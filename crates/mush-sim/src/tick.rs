@@ -497,6 +497,150 @@ impl<'de> Deserialize<'de> for StandingOrder {
     }
 }
 
+/// The world-state standing-order book (`D-35-9`, `35c` §6.1).
+///
+/// Holds the live [`StandingOrder`] per [`StandingOrderKey`] `(unit, channel)`
+/// so domain and space ticks read `mush-sim`'s continuous order channels
+/// directly without keeping a duplicate book outside `mush-sim`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandingOrderBook {
+    /// Monotonic revision counter for orders recorded through [`record_standing_order`].
+    #[serde(default)]
+    pub next_revision: u64,
+    /// Active standing orders keyed by `(unit, channel)`.
+    #[serde(default, with = "standing_order_book_serde")]
+    pub orders: BTreeMap<StandingOrderKey, StandingOrder>,
+}
+
+impl StandingOrderBook {
+    /// Look up the [`StandingOrder`] for `(unit, channel)`.
+    #[must_use]
+    pub fn get(&self, unit: ObjId, channel: OrderChannel) -> Option<&StandingOrder> {
+        self.orders.get(&StandingOrderKey { unit, channel })
+    }
+
+    /// Construct, validate, and store a [`StandingOrder`] directly in this book.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        &mut self,
+        unit: ObjId,
+        channel: OrderChannel,
+        value: OrderValue,
+        by: ObjId,
+        domain: DomainId,
+        generation: u64,
+        tick: i64,
+    ) -> Result<StandingOrder, TickRecordError> {
+        let sim_owner = owner().map_err(|_| TickRecordError::NotDomainTick)?;
+        let clock =
+            pulse_clock(&sim_owner, domain, generation).ok_or(TickRecordError::NotDomainTick)?;
+        let stamp = ClockStamp { clock, at: tick };
+        let next_rev = self.next_revision.saturating_add(1).max(1);
+        let order = StandingOrder::new(unit, channel, value, stamp, by, next_rev)?;
+        self.next_revision = next_rev;
+        self.orders.insert(order.key(), order.clone());
+        Ok(order)
+    }
+}
+
+mod standing_order_book_serde {
+    use super::{BTreeMap, Deserialize, Serialize, StandingOrder, StandingOrderKey};
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        map: &BTreeMap<StandingOrderKey, StandingOrder>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let pairs: Vec<(&StandingOrderKey, &StandingOrder)> = map.iter().collect();
+        pairs.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<StandingOrderKey, StandingOrder>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let pairs: Vec<(StandingOrderKey, StandingOrder)> = Vec::deserialize(deserializer)?;
+        Ok(pairs.into_iter().collect())
+    }
+}
+
+/// Borrow the current validated [`StandingOrder`] for `(unit, channel)` from `mush-sim`'s
+/// [`StandingOrderBook`] (`D-35-9`, `35c` §6.1).
+#[must_use]
+pub fn standing_order(
+    world: &mush_core::World,
+    unit: ObjId,
+    channel: OrderChannel,
+) -> Option<&StandingOrder> {
+    world
+        .module_state::<StandingOrderBook>()?
+        .orders
+        .get(&StandingOrderKey { unit, channel })
+}
+
+/// Construct, validate, and store a [`StandingOrder`] on `(unit, channel)` in `mush-sim`'s
+/// [`StandingOrderBook`] (`D-35-9`, `35c` §6.1).
+///
+/// # Errors
+///
+/// Returns [`TickRecordError`] if `value` does not fit `channel`, falls outside the scalar band,
+/// or the domain clock cannot be constructed.
+#[allow(clippy::too_many_arguments)]
+pub fn record_standing_order(
+    world: &mut mush_core::World,
+    unit: ObjId,
+    channel: OrderChannel,
+    value: OrderValue,
+    by: ObjId,
+    domain: DomainId,
+    generation: u64,
+    tick: i64,
+) -> Result<StandingOrder, TickRecordError> {
+    let sim_owner = owner().map_err(|_| TickRecordError::NotDomainTick)?;
+    let clock =
+        pulse_clock(&sim_owner, domain, generation).ok_or(TickRecordError::NotDomainTick)?;
+    let stamp = ClockStamp { clock, at: tick };
+    let book = world
+        .module_state_mut::<StandingOrderBook>()
+        .ok_or(TickRecordError::NotDomainTick)?;
+    let next_rev = book.next_revision.saturating_add(1).max(1);
+    let order = StandingOrder::new(unit, channel, value, stamp, by, next_rev)?;
+    book.next_revision = next_rev;
+    book.orders.insert(order.key(), order.clone());
+    Ok(order)
+}
+
+/// Clear all [`StandingOrder`] channels (`Heading`, `Thrust`, `Speed`, `Posture`) for `unit`
+/// when its bubble closes or the unit docks (`35c` §6.1).
+pub fn clear_unit_standing_orders(world: &mut mush_core::World, unit: ObjId) {
+    if let Some(book) = world.module_state_mut::<StandingOrderBook>() {
+        for channel in OrderChannel::all() {
+            book.orders.remove(&StandingOrderKey { unit, channel });
+        }
+    }
+}
+
+/// Snapshot `mush-sim`'s [`StandingOrderBook`] for persistence across restarts.
+#[must_use]
+pub fn standing_orders_snapshot(world: &mush_core::World) -> StandingOrderBook {
+    world
+        .module_state::<StandingOrderBook>()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Restore `mush-sim`'s [`StandingOrderBook`] at boot.
+pub fn restore_standing_orders(world: &mut mush_core::World, snapshot: StandingOrderBook) {
+    if let Some(book) = world.module_state_mut::<StandingOrderBook>() {
+        *book = snapshot;
+    }
+}
+
 // ----------------------------------------------------------------------
 // B3 — the intent vocabulary
 // ----------------------------------------------------------------------
@@ -3439,6 +3583,7 @@ pub(crate) fn register(
         schedules: families.schedules.clone(),
         reaping: families.reaping.clone(),
     });
+    reg.state(StandingOrderBook::default());
 
     reg.action_provider(
         definitions.arm_action.clone(),

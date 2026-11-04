@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use mush_core::module::{ModError, Registrar, TickCadence};
 use mush_core::{ClockStamp, Ctx, ModuleWrite, ObjId, SceneId, World};
+use mush_sim::tick::{OrderChannel, OrderValue};
 use mush_sim::{
     ActivationBook, CarrierJourney, DomainId, JourneyBook, JourneyState, PromotionTrigger,
     SpatialState, promote_carrier_journey, resume_carrier_journey, stand_down_domain,
@@ -42,8 +43,8 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use super::bubble::{
-    BubbleId, BubbleInputCommand, BubbleInputTape, BubbleSnapshot, DERELICT_WINDOW_S, HullStatus,
-    LocalSpaceBubble, SpaceShipState, admitted_party,
+    BubbleId, BubbleInputCommand, BubbleInputTape, BubbleSnapshot, DERELICT_WINDOW_S, EmconPosture,
+    HullStatus, LocalSpaceBubble, SpaceShipState, admitted_party,
 };
 use super::custody::{
     check_in_space_unit, check_out_space_unit, instantiate_stock_space_unit,
@@ -537,6 +538,7 @@ impl CompletedInterdictionBubble {
 /// Open-epoch derelict hull record persisted when a ship's drive or hull is disabled
 /// in a space bubble (`SF.R2`, `D-35-12`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpaceDerelictRecord {
     /// Disabled hull object id.
     pub hull: ObjId,
@@ -622,6 +624,7 @@ pub const SOLAR_MU_KM3_S2: f64 = 132_712_440_018.0;
 /// Tier-1 interplanetary free-flight state for a carrier hull that has decoupled from its
 /// corridor route (`+helm/decouple`, `SF.R4`, `D-35-5`, `D-35-6`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpaceFreeFlightRecord {
     /// Carrier hull root [`ObjId`].
     pub hull: ObjId,
@@ -746,6 +749,7 @@ impl SpaceFreeFlightRecord {
 
 /// Live reaction-mass ledger for a hull in free flight or an interdiction bubble (`SF.R4`, `D-35-6`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HullPropellantLedger {
     /// Sub-tonne kilograms burned across maneuvers (`0..999`); every 1,000 kg crosses into a
     /// whole-tonne `tacsim_port_burn` debit against `stow.propellant`.
@@ -832,10 +836,30 @@ pub struct SpaceLinkdeadState {
     pub queued_return_port: Option<String>,
 }
 
+/// Pending bubble input queued by a `+tac/*` or `+helm/*` switch for `BubbleInputProvider` (`SF.R21`, `35b` §3b).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingBubbleInput {
+    /// Monotonic sequence number.
+    pub seq: u64,
+    /// Submitting actor [`ObjId`].
+    pub actor: ObjId,
+    /// Carrier hull [`ObjId`].
+    pub hull: ObjId,
+    /// Switch name (`"beam"`, `"lock"`, `"torp"`, `"railgun"`, `"pdc"`, `"heading"`, `"thrust"`, etc.).
+    pub switch: String,
+    /// World IC timestamp.
+    pub at_ic: i64,
+    /// Optional [`BubbleInputCommand`] staged by the command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<BubbleInputCommand>,
+}
+
 /// World-state registry of active and completed space interdiction bubbles,
-/// open-epoch derelicts, validated `mush-sim` standing orders, Tier-1 free-flight records,
-/// live propellant ledgers, orbital cluster mining sessions, and 6-DOF docking sessions (`SF.R1`–`SF.R8`).
+/// open-epoch derelicts, Tier-1 free-flight records, live propellant ledgers,
+/// orbital cluster mining sessions, and 6-DOF docking sessions (`SF.R1`–`SF.R21`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpaceBubbleBook {
     /// Active interdiction bubbles keyed by waypoint [`DomainId`] (`SF.R12`, `D-35-5`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
@@ -849,10 +873,6 @@ pub struct SpaceBubbleBook {
     /// Open-epoch derelict hulls keyed by hull [`ObjId`] (`D-35-12`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub derelicts: BTreeMap<ObjId, SpaceDerelictRecord>,
-    /// Validated `mush-sim` continuous standing orders (`Heading`, `Thrust`, `Speed`, `Posture`)
-    /// keyed by `(hull, channel)` (`SF.R3`, `D-35-9`).
-    #[serde(default, with = "super::bubble::vec_tuple_map")]
-    pub standing_orders: BTreeMap<mush_sim::tick::StandingOrderKey, mush_sim::tick::StandingOrder>,
     /// Tier-1 interplanetary free-flight records keyed by carrier hull root [`ObjId`] (`SF.R4`, `D-35-5`, `D-35-6`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub free_flights: BTreeMap<ObjId, SpaceFreeFlightRecord>,
@@ -898,9 +918,6 @@ pub struct SpaceBubbleBook {
     /// Monotonic sequence allocator for [`Self::docking_sessions`].
     #[serde(default)]
     pub next_docking_session_seq: u64,
-    /// Monotonic revision counter for `mush-sim` standing orders (`SF.R3`).
-    #[serde(default)]
-    pub next_order_revision: u64,
     /// Monotonic allocator for space salvage [`RecoveryOpId`]s.
     #[serde(default)]
     pub next_recovery_op_id: u64,
@@ -916,9 +933,46 @@ pub struct SpaceBubbleBook {
     /// Derelict hulls whose Freeport Registry salvage recovery bounty has already been paid (`SF.R19`, `35b` §5 #5).
     #[serde(default)]
     pub paid_salvage_bounties: std::collections::BTreeSet<ObjId>,
+    /// Server-authenticated bubble inputs queued by `+tac/*` and `+helm/*` for `BubbleInputProvider` (`SF.R21`, `35b` §3b).
+    #[serde(default, skip)]
+    pub pending_bubble_inputs: Vec<PendingBubbleInput>,
+    /// Monotonic sequence allocator for [`Self::pending_bubble_inputs`] (`SF.R21`, `35b` §3b).
+    #[serde(default, skip)]
+    pub next_bubble_input_seq: u64,
+    /// Transient tracking of actors whose most recent queued submission is [`BUBBLE_INPUT_ACTION`].
+    #[serde(default, skip)]
+    pub last_bubble_submit_actors: std::collections::BTreeSet<ObjId>,
+    /// Transient tracking of actors with an un-drained `tacsim_port_burn` submission.
+    #[serde(default, skip)]
+    pub pending_burn_submit_actors: std::collections::BTreeSet<ObjId>,
+    /// Bubble domains quarantined at boot due to an unreadable `tacsim:space:bubble:{domain}` document (`SF.R21`, `35c` §6.3).
+    #[serde(default, skip)]
+    pub quarantined_bubbles: std::collections::BTreeSet<DomainId>,
+    /// Hulls quarantined at boot due to an unreadable per-hull space document (`SF.R21`, `35c` §6.3).
+    #[serde(default, skip)]
+    pub quarantined_hulls: std::collections::BTreeSet<ObjId>,
 }
 
 impl SpaceBubbleBook {
+    /// Return a copy of `self` with the five per-entity maps (`by_domain`, `free_flights`,
+    /// `derelicts`, `docking_sessions`, `propellant_ledgers`) cleared, for auxiliary store diffing (`SF.R21`).
+    #[must_use]
+    pub fn without_per_entity_maps(&self) -> Self {
+        let mut aux = self.clone();
+        aux.by_domain.clear();
+        aux.free_flights.clear();
+        aux.derelicts.clear();
+        aux.docking_sessions.clear();
+        aux.propellant_ledgers.clear();
+        aux.pending_bubble_inputs.clear();
+        aux.next_bubble_input_seq = 0;
+        aux.last_bubble_submit_actors.clear();
+        aux.pending_burn_submit_actors.clear();
+        aux.quarantined_bubbles.clear();
+        aux.quarantined_hulls.clear();
+        aux
+    }
+
     /// Borrow the linkdead state for `hull`, if any (`SF.R13`, `D-35-7`).
     #[must_use]
     pub fn linkdead_state(&self, hull: ObjId) -> Option<&SpaceLinkdeadState> {
@@ -1044,52 +1098,6 @@ impl SpaceBubbleBook {
         format!("dock.{}.{}", hull.0, self.next_docking_session_seq)
     }
 
-    /// Borrow the current validated [`mush_sim::tick::StandingOrder`] for `(unit, channel)` (`D-35-9`).
-    #[must_use]
-    pub fn standing_order(
-        &self,
-        unit: ObjId,
-        channel: mush_sim::tick::OrderChannel,
-    ) -> Option<&mush_sim::tick::StandingOrder> {
-        self.standing_orders
-            .get(&mush_sim::tick::StandingOrderKey { unit, channel })
-    }
-
-    /// Allocate the next monotonic standing-order revision and record a validated
-    /// [`mush_sim::tick::StandingOrder`] on `(unit, channel)` (`SF.R3`, `D-35-9`).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`mush_sim::tick::TickRecordError`] if the order value or stamp fails
-    /// `mush-sim`'s [`mush_sim::tick::StandingOrder::new`] invariant checks.
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_standing_order(
-        &mut self,
-        unit: ObjId,
-        channel: mush_sim::tick::OrderChannel,
-        value: mush_sim::tick::OrderValue,
-        by: ObjId,
-        domain: DomainId,
-        generation: u64,
-        tick: i64,
-    ) -> Result<mush_sim::tick::StandingOrder, mush_sim::tick::TickRecordError> {
-        let next_rev = self.next_order_revision.saturating_add(1);
-        let stamp = ClockStamp {
-            clock: mush_core::ClockRef::DomainTick {
-                owner: mush_core::OwnerId::new("sim")
-                    .map_err(|_| mush_sim::tick::TickRecordError::NotDomainTick)?,
-                id: mush_core::CanonicalId::new(format!("domain_{}", domain.0))
-                    .map_err(|_| mush_sim::tick::TickRecordError::NotDomainTick)?,
-                generation,
-            },
-            at: tick,
-        };
-        let order = mush_sim::tick::StandingOrder::new(unit, channel, value, stamp, by, next_rev)?;
-        self.next_order_revision = next_rev;
-        self.standing_orders.insert(order.key(), order.clone());
-        Ok(order)
-    }
-
     pub(crate) fn alloc_recovery_op_id(&mut self) -> Option<RecoveryOpId> {
         self.next_recovery_op_id = self.next_recovery_op_id.saturating_add(1);
         RecoveryOpId::new(self.next_recovery_op_id).ok()
@@ -1193,14 +1201,124 @@ pub fn clear_interdiction_bubble(w: &mut World, hull: ObjId) -> bool {
     true
 }
 
-/// Store document key under which [`SpacePersistedState`] is persisted in the `"tacsim"` namespace (`SF.R8`, `D-35-12`).
+/// Store document key under which auxiliary [`SpacePersistedState`] is persisted in the `"tacsim"` namespace (`SF.R8`, `SF.R21`, `D-35-12`).
 pub const SPACE_STATE_KEY: &str = "tacsim:space:state";
 
-/// Schema format version for [`SpacePersistedState`].
+/// Prefix shared by all space persistence keys (`tacsim:space:*`).
+pub const SPACE_KEY_PREFIX: &str = "tacsim:space:";
+
+/// Per-domain active bubble store key prefix (`tacsim:space:bubble:{domain}`, `SF.R21`, `35c` §6.2).
+pub const SPACE_BUBBLE_PREFIX: &str = "tacsim:space:bubble:";
+
+/// Per-hull free-flight store key prefix (`tacsim:space:flight:{hull}`, `SF.R21`, `35c` §6.2).
+pub const SPACE_FLIGHT_PREFIX: &str = "tacsim:space:flight:";
+
+/// Per-hull derelict store key prefix (`tacsim:space:derelict:{hull}`, `SF.R21`, `35c` §6.2).
+pub const SPACE_DERELICT_PREFIX: &str = "tacsim:space:derelict:";
+
+/// Per-hull docking session store key prefix (`tacsim:space:docking:{hull}`, `SF.R21`, `35c` §6.2).
+pub const SPACE_DOCKING_PREFIX: &str = "tacsim:space:docking:";
+
+/// Per-hull propellant ledger store key prefix (`tacsim:space:ledger:{hull}`, `SF.R21`, `35c` §6.2).
+pub const SPACE_LEDGER_PREFIX: &str = "tacsim:space:ledger:";
+
+/// Schema format version for [`SpacePersistedState`] and per-entity space documents.
 pub const SPACE_STATE_FORMAT: u16 = 1;
 
-/// Durable store snapshot of [`SpaceBubbleBook`] and [`SalvageClaimBook`] (`SF.R8`, `D-35-12`).
+/// Format the per-domain store key for an active bubble (`tacsim:space:bubble:{domain}`).
+#[must_use]
+pub fn space_bubble_key(domain: DomainId) -> String {
+    format!("{SPACE_BUBBLE_PREFIX}{}", domain.0)
+}
+
+/// Format the per-hull store key for a free-flight record (`tacsim:space:flight:{hull}`).
+#[must_use]
+pub fn space_flight_key(hull: ObjId) -> String {
+    format!("{SPACE_FLIGHT_PREFIX}{}", hull.0)
+}
+
+/// Format the per-hull store key for a derelict record (`tacsim:space:derelict:{hull}`).
+#[must_use]
+pub fn space_derelict_key(hull: ObjId) -> String {
+    format!("{SPACE_DERELICT_PREFIX}{}", hull.0)
+}
+
+/// Format the per-hull store key for a docking session (`tacsim:space:docking:{hull}`).
+#[must_use]
+pub fn space_docking_key(hull: ObjId) -> String {
+    format!("{SPACE_DOCKING_PREFIX}{}", hull.0)
+}
+
+/// Format the per-hull store key for a propellant ledger (`tacsim:space:ledger:{hull}`).
+#[must_use]
+pub fn space_ledger_key(hull: ObjId) -> String {
+    format!("{SPACE_LEDGER_PREFIX}{}", hull.0)
+}
+
+/// Per-domain active bubble store document (`tacsim:space:bubble:{domain}`, `SF.R21`, `35c` §6.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedBubbleDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Domain identity matching the key suffix.
+    pub domain: DomainId,
+    /// Persisted [`ActiveInterdictionBubble`].
+    pub bubble: ActiveInterdictionBubble,
+}
+
+/// Per-hull free-flight store document (`tacsim:space:flight:{hull}`, `SF.R21`, `35c` §6.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedFlightDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Hull identity matching the key suffix.
+    pub hull: ObjId,
+    /// Persisted [`SpaceFreeFlightRecord`].
+    pub flight: SpaceFreeFlightRecord,
+}
+
+/// Per-hull derelict store document (`tacsim:space:derelict:{hull}`, `SF.R21`, `35c` §6.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedDerelictDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Hull identity matching the key suffix.
+    pub hull: ObjId,
+    /// Persisted [`SpaceDerelictRecord`].
+    pub derelict: SpaceDerelictRecord,
+}
+
+/// Per-hull docking session store document (`tacsim:space:docking:{hull}`, `SF.R21`, `35c` §6.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedDockingDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Hull identity matching the key suffix.
+    pub hull: ObjId,
+    /// Persisted [`super::docking::DockingSession`].
+    pub session: super::docking::DockingSession,
+}
+
+/// Per-hull propellant ledger store document (`tacsim:space:ledger:{hull}`, `SF.R21`, `35c` §6.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedLedgerDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Hull identity matching the key suffix.
+    pub hull: ObjId,
+    /// Persisted [`HullPropellantLedger`].
+    pub ledger: HullPropellantLedger,
+}
+
+/// Durable store snapshot of [`SpaceBubbleBook`], [`SalvageClaimBook`], and `mush-sim`
+/// [`mush_sim::tick::StandingOrderBook`] (`SF.R8`, `SF.R21`, `D-35-12`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpacePersistedState {
     /// Schema format version ([`SPACE_STATE_FORMAT`]).
     pub format: u16,
@@ -1208,10 +1326,184 @@ pub struct SpacePersistedState {
     pub book: SpaceBubbleBook,
     /// Persisted [`SalvageClaimBook`] state (48-hour salvage claims, recovery records, black-box tapes).
     pub salvage: SalvageClaimBook,
+    /// Persisted `mush-sim` [`mush_sim::tick::StandingOrderBook`] (`SF.R21`, `D-35-9`).
+    #[serde(default)]
+    pub standing_orders: mush_sim::tick::StandingOrderBook,
 }
 
-/// Persist the current [`SpaceBubbleBook`] and [`SalvageClaimBook`] into [`TacsimStore`] and
-/// emit a [`ModuleWrite::JsonSet`] document under [`SPACE_STATE_KEY`] (`SF.R8`, `D-35-12`).
+impl SpacePersistedState {
+    /// Construct an empty state at [`SPACE_STATE_FORMAT`].
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            format: SPACE_STATE_FORMAT,
+            book: SpaceBubbleBook::default(),
+            salvage: SalvageClaimBook::new(),
+            standing_orders: mush_sim::tick::StandingOrderBook::default(),
+        }
+    }
+}
+
+/// Decode and validate one `tacsim:space:*` KV entry into `store` (`SF.R8`, `SF.R10`, `SF.R21`, `35c` §6.2).
+///
+/// Any malformed, format-mismatched, or key-vs-inner-identity-mismatched document quarantines
+/// space state (`store.space_state = None; store.space_state_held = true`) so it fails closed
+/// and is never overwritten.
+pub fn load_space_kv_entry(
+    store: &mut TacsimStore,
+    key: &str,
+    value: &serde_json::Value,
+) {
+    if store.space_state_held && store.space_state.is_none() {
+        return;
+    }
+    store.space_state_held = true;
+    let mut state = store
+        .space_state
+        .take()
+        .unwrap_or_else(SpacePersistedState::empty);
+
+    let ok = if key == SPACE_STATE_KEY {
+        match serde_json::from_value::<SpacePersistedState>(value.clone()) {
+            Ok(aux) if aux.format == SPACE_STATE_FORMAT => {
+                let mut merged_book = aux.book;
+                for (dom, b) in state.book.by_domain {
+                    merged_book.by_domain.insert(dom, b);
+                }
+                for (h, f) in state.book.free_flights {
+                    merged_book.free_flights.insert(h, f);
+                }
+                for (h, d) in state.book.derelicts {
+                    merged_book.derelicts.insert(h, d);
+                }
+                for (h, s) in state.book.docking_sessions {
+                    merged_book.docking_sessions.insert(h, s);
+                }
+                for (h, l) in state.book.propellant_ledgers {
+                    merged_book.propellant_ledgers.insert(h, l);
+                }
+                merged_book.quarantined_bubbles = state.book.quarantined_bubbles;
+                merged_book.quarantined_hulls = state.book.quarantined_hulls;
+                state.book = merged_book;
+                state.salvage = aux.salvage;
+                state.standing_orders = aux.standing_orders;
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(dom_str) = key.strip_prefix(SPACE_BUBBLE_PREFIX) {
+        match (
+            dom_str.parse::<u64>().ok().map(DomainId),
+            serde_json::from_value::<PersistedBubbleDoc>(value.clone()),
+        ) {
+            (Some(dom), Ok(doc))
+                if doc.format == SPACE_STATE_FORMAT
+                    && doc.domain == dom
+                    && doc.bubble.domain == dom =>
+            {
+                state.book.by_domain.insert(dom, doc.bubble);
+                true
+            }
+            (Some(dom), _) => {
+                state.book.quarantined_bubbles.insert(dom);
+                tracing::warn!(%key, domain = dom.0, "tacsim: space bubble document is unreadable; domain quarantined");
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(hull_str) = key.strip_prefix(SPACE_FLIGHT_PREFIX) {
+        match (
+            hull_str.parse::<u32>().ok().map(ObjId),
+            serde_json::from_value::<PersistedFlightDoc>(value.clone()),
+        ) {
+            (Some(hull), Ok(doc))
+                if doc.format == SPACE_STATE_FORMAT
+                    && doc.hull == hull
+                    && doc.flight.hull == hull =>
+            {
+                state.book.free_flights.insert(hull, doc.flight);
+                true
+            }
+            (Some(hull), _) => {
+                state.book.quarantined_hulls.insert(hull);
+                tracing::warn!(%key, hull = hull.0, "tacsim: space flight document is unreadable; hull quarantined");
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(hull_str) = key.strip_prefix(SPACE_DERELICT_PREFIX) {
+        match (
+            hull_str.parse::<u32>().ok().map(ObjId),
+            serde_json::from_value::<PersistedDerelictDoc>(value.clone()),
+        ) {
+            (Some(hull), Ok(doc))
+                if doc.format == SPACE_STATE_FORMAT
+                    && doc.hull == hull
+                    && doc.derelict.hull == hull =>
+            {
+                state.book.derelicts.insert(hull, doc.derelict);
+                true
+            }
+            (Some(hull), _) => {
+                state.book.quarantined_hulls.insert(hull);
+                tracing::warn!(%key, hull = hull.0, "tacsim: space derelict document is unreadable; hull quarantined");
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(hull_str) = key.strip_prefix(SPACE_DOCKING_PREFIX) {
+        match (
+            hull_str.parse::<u32>().ok().map(ObjId),
+            serde_json::from_value::<PersistedDockingDoc>(value.clone()),
+        ) {
+            (Some(hull), Ok(doc))
+                if doc.format == SPACE_STATE_FORMAT
+                    && doc.hull == hull
+                    && doc.session.hull_id == hull =>
+            {
+                state.book.docking_sessions.insert(hull, doc.session);
+                true
+            }
+            (Some(hull), _) => {
+                state.book.quarantined_hulls.insert(hull);
+                tracing::warn!(%key, hull = hull.0, "tacsim: space docking document is unreadable; hull quarantined");
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(hull_str) = key.strip_prefix(SPACE_LEDGER_PREFIX) {
+        match (
+            hull_str.parse::<u32>().ok().map(ObjId),
+            serde_json::from_value::<PersistedLedgerDoc>(value.clone()),
+        ) {
+            (Some(hull), Ok(doc)) if doc.format == SPACE_STATE_FORMAT && doc.hull == hull => {
+                state.book.propellant_ledgers.insert(hull, doc.ledger);
+                true
+            }
+            (Some(hull), _) => {
+                state.book.quarantined_hulls.insert(hull);
+                tracing::warn!(%key, hull = hull.0, "tacsim: space ledger document is unreadable; hull quarantined");
+                true
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+
+    if ok {
+        store.space_state = Some(state);
+    } else {
+        store.space_state = None;
+        tracing::warn!(%key, "tacsim: space document is unreadable; held for staff repair");
+    }
+}
+
+/// Persist the current [`SpaceBubbleBook`], [`SalvageClaimBook`], and `mush-sim`
+/// [`mush_sim::tick::StandingOrderBook`] into [`TacsimStore`], emitting dirty-only per-entity
+/// [`ModuleWrite::JsonSet`] / [`ModuleWrite::Del`] operations (`tacsim:space:bubble:{domain}`,
+/// `tacsim:space:flight:{hull}`, `tacsim:space:derelict:{hull}`, `tacsim:space:docking:{hull}`,
+/// `tacsim:space:ledger:{hull}`, and auxiliary `tacsim:space:state`) (`SF.R8`, `SF.R21`, `35c` §6.2).
 pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     if ctx
         .w
@@ -1220,149 +1512,732 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     {
         return;
     }
-    let Some(book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
+    let Some(mut book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
         return;
     };
+    book.pending_bubble_inputs.clear();
+    book.next_bubble_input_seq = 0;
+    book.last_bubble_submit_actors.clear();
+    book.pending_burn_submit_actors.clear();
+
     let salvage = ctx
         .w
         .module_state::<SalvageClaimBook>()
         .cloned()
         .unwrap_or_else(SalvageClaimBook::new);
+    let standing_orders = mush_sim::tick::standing_orders_snapshot(ctx.w);
     let snapshot = SpacePersistedState {
         format: SPACE_STATE_FORMAT,
         book,
         salvage,
+        standing_orders,
     };
-    let unchanged = match ctx
+    let prev = ctx
         .w
         .module_state::<TacsimStore>()
         .and_then(TacsimStore::space_state)
-    {
-        Some(prev) => *prev == snapshot,
-        None => snapshot.book == SpaceBubbleBook::default(),
+        .cloned();
+    let unchanged = match &prev {
+        Some(p) => *p == snapshot,
+        None => {
+            snapshot.book == SpaceBubbleBook::default()
+                && snapshot.salvage == SalvageClaimBook::new()
+                && snapshot.standing_orders == mush_sim::tick::StandingOrderBook::default()
+        }
     };
     if unchanged {
         return;
     }
-    match serde_json::to_value(&snapshot) {
-        Ok(value) => crate::store::push_op(
-            ctx.out,
-            ModuleWrite::JsonSet {
-                key: SmolStr::new_static(SPACE_STATE_KEY),
-                value,
-            },
-        ),
-        Err(error) => {
-            tracing::error!(%error, "tacsim: space state did not encode");
-            return;
+
+    // 1. Per-domain active bubbles (`tacsim:space:bubble:{domain}`).
+    for (&domain, active) in &snapshot.book.by_domain {
+        if prev.as_ref().and_then(|p| p.book.by_domain.get(&domain)) != Some(active) {
+            let doc = PersistedBubbleDoc {
+                format: SPACE_STATE_FORMAT,
+                domain,
+                bubble: active.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_bubble_key(domain)),
+                        value,
+                    },
+                );
+            }
         }
     }
+    if let Some(p) = &prev {
+        for &domain in p.book.by_domain.keys() {
+            if !snapshot.book.by_domain.contains_key(&domain) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_bubble_key(domain)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 2. Per-hull free-flight records (`tacsim:space:flight:{hull}`).
+    for (&hull, flight) in &snapshot.book.free_flights {
+        if prev.as_ref().and_then(|p| p.book.free_flights.get(&hull)) != Some(flight) {
+            let doc = PersistedFlightDoc {
+                format: SPACE_STATE_FORMAT,
+                hull,
+                flight: flight.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_flight_key(hull)),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(p) = &prev {
+        for &hull in p.book.free_flights.keys() {
+            if !snapshot.book.free_flights.contains_key(&hull) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_flight_key(hull)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 3. Per-hull derelict records (`tacsim:space:derelict:{hull}`).
+    for (&hull, derelict) in &snapshot.book.derelicts {
+        if prev.as_ref().and_then(|p| p.book.derelicts.get(&hull)) != Some(derelict) {
+            let doc = PersistedDerelictDoc {
+                format: SPACE_STATE_FORMAT,
+                hull,
+                derelict: derelict.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_derelict_key(hull)),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(p) = &prev {
+        for &hull in p.book.derelicts.keys() {
+            if !snapshot.book.derelicts.contains_key(&hull) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_derelict_key(hull)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 4. Per-hull docking sessions (`tacsim:space:docking:{hull}`).
+    for (&hull, session) in &snapshot.book.docking_sessions {
+        if prev
+            .as_ref()
+            .and_then(|p| p.book.docking_sessions.get(&hull))
+            != Some(session)
+        {
+            let doc = PersistedDockingDoc {
+                format: SPACE_STATE_FORMAT,
+                hull,
+                session: session.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_docking_key(hull)),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(p) = &prev {
+        for &hull in p.book.docking_sessions.keys() {
+            if !snapshot.book.docking_sessions.contains_key(&hull) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_docking_key(hull)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 5. Per-hull propellant ledgers (`tacsim:space:ledger:{hull}`).
+    for (&hull, ledger) in &snapshot.book.propellant_ledgers {
+        if prev
+            .as_ref()
+            .and_then(|p| p.book.propellant_ledgers.get(&hull))
+            != Some(ledger)
+        {
+            let doc = PersistedLedgerDoc {
+                format: SPACE_STATE_FORMAT,
+                hull,
+                ledger: ledger.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_ledger_key(hull)),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(p) = &prev {
+        for &hull in p.book.propellant_ledgers.keys() {
+            if !snapshot.book.propellant_ledgers.contains_key(&hull) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_ledger_key(hull)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 6. Auxiliary space state (`tacsim:space:state`), written only when auxiliary fields change.
+    let aux_now = SpacePersistedState {
+        format: SPACE_STATE_FORMAT,
+        book: snapshot.book.without_per_entity_maps(),
+        salvage: snapshot.salvage.clone(),
+        standing_orders: snapshot.standing_orders.clone(),
+    };
+    let aux_changed = match &prev {
+        Some(p) => {
+            let aux_prev = SpacePersistedState {
+                format: p.format,
+                book: p.book.without_per_entity_maps(),
+                salvage: p.salvage.clone(),
+                standing_orders: p.standing_orders.clone(),
+            };
+            aux_prev != aux_now
+        }
+        None => {
+            aux_now.book != SpaceBubbleBook::default()
+                || aux_now.salvage != SalvageClaimBook::new()
+                || aux_now.standing_orders != mush_sim::tick::StandingOrderBook::default()
+        }
+    };
+    if aux_changed {
+        match serde_json::to_value(&aux_now) {
+            Ok(value) => crate::store::push_op(
+                ctx.out,
+                ModuleWrite::JsonSet {
+                    key: SmolStr::new_static(SPACE_STATE_KEY),
+                    value,
+                },
+            ),
+            Err(error) => {
+                tracing::error!(%error, "tacsim: space state did not encode");
+                return;
+            }
+        }
+    }
+
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
         store.space_state = Some(snapshot);
         store.space_state_held = true;
     }
 }
 
-/// Hydrate [`SpaceBubbleBook`], [`SalvageClaimBook`], and [`TacsimStore::space_state`] from the
-/// `"tacsim"` boot key-value documents during `TacsimRuleset::on_world_loaded` (`SF.R8`, `D-35-12`).
+/// Hydrate [`SpaceBubbleBook`], [`SalvageClaimBook`], `mush-sim` [`mush_sim::tick::StandingOrderBook`],
+/// and [`TacsimStore::space_state`] from the `"tacsim"` boot key-value documents during
+/// `TacsimRuleset::on_world_loaded` (`SF.R8`, `SF.R21`, `D-35-12`).
 pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
-    for (key, value) in kv {
-        if key.as_str() != SPACE_STATE_KEY {
-            continue;
-        }
-        if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-            store.space_state_held = true;
-        }
-        match serde_json::from_value::<SpacePersistedState>(value.clone()) {
-            Ok(mut state) if state.format == SPACE_STATE_FORMAT => {
-                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-                    crate::minds::content::ensure_space_mind_sources_installed(store);
-                }
-                for active in state.book.by_domain.values_mut() {
-                    if let Some(picket) = active.picket.as_mut() {
-                        picket.corvette_seal =
-                            super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull).or_else(
-                                || {
-                                    super::picket::build_space_mind_seal(
-                                        picket.corvette_hull,
-                                        crate::arena::mind::SortieId::ic(picket.corvette_hull, 1),
-                                        "kirkwood_picket",
-                                        crate::minds::content::kirkwood_picket_digest().0,
-                                    )
-                                },
-                            );
-                        picket.raider_seal =
-                            super::picket::space_mind_seal_of(ctx.w, picket.raider_hull).or_else(
-                                || {
-                                    super::picket::build_space_mind_seal(
-                                        picket.raider_hull,
-                                        crate::arena::mind::SortieId::ic(picket.raider_hull, 1),
-                                        "belt_raider",
-                                        crate::minds::content::belt_raider_digest().0,
-                                    )
-                                },
-                            );
-                    } else {
-                        active.interdictor_seal =
-                            super::picket::space_mind_seal_of(ctx.w, active.interdictor_hull)
-                                .or_else(|| {
-                                    super::picket::build_space_mind_seal(
-                                        active.interdictor_hull,
-                                        crate::arena::mind::SortieId::ic(
-                                            active.interdictor_hull,
-                                            1,
-                                        ),
-                                        "interdictor_patrol",
-                                        crate::minds::content::interdictor_patrol_digest().0,
-                                    )
-                                });
-                    }
-                }
-                for sess in state.book.cluster_sessions.values_mut() {
-                    for d in &mut sess.active_drones {
-                        d.mind_seal = super::picket::space_mind_seal_of(ctx.w, d.excursion_id.tv)
-                            .or_else(|| {
-                                super::picket::build_space_mind_seal(
-                                    d.excursion_id.tv,
-                                    crate::arena::mind::SortieId::ic(
-                                        d.excursion_id.tv,
-                                        d.excursion_id.launch_ic,
-                                    ),
-                                    "drone_mining",
-                                    crate::minds::content::drone_mining_digest().0,
-                                )
-                            });
-                    }
-                }
-                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-                    *book = state.book.clone();
-                }
-                if let Some(salvage) = ctx.w.module_state_mut::<SalvageClaimBook>() {
-                    *salvage = state.salvage.clone();
-                }
-                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-                    store.space_state = Some(state);
-                }
-            }
-            Ok(state) => {
-                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-                    store.space_state = None;
-                }
-                tracing::warn!(
-                    format = state.format,
-                    "tacsim: tacsim:space:state has unsupported format; held for staff repair"
-                );
-            }
-            Err(error) => {
-                if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-                    store.space_state = None;
-                }
-                tracing::warn!(
-                    %error,
-                    "tacsim: tacsim:space:state did not decode; held for staff repair"
-                );
+    let mut has_space_keys = false;
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.space_state = None;
+        store.space_state_held = false;
+        for (key, value) in kv {
+            if key.as_str() == SPACE_STATE_KEY || key.as_str().starts_with(SPACE_KEY_PREFIX) {
+                has_space_keys = true;
+                load_space_kv_entry(store, key.as_str(), value);
             }
         }
+    }
+    if !has_space_keys {
+        return;
+    }
+    let loaded = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|s| s.space_state.clone());
+    let Some(mut state) = loaded else {
+        return;
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        crate::minds::content::ensure_space_mind_sources_installed(store);
+    }
+    for active in state.book.by_domain.values_mut() {
+        if let Some(picket) = active.picket.as_mut() {
+            picket.corvette_seal =
+                super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull).or_else(|| {
+                    super::picket::build_space_mind_seal(
+                        picket.corvette_hull,
+                        crate::arena::mind::SortieId::ic(picket.corvette_hull, 1),
+                        "kirkwood_picket",
+                        crate::minds::content::kirkwood_picket_digest().0,
+                    )
+                });
+            picket.raider_seal =
+                super::picket::space_mind_seal_of(ctx.w, picket.raider_hull).or_else(|| {
+                    super::picket::build_space_mind_seal(
+                        picket.raider_hull,
+                        crate::arena::mind::SortieId::ic(picket.raider_hull, 1),
+                        "belt_raider",
+                        crate::minds::content::belt_raider_digest().0,
+                    )
+                });
+        } else {
+            active.interdictor_seal =
+                super::picket::space_mind_seal_of(ctx.w, active.interdictor_hull).or_else(|| {
+                    super::picket::build_space_mind_seal(
+                        active.interdictor_hull,
+                        crate::arena::mind::SortieId::ic(active.interdictor_hull, 1),
+                        "interdictor_patrol",
+                        crate::minds::content::interdictor_patrol_digest().0,
+                    )
+                });
+        }
+    }
+    for sess in state.book.cluster_sessions.values_mut() {
+        for d in &mut sess.active_drones {
+            d.mind_seal =
+                super::picket::space_mind_seal_of(ctx.w, d.excursion_id.tv).or_else(|| {
+                    super::picket::build_space_mind_seal(
+                        d.excursion_id.tv,
+                        crate::arena::mind::SortieId::ic(d.excursion_id.tv, d.excursion_id.launch_ic),
+                        "drone_mining",
+                        crate::minds::content::drone_mining_digest().0,
+                    )
+                });
+        }
+    }
+    mush_sim::tick::restore_standing_orders(ctx.w, state.standing_orders.clone());
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        *book = state.book.clone();
+    }
+    if let Some(salvage) = ctx.w.module_state_mut::<SalvageClaimBook>() {
+        *salvage = state.salvage.clone();
+    }
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.space_state = Some(state);
+    }
+}
+
+/// Authoritative action id for bubble input tape staging (`SF.R21`, `35b` §3b).
+pub const BUBBLE_INPUT_ACTION: &str = "tacsim_space_bubble_input";
+
+/// Authoritative outcome id for [`BUBBLE_INPUT_ACTION`] (`SF.R21`, `35b` §3b).
+pub const BUBBLE_INPUT_OUTCOME: &str = "tacsim_space_bubble_input_outcome";
+
+/// Typed state family id for staged bubble input tapes (`SF.R21`, `35b` §3b).
+pub const BUBBLE_TAPE_FAMILY: &str = "tacsim.space_bubble_tape";
+
+/// Staged authoritative bubble-input ledger for a hull in `tacsim.space_bubble_tape` (`SF.R21`, `35b` §3b).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedBubbleTapeLedger {
+    /// Carrier hull [`ObjId`].
+    pub hull: ObjId,
+    /// Last staged sequence number (`> 0`).
+    pub last_seq: u64,
+    /// Bounded tail of staged bubble commands (`<= MAX_BUBBLE_TAPE_ENTRIES`).
+    #[serde(default)]
+    pub recent: Vec<StagedBubbleTapeEntry>,
+}
+
+impl StagedBubbleTapeLedger {
+    /// Validate record invariants for the `tacsim.space_bubble_tape` state family.
+    pub fn check(&self) -> Result<(), String> {
+        if self.hull.0 == 0 || self.last_seq == 0 {
+            return Err("a staged bubble tape ledger names a hull and a positive sequence".to_owned());
+        }
+        if self.recent.len() > MAX_BUBBLE_TAPE_ENTRIES {
+            return Err("a staged bubble tape ledger exceeds MAX_BUBBLE_TAPE_ENTRIES".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// One authoritative bubble input staged through `BubbleInputProvider` (`SF.R21`, `35b` §3b).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedBubbleTapeEntry {
+    /// Monotonic sequence number on the hull's bubble input ledger.
+    pub seq: u64,
+    /// Submitting actor [`ObjId`].
+    pub actor: ObjId,
+    /// Carrier hull [`ObjId`].
+    pub hull: ObjId,
+    /// Switch name (`"beam"`, `"lock"`, `"torp"`, `"railgun"`, `"pdc"`, `"heading"`, `"thrust"`, etc.).
+    pub switch: String,
+    /// World IC timestamp when staged.
+    pub at_ic: i64,
+    /// Optional [`BubbleInputCommand`] staged by the command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<BubbleInputCommand>,
+}
+
+/// World-state handles for [`BUBBLE_INPUT_ACTION`] and [`BUBBLE_TAPE_FAMILY`] (`SF.R21`, `35b` §3b).
+#[derive(Clone)]
+pub struct BubbleInputHandles {
+    /// Registered `tacsim_space_bubble_input` action reference.
+    pub action: Option<mush_core::DefinitionRef>,
+    /// Typed state family handle (`tacsim.space_bubble_tape`).
+    pub tapes: mush_core::StateFamilyHandle<ObjId, StagedBubbleTapeLedger>,
+}
+
+/// Outcome descriptor for [`BUBBLE_INPUT_OUTCOME`] (`SF.R21`, `35b` §3b).
+pub(crate) fn outcome_descriptor() -> Result<mush_core::DefinitionDescriptor, ModError> {
+    crate::port_tick::descriptor(
+        "outcome",
+        BUBBLE_INPUT_OUTCOME,
+        serde_json::json!({"format":1,"fields":["actor","hull","seq","switch"]}),
+    )
+}
+
+/// Action descriptor for [`BUBBLE_INPUT_ACTION`] (`SF.R21`, `35b` §3b).
+pub(crate) fn action_descriptor(
+    outcomes: &BTreeMap<String, mush_core::DefinitionRef>,
+) -> Result<mush_core::DefinitionDescriptor, ModError> {
+    let outcome = outcomes
+        .get(BUBBLE_INPUT_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the space bubble input outcome did not register"))?;
+    crate::port_tick::descriptor(
+        "action",
+        BUBBLE_INPUT_ACTION,
+        serde_json::json!({"format":1,"subject":"self_actor","targets":0,"family":BUBBLE_TAPE_FAMILY}),
+    )
+    .map(|d| d.with_references(vec![outcome]))
+}
+
+/// Register the [`BUBBLE_TAPE_FAMILY`] state family, [`BubbleInputProvider`], and [`BubbleInputHandles`] (`SF.R21`).
+pub(crate) fn register_bubble_input(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, mush_core::DefinitionRef>,
+    outcomes: &BTreeMap<String, mush_core::DefinitionRef>,
+) -> Result<(), ModError> {
+    use crate::port::families::family_descriptor;
+    let tapes = reg.state_family::<ObjId, StagedBubbleTapeLedger, _, _, _, _>(
+        family_descriptor(
+            BUBBLE_TAPE_FAMILY,
+            "tacsim.space_bubble_tape_key.v1",
+            "tacsim.space_bubble_tape",
+        )?,
+        |key: &ObjId| Ok(key.0.to_string()),
+        |value: &serde_json::Value| {
+            serde_json::from_value(value.clone()).map_err(|e| e.to_string())
+        },
+        |value: &StagedBubbleTapeLedger| value.check(),
+        |value: &StagedBubbleTapeLedger| serde_json::to_value(value).map_err(|e| e.to_string()),
+    )?;
+    let action = if let Some(action) = actions.get(BUBBLE_INPUT_ACTION).cloned() {
+        let outcome = outcomes
+            .get(BUBBLE_INPUT_OUTCOME)
+            .cloned()
+            .ok_or_else(|| ModError::msg("the space bubble input outcome did not register"))?;
+        reg.action_provider(
+            action.clone(),
+            BubbleInputProvider {
+                action: action.clone(),
+                outcome,
+                tapes: tapes.clone(),
+            },
+        )?;
+        Some(action)
+    } else {
+        None
+    };
+    reg.state(BubbleInputHandles { action, tapes });
+    Ok(())
+}
+
+/// Queue a [`PendingBubbleInput`] and submit [`BUBBLE_INPUT_ACTION`] via `Ctx::submit_authoritative` (`SF.R21`, `35b` §3b).
+pub fn submit_bubble_input(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    switch: &str,
+    cmd: Option<BubbleInputCommand>,
+) -> Option<u64> {
+    let at_ic = ctx.w.world_ic_now().at;
+    let actor = ctx.actor;
+    let (seq, can_submit) = {
+        let book = ctx.w.module_state_mut::<SpaceBubbleBook>()?;
+        book.next_bubble_input_seq = book.next_bubble_input_seq.saturating_add(1);
+        let seq = book.next_bubble_input_seq;
+        book.pending_bubble_inputs.push(PendingBubbleInput {
+            seq,
+            actor,
+            hull,
+            switch: switch.to_owned(),
+            at_ic,
+            cmd,
+        });
+        if book.pending_bubble_inputs.len() > 64 {
+            let excess = book.pending_bubble_inputs.len() - 64;
+            book.pending_bubble_inputs.drain(0..excess);
+        }
+        let can_submit = !ctx.out.authoritative_pending(actor)
+            && !book.pending_burn_submit_actors.contains(&actor);
+        if can_submit {
+            book.last_bubble_submit_actors.insert(actor);
+        }
+        (seq, can_submit)
+    };
+    if can_submit
+        && let Some(action) = ctx
+            .w
+            .module_state::<BubbleInputHandles>()
+            .and_then(|h| h.action.clone())
+        && let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
+            "tacsim.space.input/{}/{}/{}",
+            hull.0, seq, switch
+        ))
+    {
+        ctx.submit_authoritative(
+            action,
+            mush_core::PerceivedRef::SelfActor,
+            Vec::new(),
+            serde_json::json!({
+                "hull": hull.0,
+                "seq": seq,
+                "switch": switch,
+            }),
+            key,
+        );
+    }
+    Some(seq)
+}
+
+/// Authoritative action provider for [`BUBBLE_INPUT_ACTION`] (`SF.R21`, `35b` §3b).
+pub(crate) struct BubbleInputProvider {
+    pub action: mush_core::DefinitionRef,
+    pub outcome: mush_core::DefinitionRef,
+    pub tapes: mush_core::StateFamilyHandle<ObjId, StagedBubbleTapeLedger>,
+}
+
+impl mush_core::ActionProvider for BubbleInputProvider {
+    fn validate_invocation(
+        &self,
+        invocation: &mush_core::ActionInvocation,
+    ) -> Result<(), mush_core::ActionError> {
+        let invalid = || {
+            crate::port_tick::port_error(
+                mush_core::ActionErrorCode::InvalidRequest,
+                "a space bubble input is self-scoped and names hull, seq, and switch",
+            )
+        };
+        if invocation.subject() != &mush_core::PerceivedRef::SelfActor
+            || !invocation.targets().is_empty()
+        {
+            return Err(invalid());
+        }
+        let params = invocation.parameters().as_object().ok_or_else(invalid)?;
+        let _hull = params
+            .get("hull")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|h| u32::try_from(h).ok())
+            .filter(|&h| h > 0)
+            .ok_or_else(invalid)?;
+        let _seq = params
+            .get("seq")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&s| s > 0)
+            .ok_or_else(invalid)?;
+        let _switch = params
+            .get("switch")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(invalid)?;
+        Ok(())
+    }
+
+    fn project_offer(
+        &self,
+        action: &mush_core::DefinitionRef,
+        query: &mush_core::LegalActionQuery,
+        engine: &mush_core::Engine,
+    ) -> Result<Option<mush_core::ProviderOfferDraft>, mush_core::ActionError> {
+        if !crate::surface::act::self_query(action, &self.action, query) {
+            return Ok(None);
+        }
+        let w = &engine.world;
+        let Some(book) = w.module_state::<SpaceBubbleBook>() else {
+            return Ok(None);
+        };
+        let mut pending_map = serde_json::Map::new();
+        for entry in book
+            .pending_bubble_inputs
+            .iter()
+            .filter(|e| e.actor == query.actor())
+        {
+            if let Ok(val) = serde_json::to_value(entry) {
+                pending_map.insert(entry.seq.to_string(), val);
+            }
+        }
+        if pending_map.is_empty() {
+            return Ok(None);
+        }
+        let parameters = vec![
+            crate::surface::act::parameter(
+                "hull",
+                true,
+                mush_core::ProjectedParameterKind::Integer {
+                    minimum: 1,
+                    maximum: i64::from(u32::MAX),
+                },
+            )?,
+            crate::surface::act::parameter(
+                "seq",
+                true,
+                mush_core::ProjectedParameterKind::Integer {
+                    minimum: 1,
+                    maximum: i64::MAX,
+                },
+            )?,
+            crate::surface::act::parameter(
+                "switch",
+                true,
+                mush_core::ProjectedParameterKind::Text { maximum_bytes: 32 },
+            )?,
+        ];
+        crate::surface::act::offer_draft(
+            action,
+            engine,
+            serde_json::json!({ "pending": pending_map }),
+            parameters,
+            (
+                "tacsim-space-bubble-input",
+                "Stage space bubble input",
+                "Stage an authenticated +helm or +tac bubble command onto tacsim.space_bubble_tape.",
+            ),
+        )
+        .map(Some)
+    }
+
+    fn prepare_authoritative(
+        &self,
+        invocation: &mush_core::ActionInvocation,
+        txn: &mut mush_core::ActionTxn<'_>,
+    ) -> Result<mush_core::AuthoritativeActionOutput, mush_core::ActionError> {
+        self.validate_invocation(invocation)?;
+        let invalid = || {
+            crate::port_tick::port_error(
+                mush_core::ActionErrorCode::InvalidRequest,
+                "that space bubble input is not on file",
+            )
+        };
+        let params = invocation.parameters().as_object().ok_or_else(invalid)?;
+        let hull = ObjId(
+            params
+                .get("hull")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|h| u32::try_from(h).ok())
+                .ok_or_else(invalid)?,
+        );
+        let seq = params
+            .get("seq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(invalid)?;
+        let switch = params
+            .get("switch")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let pending_val = params
+            .get("pending")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|m| m.get(&seq.to_string()))
+            .ok_or_else(invalid)?;
+        let pending: PendingBubbleInput =
+            serde_json::from_value(pending_val.clone()).map_err(|_| invalid())?;
+        if pending.actor != invocation.actor()
+            || pending.hull != hull
+            || pending.switch != switch
+        {
+            return Err(crate::port_tick::port_error(
+                mush_core::ActionErrorCode::Unauthorized,
+                "that space bubble input belongs to another actor or hull",
+            ));
+        }
+        let prior = txn
+            .get(&self.tapes, &hull)
+            .map_err(|_| {
+                crate::port_tick::port_error(
+                    mush_core::ActionErrorCode::Integrity,
+                    "the staged bubble tape family cannot be read",
+                )
+            })?
+            .cloned();
+        let mut recent = prior.as_ref().map(|l| l.recent.clone()).unwrap_or_default();
+        recent.push(StagedBubbleTapeEntry {
+            seq,
+            actor: pending.actor,
+            hull,
+            switch: pending.switch.clone(),
+            at_ic: pending.at_ic,
+            cmd: pending.cmd,
+        });
+        if recent.len() > MAX_BUBBLE_TAPE_ENTRIES {
+            let excess = recent.len() - MAX_BUBBLE_TAPE_ENTRIES;
+            recent.drain(0..excess);
+        }
+        let ledger = StagedBubbleTapeLedger {
+            hull,
+            last_seq: seq,
+            recent,
+        };
+        let staged = if prior.is_some() {
+            txn.replace(&self.tapes, &hull, ledger)
+        } else {
+            txn.insert(&self.tapes, &hull, ledger)
+        };
+        staged.map_err(|_| {
+            crate::port_tick::port_error(
+                mush_core::ActionErrorCode::Integrity,
+                "the staged bubble tape ledger did not stage",
+            )
+        })?;
+        let outcome = mush_core::RulesValue::new(
+            self.outcome.clone(),
+            serde_json::json!({
+                "actor": pending.actor.0,
+                "hull": hull.0,
+                "seq": seq,
+                "switch": pending.switch,
+            }),
+        )
+        .map_err(|_| {
+            crate::port_tick::port_error(
+                mush_core::ActionErrorCode::BoundsExceeded,
+                "the space bubble input outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(mush_core::AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
     }
 }
 
@@ -1626,7 +2501,108 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     promote_due_interdictions(ctx, &now);
     step_delivered_tows_at_port(ctx, &now);
     crate::surface::claim::tick(ctx);
+    prune_space_book_collections(ctx);
     persist_space_state(ctx);
+}
+
+fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
+    let active_journey_hulls: std::collections::BTreeSet<ObjId> = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .map(|jb| jb.journeys.keys().copied().collect())
+        .unwrap_or_default();
+    let existing_hulls: std::collections::BTreeSet<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.propellant_ledgers
+                .keys()
+                .copied()
+                .filter(|&h| ctx.w.get(h).is_some())
+                .collect()
+        })
+        .unwrap_or_default();
+    let burn_hulls: Vec<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            let mut hs: Vec<ObjId> = b.pending_space_burns.iter().map(|p| p.hull).collect();
+            hs.sort_unstable();
+            hs.dedup();
+            hs
+        })
+        .unwrap_or_default();
+    let mut tank_by_hull: BTreeMap<ObjId, u64> = BTreeMap::new();
+    for h in burn_hulls {
+        if let Some(view) = crate::port::ship::hull_view(ctx.w, h)
+            && let Ok(basis) = crate::port::voyage::basis(ctx, &view, 1)
+        {
+            tank_by_hull.insert(h, basis.tank);
+        }
+    }
+
+    let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+        return;
+    };
+    let mut landed_hulls = std::collections::BTreeSet::new();
+    for (&hull, &vault_tank_t) in &tank_by_hull {
+        if let Some(ledger) = book.propellant_ledgers.get_mut(&hull) {
+            if ledger.last_vault_tank_t > vault_tank_t {
+                let landed_t = ledger.last_vault_tank_t - vault_tank_t;
+                ledger.unlanded_burn_t = ledger.unlanded_burn_t.saturating_sub(landed_t);
+                ledger.last_vault_tank_t = vault_tank_t;
+            }
+            if ledger.unlanded_burn_t == 0 {
+                landed_hulls.insert(hull);
+            }
+        }
+    }
+    if !landed_hulls.is_empty() {
+        book.pending_space_burns.retain(|b| {
+            !(landed_hulls.contains(&b.hull) && b.seized_strategic_ore_t == 0 && b.crew_days == 0)
+        });
+    }
+    if book.pending_space_burns.len() > 16 {
+        let excess = book.pending_space_burns.len() - 16;
+        book.pending_space_burns.drain(0..excess);
+    }
+
+    let clamped_set: std::collections::BTreeSet<ObjId> =
+        book.clamped_derelicts.values().copied().collect();
+    let towed_set: std::collections::BTreeSet<ObjId> = book
+        .active_tows
+        .values()
+        .map(|t| t.derelict_hull)
+        .collect();
+    book.derelicts.retain(|&hull, d| {
+        clamped_set.contains(&hull)
+            || towed_set.contains(&hull)
+            || (d.epoch_open && (d.life_support_remaining_s > 0 || d.salvage_contest_window_s > 0))
+    });
+
+    let active_bubble_hulls: std::collections::BTreeSet<ObjId> = book
+        .by_domain
+        .values()
+        .flat_map(|a| a.all_carrier_hulls().into_iter().map(|(ch, _, _, _)| ch))
+        .collect();
+    book.cleared_interdiction_legs.retain(|&(hull, _)| {
+        active_journey_hulls.contains(&hull) || active_bubble_hulls.contains(&hull)
+    });
+
+    book.propellant_ledgers
+        .retain(|hull, _| existing_hulls.contains(hull));
+    while book.propellant_ledgers.len() > 64 {
+        let Some(&oldest) = book.propellant_ledgers.keys().next() else {
+            break;
+        };
+        book.propellant_ledgers.remove(&oldest);
+    }
+    while book.completed.len() > MAX_COMPLETED_BUBBLES {
+        let Some(&oldest) = book.completed.keys().next() else {
+            break;
+        };
+        book.completed.remove(&oldest);
+    }
 }
 
 /// Complete port delivery for any active tow on `tug_hull` once `tug_hull` is berthed at a port
@@ -1924,6 +2900,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
     }
     for (ch, cship) in detached_carriers {
+        mush_sim::tick::clear_unit_standing_orders(ctx.w, ch);
         if let Some(ship) = cship {
             let _ = check_in_space_unit(ctx, ch, &ship, now.at);
         }
@@ -2012,6 +2989,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 
     for (_primary_hull, domain, carrier_entries, npc_contacts) in to_finalize {
         for (ch, cship, _, _) in &carrier_entries {
+            mush_sim::tick::clear_unit_standing_orders(ctx.w, *ch);
             if let Some(ship) = cship {
                 let _ = check_in_space_unit(ctx, *ch, ship, now.at);
             }
@@ -2128,6 +3106,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     }
 
     for (hull, _interdictor_hull, domain, carrier_ship) in partial_settled {
+        mush_sim::tick::clear_unit_standing_orders(ctx.w, hull);
         if let Some(ship) = carrier_ship {
             let assessment = check_in_space_unit(ctx, hull, &ship, now.at).ok();
             let (epoch_open, life_support_remaining_s, salvage_contest_window_s) = match ship.status
@@ -2263,6 +3242,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             destroy_unclaimed_npc_hull(ctx, npc_hull);
         }
         for (hull, carrier_ship) in carrier_ships {
+            mush_sim::tick::clear_unit_standing_orders(ctx.w, hull);
             let Some(ship) = carrier_ship else {
                 continue;
             };
@@ -2323,6 +3303,7 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let wall_now_s = ctx.w.now();
     let mut combat_reports = Vec::new();
     let mut ran_picket_hulls = Vec::new();
+    let standing_orders = mush_sim::tick::standing_orders_snapshot(ctx.w);
 
     let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
@@ -2367,6 +3348,58 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             1_000
         };
         active.last_stepped_wall_s = wall_now_s;
+        for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+            let is_linkdead = active
+                .bubble
+                .ships
+                .get(&cship_id)
+                .is_some_and(|s| s.crew_linkdead);
+            if is_linkdead {
+                continue;
+            }
+            if let Some(order) = standing_orders.get(chull, OrderChannel::Posture)
+                && let OrderValue::Emcon { level } = order.value()
+            {
+                let posture = match level {
+                    0 => EmconPosture::Ghost,
+                    1 => EmconPosture::Passive,
+                    2 => EmconPosture::Standard,
+                    _ => EmconPosture::ActiveCombat,
+                };
+                if active
+                    .bubble
+                    .ships
+                    .get(&cship_id)
+                    .is_some_and(|s| s.emcon != posture)
+                {
+                    let _ = active.tape.record_and_apply(
+                        &mut active.bubble,
+                        BubbleInputCommand::SetEmcon {
+                            ship_id: cship_id.clone(),
+                            posture,
+                        },
+                    );
+                }
+            }
+            if let Some(order) = standing_orders.get(chull, OrderChannel::Thrust)
+                && let OrderValue::Scalar { value } = order.value()
+                && *value <= 0
+                && active
+                    .bubble
+                    .ships
+                    .get(&cship_id)
+                    .is_some_and(|s| s.thrust_mmps2 != [0, 0, 0])
+            {
+                let _ = active.tape.record_and_apply(
+                    &mut active.bubble,
+                    BubbleInputCommand::CommandBurnMmps2 {
+                        ship_id: cship_id.clone(),
+                        thrust_mmps2: [0, 0, 0],
+                        force_into_reserve: false,
+                    },
+                );
+            }
+        }
         let mut events = active.tape.record_and_apply(
             &mut active.bubble,
             BubbleInputCommand::StepWall {

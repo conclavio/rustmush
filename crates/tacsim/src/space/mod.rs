@@ -75,14 +75,20 @@ pub use picket::{
     spawn_kirkwood_picket_ships_in_world, step_kirkwood_picket,
 };
 pub use tick::{
-    ActiveInterdictionBubble, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
+    ActiveInterdictionBubble, BUBBLE_INPUT_ACTION, BUBBLE_INPUT_OUTCOME, BUBBLE_TAPE_FAMILY,
+    BubbleInputHandles, CARRIER_PARTY, COMBAT_STEP_WALL_MS, CRUISE_STEP_WALL_MS,
     CompletedInterdictionBubble, FreeFlightGuidanceMode, HullPropellantLedger,
     INTERDICTION_STANDOFF_M, INTERDICTOR_PARTY, MAX_BUBBLE_SNAPSHOTS, MAX_BUBBLE_TAPE_ENTRIES,
-    MAX_BUBBLE_TICK_STEP_MS, MAX_COMPLETED_BUBBLES, ORDNANCE_STEP_WALL_MS,
-    SALVAGE_HOLD_TIMEOUT_WALL_S, SOLAR_MU_KM3_S2, SPACE_STATE_FORMAT, SPACE_STATE_KEY, SPACE_TICK,
-    SPACE_TICK_PERIOD, SpaceBubbleBook, SpaceDerelictRecord, SpaceFreeFlightRecord,
-    SpacePersistedState, apply_bubble_command, boot_read, clear_interdiction_bubble,
-    persist_space_state, reacquire_custody_after_boot,
+    MAX_BUBBLE_TICK_STEP_MS, MAX_COMPLETED_BUBBLES, ORDNANCE_STEP_WALL_MS, PendingBubbleInput,
+    PersistedBubbleDoc, PersistedDerelictDoc, PersistedDockingDoc, PersistedFlightDoc,
+    PersistedLedgerDoc, SALVAGE_HOLD_TIMEOUT_WALL_S, SOLAR_MU_KM3_S2, SPACE_BUBBLE_PREFIX,
+    SPACE_DERELICT_PREFIX, SPACE_DOCKING_PREFIX, SPACE_FLIGHT_PREFIX, SPACE_KEY_PREFIX,
+    SPACE_LEDGER_PREFIX, SPACE_STATE_FORMAT, SPACE_STATE_KEY, SPACE_TICK, SPACE_TICK_PERIOD,
+    SpaceBubbleBook, SpaceDerelictRecord, SpaceFreeFlightRecord, SpacePersistedState,
+    StagedBubbleTapeEntry, StagedBubbleTapeLedger, apply_bubble_command, boot_read,
+    clear_interdiction_bubble, load_space_kv_entry, persist_space_state,
+    reacquire_custody_after_boot, space_bubble_key, space_derelict_key, space_docking_key,
+    space_flight_key, space_ledger_key, submit_bubble_input,
 };
 pub use weapons::{
     DEFAULT_TORPEDO_MAX_FLIGHT_MS, InFlightSlug, InFlightTorpedo, LaserMode, LaserMount, PdcMount,
@@ -867,8 +873,9 @@ mod tests {
             },
         );
 
-        let _ = book
-            .record_standing_order(
+        let mut standing_orders = mush_sim::tick::StandingOrderBook::default();
+        let _ = standing_orders
+            .record(
                 hull,
                 mush_sim::tick::OrderChannel::Thrust,
                 mush_sim::tick::OrderValue::Scalar { value: 500 },
@@ -911,6 +918,7 @@ mod tests {
             format: SPACE_STATE_FORMAT,
             book,
             salvage,
+            standing_orders,
         };
         let encoded = serde_json::to_value(&state).expect("encode SpacePersistedState");
         let decoded: SpacePersistedState =

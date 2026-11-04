@@ -370,6 +370,18 @@ fn require_aboard_and_seat(
 ) -> Result<(ObjId, BridgeRole), CmdError> {
     let hull =
         hull_aboard_for_actor(ctx.w, ctx.actor).ok_or_else(|| CmdError::msg(NOT_ABOARD_SHIP))?;
+    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
+        if book.quarantined_hulls.contains(&hull)
+            || book
+                .active_for_hull(hull)
+                .is_some_and(|a| book.quarantined_bubbles.contains(&a.domain))
+        {
+            return Err(CmdError::msg(format!(
+                "Ship #{} or its active bubble is quarantined for staff repair due to an unreadable persisted document.",
+                hull.0
+            )));
+        }
+    }
     let role = seat_role_for_actor(ctx.w, hull, ctx.actor)
         .ok_or_else(|| CmdError::msg(NO_BRIDGE_STATION))?;
     if let Some(channel) = required_channel
@@ -1036,7 +1048,7 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
         let mut order_summaries = Vec::new();
         for channel in OrderChannel::all() {
-            if let Some(order) = book.standing_order(hull, channel) {
+            if let Some(order) = mush_sim::tick::standing_order(ctx.w, hull, channel) {
                 order_summaries.push(format!(
                     "{}={} (rev {})",
                     channel.token(),
@@ -1385,16 +1397,16 @@ fn helm_heading(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tick,
     )?;
 
+    let mut bubble_cmd = None;
     if let Some((ship_id, roll_deg)) = active_carrier_ship_and_roll(ctx.w, hull) {
-        let _ = apply_bubble_command(
-            ctx.w,
-            hull,
-            BubbleInputCommand::SetAttitude {
-                ship_id,
-                attitude_deg: (yaw_deg, pitch_deg, roll_deg),
-            },
-        );
+        let cmd = BubbleInputCommand::SetAttitude {
+            ship_id,
+            attitude_deg: (yaw_deg, pitch_deg, roll_deg),
+        };
+        let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+        bubble_cmd = Some(cmd);
     }
+    let _ = super::tick::submit_bubble_input(ctx, hull, "heading", bubble_cmd);
 
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -1411,6 +1423,7 @@ fn helm_heading(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    ensure_hull_can_maneuver(ctx.w, hull)?;
     let raw = ctx.args.raw().trim();
     if raw.is_empty() {
         return Err(CmdError::msg(
@@ -1458,21 +1471,8 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         default_nose_burn_dir(ctx.w, hull)
     };
 
-    let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
-    let order = record_hull_standing_order(
-        ctx.w,
-        hull,
-        OrderChannel::Thrust,
-        OrderValue::Scalar {
-            value: i32::from(thrust_permille),
-        },
-        ctx.actor,
-        domain,
-        generation,
-        tick,
-    )?;
-
-    let mut effective_accel_mmps2: Option<[i64; 3]> = None;
+    let effective_accel_mmps2: Option<[i64; 3]>;
+    let mut bubble_cmd: Option<BubbleInputCommand> = None;
     if let Some((ship_id, max_accel_mmps2)) = active_carrier_ship_and_max_accel_mmps2(ctx.w, hull) {
         let scale = i64::from(thrust_permille);
         let thrust_mmps2 = if scale == 0 {
@@ -1490,15 +1490,12 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 (max_accel_mmps2 * scale * i64::from(burn_dir[2])) / (1_000 * dir_mag),
             ]
         };
-        let events = apply_bubble_command(
-            ctx.w,
-            hull,
-            BubbleInputCommand::CommandBurnMmps2 {
-                ship_id: ship_id.clone(),
-                thrust_mmps2,
-                force_into_reserve,
-            },
-        );
+        let cmd = BubbleInputCommand::CommandBurnMmps2 {
+            ship_id: ship_id.clone(),
+            thrust_mmps2,
+            force_into_reserve,
+        };
+        let events = apply_bubble_command(ctx.w, hull, cmd.clone());
         for ev in &events {
             if let super::bubble::SpaceCombatEvent::TankReserveWarning {
                 remaining_dv_mps,
@@ -1511,6 +1508,7 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 )));
             }
         }
+        bubble_cmd = Some(cmd);
         effective_accel_mmps2 = ctx
             .w
             .module_state::<SpaceBubbleBook>()
@@ -1562,7 +1560,26 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ff.burn_remaining_ic_s = (thrust_mmps2 != [0, 0, 0]).then_some(60);
         }
         effective_accel_mmps2 = Some(thrust_mmps2);
+    } else {
+        return Err(CmdError::msg(
+            "Ship is not in an active space bubble or decoupled free flight.",
+        ));
     }
+
+    let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
+    let order = record_hull_standing_order(
+        ctx.w,
+        hull,
+        OrderChannel::Thrust,
+        OrderValue::Scalar {
+            value: i32::from(thrust_permille),
+        },
+        ctx.actor,
+        domain,
+        generation,
+        tick,
+    )?;
+    let _ = super::tick::submit_bubble_input(ctx, hull, "thrust", bubble_cmd);
 
     let accel_clause = effective_accel_mmps2.map_or_else(String::new, |a| {
         format!(", accel=({}, {}, {}) mm/s²", a[0], a[1], a[2])
@@ -1602,13 +1619,13 @@ fn helm_emcon(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tick,
     )?;
 
+    let mut bubble_cmd = None;
     if let Some((ship_id, _)) = active_carrier_ship_and_roll(ctx.w, hull) {
-        let _ = apply_bubble_command(
-            ctx.w,
-            hull,
-            BubbleInputCommand::SetEmcon { ship_id, posture },
-        );
+        let cmd = BubbleInputCommand::SetEmcon { ship_id, posture };
+        let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+        bubble_cmd = Some(cmd);
     }
+    let _ = super::tick::submit_bubble_input(ctx, hull, "emcon", bubble_cmd);
 
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -1636,16 +1653,16 @@ fn helm_roll(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Roll must be in -180..=180 degrees."));
     }
 
+    let mut bubble_cmd = None;
     if let Some((ship_id, yaw_deg, pitch_deg)) = active_carrier_attitude(ctx.w, hull) {
-        let _ = apply_bubble_command(
-            ctx.w,
-            hull,
-            BubbleInputCommand::SetAttitude {
-                ship_id,
-                attitude_deg: (yaw_deg, pitch_deg, roll_deg),
-            },
-        );
+        let cmd = BubbleInputCommand::SetAttitude {
+            ship_id,
+            attitude_deg: (yaw_deg, pitch_deg, roll_deg),
+        };
+        let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+        bubble_cmd = Some(cmd);
     }
+    let _ = super::tick::submit_bubble_input(ctx, hull, "roll", bubble_cmd);
 
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -1665,6 +1682,7 @@ fn helm_guidance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         {
             ff.guidance = mode;
         }
+        let _ = super::tick::submit_bubble_input(ctx, hull, "guidance", None);
         ctx.out.sys_to_actor(
             ctx.actor,
             "tacsim.space",
@@ -1684,17 +1702,17 @@ fn helm_guidance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
 
+    let mut bubble_cmd = None;
     if let Some((ship_id, _, pitch_deg)) = active_carrier_attitude(ctx.w, hull) {
         let roll_deg = active_carrier_ship_and_roll(ctx.w, hull).map_or(0, |(_, r)| r);
-        let _ = apply_bubble_command(
-            ctx.w,
-            hull,
-            BubbleInputCommand::SetAttitude {
-                ship_id,
-                attitude_deg: (yaw_deg, pitch_deg, roll_deg),
-            },
-        );
+        let cmd = BubbleInputCommand::SetAttitude {
+            ship_id,
+            attitude_deg: (yaw_deg, pitch_deg, roll_deg),
+        };
+        let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+        bubble_cmd = Some(cmd);
     }
+    let _ = super::tick::submit_bubble_input(ctx, hull, "guidance", bubble_cmd);
 
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -1997,6 +2015,8 @@ fn submit_space_burn_if_needed(
                 crew_days,
                 seized_strategic_ore_t: 0,
             });
+        book.pending_burn_submit_actors.insert(burn_actor);
+        book.last_bubble_submit_actors.remove(&burn_actor);
         seq
     };
     let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
@@ -2059,6 +2079,8 @@ pub(crate) fn submit_seized_contraband_burn(
                 crew_days: 0,
                 seized_strategic_ore_t,
             });
+        book.pending_burn_submit_actors.insert(burn_actor);
+        book.last_bubble_submit_actors.remove(&burn_actor);
         seq
     };
     let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
@@ -3177,10 +3199,7 @@ fn record_hull_standing_order(
     generation: u64,
     tick: i64,
 ) -> Result<StandingOrder, CmdError> {
-    let book = w
-        .module_state_mut::<SpaceBubbleBook>()
-        .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
-    book.record_standing_order(hull, channel, value, by, domain, generation, tick)
+    mush_sim::tick::record_standing_order(w, hull, channel, value, by, domain, generation, tick)
         .map_err(|e| CmdError::msg(e.to_string()))
 }
 
@@ -3216,8 +3235,7 @@ fn default_nose_burn_dir(w: &World, hull: ObjId) -> [i32; 3] {
     {
         return [x, y, z];
     }
-    if let Some(book) = w.module_state::<SpaceBubbleBook>()
-        && let Some(order) = book.standing_order(hull, OrderChannel::Heading)
+    if let Some(order) = mush_sim::tick::standing_order(w, hull, OrderChannel::Heading)
         && let OrderValue::Vector { x, y, z } = *order.value()
     {
         return [x, y, z];
@@ -3442,14 +3460,12 @@ fn tac_lock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let Some((ship_id, _)) = active_carrier_ship_and_roll(ctx.w, hull) else {
             return Err(CmdError::msg("No active space bubble for this ship."));
         };
-        let _ = apply_bubble_command(
-            ctx.w,
-            hull,
-            BubbleInputCommand::SetLockedTarget {
-                ship_id,
-                target_id: None,
-            },
-        );
+        let cmd = BubbleInputCommand::SetLockedTarget {
+            ship_id,
+            target_id: None,
+        };
+        let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+        let _ = super::tick::submit_bubble_input(ctx, hull, "lock", Some(cmd));
         ctx.out
             .sys_to_actor(ctx.actor, "tacsim.space", "Target lock cleared.");
         push_space_panels(ctx, hull);
@@ -3457,14 +3473,12 @@ fn tac_lock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 
     let (ship_id, target_id) = resolve_detected_contact(ctx.w, hull, Some(raw))?;
-    let _ = apply_bubble_command(
-        ctx.w,
-        hull,
-        BubbleInputCommand::SetLockedTarget {
-            ship_id,
-            target_id: Some(target_id.clone()),
-        },
-    );
+    let cmd = BubbleInputCommand::SetLockedTarget {
+        ship_id,
+        target_id: Some(target_id.clone()),
+    };
+    let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let _ = super::tick::submit_bubble_input(ctx, hull, "lock", Some(cmd));
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
@@ -3481,14 +3495,12 @@ fn tac_beam(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         resolve_detected_contact(ctx.w, hull, (!raw.is_empty()).then_some(raw))?;
     verify_hostile_fire_allowed(ctx.w, hull, &shooter_id, &target_id)?;
 
-    let events = apply_bubble_command(
-        ctx.w,
-        hull,
-        BubbleInputCommand::FireOffensiveLasers {
-            shooter_id,
-            target_id: target_id.clone(),
-        },
-    );
+    let cmd = BubbleInputCommand::FireOffensiveLasers {
+        shooter_id,
+        target_id: target_id.clone(),
+    };
+    let events = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let _ = super::tick::submit_bubble_input(ctx, hull, "beam", Some(cmd));
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
@@ -3520,15 +3532,13 @@ fn tac_torp(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (shooter_id, target_id) = resolve_detected_contact(ctx.w, hull, target_arg)?;
     verify_hostile_fire_allowed(ctx.w, hull, &shooter_id, &target_id)?;
 
-    let _ = apply_bubble_command(
-        ctx.w,
-        hull,
-        BubbleInputCommand::FireTorpedoSalvo {
-            shooter_id,
-            target_id: target_id.clone(),
-            count,
-        },
-    );
+    let cmd = BubbleInputCommand::FireTorpedoSalvo {
+        shooter_id,
+        target_id: target_id.clone(),
+        count,
+    };
+    let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let _ = super::tick::submit_bubble_input(ctx, hull, "torp", Some(cmd));
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
@@ -3545,14 +3555,12 @@ fn tac_railgun(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         resolve_detected_contact(ctx.w, hull, (!raw.is_empty()).then_some(raw))?;
     verify_hostile_fire_allowed(ctx.w, hull, &shooter_id, &target_id)?;
 
-    let _ = apply_bubble_command(
-        ctx.w,
-        hull,
-        BubbleInputCommand::FireRailgun {
-            shooter_id,
-            target_id: target_id.clone(),
-        },
-    );
+    let cmd = BubbleInputCommand::FireRailgun {
+        shooter_id,
+        target_id: target_id.clone(),
+    };
+    let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let _ = super::tick::submit_bubble_input(ctx, hull, "railgun", Some(cmd));
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
@@ -3568,33 +3576,30 @@ fn tac_pdc(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some((ship_id, _)) = active_carrier_ship_and_roll(ctx.w, hull) else {
         return Err(CmdError::msg("No active space bubble for this ship."));
     };
+    let bubble_cmd;
     match raw.as_str() {
         "auto" | "on" => {
-            let _ = apply_bubble_command(
-                ctx.w,
-                hull,
-                BubbleInputCommand::SetPdcAuto {
-                    ship_id,
-                    enabled: true,
-                },
-            );
+            let cmd = BubbleInputCommand::SetPdcAuto {
+                ship_id,
+                enabled: true,
+            };
+            let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+            bubble_cmd = Some(cmd);
             ctx.out
                 .sys_to_actor(ctx.actor, "tacsim.space", "PDC auto-intercept enabled.");
         }
         "manual" | "off" => {
-            let _ = apply_bubble_command(
-                ctx.w,
-                hull,
-                BubbleInputCommand::SetPdcAuto {
-                    ship_id,
-                    enabled: false,
-                },
-            );
+            let cmd = BubbleInputCommand::SetPdcAuto {
+                ship_id,
+                enabled: false,
+            };
+            let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+            bubble_cmd = Some(cmd);
             ctx.out
                 .sys_to_actor(ctx.actor, "tacsim.space", "PDC auto-intercept disabled.");
         }
         "point" | "defense" | "defence" => {
-            set_all_laser_modes(ctx.w, hull, &ship_id, LaserMode::Defense);
+            bubble_cmd = set_all_laser_modes(ctx.w, hull, &ship_id, LaserMode::Defense);
             ctx.out.sys_to_actor(
                 ctx.actor,
                 "tacsim.space",
@@ -3602,7 +3607,7 @@ fn tac_pdc(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
         }
         "offense" | "offence" => {
-            set_all_laser_modes(ctx.w, hull, &ship_id, LaserMode::Offense);
+            bubble_cmd = set_all_laser_modes(ctx.w, hull, &ship_id, LaserMode::Offense);
             ctx.out.sys_to_actor(
                 ctx.actor,
                 "tacsim.space",
@@ -3613,28 +3618,34 @@ fn tac_pdc(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("Usage: +tac/pdc <auto|manual|point|offense>"));
         }
     }
+    let _ = super::tick::submit_bubble_input(ctx, hull, "pdc", bubble_cmd);
     push_space_panels(ctx, hull);
     Ok(())
 }
 
-fn set_all_laser_modes(w: &mut World, hull: ObjId, ship_id: &str, mode: LaserMode) {
+fn set_all_laser_modes(
+    w: &mut World,
+    hull: ObjId,
+    ship_id: &str,
+    mode: LaserMode,
+) -> Option<BubbleInputCommand> {
     let laser_ids: Vec<String> = w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.active_for_hull(hull))
         .and_then(|a| a.bubble.ships.get(ship_id))
         .map(|s| s.lasers.iter().map(|m| m.id.clone()).collect())
         .unwrap_or_default();
+    let mut last_cmd = None;
     for laser_id in laser_ids {
-        let _ = apply_bubble_command(
-            w,
-            hull,
-            BubbleInputCommand::SetLaserMode {
-                ship_id: ship_id.to_owned(),
-                laser_id,
-                mode,
-            },
-        );
+        let cmd = BubbleInputCommand::SetLaserMode {
+            ship_id: ship_id.to_owned(),
+            laser_id,
+            mode,
+        };
+        let _ = apply_bubble_command(w, hull, cmd.clone());
+        last_cmd = Some(cmd);
     }
+    last_cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -3696,6 +3707,29 @@ pub(crate) fn debit_hull_propellant_for_dv(
             .w
             .module_state_mut::<SpaceBubbleBook>()
             .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            let ship_id = active.carrier_ship_id_for(hull).to_owned();
+            let deduct_u32 = u32::try_from(burn_kg).unwrap_or(u32::MAX);
+            if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
+                ship.propellant_kg = ship.propellant_kg.saturating_sub(deduct_u32);
+                let new_prop_kg = u64::from(ship.propellant_kg);
+                if let Ok(new_dv) = crate::port::passage::remaining_dv_mps_for_propellant(
+                    &basis.spec.drive,
+                    basis.spec.dry_kg,
+                    non_prop_payload.saturating_add(new_prop_kg),
+                    new_prop_kg,
+                ) {
+                    ship.delta_v_mps = i64::from(new_dv);
+                }
+                let cur_kg = ship.propellant_kg;
+                if let Some(entry) = active.carriers.get_mut(&hull) {
+                    entry.last_synced_propellant_kg = cur_kg;
+                }
+                if active.hull == hull {
+                    active.last_synced_propellant_kg = cur_kg;
+                }
+            }
+        }
         book.propellant_ledger_mut(hull)
             .record_burn_kg(basis.tank, burn_kg)
     };
@@ -3780,6 +3814,7 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             generation,
             tick,
         )?;
+        let _ = super::tick::submit_bubble_input(ctx, hull, "approach", None);
         ctx.out.sys_to_actor(
             ctx.actor,
             "tacsim.space",
@@ -3831,6 +3866,7 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         generation,
         tick,
     )?;
+    let _ = super::tick::submit_bubble_input(ctx, hull, "approach", None);
 
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -3905,6 +3941,7 @@ fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         generation,
         tick,
     )?;
+    let _ = super::tick::submit_bubble_input(ctx, hull, "match", None);
 
     ctx.out.sys_to_actor(
         ctx.actor,
@@ -4109,6 +4146,7 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
     }
 
+    let _ = super::tick::submit_bubble_input(ctx, hull, "submit", None);
     push_space_panels(ctx, hull);
     Ok(())
 }
@@ -4168,6 +4206,7 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     crate::port::voyage::narrate_hull(ctx, hull, &line);
     ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    let _ = super::tick::submit_bubble_input(ctx, hull, "run", None);
     push_space_panels(ctx, hull);
     Ok(())
 }
@@ -4195,6 +4234,34 @@ pub(crate) fn debit_hull_propellant_kg(
         let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
             return Ok(());
         };
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            let own_ship_id = active.carrier_ship_id_for(hull).to_owned();
+            let non_prop_payload = basis
+                .payload
+                .saturating_sub(basis.tank.saturating_mul(1_000));
+            if let Some(ship) = active.bubble.ships.get_mut(&own_ship_id) {
+                let deduct = u32::try_from(clamped_kg)
+                    .unwrap_or(u32::MAX)
+                    .min(ship.propellant_kg);
+                ship.propellant_kg = ship.propellant_kg.saturating_sub(deduct);
+                let new_prop_kg = u64::from(ship.propellant_kg);
+                if let Ok(new_dv) = crate::port::passage::remaining_dv_mps_for_propellant(
+                    &basis.spec.drive,
+                    basis.spec.dry_kg,
+                    non_prop_payload.saturating_add(new_prop_kg),
+                    new_prop_kg,
+                ) {
+                    ship.delta_v_mps = i64::from(new_dv);
+                }
+                let synced = ship.propellant_kg;
+                if let Some(entry) = active.carriers.get_mut(&hull) {
+                    entry.last_synced_propellant_kg = synced;
+                }
+                if active.hull == hull {
+                    active.last_synced_propellant_kg = synced;
+                }
+            }
+        }
         let ledger = book.propellant_ledger_mut(hull);
         ledger.record_burn_kg(basis.tank, clamped_kg)
     };
@@ -4779,22 +4846,26 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
                 debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg.max(1))?;
                 unpause_hull_after_docking(ctx, hull, &now);
-                super::tick::persist_space_state(ctx);
-                return Err(CmdError::msg(format!(
-                    "Docking input tape rejected: collar gates not aligned at end of {} frames ({}/5 gates green: lateral={}, attitude={}, roll={}, closure={}, range={}; final pose dx={} mm, dy={} mm, dz={} mm, vz={} mm/s; session `{}` closed and hull unpaused).",
-                    report.frames_replayed,
-                    gates.green_count(),
-                    gates.lateral_ok,
-                    gates.attitude_ok,
-                    gates.roll_ok,
-                    gates.closure_ok,
-                    gates.range_ok,
-                    report.final_pose.lateral_x_mm,
-                    report.final_pose.lateral_y_mm,
-                    report.final_pose.range_z_mm,
-                    report.final_pose.closure_mmps,
-                    session.challenge.session_id,
-                )));
+                ctx.out.error(
+                    ctx.actor,
+                    format!(
+                        "Docking input tape rejected: collar gates not aligned at end of {} frames ({}/5 gates green: lateral={}, attitude={}, roll={}, closure={}, range={}; final pose dx={} mm, dy={} mm, dz={} mm, vz={} mm/s; session `{}` closed and hull unpaused).",
+                        report.frames_replayed,
+                        gates.green_count(),
+                        gates.lateral_ok,
+                        gates.attitude_ok,
+                        gates.roll_ok,
+                        gates.closure_ok,
+                        gates.range_ok,
+                        report.final_pose.lateral_x_mm,
+                        report.final_pose.lateral_y_mm,
+                        report.final_pose.range_z_mm,
+                        report.final_pose.closure_mmps,
+                        session.challenge.session_id,
+                    ),
+                );
+                push_space_panels(ctx, hull);
+                return Ok(());
             }
             super::docking::DockingOutcome::Aborted => {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
@@ -4918,6 +4989,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                     }
                                 }
                             }
+                            mush_sim::tick::clear_unit_standing_orders(ctx.w, hull);
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.completed.insert(
                                     hull,

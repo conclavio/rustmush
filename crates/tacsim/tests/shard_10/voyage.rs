@@ -409,6 +409,12 @@ pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
             kept.push(*submit);
         }
     }
+    if let Some(book) = tw
+        .world_mut()
+        .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+    {
+        book.last_bubble_submit_actors.clear();
+    }
     kept
 }
 
@@ -3842,14 +3848,9 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
     );
 
     {
-        let book = rig
-            .tw
-            .world()
-            .module_state::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let h_order = book
-            .standing_order(hull, mush_sim::tick::OrderChannel::Heading)
-            .expect("Heading standing order");
+        let h_order =
+            mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Heading)
+                .expect("Heading standing order");
         assert_eq!(
             *h_order.value(),
             mush_sim::tick::OrderValue::Vector {
@@ -3858,21 +3859,26 @@ fn sfr3_authoritative_helm_and_tac_enforce_aboard_seats_write_standing_orders_an
                 z: 0
             }
         );
-        let t_order = book
-            .standing_order(hull, mush_sim::tick::OrderChannel::Thrust)
-            .expect("Thrust standing order");
+        let t_order =
+            mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Thrust)
+                .expect("Thrust standing order");
         assert_eq!(
             *t_order.value(),
             mush_sim::tick::OrderValue::Scalar { value: 600 }
         );
-        let p_order = book
-            .standing_order(hull, mush_sim::tick::OrderChannel::Posture)
-            .expect("Posture standing order");
+        let p_order =
+            mush_sim::tick::standing_order(rig.tw.world(), hull, mush_sim::tick::OrderChannel::Posture)
+                .expect("Posture standing order");
         assert_eq!(
             *p_order.value(),
             mush_sim::tick::OrderValue::Emcon { level: 1 }
         );
 
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
         let active = book.active_for_hull(hull).expect("active bubble");
         assert_eq!(
             active.tape.entries.len(),
@@ -4175,6 +4181,12 @@ fn drain_space_and_industry(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
                 kept.push(*submit);
             }
         }
+    }
+    if let Some(book) = tw
+        .world_mut()
+        .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+    {
+        book.last_bubble_submit_actors.clear();
     }
     kept
 }
@@ -9498,5 +9510,363 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
         (slow_test_ship.slow_pct, slow_test_ship.rated_accel_mg),
         (slow_after_first, accel_after_first),
         "Slow consequence must take min(current_slow_pct, 75) via arena::damage::apply_slow_consequence without compounding"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_with_quarantine() {
+    let roster = || Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster());
+    let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+
+    seed_pool(&mut rig, vault_id, "propellant", 65, LotId(2021));
+    seed_pool(&mut rig, vault_id, "provisions", 25, LotId(2022));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_actor);
+
+    let pending = undock_and_burn(&mut rig, pilot_actor, hull);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(
+        &mut rig,
+        pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs),
+    );
+
+    let bubble_domain = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|b| b.active_for_hull(hull))
+        .map(|a| a.domain)
+        .expect("entered interdiction bubble");
+
+    // 1. Per-entity store keys: verify `tacsim:space:bubble:{domain}` is written in `rig.store`.
+    let has_kv = |r: &Rig, k: &str| r.store[tacsim::NS].kv.iter().any(|(ek, _)| ek.as_str() == k);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let bubble_key = SmolStr::new(tacsim::space::space_bubble_key(bubble_domain));
+    assert!(
+        has_kv(&rig, &bubble_key),
+        "active bubble must persist at per-entity key `{bubble_key}`"
+    );
+
+    // 2. Prepared bubble input (`tacsim_space_bubble_input`, family `tacsim.space_bubble_tape`)
+    //    and `mush-sim` `StandingOrder` channels (`D-35-9`):
+    let heading_out = run(&mut rig.tw, pilot_actor, "+helm/heading 90 0");
+    assert!(heading_out.contains("Helm heading set"), "{heading_out}");
+    let heading_submits = drain(&mut rig.tw);
+    assert!(
+        heading_submits
+            .iter()
+            .any(|s| s.action.key().id.as_str() == tacsim::space::BUBBLE_INPUT_ACTION),
+        "+helm/heading must submit prepared `tacsim_space_bubble_input`: {heading_submits:?}"
+    );
+    land_all(&mut rig, &heading_submits);
+    assert!(
+        rig.typed.contains_key(&(
+            SmolStr::new(tacsim::NS),
+            SmolStr::new(format!(
+                "action-state/v1/{}/{}",
+                tacsim::space::BUBBLE_TAPE_FAMILY,
+                hull.0
+            ))
+        )),
+        "landing `tacsim_space_bubble_input` must write `tacsim.space_bubble_tape` for the hull"
+    );
+
+    let _ = run(&mut rig.tw, pilot_actor, "+helm/emcon ghost");
+    let emcon_submits = drain(&mut rig.tw);
+    land_all(&mut rig, &emcon_submits);
+
+    let _ = run(&mut rig.tw, pilot_actor, "+helm/thrust 0");
+    let thrust_submits = drain(&mut rig.tw);
+    land_all(&mut rig, &thrust_submits);
+
+    // Verify `mush-sim`'s `StandingOrderBook` holds all 3 channels (`Heading`, `Posture`, `Thrust`):
+    assert_eq!(
+        mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Heading
+        )
+        .map(|o| o.value().clone()),
+        Some(mush_sim::tick::OrderValue::Vector {
+            x: 0,
+            y: 1_000,
+            z: 0
+        })
+    );
+    assert_eq!(
+        mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Posture
+        )
+        .map(|o| o.value().clone()),
+        Some(mush_sim::tick::OrderValue::Emcon { level: 0 })
+    );
+    assert_eq!(
+        mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Thrust
+        )
+        .map(|o| o.value().clone()),
+        Some(mush_sim::tick::OrderValue::Scalar { value: 0 })
+    );
+
+    // Step `space_tick` and verify `OrderChannel::Thrust` (`Scalar { value: 0 }`) keeps the carrier
+    // hove-to (`thrust_mmps2 == [0, 0, 0]`):
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let carrier_thrust = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|b| b.active_for_hull(hull))
+        .and_then(|a| a.bubble.ships.get(a.carrier_ship_id_for(hull)))
+        .map(|s| s.thrust_mmps2)
+        .expect("carrier thrust");
+    assert_eq!(
+        carrier_thrust,
+        [0, 0, 0],
+        "mush-sim StandingOrder Thrust=0 must keep the carrier at zero burn on space_tick"
+    );
+
+    // 3. Disable the interdictor to produce a `DisabledDerelict`, test unified propellant ledger
+    //    on `+helm/approach derelict`, and test `OutOfGate` docking session deletion + persistence:
+    let _ = run(&mut rig.tw, pilot_actor, "+tac/lock Interdictor Picket");
+    let lock_submits = drain(&mut rig.tw);
+    land_all(&mut rig, &lock_submits);
+    for i in 0..4 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        if i == 0 || i == 2 || i == 3 {
+            let _ = run(&mut rig.tw, pilot_actor, "+tac/beam Interdictor Picket");
+            let beam_submits = drain(&mut rig.tw);
+            land_all(&mut rig, &beam_submits);
+        }
+        if i == 1 || i == 2 {
+            let _ = run(&mut rig.tw, pilot_actor, "+damage/vent");
+        }
+    }
+
+    let prop_before_approach = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|b| b.active_for_hull(hull))
+        .and_then(|a| a.bubble.ships.get(a.carrier_ship_id_for(hull)))
+        .map(|s| s.propellant_kg)
+        .expect("propellant before approach");
+    let _ = run(&mut rig.tw, pilot_actor, "+helm/approach derelict");
+    let approach_submits = drain(&mut rig.tw);
+    land_all(&mut rig, &approach_submits);
+    let prop_after_approach = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|b| b.active_for_hull(hull))
+        .and_then(|a| a.bubble.ships.get(a.carrier_ship_id_for(hull)))
+        .map(|s| s.propellant_kg)
+        .expect("propellant after approach");
+    assert!(
+        prop_after_approach < prop_before_approach,
+        "+helm/approach must deduct braking propellant directly from the in-bubble ship as well as HullPropellantLedger ({prop_after_approach} < {prop_before_approach})"
+    );
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let ledger_key = SmolStr::new(tacsim::space::space_ledger_key(hull));
+    assert!(
+        has_kv(&rig, &ledger_key),
+        "propellant ledger must persist at per-entity key `{ledger_key}`"
+    );
+
+    // Finish approaching derelict on `space_tick` and open a docking session:
+    for _ in 0..48 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        let s = drain(&mut rig.tw);
+        land_all(&mut rig, &s);
+        let ready = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull))
+            .is_some_and(|a| {
+                !a.approaching_derelict
+                    && !a
+                        .carriers
+                        .get(&hull)
+                        .is_some_and(|c| c.approaching_derelict)
+            });
+        if ready {
+            break;
+        }
+    }
+    let dock_open = run(&mut rig.tw, pilot_actor, "+helm/dock derelict");
+    assert!(
+        dock_open.contains("Docking approach") || dock_open.contains("session"),
+        "opened docking session: {dock_open}"
+    );
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let docking_key = SmolStr::new(tacsim::space::space_docking_key(hull));
+    assert!(
+        has_kv(&rig, &docking_key),
+        "active docking session must persist at per-entity key `{docking_key}`"
+    );
+    let session_id = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|b| b.docking_sessions.get(&hull))
+        .map(|s| s.challenge.session_id.clone())
+        .expect("docking session_id");
+
+    // Submit an `OutOfGate` tape (`00*10`) and verify the closed session is deleted from `rig.store`
+    // and remains closed across `reboot_with`:
+    let out_of_gate = run(
+        &mut rig.tw,
+        pilot_actor,
+        &format!("+helm/dock tape {session_id} 00*10"),
+    );
+    assert!(
+        out_of_gate.contains("collar gates not aligned"),
+        "expected OutOfGate rejection: {out_of_gate}"
+    );
+    let oog_submits = drain(&mut rig.tw);
+    land_all(&mut rig, &oog_submits);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    assert!(
+        !has_kv(&rig, &docking_key),
+        "OutOfGate tape failure must persist deletion of `{docking_key}`"
+    );
+
+    rig = reboot_with(rig, roster());
+    assert!(
+        !rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .docking_sessions
+            .contains_key(&hull),
+        "OutOfGate session closure must survive reboot"
+    );
+
+    // 4. Close the bubble on tick (past the 120s salvage hold timeout) so the disabled interdictor
+    //    becomes a `SpaceDerelictRecord` at `tacsim:space:derelict:{derelict_hull}` and standing
+    //    orders for `hull` are cleared:
+    let next_real = rig.tw.world().now() + 130;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    assert!(
+        !has_kv(&rig, &bubble_key),
+        "resolved bubble must delete `{bubble_key}`"
+    );
+    assert!(
+        mush_sim::tick::standing_order(
+            rig.tw.world(),
+            hull,
+            mush_sim::tick::OrderChannel::Thrust
+        )
+        .is_none(),
+        "resolving the bubble must clear the hull's standing orders in mush-sim"
+    );
+    let derelict_hull = *rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .unwrap()
+        .derelicts
+        .keys()
+        .next()
+        .expect("derelict hull");
+    let derelict_key = SmolStr::new(tacsim::space::space_derelict_key(derelict_hull));
+    assert!(
+        has_kv(&rig, &derelict_key),
+        "derelict must persist at per-entity key `{derelict_key}`"
+    );
+
+    // 5. Dirty-only writes: decouple `hull` into free flight (`tacsim:space:flight:{hull}`), then
+    //    clear `rig.tw.take_module_ops()` and verify a tick that only ticks the derelict countdown
+    //    emits a `JsonSet` for `tacsim:space:derelict:{derelict_hull}` without rewriting
+    //    `tacsim:space:ledger:{hull}` or `tacsim:space:state`:
+    let _ = run(&mut rig.tw, pilot_actor, "+helm/decouple");
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let flight_key = SmolStr::new(tacsim::space::space_flight_key(hull));
+    assert!(
+        has_kv(&rig, &flight_key),
+        "free-flight record must persist at per-entity key `{flight_key}`"
+    );
+
+    let next_real = rig.tw.world().now() + 1;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let tick_ops = rig.tw.take_module_ops();
+    let tacsim_keys_written: Vec<SmolStr> = tick_ops
+        .iter()
+        .filter(|op| op.ns.as_str() == tacsim::NS)
+        .filter_map(|op| match &op.op {
+            ModuleWrite::JsonSet { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        tacsim_keys_written.contains(&derelict_key),
+        "dirty derelict record must be written on countdown tick: {tacsim_keys_written:?}"
+    );
+    assert!(
+        !tacsim_keys_written.contains(&ledger_key),
+        "unchanged propellant ledger must NOT be rewritten on a derelict countdown tick: {tacsim_keys_written:?}"
+    );
+    assert!(
+        !tacsim_keys_written.contains(&SmolStr::new(tacsim::space::SPACE_STATE_KEY)),
+        "unchanged auxiliary space state must NOT be rewritten on a derelict countdown tick: {tacsim_keys_written:?}"
+    );
+    fold_module_ops_into(&mut rig.store, tick_ops);
+
+    // 6. Fail-closed per-entity quarantine (`#[serde(deny_unknown_fields)]`):
+    //    Inject an unknown field into `tacsim:space:flight:{hull}` and reboot; verify `hull` is
+    //    quarantined (`quarantined_hulls.contains(&hull)`), `derelict_hull` still loads cleanly,
+    //    and `+helm/burn` on the quarantined `hull` is refused fail-closed!
+    rig = reboot_editing(rig, roster(), |store| {
+        let kv = &mut store.get_mut(tacsim::NS).unwrap().kv;
+        kv.retain(|(k, _)| k != &flight_key);
+        kv.push((
+            flight_key.clone(),
+            serde_json::json!({
+                "hull": hull.0,
+                "corrupt_unknown_field": true
+            }),
+        ));
+    });
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        assert!(
+            book.quarantined_hulls.contains(&hull),
+            "corrupt per-entity flight doc must quarantine hull #{}: {:?}",
+            hull.0,
+            book.quarantined_hulls
+        );
+        assert!(
+            book.derelicts.contains_key(&derelict_hull),
+            "healthy per-entity derelict doc must still load when another hull's doc is corrupt"
+        );
+    }
+    let quarantined_out = run(&mut rig.tw, pilot_actor, "+helm/burn 100 0 0 5");
+    assert!(
+        quarantined_out.contains("quarantined"),
+        "commands on a quarantined hull must fail closed: {quarantined_out}"
     );
 }

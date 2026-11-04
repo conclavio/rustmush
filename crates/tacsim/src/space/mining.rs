@@ -95,7 +95,8 @@ pub fn unit_hold_capacity_tonnes(unit_entry_id: &str) -> u64 {
     unit_hold_capacity_kg(unit_entry_id) / 1_000
 }
 
-/// Read `hull`'s unreserved bulk/ore hold capacity in kilograms from its bound [`UnitSpec`] (`SF.R20`).
+/// Read `hull`'s unreserved bulk/ore hold capacity in kilograms from its bound
+/// [`crate::definitions::unit::UnitSpec`] (`SF.R20`).
 #[must_use]
 pub fn hull_hold_capacity_kg(w: &mush_core::World, hull: ObjId) -> u64 {
     if crate::port::ship::hull_view(w, hull).is_some_and(|v| v.is_prospector()) {
@@ -110,7 +111,8 @@ pub fn hull_hold_capacity_kg(w: &mush_core::World, hull: ObjId) -> u64 {
     unit_hold_capacity_kg("tacsim.unit.dray_p")
 }
 
-/// Read `hull`'s unreserved bulk/ore hold capacity in whole tonnes from its bound [`UnitSpec`] (`SF.R20`).
+/// Read `hull`'s unreserved bulk/ore hold capacity in whole tonnes from its bound
+/// [`crate::definitions::unit::UnitSpec`] (`SF.R20`).
 #[must_use]
 pub fn hull_hold_capacity_tonnes(w: &mush_core::World, hull: ObjId) -> u64 {
     hull_hold_capacity_kg(w, hull) / 1_000

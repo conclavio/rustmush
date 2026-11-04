@@ -2612,20 +2612,10 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // that will not read is `Unreadable`, which disables the geology layer and
             // is never rewritten by the boot.
             store.geology_pin = crate::surface::key::load_geology_pin(key, value);
-        } else if key == crate::space::SPACE_STATE_KEY {
-            // Doc 35 cut SF.R8 / SF.R10 (`D-35-12`, `35b` §5 #9): persisted space bubbles,
-            // free-flight records, open-epoch derelicts, paused docking sessions, and 48h salvage
-            // claims. An unreadable document is held (`space_state_held = true, space_state = None`)
-            // and never overwritten.
-            store.space_state_held = true;
-            match serde_json::from_value::<crate::space::SpacePersistedState>(value.clone()) {
-                Ok(state) if state.format == crate::space::SPACE_STATE_FORMAT => {
-                    store.space_state = Some(state);
-                }
-                _ => {
-                    tracing::warn!(%key, "tacsim: space state document is unreadable; held for staff repair")
-                }
-            }
+        } else if key == crate::space::SPACE_STATE_KEY
+            || key.starts_with(crate::space::SPACE_KEY_PREFIX)
+        {
+            crate::space::load_space_kv_entry(&mut store, key, value);
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }

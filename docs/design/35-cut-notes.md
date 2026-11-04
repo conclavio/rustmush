@@ -548,3 +548,32 @@ matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`
 **Test.** `sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_and_no_leaked_npcs`.
 
 **Divergences.** None from the `35c` §9 `SF.R20` specification.
+
+## SF.R21 — the prepared bubble mechanic and the per-entity store
+
+- Added the prepared bubble input action (`BUBBLE_INPUT_ACTION = "tacsim_space_bubble_input"`, outcome
+  `BUBBLE_INPUT_OUTCOME = "tacsim_space_bubble_input_outcome"`, typed family `BUBBLE_TAPE_FAMILY = "tacsim.space_bubble_tape"`)
+  via `BubbleInputProvider` and `submit_bubble_input` (`crates/tacsim/src/space/tick.rs`, `crates/tacsim/src/port_tick.rs`),
+  and wired in-bubble `+helm` (`/heading`, `/thrust`, `/emcon`, `/roll`, `/submit`, `/run`) and `+tac` (`/lock`, `/beam`,
+  `/torp`, `/railgun`, `/pdc`) commands (`crates/tacsim/src/space/commands.rs`) to submit `tacsim_space_bubble_input` via
+  `Ctx::submit_authoritative` (`D-35-9`, `35b` §3b, `35c` §6.1).
+- Moved `StandingOrder` persistence out of `SpaceBubbleBook::standing_orders` onto `mush-sim`'s `StandingOrderBook`
+  (`mush_sim::tick::standing_order`, `record_standing_order`, `clear_unit_standing_orders`, `standing_orders_snapshot`,
+  and `restore_standing_orders` in `crates/mush-sim/src/tick.rs`), and wired `step_active_bubbles` (`crates/tacsim/src/space/tick.rs`)
+  to read `StandingOrderBook` and apply `OrderChannel::Thrust` (`Scalar { value: 0 }` heave-to) and `OrderChannel::Posture`
+  (`Emcon`) on each tick (`D-35-9`, `35c` §6.2).
+- Replaced the monolithic `tacsim:space:state` write with dirty-only per-entity keys (`tacsim:space:bubble:{domain}`,
+  `tacsim:space:flight:{hull}`, `tacsim:space:derelict:{hull}`, `tacsim:space:docking:{hull}`, and
+  `tacsim:space:ledger:{hull}`) backed by `#[serde(deny_unknown_fields)]` wire structs (`PersistedBubbleDoc`,
+  `PersistedFlightDoc`, `PersistedDerelictDoc`, `PersistedDockingDoc`, `PersistedLedgerDoc`) and fail-closed quarantine
+  (`quarantined_bubbles`, `quarantined_hulls`) on decode failure (`crates/tacsim/src/space/tick.rs`,
+  `crates/tacsim/src/store.rs`) (`35c` §6.3).
+- Bounded `SpaceBubbleBook::completed` (`<= 64`), `paid_salvage_bounties` (`<= 256`), `pending_space_burns` (`<= 64`),
+  `pending_mine_draws` (`<= 64`), and `SalvageClaimBook::black_box_tapes` (`<= 64` hulls in
+  `crates/mush-tactics/src/field_ops/salvage.rs`), and unified propellant debits (`debit_hull_propellant_for_dv` and
+  `debit_hull_propellant_kg`) so in-bubble `SpaceShipState::propellant_kg` and `HullPropellantLedger` stay synchronized
+  (`35c` §6.3–§6.4).
+
+**Test.** `sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_with_quarantine`.
+
+**Divergences.** None from the `35c` §9 `SF.R21` specification.
