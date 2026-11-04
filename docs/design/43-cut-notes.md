@@ -416,3 +416,30 @@ upload.
 
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
+
+## TS.6 (2026-11-04) — the fiat budget
+
+D-43-9 as written. `crates/mush-contract-tests/tests/ci_policy/fiat_budget.rs` (module `fiat_budget::` of
+`ci_policy`) counts the unchecked state-slot accessors in every `crates/<pkg>/tests/**.rs`, after comments and
+literals are blanked. The accessors are `module_state_mut`, `module_state_pair_mut`, `get_pair_mut` and
+`get_captured_pair_mut`, matched as whole words, so path-qualified spellings count too. The checked
+`state_mut`/`try_state_mut` are not counted.
+
+- **The budgets.** `fiat_budget/<crate>-tests.txt` holds one line per file: `<budget> <low-water> <path>`.
+  Today's baseline is **205 sites in 96 files across 21 crates**. Doc 43 counted 210 at its base; tacsim
+  has 86 of today's sites.
+- **The ratchet.** The gate is equality: a file's count is its budget, so a removal is re-blessed down and
+  stays down. A budget above its low-water mark, a new file included (low-water 0), needs
+  `# raised <path> to <n>: <reason>`, and the reason must name an as-built section (`§`). Bless lowers
+  freely. It raises only with `FIAT_BUDGET_RAISE="<path>: <reason naming §…>"` and refuses without it.
+  Unit tests pin the count's spellings (prose and literals excluded) and the raise rules (missing, no `§`,
+  wrong number, stale, new file).
+- **`TestWorld::exec_ok`** runs a line that must succeed and panics, naming the line and its error, on any
+  error-styled answer, `Huh?` included. It is the prefer-instead the gate's failure names. 44 test files
+  today carry their own `has_error`, so the common case is real.
+
+**Departures from §7.** Inline `#[cfg(test)]` modules in `src/` are not counted; they are in-crate unit tests
+of a slot's own owner. Equality rather than a ceiling makes the ratchet bite on removals too. It runs in the
+existing `ci_policy` binary, so CI needs no change.
+
+**Summed minutes.** About +0.01: the walk takes 0.4 s warm and 17 s cold.

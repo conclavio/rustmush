@@ -1,0 +1,8 @@
+# mush-weather — test-side fiat budget (doc 43 cut TS.6).
+#
+# `<budget> <low-water> <path>`: each test file's unchecked state-slot writes.
+# Regenerate with:
+#   FIAT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy fiat_budget::
+# A raise names the as-built section that allows the seed.
+3 3 tests/flavor.rs
+1 1 tests/weather.rs
