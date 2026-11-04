@@ -240,6 +240,7 @@ took 190 s, 198 s and 197 s.
   biggest modules' minutes, and the dependencies (serde, rhai, hashing, compression) do much of that work.
 - **The cost.** Every warm target dir (CI's caches, the VPS gate's, the owner's box) rebuilds its dependencies
   once. The hosted cells' first run built in 1–4 min more than main's.
-- **The one red.** B's single failure, `field_gc4::gc4_the_wingman_drags…` (`field_gc4.rs:317`), also failed on
-  TS.12's branch, which has no profile change. It is a real-time race in that journey, not an effect of this
-  cut.
+- **The one red.** B's single failure, `field_gc4::gc4_the_wingman_drags…` (`field_gc4.rs:317`), passed on A in
+  every run and on main's three. It also failed twice on TS.12's branch, which has no profile change, so it is not
+  an effect of the opt level. Its cause is not established: a real-time race in that journey, or (on TS.12) the
+  binary's composition.
