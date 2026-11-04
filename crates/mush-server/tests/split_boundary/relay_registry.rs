@@ -2774,6 +2774,68 @@ fn r7_station_pack_digest_and_bounded_attention() {
     assert_eq!(f.resource_log.last().unwrap().delta, -1000);
 }
 
+/// Hold a rebuilt registry document to the shape relay cut R4 wrote: the
+/// structs at `233fbb2e`, unchanged until R7 (`ba3b072c`) (doc 43 cut TS.20).
+/// Fixed history: never edited to follow today's structs.
+fn assert_r4_shape(doc: &serde_json::Value) {
+    fn keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+    fn sorted<const N: usize>(mut want: [&'static str; N]) -> Vec<&'static str> {
+        want.sort_unstable();
+        want.to_vec()
+    }
+    assert_eq!(
+        keys(doc),
+        sorted([
+            "version",
+            "revision",
+            "source_pack",
+            "source_entry",
+            "operator",
+            "nodes",
+            "pairs",
+        ]),
+        "the rebuilt registry is not R4's"
+    );
+    for node in doc["nodes"].as_object().expect("nodes").values() {
+        assert_eq!(
+            keys(node),
+            sorted(["object", "place", "label", "operator", "coverage"]),
+            "a rebuilt node is not R4's"
+        );
+    }
+    for pair in doc["pairs"].as_object().expect("pairs").values() {
+        assert_eq!(
+            keys(pair),
+            sorted(["halves", "capacity_units_per_ic_second", "class_policy"]),
+            "a rebuilt pair is not R4's"
+        );
+        for half in pair["halves"].as_array().expect("halves") {
+            assert_eq!(
+                keys(half),
+                sorted([
+                    "id",
+                    "object",
+                    "node",
+                    "enabled",
+                    "powered",
+                    "staffed",
+                    "destroyed",
+                ]),
+                "a rebuilt half is not R4's"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once() {
     let mut rig = Rig::new(true).await;
@@ -2794,6 +2856,17 @@ async fn r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once()
         .unwrap()
         .unwrap();
     doc.as_object_mut().unwrap().remove("structural_version");
+    // R7 also added the loss ledger and each half's `damaged`; R4 wrote neither
+    // (doc 43 cut TS.20). Both are empty here, so R4 can express this state.
+    let losses = doc.as_object_mut().unwrap().remove("losses");
+    assert_eq!(losses, Some(serde_json::json!({})), "no loss to drop");
+    for pair in doc["pairs"].as_object_mut().unwrap().values_mut() {
+        for half in pair["halves"].as_array_mut().unwrap() {
+            let damaged = half.as_object_mut().unwrap().remove("damaged");
+            assert_eq!(damaged, Some(serde_json::json!(false)), "no damage to drop");
+        }
+    }
+    assert_r4_shape(&doc);
     rig.replace_document(doc).await;
     rig.restart().await.unwrap();
     assert!(mush_tactics::module::unit_of(rig.tw.world(), node).is_some());

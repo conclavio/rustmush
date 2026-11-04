@@ -175,3 +175,36 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
+
+## TS.20 (2026-11-04) — pinned reconstructions
+
+§7's four unpinned rebuilds of old content each get a pin. A pin is the shape the old version actually had, read
+from the commit before the change it rebuilds around and written into the test as fixed history. Pinning
+turned up drift in two of the four: those reconstructions had been carrying fields their version never wrote.
+
+- **`ooc_v3`** (`mush-atlas/tests/interior.rs`) is held to `V3_REBUILT_DIGEST`, like `ooc_v6` and
+  `staff_lobby_v4`. It cannot be the published digest (`74344b62…`, `44115c47`). The published version 3 has
+  the same 24 entries, and 20 are byte-equal, but four differ:
+  - the Welcome Hall's desc and sign: the shipped text is kept, which is why the upgrade plans one update;
+  - the three `Lounge <L>` exits' `l` segment: since 16b cut D.5, apply refuses it.
+
+  So the real bytes cannot boot, and a committed fixture of them would prove nothing. The doc comment lists the
+  four entries. A re-pin must confirm the rebuild still differs from version 3 in those four entries and no
+  others.
+- **The format-3 checkpoint body** (`mush-economy/tests/e2b.rs`) is held to `FORMAT_3_FOLD_FIELDS`, the 28
+  fields `FoldState` serialized at `b205438c^`. **Finding: the rebuild had drifted.** Besides
+  `title_lineage`, it carried `seizure_receipts` and `bay_refit_receipts`, two audits added after format 4
+  without a format bump, which format 3 never had. The rebuild now strips all three.
+- **The pre-O.1 replay** (`tacsim/tests/shard_1/replay.rs`) is held to `PRE_O1_REPLAY_KEYS`, the 18 keys
+  `Replay::to_document` wrote at `8c2f0388^`. It matched: `mode` was the only key added since.
+- **The R4 relay shape** (`mush-server/tests/split_boundary/relay_registry.rs`) is held by `assert_r4_shape`
+  to the registry, node, pair and half fields at `233fbb2e`. R4 and R7 are consecutive commits on `relay.rs`.
+  **Finding: the rebuild had drifted.** R7 added `losses` and each half's `damaged` as well as
+  `structural_version`, and the "R4" document still carried both. The rebuild now drops them, after asserting
+  they are empty and false (so R4 could express that state).
+
+**Departures from §7.** None of the four uses a committed fixture. Three rebuild documents from a live run,
+whose bytes depend on that run. The fourth is the OOC pack, whose published bytes no longer apply. So the pin
+is the version's field set, or its rebuilt digest, and the `golden/v12` template does not fit any of them.
+
+**Summed minutes.** Zero: four assertions in tests that already exist.
