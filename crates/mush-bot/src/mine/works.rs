@@ -19,6 +19,12 @@ use crate::mine::lines::{self, Listing};
 
 /// The works verb.
 pub const WORKS: &str = "+works";
+/// The yard verb (doc 39 cut IN.11): `+works`' grammar at a yard.
+pub const YARD: &str = "+yard";
+/// `tacsim::port::works::BOOKED_AT` at the yard: "Order {n} booked at the yard: …".
+pub const YARD_BOOKED: &str = " booked at the yard: ";
+/// `tacsim::port::works::COMMISSIONS_AS`: "Order {n}: the yard commissions her as {mark}; …".
+pub const COMMISSIONS_AS: &str = ": the yard commissions her as ";
 
 /// The ports the trade run sails between, by the route word `+ship/plan` and `+ship/undock` take.
 pub const PORTS: [&str; 2] = ["ceres", "stickney"];
@@ -48,10 +54,13 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 120 || line.contains(['\n', '\r']) {
         return false;
     }
-    if line == WORKS {
+    if line == WORKS || line == YARD {
         return true;
     }
-    if let Some(rest) = line.strip_prefix("+works/") {
+    if let Some(rest) = line
+        .strip_prefix("+works/")
+        .or_else(|| line.strip_prefix("+yard/"))
+    {
         return works_switch(rest);
     }
     for verb in ["+ship/plan ", "+ship/undock "] {
@@ -103,6 +112,26 @@ pub fn booked(window: &str) -> Option<u64> {
     let at = window.find(BOOKED)?;
     let head = window[..at].rsplit("Order ").next()?;
     head.parse().ok()
+}
+
+/// **The order a yard booking names** ("Order {n} booked at the yard: …").
+#[must_use]
+pub fn yard_booked(window: &str) -> Option<u64> {
+    let window = lines::normalise(window);
+    let at = window.find(YARD_BOOKED)?;
+    let head = window[..at].rsplit("Order ").next()?;
+    head.parse().ok()
+}
+
+/// **The mark the yard commissions `order` under** ("Order {n}: the yard commissions her as
+/// {mark}; …").
+#[must_use]
+pub fn commissioned(window: &str, order: u64) -> Option<String> {
+    let window = lines::normalise(window);
+    let lead = format!("Order {order}{COMMISSIONS_AS}");
+    let at = window.find(&lead)?;
+    let rest = &window[at + lead.len()..];
+    Some(rest.split(';').next()?.trim().to_owned())
 }
 
 /// Whether `window` tells that `order` is delivered at the works.
@@ -188,6 +217,11 @@ mod tests {
             "+works/deliver 154=carbon_ore 1",
             "+works/collect 154",
             "+works/cancel 154",
+            "+yard",
+            "+yard/quote dray",
+            "+yard/order tv_escort",
+            "+yard/deliver 161=tacsim.part.plant.hauler_mk1 1",
+            "+yard/collect 161",
             "+ship/plan stickney",
             "+ship/undock stickney",
             "+ship/undock ceres",
@@ -225,6 +259,19 @@ mod tests {
         assert_eq!(INTO_HOLD, GAME_HOLD);
         assert_eq!(FEE, FEE_CLAUSE);
         assert_eq!(SETTLING, GAME_SETTLING);
+        assert_eq!(YARD_BOOKED, format!("{BOOKED_AT}yard: "));
+        assert_eq!(COMMISSIONS_AS, tacsim::port::works::COMMISSIONS_AS);
+        assert_eq!(
+            yard_booked("Order 161 booked at the yard: dray x1, 12 IC days. Deliver the bill: …"),
+            Some(161)
+        );
+        assert_eq!(
+            commissioned(
+                "Order 161: the yard commissions her as SYB-01; she is handed over when the \n                 work is done.",
+                161
+            ),
+            Some("SYB-01".to_owned())
+        );
         let book = "Order 154 booked at the works: fittings x1, 1 IC days. Deliver the bill: 5 \
                     structural_alloys, 1 carbon_ore. Booking fee 847.00cr held (forfeit on a \
                     cancel).";
