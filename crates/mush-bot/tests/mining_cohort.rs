@@ -571,8 +571,10 @@ async fn in5_the_bot_mines_refines_and_sells_fittings_from_urvara() {
 const PRODUCTION_RATE: u32 = 3_600;
 
 /// One line of the production run, held to the bot's vocabulary and answered by one of
-/// `needles` (sent again two seconds later on the `retry` needle, at most sixty times); the
-/// needle's index and the text since the send.
+/// `needles` (sent again two seconds later on a `retry` needle or a transient, at most sixty
+/// times); the needle's index and the text since the send. The needles are matched on the text
+/// with its whitespace normalised ([`lines::normalise`]): the game wraps a long sentence at the
+/// session's width, anywhere between two words.
 async fn typed(
     client: &mut arena::Client,
     line: &str,
@@ -584,14 +586,36 @@ async fn typed(
         in_vocabulary(line) || works::in_vocabulary(line),
         "`{line}` is not in the bot's vocabulary"
     );
-    let mut all: Vec<&str> = needles.to_vec();
-    all.extend_from_slice(retry);
+    let found = |text: &str, wanted: &[&str]| {
+        let text = lines::normalise(text);
+        wanted
+            .iter()
+            .position(|needle| text.contains(&lines::normalise(needle)))
+    };
     for _ in 0..60 {
-        let (index, text) = client.answer(line, &all).await;
-        match index {
-            Some(i) if i < needles.len() => return (i, text),
-            Some(_) => tokio::time::sleep(Duration::from_secs(2)).await,
-            None => panic!("`{line}` answered none of {all:?}:\n{text}"),
+        let from = client.seen.len();
+        if let Err(closed) = client.try_send(line).await {
+            panic!("`{line}`: {closed}");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let answer = loop {
+            client.pump(Duration::from_millis(200)).await;
+            let text = client.seen.get(from..).unwrap_or("").to_owned();
+            if let Some(i) = found(&text, needles) {
+                break Some((i, text));
+            }
+            if found(&text, retry).is_some() || found(&text, &arena::TRANSIENTS).is_some() {
+                break None;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "`{line}` answered none of {needles:?} or {retry:?}:
+{text}"
+            );
+        };
+        match answer {
+            Some(answer) => return answer,
+            None => tokio::time::sleep(Duration::from_secs(2)).await,
         }
     }
     panic!("`{line}` kept answering {retry:?}");
@@ -847,7 +871,7 @@ async fn production_story(miner: Miner) {
     assert!(coop.text.contains("600.00cr"), "{}", coop.text);
     let sale = sell_all(&mut client, coop.number).await;
     assert_eq!(sale.qty_t, 5, "{sale:?}");
-    assert_eq!(sale.gross, "3,000.00cr", "{sale:?}");
+    assert_eq!(sale.gross, "3000.00cr", "{sale:?}");
     stamp(&format!(
         "sold five tonnes of fittings to the Co-op: gross {}, net {}",
         sale.gross, sale.net
