@@ -1567,6 +1567,90 @@ fn ic7_a_player_listing_never_delivers_into_a_governed_endpoint() {
     no_settlement_pages(&r.tw);
 }
 
+// ---- 10a: the reserve grace (found by doc 39 cut IN.6) --------------------------------
+
+/// The one hold-backed lot listing the vendor stands, after `@market/vendor stock … endpoint=`.
+fn the_lot_listing(tw: &TestWorld) -> ListingId {
+    market_of(tw)
+        .lot_listings()
+        .map(|l| l.id)
+        .next()
+        .expect("the hold-backed listing")
+}
+
+/// **A lot listing whose reserve has not landed survives a sweep**: the command writes the
+/// listing and stages its reserve, which lands later. A market sweep that runs in between used
+/// to read the missing hold as one a crash never placed and withdraw the listing, and the
+/// reserve then landed under a listing that no longer existed, stranding the stock (found by
+/// doc 39 cut IN.6, on a seeded part's lot ask). The reconcile now leaves it alone for
+/// `RESERVE_GRACE_SWEEPS` sweeps: the reserve lands, and the listing stands and sells.
+#[test]
+fn ic7_a_lot_listing_survives_a_sweep_before_its_reserve_lands() {
+    let mut r = rig();
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GOOD} price=700 qty=10 endpoint={}",
+            r.vendor.0,
+            r.depot.vault().0
+        ),
+    );
+    let reserve = take(&mut r.tw);
+    let listing = the_lot_listing(&r.tw);
+    let start = r.tw.world().now();
+    // A market sweep before the reserve lands.
+    at(&mut r.tw, start + 61);
+    assert_eq!(
+        listing_qty(&r.tw, listing),
+        Some(10),
+        "a listing whose reserve may still be landing is kept"
+    );
+    land_submit(&mut r.tw, &reserve, 0xc1).expect("the reserve lands");
+    for i in 2..=4 {
+        at(&mut r.tw, start + i * 61);
+    }
+    assert_eq!(
+        listing_qty(&r.tw, listing),
+        Some(10),
+        "its hold stands, so every later sweep keeps it"
+    );
+    no_settlement_pages(&r.tw);
+}
+
+/// **A lot listing whose reserve never lands is still withdrawn**, once the grace has passed
+/// (the crash case the reconcile arm exists for, E7r2 P1): the reserve is lost, and within
+/// `RESERVE_GRACE_SWEEPS` sweeps after it the arm withdraws the listing.
+#[test]
+fn ic7_a_lot_listing_whose_reserve_never_lands_is_withdrawn_after_the_grace() {
+    let mut r = rig();
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GOOD} price=700 qty=10 endpoint={}",
+            r.vendor.0,
+            r.depot.vault().0
+        ),
+    );
+    let _lost = take(&mut r.tw);
+    let listing = the_lot_listing(&r.tw);
+    let start = r.tw.world().now();
+    let mut swept = 0;
+    for i in 1..=4 {
+        at(&mut r.tw, start + i * 61);
+        if listing_qty(&r.tw, listing).is_none() {
+            swept = i;
+            break;
+        }
+    }
+    let grace = i64::try_from(mush_market::RESERVE_GRACE_SWEEPS).expect("small");
+    assert_eq!(
+        swept, grace,
+        "kept through the grace, withdrawn at the sweep that ends it"
+    );
+}
+
 // ---- 11: the party-cap source -------------------------------------------------------------
 
 /// **The party-cap source admits after the table, and confers no money authority.**

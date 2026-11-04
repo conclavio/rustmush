@@ -143,7 +143,7 @@ pub use api::{
     post_wanted, principal_account, refuse_market, register_vendor, restock_ask, retire_vendor,
     revise_wanted, visible, withdraw_listing,
 };
-pub use boot::HOLD_RECHECK_SWEEPS;
+pub use boot::{HOLD_RECHECK_SWEEPS, RESERVE_GRACE_SWEEPS};
 pub use boot::{
     MAX_BOOT_DELIVERY_PAGES, MAX_DRAWS_MIRRORED_PER_FIRE, MAX_LOT_RECONCILED_PER_FIRE,
     MAX_RECONCILED_QUOTES, MAX_SWEPT_PER_FIRE,
