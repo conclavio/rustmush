@@ -570,7 +570,10 @@ every earlier test reads as before.
   steps (3)–(4) now read the retry. The refused arrival's retry takes the freed letter, the third takes the next
   free one, and the restart keeps every letter. This is the test that failed under load (the gc1b-flake session's
   diagnosis: the kernel refuses a join for real while a think is outstanding, FR.5's await, and the arrival was
-  never asked again). PR #398's `retries = 2` override for it is to be dropped once this lands (see the PR).
+  never asked again). The cut drops PR #398's `retries = 2` stopgap override for it from `.config/nextest.toml`.
+  The gc1b-flake session's loaded stress was run on conclav.dev at this branch's `237bd386`: 5 copies × 6 rounds of
+  `field_carrier::` on `taskset -c 0-3`, `--test-threads=6`. **0 of 30 failed**, against 4 of 18 (beat-counted
+  waits) and 3 of 30 (the unchanged control) on the same rig without the retry.
 
 **§4a's pins.** None of §4a's pinned files is touched: no kernel file, no snapshot or live-record format, no
 content, no seal. The live record gains no field (`launching` and `relaunch` are RAM), so `FIELD_LIVE_FORMAT` 1
