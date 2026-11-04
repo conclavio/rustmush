@@ -694,6 +694,14 @@ above, in order:
   books of the unit parties whose hulls that leader seats, so one mark covers every hull they command. It is
   host-side (GC.10/FR.1's mark path) and is built as its own small PR after FR.7. When that PR lands,
   `field_gc10`'s void gate moves to `disengage_s`, as §4a expected, and its 8 s idle-bound comment goes.
+  **Built** (the leader's mark PR, after FR.5b):
+  - `field::commands::mark_in_field` also sends `ArenaMsg::Mark` for every unit party whose hull the leader seats
+    (`seated_parties`, by the live record's pilot or the seat as it stands now). Each book keeps its own standing
+    Hostile on a clear.
+  - `gc10_a_leader_voids_friendly_fire_standing` now demotes on `disengage_s` (5 s, with the idle bound at 600 s),
+    in 28.9 s.
+  - `field_fr1::`, `field_fr2::`, `field_story::` (both sizes), `field_raiders::` and `review_36a::` are unmoved:
+    23 of 23.
 - **The relay** reads the carrier's world record. A relay damaged by a hit inside the running field therefore
   takes effect from the next field. The seam is named in `carrier_relay`'s doc comment: a host mirror of the
   kernel's part conditions would replace that read.
