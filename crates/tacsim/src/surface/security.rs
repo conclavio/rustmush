@@ -12,7 +12,7 @@
 //!   is fined by kind ([`fine_major`]) to the Freeport Registry's account. The fine is a one-term
 //!   debt (RS.5's `create_debt`, under [`DEBT_NAMESPACE`] so `+debts` lists it), paid in the same
 //!   step when the account covers it; the row carries the debt's id, so it is never charged twice.
-//! - **The quarantine** ([`quarantine_line`], read by `prepare_departure`): while a fine stands
+//! - **The quarantine** (`quarantine_line`, read by `prepare_departure`): while a fine stands
 //!   owed against the carrier's master or operator she does not lift. It lifts when the debt is
 //!   paid — `+debts/pay`, or the docking check reinstating it at every later docking so the sweep
 //!   tries again.
