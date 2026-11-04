@@ -107,7 +107,7 @@ pub const MAX_UNLAWFUL: usize = 64;
 pub const AWARD_ISSUER: &str = crate::port::hull::REGISTRY_ISSUER;
 
 /// `+salvage` usage.
-pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/inspect <hull> or +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go].";
+pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/report <site>[=<who>|#<hull>] registry, +salvage/inspect <hull> or +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go].";
 /// Nothing to list.
 pub const NO_CLAIMS: &str = "You stand in no salvage claim.";
 /// No custody record names the hull: `{hull}`.
@@ -1763,6 +1763,10 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return authorize_cmd(ctx, word.trim(), who, until, go);
     }
     if ctx.switches.has("report") {
+        // Doc 41 cut RS.7 (Q-41-24): the registry's form reads the site's log, not a custody row.
+        if let Some(head) = raw.trim().strip_suffix(" registry") {
+            return crate::surface::security::report_cmd(ctx, head);
+        }
         let (rest, go) = split_go(&raw);
         let (word, who) = rest
             .split_once('=')
@@ -1850,7 +1854,7 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// # Errors
 ///
 /// The line that refuses.
-pub(crate) fn file_claim(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
+pub(crate) fn tow_files_salvage(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
     claim_cmd(ctx, word, true)
 }
 
@@ -2500,6 +2504,40 @@ fn why_vacated(file: &SalvageClaim) -> &'static str {
     }
 }
 
+/// Whether a claim was vacated on a proven unlawful recovery (a `recovery` contest).
+fn vacated_on_recovery(file: &SalvageClaim) -> bool {
+    use mush_tactics::field_ops::ContestSuccessReason;
+    matches!(
+        file.contests
+            .iter()
+            .find_map(|contest| contest.valid_to_vacate.clone()),
+        Some(ContestSuccessReason::ProvenUnlawfulRecovery)
+    )
+}
+
+/// **The recovery a `recovery` vacate proves** (doc 41 cut RS.7): the site's `Recovery` row on
+/// the hull by the custodian, the latest; when the ring has dropped it, the row as the custody
+/// knew it.
+fn proven_recovery(ctx: &Ctx<'_>, site: &CanonicalId, row: &SalvageCustody) -> UnlawfulAct {
+    crate::surface::tow::record_or_new(ctx, site)
+        .unlawful
+        .iter()
+        .rev()
+        .find(|act| {
+            act.kind == UnlawfulKind::Recovery
+                && act.actor == row.holder
+                && act.subject == row.hull.0
+        })
+        .cloned()
+        .unwrap_or_else(|| UnlawfulAct {
+            kind: UnlawfulKind::Recovery,
+            actor: row.holder,
+            subject: row.hull.0,
+            landholder: row.pin.as_ref().and_then(TenurePin::landholder),
+            at_ic: row.recovered_ic,
+        })
+}
+
 /// **Whether an organization's hull is under a live lease or charter** (doc 41 Q-41-22, doc 36
 /// Q-36-29): a rig lease, or a programme charter; such a hull is never awarded by salvage.
 fn leased_or_chartered(w: &World, hull: ObjId) -> bool {
@@ -2659,6 +2697,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         };
         if !submit(ctx, row.holder, order, 5) {
             continue;
+        }
+        // Doc 41 cut RS.7 (Q-41-24): a `recovery` contest's vacate is the registry's finding, so
+        // the recovery it vacated is proven and goes port-side.
+        if settlement == Settlement::Vacate && vacated_on_recovery(file) {
+            let act = proven_recovery(ctx, &site, &row);
+            let _ = crate::surface::security::prove(
+                ctx,
+                &site,
+                &act,
+                crate::surface::security::Proof::Vacated,
+            );
         }
         // Doc 41 §4.6: every lot the hull's record lists under this claim is flagged hot.
         if settlement == Settlement::Vacate

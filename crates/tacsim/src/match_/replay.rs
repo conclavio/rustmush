@@ -44,7 +44,7 @@
 //! # Held to the arena library's standard
 //!
 //! The fold and the window are under `match_/` and not `arena/`, so
-//! `crates/mush-contract-tests/tests/arena_library.rs` does not scan them, but
+//! `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` does not scan them, but
 //! they keep the same rules: no I/O, no world, no clock, no float, every map a
 //! `BTreeMap`. The request, the queries' answers and `ground_for` are the
 //! world-side half and the only part that touches a [`World`] or a [`Ctx`].

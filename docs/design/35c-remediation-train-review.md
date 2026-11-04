@@ -257,7 +257,7 @@ fabricated principals.
 
 - **One claim path.** `+helm/tow` no longer builds a claim itself. It puts the derelict in the
   tug's custody as a `SalvageCustody` row with `ClaimSeam::Owed`, then files through
-  `surface::claim::file_claim`. That function is `+salvage/claim <hull> go`'s own code, so the
+  `surface::claim::tow_files_salvage`. That function is `+salvage/claim <hull> go`'s own code, so the
   audience, the `file_salvage_claim` contract, the `[tacsim.recovery].claim_window_s` window, the
   IC mail and the claim tick's `award_salvage_title` are all the ground's.
   - `register_derelict_salvage_in_book` is deleted, and so are the claim book's `submit_contest`

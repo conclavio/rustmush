@@ -21,9 +21,78 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.5 (lane v24): the refinery and the works taken out** — Stickney's `refinery`
+/// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, and the
+/// Freeport Works org and vendor (its carbon stock and ask) — so a strip chain rebuilds a lane
+/// before v24 (idempotent). The programme's carbon reference goes back from Freeport Works'
+/// listing to its fixed 25.00cr.
+pub fn strip_industry(doc: &mut Value) {
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    // `get_mut`, never `IndexMut`: indexing a missing key inserts it.
+    if let Some(def) = entries
+        .get_mut("stickney_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("refinery");
+        def.remove("works");
+        for vendor in def
+            .get_mut("vendors")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter(|vendor| vendor["org"] == "kasei")
+        {
+            if let Some(vendor) = vendor.as_object_mut() {
+                vendor.remove("mill");
+            }
+            for bid in vendor
+                .get_mut("bids")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+                .filter(|bid| bid["good"] == "metals")
+            {
+                if let Some(bid) = bid.as_object_mut() {
+                    bid.remove("refresh");
+                }
+            }
+        }
+    }
+    let Some(def) = entries
+        .get_mut("ceres_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    def.remove("works");
+    if let Some(programme) = def.get_mut("programme").and_then(Value::as_object_mut)
+        && programme
+            .get_mut("reference")
+            .and_then(Value::as_object_mut)
+            .and_then(|reference| reference.remove("carbon_ore"))
+            .is_some()
+        && let Some(fixed) = programme
+            .get_mut("reference_minor")
+            .and_then(Value::as_object_mut)
+    {
+        fixed.insert("carbon_ore".to_owned(), 2500.into());
+    }
+    if let Some(orgs) = def.get_mut("orgs").and_then(Value::as_array_mut) {
+        orgs.retain(|org| org["id"] != "freeport_works");
+    }
+    if let Some(vendors) = def.get_mut("vendors").and_then(Value::as_array_mut) {
+        vendors.retain(|vendor| vendor["org"] != "freeport_works");
+    }
+}
+
 /// **Doc 42 cut CR.2 (lane v23): the IC ports' `authority` and `release_fee_cr` taken out**, so a
-/// strip chain rebuilds a lane before v23 (idempotent).
+/// strip chain rebuilds a lane before v23 (idempotent); lane v24's [`strip_industry`] first.
 pub fn strip_release_authority(doc: &mut Value) {
+    strip_industry(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

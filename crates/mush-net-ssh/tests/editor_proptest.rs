@@ -12,6 +12,10 @@
 use mush_net_ssh::{EchoMode, EditorAction, LineEditor, MAX_LINE_CHARS};
 use proptest::prelude::*;
 
+// Doc 43 cut TS.4: the TUI's key parser and the caps replies it carries.
+#[path = "editor_proptest/key_parser.rs"]
+mod key_parser;
+
 /// Feed `bytes` to a fresh editor, split at the given chunk boundaries, and
 /// return `(submitted lines, all echo bytes)`.
 fn drive(bytes: &[u8], chunks: &[usize], mode: EchoMode) -> (Vec<String>, Vec<u8>) {

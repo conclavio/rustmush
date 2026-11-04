@@ -5611,7 +5611,7 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
             if pin.answering.is_some() {
                 let word = format!("#{}", clamped_derelict.0);
-                if let Err(error) = crate::surface::claim::file_claim(ctx, &word) {
+                if let Err(error) = crate::surface::claim::tow_files_salvage(ctx, &word) {
                     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                         let _ = book.space_custody.remove(&clamped_derelict);
                     }

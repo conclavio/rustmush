@@ -80,6 +80,16 @@ on:
         description: "sweep: REDIS_URL at the gate's private Redis (127.0.0.1:6799), wiped first"
         type: boolean
         default: true
+      # Doc 43 cut TS.2 (§5.9): a configuration is a coverage dimension, and a
+      # variant nobody selects runs nowhere. This selects one: the pairs are
+      # exported to every later step, whatever the kind (MINE_RATE=24 for
+      # the rate-24 mining run, FIELD_RAID=director for the director-raid
+      # story, the harness's TACSIM_* sizes). A variant run this way is the
+      # dispatch tier in crates/mush-contract-tests/test-tiers.toml.
+      env:
+        description: "every kind: space-separated NAME=VALUE pairs exported to the run, e.g. MINE_RATE=24 (no spaces in a value)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -142,6 +152,34 @@ jobs:
           echo "CARGO_BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
           if [ -n "$threads" ]; then echo "NEXTEST_TEST_THREADS=$threads" >> "$GITHUB_ENV"; fi
           echo "$RUNNER_NAME: $(nproc) cores; CARGO_BUILD_JOBS=$jobs; test threads ${threads:-num-cpus (the ci profile)}"
+      # The `env` input (doc 43 TS.2), through GITHUB_ENV. The value reaches
+      # the script as an environment variable, never as interpolated text,
+      # and is split on whitespace with globbing off, so a pair cannot carry
+      # a newline into GITHUB_ENV. A name the workflow or the toolchain owns
+      # is refused: REDIS_URL is the `redis` input's, the CARGO_*/RUST*/
+      # NEXTEST_* sizing is the box's, and the runner's own are not a test's
+      # configuration.
+      - name: The dispatch's configuration
+        if: inputs.env != ''
+        env:
+          CONFIG: ${{ inputs.env }}
+        run: |
+          set -euo pipefail -f
+          for pair in $CONFIG; do
+            name="${pair%%=*}"
+            if [ "$name" = "$pair" ] || ! [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+              echo "::error::env: '$pair' is not NAME=VALUE with an upper-case NAME"
+              exit 1
+            fi
+            case "$name" in
+              PATH|HOME|SHELL|TMPDIR|REDIS_URL|RUSTFLAGS|RUSTDOCFLAGS|CARGO_*|RUSTUP_*|RUSTC*|NEXTEST_*|GITHUB_*|RUNNER_*|ACTIONS_*|LD_*|BASH_*)
+                echo "::error::env: $name is the workflow's or the toolchain's, not a configuration"
+                exit 1
+                ;;
+            esac
+            echo "$pair" >> "$GITHUB_ENV"
+            echo "configuration: $pair"
+          done
       - name: The box before the run
         run: |
           hostname; nproc; free -m; df -h /; cat /proc/loadavg

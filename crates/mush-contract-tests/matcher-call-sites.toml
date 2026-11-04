@@ -1,6 +1,6 @@
 # The matcher audit (16b cut U.4; 16c T-67, answering Q34 at its default: the
 # gate and @find now, the lens is H6). Read by
-# crates/mush-contract-tests/tests/matcher_call_sites.rs.
+# crates/mush-contract-tests/tests/ci_policy/matcher_call_sites.rs.
 #
 # `mush_core::matchit::match_object` resolves `#N` for ANY object in the world
 # and `*name` for ANY player, with no observer test. Every production call site

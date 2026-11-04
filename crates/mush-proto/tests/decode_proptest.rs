@@ -8,9 +8,13 @@
 //! back to an equal value.
 
 use mush_proto::{
-    ClientCaps, ClientCommand, ClientKind, ColorDepth, Envelope, OutputEvent, Query, SmolStr,
+    ActionStatusId, ClientCaps, ClientCommand, ClientKind, ColorDepth, ContentStudioRequest,
+    Envelope, InvokeRequest, LegalActionRequest, MindRequest, OutputEvent, PictureKind,
+    ProjectedCommitToken, Query, RespondChoice, SmolStr, UnitDesignRequest,
 };
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
+use proptest::test_runner::TestRunner;
 
 /// Decoding arbitrary bytes as either wire type must never panic.
 fn decode_all(bytes: &[u8]) {
@@ -25,6 +29,11 @@ fn decode_all(bytes: &[u8]) {
 }
 
 /// A strategy over every `ClientCommand` variant with representative payloads.
+///
+/// Exhaustive by construction (doc 43 cut TS.4): [`variant_tag`] matches every
+/// `ClientCommand`, `Query` and `InvokeRequest` variant with no wildcard, so a
+/// new variant fails to compile here, and `strategy_reaches_every_variant`
+/// fails until this strategy generates it.
 fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
     let caps = (any::<u16>(), any::<u16>(), any::<bool>(), any::<bool>()).prop_map(
         |(width, height, utf8, structured)| {
@@ -41,6 +50,7 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
     let query = prop_oneof![
         Just(Query::Who),
         Just(Query::Sheet),
+        Just(Query::Commands),
         (any::<bool>(), any::<Option<u128>>()).prop_map(|(own, after)| {
             Query::MarketOriginalMinds(mush_proto::MarketOriginalMindsRequest {
                 kind: if own {
@@ -98,7 +108,154 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
         any::<u64>().prop_map(|last_seq| ClientCommand::Resume { last_seq }),
         any::<u64>().prop_map(|nonce| ClientCommand::Pong { nonce }),
         caps,
+        (any::<u64>(), invoke_strategy())
+            .prop_map(|(id, request)| ClientCommand::Invoke { id, request }),
+        any::<u128>().prop_map(|n| ClientCommand::Ack {
+            commit: ProjectedCommitToken::new(format!("{n:032x}"))
+                .expect("canonical generated token"),
+        }),
+        any::<bool>().prop_map(|active| ClientCommand::Composing { active }),
+        (any::<String>(), any::<u64>(), respond_choice_strategy())
+            .prop_map(|(epoch, id, choice)| ClientCommand::Respond { epoch, id, choice }),
+        (any::<bool>(), any::<i64>(), any::<bool>()).prop_map(|(on, look_mdeg, overhead)| {
+            ClientCommand::Picture {
+                on,
+                look_mdeg,
+                kind: if overhead {
+                    PictureKind::Overhead
+                } else {
+                    PictureKind::Cockpit
+                },
+            }
+        }),
     ]
+}
+
+fn respond_choice_strategy() -> impl Strategy<Value = RespondChoice> {
+    prop_oneof![
+        any::<bool>().prop_map(RespondChoice::Confirm),
+        any::<String>().prop_map(|id| RespondChoice::Choose(SmolStr::new(&id))),
+        any::<String>().prop_map(RespondChoice::Text),
+        Just(RespondChoice::Cancel),
+    ]
+}
+
+/// One representative request per `InvokeRequest` family; the families' own
+/// payload grammars are pinned by their crates' tests.
+fn invoke_strategy() -> impl Strategy<Value = InvokeRequest> {
+    prop_oneof![
+        any::<String>().prop_map(|name| InvokeRequest::Mind(MindRequest::Remove { name })),
+        (any::<u32>(), any::<u32>()).prop_map(|(first, last)| {
+            InvokeRequest::Mind(MindRequest::FiledSource {
+                licence: "7".to_owned(),
+                first,
+                last,
+            })
+        }),
+        Just(InvokeRequest::LegalAction(LegalActionRequest::Status {
+            reference: ActionStatusId::new(
+                "k5:toy:brace:0000000000000007:01010101010101010101010101010101"
+            )
+            .expect("canonical status id"),
+        })),
+        (any::<String>(), any::<u32>()).prop_map(|(id, version)| {
+            InvokeRequest::UnitDesign(UnitDesignRequest::Check {
+                id,
+                version,
+                rules: serde_json::json!({ "hull": version }),
+            })
+        }),
+        Just(InvokeRequest::ContentStudio(
+            ContentStudioRequest::Catalog {}
+        )),
+        any::<String>()
+            .prop_map(|id| InvokeRequest::ContentStudio(ContentStudioRequest::Read { id })),
+    ]
+}
+
+/// Every `ClientCommand`, `Query` and `InvokeRequest` variant's tag. No
+/// wildcard arm: a new variant is a compile error until it is listed here, and
+/// listing it here fails `strategy_reaches_every_variant` until the strategy
+/// generates it.
+fn variant_tag(cmd: &ClientCommand) -> &'static str {
+    match cmd {
+        ClientCommand::Line(_) => "line",
+        ClientCommand::Invoke { request, .. } => match request {
+            InvokeRequest::Mind(_) => "invoke.mind",
+            InvokeRequest::LegalAction(_) => "invoke.legal_action",
+            InvokeRequest::UnitDesign(_) => "invoke.unit_design",
+            InvokeRequest::ContentStudio(_) => "invoke.content_studio",
+        },
+        ClientCommand::Req { q, .. } => match q {
+            Query::MailList { .. } => "req.mail_list",
+            Query::Who => "req.who",
+            Query::Sheet => "req.sheet",
+            Query::Commands => "req.commands",
+            Query::ChannelBacklog { .. } => "req.channel_backlog",
+            Query::NarrativeBacklog { .. } => "req.narrative_backlog",
+            Query::MindBulk { .. } => "req.mind_bulk",
+            Query::MarketOriginalMinds(_) => "req.market_original_minds",
+            Query::MindMarket(_) => "req.mind_market",
+            Query::PanelSubscribe { .. } => "req.panel_subscribe",
+        },
+        ClientCommand::Resume { .. } => "resume",
+        ClientCommand::Ack { .. } => "ack",
+        ClientCommand::Composing { .. } => "composing",
+        ClientCommand::Respond { .. } => "respond",
+        ClientCommand::Pong { .. } => "pong",
+        ClientCommand::Picture { .. } => "picture",
+        ClientCommand::Caps(_) => "caps",
+    }
+}
+
+/// Every tag [`variant_tag`] can return; keep in step with its arms.
+const ALL_TAGS: &[&str] = &[
+    "line",
+    "invoke.mind",
+    "invoke.legal_action",
+    "invoke.unit_design",
+    "invoke.content_studio",
+    "req.mail_list",
+    "req.who",
+    "req.sheet",
+    "req.commands",
+    "req.channel_backlog",
+    "req.narrative_backlog",
+    "req.mind_bulk",
+    "req.market_original_minds",
+    "req.mind_market",
+    "req.panel_subscribe",
+    "resume",
+    "ack",
+    "composing",
+    "respond",
+    "pong",
+    "picture",
+    "caps",
+];
+
+/// The round-trip property below covers the whole client vocabulary: drawing
+/// from the strategy reaches every tag `variant_tag` knows.
+#[test]
+fn strategy_reaches_every_variant() {
+    let strategy = client_command_strategy();
+    let mut runner = TestRunner::deterministic();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..20_000 {
+        let cmd = strategy
+            .new_tree(&mut runner)
+            .expect("strategy draws")
+            .current();
+        seen.insert(variant_tag(&cmd));
+        if seen.len() == ALL_TAGS.len() {
+            break;
+        }
+    }
+    let missing: Vec<_> = ALL_TAGS.iter().filter(|t| !seen.contains(*t)).collect();
+    assert!(
+        missing.is_empty(),
+        "client_command_strategy never generates {missing:?}"
+    );
 }
 
 proptest! {

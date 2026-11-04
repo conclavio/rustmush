@@ -391,6 +391,9 @@ impl PortApplier {
         crate::port::workshop::preflight(w, id, def, map)?;
         // Doc 36 cut GC.13 (part k): a facility already on the medical room is this entry's.
         crate::port::medical::preflight(w, id, def, map)?;
+        // Doc 39 cut IN.5 (parts l and m): a facility already on the refinery or works room is
+        // this entry's.
+        crate::port::plant::preflight(w, id, def, map)?;
         let hulls_to_title = hulls_to_title.saturating_add(yard_hulls);
         let rigs_to_title = rigs_to_title.saturating_add(yard_rigs);
         // The mint cap (D-18-14): the largest tranche still to be created. The
@@ -951,6 +954,10 @@ impl PortApplier {
 
         // (k) Doc 36 cut GC.13: the medical room becomes its operator's `medical` facility.
         crate::port::medical::put(ctx, id, &def, &map)?;
+
+        // (l, m) Doc 39 cut IN.5: the refinery and works rooms become their operators'
+        // facilities.
+        crate::port::plant::put(ctx, id, &def, &map)?;
 
         // (f) The hulls (cut IC4; L8): after the institutions, because the
         // title goes to the programme org part c made in this same pass.

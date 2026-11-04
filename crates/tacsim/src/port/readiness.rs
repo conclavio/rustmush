@@ -943,10 +943,13 @@ fn commerce_lines(
                 Some(mills) => crate::port::mill::unlisted(ctx, mills, map, vendor, row, good),
                 None => Ok(0),
             };
-            let Some((net, milled)) = unlisted
-                .ok()
-                .and_then(|u| pool.checked_sub(u).map(|net| (net, u)))
-            else {
+            // Doc 39 cut IN.5: and the lot a works' house purchase is moving out from under its
+            // lowered ask.
+            let moving = crate::port::supply::moving(ctx, row.vault, good);
+            let Some((net, milled)) = unlisted.ok().and_then(|u| {
+                pool.checked_sub(u)
+                    .map(|net| (net.saturating_sub(moving), u))
+            }) else {
                 push(
                     Binding::Listings,
                     LineState::Flagged,
@@ -1016,6 +1019,16 @@ fn commerce_lines(
                         Binding::Listings,
                         LineState::Ready,
                         format!("{head}: SOLD OUT: seeded {total} {unit}, 0 left{clause}."),
+                    ),
+                    // Doc 39 cut IN.5: the ask is down for a works' house purchase, which
+                    // moves its lot and lets the list step re-list the rest; never a closed desk.
+                    Ok(_) if moving > 0 => push(
+                        Binding::Listings,
+                        LineState::Ready,
+                        format!(
+                            "{head}: {pool} {unit} in the storefront; a house purchase is moving \
+                             part of it, and the rest is listed after it."
+                        ),
                     ),
                     Ok(_) => push(
                         Binding::Listings,

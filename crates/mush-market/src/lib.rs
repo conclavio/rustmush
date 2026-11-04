@@ -96,7 +96,7 @@
 //! how a settlement reaches the trade tape.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
-// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(
@@ -141,7 +141,7 @@ pub use api::{
     fund_from_faucet, halt_source, hidden_seller_orgs, is_hidden_org, is_staff, list_goods,
     listing_lapsed, load_pack, may_list_vendor, may_view_listing, org_is_closed, org_may_trade,
     post_wanted, principal_account, refuse_market, register_vendor, restock_ask, retire_vendor,
-    revise_wanted, visible, withdraw_listing,
+    revise_wanted, shrink_ask, visible, withdraw_listing,
 };
 pub use boot::{HOLD_RECHECK_SWEEPS, RESERVE_GRACE_SWEEPS};
 pub use boot::{
