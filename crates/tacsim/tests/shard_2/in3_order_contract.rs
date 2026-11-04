@@ -20,10 +20,10 @@
 //! 9. The stranger never collects: 28 IC days after the delivery, storage is charged a slot-day
 //!    a day.
 //!
-//! **Seeds** (doc 43 rule 2.3 #4): the works itself — a facility at the Service Counter owned
-//! by Stickney Yards, Public, on §4.4's works row (`@facility/open`, `/owner`, `/terms`); the
-//! lane's works rows and rooms are IN.5's — and its two recipes (a test pack: the plant and
-//! fittings recipes are IN.5's and IN.7's content); the holds' goods (`seed_hold`); the
+//! **Seeds** (doc 43 rule 2.3 #4): the works is the lane's since doc 39 cut IN.5 (Stickney
+//! Yards', Public, on §4.4's works row; the cut seeded its own at the Service Counter until
+//! then); its two recipes (a test pack: the shipped `fittings` is IN.5's and the plant
+//! recipes IN.7's); the holds' goods (`seed_hold`); the
 //! officer's grant over the Yards. Every claim — the quote, the bookings, the deliveries, the
 //! queue, the refusals, the cancel's arithmetic, the deadline, the delivery, the collection and
 //! the storage — is reached by the players' commands and the port tick.
@@ -99,21 +99,6 @@ fn money(rig: &Rig, account: AccountId) -> (i64, i64) {
         .and_then(|s| s.snapshot().account(account).cloned())
         .expect("the account");
     (a.posted_balance.minor(), a.held_amount.minor())
-}
-
-fn made(rig: &mut Rig, name: &str) -> ObjId {
-    let out = run(&mut rig.tw, GOD, &format!("@create {name}"));
-    out.split('#')
-        .nth(1)
-        .and_then(|rest| {
-            rest.chars()
-                .take_while(char::is_ascii_digit)
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .map(ObjId)
-        .unwrap_or_else(|| panic!("a thing: {out}"))
 }
 
 fn contracts(rig: &Rig) -> Vec<WorksContract> {
@@ -332,13 +317,10 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
     let captain_hold = hold_vault_of(&rig.tw, &captain_row);
     let stranger_hold = hold_vault_of(&rig.tw, &stranger_row);
 
-    // ---- The seed: the Stickney works, owned by the Yards, Public, on §4.4's works row ----
+    // ---- The Stickney works: the lane's row since doc 39 cut IN.5 (the Yards', Public, on
+    // §4.4's works row, the spine room the facility) ----
     let counter = station_room(&rig.tw, STICKNEY, "room.p11_service");
-    let works = made(&mut rig, "Stickney works");
-    rig.tw
-        .world_mut()
-        .move_to(works, counter)
-        .expect("the works into the Service Counter");
+    let works = station_room(&rig.tw, STICKNEY, "room.p15_maintenance");
     let vendor = port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")]
         .vendor
         .expect("the yard's vendor");
@@ -348,14 +330,6 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
         .module_state::<mush_market::MarketStore>()
         .and_then(|m| m.vendor(mush_market::VendorId(vendor)).map(|v| v.org))
         .expect("the yard's org");
-    for line in [
-        format!("@facility/open {}=2 tacsim.works", works.0),
-        format!("@facility/owner {}=org:{}", works.0, yards.0),
-        format!("@facility/terms {}=public 3000000/25/20/8/150/250", works.0),
-    ] {
-        let out = run(&mut rig.tw, GOD, &line);
-        assert!(!out.contains("Usage"), "{line}: {out}");
-    }
     let officer = rig.tw.spawn_player("Officer");
     let granted = run(
         &mut rig.tw,
@@ -465,7 +439,7 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
     settle(&mut rig, 2);
     swept(&mut rig);
     assert_eq!(*order_of(&mut rig, b).state(), WorkOrderState::Cancelled);
-    assert_eq!(contract(&rig, b).closed, Some(Close::Cancelled));
+    assert_eq!(contract(&rig, b).closed, Some(Close::Cancelled), "{:?}", contract(&rig, b));
     assert_eq!(
         hold_pool(&mut rig.tw, captain_hold, ALLOYS),
         24,

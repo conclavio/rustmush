@@ -1077,11 +1077,12 @@ fn escrow_contents(
     ctx: &Ctx<'_>,
     c: &WorksContract,
 ) -> (Vec<Goods>, Vec<(LotId, CanonicalId, u64)>) {
-    // The bill's goods, and (doc 39 cut IN.5) the order's pooled outputs.
+    // The bill's goods, and (doc 39 cut IN.5) the order's pooled bulk outputs; a part output
+    // stays a lot.
     let mut named: Vec<CanonicalId> = c.bill.iter().map(|g| g.good.clone()).collect();
     if let Some(order) = c.order.and_then(|o| work_order(ctx, o)) {
         for line in order.pinned().outputs() {
-            if !named.contains(line.commodity()) {
+            if !crate::port_tick::is_part(line.commodity()) && !named.contains(line.commodity()) {
                 named.push(line.commodity().clone());
             }
         }
@@ -1508,10 +1509,17 @@ fn fail_back(ctx: &mut Ctx<'_>, c: &mut WorksContract, facility: &FacilityRecord
 }
 
 fn port_of(w: &World, facility: &FacilityRecord) -> Option<CanonicalId> {
-    let at = w.get(facility.object()).and_then(|o| o.location)?;
+    let at = w.get(facility.object()).and_then(|o| o.location);
     crate::port::market::ports(w)
         .into_iter()
-        .find(|(_, def, _)| crate::port::market::port_rooms(w, def).contains(&at))
+        .find(|(entry, def, _)| {
+            // Doc 39 cut IN.5: or the port's authored works room is the facility itself.
+            at.is_some_and(|at| crate::port::market::port_rooms(w, def).contains(&at))
+                || crate::port::plant::works_room(w, entry, def)
+                    .ok()
+                    .flatten()
+                    == Some(facility.object())
+        })
         .map(|(entry, ..)| entry)
 }
 
