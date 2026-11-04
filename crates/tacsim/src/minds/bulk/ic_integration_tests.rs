@@ -581,7 +581,7 @@ impl IcWorld {
             composition
         };
         let (tactics, sim) = composition.configure_ic_physical(
-            mush_tactics::TacticsModule::with_catalog(layer.definition_catalog()?.units),
+            mush_tactics::TacticsModule::with_catalog(unit_catalog(&layer)?),
             mush_sim::SimulationModule::new().with_accounts(f.accounts.clone()),
         );
         let layer = composition.configure_tacsim(layer)?;
@@ -1645,6 +1645,14 @@ mod resale;
 
 pub(super) fn exercise_house_two_seats(f: &Fixture, saved: &Durable) -> TestResult {
     resale::two_seat::exercise(f, saved)
+}
+
+/// **The layer's unit catalogue**, built in a frame of its own: the whole definition catalogue
+/// is a large temporary, and `IcWorld::boot_source_qualified`'s frame sits at the
+/// `large_stack_frames` ceiling (doc 39 cut IN.1's two part and plant maps tipped it over).
+#[inline(never)]
+fn unit_catalog(layer: &crate::TacsimRuleset) -> TestResult<mush_tactics::UnitCatalog> {
+    Ok(layer.definition_catalog()?.units)
 }
 
 #[inline(never)]
