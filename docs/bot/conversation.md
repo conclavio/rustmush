@@ -53,7 +53,7 @@ semantics. The bot neither sees nor predicts that a human is typing.
 ## Managed casts
 
 Add `"speaking_floor": {}` to a harness manifest to enable cooperative scheduling.
-See [the three-player example](../bots/harness/social-floor.json). Configure its
+See [the three-player example](../../bots/harness/social-floor.json). Configure its
 accounts, SSH credentials, host key and model through your ordinary local config;
 the named characters must already exist and be together in the game. The example
 uses live models, so outcomes are sampled and costs use the normal ledger.
@@ -91,7 +91,7 @@ proxy, not a measurement of human interruption or server-side collision.
 
 ## Spectator and chronicler
 
-Use [spectator.json](../bots/conversation/spectator.json) with `--goal ""` for an
+Use [spectator.json](../../bots/conversation/spectator.json) with `--goal ""` for an
 observer. It connects as an ordinary SSH character and makes no autonomous model
 requests. Position it using local game commands. Runner questions remain available
 when a model is configured; those are deliberate paid requests.
@@ -149,5 +149,5 @@ model/provider account is needed. `--test-controls` additionally permits
 `/fault floor-grants` and `/fault floor-controls` in managed sessions to simulate
 a stalled grant receiver or a receiver that cannot acknowledge revocation.
 
-See the [implementation plan and reviews](bot-wave1-plan.md) and
-[five-wave roadmap](bot-social-campaign-plan.md).
+See the [implementation plan and reviews](wave1-plan.md) and
+[five-wave roadmap](social-campaign-plan.md).

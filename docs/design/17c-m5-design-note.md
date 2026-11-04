@@ -112,7 +112,7 @@ now.**
   (`:1590-1605`) — the carried "seated hulls at the pool" (doc 17:1808).
 - **F10. The board's release word is a bot's resume key.** A drop prints `, flown by doctrine` and an
   `EXIT` `, left` (`match_/lobby.rs:3906-3914`); the bot reads them as `Standing::{Doctrine, Left}`
-  (`crates/mush-bot/src/arena/lines.rs:1040-1044`) and resumes on the first (`docs/bot.md:429`) — 27
+  (`crates/mush-bot/src/arena/lines.rs:1040-1044`) and resumes on the first (`docs/bot/guide.md:429`) — 27
   sites in 10 crate files plus three docs (critic G4). The board's `[type]` prints in `Selection`
   only (`match_/lobby.rs:3928-3946`), the shape the mind clause copies; the bot strips suffixes before
   `[type]` (`lines.rs:1031-1072`), so any new suffix is a declared reader change.
@@ -963,7 +963,7 @@ applied inside the unit's row — and `state_hash`'s doc (`arena/hash.rs:50-112`
 5. The sortie audit (C-11a): no other cockpit sentence changes.
 6. Docs and comments: `Slot::is_dropped` (`match_/lobby.rs:148-155`), `:151`, `:2204`, `:3790`,
    `arena_bridge.rs:3537`, `crates/mush-config/src/config.rs:1342`; `docs/help/simulator.md:311`,
-   `:330`; `docs/help/cockpit.md:480-481`; `docs/bot.md:429`.
+   `:330`; `docs/help/cockpit.md:480-481`; `docs/bot/guide.md:429`.
 7. **The bot** (declared reader change, critic G4): `board_pilot` reads `, flown by its mind` as the
    resume standing (`lines.rs:1040-1044`; `Standing::Doctrine` renamed `Standing::Mind`), the reconnect
    reader (`:1834`), and the unit cases (`lines.rs:2749`, `:3076`, `:3095`;

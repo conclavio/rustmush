@@ -1,4 +1,4 @@
-//! Faction **simulation** (design: `docs/scenes_factions_knowledge.md` §3.6):
+//! Faction **simulation** (design: `docs/design/scenes-factions-knowledge.md` §3.6):
 //! fronts and clocks — the deterministic world pressure that gives factions
 //! motion the LLM only *colors*, never authors.
 //!

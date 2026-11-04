@@ -1,6 +1,6 @@
 # Wave 1 implementation and review
 
-Scope: the [social campaign roadmap](bot-social-campaign-plan.md), wave 1.
+Scope: the [social campaign roadmap](social-campaign-plan.md), wave 1.
 This work starts from `origin/main` at `1fd9299`, in an isolated bot worktree.
 
 ## Implementation plan

@@ -1,4 +1,4 @@
-//! The durable scene data model (design: `docs/scenes_factions_knowledge.md`
+//! The durable scene data model (design: `docs/design/scenes-factions-knowledge.md`
 //! §1) and its persistence keys.
 //!
 //! A **scene** is an explicit, durable envelope around play — the opposite of

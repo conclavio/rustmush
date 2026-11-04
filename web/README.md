@@ -10,21 +10,27 @@ build time. Dark theme by default; light theme via the header toggle or
 
 ## Dev workflow
 
+Start with the [development guide](../docs/development.md) for toolchain setup,
+server configuration, and workspace tests. The frontend uses Node 22.12+ and the
+pinned Rust toolchain with the `wasm32-unknown-unknown` target for its shared
+renderer.
+
 ```
-npm install          # once
-cargo run -p mushd   # the game (serves /api + /ws on 127.0.0.1:8080)
-npm run dev          # vite dev server; proxies /api and /ws to mushd
+npm ci              # from web/
+npm run wasm        # prepare renderer and assets before starting Vite
+npm run dev         # proxies /api and /ws to mushd, running in another terminal
 ```
 
 ```
-npm run build      # typecheck (svelte-check) + vite build -> web/dist
+npm run build      # Rust/WASM renderer + typecheck + Vite -> web/dist
 npm run check      # svelte-check only
 npm test           # vitest run (ws, render, stores, auth, sheet, roll, worldgen, unit, ...)
 npm run test:watch # vitest watch mode
 ```
 
 `web/dist` and `node_modules` are gitignored; `src/lib/proto/` is **committed**
-(see below), so building the SPA never requires cargo.
+(see below). Both `npm run build` and `npm test` invoke Cargo through
+`scripts/build-wasm.mjs`; protocol generation is a separate step.
 
 ## Tests
 
