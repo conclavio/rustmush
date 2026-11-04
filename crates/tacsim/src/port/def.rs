@@ -3893,6 +3893,102 @@ mod tests {
         );
     }
 
+    /// §4.4's works row.
+    fn in5_cost(margin_permille: u32) -> mush_industry::FacilityCostDef {
+        mush_industry::FacilityCostDef {
+            capital_major: 3_000_000,
+            lifetime_years: 25,
+            upkeep_permille: 20,
+            staff: 8,
+            wage_major: 150,
+            margin_permille,
+        }
+    }
+
+    /// **Doc 39 cut IN.5 (Q-39-5, Q-39-6)**: a refine row needs the port's refinery, run by the
+    /// vendor that refines; the works' room, capability, slots and house purchases are checked;
+    /// no two facility blocks share a room.
+    #[test]
+    fn in5_the_refinery_and_works_rules_refuse_with_their_sentences() {
+        let registry = "neighborhood.ceres_freeport.room.c05_registry".to_owned();
+        let refinery = |operator: &str| RefineryDef {
+            room: "neighborhood.ceres_freeport.room.c06_clearing".to_owned(),
+            operator: cid(operator),
+            capabilities: [cid(REFINE_CAPABILITY)].into_iter().collect(),
+            cost: in5_cost(0),
+        };
+        let refining = || {
+            let mut mill = sm12a_mill("metal_ore", "volatiles", (5, 4), 20, 40);
+            mill.kind = MillKind::Refine;
+            let mut def = port();
+            def.vendors.push(sm12a_vendor(vec![mill]));
+            def
+        };
+        let mut def = refining();
+        assert_eq!(
+            refused(&def),
+            "refinery: vendor coop refines, and this port authors no refinery"
+        );
+        def.refinery = Some(Box::new(refinery("coop")));
+        assert_eq!(refused(&def), "accepted");
+        def.refinery = Some(Box::new(refinery("trust")));
+        assert_eq!(
+            refused(&def),
+            "refinery: its operator trust is the one vendor with a refine row"
+        );
+        let mut lone = port();
+        lone.refinery = Some(Box::new(refinery("coop")));
+        assert_eq!(
+            refused(&lone),
+            "refinery: its operator coop is the one vendor with a refine row"
+        );
+
+        let works = |buys: Vec<WorksBuyDef>| WorksDef {
+            room: registry.clone(),
+            operator: cid("trust"),
+            capabilities: [cid(crate::port::works::WORKS_CAPABILITY)]
+                .into_iter()
+                .collect(),
+            slots: 2,
+            cost: in5_cost(250),
+            customers: mush_industry::Customers::Public,
+            buys,
+        };
+        let buy = |good: &str, vendor: &str, floor: u64, lot: u64| WorksBuyDef {
+            good: cid(good),
+            vendor: cid(vendor),
+            floor,
+            lot,
+        };
+        let with = |w: WorksDef| {
+            let mut def = refining();
+            def.refinery = Some(Box::new(refinery("coop")));
+            def.works = Some(Box::new(w));
+            refused(&def)
+        };
+        assert_eq!(with(works(vec![buy("metals", "coop", 10, 5)])), "accepted");
+        assert_eq!(
+            with(works(vec![buy("propellant", "coop", 10, 5)])),
+            "works: buys propellant: coop is not another vendor of this port that asks it"
+        );
+        assert_eq!(
+            with(works(vec![buy("metals", "coop", 10, 11)])),
+            "works: buys metals: lot is 1..=floor, and floor at most 1000000"
+        );
+        let mut slotless = works(Vec::new());
+        slotless.slots = 0;
+        assert_eq!(with(slotless), "works: slots must be 1..=16, not 0");
+        let mut bare = works(Vec::new());
+        bare.capabilities.clear();
+        assert_eq!(
+            with(bare),
+            "works: capabilities hold tacsim.works and at most 8"
+        );
+        let mut shared = works(Vec::new());
+        shared.room = "neighborhood.ceres_freeport.room.c06_clearing".to_owned();
+        assert_eq!(with(shared), "works: the room is already the refinery's");
+    }
+
     /// **Doc 20 cut SM.12a**: a vendor with no mill rows re-encodes with no `mill`
     /// key, byte-identically; a mill row is strict at each level.
     #[test]

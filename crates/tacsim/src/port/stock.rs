@@ -948,6 +948,8 @@ pub(crate) fn stock_step(
                 .module_state::<MarketStore>()
                 .map(|store| ask_reading(store, row.vault, &ask.good))
                 .unwrap_or_default();
+            // Doc 39 cut IN.5: a works' house purchase lowered the ask by the lot it is moving.
+            let net = net.saturating_sub(crate::port::supply::moving(ctx, row.vault, &ask.good));
             if drifts(net, &reading) && state.paged.insert((row.vault, ask.good.clone())) {
                 tracing::error!(
                     vault = row.vault,

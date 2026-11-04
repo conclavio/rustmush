@@ -1235,6 +1235,73 @@ pub fn restock_ask(ctx: &mut Ctx<'_>, spec: RestockSpec) -> Result<u64, MarketEr
     Ok(quantity)
 }
 
+/// **Lower a standing drawn ask by units its house takes out of the storefront itself**
+/// (doc 39 cut IN.5: a works' house purchase), [`restock_ask`]'s mirror: the listing comes down
+/// first, so the units the house then moves were never on sale twice. The checks are
+/// [`restock_ask`]'s 1–5, then `spec.units` at least 1 and at most the listing's quantity;
+/// nothing is read of the pool. It bumps the listing's revision, so an open quote goes stale.
+///
+/// # Errors
+///
+/// [`MarketError`], in that order. Returns the listing's new quantity.
+pub fn shrink_ask(ctx: &mut Ctx<'_>, spec: RestockSpec) -> Result<u64, MarketError> {
+    let now = ctx.w.now();
+    let Some(listing) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(spec.listing).cloned())
+        .filter(|listing| !listing_lapsed(listing, now))
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    let vault = match &listing.source {
+        Supply::Stock { vault }
+            if mush_inventory::may_take(ctx.w, ctx.actor, mush_inventory::EndpointRef(*vault)) =>
+        {
+            *vault
+        }
+        _ => return Err(MarketError::NoStanding(NO_SUCH_LISTING)),
+    };
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(listing.vendor).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    };
+    if vault != vendor.vault {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    let Some(crate::record::LotMatter::Draw { commodity, .. }) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.lot_matter(&listing))
+    else {
+        return Err(MarketError::bad("Only a drawn ask is lowered."));
+    };
+    if commodity != spec.good {
+        return Err(MarketError::bad("That ask does not sell that good."));
+    }
+    let Some(quantity) = listing
+        .quantity
+        .checked_sub(spec.units)
+        .filter(|_| spec.units > 0)
+    else {
+        return Err(MarketError::bad(
+            "An ask is lowered by one unit to as many as it lists.",
+        ));
+    };
+    put_listing(
+        ctx,
+        Listing {
+            quantity,
+            revision: listing.revision.saturating_add(1),
+            ..listing
+        },
+    );
+    Ok(quantity)
+}
+
 // ---- doc 18 cut IC8: standing bids -----------------------------------------
 
 /// What [`post_wanted`] is asked to post (doc 18 cut IC8; §4.3 "Bids that take real

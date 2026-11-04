@@ -16,13 +16,14 @@
 //! to the offer the act lands through, and the IC-day rate limit is RAM, as the mill's back-offs
 //! are (a restart may buy one lot early, which the floor bounds).
 //!
-//! **The listing comes down first.** The seller's units back its standing Draw listing, and a pool
-//! moved from under its listing is the drift the stock clerk pages on. So the move waits for the
-//! seller's listing of the good to be gone: the clerk withdraws it (never while a Draw quote on the
-//! pool is unsettled, the mill restock's wait), moves the lot, and the stock arm's list step
-//! re-lists the rest of the pool on the next fire and sets the seller's mill counters to their
-//! ledger totals (doc 20 cut SM.12a's healing path). While a purchase is in flight the clerk's arm
-//! does nothing else at that port, so the list step can never re-list the lot it is moving.
+//! **The ask comes down first.** The seller's units back its standing Draw listing, and a pool
+//! moved from under its listing is the drift the stock clerk pages on. So the clerk first lowers
+//! the seller's ask by the lot (`mush_market::shrink_ask`, the mill restock's mirror; never while a
+//! Draw quote on the pool is unsettled, the restock's wait), then moves the lot. The ask stands
+//! throughout, so a buyer never finds it gone. Whether the ask is already down is read off durable
+//! state: the pool's excess over the listing and its undrawn quotes (net of the mills' unlisted
+//! units) is the lot exactly while the move is owed. Meanwhile the drift check and the readiness
+//! report count that lot as moving ([`moving`]), and the clerk's arm does nothing else at that port.
 //!
 //! **What it never does.** It never buys for a player, never lets the stores pass the floor by more
 //! than a lot, and never moves a lot whose payment has not posted. A re-authored row (its good or
@@ -69,15 +70,22 @@ pub(crate) fn owed_moves(w: &World, actor: ObjId) -> Vec<(u64, WorksAct)> {
         .unwrap_or_default()
 }
 
-/// **Whether a house purchase is moving `good` out of the storefront `vault`** this fire (the
-/// readiness report's reading: the seller's ask is down for the move, not waiting on the list
-/// step).
-pub(crate) fn moving(w: &World, vault: u64, good: &CanonicalId) -> bool {
-    w.module_state::<PortTickState>().is_some_and(|state| {
+/// **The units of `good` a house purchase is moving out of the storefront `vault`** this fire: the
+/// lot its ask was lowered by, which the pool still holds until the move lands under the works
+/// ledger (the drift check's and the readiness report's reading).
+pub(crate) fn moving(ctx: &Ctx<'_>, vault: u64, good: &CanonicalId) -> u64 {
+    ctx.w.module_state::<PortTickState>().map_or(0, |state| {
         state
             .supply_owed
-            .values()
-            .any(|owed| owed.from == vault && owed.goods.iter().any(|g| &g.good == good))
+            .iter()
+            .filter(|(stores, owed)| {
+                owed.from == vault && crate::port::works::landed(ctx, **stores) < owed.act
+            })
+            .map(|(_, owed)| owed)
+            .flat_map(|owed| owed.goods.iter())
+            .filter(|g| &g.good == good)
+            .map(|g| g.units)
+            .sum()
     })
 }
 
@@ -158,37 +166,45 @@ pub(crate) fn supply_step(
         tries,
     };
     state.supply_owed.insert(stores, owed);
-    let now = ctx.w.now();
-    let (in_flight, listing) = ctx
+    let reading = ctx
         .w
         .module_state::<MarketStore>()
-        .map(|market| {
-            let listing = market.lot_listing_of(from, &buy.good).filter(|id| {
-                market
-                    .listing(*id)
-                    .is_some_and(|listing| !mush_market::listing_lapsed(listing, now))
-            });
-            (market.draw_reading(from, &buy.good).1, listing)
-        })
-        .unwrap_or((false, None));
+        .map(|market| crate::port::stock::ask_reading(market, seller.vault, &buy.good))
+        .unwrap_or_default();
     // A Draw quote on the pool unsettled: the wait is the mill restock's, a delay never a loss.
-    if in_flight {
+    if reading.in_flight {
         return Some(Step::Idle);
     }
-    // 2. The seller's listing comes down first.
-    if let Some(listing) = listing {
-        return Some(
-            match fire.as_principal(ctx, clerk, clerk, |ctx| {
-                mush_market::withdraw_listing(ctx, listing)
-            }) {
-                Ok(Ok(())) => Step::Worked,
-                Ok(Err(error)) => {
-                    warn_once(state, stores, &buy.good, &format!("{error:?}"));
-                    Step::Refused
-                }
-                Err(refused) => swapped(Err(refused)),
-            },
-        );
+    // 2. The seller's ask comes down by the lot, unless it already has.
+    if let Some((listing, listed)) = reading.listing {
+        let mills = ctx
+            .w
+            .module_state::<crate::port::families::PortHandles>()
+            .map(|handles| handles.families.mills.clone())?;
+        let vendor = def.vendors.iter().find(|v| v.org == buy.vendor)?;
+        let pool = crate::port_tick::read_pool(ctx, from, &buy.good).ok()?;
+        let unlisted =
+            crate::port::mill::unlisted(ctx, &mills, map, vendor, seller, &buy.good).ok()?;
+        let excess = pool
+            .saturating_sub(unlisted)
+            .saturating_sub(listed.saturating_add(reading.undrawn));
+        if excess < buy.lot {
+            let spec = mush_market::RestockSpec {
+                listing,
+                good: buy.good.clone(),
+                units: buy.lot - excess,
+            };
+            return Some(
+                match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::shrink_ask(ctx, spec)) {
+                    Ok(Ok(_)) => Step::Worked,
+                    Ok(Err(error)) => {
+                        warn_once(state, stores, &buy.good, &format!("{error:?}"));
+                        Step::Refused
+                    }
+                    Err(refused) => swapped(Err(refused)),
+                },
+            );
+        }
     }
     // 3. The move, under the works ledger's next ordinal.
     let action = ctx

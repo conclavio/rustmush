@@ -114,6 +114,21 @@ pub const WORKS_SWITCHES: &[&str] = &["quote", "order", "deliver", "collect", "c
 
 const NO_ORDER: &str = "You have no such order here.";
 
+// ---- the sentences the bot reads (doc 39 cut IN.5; `mush-bot`'s `lane::works`) ----------------
+
+/// A booking's middle, before the front's word: "Order {n} booked at the works: …".
+pub const BOOKED_AT: &str = " booked at the ";
+/// The delivery's tell, before the front's word: "Order {n} is delivered at the works: …".
+pub const DELIVERED_AT: &str = " is delivered at the ";
+/// A delivery into the escrow's tail: "{units} {good} moves into order {n}'s escrow.".
+pub const INTO_ESCROW: &str = "'s escrow.";
+/// A collection's tail: "Order {n}: {goods} move into your hold.".
+pub const INTO_HOLD: &str = " move into your hold.";
+/// The quote's fee clause: "…; fee {cr}; booking fee {cr}.".
+pub const FEE_CLAUSE: &str = "; fee ";
+/// A collection or delivery asked for while the order's last move settles.
+pub const SETTLING: &str = "That order is still settling.";
+
 // ---- the records --------------------------------------------------------------------------
 
 /// **Which front** an order was booked through.
@@ -755,7 +770,7 @@ fn quote(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let fee = facility.fee_minor(units);
     let booking = facility.booking_fee_minor();
     let line = format!(
-        "{word} x{quantity}: bill {}; {} IC days ({units} work units); fee {}; booking fee {}.",
+        "{word} x{quantity}: bill {}; {} IC days ({units} work units){FEE_CLAUSE}{}; booking fee {}.",
         bill_text(&bill_of(&pinned, quantity)),
         days_of(units),
         fee.map_or_else(|| "none".to_owned(), |f| cr(ctx, f)),
@@ -899,7 +914,7 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     put(ctx, &contract);
     let _ = entry;
     let line = format!(
-        "Order {} booked at the {}: {word} x{quantity}, {} IC days. Deliver the bill: {}. \
+        "Order {}{BOOKED_AT}{}: {word} x{quantity}, {} IC days. Deliver the bill: {}. \
          Booking fee {} held{}.",
         vault.0,
         front.word(),
@@ -999,7 +1014,7 @@ fn deliver(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     say(
         ctx,
         format!(
-            "{units} {} moves into order {}'s escrow.",
+            "{units} {} moves into order {}{INTO_ESCROW}",
             good.as_str(),
             c.id
         ),
@@ -1019,14 +1034,14 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         _ => return Err("That order has nothing to collect yet.".to_owned()),
     };
     if c.owed.is_some() {
-        return Err("That order is still settling.".to_owned());
+        return Err(SETTLING.to_owned());
     }
     let entry = here(ctx, front)?.0;
     let hold = docked_hold(ctx.w, ctx.actor, &entry, true)?;
     let (goods, lots) = escrow_contents(ctx, &c);
     // Doc 39 cut IN.5: a bulk output is pooled by the arm before it moves.
     if !bulk_lots(&lots).is_empty() {
-        return Err("That order is still settling.".to_owned());
+        return Err(SETTLING.to_owned());
     }
     if goods.is_empty() && lots.is_empty() {
         close(
@@ -1047,7 +1062,7 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let words = describe(&goods, &lots);
     let (by, escrow) = (ctx.actor, c.escrow());
     owe(ctx, &mut c, by, (escrow, hold), (goods, lots), then)?;
-    say(ctx, format!("Order {}: {words} move into your hold.", c.id));
+    say(ctx, format!("Order {}: {words}{INTO_HOLD}", c.id));
     Ok(())
 }
 
@@ -1394,7 +1409,7 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                 ctx.out.info(
                     c.requester,
                     format!(
-                        "Order {} is delivered at the {}: `{} /collect {}` takes it.",
+                        "Order {}{DELIVERED_AT}{}: `{} /collect {}` takes it.",
                         c.id,
                         c.front.word(),
                         c.front.verb(),
