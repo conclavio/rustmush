@@ -609,8 +609,7 @@ async fn typed(
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "`{line}` answered none of {needles:?} or {retry:?}:
-{text}"
+                "`{line}` answered none of {needles:?} or {retry:?}:\n{text}"
             );
         };
         match answer {
@@ -911,12 +910,32 @@ async fn production_story(miner: Miner) {
         sale.gross, sale.net
     ));
 
-    // The matter pin and the drift check: every port reads ready, nothing flagged.
+    // The matter pin and the drift check: no readiness line is pending, missing or flagged but
+    // two the story's own rate brings: the rate line itself (play runs at 24), and Occator's
+    // house rig stopped under a claim after the month of IC time the lifted rate runs.
     let (index, report) = god
         .answer("@tacsim/port status", &[mine::READY, mine::NOT_READY])
         .await;
-    assert_eq!(index, Some(0), "the ports read ready:\n{report}");
-    assert!(!report.contains("[flagged]"), "{report}");
+    assert!(
+        index.is_some(),
+        "the readiness report's last line:\n{report}"
+    );
+    let text = lines::normalise(&report);
+    let flagged = ["[flagged]", "[pending]", "[missing]"]
+        .iter()
+        .flat_map(|tag| text.match_indices(tag).map(|(at, _)| at))
+        .map(|at| {
+            let entry = &text[..at];
+            entry[entry.rfind("] ").map_or(0, |end| end + 2)..].trim()
+        })
+        .filter(|entry| {
+            !entry.starts_with("world rate: ")
+                && !(entry.contains("occator_port dispatch occator: ")
+                    && entry.contains(" stopped: under claim."))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(flagged.is_empty(), "{flagged:#?}\n{report}");
     client.close().await;
     god.close().await;
     drop(rig);
