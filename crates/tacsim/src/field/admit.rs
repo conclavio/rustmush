@@ -712,10 +712,13 @@ fn custody(
         }
     }
     friends.sort_unstable();
-    let seed = crate::match_::seed_for(
-        crate::arena_task::MatchId(u64::from(field.ordinal)),
-        ctx.w.now(),
-    );
+    // `[tacsim.field]`'s pinned seed, when a test or a replay sets one (`FieldConfig::seed`).
+    let seed = super::config(ctx.w).seed.unwrap_or_else(|| {
+        crate::match_::seed_for(
+            crate::arena_task::MatchId(u64::from(field.ordinal)),
+            ctx.w.now(),
+        )
+    });
     Ok(CustodyOut {
         definition,
         units,

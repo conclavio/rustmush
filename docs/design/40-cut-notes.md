@@ -703,6 +703,26 @@ above, in order:
   After a release the casualty keeps its damage limits but may fire again. A casualty destroyed while coupled
   stays coupled, since a wreck is still towed.
 
+**After merge: the field seed and the Q-40-4 JAM path (2026-11-04, #451).** gc0 (`shard_9
+field_story::gc0_the_raiders_barge_lifts…`) and cf6c (`shard_8 escort_lease::cf6c_a_leased_escort_flies_out…`)
+went red on main once IN.5 (#414) merged after this cut.
+
+- **The cause** is not IN.5's content. A field's arena seed was `match_::seed_for(ordinal, world_now, the
+  process's salt)`, and IN.5's Freeport Works vendor row at Ceres (bisected on conclav.dev: stripping it alone
+  turns gc0 green) moves `world_now` and the salt at admission. Under the new seed gc0's scripted engine hit
+  draws this cut's JAM on the escort's plant: Q-40-4, power off, STARTUP refused. A probe read the escort's
+  frame Online before the hit and Off after. cf6c's escort just lost its dice exchange. Both stories passed or
+  failed on the seed's luck.
+- **The knob**: `FieldConfig::seed: Option<u64>`, a test and replay knob, not in `[tacsim.field]`. `None` (the
+  default, and production's) keeps `seed_for`. `Some(seed)` seeds every field a world admits, read once at
+  admission (`field/admit.rs`). The field rigs pin it in `driving_rig::rig_config` (`FIELD_SEED`,
+  `0x5EED_0002`), so a scripted field story's hits, jams and misses no longer hang on lane content or the
+  world clock.
+- **The stories**: gc0 names a jammed escort plant in its failure, since a tender's `unjam` is the only way
+  back and the story has no tender. cf6c withdraws as soon as the escort has fired and taken its first hit,
+  the intruder ceasing fire too. Its point is the withdrawal, and a failure names the exchange and the seed.
+- **Long term**: doc 43c's clock seam (TS.10) is this knob's home, with a world clock a test can pin.
+
 ## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
 
 PR #433, off `main` after #410 and RS.5 (#415). #410 merged with story (a)'s stale expectation
