@@ -936,6 +936,13 @@ pub struct SpaceBubbleBook {
     /// Derelict hulls whose Freeport Registry salvage recovery bounty has already been paid (`SF.R19`, `35b` §5 #5).
     #[serde(default)]
     pub paid_salvage_bounties: std::collections::BTreeSet<ObjId>,
+    /// Origin blocks `(cluster_id, letter)` from which a carrier hull extracted `strategic_ore` (`SF.R23`, `35b` §5 #15).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
+    pub mined_strategic_blocks:
+        BTreeMap<ObjId, std::collections::BTreeSet<(mush_core::CanonicalId, char)>>,
+    /// Queued radio hails awaiting one-way light-lag (`d / c`) delivery (`SF.R23`, `D-35-10`).
+    #[serde(default)]
+    pub pending_light_lag_hails: Vec<super::picket::PendingLightLagHail>,
     /// Bubble domains quarantined at boot due to an unreadable `tacsim:space:bubble:{domain}` document (`SF.R21`, `35c` §6.3).
     #[serde(default, skip)]
     pub quarantined_bubbles: std::collections::BTreeSet<DomainId>,
@@ -2415,6 +2422,11 @@ fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
             ff.burn_remaining_ic_s = None;
             affected = true;
         }
+        if let Some(cs) = book.cluster_sessions.get_mut(&hull) {
+            cs.approaching_rock = None;
+            cs.ship_vel_mmps = [0, 0, 0];
+            affected = true;
+        }
         if affected || has_journey {
             book.linkdead_hulls.insert(
                 hull,
@@ -2465,6 +2477,10 @@ fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
             ff.burn_remaining_ic_s = None;
             ff.guidance = FreeFlightGuidanceMode::Retrograde;
         }
+        if let Some(cs) = book.cluster_sessions.get_mut(&hull) {
+            cs.approaching_rock = None;
+            cs.ship_vel_mmps = [0, 0, 0];
+        }
         if let Some(state) = book.linkdead_hulls.get_mut(&hull)
             && !state.grace_expired
         {
@@ -2478,6 +2494,7 @@ fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
         }
     }
     if let Some(port) = newly_expired_port {
+        let _ = super::commands::execute_linkdead_return_journey(ctx, hull, &port);
         let line = format!(
             "[SPACE] Linkdead grace window expired; hull holding ballistic life-support reserve with queued return plan to {}.",
             port
@@ -2573,6 +2590,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     let now = ctx.w.world_ic_now();
     step_linkdead_grace_windows(ctx);
+    super::picket::step_pending_light_lag_hails(ctx);
     expire_stale_docking_sessions(ctx, &now);
     step_derelict_records(ctx);
     clear_resolved_bubbles(ctx, &now);
@@ -4569,6 +4587,17 @@ fn build_carrier_ship_state(
                 ship.return_reserve_dv_mps = i64::from(reserve_dv);
             }
         }
+    }
+    let is_linkdead = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.linkdead_hulls.contains_key(&hull))
+        || (!super::commands::all_aboard_crew_for_hull(ctx.w, hull).is_empty()
+            && !any_other_live_crew_aboard(ctx.w, hull, ObjId(0)));
+    if is_linkdead {
+        ship.crew_linkdead = true;
+        ship.thrust_mps2 = [0, 0, 0];
+        ship.pdc_auto = true;
     }
     Some(ship)
 }

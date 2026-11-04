@@ -544,7 +544,11 @@ pub struct DroneSortieState {
     pub mind_last_trace: Vec<String>,
 }
 
-/// Active orbital cluster session for a carrier hull (`+helm/cluster`).
+/// Idle timeout (`7` IC days = `604,800` IC seconds) after which an inactive cluster mining
+/// session with no active laser, drones, or approach maneuver expires into free flight (`SF.R23`).
+pub const CLUSTER_SESSION_IDLE_TIMEOUT_IC_SECS: i64 = 7 * 86_400;
+
+/// Active orbital cluster session for a carrier hull (`+helm/autopilot <cluster_id>`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveClusterMiningSession {
     /// Carrier hull [`ObjId`].
@@ -575,6 +579,9 @@ pub struct ActiveClusterMiningSession {
     pub claim_jump_flagged: bool,
     /// Last W-clock IC timestamp stepped.
     pub last_ic_s: i64,
+    /// Last W-clock IC timestamp of mining/helm activity in this cluster session (`SF.R23`).
+    #[serde(default)]
+    pub last_activity_ic_s: i64,
 }
 
 impl ActiveClusterMiningSession {
@@ -595,6 +602,7 @@ impl ActiveClusterMiningSession {
             frontier_bloom_heat: 0,
             claim_jump_flagged: false,
             last_ic_s: now_ic,
+            last_activity_ic_s: now_ic,
         }
     }
 }
@@ -694,12 +702,46 @@ pub fn build_updated_pocket_cursor(
     Some(cursor)
 }
 
+/// Resolve the canonical host room for an orbital cluster's clerk, block places, and deposit openers
+/// (`SF.R23`, `35b` §5 #15) — anchored at the cluster's `anchor_body` / port host in `TacsimStore`,
+/// never inside an arriving carrier hull.
+#[must_use]
+pub fn resolve_cluster_host_room(w: &mush_core::World, cluster: &ResolvedOrbitalCluster) -> ObjId {
+    if let Some(store) = w.module_state::<crate::store::TacsimStore>() {
+        for loaded in store.packs() {
+            let manifest = loaded.pack.manifest();
+            if store.applied_in(w, manifest.id()) != Some(manifest.version()) {
+                continue;
+            }
+            let Some(placed) = store.placed_in(w, manifest.id(), manifest.version()) else {
+                continue;
+            };
+            if let Some(obj) = placed.iter().find_map(|(cid, obj)| {
+                (*cid == cluster.id || *cid == cluster.anchor_body).then_some(*obj)
+            }) {
+                return obj;
+            }
+            if let Some(obj) = placed.iter().find_map(|(cid, obj)| {
+                cid.as_str()
+                    .starts_with(cluster.anchor_body.as_str())
+                    .then_some(*obj)
+            }) {
+                return obj;
+            }
+            if let Some((_, obj)) = placed.first_key_value() {
+                return *obj;
+            }
+        }
+    }
+    ObjId(0)
+}
+
 /// Ensure the `DARK` block place `Thing`s (`A`, `B`, `C`), deposit `Vault`s (`SITES_PRINCIPAL`),
 /// and cluster clerk `Thing` exist for `cluster`.
 pub fn ensure_cluster_laid_up(
     ctx: &mut Ctx<'_>,
     cluster: &ResolvedOrbitalCluster,
-    fallback_room: ObjId,
+    _fallback_room: ObjId,
 ) -> Result<ClusterSiteState, String> {
     if let Some(existing) = ctx
         .w
@@ -709,11 +751,7 @@ pub fn ensure_cluster_laid_up(
         return Ok(existing);
     }
 
-    let host_room = ctx
-        .w
-        .get(ctx.actor)
-        .and_then(|obj| obj.location)
-        .unwrap_or(fallback_room);
+    let host_room = resolve_cluster_host_room(ctx.w, cluster);
     let cluster_cid = cluster.id.clone();
     let saved_actor = ctx.actor;
     ctx.actor = mush_core::GOD;
@@ -1119,6 +1157,9 @@ pub fn next_space_mine_work_row(
 ) -> Option<(String, Value)> {
     let w = &engine.world;
     let book = w.module_state::<super::tick::SpaceBubbleBook>()?;
+    let inventory = w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|h| h.inventory.as_ref());
     let state = engine.action_state();
     let draw = book.pending_space_mine_draws.iter().find(|d| {
         if d.clerk != clerk {
@@ -1130,16 +1171,58 @@ pub fn next_space_mine_work_row(
             .flatten()
             .and_then(PocketCursor::drawn_total)
             .unwrap_or(0);
-        prior_drawn < d.expected_total_t
+        if prior_drawn >= d.expected_total_t {
+            return false;
+        }
+        if let Some(inv) = inventory
+            && let Ok(key) = mush_inventory::pool_key(
+                mush_inventory::record::EndpointRef(d.from_vault),
+                &d.commodity,
+            )
+        {
+            let avail = state
+                .get(&inv.pools, &key)
+                .ok()
+                .flatten()
+                .and_then(|s| u64::try_from(s.current()).ok())
+                .unwrap_or(0);
+            if avail == 0 {
+                return false;
+            }
+        }
+        true
     })?;
     let prior = state.get(pockets, &draw.deposit).ok()?.cloned();
-    let updated = build_updated_pocket_cursor(draw.deposit, prior.as_ref(), draw.worked_t)?;
+    let prior_drawn = prior
+        .as_ref()
+        .and_then(PocketCursor::drawn_total)
+        .unwrap_or(0);
+    let avail_in_rock = inventory
+        .and_then(|inv| {
+            let key = mush_inventory::pool_key(
+                mush_inventory::record::EndpointRef(draw.from_vault),
+                &draw.commodity,
+            )
+            .ok()?;
+            state
+                .get(&inv.pools, &key)
+                .ok()
+                .flatten()
+                .and_then(|s| u64::try_from(s.current()).ok())
+        })
+        .unwrap_or(draw.worked_t);
+    let needed_t = draw.expected_total_t.saturating_sub(prior_drawn);
+    let effective_worked_t = draw.worked_t.min(needed_t).min(avail_in_rock);
+    if effective_worked_t == 0 {
+        return None;
+    }
+    let updated = build_updated_pocket_cursor(draw.deposit, prior.as_ref(), effective_worked_t)?;
     let value = json!({
         "deposit": cursor_key_text(&draw.deposit),
         "commodity": draw.commodity.as_str(),
         "from": draw.from_vault.0,
         "to": draw.to_vault.0,
-        "worked_t": draw.worked_t,
+        "worked_t": effective_worked_t,
         "cursor": updated.rows,
         "clerk": draw.clerk.0,
         "space_mine": true,
@@ -1179,6 +1262,89 @@ pub fn rock_pool_tonnes(ctx: &Ctx<'_>, rock_vault: VaultId, family: OreFamily) -
     };
     crate::port_tick::read_pool(ctx, mush_inventory::record::EndpointRef(rock_vault), &good)
         .unwrap_or(0)
+}
+
+/// Read the remaining uncommitted `OreDeposit` pool tonnes in `rock_vault` for `family`,
+/// subtracting any unlanded draws already queued in `pending_space_mine_draws` (`SF.R23`, `35b` §5 #15).
+#[must_use]
+pub fn rock_uncommitted_pool_tonnes(ctx: &Ctx<'_>, rock_vault: VaultId, family: OreFamily) -> u64 {
+    let pool_t = rock_pool_tonnes(ctx, rock_vault, family);
+    let good_str = ore_good(family);
+    let Some(pockets) = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .map(|h| h.families.pockets.clone())
+    else {
+        return pool_t;
+    };
+    let Some(book) = ctx.w.module_state::<super::tick::SpaceBubbleBook>() else {
+        return pool_t;
+    };
+    let mut committed_t = 0_u64;
+    for d in &book.pending_space_mine_draws {
+        if d.from_vault != rock_vault || d.commodity.as_str() != good_str {
+            continue;
+        }
+        let landed = ctx
+            .action_state(&pockets, &d.deposit)
+            .ok()
+            .flatten()
+            .and_then(PocketCursor::drawn_total)
+            .unwrap_or(0);
+        if d.expected_total_t > landed {
+            let unlanded = d.expected_total_t.saturating_sub(landed).min(d.worked_t);
+            committed_t = committed_t.saturating_add(unlanded);
+        }
+    }
+    pool_t.saturating_sub(committed_t)
+}
+
+/// Return whether `actor` holds a live registered claim on `(cluster, letter)` in
+/// `PortHandles::families.claims` (`SF.R23`, `35b` §5 #15).
+#[must_use]
+pub fn actor_holds_cluster_block_claim(
+    ctx: &Ctx<'_>,
+    cluster: &CanonicalId,
+    letter: char,
+    actor: ObjId,
+    now_ic: i64,
+) -> bool {
+    let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() else {
+        return false;
+    };
+    let key = BlockKey {
+        site: cluster.clone(),
+        letter,
+    };
+    let Ok(Some(record)) = ctx.action_state(&handles.families.claims, &key) else {
+        return false;
+    };
+    let Some(claim) = record.claim.as_ref() else {
+        return false;
+    };
+    if !claim.live(now_ic) {
+        return false;
+    }
+    if claim.holder == PrincipalId::Object(actor) {
+        return true;
+    }
+    let account_hash = crate::port::licence::gateway_account(ctx.w, actor)
+        .map(mush_core::AccountId::canonical_hash);
+    if let (Some(acc), Some(acc_hash)) = (claim.account, account_hash)
+        && acc.canonical_hash() == acc_hash
+    {
+        return true;
+    }
+    if let PrincipalId::Organization(org_id) = claim.holder
+        && let Some(orgs) = ctx.w.module_state::<mush_org::OrgStore>()
+        && orgs
+            .state()
+            .membership(org_id, actor)
+            .is_some_and(|m| m.status == mush_org::MembershipStatus::Active)
+    {
+        return true;
+    }
+    false
 }
 
 /// Format the live tenure description of `(cluster, letter)` for `viewer`.
@@ -1250,6 +1416,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         .unwrap_or_default();
 
     for hull in hulls {
+        let mut in_tick_committed: BTreeMap<(VaultId, OreFamily), u64> = BTreeMap::new();
         if ctx
             .w
             .module_state::<super::tick::SpaceBubbleBook>()
@@ -1260,6 +1427,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             {
                 let dt_paused = now.at.saturating_sub(s.last_ic_s).max(0);
                 s.last_ic_s = s.last_ic_s.max(now.at);
+                s.last_activity_ic_s = s.last_activity_ic_s.max(now.at);
                 if let Some(laser) = &mut s.active_laser {
                     laser.due_ic = laser.due_ic.saturating_add(dt_paused);
                 }
@@ -1345,10 +1513,18 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         {
             remaining_laser = None;
             if let Some(rock_vault) = site_snapshot.vaults.get(&laser.rock_letter).copied() {
-                let avail_t = rock_pool_tonnes(ctx, rock_vault, laser.family);
+                let uncommitted = rock_uncommitted_pool_tonnes(ctx, rock_vault, laser.family);
+                let taken_this_tick = in_tick_committed
+                    .get(&(rock_vault, laser.family))
+                    .copied()
+                    .unwrap_or(0);
+                let avail_t = uncommitted.saturating_sub(taken_this_tick);
                 let take_t = laser.yield_t.min(hold_room_t).min(avail_t);
                 if take_t > 0 {
                     hold_room_t = hold_room_t.saturating_sub(take_t);
+                    *in_tick_committed
+                        .entry((rock_vault, laser.family))
+                        .or_insert(0) += take_t;
                     completed_draws.push((
                         laser.rock_letter,
                         laser.family,
@@ -1365,10 +1541,18 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         for drone in &session_snapshot.active_drones {
             if now.at >= drone.due_ic {
                 if let Some(rock_vault) = site_snapshot.vaults.get(&drone.rock_letter).copied() {
-                    let avail_t = rock_pool_tonnes(ctx, rock_vault, drone.family);
+                    let uncommitted = rock_uncommitted_pool_tonnes(ctx, rock_vault, drone.family);
+                    let taken_this_tick = in_tick_committed
+                        .get(&(rock_vault, drone.family))
+                        .copied()
+                        .unwrap_or(0);
+                    let avail_t = uncommitted.saturating_sub(taken_this_tick);
                     let take_t = drone.yield_t.min(hold_room_t).min(avail_t);
                     if take_t > 0 {
                         hold_room_t = hold_room_t.saturating_sub(take_t);
+                        *in_tick_committed
+                            .entry((rock_vault, drone.family))
+                            .or_insert(0) += take_t;
                         completed_draws.push((
                             drone.rock_letter,
                             drone.family,
@@ -1398,6 +1582,11 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 remaining_drones.push(updated);
             }
         }
+
+        let had_mining_activity = !completed_draws.is_empty()
+            || remaining_laser.is_some()
+            || !remaining_drones.is_empty()
+            || session_snapshot.approaching_rock.is_some();
 
         // Coalesce completed draws per `(rock_letter, family)` so one `tacsim_site_work` bundle
         // moves the combined tonnes cleanly!
@@ -1447,6 +1636,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                     .saturating_add(queued_drawn)
                     .saturating_add(worked_t);
                 new_draws.push((
+                    letter,
+                    family,
                     rec_base,
                     deposit,
                     commodity,
@@ -1459,6 +1650,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             }
             if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
                 for (
+                    letter,
+                    family,
                     rec_base,
                     deposit,
                     commodity,
@@ -1469,6 +1662,12 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                     excursion,
                 ) in new_draws
                 {
+                    if family == OreFamily::StrategicElements {
+                        book.mined_strategic_blocks
+                            .entry(hull)
+                            .or_default()
+                            .insert((session_snapshot.cluster.clone(), letter));
+                    }
                     book.next_space_mine_draw_seq = book.next_space_mine_draw_seq.saturating_add(1);
                     let seq = book.next_space_mine_draw_seq;
                     let draw_receipt = format!("{rec_base}/draw/{seq}");
@@ -1490,6 +1689,66 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             }
         }
 
+        let last_act = if had_mining_activity {
+            now.at
+        } else if session_snapshot.last_activity_ic_s > 0 {
+            session_snapshot.last_activity_ic_s
+        } else {
+            now.at
+        };
+        if !had_mining_activity
+            && now.at.saturating_sub(last_act) >= CLUSTER_SESSION_IDLE_TIMEOUT_IC_SECS
+        {
+            let anchor_body = resolved_cluster.anchor_body.clone();
+            let (pos_km, vel_mps) = if let Some(store) =
+                ctx.w.module_state::<crate::store::TacsimStore>()
+                && let Ok(lane) =
+                    mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK)
+                && let Some(version) = store.applied_in(ctx.w, &lane)
+                && let Ok((sky, _pack)) = crate::port::voyage::lane_sky_of(ctx.w, version)
+            {
+                let p = sky
+                    .position_km(&anchor_body, now.at)
+                    .unwrap_or(crate::sky::PosKm {
+                        x: 414_000_000,
+                        y: 0,
+                        z: 0,
+                    });
+                let [vx, vy, vz] = sky
+                    .velocity_mps(&anchor_body, now.at)
+                    .unwrap_or([0, 17_900, 0]);
+                (
+                    [p.x, p.y, p.z],
+                    [i64::from(vx), i64::from(vy), i64::from(vz)],
+                )
+            } else {
+                ([414_000_000, 0, 0], [0, 17_900, 0])
+            };
+            if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
+                book.cluster_sessions.remove(&hull);
+                book.free_flights.insert(
+                    hull,
+                    super::tick::SpaceFreeFlightRecord {
+                        hull,
+                        origin_place: anchor_body.clone(),
+                        target_place: anchor_body,
+                        pos_km,
+                        vel_mps,
+                        thrust_mmps2: [0, 0, 0],
+                        burn_remaining_ic_s: None,
+                        guidance: super::tick::FreeFlightGuidanceMode::Manual,
+                        braking_flipped: false,
+                        decoupled_at_ic_s: now.at,
+                        last_ic_s: now.at,
+                        cluster_arrival_ic_s: None,
+                        prepaid_unflown_t: 0,
+                    },
+                );
+            }
+            super::commands::push_space_panels(ctx, hull);
+            continue;
+        }
+
         if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
             && let Some(session) = book.cluster_sessions.get_mut(&hull)
         {
@@ -1501,7 +1760,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             session.active_laser = remaining_laser;
             session.active_drones = remaining_drones;
             session.last_ic_s = now.at;
+            session.last_activity_ic_s = last_act;
         }
+        super::commands::push_space_panels(ctx, hull);
     }
 
     // 2. For each laid-up cluster, let its dedicated deposit openers open any unopened
@@ -1604,8 +1865,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             }
         }
 
-        // 2c. Prune any `pending_space_mine_draws` whose `PocketCursor` has already landed, and
-        //     submit the next pending `tacsim_site_work` draw via `site.clerk`.
+        // 2c. Prune any `pending_space_mine_draws` whose `PocketCursor` has already landed or
+        //     whose source rock deposit is exhausted, and submit the next pending `tacsim_site_work`
+        //     draw via `site.clerk`.
         let clerk = site.clerk;
         let pending_for_clerk: Vec<PendingSpaceMineDraw> = ctx
             .w
@@ -1627,7 +1889,13 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 .flatten()
                 .and_then(PocketCursor::drawn_total)
                 .unwrap_or(0);
-            if drawn >= d.expected_total_t {
+            let avail_in_rock = crate::port_tick::read_pool(
+                ctx,
+                mush_inventory::record::EndpointRef(d.from_vault),
+                &d.commodity,
+            )
+            .unwrap_or(0);
+            if drawn >= d.expected_total_t || avail_in_rock == 0 || d.worked_t == 0 {
                 landed_receipts.push(d.receipt);
             } else if next_draw.is_none() {
                 next_draw = Some(d);
