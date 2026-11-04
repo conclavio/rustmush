@@ -5,7 +5,7 @@ band before a disagreement, try private discussion, public confrontation or an
 invitation to demonstrate, then continue the branch you choose. Every branch
 runs a new fixture process and independent bot processes connected over SSH.
 
-[Wave 3 social state](bot-social.md) extends these checkpoints with validated
+[Wave 3 social state](social.md) extends these checkpoints with validated
 relationships, claims, background and observed commitments. Campaign manifests
 can seed `groups` for an initial world; checkpoint continuations inherit them.
 
@@ -180,7 +180,7 @@ is exactly zero, including cancelled test requests. Paid models remain supported
 by standalone bots and the existing harness; enabling them inside a capped
 campaign needs a trustworthy maximum-cost reservation contract. A post-response
 OpenRouter receipt alone cannot enforce a hard cap on concurrent requests. This
-is recorded in the [wave-2 review](bot-wave2-plan.md), along with the future
+is recorded in the [wave-2 review](wave2-plan.md), along with the future
 production-server adapter boundary.
 
 Artifacts distinguish these operations:

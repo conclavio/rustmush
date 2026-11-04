@@ -217,5 +217,5 @@ offscreen disclosure and formal commander authority remain separate future
 experiment modes. They should record their interventions and label their results
 before being compared against the embodied negotiation mode.
 
-See [the plan and reviews](bot-wave3-plan.md), [campaigns](bot-campaigns.md),
-[conversation pacing](bot-conversation.md), and [the five-wave roadmap](bot-social-campaign-plan.md).
+See [the plan and reviews](wave3-plan.md), [campaigns](campaigns.md),
+[conversation pacing](conversation.md), and [the five-wave roadmap](social-campaign-plan.md).

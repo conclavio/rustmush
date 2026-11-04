@@ -26,10 +26,13 @@ bad()  { echo "  FAIL  $*" >&2; fail=1; }
 
 echo "sshdoorway logging check"
 
-command -v zstd >/dev/null && command -v unzstd >/dev/null \
-    && ok "zstd is installed" || bad "zstd is not installed (apt-get install zstd)"
+if command -v zstd >/dev/null && command -v unzstd >/dev/null; then
+    ok "zstd is installed"
+else
+    bad "zstd is not installed (apt-get install zstd)"
+fi
 
-[[ -r "$conf" ]] && ok "$conf exists" || bad "$conf is missing"
+if [[ -r "$conf" ]]; then ok "$conf exists"; else bad "$conf is missing"; fi
 
 if logrotate -d -s "$tmp/status" "$conf" >"$tmp/out" 2>&1 \
     && ! grep -qiE '^error' "$tmp/out"; then
@@ -38,8 +41,11 @@ else
     bad "logrotate -d rejected the config:"; sed 's/^/        /' "$tmp/out" >&2
 fi
 
-systemctl is-enabled --quiet sshdoorway-logrotate.timer \
-    && ok "sshdoorway-logrotate.timer is enabled" || bad "sshdoorway-logrotate.timer is not enabled"
+if systemctl is-enabled --quiet sshdoorway-logrotate.timer; then
+    ok "sshdoorway-logrotate.timer is enabled"
+else
+    bad "sshdoorway-logrotate.timer is not enabled"
+fi
 last=$(systemctl show -p LastTriggerUSec --value sshdoorway-logrotate.timer 2>/dev/null || true)
 if [[ -n "$last" && "$last" != "n/a" && "$last" != "0" ]]; then
     ok "the timer has fired (last: $last)"

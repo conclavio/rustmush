@@ -71,7 +71,7 @@ web client (a follow-on to R0), and a shared "scene thread" in a guild (§7).
   `can_perceive` (`:7216`) *before* a `SendTarget::Char` leaves the world. A connection of the
   character's own session therefore inherits R1's "never more than the terminal" for free; a bot that
   *watched rooms* would have to re-implement it (and the docs are explicit that a witness is "what the
-  delivery layer decided", `docs/scenes_factions_knowledge.md` §5).
+  delivery layer decided", `docs/design/scenes-factions-knowledge.md` §5).
 - **Everything a client can send already crosses the boundary.** `WireInbound::{Cmd, Query, ConnUp,
   ConnDown, SessionGone, Composing, Respond}` (`crates/mush-ipc/src/protocol.rs:141-215`);
   `IPC_VERSION = 4` (`:85`) and the rmp codec is additive, so new arms need no bump. Only the *gateway*
@@ -123,7 +123,7 @@ web client (a follow-on to R0), and a shared "scene thread" in a guild (§7).
   delivery keyed by the stable item id (`docs/ops.md:448`). Adapters run in the **server** half.
 - **The verified Discord link is already anticipated.** Doc 09's on-call model: a Wizard "links and
   verifies a Discord account rather than entering an unverified display name … referenced by opaque
-  IDs" (`09:1352-1355`; `docs/ops.md:503`). `docs/next_ideas.md` §4 lists "Discord participation" among
+  IDs" (`09:1352-1355`; `docs/ops.md:503`). `docs/archive/next-ideas.md` §4 lists "Discord participation" among
   what first-class scenes solve; §11 notes downtime "maps well to Discord".
 - **Secrets and config conventions.** API keys resolve from an env var named in config, never logged
   (`crates/mush-llm/src/config.rs:257` `resolve_key`); `mushd` loads `.env` in dev (`mushd/src/main.rs:121`);

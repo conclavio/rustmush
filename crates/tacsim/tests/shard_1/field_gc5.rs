@@ -32,10 +32,10 @@ use crate::field_gc4::{demoted, powerless, seconds_until, towing};
 use crate::field_host_rig::{armed, egress, seat, second, site_record, task, tune, until};
 use crate::site_record_rig::{staff, staff_member};
 
-/// Short tow stages and a short extraction, on the field host's lab tempo.
+/// Short tow stages and a short extraction, on the field host's lab tempo and its default
+/// disengagement (doc 43 TS.16): no body here acts inside a field, it waits for it to settle.
 fn quick(cfg: &mut tacsim::TacsimConfig) {
     tune(cfg);
-    cfg.field.disengage_s = 90;
     cfg.field.idle_demote_s = 3_600;
     cfg.field.extract_s = 600;
     cfg.recovery.inspect_s = 30;

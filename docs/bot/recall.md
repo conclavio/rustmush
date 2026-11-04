@@ -14,7 +14,7 @@ Use a JSON context profile with `--context`, or load one during a session:
 /inspect preview How much did I pay for the rose?
 ```
 
-The checked-in [recency profile](../bots/context/recency-recall.json) is an
+The checked-in [recency profile](../../bots/context/recency-recall.json) is an
 experiment in favoring recent experience. A context profile can select a combined
 policy instead:
 
@@ -96,4 +96,4 @@ matches establish a recall gap, not that an event never happened.
 Use harness matrix `contexts` to compare these profiles while holding other
 settings fixed. Replay uses the records already captured in a model request;
 changing a local recall profile cannot retroactively alter that capture. See the
-[bot guide](bot.md) for context controls, captures and harness matrices.
+[bot guide](guide.md) for context controls, captures and harness matrices.

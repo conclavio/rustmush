@@ -1,6 +1,6 @@
 //! # mush-canon
 //!
-//! The **canon event ledger** (design: `docs/scenes_factions_knowledge.md`
+//! The **canon event ledger** (design: `docs/design/scenes-factions-knowledge.md`
 //! §5): the durable, append-only record of what *became true* in the world —
 //! the consequences selected from scene and world activity, distinct from the
 //! full transcript (the per-scene event log).

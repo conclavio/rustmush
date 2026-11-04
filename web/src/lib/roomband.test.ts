@@ -69,8 +69,9 @@ describe("roomBand", () => {
     const bare = roomBand({ ...base, ambient: { weather: { state: "rain" } } }, new Map());
     expect(bare?.weather).toEqual({ state: "rain", icon: "rain", temp: null, line: null });
 
-    // The fallback itself lives in the component, which has no harness on
-    // this client (`environment: "node"`), so it is pinned as source.
+    // The fallback itself lives in the component; this file runs in
+    // `environment: "node"`, so it is pinned as source (a jsdom mount, as the
+    // `components/*.test.ts` files do, is doc 43 TS.19's).
     const src = readFileSync(resolve(process.cwd(), "src/components/RoomBand.svelte"), "utf8");
     expect(src).toContain("{band.weather.line ?? band.weather.state}");
   });
