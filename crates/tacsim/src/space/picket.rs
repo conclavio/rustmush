@@ -386,6 +386,20 @@ pub struct KirkwoodPicketState {
     /// Sealed mind record for the Belt Raider (`SF.R14`, `D-35-1`, `D-35-17`).
     #[serde(default, with = "compact_mind_seal")]
     pub raider_seal: Option<crate::arena::mind::MindSeal>,
+    /// Per-carrier customs inspection status keyed by carrier hull [`ObjId`] (`SF.R18`).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "super::bubble::vec_tuple_map"
+    )]
+    pub carrier_inspection_status: BTreeMap<ObjId, PicketInspectionStatus>,
+    /// Per-carrier customs inspection outcome keyed by carrier hull [`ObjId`] (`SF.R18`).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "super::bubble::vec_tuple_map"
+    )]
+    pub carrier_inspection_outcome: BTreeMap<ObjId, PicketInspectionOutcome>,
 }
 
 impl KirkwoodPicketState {
@@ -429,29 +443,87 @@ impl KirkwoodPicketState {
             raider_last_trace: Vec::new(),
             raider_last_intents: Vec::new(),
             raider_seal,
+            carrier_inspection_status: BTreeMap::new(),
+            carrier_inspection_outcome: BTreeMap::new(),
         }
     }
 
-    /// Whether the Customs Corvette is still screening the carrier (hailed or hove-to, neither
-    /// cleared nor run): the bubble's inspecting flag on its party (Q-40-22).
+    /// Return the customs inspection status for carrier `hull` (`SF.R18`).
     #[must_use]
-    pub const fn is_screening(&self) -> bool {
-        matches!(
-            self.inspection_status,
-            PicketInspectionStatus::AwaitingHeaveTo
-                | PicketInspectionStatus::HoveToReadyForInspection
-        )
+    pub fn inspection_status_for(&self, hull: ObjId) -> PicketInspectionStatus {
+        self.carrier_inspection_status
+            .get(&hull)
+            .copied()
+            .unwrap_or(self.inspection_status)
     }
 
-    /// Return whether the customs picket inspection is satisfied (`Cleared`, `ClearedAfterFine`, or `ClearedAfterSeizure`).
+    /// Return the customs inspection outcome for carrier `hull` (`SF.R18`).
     #[must_use]
-    pub const fn is_customs_cleared(&self) -> bool {
+    pub fn inspection_outcome_for(&self, hull: ObjId) -> Option<&PicketInspectionOutcome> {
+        self.carrier_inspection_outcome
+            .get(&hull)
+            .or(self.inspection_outcome.as_ref())
+    }
+
+    /// Record the customs inspection status for carrier `hull` (`SF.R18`).
+    pub fn set_inspection_status_for(&mut self, hull: ObjId, status: PicketInspectionStatus) {
+        self.inspection_status = status;
+        self.carrier_inspection_status.insert(hull, status);
+    }
+
+    /// Record the customs inspection outcome for carrier `hull` (`SF.R18`).
+    pub fn set_inspection_outcome_for(&mut self, hull: ObjId, outcome: PicketInspectionOutcome) {
+        self.inspection_outcome = Some(outcome.clone());
+        self.carrier_inspection_outcome.insert(hull, outcome);
+    }
+
+    /// Return whether carrier `hull` has satisfied the customs picket inspection (`SF.R18`).
+    #[must_use]
+    pub fn is_carrier_customs_cleared(&self, hull: ObjId) -> bool {
         matches!(
-            self.inspection_status,
+            self.inspection_status_for(hull),
             PicketInspectionStatus::Cleared
                 | PicketInspectionStatus::ClearedAfterFine
                 | PicketInspectionStatus::ClearedAfterSeizure
         )
+    }
+
+    /// Whether the Customs Corvette is still screening any carrier (hailed or hove-to, neither
+    /// cleared nor run): the bubble's inspecting flag on its party (Q-40-22, `SF.R18`).
+    #[must_use]
+    pub fn is_screening(&self) -> bool {
+        if self.carrier_inspection_status.is_empty() {
+            matches!(
+                self.inspection_status,
+                PicketInspectionStatus::AwaitingHeaveTo
+                    | PicketInspectionStatus::HoveToReadyForInspection
+            )
+        } else {
+            self.carrier_inspection_status.values().any(|s| {
+                matches!(
+                    s,
+                    PicketInspectionStatus::AwaitingHeaveTo
+                        | PicketInspectionStatus::HoveToReadyForInspection
+                )
+            })
+        }
+    }
+
+    /// Return whether the customs picket inspection is satisfied (`Cleared`, `ClearedAfterFine`, or `ClearedAfterSeizure`).
+    #[must_use]
+    pub fn is_customs_cleared(&self) -> bool {
+        if self.carrier_inspection_status.is_empty() {
+            matches!(
+                self.inspection_status,
+                PicketInspectionStatus::Cleared
+                    | PicketInspectionStatus::ClearedAfterFine
+                    | PicketInspectionStatus::ClearedAfterSeizure
+            )
+        } else {
+            self.carrier_inspection_status
+                .keys()
+                .all(|&h| self.is_carrier_customs_cleared(h))
+        }
     }
 }
 
@@ -996,7 +1068,12 @@ pub fn run_drone_rhai_think(
 }
 
 fn sync_corvette_cleared_stage_in_memory(picket: &mut KirkwoodPicketState) {
-    if !picket.is_customs_cleared() {
+    let any_cleared = picket.is_customs_cleared()
+        || picket
+            .carrier_inspection_status
+            .keys()
+            .any(|&h| picket.is_carrier_customs_cleared(h));
+    if !any_cleared {
         return;
     }
     let mut mem = crate::arena::mind::decode_memory(&picket.corvette_memory);
@@ -1019,6 +1096,7 @@ fn step_corvette_mind_on_bubble(
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
     carrier_ship_id: &str,
+    carriers: &[(ObjId, String, PartyId)],
     emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
 ) {
     sync_corvette_cleared_stage_in_memory(picket);
@@ -1047,7 +1125,9 @@ fn step_corvette_mind_on_bubble(
         picket.corvette_last_intents = res.intents.clone();
 
         // Read `this.stage` from the Corvette's Rhai memory (`SF.R14`, `D-35-1`, `D-35-11`, `D-35-17`):
-        if let Some(stage) = read_corvette_stage_from_memory(&picket.corvette_memory) {
+        if carriers.is_empty()
+            && let Some(stage) = read_corvette_stage_from_memory(&picket.corvette_memory)
+        {
             if stage == 4 && !picket.is_customs_cleared() {
                 picket.inspection_status = PicketInspectionStatus::RanThePicket;
                 bubble.set_party_relation(
@@ -1160,19 +1240,51 @@ fn step_corvette_mind_on_bubble(
         }
     }
 
-    // Perimeter backstop if an undetected (`Ghost`) carrier drifts past the 35 km picket boundary.
-    if !picket.is_customs_cleared()
-        && picket.inspection_status != PicketInspectionStatus::RanThePicket
-        && let (Some(carrier), Some(corvette)) = (
-            bubble.ships.get(carrier_ship_id),
-            bubble.ships.get(&picket.corvette_ship_id),
-        )
-        && carrier.status == HullStatus::Operational
+    // Per-carrier heave-to and 35 km perimeter breach evaluation (`SF.R18`):
+    if carriers.is_empty() {
+        if !picket.is_customs_cleared()
+            && picket.inspection_status != PicketInspectionStatus::RanThePicket
+            && let (Some(carrier), Some(corvette)) = (
+                bubble.ships.get(carrier_ship_id),
+                bubble.ships.get(&picket.corvette_ship_id),
+            )
+            && carrier.status == HullStatus::Operational
+            && corvette.status == HullStatus::Operational
+            && distance_3d_m(carrier.pos_m, corvette.pos_m) > PICKET_RUN_BOUNDARY_M
+        {
+            picket.inspection_status = PicketInspectionStatus::RanThePicket;
+            bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
+        }
+    } else if let Some(corvette) = bubble.ships.get(&picket.corvette_ship_id).cloned()
         && corvette.status == HullStatus::Operational
-        && distance_3d_m(carrier.pos_m, corvette.pos_m) > PICKET_RUN_BOUNDARY_M
     {
-        picket.inspection_status = PicketInspectionStatus::RanThePicket;
-        bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
+        for (chull, cship_id, cparty) in carriers {
+            let Some(carrier) = bubble.ships.get(cship_id) else {
+                continue;
+            };
+            if carrier.status != HullStatus::Operational {
+                continue;
+            }
+            let cur_status = picket.inspection_status_for(*chull);
+            if cur_status == PicketInspectionStatus::AwaitingHeaveTo
+                && relative_speed_3d_mmps(carrier.vel_mmps, corvette.vel_mmps)
+                    < HEAVE_TO_REL_VEL_MMPS
+            {
+                picket
+                    .carrier_inspection_status
+                    .insert(*chull, PicketInspectionStatus::HoveToReadyForInspection);
+                if picket.inspection_status == PicketInspectionStatus::AwaitingHeaveTo {
+                    picket.inspection_status = PicketInspectionStatus::HoveToReadyForInspection;
+                }
+            }
+            if !picket.is_carrier_customs_cleared(*chull)
+                && cur_status != PicketInspectionStatus::RanThePicket
+                && distance_3d_m(carrier.pos_m, corvette.pos_m) > PICKET_RUN_BOUNDARY_M
+            {
+                picket.set_inspection_status_for(*chull, PicketInspectionStatus::RanThePicket);
+                bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, *cparty, Some(Mark::Hostile));
+            }
+        }
     }
 }
 
@@ -1183,9 +1295,14 @@ fn step_raider_mind_on_bubble(
     carrier_ship_id: &str,
     emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
 ) {
-    let should_uncloak_raider = !picket.raider_ambush_launched
-        && (picket.inspection_outcome.is_some()
-            || picket.inspection_status == PicketInspectionStatus::RanThePicket);
+    let any_outcome_or_run = picket.inspection_outcome.is_some()
+        || !picket.carrier_inspection_outcome.is_empty()
+        || picket.inspection_status == PicketInspectionStatus::RanThePicket
+        || picket
+            .carrier_inspection_status
+            .values()
+            .any(|&s| s == PicketInspectionStatus::RanThePicket);
+    let should_uncloak_raider = !picket.raider_ambush_launched && any_outcome_or_run;
     if should_uncloak_raider
         && let Some(raider) = bubble.ships.get(&picket.raider_ship_id)
         && raider.status == HullStatus::Operational
@@ -1321,6 +1438,60 @@ fn step_raider_mind_on_bubble(
                 _ => {}
             }
         }
+
+        if picket
+            .raider_last_trace
+            .iter()
+            .any(|t| t == "RAIDER_PRESS_ATTACK")
+        {
+            if let Some(active_combat_carrier) = bubble
+                .ships
+                .values()
+                .find(|s| {
+                    s.id != picket.raider_ship_id
+                        && s.id != picket.corvette_ship_id
+                        && s.status == HullStatus::Operational
+                        && s.emcon == EmconPosture::ActiveCombat
+                        && bubble.party_relation(BELT_RAIDER_PARTY, s.party)
+                            == crate::arena::party::Relation::Hostile
+                })
+                .map(|s| s.id.clone())
+            {
+                locked_ship = active_combat_carrier;
+            }
+            if bubble.ships.get(&locked_ship).is_some_and(|s| {
+                s.id != picket.corvette_ship_id
+                    && s.status == HullStatus::Operational
+                    && s.emcon == EmconPosture::ActiveCombat
+            }) {
+                if bubble
+                    .ships
+                    .get(&picket.raider_ship_id)
+                    .is_some_and(|s| s.heat_permille > 650)
+                {
+                    emitted_events.extend(tape.record_and_apply(
+                        bubble,
+                        BubbleInputCommand::BlowdownCoolant {
+                            ship_id: picket.raider_ship_id.clone(),
+                        },
+                    ));
+                }
+                emitted_events.extend(tape.record_and_apply(
+                    bubble,
+                    BubbleInputCommand::FireRailgun {
+                        shooter_id: picket.raider_ship_id.clone(),
+                        target_id: locked_ship.clone(),
+                    },
+                ));
+                emitted_events.extend(tape.record_and_apply(
+                    bubble,
+                    BubbleInputCommand::FireOffensiveLasers {
+                        shooter_id: picket.raider_ship_id.clone(),
+                        target_id: locked_ship,
+                    },
+                ));
+            }
+        }
     }
 }
 
@@ -1332,13 +1503,38 @@ pub fn step_kirkwood_picket(
     picket: &mut KirkwoodPicketState,
     carrier_ship_id: &str,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
+    step_kirkwood_picket_for_carriers(bubble, tape, picket, carrier_ship_id, &[])
+}
+
+/// Step the Kirkwood Customs Picket `RhaiRunner` doctrines across all participating carriers (`SF.R18`).
+pub fn step_kirkwood_picket_for_carriers(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    picket: &mut KirkwoodPicketState,
+    carrier_ship_id: &str,
+    carriers: &[(ObjId, String, PartyId)],
+) -> Vec<super::bubble::SpaceCombatEvent> {
     let mut emitted_events = Vec::new();
     bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
-    if picket.inspection_outcome.is_some() {
+    if picket.inspection_outcome.is_some() || !picket.carrier_inspection_outcome.is_empty() {
         step_raider_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
-        step_corvette_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
+        step_corvette_mind_on_bubble(
+            bubble,
+            tape,
+            picket,
+            carrier_ship_id,
+            carriers,
+            &mut emitted_events,
+        );
     } else {
-        step_corvette_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
+        step_corvette_mind_on_bubble(
+            bubble,
+            tape,
+            picket,
+            carrier_ship_id,
+            carriers,
+            &mut emitted_events,
+        );
         step_raider_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
     }
     bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());

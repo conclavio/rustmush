@@ -820,6 +820,7 @@ mod tests {
             tick::BubbleCarrierEntry {
                 hull,
                 ship_id: "ship.4201".to_owned(),
+                party: admitted_party(0),
                 leg_cursor: 1,
                 departed_at_ic_s: 74_152_600_000,
                 approaching_derelict: false,
