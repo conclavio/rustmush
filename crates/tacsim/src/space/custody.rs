@@ -1003,6 +1003,12 @@ pub fn check_in_space_unit(
     } else {
         mush_sim::deployed::clear(ctx.w, hull);
     }
+    // Doc 42 cut CR.6 (Q-42-24): the crew aboard check in with the hull.
+    check_in_space_crew(
+        ctx,
+        hull,
+        matches!(ship.status, HullStatus::DisabledDerelict { .. }),
+    );
 
     Ok(assessment)
 }
@@ -1247,6 +1253,167 @@ pub fn pin_at_clamp(
         witnesses,
         pinned_ic,
     }
+}
+
+// ---- the crew's space seam (doc 42 cut CR.6, Q-42-24) ---------------------------------------
+
+/// **The site a space domain's crew records name** (doc 42 cut CR.6, Q-42-24): the lane entry
+/// whose map hosts the domain (a waypoint such as `kirkwood_depot`), else `space_domain_<n>`.
+#[must_use]
+pub fn space_site(w: &mush_core::World, domain: mush_sim::DomainId) -> Option<CanonicalId> {
+    let host = w
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|state| state.domains.get(&domain))
+        .map(|record| record.host);
+    if let Some(host) = host {
+        for (_, map) in crate::port::voyage::lane_ports(w) {
+            if let Some(map) = map
+                && map.host == Some(host.0)
+            {
+                return Some(map.entry.clone());
+            }
+        }
+    }
+    CanonicalId::new(format!("space_domain_{}", domain.0)).ok()
+}
+
+/// The domain `hull` flew in last: its bubble (a settled carrier keeps its ship row there), its
+/// derelict record, the bubble it just left, or where it is placed.
+fn space_domain_of(w: &mush_core::World, hull: ObjId) -> Option<mush_sim::DomainId> {
+    if let Some(book) = w.module_state::<super::tick::SpaceBubbleBook>() {
+        if let Some(active) = book.active_for_hull(hull) {
+            return Some(active.domain);
+        }
+        if let Some((&domain, _)) = book
+            .by_domain
+            .iter()
+            .find(|(_, active)| active.ship_hulls.values().any(|&h| h == hull))
+        {
+            return Some(domain);
+        }
+        if let Some(derelict) = book.derelicts.get(&hull) {
+            return Some(derelict.domain);
+        }
+        // A carrier leaving a bubble checks in after the bubble's record is filed.
+        if let Some(completed) = book.completed.get(&hull) {
+            return Some(completed.domain);
+        }
+    }
+    mush_sim::pose_of(w, hull).map(|(domain, _)| domain)
+}
+
+/// **The crew of `hull` checked in from space** (doc 42 cut CR.6, Q-42-24): every character
+/// aboard gets the ground's record (`crate::field::crew::check_in`, with its rules: a record in
+/// custody is left alone, a check-in never heals, a fallen hull strands its souls). A
+/// `DisabledDerelict` strands them too: her crew are `Stranded` in her on the domain's site and
+/// may ask `+sortie/extract`, as on a ground site.
+pub fn check_in_space_crew(ctx: &mut Ctx<'_>, hull: ObjId, disabled: bool) {
+    let souls = crate::field::carrier::souls_aboard(ctx.w, hull);
+    if souls.is_empty() {
+        return;
+    }
+    let Some(site) = space_domain_of(ctx.w, hull).and_then(|domain| space_site(ctx.w, domain))
+    else {
+        return;
+    };
+    for who in souls {
+        crate::field::crew::check_in(ctx, &site, hull, Some(who));
+        if !disabled {
+            continue;
+        }
+        let Some(record) = crate::field::crew::crew_of(ctx.w, who).cloned() else {
+            continue;
+        };
+        if record.location != (crate::field::crew::CrewLocation::Carrier { hull }) {
+            continue;
+        }
+        crate::field::crew::put(
+            ctx,
+            crate::field::crew::CrewRecord {
+                location: crate::field::crew::CrewLocation::Stranded {
+                    site: site.clone(),
+                    unit: hull,
+                },
+                ..record
+            },
+        );
+        let line = crate::field::crew::STRANDED
+            .replace("{unit}", &hull.0.to_string())
+            .replace("{site}", &crate::surface::act::site_name(ctx.w, &site));
+        ctx.out.sys_to_actor(who, "tacsim.field", line);
+    }
+}
+
+/// **Whether `tug` hard-docking `derelict` is a friend's** (doc 42 cut CR.6; Q-42-24's
+/// D-35-12): the ground's Friend rule (`crate::field::parties::friends`, as a ground load reads
+/// it): one owner behind both, or an organization they openly share. The bubble's own relation
+/// is not read: SF.R18 marks every co-participating carrier Friend for fire control, which says
+/// nothing of who may take whom.
+fn hard_dock_friendly(ctx: &Ctx<'_>, site: &CanonicalId, tug: ObjId, derelict: ObjId) -> bool {
+    let entrants = crate::field::parties::entrants(ctx, site, &[derelict, tug]);
+    let [a, b] = entrants.as_slice() else {
+        return false;
+    };
+    if a.key == b.key {
+        return true;
+    }
+    let Ok((parties, _)) = crate::field::parties::letter(&entrants) else {
+        return false;
+    };
+    let letter = |key| parties.iter().find(|p| p.key == key).map(|p| p.party);
+    let (Some(x), Some(y)) = (letter(a.key), letter(b.key)) else {
+        return false;
+    };
+    crate::field::parties::friends(&entrants, &parties)
+        .into_iter()
+        .any(|pair| pair == (x, y) || pair == (y, x))
+}
+
+/// **A hard-dock on a derelict with crew** (doc 42 cut CR.6, Q-42-24; Q-42-1 (iii)): the
+/// derelict's crew are checked in first (stranded in her), then a non-friend's clamp captures
+/// them as a ground load does (`crate::field::crew::captured_loaded`: the seat vacated, the
+/// body stepped into the tug's bay room, `Captured { carrier: tug, captor }`, both told, the
+/// standing paid), and a friend's takes them aboard the tug
+/// (`crate::field::crew::aboard_loaded`). The captives, in record order.
+pub fn capture_at_hard_dock(ctx: &mut Ctx<'_>, tug: ObjId, derelict: ObjId) -> Vec<ObjId> {
+    check_in_space_crew(ctx, derelict, true);
+    // The record is the truth, as a ground load reads it: everyone it holds in the derelict.
+    // (A clamp is rare; the characters are scanned through the public reader.)
+    let crewed = ctx.w.iter().any(|object| {
+        object.kind == mush_core::ObjKind::Player
+            && crate::field::crew::crew_of(ctx.w, object.id)
+                .is_some_and(|record| crate::field::crew::held_in(record, derelict))
+    });
+    if !crewed {
+        return Vec::new();
+    }
+    let Some(room) = crate::port::ship::hull_view(ctx.w, tug).and_then(|view| {
+        crate::port::vehicle::bay_rooms(ctx.w, &view)
+            .into_iter()
+            .next()
+            .or_else(|| view.airlock())
+    }) else {
+        return Vec::new();
+    };
+    let Some(site) = space_domain_of(ctx.w, derelict).and_then(|domain| space_site(ctx.w, domain))
+    else {
+        return Vec::new();
+    };
+    if hard_dock_friendly(ctx, &site, tug, derelict) {
+        crate::field::crew::aboard_loaded(ctx, derelict, tug, Some(room));
+        return Vec::new();
+    }
+    crate::field::crew::captured_loaded(
+        ctx,
+        &crate::field::crew::LoadCapture {
+            site: &site,
+            ordinal: 0,
+            casualty: derelict,
+            carrier: tug,
+            room,
+            captor: ctx.actor,
+        },
+    )
 }
 
 /// Real UTC seconds now (`w.now()`), clamped to at least `1` (`SF.R19`, `35b` §6.8 #14).

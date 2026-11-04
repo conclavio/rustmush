@@ -38,10 +38,11 @@ pub use commands::{
 pub use custody::{
     ALL_FACET_BANDS, ALL_SHIP_SECTIONS, MAX_SPACE_CUSTODY, SpaceCustodyBook, SpaceUnitOverlay,
     apply_space_unit_overlay, apply_unit_spec_to_space_ship, build_space_damage_mutation_plan,
-    check_in_space_unit, check_out_space_unit, format_tactical_unit_damage_line,
-    instantiate_stock_space_unit, record_space_combat_to_black_box, resolve_tactical_section_id,
-    space_ship_from_tactical_unit, space_ship_from_tactical_unit_with_spec,
-    space_unit_overlay_for_id, unit_spec_for_id,
+    capture_at_hard_dock, check_in_space_crew, check_in_space_unit, check_out_space_unit,
+    format_tactical_unit_damage_line, instantiate_stock_space_unit,
+    record_space_combat_to_black_box, resolve_tactical_section_id, space_ship_from_tactical_unit,
+    space_ship_from_tactical_unit_with_spec, space_site, space_unit_overlay_for_id,
+    unit_spec_for_id,
 };
 pub use docking::{
     COLLAR_SCRAPE_FRONT_ARMOR_DAMAGE, DOCK_GATE_MAX_ANG_RATE_MDEG_S, DOCK_GATE_MAX_LAT_VEL_MMPS,
