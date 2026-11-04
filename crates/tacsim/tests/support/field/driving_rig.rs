@@ -77,9 +77,19 @@ pub(crate) fn cid(word: &str) -> CanonicalId {
 pub(crate) struct Roster(pub(crate) TacsimConfig);
 
 /// The `[tacsim]` every keyed rig boots under: the layer on, everything else the default.
+/// **The field rigs' dice seed** (`FieldConfig::seed`, doc 40 FR.5's cut note): every field a
+/// rig world admits draws from it, so a scripted field story's hits, jams and misses hang on the
+/// script and not on whatever lane content or world clock went before the field (IN.5's Ceres
+/// vendor row moved `seed_for`'s seed and jammed gc0's escort plant on its engine hit).
+pub(crate) const FIELD_SEED: u64 = 0x5EED_0001;
+
 pub(crate) fn rig_config() -> TacsimConfig {
     TacsimConfig {
         enabled: true,
+        field: tacsim::config::FieldConfig {
+            seed: Some(FIELD_SEED),
+            ..tacsim::config::FieldConfig::default()
+        },
         ..TacsimConfig::default()
     }
 }
