@@ -175,6 +175,75 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
+## TS.3 (2026-11-04) — optimised dependencies, measured
+
+Q-43-4 / D-43-4. `[profile.dev.package."*"] opt-level = 1` in `Cargo.toml`: every non-workspace dependency is
+optimised in dev and test builds, and the workspace's own crates are not. Variant B added `opt-level = 2` for
+`rhai`, `serde_json`, `rmp-serde`, `sha2`, `blake3`, `image` and `flate2` (PR #423, closed unmerged).
+
+**Hosted CI, summed test minutes per cell** (nextest JUnit).
+- main: runs 41870246223 (`7a535806`), 41870167197 and 41827163605.
+- A: run 41871003719, attempts 1 and 2.
+- B: run 41873792386.
+
+| cell | main mean (min–max) | optA mean (min–max) | optB | optA Δ% | optB Δ% |
+|---|---|---|---|---|---|
+| bot | 10.7 (9.7–11.9) | 8.2 (8.2–8.2) | 8.1 | -23 | -24 |
+| bot-stories | 28.3 (28.0–28.6) | 25.3 (25.3–25.3) | 26.2 | -10 | -7 |
+| rest-gateway | 5.0 (4.6–5.4) | 3.0 (2.8–3.2) | 3.5 | -39 | -30 |
+| rest-libs | 18.9 (16.1–20.6) | 11.3 (10.1–12.5) | 12.6 | -40 | -33 |
+| rest-mushd | 31.4 (26.7–34.0) | 17.6 (15.5–19.7) | 17.7 | -44 | -44 |
+| rest-server | 46.5 (36.9–51.6) | 40.9 (35.7–46.0) | 38.9 | -12 | -16 |
+| rest-server-boundary | 33.6 (30.2–40.2) | 21.4 (21.2–21.6) | 16.6 | -36 | -51 |
+| tacsim-integration-1 | 59.0 (43.3–72.6) | 49.6 (43.3–55.9) | 54.8 | -16 | -7 |
+| tacsim-integration-10 | 48.3 (37.3–61.2) | 39.1 (35.1–43.1) | 26.4 | -19 | -45 |
+| tacsim-integration-2 | 28.2 (21.5–40.4) | 27.5 (27.4–27.7) | 29.6 | -2 | +5 |
+| tacsim-integration-3 | 49.0 (46.9–50.1) | 33.3 (32.8–33.7) | 23.1 | -32 | -53 |
+| tacsim-integration-4 | 46.5 (30.4–61.7) | 38.9 (33.1–44.6) | 46.3 | -16 | -0 |
+| tacsim-integration-5 | 42.0 (34.3–46.0) | 33.6 (33.4–33.8) | 34.7 | -20 | -17 |
+| tacsim-integration-6 | 46.3 (46.2–46.5) | 28.5 (23.4–33.6) | 34.3 | -39 | -26 |
+| tacsim-integration-7 | 49.6 (48.9–50.0) | 29.2 (28.1–30.3) | 29.6 | -41 | -40 |
+| tacsim-integration-8 | 51.5 (30.3–62.7) | 36.4 (36.0–36.7) | 49.6 | -29 | -4 |
+| tacsim-integration-9 | 52.3 (51.5–52.9) | 32.1 (24.9–39.2) | 40.6 | -39 | -22 |
+| tacsim-lib | 38.3 (37.7–39.0) | 21.9 (18.9–24.9) | 27.5 | -43 | -28 |
+| **total** | 685.5 (636.8–751.6) | 497.7 (493.6–501.8) | 520.3 | -27 | -24 |
+
+**conclav.dev, tacsim's whole sweep** (`-P ci`, 16 threads, base `7a535806`, summed minutes per binary):
+
+| binary | main-a | main-b | o1-a | o2-a | main-b vs main-a | o1-a vs main-a | o2-a vs main-a |
+|---|---|---|---|---|---|---|---|
+| tacsim::shard_1 | 32.7 | 32.7 | 26.2 | 27.5 | -0% | -20% | -16% |
+| tacsim::shard_9 | 27.5 | 27.4 | 22.1 | 22.9 | -0% | -20% | -17% |
+| tacsim::shard_8 | 26.7 | 26.7 | 20.9 | 21.7 | -0% | -22% | -19% |
+| tacsim::shard_10 | 25.5 | 25.7 | 18.5 | 20.1 | +1% | -27% | -21% |
+| tacsim::shard_4 | 22.0 | 21.5 | 15.3 | 16.2 | -2% | -31% | -26% |
+| tacsim::shard_7 | 20.7 | 20.8 | 16.3 | 17.1 | +1% | -21% | -18% |
+| tacsim::shard_3 | 18.7 | 18.1 | 11.9 | 12.8 | -3% | -36% | -32% |
+| tacsim::shard_6 | 16.4 | 16.6 | 11.9 | 12.9 | +1% | -27% | -21% |
+| tacsim::shard_5 | 16.0 | 15.9 | 11.6 | 12.2 | -1% | -28% | -24% |
+| tacsim | 14.6 | 14.7 | 9.4 | 10.4 | +0% | -36% | -29% |
+| tacsim::shard_2 | 14.0 | 14.2 | 11.1 | 11.9 | +1% | -21% | -15% |
+| tacsim::cost_lane | 4.8 | 4.8 | 3.2 | 3.3 | +1% | -33% | -30% |
+| tacsim::harness | 0.4 | 0.4 | 0.3 | 0.3 | -2% | -31% | -27% |
+| **total** | 240.1 | 239.4 | 178.7 | 189.2 | -0% | -26% | -21% |
+
+The wall of that sweep was 1366 s on both main runs, 1036 s for A and 1082 s for B. A cold build of tacsim's tests
+took 190 s, 198 s and 197 s.
+
+**Reading**
+- **A meets D-43-4's bar.**
+  - On hosted CI, 11 of the 18 cells fall by a fifth or more, and the total by 27%.
+  - On the quiet box every tacsim binary falls by 20–36%, with main against itself at ±0%.
+- **B is slower than A on the same host** (−21% against −26%), so per-crate opt-level 2 is not taken.
+- **Why it works.** TS.3b found that boot (debug-build composition, content, site generation) is 70% of the
+  biggest modules' minutes, and the dependencies (serde, rhai, hashing, compression) do much of that work.
+- **The cost.** Every warm target dir (CI's caches, the VPS gate's, the owner's box) rebuilds its dependencies
+  once. The hosted cells' first run built in 1–4 min more than main's.
+- **The one red.** B's single failure, `field_gc4::gc4_the_wingman_drags…` (`field_gc4.rs:317`), passed on A in
+  every run and on main's three. It also failed twice on TS.12's branch, which has no profile change, so it is not
+  an effect of the opt level. Its cause is not established: a real-time race in that journey, or (on TS.12) the
+  binary's composition.
+
 ## TS.3b (2026-11-04) — the step audit
 
 Read-only. The question was: for the dozen modules of §2.4, where do each story's minutes go? Four buckets:
