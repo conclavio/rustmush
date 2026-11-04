@@ -8,10 +8,10 @@
 //!    - [`CARRIER_PARTY`] (`PartyId::nth(0)` = `'A'`): The player's `Dray-P` carrier.
 //!    - [`CUSTOMS_CORVETTE_PARTY`] (`PartyId::nth(1)` = `'B'`): **Republic Customs Corvette**
 //!      (`Relation::Neutral` toward the carrier under the bubble's inspecting flag, Q-40-22;
-//!      `Relation::Hostile` toward the Belt Raider), flown by a compiled [`RhaiRunner`] executing `kirkwood_picket.rhai`.
+//!      `Relation::Hostile` toward the Belt Raider), flown by a compiled [`crate::minds::MindPool`] runner executing `kirkwood_picket.rhai`.
 //!    - [`BELT_RAIDER_PARTY`] (`PartyId::nth(2)` = `'C'`): **Belt Raider** (`Relation::Hostile`
 //!      toward both the carrier and the Republic Customs Corvette), flown by a compiled
-//!      [`RhaiRunner`] executing `belt_raider.rhai`.
+//!      [`crate::minds::MindPool`] runner executing `belt_raider.rhai`.
 //! 2. **Light-lagged radio hail (`D-35-10`, `35a` §4 row 2)**:
 //!    - Computes light propagation delay via [`mush_propagation::resolve_delivery`] and emits
 //!      both hull narration and a structured `"tacsim:notice"` event ordering the carrier to
@@ -48,11 +48,11 @@ use super::bubble::{
     BubbleInputCommand, BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble,
     SpaceShipState, admitted_party,
 };
-use super::weapons::{LaserMode, isqrt_i128};
+use super::weapons::isqrt_i128;
 use crate::arena::card::line;
 use crate::arena::core::{ClassTable, CoreClass};
 use crate::arena::intents::{IntentKind, MotorGoal};
-use crate::arena::mind::{MindRunner, MindView, ThinkJob, ThinkResult, ViewContact};
+use crate::arena::mind::{MindView, ThinkResult, ViewContact};
 use crate::arena::party::{Mark, PartyId};
 use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, Receiver as FrameReceiver};
 use crate::arena::profile_rules::BoundProgram;
@@ -65,7 +65,6 @@ use crate::arena::state::{
 use crate::arena::step::FrameHeat;
 use crate::arena::weapons::FrameWeapon;
 use crate::config::{ArenaConfig, ReflexConfig};
-use crate::minds::RhaiRunner;
 use crate::port::apply::{credit_scale, minor_of};
 use crate::port::licence::{LICENCE_SETTLE_WINDOW_SECS, licence_gate, licence_port};
 
@@ -594,8 +593,27 @@ pub fn should_open_kirkwood_picket(w: &World, _hull: ObjId, domain: mush_sim::Do
     false
 }
 
-/// Inspect the carrier hull's live `stow.ore` vault and the pilot's Freeport Registry
-/// prospecting licence (`licence_gate`) and `tacsim.claims` tenure (`D-35-11`, `35a` §1).
+/// Resolve the customs principal (`ObjId`) responsible for `hull`'s manifest and fines (`SF.R23`, `35b` §5 #15):
+/// prefers the hull's live Co-op charter tenant or active `EconomyStore` asset title holder
+/// (`crate::port::coop::helm_holder`), falling back to `fallback_actor`.
+#[must_use]
+pub fn resolve_hull_customs_principal(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
+    if let Some(holder) = crate::port::coop::helm_holder(w, hull) {
+        return holder;
+    }
+    if let Some(PrincipalId::Object(owner)) = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().asset(hull))
+        .map(|a| a.title_owner.clone())
+        && owner != hull
+    {
+        return owner;
+    }
+    fallback_actor
+}
+
+/// Inspect the carrier hull's live `stow.ore` vault and the hull principal's Freeport Registry
+/// prospecting licence (`licence_gate`) and per-block `tacsim.claims` tenure (`D-35-11`, `SF.R23`, `35b` §5 #15).
 #[must_use]
 pub fn inspect_hull_manifest(
     ctx: &Ctx<'_>,
@@ -620,32 +638,56 @@ pub fn inspect_hull_manifest(
         manifest.ice_ore_kg = read_kg("ice_ore");
         manifest.carbon_ore_kg = read_kg("carbon_ore");
     }
-    if let Some(actor) = pilot {
-        manifest.licensed = licence_gate(ctx.w, actor, now_ic).is_ok();
-        let account_hash = crate::port::licence::gateway_account(ctx.w, actor)
-            .map(mush_core::AccountId::canonical_hash);
-        if let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() {
-            'search: for cluster in super::mining::OrbitalClusterId::ALL {
-                let Ok(site) = CanonicalId::new(cluster.as_str()) else {
-                    continue;
-                };
-                for letter in ['A', 'B', 'C'] {
-                    let key = crate::surface::claims::BlockKey {
-                        site: site.clone(),
-                        letter,
-                    };
-                    if let Ok(Some(tenure)) = ctx.action_state(&handles.families.claims, &key)
-                        && let Some(claim) = &tenure.claim
+    if let Some(raw_actor) = pilot {
+        let principal_actor = resolve_hull_customs_principal(ctx.w, hull, raw_actor);
+        manifest.licensed = licence_gate(ctx.w, principal_actor, now_ic).is_ok()
+            || licence_gate(ctx.w, raw_actor, now_ic).is_ok();
+
+        let mined_blocks = ctx
+            .w
+            .module_state::<super::tick::SpaceBubbleBook>()
+            .and_then(|b| b.mined_strategic_blocks.get(&hull))
+            .filter(|blocks| !blocks.is_empty())
+            .cloned();
+
+        if let Some(blocks) = mined_blocks {
+            manifest.has_registered_claim = blocks.iter().all(|(site, letter)| {
+                super::mining::actor_holds_cluster_block_claim(
+                    ctx,
+                    site,
+                    *letter,
+                    principal_actor,
+                    now_ic,
+                ) || super::mining::actor_holds_cluster_block_claim(
+                    ctx, site, *letter, raw_actor, now_ic,
+                )
+            });
+        } else {
+            'search: for cluster in super::mining::all_orbital_clusters(ctx.w) {
+                let site = cluster.id.clone();
+                for rock in &cluster.rocks {
+                    if !rock
+                        .spectral
+                        .families()
+                        .contains(&crate::surface::OreFamily::StrategicElements)
                     {
-                        let holds = claim.holder == PrincipalId::Object(actor)
-                            || match (claim.account, account_hash) {
-                                (Some(acc), Some(acc_hash)) => acc.canonical_hash() == acc_hash,
-                                _ => false,
-                            };
-                        if holds {
-                            manifest.has_registered_claim = true;
-                            break 'search;
-                        }
+                        continue;
+                    }
+                    if super::mining::actor_holds_cluster_block_claim(
+                        ctx,
+                        &site,
+                        rock.letter,
+                        principal_actor,
+                        now_ic,
+                    ) || super::mining::actor_holds_cluster_block_claim(
+                        ctx,
+                        &site,
+                        rock.letter,
+                        raw_actor,
+                        now_ic,
+                    ) {
+                        manifest.has_registered_claim = true;
+                        break 'search;
                     }
                 }
             }
@@ -657,26 +699,38 @@ pub fn inspect_hull_manifest(
     manifest
 }
 
-/// Emit a light-lagged radio hail (`mush_propagation::light_delay_secs`) from the
-/// Republic Customs Corvette to the carrier hull and publish a structured `"tacsim:notice"`
-/// event to every bridge crew member aboard (`D-35-10`, `doc 35` §9 Story 1 step 2, `35a` §4).
-pub fn emit_light_lagged_picket_hail(
-    ctx: &mut Ctx<'_>,
-    hull: ObjId,
-    distance_m: i64,
-) -> (u64, u64) {
-    let dist_u64 = u64::try_from(distance_m.max(0)).unwrap_or(0);
-    let lag_ms_u64 = super::commands::vacuum_light_lag_ms(dist_u64);
-    let lag_s = lag_ms_u64 / 1_000;
-    let text = format!(
-        "[RADIO +{}.{:03}s light-lag ({} m)] Republic Customs Corvette: \"Heave-to under 10 m/s (|dv| < 10.0 m/s) and run +helm/submit for Freeport Registry manifest & claim inspection.\"",
-        lag_ms_u64 / 1_000,
-        lag_ms_u64 % 1_000,
-        dist_u64,
-    );
-    crate::port::voyage::narrate_hull(ctx, hull, &text);
+/// Queued light-lagged radio hail awaiting delivery at `deliver_at_real_s` (`now + d/c`, `D-35-10`, `SF.R23`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingLightLagHail {
+    /// Destination hull [`ObjId`].
+    pub hull: ObjId,
+    /// Sender label (e.g., `"Republic Customs Corvette"`).
+    pub sender: String,
+    /// Hail body message.
+    pub message: String,
+    /// Distance in metres (`d`).
+    pub distance_m: u64,
+    /// Whole seconds of one-way light-lag (`d / c`).
+    pub light_lag_s: u64,
+    /// Milliseconds of one-way light-lag (`(d * 1000) / c`).
+    pub light_lag_ms: u64,
+    /// Wall-clock real second (`ctx.w.now()`) at or after which the hail arrives at `hull`.
+    pub deliver_at_real_s: i64,
+}
 
-    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull)
+/// Deliver a [`PendingLightLagHail`] to `hail.hull` and its bridge crew on `"tacsim:notice"` (`D-35-10`, `SF.R23`).
+pub fn deliver_light_lagged_hail_now(ctx: &mut Ctx<'_>, hail: &PendingLightLagHail) {
+    let text = format!(
+        "[RADIO +{}.{:03}s light-lag ({} m)] {}: \"{}\"",
+        hail.light_lag_ms / 1_000,
+        hail.light_lag_ms % 1_000,
+        hail.distance_m,
+        hail.sender,
+        hail.message,
+    );
+    crate::port::voyage::narrate_hull(ctx, hail.hull, &text);
+
+    if let Some(view) = crate::port::ship::hull_view(ctx.w, hail.hull)
         && let Some(airlock) = view.airlock()
     {
         let crew: Vec<ObjId> = ctx
@@ -692,10 +746,10 @@ pub fn emit_light_lagged_picket_hail(
             .collect();
         let payload = json!({
             "kind": "picket_hail",
-            "sender": "Republic Customs Corvette",
-            "distance_m": dist_u64,
-            "light_lag_s": lag_s,
-            "light_lag_ms": lag_ms_u64,
+            "sender": hail.sender,
+            "distance_m": hail.distance_m,
+            "light_lag_s": hail.light_lag_s,
+            "light_lag_ms": hail.light_lag_ms,
             "max_heave_to_mps": 10,
             "text": text,
         });
@@ -710,7 +764,86 @@ pub fn emit_light_lagged_picket_hail(
             );
         }
     }
+}
+
+/// Deliver all due [`PendingLightLagHail`]s whose `deliver_at_real_s <= ctx.w.now()` (`D-35-10`, `SF.R23`).
+pub fn step_pending_light_lag_hails(ctx: &mut Ctx<'_>) {
+    let now_real_s = ctx.w.now();
+    let due_hails: Vec<PendingLightLagHail> = {
+        let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() else {
+            return;
+        };
+        if book.pending_light_lag_hails.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        let mut remaining = Vec::new();
+        for hail in book.pending_light_lag_hails.drain(..) {
+            if now_real_s >= hail.deliver_at_real_s {
+                due.push(hail);
+            } else {
+                remaining.push(hail);
+            }
+        }
+        book.pending_light_lag_hails = remaining;
+        due
+    };
+    for hail in &due_hails {
+        deliver_light_lagged_hail_now(ctx, hail);
+    }
+}
+
+/// Emit or queue a light-lagged radio hail (`mush_propagation::light_delay_secs`) from `sender`
+/// to `hull` at range `distance_m` (`D-35-10`, `SF.R23`).
+///
+/// When `lag_s == 0` (`distance_m < LIGHT_SPEED_MPS`, e.g. 6 km standoff = 20 ms), the hail arrives
+/// within the current 1 Hz tick and is delivered immediately. When `lag_s >= 1`, the hail is queued
+/// in `SpaceBubbleBook::pending_light_lag_hails` and delivered on `space_tick` at `now + lag_s`.
+pub fn queue_or_deliver_light_lagged_hail(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    sender: impl Into<String>,
+    message: impl Into<String>,
+    distance_m: i64,
+) -> (u64, u64) {
+    let dist_u64 = u64::try_from(distance_m.max(0)).unwrap_or(0);
+    let lag_ms_u64 = super::commands::vacuum_light_lag_ms(dist_u64);
+    let lag_s = lag_ms_u64 / 1_000;
+    let hail = PendingLightLagHail {
+        hull,
+        sender: sender.into(),
+        message: message.into(),
+        distance_m: dist_u64,
+        light_lag_s: lag_s,
+        light_lag_ms: lag_ms_u64,
+        deliver_at_real_s: ctx
+            .w
+            .now()
+            .saturating_add(i64::try_from(lag_s).unwrap_or(0)),
+    };
+    if lag_s == 0 {
+        deliver_light_lagged_hail_now(ctx, &hail);
+    } else if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
+        book.pending_light_lag_hails.push(hail);
+    }
     (lag_s, lag_ms_u64)
+}
+
+/// Emit a light-lagged radio hail (`mush_propagation::light_delay_secs`) from the
+/// Republic Customs Corvette to the carrier hull and publish a structured `"tacsim:notice"`
+/// event to every bridge crew member aboard (`D-35-10`, `doc 35` §9 Story 1 step 2, `35a` §4, `SF.R23`).
+pub fn emit_light_lagged_picket_hail(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    distance_m: i64,
+) -> (u64, u64) {
+    queue_or_deliver_light_lagged_hail(
+        ctx,
+        hull,
+        "Republic Customs Corvette",
+        "Heave-to under 10 m/s (|dv| < 10.0 m/s) and run +helm/submit for Freeport Registry manifest & claim inspection.",
+        distance_m,
+    )
 }
 
 fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
@@ -735,46 +868,169 @@ fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
     })
 }
 
-static CACHED_RHAI_RUNNERS: std::sync::LazyLock<
-    std::sync::Mutex<BTreeMap<[u8; 32], Arc<RhaiRunner>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
+fn build_minimal_sealed_space_arena() -> Option<crate::arena::state::Arena> {
+    use crate::arena::mind::MindSeal;
+    use crate::arena::party::FieldHost;
+    use crate::arena::resolution::UnitProfile;
+    use crate::arena::state::{Arena, Controller, CustodyOut, CustodyUnit, TrackedRules};
+    use crate::config::{MatchConfig, SensorsConfig};
+    use mush_sim::data::Pose;
+
+    let definition = minimal_space_arena_definition()?;
+    let (unit, _) = super::custody::instantiate_stock_space_unit(
+        ObjId(1),
+        crate::definitions::content::CORVETTE,
+    )
+    .ok()?;
+    let seal = build_space_mind_seal(
+        ObjId(1),
+        crate::arena::mind::SortieId::ic(ObjId(1), 1),
+        "kirkwood_picket",
+        crate::minds::content::kirkwood_picket_digest().0,
+    )
+    .unwrap_or_else(MindSeal::placeholder);
+    let pose = Pose::at(1_500, 1_500, 0, unit.rules().clone());
+    let custody_unit = CustodyUnit {
+        id: ObjId(1),
+        team: PartyId::RED,
+        pose,
+        mobility: TrackedRules {
+            max_speed_cms: 1_000,
+            accel_cms2: 200,
+            brake_cms2: 400,
+            turn_rate_mdeg_s: 30_000,
+            reverse_factor_pct: 40,
+        },
+        sensor_height_cm: 150,
+        sensor: None,
+        weapons: Vec::new(),
+        profile: UnitProfile::default(),
+        gunnery: 0,
+        controller: Controller::Mind,
+        slot: 0,
+        seal,
+        unit,
+    };
+    let mut host = FieldHost::all_hostile();
+    host.every_class = true;
+    Arena::new(
+        CustodyOut {
+            definition,
+            units: vec![custody_unit],
+            pilots: Vec::new(),
+            resolution: crate::match_::stock_resolution(),
+            seed: 2_350,
+            mode: MatchMode::Skirmish,
+            host,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .ok()
+}
 
 static CACHED_SPACE_ARENA_DEF: std::sync::LazyLock<Option<Arc<ArenaDefinition>>> =
     std::sync::LazyLock::new(|| minimal_space_arena_definition().map(Arc::new));
 
-/// Compile or retrieve a cached [`RhaiRunner`] for `source` (`SF.R10`, `35b` §5 #9).
-pub fn cached_space_rhai_runner(source: &str) -> Option<Arc<RhaiRunner>> {
-    use sha2::{Digest as _, Sha256};
+static BASE_SEALED_SPACE_ARENA: std::sync::LazyLock<Option<crate::arena::state::Arena>> =
+    std::sync::LazyLock::new(build_minimal_sealed_space_arena);
 
-    let bytes: [u8; 32] = Sha256::digest(source.as_bytes()).into();
-    if let Ok(guard) = CACHED_RHAI_RUNNERS.lock()
-        && let Some(found) = guard.get(&bytes)
-    {
-        return Some(found.clone());
+/// Install the unit's sealed scripted runner via [`crate::minds::sealed::install_sealed_runners`]
+/// (resolving the Rhai source by seal digest from [`crate::store::TacsimStore`]) and execute
+/// the think job on the process-wide [`crate::minds::MindPool`] (`SF.R22`, `D-35-1`, `D-35-17`).
+#[allow(clippy::too_many_arguments)]
+pub fn run_sealed_mind_on_pool(
+    unit_obj: ObjId,
+    seal: Option<&crate::arena::mind::MindSeal>,
+    default_digest: [u8; 32],
+    store: Option<&crate::store::TacsimStore>,
+    think_seq: u64,
+    t_ms: i64,
+    view: Arc<MindView>,
+    memory: &[u8],
+) -> Option<ThinkResult> {
+    use crate::arena::mind::{CollectedThink, SealEngine};
+
+    let mut arena = BASE_SEALED_SPACE_ARENA.as_ref()?.clone();
+    let digest = seal.map_or(default_digest, |s| s.source_sha256);
+    if let Some(u) = arena.units.first_mut() {
+        u.id = unit_obj;
+        u.seal.engine = SealEngine::Scripted;
+        u.seal.digest = digest;
     }
     let cfg = ArenaConfig::default();
-    let runner = Arc::new(RhaiRunner::new(&cfg, source, mush_mind::Digest(bytes)).ok()?);
-    if let Ok(mut guard) = CACHED_RHAI_RUNNERS.lock() {
-        guard.insert(bytes, runner.clone());
-    }
-    Some(runner)
+    crate::minds::sealed::install_sealed_runners(&mut arena, &cfg, &|d| {
+        crate::minds::content::source_lookup(store, d).map(str::to_owned)
+    })
+    .ok()?;
+    let runner = arena.runners.remove(&unit_obj)?;
+
+    let card_def = stock_definition(
+        &[(SmolStr::new_static("Line"), line(&ReflexConfig::default()))],
+        CoreClass::I,
+    )
+    .ok()?;
+    let mut catalog = CardCatalog::default();
+    let def_digest = catalog.admit(card_def).ok()?;
+    let card = catalog
+        .resolve(ProfileKey {
+            definition: def_digest,
+            index: 0,
+        })
+        .ok()?;
+    let core_profile = ClassTable::STOCK.row(CoreClass::I);
+    let program = BoundProgram::bind(&[], &[], &[], &core_profile, 0).ok()?;
+    let profile_token = ProfileToken {
+        unit: unit_obj,
+        generation: 0,
+        key: card.key(),
+    };
+    let map: Arc<ArenaDefinition> = CACHED_SPACE_ARENA_DEF.as_ref()?.clone();
+    let collected = CollectedThink {
+        epochs: [0, 0, 0],
+        unit: unit_obj,
+        think_seq,
+        t_ms,
+        lands_ms: t_ms.saturating_add(500),
+        seed: u64::from(unit_obj.0).wrapping_add(think_seq),
+        dropped: false,
+        profile: core_profile,
+        view,
+        memory: memory.to_vec(),
+        map,
+        card,
+        program,
+        profile_token,
+        runner,
+        substep_hash: None,
+        ranges_before: BTreeMap::new(),
+    };
+    let mut answers = crate::minds::MindPool::shared(1)
+        .submit(vec![collected])
+        .wait()
+        .ok()?;
+    Some(answers.pop()?.result)
 }
 
-/// Compile and run one Rhai [`MindRunner::think`] step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
+/// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`, `SF.R22`).
 ///
 /// Builds a propagation-gated [`MindView`] (`mush_propagation::resolve_detection`) so the AI mind
-/// sees only contacts that pass inverse-square IR / EMCON detection, executes `source` on
-/// [`RhaiRunner`], and returns the [`ThinkResult`] alongside a `(ContactId -> ship_id)` lookup table.
-pub fn run_space_rhai_think(
+/// sees only contacts that pass inverse-square IR / EMCON detection, installs the runner via
+/// [`crate::minds::sealed::install_sealed_runners`] from `seal` and `store`, and executes the
+/// job on [`crate::minds::MindPool`].
+#[allow(clippy::too_many_arguments)]
+pub fn run_space_rhai_think_with_seal(
     bubble: &LocalSpaceBubble,
     ship_id: &str,
     unit_obj: ObjId,
-    source: &str,
+    seal: Option<&crate::arena::mind::MindSeal>,
+    default_digest: [u8; 32],
+    store: Option<&crate::store::TacsimStore>,
     think_seq: u64,
     memory: &[u8],
 ) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
     let observer = bubble.ships.get(ship_id)?;
-    let runner = cached_space_rhai_runner(source)?;
 
     let mut contact_map = BTreeMap::new();
     let mut contacts = Vec::new();
@@ -936,57 +1192,46 @@ pub fn run_space_rhai_think(
         odds_floor_permille: 0,
     });
 
-    let card_def = stock_definition(
-        &[(SmolStr::new_static("Line"), line(&ReflexConfig::default()))],
-        CoreClass::I,
-    )
-    .ok()?;
-    let mut catalog = CardCatalog::default();
-    let def_digest = catalog.admit(card_def).ok()?;
-    let card = catalog
-        .resolve(ProfileKey {
-            definition: def_digest,
-            index: 0,
-        })
-        .ok()?;
-    let core_profile = ClassTable::STOCK.row(CoreClass::I);
-    let program = BoundProgram::bind(&[], &[], &[], &core_profile, 0).ok()?;
-    let profile_token = ProfileToken {
-        unit: unit_obj,
-        generation: 0,
-        key: card.key(),
-    };
-
-    let map: Arc<ArenaDefinition> = CACHED_SPACE_ARENA_DEF.as_ref()?.clone();
-    let job = ThinkJob {
-        unit: unit_obj,
+    let result = run_sealed_mind_on_pool(
+        unit_obj,
+        seal,
+        default_digest,
+        store,
         think_seq,
         t_ms,
-        lands_ms: t_ms.saturating_add(500),
-        seed: u64::from(unit_obj.0).wrapping_add(think_seq),
-        dropped: false,
-        profile: &core_profile,
-        view: &view,
+        view,
         memory,
-        map: &map,
-        card: &card,
-        program: &program,
-        profile_token,
-    };
-
-    let result = runner.think(&job);
+    )?;
     Some((result, contact_map))
 }
 
-/// Run one Rhai [`MindRunner::think`] step for a collector drone sortie (`drone_mining.rhai`, `SF.R14`, `D-35-13`).
+/// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
+pub fn run_space_rhai_think(
+    bubble: &LocalSpaceBubble,
+    ship_id: &str,
+    unit_obj: ObjId,
+    source: &str,
+    think_seq: u64,
+    memory: &[u8],
+) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
+    use sha2::{Digest as _, Sha256};
+    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    run_space_rhai_think_with_seal(
+        bubble, ship_id, unit_obj, None, digest, None, think_seq, memory,
+    )
+}
+
+/// Run one Rhai [`crate::minds::MindPool`] think step for a collector drone sortie (`drone_mining.rhai`, `SF.R14`, `SF.R22`, `D-35-13`).
 #[must_use]
 pub fn run_drone_rhai_think(
+    store: Option<&crate::store::TacsimStore>,
     drone_obj: ObjId,
+    seal: Option<&crate::arena::mind::MindSeal>,
     pos_m: [i64; 3],
     think_seq: u64,
     memory: &[u8],
 ) -> Option<ThinkResult> {
-    let runner = cached_space_rhai_runner(crate::minds::content::drone_mining_source())?;
+    let t_ms = i64::try_from(think_seq.saturating_mul(1_000)).unwrap_or(0);
     let view = Arc::new(MindView {
         unit: drone_obj.0,
         callsign: Designator::Unit {
@@ -1021,50 +1266,22 @@ pub fn run_drone_rhai_think(
         weapons: Vec::new(),
         rules: Vec::new(),
         order: None,
-        t_ms: i64::try_from(think_seq.saturating_mul(1_000)).unwrap_or(0),
+        t_ms,
         notices: Vec::<FrameNotice>::new(),
         contacts: Vec::new(),
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
     });
-    let card_def = stock_definition(
-        &[(SmolStr::new_static("Line"), line(&ReflexConfig::default()))],
-        CoreClass::I,
-    )
-    .ok()?;
-    let mut catalog = CardCatalog::default();
-    let def_digest = catalog.admit(card_def).ok()?;
-    let card = catalog
-        .resolve(ProfileKey {
-            definition: def_digest,
-            index: 0,
-        })
-        .ok()?;
-    let core_profile = ClassTable::STOCK.row(CoreClass::I);
-    let program = BoundProgram::bind(&[], &[], &[], &core_profile, 0).ok()?;
-    let profile_token = ProfileToken {
-        unit: drone_obj,
-        generation: 0,
-        key: card.key(),
-    };
-    let map: Arc<ArenaDefinition> = CACHED_SPACE_ARENA_DEF.as_ref()?.clone();
-    let t_ms = i64::try_from(think_seq.saturating_mul(1_000)).unwrap_or(0);
-    let job = ThinkJob {
-        unit: drone_obj,
+    run_sealed_mind_on_pool(
+        drone_obj,
+        seal,
+        crate::minds::content::drone_mining_digest().0,
+        store,
         think_seq,
         t_ms,
-        lands_ms: t_ms.saturating_add(500),
-        seed: u64::from(drone_obj.0).wrapping_add(think_seq),
-        dropped: false,
-        profile: &core_profile,
-        view: &view,
+        view,
         memory,
-        map: &map,
-        card: &card,
-        program: &program,
-        profile_token,
-    };
-    Some(runner.think(&job))
+    )
 }
 
 fn sync_corvette_cleared_stage_in_memory(picket: &mut KirkwoodPicketState) {
@@ -1097,23 +1314,20 @@ fn step_corvette_mind_on_bubble(
     picket: &mut KirkwoodPicketState,
     carrier_ship_id: &str,
     carriers: &[(ObjId, String, PartyId)],
+    store: Option<&crate::store::TacsimStore>,
     emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
 ) {
     sync_corvette_cleared_stage_in_memory(picket);
-    let corvette_digest = picket.corvette_seal.as_ref().map_or_else(
-        || crate::minds::content::kirkwood_picket_digest().0,
-        |s| s.source_sha256,
-    );
-    let corvette_source = crate::minds::content::source_lookup(None, &corvette_digest)
-        .unwrap_or_else(|| crate::minds::content::kirkwood_picket_source());
 
     if let Some(corvette) = bubble.ships.get(&picket.corvette_ship_id)
         && corvette.status == HullStatus::Operational
-        && let Some((res, cmap)) = run_space_rhai_think(
+        && let Some((res, cmap)) = run_space_rhai_think_with_seal(
             bubble,
             &picket.corvette_ship_id,
             picket.corvette_hull,
-            corvette_source,
+            picket.corvette_seal.as_ref(),
+            crate::minds::content::kirkwood_picket_digest().0,
+            store,
             picket.corvette_think_seq,
             &picket.corvette_memory,
         )
@@ -1293,6 +1507,7 @@ fn step_raider_mind_on_bubble(
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
     carrier_ship_id: &str,
+    store: Option<&crate::store::TacsimStore>,
     emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
 ) {
     let any_outcome_or_run = picket.inspection_outcome.is_some()
@@ -1317,21 +1532,16 @@ fn step_raider_mind_on_bubble(
         ));
     }
 
-    let raider_digest = picket.raider_seal.as_ref().map_or_else(
-        || crate::minds::content::belt_raider_digest().0,
-        |s| s.source_sha256,
-    );
-    let raider_source = crate::minds::content::source_lookup(None, &raider_digest)
-        .unwrap_or_else(|| crate::minds::content::belt_raider_source());
-
     if let Some(raider) = bubble.ships.get(&picket.raider_ship_id)
         && raider.status == HullStatus::Operational
         && raider.emcon != EmconPosture::Ghost
-        && let Some((res, cmap)) = run_space_rhai_think(
+        && let Some((res, cmap)) = run_space_rhai_think_with_seal(
             bubble,
             &picket.raider_ship_id,
             picket.raider_hull,
-            raider_source,
+            picket.raider_seal.as_ref(),
+            crate::minds::content::belt_raider_digest().0,
+            store,
             picket.raider_think_seq,
             &picket.raider_memory,
         )
@@ -1389,20 +1599,46 @@ fn step_raider_mind_on_bubble(
                     }
                 }
                 IntentKind::Speed { cms } => {
-                    if *cms > 0
-                        && bubble
+                    if *cms > 0 {
+                        let desired_thrust = if let (Some(raider_ship), Some(target_ship)) = (
+                            bubble.ships.get(&picket.raider_ship_id),
+                            bubble.ships.get(&locked_ship),
+                        ) {
+                            let max_accel = raider_ship.max_accel_mps2.max(1);
+                            let mag = (i64::from(*cms) / 100).clamp(1, max_accel);
+                            let dx =
+                                i128::from(target_ship.pos_m[0]) - i128::from(raider_ship.pos_m[0]);
+                            let dy =
+                                i128::from(target_ship.pos_m[1]) - i128::from(raider_ship.pos_m[1]);
+                            let dz =
+                                i128::from(target_ship.pos_m[2]) - i128::from(raider_ship.pos_m[2]);
+                            let dist = isqrt_i128(dx * dx + dy * dy + dz * dz);
+                            if dist > 0 {
+                                let tx = ((dx * i128::from(mag)) / dist) as i64;
+                                let ty = ((dy * i128::from(mag)) / dist) as i64;
+                                let tz = ((dz * i128::from(mag)) / dist) as i64;
+                                let v = [tx, ty, tz];
+                                if v == [0, 0, 0] { [-15, 0, 0] } else { v }
+                            } else {
+                                [-15, 0, 0]
+                            }
+                        } else {
+                            [-15, 0, 0]
+                        };
+                        if bubble
                             .ships
                             .get(&picket.raider_ship_id)
-                            .is_some_and(|s| s.thrust_mps2 != [-15, 0, 0])
-                    {
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::CommandBurn {
-                                ship_id: picket.raider_ship_id.clone(),
-                                thrust_mps2: [-15, 0, 0],
-                                force_into_reserve: true,
-                            },
-                        ));
+                            .is_some_and(|s| s.thrust_mps2 != desired_thrust)
+                        {
+                            emitted_events.extend(tape.record_and_apply(
+                                bubble,
+                                BubbleInputCommand::CommandBurn {
+                                    ship_id: picket.raider_ship_id.clone(),
+                                    thrust_mps2: desired_thrust,
+                                    force_into_reserve: true,
+                                },
+                            ));
+                        }
                     }
                 }
                 IntentKind::Fire { weapon, .. } => {
@@ -1503,7 +1739,7 @@ pub fn step_kirkwood_picket(
     picket: &mut KirkwoodPicketState,
     carrier_ship_id: &str,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
-    step_kirkwood_picket_for_carriers(bubble, tape, picket, carrier_ship_id, &[])
+    step_kirkwood_picket_for_carriers_with_store(bubble, tape, picket, carrier_ship_id, &[], None)
 }
 
 /// Step the Kirkwood Customs Picket `RhaiRunner` doctrines across all participating carriers (`SF.R18`).
@@ -1514,16 +1750,44 @@ pub fn step_kirkwood_picket_for_carriers(
     carrier_ship_id: &str,
     carriers: &[(ObjId, String, PartyId)],
 ) -> Vec<super::bubble::SpaceCombatEvent> {
+    step_kirkwood_picket_for_carriers_with_store(
+        bubble,
+        tape,
+        picket,
+        carrier_ship_id,
+        carriers,
+        None,
+    )
+}
+
+/// Step the Kirkwood Customs Picket sealed minds across all participating carriers with an
+/// explicit [`crate::store::TacsimStore`] reference (`SF.R22`).
+pub fn step_kirkwood_picket_for_carriers_with_store(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    picket: &mut KirkwoodPicketState,
+    carrier_ship_id: &str,
+    carriers: &[(ObjId, String, PartyId)],
+    store: Option<&crate::store::TacsimStore>,
+) -> Vec<super::bubble::SpaceCombatEvent> {
     let mut emitted_events = Vec::new();
     bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
     if picket.inspection_outcome.is_some() || !picket.carrier_inspection_outcome.is_empty() {
-        step_raider_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
+        step_raider_mind_on_bubble(
+            bubble,
+            tape,
+            picket,
+            carrier_ship_id,
+            store,
+            &mut emitted_events,
+        );
         step_corvette_mind_on_bubble(
             bubble,
             tape,
             picket,
             carrier_ship_id,
             carriers,
+            store,
             &mut emitted_events,
         );
     } else {
@@ -1533,9 +1797,17 @@ pub fn step_kirkwood_picket_for_carriers(
             picket,
             carrier_ship_id,
             carriers,
+            store,
             &mut emitted_events,
         );
-        step_raider_mind_on_bubble(bubble, tape, picket, carrier_ship_id, &mut emitted_events);
+        step_raider_mind_on_bubble(
+            bubble,
+            tape,
+            picket,
+            carrier_ship_id,
+            store,
+            &mut emitted_events,
+        );
     }
     bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
     emitted_events
@@ -1806,39 +2078,59 @@ pub fn record_ran_the_picket_incident(
     front_id
 }
 
+/// Authored NPC cast entry from `content/space/picket_cast.json` (`SF.R22`, `D-35-17`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PicketCastEntry {
+    pub commander: String,
+    pub organization: Option<String>,
+    pub hull_name: String,
+    pub unit: String,
+    pub overlay: String,
+    pub doctrine: String,
+    pub pos_m: [i64; 3],
+    pub vel_mmps: [i64; 3],
+}
+
+/// Authored NPC cast table for the Kirkwood Customs Picket and deep-space interdiction (`SF.R22`, `D-35-17`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PicketCastBook {
+    pub corvette: PicketCastEntry,
+    pub raider: PicketCastEntry,
+    pub interdictor: PicketCastEntry,
+}
+
+const PICKET_CAST_JSON: &str = include_str!("../../content/space/picket_cast.json");
+
+static PICKET_CAST: std::sync::LazyLock<Option<PicketCastBook>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(PICKET_CAST_JSON).ok());
+
+/// Return the authored [`PicketCastBook`] loaded from `content/space/picket_cast.json` (`SF.R22`, `D-35-17`).
+#[must_use]
+pub fn picket_cast_book() -> Option<&'static PicketCastBook> {
+    PICKET_CAST.as_ref()
+}
+
 fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &mut SpaceShipState) {
+    let (corvette_overlay, raider_overlay) = if let Some(cast) = picket_cast_book() {
+        (cast.corvette.overlay.as_str(), cast.raider.overlay.as_str())
+    } else {
+        ("tacsim.unit.corvette", "tacsim.unit.raider_heavy")
+    };
     super::custody::apply_space_unit_overlay(
         corvette,
-        &super::custody::space_unit_overlay_for_id("tacsim.unit.corvette"),
+        &super::custody::space_unit_overlay_for_id(corvette_overlay),
     );
     corvette.attitude_deg = (180, 0, 0);
     corvette.pdc_auto = true;
     corvette.emcon = EmconPosture::ActiveCombat;
-    if let Some(off_laser) = corvette.lasers.first_mut() {
-        off_laser.max_range_m = 160_000;
-        off_laser.base_damage = 180;
-    }
-    if let Some(def_laser) = corvette.lasers.get_mut(1) {
-        def_laser.mode = LaserMode::Defense;
-        def_laser.defense_range_m = 45_000;
-    }
 
     super::custody::apply_space_unit_overlay(
         raider,
-        &super::custody::space_unit_overlay_for_id("tacsim.unit.raider_heavy"),
+        &super::custody::space_unit_overlay_for_id(raider_overlay),
     );
     raider.attitude_deg = (180, 0, 0);
     raider.emcon = EmconPosture::Ghost;
     raider.heat_permille = 0;
-    if let Some(rg) = raider.railguns.first_mut() {
-        rg.max_range_m = 250_000;
-        rg.muzzle_vel_mps = 12_000;
-    }
-    if let Some(tube) = raider.torpedo_tubes.first_mut() {
-        tube.tubes = 2;
-        tube.max_dv_mps = 12_000;
-        tube.accel_mps2 = 250;
-    }
 }
 
 /// Standard Freeport Registry derelict salvage recovery bounty (`1,200 cr`, `SF.R15`).
@@ -1965,9 +2257,8 @@ pub fn settle_salvage_recovery_payout_from_registry(
 }
 
 /// Spawn real world `Thing` hulls and checked-out [`mush_tactics::TacticalUnit`]s for the
-/// Republic Customs Corvette (`"tacsim.unit.corvette"`) and Belt Raider (`"tacsim.unit.corvette"`
-/// with `"tacsim.unit.raider_heavy"` overlay), and insert them alongside their 3-party relations
-/// into `bubble` (`SF.R12`, `SF.R20`, `D-35-1`, `D-35-11`).
+/// Republic Customs Corvette and Belt Raider from `content/space/picket_cast.json`, and insert
+/// them alongside their 3-party relations into `bubble` (`SF.R12`, `SF.R20`, `SF.R22`, `D-35-1`, `D-35-11`, `D-35-17`).
 pub fn spawn_kirkwood_picket_ships_in_world(
     ctx: &mut Ctx<'_>,
     bubble: &mut LocalSpaceBubble,
@@ -1975,27 +2266,21 @@ pub fn spawn_kirkwood_picket_ships_in_world(
     leg_cursor: u32,
     _carrier_ship_id: &str,
 ) -> Option<KirkwoodPicketState> {
+    let cast = picket_cast_book()?;
     let site_id = format!("domain.{}", domain.0);
     let corvette_ship_id = format!("customs.{}.{}", domain.0, leg_cursor);
     let raider_ship_id = format!("raider.{}.{}", domain.0, leg_cursor);
 
     let corvette_commander = super::tick::reuse_or_create_npc_commander(
         ctx,
-        "Customs Picket Commander",
-        Some("Republic Customs"),
+        &cast.corvette.commander,
+        cast.corvette.organization.as_deref(),
     )
     .unwrap_or(mush_core::GOD);
-    let corvette_hull = super::tick::reuse_or_create_npc_hull(
-        ctx,
-        "Republic Customs Corvette",
-        corvette_commander,
-    )?;
-    super::custody::create_stock_space_unit_in_world(
-        ctx,
-        corvette_hull,
-        crate::definitions::content::CORVETTE,
-    )
-    .ok()?;
+    let corvette_hull =
+        super::tick::reuse_or_create_npc_hull(ctx, &cast.corvette.hull_name, corvette_commander)?;
+    super::custody::create_stock_space_unit_in_world(ctx, corvette_hull, &cast.corvette.unit)
+        .ok()?;
     super::custody::ensure_space_hull_titled(ctx, corvette_hull, corvette_commander);
     let mut corvette = super::custody::check_out_space_unit(
         ctx,
@@ -2003,22 +2288,20 @@ pub fn spawn_kirkwood_picket_ships_in_world(
         &site_id,
         leg_cursor,
         &corvette_ship_id,
-        "Republic Customs Corvette",
+        &cast.corvette.hull_name,
         CUSTOMS_CORVETTE_PARTY,
-        [-CORVETTE_STANDOFF_M, 400, 0],
-        [13_800, 0, 0],
+        cast.corvette.pos_m,
+        cast.corvette.vel_mmps,
     )
     .ok()?;
 
-    let leader =
-        super::tick::reuse_or_create_npc_commander(ctx, "Kaelen Vane", Some("Kirkwood Corsairs"))?;
-    let raider_hull = super::tick::reuse_or_create_npc_hull(ctx, "Belt Raider", leader)?;
-    super::custody::create_stock_space_unit_in_world(
+    let leader = super::tick::reuse_or_create_npc_commander(
         ctx,
-        raider_hull,
-        crate::definitions::content::CORVETTE,
-    )
-    .ok()?;
+        &cast.raider.commander,
+        cast.raider.organization.as_deref(),
+    )?;
+    let raider_hull = super::tick::reuse_or_create_npc_hull(ctx, &cast.raider.hull_name, leader)?;
+    super::custody::create_stock_space_unit_in_world(ctx, raider_hull, &cast.raider.unit).ok()?;
     super::custody::ensure_space_hull_titled(ctx, raider_hull, leader);
     let mut raider = super::custody::check_out_space_unit(
         ctx,
@@ -2026,10 +2309,10 @@ pub fn spawn_kirkwood_picket_ships_in_world(
         &site_id,
         leg_cursor,
         &raider_ship_id,
-        "Belt Raider",
+        &cast.raider.hull_name,
         BELT_RAIDER_PARTY,
-        [RAIDER_AMBUSH_RANGE_M, 0, 0],
-        [-20_000, 0, 0],
+        cast.raider.pos_m,
+        cast.raider.vel_mmps,
     )
     .ok()?;
 
@@ -2052,14 +2335,14 @@ pub fn spawn_kirkwood_picket_ships_in_world(
         ctx,
         corvette_hull,
         crate::arena::mind::SortieId::ic(corvette_hull, now_ic),
-        "kirkwood_picket",
+        &cast.corvette.doctrine,
         crate::minds::content::kirkwood_picket_digest().0,
     );
     let raider_seal = seal_space_unit_in_world(
         ctx,
         raider_hull,
         crate::arena::mind::SortieId::ic(raider_hull, now_ic),
-        "belt_raider",
+        &cast.raider.doctrine,
         crate::minds::content::belt_raider_digest().0,
     );
 
@@ -2083,6 +2366,7 @@ pub fn build_kirkwood_picket_ships(
     leg_cursor: u32,
     _carrier_ship_id: &str,
 ) -> Option<KirkwoodPicketState> {
+    let cast = picket_cast_book()?;
     let corvette_ship_id = format!("customs.{}.{}", domain.0, leg_cursor);
     let raider_ship_id = format!("raider.{}.{}", domain.0, leg_cursor);
     let corvette_hull = ObjId(
@@ -2098,17 +2382,17 @@ pub fn build_kirkwood_picket_ships(
 
     let mut corvette = SpaceShipState::new_corvette(
         &corvette_ship_id,
-        "Republic Customs Corvette",
+        &cast.corvette.hull_name,
         CUSTOMS_CORVETTE_PARTY,
-        [-CORVETTE_STANDOFF_M, 400, 0],
-        [13_800, 0, 0],
+        cast.corvette.pos_m,
+        cast.corvette.vel_mmps,
     );
     let mut raider = SpaceShipState::new_corvette(
         &raider_ship_id,
-        "Belt Raider",
+        &cast.raider.hull_name,
         BELT_RAIDER_PARTY,
-        [RAIDER_AMBUSH_RANGE_M, 0, 0],
-        [-20_000, 0, 0],
+        cast.raider.pos_m,
+        cast.raider.vel_mmps,
     );
     configure_corvette_and_raider_ships(&mut corvette, &mut raider);
 

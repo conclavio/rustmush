@@ -1323,6 +1323,102 @@ fn place_coordinates_fault(place: &LocationDef) -> Option<String> {
     }
 }
 
+/// **Doc 35 cut SF.R22 (`D-35-17`)** — validate authored orbital clusters on a location:
+/// unique cluster ids across the pack, non-empty label, zone `"Core"` or `"Frontier"`,
+/// `anchor_body` naming a body in the pack, non-empty `rocks` with unique `'A'..='Z'`
+/// letters, unique non-empty aliases, valid spectral class, positive `gross_t`, and
+/// `tenure == Held` iff `holder_org.is_some()`.
+fn place_clusters_fault(
+    place: &LocationDef,
+    entries: &BTreeMap<CanonicalId, PackEntry>,
+    seen_cluster_ids: &mut std::collections::BTreeSet<CanonicalId>,
+) -> Option<String> {
+    for cluster in &place.clusters {
+        if !seen_cluster_ids.insert(cluster.id.clone()) {
+            return Some(format!("duplicate orbital cluster id {}", cluster.id));
+        }
+        if cluster.label.trim().is_empty() || cluster.label.len() > MAX_LABEL_BYTES {
+            return Some(format!(
+                "cluster {} must have a non-empty label of at most {MAX_LABEL_BYTES} bytes",
+                cluster.id
+            ));
+        }
+        if !matches!(cluster.zone.as_str(), "Core" | "Frontier") {
+            return Some(format!(
+                "cluster {} zone must be \"Core\" or \"Frontier\", not {:?}",
+                cluster.id, cluster.zone
+            ));
+        }
+        let prefixed_anchor = CanonicalId::new(format!("tacsim.body.{}", cluster.anchor_body)).ok();
+        let anchor_declared = matches!(
+            entries
+                .get(&cluster.anchor_body)
+                .or_else(|| { prefixed_anchor.as_ref().and_then(|cid| entries.get(cid)) }),
+            Some(PackEntry::Body(_))
+        );
+        if !anchor_declared {
+            return Some(format!(
+                "cluster {} anchor_body {} is not a body of this pack",
+                cluster.id, cluster.anchor_body
+            ));
+        }
+        if cluster.rocks.is_empty() {
+            return Some(format!(
+                "cluster {} must declare at least one rock",
+                cluster.id
+            ));
+        }
+        let mut seen_letters = std::collections::BTreeSet::new();
+        let mut seen_aliases = std::collections::BTreeSet::new();
+        for rock in &cluster.rocks {
+            if !rock.letter.is_ascii_uppercase() {
+                return Some(format!(
+                    "cluster {} rock letter {:?} must be 'A'..='Z'",
+                    cluster.id, rock.letter
+                ));
+            }
+            if !seen_letters.insert(rock.letter) {
+                return Some(format!(
+                    "cluster {} repeats rock letter {}",
+                    cluster.id, rock.letter
+                ));
+            }
+            if rock.alias.trim().is_empty() {
+                return Some(format!(
+                    "cluster {} rock {} has an empty alias",
+                    cluster.id, rock.letter
+                ));
+            }
+            if !seen_aliases.insert(rock.alias.to_ascii_lowercase()) {
+                return Some(format!(
+                    "cluster {} repeats rock alias {}",
+                    cluster.id, rock.alias
+                ));
+            }
+            if crate::space::mining::SpectralClass::parse(&rock.spectral).is_none() {
+                return Some(format!(
+                    "cluster {} rock {} has invalid spectral class {:?}",
+                    cluster.id, rock.letter, rock.spectral
+                ));
+            }
+            if rock.gross_t == 0 {
+                return Some(format!(
+                    "cluster {} rock {} gross_t must be positive",
+                    cluster.id, rock.letter
+                ));
+            }
+            let is_held = rock.tenure == crate::port::def::Tenure::Held;
+            if is_held != rock.holder_org.is_some() {
+                return Some(format!(
+                    "cluster {} rock {} tenure {:?} and holder_org {:?} disagree",
+                    cluster.id, rock.letter, rock.tenure, rock.holder_org
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// The entry kinds this crate decodes; any other kind in a pack is another
 /// module's, applied through the content module (S9.1).
 ///
@@ -1618,6 +1714,7 @@ impl RulesPack {
         }
         // A route's symbolic endpoints have to name places this same pack declares:
         // resolving across packs would make a route's meaning depend on load order.
+        let mut seen_cluster_ids = std::collections::BTreeSet::new();
         for (id, entry) in &entries {
             // E7 cut 3: a body's place is symbolic for the same reason a route's
             // endpoints are, and it is checked the same way — resolving across
@@ -1660,6 +1757,15 @@ impl RulesPack {
             // on a body, inside the latitude and east-longitude bands.
             if let PackEntry::Location(place) = entry
                 && let Some(detail) = place_coordinates_fault(place)
+            {
+                return Err(PackError::PlaceCoordinates {
+                    place: id.to_string(),
+                    detail,
+                });
+            }
+            // Doc 35 cut SF.R22 (D-35-17): authored orbital clusters on a place.
+            if let PackEntry::Location(place) = entry
+                && let Some(detail) = place_clusters_fault(place, &entries, &mut seen_cluster_ids)
             {
                 return Err(PackError::PlaceCoordinates {
                     place: id.to_string(),

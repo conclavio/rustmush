@@ -253,7 +253,7 @@ the site has settled:
   into the bay, where `+bay` quotes its repair (`help ships`). Loaded into your
   own party's or a Friend's carrier, it is home. Loaded into anyone else's, it
   is in that carrier's custody with a salvage claim owed, never its title, and
-  anyone still aboard is abandoned to extraction. The custodian files the claim
+  anyone still aboard is taken captive (see *Crew*). The custodian files the claim
   (`+salvage/claim <hull> go`), everyone who answers for the title (a company's
   people, or its agent) is told by IC mail, and either side's evidence is read
   and contested at the registry (`+salvage/inspect`,
@@ -321,9 +321,24 @@ Speech in the room, `look`, `+sortie/condition`, mail, pages and OOC channels
 work, and so do the reads (`+ship`, `+field`, `+tv`, `+sortie/operation`) and
 standing your own operation down (`+sortie/deactivate`, `+sortie/end`). A
 character in processing at a port may go anywhere in the port and nowhere else:
-"You are being processed at Ceres Freeport; about 1 IC h." What takes a
-character captive, hands them over and frees them is still being built; the
-record and the refusals are in place first.
+"You are being processed at Ceres Freeport; about 1 IC h."
+
+**Taken at a load.** A casualty loaded into a carrier that is not your party's or
+a Friend's takes everyone still inside it captive, a Neutral salvor's as much as
+an enemy's. You step out into that carrier's bay room, held by the carrier's
+operator, and are told so. A captor who was no enemy of yours (no declared
+Hostile stance between your organizations, and no fire either way in the field
+your hull came out of) loses 5 standing with each faction you openly stand in. A
+hired NPC flying the hull is never taken: they leave the seat, go back to the
+crew room they were hired in, and their contract with you ends; until that lands
+they are not on offer to anyone. Taking a person off owned ground without the
+title holder's or the landholder's leave is written in the site's evidence log.
+
+The captor reads who they hold with `+ship/captives` and lets one go with
+`+ship/release <name|#n>`, for nothing: docked at a port, the captive is set down
+in its arrivals; anywhere else they ride on aboard as a passenger. Handing a
+captive over at a port, the time limit on captivity and capture at an ejection are
+still being built.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field

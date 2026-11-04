@@ -1347,6 +1347,14 @@ impl ClaimCursor {
 
 /// **A launch over a live claim cursor** (doc 23 §17.3): the claim's relaunch guard.
 pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
+/// **The cursor's reason when the claim was refused for good** (doc 23 cut S.4b-2, D-23-21): the
+/// owners refused the Open on every try (a licence's seat already held, a lapsed or withdrawn
+/// holding, a changed hull); the launch is cancelled with the rig in its bay.
+pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is cancelled and the rig stays in its bay.";
+
+/// **A queued launch whose claim the book does not hold yet** (doc 23 cut S.4b-2): the start
+/// waits; the tick retries it.
+pub const CLAIM_NOT_OPEN: &str = "that rig's mind claim has not opened yet";
 
 /// **The four close kinds the claim and the epoch share** (`IcCloseKind`; doc 23 §17.2), as the
 /// cursor carries them from a finish to the fire that submits the Close.
@@ -1370,6 +1378,35 @@ pub enum ClaimCloseKind {
         /// The recoverer.
         base: ObjId,
     },
+}
+
+impl From<mush_roll::commerce::ic_claims::IcCloseKind> for ClaimCloseKind {
+    fn from(kind: mush_roll::commerce::ic_claims::IcCloseKind) -> Self {
+        use mush_roll::commerce::ic_claims::IcCloseKind;
+        match kind {
+            IcCloseKind::ReturnedToBase { base } => ClaimCloseKind::ReturnedToBase { base },
+            IcCloseKind::PoweredDownInBase { base } => ClaimCloseKind::PoweredDownInBase { base },
+            IcCloseKind::Destroyed => ClaimCloseKind::Destroyed,
+            IcCloseKind::RecoveredToBase { base } => ClaimCloseKind::RecoveredToBase { base },
+        }
+    }
+}
+
+impl RigRecord {
+    /// **The claim's Close is owed** (doc 23 cut S.4b-2, D-23-13: "the epoch's close finishes
+    /// land `Closing` on the cursor"): every path that closes the rig's epoch calls this in the
+    /// same bundle with the kind it wrote on the close line; an `Open` cursor becomes `Closing`,
+    /// and the surface tick's claim arm submits the Close as the operator the cursor kept. A
+    /// rig with no open claim is untouched.
+    pub fn owe_claim_close(&mut self, kind: impl Into<ClaimCloseKind>) {
+        if let Some(ClaimCursor::Open { open, operator }) = self.claim.as_deref() {
+            self.claim = Some(Box::new(ClaimCursor::Closing {
+                open: *open,
+                kind: kind.into(),
+                operator: *operator,
+            }));
+        }
+    }
 }
 
 /// serde's `skip_serializing_if` for [`ClaimCursor::Opening`]'s `tries`.
@@ -1472,6 +1509,9 @@ pub struct QueuedLaunch {
     /// The organisation the operator acts for (`org=`), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<u64>,
+    /// **The licence's state at `go`** (doc 23 cut S.4b-2): `active` or `grace`, which the
+    /// open line prints beside the claim's seal.
+    pub licence_state: crate::minds::licence_state::SealLicenceState,
 }
 
 /// A slot word a record may carry: `1..=MAX_BAY_ITEMS`.
@@ -1769,12 +1809,27 @@ impl RigRecord {
         }
         // Doc 20 cut SM.8 (lead ruling 1): a queued unload waits on an idle rig — no act, no run.
         if let Some(queued) = &self.queued {
-            // Doc 23 cut S.4b-1: the launch a claim holds back is S.4b-2's to queue.
-            if queued.kind != ActKind::Unload || queued.launch.is_some() {
-                return Err("only an unload is queued".to_owned());
-            }
-            if queued.after > self.ordinal || queued.after == 0 {
-                return Err("a queued act follows an act of the record".to_owned());
+            // Doc 23 cut S.4b-2 (D-23-21): a launch queued behind its claim, which `go` filed
+            // with the rig in its bay (no act yet, so it may be the rig's first); else SM.8's
+            // unload after its recover.
+            match (queued.kind, queued.launch.as_deref()) {
+                (ActKind::Launch, Some(launch)) => {
+                    if !matches!(
+                        self.claim.as_deref(),
+                        Some(ClaimCursor::Opening { launch_ic, .. }) if *launch_ic == launch.launch_ic
+                    ) {
+                        return Err("a queued launch waits on its claim's Open".to_owned());
+                    }
+                    if queued.after != self.ordinal {
+                        return Err("a queued launch follows the record's last act".to_owned());
+                    }
+                }
+                (ActKind::Unload, None) => {
+                    if queued.after > self.ordinal || queued.after == 0 {
+                        return Err("a queued act follows an act of the record".to_owned());
+                    }
+                }
+                _ => return Err("only an unload is queued".to_owned()),
             }
             if !slot_ok(queued.slot) {
                 return Err(format!("a queued act's slot is 1 to {MAX_BAY_ITEMS}"));
@@ -4152,6 +4207,7 @@ mod tests {
                 launch_ic: 1_000,
                 mind: "filed:7".into(),
                 org: None,
+                licence_state: crate::minds::licence_state::SealLicenceState::Active,
             }));
         }
         assert_eq!(

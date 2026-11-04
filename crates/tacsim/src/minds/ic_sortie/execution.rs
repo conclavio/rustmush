@@ -15,7 +15,8 @@ use crate::deliberation::order::CharacterRef;
 use crate::match_::filed_holdings::FiledExecutable;
 use crate::match_::seal::{SealPolicy, seal_with_policy};
 
-fn bad(_: impl std::fmt::Display) -> ParticipantError {
+fn bad(reason: impl std::fmt::Display) -> ParticipantError {
+    tracing::debug!(target: "ic_claim", %reason, "tacsim: IC executable refused");
     ParticipantError::refused("IC executable material is unavailable or changed")
 }
 
@@ -23,7 +24,8 @@ fn bad(_: impl std::fmt::Display) -> ParticipantError {
 #[serde(deny_unknown_fields)]
 pub(super) struct Execution {
     pub(super) seal: MindSeal,
-    source: String,
+    // Doc 23 cut S.4b-2: read by `super::surface::retained_source` for a field's install.
+    pub(super) source: String,
     arena: ArenaConfig,
     classes: ClassTable,
 }
@@ -35,6 +37,7 @@ impl Execution {
         profiles: &[SmolStr],
         arena: &ArenaConfig,
         minds: &MindsConfig,
+        composed: Option<&crate::definitions::Catalog>,
     ) -> Result<Self, ParticipantError> {
         arena.validate().map_err(bad)?;
         minds.validate().map_err(bad)?;
@@ -59,7 +62,9 @@ impl Execution {
             .module_state::<crate::store::TacsimStore>()
             .ok_or_else(|| bad("sources"))?;
         let unit = mush_tactics::module::unit_of(world, facts.unit()).ok_or_else(|| bad("unit"))?;
-        let catalog = store.definitions();
+        // Doc 23 cut S.4b-2: the composition's own catalogue (a governed or fitted world's rig
+        // roots ride it; the store's is the fielded set alone), else the store's.
+        let catalog = composed.unwrap_or_else(|| store.definitions());
         // weapon_summaries is intentionally total for OOC callers. IC must not
         // interpret an unknown/mismatched schema as an unarmed authored hull.
         let id = catalog

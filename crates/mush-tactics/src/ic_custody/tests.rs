@@ -926,3 +926,78 @@ fn strict_history_and_condition_only_close_preserve_old_ooc_boundary() -> Result
     );
     Ok(())
 }
+
+/// One closed call with a `Ctx` under the tactics module's identity (the custody calls' shape).
+fn with_ctx<T>(f: &mut Fixture, call: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+    let mut out = Outbox::new();
+    let engine = f.world.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(SmolStr::new("tactics")),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    call(&mut ctx)
+}
+
+/// **Doc 23 cut S.4b-2 (D-23-15): an IC field's mark coexists with the claim, and the Close is
+/// over the live hull.** With the Open installed, a match's check-out is refused (the claim is
+/// no OOC loan) and a field's is admitted; the field's check-in writes the hull (its revision
+/// moves past the Open's); the Close then prepares and installs over that live hull, and the
+/// hull leaves IC custody. The live-hull rule itself: the Open's object and definition, at a
+/// revision no older than the Open's, its bytes held only at the Open's own revision.
+#[test]
+fn s4b2_a_field_mark_coexists_with_the_claim_and_the_close_takes_the_live_hull() -> Result {
+    let mut f = setup()?;
+    let prepared = prepare(&mut f, false)?;
+    stage(&mut f, false, prepared)?;
+    install(&mut f)?;
+    let hull = f.hull;
+    check!(stored(&f).is_ic_custodied(hull));
+    let opened = stored(&f).units.get(&hull).ok_or("the held hull")?.clone();
+    let refused = with_ctx(&mut f, |ctx| {
+        crate::custody::check_out(ctx, hull, mush_sim::DeployedMark::new(7, "probe")).is_err()
+    });
+    check!(refused, "a match never checks out an IC-held hull");
+    with_ctx(&mut f, |ctx| {
+        crate::custody::check_out(ctx, hull, mush_sim::DeployedMark::field("probe_site", 1))
+    })?;
+    let plan = UnitMutationPlan::new(
+        vec![UnitMutationOp::SetCell {
+            addr: crate::CellAddr::Unit {
+                cell: crate::CellId::new("heat")?,
+            },
+            value: 17,
+        }],
+        Some(opened.revision()),
+        None,
+    )?;
+    let back = with_ctx(&mut f, |ctx| {
+        crate::custody::check_in(ctx, hull, Some(&plan))
+    })?;
+    check!(
+        back.unit.revision() > opened.revision(),
+        "the field wrote the hull"
+    );
+    check!(
+        stored(&f).is_ic_custodied(hull),
+        "the claim stands through the field"
+    );
+    // The rule, over the Open's own record.
+    let state = stored(&f);
+    let open = &state.ic.rows.values().next().ok_or("the Open")?.open;
+    check!(live_matches(open, &opened)?, "the Open's own image");
+    check!(live_matches(open, &back.unit)?, "a host's later write");
+    let prepared = prepare(&mut f, true)?;
+    stage(&mut f, true, prepared)?;
+    install(&mut f)?;
+    check!(
+        !stored(&f).is_ic_custodied(hull),
+        "the Close took the live hull"
+    );
+    Ok(())
+}

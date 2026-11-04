@@ -906,6 +906,8 @@ impl ActionProvider for RecoveryProvider {
             if let Some((Some(into), staff)) = finishing
                 && let Some(open) = record.sortie.take()
             {
+                // Doc 23 cut S.4b-2: the claim's Close is owed with the epoch's.
+                record.owe_claim_close(IcCloseKind::RecoveredToBase { base: into });
                 closing = Some(
                     crate::surface::black_box::BlackBoxLine::sortie_closed(
                         tv,
@@ -1041,6 +1043,8 @@ impl ActionProvider for RecoveryProvider {
                         closing = Some(line);
                     } else if recovering.is_some() && fixed.in_bay {
                         if let Some(open) = record.sortie.take() {
+                            record
+                                .owe_claim_close(IcCloseKind::ReturnedToBase { base: fixed.hull });
                             closing = Some(crate::surface::black_box::BlackBoxLine::sortie_closed(
                                 tv,
                                 &open,
@@ -1066,16 +1070,16 @@ impl ActionProvider for RecoveryProvider {
                     if let Some(open) = record.sortie.take() {
                         let base = fixed.hull;
                         let recovered = open.abandoned || fixed.parked;
+                        let kind = if recovered {
+                            IcCloseKind::RecoveredToBase { base }
+                        } else {
+                            IcCloseKind::ReturnedToBase { base }
+                        };
+                        // Doc 23 cut S.4b-2: the claim's Close is owed with the epoch's.
+                        record.owe_claim_close(kind);
                         closing = Some(
                             crate::surface::black_box::BlackBoxLine::sortie_closed(
-                                tv,
-                                &open,
-                                now,
-                                if recovered {
-                                    IcCloseKind::RecoveredToBase { base }
-                                } else {
-                                    IcCloseKind::ReturnedToBase { base }
-                                },
+                                tv, &open, now, kind,
                             )
                             .recovered_by(invocation.actor()),
                         );

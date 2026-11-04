@@ -483,8 +483,9 @@ pub struct TacsimRuleset {
 }
 
 pub use minds::ic_sortie::{
-    CloseEvent as IcCloseEvent, IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution,
-    IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
+    ClaimRead as IcClaimRead, CloseEvent as IcCloseEvent, IcHost, IcHostCompletion, IcHostTicket,
+    IcRetainedExecution, IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
+    claim_closed as ic_claim_closed, claim_of as ic_claim_of, claim_seal as ic_claim_seal,
 };
 impl TacsimRuleset {
     /// Request the live unit-authority reader as Tacsim, when composition also
@@ -1069,7 +1070,7 @@ impl GameModule for TacsimRuleset {
                 conduct.register(reg, &self.cfg, &catalog)?;
             }
             if let Some(ic) = &self.ic_minds {
-                ic.register(reg, &self.cfg, registry.reference())?;
+                ic.register(reg, &self.cfg, registry.reference(), &catalog)?;
                 if let Some(coverage) = &self.coverage {
                     coverage.register(
                         reg,

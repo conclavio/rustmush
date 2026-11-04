@@ -2572,6 +2572,12 @@ impl LocalSpaceBubble {
             let target_pos = self
                 .ships
                 .get(&torp.target_id)
+                .filter(|s| {
+                    s.id == observer_ship_id
+                        || obs.is_some_and(|o| {
+                            super::commands::is_bubble_ship_detected(o, s, self.ic_timestamp_s)
+                        })
+                })
                 .map(|s| s.pos_m)
                 .unwrap_or(torp.pos_m);
             torpedoes.push(json!({

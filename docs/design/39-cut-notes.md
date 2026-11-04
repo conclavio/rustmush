@@ -422,7 +422,12 @@ lane pins: `LANE_VERSION` 22, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `af3f150a…`,
 (`relay_registry.rs`, `boot_parity.rs`, `shard_10/stations.rs`), and the version asserts in `shard_3/drones.rs`,
 `shard_5/sites.rs`, `shard_9/mill.rs`, `cost_lane.rs` and `shard_4/lane.rs`.
 
-**Cell delta (rule #14).** To be read off the PR run's JUnit.
+**Cell delta (rule #14).** `tacsim-integration-2`: **+0.35 min** for the new story (21.2 s on PR run 41805020497's
+JUnit, the merged head 1fbd149e). The cell's sum reads 25.10 → 37.44 min, main's run at the merge base (41791768168,
+`2b1eca4c`) against the PR's, 413 → 414 tests: runner speed outweighs the story. Every test in the cell ran about 1.4×
+slower, unrelated ones too (`twin::m2_gate_a_on_a_mixed_pool` 28.1 → 52.5 s, `moon_ports::a8_titan_throttle…` 42.7 →
+64.0 s), and no test ran faster. The other changed tests run no longer for the cut: the stores are minted inside the
+bulk mint, so a port boots in exactly main's fires.
 
 ## IN.5 — the first production story: the refine and the works (Q-39-4, Q-39-5, Q-39-6, Q-39-23, Q-39-31)
 

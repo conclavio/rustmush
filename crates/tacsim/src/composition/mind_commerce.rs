@@ -367,18 +367,38 @@ impl MindCommerce {
     /// Explicit fixed-base IC custody. No host event or start transition is
     /// minted, and ordinary rosters retain their previous configuration.
     pub fn with_ic_minds(
-        mut self,
+        self,
         bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
+    ) -> Result<Self, ModError> {
+        let ic = crate::minds::ic_sortie::registration::Composition::new(
+            self.manifest().clone(),
+            bases,
+        )?;
+        self.compose_ic(ic)
+    }
+    /// **IC custody whose claims open in a carrier's bay** (doc 23 cut S.4b-2, D-23-11,
+    /// D-23-21): as [`MindCommerce::with_ic_minds`], with the exclusion admitting a rig's bay
+    /// as the claim's hangar, so the surface host's `go` opens a licensed rig's claim before
+    /// its launch. `bases` may be empty.
+    pub fn with_ic_minds_in_bays(
+        self,
+        bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
+    ) -> Result<Self, ModError> {
+        let ic = crate::minds::ic_sortie::registration::Composition::with_hangars(
+            self.manifest().clone(),
+            bases,
+        )?;
+        self.compose_ic(ic)
+    }
+    fn compose_ic(
+        mut self,
+        ic: crate::minds::ic_sortie::registration::Composition,
     ) -> Result<Self, ModError> {
         if self.state.mode != CommerceMode::Active || self.state.ic.is_some() {
             return Err(ModError::msg(
                 "IC requires explicit Active composition once",
             ));
         }
-        let ic = crate::minds::ic_sortie::registration::Composition::new(
-            self.manifest().clone(),
-            bases,
-        )?;
         self.state.roll = self
             .state
             .roll

@@ -496,7 +496,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
         mush_tactics::field_ops::OperationalState::Operational,
         "{fit:?}"
     );
-    let contract = mush_economy::ContractId(done.contract);
+    let contract = mush_economy::ContractId(done.contract.expect("a fee contract at port"));
     for _ in 0..4 {
         let (_, queued) = fire(&mut rig);
         land_quietly(&mut rig, &queued);

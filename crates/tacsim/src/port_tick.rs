@@ -310,6 +310,10 @@ pub(crate) fn register_with_coverage(
         &outcome_refs,
     )?);
     actions.push(crate::detachment::crew::action_descriptor(&outcome_refs)?);
+    // Doc 42 cut CR.1 (Q-42-26): a captured hull's NPC leaves the roster.
+    actions.push(crate::detachment::crew::captured_action_descriptor(
+        &outcome_refs,
+    )?);
     actions.push(crate::detachment::activation::action_descriptor(
         &outcome_refs,
     )?);
@@ -357,7 +361,10 @@ pub(crate) fn register_with_coverage(
         (&action_refs, &outcome_refs),
         (inventory, burn),
         unit_authority,
-    )
+    )?;
+    // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots; doc 23 cut S.4b-2 hands it the
+    // composed IC host for the claim arm.
+    crate::surface::tick::register(reg, ic.map(|ic| ic.host.clone()))
 }
 
 /// **Every provider, the port's handles and its ticks** — the second half of
@@ -629,7 +636,7 @@ fn register_providers(
         (inventory_families.as_ref(), black_box.tow),
     )?;
     // Doc 35 cut SF.R21: the space bubble's prepared input tape family and provider.
-    crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs)?;
+    crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs, &port_families)?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -665,8 +672,6 @@ fn register_providers(
         Arc::new(port_tick),
     )?;
     reg.hook(HookPoint::Connected, Arc::new(ReconnectNotices));
-    // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
-    crate::surface::tick::register(reg)?;
     Ok(())
 }
 
@@ -682,6 +687,7 @@ fn register_outcomes(
     let mut outcomes = outcome_descriptors(test_world)?;
     outcomes.push(crate::detachment::planning::outcome_descriptor()?);
     outcomes.push(crate::detachment::crew::outcome_descriptor()?);
+    outcomes.push(crate::detachment::crew::captured_outcome_descriptor()?);
     outcomes.push(crate::detachment::activation::outcome_descriptor()?);
     outcomes.push(crate::detachment::sortie::outcome_descriptor()?);
     outcomes.push(crate::procurement::outcome_descriptor()?);

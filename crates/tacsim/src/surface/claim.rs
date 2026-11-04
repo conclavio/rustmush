@@ -655,6 +655,10 @@ pub enum UnlawfulKind {
     Scrap,
     /// A salvage claim vacated on proof of an unlawful recovery.
     Vacated,
+    /// **Doc 42 cut CR.1** (Q-42-22): a person carried off owned ground by a load with neither the
+    /// title holder's nor the landholder's authority; the row's `subject` is the captive, its
+    /// `actor` the captor.
+    Capture,
 }
 
 /// **One unlawful act on a site's ground** (Q-36-30): evidence for a later crime system, never
@@ -680,6 +684,30 @@ pub(crate) fn log_unlawful(record: &mut SiteRecord, act: UnlawfulAct) {
     record.unlawful.push(act);
     while record.unlawful.len() > MAX_UNLAWFUL {
         record.unlawful.remove(0);
+    }
+}
+
+/// **The captives an unlawful recovery carried off** (doc 42 cut CR.1, Q-42-22): one
+/// [`UnlawfulKind::Capture`] row each, beside the load's `Recovery` row and under its condition,
+/// naming the captor and the captive. Evidence only; doc 41's consumer reads it.
+pub(crate) fn log_captures(
+    record: &mut SiteRecord,
+    captor: ObjId,
+    landholder: ObjId,
+    captives: &[ObjId],
+    at_ic: i64,
+) {
+    for captive in captives {
+        log_unlawful(
+            record,
+            UnlawfulAct {
+                kind: UnlawfulKind::Capture,
+                actor: captor,
+                subject: captive.0,
+                landholder: Some(landholder),
+                at_ic,
+            },
+        );
     }
 }
 
@@ -2895,6 +2923,33 @@ mod tests {
             }],
             pinned_ic: 50,
         }
+    }
+
+    /// **Doc 42 cut CR.1** (Q-42-22): an unlawful recovery that carried crew writes one `Capture`
+    /// row a captive, naming the captor and the captive; the row round-trips, and a load that
+    /// carried nobody writes none.
+    #[test]
+    fn cr1_a_capture_off_owned_ground_is_evidence_naming_captor_and_captive() {
+        let mut record = SiteRecord::new(CanonicalId::new("ahuna_port").expect("a site"));
+        log_captures(&mut record, ObjId(20), ObjId(40), &[], 500);
+        assert!(record.unlawful.is_empty());
+        log_captures(
+            &mut record,
+            ObjId(20),
+            ObjId(40),
+            &[ObjId(7), ObjId(8)],
+            500,
+        );
+        assert_eq!(record.unlawful.len(), 2);
+        let row = &record.unlawful[0];
+        assert_eq!(
+            (row.kind, row.actor, row.subject, row.landholder, row.at_ic),
+            (UnlawfulKind::Capture, ObjId(20), 7, Some(ObjId(40)), 500)
+        );
+        let wire = serde_json::to_value(row).expect("encodes");
+        assert_eq!(wire["kind"], "capture");
+        let back: UnlawfulAct = serde_json::from_value(wire).expect("decodes");
+        assert_eq!(&back, row);
     }
 
     /// **Q-36-26**: the same tug's reattach keeps the pin; another tug's attach replaces it.

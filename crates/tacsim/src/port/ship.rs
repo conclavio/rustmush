@@ -79,7 +79,10 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      <qty|fill> [max=<cr>] [short=…] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] \
      [until=+Nh|+Nm] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>  aboard \
      your Dray, or in the port where she is docked: file and amend the sailing plan the port \
-     runs under your signature while you are off watch.";
+     runs under your signature while you are off watch.\n+ship/captives  the people you hold \
+     aboard: a crew taken in a hull your carrier loaded.\n+ship/release <who>  let one of them \
+     go, for nothing: docked at a port they are set down in its arrivals; anywhere else they \
+     ride on as a passenger.";
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";
@@ -757,6 +760,11 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         leave(ctx)
     } else if ctx.switches.has("hold") {
         hold(ctx)
+    } else if ctx.switches.has("captives") {
+        // Doc 42 cut CR.1 (Q-42-9): the captor's list and release.
+        crate::field::crew::captives_cmd(ctx)
+    } else if ctx.switches.has("release") {
+        crate::field::crew::release_cmd(ctx)
     } else {
         status(ctx)
     }

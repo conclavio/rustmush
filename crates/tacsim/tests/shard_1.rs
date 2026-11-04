@@ -34,6 +34,8 @@ mod bay_36a;
 mod bay_gc8;
 #[path = "support/field/claim_rig.rs"]
 mod claim_rig;
+#[path = "shard_1/crew_custody.rs"]
+mod crew_custody;
 #[path = "shard_1/crew_exit.rs"]
 mod crew_exit;
 #[path = "shard_1/crew_treatment.rs"]

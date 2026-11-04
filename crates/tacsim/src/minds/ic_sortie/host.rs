@@ -354,6 +354,44 @@ impl IcHost {
         pending.attempt = Attempt::Observed(observed);
         Ok(pending.attempt.status())
     }
+    /// **The surface host's submission** (doc 23 cut S.4b-2, D-23-13): the claim arm's one
+    /// closed call as the cursor's operator through the tick's `Fire::as_principal` (S.2's
+    /// epoch-arm precedent), which has no dispatch caller to observe, so this is the plain
+    /// authoritative submission of the same signed selector under the ticket's own idempotency
+    /// key. The arm never reads an attempt state: it observes the book (`surface::claim_of`,
+    /// `claim_closed`) and resubmits the same key on a later fire until the transition is
+    /// there, so a lost submission costs a fire and a duplicate is the same request.
+    ///
+    /// # Errors
+    ///
+    /// The actor is not the ticket's, the owners are not ready, or the ticket is not pending.
+    pub fn submit_as_host(
+        &self,
+        ctx: &mut Ctx<'_>,
+        ticket: &IcHostTicket,
+    ) -> Result<(), ParticipantError> {
+        if ctx.actor != ticket.actor || !self.ready(ctx.w) {
+            return Err(ParticipantError::Authority);
+        }
+        {
+            let inbox = self.inbox.lock().map_err(bad)?;
+            let pending = inbox
+                .rows
+                .get(&ticket.request)
+                .ok_or_else(|| bad("pending"))?;
+            self.check_ticket(pending, ticket)?;
+        }
+        let key = IdempotencyKeyText::parse_canonical(format!("ic.{}", ticket.request.to_hex()))
+            .map_err(bad)?;
+        ctx.submit_authoritative(
+            ticket.action.clone(),
+            PerceivedRef::SelfActor,
+            vec![],
+            ticket.parameters(),
+            key,
+        );
+        Ok(())
+    }
     /// No timeout cleanup. A definitive disposition permits retry of the same
     /// ticket, or explicit return of an unadmitted Open after audited absence.
     /// Missing responses and every Close keep their original capabilities.

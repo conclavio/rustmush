@@ -485,7 +485,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: crate::port::ship::SHIP_VERB.into(),
             shape: ArgShape::Raw,
             switches: [
-                "board", "leave", "hold", "plan", "undock", "lift", "orders", "order",
+                "board", "leave", "hold", "plan", "undock", "lift", "orders", "order", "captives",
+                "release",
             ]
             .iter()
             .copied()

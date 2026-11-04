@@ -975,7 +975,7 @@ pub(crate) fn plan_at(
             plan.set_placements.push(rec);
         }
     }
-    crate::ic_exclusion::check_plan(w, &plan)?;
+    crate::ic_exclusion::check_plan(st, w, &plan)?;
     Ok(plan)
 }
 
@@ -994,7 +994,7 @@ pub fn apply(
 ) -> Result<(), SpatialError> {
     // Public callers may retain a previously checked plan. Recheck dedicated
     // IC custody before the first audit allocation, projection or state write.
-    crate::ic_exclusion::check_plan(w, &plan)?;
+    crate::ic_exclusion::check_plan(st, w, &plan)?;
     let prepared_audit = if plan.audit.is_null() {
         None
     } else {

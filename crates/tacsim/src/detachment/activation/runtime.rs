@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const ACTION: &str = "tacsim_detachment_activation";
 pub const OUTCOME: &str = "tacsim_detachment_activation_result";
 const RECORDS: &str = "tacsim.detachment_active";
-const RESERVATIONS: &str = "tacsim.detachment_reservations";
+pub(crate) const RESERVATIONS: &str = "tacsim.detachment_reservations";
 const REVISION: &str = "detachment_activation_input";
 const MAX_INPUT: usize = 16 * 1024;
 const MAX_PENDING: usize = 256;
@@ -421,8 +421,11 @@ fn snapshot(
             }
             let entities = record.entities();
             for entity in &entities {
-                if reservation(*entity)?.as_ref() != Some(&Reservation::for_entity(record, *entity))
-                {
+                // Doc 42 cut CR.1 (Q-42-26): a hired NPC whose hull a non-friend loaded left the
+                // roster by `tacsim_crew_captured`, which cleared their reservation; the roster
+                // still stands down.
+                let held = reservation(*entity)?;
+                if held.is_some_and(|held| held != Reservation::for_entity(record, *entity)) {
                     return Err("Reservation changed.".into());
                 }
             }
@@ -841,8 +844,11 @@ impl ActionProvider for Provider {
                         &entity,
                         Reservation::for_entity(&record, entity),
                     )
-                } else {
+                } else if reservations.get(&entity).is_none_or(Option::is_some) {
                     txn.remove(&self.handles.reservations, &entity)
+                } else {
+                    // Doc 42 cut CR.1: already cleared by a capture's crew exit.
+                    Ok(())
                 }
                 .map_err(|_| refused())?;
             }
