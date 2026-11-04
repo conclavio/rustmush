@@ -1,0 +1,688 @@
+# Doc 43 cut TS.2: the gated tests' tiers and configurations.
+#
+# A gated test is one that passes without running when nobody gives it what it
+# needs: `#[ignore]`d, reading `REDIS_URL`, or opting in by a `RUN_*`/`*_RUN`
+# flag (tests/ci_policy/ci_gated_test_inventory.rs finds them by scanning the tree). Each
+# one says here WHEN it runs and UNDER WHAT:
+#
+#   tier      pr        a ci.yml job with no `if:` (every push and pull request)
+#             nightly   a job whose `if:` admits the schedule (daily, 04:17 UTC)
+#             weekly    a job whose `if:` admits the Sunday cron '17 4 * * 0'
+#                       (D-43-11), at the fast pulse
+#             dispatch  a job only `workflow_dispatch` reaches, or the VPS
+#                       gate (`job = "gate.yml:<kind>"`, `via` the script
+#                       the kind runs)
+#             by-hand   no job: somebody runs it on a box. `by_hand` is the
+#                       `by-hand:` tag, the revision of its last recorded run
+#                       (or `never`, with a note saying why)
+#   job       the ci.yml job that runs it (not on the by-hand tier)
+#   config    the environment that run sets: space-separated NAME or
+#             NAME=VALUE; the job must set each (an opt-in test's row names
+#             its flag). Empty is the default configuration. One test may
+#             have a row per configuration (doc 43 §5.9, TS.18)
+#   via       a script the job runs that runs the test
+#   child_of  an ignored helper its file's test spawns as a child process
+#   id        `<pkg>/tests::<module or target>::<fn>` for an integration test
+#             (the group directory left out: a reshard rewrites no row);
+#             `<path under crates/>::<fn>` for a unit test; `<prefix>::*` for
+#             every gated test under a prefix that needs no opt-in flag
+#
+# The test refuses: a gated test with no row; a row matching no gated test; a
+# job on another tier than its row says; a job that runs the test only in a
+# comment (a comment is a recipe, not a run); an ignored test under a command
+# without --ignored / --run-ignored; a config the job does not set; a by-hand
+# row without its revision.
+#
+# A cut that adds a gated story adds its row in the same pull request (doc 43
+# TS.2, §10.3). A programme story on the dispatch or by-hand tier is named in
+# the Sunday slot (a weekly job) or carries its by-hand revision here and in
+# its cut note. After a by-hand run, update `by_hand` to the revision it ran
+# at, in the commit that records the run's figures.
+#
+# Doc 43 cut TS.18, variant identities (§5.9): an exact row may name a test
+# that is NOT gated, with a non-default `config`: a variant, with its own tier
+# and last run (FIELD_RAID=director, MINE_RATE=24 below). And every variable
+# tacsim's and the bot's tests read (a literal or a `const` passed to
+# `env::var`, `knob` or an `env_*` helper) is either named in some row's
+# `config` or declared a [[knob]] at the end of this file, with the kind that
+# says why it needs no row of its own. A knob of kind `opt-in` makes a test
+# that returns early unless it is set a gated test, like a `RUN_*` flag.
+
+# ---- pr: every push and pull request ----
+
+# The live-Redis branches (redis-faults sets REDIS_URL at a disposable Redis 8).
+[[test]]
+id = "mushd/tests::persistence::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mushd/tests::durability_e2e::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mushd/tests::m10c_e2e::m10c_persistence_twin_redis_gated"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-gateway/tests::authoritative_process_kill::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-server/tests::authoritative_boot::*"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-server/src/persist.rs::live_redis_wrong_type_bundle_quarantines_repairs_and_recovers"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+[[test]]
+id = "mush-server/src/timeline.rs::redis_round_trip_preserves_exact_generations"
+tier = "pr"
+job = "redis-faults"
+config = "REDIS_URL"
+
+# The unit minds' cross-platform pins (the test matrix's tacsim-minds cell).
+[[test]]
+id = "tacsim/tests::minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host"
+tier = "pr"
+job = "test"
+
+[[test]]
+id = "tacsim/tests::twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool"
+tier = "pr"
+job = "test"
+
+[[test]]
+id = "tacsim/tests::minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library"
+tier = "pr"
+job = "test"
+
+# The LLM cost report against the mock provider (tacsim-integration-1's named step).
+[[test]]
+id = "tacsim/tests::harness::tacsim_harness_llm_cost_run"
+tier = "pr"
+job = "test"
+config = "TACSIM_LLM_COST_RUN=1 TACSIM_LLM_COST_MOCK=1"
+
+# The child half of `split_halves_write_distinct_log_files`, spawned by it.
+[[test]]
+id = "mushd/tests::world_panic_exit::the_half_child"
+tier = "pr"
+child_of = "split_halves_write_distinct_log_files"
+
+# ---- nightly ----
+
+# M7: the six Registry-rating stories, at production's pulse on the schedule.
+[[test]]
+id = "tacsim/src/minds/bulk/original_purchase_integration_tests.rs::genuine_registry_original_purchase_grant_refund_and_paired_recovery"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/paid_purchase.rs::genuine_registry_purchase_writer_unknown_expiry_and_recovery"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "tacsim/src/minds/bulk/conduct_integration_tests.rs::genuine_safe_conduct_service_result_and_complete_cold_inverse"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "tacsim/src/hardware/flow/launch/story.rs::named_coprates_real_save_rate_house_sale_and_membership_fences"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/player_market_story.rs::player_market_commands_story_two_accounts_alt_stale_tiny_and_restart"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+note = "Owner: the M7 market story (doc 17g C2a). Red at production pace on the nightlies of 10-30, 10-31 and 11-02, each time the story's own timing, not the product: the holder's renewal (#230), the engine's busy back-pressure on a typed step (c56dfcde) and the buyer's recall notice (8245c88e). Green on 11-03 and 11-04 (10-28 and 10-29 not re-read)."
+
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/player_market_typed.rs::typed_market_story_quote_pay_complete_panels_resale_and_restart"
+tier = "nightly"
+job = "mind-commerce-acceptance"
+config = "MIND_PULSE_MS=1000"
+
+# M8: the gate's stories over the combined world (the S.4b cuts' too).
+[[test]]
+id = "tacsim/tests::m8_world::*"
+tier = "nightly"
+job = "m8-gate-stories"
+
+# H3: the scale harness, against a disposable Redis.
+[[test]]
+id = "mush-contract-tests/tests::scale_harness::*"
+tier = "nightly"
+job = "scale"
+config = "REDIS_URL"
+
+# 16b cut H: the TacSim harness in release, the delta gating the deterministic block.
+[[test]]
+id = "tacsim/tests::harness::*"
+tier = "nightly"
+job = "tacsim-harness"
+config = "TACSIM_JSON=harness.json"
+
+# ---- weekly: the Sunday cron, at the fast pulse (D-43-11) ----
+
+[[test]]
+id = "mush-bot/tests::arena_mind_author_story::field_pilot_complete_production_author_story"
+tier = "weekly"
+job = "mind-author-acceptance"
+via = "scripts/mind_port_acceptance.py"
+
+[[test]]
+id = "mush-bot/tests::arena_mind_port_rate::field_pilot_fresh_external_muster_interval"
+tier = "weekly"
+job = "mind-author-acceptance"
+via = "scripts/mind_port_acceptance.py"
+
+[[test]]
+id = "tacsim/src/minds/resimulation.rs::m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep"
+tier = "weekly"
+job = "mind-full-replay"
+
+[[test]]
+id = "tacsim/tests::m8_leaks::*"
+tier = "weekly"
+job = "m8-leak-battery"
+
+[[test]]
+id = "tacsim/src/minds/registry/trials/house_tests.rs::house_minds_over_every_trial_case"
+tier = "weekly"
+job = "m8-house-doctrines"
+
+[[test]]
+id = "tacsim/src/hardware/flow/launch/story.rs::launch_house_doctrines_win_some_registry_trials"
+tier = "weekly"
+job = "m8-house-doctrines"
+
+[[test]]
+id = "mush-bot/tests::arena_win_rate::arena_win_rate_over_ten_matches"
+tier = "weekly"
+job = "bot-win-rate"
+
+[[test]]
+id = "mush-bot/tests::arena_muster_rate::*"
+tier = "weekly"
+job = "bot-muster-rate"
+
+# ---- dispatch: the VPS gate on conclav.dev ----
+
+# scripts/harness-weekly.sh: the same lanes with the absolutes asserted, on the
+# host that blessed the timing baseline (doc 43 D-43-6, cut TS.21).
+[[test]]
+id = "tacsim/tests::harness::*"
+tier = "dispatch"
+job = "gate.yml:harness"
+via = "scripts/harness-weekly.sh"
+config = "TACSIM_ASSERT=1"
+
+# scripts/cost-lane.sh: the surface-mining cost lane's IC month at 30 TVs.
+[[test]]
+id = "tacsim/tests::cost_lane::sm12c_cost_lane_cohort_over_an_ic_month"
+tier = "dispatch"
+job = "gate.yml:cost-lane"
+via = "scripts/cost-lane.sh"
+config = "TACSIM_ASSERT=1 TACSIM_COHORT_TVS=30"
+# TS.21's run on conclav.dev: no breach, month p99 2,053 us, 730 s.
+by_hand = "a2ef4075"
+
+# ---- by-hand ----
+
+# The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
+# (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
+[[test]]
+id = "mush-bot/tests::mining_cohort::four_bots_mine_and_sell_over_ssh_in_line_mode"
+tier = "by-hand"
+by_hand = "d2f4ee7c"
+
+# Doc 40 FR.0's Urvara smoke: passed on the owner's box, recorded in the cut's commit.
+[[test]]
+id = "mush-bot/tests::mining_cohort::fr0_the_bot_drives_to_a_four_digit_pocket_on_urvara_and_types_void"
+tier = "by-hand"
+by_hand = "99b3a4b4"
+
+# Doc 41 RS.0's two smokes: both passed (687 s) on the branch head (41 cut notes).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_urvara"
+tier = "by-hand"
+by_hand = "5e03f6d2"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_ahuna"
+tier = "by-hand"
+by_hand = "5e03f6d2"
+
+# Doc 40 FR.7's round story at 256 and 512, about an hour each: both passed by hand on
+# conclav.dev and through gate.yml's sweep (run 41904925552) at the revision named (40 cut notes,
+# FR.7b). No dispatch-only job or
+# gate.yml kind runs it yet (the sweep kind has no `via` script), so it is by-hand.
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
+tier = "by-hand"
+by_hand = "c969ec3f"
+
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
+tier = "by-hand"
+by_hand = "c969ec3f"
+
+# Doc 39 IN.5's production story, the bot over SSH: both passed side by side on conclav.dev
+# at cdd30329 (Ahuna 1,895 s, Urvara 1,897 s; 39 cut notes, IN.5).
+[[test]]
+id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_ahuna"
+tier = "by-hand"
+by_hand = "cdd30329"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_urvara"
+tier = "by-hand"
+by_hand = "cdd30329"
+
+# Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
+# (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
+[[test]]
+id = "tacsim/tests::field_scale::gc12_the_field_pulse_is_measured_at_scale"
+tier = "by-hand"
+by_hand = "34416410"
+
+# 16c Q-AK4: spends real money, so no job runs it. The last run, "on AN", from
+# the muster (cut AN.1's FROM_MUSTER variant), two of five, $0.0725 (16c),
+# recorded at this commit. The posed form (FROM_MUSTER unset) has no later run.
+[[test]]
+id = "mush-bot/tests::arena_live_commander::arena_live_commander_five_matches"
+tier = "by-hand"
+by_hand = "21cbe730"
+config = "MUSH_BOT_LIVE_COMMANDER=1 MUSH_BOT_LIVE_FROM_MUSTER=1"
+
+# 17b cut M1b.5: the M1b gate's measure, 15 of 30 at the gate (17b's plan).
+[[test]]
+id = "mush-bot/tests::arena_win_rate::the_bot_against_a_conditioned_t1_over_thirty_pooled_matches"
+tier = "by-hand"
+by_hand = "d2d49389"
+
+# The live-provider smokes and cost run: operator-funded, never run against
+# the real provider (the logged "ok" lines are their early returns).
+[[test]]
+id = "mushd/tests::npc_smoke::live_npc_dialogue_openrouter_smoke"
+tier = "by-hand"
+config = "RUN_LLM_SMOKE=1"
+by_hand = "never"
+note = "Needs an operator-funded OpenRouter key; no recorded run against the live provider."
+
+[[test]]
+id = "mushd/tests::worldgen_smoke::live_worldgen_openrouter_smoke"
+tier = "by-hand"
+config = "RUN_LLM_SMOKE=1"
+by_hand = "never"
+note = "Needs an operator-funded OpenRouter key; no recorded run against the live provider."
+
+[[test]]
+id = "tacsim/tests::harness::tacsim_harness_llm_cost_run"
+tier = "by-hand"
+config = "TACSIM_LLM_COST_RUN=1"
+by_hand = "never"
+note = "Owner-funded cost measurement; only the mock lane has run (16b's plan: no run against the real provider)."
+
+# ---- variants (doc 43 TS.18): configurations other than the default ----
+
+# Doc 36 cut GC.11's director raid: the captain/escort story with the field's
+# director seeding the raider. Its default form runs in the bot-stories cell.
+[[test]]
+id = "mush-bot/tests::mining_cohort::a_captain_and_its_escort_fight_the_raider_in_an_ic_field"
+tier = "by-hand"
+config = "FIELD_RAID=director"
+by_hand = "2c4b1c03"
+note = "Recorded by TS.18: gate run 41874705027 on conclav.dev, dispatched with gate.yml's env input (FIELD_RAID=director), passed in 584 s."
+
+# The mining canary at world rate 24 (docs/testing-rate.md): 168 by default
+# since 2026-10-27. Its rate-24 run was gate run 40431777853, 528.0 s, on a
+# gate/ snapshot commit, when 24 was still the default.
+[[test]]
+id = "mush-bot/tests::mining_cohort::the_mining_root_runs_under_the_bots_serde"
+tier = "by-hand"
+config = "MINE_RATE=24"
+by_hand = "77d2f56c"
+
+# GC.12 with the budget asserted instead of reported (doc 36: report-only by
+# default, D-H-8).
+[[test]]
+id = "tacsim/tests::field_scale::gc12_the_field_pulse_is_measured_at_scale"
+tier = "by-hand"
+config = "GC12_ASSERT=1"
+by_hand = "never"
+note = "Both recorded GC.12 runs were report-only; the assertion is for the production class of host (16c T-109)."
+
+# The Hold lane (16b cut O.1, 16c Q-O3): report-only, run by hand in O.1's gate.
+[[test]]
+id = "tacsim/tests::harness::tacsim_harness_hold_lane"
+tier = "by-hand"
+config = "TACSIM_HOLD_LANE=1"
+by_hand = "8c2f0388"
+
+# ---- knobs (doc 43 TS.18): variables a test reads that need no row ----
+
+[[knob]]
+name = "TACSIM_HOLD_LANE"
+kind = "opt-in"
+note = "tacsim_harness_hold_lane returns at once unless it is 1"
+
+[[knob]]
+name = "TACSIM_SNAPSHOT_OFF"
+kind = "measurement"
+note = "the harness skips the snapshot lens (16b cut AF.2): measurement only"
+
+[[knob]]
+name = "TACSIM_FRAME_WORKERS"
+kind = "measurement"
+note = "the harness's frame workers, reported beside the figures; default 1"
+
+[[knob]]
+name = "FIELD_IDLE_S"
+kind = "size"
+note = "the IC field's idle bound in the captain/escort story (and a director raid's idle trigger)"
+
+[[knob]]
+name = "GC12_SIZES"
+kind = "size"
+note = "GC.12's unit ladder; default the full 9..100 the recorded runs used"
+
+[[knob]]
+name = "GC12_ARENA_S"
+kind = "size"
+note = "GC.12's arena seconds a size; default 120, as recorded"
+
+[[knob]]
+name = "MUSH_BOT_MIND_RATE_MATCHES"
+kind = "size"
+note = "the thirty-pooled-matches lane's match count; default 30"
+
+[[knob]]
+name = "MUSH_BOT_MIND_RATE_PARALLEL"
+kind = "size"
+note = "the thirty-pooled-matches lane's parallel matches"
+
+[[knob]]
+name = "MUSH_BOT_WIN_RATE_KEEP"
+kind = "size"
+note = "keep the win-rate lanes' match directories for reading"
+
+[[knob]]
+name = "TACSIM_ARENA_S"
+kind = "size"
+note = "the harness arena's seconds; the delta reads a run at the default"
+
+[[knob]]
+name = "TACSIM_FIGHTING"
+kind = "size"
+note = "the harness's fighting share; the delta reads a run at the default"
+
+[[knob]]
+name = "TACSIM_LANCE_ARENA_S"
+kind = "size"
+note = "the lance lane's seconds"
+
+[[knob]]
+name = "TACSIM_LANCE_UNITS"
+kind = "size"
+note = "the lance lane's units"
+
+[[knob]]
+name = "TACSIM_LONG_RUN_S"
+kind = "size"
+note = "the long-run lane's seconds (no delta reads it)"
+
+[[knob]]
+name = "TACSIM_MINDS_JITTER_MS"
+kind = "size"
+note = "the minds lane's late wakes, ms"
+
+[[knob]]
+name = "TACSIM_MINDS_JITTER_PER_MILLE"
+kind = "size"
+note = "the minds lane's late wakes, per mille"
+
+[[knob]]
+name = "TACSIM_MINDS_VARIANTS"
+kind = "size"
+note = "a subset of the minds lane's four variants; unset is all four, as the baseline"
+
+[[knob]]
+name = "TACSIM_PULSES"
+kind = "size"
+note = "the ground-pulse lane's pulses (no delta reads it)"
+
+[[knob]]
+name = "TACSIM_SEED"
+kind = "size"
+note = "the harness relief's seed; the baseline is the default seed"
+
+[[knob]]
+name = "TACSIM_SENSOR_CELLS"
+kind = "size"
+note = "the harness's sensor cells; default as blessed"
+
+[[knob]]
+name = "TACSIM_SHARE_CELLS"
+kind = "size"
+note = "the harness's share cells; default as blessed"
+
+[[knob]]
+name = "TACSIM_SIGHT_ORIGINS"
+kind = "size"
+note = "the sight differential's seeded origins (16b cut J.1)"
+
+[[knob]]
+name = "TACSIM_UNITS"
+kind = "size"
+note = "the harness's units; default as blessed"
+
+[[knob]]
+name = "TACSIM_WAKE_JITTER_MS"
+kind = "size"
+note = "the harness's wake jitter, ms"
+
+[[knob]]
+name = "TACSIM_COHORT_IC_DAYS"
+kind = "size"
+note = "the cost lane's IC days; 30 by default, 5 the smoke"
+
+[[knob]]
+name = "TACSIM_LLM_COST_CAP_USD"
+kind = "size"
+note = "the live LLM cost run's spending cap"
+
+[[knob]]
+name = "TACSIM_LLM_COST_MINUTES"
+kind = "size"
+note = "the LLM cost run's minutes"
+
+[[knob]]
+name = "TACSIM_LLM_COST_MODEL"
+kind = "size"
+note = "the LLM cost run's model"
+
+[[knob]]
+name = "TACSIM_LLM_COST_UNITS"
+kind = "size"
+note = "the LLM cost run's units"
+
+[[knob]]
+name = "TACSIM_COST_JSON"
+kind = "report"
+note = "the cost lane's JSON report path"
+
+[[knob]]
+name = "RELIEF_PREVIEW"
+kind = "report"
+note = "writes a relief preview image to this path"
+
+[[knob]]
+name = "M6_AUTHOR_STORY_OUT"
+kind = "report"
+note = "the M6 author story's evidence file, set by scripts/mind_port_acceptance.py"
+
+[[knob]]
+name = "M6_BOT_INTERVAL_OUT"
+kind = "report"
+note = "the M6 external interval's evidence file, set by scripts/mind_port_acceptance.py"
+
+[[knob]]
+name = "TACSIM_BLESS"
+kind = "bless"
+note = "rewrites a test's committed golden fixture"
+
+[[knob]]
+name = "TACSIM_BASELINE_BLESS"
+kind = "bless"
+note = "re-blesses harness_baseline/arena.<os>.json, by a record, never blind"
+
+[[knob]]
+name = "TACSIM_WRITE_CONTENT"
+kind = "bless"
+note = "rewrites the generated content files and re-signs them"
+
+[[knob]]
+name = "ANTHROPIC_API_KEY"
+kind = "secret"
+note = "a live model key for the bot's model lanes"
+
+[[knob]]
+name = "OPENROUTER_API_KEY"
+kind = "secret"
+note = "a live model key (the live commander, the live LLM cost run)"
+
+[[knob]]
+name = "MUSH_BOT_PASSWORD"
+kind = "secret"
+note = "the arena test account's password"
+
+[[knob]]
+name = "MUSH_BOT_E2E_PASSWORD"
+kind = "secret"
+note = "the e2e test account's password"
+
+[[knob]]
+name = "MUSH_BOT_E2E_MODEL_KEY"
+kind = "secret"
+note = "the e2e test's model key"
+
+[[knob]]
+name = "MUSH_BOT_BUDGET_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_BUDGET_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_OFFLINE_TEST_MISSING_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_OFFLINE_TEST_MISSING_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_PROBE_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_PROBE_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_REGRESSION_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_REGRESSION_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_STUDIO_TEST_MISSING_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_STUDIO_TEST_MISSING_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_TRACE_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_TRACE_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "M6_ACCEPTANCE_REVISION"
+kind = "plumbing"
+note = "the revision scripts/mind_port_acceptance.py records for its run"
+
+[[knob]]
+name = "M6_ACCEPTANCE_RUN_ID"
+kind = "plumbing"
+note = "the run identity scripts/mind_port_acceptance.py records"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_HELPER"
+kind = "plumbing"
+note = "the cast-debug test's child process role"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_MANIFEST"
+kind = "plumbing"
+note = "the cast-debug child's manifest path"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_OUTPUT"
+kind = "plumbing"
+note = "the cast-debug child's output path"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_SETTINGS"
+kind = "plumbing"
+note = "the cast-debug child's settings path"
+
+[[knob]]
+name = "MUSH_BOT_OWNED_HELPER"
+kind = "plumbing"
+note = "the lab test's child process role (the parent sets it to 1)"
+
+[[knob]]
+name = "MUSH_CAMPAIGN_START"
+kind = "plumbing"
+note = "a campaign fixture child's start file, set by its parent"

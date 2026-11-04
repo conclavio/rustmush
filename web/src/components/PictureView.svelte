@@ -72,14 +72,7 @@
     swingLook,
     wrap360Mdeg,
     wrapMdeg,
-    type WebDockingSession,
-    createWebDockingSession,
-    dockOrderToFrameInput,
-    formatWebDockingTapeCommand,
-    isWebDockingClamped,
-    playWebDockingToClamp,
-    stepWebDockingFrame,
-    webDockingFeedOverlay,
+    dockOrderToInputMask,
   } from "$lib/picture";
   import {
     FRAME_H,
@@ -120,21 +113,7 @@
   let turning = $state<-1 | 0 | 1>(0);
   /** The 2.5D camera zoom in permille (`500..=2000`, `1000` = 100%). */
   let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
-  /** Active 60 Hz client-side 6-DOF docking game session (`SF.R16`, `D-35-14`). */
-  let webDockingSession = $state<WebDockingSession | null>(null);
   let submittedDockingSessionId = $state<string | null>(null);
-
-  $effect(() => {
-    const rawDock = app.picture.spaceDockingData as { session_id?: unknown } | null;
-    const feedSessionId = typeof rawDock?.session_id === "string" ? rawDock.session_id : null;
-    if (!feedSessionId) {
-      webDockingSession = null;
-      return;
-    }
-    if (untrack(() => webDockingSession?.sessionId) !== feedSessionId) {
-      webDockingSession = createWebDockingSession(rawDock);
-    }
-  });
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
   const PICTURE_HD_KEY = "rustmush.pictureHd";
@@ -488,15 +467,23 @@
           : { dxCm: 0, dyCm: 0 };
         const targetW = hdMode ? FRAME_W_HD : FRAME_W;
         const targetH = hdMode ? FRAME_H_HD : FRAME_H;
+        if (app.picture.spaceMode === "docking") {
+          const curDock = l.dockingState(app.picture.spaceDockingData);
+          if (curDock !== null && !curDock.clamped) {
+            const stepped = l.stepDocking(app.picture.spaceDockingData, 0);
+            if (stepped !== null && stepped.clamped && submittedDockingSessionId !== stepped.session_id) {
+              submittedDockingSessionId = stepped.session_id;
+              app.helm(stepped.tape_command);
+            }
+          }
+        }
         const drawn =
           app.picture.spaceMode !== null
             ? l.drawSpace(
                 app.picture.spaceMode,
                 app.picture.spaceHolotankData,
                 app.picture.spaceCockpitData,
-                webDockingSession !== null
-                  ? webDockingFeedOverlay(webDockingSession, app.picture.spaceDockingData)
-                  : app.picture.spaceDockingData,
+                app.picture.spaceDockingData,
                 (app as { chart?: { frame?: unknown } }).chart?.frame ?? null,
                 app.picture.lookMdeg,
                 effectiveZoomPermille,
@@ -836,28 +823,23 @@
           lookTo(wrapMdeg(app.picture.lookMdeg + skey.deltaMdeg));
           local?.forget();
           break;
-        case "dockOrder":
-          if (webDockingSession !== null) {
-            if (skey.cmd === "DOCK CLAMP ASSIST") {
-              playWebDockingToClamp(webDockingSession);
-            } else {
-              const input = dockOrderToFrameInput(skey.cmd);
-              if (input !== null) {
-                stepWebDockingFrame(webDockingSession, input);
-              }
-            }
+        case "dockOrder": {
+          const mask = dockOrderToInputMask(skey.cmd);
+          const stepped =
+            mask !== null && local !== null
+              ? local.stepDocking(app.picture.spaceDockingData, mask)
+              : null;
+          if (stepped !== null) {
             local?.forget();
-            if (
-              isWebDockingClamped(webDockingSession) &&
-              submittedDockingSessionId !== webDockingSession.sessionId
-            ) {
-              submittedDockingSessionId = webDockingSession.sessionId;
-              app.helm(formatWebDockingTapeCommand(webDockingSession));
+            if (stepped.clamped && submittedDockingSessionId !== stepped.session_id) {
+              submittedDockingSessionId = stepped.session_id;
+              app.helm(stepped.tape_command);
             }
           } else if (!ev.repeat) {
             app.helm(skey.cmd);
           }
           break;
+        }
         case "spaceOrder":
           if (!ev.repeat) app.helm(skey.cmd);
           break;

@@ -391,6 +391,20 @@ struct Knobs {
     sight_origins: u64,
 }
 
+/// **A hull whose plant is jammed or destroyed** (doc 40 cut FR.5, Q-40-4): it stands `Off` by the
+/// ruling until the field ends (a warm-up hit in the authored cohort can jam a plant before its
+/// startup lands), so the warm-up's cold check reads it as the kernel's own outcome, not a ROM
+/// that failed to start the field up.
+fn plant_down(unit: &tacsim::arena::state::UnitState) -> bool {
+    tacsim::arena::part_effects::plant_condition(&unit.unit).is_some_and(|condition| {
+        matches!(
+            condition,
+            mush_tactics::field_ops::ComponentCondition::Jammed
+                | mush_tactics::field_ops::ComponentCondition::Destroyed
+        )
+    })
+}
+
 fn env_u64(name: &str, fallback: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -3110,7 +3124,7 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
     let cold: Vec<(ObjId, Power)> = arena
         .units
         .iter()
-        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck)
+        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck && !plant_down(unit))
         .map(|unit| (unit.id, unit.power))
         .collect();
     let killed_warming = arena.units.iter().filter(|unit| unit.limits.wreck).count();
@@ -8566,7 +8580,7 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         .arena
         .units
         .iter()
-        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck)
+        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck && !plant_down(unit))
         .map(|unit| (unit.id, unit.power))
         .collect();
     assert!(
@@ -9191,9 +9205,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // `squads_per_side - 1`, re-pinned by record; see above).
             assert_eq!(
                 command.span_max, squads_per_side,
-                "W8: the span read {} where blue's commander holds live orders on all three \
-                 squads at the read (`blue-1` on its wreck #100003 alone, taken at 71,500 ms and \
-                 never released; re-pinned by record from `5993ba20`, see above)",
+                "W8: the span read {} where a commander holds live orders on all three \
+                 squads at the read (one on a wreck alone: `blue-1` from `5993ba20`, `red-1` since \
+                 doc 40 cut FR.5; re-pinned by record, see above)",
                 command.span_max
             );
             // **The one squad that rests on a wreck** (17b cut M4.5's review,
@@ -9203,16 +9217,23 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // counted adds `blue-1` under blue's commander and nothing else.
             // Held per commander, squad by squad, not only at the maximum.
             let standing = live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Skipped);
+            //
+            // **Re-pinned by record (doc 43 rule #8) by doc 40 cut FR.5**, the round's one kernel
+            // rebless (doc 40 §4a): `line_to` traces the wrecks the fire trace walks and a
+            // jammed or damaged part takes its effect, so the lance fight at the defaults moves
+            // once more. The squad held by a wreck alone is now red's `red-1` under red's
+            // commander, where it was blue's `blue-1`; the span (3), the end (none, 131,500 ms)
+            // and the busiest minute stand. Read on conclav.dev, harness kind run 41848864284.
             let mut wreck_held = standing.clone();
             wreck_held
-                .entry(commanders.get(1).copied())
+                .entry(commanders.first().copied())
                 .or_default()
-                .insert("blue-1".to_string());
+                .insert("red-1".to_string());
             assert_eq!(
                 live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Counted),
                 wreck_held,
-                "W8: at the defaults the span's squads rest on standing machines but `blue-1`, \
-                 held by its wreck alone (re-pinned by record from `5993ba20`); standing: \
+                "W8: at the defaults the span's squads rest on standing machines but `red-1`, \
+                 held by its wreck alone (re-pinned by record by doc 40 cut FR.5); standing: \
                  {standing:?}"
             );
             let standing_span = standing
@@ -9245,6 +9266,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // from, so each passes on a fact. Since `5993ba20` (re-pinned by
             // record, see above) `blue-1` stands three at 71,500 ms — #100003
             // takes the minute-one order and is wrecked before the release.
+            // **Doc 40 cut FR.5 re-pins them by record** (the round's one kernel rebless, doc 40
+            // §4a: `line_to` over wrecks and the component effects): `blue-1` stands three at
+            // both marks, `red-1` four at 71,500 ms and three at the release.
             assert_eq!(
                 (
                     stood(71_500, "blue-1", true),
@@ -9252,9 +9276,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     stood(71_500, "red-1", true),
                     stood(LANCE_RELEASE_MS, "red-1", false)
                 ),
-                (Some(3), Some(2), Some(3), Some(3)),
-                "at the defaults blue-1 stands three at 71,500 ms and two at {LANCE_RELEASE_MS} \
-                 ms, red-1 three at both (re-pinned by record from `5993ba20`): {marks:?}"
+                (Some(3), Some(3), Some(4), Some(3)),
+                "at the defaults blue-1 stands three at 71,500 ms and three at {LANCE_RELEASE_MS} \
+                 ms, red-1 four and three (re-pinned by record by doc 40 cut FR.5): {marks:?}"
             );
             // The sides whose first squad had a standing machine at the release.
             let stood_at_release: Vec<(ObjId, &str)> = commanders
@@ -10803,6 +10827,7 @@ fn calibrate_ops_per_us(field: &MindsField) -> Calibration {
             view: &view,
             memory: &memory,
             map: &clone.definition,
+            wrecks: &clone.mind_wrecks(),
             card: &card,
             program: &runtime.program,
             profile_token: runtime.token(),
@@ -11102,7 +11127,7 @@ fn open_minds_field(
     let cold: Vec<(ObjId, Power)> = arena
         .units
         .iter()
-        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck)
+        .filter(|unit| unit.power != Power::Online && !unit.limits.wreck && !plant_down(unit))
         .map(|unit| (unit.id, unit.power))
         .collect();
     if !cold.is_empty() {
@@ -12480,6 +12505,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
         assert_eq!(view.power, power);
         let runtime = arena.profiles.get(&red).expect("admitted runtime");
         let card = runtime.card.clone();
+        let wrecks = arena.mind_wrecks();
         let job = |profile| ThinkJob {
             unit: red,
             think_seq: 0,
@@ -12491,6 +12517,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
             view: &view,
             memory: &memory,
             map: &arena.definition,
+            wrecks: &wrecks,
             card: &card,
             program: &runtime.program,
             profile_token: runtime.token(),

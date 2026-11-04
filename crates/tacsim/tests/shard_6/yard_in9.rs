@@ -27,8 +27,7 @@
 //!    it in their Dray-P and board it by its title view (`acts_for`), and their crewmate without
 //!    office cannot.
 //!
-//! **Seeds** (doc 43 rule 2.3 #4): the yard facility (`@facility/open`, `/owner`, `/terms`: the
-//! lane's `yard` row is lane v24's, after IN.5's v23); the Dray-P's bill in its escrow; the
+//! **Seeds** (doc 43 rule 2.3 #4): the Dray-P's bill in its escrow; the
 //! escort's bill and the munitions in the Dray-P's hold; the money; the officer's grant; the
 //! captain's passage to Stickney (a move). Every claim is reached by the players' commands and
 //! the port tick.
@@ -62,21 +61,6 @@ fn mint(rig: &mut Rig, pilot: ObjId) {
         GOD,
         &format!("@econ/mint {treasury}={} 10000000", account.0),
     );
-}
-
-fn made(rig: &mut Rig, name: &str) -> ObjId {
-    let out = run(&mut rig.tw, GOD, &format!("@create {name}"));
-    out.split('#')
-        .nth(1)
-        .and_then(|rest| {
-            rest.chars()
-                .take_while(char::is_ascii_digit)
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .map(ObjId)
-        .unwrap_or_else(|| panic!("a thing: {out}"))
 }
 
 fn contracts(rig: &Rig) -> Vec<WorksContract> {
@@ -264,32 +248,12 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     let floor = station_room(&rig.tw, STICKNEY, "room.p11_service");
     teleport(&mut rig.tw, captain, floor);
 
-    // ---- The seed: the Stickney yard, the Yards', Public, a 10M slipway over 30 years ----
-    let yard = made(&mut rig, "Stickney slipway");
-    rig.tw
-        .world_mut()
-        .move_to(yard, floor)
-        .expect("the yard onto the floor");
-    let vendor = port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")]
-        .vendor
-        .expect("the yard's vendor");
-    let yards = rig
-        .tw
-        .world()
-        .module_state::<mush_market::MarketStore>()
-        .and_then(|m| m.vendor(mush_market::VendorId(vendor)).map(|v| v.org))
-        .expect("the yard's org");
-    for line in [
-        format!("@facility/open {}=2 tacsim.yard", yard.0),
-        format!("@facility/owner {}=org:{}", yard.0, yards.0),
-        format!(
-            "@facility/terms {}=public 10000000/30/20/12/150/250",
-            yard.0
-        ),
-    ] {
-        let out = run(&mut rig.tw, GOD, &line);
-        assert!(!out.contains("Usage"), "{line}: {out}");
-    }
+    // ---- The yard: lane v27's row, Stickney Yards' slipway counter over the drydocks ----
+    let menu = run(&mut rig.tw, captain, "+yard");
+    assert!(
+        menu.contains("dray_p") && menu.contains("tv_escort"),
+        "{menu}"
+    );
 
     // ---- (1) The Dray-P, built for them earlier in the story ----
     let dray_order = booked(&mut rig, captain, "+yard/order dray_p");
@@ -552,36 +516,10 @@ fn free_captain(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     captain
 }
 
-/// **The Stickney yard** (the seed until lane v24 authors the row): a two-slot facility of the
-/// Yards on the Service Counter's floor, Public, a 10M slipway over thirty years.
+/// **The Stickney yard** (lane v27's row): the captain on the Service Counter's floor, where a
+/// rig the yard builds stands; `+yard` finds the yard in the port.
 fn open_yard(rig: &mut Rig) -> ObjId {
-    let floor = station_room(&rig.tw, STICKNEY, "room.p11_service");
-    let yard = made(rig, "Stickney slipway");
-    rig.tw
-        .world_mut()
-        .move_to(yard, floor)
-        .expect("the yard onto the floor");
-    let vendor = port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")]
-        .vendor
-        .expect("the yard's vendor");
-    let yards = rig
-        .tw
-        .world()
-        .module_state::<mush_market::MarketStore>()
-        .and_then(|m| m.vendor(mush_market::VendorId(vendor)).map(|v| v.org))
-        .expect("the yard's org");
-    for line in [
-        format!("@facility/open {}=2 tacsim.yard", yard.0),
-        format!("@facility/owner {}=org:{}", yard.0, yards.0),
-        format!(
-            "@facility/terms {}=public 10000000/30/20/12/150/250",
-            yard.0
-        ),
-    ] {
-        let out = run(&mut rig.tw, GOD, &line);
-        assert!(!out.contains("Usage"), "{line}: {out}");
-    }
-    floor
+    station_room(&rig.tw, STICKNEY, "room.p11_service")
 }
 
 /// **One hull built and handed over**: `+yard/order <design>`, its bill laid in the escrow (the

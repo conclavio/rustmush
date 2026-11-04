@@ -86,7 +86,8 @@ use tacsim::arena::state::{
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::arena::stock_mind::{
-    NativeStockMind, Weights, best_hostile, cell_point, health_permille, line_to, view_ranges,
+    Ground, NativeStockMind, Weights, best_hostile, cell_point, health_permille, line_to,
+    view_ranges,
 };
 use tacsim::arena::weapons::WeaponBand;
 use tacsim::arena_task::MatchId;
@@ -651,6 +652,7 @@ impl Kept {
             view: &self.view,
             memory: &self.memory,
             map: &self.map,
+            wrecks: &[],
             card: &self.card,
             program: &self.program,
             profile_token: self.profile_token,
@@ -1448,6 +1450,7 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
                 view: &moment.view,
                 memory: &[],
                 map: &moment.map,
+                wrecks: &[],
                 card: &moment.card,
                 program: &moment.program,
                 profile_token: moment.profile_token,
@@ -2744,7 +2747,10 @@ fn kernels_by_hand(view: &MindView, def: &ArenaDefinition) -> Memory {
         )
         .map_or(MemValue::Unit, |id| MemValue::Int(contact_int(id))),
     );
-    put("line", MemValue::Bool(line_to(def, here, plot)));
+    put(
+        "line",
+        MemValue::Bool(line_to(&Ground::bare(def), here, plot)),
+    );
     put(
         "stand",
         cell_value(motor::stand_off_cell(
@@ -2820,6 +2826,7 @@ fn kernels_on(runner: &RhaiRunner, view: &Arc<MindView>, arena: &Arena) -> Memor
         view,
         memory: &[],
         map: &arena.definition,
+        wrecks: &arena.mind_wrecks(),
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),
@@ -3287,6 +3294,7 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
                 view: &view,
                 memory: &[],
                 map: &arena.definition,
+                wrecks: &arena.mind_wrecks(),
                 card: &card,
                 program: &runtime.program,
                 profile_token: runtime.token(),
@@ -3575,20 +3583,30 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `4_924_910_240_422_684_525` / `0f0ad87d…` / `0d2ba00b…`,
 /// `8_909_812_314_400_105_102` / `212d8fe2…` / `c2dc08a7…`, and row 2's ledger
 /// digest `b51e9f23…`.
+///
+/// **Doc 40 cut FR.5 re-pins rows 0 and 1** (the round's one kernel rebless,
+/// doc 40 §4a): `line_to` traces the wrecks the fire trace walks and a jammed
+/// or damaged part takes its effect, so rows 0 and 1 fight differently — their
+/// stopping times move 176,250 → 180,250 and 235,250 → 177,500, and every hash
+/// with them. Row 2 is unmoved, byte for byte (no wreck on a line, no part
+/// struck to an effect); row 3, the float probe, is unmoved with its 3,600 thinks
+/// and the 369098751 bitmask. Read on Linux (conclav.dev); Windows is ci.yml's
+/// same step. Were: `12_465_543_414_996_090_189` / `20f549f1…` / `6349d78a…`,
+/// `6_776_313_200_826_027_730` / `a019a970…` / `1c1fd95e…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
-        176250,
-        12465543414996090189,
-        "20f549f1a534e378fecac90545c2b8b551b0401d13de52c3fe3c158b19695451",
-        "6349d78ad1b2fd07f9db1c057a8509eb231ba834079295fa4f3bab08cbfa2da1",
+        180250,
+        15586863211666066749,
+        "cde0021ec66db3e7c863fc7e5d2a1f011f35b8a8a25aa45c13280d86c6eb4214",
+        "05d2d1f5b663ec7b18c20f19ab86017dfc70070961429395127131c2b4cc37ab",
     ),
     (
         2351,
-        235250,
-        6776313200826027730,
-        "a019a9706423db9d95b17dbe61cd2bc6b44a182a7ac54dd9ca30233c42ae707f",
-        "1c1fd95e1c4bf66bc161969a857c500ddcda90a6bd3f8c60d5de4a1ae7b287fb",
+        177500,
+        4191525885588509762,
+        "aee4969fc9b274cfd3a78c070205a6ca4a5c44d97c5ccff5dcbd39ece6384422",
+        "25d919aa526b7630e33c4f9b782187649b7073fcd6c217a07a74d76b5bce39e8",
     ),
     (
         2352,
@@ -3890,6 +3908,7 @@ fn think_on_row(arena: &mut Arena, source: &str, memory: &[u8]) -> ThinkResult {
         view: &view,
         memory,
         map: &arena.definition,
+        wrecks: &arena.mind_wrecks(),
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),
@@ -3979,6 +3998,7 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
     let view = Arc::new(three.mind_view(RED).expect("red's view"));
     let runtime = &three.profiles[&RED];
     let card = runtime.card.clone();
+    let wrecks = three.mind_wrecks();
     let job = |profile| ThinkJob {
         unit: RED,
         think_seq: 0,
@@ -3990,6 +4010,7 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
         view: &view,
         memory: &[],
         map: &three.definition,
+        wrecks: &wrecks,
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),
@@ -4439,6 +4460,7 @@ fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_ca
             view: &view,
             memory: &memory,
             map: &control.definition,
+            wrecks: &control.mind_wrecks(),
             card: &card,
             program: &runtime.program,
             profile_token: runtime.token(),

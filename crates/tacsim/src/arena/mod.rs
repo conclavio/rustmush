@@ -15,7 +15,7 @@
 //! `arena_task` is the thin wrapper that owns an [`crate::arena::state::Arena`], the bounded
 //! inbox, the bounded egress, a timer driven by `next_due_ms`, a watchdog and
 //! the unwind boundary; everything below is a pure function of state and inputs.
-//! `crates/mush-contract-tests/tests/arena_library.rs` scans every file here for
+//! `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs` scans every file here for
 //! the names that would break that, so the property is a gate and not a habit.
 //!
 //! # Everything is an integer
@@ -322,6 +322,7 @@ pub mod motion;
 pub mod motor;
 pub mod observer;
 pub(crate) mod order_watch;
+pub mod part_effects;
 pub mod party;
 pub mod path;
 pub mod perception;
@@ -341,6 +342,7 @@ pub mod snapshot_capacity;
 pub mod state;
 pub mod step;
 pub mod stock_mind;
+pub mod tow;
 pub(crate) mod trace_runtime;
 pub mod view;
 pub mod weapons;
@@ -446,7 +448,7 @@ pub use weapons::{FrameArming, FrameBand, FrameWeapon, Shot, WeaponBand};
 /// and a one-call [`Arena`].
 ///
 /// It is an **inline** `#[cfg(test)]` module rather than its own file on purpose.
-/// `crates/mush-contract-tests/tests/panic_budget.rs` excludes brace-delimited
+/// `crates/mush-contract-tests/tests/ci_policy/panic_budget.rs` excludes brace-delimited
 /// items carrying `#[cfg(test)]` but scans every other `.rs` file under a crate,
 /// so a `test_support.rs` would put its `expect`s on tacsim's production panic
 /// budget; the root `clippy.toml`'s `allow-*-in-tests` keys work the same way.
@@ -554,7 +556,7 @@ pub(crate) mod test_support {
     }
 
     /// [`tactical_unit`]'s spec, under any rules blob.
-    fn tactical_unit_spec(rules: RulesValue) -> UnitSpec {
+    pub(crate) fn tactical_unit_spec(rules: RulesValue) -> UnitSpec {
         UnitSpec {
             definition: dref("unit", "tacsim.unit.line_tank"),
             sections: vec![SectionSpec {

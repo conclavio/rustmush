@@ -360,9 +360,17 @@ impl PartyCapSource for PortPartyCaps {
                 .as_ref()
                 .and_then(|w| map.orgs.get(&w.operator))
                 .map(|row| OrgId(row.org));
+            // Doc 41 cut RS.5 (Q-41-11): the recovery operator (Tycho Mutual) accepts a
+            // retrieval at the window's end, the clerk's tick; it escrows nothing.
+            let recovery = def
+                .recovery
+                .as_ref()
+                .and_then(|r| map.orgs.get(&r.operator))
+                .map(|row| OrgId(row.org));
             programme == Some(*org)
                 || issuer == Some(*org)
                 || workshop == Some(*org)
+                || recovery == Some(*org)
                 || vendor_orgs(map).contains(org)
         })
     }

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 23,
+    "version": 28,
     "kind": "campaign_seed",
-    "digest": "5b35ec9cdbb8ff8e2c99384841ba7e13c893ef2b1bdeecbb53a16f8a948cf299",
+    "digest": "27a5d41a557f194404daebf404f8cede538988c27527fa400d39a294f50f5cf9",
     "requires": []
   },
   "entries": {
@@ -2726,6 +2726,8 @@
       "def": {
         "location": "ceres_freeport",
         "venue": "ceres",
+        "authority": "freeport_registry",
+        "release_fee_cr": 1500,
         "area": "neighborhood.ceres_freeport",
         "gallery": "neighborhood.ceres_freeport.room.c01_berth_gallery",
         "rooms": {
@@ -2741,7 +2743,7 @@
         "orgs": [
           { "id": "ceres_clearing", "name": "Ceres Clearing", "capital_major": 50000, "faction": "freeport" },
           { "id": "coop", "name": "Belt Carriers' Cooperative", "capital_major": 3100000, "faction": "freeport" },
-          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport" },
+          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
           { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" },
@@ -2789,12 +2791,7 @@
           { "org": "occator", "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.qureshi",
             "stock": [ { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
-                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 },
-                       { "good": "tacsim.part.weapon.cannon_105", "qty": 4, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.weapon.mg_coax", "qty": 4, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.sensor.visual_mk1", "qty": 4, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.plant.vehicle_mk1", "qty": 4, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.plant.light_mk1", "qty": 4, "grade": 9, "issue": 1 } ],
+                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "volatiles", "price_major": 100, "boards": ["exchange"] },
                        { "good": "propellant", "price_major": 40, "boards": ["exchange"] } ],
             "bids":  [ { "good": "ice_ore", "price_major": 35, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } } ],
@@ -2856,6 +2853,8 @@
       "def": {
         "location": "stickney_yards",
         "venue": "stickney",
+        "authority": "stickney_yards",
+        "release_fee_cr": 1500,
         "area": "neighborhood.stickney_yards",
         "gallery": "neighborhood.stickney_yards.room.p01_berth_gallery",
         "rooms": {
@@ -2870,7 +2869,7 @@
         "treasury": "tacsim.treasury",
         "orgs": [
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic" },
-          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic" },
+          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ] },
           { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic" }
         ],
         "vendors": [
@@ -2889,25 +2888,13 @@
                        { "good": "ammo_ap_30", "qty": 4800, "grade": 50, "issue": 1 },
                        { "good": "ammo_ball_762", "qty": 400, "grade": 50, "issue": 1 },
                        { "good": "ammo_he_105", "qty": 800, "grade": 50, "issue": 1 },
-                       { "good": "ammo_missile", "qty": 120, "grade": 50, "issue": 1 },
-                       { "good": "tacsim.part.weapon.cannon_105", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.weapon.autocannon_30", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.weapon.laser_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.weapon.missile_lr", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.weapon.mg_coax", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.sensor.visual_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.sensor.thermal_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.sensor.ecm_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.sensor.eccm_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.plant.light_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.plant.vehicle_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.plant.walker_mk1", "qty": 6, "grade": 9, "issue": 1 },
-                       { "good": "tacsim.part.plant.hauler_mk1", "qty": 6, "grade": 9, "issue": 1 } ],
+                       { "good": "ammo_missile", "qty": 120, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "industrial_parts", "price_major": 520, "boards": ["exchange", "yard"] },
                        { "good": "ammo_ap_30", "price_major": 12, "boards": ["yard"] },
                        { "good": "ammo_ball_762", "price_major": 25, "boards": ["yard"] },
                        { "good": "ammo_he_105", "price_major": 150, "boards": ["yard"] },
-                       { "good": "ammo_missile", "price_major": 1500, "boards": ["yard"] } ] },
+                       { "good": "ammo_missile", "price_major": 1500, "boards": ["yard"] } ],
+            "bids":  [ { "good": "strategic_ore", "price_major": 700, "intake": 12, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 12 } } ] },
           { "org": "yard_commissary", "storefront": "neighborhood.stickney_yards.item.commissary_locker",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.okonkwo",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
@@ -2930,7 +2917,11 @@
                    "capabilities": ["tacsim.works"], "slots": 2, "customers": "public",
                    "cost": { "capital_major": 3000000, "lifetime_years": 25, "upkeep_permille": 20,
                              "staff": 8, "wage_major": 150, "margin_permille": 250 },
-                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] }
+                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] },
+        "yard": { "room": "neighborhood.stickney_yards.room.p12_observation", "operator": "stickney_yards",
+                  "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
+                  "cost": { "capital_major": 10000000, "lifetime_years": 30, "upkeep_permille": 20,
+                            "staff": 12, "wage_major": 150, "margin_permille": 250 } }
       }
     },
     "luna_port": {
@@ -2938,6 +2929,8 @@
       "def": {
         "location": "aitken_highport",
         "venue": "luna",
+        "authority": "orbital_access",
+        "release_fee_cr": 1500,
         "area": "neighborhood.aitken_highport",
         "gallery": "neighborhood.aitken_highport.room.l01_berth_gallery",
         "rooms": {
@@ -2991,6 +2984,8 @@
       "def": {
         "location": "voltaire_anchorage",
         "venue": "deimos",
+        "authority": "voltaire_bond",
+        "release_fee_cr": 1500,
         "area": "neighborhood.voltaire_anchorage",
         "gallery": "neighborhood.voltaire_anchorage.room.d01_berth_gallery",
         "rooms": {
@@ -3031,6 +3026,8 @@
       "def": {
         "location": "ligeia_terminal",
         "venue": "titan",
+        "authority": "titan_concession",
+        "release_fee_cr": 1500,
         "area": "neighborhood.ligeia_terminal",
         "gallery": "neighborhood.ligeia_terminal.room.t01_berth_gallery",
         "rooms": {

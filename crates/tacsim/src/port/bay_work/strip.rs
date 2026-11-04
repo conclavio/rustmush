@@ -7,9 +7,16 @@
 //!   catalogue — carrying its provenance: the parent hull, the slot, its condition and the
 //!   claim it came off under (Q-F6). Title and a `maintain_refit` grant may strip.
 //! - **`+bay/scrap <hull>`**: the title holder breaks a berthed hull up
-//!   (`WorkshopBook::scrap_hull`): its structural mass becomes `structural_alloys`, a tonne per
-//!   1,000 kg, and each salvageable part a lot with its provenance. The hull is left an
-//!   irrecoverable shell in the workshop, its berth freed.
+//!   (`WorkshopBook::scrap_hull`) and the workshop's operator buys what comes off (doc 39 cut
+//!   IN.8, §4.6, [`super::scrap`]): the structure's yield at the design's own figures into the
+//!   operator's stock in whole tonnes of `structural_alloys`, each salvageable part a lot with
+//!   its provenance into its stores, the fraction and the hull's bale into the shop bale; the
+//!   holder is credited a fifth of the scrappable value for the structure (at most the alloys'
+//!   worth), the parts' used value less their removal, and the bale at the references. The hull
+//!   is left an irrecoverable shell in the workshop, its berth freed.
+//! - **`+bay/return <hull>`** (doc 39 cut IN.8, §4.10): the holder sells the hull's opened bale
+//!   back to the workshop at the references, kilogram for kilogram, into its shop bale, which
+//!   mints a tonne into the operator's stock each time it passes 1,000 kg.
 //! - **When the hull changes** (doc 36a §5.1): a strip or a scrap is checked against the hull
 //!   when it is ordered, but written to it only when its mint has landed (`land_mint`, from
 //!   the port tick's settle), so a mint given up destroys nothing. The command writes the owed
@@ -23,8 +30,8 @@
 //!   refuses to fit a hot part (`+bay/fit`).
 //! - **Remains** (Q-36-39): scrapped where they lie by their title holder or a winning claimant —
 //!   built by doc 36 cut GC.6 as `+tv/<n> scrap` on the site ([`crate::surface::claim`]), which
-//!   mints the alloys at [`SCRAP_KG_PER_T`] in the same bundle that takes the remains off the
-//!   site's record.
+//!   mints the capped yield (doc 39 cut IN.8, §4.6) at [`SCRAP_KG_PER_T`] in the same bundle
+//!   that takes the remains off the site's record.
 
 use std::collections::BTreeMap;
 
@@ -131,7 +138,7 @@ fn owe_mint(
     act: u32,
     vault: u64,
     why: &str,
-    lots: Vec<LotMint>,
+    (lots, settle): (Vec<LotMint>, Option<super::scrap::Settlement>),
 ) {
     record.acts = act;
     record.owed = Some(Box::new(OwedAct {
@@ -141,6 +148,7 @@ fn owe_mint(
         kind: OwedKind::Mint {
             why: why.to_owned(),
             lots,
+            settle: settle.map(Box::new),
         },
         tries: 0,
     }));
@@ -261,31 +269,148 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             vacated: None,
         });
     }
-    owe_mint(ctx, record, act_no, vault.0, "strip", vec![row]);
+    owe_mint(ctx, record, act_no, vault.0, "strip", (vec![row], None));
     Ok(lot)
 }
 
 /// What a scrapping yields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scrapped {
-    /// Tonnes of `structural_alloys`.
+    /// Tonnes of `structural_alloys` into the operator's stock.
     pub alloys_t: u64,
-    /// The parts' lots.
+    /// The yield, kilograms, before the tonnes are taken out.
+    pub yield_kg: u64,
+    /// The parts' lots, into its stores.
     pub parts: Vec<LotId>,
+    /// The holder's credit, minor units.
+    pub credit_minor: u64,
 }
 
-/// **`+bay/scrap`** (Q-36-39): the title holder breaks a berthed hull up.
+/// What a return comes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Returned {
+    /// The bale bought back.
+    pub bale: super::Bale,
+    /// The holder's credit, minor units.
+    pub credit_minor: u64,
+    /// Tonnes the shop bale mints of `structural_alloys` and `industrial_parts`.
+    pub minted: (u64, u64),
+}
+
+/// The operator's storefront, the org and account that pay, and its shop bale.
+type Buyer = (
+    VaultId,
+    (mush_org::OrgId, mush_economy::AccountId),
+    super::ShopBale,
+);
+
+/// **The workshop's side of a scrap or a return** (doc 39 cut IN.8): the operator's storefront
+/// (its stores and stock), the org and account that pay, and its shop bale — read free of
+/// another hull's pending mint.
+fn buyer(w: &mush_core::World, facility: &super::Facility) -> Result<Buyer, String> {
+    let (Some(port), Some(operator), Some(row)) = (
+        facility.port.as_ref(),
+        facility.operator,
+        super::stores_of(w, facility),
+    ) else {
+        return Err("That workshop keeps no stores to buy what comes off her.".to_owned());
+    };
+    let shop = w
+        .module_state::<crate::store::TacsimStore>()
+        .ok_or("TacSim is not loaded.")?
+        .shop_bale(port)
+        .ok_or("The workshop's books cannot be read; staff repair them first.")?;
+    if shop.pending.is_some() {
+        return Err(
+            "The workshop is still taking another hull's matter into its stores; try again in a \
+             moment."
+                .to_owned(),
+        );
+    }
+    Ok((VaultId(row.vault), operator, shop))
+}
+
+/// The holder's credit account.
+fn holder_account(w: &mush_core::World, holder: ObjId) -> Result<mush_economy::AccountId, String> {
+    crate::port::credit::own_account(w, holder)
+        .map(|account| account.id)
+        .ok_or_else(|| "You hold no credit account for the yard to pay into.".to_owned())
+}
+
+/// The bulk lots a settlement mints into the operator's stock, rows `0` and `1` of the act.
+fn bulk_lots(
+    hull: ObjId,
+    act_no: u32,
+    terms: &super::scrap::Terms,
+) -> Result<Vec<LotMint>, String> {
+    let mut lots = Vec::new();
+    for (row, good, t) in [
+        (0, SCRAP_GOOD, terms.alloys_t),
+        (1, super::PARTS_GOOD, terms.fittings_t),
+    ] {
+        if t > 0 {
+            lots.push(LotMint {
+                lot: act::lot_id(hull, act_no, row)?,
+                commodity: CanonicalId::new(good).map_err(|e| e.to_string())?,
+                quantity: t,
+                grade: SCRAP_GRADE,
+                part: None,
+            });
+        }
+    }
+    Ok(lots)
+}
+
+/// The references a scrap or a return reads (§4.6, §4.10), the hull's at `hull_minor`.
+fn references(w: &mush_core::World, hull_minor: u64) -> super::scrap::References {
+    super::scrap::References {
+        hull_minor,
+        alloys_minor_t: crate::definitions::mass::good_reference_minor(w, SCRAP_GOOD),
+        fittings_minor_t: crate::definitions::mass::good_reference_minor(w, super::PARTS_GOOD),
+    }
+}
+
+/// **Settle or owe** a scrap's or a return's matter and money: with nothing to mint it lands
+/// now; otherwise the shop bale is held for this act and the mint is owed with its settlement.
+#[allow(clippy::too_many_arguments)]
+fn settle_or_owe(
+    ctx: &mut Ctx<'_>,
+    record: BayHull,
+    (act_no, why): (u32, &str),
+    (stores, shop): (VaultId, super::ShopBale),
+    lots: Vec<LotMint>,
+    settle: super::scrap::Settlement,
+) {
+    let hull = record.hull;
+    if lots.is_empty() {
+        super::scrap::land(ctx, hull, act_no, ctx.actor, &settle);
+        return;
+    }
+    crate::store::put_shop_bale(
+        ctx,
+        &super::ShopBale {
+            pending: Some((hull, act_no)),
+            ..shop
+        },
+    );
+    owe_mint(ctx, record, act_no, stores.0, why, (lots, Some(settle)));
+}
+
+/// **`+bay/scrap`** (Q-36-39; doc 39 cut IN.8, §4.6): the title holder breaks a berthed hull up
+/// and the workshop's operator buys what comes off.
 ///
 /// # Errors
 ///
 /// The refusal, as a sentence; nothing is written on any.
+#[allow(clippy::too_many_lines)]
 pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
     let (mut record, facility) = ready(ctx, hull, Act::Scrap)?;
-    let vault = super::source_hold(ctx.w, hull, &facility)?;
+    let (stores, (operator, operator_account), shop) = buyer(ctx.w, &facility)?;
+    let holder = holder_account(ctx.w, ctx.actor)?;
     let (before, _, anatomy) = super::unit_parts(ctx.w, hull)?;
     let at_ic = ctx.w.world_ic_now().at;
     let assessment = assess_tactical_unit(&before, &anatomy);
-    let (after, report) = WorkshopBook::new()
+    let (after, _) = WorkshopBook::new()
         .scrap_hull(
             &before,
             &anatomy,
@@ -295,20 +420,16 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             at_ic,
         )
         .map_err(|e| e.to_string())?;
+    // Doc 39 cut IN.8 (§4.6): the yield at the design's own figures, over its structural cells.
+    let budget = crate::definitions::mass::hull_budget(ctx.w, hull);
+    let yield_kg = budget.as_ref().map_or(0, |(_, budget)| {
+        budget.scrap_yield_kg(super::scrap::surviving_points(&before))
+    });
     let act_no = super::next_act(ctx, &record);
-    let mut lots = Vec::new();
-    let alloys_t = report.structural_scrap_kg / SCRAP_KG_PER_T;
-    if alloys_t > 0 {
-        lots.push(LotMint {
-            lot: act::lot_id(hull, act_no, 0)?,
-            commodity: CanonicalId::new(SCRAP_GOOD).map_err(|e| e.to_string())?,
-            quantity: alloys_t,
-            grade: SCRAP_GRADE,
-            part: None,
-        });
-    }
+    let mut parts = Vec::new();
+    let mut part_lots = Vec::new();
     for (slot, condition) in &assessment.component_conditions {
-        if !condition.is_salvageable() || lots.len() >= act::MAX_ACT_ROWS {
+        if !condition.is_salvageable() || part_lots.len() >= act::MAX_ACT_ROWS - 2 {
             continue;
         }
         let Some(definition) = before.component(slot).map(|c| c.definition.clone()) else {
@@ -317,12 +438,18 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         let Some(part_row) = crate::hardware::bay::part_of(ctx.w, &definition) else {
             continue;
         };
-        let lot = act::lot_id(hull, act_no, lots.len().saturating_add(1))?;
-        lots.push(LotMint {
+        let intact = *condition == ComponentCondition::Intact;
+        parts.push(super::scrap::PartIn {
+            reference_minor: super::part_price(ctx.w, hull, slot).map_or(0, |(_, _, price)| price),
+            intact,
+        });
+        // Rows 0 and 1 are the bulk lots'.
+        let lot = act::lot_id(hull, act_no, part_lots.len().saturating_add(2))?;
+        part_lots.push(LotMint {
             lot,
             commodity: part_row.commodity,
             quantity: 1,
-            grade: crate::hardware::bay::part_grade(*condition == ComponentCondition::Intact),
+            grade: crate::hardware::bay::part_grade(intact),
             part: Some(provenance(
                 lot,
                 &before,
@@ -335,6 +462,29 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             )),
         });
     }
+    let hull_minor = budget.as_ref().map_or(0, |(design, budget)| {
+        crate::definitions::mass::reference_price_minor(ctx.w, design, budget)
+    });
+    // The removal is the tariff's replacement labour at the operator's multiplier (§4.6: the
+    // strip's four IC hours).
+    let removal = crate::definitions::workshop::workshop_tariff()
+        .map_err(|e| e.to_string())?
+        .with_multiplier_permille(facility.multiplier_permille)
+        .map_err(|e| e.to_string())?
+        .labor_cost_replace_component;
+    let terms = super::scrap::terms(
+        references(ctx.w, hull_minor),
+        yield_kg,
+        &parts,
+        removal,
+        record.bale,
+        shop.kg,
+    );
+    if !super::scrap::operator_covers(ctx.w, operator_account, terms.credit_minor()) {
+        return Err("The yard cannot pay for her just now; nothing is scrapped.".to_owned());
+    }
+    let mut lots = bulk_lots(hull, act_no, &terms)?;
+    lots.extend(part_lots);
     let plan = mush_tactics::field_ops::ic_condition_plan(
         &before,
         &after,
@@ -342,26 +492,89 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         Some(SmolStr::new_static("tacsim.bay.scrap")),
     )
     .map_err(|e| e.to_string())?;
-    hold_takes(ctx, vault, &lots)?;
-    let parts = lots
-        .iter()
-        .filter(|l| l.part.is_some())
-        .map(|l| l.lot)
-        .collect();
+    hold_takes(ctx, stores, &lots)?;
+    let settle = super::scrap::Settlement {
+        credit_minor: terms.credit_minor(),
+        operator: operator.0,
+        operator_account: operator_account.0,
+        holder_account: holder.0,
+        shop: super::ShopBale {
+            kg: terms.shop_after,
+            pending: None,
+            ..shop.clone()
+        },
+        clear_bale: record.bale.is_some(),
+    };
+    let scrapped = Scrapped {
+        alloys_t: terms.alloys_t,
+        yield_kg,
+        parts: lots
+            .iter()
+            .filter(|l| l.part.is_some())
+            .map(|l| l.lot)
+            .collect(),
+        credit_minor: terms.credit_minor(),
+    };
     if lots.is_empty() {
-        // Nothing to lay in the hold: the hull is broken up now.
+        // Nothing to lay in the stores: the hull is broken up now.
         if let Some(plan) = plan {
             mush_tactics::module::apply_plan(ctx, hull, &plan).map_err(|e| e.to_string())?;
         }
         record.scrapped_ic = Some(at_ic);
         record.berth = None;
         put_bay_hull(ctx, &record);
-    } else {
-        // The breaking-up is written when the mint lands (`land_mint`); the hull stands
-        // berthed and whole until then.
-        owe_mint(ctx, record, act_no, vault.0, "scrap", lots);
     }
-    Ok(Scrapped { alloys_t, parts })
+    // Otherwise the breaking-up and the credit land with the mint (`land_mint`); the hull
+    // stands berthed and whole, and the shop bale held, until then.
+    settle_or_owe(ctx, record, (act_no, "scrap"), (stores, shop), lots, settle);
+    Ok(scrapped)
+}
+
+/// **`+bay/return`** (doc 39 cut IN.8, §4.10): the title holder sells the hull's opened bale back
+/// to the workshop at the references, raw matter with no fifth applied.
+///
+/// # Errors
+///
+/// The refusal, as a sentence; nothing is written on any.
+pub fn return_bale(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Returned, String> {
+    let (record, facility) = ready(ctx, hull, Act::Scrap)?;
+    let Some(bale) = record.bale.filter(|bale| *bale != super::Bale::default()) else {
+        return Err("Her bale holds nothing to return.".to_owned());
+    };
+    let (stores, (operator, operator_account), shop) = buyer(ctx.w, &facility)?;
+    let holder = holder_account(ctx.w, ctx.actor)?;
+    let terms = super::scrap::terms(references(ctx.w, 0), 0, &[], 0, Some(bale), shop.kg);
+    if !super::scrap::operator_covers(ctx.w, operator_account, terms.credit_minor()) {
+        return Err("The yard cannot pay for her bale just now.".to_owned());
+    }
+    let act_no = super::next_act(ctx, &record);
+    let lots = bulk_lots(hull, act_no, &terms)?;
+    hold_takes(ctx, stores, &lots)?;
+    let settle = super::scrap::Settlement {
+        credit_minor: terms.credit_minor(),
+        operator: operator.0,
+        operator_account: operator_account.0,
+        holder_account: holder.0,
+        shop: super::ShopBale {
+            kg: terms.shop_after,
+            pending: None,
+            ..shop.clone()
+        },
+        clear_bale: true,
+    };
+    settle_or_owe(
+        ctx,
+        record,
+        (act_no, "return"),
+        (stores, shop),
+        lots,
+        settle,
+    );
+    Ok(Returned {
+        bale,
+        credit_minor: terms.credit_minor(),
+        minted: (terms.alloys_t, terms.fittings_t),
+    })
 }
 
 /// **A mint landed** (doc 36a §5.1): the change a strip or a scrap owes the hull is written
@@ -370,6 +583,10 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
 /// destroys nothing. A hull that will not take the change any more is paged for staff; its
 /// lots stand. A scrap marks the record scrapped and frees its berth either way.
 pub(crate) fn land_mint(ctx: &mut Ctx<'_>, hull: ObjId, by: ObjId, why: &str, lots: &[LotMint]) {
+    // Doc 39 cut IN.8: a return changes nothing on the hull but its bale (its settlement's).
+    if why == "return" {
+        return;
+    }
     let at_ic = ctx.w.world_ic_now().at;
     let scrap = why == "scrap";
     let custody = CustodyTitleStatus::ResolvedTitle { owner: by };
@@ -472,6 +689,37 @@ pub fn vacate_claim(
         },
         tries: 0,
     }));
+    put_bay_hull(ctx, &record);
+    Ok(())
+}
+
+/// **List a stripped lot under a pending claim** (doc 39 cut IN.7; doc 41 §4.6): staff's seam
+/// for the strip under a claim, which no ruled path makes yet (a salvor never strips, Q-36-33),
+/// [`vacate_claim`]'s pair. `lot` came off `hull`; until `claim` is vacated or its contract
+/// ends, the part is disputed ([`super::disputed`]).
+///
+/// # Errors
+///
+/// A zero claim, the record unreadable, or its claim list full.
+pub fn list_under_claim(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    lot: LotId,
+    claim: u64,
+) -> Result<(), String> {
+    if claim == 0 {
+        return Err("A claim names its contract.".to_owned());
+    }
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.claim_lots.len() >= super::MAX_CLAIM_LOTS {
+        return Err("That hull's claim list is full.".to_owned());
+    }
+    record.claim_lots.retain(|listed| listed.lot != lot.0);
+    record.claim_lots.push(super::ClaimLot {
+        lot: lot.0,
+        claim,
+        vacated: None,
+    });
     put_bay_hull(ctx, &record);
     Ok(())
 }

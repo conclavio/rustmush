@@ -375,8 +375,47 @@ pub fn held(w: &World, who: ObjId) -> Option<ObjId> {
 /// processing on movement. `None` passes.
 #[must_use]
 pub fn refusal(w: &World, who: ObjId, gate: Gate) -> Option<String> {
-    let hold = crew_of(w, who)?.hold()?;
+    let record = crew_of(w, who)?;
+    // Doc 42 cut CR.3 (Q-42-8): a captive may ask for extraction once the bound has passed; before
+    // it, the refusal names the time left.
+    if gate == Gate::Extract
+        && let CrewLocation::Captured {
+            carrier, since_ic, ..
+        } = record.location
+    {
+        let due = since_ic.saturating_add(i64::from(super::config(w).captive_bound_s));
+        let left = due - w.world_ic_now().at;
+        return (left > 0).then(|| {
+            HELD_BOUND
+                .replace("{carrier}", &crate::port::coop::name_of(w, carrier))
+                .replace("{h}", &hours(left).to_string())
+        });
+    }
+    let hold = record.hold()?;
     refusal_for(w, &hold, gate)
+}
+
+/// **A captive's extraction before the bound** (doc 42 cut CR.3, Q-42-8): `{carrier}`, `{h}`.
+pub const HELD_BOUND: &str = "You are held aboard the {carrier}. In about {h} IC h a recovery service may negotiate your release: +sortie/extract then.";
+/// **An extraction asked for from captivity, or as a passenger** (doc 42 cut CR.3; Q-42-8,
+/// Q-42-9): `{port}`, `{h}`.
+pub const EXTRACT_RELEASE: &str = "Extraction requested. A recovery service negotiates your passage and sets you down at {port} in about {h} IC h.";
+
+/// **Whether `who` may ask for extraction where their record stands** (doc 42 cut CR.3): a
+/// stranded or incapacitated character inside their unit (Q-CF-39); a captive past the bound
+/// (the gate has read it, Q-42-8); or a passenger released aboard a hull not their own (Q-42-9's
+/// widening: `Carrier { hull }` on a hull other than the one they command).
+fn may_extract(w: &World, who: ObjId, record: &CrewRecord) -> bool {
+    match &record.location {
+        CrewLocation::Captured { .. } => true,
+        CrewLocation::Carrier { hull } => {
+            crate::port::coop::helm_of(w, who).is_none_or(|helm| helm.hull != *hull)
+                && inside(w, who, *hull)
+        }
+        _ => record
+            .extractable()
+            .is_some_and(|unit| inside(w, who, unit)),
+    }
 }
 
 /// [`refusal`]'s rule for one [`Hold`].
@@ -667,6 +706,19 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         return;
     }
     let prior = crew_of(ctx.w, pilot).cloned();
+    // Doc 42 cut CR.3 (Q-42-15): a captor's carrier whose hull fell strands everyone aboard,
+    // captives included; custody ends with the hull.
+    if let Some(stranded) = prior
+        .as_ref()
+        .and_then(|record| wrecked_captive(record, site, unit, aboard(ctx.w, site, unit)))
+    {
+        put(ctx, stranded);
+        let line = STRANDED
+            .replace("{unit}", &unit.0.to_string())
+            .replace("{site}", &super::admit::site_name(ctx, site));
+        ctx.out.sys_to_actor(pilot, "tacsim.field", line);
+        return;
+    }
     if prior.as_ref().is_some_and(leaves_alone) {
         return;
     }
@@ -733,6 +785,32 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
             .replace("{site}", &super::admit::site_name(ctx, site));
         ctx.out.sys_to_actor(pilot, "tacsim.field", line);
     }
+}
+
+/// **[`check_in`]'s rule for a captive whose carrier checks in** (doc 42 cut CR.3, Q-42-15):
+/// held aboard `unit` and the carrier's own check-in strands its souls (`at` is
+/// [`aboard`]'s reading) — stranded in the wreck on `site`, the condition kept, custody gone.
+/// Anyone else, and a captive of a sound carrier, is `None`.
+#[must_use]
+pub(crate) fn wrecked_captive(
+    record: &CrewRecord,
+    site: &CanonicalId,
+    unit: ObjId,
+    at: CrewLocation,
+) -> Option<CrewRecord> {
+    let CrewLocation::Captured { carrier, .. } = record.location else {
+        return None;
+    };
+    if carrier != unit || !matches!(at, CrewLocation::Stranded { .. }) {
+        return None;
+    }
+    let mut next = record.clone();
+    next.location = CrewLocation::Stranded {
+        site: site.clone(),
+        unit,
+    };
+    next.extraction = None;
+    Some(next)
 }
 
 /// **Whether a check-in leaves `record` alone** (doc 36a §11 row 4; doc 42 Q-42-3, Q-42-12): an
@@ -1440,10 +1518,13 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .replace("{h}", &hours(coming.due_ic - now).to_string()),
         ));
     }
-    record
-        .extractable()
-        .filter(|unit| inside(ctx.w, actor, *unit))
-        .ok_or_else(|| CmdError::msg(NOT_STRANDED))?;
+    if !may_extract(ctx.w, actor, &record) {
+        return Err(CmdError::msg(NOT_STRANDED));
+    }
+    let negotiated = matches!(
+        record.location,
+        CrewLocation::Captured { .. } | CrewLocation::Carrier { .. }
+    );
     if ctx.w.world_timeline().is_frozen() {
         return Err(CmdError::msg(
             "World time is frozen; ask again once it resumes.",
@@ -1463,9 +1544,13 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.sys_to_actor(
         actor,
         "tacsim.field",
-        EXTRACT_TAKEN
-            .replace("{port}", port.name)
-            .replace("{h}", &hours(delay).to_string()),
+        (if negotiated {
+            EXTRACT_RELEASE
+        } else {
+            EXTRACT_TAKEN
+        })
+        .replace("{port}", port.name)
+        .replace("{h}", &hours(delay).to_string()),
     );
     Ok(())
 }
@@ -1549,6 +1634,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         }
         land(ctx, record, &coming, site.as_ref(), unit);
     }
+    // Doc 42 cut CR.2: the handover's catch-up, the fee's retries and the releases due.
+    custody_pass(ctx, now);
     treat(ctx, now);
 }
 
@@ -2039,6 +2126,330 @@ fn set_down(ctx: &mut Ctx<'_>, who: ObjId, dest: ObjId) {
     });
 }
 
+// ---- the port handover and release (doc 42 cut CR.2; Q-42-6, Q-42-7, Q-42-19) --------------
+
+/// **The handover**, told to the captive: `{carrier}`, `{port}`, `{authority}`, `{h}`, `{fee}`.
+pub const HANDED_OVER: &str = "The {carrier} docks at {port} and hands you over to the {authority}: you are in processing, released in about {h} IC h. The release fee is {fee} cr, levied on your account; whatever it cannot cover stays with you as a debt (+debts).";
+/// **The handover**, told to the captor: `{who}`, `{authority}`, `{port}`.
+pub const HANDED_OVER_CAPTOR: &str =
+    "At {port} you hand {who} over to the {authority}. You are paid nothing for it.";
+/// **The release after processing**, told to the released: `{authority}`, `{port}`.
+pub const PROCESSED: &str = "The {authority} releases you at {port}: you are free.";
+
+/// **The IC port a hull is docked at, and its authority's facts** (doc 42 Q-42-6): the port, the
+/// entry's id and definition and map. `None` anywhere but a docked berth at an IC port whose entry
+/// authors an authority.
+fn authority_berth(
+    w: &World,
+    hull: ObjId,
+) -> Option<(
+    &'static crate::ic_return::IcPort,
+    &crate::port::def::PortDef,
+    &crate::port::map::PortMap,
+)> {
+    let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(w, hull) else {
+        return None;
+    };
+    def.authority.as_ref()?;
+    let port = crate::ic_return::PORTS
+        .iter()
+        .find(|known| known.id == def.venue.as_str())?;
+    Some((port, def, map))
+}
+
+/// The authority's display name at `def`'s port.
+fn authority_name(def: &crate::port::def::PortDef) -> String {
+    def.authority.as_ref().map_or_else(String::new, |id| {
+        def.orgs
+            .iter()
+            .find(|org| &org.id == id)
+            .map_or_else(|| id.to_string(), |org| org.name.clone())
+    })
+}
+
+/// **Hand every captive aboard `hull` over at the IC port it docked at** (doc 42 cut CR.2;
+/// Q-42-6, Draft 0.3 42-2, 42-3): the docking hook's step, run before any hull hook of the same
+/// arrival, and again on the crew tick, so a lost callback is caught. Each record still
+/// `Captured { carrier: hull }` — and only such a record, so a duplicate callback, a replayed
+/// arrival or a restart finds nobody twice — has its body set down in the port's medical room
+/// (else its arrival room), and is written `Processing { charge: None }` first; the release fee's
+/// obligation is created after and fills `charge` ([`levy_release`]). Nothing at a site's pad or
+/// at a port with no authority.
+pub(crate) fn hand_over(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let held: Vec<CrewRecord> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| {
+                    matches!(record.location, CrewLocation::Captured { carrier, .. } if carrier == hull)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if held.is_empty() {
+        return;
+    }
+    let Some((port, room, authority, fee)) =
+        authority_berth(ctx.w, hull).map(|(port, def, map)| {
+            let room = crate::port::medical::room(ctx.w, &map.entry, def)
+                .ok()
+                .flatten()
+                .or_else(|| crate::ic_return::arrival_room(ctx.w, port));
+            (
+                port,
+                room,
+                authority_name(def),
+                def.release_fee_cr.unwrap_or(0),
+            )
+        })
+    else {
+        return;
+    };
+    let Some(room) = room else {
+        tracing::warn!(
+            hull = hull.0,
+            port = port.id,
+            "tacsim: a captive's handover port has no room to set them down in; it waits"
+        );
+        return;
+    };
+    let carrier = crate::port::coop::name_of(ctx.w, hull);
+    let now = ctx.w.world_ic_now().at;
+    let due = now.saturating_add(i64::from(super::config(ctx.w).release_s));
+    for record in held {
+        let who = record.character;
+        let CrewLocation::Captured { captor, .. } = record.location else {
+            continue;
+        };
+        set_down(ctx, who, room);
+        put(
+            ctx,
+            CrewRecord {
+                location: CrewLocation::Processing {
+                    port: SmolStr::new(port.id),
+                    release_due_ic: due,
+                    charge: None,
+                },
+                // Doc 42 cut CR.3: an extraction asked for after the bound is overtaken by the
+                // handover.
+                extraction: None,
+                at_ic: now,
+                ..record
+            },
+        );
+        ctx.out.sys_to_actor(
+            who,
+            "tacsim.field",
+            HANDED_OVER
+                .replace("{carrier}", &carrier)
+                .replace("{port}", port.name)
+                .replace("{authority}", &authority)
+                .replace("{h}", &hours(due - now).to_string())
+                .replace("{fee}", &fee.to_string()),
+        );
+        ctx.out.sys_to_actor(
+            captor,
+            "tacsim.field",
+            HANDED_OVER_CAPTOR
+                .replace("{who}", &crate::port::coop::name_of(ctx.w, who))
+                .replace("{authority}", &authority)
+                .replace("{port}", port.name),
+        );
+        levy_release(ctx, who);
+    }
+}
+
+/// **The release fee's inspection key** (doc 42 Q-42-7): `release:<captive>:<release_due_ic>`,
+/// one per handover.
+#[must_use]
+pub fn release_key(who: ObjId, release_due_ic: i64) -> String {
+    format!("release:{}:{release_due_ic}", who.0)
+}
+
+/// **Levy the release fee for a record in processing with no charge yet** (doc 42 Q-42-7, Draft
+/// 0.3 42-7): one `create_sanction_obligation`, one period due now, debiting the captive's own
+/// account under the port clerk's `port.release_fee` grant on the authority's root scope, paying
+/// the authority's account. An obligation already carrying the key (a crash between the economy's
+/// write and the record's) is adopted rather than levied twice. A refusal leaves `charge` empty
+/// for the crew tick to try again; the release never waits on it (FO-12).
+fn levy_release(ctx: &mut Ctx<'_>, who: ObjId) {
+    let Some(record) = crew_of(ctx.w, who).cloned() else {
+        return;
+    };
+    let CrewLocation::Processing {
+        port,
+        release_due_ic,
+        charge: None,
+    } = &record.location
+    else {
+        return;
+    };
+    let key = release_key(who, *release_due_ic);
+    let found = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| {
+            economy.snapshot().obligations().find_map(|o| {
+                matches!(&o.cause, mush_economy::ObligationCause::Sanction { inspection } if *inspection == key)
+                    .then_some(o.id)
+            })
+        });
+    let charge = match found {
+        Some(id) => Some(id),
+        None => create_release_obligation(ctx, who, port.as_str(), &key),
+    };
+    let Some(charge) = charge else {
+        return;
+    };
+    let mut next = record.clone();
+    if let CrewLocation::Processing { charge: slot, .. } = &mut next.location {
+        *slot = Some(charge);
+    }
+    put(ctx, next);
+}
+
+/// The economy's half of [`levy_release`]: the sanction's facts read off the port's entry and map.
+fn create_release_obligation(
+    ctx: &mut Ctx<'_>,
+    who: ObjId,
+    port: &str,
+    key: &str,
+) -> Option<mush_economy::ObligationId> {
+    let (def, map) = crate::port::market::ports(ctx.w)
+        .into_iter()
+        .find(|(_, def, _)| def.venue.as_str() == port)
+        .and_then(|(_, def, map)| Some((def.clone(), map?.clone())))?;
+    let authority = def.authority.as_ref()?;
+    let row = map.orgs.get(authority)?;
+    let credit = mush_economy::AccountId(row.account?);
+    let clerk = ObjId(map.clerk.as_ref()?.thing);
+    let debit = crate::port::credit::own_account(ctx.w, who)?.id;
+    let scale = crate::port::apply::credit_scale(ctx.w);
+    let minor = crate::port::apply::minor_of(def.release_fee_cr?, scale)?;
+    let capability = mush_org::CapabilityId::new(crate::port::vendor::RELEASE_FEE_CAPABILITY)?;
+    let spec = mush_economy::SanctionSpec {
+        debit_account: debit,
+        credit_account: credit,
+        amount: mush_economy::Amount::from_minor(minor),
+        due_ic: ctx.w.world_ic_now().at,
+        grace: mush_economy::GracePolicy::new(1),
+        inspection: SmolStr::new(key),
+        capability,
+        scope: mush_org::OrgScopeId(row.root_scope),
+        levied_by: clerk,
+    };
+    match mush_economy::create_sanction_obligation(ctx, spec) {
+        Ok(id) => Some(id),
+        Err(error) => {
+            tracing::warn!(who = who.0, port, %error, "tacsim: a release fee could not be levied; the crew tick tries again");
+            None
+        }
+    }
+}
+
+/// **The crew tick's custody pass** (doc 42 cut CR.2): every captive whose carrier now stands
+/// docked at an IC port with an authority is handed over (the docking hook's catch-up); every
+/// record in processing with no charge is levied again; every one whose release is due is
+/// released ([`release_processed`]).
+fn custody_pass(ctx: &mut Ctx<'_>, now: i64) {
+    let (carriers, uncharged, due): (
+        std::collections::BTreeSet<ObjId>,
+        Vec<ObjId>,
+        Vec<CrewRecord>,
+    ) = {
+        let Some(book) = ctx.w.module_state::<CrewBook>() else {
+            return;
+        };
+        let mut carriers = std::collections::BTreeSet::new();
+        let mut uncharged = Vec::new();
+        let mut due = Vec::new();
+        for record in book.0.values() {
+            match &record.location {
+                CrewLocation::Captured { carrier, .. } => {
+                    carriers.insert(*carrier);
+                }
+                CrewLocation::Processing {
+                    release_due_ic,
+                    charge,
+                    ..
+                } => {
+                    if *release_due_ic <= now {
+                        due.push(record.clone());
+                    } else if charge.is_none() {
+                        uncharged.push(record.character);
+                    }
+                }
+                _ => {}
+            }
+        }
+        (carriers, uncharged, due)
+    };
+    for carrier in carriers {
+        if authority_berth(ctx.w, carrier).is_some() {
+            hand_over(ctx, carrier);
+        }
+    }
+    for who in uncharged {
+        levy_release(ctx, who);
+    }
+    for record in due {
+        release_processed(ctx, record, now);
+    }
+}
+
+/// **The release after processing** (doc 42 Q-42-7): the character at the port — set down in its
+/// arrival room unless they already stand in one of its rooms — stamped as the port they know,
+/// `Port { port }`, told. An uncharged fee is levied first, once more; the release never waits
+/// on it.
+fn release_processed(ctx: &mut Ctx<'_>, record: CrewRecord, now: i64) {
+    let who = record.character;
+    let CrewLocation::Processing { port, charge, .. } = &record.location else {
+        return;
+    };
+    if charge.is_none() {
+        levy_release(ctx, who);
+    }
+    let Some(known) = crate::ic_return::PORTS
+        .iter()
+        .find(|known| known.id == port.as_str())
+    else {
+        return;
+    };
+    if port_here(ctx.w, who).is_none_or(|here| here.id != known.id)
+        && let Some(room) = crate::ic_return::arrival_room(ctx.w, known)
+    {
+        set_down(ctx, who, room);
+    }
+    if let Err(error) = crate::ic_return::stamp(ctx.w, who, known) {
+        tracing::warn!(who = who.0, %error, "tacsim: a released captive's last-port stamp did not write");
+    }
+    let record = crew_of(ctx.w, who).cloned().unwrap_or(record);
+    put(
+        ctx,
+        CrewRecord {
+            location: CrewLocation::Port {
+                port: SmolStr::new(known.id),
+            },
+            at_ic: now,
+            ..record
+        },
+    );
+    let authority = crate::port::market::ports(ctx.w)
+        .into_iter()
+        .find(|(_, def, _)| def.venue.as_str() == known.id)
+        .map_or_else(String::new, |(_, def, _)| authority_name(def));
+    ctx.out.sys_to_actor(
+        who,
+        "tacsim.field",
+        PROCESSED
+            .replace("{authority}", &authority)
+            .replace("{port}", known.name),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2226,6 +2637,55 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&exit).expect("encodes")).expect("decodes");
         assert_eq!(back, exit);
         assert_eq!(npc_exit_key(ObjId(55)).as_str(), "tacsim:crew_exit:55");
+    }
+
+    /// **Doc 42 cut CR.2** (Q-42-7): the release fee's inspection key is one per handover, and
+    /// `[tacsim.field].release_s` is banded an IC minute to an IC day.
+    #[test]
+    fn cr2_the_release_key_and_the_processing_band() {
+        assert_eq!(release_key(ObjId(7), 4_100), "release:7:4100");
+        let mut cfg = crate::config::FieldConfig::default();
+        assert_eq!(cfg.release_s, 3_600);
+        assert!(cfg.validate().is_ok());
+        cfg.release_s = 59;
+        assert!(cfg.validate().is_err_and(|e| e.contains("release_s")));
+        cfg.release_s = 86_401;
+        assert!(cfg.validate().is_err());
+    }
+
+    /// **Doc 42 cut CR.3** (Q-42-15): a captive of a carrier whose own check-in strands its souls
+    /// is stranded in the wreck, custody gone; a sound carrier's check-in, or another unit's,
+    /// leaves the captive alone.
+    #[test]
+    fn cr3_a_captors_wreck_strands_its_captives() {
+        let site = CanonicalId::new("ahuna").expect("a site");
+        let held = record_at(
+            ObjId(7),
+            CrewLocation::Captured {
+                carrier: ObjId(90),
+                captor: ObjId(12),
+                since_ic: 100,
+            },
+        );
+        let wreck = CrewLocation::Stranded {
+            site: site.clone(),
+            unit: ObjId(90),
+        };
+        let left = wrecked_captive(&held, &site, ObjId(90), wreck.clone()).expect("stranded");
+        assert_eq!(left.location, wreck);
+        assert!(!left.in_custody() && left.extractable() == Some(ObjId(90)));
+        assert_eq!(left.condition, held.condition, "the condition kept");
+        assert!(
+            wrecked_captive(
+                &held,
+                &site,
+                ObjId(90),
+                CrewLocation::Carrier { hull: ObjId(90) }
+            )
+            .is_none(),
+            "a sound carrier keeps its captive"
+        );
+        assert!(wrecked_captive(&held, &site, ObjId(91), wreck).is_none());
     }
 
     /// A record for the doc 42 tests: `who`, injured, at `location`.
@@ -2432,12 +2892,35 @@ mod tests {
         assert_eq!(held(&w, who), Some(carrier));
         for gate in gates {
             let line = refusal(&w, who, gate).expect("a captive is refused");
-            assert_eq!(
-                line,
-                HELD.replace("{carrier}", &crate::port::coop::name_of(&w, carrier))
-            );
             assert!(line.starts_with("You are held aboard the "), "{line}");
+            if gate == Gate::Extract {
+                // Doc 42 cut CR.3 (Q-42-8): the time left to the bound.
+                assert!(line.contains("In about 168 IC h"), "{line}");
+            } else {
+                assert_eq!(
+                    line,
+                    HELD.replace("{carrier}", &crate::port::coop::name_of(&w, carrier))
+                );
+            }
         }
+        // Doc 42 cut CR.3: past the bound the captive may ask; nothing else opens.
+        let saved = book.clone();
+        book.0.insert(
+            who,
+            record_at(
+                who,
+                CrewLocation::Captured {
+                    carrier,
+                    captor: ObjId(12),
+                    since_ic: now - 604_800,
+                },
+            ),
+        );
+        w.module_state_insert(book.clone());
+        assert!(refusal(&w, who, Gate::Extract).is_none());
+        assert!(refusal(&w, who, Gate::Move).is_some());
+        book = saved;
+        w.module_state_insert(book.clone());
         let mut ejectee = record_at(
             who,
             CrewLocation::Stranded {

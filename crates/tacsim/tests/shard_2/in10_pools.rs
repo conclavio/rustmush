@@ -19,18 +19,18 @@
 //!    Trust.
 //! 5. The desk enrols the ninth captain into her.
 //!
-//! **Seeds** (doc 43 rule 2.3 #4): the yard facility (`@facility/open`, the seed until lane v24
-//! authors the row), the captains' money for the buyouts, and — until the Trust's raise lands in
-//! the lane — the 250,000 raise as a staff mint before the ninth enrolment. Every other claim is
-//! reached by the players' commands and the port tick.
+//! **Seeds** (doc 43 rule 2.3 #4): one hauler plant in the Yards' stores (IN.7 retired the
+//! seeded part stock; the house buys it there at its catalogue price), the captains' money for
+//! the buyouts, and the Trust's 250,000 raise (lane v28) held back in the treasury by staff from
+//! boot until the ninth enrolment, so the story reads the world before the raise, as the row
+//! does. Every other claim is reached by the players' commands and the port tick.
 
 use mush_core::{GOD, ObjId};
 use mush_org::PrincipalId;
 use tacsim::port::pools::Phase;
 
-use crate::driving_rig::{Rig, cid, ic_now, pilot, port_map, run, station_room, stocked, store};
+use crate::driving_rig::{Rig, cid, ic_now, pilot, port_map, run, stocked, store};
 
-const STICKNEY: &str = "stickney_port";
 const CERES: &str = "ceres_port";
 const TRUST: &str = "coop_trust";
 const DAY: i64 = 86_400;
@@ -54,21 +54,6 @@ fn mint(rig: &mut Rig, account: u64, major: u64) {
         &format!("@econ/mint {treasury}={account} {}", major * 100),
     );
     assert!(!out.contains("Usage"), "{out}");
-}
-
-fn made(rig: &mut Rig, name: &str) -> ObjId {
-    let out = run(&mut rig.tw, GOD, &format!("@create {name}"));
-    out.split('#')
-        .nth(1)
-        .and_then(|rest| {
-            rest.chars()
-                .take_while(char::is_ascii_digit)
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .map(ObjId)
-        .unwrap_or_else(|| panic!("a thing: {out}"))
 }
 
 /// Every submission staged, the industry's included, landed in order.
@@ -192,6 +177,20 @@ fn order_of(rig: &mut Rig, order: Option<u64>) -> Option<mush_industry::WorkOrde
     )
 }
 
+/// The Trust's 250,000 raise held back in the treasury (`true`), or given back.
+fn hold(rig: &mut Rig, back: bool) {
+    let trust = trust_account(rig);
+    let treasury = port_map(&rig.tw, CERES).treasury.expect("a treasury");
+    let (from, to) = if back {
+        (trust, treasury)
+    } else {
+        (treasury, trust)
+    };
+    let out = run(&mut rig.tw, GOD, &format!("@econ/pay {from}={to} 25000000"));
+    assert!(!out.contains("Usage"), "{out}");
+    settle(rig, 1);
+}
+
 fn trust_pool(rig: &Rig) -> Option<tacsim::port::pools::HousePool> {
     tacsim::port::pools::pool(rig.tw.world(), TRUST).cloned()
 }
@@ -220,44 +219,30 @@ fn available(rig: &Rig, account: u64) -> i64 {
         .expect("the account")
 }
 
-/// **The Stickney yard** (the seed until lane v24 authors the row): a two-slot facility of the
-/// Yards on the Service Counter's floor, Public, a 10M slipway over thirty years.
-fn open_yard(rig: &mut Rig) {
-    let floor = station_room(&rig.tw, STICKNEY, "room.p11_service");
-    let yard = made(rig, "Stickney slipway");
-    rig.tw
-        .world_mut()
-        .move_to(yard, floor)
-        .expect("the yard onto the floor");
-    let vendor = port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")]
-        .vendor
-        .expect("the yard's vendor");
-    let yards = rig
-        .tw
-        .world()
-        .module_state::<mush_market::MarketStore>()
-        .and_then(|m| m.vendor(mush_market::VendorId(vendor)).map(|v| v.org))
-        .expect("the yard's org");
-    for line in [
-        format!("@facility/open {}=2 tacsim.yard", yard.0),
-        format!("@facility/owner {}=org:{}", yard.0, yards.0),
-        format!(
-            "@facility/terms {}=public 10000000/30/20/12/150/250",
-            yard.0
-        ),
-    ] {
-        let out = run(&mut rig.tw, GOD, &line);
-        assert!(!out.contains("Usage"), "{line}: {out}");
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
     let mut rig = stocked();
-    open_yard(&mut rig);
+    // IN.7 retired the seeded part stock: staff stock the Yards' stores with the hauler plant a
+    // Dray's bill takes (`seed_store_parts`, the seed).
+    let _ = crate::driving_rig::seed_store_parts(
+        &mut rig,
+        "stickney_port",
+        "stickney_yards",
+        "tacsim.part.plant.hauler_mk1",
+        1,
+        9_100,
+    );
     // The Yards' part stores seed after the asks (IN.6): let the clerk finish.
     settle(&mut rig, 40);
+    // The Trust before its raise: lane v28 posts it 250,000 more at boot, which staff hold back
+    // in the treasury until the story's last step (the world the row reads, before v28).
+    assert_eq!(
+        available(&rig, trust_account(&rig)),
+        500_000 * 100,
+        "the base and the raise"
+    );
+    hold(&mut rig, true);
 
     // ---- (1) Eight charters leave no free Dray ----
     let captains: Vec<ObjId> = NAMES
@@ -435,8 +420,8 @@ commission {:?}",
     assert_eq!(available(&rig, purse), 0, "the unspent purse is home");
 
     // ---- (5) The desk enrols the ninth captain ----
-    // The Trust's raise (lane v26's `raises: [250000]`), as a staff mint until the lane lands.
-    mint(&mut rig, trust, 250_000);
+    // The Trust's raise comes in (the hold-back given back).
+    hold(&mut rig, false);
     let out = run(&mut rig.tw, ninth, &format!("+coop/enrol {}", NAMES[8]));
     assert!(out.contains(&format!("now the {}", NAMES[8])), "{out}");
     // The desk lends the lowest free hull: over these weeks the dormancy recall (seven real days on

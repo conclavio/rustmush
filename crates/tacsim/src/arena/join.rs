@@ -20,10 +20,18 @@
 //! (`Arena::grid_at`). One `mind_sealed` line journals it, as every unit's at check-out.
 //!
 //! **What it never joins.** A squad (squads are the OOC lobby's command, dealt at check-out); a
-//! scripted mind (an IC field carries none until doc 23 S.4b, Q-CF-43, and the task holds no
-//! source); an OOC match: only an arena its host ends ([`EndCondition::Host`], the IC field's)
-//! takes a unit in, under a host that admits every class, and the task refuses the message
-//! outright without field terms, so no practice hash can ever see one.
+//! scripted mind without its retained source; an OOC match: only an arena its host ends
+//! ([`EndCondition::Host`], the IC field's) takes a unit in, under a host that admits every
+//! class, and the task refuses the message outright without field terms, so no practice hash can
+//! ever see one.
+//!
+//! **A scripted seal** (doc 23 cut S.4b-3's kernel half, built in doc 40 cut FR.5): the host
+//! hands the retained doctrine source beside the check-out row, and [`Arena::join_installing`]
+//! admits the unit and installs its runner through the caller's installer — the task's is the
+//! rule a fresh check-out uses (`crate::minds::install_sealed_runner`), the arena never naming
+//! the interpreter (D-UM-1) — on the same copy, so an install that fails leaves the arena as it
+//! was and is refused by its own sentence. With no installer (no source) a scripted seal is
+//! refused by name; a mind never voids a field (D-23-17).
 //!
 //! **All or nothing.** The join is built on a copy of the arena and swapped in whole, so a refusal
 //! leaves the arena exactly as it was.
@@ -54,6 +62,10 @@ pub fn ring_cells(centre: (u16, u16), ring: u16) -> Vec<(u16, u16)> {
     }
     out
 }
+
+/// **The installer [`Arena::join_installing`] hands the copy it builds on** (doc 40 cut FR.5):
+/// the scripted seal's runner for the unit, or the install's own sentence.
+pub type JoinInstaller<'a> = &'a dyn Fn(&mut Arena, ObjId) -> Result<(), String>;
 
 /// A refusal of [`Arena::join`] that no check-out meets.
 fn refused(unit: ObjId, reason: &str) -> ArenaError {
@@ -106,7 +118,28 @@ impl Arena {
         spread: u16,
     ) -> Result<Designator, ArenaError> {
         let mut next = self.clone();
-        let name = next.join_in_place(unit, pilot, host, spread)?;
+        let name = next.join_in_place(unit, pilot, host, spread, None)?;
+        *self = next;
+        Ok(name)
+    }
+
+    /// **[`Arena::join`], with the runner of a scripted seal installed** (this module's head):
+    /// `install` is handed the copy the join builds on and the unit's id once its row is in, and
+    /// answers the install's own sentence on a refusal.
+    ///
+    /// # Errors
+    ///
+    /// [`Arena::join`]'s, and the install's refusal naming the unit; the arena is unchanged.
+    pub fn join_installing(
+        &mut self,
+        unit: CustodyUnit,
+        pilot: Option<Pilot>,
+        host: &FieldHost,
+        spread: u16,
+        install: JoinInstaller<'_>,
+    ) -> Result<Designator, ArenaError> {
+        let mut next = self.clone();
+        let name = next.join_in_place(unit, pilot, host, spread, Some(install))?;
         *self = next;
         Ok(name)
     }
@@ -117,6 +150,7 @@ impl Arena {
         pilot: Option<Pilot>,
         host: &FieldHost,
         spread: u16,
+        install: Option<JoinInstaller<'_>>,
     ) -> Result<Designator, ArenaError> {
         let id = unit.id;
         if self.unit(id).is_some() {
@@ -127,8 +161,9 @@ impl Arena {
         if self.end != EndCondition::Host || !host.every_class || host.all_hostile {
             return Err(refused(id, "only an IC field takes a unit in once it runs"));
         }
-        if unit.seal.engine == SealEngine::Scripted {
-            return Err(refused(id, "a scripted mind is never taken into a field"));
+        let scripted = unit.seal.engine == SealEngine::Scripted;
+        if scripted && install.is_none() {
+            return Err(refused(id, "a scripted seal with no retained source"));
         }
         if let Some(pilot) = &pilot
             && pilot.unit != id
@@ -178,6 +213,11 @@ impl Arena {
                         &format!("its profile rules were not installed: {error}"),
                     )
                 })?;
+        }
+        // Doc 23 cut S.4b-3's kernel half (doc 40 cut FR.5): a scripted seal's runner, by the
+        // fresh check-out's rule, on this copy.
+        if scripted && let Some(install) = install {
+            install(self, id).map_err(|error| refused(id, &error))?;
         }
         super::state::check_substep(&self.definition.terrain, &self.units, &self.min_cost)?;
         if !self.relations.contains(party) {
@@ -325,6 +365,7 @@ mod tests {
             end: EndCondition::Host,
             every_class: true,
             weapons_hold: true,
+            tows: Vec::new(),
         }
     }
 

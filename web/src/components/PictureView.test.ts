@@ -24,6 +24,7 @@ import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import PictureView from "./PictureView.svelte";
+import { onlyReaches } from "./reach";
 import { decodeCockpitFrame, type CockpitFrame } from "$lib/cockpit";
 import type { GameApp } from "$lib/game.svelte";
 import {
@@ -108,7 +109,17 @@ function mount(cockpit: CockpitFrame | null = null): {
   });
   const helm = vi.fn();
   const prefill = vi.fn();
-  const app = { picture, setPicture, helm } as unknown as GameApp;
+  // Doc 21 cut G.3c: the picture reads its own store and orders through
+  // `helm`, the one send the cockpit tab makes; nothing else (no `submit`, no
+  // `setPicture`: the ask rides the store). Every mount enforces it. `chart`
+  // too, read-only: SF.18's space views draw the sky chart's frame behind
+  // the ship, reached through a cast (`(app as { chart?… }).chart`) that the
+  // source probe this replaces could not see (doc 43 cut TS.19).
+  const { app } = onlyReaches({ picture, setPicture, helm } as unknown as GameApp, [
+    "picture",
+    "helm",
+    "chart",
+  ]);
   const { unmount } = render(PictureView, {
     props: { app, headingDeg: HEADING, frame: cockpit, prefill },
   });

@@ -31,6 +31,8 @@ mod vertex;
 mod claim_rig;
 #[path = "shard_7/cockpit.rs"]
 mod cockpit;
+#[path = "support/field/custody_rig.rs"]
+mod custody_rig;
 #[path = "support/field/driving_rig.rs"]
 mod driving_rig;
 #[path = "support/field/field_host_rig.rs"]

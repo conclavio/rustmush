@@ -5,8 +5,9 @@
 //! Occator's escort into their Dray-P and brings it to the Dockmaster's yard (C14, Occator's
 //! workshop, at 1.2x) with its cannon destroyed.
 //!
-//! 1. The clerk has seeded Occator's stores: four `cannon_105` lots, each with a `Seeded` row,
-//!    at the storefront by the time the port reads ready.
+//! 1. Occator's stores hold four `cannon_105` lots, each with a `Seeded` row, at the storefront
+//!    (staff's since doc 39 cut IN.7 retired the lane's seeded part stock: the works make parts
+//!    now, and the mechanism the stores are drawn by is unchanged).
 //! 2. `+bay` quotes the replace at 480 of labour and the part at its catalogue 28,000, from the
 //!    workshop's stores.
 //! 3. `+bay/order …=replace` escrows 28,480: the order takes the lowest-grade clean lot from the
@@ -16,9 +17,10 @@
 //! 5. Three more refits empty the stores; the fifth replace refuses `NO_PART`, at the quote and
 //!    at the order.
 //!
-//! **Seeds** (doc 43 rule 2.3 #4; doc 36a §8): the destroyed cannon is staff damage through the
-//! unit's one plan path (GC.8's fixture); the captain's money is staff's `@econ/mint`. Every claim
-//! is reached by the player's command.
+//! **Seeds** (doc 43 rule 2.3 #4; doc 36a §8): the four cannons in the stores
+//! (`seed_store_parts`, as IN.6's stock row laid them); the destroyed cannon is staff damage
+//! through the unit's one plan path (GC.8's fixture); the captain's money is staff's
+//! `@econ/mint`. Every claim is reached by the player's command.
 //!
 //! **No site**: the cut is port-side, so it has no 256/512 pair (IN.2's and IN.4's precedent).
 
@@ -31,7 +33,7 @@ use tacsim::port::bay_work::{BayHullState, OrderStatus};
 
 use crate::driving_rig::{
     Rig, at_counter, cid, drain, fire, land_all, land_quietly, port_map, prospector, rigs_of, run,
-    staff_hand, station_room, stocked, store, typed,
+    seed_store_parts, staff_hand, station_room, stocked, store, typed,
 };
 
 const CERES: &str = "ceres_port";
@@ -83,17 +85,12 @@ fn stores(rig: &Rig) -> u64 {
     port_map(&rig.tw, CERES).vendors[&cid("occator")].vault
 }
 
-/// The seeded cannon lots, in seed order.
-fn seeded(rig: &Rig) -> Vec<LotId> {
-    let row = &port_map(&rig.tw, CERES).vendors[&cid("occator")];
-    row.stock
-        .iter()
-        .filter(|s| s.good.as_str() == CANNON)
-        .flat_map(|s| {
-            let id = tacsim::port::families::StockIssueId::parse(&s.id).expect("an issue id");
-            (0..s.qty).map(move |n| tacsim::port::stock::seed_lot_id(&id, n))
-        })
-        .collect()
+/// The first of the four cannon lots staff stock the stores with.
+const FIRST_CANNON: u64 = 7_600_000;
+
+/// The cannon lots in the stores, in seed order.
+fn seeded(_rig: &Rig) -> Vec<LotId> {
+    (FIRST_CANNON..FIRST_CANNON + 4).map(LotId).collect()
 }
 
 /// **The stores' count of cannons**: the seeded lots still at the storefront.
@@ -164,6 +161,7 @@ fn refit(rig: &mut Rig, pilot: ObjId, escort: ObjId) -> tacsim::port::bay_work::
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
     let mut rig = stocked();
+    seed_store_parts(&mut rig, CERES, "occator", CANNON, 4, FIRST_CANNON);
     let (pilot, _row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
     mint(&mut rig, pilot);
     at_counter(&mut rig, pilot);
@@ -171,11 +169,10 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
     assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
     let escort = rigs_of(&rig.tw, pilot)[0];
 
-    // (1) The stores, seeded by the time the port reads ready: four cannons, each its own lot
-    // with a `Seeded` row, at Occator's storefront (no lot ask lists them: §4.5's stores are the
-    // workshop's, and the lane authors no part asks).
+    // (1) The stores: four cannons, each its own lot with a `Seeded` row, at Occator's storefront
+    // (no lot ask lists them: §4.5's stores are the workshop's, and the lane authors no part
+    // asks).
     let lots = seeded(&rig);
-    assert_eq!(lots.len(), 4, "Occator seeds four cannons (Q-39-12)");
     assert!(lots.iter().all(|lot| !listed(&rig, *lot)));
     assert_eq!(in_stores(&mut rig), 4);
     for lot in &lots {

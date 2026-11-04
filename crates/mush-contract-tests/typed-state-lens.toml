@@ -1,5 +1,5 @@
 # The typed-state lens pin (WS03-S7, completed by WS03-S13). Read by
-# crates/mush-contract-tests/tests/typed_state_lens.rs.
+# crates/mush-contract-tests/tests/engine_contracts/typed_state_lens.rs.
 #
 # `mush_core::TypedStateLens` is how a call says how far it can see into
 # engine-owned typed state: `Live(store)`, or `Detached(reason)` naming why

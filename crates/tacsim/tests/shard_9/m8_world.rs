@@ -34,9 +34,7 @@ use tacsim::launch::{
 };
 use tacsim::surface::black_box::BlackBoxLine;
 
-use crate::excursions::{
-    Rig, economy, god, land_commit, launch_layer, on_pad, reboot_with, run, stocked,
-};
+use crate::excursions::{Rig, economy, god, land_commit, launch_layer, reboot_with, run, stocked};
 
 /// **The combined world, booted Active**: the rig, the deployment it was composed from, the
 /// pilot (the Dray-P's, on Ahuna Flank's pad with its rigs in the bay), the Dray-P's map row
@@ -541,18 +539,31 @@ fn procuring_house(
 /// that House's procurement policy in the deployment ([`procuring_house`]) and titling it that
 /// many chartered hulls, before the launch boots.
 pub(crate) fn m8_world_with(procurement: Option<(&str, i64, usize)>) -> M8World {
-    m8_world_in(procurement, false)
+    m8_world_in(procurement, false, ("ahuna", "ahuna_port"), 1)
 }
 
 /// **[`m8_world`] with the IC mind claims composed in the rigs' bays** (doc 23 cut S.4b-2): the
 /// Active launch `with_ic_minds_in_bays`, so a filed mind's `go` opens a claim.
 pub(crate) fn m8_world_with_claims() -> M8World {
-    m8_world_in(None, true)
+    m8_world_in(None, true, ("ahuna", "ahuna_port"), 1)
 }
 
-fn m8_world_in(procurement: Option<(&str, i64, usize)>, claims: bool) -> M8World {
+/// **The claims world on `site`, with `n_rigs` rigs** (doc 23 cut S.4b-3): [`m8_world_with_claims`]
+/// on any site (`(venue, entry)`). The field runs at the stock tempo: a tuned layer would also run
+/// the Registry's rating arenas at it, and a reboot to retune after the purchase loses it.
+pub(crate) fn m8_world_field(site: (&str, &str), n_rigs: usize) -> M8World {
+    m8_world_in(None, true, site, n_rigs)
+}
+
+fn m8_world_in(
+    procurement: Option<(&str, i64, usize)>,
+    claims: bool,
+    site: (&str, &str),
+    n_rigs: usize,
+) -> M8World {
     let mut rig = stocked();
-    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let (pilot, row, tvs) =
+        crate::excursions::on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), site, n_rigs);
     crate::excursions::enable_account_captures(&rig);
     // GOD publishes the named Houses' sources and authors them, a player with an account.
     crate::excursions::with_account(&mut rig, GOD, "Publisher", 9_001);
@@ -1993,7 +2004,17 @@ fn on_leased_rig(
     world: &mut M8World,
     fit: impl FnOnce(&mut M8World, (ObjId, AccountId), ObjId) -> ObjId,
 ) -> ObjId {
-    let (pilot, tv) = (world.pilot, world.tvs[0]);
+    let tv = world.tvs[0];
+    on_leased(world, tv, fit)
+}
+
+/// [`on_leased_rig`] for any of the pilot's rigs (doc 23 cut S.4b-3).
+fn on_leased(
+    world: &mut M8World,
+    tv: ObjId,
+    fit: impl FnOnce(&mut M8World, (ObjId, AccountId), ObjId) -> ObjId,
+) -> ObjId {
+    let pilot = world.pilot;
     let where_tv = world
         .rig
         .tw
@@ -2587,4 +2608,295 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         crate::excursions::record_of(&mut world.rig.tw, tv).is_some_and(|r| r.act.is_some()),
         "a spent claim holds nothing"
     );
+}
+
+/// **Hand the M8 world's live world to the field harness** (doc 23 cut S.4b-3): the same
+/// `TestWorld`, store and typed rows under a `driving_rig::Rig`, whose field helpers (the arena's
+/// egress pumped by hand, the composed tick, the raiders) run the field. The world is not
+/// rebooted after the hand-over: a `driving_rig` reboot composes no launch.
+pub(crate) fn into_field_rig(world: M8World) -> crate::driving_rig::Rig {
+    crate::driving_rig::Rig {
+        tw: world.rig.tw,
+        cfg: launch_layer().config().clone(),
+        oracle: Arc::new(crate::driving_rig::MapOracle(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        ))),
+        store: world.rig.store,
+        typed: world.rig.typed,
+        commerce: None,
+    }
+}
+
+/// **Where one size's story stands** (doc 23 cut S.4b-3, the S.4b-T stories' cells): the site, the
+/// licensed rig's working cell, and the raider seeded there.
+struct FieldSite {
+    venue: &'static str,
+    entry: &'static str,
+    cell: (i64, i64),
+    wide: bool,
+}
+
+/// **Doc 23 cut S.4b-3, the licensed field story** (§17.10's acceptance, one script at both
+/// sizes): the claims world on the site, one genuine rating, the paid Pin over two rigs bound to
+/// the governed Class II root and titled to the pilot. Through the production command paths:
+/// 1. rig 1 `go` opens its claim in the bay and launches under the claim's seal;
+/// 2. rig 2's `go` under the same one-seat Pin is refused at `go` with the seat sentence
+///    (D-23-16), nothing filed;
+/// 3. the raider's leader marks rig 1 Hostile and the field promotes; rig 1 is admitted **under
+///    its claim's own seal** — the field's `mind_sealed` line names the filed mind, the Pin's
+///    licence and `active`, the claim's seal digest — its retained source installed (a missing
+///    source fails the field's spawn), and it flies the field with no `mind_dropped` and no
+///    `mind_fault`;
+/// 4. the raiders withdraw (`@field/raiders/withdraw`, the field story's own ending), their barge
+///    lifts and the field demotes, checking rig 1 in (the check-in writes the hull);
+/// 5. `+tv/1 recover go` brings rig 1 home and the claim's Close lands **over the live hull**
+///    the field wrote (D-23-15), the seat released: rig 2's `go` now files its own claim.
+async fn licensed_field_story(at: &FieldSite) {
+    use tacsim::arena::ledger::{EventKind, LedgerEvent};
+    use tacsim::surface::excursion::ClaimCursor;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
+    let mut world = m8_world_field((at.venue, at.entry), 2);
+    let (_, _, listing) = rate_and_list_coprates(&mut world).await;
+    let paid = buy(&mut world, listing);
+    let (pilot, tv, second_tv) = (world.pilot, world.tvs[0], world.tvs[1]);
+    for rig_tv in [tv, second_tv] {
+        crate::ic_sortie_surface::fit(
+            &mut world.rig,
+            rig_tv,
+            tacsim::definitions::core_replacement::RIG_II,
+        );
+        let _ = on_leased(&mut world, rig_tv, |_, _, tv| tv);
+    }
+    // 1. Rig 1's claim in the bay, then its launch under the claim's seal.
+    let (out, queued) = crate::excursions::command(
+        &mut world.rig,
+        pilot,
+        &format!("+tv/1 launch mind=filed:{} go", paid.get()),
+    );
+    assert_eq!(queued.len(), 1, "one start: {out}");
+    crate::excursions::land(&mut world.rig, &queued[0]).expect("the go lands");
+    for _ in 0..12 {
+        fires(&mut world, 1);
+        if crate::excursions::record_of(&mut world.rig.tw, tv).is_some_and(|r| r.act.is_some()) {
+            break;
+        }
+    }
+    let _ = crate::excursions::finish(&mut world.rig, tv, pilot);
+    let open = match crate::excursions::record_of(&mut world.rig.tw, tv)
+        .and_then(|record| record.claim.map(|claim| *claim))
+    {
+        Some(ClaimCursor::Open { open, .. }) => open,
+        other => panic!("rig 1's claim is open: {other:?}"),
+    };
+    let seal = tacsim::ic_claim_seal(world.rig.tw.world(), open).expect("the claim's seal");
+    // 2. D-23-16: the one-seat Pin's seat is held; rig 2 is refused at `go`.
+    let refused = crate::ic_sortie_surface::start_refusal(
+        &mut world.rig,
+        pilot,
+        &format!("+tv/2 launch mind=filed:{} go", paid.get()),
+    )
+    .expect("the second rig is refused");
+    assert!(
+        refused.contains(
+            &tacsim::surface::dispatch::MIND_SEATS_HELD
+                .replace("{licence}", &paid.get().to_string())
+                .replace("{held}", "1")
+                .replace("{seats}", "1")
+        ),
+        "{refused}"
+    );
+    assert!(
+        crate::excursions::record_of(&mut world.rig.tw, second_tv)
+            .is_none_or(|record| record.claim.is_none())
+    );
+    // 3. The field, over the field harness.
+    let mut rig = into_field_rig(world);
+    crate::driving_rig::to_cell_on(&mut rig, at.entry, tv, at.cell);
+    let raider = if at.wide {
+        "tacsim.raider.urvara_s4b3"
+    } else {
+        crate::field_raiders_rig::SKULKS
+    };
+    let raiders = if at.wide {
+        let mut def = tacsim::field::raiders::raiders()
+            .expect("the fixture raiders")
+            .into_iter()
+            .find(|def| def.id.as_str() == crate::field_raiders_rig::SKULKS)
+            .expect("the content's raider");
+        def.id = crate::driving_rig::cid(raider);
+        def.site = crate::driving_rig::cid(at.entry);
+        let seeded =
+            crate::driving_rig::staff_hand(&mut rig, |ctx| tacsim::field::raiders::seed(ctx, &def));
+        assert!(
+            seeded.as_deref().is_ok_and(|s| s.contains("seeded")),
+            "{seeded:?}"
+        );
+        let launched = crate::driving_rig::staff_hand(&mut rig, |ctx| {
+            tacsim::field::raiders::launch(ctx, &def)
+        });
+        assert!(launched.is_ok(), "{launched:?}");
+        crate::field_raiders_rig::raider_hulls(&rig)
+    } else {
+        crate::field_raiders_rig::seed_and_launch(&mut rig).0
+    };
+    let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
+    let mut rx = crate::field_host_rig::egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    for _ in 0..3 {
+        let _ = crate::field_host_rig::second_composed(&mut rig);
+    }
+    let (out, queued) = crate::driving_rig::command(&mut rig, leader, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+            crate::field_host_rig::task(rig).is_some()
+        })
+        .await,
+        "the field opens on {}",
+        at.entry
+    );
+    let live = tacsim::field::live_on(rig.tw.world(), &crate::driving_rig::cid(at.entry))
+        .expect("the field's live record");
+    eprintln!(
+        "S4B3 {}: units {:?}",
+        at.entry,
+        live.units
+            .iter()
+            .map(|row| (row.unit.0, row.party, row.pilot.as_ref().map(|(p, _)| p.0)))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        live.units.iter().any(|row| row.unit == tv),
+        "rig 1 is admitted to the field"
+    );
+    let sealed_line = |lines: &[LedgerEvent]| {
+        lines.iter().find_map(|line| match &line.kind {
+            EventKind::MindSealed {
+                unit,
+                mind,
+                licence,
+                licence_state,
+                card_digest,
+                ..
+            } if *unit == tv => Some((
+                mind.clone(),
+                licence.clone(),
+                *licence_state,
+                card_digest.clone(),
+            )),
+            _ => None,
+        })
+    };
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 300, |_, lines| {
+            sealed_line(lines).is_some()
+        })
+        .await,
+        "rig 1's seal line lands on the field's log: {:?}",
+        lines
+            .iter()
+            .filter_map(|line| match &line.kind {
+                EventKind::MindSealed {
+                    unit,
+                    mind,
+                    licence,
+                    ..
+                } => {
+                    Some(format!("{}:{mind}:{licence}", unit.0))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+    let (mind, licence, state, card) = sealed_line(&lines).expect("the seal line");
+    let facts = tacsim::surface::black_box::SealFacts::of(
+        &seal,
+        tacsim::minds::licence_state::SealLicenceState::Active,
+    );
+    assert_eq!(mind, facts.mind, "the field admits the claim's own mind");
+    assert_eq!(licence.as_str(), paid.get().to_string());
+    assert_eq!(
+        state,
+        Some(tacsim::minds::licence_state::SealLicenceState::Active)
+    );
+    assert_eq!(card, facts.card_digest, "the claim's card, not the ROM's");
+    // It flies the field: twenty seconds with no drop and no fault.
+    let _ = crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 20, |_, _| false)
+        .await;
+    let troubled = lines.iter().any(|line| {
+        matches!(&line.kind, EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. } if *unit == tv)
+    });
+    assert!(!troubled, "the licensed mind neither dropped nor faulted");
+    // 4. The raiders withdraw (the field story's own ending), their barge lifts and the field
+    // demotes on its quiet interval, checking rig 1 in. A field the fight already ended is over.
+    if crate::field_host_rig::task(&rig).is_some() {
+        let ordered = crate::driving_rig::run(
+            &mut rig.tw,
+            GOD,
+            &format!("@field/raiders/withdraw {raider}"),
+        );
+        assert!(ordered.contains("make for the"), "{ordered}");
+    }
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, _| {
+            crate::field_host_rig::task(rig).is_none()
+        })
+        .await,
+        "the field demotes"
+    );
+    // 5. Home: the Close over the live hull, the seat released.
+    // The pilot's own start (a tick's submission may sit beside it in the queue), landed on
+    // the composed path; the recover's finish and the claim's Close are the composed ticks'.
+    let (out, queued) = crate::driving_rig::command(&mut rig, pilot, "+tv/1 recover go");
+    let start = queued
+        .iter()
+        .find(|submit| submit.actor == pilot)
+        .unwrap_or_else(|| panic!("the pilot's recover: {out}"));
+    crate::driving_rig::land_composed(&mut rig, start).expect("the recover starts");
+    let closed =
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, _| {
+            tacsim::ic_claim_closed(rig.tw.world(), open).is_some()
+        })
+        .await;
+    assert!(
+        closed,
+        "the claim's Close lands over the field-written hull"
+    );
+    let (out, queued) = crate::driving_rig::command(
+        &mut rig,
+        pilot,
+        &format!("+tv/2 launch mind=filed:{} go", paid.get()),
+    );
+    assert_eq!(queued.len(), 1, "rig 2's start: {out}");
+    crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the seat is free");
+}
+
+/// **S.4b-3 at 256** (Ahuna Flank).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
+async fn s4b3_a_licensed_mind_flies_a_field_at_256() {
+    licensed_field_story(&FieldSite {
+        venue: "ahuna",
+        entry: "ahuna_port",
+        cell: (190, 126),
+        wide: false,
+    })
+    .await;
+}
+
+/// **S.4b-3 at 512** (Urvara Reach).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
+async fn s4b3_a_licensed_mind_flies_a_field_at_512() {
+    licensed_field_story(&FieldSite {
+        venue: "urvara",
+        entry: "urvara_port",
+        cell: (300, 257),
+        wide: true,
+    })
+    .await;
 }

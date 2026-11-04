@@ -437,7 +437,7 @@ main's two merges after it, up to this branch's base `a2ef4075`, were docs only.
 
 ## FR.5 — carried in: the join-during-think await (found 2026-11-04, before the cut)
 
-Not built yet. This records a finding so FR.5 does not rediscover it: doc 38 §9.3's "the join-during-think await",
+Built by FR.5 (below, item 1). This recorded a finding so FR.5 did not rediscover it: doc 38 §9.3's "the join-during-think await",
 with the evidence from the GC.1b shard-10 flake.
 
 - **What fails.** `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` failed at
@@ -583,3 +583,391 @@ cut, and FR.5 moves no hash it would not have moved before it.
 ### Cell minutes (rule #14)
 
 To be read from the PR run's JUnit and recorded here before the PR is marked ready.
+
+## FR.5 — the rebless (§4.1, §4a; Q-38-17, Q-38-27, Q-36-56, Q-40-2..10, Q-40-25)
+
+PR #410. One kernel rebless, built in §4.1's order. The base is `4390f04c`.
+
+### What was built
+
+1. **The await** (Q-40-10). `arena_loop` awaits the outstanding think batch (`Task::await_thinks`) before
+   `Task::apply_field_acts`, which applies the pulse head's marks, tow releases, withdrawals, homes and joins.
+   A join now encodes an arena whose answers have landed. The pulse's own await then finds nothing in flight.
+   An OOC match has no field acts, so its order is unchanged.
+   - Gate: `arena_task::tests::fr5_a_join_is_taken_in_after_the_batch_in_flight_lands`. It drives GC.1b's
+     order, where the join is refused by name with "a think awaits its answer", then the new order, where the
+     join is taken in.
+   - FR.3's retry stays as the guard.
+2. **`note_fire`** (Q-40-9). A third party that holds the shooter a Friend, by standing or by mark, is no
+   longer told. The victim is moved as before. Gate: `party::tests::fr5_a_friend_of_both_is_not_told`.
+3. **`line_to` over wrecks** (Q-40-8, no API bump).
+   - `ThinkJob::wrecks` carries the wreck cells (`Arena::mind_wrecks`), captured at collection beside the
+     map. The view is unchanged: a mind reads no wreck.
+   - The stock mind and the Rhai `line_to` kernel trace `stock_mind::Ground`, which is the map plus those
+     cells, over `WithWrecks` with the line's two ends left out, as the fire trace does.
+   - The twin's `line` counter reads the same ground.
+4. **The component effects** (Q-40-2..6).
+   - `ComponentEffects` is compiled beside `COMPONENT_HITS`. An optional `component_effects` block may
+     override it, on the resolution pack's def and per unit (`UnitSpec`). It is absent from every shipped
+     pack, so no digest moves.
+   - `Arena::apply_part_effects` (`arena/part_effects.rs`) runs in `admit_unit`, which also serves a join,
+     and after `part_struck` lands. What it does, kind by kind:
+     - Sensor: off when jammed. When damaged, the range is 500 ‰ of `UnitState.sensor_authored`, so it never
+       compounds. `sensor_authored` is folded into the hash only when present.
+     - Pod and filter: off when jammed or damaged.
+     - Plant, jammed: `Power::Off` and the pending `StartupComplete` dropped. STARTUP is refused by name with
+       `Refusal::Plant`.
+     - Plant, damaged: the heat ceiling and the dissipation at 500 ‰, read-side.
+     - Core: one class down, read-side (`read_core_under`), with the slots truncated.
+     - Mount: as GC.2 built it. `part_works` is retired into the derivation.
+   - The relay is the host's (`field/orders.rs`): an order is held while the relay is jammed and delivered
+     10 s late while it is damaged.
+   - No new draw.
+5. **The coupled tow** (Q-40-7, Q-40-25).
+   - Kernel (`arena/tow.rs`):
+     - `UnitState.coupled_to` is folded only when present.
+     - `FieldHost.tows` is coupled in `Arena::new`. A stacked casualty is first moved off its tug's cell by
+       the join's ring rule.
+     - The trailer step: after the tug's `integrate` and `index.move_unit`, its casualty takes the cell the
+       tug left. A coupled unit never integrates and never fires.
+     - The drop: a destroyed or withdrawn tug leaves its casualty standing.
+     - `ArenaMsg::Release` / `ArenaOut::Released` is a field act, IC only, answered behind the ledger.
+     - The coupled withdraw: a casualty is judged by its tug at the ramp and is withdrawn before it.
+   - Host: `field/admit.rs` lifts the `carried` filter. A towed casualty is an entrant on its tug's party
+     (`coupled_entrants`), the pair rides `FieldHost.tows`, and the casualty is never counted.
+   - `surface/tow.rs`'s half went last on that file, after RS.5. It is **FR.5b** (PR #433), split from #410 so
+     that #410 could merge first.
+
+**The join's install of a scripted seal** (doc 23 S.4b-3's need). Carried here as the kernel half, agreed with
+the S.4b session on 2026-11-04.
+- `ArenaMsg::Join` carries `source: Option<String>`, the retained doctrine source keyed by the seal's digest.
+- `Arena::join_installing` installs the runner on the join's clone by the fresh check-out's rule
+  (`minds::install_sealed_runner`).
+- A scripted seal with no source, or one that does not install, is refused by name and never voids the field
+  (D-23-17).
+- Every sender passes `None` today. S.4b-3's host half fills it in.
+
+**Not taken here: doc 23's D-23-18, the carried memory.** S.4b-3 (#411) left its arena side to FR.5. D-23-18
+(doc 23 §17.7) has two halves:
+- the return: `UnitReturn` carries the mind's memory, `think_seq` and drop cause at every check-in;
+- the seed: the next install on that epoch seeds the row from `OpenSortie.mind`.
+
+The seed needs the carried mind on `CustodyUnit`, a struct that dozens of test files build literally, beside the
+S.4b host record. Neither half is useful alone. FR.5 therefore leaves both to one later cut on doc 23's side, which
+owns `arena/*` once FR.5 merges.
+
+### §4a's pins, re-pinned once (rule #13)
+
+Each row is set against FR.0's inventory and was read on conclav.dev.
+
+| §4a row | FR.0's value | FR.5's | Why |
+|---|---|---|---|
+| `M4_5_POOLED_RECORD` | as committed | re-recorded (21 lines) | items 3 and 4. The divergence counters return toward nought, `line` 28 → 5 and `no_line` 31 → 12. Thinks 10,603 → 10,306. The 14–1 split and `first_divergence_ms` (101,377) stand. The one blue win moves from seed 2360 to seed 2355, a close finish the effects now decide. Nothing is `unlawful`. |
+| `COVERAGE` | pooled `(10_295, 308)`, mixed `(13_230, 502)`, lance `(7_157, 130)` | `(10_015, 291)`, `(12_884, 449)`, `(7_260, 126)` | the same two items; no divergence on any lane |
+| `POOLED_MATCHES_WITH_STAND_IN` | 12 | 14 | a jammed or damaged core reads a class down, so more hulls finish on the ROM |
+| `M2_CROSS_PLATFORM_PINS` | rows 0–3 as FR.0 recorded | rows 0 and 1 re-pinned (stops 176,250 → 180,250 and 235,250 → 177,500) | items 3 and 4. Row 2 is unmoved byte for byte. Row 3, the float probe, is unmoved (3,600 thinks, bitmask 369098751). Windows is ci.yml's step on the PR. |
+| `DUEL_HASH_API6_OBSERVED`, `DUEL_HASH_AT_HEAD` | `16080728793682240297`, `0xd15b_cccc_3546_150f` | **unmoved** | every new row folds into the hash only when present |
+| The (j) field, the memory digests, the draw-label set, `DIGESTS`, `POWER_STATES_SCHEMA_DIGEST`, `STANDARD_SHA256`, `API_VERSION` 7, the seal identities, `SNAPSHOT_FORMAT` 19, `FIELD_LIVE_FORMAT` 1, the four pack digests | as FR.0 recorded | **unmoved** | no new draw, no shipped pack byte, no API bump (Q-40-8), and every new field decodes by serde default |
+| The field gates | as FR.0 recorded | `field_gc2::` (2) and `field_story::` (4) unmoved; `field_gc10` keeps `idle_demote_s` (see the departures); story (a) moves with item 5 (below) | |
+| The harness's arena baseline (`arena.linux.json`) | blessed at `a2ef4075` | 65 deterministic leaves re-blessed by record, `fr5_deterministic_update` | items 3 and 4. One hull ends a minds lane in `startup`, because a warm-up hit jammed its plant. The warm-up's cold check now reads a jammed or destroyed plant as the ruling's `Off` (`plant_down`). The timing block is unmoved. |
+| The lance lane's W8 fact pins | `blue-1` the squad held by a wreck alone; standings `(3, 2, 3, 3)` | `red-1`; `(3, 3, 4, 3)`; six releases | re-pinned by record, items 3 and 4. The span (3), the end (none, 131,500 ms) and the busiest minute stand. |
+| `field_scale` at 100 | Engaged p99 6.375 ms (GC.12) | Engaged p99 **7.831 ms**, worst 500 ms window 14.851 ms (lattice); 9 units: 0.275 ms | the effect derivation in the pulse. Measured by hand in release on the owner's Windows box, because the harness held conclav.dev at the time. The 40 ms budget stands. |
+| The contract guards | 34 files green | green (163 tests) | |
+
+**The harness kind on conclav-dev** (rule #13): green at `ef63b21f`, run
+[41860284848](https://github.com/conclavio/rustmush/actions/runs/41860284848). Three runs before it found the moves
+above, in order:
+- [41848864284](https://github.com/conclavio/rustmush/actions/runs/41848864284): the cold check and W8.
+- [41855932681](https://github.com/conclavio/rustmush/actions/runs/41855932681): the delta.
+
+### Departures
+
+- **`field_gc10`'s void gate still demotes on `idle_demote_s`, not on `disengage_s` as §4a expected.** Probed on
+  conclav.dev with the books and every armed viewer's hostile contacts printed each two arena seconds, the cause
+  is not a friend of both:
+  - B's hull is its own unit party (`f`) and was the victim, so its book holds A's hull (`e`) fired.
+  - B's `+field/mark <e>=friendly` writes the book of B's roster party (`blue -> e: Friend`), never `f`'s.
+  - `f` is armed and holds `e` in reach, so the tempo is Engaged every pulse.
+
+  `note_fire`'s fix does not touch this, so the gate keeps its 8 s idle bound, with the reason in its comment.
+  **Ruled by the owner (2026-11-04): yes.** A leader's `+field/mark <hull>=friendly|hostile` also writes the
+  books of the unit parties whose hulls that leader seats, so one mark covers every hull they command. It is
+  host-side (GC.10/FR.1's mark path) and is built as its own small PR after FR.7. When that PR lands,
+  `field_gc10`'s void gate moves to `disengage_s`, as §4a expected, and its 8 s idle-bound comment goes.
+  **Built** (the leader's mark PR, after FR.5b):
+  - `field::commands::mark_in_field` also sends `ArenaMsg::Mark` for every unit party whose hull the leader seats
+    (`seated_parties`, by the live record's pilot or the seat as it stands now). Each book keeps its own standing
+    Hostile on a clear.
+  - `gc10_a_leader_voids_friendly_fire_standing` now demotes on `disengage_s` (5 s, with the idle bound at 600 s),
+    in 28.9 s.
+  - `field_fr1::`, `field_fr2::`, `field_story::` (both sizes), `field_raiders::` and `review_36a::` are unmoved:
+    23 of 23.
+- **The relay** reads the carrier's world record. A relay damaged by a hit inside the running field therefore
+  takes effect from the next field. The seam is named in `carrier_relay`'s doc comment: a host mirror of the
+  kernel's part conditions would replace that read.
+- **A core below its sealed class** lowers the mind's class read-side and truncates its slots, as `DegradeCore`
+  does. It does not re-seat the mind on the ROM, because `DegradeCore` does not either.
+- **A coupled casualty's "no fire"** answers the existing refusal for a hull with nothing to fire, so no new refusal word is added.
+  After a release the casualty keeps its damage limits but may fire again. A casualty destroyed while coupled
+  stays coupled, since a wreck is still towed.
+
+**After merge: the field seed and the Q-40-4 JAM path (2026-11-04, #451).** gc0 (`shard_9
+field_story::gc0_the_raiders_barge_lifts…`) and cf6c (`shard_8 escort_lease::cf6c_a_leased_escort_flies_out…`)
+went red on main once IN.5 (#414) merged after this cut.
+
+- **The cause** is not IN.5's content. A field's arena seed was `match_::seed_for(ordinal, world_now, the
+  process's salt)`, and IN.5's Freeport Works vendor row at Ceres (bisected on conclav.dev: stripping it alone
+  turns gc0 green) moves `world_now` and the salt at admission. Under the new seed gc0's scripted engine hit
+  draws this cut's JAM on the escort's plant: Q-40-4, power off, STARTUP refused. A probe read the escort's
+  frame Online before the hit and Off after. cf6c's escort just lost its dice exchange. Both stories passed or
+  failed on the seed's luck.
+- **The knob**: `FieldConfig::seed: Option<u64>`, a test and replay knob, not in `[tacsim.field]`. `None` (the
+  default, and production's) keeps `seed_for`. `Some(seed)` seeds every field a world admits, read once at
+  admission (`field/admit.rs`). The field rigs pin it in `driving_rig::rig_config` (`FIELD_SEED`,
+  `0x5EED_0002`), so a scripted field story's hits, jams and misses no longer hang on lane content or the
+  world clock.
+- **The stories**: gc0 names a jammed escort plant in its failure, since a tender's `unjam` is the only way
+  back and the story has no tender. cf6c withdraws as soon as the escort has fired and taken its first hit,
+  the intruder ceasing fire too. Its point is the withdrawal, and a failure names the exchange and the seed.
+- **Long term**: doc 43c's clock seam (TS.10) is this knob's home, with a world clock a test can pin.
+
+## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
+
+PR #433, off `main` after #410 and RS.5 (#415). #410 merged with story (a)'s stale expectation
+(`field_gc4.rs:317`: "the casualty rides as its tug's load"), so main was red on `tacsim-integration-1` until this
+PR.
+
+### What was built
+
+- **The trailer.** While a field runs, the kernel trails the casualty. `tow::follow` does nothing while the tug or its
+  casualty is in a running field, and the casualty checks in at its own row's pose.
+- **The drop.** `tow::set_down` sets the casualty down at its own pose and never on its tug's cell. Lane 3's P0-8
+  (the tug falls irrecoverable) stays green.
+- **Release as a field act.** `+tv/<n> release go` on a tug in a field goes to `field_release_cmd` (`port/tv.rs`):
+  - It sends `offer_field_release` and answers `FIELD_RELEASE_ORDERED`, or `FIELD_BUSY` when the queue is full.
+    The preview line is `FIELD_RELEASE_PREVIEW`.
+  - `exit::on_released`, on `Ok`, submits `TowOrder::Release { site, field: true }` in the same batch. The tow
+    retires on the site record and the pilot gets the ordinary `RELEASED` line.
+  - On `Err` it tells `FIELD_RELEASE_REFUSED`.
+  - A re-attach inside a field still waits (Q-CF-30).
+- **The coupled withdraw at the ramp** (Q-40-25). `+tv/<n> load go` on a tug in a field goes to `field_load_cmd`:
+  - It checks the bay's room first, then `exit::request_coupled` sends `ArenaMsg::Withdraw` for the casualty and
+    the tug with the ramp's position.
+  - Two new `Then` arms, `Towed` and `TowLoad`, follow the pair out. A refusal is told once, by the tug's answer;
+    `NotAtRamp` reads `tow::NOT_AT_RAMP`.
+  - Once both exits are on the record, the exit tick runs `tow::load_cmd` as the player. `TowOrder::Load`/`Loaded`
+    then run as on open ground, and `complete_load` is untouched.
+  - `+tv/<n> recover` and `+sortie/recover` still refuse a tug in tow.
+
+### Stories (conclav.dev)
+
+`tests/shard_10/field_fr5.rs`, new, each at Ahuna Flank (256) and Urvara Reach (512):
+- the casualty struck while towed, then released in the field by `+tv/<n> release go` (109 s each);
+- the tug falls and the casualty is dropped where it stands (50 s each);
+- a coupled pair withdrawn at the ramp by `+tv/<n> load go` under fire and loaded into the bay (69 s and 54 s).
+
+Story (a), `field_gc4::gc4_the_wingman_drags…`, keeps its claims. Three asserts move, each commented "Doc 40 cut
+FR.5": the casualty is in the field, it stands beside its tug rather than on it, and it is indexed at its own cell.
+It ran in 204 s.
+
+`field_fr5`, `field_gc4`, `field_carrier` and `field_gc2` passed 20 of 20. `mush-contract-tests` and `tacsim --lib`
+passed 2,208.
+
+### Departures
+
+- **Own carrier only.** The coupled load in a field offers only the rig's own carrier's ramp. The host cannot read
+  the tug's live pose against a Friend's carrier.
+- **A fixture instead of a first field.** The new stories lay the casualty on the site's index with the staff fixture
+  (GC.5's precedent) instead of fighting a first field. Story (a) still fights its first field.
+- **Hits read from the ledger.** The stories set `[tacsim.arena.ledger].summary_ms` to 100 (FR.4's knob), so the
+  hit lines reach the host while the field runs.
+- **The tug-falls story checks at demotion.** Once the tug was destroyed, the field closed within seconds in every
+  run, so the drop is read at demotion. The kernel gate `fr5_a_tug_destroyed_leaves_its_casualty_standing` holds
+  the uncoupling itself.
+- **One public reader.** `tow::field_stand(w, site, unit)` reads a unit's cell and `coupled_to` from the field's
+  last snapshot, for the stories.
+- **The release story's placement.** At Ahuna the powerless casualty was never seen at ramp + 3 from the stranger's
+  hull, so it stands at ramp + 4 and its tug at ramp + 5.
+
+## FR.7 — the round's story (Q-38-29; §4.7, §6's FR.7 row)
+
+PR #420, stacked on FR.5 (#410). One script, `crates/mush-bot/tests/mining_cohort/fr7_round.rs`, run as
+`fr7_round::fr7_the_rounds_story_at_256` (Ahuna Flank) and `…_at_512` (Urvara Reach), over the two `Ground`s of
+`crates/tacsim/tests/support/field/grounds_rig.rs`, which the bot's `mining_cohort` binary declares by path (two
+one-constant shim modules give it the `driving_rig::AHUNA` and `field_raiders_rig::SKULKS` it names).
+
+### What the script does
+
+The production root is booted in the test binary (`mine::boot_with`, FR.0's smoke's rig). Every player line goes
+over that player's own SSH session in line mode, after the bot's own closed vocabulary admits it:
+`mine::lane::field::in_vocabulary` for the captain, `…::escort::in_vocabulary` for the Basin pilots. Answers are
+read by the bot's parsers where it has them: `own_party`, `field_contact`, `void_offered`, `void_answer`, and the
+arena classifier's weapon rows.
+
+- **The cast.** Concord's captain is the bot's own hired-crew lane (`Lane::with_detachment`), driven in-process over
+  its session exactly as `--mine-detachment` plays it. It kits up at Ceres, hires Ilya Mendes for rig 1, takes rig 2's
+  cab, drafts, accepts, readies and activates the operation, and hops to the site. The script stops the lane where
+  it would type `+sortie/launch <op>=all` and types the captain's lines from there (FR.0's precedent). Basin's raider
+  and wing each fly an armed hull on the ground.
+- **Beat 1, the raid of a declared-Hostile co-op (FR.1).** The raider types `+faction/stance Basin=Concord/hostile`.
+  The captain's `+sortie/launch <op>=1` puts rig 1 down the ramp, read through `+sortie/operation` ("last confirmed on
+  the surface"). The raider's `+field/mark W=hostile` on open ground opens the field. The live record holds both Basin
+  parties' `stance_hostile` naming Concord's operation party from admission, and the raider's `CONTACTS`/`LOCK`/`FIRE
+  machine_gun` lands on Concord.
+- **Beat 2, reinforcement from the pad (FR.3).** The captain's `+sortie/launch <op>=2` into the running field. Rig 2,
+  the captain in its cab, joins Concord's party on the live record, and the captain's `+field` reads that party.
+- **Beat 3, the tow (FR.5): pending**, below.
+- **Beat 4, a jammed sight (FR.5 item 4).** The wing flies the fixture design `fr7.unit.jamming_tank`, worn to its
+  armour floor: the shipped line tank under its own pack and unit id with `component_hits` at a jam every survivable
+  hit (`jam_permille` 1000, no damage). The raider's machine gun on it jams the turret's parts one a hit until the sight
+  is one. The field's snapshot (`tacsim:field:snapshot:<site>`, read from the store) then holds the wing's
+  `UnitState.sensor` null.
+- **Beat 6, a segment rolled (FR.4).** `[tacsim.arena.ledger].max_bytes` is set to 1 MiB and `summary_ms` to 1 s, the
+  production floors: `ArenaConfig::validate` refuses less at boot, so FR.4's 48 KiB harness knob is not available to
+  a production root. After the jam the raider types nothing, and the field waits on its idle bound (`idle_demote_s` =
+  `disengage_s` = 3,300 s) until the live record reads segment 2.
+- **Beat 5, friendly fire voided at once (FR.2).** Raider and wing are both Basin, so the raider's rounds on the wing
+  are friendly fire. The field demotes on its idle bound, and the raider, who has typed nothing since the jam, is
+  offered the void. Its next line, `+field/void`, is answered `Voided as friendly fire`.
+
+**What is a fixture** (as FR.1's and FR.2's): at boot, before the world task, a staff hand makes, places and seats
+the two Basin hulls and wears the wing. `@faction/create` and `@faction/add` make and staff the two factions. The
+jamming design is a test pack on `[tacsim].pack_paths`, signed with the digest `tacsim::pack::load_pack` computes.
+Everything after boot is a player's command over SSH. The world is only read, from the store (the live record, the
+field snapshot, the chunk count).
+
+### The tow beat's seam (FR.5's `surface/tow.rs` half, PR #415)
+
+Two async functions in `fr7_round.rs`, each marked `// FR.5 tow half pending:` and each answering `"pending"` today:
+
+- `tow_struck_before_field`, called after rig 1 is on the surface and before the raider's mark. It is to type a tug's
+  `+tv/<n> tow go` on a casualty beside the ramp (read through `lines::tow_line`) and assert that admission carries
+  the pair coupled: the casualty an entrant on its tug's party, in `FieldHost.tows`, not counted.
+- `tow_released_under_fire`, called after the reinforcement joins. It is to have the raider `LOCK`/`FIRE` on the
+  towed casualty until a round lands, then the tug's pilot types `+tv/<n> release go` (admitted by
+  `field::round_word`), reads the `Released` line, and asserts the casualty stands uncoupled where it was dropped.
+
+What it needs from FR.5: the open-ground tow coupling into the field (`surface/tow.rs`), and a rig the story can disable
+by the production path to be the casualty. Nothing else in the script depends on the seam.
+
+### Runs (conclav.dev, by hand as `ghrunner`, throwaway clone, `CARGO_TARGET_DIR=/home/ghrunner/fr7-target`)
+
+**Green at both sizes on head `6ccaf77`**, run r4, the two sizes side by side, 2026-11-04 (logs
+`/home/ghrunner/fr7-256-r4.log` and `fr7-512-r4.log` on the box):
+
+| Beat | Ahuna Flank (256) | Urvara Reach (512) |
+|---|---|---|
+| The captain's lane at its launch (kit-up, hire, operation, hop; rate lifted to 168 after enrolment) | +342 s | +352 s |
+| 1. `Basin now stands Hostile toward Concord`; the mark opens field 1; both Basin parties' `stance_hostile` = `["a"]` (Concord's operation party) at admission; raider's fire lands on Concord | green | green |
+| 2. `+sortie/launch 1:1=2` into the field; rig 2 joins party A; the captain's `+field` reads `Your party is A` | green | green |
+| 3. the tow | pending (the seam) | pending (the seam) |
+| 4. the wing's snapshot `sensor` null | after 10 shots, +405 s | after 13 shots, +427 s |
+| 6. live record on segment 2 (48 / 47 chunks shipped) | +3528 s | +3576 s |
+| 5. field settles; the raider's first line, `+field/void`, answers `Voided as friendly fire: 1 standing change(s)` | +3703 s | +3726 s |
+| `test result: ok` | 3,704 s | 3,727 s |
+
+How the earlier runs failed, and what changed:
+
+- **r1** (`ceec1323`): beats 1, 2 and 4 green at both sizes. The roll never came, because the field demoted about
+  four minutes after it opened, once the rigs were wrecked. FR.4's 48 KiB knob is below the production floor, so the
+  roll needs about forty field minutes.
+- **r2** (`ca529e1`): showed the fill rate, about one 16 KiB chunk a minute for this five-hull field. It was stopped
+  by hand, then re-run with a 3,300 s idle bound.
+- **r3**: killed at +780 s by another session's `pkill` of `mining_cohort` processes on the shared box. Since then,
+  `fr7-run.sh` runs a renamed copy of the test binary (`/home/ghrunner/fr7-bin/fr7story-<size>`).
+
+Contract guards, `cargo clippy -j 8 -p mush-bot --all-targets -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc
+-p mush-bot --no-deps` and `cargo nextest run -p mush-contract-tests` (163 passed) were run on conclav.dev in a
+separate target dir. The Windows box's build slot was held for FR.5 throughout.
+
+**Not run on gate.yml.** §6's acceptance names gate.yml. These runs are by hand on the same box, because gate.yml's
+sweep would build the whole workspace to run two hour-long ignored tests. Once TS.2's manifest lands, a
+`--extra "--run-ignored only -E 'test(/fr7_the_rounds_story/)'" --packages mush-bot` dispatch is the recorded way
+to run it.
+
+### Tier
+
+#420 merged before TS.2's manifest reached its branch, so it merged without rows; FR.7b (#454) adds them, on the
+by-hand tier (see FR.7b). The story is `#[ignore]`d, run by name, about an hour a size, and the two sizes run side by
+side:
+
+`cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored fr7_ --nocapture`
+
+### Cell minutes (rule #14)
+
+**+0 summed minutes on every CI cell.** Both tests are `#[ignore]`d, and no PR cell runs ignored `mining_cohort`
+tests. The binary gains one module and no default test. The dispatch costs about 60 minutes of wall time per size on
+conclav.dev.
+
+## FR.7b — the tow beat, and FR.7's tier rows
+
+PR #454, off `main` after FR.7 (#420, merged at `6ccaf77e` with the tow seam still pending and without its tier
+rows) and FR.5b (#433).
+
+**The rows** (`crates/mush-contract-tests/test-tiers.toml`). `mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256`
+and `_512` are on the by-hand tier at the revision of their last green run. Notes on the rows:
+- The id is the module path. The inventory refuses a `mining_cohort::` id.
+- They are not on the dispatch tier because the manifest accepts dispatch only for a dispatch-only ci.yml job or a
+  gate.yml kind with a `via` script. Every ci.yml job also runs on the schedule, and the `sweep` kind has no `via`.
+- Moving them to dispatch means a gate kind and its script. That is not built here.
+- With the rows in, `ci_gated_test_inventory` on conclav.dev names only IN.5's two `in5_…` rows, which belong to
+  IN.5's session.
+
+**The tow beat** (`fr7_round.rs`, `tow_struck_before_field` and `tow_released_under_fire`, the seams FR.7 marked):
+
+- **The casualty** is a stock rig (`tacsim.unit.tv_prospector`, "Stranded Rig") placed at boot one cell east of the
+  ramp with its power destroyed. Staff then index it as a casualty on the site's record with `@tacsim/site <site>
+  leave #<unit> casualty <x>,<y>` over God's SSH session. This is GC.5's fixture, as `field_fr5` uses it. No player
+  path disables a rig outside a field, which is what this fixture stands in for.
+- **Struck before the field.** The captain's `+tv/1 tow go` (the bot's GC.4 tow line, admitted by
+  `escort::in_vocabulary`) has rig 1, which came down the ramp, take the casualty in tow. `lines::tow_line` reads it
+  as `Attached`: "Rig 1 has the Stranded Rig in tow, at 1.6 m/s."
+- **Admitted coupled.** After the raider's mark, the field's snapshot holds the casualty `coupled_to` rig 1
+  (Q-40-7).
+- **Struck in tow.** The raider locks Concord's contacts in turn and fires until the snapshot reads the casualty's
+  `own_last_hit_ms` while it is still coupled.
+- **Released under fire.** After one more burst, the captain types `+tv/1 release go` (`field::round_word`) and reads
+  "Rig 1 lets go of the Stranded Rig at field 1's next pulse." The snapshot then stands the casualty with no
+  `coupled_to`, within two cells of where it was struck.
+
+**What moved from FR.7, and why:**
+
+- **The release comes before beat 2's launch.** Once rig 2 flies, the captain sits at its helm, and at a helm `+tv/<n>`
+  names only that rig (`port::tv::select_word`), so `+tv/1 release go` answers "There is no rig 1 in the … bay".
+- **The lane's launch is held back.** The captain lane's `+sortie/launch <op>=all` could open and be sent in one
+  tick, past FR.7's check of the open step. When that happened, rig 2 left with slot 1, and the beat-2 launch only
+  re-confirmed a pending departure. The driver now refuses to send that line. The opening asserts that rig 2 is not
+  yet in the field.
+- **The raider's approach depends on the ground** (`approach`). At Ahuna Flank the ramp's row is out of the raider's
+  sight from the east: across every FR.7 run there it saw only the carrier. It now comes from twelve cells south of
+  the ramp, facing north, and marks `N`. Four approaches were probed on conclav.dev in parallel: from the south,
+  from the west, and east-north-east all saw the casualty; from the east-south-east, the raider saw only its wing.
+  Urvara keeps the east approach (`W`).
+- **The raider no longer fires while rig 2 comes down.** The field's idle bound holds it open, and the extra rounds
+  had wrecked rig 1, the tug.
+
+**Runs** (conclav.dev, head `c969ec3f`; the code is `37276a81`'s, with docs and the nextest override on top). Both sizes
+are green by hand and through gate.yml.
+
+| Beat | Ahuna Flank (256), by hand | Urvara Reach (512), by hand |
+|---|---|---|
+| The lane's own `=all` held back | +343 s | +352 s |
+| 3a. rig 1 takes the Stranded Rig in tow | green | green |
+| 3b. coupled at admission; struck in tow; released under fire, uncoupled where struck | (129, 124) | (257, 252) |
+| 4. the wing's sight dark | after 8 shots, +419 s | after 6 shots, +420 s |
+| 6. segment 2 | +3290 s | +3229 s |
+| 5. `Voided as friendly fire` | green | green |
+| `test result: ok` | 3,719 s | 3,720 s |
+
+- **Through gate.yml**: run [41904925552](https://github.com/conclavio/rustmush/actions/runs/41904925552), dispatched
+  with `scripts/vps-gate.sh --runner conclav-dev --packages mush-bot --extra "--run-ignored only -E
+  'test(/fr7_/)'" --no-push`. Both tests passed under the `ci-bot` profile, 256 in 3,712 s and 512 in 3,742 s. The
+  run is a success, which meets §6's "green on gate.yml".
+- **The profile override.** `.config/nextest.toml` gains a `ci-bot` override for `fr7_round::`
+  (`terminate-after = 100`). Without it, the profile's 20-minute limit would end an hour-long story.
+- **The runs before these** (r5–r7 and the four Ahuna approach probes) found the release-at-the-helm refusal, the
+  lane's own launch, the Ahuna sight line and the fire that wrecked the tug, each fixed as listed above.
+- **Contract test.** `mush-contract-tests` on conclav.dev fails only on IN.5's two missing rows.
+
+**Cell minutes (rule #14): +0.** The tests stay `#[ignore]`d, and no PR cell runs them.
+

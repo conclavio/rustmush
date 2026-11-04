@@ -100,36 +100,88 @@ pub fn install_sealed_runners(
     cfg: &ArenaConfig,
     sources: &dyn Fn(&[u8; 32]) -> Option<String>,
 ) -> Result<usize, InstallError> {
+    install_sealed_runners_except(arena, cfg, sources, &std::collections::BTreeSet::new())
+}
+
+/// **[`install_sealed_runners`] over every scripted hull but `installed`** (doc 23 cut S.4b-3): an
+/// IC field installs each claimed hull through its claim's retained execution first (the ABI and
+/// compile drops, D-23-17), then this strict rule over the rest.
+///
+/// # Errors
+///
+/// As [`install_sealed_runners`].
+pub fn install_sealed_runners_except(
+    arena: &mut Arena,
+    cfg: &ArenaConfig,
+    sources: &dyn Fn(&[u8; 32]) -> Option<String>,
+    skip: &std::collections::BTreeSet<ObjId>,
+) -> Result<usize, InstallError> {
     let mut compiled: BTreeMap<[u8; 32], Arc<dyn MindRunner>> = BTreeMap::new();
     let mut installed: BTreeMap<ObjId, Arc<dyn MindRunner>> = BTreeMap::new();
     for unit in &arena.units {
-        if unit.seal.engine != SealEngine::Scripted {
+        if unit.seal.engine != SealEngine::Scripted || skip.contains(&unit.id) {
             continue;
         }
-        let source = sources(&unit.seal.digest).ok_or(InstallError::NoSource {
-            unit: unit.id,
-            digest: unit.seal.digest,
-        })?;
-        let key: [u8; 32] = Sha256::digest(source.as_bytes()).into();
-        let runner = match compiled.get(&key) {
-            Some(runner) => Arc::clone(runner),
-            None => {
-                let runner: Arc<dyn MindRunner> =
-                    Arc::new(RhaiRunner::new(cfg, &source, Digest(key)).map_err(|error| {
-                        InstallError::Compile {
-                            unit: unit.id,
-                            error,
-                        }
-                    })?);
-                compiled.insert(key, Arc::clone(&runner));
-                runner
-            }
-        };
+        let runner = runner_for(unit.id, &unit.seal.digest, cfg, sources, &mut compiled)?;
         installed.insert(unit.id, runner);
     }
     let count = installed.len();
     arena.runners.extend(installed);
     Ok(count)
+}
+
+/// **[`install_sealed_runners`] for one hull** (doc 23 cut S.4b-3's kernel half, built in doc 40
+/// cut FR.5): the runner a scripted seal names, by the same rule — the source `sources` answers
+/// for the seal's digest, compiled on the standard sandbox keyed by the source's own SHA-256 —
+/// set on `Arena::runners` for `unit` alone, so a hull joining a running field never re-installs
+/// anyone else's. Answers whether a runner was installed (`false` for a `native` or `reflex`
+/// seal, and for a unit the arena does not hold).
+///
+/// # Errors
+///
+/// [`InstallError::NoSource`], [`InstallError::Compile`], as [`install_sealed_runners`]; on a
+/// refusal `arena.runners` is left as it was.
+pub fn install_sealed_runner(
+    arena: &mut Arena,
+    cfg: &ArenaConfig,
+    unit: ObjId,
+    sources: &dyn Fn(&[u8; 32]) -> Option<String>,
+) -> Result<bool, InstallError> {
+    let Some(digest) = arena
+        .unit(unit)
+        .filter(|state| state.seal.engine == SealEngine::Scripted)
+        .map(|state| state.seal.digest)
+    else {
+        return Ok(false);
+    };
+    let runner = runner_for(unit, &digest, cfg, sources, &mut BTreeMap::new())?;
+    arena.runners.insert(unit, runner);
+    Ok(true)
+}
+
+/// **One scripted seal's runner** (this module's head): the source for `digest`, compiled once
+/// per distinct source text across `compiled`.
+fn runner_for(
+    unit: ObjId,
+    digest: &[u8; 32],
+    cfg: &ArenaConfig,
+    sources: &dyn Fn(&[u8; 32]) -> Option<String>,
+    compiled: &mut BTreeMap<[u8; 32], Arc<dyn MindRunner>>,
+) -> Result<Arc<dyn MindRunner>, InstallError> {
+    let source = sources(digest).ok_or(InstallError::NoSource {
+        unit,
+        digest: *digest,
+    })?;
+    let key: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    if let Some(runner) = compiled.get(&key) {
+        return Ok(Arc::clone(runner));
+    }
+    let runner: Arc<dyn MindRunner> = Arc::new(
+        RhaiRunner::new(cfg, &source, Digest(key))
+            .map_err(|error| InstallError::Compile { unit, error })?,
+    );
+    compiled.insert(key, Arc::clone(&runner));
+    Ok(runner)
 }
 
 #[cfg(test)]

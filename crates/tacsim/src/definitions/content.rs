@@ -967,7 +967,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// the customs hall, the Yard's, four beds), each opened as a `medical` facility that crew
 /// treatment reads; **v21 since doc 41 cut RS.1**: Occator's third lease design, the tender
 /// (`+tv/lease tender`, pool 2, 1,800 + 7,000 for 168 IC days, provisional); **v22 since doc 39
-/// cut IN.6**: the seeded part rows; **v23 since doc 39 cut IN.5**: Stickney's refinery (Kasei's
+/// cut IN.6**: the seeded part rows; **v23 since doc 42 cut CR.2**: the five IC ports'
+/// `authority` and `release_fee_cr` (the captive handover); **v24 since doc 39 cut IN.5**: Stickney's refinery (Kasei's
 /// `kind: refine` mill row, concentrate into alloys at five to four, and its bid's `refresh`) and
 /// works (Stickney Yards', its house purchase of Kasei's alloys), and the Ceres works of Freeport
 /// Works (the new org), which stocks and asks carbon ore. The port readiness report
@@ -984,7 +985,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 39 cut IN.5), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -995,17 +996,20 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 23;
+pub const LANE_VERSION: u32 = 28;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
 pub const LANE_SOURCES: [(&str, &str); 1] = [("tacsim/content/lane/ceres_phobos.json", LANE_JSON)];
 /// **The industry recipes' pack id** (doc 39 cut IN.5, §4.3): the works' menu — `fittings`
 /// (five tonnes of alloys and one of carbon ore into five of fittings, six work units, pooled);
-/// IN.7 adds the part recipes and IN.9 the hulls, each at the pack's next version.
+/// IN.7 adds the part recipes at v2 (the mounts, the sights, the pods and the plants, each
+/// `output_lots: each`, so the works arm commissions them).
 pub const INDUSTRY_RECIPES_PACK: &str = "tacsim.industry.recipes";
-/// `crates/tacsim/content/industry/recipes-v1.json`.
-pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v1.json");
+/// The pack's shipped version.
+pub const INDUSTRY_RECIPES_VERSION: u32 = 2;
+/// `crates/tacsim/content/industry/recipes-v2.json`.
+pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v2.json");
 /// The outbound route: Ceres Freeport by Kirkwood Depot to Stickney Yards.
 pub const LANE_ROUTE_OUT: &str = "ceres_stickney";
 /// The return route: Stickney Yards by Kirkwood Depot to Ceres Freeport.
@@ -1044,7 +1048,7 @@ pub fn game_seed_sources() -> Vec<PackSource> {
                     "relays/manufacture-v1.json",
                     include_str!("../../content/relays/manufacture-v1.json"),
                 ),
-                ("industry/recipes-v1.json", INDUSTRY_RECIPES_JSON),
+                ("industry/recipes-v2.json", INDUSTRY_RECIPES_JSON),
                 // Doc 39 cut IN.9: the yard's hull recipes (each row pinned to its design's
                 // bill, `crate::port::bill`).
                 ("industry/hulls-v1.json", INDUSTRY_HULLS_JSON),

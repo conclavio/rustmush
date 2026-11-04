@@ -368,23 +368,13 @@ fn step(
     home: &Home,
     record: &mut HousePool,
 ) -> Result<bool, String> {
-    // 1. The helm and its purse.
-    let Some(helm) = record.helm else {
-        let thing = crate::port::site::dark_thing(
-            ctx,
-            &CanonicalId::new(floor.org).map_err(|e| e.to_string())?,
-            &HELM_NAME.replace("{org}", floor.org),
-            home.host,
-        )?;
-        record.helm = Some(ObjId(thing));
-        return Ok(true);
-    };
-    let Some(account) = record.account.map(AccountId) else {
-        record.account = Some(open_purse(ctx, helm)?.0);
-        return Ok(true);
-    };
-    // 2. The oldest open order's next step.
-    if let Some(index) = (!record.orders.is_empty()).then_some(0) {
+    // 1. The oldest open order's next step (an order stands only once the helm and its purse do).
+    if let (Some(helm), Some(account), false) = (
+        record.helm,
+        record.account.map(AccountId),
+        record.orders.is_empty(),
+    ) {
+        let index = 0;
         let mut order = record.orders[index].clone();
         let step = advance(ctx, floor, home, helm, account, &mut order)?;
         match step {
@@ -406,7 +396,7 @@ fn step(
             return Ok(false);
         }
     }
-    // 3. The floor.
+    // 2. The floor: breached and fundable, or nothing (the helm is made only when needed).
     let free = free_count(ctx.w, floor);
     let standing = u32::try_from(record.orders.len()).unwrap_or(u32::MAX);
     if free.saturating_add(standing) >= floor.floor {
@@ -417,6 +407,21 @@ fn step(
     if available < price {
         return Ok(false);
     }
+    // 3. The helm and its purse, a fire each, then the funding.
+    let Some(helm) = record.helm else {
+        let thing = crate::port::site::dark_thing(
+            ctx,
+            &CanonicalId::new(floor.org).map_err(|e| e.to_string())?,
+            &HELM_NAME.replace("{org}", floor.org),
+            home.host,
+        )?;
+        record.helm = Some(ObjId(thing));
+        return Ok(true);
+    };
+    let Some(account) = record.account.map(AccountId) else {
+        record.account = Some(open_purse(ctx, helm)?.0);
+        return Ok(true);
+    };
     let n = record.made.saturating_add(1);
     pay(
         ctx,
@@ -824,11 +829,18 @@ fn seller(
 ) -> Result<(crate::port::def::VendorDef, u64), String> {
     let scale = credit_scale(w);
     if part {
+        // The yard's operator's stores (IN.7: no part is seeded; what is made, scrapped or sold
+        // into them is drawable).
+        let operator = def
+            .yard
+            .as_ref()
+            .map(|yard| yard.operator.clone())
+            .ok_or("the yard's port authors no yard")?;
         let vendor = def
             .vendors
             .iter()
-            .find(|v| v.stock.iter().any(|s| &s.good == good))
-            .ok_or("no vendor stocks that part")?;
+            .find(|v| v.org == operator)
+            .ok_or("the yard's operator keeps no stores")?;
         let major = w
             .module_state::<TacsimStore>()
             .and_then(TacsimStore::goods)
@@ -868,29 +880,22 @@ fn yard_port(w: &World) -> Result<(PortMap, PortDef), String> {
 /// The yard facility at the yard's port.
 fn yard(w: &World) -> Result<FacilityRecord, String> {
     let (_, def) = yard_port(w)?;
-    let rooms = crate::port::market::port_rooms(w, &def);
-    let capability =
-        CanonicalId::new(crate::port::works::YARD_CAPABILITY).map_err(|e| e.to_string())?;
+    let entry = CanonicalId::new(YARD_PORT).map_err(|e| e.to_string())?;
+    // The lane's yard row is a room of the port, which is the facility itself (IN.9).
+    let room = crate::port::plant::block_room(w, &entry, &def, "yard")?
+        .ok_or("the yard's port authors no yard")?;
     w.module_state::<mush_industry::IndustryStore>()
-        .into_iter()
-        .flat_map(|store| store.facilities())
-        .find(|f| {
-            f.capabilities().contains(&capability)
-                && (rooms.contains(&f.object())
-                    || w.get(f.object())
-                        .and_then(|o| o.location)
-                        .is_some_and(|at| rooms.contains(&at)))
-        })
+        .and_then(|store| store.facility(room))
         .cloned()
         .ok_or_else(|| "the yard is not open".to_owned())
 }
 
-/// The days the floor's recipe takes at the yard, or the bill's rule's floor.
+/// The days the floor's recipe takes at the yard, or two (§4.7's fewest).
 fn build_days(w: &World, floor: &Floor) -> i64 {
     yard(w)
         .ok()
         .and_then(|facility| crate::port::works::find_recipe(w, &facility, floor.recipe))
-        .map_or(crate::port::bill::MIN_DAYS, |(_, pinned)| {
+        .map_or(2, |(_, pinned)| {
             pinned
                 .work_units()
                 .div_ceil(crate::port::bill::WORK_UNITS_A_DAY)
