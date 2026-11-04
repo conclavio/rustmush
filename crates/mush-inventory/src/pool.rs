@@ -61,6 +61,13 @@ pub struct InventoryFamilies {
     /// family from `census` because one `ActionTxn` may mutate one record only
     /// once and `dissolve` both creates a pool and consumes a lot.
     pub lot_census: StateFamilyHandle<EndpointRef, crate::record::LotCensus>,
+    /// `inventory.lot_tally` — **the units held in lots, per endpoint and commodity** (doc 39
+    /// cut IN.1), keyed by the pool key ([`pool_key`]). A part never pools (Q-39-27), so a
+    /// hold's capacity reading adds this to the pool for one; written by every lot verb here
+    /// in the bundle that moves the lot, and absent at zero. The bay refit's and the core
+    /// input's custody terminals keep their kernel-declared write sets and do not move it:
+    /// their lots live in a facility's stores, never in a hull's hold.
+    pub lot_tally: StateFamilyHandle<ReservationBookId, u64>,
     /// `inventory.reservation_index` — one [`ReservationId`] → its
     /// [`ReservationBookId`], written in the same bundle as the hold (E7c2 fold
     /// B10). It turns the guard validator's O(books) walk, and its permanent
@@ -473,6 +480,54 @@ impl InventoryFamilies {
             txn.insert(&self.lot_census, &endpoint, next)?;
         }
         Ok(())
+    }
+
+    /// `delta` more units of `commodity` held in lots at `endpoint` (doc 39 cut IN.1): staged
+    /// once per key, removed at zero; a tally is a reading, so one that would go negative (a
+    /// lot laid outside these verbs, then consumed through them) clamps at zero.
+    ///
+    /// # Errors
+    /// [`InventoryError`] on a key that will not derive or a family that will not stage.
+    fn tally_lots(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        delta: i128,
+    ) -> Result<(), InventoryError> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let key = pool_key(endpoint, commodity)?;
+        let existing = txn.get(&self.lot_tally, &key)?.copied();
+        let next = u64::try_from(
+            i128::from(existing.unwrap_or(0))
+                .saturating_add(delta)
+                .clamp(0, i128::from(u64::MAX)),
+        )
+        .unwrap_or(0);
+        match (existing, next) {
+            (None, 0) => {}
+            (None, next) => txn.insert(&self.lot_tally, &key, next)?,
+            (Some(_), 0) => txn.remove(&self.lot_tally, &key)?,
+            (Some(_), next) => txn.replace(&self.lot_tally, &key, next)?,
+        }
+        Ok(())
+    }
+
+    /// **The units of `commodity` held in lots at `endpoint`** (doc 39 cut IN.1): `0` when
+    /// none.
+    ///
+    /// # Errors
+    /// [`InventoryError`] on a key that will not derive or a family that will not read.
+    pub fn lot_quantity(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+    ) -> Result<u64, InventoryError> {
+        let key = pool_key(endpoint, commodity)?;
+        Ok(txn.get(&self.lot_tally, &key)?.copied().unwrap_or(0))
     }
 
     /// Move quantity between two endpoints in **one** bundle.
@@ -1255,7 +1310,14 @@ impl InventoryFamilies {
         txn.replace(&self.tranches, &tranche_id, drawn)?;
         txn.insert(&self.lots, &sale.buyer_lot, buyer.clone())?;
         self.move_lots(txn, sale.destination, 1)?;
+        self.tally_lots(
+            txn,
+            sale.destination,
+            commodity,
+            i128::from(buyer.quantity()),
+        )?;
         if let Some(record) = remainder.clone() {
+            self.tally_lots(txn, from, commodity, i128::from(record.quantity()))?;
             txn.insert(&self.lots, &sale.remainder_lot, record)?;
             self.move_lots(txn, from, 1)?;
         }
@@ -1513,6 +1575,9 @@ impl InventoryFamilies {
         txn.replace(&self.lots, &lot, moved.clone())?;
         self.move_lots(txn, from, -1)?;
         self.move_lots(txn, to, 1)?;
+        let quantity = i128::from(moved.quantity());
+        self.tally_lots(txn, from, moved.commodity(), -quantity)?;
+        self.tally_lots(txn, to, moved.commodity(), quantity)?;
         Ok(moved)
     }
 
@@ -1534,6 +1599,12 @@ impl InventoryFamilies {
             return Err(InventoryError::NoLot);
         }
         self.move_lots(txn, expected.endpoint(), -1)?;
+        self.tally_lots(
+            txn,
+            expected.endpoint(),
+            expected.commodity(),
+            -i128::from(expected.quantity()),
+        )?;
         txn.remove(&self.lots, &expected.id())?;
         Ok(())
     }
@@ -1712,6 +1783,7 @@ impl InventoryFamilies {
             txn.replace(&self.tranches, &id, next)?;
         }
         self.move_lots(txn, endpoint, -1)?;
+        self.tally_lots(txn, endpoint, &commodity, -i128::from(record.quantity()))?;
         txn.remove(&self.lots, &lot)?;
         Ok((id, moved))
     }
@@ -1797,6 +1869,7 @@ impl InventoryFamilies {
         )?;
         let moved = self.debit(txn, endpoint, commodity, amount)?;
         self.move_lots(txn, endpoint, 1)?;
+        self.tally_lots(txn, endpoint, commodity, i128::from(amount))?;
         txn.replace(&self.tranches, &tranche_id, drawn)?;
         txn.insert(&self.lots, &child, created.clone())?;
         Ok((created, moved))
@@ -1881,6 +1954,7 @@ impl InventoryFamilies {
             0,
         )?;
         self.move_lots(txn, endpoint, 1)?;
+        self.tally_lots(txn, endpoint, commodity, i128::from(amount))?;
         txn.insert(&self.lots, &child, created.clone())?;
         Ok(created)
     }
@@ -1932,6 +2006,16 @@ impl InventoryFamilies {
             })
         })?;
         self.move_lots(txn, endpoint, count)?;
+        // One tally write a commodity: a bundle stages a key once.
+        let mut tallies: std::collections::BTreeMap<&CanonicalId, i128> =
+            std::collections::BTreeMap::new();
+        for lot in &created {
+            let sum = tallies.entry(lot.commodity()).or_insert(0);
+            *sum = sum.saturating_add(i128::from(lot.quantity()));
+        }
+        for (commodity, units) in tallies {
+            self.tally_lots(txn, endpoint, commodity, units)?;
+        }
         for lot in &created {
             txn.insert(&self.lots, &lot.id(), lot.clone())?;
         }

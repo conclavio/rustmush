@@ -76,7 +76,7 @@ fn pin_file(relative: &str, want: &str) {
 }
 
 /// Every shipped pack file, by its path under `content/`.
-const PACK_FILES: [&str; 9] = [
+const PACK_FILES: [&str; 10] = [
     "ammunition/he_105.json",
     "ammunition/ball_762.json",
     "weapons/cannon_105.json",
@@ -84,6 +84,8 @@ const PACK_FILES: [&str; 9] = [
     "sensors/visual_mk1.json",
     // 17b cut M3.1: the cores pack, ahead of the line tank that requires it.
     "cores/cores.json",
+    // Doc 39 cut IN.1: the plants pack, ahead of every chassis.
+    "plants/plants.json",
     "units/line_tank.json",
     "resolution.json",
     "arenas/proving_ground.json",
@@ -97,8 +99,10 @@ const PACK_FILES: [&str; 9] = [
 /// version 2. **17b cut M3.6** moved the line tank's again for the core
 /// consequence words (`destroy_core` on the turret, and its note's M.4
 /// sentence shortened to fit the 1,024-byte bound; version 4). Was
-/// `2cdf945e…` at version 3.
-const DIGESTS: [(&str, &str); 14] = [
+/// `2cdf945e…` at version 3. **Doc 39 cut IN.1** added the plants pack and moved every
+/// chassis's for its power component's `plant` (no version moved; the line tank was
+/// `2d80e63e…`).
+const DIGESTS: [(&str, &str); 15] = [
     (
         "tacsim.pack.he_105",
         "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
@@ -125,8 +129,13 @@ const DIGESTS: [(&str, &str); 14] = [
         "a5c8d97b007d7fcec0e34d97be7d45fa6df18d99e50a5658ce72e74aa1e049f7",
     ),
     (
+        "tacsim.pack.plants",
+        // Doc 39 cut IN.1: the six power plants (Q-39-35).
+        "c43273d380345d4c3cb507fa42721adb1b72ffd1d57d7bbe5d751e5ac55f94b2",
+    ),
+    (
         "tacsim.pack.line_tank",
-        "2d80e63eecf5167fc8d803746d507ae861db25c4d6d76dcdbe2fd5c1c4bff2b8",
+        "5c3382e11efc7df5b99ce229a50839e7ad385e687355c918004ff44479b0ded1",
     ),
     (
         "tacsim.pack.resolution",
@@ -1106,11 +1115,12 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     let stock = content::sources();
     let fielded = content::fielded_sources();
     // 17b cut M3.1: the stock game is nine packs — the cores pack joined the
-    // eight, ahead of the line tank that requires it.
+    // eight, ahead of the line tank that requires it; doc 39 cut IN.1: ten, the plants pack
+    // after it.
     assert_eq!(
         stock.len(),
-        9,
-        "nine shipped packs, the cores pack among them"
+        10,
+        "ten shipped packs, the cores and plants packs among them"
     );
     // Doc 18 cut IC2: and the Dray, a twentieth, last (was `+ 19`). Doc 20 cut
     // SM.3a: and the terrain vehicle and the Dray-P after it (was `+ 20`).
@@ -1381,8 +1391,13 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         tacsim::pack::load_pack(content::TARGET_MK1_JSON).expect("the target's pack verifies");
     assert_eq!(target.manifest().version(), 1, "the target is not moved");
     assert!(
-        target.manifest().requires().is_empty(),
-        "the target requires nothing: it fits no core"
+        target
+            .manifest()
+            .requires()
+            .iter()
+            .map(|r| (r.id.as_str(), r.version))
+            .eq([("tacsim.pack.plants", 1)]),
+        "the target fits no core: it requires only its plant's pack (doc 39 cut IN.1)"
     );
 }
 
@@ -2763,12 +2778,13 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "89093a73c7680e0f8c700412aa17aaec188f0c0b7ef617970e640ff8513ee523";
+const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9e4dfbd81a42";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
-/// `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const GOODS_DIGEST: &str = "812c949753358b36eb7cfae88e48884b1975a12dc5a172e4993924e32d5b86b1";
+/// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
+/// rows (was `812c9497…` at v4).
+const GOODS_DIGEST: &str = "e8c593933f914cffd71198cf7d697996c6ba9273fa8db1b1288ac36ffed5c847";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -2828,8 +2844,12 @@ fn ic2_the_dray_is_pinned_and_checks() {
         "doc 19 cut A.2 re-published the Dray at v3 (the flip law); doc 18 cut IC8's was v2"
     );
     assert!(
-        pack.manifest().requires().is_empty(),
-        "the Dray requires nothing"
+        pack.manifest()
+            .requires()
+            .iter()
+            .map(|r| (r.id.as_str(), r.version))
+            .eq([("tacsim.pack.plants", 1)]),
+        "the Dray requires only the plants pack (doc 39 cut IN.1)"
     );
     assert_eq!(
         pack.manifest().digest().to_hex(),
@@ -3306,8 +3326,9 @@ fn ic2_the_goods_table_is_pinned() {
     );
     let table = goods_table().expect("the shipped goods table loads");
     // Doc 19 cut A.8: v2 (the two moon goods); doc 20 cut SM.3a: v3 (the four
-    // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods).
-    assert_eq!(table.version, 4);
+    // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods); doc
+    // 39 cut IN.1: v5 (the thirteen parts).
+    assert_eq!(table.version, 5);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3548,9 +3569,165 @@ fn ic2_the_goods_table_is_pinned() {
                 None,
                 1_500
             ),
+            (
+                "tacsim.part.weapon.cannon_105",
+                "105 mm cannon mount",
+                None,
+                GoodClass::Part,
+                "each",
+                2_400,
+                2_400,
+                "stow.bulk",
+                None,
+                28_000
+            ),
+            (
+                "tacsim.part.weapon.autocannon_30",
+                "30 mm autocannon mount",
+                None,
+                GoodClass::Part,
+                "each",
+                500,
+                500,
+                "stow.bulk",
+                None,
+                12_000
+            ),
+            (
+                "tacsim.part.weapon.laser_mk1",
+                "laser mount, mark 1",
+                None,
+                GoodClass::Part,
+                "each",
+                1_200,
+                1_200,
+                "stow.bulk",
+                None,
+                36_000
+            ),
+            (
+                "tacsim.part.weapon.missile_lr",
+                "long-range missile rack",
+                None,
+                GoodClass::Part,
+                "each",
+                800,
+                800,
+                "stow.bulk",
+                None,
+                18_000
+            ),
+            (
+                "tacsim.part.weapon.mg_coax",
+                "coaxial machine gun",
+                None,
+                GoodClass::Part,
+                "each",
+                40,
+                40,
+                "stow.bulk",
+                None,
+                2_500
+            ),
+            (
+                "tacsim.part.sensor.visual_mk1",
+                "visual sight, mark 1",
+                None,
+                GoodClass::Part,
+                "each",
+                90,
+                180,
+                "stow.bulk",
+                None,
+                9_000
+            ),
+            (
+                "tacsim.part.sensor.thermal_mk1",
+                "thermal sight, mark 1",
+                None,
+                GoodClass::Part,
+                "each",
+                130,
+                260,
+                "stow.bulk",
+                None,
+                18_000
+            ),
+            (
+                "tacsim.part.sensor.ecm_mk1",
+                "jamming pod, mark 1",
+                None,
+                GoodClass::Part,
+                "each",
+                160,
+                320,
+                "stow.bulk",
+                None,
+                24_000
+            ),
+            (
+                "tacsim.part.sensor.eccm_mk1",
+                "counter-jamming pod, mark 1",
+                None,
+                GoodClass::Part,
+                "each",
+                120,
+                240,
+                "stow.bulk",
+                None,
+                20_000
+            ),
+            (
+                "tacsim.part.plant.light_mk1",
+                "light power plant",
+                None,
+                GoodClass::Part,
+                "each",
+                300,
+                300,
+                "stow.bulk",
+                None,
+                5_000
+            ),
+            (
+                "tacsim.part.plant.vehicle_mk1",
+                "vehicle power plant",
+                None,
+                GoodClass::Part,
+                "each",
+                1_800,
+                1_800,
+                "stow.bulk",
+                None,
+                22_000
+            ),
+            (
+                "tacsim.part.plant.walker_mk1",
+                "walker power plant",
+                None,
+                GoodClass::Part,
+                "each",
+                2_500,
+                2_500,
+                "stow.bulk",
+                None,
+                26_000
+            ),
+            (
+                "tacsim.part.plant.hauler_mk1",
+                "hauler power plant",
+                None,
+                GoodClass::Part,
+                "each",
+                30_000,
+                30_000,
+                "stow.bulk",
+                None,
+                30_000
+            ),
         ],
         "doc 18 section 4.3's six rows, doc 19 cut A.8's two, doc 20 cut SM.3a's \
-         four and doc 36 cut GC.7's four, in its order"
+         four, doc 36 cut GC.7's four and doc 39 cut IN.1's thirteen parts, in its order"
     );
     // Doc 36 cut GC.7 (Q-36-36): every shipped ammunition but beam charge is exactly one
     // munitions good, and every munitions good names a shipped ammunition.
@@ -3597,11 +3774,11 @@ fn ic2_the_goods_table_is_pinned() {
 
 /// **The terrain vehicle's pin** (doc 20 cut SM.3a; §4.1, D-20-6). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const TV_DIGEST: &str = "26744d62f2c42b4cd1a2c4a9d6af0cedd290ae6095c5cc5c10c77ad8c2c1bc49";
+const TV_DIGEST: &str = "2d03e9c0a53217b3e2a4b102b925274dc0fa6b90490a7e5e69bb137583f0f27f";
 
 /// **The Dray-P's pin** (doc 20 cut SM.3a; §4.3, D-20-7). Re-signed in place
 /// under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_P_DIGEST: &str = "d07737c6b0fb34dcf17976f408c6f12b80ba0b6a7820c8ec700411df84287adb";
+const DRAY_P_DIGEST: &str = "f9c02c3b3c0ad103c98df4826bad75cbca07e87c03e98b938f1d314d3be25306";
 
 /// **The tools' pins** (doc 20 cut SM.3a; §4.1): each tool's canonical digest
 /// under `tacsim.tools.v1`. Printed under `TACSIM_WRITE_CONTENT=1` and copied here
@@ -3812,7 +3989,13 @@ fn sm3a_the_terrain_vehicle_is_pinned_and_checks() {
         .iter()
         .map(|r| (r.id.to_string(), r.version))
         .collect();
-    assert_eq!(requires, vec![("tacsim.pack.visual_mk1".to_owned(), 1)]);
+    assert_eq!(
+        requires,
+        vec![
+            ("tacsim.pack.visual_mk1".to_owned(), 1),
+            ("tacsim.pack.plants".to_owned(), 1)
+        ]
+    );
     assert_eq!(
         pack.manifest().digest().to_hex(),
         TV_DIGEST,
@@ -3919,8 +4102,12 @@ fn sm3a_the_dray_p_is_the_dray_with_a_bay() {
     assert_eq!(pack.manifest().id().as_str(), content::DRAY_P_PACK);
     assert_eq!(pack.manifest().version(), 1);
     assert!(
-        pack.manifest().requires().is_empty(),
-        "the Dray-P requires nothing"
+        pack.manifest()
+            .requires()
+            .iter()
+            .map(|r| (r.id.as_str(), r.version))
+            .eq([("tacsim.pack.plants", 1)]),
+        "the Dray-P requires only the plants pack (doc 39 cut IN.1)"
     );
     assert_eq!(
         pack.manifest().digest().to_hex(),

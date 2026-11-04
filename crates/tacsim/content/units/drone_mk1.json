@@ -3,7 +3,7 @@
     "id": "tacsim.pack.drone_mk1",
     "version": 4,
     "kind": "rules_definition",
-    "digest": "59a0a26f39a582243de8c88fc6afd61cd5d3ac7ca9ccd336cbfd42b31bf1db50",
+    "digest": "6d60eea30769c61bd3c1f4627314bcb7b5ad4306de0e075f0509ed437f1b2302",
     "requires": [
       {
         "id": "tacsim.pack.visual_mk1",
@@ -11,6 +11,10 @@
       },
       {
         "id": "tacsim.pack.cores",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
         "version": 1
       }
     ]
@@ -49,6 +53,7 @@
             "section": "body",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.light_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

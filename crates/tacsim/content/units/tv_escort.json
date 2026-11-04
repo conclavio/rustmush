@@ -3,7 +3,7 @@
     "id": "tacsim.pack.tv_escort",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "808bd7452f2b154b6559ba094d23f0b1d40f8ec4b78892e993a8f91adbc1b58a",
+    "digest": "a210745a2f00955b87e3b52901cef4c4e3d0418a8aee7bb5ae755591dee8a780",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -19,6 +19,10 @@
       },
       {
         "id": "tacsim.pack.cores",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
         "version": 1
       }
     ]
@@ -193,6 +197,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.vehicle_mk1",
               "capability": "tacsim.power",
               "states": [
                 "off",

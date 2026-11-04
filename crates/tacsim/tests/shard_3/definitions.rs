@@ -408,10 +408,13 @@ fn the_six_content_kinds_are_the_six_the_pack_format_owns() {
     // three would be a kind nothing applies or a kind nothing decodes. **17b
     // cut M3.1** added that seventh, `core` (doc 17 §9), to all three at once
     // — and the shipped content carries it (the cores pack), so the stock game
-    // exercises all seven.
-    assert_eq!(tacsim::definitions::CONTENT_KINDS.len(), 7);
+    // exercises all seven. **Doc 39 cut IN.1** added the eighth, `plant`, the same way
+    // (the plants pack).
+    assert_eq!(tacsim::definitions::CONTENT_KINDS.len(), 8);
     assert!(tacsim::definitions::CONTENT_KINDS.contains(&"core"));
     assert!(tacsim::definitions::KINDS.contains(&"core"));
+    assert!(tacsim::definitions::CONTENT_KINDS.contains(&"plant"));
+    assert!(tacsim::definitions::KINDS.contains(&"plant"));
     for kind in tacsim::definitions::CONTENT_KINDS {
         assert!(
             tacsim::pack::OWNED_KINDS.contains(&kind),

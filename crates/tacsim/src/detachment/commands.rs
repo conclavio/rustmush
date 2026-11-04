@@ -159,6 +159,8 @@ pub fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), String> {
 }
 
 fn respond(ctx: &mut Ctx<'_>, response: Response) -> Result<(), CmdError> {
+    // Doc 42 cut CR.0 (Draft 0.3 42-6): WILCO and NEGATIVE are the held gate's.
+    crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
     let raw = ctx.args.raw().trim().to_owned();
     if let Some(result) = super::sortie::field_response(ctx, &raw, response) {
         return result.map_err(CmdError::msg);
@@ -231,6 +233,11 @@ fn roster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one +sortie operation."));
     }
+    // Doc 42 cut CR.0 (Q-42-2, Draft 0.3 42-6): the switches that move a person or commit one to
+    // an operation; the stand-downs and the reads pass.
+    if let Some(held) = ctx.switches.iter().next().and_then(sortie_gate) {
+        crate::field::crew::gate(ctx, held)?;
+    }
     if super::sortie::handles(ctx) {
         return super::sortie::command(ctx);
     }
@@ -289,6 +296,22 @@ fn roster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     refresh(ctx);
     Ok(())
+}
+
+/// **The held gate's kind for a `+sortie` switch** (doc 42 Q-42-2, Draft 0.3 42-6): `None` for
+/// a switch a captive may use (`/deactivate`, `/end`, `/history`, `/operation`, `/refresh`,
+/// `/orders`, `/plans`, `/condition` and the rest of the reads).
+fn sortie_gate(switch: &str) -> Option<crate::field::crew::Gate> {
+    use crate::field::crew::Gate;
+    match switch {
+        "seat" => Some(Gate::Move),
+        "activate" | "hire" | "board" | "contract" | "launch" | "recover" | "cancel-launch" => {
+            Some(Gate::Operate)
+        }
+        "extract" => Some(Gate::Extract),
+        "chat" => Some(Gate::Chat),
+        _ => None,
+    }
 }
 
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {

@@ -1577,12 +1577,16 @@ impl TowProvider {
         } else {
             let holder = facts.custodian.unwrap_or(operator);
             // Doc 36 cut GC.6 (Q-36-30): a recovery off owned ground with neither the title
-            // holder's nor the landholder's authority is written to the evidence log.
+            // holder's nor the landholder's authority is written to the evidence log; doc 41
+            // Q-41-21: either authorization as the attach read it counts.
             if let Some(landholder) = pin
                 .as_ref()
                 .and_then(crate::surface::claim::TenurePin::landholder)
                 && landholder != holder
                 && pin.as_ref().and_then(|pin| pin.answering) != Some(holder)
+                && !pin
+                    .as_ref()
+                    .is_some_and(|pin| pin.owner_grant.is_some() || pin.landholder_authorized)
             {
                 crate::surface::claim::log_unlawful(
                     record,
@@ -1610,6 +1614,7 @@ impl TowProvider {
                     file: None,
                     told: Vec::new(),
                     evidence: Vec::new(),
+                    at_risk: Vec::new(),
                 },
             );
         }
@@ -1789,15 +1794,18 @@ impl TowProvider {
         if *of != facts.of || *mass_kg != facts.mass_kg {
             return Err(refused("scrap_changed"));
         }
+        // Doc 39 cut IN.1 (§4.10): scrap mints down to whole tonnes; under a tonne, on a site
+        // with no facility to keep the fraction, nothing mints and the mass is a declared loss.
         let alloys_t = mass_kg / crate::port::bay_work::strip::SCRAP_KG_PER_T;
-        if alloys_t == 0 || alloys_t != facts.alloys_t {
+        if alloys_t != facts.alloys_t {
             return Err(refused("scrap_changed"));
         }
         let good = CanonicalId::new(crate::port::bay_work::strip::SCRAP_GOOD)
             .map_err(|_| integrity("the alloys' good is malformed"))?;
         let grade = mush_inventory::Grade::new(crate::port::bay_work::strip::SCRAP_GRADE)
             .map_err(|_| integrity("the alloys' grade is out of bounds"))?;
-        inventory
+        if alloys_t > 0 {
+            inventory
             .mint_origin(
                 txn,
                 mush_inventory::EndpointRef(mush_economy::VaultId(facts.hold)),
@@ -1816,6 +1824,7 @@ impl TowProvider {
                 tracing::warn!(tv = tv.0, object = facts.object, %error, "tacsim: remains' alloys would not mint; the scrap refuses");
                 refused("scrap_unminted")
             })?;
+        }
         if facts.lawful {
             return Ok("scrapped:lawful".to_owned());
         }

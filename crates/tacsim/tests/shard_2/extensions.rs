@@ -126,7 +126,7 @@ const DIGESTS: [(&str, &str); 3] = [
     ),
     (
         "tacsim.pack.line_tank_laser",
-        "2d337792301e533d99317cb7898bfc43d1a4ff6be367128497aabc2bd8536293",
+        "85ff14c1c80a67af98d9b42953dd5f3de234b6adea2daa59101a0b72c37918a4",
     ),
 ];
 
@@ -143,7 +143,7 @@ const PACK_FILES: [&str; 3] = [
 /// the torso. Was `6d2272a0…` at version 1.
 const DIGESTS_BIPED: [(&str, &str); 1] = [(
     "tacsim.pack.biped_mk1",
-    "cf38ed133b16e510880215d365b8743f3e16bf19c0462b3de2a089dc273df837",
+    "2573ae24c7872908c6525e5396df8e22141e6e7674e4e3d32842e6d138deea67",
 )];
 
 /// The biped's pack file, by its path under `content/`.
@@ -164,7 +164,7 @@ const DIGESTS_THERMAL: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_thermal",
-        "45d2d86aba3418652cc2e7e71153b24586810b799d24ae64fa883671f48304e7",
+        "a90431a398347f152f6536cda35cf2a3013589b5d29a95a493061551074b24d9",
     ),
 ];
 
@@ -186,7 +186,7 @@ const DIGESTS_ECM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_ecm",
-        "b65d68d1ab50270bda1913623f9173fccae770e3e754adcf3437d497a37e94e8",
+        "262821978dabfdc4528758337e19045ea3ff42467c4327fa06c898cc4b8f2e8d",
     ),
 ];
 
@@ -209,7 +209,7 @@ const DIGESTS_ECCM: [(&str, &str); 2] = [
     ),
     (
         "tacsim.pack.line_tank_eccm",
-        "b88da749f826d85c11e3951fc96e56a3e43ec8d0b5e0ed847e998c9eda163fc8",
+        "b47c57c0cc694609df2df1732cf5dbbf81e9888d46c31b0f9ffddc998f866777",
     ),
 ];
 
@@ -220,7 +220,7 @@ const PACK_FILES_ECCM: [&str; 2] = ["sensors/eccm_mk1.json", "units/line_tank_ec
 /// the laser's: one unit schema, requiring nothing.
 const DIGESTS_TARGET: [(&str, &str); 1] = [(
     "tacsim.pack.target_mk1",
-    "f376460f54bef4c862ff30d152f515917fb135356d9e7523149f0cfadf012068",
+    "8aa6da109f142231781848344b9c59a840cb49dde49bd47014540d0e19a04179",
 )];
 
 /// The target's pack file, by its path under `content/`.
@@ -278,7 +278,12 @@ const VISUAL_MK1_SIGNATURE: &str = concat!(
 /// `destroy_core` beside its `remove_weapons`, so the unit definition is a new
 /// one by content; the same refit rule takes a persisted `line_tank` to it.
 /// Was `b8fa366613da1a39345a0a74eacc662aba00f954213972bc4ff135aaa9ef74dc`.
-const LINE_TANK_DIGEST: &str = "6bfa9bdbb4f75724e77228ade042700d4bdce398d4facf98f92c746e30200714";
+///
+/// **Doc 39 cut IN.1 moved it a fourth time, with the content** (Q-39-35): the power
+/// component names its plant (`tacsim.plant.vehicle_mk1`), and the unit's rules carry the
+/// authored components, so the definition is a new one by content (pre-launch: no persisted
+/// unit to migrate). Was `6bfa9bdbb4f75724e77228ade042700d4bdce398d4facf98f92c746e30200714`.
+const LINE_TANK_DIGEST: &str = "c85d03ac6b1cb4455cb7a9a6a37d1d9eebd98ebe480edaeb30071d00cdf61e18";
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
@@ -8330,8 +8335,12 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
             "{id}'s digest moved; re-review the content and re-pin it"
         );
         assert!(
-            pack.manifest().requires().is_empty(),
-            "a target mounts nothing, so it requires no pack"
+            pack.manifest()
+                .requires()
+                .iter()
+                .map(|r| (r.id.as_str(), r.version))
+                .eq([("tacsim.pack.plants", 1)]),
+            "a target mounts nothing, so it requires only its plant's pack (doc 39 cut IN.1)"
         );
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_TARGET.len());
@@ -8539,15 +8548,15 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
 const DIGESTS_CHASSIS: [(&str, &str); 3] = [
     (
         "tacsim.pack.scout_mk1",
-        "b0d865e5e4b774f678a74fb81eeac115bb2a9b328540960a94bd0be700d6a36a",
+        "659f53035bc6010742d7f8c20a71a374e1c12f3d5837af25e89d06663731c5e1",
     ),
     (
         "tacsim.pack.heavy_mk1",
-        "162bed78096b89b4b77ec9f6ca19d11306b433ba9dc5cb59338d02ef1d7d6c04",
+        "e6750e04a6151e2ef84a5a8570f10c8fa311c7bc010b92751fcee3521ae4c556",
     ),
     (
         "tacsim.pack.biped_mk2",
-        "c0bb3689551f5b7f914ed9249516ef955a0f8cd55eefe3dbe300a94d5dcaf217",
+        "886f86daea7132c3a3953bd3248513ad7a2386c5b7089cb1264043170811f3b6",
     ),
 ];
 
@@ -10900,7 +10909,7 @@ fn ae2_the_round_is_traced_from_where_it_left() {
 /// says a drone cannot hold or contest the square. No mechanical values change.
 const DIGESTS_DRONE: [(&str, &str); 1] = [(
     "tacsim.pack.drone_mk1",
-    "59a0a26f39a582243de8c88fc6afd61cd5d3ac7ca9ccd336cbfd42b31bf1db50",
+    "6d60eea30769c61bd3c1f4627314bcb7b5ad4306de0e075f0509ed437f1b2302",
 )];
 
 /// The drone's pack file, by its path under `content/`.

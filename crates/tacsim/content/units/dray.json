@@ -3,8 +3,13 @@
     "id": "tacsim.pack.dray",
     "version": 3,
     "kind": "rules_definition",
-    "digest": "89093a73c7680e0f8c700412aa17aaec188f0c0b7ef617970e640ff8513ee523",
-    "requires": []
+    "digest": "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9e4dfbd81a42",
+    "requires": [
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ]
   },
   "entries": {
     "tacsim.unit.dray": {
@@ -49,6 +54,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.hauler_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

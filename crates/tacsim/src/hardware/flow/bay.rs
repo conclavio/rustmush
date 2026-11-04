@@ -68,7 +68,7 @@ fn bay(r: &mut Rig) -> Result {
         families.mint_origin(
             &mut txn,
             mush_inventory::EndpointRef(vault),
-            &mush_core::CanonicalId::new("tacsim.part.laser")?,
+            &mush_core::CanonicalId::new("tacsim.part.weapon.laser_mk1")?,
             1,
             Grade::new(9)?,
             mush_economy::ExternalRef {
@@ -170,7 +170,7 @@ async fn ud4b_a_shipped_line_tank_is_refitted_to_its_laser_in_a_bay() -> Result 
     let returned = r
         .rows("inventory_lots")
         .into_iter()
-        .find(|v| v["commodity"] == "tacsim.part.cannon")
+        .find(|v| v["commodity"] == "tacsim.part.weapon.cannon_105")
         .ok_or("the cannon returned to the bay's stores")?;
     check_eq!(returned["endpoint"], json!(site.stores));
     check!(

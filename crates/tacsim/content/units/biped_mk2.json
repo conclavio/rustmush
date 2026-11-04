@@ -3,7 +3,7 @@
     "id": "tacsim.pack.biped_mk2",
     "version": 2,
     "kind": "rules_definition",
-    "digest": "c0bb3689551f5b7f914ed9249516ef955a0f8cd55eefe3dbe300a94d5dcaf217",
+    "digest": "886f86daea7132c3a3953bd3248513ad7a2386c5b7089cb1264043170811f3b6",
     "requires": [
       {
         "id": "tacsim.pack.laser_mk1",
@@ -19,6 +19,10 @@
       },
       {
         "id": "tacsim.pack.cores",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
         "version": 1
       }
     ]
@@ -143,6 +147,7 @@
             "section": "torso",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.walker_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

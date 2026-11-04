@@ -70,10 +70,45 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.1 (lane v20): the ladder's three prices put back** — Kasei's alloy ask 450 →
+/// 400, Stickney Yards' fittings ask 520 → 400, the Co-op's fittings bid 600 → 560 — so a strip
+/// chain rebuilds a lane before v20 (idempotent).
+pub fn strip_ladder(doc: &mut Value) {
+    for (port, org, side, good, was) in [
+        ("stickney_port", "kasei", "asks", "structural_alloys", 400),
+        (
+            "stickney_port",
+            "stickney_yards",
+            "asks",
+            "industrial_parts",
+            400,
+        ),
+        ("ceres_port", "coop", "bids", "industrial_parts", 560),
+    ] {
+        for vendor in doc["entries"][port]["def"]["vendors"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .filter(|vendor| vendor["org"] == org)
+        {
+            for row in vendor[side]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .filter(|row| row["good"] == good)
+            {
+                row["price_major"] = was.into();
+            }
+        }
+    }
+}
+
 /// Remove what doc 36 cut GC.7 added to the lane (lane v18): Ceres's and Stickney's `workshop`
 /// blocks and every vendor's munitions stock and asks — the lane v17 shape but its manifest
-/// (idempotent). Cut GC.13's `medical` blocks (lane v19) go with them.
+/// (idempotent). Cut GC.13's `medical` blocks (lane v19) go with them, and since lane v20
+/// doc 39 cut IN.1's ladder ([`strip_ladder`]) first.
 pub fn strip_workshops(doc: &mut Value) {
+    strip_ladder(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

@@ -349,6 +349,31 @@ impl GameModule for InventoryModule {
             },
             |value: &LotCensus| serde_json::to_value(value).map_err(|e| e.to_string()),
         )?;
+        // ---- Doc 39 cut IN.1 — the units held in lots, per endpoint and commodity ----
+        // Keyed like `pools`: what a capacity reading adds for a good that never pools (a
+        // part), written in the same bundle as the lot it counts.
+        let lot_tally = reg.state_family::<ReservationBookId, u64, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("inventory_lot_tally")?,
+                canonical("reservation_book_id.v1")?,
+                canonical("inventory.lot_tally.v1")?,
+                1,
+                canonical("inventory.lot_tally.decode_json.v1")?,
+                canonical("inventory.lot_tally.bounds.v1")?,
+                canonical("inventory.lot_tally.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ReservationBookId| Ok(key.canonical_hash().to_hex()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &u64| {
+                if *value == 0 {
+                    Err("a lot tally is removed at zero, never stored".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &u64| serde_json::to_value(value).map_err(|e| e.to_string()),
+        )?;
         // ---- Doc 18 §9 risk 19, cut IC14 row 1 — the per-endpoint marker ring ----
         // Keyed like `census`: one ring per source endpoint, written in the
         // same bundle as the marker it records, so `inventory.applied` is
@@ -427,6 +452,7 @@ impl GameModule for InventoryModule {
             applied,
             census,
             lot_census,
+            lot_tally,
             reservations: reservations.clone(),
             marker_ring,
             core_inputs,

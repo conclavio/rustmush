@@ -1246,19 +1246,23 @@ enum Edit {
 
 /// A good by id (case-insensitive) or by a case-insensitive prefix of exactly one
 /// label.
-fn match_good(goods: &GoodsTable, word: &str) -> Option<CanonicalId> {
-    let lower = word.to_lowercase();
-    if let Some(good) = goods
+/// **The goods a standing order trades** (doc 39 cut IN.1): every row but a part, which is an
+/// identified lot the market sells as itself (doc 39 §4.11), never a quantity of a pool.
+fn orderable(goods: &GoodsTable) -> impl Iterator<Item = &crate::definitions::GoodDef> {
+    goods
         .goods
         .iter()
-        .find(|good| good.id.as_str().eq_ignore_ascii_case(&lower))
+        .filter(|good| good.class != crate::definitions::GoodClass::Part)
+}
+
+fn match_good(goods: &GoodsTable, word: &str) -> Option<CanonicalId> {
+    let lower = word.to_lowercase();
+    if let Some(good) = orderable(goods).find(|good| good.id.as_str().eq_ignore_ascii_case(&lower))
     {
         return Some(good.id.clone());
     }
-    let mut prefixed = goods
-        .goods
-        .iter()
-        .filter(|good| good.label.to_lowercase().starts_with(&lower));
+    let mut prefixed =
+        orderable(goods).filter(|good| good.label.to_lowercase().starts_with(&lower));
     let only = prefixed.next()?;
     prefixed.next().is_none().then(|| only.id.clone())
 }
@@ -1312,7 +1316,7 @@ fn parse_trade(goods: &GoodsTable, sell: bool, args: &[&str]) -> Result<What, Cm
         return Err(usage());
     };
     let Some(good) = match_good(goods, good_word) else {
-        let ids: Vec<&str> = goods.goods.iter().map(|good| good.id.as_str()).collect();
+        let ids: Vec<&str> = orderable(goods).map(|good| good.id.as_str()).collect();
         return Err(CmdError::msg(
             UNKNOWN_GOOD.replace("{list}", &ids.join(", ")),
         ));

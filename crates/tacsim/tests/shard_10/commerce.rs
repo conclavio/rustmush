@@ -1437,11 +1437,13 @@ fn ic8_the_board_counts_down_to_sold_out() {
         assert!(line.starts_with(want), "{want}:\n{out}");
     }
     assert!(
-        lines[4].starts_with("  wanted, yard fittings, crated: 560.00cr/t, 5,400 t more"),
+        // Doc 39 cut IN.1: the fittings bid at 600 (lane v20's ladder).
+        lines[4].starts_with("  wanted, yard fittings, crated: 600.00cr/t, 5,400 t more"),
         "{out}"
     );
     // P11 and P08: the Yard's fittings ask.
-    let ask = "  yard fittings, crated: 400.00cr/t, 5,400 t left (Stickney Yards; signed";
+    // Doc 39 cut IN.1: 520 (lane v20's ladder).
+    let ask = "  yard fittings, crated: 520.00cr/t, 5,400 t left (Stickney Yards; signed";
     for local in ["room.p11_service", "room.p08_exchange"] {
         let room = station_room(&rig.tw, "stickney_port", local);
         let out = look_in(&mut rig.tw, pilot, room);

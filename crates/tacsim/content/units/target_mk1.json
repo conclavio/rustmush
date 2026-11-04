@@ -3,8 +3,13 @@
     "id": "tacsim.pack.target_mk1",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "f376460f54bef4c862ff30d152f515917fb135356d9e7523149f0cfadf012068",
-    "requires": []
+    "digest": "8aa6da109f142231781848344b9c59a840cb49dde49bd47014540d0e19a04179",
+    "requires": [
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ]
   },
   "entries": {
     "tacsim.unit.target_mk1": {
@@ -69,6 +74,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.light_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

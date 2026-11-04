@@ -237,10 +237,16 @@ the site has settled:
   own party's or a Friend's carrier, it is home. Loaded into anyone else's, it
   is in that carrier's custody with a salvage claim owed, never its title, and
   anyone still aboard is abandoned to extraction. The custodian files the claim
-  (`+salvage/claim <hull> go`), the title holder is told by IC mail, and either
-  side's evidence is read and contested at the registry (`+salvage/inspect`,
-  `+salvage/contest`). An uncontested claim passes the title when its window
-  runs out.
+  (`+salvage/claim <hull> go`), everyone who answers for the title (a company's
+  people, or its agent) is told by IC mail, and either side's evidence is read
+  and contested at the registry (`+salvage/inspect`,
+  `+salvage/contest <hull>=recovery|procedure|right`): an unlawful recovery on
+  your own record of it, a defect in the claim's procedure, or a right of yours
+  that bound the claimant. A title holder authorizes a recovery beforehand with
+  `+salvage/authorize <hull>=<who> go`, a landholder with
+  `+salvage/authorize <site>/<block>=<who> go`. Repairs a salvor makes are at
+  their own risk and are never repaid. An uncontested claim passes the title
+  when its window runs out.
 - **A carrier** is towed only by a tug of at least half its tonnage, which no
   rig is. A carrier whose drive is destroyed cannot lift. One whose hull falls
   is a wreck that never lifts and strands its crew.
@@ -282,10 +288,25 @@ The game keeps a record of every character a field touched: **where** they are a
 
 - **Where.** Aboard a unit, aboard a carrier (a pilot at a remote console on the
   carrier), **stranded** on the site (inside a hull that cannot bring them home
-  under its own power, or a wreck), or at a port.
+  under its own power, or a wreck), at a port, **held** aboard another party's
+  carrier (a captive), or **in processing** at a port after a captor hands you
+  over.
 - **How.** Fit, **injured** (a control section damaged around you) or
   **incapacitated** (a control section destroyed around you). A pilot at a remote
-  console aboard the carrier is always fit. There is no ejection or capture.
+  console aboard the carrier is always fit.
+
+**Held.** A captive is a passenger who cannot leave and cannot operate. Exits,
+boarding and leaving a hull or a rig, the bay, every unit, ship, field, bay and
+salvage act, the cockpit, `WILCO`, `NEGATIVE`, `@station`, `+focus`, the
+`+sortie` switches that seat, hire, launch or recover, `+sortie/chat` and
+`+sortie/extract` are refused with one line: "You are held aboard the Kestrel."
+Speech in the room, `look`, `+sortie/condition`, mail, pages and OOC channels
+work, and so do the reads (`+ship`, `+field`, `+tv`, `+sortie/operation`) and
+standing your own operation down (`+sortie/deactivate`, `+sortie/end`). A
+character in processing at a port may go anywhere in the port and nowhere else:
+"You are being processed at Ceres Freeport; about 1 IC h." What takes a
+character captive, hands them over and frees them is still being built; the
+record and the refusals are in place first.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field
@@ -318,7 +339,7 @@ stand in. While world time is frozen the clock does not run.
   +sortie/extract          stranded or incapacitated: ask a recovery service to
                            lift you to a safe port
   +sortie/condition        how you are and where, and the time left on an
-                           extraction or a treatment
+                           extraction, a treatment or a processing hour
 
 ## Leaving units behind
 

@@ -2451,7 +2451,9 @@ pub enum PoolReadError {
     Corrupt,
 }
 
-/// One pool's balance, read ONLY through this module's own typed-state capability
+/// One pool's balance — and, for a part, which never pools, the units held in lots there (doc 39
+/// cut IN.1: the hold weighs a part by its catalogue mass) — read ONLY through this module's own
+/// typed-state capability
 /// (`ctx.action_state(&inventory.pools, &key)`, which the module-scoped lens admits because of the
 /// delegation `server_modules_with_tacsim` declares; never through an owner-stamped transaction or
 /// the engine's store). An absent pool is 0; anything that cannot be read is an error, never 0
@@ -2474,7 +2476,31 @@ pub fn read_pool(
     };
     let key = mush_inventory::pool_key(endpoint, commodity)
         .map_err(|error| PoolReadError::Key(error.to_string()))?;
-    pool_value(ctx.action_state(&inventory.pools, &key))
+    let pooled = pool_value(ctx.action_state(&inventory.pools, &key))?;
+    if !is_part(commodity) {
+        return Ok(pooled);
+    }
+    tally_value(ctx.action_state(&inventory.lot_tally, &key))
+        .map(|held| pooled.saturating_add(held))
+}
+
+/// **Whether `commodity` is a part** (doc 39 cut IN.1): the goods table lets only a part's id
+/// carry the part prefix.
+#[must_use]
+pub fn is_part(commodity: &CanonicalId) -> bool {
+    commodity
+        .as_str()
+        .starts_with(crate::definitions::goods::PART_PREFIX)
+}
+
+/// The lens's answer as the units held in lots: absent is 0, a refusal is mapped, never 0.
+fn tally_value(
+    found: Result<Option<&u64>, ModuleActionStateReadError>,
+) -> Result<u64, PoolReadError> {
+    match found {
+        Ok(found) => Ok(found.copied().unwrap_or(0)),
+        Err(error) => Err(pool_read_error(&error)),
+    }
 }
 
 /// **One pool's availability** — its balance less every live hold, the figure
@@ -2540,7 +2566,12 @@ pub fn read_pool_in(
     };
     let key = mush_inventory::pool_key(endpoint, commodity)
         .map_err(|error| PoolReadError::Key(error.to_string()))?;
-    pool_value(hook.action_state(&inventory.pools, &key))
+    let pooled = pool_value(hook.action_state(&inventory.pools, &key))?;
+    if !is_part(commodity) {
+        return Ok(pooled);
+    }
+    tally_value(hook.action_state(&inventory.lot_tally, &key))
+        .map(|held| pooled.saturating_add(held))
 }
 
 /// The lens's answer as a balance: absent is 0, a scalar that does not fit

@@ -3,8 +3,13 @@
     "id": "tacsim.pack.corvette",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "9f75aa3469d4eec3c2c0b7ebe817dcc08845c4193eecce2399d2a236a70286db",
-    "requires": []
+    "digest": "94940951d934feaacc846a260bf8727bf7e593ae9f62061a230506ef15e4e873",
+    "requires": [
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ]
   },
   "entries": {
     "tacsim.unit.corvette": {
@@ -49,6 +54,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.capital_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "online"
