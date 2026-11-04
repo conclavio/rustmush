@@ -47,8 +47,7 @@ use super::bubble::{
 };
 use super::custody::{
     check_in_space_unit, check_out_space_unit, instantiate_stock_space_unit,
-    record_space_combat_to_black_box, register_derelict_salvage_in_book,
-    space_ship_from_tactical_unit,
+    record_space_combat_to_black_box, space_ship_from_tactical_unit,
 };
 use crate::arena::party::{Mark, PartyId, Relation};
 use crate::field_ops::{
@@ -908,6 +907,15 @@ pub struct SpaceBubbleBook {
     /// Linkdead grace-window and queued return-plan state keyed by carrier hull [`ObjId`] (`SF.R13`, `D-35-7`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub linkdead_hulls: BTreeMap<ObjId, SpaceLinkdeadState>,
+    /// Pinned tenure, title holder, and witnesses recorded at 6-DOF derelict collar clamp, keyed by derelict hull [`ObjId`] (`SF.R19`, `Q-36-46`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
+    pub derelict_pins: BTreeMap<ObjId, crate::surface::claim::TenurePin>,
+    /// Live salvage custody rows for towed space derelicts, keyed by derelict hull [`ObjId`] (`SF.R19`, `Q-36-46`).
+    #[serde(default, with = "super::bubble::vec_tuple_map")]
+    pub space_custody: BTreeMap<ObjId, crate::surface::salvage::SalvageCustody>,
+    /// Derelict hulls whose Freeport Registry salvage recovery bounty has already been paid (`SF.R19`, `35b` §5 #5).
+    #[serde(default)]
+    pub paid_salvage_bounties: std::collections::BTreeSet<ObjId>,
 }
 
 impl SpaceBubbleBook {
@@ -1082,7 +1090,7 @@ impl SpaceBubbleBook {
         Ok(order)
     }
 
-    fn alloc_recovery_op_id(&mut self) -> Option<RecoveryOpId> {
+    pub(crate) fn alloc_recovery_op_id(&mut self) -> Option<RecoveryOpId> {
         self.next_recovery_op_id = self.next_recovery_op_id.saturating_add(1);
         RecoveryOpId::new(self.next_recovery_op_id).ok()
     }
@@ -1616,7 +1624,86 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     step_free_flight_records(ctx, &now);
     super::mining::step_clusters_on_tick(ctx, now.clone());
     promote_due_interdictions(ctx, &now);
+    step_delivered_tows_at_port(ctx, &now);
+    crate::surface::claim::tick(ctx);
     persist_space_state(ctx);
+}
+
+/// Complete port delivery for any active tow on `tug_hull` once `tug_hull` is berthed at a port
+/// (`SF.R19`, `Q-36-46`, `D-35-12`).
+///
+/// Docks `derelict_hull` at the tug's port domain so `berth_of(w, derelict_hull)` resolves to
+/// `Berth::Docked` for bay repair (`+workshop`) and claim inspection (`+salvage/inspect`,
+/// `+salvage/contest`, `+salvage/report`), logs `BlackBoxFlightEntry::EpochClosedInBay`, and
+/// settles the one-time `1,200 cr` salvage recovery bounty on port delivery.
+pub fn deliver_active_tow_at_port(ctx: &mut Ctx<'_>, tug_hull: ObjId, now: &ClockStamp) {
+    let Some(tow) = ctx.w.module_state_mut::<SpaceBubbleBook>().and_then(|b| {
+        let tow = b.active_tows.remove(&tug_hull)?;
+        b.clamped_derelicts.remove(&tug_hull);
+        Some(tow)
+    }) else {
+        return;
+    };
+    let derelict_hull = tow.derelict_hull;
+    let _ = mush_tactics::custody::check_in(ctx, derelict_hull, None);
+    if let Some((port_domain, port_pose)) = mush_sim::pose_of(ctx.w, tug_hull) {
+        let _ = mush_sim::dock_carrier_at_destination(
+            ctx,
+            derelict_hull,
+            mush_sim::SpatialParent::Direct {
+                domain: port_domain,
+                pose: port_pose.clone(),
+            },
+            now,
+        );
+        let _ = mush_sim::place(ctx, derelict_hull, port_domain, port_pose);
+        let base_obj = resolve_nearest_port_base_obj(ctx.w, port_domain, tug_hull);
+        let op_id = ctx.w.module_state::<SpaceBubbleBook>().and_then(|b| {
+            b.space_custody
+                .get(&derelict_hull)
+                .and_then(|c| c.operation)
+        });
+        if let Some(salvage_book) = ctx.w.module_state_mut::<SalvageClaimBook>() {
+            let _ = salvage_book.append_black_box_entry(
+                derelict_hull,
+                crate::field_ops::BlackBoxFlightEntry::EpochClosedInBay {
+                    operation_id: op_id,
+                    base: base_obj,
+                    at_ic: now.at,
+                },
+            );
+        }
+    }
+    if let Some(pilot) = crate::port::coop::helm_holder(ctx.w, tug_hull).or_else(|| {
+        super::commands::all_aboard_crew_for_hull(ctx.w, tug_hull)
+            .into_iter()
+            .next()
+    }) {
+        let _ =
+            super::picket::settle_salvage_recovery_payout_from_registry(ctx, pilot, derelict_hull);
+    }
+}
+
+fn step_delivered_tows_at_port(ctx: &mut Ctx<'_>, now: &ClockStamp) {
+    let docked_tugs: Vec<ObjId> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            b.active_tows
+                .keys()
+                .copied()
+                .filter(|&tug_hull| {
+                    matches!(
+                        crate::port::ship::berth_of(ctx.w, tug_hull),
+                        crate::port::ship::Berth::Docked { .. }
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for tug_hull in docked_tugs {
+        deliver_active_tow_at_port(ctx, tug_hull, now);
+    }
 }
 
 fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
@@ -1679,14 +1766,23 @@ fn step_derelict_records(ctx: &mut Ctx<'_>) {
     }
 }
 
-fn real_now_secs(w: &World, _now: &ClockStamp) -> i64 {
-    let wall_s = w.now();
-    if wall_s > 0 { wall_s } else { 1 }
-}
-
-/// Resolve the real world owner or charterer [`ObjId`] of `hull` for salvage claim filing (`SF.R12`, `35b` §5 #7).
+/// Resolve the real world owner or charterer [`ObjId`] of `hull` for salvage claim filing (`SF.R12`, `SF.R19`, `35b` §5 #7).
 #[must_use]
 pub(crate) fn resolve_hull_prior_owner(w: &World, hull: ObjId, recoverer_hull: ObjId) -> ObjId {
+    if let Some(mush_org::PrincipalId::Object(holder)) = w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|s| s.snapshot().asset(hull))
+        .map(|a| a.title_owner.clone())
+        && holder != hull
+        && holder != recoverer_hull
+    {
+        return holder;
+    }
+    if let Some(pilot) = crate::port::coop::helm_holder(w, hull)
+        && pilot != recoverer_hull
+    {
+        return pilot;
+    }
     if let Some(leader) = crate::field::raiders::leader_of(w, hull)
         && leader != recoverer_hull
     {
@@ -1718,13 +1814,21 @@ pub(crate) fn resolve_hull_prior_owner(w: &World, hull: ObjId, recoverer_hull: O
     }
 }
 
-/// Resolve a real world base/port [`ObjId`] for salvage claim filing at `domain` (`SF.R12`, `35b` §5 #7).
+/// Resolve a real world base/port [`ObjId`] for salvage claim filing at `domain` (`SF.R12`, `SF.R19`, `35b` §5 #7).
 #[must_use]
 pub(crate) fn resolve_nearest_port_base_obj(
     w: &World,
     domain: DomainId,
     recoverer_hull: ObjId,
 ) -> ObjId {
+    for (_, map) in crate::port::voyage::lane_ports(w) {
+        if let Some(host_raw) = map.and_then(|m| m.host) {
+            let host = ObjId(host_raw);
+            if w.get(host).is_some() && host != recoverer_hull {
+                return host;
+            }
+        }
+    }
     if let Some(host) = w
         .module_state::<SpatialState>()
         .and_then(|s| s.domains.get(&domain))
@@ -1734,46 +1838,11 @@ pub(crate) fn resolve_nearest_port_base_obj(
     {
         return host;
     }
-    for (_, map) in crate::port::voyage::lane_ports(w) {
-        if let Some(host_raw) = map.and_then(|m| m.host) {
-            let host = ObjId(host_raw);
-            if w.get(host).is_some() && host != recoverer_hull {
-                return host;
-            }
-        }
-    }
     if mush_core::GOD != recoverer_hull {
         mush_core::GOD
     } else {
         ObjId(2)
     }
-}
-
-fn open_salvage_claim_for_derelict(
-    w: &mut World,
-    derelict_obj: ObjId,
-    recoverer_hull: ObjId,
-    prior_owner_obj: ObjId,
-    port_base_obj: ObjId,
-    at_ic: i64,
-    filed_at_real_s: i64,
-) -> Option<CustodyTitleStatus> {
-    let op_id = w
-        .module_state_mut::<SpaceBubbleBook>()?
-        .alloc_recovery_op_id()?;
-    let salvage_book = w.module_state_mut::<SalvageClaimBook>()?;
-    register_derelict_salvage_in_book(
-        salvage_book,
-        op_id,
-        derelict_obj,
-        recoverer_hull,
-        recoverer_hull,
-        prior_owner_obj,
-        port_base_obj,
-        at_ic,
-        filed_at_real_s,
-    )
-    .ok()
 }
 
 fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
@@ -1941,8 +2010,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
     }
 
-    let filed_real_s = real_now_secs(ctx.w, now);
-    for (primary_hull, domain, carrier_entries, npc_contacts) in to_finalize {
+    for (_primary_hull, domain, carrier_entries, npc_contacts) in to_finalize {
         for (ch, cship, _, _) in &carrier_entries {
             if let Some(ship) = cship {
                 let _ = check_in_space_unit(ctx, *ch, ship, now.at);
@@ -1956,33 +2024,25 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 life_support_remaining_s,
                 salvage_contest_window_s,
             } = iship.status
+                && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
             {
-                let prior_owner = resolve_hull_prior_owner(ctx.w, contact_hull, primary_hull);
-                let base_obj = resolve_nearest_port_base_obj(ctx.w, domain, primary_hull);
-                let title_status = open_salvage_claim_for_derelict(
-                    ctx.w,
+                let existing_status = book
+                    .derelicts
+                    .get(&contact_hull)
+                    .and_then(|d| d.salvage_title_status.clone());
+                book.derelicts.insert(
                     contact_hull,
-                    primary_hull,
-                    prior_owner,
-                    base_obj,
-                    now.at,
-                    filed_real_s,
+                    SpaceDerelictRecord {
+                        hull: contact_hull,
+                        domain,
+                        disabled_at_ic_s: now.at,
+                        epoch_open,
+                        life_support_remaining_s,
+                        salvage_contest_window_s,
+                        assessment,
+                        salvage_title_status: existing_status,
+                    },
                 );
-                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-                    book.derelicts.insert(
-                        contact_hull,
-                        SpaceDerelictRecord {
-                            hull: contact_hull,
-                            domain,
-                            disabled_at_ic_s: now.at,
-                            epoch_open,
-                            life_support_remaining_s,
-                            salvage_contest_window_s,
-                            assessment,
-                            salvage_title_status: title_status,
-                        },
-                    );
-                }
             }
         }
 
@@ -2043,8 +2103,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     break;
                 }
                 if let Some(entry) = active.carriers.remove(&ch) {
-                    let cship = active.bubble.ships.remove(&entry.ship_id);
-                    active.ship_hulls.remove(&entry.ship_id);
+                    let cship = active.bubble.ships.get(&entry.ship_id).cloned();
                     if let Some(picket) = active.picket.as_mut() {
                         picket.carrier_inspection_status.remove(&ch);
                         picket.carrier_inspection_outcome.remove(&ch);
@@ -2067,8 +2126,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
     }
 
-    let filed_real_s = real_now_secs(ctx.w, now);
-    for (hull, interdictor_hull, domain, carrier_ship) in partial_settled {
+    for (hull, _interdictor_hull, domain, carrier_ship) in partial_settled {
         if let Some(ship) = carrier_ship {
             let assessment = check_in_space_unit(ctx, hull, &ship, now.at).ok();
             let (epoch_open, life_support_remaining_s, salvage_contest_window_s) = match ship.status
@@ -2084,18 +2142,11 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 ),
                 HullStatus::Operational => (true, DERELICT_WINDOW_S, DERELICT_WINDOW_S),
             };
-            let prior_owner = resolve_hull_prior_owner(ctx.w, hull, interdictor_hull);
-            let base_obj = resolve_nearest_port_base_obj(ctx.w, domain, interdictor_hull);
-            let title_status = open_salvage_claim_for_derelict(
-                ctx.w,
-                hull,
-                interdictor_hull,
-                prior_owner,
-                base_obj,
-                now.at,
-                filed_real_s,
-            );
             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                let existing_status = book
+                    .derelicts
+                    .get(&hull)
+                    .and_then(|d| d.salvage_title_status.clone());
                 book.derelicts.insert(
                     hull,
                     SpaceDerelictRecord {
@@ -2106,7 +2157,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         life_support_remaining_s,
                         salvage_contest_window_s,
                         assessment,
-                        salvage_title_status: title_status,
+                        salvage_title_status: existing_status,
                     },
                 );
             }
@@ -2180,10 +2231,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         }
     }
 
-    for (interdictor_hull, domain, carrier_ships, npc_contacts) in settled {
-        let primary_hull = carrier_ships
-            .first()
-            .map_or(interdictor_hull, |(ch, _)| *ch);
+    for (_interdictor_hull, domain, carrier_ships, npc_contacts) in settled {
         for (npc_hull, npc_ship) in npc_contacts {
             let assessment = check_in_space_unit(ctx, npc_hull, &npc_ship, now.at).ok();
             if let HullStatus::DisabledDerelict {
@@ -2191,33 +2239,25 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 life_support_remaining_s,
                 salvage_contest_window_s,
             } = npc_ship.status
+                && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
             {
-                let prior_owner = resolve_hull_prior_owner(ctx.w, npc_hull, primary_hull);
-                let base_obj = resolve_nearest_port_base_obj(ctx.w, domain, primary_hull);
-                let title_status = open_salvage_claim_for_derelict(
-                    ctx.w,
+                let existing_status = book
+                    .derelicts
+                    .get(&npc_hull)
+                    .and_then(|d| d.salvage_title_status.clone());
+                book.derelicts.insert(
                     npc_hull,
-                    primary_hull,
-                    prior_owner,
-                    base_obj,
-                    now.at,
-                    filed_real_s,
+                    SpaceDerelictRecord {
+                        hull: npc_hull,
+                        domain,
+                        disabled_at_ic_s: now.at,
+                        epoch_open,
+                        life_support_remaining_s,
+                        salvage_contest_window_s,
+                        assessment,
+                        salvage_title_status: existing_status,
+                    },
                 );
-                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-                    book.derelicts.insert(
-                        npc_hull,
-                        SpaceDerelictRecord {
-                            hull: npc_hull,
-                            domain,
-                            disabled_at_ic_s: now.at,
-                            epoch_open,
-                            life_support_remaining_s,
-                            salvage_contest_window_s,
-                            assessment,
-                            salvage_title_status: title_status,
-                        },
-                    );
-                }
             }
         }
         for (hull, carrier_ship) in carrier_ships {
@@ -2238,18 +2278,11 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 ),
                 HullStatus::Operational => (true, DERELICT_WINDOW_S, DERELICT_WINDOW_S),
             };
-            let prior_owner = resolve_hull_prior_owner(ctx.w, hull, interdictor_hull);
-            let base_obj = resolve_nearest_port_base_obj(ctx.w, domain, interdictor_hull);
-            let title_status = open_salvage_claim_for_derelict(
-                ctx.w,
-                hull,
-                interdictor_hull,
-                prior_owner,
-                base_obj,
-                now.at,
-                filed_real_s,
-            );
             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                let existing_status = book
+                    .derelicts
+                    .get(&hull)
+                    .and_then(|d| d.salvage_title_status.clone());
                 book.derelicts.insert(
                     hull,
                     SpaceDerelictRecord {
@@ -2260,7 +2293,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         life_support_remaining_s,
                         salvage_contest_window_s,
                         assessment,
-                        salvage_title_status: title_status,
+                        salvage_title_status: existing_status,
                     },
                 );
             }
@@ -3119,12 +3152,25 @@ fn build_interdiction_bubble(
         (raider_hull, raider_ship_id, Some(picket_state), None)
     } else {
         let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
+        let interdictor_commander = ctx
+            .w
+            .resolve_player("Interdictor Picket Commander")
+            .or_else(|| {
+                ctx.w
+                    .create(
+                        mush_core::ObjKind::Npc,
+                        "Interdictor Picket Commander",
+                        mush_core::GOD,
+                        None,
+                    )
+                    .ok()
+            })?;
         let interdictor_hull = ctx
             .w
             .create(
                 mush_core::ObjKind::Thing,
                 "Interdictor Picket",
-                mush_core::GOD,
+                interdictor_commander,
                 None,
             )
             .ok()?;
@@ -3134,6 +3180,7 @@ fn build_interdiction_bubble(
             crate::definitions::content::CORVETTE,
         )
         .ok()?;
+        super::custody::ensure_space_hull_titled(ctx, interdictor_hull, interdictor_commander);
         let interdictor_seal = super::picket::seal_space_unit_in_world(
             ctx,
             interdictor_hull,

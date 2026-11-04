@@ -496,3 +496,27 @@ matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`
 **Test.** `sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settlement_and_domain_stand_down`.
 
 **Divergences.** None from the `35c` §9 `SF.R18` specification.
+
+## SF.R19 — one salvage path
+
+- Unified space derelict salvage with `GC.6`'s economy-contract salvage claim path (`mush_economy::file_salvage_claim`,
+  `mush_economy::award_salvage_title`, `mush_economy::close_salvage_claim`, and `SalvageCustody`) (`Q-36-46`, `35c` §4 `SF.R19`).
+- Removed auto-filing of salvage claims on disablement in `clear_resolved_bubbles` and `settle_disabled_carrier_bubbles`
+  (`crates/tacsim/src/space/tick.rs`): disablement records the open-epoch `SpaceDerelictRecord` with `salvage_title_status: None`
+  until a tug clamps (`+helm/dock`) and attaches a tow line (`+helm/tow`).
+- Added `real_now_secs(w)` (`w.now().max(1)`, never dividing by `1_000` or `now.at / 24`), `salvage_claim_window_secs(w)`
+  (`store.config().recovery.claim_window_s`), and `ensure_space_hull_titled` (`crates/tacsim/src/space/custody.rs`), and
+  issued `EconomyStore` titles on spawned NPC picket/raider/interdictor hulls (`picket.rs`, `tick.rs`).
+- Enforced single-claimant collar clamp and tow gates across `validate_docking_initiation_gates`, `helm_dock`, and
+  `helm_tow` (`crates/tacsim/src/space/commands.rs`) so two ships racing for the same derelict cannot double-clamp or
+  double-tow it, and added `+helm/tow release` to release a tow line and collar clamp.
+- Moved the `1,200.00 cr` Freeport Registry salvage recovery bounty settlement from deep-space tow attach to port
+  delivery (`deliver_active_tow_at_port` and `step_delivered_tows_at_port` in `tick.rs`) with idempotency tracking in
+  `SpaceBubbleBook::paid_salvage_bounties` so releasing and re-towing never pays the bounty twice (`35c` §4 #11).
+- Wired `SpaceBubbleBook::space_custody` into `surface::salvage::custody_of` and `surface::claim` (`+salvage`,
+  `+salvage/inspect`, `+salvage/report`, `+salvage/contest`, and `claim::tick`) and cleared `SpaceBubbleBook::derelicts`
+  when a salvaged hull is repaired at a port workshop (`crates/tacsim/src/port/bay_work/mod.rs`).
+
+**Test.** `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy`.
+
+**Divergences.** None from the `35c` §9 `SF.R19` specification.

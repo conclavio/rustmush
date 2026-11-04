@@ -4346,6 +4346,20 @@ fn validate_docking_initiation_gates(
             let book = w
                 .module_state::<SpaceBubbleBook>()
                 .ok_or_else(|| CmdError::msg("Space state is not registered."))?;
+            if book
+                .clamped_derelicts
+                .iter()
+                .any(|(&tug, &dh)| tug != hull && dh == *derelict_hull)
+                || book
+                    .active_tows
+                    .iter()
+                    .any(|(&tug, t)| tug != hull && t.derelict_hull == *derelict_hull)
+            {
+                return Err(CmdError::msg(format!(
+                    "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
+                    derelict_hull.0
+                )));
+            }
             let active = book.active_for_hull(hull).ok_or_else(|| {
                 CmdError::msg(format!(
                     "Ship is not in the spatial frame of derelict `{derelict_name}` (#{}).",
@@ -4823,6 +4837,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         }
                         mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
                             .map_err(CmdError::msg)?;
+                        super::tick::deliver_active_tow_at_port(ctx, hull, &now);
                         let line = format!(
                             "[DOCKING] Hard dock and magnetic collar seal confirmed at {port_name} on frame {} (dz={} mm, vz={} mm/s, spent {} kg RCS propellant; berth transitioned to `Berth::Docked`).",
                             report.frames_replayed,
@@ -4837,8 +4852,45 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         derelict_hull,
                         ref derelict_name,
                     } => {
+                        if ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|book| {
+                            book.clamped_derelicts
+                                .iter()
+                                .any(|(&tug, &dh)| tug != hull && dh == derelict_hull)
+                                || book.active_tows.iter().any(|(&tug, t)| {
+                                    tug != hull && t.derelict_hull == derelict_hull
+                                })
+                        }) {
+                            return Err(CmdError::msg(format!(
+                                "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
+                                derelict_hull.0
+                            )));
+                        }
+                        let mut prior_owner =
+                            super::tick::resolve_hull_prior_owner(ctx.w, derelict_hull, hull);
+                        if prior_owner == ctx.actor {
+                            prior_owner = if mush_core::GOD != ctx.actor {
+                                mush_core::GOD
+                            } else {
+                                ObjId(2)
+                            };
+                        }
+                        super::custody::ensure_space_hull_titled(ctx, derelict_hull, prior_owner);
+                        let pin = crate::surface::claim::TenurePin {
+                            casualty: derelict_hull,
+                            tug: hull,
+                            recoverer: ctx.actor,
+                            title: Some(mush_org::PrincipalId::Object(prior_owner)),
+                            answering: Some(prior_owner),
+                            answerers: vec![prior_owner],
+                            owner_grant: None,
+                            landholder_authorized: false,
+                            tenure: crate::field_ops::GroundTenure::Unclaimed,
+                            witnesses: Vec::new(),
+                            pinned_ic: now.at,
+                        };
                         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                             book.clamped_derelicts.insert(hull, derelict_hull);
+                            book.derelict_pins.insert(derelict_hull, pin);
                         }
                         unpause_hull_after_docking(ctx, hull, &now);
                         let line = format!(
@@ -4983,6 +5035,26 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_owned();
     let now = ctx.w.world_ic_now();
 
+    if ctx.switches.has("release") || raw.eq_ignore_ascii_case("release") {
+        let released = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .and_then(|b| {
+                let tow = b.active_tows.remove(&hull).map(|t| t.derelict_hull);
+                let clamp = b.clamped_derelicts.remove(&hull);
+                tow.or(clamp)
+            })
+            .ok_or_else(|| CmdError::msg("No active tow line or collar clamp to release."))?;
+        let line = format!(
+            "[SALVAGE] Tow line and collar clamp released from derelict #{}.",
+            released.0
+        );
+        crate::port::voyage::narrate_hull(ctx, hull, &line);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+        push_space_panels(ctx, hull);
+        return Ok(());
+    }
+
     let clamped_derelict = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -4992,6 +5064,17 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "Must complete a 6-DOF hard-dock clamp (`+helm/dock <derelict>` then `+helm/dock tape ...`) before attaching a tow line.",
             )
         })?;
+
+    if ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.active_tows
+            .iter()
+            .any(|(&tug, t)| tug != hull && t.derelict_hull == clamped_derelict)
+    }) {
+        return Err(CmdError::msg(format!(
+            "Derelict #{} is already under tow by another ship.",
+            clamped_derelict.0
+        )));
+    }
 
     if !raw.is_empty()
         && let Some(parsed_id) = raw
@@ -5017,22 +5100,52 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
 
-    let filed_real_s = if ctx.w.now() > 0 {
-        (ctx.w.now() / 1_000).max(1)
-    } else {
-        (now.at / 24).max(1)
-    };
-    let contest_expires_real_s =
-        filed_real_s.saturating_add(i64::from(super::bubble::DERELICT_WINDOW_S));
+    let filed_real_s = super::custody::real_now_secs(ctx.w);
+    let window_s = super::custody::salvage_claim_window_secs(ctx.w);
+    let contest_expires_real_s = filed_real_s.saturating_add(window_s);
 
-    // Ensure the derelict is registered in `SalvageClaimBook` and `SpaceBubbleBook::derelicts` (`D-35-12`, `SF.R12`):
-    let already_claimed = ctx
+    // Ensure the derelict is registered through the unified GC.6 / `mush_economy` salvage path
+    // (`SF.R19`, `Q-36-46`, `D-35-12`, `SF.R12`):
+    let existing_expires = ctx
         .w
         .module_state::<SpaceBubbleBook>()
-        .and_then(|b| b.derelicts.get(&clamped_derelict))
-        .is_some_and(|d| d.salvage_title_status.is_some());
-    if !already_claimed {
-        let (domain, op_id) = {
+        .and_then(|b| b.space_custody.get(&clamped_derelict))
+        .and_then(|c| c.file.as_ref().map(|f| f.deadline_real_s));
+    let contest_expires_real_s = if let Some(exp) = existing_expires {
+        exp
+    } else {
+        let mut prior_owner = super::tick::resolve_hull_prior_owner(ctx.w, clamped_derelict, hull);
+        if prior_owner == ctx.actor {
+            prior_owner = if mush_core::GOD != ctx.actor {
+                mush_core::GOD
+            } else {
+                ObjId(2)
+            };
+        }
+        super::custody::ensure_space_hull_titled(ctx, clamped_derelict, prior_owner);
+        let remainder = crate::port::credit::own_account(ctx.w, ctx.actor)
+            .map(|a| a.id)
+            .ok_or_else(|| CmdError::msg(crate::port::claims::CLAIMS_FAILED))?;
+        let label = crate::port::coop::name_of(ctx.w, clamped_derelict);
+        let audience = if prior_owner != ctx.actor {
+            vec![mush_org::PrincipalId::Object(prior_owner)]
+        } else {
+            Vec::new()
+        };
+        let contract = mush_economy::file_salvage_claim(
+            ctx,
+            mush_economy::SalvageClaimSpec {
+                name: smol_str::SmolStr::new(format!("Salvage claim: the {label}")),
+                claimant: ctx.actor,
+                hull: clamped_derelict,
+                audience,
+                window_secs: window_s,
+                remainder_to: remainder,
+            },
+        )
+        .map_err(|e| CmdError::msg(format!("Failed to file salvage claim with Registry: {e}")))?;
+
+        let (domain, op_id, pin) = {
             let book = ctx
                 .w
                 .module_state_mut::<SpaceBubbleBook>()
@@ -5042,34 +5155,86 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .map(|a| a.domain)
                 .or_else(|| book.derelicts.get(&clamped_derelict).map(|d| d.domain))
                 .unwrap_or(DomainId(1));
-            book.next_recovery_op_id = book.next_recovery_op_id.saturating_add(1);
-            let op = crate::field_ops::RecoveryOpId::new(book.next_recovery_op_id)
-                .map_err(|e| CmdError::msg(e.to_string()))?;
-            (dom, op)
+            let op = book
+                .alloc_recovery_op_id()
+                .ok_or_else(|| CmdError::msg("Failed to allocate recovery operation id."))?;
+            let pin = book
+                .derelict_pins
+                .get(&clamped_derelict)
+                .cloned()
+                .unwrap_or(crate::surface::claim::TenurePin {
+                    casualty: clamped_derelict,
+                    tug: hull,
+                    recoverer: ctx.actor,
+                    title: Some(mush_org::PrincipalId::Object(prior_owner)),
+                    answering: Some(prior_owner),
+                    answerers: vec![prior_owner],
+                    owner_grant: None,
+                    landholder_authorized: false,
+                    tenure: crate::field_ops::GroundTenure::Unclaimed,
+                    witnesses: Vec::new(),
+                    pinned_ic: now.at,
+                });
+            (dom, op, pin)
         };
-        let prior_owner = super::tick::resolve_hull_prior_owner(ctx.w, clamped_derelict, hull);
         let base_obj = super::tick::resolve_nearest_port_base_obj(ctx.w, domain, hull);
-        let title_status = ctx
+        let (title_status, salvage_claim_opt) = ctx
             .w
             .module_state_mut::<crate::field_ops::SalvageClaimBook>()
             .and_then(|sb| {
-                super::custody::register_derelict_salvage_in_book(
+                let status = super::custody::register_derelict_salvage_in_book(
                     sb,
                     op_id,
                     clamped_derelict,
                     hull,
-                    hull,
+                    ctx.actor,
                     prior_owner,
                     base_obj,
                     now.at,
                     filed_real_s,
                 )
-                .ok()
-            });
+                .ok()?;
+                let claim = match &status {
+                    crate::field_ops::CustodyTitleStatus::PendingSalvageClaim {
+                        claim_id, ..
+                    } => sb.claim(*claim_id).cloned(),
+                    crate::field_ops::CustodyTitleStatus::ResolvedTitle { .. } => None,
+                };
+                Some((status, claim))
+            })
+            .ok_or_else(|| {
+                CmdError::msg("Failed to register salvage claim in SalvageClaimBook.")
+            })?;
+        let salvage_claim = salvage_claim_opt.map(|mut c| {
+            c.deadline_real_s = contest_expires_real_s;
+            c
+        });
+        let told = if prior_owner != ctx.actor {
+            vec![prior_owner]
+        } else {
+            Vec::new()
+        };
+        let custody_row = crate::surface::salvage::SalvageCustody {
+            hull: clamped_derelict,
+            holder: ctx.actor,
+            carrier: hull,
+            recovered_by: hull,
+            recovered_ic: now.at,
+            left_ic: Some(now.at),
+            claim: crate::surface::salvage::ClaimSeam::Filed {
+                contract: contract.0,
+            },
+            operation: Some(op_id),
+            pin: Some(pin),
+            file: salvage_claim.map(Box::new),
+            told: told.clone(),
+            at_risk: Vec::new(),
+            evidence: Vec::new(),
+        };
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-            book.derelicts
-                .entry(clamped_derelict)
-                .or_insert(super::tick::SpaceDerelictRecord {
+            book.space_custody.insert(clamped_derelict, custody_row);
+            let entry = book.derelicts.entry(clamped_derelict).or_insert(
+                super::tick::SpaceDerelictRecord {
                     hull: clamped_derelict,
                     domain,
                     disabled_at_ic_s: now.at,
@@ -5077,16 +5242,27 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     life_support_remaining_s: super::bubble::DERELICT_WINDOW_S,
                     salvage_contest_window_s: super::bubble::DERELICT_WINDOW_S,
                     assessment: None,
-                    salvage_title_status: title_status,
-                });
+                    salvage_title_status: Some(title_status.clone()),
+                },
+            );
+            entry.salvage_title_status = Some(title_status);
         }
-    }
+        for who in told {
+            ctx.out.sys_to_actor(
+                who,
+                "tacsim.salvage",
+                format!(
+                    "{} has filed a salvage claim on the {label} (#{}) at the Freeport Registry (contract #{}). +salvage/contest #{} go contests it.",
+                    crate::port::coop::name_of(ctx.w, ctx.actor),
+                    clamped_derelict.0,
+                    contract.0,
+                    clamped_derelict.0
+                ),
+            );
+        }
+        contest_expires_real_s
+    };
 
-    let already_towed = ctx
-        .w
-        .module_state::<SpaceBubbleBook>()
-        .and_then(|b| b.active_tows.get(&hull))
-        .is_some_and(|t| t.derelict_hull == clamped_derelict);
     let tow_record = super::docking::SalvageTowRecord {
         tug_hull: hull,
         derelict_hull: clamped_derelict,
@@ -5100,13 +5276,6 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             active.set_approaching_derelict_for(hull, false);
             active.set_holding_for_salvage_for(hull, false);
         }
-    }
-    if !already_towed {
-        let _ = super::picket::settle_salvage_recovery_payout_from_registry(
-            ctx,
-            ctx.actor,
-            clamped_derelict,
-        );
     }
 
     let line = format!(

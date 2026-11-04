@@ -164,6 +164,13 @@ pub fn custody_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<SalvageCustody> {
     if crate::port::tv::written_off(ctx.w, hull) {
         return None;
     }
+    if let Some(space_row) = ctx
+        .w
+        .module_state::<crate::space::tick::SpaceBubbleBook>()
+        .and_then(|b| b.space_custody.get(&hull).cloned())
+    {
+        return Some(space_row);
+    }
     let handles = ctx.w.module_state::<crate::port::families::PortHandles>()?;
     crate::surface::chart::lane_sites(ctx.w)
         .into_iter()

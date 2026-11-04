@@ -962,3 +962,42 @@ pub fn register_derelict_salvage_in_book(
         .resolve_hull_recovery_custody(operation_id, filed_at_real_s)
         .map_err(FieldOpsError::Salvage)
 }
+
+/// Real UTC seconds now (`w.now()`), clamped to at least `1` (`SF.R19`, `35b` §6.8 #14).
+#[must_use]
+pub fn real_now_secs(w: &mush_core::World) -> i64 {
+    w.now().max(1)
+}
+
+/// Configured salvage contest window in real seconds (`[tacsim.recovery].claim_window_s`),
+/// clamped to `1..=MAX_SALVAGE_CLAIM_WINDOW_SECS` (`SF.R19`, `35b` §6.8 #15).
+#[must_use]
+pub fn salvage_claim_window_secs(w: &mush_core::World) -> i64 {
+    w.module_state::<crate::store::TacsimStore>()
+        .map_or(mush_economy::SALVAGE_CLAIM_WINDOW_SECS, |store| {
+            store.config().recovery.claim_window_s
+        })
+        .clamp(1, mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS)
+}
+
+/// Ensure `hull` carries an active asset title in [`mush_economy::EconomyStore`] owned by
+/// `owner` (`SF.R19`, `Q-36-46`).
+pub fn ensure_space_hull_titled(ctx: &mut Ctx<'_>, hull: ObjId, owner: ObjId) {
+    let titled = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|store| store.snapshot().asset(hull).is_some());
+    if titled {
+        return;
+    }
+    if let Some(issuer) = mush_org::SystemPrincipalId::new(crate::port::hull::REGISTRY_ISSUER) {
+        let _ = mush_economy::issue_title(
+            ctx,
+            hull,
+            mush_org::PrincipalId::Object(owner),
+            None,
+            issuer,
+            None,
+        );
+    }
+}

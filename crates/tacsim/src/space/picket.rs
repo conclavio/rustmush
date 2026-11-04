@@ -1860,8 +1860,18 @@ pub const SALVAGE_RECOVERY_CONTRACT_NAME: &str = "Freeport Registry Derelict Sal
 pub fn settle_salvage_recovery_payout_from_registry(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
-    _derelict_hull: ObjId,
+    derelict_hull: ObjId,
 ) -> Result<(ContractId, i64), String> {
+    if ctx
+        .w
+        .module_state::<super::tick::SpaceBubbleBook>()
+        .is_some_and(|b| b.paid_salvage_bounties.contains(&derelict_hull))
+    {
+        return Err(format!(
+            "salvage recovery bounty already settled for derelict #{}",
+            derelict_hull.0
+        ));
+    }
     let bounty_minor = minor_of(
         u64::try_from(SALVAGE_RECOVERY_BOUNTY_MAJOR).unwrap_or(1_200),
         credit_scale(ctx.w),
@@ -1950,6 +1960,9 @@ pub fn settle_salvage_recovery_payout_from_registry(
     }
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
+    if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
+        book.paid_salvage_bounties.insert(derelict_hull);
+    }
     Ok((contract_id, bounty_minor))
 }
 
@@ -1967,12 +1980,26 @@ pub fn spawn_kirkwood_picket_ships_in_world(
     let corvette_ship_id = format!("customs.{}.{}", domain.0, leg_cursor);
     let raider_ship_id = format!("raider.{}.{}", domain.0, leg_cursor);
 
+    let corvette_commander = ctx
+        .w
+        .resolve_player("Customs Picket Commander")
+        .or_else(|| {
+            ctx.w
+                .create(
+                    mush_core::ObjKind::Npc,
+                    "Customs Picket Commander",
+                    mush_core::GOD,
+                    None,
+                )
+                .ok()
+        })
+        .unwrap_or(mush_core::GOD);
     let corvette_hull = ctx
         .w
         .create(
             mush_core::ObjKind::Thing,
             "Republic Customs Corvette",
-            mush_core::GOD,
+            corvette_commander,
             None,
         )
         .ok()?;
@@ -1982,6 +2009,7 @@ pub fn spawn_kirkwood_picket_ships_in_world(
         crate::definitions::content::CORVETTE,
     )
     .ok()?;
+    super::custody::ensure_space_hull_titled(ctx, corvette_hull, corvette_commander);
     let mut corvette = super::custody::check_out_space_unit(
         ctx,
         corvette_hull,
@@ -2037,6 +2065,7 @@ pub fn spawn_kirkwood_picket_ships_in_world(
             mush_core::GOD,
         ),
     );
+    super::custody::ensure_space_hull_titled(ctx, raider_hull, leader);
     let mut raider = super::custody::check_out_space_unit(
         ctx,
         raider_hull,
