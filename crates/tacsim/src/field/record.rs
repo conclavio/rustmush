@@ -165,9 +165,10 @@ pub struct FieldLive {
     pub field: FieldId,
     /// The IC instant it opened.
     pub opened_ic: i64,
-    /// **How many times its task has been opened** (1 at promotion, one more per resume): each
-    /// opening writes its black box to a log of its own, `field.<site>.<ordinal>.<segment>`, so
-    /// a resumed task never needs a restored ledger tail.
+    /// **The black box's segment** (1 at promotion, one more per resume and per live roll, doc 40
+    /// cut FR.4): each segment writes its chunks to a log of its own,
+    /// `field.<site>.<ordinal>.<segment>`, so a resumed task never needs a restored ledger tail
+    /// and a long field's archive is its segments' logs (`crate::field::segment`).
     pub segment: u32,
     /// The arena millisecond of the last snapshot the world holds (0 before the first).
     pub at_ms: i64,

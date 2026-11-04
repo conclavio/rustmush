@@ -70,6 +70,7 @@ pub(crate) mod parties;
 pub mod provider;
 pub mod raiders;
 pub mod record;
+pub(crate) mod segment;
 pub mod standing;
 pub(crate) mod testimony;
 

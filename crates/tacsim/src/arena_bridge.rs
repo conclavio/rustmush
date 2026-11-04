@@ -3699,6 +3699,8 @@ fn note_cards_from_tape(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEv
 /// anyway, because a black box that lost a page is not a reason to wedge the
 /// match that is still running.
 fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
+    // Doc 40 cut FR.4: a chunk that opens a segment moves the field onto that segment's log.
+    crate::field::segment::note_chunk(ctx, match_id, bytes);
     // Doc 32 cut CF.2: a field's black box is its own log, never `log:match.<id>`.
     let log_id =
         crate::field::log_of_task(ctx.w, match_id).unwrap_or_else(|| match_log_id(match_id));

@@ -2546,6 +2546,11 @@ impl Task {
         ) {
             return SnapshotTaken::NotDue;
         }
+        // Doc 40 cut FR.4 (Q-40-21): an IC field rolls its black box at the snapshot cadence,
+        // so this period's snapshot is the new segment's head. An OOC match never rolls.
+        if self.terms.is_some() && self.arena.ledger.segment_full() {
+            self.roll_segment();
+        }
         self.checkpoint_tape();
         match Snapshot::encode(&self.arena) {
             Ok(snapshot) => {
@@ -2562,6 +2567,45 @@ impl Task {
                 );
                 SnapshotTaken::Failed
             }
+        }
+    }
+
+    /// **The live segment roll** (doc 40 cut FR.4; Q-38-28, Q-40-21): the open chunk closes and
+    /// every closed chunk is queued, so the last segment's bytes all ride ahead of the line;
+    /// then [`crate::arena::ledger::Ledger::roll_segment`] opens the next segment with its
+    /// `segment` line, closed and queued as a chunk of its own. The field host reads that line as
+    /// the chunk arrives and files it, and every chunk after it, under the new segment's log
+    /// (`crate::field::segment`), so a chunk is never in two segments; and the period's snapshot,
+    /// queued behind it, is the new segment's head with nothing open, written beside a live
+    /// record that already names the new segment.
+    fn roll_segment(&mut self) {
+        self.queue_closed();
+        let from = self.arena.ledger.segment();
+        let bytes = self.arena.ledger.bytes_total();
+        let hash = crate::arena::hash::state_hash(&self.arena);
+        let segment = from.saturating_add(1);
+        if let Err(full) = self
+            .arena
+            .ledger
+            .roll_segment(segment, self.arena.now_ms, hash)
+        {
+            tracing::error!(match_id = %self.match_id, %full, "a field's segment line was not recorded");
+        }
+        self.queue_closed();
+        tracing::info!(
+            match_id = %self.match_id,
+            arena_ms = self.arena.now_ms,
+            segment,
+            bytes,
+            "tacsim: an IC field's black box rolled to a new segment"
+        );
+    }
+
+    /// Close the open chunk and queue every closed one (doc 40 cut FR.4's roll).
+    fn queue_closed(&mut self) {
+        self.arena.ledger.flush();
+        for chunk in self.arena.ledger.take_chunks() {
+            self.queue_chunk(chunk);
         }
     }
 
