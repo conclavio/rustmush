@@ -935,6 +935,21 @@ jobs:
           npm run build
       - name: Exercise the release embed guard and thin LTO with native TLS
         run: cargo build --locked --release -p mushd -p mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls
+      # Doc 43 cut TS.17 (D-43-13): run what was just built, as a box would,
+      # and exit: --check-config on a rendered instance, the all-in-one's
+      # embedded SPA over TLS with a self-signed certificate made in the job
+      # (never committed), and the split pair attached with one SSH session
+      # across it. Until this step no release binary had ever started in CI.
+      - name: Release-runtime smoke
+        env:
+          RELEASE_SMOKE_DIR: ${{ runner.temp }}/release-smoke
+        run: scripts/release-smoke.sh target/release
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-smoke-logs
+          path: ${{ runner.temp }}/release-smoke/*.log
+          if-no-files-found: ignore
 
   # WS25-S6: a new instance is PROVISIONED by rendering
   # `deploy/instance/mushd.toml.tmpl` against an `instance.env`, and until this
