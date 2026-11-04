@@ -390,5 +390,47 @@ the reset, the chain, no `segment` key before a roll and a round trip after) and
 
 **§4a's OOC pins.** None moves, against FR.0's inventory above: OOC tasks never roll, and a ledger that has not
 rolled encodes no new key, so `SNAPSHOT_FORMAT` 19 and `FIELD_LIVE_FORMAT` 1 stand. The new `EventKind` variant
-is written only by a roll. The draw-label set is untouched. The pin rows were re-run on this branch: see
-"Pins run" below.
+is written only by a roll. The draw-label set is untouched. The pin rows were re-run on this branch (below).
+
+### Pins run (§4a, rule #13)
+
+- **The pin rows**: gate sweep [41761095972](https://github.com/conclavio/rustmush/actions/runs/41761095972) on
+  conclav.dev, head `dda59126`, with FR.0 run A's filter widened to run C's rows (`arena::`, `arena::rng::`,
+  `match_lifecycle::m3_start_writes…`) and `field_fr4::`. **1,617 tests, 0 failed, 2,275 s.** Each §4a row's test
+  passed:
+  - `twin::m4_5_the_stock_pool…`, `motor::m1a1_the_shipped_duel_hashes_as_before` and `motor::gc1b_…`;
+  - `reflex::m3_the_j_fields…`, `minds::m2_the_memory_codec…`;
+  - `the_draw_label_set_is_pinned`, `adding_a_label_shifts_no_existing_draw`;
+  - `content::the_pinned_digests_are_the_shipped_ones`, `m2_the_standard_doctrine_source_is_pinned` and
+    `m5rules_default_seal_identities_are_pinned`;
+  - the 16 `af1_` snapshot tests and `field::record::`;
+  - the field gates: `field_gc2::` (2), `field_gc4::` (6), `field_gc10::` (2) and `field_story::` (4).
+
+  `M2_CROSS_PLATFORM_PINS` row 0–3 is the `tacsim-minds` cell's by-name step on the PR run (green).
+- **The harness kind**: [41761096467](https://github.com/conclavio/rustmush/actions/runs/41761096467) on
+  conclav.io, 4 of 8 failed. Three are timing lenses:
+  - `arena_minds`: wake p99 23.3 ms against 20 ms, window p99 45.3 ms against 32 ms;
+  - `arena_step`: window p99 33.9 ms against 22 ms;
+  - `arena_authored_reach`: wake p99 26.4 ms against 20 ms.
+
+  The fourth is `lance` W8 (span 3 where 2), which TS.21's own harness runs on conclav.dev (41756575489,
+  41760419368) also fail. Every variant reads `sound=true` and every snapshot `hash_ok=true`. No harness path rolls
+  (an OOC task has no `FieldTerms`).
+  **Main fails the same four on the same box**, with the same assertions and similar figures:
+  [41763746775](https://github.com/conclavio/rustmush/actions/runs/41763746775), `main` at `ea602323`, `authored_reach`
+  wake p99 22.3 ms, `arena_step` window p99 33.7 ms, the minds verdict 0 of 4, and `lance` W8. So the kind's red
+  is the box's timing and the known W8 read, both TS.21's to re-bless (doc 43 amendment 6), not this cut's.
+
+### Cell minutes (rule #14)
+
+**+1.6 summed minutes on `tacsim-integration-10`**: the two stories, 45.0 s (Ahuna) + 51.9 s (Urvara), on the PR's
+CI run [41761064794](https://github.com/conclavio/rustmush/actions/runs/41761064794) (head `dda59126`). That run is
+set against main's [41754225803](https://github.com/conclavio/rustmush/actions/runs/41754225803) at `c0d123a9`;
+main's two merges after it, up to this branch's base `a2ef4075`, were docs only.
+
+- **New tests**: the two stories, plus two unit tests in `tacsim-lib` (0.0 s each).
+- **Test counts**: no other cell's count moved.
+- **The cell's sum** read 50.2 → 28.3 min and its Test step 16 m 25 s → 9 m 42 s: the host, not the cut.
+- **Every other cell** moved both ways by up to 26 min with identical tests (`tacsim-integration-1` −25.9,
+  `rest-server` +16.4, `tacsim-lib` +17.0); the total read 637.1 → 604.0.
+- **Shards**: no cell's wall is set by this cut, and nothing moves shard.
