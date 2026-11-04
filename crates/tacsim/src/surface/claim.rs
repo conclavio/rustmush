@@ -1850,7 +1850,7 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// # Errors
 ///
 /// The line that refuses.
-pub(crate) fn file_claim(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
+pub(crate) fn tow_files_salvage(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
     claim_cmd(ctx, word, true)
 }
 

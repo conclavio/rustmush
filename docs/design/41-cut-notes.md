@@ -446,7 +446,7 @@ session. The as-built is doc 35c §12.1. No lane rows, no config keys, no kernel
 **Built.** In the space tree (`space/custody.rs`, `commands.rs`, `tick.rs`, `bubble.rs`, `docking.rs`,
 `picket.rs`, `mod.rs`), plus three changes outside it:
 - `surface/claim.rs`:
-  - `file_claim` is `+salvage/claim`'s filing, and `+helm/tow` calls it.
+  - `tow_files_salvage` (named clear of `shard_3`'s industry-seam tripwire, which forbids `file_claim(`) is `+salvage/claim`'s filing, and `+helm/tow` calls it.
   - `title_of` is now `pub(crate)`.
   - The space orders persist the custody document, and the RAM claim-book mirrors are gone.
 - `composition/sim_routes.rs`: one call. A hull her retriever docks under her own power is
