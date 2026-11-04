@@ -82,3 +82,49 @@ were docs-only. Summed minutes, main → PR:
 | **All cells** | | 637.1 | 693.0 | |
 
 No cell's wall is set by this cut, and no story moves to another shard.
+
+## TS.8 (2026-11-04) — one scanner, one strip chain
+
+§7's TS.8 row and §10.4, as PR #393. Test-only: no crate's production code changes.
+
+**Built.**
+- **`mush-contract-tests/src/scan.rs`** is the one copy of `repo_root`, the walker (`files`, `rust_files`,
+  `crate_dirs`, `relative`), the comment-and-literal stripper, the `#[cfg(test)]` blanker and
+  `file_is_test_only`. Fifteen gates call it. Gone: 13 private `repo_root`s, 13 recursive walkers and the two
+  drifted lexers (`panic_budget.rs`, `matcher_call_sites.rs`). The single-level listings of non-crate
+  directories (help pages, golden frames, workflows, budget files, unit packs) stay at their gates.
+- **`state-slot-owners.toml`:** the 78 rows whose site is under a crate's `tests/` are keyed
+  `module = "<crate>/tests::<module>"`: the module path, less a `mod.rs`, less the group directory of the
+  target that declares it. So `shard_3/drones.rs` is `tacsim/tests::drones`, and a reshard rewrites no row.
+  The 61 production rows keep `path`. The guard refuses a test-rig row keyed by path (naming its key), a
+  row with both keys or neither, and a key that resolves to two files.
+- **One strip chain.** `tacsim/tests/support/lane_chain.rs` holds `strip_ladder`, `strip_workshops`,
+  `strip_wide_sites` and their two tables, moved verbatim from `support/sites.rs`; it needs only
+  `serde_json`. mush-server's `split_boundary.rs` includes it by `#[path]`, and `relay_registry.rs`'s
+  `strip_urvara` and `strip_ladder` copies are gone. Doc 41's lane v21 (RS.1, RS.6) extends the one chain.
+
+**The gate: behaviour unchanged, measured.** A throwaway probe ran the old copies against the new ones over
+the whole tree. The 13 walkers return identical file lists. The merged stripper is byte-identical to
+`panic_budget.rs`'s on all 2,568 `.rs` files, and every per-file production panic count is unchanged. It
+differs from `matcher_call_sites.rs`'s copy on 17 files, every one a `br#"…"#` literal: that copy's
+identifier guard read the `b` prefix as an identifier and lexed the raw string's body as code. The merged
+stripper reads the guard from the blanked output, so it lexes those literals as the panic budget's copy
+did. The matcher gate pins its census exactly and passes, so no verdict moved. `scan.rs` carries a unit
+test for the case. The relay registry's lane v13 and v15 rebuilds hold their published digests.
+
+**Departure from §7's row.** None in scope. The strip chain is shared by `#[path]` rather than through a
+crate, so it stays test code; the file's header says why it must not grow a `super::` or a tacsim-only type.
+
+**Cell delta** (rule #14). Structurally zero: no test was added or lengthened (four unit tests in `scan.rs`
+and one in `state_slot_owners` are all under 0.1 s), and the walk and lexing work is the same. From the JUnit
+of #393's green CI run `41768292766` (head `041ccbf4`) against main's CI run `41767438548` at the PR's merge
+base `c252ec8d`. Summed, main → PR:
+
+| What | Main | PR | Read |
+|---|---|---|---|
+| rest-libs, the 15 ported gates + lib | 42.3 s | 34.6 s | The cell ran faster as a whole (19.6 → 16.4 min); untouched gates fell as much (`module_ns_owners` 5.1 → 3.9 s). |
+| rest-server-boundary, `relay_registry::` (65 tests) | 643.9 s | 840.7 s | Load: the binary's untouched modules rose the same (17.5 → 22.4 min), and the untouched rest-server cell rose 49.6 → 64.9. |
+| shard 3, `drones::` (23 tests) | 1,715.5 s | 1,689.2 s | Flat; the cell 50.9 → 49.9 min. |
+| shard 5, `sites::` (27 tests) | 218.5 s | 221.4 s | Flat; the cell 33.6 → 34.1 min. |
+
+No cell's wall is set by this cut, and no story moves to another shard.
