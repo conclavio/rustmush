@@ -368,23 +368,13 @@ fn step(
     home: &Home,
     record: &mut HousePool,
 ) -> Result<bool, String> {
-    // 1. The helm and its purse.
-    let Some(helm) = record.helm else {
-        let thing = crate::port::site::dark_thing(
-            ctx,
-            &CanonicalId::new(floor.org).map_err(|e| e.to_string())?,
-            &HELM_NAME.replace("{org}", floor.org),
-            home.host,
-        )?;
-        record.helm = Some(ObjId(thing));
-        return Ok(true);
-    };
-    let Some(account) = record.account.map(AccountId) else {
-        record.account = Some(open_purse(ctx, helm)?.0);
-        return Ok(true);
-    };
-    // 2. The oldest open order's next step.
-    if let Some(index) = (!record.orders.is_empty()).then_some(0) {
+    // 1. The oldest open order's next step (an order stands only once the helm and its purse do).
+    if let (Some(helm), Some(account), false) = (
+        record.helm,
+        record.account.map(AccountId),
+        record.orders.is_empty(),
+    ) {
+        let index = 0;
         let mut order = record.orders[index].clone();
         let step = advance(ctx, floor, home, helm, account, &mut order)?;
         match step {
@@ -406,7 +396,7 @@ fn step(
             return Ok(false);
         }
     }
-    // 3. The floor.
+    // 2. The floor: breached and fundable, or nothing (the helm is made only when needed).
     let free = free_count(ctx.w, floor);
     let standing = u32::try_from(record.orders.len()).unwrap_or(u32::MAX);
     if free.saturating_add(standing) >= floor.floor {
@@ -417,6 +407,21 @@ fn step(
     if available < price {
         return Ok(false);
     }
+    // 3. The helm and its purse, a fire each, then the funding.
+    let Some(helm) = record.helm else {
+        let thing = crate::port::site::dark_thing(
+            ctx,
+            &CanonicalId::new(floor.org).map_err(|e| e.to_string())?,
+            &HELM_NAME.replace("{org}", floor.org),
+            home.host,
+        )?;
+        record.helm = Some(ObjId(thing));
+        return Ok(true);
+    };
+    let Some(account) = record.account.map(AccountId) else {
+        record.account = Some(open_purse(ctx, helm)?.0);
+        return Ok(true);
+    };
     let n = record.made.saturating_add(1);
     pay(
         ctx,

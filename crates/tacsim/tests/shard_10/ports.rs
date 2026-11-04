@@ -631,12 +631,12 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_600_100_000,
-        "16,001,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_625_100_000,
+        "16,251,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
          SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000, \
          Freeport Works' 1,000,000 (doc 39 cut IN.5), Stickney Yards' 50,000 raise (IN.7's, in \
-         doc 39 cut IN.9's lane v27) and the two passengers' one-time 500cr purses"
+         doc 39 cut IN.9's lane v27), the Trust's 250,000 raise (doc 39 cut IN.10's lane v28) and the          two passengers' one-time 500cr purses"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -2139,11 +2139,12 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
         (
             "the floor and stakes over the capital",
             Box::new(|doc| {
-                doc["entries"]["ceres_port"]["def"]["programme"]["stake_major"] = json!(30_000);
+                // Doc 39 cut IN.10: over the Trust's 500,000 with its raise.
+                doc["entries"]["ceres_port"]["def"]["programme"]["stake_major"] = json!(60_000);
             }),
             vec![
                 "port entry ceres_port",
-                "floor_major + pool × stake_major is 290000",
+                "floor_major + pool × stake_major is 530000",
             ],
         ),
         (

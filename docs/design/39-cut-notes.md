@@ -893,7 +893,9 @@ from durable state.
   the Trust; the bill bought line by line, paid under `tacsim.house_order/{escrow}/{good}/{held}` (the count the
   escrow holds names the purchase, so a restart finds the payment and never pays twice), the seller's standing ask
   lowered first (IN.5's `shrink_ask` rule), then moved through `works::supply_from` under the order's own ledger.
-  A part is one store lot of the Yards' with no ask. The works arm runs the order; the helm collects it into IN.9's
+  A part is one lot from the yard operator's stores (the Yards'), at its catalogue price: IN.7 retired the seeded
+  part stock, so the stores hold what was made, scrapped or sold into them, and the order waits while they hold
+  none. The works arm runs the order; the helm collects it into IN.9's
   commission (`works::commission_as`, the route IN.9's note asked for).
 - **The ferry**: the passage's burn with a quarter over and its crew-days are dry-run (`voyage::passage_needs`) and
   bought into her hold the same way, under the works ledger keyed by the hold (`pools::owed_moves` in the works
@@ -905,8 +907,12 @@ from durable state.
   fund one." (`NO_HULL_UNFUNDED`) or "The Trust has a Dray on order at Stickney Yards, due at Ceres in n IC days."
   (`NO_HULL_ON_ORDER`, from `pools::next_due`: the build's days and a four-day passage allowance until she sails,
   then her filed arrival).
-- **The raise**: `lane_chain::strip_trust_raise` is drafted; the lane bump (`coop_trust` `raises: [250000]`) lands
-  after IN.5's and IN.9's lane versions, on the next free number.
+- **The raise**: lane v28 / relay v19 — `coop_trust` gains `raises: [250000]` (Q-39-34), so the Trust boots at
+  500,000. `lane_chain::strip_trust_raise` heads the strip chain (`strip_yard` calls it first), and
+  `in10_strip_trust_raise_rebuilds_the_published_v27` holds it to IN.9's v27 digest. The pins: `LANE_DIGEST`
+  `27a5d41a…`, the relay `876dcae5…`, the treasury's 16,251,000.00cr, and the version asserts.
+- **`works::port_of` reads the yard room** (IN.9's row is a room that is the facility itself), so an order at the
+  yard finds its port; the house collection needed it.
 
 **The story.** `shard_2/in10_pools.rs` (port-side; no site, so no 256/512 pair):
 `in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home`. Eight captains enrol; the Trust is at 50,000
@@ -917,8 +923,16 @@ the order as `SYB-01`, titled to the Trust; her stores are bought, the helm file
 Ceres a free register hull while the programme map still holds eight; the helm's purse is empty. The desk then
 enrols the ninth captain. Over those weeks the dormancy recall (seven real days on the rig's clock) may hand a
 programme Dray back first, and the desk lends the lowest free id, so the story asserts the ninth captain is
-chartered and the Trust's Dray is theirs or still free. 39 s locally.
+chartered and the Trust's Dray is theirs or still free. The seeds: one hauler plant in the Yards' stores, the
+captains' buyout money, and the Trust's raise held back in the treasury by staff from boot to the ninth enrolment
+(the world the row reads is the one before v28; with the raise in from boot the Trust would order at the seventh
+charter, which is what the raise is for). 22 s locally.
 
-**Owed.** Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the
-yard, so `FLOORS` carries the Trust's row alone. The lane raise and its pins, and the story's staff mint of the
-raise, go away when the bump lands. The rule #14 cell delta is owed from CI.
+**Owed / flagged.**
+- Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the yard, so
+  `FLOORS` carries the Trust's row alone.
+- **A house restock of the stores** (IN.7's flag): nothing refills the Yards' part stores, so with the seeds
+  retired a house Dray waits on a hauler plant someone made or scrapped there. Ordering the plant at the works
+  (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
+  the owner.
+- The rule #14 cell delta is owed from CI.

@@ -2299,15 +2299,20 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
     // Doc 20 cut SM.10: v12 also adds the Pallas Syndicate (capital 50,000), whose base
     // tranche joins R9b's 100,000-credit Fleet base; Occator's raise is still exactly one. Doc 39
     // cut IN.5: Freeport Works' 1,000,000 comes in two tranches, 800,000 and 200,000. Doc 39
-    // cut IN.9 (lane v27): Stickney Yards' 50,000 raise (IN.7's), one more.
+    // cut IN.9 (lane v27): Stickney Yards' 50,000 raise (IN.7's), one more. Doc 39 cut IN.10
+    // (lane v28): the Trust's 250,000 raise, one more, the same amount as Occator's.
     assert_eq!(
         made.len(),
-        6,
-        "Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two"
+        7,
+        "Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two, the          Yards' raise and the Trust's"
     );
+    let trust = port_map(&rig.tw, "ceres_port").orgs[&cid("coop_trust")]
+        .account
+        .expect("the Trust's account");
     let made: Vec<mush_economy::Obligation> = made
         .into_iter()
         .filter(|o| ![5_000_000, 10_000_000, 80_000_000, 20_000_000].contains(&o.amount.minor()))
+        .filter(|o| o.credit_account.0 != trust)
         .collect();
     assert_eq!(made.len(), 1, "exactly one new Occator tranche");
     assert_eq!(made[0].amount.minor(), 25_000_000);
