@@ -2950,7 +2950,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 14 update, 0 retire, 22 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 16 update, 0 retire, 20 unchanged"
         )),
         "{plan}"
     );
@@ -2961,7 +2961,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 14 updated, 0 retired, 22 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 16 updated, 0 retired, 20 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3005,7 +3005,7 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 14 updated, 0 retired, 22 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 16 updated, 0 retired, 20 unchanged."
         )),
         "{plan}\n{apply}"
     );
