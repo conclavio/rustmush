@@ -23,6 +23,19 @@
 mod arena;
 #[path = "support/mine.rs"]
 mod mine;
+// Doc 40 cut FR.7: the round's story at both sizes, over tacsim's own two grounds.
+#[path = "mining_cohort/fr7_round.rs"]
+mod fr7_round;
+#[path = "../../tacsim/tests/support/field/grounds_rig.rs"]
+mod grounds_rig;
+/// The one name `grounds_rig` reads from tacsim's `driving_rig`: Ahuna Flank's port entry.
+mod driving_rig {
+    pub(crate) const AHUNA: &str = "ahuna_port";
+}
+/// The one name `grounds_rig` reads from tacsim's `field_raiders_rig`: Ahuna's content raider.
+mod field_raiders_rig {
+    pub(crate) const SKULKS: &str = "tacsim.raider.ahuna_skulks";
+}
 
 use std::{collections::BTreeSet, time::Duration};
 
