@@ -632,6 +632,29 @@ runs `npm` only.
 
 Doc 43 has no cut-notes file; each cut's note lands here.
 
+### TS.17 the release-runtime smoke (D-43-13)
+
+**Built.** `scripts/release-smoke.sh` runs in the nightly release job, right after the build it
+already pays for. It runs what was built, the way a box does, and exits:
+
+1. **The config.** It renders a throwaway instance from the shipped template with
+   `deploy/instance/render.sh`, which runs `--check-config` on all three release binaries. The one
+   deviation from a box is the memory store.
+2. **The all-in-one.** It boots `mushd` with a self-signed certificate made in the job (never
+   committed) and fetches the embedded SPA over TLS, verified against that certificate. The page
+   must be byte-equal to `web/dist/index.html`.
+3. **The split pair.** It boots `mush-server` and `mush-gateway`. The gateway must log `handshake
+   ok` over the IPC socket. Then it plays one front-door SSH session with a PTY (the front door
+   refuses a session without one, which the first try found):
+   - `create`, answered "Account created." only on the server's CreatePlayer reply;
+   - `look`, which must draw the room again after the connect.
+
+Logs are uploaded on failure.
+
+**Proved on the PR**, with the release job enabled for the PR's iterations only: run
+[41897722096](https://github.com/conclavio/rustmush/actions/runs/41897722096). The whole smoke took
+about 20 s after a cold 23-minute release build.
+
 ### TS.16 the field tempo (§5.8, §10.2)
 
 **Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their

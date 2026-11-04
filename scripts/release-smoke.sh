@@ -174,4 +174,10 @@ if ! grep -q 'Account created\.' "$work/session.log"; then
   echo "release-smoke: no \"Account created.\" from the split pair" >&2
   exit 1
 fi
+# The verb: `look` is answered by the world task with the room, whose exits
+# line is printed once on connecting and once more for the `look`.
+if [ "$(grep -c 'Exits ' "$work/session.log")" -lt 2 ]; then
+  echo "release-smoke: \`look\` drew no room after the connect" >&2
+  exit 1
+fi
 echo "release-smoke: the gateway and the server handshook, and one front-door session crossed the split (create, look)"
