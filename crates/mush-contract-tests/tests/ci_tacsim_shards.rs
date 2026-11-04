@@ -11,7 +11,10 @@
 //! (2026-10-26) the targets are the group binaries `shard_1`..`shard_10` (four until 2026-10-27, six until 2026-11-03)
 //! (`tests/shard_N.rs`, one `mod` line per former file, now under
 //! `tests/shard_N/`) and the standalone `harness` and `cost_lane`: a new test
-//! MODULE is a `mod` line in a shard root, never a name here.
+//! MODULE is a `mod` line in a shard root, never a name here. Since doc 43 cut
+//! TS.0 it also fails on a file under `tests/shard_N/` that no root's module
+//! tree declares (it would compile nowhere), and on a module name in a shard
+//! that ends with another's (cargo's substring filter would run both).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -131,4 +134,178 @@ fn the_workflow_runs_every_listed_shard_and_no_other() {
         "{} no longer runs the shards through scripts/ci-tacsim-shard.sh",
         workflow_path.display()
     );
+}
+
+/// A source file's `mod` declarations, as `(name, Some(path))` for a
+/// `#[path = "..."]`-attributed one and `(name, None)` for a plain `mod name;`.
+/// Comment lines are skipped (a doc comment may quote a declaration), and so is
+/// an inline `mod name {`, whose children live in the same file.
+fn mod_declarations(source: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    let mut pending_path: Option<String> = None;
+    for line in source.lines() {
+        let line = line.trim();
+        if line.starts_with("//") || line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#[path") {
+            pending_path = rest.split('"').nth(1).map(str::to_owned);
+            continue;
+        }
+        if line.starts_with("#[") {
+            continue;
+        }
+        let decl = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub(super) "))
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        if let Some(name) = decl
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.strip_suffix(';'))
+        {
+            out.push((name.trim().to_owned(), pending_path.take()));
+        } else {
+            pending_path = None;
+        }
+    }
+    out
+}
+
+/// The file a declaration in `file` loads: a `#[path]` is relative to the
+/// declaring file's directory; a plain `mod name;` in a crate root or a
+/// `mod.rs` is `name.rs` (or `name/mod.rs`) beside it, and anywhere else it is
+/// under the directory named for the declaring file.
+fn declared_file(file: &Path, is_root: bool, name: &str, path: Option<&str>) -> PathBuf {
+    let dir = file.parent().expect("a source file has a directory");
+    if let Some(path) = path {
+        return dir.join(path);
+    }
+    let base = if is_root || file.file_name().is_some_and(|n| n == "mod.rs") {
+        dir.to_path_buf()
+    } else {
+        dir.join(file.file_stem().expect("a source file has a stem"))
+    };
+    let flat = base.join(format!("{name}.rs"));
+    if flat.is_file() {
+        flat
+    } else {
+        base.join(name).join("mod.rs")
+    }
+}
+
+/// `.` and `..` folded out, so two spellings of one file compare equal.
+fn normalise(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn rust_files(dir: &Path, out: &mut BTreeSet<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|err| panic!("{}: {err}", dir.display())) {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.insert(normalise(&path));
+        }
+    }
+}
+
+/// The shard roots `tests/shard_N.rs`, by target name, in name order.
+fn shard_roots(root: &Path) -> Vec<(String, PathBuf)> {
+    let tests = root.join("crates/tacsim/tests");
+    tacsim_targets(root)
+        .into_iter()
+        .filter(|target| target.starts_with("shard_"))
+        .map(|target| {
+            let path = tests.join(format!("{target}.rs"));
+            (target, path)
+        })
+        .collect()
+}
+
+/// Doc 43 §5.3 (cut TS.0): a file under `tests/shard_N/` that no root's module
+/// tree declares compiles in no binary and fails nothing, so the target guard
+/// above cannot see it. Every such file must be reached from some shard root
+/// by its `mod` declarations (with `#[path]` siblings and subdirectories).
+#[test]
+fn every_file_under_a_shard_directory_is_declared_by_a_root() {
+    let root = repo_root();
+    let tests = root.join("crates/tacsim/tests");
+    let mut reached: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut queue: Vec<(PathBuf, bool)> = shard_roots(&root)
+        .into_iter()
+        .map(|(_, path)| (normalise(&path), true))
+        .collect();
+    while let Some((file, is_root)) = queue.pop() {
+        if !reached.insert(file.clone()) {
+            continue;
+        }
+        let source =
+            fs::read_to_string(&file).unwrap_or_else(|err| panic!("{}: {err}", file.display()));
+        for (name, path) in mod_declarations(&source) {
+            let child = normalise(&declared_file(&file, is_root, &name, path.as_deref()));
+            assert!(
+                child.is_file(),
+                "{} declares `mod {name}` at {}, which does not exist",
+                file.display(),
+                child.display()
+            );
+            queue.push((child, false));
+        }
+    }
+
+    let mut under_shards = BTreeSet::new();
+    for entry in fs::read_dir(&tests).unwrap_or_else(|err| panic!("{}: {err}", tests.display())) {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir()
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("shard_"))
+        {
+            rust_files(&path, &mut under_shards);
+        }
+    }
+    let orphans: Vec<&PathBuf> = under_shards.difference(&reached).collect();
+    assert!(
+        orphans.is_empty(),
+        "these files are under a shard directory but no shard root declares them, so they \
+         compile nowhere; add a `#[path = \"shard_N/<file>.rs\"] mod <file>;` line to a root \
+         (the shard with the most room) or delete them: {orphans:?}"
+    );
+}
+
+/// Doc 43 §5.3 (cut TS.0): one module of a group binary runs with `cargo test
+/// --test shard_N <module>::`, a substring filter, so a module whose name ends
+/// with another's in the same binary (`gc5` and `field_gc5`) drags the other's
+/// tests in. The merge script refused this; the guard now does.
+#[test]
+fn no_module_name_in_a_shard_ends_with_another_in_the_same_shard() {
+    for (shard, path) in shard_roots(&repo_root()) {
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let names: BTreeSet<String> = mod_declarations(&source)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for long in &names {
+            for short in &names {
+                assert!(
+                    long == short || !long.ends_with(short.as_str()),
+                    "{shard}: module `{long}` ends with module `{short}`, so the filter \
+                     `{short}::` also runs `{long}`'s tests; rename one"
+                );
+            }
+        }
+    }
 }
