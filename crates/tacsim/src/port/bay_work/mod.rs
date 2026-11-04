@@ -2489,6 +2489,28 @@ pub(crate) fn berth_held(ctx: &mut Ctx<'_>, carrier: ObjId) {
     }
 }
 
+/// **A house's stow** (doc 41 cut RS.6a): a hull berthed on a workshop floor goes into a free
+/// slot of `carrier`'s bay, by the house's own hand (no actor's right is read: the caller is the
+/// port tick laying up a house it owns). Idempotent: a hull already in that bay is left.
+///
+/// # Errors
+///
+/// The refusal, as a sentence; nothing is written on any.
+pub(crate) fn stow_house(ctx: &mut Ctx<'_>, hull: ObjId, carrier: ObjId) -> Result<(), String> {
+    if crate::surface::act::where_is(ctx.w, hull)
+        == (crate::surface::act::Where::Bay { hull: carrier })
+    {
+        return Ok(());
+    }
+    let mut record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    let (room, slot) = free_bay_slot(ctx.w, carrier, hull)?;
+    mush_sim::place_interior(ctx, hull, room, Some(slot))
+        .map_err(|e| format!("Her bay will not take her: {e}"))?;
+    record.berth = None;
+    put_bay_hull(ctx, &record);
+    Ok(())
+}
+
 /// **A free slot of `carrier`'s bay that takes `hull`** (doc 39 cut IN.9): the bay's rigs
 /// compartment with room for one more, its mass limit at least her catalogue mass.
 fn free_bay_slot(

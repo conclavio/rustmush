@@ -329,6 +329,23 @@ pub struct RecoveryDef {
     pub slots: u32,
     /// The cost model (§4.4).
     pub cost: mush_industry::FacilityCostDef,
+    /// **Doc 41 cut RS.6a (Q-41-15, lane v28)** — the operator's own two house hulls: a
+    /// `tycho_lifter` docked at this port with a `tycho_crawler` in its bay, laid up by the port
+    /// tick as yard commissions titled to the operator. Absent: the operator owns no hulls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub house: Option<Box<RecoveryHouseDef>>,
+}
+
+/// **A recovery operator's house hulls** (doc 41 cut RS.6a; §4.4, Q-41-15): their marks; the
+/// designs are Tycho's two ([`crate::definitions::content::TYCHO_LIFTER`],
+/// [`crate::definitions::content::TYCHO_CRAWLER`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryHouseDef {
+    /// The lifter's registry mark (`TMA-LF-01`).
+    pub lifter_mark: String,
+    /// The crawler's registry mark (`TMA-CR-01`).
+    pub crawler_mark: String,
 }
 
 impl RecoveryDef {
@@ -1679,6 +1696,17 @@ impl PortDef {
                 .cost
                 .check()
                 .map_err(|error| format!("recovery: {error}"))?;
+            // Doc 41 cut RS.6a: the house hulls' marks.
+            if let Some(house) = &recovery.house
+                && (!prefix_ok(&house.lifter_mark)
+                    || !prefix_ok(&house.crawler_mark)
+                    || house.lifter_mark == house.crawler_mark)
+            {
+                return Err(
+                    "recovery: the house marks are two distinct 1-16 byte runs of A-Z, 0-9 and -"
+                        .to_owned(),
+                );
+            }
         }
         // Doc 39 cut IN.5: the refinery and the works.
         self.check_refinery()?;
@@ -3094,6 +3122,7 @@ mod tests {
                 wage_major: 150,
                 margin_permille: 250,
             },
+            house: None,
         };
         assert_eq!(row.cost.daily_cost_minor(), 206_896);
         assert_eq!(row.retrieval_fee_minor(1), 258_700);
