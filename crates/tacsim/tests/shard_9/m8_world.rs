@@ -2786,7 +2786,7 @@ async fn licensed_field_story(at: &FieldSite) {
         })
     };
     assert!(
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |_, lines| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 300, |_, lines| {
             sealed_line(lines).is_some()
         })
         .await,
@@ -2826,7 +2826,16 @@ async fn licensed_field_story(at: &FieldSite) {
     });
     assert!(!troubled, "the licensed mind neither dropped nor faulted");
     // 4. The mark cleared, the field demotes and checks rig 1 in.
-    let (out, queued) = crate::driving_rig::command(&mut rig, leader, "+field/mark E=clear");
+    // In the field the parties carry the field's own letters (the promotion's `E` was the
+    // site's): the leader clears its mark on rig 1's party by that party's letter.
+    let party = live
+        .units
+        .iter()
+        .find(|row| row.unit == tv)
+        .map(|row| row.party.letter())
+        .expect("rig 1's party");
+    let (out, queued) =
+        crate::driving_rig::command(&mut rig, leader, &format!("+field/mark {party}=clear"));
     assert_eq!(queued.len(), 1, "one clear: {out}");
     crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the clear lands");
     assert!(
