@@ -161,19 +161,21 @@ fn provenance(
 ) -> PartProvenance {
     PartProvenance {
         lot,
-        parent_hull: unit.object(),
-        parent_schema: unit.schema().clone(),
-        slot: slot.clone(),
         definition,
         condition,
-        // A title holder or a grant holder strips here; a salvor's claim reference rides in
-        // once GC.5/GC.6 record their custody (`super::salvor_custody`).
-        claim: None,
         legality: ProvenanceLegalityStatus::CleanTitle,
-        stripped_by: by,
-        stripped_at_ic: at_ic,
-        scrapped,
         fitted_into: None,
+        origin: act::PartOrigin::Stripped(act::Stripped {
+            parent_hull: unit.object(),
+            parent_schema: unit.schema().clone(),
+            slot: slot.clone(),
+            // A title holder or a grant holder strips here; a salvor's claim reference rides
+            // in once GC.5/GC.6 record their custody (`super::salvor_custody`).
+            claim: None,
+            stripped_by: by,
+            stripped_at_ic: at_ic,
+            scrapped,
+        }),
     }
 }
 
@@ -382,7 +384,7 @@ pub(crate) fn land_mint(ctx: &mut Ctx<'_>, hull: ObjId, by: ObjId, why: &str, lo
             let slot = lots
                 .iter()
                 .find_map(|l| l.part.as_ref())
-                .map(|p| p.slot.clone())
+                .and_then(|p| p.stripped().map(|s| s.slot.clone()))
                 .ok_or("the strip names no slot")?;
             let (after, _, _) = WorkshopBook::new()
                 .strip_component(

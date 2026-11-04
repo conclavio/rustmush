@@ -208,7 +208,57 @@ pub(crate) fn clerk_rows(w: &World, clerk: ObjId) -> BTreeMap<String, Value> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return BTreeMap::new();
     };
-    rows_of(store.port_maps(), clerk)
+    let mut rows = rows_of(store.port_maps(), clerk);
+    // Doc 39 cut IN.2: a part row carries the hardware row its lots are, for their `Seeded`
+    // provenance (the prepare has no world to look it up in).
+    for row in rows.values_mut() {
+        let good = row
+            .get("good")
+            .and_then(Value::as_str)
+            .and_then(|g| CanonicalId::new(g).ok());
+        if let (Some(good), Some(map)) = (good, row.as_object_mut())
+            && crate::port_tick::is_part(&good)
+            && let Some(part) = part_row_of(w, &good)
+            && let Ok(value) = serde_json::to_value(&part)
+        {
+            map.insert("part".to_owned(), value);
+        }
+    }
+    rows
+}
+
+/// **The hardware row a part good is** (doc 39 cut IN.2): the catalogue's part index read
+/// backwards, any component that stocks as `good`.
+pub(crate) fn part_row_of(w: &World, good: &CanonicalId) -> Option<DefinitionRef> {
+    w.module_state::<TacsimStore>()?
+        .definitions()
+        .parts
+        .values()
+        .find(|row| &row.commodity == good)
+        .map(|row| row.row.clone())
+}
+
+/// **The `n`th one-unit lot a part stock issue mints** (doc 39 cut IN.2): the issue's own lot
+/// id first ([`StockIssueId::lot_id`], the receipt's `lot`), then one derived per unit.
+#[must_use]
+pub fn seed_lot_id(id: &StockIssueId, n: u64) -> LotId {
+    if n == 0 {
+        return id.lot_id();
+    }
+    mush_core::CanonicalHash::for_canonical_value(
+        "tacsim.stock_part_lot.v1",
+        1,
+        &json!({ "issue": id.key_text(), "unit": n }),
+        1024,
+    )
+    .map_or_else(
+        |_| id.lot_id(),
+        |hash| {
+            let mut head = [0_u8; 8];
+            head.copy_from_slice(&hash.as_bytes()[..8]);
+            LotId(u64::from_be_bytes(head))
+        },
+    )
 }
 
 /// [`clerk_rows`] over a set of port maps (pure).
@@ -248,6 +298,8 @@ pub(crate) struct StockProvider {
     pub outcome: DefinitionRef,
     pub receipts: StateFamilyHandle<StockIssueId, StockReceipt>,
     pub inventory: InventoryFamilies,
+    /// `tacsim.bay_parts` (doc 39 cut IN.2): a part seed's `Seeded` rows.
+    pub parts: StateFamilyHandle<LotId, crate::port::bay_work::act::PartProvenance>,
 }
 
 fn invalid() -> mush_core::ActionError {
@@ -416,22 +468,56 @@ impl ActionProvider for StockProvider {
             id: smol_str::SmolStr::new(format!("{pack}/{port}/{org}/{good}")),
             revision: Some(u64::from(issue)),
         };
+        // Doc 39 cut IN.2 (Q-39-27): a part row mints one identified lot a unit, each with its
+        // `Seeded` provenance row, and the clerk never dissolves them; any other row mints
+        // one lot of the quantity, as it always has.
+        let part = if crate::port_tick::is_part(&good) {
+            let definition: DefinitionRef = entry
+                .get("part")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .ok_or_else(invalid)?;
+            if qty > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
+                return Err(invalid());
+            }
+            Some(definition)
+        } else {
+            None
+        };
+        let rows: Vec<(CanonicalId, u64, Grade, LotId)> = match &part {
+            Some(_) => (0..qty)
+                .map(|n| (good.clone(), 1, grade_value, seed_lot_id(&id, n)))
+                .collect(),
+            None => vec![(good.clone(), qty, grade_value, id.lot_id())],
+        };
         self.inventory
-            .mint_origin(
-                txn,
-                EndpointRef(VaultId(vault)),
-                &good,
-                qty,
-                grade_value,
-                source,
-                id.lot_id(),
-            )
+            .mint_origins(txn, EndpointRef(VaultId(vault)), &rows, &source)
             .map_err(|_| {
                 port_error(
                     ActionErrorCode::ProviderRejected,
                     "the stock lot could not be minted",
                 )
             })?;
+        if let Some(definition) = part {
+            for (_, _, _, lot) in &rows {
+                let row = crate::port::bay_work::act::PartProvenance {
+                    lot: *lot,
+                    definition: definition.clone(),
+                    condition: mush_tactics::field_ops::ComponentCondition::Intact,
+                    legality: mush_tactics::field_ops::ProvenanceLegalityStatus::CleanTitle,
+                    fitted_into: None,
+                    origin: crate::port::bay_work::act::PartOrigin::Seeded {
+                        receipt: id.key_text(),
+                    },
+                };
+                txn.insert(&self.parts, lot, row).map_err(|_| {
+                    port_error(
+                        ActionErrorCode::Integrity,
+                        "the seeded part's provenance did not stage",
+                    )
+                })?;
+            }
+        }
         let receipt = StockReceipt {
             pack,
             entry: port,
@@ -636,6 +722,9 @@ pub(crate) fn stock_step(
                     }
                     return step;
                 }
+                // Doc 39 cut IN.2: a part's lots are never dissolved; they are listed one by
+                // one ([`part_ask_step`]).
+                Some(_) if crate::port_tick::is_part(&stock.good) => {}
                 Some(receipt) => {
                     let standing = ctx
                         .action_state(&inventory.lots, &LotId(receipt.lot))
@@ -694,7 +783,12 @@ pub(crate) fn stock_step(
         let Some(row) = map.vendors.get(&vendor.org) else {
             continue;
         };
-        for ask in &vendor.asks {
+        // Doc 39 cut IN.2: a part's ask is a listing a lot ([`part_ask_step`]), never a pool.
+        for ask in vendor
+            .asks
+            .iter()
+            .filter(|ask| !crate::port_tick::is_part(&ask.good))
+        {
             let Ok(pool) = read_pool(ctx, EndpointRef(VaultId(row.vault)), &ask.good) else {
                 return Step::Refused;
             };
@@ -760,6 +854,10 @@ pub(crate) fn stock_step(
         }
     }
     let Some((vendor, vault, good, price_major, pool)) = due else {
+        // Doc 39 cut IN.2: a seeded part not yet listed is listed as its own lot ask.
+        if let Some(step) = part_ask_step(ctx, state, fire, clerk, &map, &def) {
+            return step;
+        }
         // Doc 20 cut SM.5 (lead ruling 4): the intake drip, before the lapsed-bid
         // re-post (which never touches a refresh row).
         if let Some(step) = drip_step(ctx, state, fire, clerk, &map, &def) {
@@ -820,6 +918,131 @@ pub(crate) fn stock_step(
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
         Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
     }
+}
+
+/// **The part asks** (doc 39 cut IN.2, Q-39-27's "sold"): a seeded part is listed as **a lot
+/// ask** — one hold-backed listing of that one lot (`Supply::Lot` naming it), so its sale hands
+/// the lot itself, its id and its `Seeded` row, to the buyer. One listing a fire: the first
+/// seeded lot of a part ask's good still at the storefront, unheld and unlisted. An ask the
+/// market refused today waits for the next IC day, as the pooled asks do.
+fn part_ask_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    def: &PortDef,
+) -> Option<Step> {
+    let handles = ctx.w.module_state::<PortHandles>().cloned()?;
+    let inventory = handles.inventory.clone()?;
+    let today = ctx.w.world_ic_now().at.div_euclid(IC_DAY);
+    let mut due = None;
+    'vendors: for vendor in &def.vendors {
+        let Some(row) = map.vendors.get(&vendor.org) else {
+            continue;
+        };
+        let Some(vendor_id) = row.vendor else {
+            continue;
+        };
+        let storefront = EndpointRef(VaultId(row.vault));
+        for ask in vendor
+            .asks
+            .iter()
+            .filter(|ask| crate::port_tick::is_part(&ask.good))
+        {
+            if state
+                .list_refused
+                .get(&(row.vault, ask.good.clone()))
+                .is_some_and(|day| *day == today)
+            {
+                continue;
+            }
+            for stock in row.stock.iter().filter(|s| s.good == ask.good) {
+                let Some(id) = StockIssueId::parse(&stock.id) else {
+                    continue;
+                };
+                if !matches!(
+                    receipt_at(ctx, &handles.families.port_stock, &id),
+                    Ok(Some(_))
+                ) {
+                    continue;
+                }
+                for n in 0..stock.qty {
+                    let lot = seed_lot_id(&id, n);
+                    let here = ctx
+                        .action_state(&inventory.lots, &lot)
+                        .ok()
+                        .flatten()
+                        .filter(|l| l.endpoint() == storefront)
+                        .cloned();
+                    let Some(here) = here else {
+                        continue;
+                    };
+                    let held = !matches!(ctx.action_state(&inventory.lot_holds, &lot), Ok(None));
+                    let listed = ctx.w.module_state::<MarketStore>().is_some_and(|m| {
+                        m.lot_listings().any(|l| l.source.exact_lot() == Some(lot))
+                    });
+                    if held || listed {
+                        continue;
+                    }
+                    due = Some((
+                        mush_market::VendorId(vendor_id),
+                        row.vault,
+                        ask.good.clone(),
+                        ask.price_major,
+                        lot,
+                        here.grade().get(),
+                    ));
+                    break 'vendors;
+                }
+            }
+        }
+    }
+    let (vendor, vault, good, price_major, lot, grade) = due?;
+    let Some(price) = ask_price(ctx.w, price_major) else {
+        return Some(Step::Refused);
+    };
+    let spec = mush_market::ListingSpec {
+        vendor,
+        catalog: CatalogRef {
+            ruleset: smol_str::SmolStr::new_static(crate::NS),
+            code: smol_str::SmolStr::new(good.as_str()),
+        },
+        price,
+        quantity: 1,
+        source: Supply::Lot {
+            endpoint: mush_market::LotEndpoint(EndpointRef(VaultId(vault))),
+            commodity: mush_market::LotCommodity(good.clone()),
+            grade,
+            lot: Some(lot),
+        },
+        object: None,
+        visibility: MarketVisibility::Public,
+        ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+    };
+    Some(
+        match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
+            Ok(Ok(_)) => Step::Worked,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    vault, good = %good, ?error,
+                    "tacsim: the stock clerk could not list a part"
+                );
+                state.list_refused.retain(|_, day| *day == today);
+                let key = (vault, good);
+                if state.list_refused.contains_key(&key)
+                    || state.list_refused.len() < MAX_CLERK_ROWS
+                {
+                    state.list_refused.insert(key, today);
+                }
+                Step::Refused
+            }
+            Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+                Step::Deferred
+            }
+            Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+        },
+    )
 }
 
 /// **A fresh listing's target counters** (doc 20 cut SM.12a, F1): for each of the vendor's
@@ -1695,6 +1918,24 @@ mod tests {
     /// **The offer rows are derived from the map** (lead ruling L4): every stock row of
     /// every recorded vendor of the clerk's lane map, keyed by its issue id, carrying
     /// the storefront vault and the clerk — and nothing for another object.
+    /// **A part seed's lots** (doc 39 cut IN.2): the first is the issue's own lot (the
+    /// receipt's), every unit's id is distinct and derived, so a replay names the same lots.
+    #[test]
+    fn in2_a_part_seed_mints_a_distinct_derived_lot_a_unit() {
+        let id = StockIssueId::derive(
+            &cid("tacsim.pack.lane"),
+            &cid("stickney_port"),
+            &cid("stickney_yards"),
+            &cid("tacsim.part.sensor.visual_mk1"),
+            1,
+        )
+        .expect("an issue");
+        assert_eq!(seed_lot_id(&id, 0), id.lot_id());
+        let lots: std::collections::BTreeSet<_> = (0..6).map(|n| seed_lot_id(&id, n)).collect();
+        assert_eq!(lots.len(), 6);
+        assert_eq!(seed_lot_id(&id, 4), seed_lot_id(&id, 4));
+    }
+
     #[test]
     fn ic8_the_offer_rows_are_derived_from_the_map() {
         let pack = cid(LANE_PACK);

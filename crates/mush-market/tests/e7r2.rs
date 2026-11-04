@@ -1066,6 +1066,7 @@ fn e7r2_p1_a_lot_listing_re_enters_through_its_wire_and_a_bad_grade_refuses_on_l
             endpoint: mush_market::LotEndpoint(endpoint(7)),
             commodity: mush_market::LotCommodity(commodity("iron")),
             grade: 3,
+            lot: None,
         },
         object: None,
         price: mush_economy::Amount::from_minor(100),

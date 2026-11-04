@@ -442,6 +442,66 @@ fn record_of(w: &World, hull: ObjId) -> Result<BayHull, &'static str> {
     }
 }
 
+/// **Owe the part commission** (doc 39 cut IN.2, §4.11): the industry lot `source` in `vault`,
+/// carrying `lineage`, is consumed and laid back as one identified lot a unit, each with its
+/// provenance row (`Manufactured` for a work order's delivery, `Stripped` for a refit's
+/// removed part), in one bundle under `ledger`'s ordinal replay — the facility's object for a
+/// work order, the refit hull for its removed part. The port tick submits it as `by`, retries
+/// a refusal and pages the last. Each lot's id is derived from the ledger, the act and the
+/// unit, so a replay names the same lots.
+///
+/// # Errors
+///
+/// The refusal, as a sentence: a ledger that owes another act or cannot be read, or a source
+/// of no units or more than one act carries.
+#[allow(clippy::too_many_arguments)]
+pub fn owe_commission(
+    ctx: &mut Ctx<'_>,
+    ledger: ObjId,
+    by: ObjId,
+    vault: VaultId,
+    source: (LotId, &CanonicalId, u64),
+    lineage: act::CommissionSource,
+    part: impl Fn(LotId) -> act::PartProvenance,
+) -> Result<Vec<LotId>, String> {
+    let mut record = record_of(ctx.w, ledger).map_err(str::to_owned)?;
+    if record.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
+    let (lot, good, units) = source;
+    if units == 0 || units > act::MAX_ACT_ROWS as u64 {
+        return Err("A commission lays one to 32 parts.".to_owned());
+    }
+    let act_no = next_act(ctx, &record);
+    let mut lots = Vec::new();
+    for row in 0..units {
+        let id = act::lot_id(ledger, act_no, usize::try_from(row).unwrap_or(usize::MAX))?;
+        lots.push(act::LotMint {
+            lot: id,
+            commodity: good.clone(),
+            quantity: 1,
+            grade: crate::hardware::bay::part_grade(true),
+            part: Some(part(id)),
+        });
+    }
+    let ids = lots.iter().map(|l| l.lot).collect();
+    record.acts = act_no;
+    record.owed = Some(Box::new(OwedAct {
+        act: act_no,
+        by,
+        vault: Some(vault.0),
+        kind: OwedKind::Commission {
+            source: lot,
+            lineage,
+            lots,
+        },
+        tries: 0,
+    }));
+    record.check()?;
+    put_bay_hull(ctx, &record);
+    Ok(ids)
+}
+
 /// **The ordinal the next owed act takes** (doc 36a §5.1): one past the hull's ledger when it
 /// reads — the ledger, not the record, is what the prepare accepts — else one past the
 /// record's own count. A record that ran ahead of its ledger (an act given up) heals here.
@@ -793,11 +853,15 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
         return Err(format!(
             "That part is hot: it came off #{} under a vacated claim, and a lawful workshop will \
              not fit it until #{} clears it.",
-            part.parent_hull.0, rightful_owner.0
+            part.parent_hull().map_or(0, |h| h.0),
+            rightful_owner.0
         ));
     }
     if part.fitted_into.is_some() {
         return Err("That part has already been fitted.".to_owned());
+    }
+    if act::lot_hold(ctx, lot)?.is_some() {
+        return Err("That part is held for a sale or another order.".to_owned());
     }
     take(ctx, hull, slot, Some((lot, part)))
 }
@@ -996,6 +1060,23 @@ fn take(
         note: None,
     };
     record.order = Some(order.clone());
+    // Doc 39 cut IN.2 (Q-39-27's "reserved"): an order that fits a part from a lot holds that
+    // lot from now to the draw, so no sale, move or split takes it meanwhile. The hold is an
+    // act the port tick lands; one refused every try cancels the order.
+    if let (Some((lot, _)), Some(vault)) = (&fit, vault) {
+        let act = next_act(ctx, &record);
+        record.acts = act;
+        record.owed = Some(Box::new(OwedAct {
+            act,
+            by: ctx.actor,
+            vault: Some(vault),
+            kind: OwedKind::Hold {
+                order: order.seq,
+                lot: *lot,
+            },
+            tries: 0,
+        }));
+    }
     if let Err(error) = record.check() {
         tracing::error!(%error, hull = hull.0, "tacsim: +bay/order wrote a record that fails its own check");
     }
@@ -1003,8 +1084,32 @@ fn take(
     Ok(Taken { order })
 }
 
-/// Close the open order as cancelled with `note`, releasing the escrow.
-fn close_cancelled(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str) {
+/// Close the open order as cancelled with `note`, releasing the escrow — and, for an order that
+/// fits a part from a lot, owing the release of the lot it held (doc 39 cut IN.2).
+fn close_cancelled(ctx: &mut Ctx<'_>, record: BayHull, note: &str) {
+    close_order(ctx, record, note, true);
+}
+
+fn close_order(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str, release: bool) {
+    let held = record.order.as_ref().and_then(|order| {
+        order.jobs.iter().find_map(|j| match &j.job {
+            BayJob::Replace { lot: Some(lot), .. } => {
+                order.munitions_vault.map(|vault| (order.seq, *lot, vault))
+            }
+            _ => None,
+        })
+    });
+    if let (true, Some((seq, lot, vault)), None) = (release, held, &record.owed) {
+        let act = next_act(ctx, &record);
+        record.acts = act;
+        record.owed = Some(Box::new(OwedAct {
+            act,
+            by: record.order.as_ref().map_or(ctx.actor, |o| o.requester),
+            vault: Some(vault),
+            kind: OwedKind::Release { order: seq, lot },
+            tries: 0,
+        }));
+    }
     let Some(order) = record.order.as_mut() else {
         return;
     };
@@ -1183,7 +1288,8 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Some(order) = record.open().cloned() else {
         return;
     };
-    if ctx.w.world_ic_now().at < order.due_ic || order.draw_act.is_some() {
+    // An owed act (the part's hold) lands before the work is finished.
+    if ctx.w.world_ic_now().at < order.due_ic || order.draw_act.is_some() || record.owed.is_some() {
         return;
     }
     if let Some(note) = refused_now(ctx.w, hull, &order) {
@@ -1403,7 +1509,10 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     ),
                 );
             }
-            OwedKind::Hot { .. } => {}
+            OwedKind::Hot { .. }
+            | OwedKind::Hold { .. }
+            | OwedKind::Release { .. }
+            | OwedKind::Commission { .. } => {}
         }
         return;
     }
@@ -1435,6 +1544,16 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     "the carrier's hold could not supply the goods the work needs",
                 );
             }
+            OwedKind::Hold { .. } => {
+                // Nothing was held, so nothing is released.
+                close_order(
+                    ctx,
+                    record,
+                    "the part could not be held for the order (it has left the hold, or a \
+                     sale or another order holds it)",
+                    false,
+                );
+            }
             OwedKind::Mint { why, .. } => {
                 // The strip or the scrap was never written to the hull (`strip::land_mint`
                 // writes it when the mint lands): a lost mint destroys nothing.
@@ -1462,8 +1581,9 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     hull = hull.0,
                     act = owed.act,
                     op = kind.word(),
-                    "tacsim: a bay act was refused every try; its flag was not written, staff \
-                     write it by hand"
+                    "tacsim: a bay act (a hot flag, a cancelled order's release or a part \
+                     commission) was refused every try and was not written; staff write it by \
+                     hand"
                 );
             }
         }

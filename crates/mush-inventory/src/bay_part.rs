@@ -180,6 +180,7 @@ struct Shared {
     lots: StateFamilyHandle<LotId, Lot>,
     lot_census: StateFamilyHandle<EndpointRef, LotCensus>,
     core_inputs: Option<crate::core_input::CoreInputHandle>,
+    lot_holds: StateFamilyHandle<LotId, crate::lot_hold::LotHold>,
 }
 /// The registered bay part families, handed to the Industry bay provider.
 #[derive(Clone, Debug)]
@@ -193,6 +194,7 @@ pub(crate) fn register(
     lots: StateFamilyHandle<LotId, Lot>,
     lot_census: StateFamilyHandle<EndpointRef, LotCensus>,
     core_inputs: Option<crate::core_input::CoreInputHandle>,
+    lot_holds: StateFamilyHandle<LotId, crate::lot_hold::LotHold>,
 ) -> Result<BayPartHandle, ModError> {
     binding
         .validate()
@@ -239,6 +241,7 @@ pub(crate) fn register(
             lots,
             lot_census,
             core_inputs,
+            lot_holds,
         }),
     })
 }
@@ -335,6 +338,10 @@ impl BayPartHandle {
         }
         if let Some(core) = &f.core_inputs {
             core.require_unheld(txn, lot).map_err(|_| Error::Reserved)?;
+        }
+        // Doc 39 cut IN.2: a lot a listing or a game order holds is its holder's alone.
+        if txn.get(&f.lot_holds, &lot).map_err(bad)?.is_some() {
+            return Err(Error::Reserved);
         }
         let previous = self.holder(txn, lot)?;
         if previous
