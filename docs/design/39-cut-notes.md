@@ -246,4 +246,10 @@ vacated claim (GC.8's `vacate_claim`).
 - **The matter pin moved**: `shard_9/mill.rs::sm12a_…` counts the clerk under `.mint_origins(`; `.mint_origin(`
   is the remains scrap's alone. The receipt kinds are unchanged (`port.stock`).
 
-**Cell delta (rule #14).** shard_2: _filled from the PR's JUnit_ (the story 12.6 s locally).
+**Cell delta (rule #14).** `tacsim-integration-2`: **+0.34 min** for the new story (20.6 s on PR run 41764030040's
+JUnit; 12.6 s locally). The cell's sum reads 34.06 → 33.25 min, main's run at the merge base (41763500559, `ea602323`)
+against the PR's, 411 → 412 tests: runner noise outweighs the story. The other changed tests run no longer: IN.1's
+story 20.3 → 18.1 s with the fit's extra fire. On the same PR run `tacsim-integration-10` failed once on
+`field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` (53 s against its 20 s
+wall-clock `until_refusing` deadline; it passed on main's run at the merge base and locally in 20 s on this branch), a
+timing flake outside the cut.
