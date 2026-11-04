@@ -2698,6 +2698,13 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if !submit(ctx, row.holder, order, 5) {
             continue;
         }
+        // Doc 41 cut RS.4 (Q-41-18): a vacated hull is held for her title holder, who takes her
+        // out of the custodian's bay; nothing else can move her.
+        if settlement == Settlement::Vacate
+            && let Some(owner) = title_of(ctx.w, row.hull).0
+        {
+            crate::port::bay_work::hold_for(ctx, row.hull, owner);
+        }
         // Doc 41 cut RS.7 (Q-41-24): a `recovery` contest's vacate is the registry's finding, so
         // the recovery it vacated is proven and goes port-side.
         if settlement == Settlement::Vacate && vacated_on_recovery(file) {
