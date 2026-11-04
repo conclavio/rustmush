@@ -101,6 +101,27 @@ pub(crate) fn put(
         .map_err(|error| format!("{id}: medical: {error}"))
 }
 
+/// **The beds of `port`'s medical rooms** (doc 42 cut CR.5; Q-42-17): the slots of every facility
+/// holding the [`MEDICAL_CAPABILITY`] whose room is in that port; 0 for a port with none.
+#[must_use]
+pub fn medical_beds(w: &World, port: &crate::ic_return::IcPort) -> u32 {
+    w.module_state::<IndustryStore>().map_or(0, |store| {
+        store
+            .facilities()
+            .into_iter()
+            .filter(|facility| {
+                facility
+                    .capabilities()
+                    .iter()
+                    .any(|word| word.as_str() == MEDICAL_CAPABILITY)
+                    && crate::ic_return::port_of_room(w, facility.object())
+                        .is_some_and(|at| at.id == port.id)
+            })
+            .map(|facility| facility.maximum_slots())
+            .fold(0_u32, u32::saturating_add)
+    })
+}
+
 /// **Whether `port` has a medical room**: a facility holding the
 /// [`MEDICAL_CAPABILITY`] whose room is in that port.
 #[must_use]

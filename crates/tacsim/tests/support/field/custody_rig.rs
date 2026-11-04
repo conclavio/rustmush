@@ -772,3 +772,100 @@ pub(crate) async fn eject_under_the_hold(at: &Ground, permille: u32) {
         "an eject never hurts (Q-42-13)"
     );
 }
+
+/// **Doc 42 cut CR.5's gate, beds as a limit** (Q-42-17): three injured characters stand in
+/// Ceres's arrivals hall, its medical room of two beds, their records read back at a boot. The
+/// first two take the beds at the medical rate; the third is under treatment at the full time,
+/// "waiting for a bed". Once the first two are fit, the third takes a freed bed, the time left
+/// rescaled to the medical rate, and is fit again after it.
+pub(crate) fn beds_at_ceres() {
+    let rig = stocked_tuned(|cfg| {
+        quick(cfg);
+        cfg.field.treat_injured_s = 3_600;
+        cfg.field.treat_medical_permille = 500;
+    });
+    let hall = crate::driving_rig::station_room(&rig.tw, "ceres_port", "room.c03_arrivals");
+    let mut rig = rig;
+    let who: Vec<ObjId> = ["Ash", "Birch", "Cedar"]
+        .into_iter()
+        .map(|name| {
+            crate::driving_rig::staff_hand(&mut rig, |ctx| {
+                ctx.w
+                    .create(mush_core::ObjKind::Player, name, mush_core::GOD, Some(hall))
+                    .expect("a character")
+            })
+        })
+        .collect();
+    let now = rig.tw.world().world_ic_now().at;
+    let docs = who
+        .iter()
+        .map(|character| {
+            let record = tacsim::field::CrewRecord {
+                format: tacsim::field::crew::CREW_FORMAT,
+                character: *character,
+                location: CrewLocation::Port {
+                    port: smol_str::SmolStr::new_static("ceres"),
+                },
+                condition: tacsim::field::CrewCondition::Injured,
+                at_ic: now,
+                organizer: None,
+                extraction: None,
+                treatment: None,
+            };
+            (
+                tacsim::field::crew::crew_key(*character),
+                serde_json::to_value(&record).expect("encodes"),
+            )
+        })
+        .collect();
+    let mut rig = crate::driving_rig::reboot_seeding(rig, docs, &who);
+    let treatment = |rig: &crate::driving_rig::Rig, character: ObjId| {
+        crew_of(rig.tw.world(), character).and_then(|crew| crew.treatment.clone())
+    };
+    assert!(
+        seconds_until(&mut rig, 10, |rig| who
+            .iter()
+            .all(|character| treatment(rig, *character).is_some())),
+        "all three are under treatment"
+    );
+    let beds: Vec<bool> = who
+        .iter()
+        .map(|character| treatment(&rig, *character).is_some_and(|under| under.medical))
+        .collect();
+    assert_eq!(
+        beds.iter().filter(|medical| **medical).count(),
+        2,
+        "two beds: {beds:?}"
+    );
+    let waiter = who[beds.iter().position(|medical| !medical).expect("one waits")];
+    let status = run(&mut rig.tw, waiter, "+sortie/condition");
+    assert!(status.contains("waiting for a bed"), "{status}");
+    let full = treatment(&rig, waiter).expect("waiting").due_ic;
+    let first = who
+        .iter()
+        .filter(|character| **character != waiter)
+        .filter_map(|character| treatment(&rig, *character).map(|under| under.due_ic))
+        .max()
+        .expect("the beds' due instants");
+    // The beds free; the waiter takes one, the time left halved.
+    let _ = crate::driving_rig::to_ic(&mut rig, first);
+    assert!(
+        seconds_until(&mut rig, 10, |rig| treatment(rig, waiter)
+            .is_some_and(|under| under.medical)),
+        "the waiter takes a freed bed: {:?}",
+        treatment(&rig, waiter)
+    );
+    let rescaled = treatment(&rig, waiter).expect("in a bed").due_ic;
+    assert!(
+        rescaled < full,
+        "the time left is rescaled: {rescaled} < {full}"
+    );
+    let _ = crate::driving_rig::to_ic(&mut rig, rescaled);
+    assert!(
+        seconds_until(&mut rig, 10, |rig| crew_of(rig.tw.world(), waiter)
+            .is_some_and(
+                |crew| crew.condition == tacsim::field::CrewCondition::Fit
+            )),
+        "the waiter is fit again"
+    );
+}

@@ -396,7 +396,10 @@ never waits.
 under treatment there and is fit again after a stay of IC time: one IC day when
 injured (`[tacsim.field].treat_injured_s`), three when incapacitated
 (`treat_incapacitated_s`), and half that at a port with a medical room (Ceres's
-arrivals hall and Stickney's customs hall have one). There is no check and no
+arrivals hall and Stickney's customs hall have one). A medical room has a number
+of beds (two at Ceres, four at Stickney): when every bed is taken, a new arrival
+is treated at the full time, "waiting for a bed", and takes the first bed that
+frees, the time left halved from then. There is no check and no
 charge. You are told when treatment begins and when you are fit again. If you
 leave the port first (back aboard a hull, out to a site, or out to Limbo or the
 OOC area), you keep your condition and the clock starts over at the next port you

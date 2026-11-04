@@ -328,3 +328,9 @@ async fn cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port() {
 async fn cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port_at_512() {
     crate::custody_rig::eject_under_the_hold(&URVARA_REACH, 0).await;
 }
+
+/// **CR.5's beds as a limit** (`custody_rig::beds_at_ceres`): a third casualty waits for a bed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr5_a_third_casualty_waits_for_a_bed_at_ceres() {
+    crate::custody_rig::beds_at_ceres();
+}
