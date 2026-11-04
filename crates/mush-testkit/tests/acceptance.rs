@@ -195,3 +195,20 @@ fn who_lists_connected_players() {
     assert_actor_saw(&events, alice, "God");
     assert_actor_saw(&events, alice, "3 players connected.");
 }
+
+/// Doc 43 cut TS.6: `exec_ok` passes a line that succeeds through, output and all.
+#[test]
+fn exec_ok_runs_a_line_that_succeeds() {
+    let mut tw = TestWorld::new();
+    let out = tw.exec_ok(GOD, "@create widget");
+    assert!(!out.is_empty());
+    assert!(tw.world().iter().any(|o| o.name.as_str() == "widget"));
+}
+
+/// …and refuses one that answers with an error, `Huh?` included.
+#[test]
+#[should_panic(expected = "was refused: Huh?")]
+fn exec_ok_refuses_a_line_that_errors() {
+    let mut tw = TestWorld::new();
+    tw.exec_ok(GOD, "frobnicate the widget");
+}
