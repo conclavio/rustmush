@@ -280,3 +280,172 @@ From the PR's last run's JUnit (`41773658403`, at `6dc72e09`): **+0.07 summed mi
 `tacsim-integration-9`** — the one new story, `s4b1_a_live_claim_cursor_holds_the_rig_in_its_bay`,
 4.0 s; the cell sums 30.9 min. The lib, `rest-libs` and `bot` additions are under a second in all
 (`tacsim-lib` 0.77 s over six tests, `rest-libs` 0.03 s, `bot` 0.01 s).
+
+## S.4b-2 (2026-11-04): the claim arm, the claim through the surface, the field's claim seal (§17.3–§17.6, §17.10; D-23-13, D-23-14, D-23-15, D-23-21, D-23-23)
+
+Built on `claude/s4b2-claim-arm` off `main` `c0801a8a` (S.4b-1, #390), one PR. It runs beside doc
+40's FR.3 (#400), which builds steps 2–5 of the pending-launch protocol on S.4b-1's seams.
+
+**Three slices, not two.** Building S.4b-2 turned up three gaps, each larger than its line in §17:
+
+1. **The tick cannot use `IcHost::submit`.** `submit` uses `submit_authoritative_observed`, which needs a
+   dispatch caller: a player's own command. The surface tick's swapped call has none.
+2. **The store's catalog has no rig roots.** The tacsim store holds the plain fielded catalog, so
+   `Execution::capture` refused every governed or fitted rig (`unit schema`).
+3. **The field half reaches into mush-tactics' four-owner custody.** It needs the check-out under a
+   field mark, the field's own write to a held hull, and a Close over the live hull.
+
+This PR closes all three gaps and runs the claim's whole lifecycle through the surface. The field
+stories at 256 and 512, the join's install, the seats, the drop and the carried memory are
+**S.4b-3**, listed under "Deferred".
+
+### What landed
+
+- **The composition.**
+  - `MindCommerce::with_ic_minds_in_bays` and `LaunchComposition::with_ic_minds_in_bays` compose
+    the claim path with the exclusion admitting a bay as the hangar
+    (`ic_sortie::registration::Composition::with_hangars`).
+  - The surface tick gets the composed `IcHost`: `port_tick::register_with_coverage` now registers
+    the surface tick itself, after the providers.
+  - The IC seal owner reads **the composition's own unit catalog** (`Config.catalog`, set from the
+    layer's `definition_catalog` at registration), so a rig root's armament is read, never guessed.
+- **`go` (D-23-21, step 1).** Where the claim path is composed, a filed mind that will fly makes
+  `dispatch` return `Dispatched::Claim { licence, state }` and takes no seal (the claim's capture is
+  the one seal, D-23-14). The start writes `RigRecord.claim = Opening { operator, licence, org,
+  launch_ic: now }` and `Queued { kind: Launch, launch: QueuedLaunch { launch_ic, mind, org,
+  licence_state } }` in one bundle, then answers `Queued.`. No act starts, and the rig stays in its
+  bay.
+- **The production `HostTransition`** (`minds/ic_sortie/surface.rs`). `surface_start` mints the
+  `StartPermit` from the record under `SortieId::ic(tv, launch_ic)`; `surface_close` mints the
+  `CloseEvent` over the claim's Open with an empty plan fenced on the live revision.
+  `claim_of`, `claim_closed`, `claim_seal` and `retained_source` read the book; the cursor moves
+  only on what the book shows.
+- **`IcHost::submit_as_host`.** The claim arm's one closed call, as the operator, through
+  `Fire::as_principal` (S.2's epoch-arm precedent). It is the plain authoritative submission of the
+  same signed selector under the ticket's own key. The arm resubmits that key on later fires until
+  the book shows the transition, so it never reads an attempt state.
+- **The claim arm** (`surface/mind_claim.rs`; the tick's `claim` candidate reason, `CLAIM_CYCLE`).
+  It takes, as the cursor's operator:
+  - **`Opening` with no Open in the book:** mint, enqueue (once a boot) and submit the Open.
+  - **`Opening` with the operator's active Open in the book:** acknowledge the Open, then submit
+    the queued launch's own start. That start's prepare (`queued_claim`) sets the cursor to
+    `Open { open }`, opens the excursion at `go`'s instant, and carries the claim's seal on the act
+    (`DispatchSeal.open`), so the open line prints the claim's seal.
+  - **`Closing` with the book's row not closed:** mint, enqueue and submit the Close. Once the book
+    holds it, nothing more is owed: the relaunch guard reads a `Closing` cursor whose Close the book
+    holds as spent (`closed_in_book`).
+  - **The tries spent with no Open (D-23-21):** submit the queued launch's start with
+    `claim: refused`, whose prepare writes `Refused { reason: CLAIM_REFUSED }` and clears the queue.
+    The operator hears `CLAIM_REFUSED` once.
+  - The claim's attempt key is kept in the tick's `still_due` set, so its tries survive the prune.
+- **Every epoch close owes the claim's Close** (`RigRecord::owe_claim_close`, `Open` → `Closing`),
+  with the close line's own kind:
+  - `ReturnedToBase`: the recover's `Done` and the staff home into its own hull;
+  - `RecoveredToBase`: the home into a second carrier, the parked or abandoned home, and the
+    salvage load (Q-23-11);
+  - `Destroyed`: `close_destroyed`.
+- **The field takes the claim's seal** (D-23-17 (a)).
+  - `Entrant.claim` carries the rig record's `Open` token. `custody_unit` seals that entrant under
+    `claim_seal(world, open)`; everyone else gets the ROM, as before.
+  - `arena_bridge::sealed_sources` also reads the claim's retained source, so the arena installs
+    the claim's Rhai runner at admission (the `sources` seam, §17.10).
+  - `held_out` no longer walls a hull whose hold is in a hangar (`mush_sim::ic_exclusion::held_in_hangar`).
+- **Custody coexistence and the live-hull Close (D-23-15, mush-tactics).**
+  - `custody::check_out` admits an IC-held hull under a field mark; a match's mark is still
+    refused.
+  - The boot check skips a held hull deployed to a field (the field's resume owns it) and otherwise
+    accepts a held hull of the Open's object and definition at a revision no older than the Open's:
+    its bytes are held only at the Open's own revision (`live_matches`).
+  - The Close compares the live hull the same way, and `project_live_close_unit_digest` projects
+    over it. The seal participant's Close identity compares object, definition and revision, and
+    projects over the live hull too.
+- **Refusal reasons for the operator.** The IC owners' error helpers (seal, executable, tactics
+  custody, sim exclusion, the Roll's writer and its reader's refusal branches) trace their reason at
+  `debug` under the `ic_claim` target. The player's sentence stays generic.
+
+### The exclusion-rule change (D-23-15; for the reviewer)
+
+The freeze on a hold in a hangar is **re-anchoring only** (`check_plan`, `hangar_move_admitted`).
+A hold in a fixed base is frozen exactly as before. For a hull held in a hangar:
+
+| Move | Rule |
+|---|---|
+| A pose on the domain the hull stands on | admitted only on that same domain |
+| The ramp from its hangar | admitted only onto the domain its carrier is landed on: the carrier's own placement is `Direct` on that domain and not unplaced, the carrier is under no journey (`JourneyBook::under_way`), and the domain is `Active` |
+| A move from one domain to another (a teleport) | refused |
+| A re-parent `Interior` into its own hangar, or into any carrier's bay (`MovingObject`-anchored: a recoverer's, S.3; a salvage load's, Q-23-11) | admitted |
+| A mount, an unplacing, a fixed room, a projection with no admitted placement, a rewrite of the bay's interior | refused |
+
+Also changed:
+
+- **The boot check:** a hangar hold's hull must stand on a domain or in a bay, never at the Open's
+  image, and the hangar's carrier must stand.
+- **The journey boot check:** a hangar hold is barred only by a journey rooted at the hull itself;
+  the carrier may leave, per F-6.
+
+`check_plan` now reads the **planner's own spatial state**. Inside a plan, the world's slot is not
+readable (the first version read `crate::state(world)` and refused every ramp in production while
+passing the unit test, which plans with the state left in the world).
+
+Negative tests, in the mush-sim hangar test: a ramp onto a second, unrelated active domain is
+refused, and a ramp onto the carrier's own domain is refused once the carrier is not landed.
+
+### Tests
+
+- **`mush-sim` lib:** `ic_exclusion::tests::s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted`
+  is extended:
+  - `held_in_hangar` names the carrier;
+  - the ramp onto the carrier's domain is admitted;
+  - the unrelated domain and the unlanded carrier are refused;
+  - a fixed room is refused.
+- **`mush-tactics` lib:** `ic_custody::tests::s4b2_a_field_mark_coexists_with_the_claim_and_the_close_takes_the_live_hull`:
+  - a match's check-out is refused and a field's admitted;
+  - the field's check-in writes the hull, and the claim stands through it;
+  - `live_matches` accepts the Open's image and the later revision;
+  - the Close prepares and installs over the live hull.
+- **`tacsim --test shard_9`:**
+  - `ic_sortie_surface::s4b2_an_open_refused_for_good_cancels_the_queued_launch`. In the commerce
+    harness with the claims composed in the bays (`reboot_with_claims`), every Open the arm submits
+    is refused by the Roll's reader (no licence 7 is held). Past the tries the cursor reads
+    `Refused`, the queue is gone, the rig never left its bay, the pilot hears `CLAIM_REFUSED` once,
+    and a plain launch afterwards is not held.
+  - `m8_world::s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`. Ignored; the CI
+    dispatch runs it, as M8g's stories run. In the combined M8 world with the claims composed in the
+    bays, with one genuine rating (Coprates) and the paid Pin over the governed Class II rig:
+    1. the leased rig is refused with D-23-22's sentence;
+    2. once titled to the pilot, `go` files `Opening` with the launch queued and no act;
+    3. the arm opens the claim in the bay (the pilot is its dispatcher) and starts the queued
+       launch (the cursor reads `Open`);
+    4. the open line's `seal_digest` is the claim's, the licence is the Pin's, and the claim's
+       seal sorties under the epoch's IC id;
+    5. the recover owes the Close, the arm lands it, the book holds no active claim, and a plain
+       launch afterwards is not held.
+
+### Deferred, and why (S.4b-3)
+
+- **The field stories at 256 and 512** (§17.10's acceptance): a licensed rig admitted under its
+  claim's seal that thinks in a field on Ahuna Flank and on Urvara Reach. The only world holding a
+  filed licence is the M8 world (genuine ratings, Ahuna only). The field-story harness
+  (`tests/support/field`) composes no mind commerce. S.4b-3's first task is to compose the two (the
+  M8 world's launch over `driving_rig`'s grounds), then run the field half (admission under the seal,
+  the field's check-in, the live-hull Close) at both sizes. Its in-source halves are tested above.
+- **The join's install** (D-23-23 step 3 for a reinforcement). `arena/join.rs` refuses a scripted
+  seal. FR.3's `join_launches` keeps skipping a hull whose claim is `Open` until the arena's join
+  installs the claim's runner. That is a kernel file (doc 38 §9.2: `arena/*` is FR.5's), so it is
+  coordinated there.
+- **The seats at `go` (D-23-16).** Today a second Open under a held licence seat is refused by the
+  Roll at the Open and ends `Refused` past the tries. The refusal at `go` with the arithmetic, and
+  the compute sum, are S.4b-3's.
+- **The drop and the wall (D-23-17 (b)), the carried memory (D-23-18), the install at a field's
+  resume, M8g's "To S.4b" stories, and `PoweredDownInBase` for a launch cancelled after its Open.**
+  S.4b-2 leaves the cursor no path from `Open` to a cancel; the epoch's close is the only Close.
+
+### Hash pins (rule #13)
+
+None of doc 40 §4a's pinned files is touched. `arena/*` is untouched: the field's install rides
+`install_sealed_runners`' existing `sources` seam, and no OOC arena installs a retained execution.
+The harness kind is dispatched on the PR's branch before it is marked ready.
+
+### Cost (rule #14)
+
+Recorded from the PR run's JUnit once it lands.
