@@ -2219,6 +2219,19 @@ by-hand revision in the row and in its cut note (doc 43 §10.3). After a by-hand
 run, the commit that records its figures moves `by_hand` to the revision it ran
 at.
 
+**A switch in a story is a configuration** (doc 43 cut TS.18). A test that
+reads an environment variable has a variant for every value nobody runs. Every
+variable tacsim's and the bot's tests read is either named in a row's `config`
+(a variant row may name a test that is not gated, with its non-default
+configuration, its tier and its last run: `FIELD_RAID=director`, `MINE_RATE=24`)
+or declared a `[[knob]]` in the same file with its kind: `opt-in` (the test
+returns early unless it is set, so it is gated and has rows), `size` (the
+default is what the rows cover), `measurement`, `report`, `bless`, `secret` or
+`plumbing`. `every_variable_a_story_reads_is_a_named_configuration_or_a_declared_knob`
+refuses a new variable with neither. To run a variant on the box, dispatch it
+with `scripts/vps-gate.sh --env "NAME=VALUE"` and move the row's `by_hand` to
+the revision it ran at.
+
 **The nightly's failure channel** (doc 43 D-43-3) is GitHub's own email for a
 failed scheduled run. GitHub sends a scheduled workflow's notifications to the
 account that last changed the `cron` lines in `ci.yml`, so the owner checks two

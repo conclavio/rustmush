@@ -82,6 +82,9 @@ struct DiscoveredTest {
     reads_live_backend: bool,
     /// Explicit opt-in flags in an early-returning test body.
     opt_in_flags: BTreeSet<String>,
+    /// Every variable an early-returning test body reads by literal name: the
+    /// candidates for an opt-in `test-tiers.toml` declares (doc 43 TS.18).
+    early_return_reads: BTreeSet<String>,
 }
 
 impl DiscoveredTest {
@@ -121,6 +124,14 @@ impl DiscoveredTest {
 /// Opt-in spelling is part of this source gate's contract. Knobs such as a
 /// duration or report path do not make a test optional.
 fn opt_in_flags(body: &str) -> BTreeSet<String> {
+    early_return_reads(body)
+        .into_iter()
+        .filter(|name| name.starts_with("RUN_") || name.ends_with("_RUN"))
+        .collect()
+}
+
+/// The variables an early-returning body reads by literal name.
+fn early_return_reads(body: &str) -> BTreeSet<String> {
     if !body
         .lines()
         .any(|line| line.trim_start().starts_with("return"))
@@ -131,7 +142,6 @@ fn opt_in_flags(body: &str) -> BTreeSet<String> {
     body.split(&needle)
         .skip(1)
         .filter_map(|tail| tail.split_once('"').map(|(name, _)| name))
-        .filter(|name| name.starts_with("RUN_") || name.ends_with("_RUN"))
         .map(str::to_owned)
         .collect()
 }
@@ -237,6 +247,7 @@ fn scan_file(path: &Path, relative: &str, out: &mut Vec<DiscoveredTest>) {
             ignored,
             reads_live_backend: body.contains(&needle),
             opt_in_flags: opt_in_flags(&body),
+            early_return_reads: early_return_reads(&body),
         });
         index = end + 1;
     }
@@ -975,6 +986,44 @@ const WEEKLY_CRON: &str = "17 4 * * 0";
 struct TierManifest {
     #[serde(rename = "test")]
     rows: Vec<TierRow>,
+    /// Doc 43 cut TS.18: the variables tacsim's and the bot's tests read that
+    /// are not a configuration of their own (or, `opt-in`, make a test gated).
+    #[serde(rename = "knob", default)]
+    knobs: Vec<Knob>,
+}
+
+/// The kinds of [`Knob`]: why a variable a test reads needs no row of its own.
+const KNOB_KINDS: [(&str, &str); 7] = [
+    (
+        "opt-in",
+        "an early return unless set: the test is gated and has rows",
+    ),
+    (
+        "size",
+        "a sizing knob: the default is what the rows cover, another value a recorded measurement",
+    ),
+    (
+        "measurement",
+        "changes what is measured, never what is asserted",
+    ),
+    ("report", "where a report or preview is written"),
+    ("bless", "rewrites a committed fixture or baseline"),
+    (
+        "secret",
+        "a credential, or a name a test keeps unset on purpose",
+    ),
+    (
+        "plumbing",
+        "set by a parent process or script for its child",
+    ),
+];
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Knob {
+    name: String,
+    kind: String,
+    note: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1010,13 +1059,16 @@ struct TierRow {
 }
 
 impl TierRow {
-    /// A `::*` row covers the tests under its prefix that need no opt-in
-    /// flag; a test that does is named by a row of its own, whose
-    /// configuration names the flag (a run without it is a skip).
+    /// A `::*` row covers the gated tests under its prefix that need no
+    /// opt-in flag; a test that does is named by a row of its own, whose
+    /// configuration names the flag (a run without it is a skip). An exact
+    /// row may also name a test that is not gated: a variant, which only a
+    /// configuration other than the default makes worth a row (TS.18).
     fn matches(&self, key: &str, test: &DiscoveredTest) -> bool {
         match self.id.strip_suffix("::*") {
             Some(prefix) => {
-                test.opt_in_flags.is_empty()
+                test.backend_gated()
+                    && test.opt_in_flags.is_empty()
                     && key
                         .strip_prefix(prefix)
                         .is_some_and(|rest| rest.starts_with("::"))
@@ -1176,6 +1228,29 @@ struct Workflows {
     tiers: BTreeMap<String, &'static str>,
 }
 
+/// The tree's tests, with the opt-ins `test-tiers.toml` declares (`kind =
+/// "opt-in"`) counted as opt-in flags: a test that returns early unless one
+/// is set is gated like a `RUN_*` one (doc 43 TS.18).
+fn tiered_tests(root: &Path, manifest: &TierManifest) -> Vec<DiscoveredTest> {
+    let declared: BTreeSet<&str> = manifest
+        .knobs
+        .iter()
+        .filter(|knob| knob.kind == "opt-in")
+        .map(|knob| knob.name.as_str())
+        .collect();
+    let mut tests = discovered_tests(root);
+    for test in &mut tests {
+        let extra: Vec<String> = test
+            .early_return_reads
+            .iter()
+            .filter(|name| declared.contains(name.as_str()))
+            .cloned()
+            .collect();
+        test.opt_in_flags.extend(extra);
+    }
+    tests
+}
+
 /// Checks one row against one test it matches; the problems, if any.
 fn row_problems(
     root: &Path,
@@ -1326,7 +1401,7 @@ fn every_gated_test_declares_its_tier_and_the_workflow_agrees() {
         gate,
     };
     let manifest = tier_manifest(&root);
-    let tests = discovered_tests(&root);
+    let tests = tiered_tests(&root, &manifest);
     let gated: Vec<&DiscoveredTest> = tests.iter().filter(|t| t.backend_gated()).collect();
 
     let mut problems: Vec<String> = Vec::new();
@@ -1344,14 +1419,20 @@ fn every_gated_test_declares_its_tier_and_the_workflow_agrees() {
                 row.id, row.tier, row.config
             ));
         }
-        let matched: Vec<&&DiscoveredTest> = gated
+        let matched: Vec<&DiscoveredTest> = tests
             .iter()
             .filter(|test| row.matches(&test.tier_key(&root), test))
             .collect();
         if matched.is_empty() {
-            problems.push(format!("{}: a stale row; it matches no gated test", row.id));
+            problems.push(format!("{}: a stale row; it matches no test", row.id));
         }
         for test in matched {
+            if !test.backend_gated() && row.config.is_empty() {
+                problems.push(format!(
+                    "{}: the test is not gated, so it runs in its default configuration                      wherever its binary runs; a row for it names a variant's config",
+                    row.id
+                ));
+            }
             problems.extend(row_problems(&root, &flows, row, test));
         }
     }
@@ -1407,4 +1488,167 @@ jobs:
     assert!(!runs_ignored("cargo nextest run -P ci -p a --test t"));
     assert!(is_revision("99b3a4b4"));
     assert!(!is_revision("99B3A4B4") && !is_revision("abc") && !is_revision("never"));
+}
+
+// ---- Doc 43 cut TS.18: variant identities ----
+
+/// The crates whose tests §5.9 censused: the stories that carry switches.
+const CENSUSED_TESTS: [&str; 2] = ["crates/tacsim/tests", "crates/mush-bot/tests"];
+
+/// The environment variables a test source reads by name: the argument of
+/// `env::var`, `env::var_os`, `knob` or an `env_*` helper, as a literal or a
+/// `const NAME: &str = "..."` of the same file. A census, not a parser: a name
+/// built at run time is invisible to it.
+fn env_names_read(source: &str) -> BTreeSet<String> {
+    let is_name = |name: &str| {
+        name.len() > 1
+            && name.starts_with(|c: char| c.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    };
+    let mut consts = BTreeMap::new();
+    for line in source.lines() {
+        let Some((_, rest)) = line.split_once("const ") else {
+            continue;
+        };
+        let Some((ident, value)) = rest.split_once(": &str = \"") else {
+            continue;
+        };
+        if let Some((value, _)) = value.split_once('"') {
+            consts.insert(ident.trim().to_string(), value.to_string());
+        }
+    }
+    let mut names = BTreeSet::new();
+    for (at, _) in source.match_indices('(') {
+        let before = &source[..at];
+        let callee_start = before
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_' || *c == ':'))
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let callee = &before[callee_start..];
+        let last = callee.rsplit("::").next().unwrap_or(callee);
+        let reads = callee.ends_with("env::var")
+            || callee.ends_with("env::var_os")
+            || last == "knob"
+            || last.starts_with("env_");
+        if !reads {
+            continue;
+        }
+        let argument = source[at + 1..].trim_start();
+        let name = if let Some(literal) = argument.strip_prefix('"') {
+            literal.split_once('"').map(|(name, _)| name.to_string())
+        } else {
+            let ident: String = argument
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            consts.get(&ident).cloned()
+        };
+        if let Some(name) = name.filter(|name| is_name(name)) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+/// **Doc 43 TS.18.** Every variable tacsim's and the bot's tests read is a
+/// named configuration — in the `config` of a `test-tiers.toml` row, where it
+/// has a tier and a run — or a declared knob with a kind saying why it needs
+/// no row. A new switch in a story therefore arrives with its row or its
+/// reason; a variant nobody selects is no longer a configuration with no test
+/// under a name the inventory calls covered (§5.9).
+#[test]
+fn every_variable_a_story_reads_is_a_named_configuration_or_a_declared_knob() {
+    let root = scan::repo_root();
+    let manifest = tier_manifest(&root);
+    let mut read: BTreeMap<String, String> = BTreeMap::new();
+    for dir in CENSUSED_TESTS {
+        for file in scan::files(&root.join(dir), &["rs"], &["target"]) {
+            let source = fs::read_to_string(&file).unwrap_or_default();
+            let relative = file
+                .strip_prefix(&root)
+                .expect("under the root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            for name in env_names_read(&source) {
+                read.entry(name).or_insert_with(|| relative.clone());
+            }
+        }
+    }
+    assert!(
+        read.len() >= 50 && read.contains_key("FIELD_RAID") && read.contains_key("MINE_RATE"),
+        "the census found {} variables: it is broken, not the tree",
+        read.len()
+    );
+    let configured: BTreeSet<&str> = manifest
+        .rows
+        .iter()
+        .flat_map(|row| row.config.split_whitespace())
+        .map(|pair| pair.split('=').next().unwrap_or(pair))
+        .collect();
+    let mut problems = Vec::new();
+    let mut knobs = BTreeSet::new();
+    for knob in &manifest.knobs {
+        if !KNOB_KINDS.iter().any(|(kind, _)| *kind == knob.kind) {
+            problems.push(format!(
+                "knob {}: kind {:?} is none of {KNOB_KINDS:?}",
+                knob.name, knob.kind
+            ));
+        }
+        if knob.note.trim().is_empty() {
+            problems.push(format!("knob {}: a knob says what it switches", knob.name));
+        }
+        if !knobs.insert(knob.name.as_str()) {
+            problems.push(format!("knob {}: declared twice", knob.name));
+        }
+        if !read.contains_key(&knob.name) {
+            problems.push(format!(
+                "knob {}: a stale knob; no censused test reads it",
+                knob.name
+            ));
+        }
+        if knob.kind == "opt-in" && !configured.contains(knob.name.as_str()) {
+            problems.push(format!(
+                "knob {}: an opt-in no row's config sets runs nowhere",
+                knob.name
+            ));
+        }
+    }
+    for (name, file) in &read {
+        if !configured.contains(name.as_str()) && !knobs.contains(name.as_str()) {
+            problems.push(format!(
+                "{name} (read in {file}): a configuration with no row and no declared knob; \
+                 name it in a row's config (with its tier and last run) or declare it a \
+                 [[knob]] in {TIERS_MANIFEST}"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{TIERS_MANIFEST}'s variants and knobs disagree with the tests (doc 43 TS.18):\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+#[test]
+fn the_variable_census_reads_literals_constants_and_helpers() {
+    let source = r#"
+const ROLE: &str = "MY_ROLE";
+fn x() {
+    let a = std::env::var("FIELD_RAID");
+    let b = std::env::var_os(ROLE);
+    let c = env_u64("TACSIM_SEED", 1);
+    let d = knob("GC12_ARENA_S", 120);
+    let e = std::env::var(name);
+    let f = other("NOT_READ");
+    fn env_u32(name: &str) {}
+}
+"#;
+    let names: Vec<String> = env_names_read(source).into_iter().collect();
+    assert_eq!(
+        names,
+        ["FIELD_RAID", "GC12_ARENA_S", "MY_ROLE", "TACSIM_SEED"]
+    );
 }

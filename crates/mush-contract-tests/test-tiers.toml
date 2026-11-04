@@ -38,6 +38,15 @@
 # the Sunday slot (a weekly job) or carries its by-hand revision here and in
 # its cut note. After a by-hand run, update `by_hand` to the revision it ran
 # at, in the commit that records the run's figures.
+#
+# Doc 43 cut TS.18, variant identities (§5.9): an exact row may name a test
+# that is NOT gated, with a non-default `config`: a variant, with its own tier
+# and last run (FIELD_RAID=director, MINE_RATE=24 below). And every variable
+# tacsim's and the bot's tests read (a literal or a `const` passed to
+# `env::var`, `knob` or an `env_*` helper) is either named in some row's
+# `config` or declared a [[knob]] at the end of this file, with the kind that
+# says why it needs no row of its own. A knob of kind `opt-in` makes a test
+# that returns early unless it is set a gated test, like a `RUN_*` flag.
 
 # ---- pr: every push and pull request ----
 
@@ -271,12 +280,13 @@ tier = "by-hand"
 by_hand = "34416410"
 
 # 16c Q-AK4: spends real money, so no job runs it. The last run, "on AN", from
-# the muster, two of five, $0.0725 (16c), recorded at this commit.
+# the muster (cut AN.1's FROM_MUSTER variant), two of five, $0.0725 (16c),
+# recorded at this commit. The posed form (FROM_MUSTER unset) has no later run.
 [[test]]
 id = "mush-bot/tests::arena_live_commander::arena_live_commander_five_matches"
 tier = "by-hand"
 by_hand = "21cbe730"
-config = "MUSH_BOT_LIVE_COMMANDER=1"
+config = "MUSH_BOT_LIVE_COMMANDER=1 MUSH_BOT_LIVE_FROM_MUSTER=1"
 
 # 17b cut M1b.5: the M1b gate's measure, 15 of 30 at the gate (17b's plan).
 [[test]]
@@ -306,3 +316,346 @@ tier = "by-hand"
 config = "TACSIM_LLM_COST_RUN=1"
 by_hand = "never"
 note = "Owner-funded cost measurement; only the mock lane has run (16b's plan: no run against the real provider)."
+
+# ---- variants (doc 43 TS.18): configurations other than the default ----
+
+# Doc 36 cut GC.11's director raid: the captain/escort story with the field's
+# director seeding the raider. Its default form runs in the bot-stories cell.
+[[test]]
+id = "mush-bot/tests::mining_cohort::a_captain_and_its_escort_fight_the_raider_in_an_ic_field"
+tier = "by-hand"
+config = "FIELD_RAID=director"
+by_hand = "2c4b1c03"
+note = "Recorded by TS.18: gate run 41874705027 on conclav.dev, dispatched with gate.yml's env input (FIELD_RAID=director), passed in 584 s."
+
+# The mining canary at world rate 24 (docs/testing-rate.md): 168 by default
+# since 2026-10-27. Its rate-24 run was gate run 40431777853, 528.0 s, on a
+# gate/ snapshot commit, when 24 was still the default.
+[[test]]
+id = "mush-bot/tests::mining_cohort::the_mining_root_runs_under_the_bots_serde"
+tier = "by-hand"
+config = "MINE_RATE=24"
+by_hand = "77d2f56c"
+
+# GC.12 with the budget asserted instead of reported (doc 36: report-only by
+# default, D-H-8).
+[[test]]
+id = "tacsim/tests::field_scale::gc12_the_field_pulse_is_measured_at_scale"
+tier = "by-hand"
+config = "GC12_ASSERT=1"
+by_hand = "never"
+note = "Both recorded GC.12 runs were report-only; the assertion is for the production class of host (16c T-109)."
+
+# The Hold lane (16b cut O.1, 16c Q-O3): report-only, run by hand in O.1's gate.
+[[test]]
+id = "tacsim/tests::harness::tacsim_harness_hold_lane"
+tier = "by-hand"
+config = "TACSIM_HOLD_LANE=1"
+by_hand = "8c2f0388"
+
+# ---- knobs (doc 43 TS.18): variables a test reads that need no row ----
+
+[[knob]]
+name = "TACSIM_HOLD_LANE"
+kind = "opt-in"
+note = "tacsim_harness_hold_lane returns at once unless it is 1"
+
+[[knob]]
+name = "TACSIM_SNAPSHOT_OFF"
+kind = "measurement"
+note = "the harness skips the snapshot lens (16b cut AF.2): measurement only"
+
+[[knob]]
+name = "TACSIM_FRAME_WORKERS"
+kind = "measurement"
+note = "the harness's frame workers, reported beside the figures; default 1"
+
+[[knob]]
+name = "FIELD_IDLE_S"
+kind = "size"
+note = "the IC field's idle bound in the captain/escort story (and a director raid's idle trigger)"
+
+[[knob]]
+name = "GC12_SIZES"
+kind = "size"
+note = "GC.12's unit ladder; default the full 9..100 the recorded runs used"
+
+[[knob]]
+name = "GC12_ARENA_S"
+kind = "size"
+note = "GC.12's arena seconds a size; default 120, as recorded"
+
+[[knob]]
+name = "MUSH_BOT_MIND_RATE_MATCHES"
+kind = "size"
+note = "the thirty-pooled-matches lane's match count; default 30"
+
+[[knob]]
+name = "MUSH_BOT_MIND_RATE_PARALLEL"
+kind = "size"
+note = "the thirty-pooled-matches lane's parallel matches"
+
+[[knob]]
+name = "MUSH_BOT_WIN_RATE_KEEP"
+kind = "size"
+note = "keep the win-rate lanes' match directories for reading"
+
+[[knob]]
+name = "TACSIM_ARENA_S"
+kind = "size"
+note = "the harness arena's seconds; the delta reads a run at the default"
+
+[[knob]]
+name = "TACSIM_FIGHTING"
+kind = "size"
+note = "the harness's fighting share; the delta reads a run at the default"
+
+[[knob]]
+name = "TACSIM_LANCE_ARENA_S"
+kind = "size"
+note = "the lance lane's seconds"
+
+[[knob]]
+name = "TACSIM_LANCE_UNITS"
+kind = "size"
+note = "the lance lane's units"
+
+[[knob]]
+name = "TACSIM_LONG_RUN_S"
+kind = "size"
+note = "the long-run lane's seconds (no delta reads it)"
+
+[[knob]]
+name = "TACSIM_MINDS_JITTER_MS"
+kind = "size"
+note = "the minds lane's late wakes, ms"
+
+[[knob]]
+name = "TACSIM_MINDS_JITTER_PER_MILLE"
+kind = "size"
+note = "the minds lane's late wakes, per mille"
+
+[[knob]]
+name = "TACSIM_MINDS_VARIANTS"
+kind = "size"
+note = "a subset of the minds lane's four variants; unset is all four, as the baseline"
+
+[[knob]]
+name = "TACSIM_PULSES"
+kind = "size"
+note = "the ground-pulse lane's pulses (no delta reads it)"
+
+[[knob]]
+name = "TACSIM_SEED"
+kind = "size"
+note = "the harness relief's seed; the baseline is the default seed"
+
+[[knob]]
+name = "TACSIM_SENSOR_CELLS"
+kind = "size"
+note = "the harness's sensor cells; default as blessed"
+
+[[knob]]
+name = "TACSIM_SHARE_CELLS"
+kind = "size"
+note = "the harness's share cells; default as blessed"
+
+[[knob]]
+name = "TACSIM_SIGHT_ORIGINS"
+kind = "size"
+note = "the sight differential's seeded origins (16b cut J.1)"
+
+[[knob]]
+name = "TACSIM_UNITS"
+kind = "size"
+note = "the harness's units; default as blessed"
+
+[[knob]]
+name = "TACSIM_WAKE_JITTER_MS"
+kind = "size"
+note = "the harness's wake jitter, ms"
+
+[[knob]]
+name = "TACSIM_COHORT_IC_DAYS"
+kind = "size"
+note = "the cost lane's IC days; 30 by default, 5 the smoke"
+
+[[knob]]
+name = "TACSIM_LLM_COST_CAP_USD"
+kind = "size"
+note = "the live LLM cost run's spending cap"
+
+[[knob]]
+name = "TACSIM_LLM_COST_MINUTES"
+kind = "size"
+note = "the LLM cost run's minutes"
+
+[[knob]]
+name = "TACSIM_LLM_COST_MODEL"
+kind = "size"
+note = "the LLM cost run's model"
+
+[[knob]]
+name = "TACSIM_LLM_COST_UNITS"
+kind = "size"
+note = "the LLM cost run's units"
+
+[[knob]]
+name = "TACSIM_COST_JSON"
+kind = "report"
+note = "the cost lane's JSON report path"
+
+[[knob]]
+name = "RELIEF_PREVIEW"
+kind = "report"
+note = "writes a relief preview image to this path"
+
+[[knob]]
+name = "M6_AUTHOR_STORY_OUT"
+kind = "report"
+note = "the M6 author story's evidence file, set by scripts/mind_port_acceptance.py"
+
+[[knob]]
+name = "M6_BOT_INTERVAL_OUT"
+kind = "report"
+note = "the M6 external interval's evidence file, set by scripts/mind_port_acceptance.py"
+
+[[knob]]
+name = "TACSIM_BLESS"
+kind = "bless"
+note = "rewrites a test's committed golden fixture"
+
+[[knob]]
+name = "TACSIM_BASELINE_BLESS"
+kind = "bless"
+note = "re-blesses harness_baseline/arena.<os>.json, by a record, never blind"
+
+[[knob]]
+name = "TACSIM_WRITE_CONTENT"
+kind = "bless"
+note = "rewrites the generated content files and re-signs them"
+
+[[knob]]
+name = "ANTHROPIC_API_KEY"
+kind = "secret"
+note = "a live model key for the bot's model lanes"
+
+[[knob]]
+name = "OPENROUTER_API_KEY"
+kind = "secret"
+note = "a live model key (the live commander, the live LLM cost run)"
+
+[[knob]]
+name = "MUSH_BOT_PASSWORD"
+kind = "secret"
+note = "the arena test account's password"
+
+[[knob]]
+name = "MUSH_BOT_E2E_PASSWORD"
+kind = "secret"
+note = "the e2e test account's password"
+
+[[knob]]
+name = "MUSH_BOT_E2E_MODEL_KEY"
+kind = "secret"
+note = "the e2e test's model key"
+
+[[knob]]
+name = "MUSH_BOT_BUDGET_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_BUDGET_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_OFFLINE_TEST_MISSING_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_OFFLINE_TEST_MISSING_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_PROBE_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_PROBE_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_REGRESSION_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_REGRESSION_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_STUDIO_TEST_MISSING_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_STUDIO_TEST_MISSING_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_TRACE_TEST_MODEL_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "MUSH_BOT_TRACE_TEST_SSH_SECRET"
+kind = "secret"
+note = "a secret's variable name the test keeps unset on purpose, to prove the missing-secret refusal"
+
+[[knob]]
+name = "M6_ACCEPTANCE_REVISION"
+kind = "plumbing"
+note = "the revision scripts/mind_port_acceptance.py records for its run"
+
+[[knob]]
+name = "M6_ACCEPTANCE_RUN_ID"
+kind = "plumbing"
+note = "the run identity scripts/mind_port_acceptance.py records"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_HELPER"
+kind = "plumbing"
+note = "the cast-debug test's child process role"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_MANIFEST"
+kind = "plumbing"
+note = "the cast-debug child's manifest path"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_OUTPUT"
+kind = "plumbing"
+note = "the cast-debug child's output path"
+
+[[knob]]
+name = "MUSH_BOT_CAST_DEBUG_SETTINGS"
+kind = "plumbing"
+note = "the cast-debug child's settings path"
+
+[[knob]]
+name = "MUSH_BOT_OWNED_HELPER"
+kind = "plumbing"
+note = "the lab test's child process role (the parent sets it to 1)"
+
+[[knob]]
+name = "MUSH_CAMPAIGN_START"
+kind = "plumbing"
+note = "a campaign fixture child's start file, set by its parent"
