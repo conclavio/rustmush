@@ -12481,6 +12481,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
         assert_eq!(view.power, power);
         let runtime = arena.profiles.get(&red).expect("admitted runtime");
         let card = runtime.card.clone();
+        let wrecks = arena.mind_wrecks();
         let job = |profile| ThinkJob {
             unit: red,
             think_seq: 0,
@@ -12492,7 +12493,7 @@ fn m4_2_the_load_mind_is_calibrated_to_the_class_iii_row() {
             view: &view,
             memory: &memory,
             map: &arena.definition,
-            wrecks: &arena.mind_wrecks(),
+            wrecks: &wrecks,
             card: &card,
             program: &runtime.program,
             profile_token: runtime.token(),

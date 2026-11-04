@@ -660,7 +660,7 @@ impl std::ops::Deref for Ground<'_> {
 /// eye is the default).
 ///
 /// **Doc 40 cut FR.5** (§4.1 item 3, Q-40-8): over the terrain with every wreck's cell but the
-/// line's two ends read as a wall ([`crate::arena::wreck_cover::WithWrecks`]), as the fire
+/// line's two ends read as a wall (`wreck_cover::WithWrecks`), as the fire
 /// trace walks it, so a mind no longer fires through a wreck; with no wreck, over the terrain.
 #[must_use]
 pub fn line_to(ground: &Ground<'_>, own: (u16, u16), cell: (u16, u16)) -> bool {

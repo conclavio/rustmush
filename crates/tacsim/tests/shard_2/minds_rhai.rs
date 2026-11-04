@@ -3988,6 +3988,7 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
     let view = Arc::new(three.mind_view(RED).expect("red's view"));
     let runtime = &three.profiles[&RED];
     let card = runtime.card.clone();
+    let wrecks = three.mind_wrecks();
     let job = |profile| ThinkJob {
         unit: RED,
         think_seq: 0,
@@ -3999,7 +4000,7 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
         view: &view,
         memory: &[],
         map: &three.definition,
-        wrecks: &three.mind_wrecks(),
+        wrecks: &wrecks,
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),

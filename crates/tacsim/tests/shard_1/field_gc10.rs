@@ -198,8 +198,10 @@ async fn gc10_a_leader_voids_friendly_fire_standing() {
     let mut rig = stocked_tuned(|cfg| {
         tune(cfg);
         cfg.field.disengage_s = 5;
-        // GC.2's idle bound: no shot for this long demotes whatever contacts stand in reach.
-        cfg.field.idle_demote_s = 8;
+        // Doc 40 cut FR.5 (§4.1 item 2, §4a): the field demotes on `disengage_s`. Before FR.5
+        // `note_fire` told the friend of both, whose standing hostility kept the tempo engaged,
+        // so only GC.2's idle bound (8 s here) could close it; that bound is now out of reach.
+        cfg.field.idle_demote_s = 600;
     });
     // CF.2's ground: A's and B's armed hulls four cells apart, C's prospector beside them, and
     // the Skulks' carrier on the site (seeded, not launched): four kinds of party.
@@ -274,7 +276,7 @@ async fn gc10_a_leader_voids_friendly_fire_standing() {
         })
     };
     // Both leaders stand down with a Friendly mark (the hostility friendly fire produced), and
-    // with no further shot the field demotes on its idle bound.
+    // with nobody hostile in reach the field disengages and demotes.
     let (out, _) = command(
         &mut rig,
         a,
