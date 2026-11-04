@@ -276,12 +276,12 @@ by_hand = "5e03f6d2"
 # conclav.dev at the revision named (40 cut notes, FR.7, run r4). No dispatch-only job or
 # gate.yml kind runs it yet (the sweep kind has no `via` script), so it is by-hand.
 [[test]]
-id = "mush-bot/tests::mining_cohort::fr7_the_rounds_story_at_256"
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
 tier = "by-hand"
 by_hand = "6ccaf77e"
 
 [[test]]
-id = "mush-bot/tests::mining_cohort::fr7_the_rounds_story_at_512"
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
 tier = "by-hand"
 by_hand = "6ccaf77e"
 
