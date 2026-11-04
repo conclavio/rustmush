@@ -742,14 +742,16 @@ found; the moved tests do no more work than before.
   Ceres, returns its own leased tug, and `+coop/buyout` writes the title transfer with the titled escort still in her
   bay.
 
-Seeds: the yard facility (`@facility/open`, `/owner`, `/terms`) until lane v24 authors the row; the Dray-P's bill
-and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
+Seeds: the Dray-P's bill and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
 money; the officer's grant; the captain's move to Stickney; the escort's disablement and its index row.
 
 **Departures from the row.**
 
-- **The lane's `yard` row at `room.p14_slipway`** waits on IN.5's lane v23 (#414): it is lane v24, a `PortDef.yard`
-  block of IN.5's `WorksDef` shape (capability `tacsim.yard`) and a new atlas room. Until then the facility is a seed.
+- **The lane's `yard` row is at P12 Observation, not a new `room.p14_slipway`** (lane v25, relay v16, stacked
+  on IN.5's v24 and CR.2's v23): a `PortDef.yard` block of IN.5's `WorksDef` shape under `tacsim.yard`, opened
+  by the applier's part m (`plant::rows`), found by `+yard` through `plant::block_room`. A new atlas room would
+  bump Stickney's atlas pack v4 and the Phobos exchange pack that requires it; the gallery over the drydocks is
+  the slipway's counter. `lane_chain::strip_yard` heads the strip chain (`in9_strip_yard_rebuilds_the_published_v24`).
 - **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
   bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
   which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 24,
+    "version": 25,
     "kind": "campaign_seed",
-    "digest": "0d07927c914abdf61b7cc32304e4aa1b396c767e2128ef8136f0da8bc4370caa",
+    "digest": "b62deae1d0f9ba44b45d9fbebd2020f0ca4aa61689b2d4968ae626e37d596c6e",
     "requires": []
   },
   "entries": {
@@ -2934,7 +2934,11 @@
                    "capabilities": ["tacsim.works"], "slots": 2, "customers": "public",
                    "cost": { "capital_major": 3000000, "lifetime_years": 25, "upkeep_permille": 20,
                              "staff": 8, "wage_major": 150, "margin_permille": 250 },
-                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] }
+                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] },
+        "yard": { "room": "neighborhood.stickney_yards.room.p12_observation", "operator": "stickney_yards",
+                  "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
+                  "cost": { "capital_major": 10000000, "lifetime_years": 30, "upkeep_permille": 20,
+                            "staff": 12, "wage_major": 150, "margin_permille": 250 } }
       }
     },
     "luna_port": {

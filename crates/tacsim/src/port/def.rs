@@ -230,6 +230,13 @@ pub struct PortDef {
     /// whole credits (1,500 provisional at every IC port). Authored only with [`Self::authority`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_fee_cr: Option<u64>,
+    /// **Doc 39 cut IN.9 (Q-39-19, Q-39-20; lane v25)** — the port's yard: a room of the port's
+    /// area (Stickney's P12 Observation, over the drydocks) opened as a facility of its operator holding the yard
+    /// capability, which `+yard` fronts (`crate::port::works`), in the works' shape: slots, cost
+    /// model (§4.4's 10M slipway over thirty years), customers. Its `buys` are empty (a yard order
+    /// brings its own bill). Absent everywhere but Stickney Yards. Boxed, as `works` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yard: Option<Box<WorksDef>>,
 }
 
 /// "the workshop's", "the works'": a facility block's possessive, for the shared-room sentence.
@@ -1676,7 +1683,11 @@ impl PortDef {
         // Doc 39 cut IN.5: the refinery and the works.
         self.check_refinery()?;
         if let Some(works) = &self.works {
-            self.check_works(works)?;
+            self.check_works("works", works, crate::port::works::WORKS_CAPABILITY)?;
+        }
+        // Doc 39 cut IN.9: the yard, the works' shape under its own capability.
+        if let Some(yard) = &self.yard {
+            self.check_works("yard", yard, crate::port::works::YARD_CAPABILITY)?;
         }
         Ok(())
     }
@@ -1695,6 +1706,9 @@ impl PortDef {
         }
         if let Some(works) = &self.works {
             rooms.push(("works", works.room.as_str()));
+        }
+        if let Some(yard) = &self.yard {
+            rooms.push(("yard", yard.room.as_str()));
         }
         rooms
     }
@@ -1762,45 +1776,47 @@ impl PortDef {
     /// operator one of the entry's orgs, the works capability held, the slots and the cost in
     /// bounds, and each house purchase from another vendor of this port that asks its good.
     /// Each sentence starts `works: `.
-    fn check_works(&self, works: &WorksDef) -> Result<(), String> {
-        room_key(&self.area, &works.room).map_err(|detail| format!("works: {detail}"))?;
-        if let Some((block, _)) = self
+    fn check_works(&self, block: &str, works: &WorksDef, capability: &str) -> Result<(), String> {
+        room_key(&self.area, &works.room).map_err(|detail| format!("{block}: {detail}"))?;
+        if let Some((other, _)) = self
             .facility_rooms()
             .into_iter()
-            .find(|(block, room)| *block != "works" && *room == works.room)
+            .find(|(other, room)| *other != block && *room == works.room)
         {
-            return Err(format!("works: the room is already {}", possessive(block)));
+            return Err(format!(
+                "{block}: the room is already {}",
+                possessive(other)
+            ));
         }
         if !self.orgs.iter().any(|org| org.id == works.operator) {
             return Err(format!(
-                "works: operator {} is not one of this port's orgs",
+                "{block}: operator {} is not one of this port's orgs",
                 works.operator
             ));
         }
-        let capability = crate::port::works::WORKS_CAPABILITY;
         if !Self::holds_capability(&works.capabilities, capability) {
             return Err(format!(
-                "works: capabilities hold {capability} and at most {}",
+                "{block}: capabilities hold {capability} and at most {}",
                 crate::pack::MAX_FACILITY_CAPABILITIES
             ));
         }
         if !(1..=MAX_WORKSHOP_BERTHS).contains(&works.slots) {
             return Err(format!(
-                "works: slots must be 1..={MAX_WORKSHOP_BERTHS}, not {}",
+                "{block}: slots must be 1..={MAX_WORKSHOP_BERTHS}, not {}",
                 works.slots
             ));
         }
         works
             .cost
             .check()
-            .map_err(|error| format!("works: {error}"))?;
+            .map_err(|error| format!("{block}: {error}"))?;
         if works.buys.len() > MAX_WORKS_BUYS {
-            return Err(format!("works: at most {MAX_WORKS_BUYS} buys rows"));
+            return Err(format!("{block}: at most {MAX_WORKS_BUYS} buys rows"));
         }
         let mut goods = BTreeSet::new();
         for buy in &works.buys {
             if !goods.insert(&buy.good) {
-                return Err(format!("works: buys {} is authored twice", buy.good));
+                return Err(format!("{block}: buys {} is authored twice", buy.good));
             }
             let asks = self
                 .vendors
@@ -1809,13 +1825,13 @@ impl PortDef {
                 .is_some_and(|vendor| vendor.asks.iter().any(|ask| ask.good == buy.good));
             if !asks {
                 return Err(format!(
-                    "works: buys {}: {} is not another vendor of this port that asks it",
+                    "{block}: buys {}: {} is not another vendor of this port that asks it",
                     buy.good, buy.vendor
                 ));
             }
             if buy.lot == 0 || buy.lot > buy.floor || buy.floor > mush_market::MAX_QUANTITY {
                 return Err(format!(
-                    "works: buys {}: lot is 1..=floor, and floor at most {}",
+                    "{block}: buys {}: lot is 1..=floor, and floor at most {}",
                     buy.good,
                     mush_market::MAX_QUANTITY
                 ));
@@ -2989,6 +3005,7 @@ mod tests {
             works: None,
             authority: None,
             release_fee_cr: None,
+            yard: None,
         }
     }
 
@@ -3329,6 +3346,7 @@ mod tests {
             works: None,
             authority: None,
             release_fee_cr: None,
+            yard: None,
         }
     }
 

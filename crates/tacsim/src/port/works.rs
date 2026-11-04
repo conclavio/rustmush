@@ -478,7 +478,8 @@ fn here(ctx: &Ctx<'_>, front: Front) -> Result<(CanonicalId, FacilityRecord), St
         }
         // Doc 39 cut IN.5: the lane's works row is a room of the port (its spine, at both
         // stations), which is the facility itself.
-        let authored = crate::port::plant::works_room(ctx.w, &entry, def)
+        // Doc 39 cut IN.9: and the yard's row the same way.
+        let authored = crate::port::plant::block_room(ctx.w, &entry, def, front.word())
             .ok()
             .flatten();
         let found = ctx

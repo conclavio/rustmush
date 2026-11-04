@@ -21,12 +21,26 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.9 (lane v25): the yard taken out** — Stickney's `yard` block, so a strip chain
+/// rebuilds a lane before v25 (idempotent). The chain's head.
+pub fn strip_yard(doc: &mut Value) {
+    if let Some(def) = doc["entries"]
+        .as_object_mut()
+        .and_then(|entries| entries.get_mut("stickney_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("yard");
+    }
+}
+
 /// **Doc 39 cut IN.5 (lane v24): the refinery and the works taken out** — Stickney's `refinery`
 /// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, and the
 /// Freeport Works org and vendor (its carbon stock and ask) — so a strip chain rebuilds a lane
 /// before v24 (idempotent). The programme's carbon reference goes back from Freeport Works'
 /// listing to its fixed 25.00cr.
 pub fn strip_industry(doc: &mut Value) {
+    strip_yard(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };
