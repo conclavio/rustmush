@@ -315,7 +315,7 @@ use tacsim::definitions::{Catalog, content};
 
 // Every test here carries
 // `#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch /
-// weekly)"]`. `ci_gated_test_inventory` finds the job that owns them by the verbatim
+// daily schedule)"]`. `ci_gated_test_inventory` finds the job that owns them by the verbatim
 // `-p tacsim --test harness` in `.github/workflows/ci.yml`.
 
 // ---------------------------------------------------------------------------
