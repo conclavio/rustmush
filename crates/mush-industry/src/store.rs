@@ -1203,6 +1203,25 @@ pub fn is_staff(world: &World, actor: ObjId) -> bool {
         || mush_core::perm::has_role(world, actor, mush_core::Role::Royalty)
 }
 
+/// **Whether `actor` may order at `facility`** (doc 39 cut IN.3, §4.12, Q-39-30): staff, a
+/// principal that acts for the owner, or — at a [`Customers::Public`](crate::facility::Customers)
+/// facility — any principal holding an `Active` account of their own. The one predicate
+/// `@wo/draft`, `@wo/submit` and the offer's facility book all ask.
+#[must_use]
+pub fn may_order(world: &World, actor: ObjId, facility: &FacilityRecord) -> bool {
+    is_staff(world, actor)
+        || mush_economy::acts_for(world, actor, facility.owner())
+        || (facility.customers() == crate::facility::Customers::Public
+            && world
+                .module_state::<mush_economy::EconomyStore>()
+                .is_some_and(|store| {
+                    store
+                        .snapshot()
+                        .accounts_of(&PrincipalId::Object(actor))
+                        .any(|account| account.status == mush_economy::AccountStatus::Active)
+                }))
+}
+
 /// Install a composition-authored facility without replacing an existing identity.
 /// The content owner validates its location and institution before calling.
 pub fn install_authored_facility(
@@ -1217,14 +1236,23 @@ pub fn install_authored_facility(
         if !existing.same_identity(&facility) {
             return Err("Authored facility identity drift".into());
         }
-        if existing.cost() == facility.cost() {
+        if existing.cost() == facility.cost() && existing.customers() == facility.customers() {
             return Ok(());
         }
         // Doc 39 cut IN.4: a changed cost model re-prices the facility in place, bumping its
-        // policy revision so an order drafted against the old numbers re-validates.
-        let repriced = existing
-            .with_cost(facility.cost().copied())
-            .map_err(|error| error.to_string())?;
+        // policy revision so an order drafted against the old numbers re-validates. Cut IN.3:
+        // a changed customer policy is the same kind of change, in the same bump.
+        let mut repriced = existing.clone();
+        if existing.cost() != facility.cost() {
+            repriced = repriced
+                .with_cost(facility.cost().copied())
+                .map_err(|error| error.to_string())?;
+        }
+        if existing.customers() != facility.customers() {
+            repriced = repriced
+                .with_customers(facility.customers())
+                .map_err(|error| error.to_string())?;
+        }
         persist_facility(ctx.out, &repriced);
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
             store.put_facility(repriced);
