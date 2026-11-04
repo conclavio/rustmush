@@ -13,8 +13,10 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$fixture/bin" "$fixture/build/target/release"
 export RESET_TEST_LOG="$fixture/operations"
-export RESET_TEST_OWNER="$(id -u)" RESET_TEST_GROUP="$(id -g)"
-export RESET_TEST_REAL_ID="$(command -v id)"
+RESET_TEST_OWNER="$(id -u)"
+RESET_TEST_GROUP="$(id -g)"
+RESET_TEST_REAL_ID="$(command -v id)"
+export RESET_TEST_OWNER RESET_TEST_GROUP RESET_TEST_REAL_ID
 cat > "$fixture/bin/id" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = -u ]; then echo 0; else exec "$RESET_TEST_REAL_ID" "$@"; fi

@@ -12,6 +12,7 @@
 #![deny(clippy::unwrap_used, clippy::panic, clippy::panic_in_result_fn)]
 
 pub mod b1_seam;
+pub mod scan;
 pub mod tactical_gate;
 
 use mush_core::{

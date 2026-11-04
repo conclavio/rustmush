@@ -259,15 +259,43 @@ struct Fixture {
     unit: ObjId,
     base: ObjId,
     domain: crate::DomainId,
+    carrier: ObjId,
+    bay: ObjId,
 }
 fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -> Result<Fixture> {
+    setup_in(extra, enabled, missing_placement, Admission::Base)
+}
+/// **Where the fixture's hull stands** (doc 23 cut S.4b-1): in the configured fixed base; in a
+/// carrier's bay with the composition admitting hangars; or in that bay under the base-only
+/// composition.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Base,
+    Hangar,
+    HangarUnconfigured,
+}
+fn setup_in(
+    extra: Vec<(SmolStr, Value)>,
+    enabled: bool,
+    missing_placement: bool,
+    admission: Admission,
+) -> Result<Fixture> {
     let (mut world, registry) = boot_world();
     let field = world.create(ObjKind::Room, "IC field", GOD, None)?;
     let base = world.create(ObjKind::Room, "IC base", GOD, None)?;
-    let unit = world.create(ObjKind::Thing, "IC hull", GOD, Some(base))?;
+    let carrier = world.create(ObjKind::Thing, "IC carrier", GOD, Some(field))?;
+    let bay = world.create(ObjKind::Room, "IC carrier bay", GOD, None)?;
+    let at = if admission == Admission::Base {
+        base
+    } else {
+        bay
+    };
+    let unit = world.create(ObjKind::Thing, "IC hull", GOD, Some(at))?;
     for (object, behavior) in [
         (field, "sim.domain"),
         (base, "sim.interior"),
+        (bay, "sim.interior"),
+        (carrier, "sim.participant"),
         (unit, "sim.participant"),
     ] {
         world.attach_behavior(
@@ -319,14 +347,15 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
         reference("tactics", &custody)?,
         reference("sim", &participant_descriptor()?)?,
     ];
-    let config = IcExclusionConfig::new(
-        manifest.clone(),
-        refs.clone(),
-        vec![ConfiguredIcBase::new(
-            reference("tacsim", &base_descriptor)?,
-            space.clone(),
-        )?],
-    )?;
+    let bases = vec![ConfiguredIcBase::new(
+        reference("tacsim", &base_descriptor)?,
+        space.clone(),
+    )?];
+    let config = if admission == Admission::Hangar {
+        IcExclusionConfig::with_hangars(manifest.clone(), refs.clone(), bases)?
+    } else {
+        IcExclusionConfig::new(manifest.clone(), refs.clone(), bases)?
+    };
     let action = |transition: &str| -> Result<DefinitionDescriptor> {
         let mut dependencies = vec![manifest.clone()];
         dependencies.extend(refs.clone());
@@ -390,8 +419,24 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
     let placement = crate::PlacementRecord {
         object: unit,
         parent: crate::SpatialParent::Interior {
-            space: base,
+            space: at,
             slot: None,
+        },
+        revision: 1,
+        unplaced: None,
+    };
+    let bay_space = crate::InteriorSpaceRecord {
+        object: bay,
+        anchor: crate::SpaceAnchor::MovingObject { host: carrier },
+        compartments: BTreeMap::new(),
+        rooms: BTreeSet::from([bay]),
+        egresses: BTreeMap::new(),
+    };
+    let carrier_placement = crate::PlacementRecord {
+        object: carrier,
+        parent: crate::SpatialParent::Direct {
+            domain,
+            pose: crate::data::Pose::passive(crate::data::passive_rules_value(json!({}))?),
         },
         revision: 1,
         unplaced: None,
@@ -414,6 +459,14 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
         (
             format!("space:{}", base.0).into(),
             serde_json::to_value(space)?,
+        ),
+        (
+            format!("space:{}", bay.0).into(),
+            serde_json::to_value(bay_space)?,
+        ),
+        (
+            format!("placement:{}", carrier.0).into(),
+            serde_json::to_value(carrier_placement)?,
         ),
     ];
     if !missing_placement {
@@ -448,6 +501,8 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
         unit,
         base,
         domain,
+        carrier,
+        bay,
     })
 }
 fn invocation(f: &Fixture) -> Result<ActionInvocation> {
@@ -742,9 +797,21 @@ fn exact_base_and_strict_history_refuse_ambiguous_data() -> Result {
         .ok_or("record")?
         .insert("receipt_authority".into(), json!(true));
     check!(serde_json::from_value::<Record>(unknown).is_err());
-    let mut stale = original.open.base.space.clone();
+    let mut stale = original.open.base.as_ref().ok_or("base")?.space.clone();
     stale.rooms.clear();
-    check!(ConfiguredIcBase::new(original.open.base.definition.clone(), stale).is_err());
+    check!(
+        ConfiguredIcBase::new(
+            original
+                .open
+                .base
+                .as_ref()
+                .ok_or("base")?
+                .definition
+                .clone(),
+            stale
+        )
+        .is_err()
+    );
     let mut f = setup(vec![], true, false)?;
     f.world
         .world_mut()
@@ -840,5 +907,74 @@ fn assert_ic_plan_refused_without_effect(f: &mut Fixture, plan: crate::transitio
         .world_mut()
         .module_state_mut::<crate::SpatialState>()
         .ok_or("spatial")? = spatial;
+    Ok(())
+}
+
+/// **Doc 23 cut S.4b-1 (D-23-11, D-23-15): a carrier's bay is a hangar.** Under the composition
+/// that admits hangars, a hull `Interior` to a bay anchored `MovingObject { host: carrier }` is
+/// admitted, its record names the bay and the carrier (no base image), the hull alone is
+/// excluded (never the carrier or the bay), the freeze still refuses a placement write of the
+/// hull and a rewrite of the bay, and a reboot reconstructs the hold; the base-only composition
+/// refuses the same Open. A base-held record is unchanged in shape (no `hangar` key).
+#[test]
+fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
+    let mut refused = setup_in(vec![], true, false, Admission::HangarUnconfigured)?;
+    check!(prepare(&mut refused).is_err(), "the base-only composition");
+    check!(identity_of(refused.world.world(), refused.unit).is_none());
+
+    let mut f = setup_in(vec![], true, false, Admission::Hangar)?;
+    let (p, o, inv) = prepare(&mut f)?;
+    let persisted = row_writes(&p)?;
+    let (_, value) = persisted.first().ok_or("the hold's row")?;
+    check!(value["open"].get("base").is_none(), "no base image");
+    check_eq!(value["open"]["hangar"]["carrier"], json!(f.carrier.0));
+    check_eq!(value["open"]["hangar"]["space"]["object"], json!(f.bay.0));
+    stage(&mut f, p, o, &inv)?;
+    let (_, installation) = f
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged image")?
+        .into_parts();
+    f.world.engine_mut().install_composed_action(installation)?;
+    check_eq!(
+        identity_of(f.world.world(), f.unit).map(|i| i.open),
+        Some(token())
+    );
+    for shown in [f.carrier, f.bay] {
+        check!(!crate::deployed::excluded(
+            f.world.world(),
+            crate::deployed::Shown::Unit(shown)
+        ));
+    }
+    let state = crate::state(f.world.world()).ok_or("spatial")?;
+    check!(
+        crate::transition::plan(
+            state,
+            f.world.world(),
+            &crate::transition::Transition::Place {
+                obj: f.unit,
+                parent: crate::SpatialParent::Interior {
+                    space: f.base,
+                    slot: None
+                }
+            }
+        )
+        .is_err(),
+        "the hull is frozen in its hangar until S.4b-2 re-scopes the freeze"
+    );
+    let cold = setup_in(persisted.clone(), true, false, Admission::Hangar)?;
+    check_eq!(
+        identity_of(cold.world.world(), cold.unit).map(|i| i.open),
+        Some(token()),
+        "a reboot keeps the hangar hold"
+    );
+
+    let mut based = setup(vec![], true, false)?;
+    let (p, _, _) = prepare(&mut based)?;
+    let rows = row_writes(&p)?;
+    let (_, value) = rows.first().ok_or("the base row")?;
+    check!(value["open"].get("hangar").is_none(), "a base row's shape");
+    check!(value["open"].get("base").is_some());
     Ok(())
 }

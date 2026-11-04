@@ -39,7 +39,7 @@
 # Every target must appear on exactly one line:
 # crates/mush-contract-tests/tests/ci_tacsim_shards.rs fails on a missing,
 # doubled or unknown target, so a new top-level test file cannot silently go
-# unrun. A new test MODULE is a `mod` line in one of the six shard roots and
+# unrun. A new test MODULE is a `mod` line in one of the shard roots and
 # runs with that shard. Rebalance by moving a `mod` line between two shard
 # roots when a shard drifts far from the others (per-module times: the JUnit
 # report's testcases, whose names carry the `<module>::` prefix).

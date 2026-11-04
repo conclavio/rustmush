@@ -8,7 +8,8 @@
 //! ([`on_resumed`], the `WorldClockResumed` observer; the tick retries anything still held), so
 //! nothing is shot unseen during the countdown (FO-11). A field whose live record and snapshot
 //! decode resumes from the snapshot on a fresh task — its seated pilots rebound to their seats,
-//! the quiet interval restarted, the black box on a new segment's log; anything else is the IC
+//! the quiet interval restarted, the black box on a new segment's log (doc 40 cut FR.4: the
+//! ledger rolls with it, [`super::segment`]); anything else is the IC
 //! void rule: its units demote from the last snapshot, or as they went out with none.
 //!
 //! **The host's owed writes** (doc 32 §15): a site's closing tombstone owes its `close` again and
@@ -173,6 +174,14 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     let head = crate::arena::Snapshot::head(&document).map_err(|error| error.to_string())?;
     let mut arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit)
         .map_err(|error| error.to_string())?;
+    // Doc 40 cut FR.4 (Q-38-28, Q-40-21): the resume rolls from the snapshot it rewinds to, onto
+    // a segment past both the live record's and the snapshot's, so no opening writes to a log
+    // another opening wrote; the `segment` line is the resume's first.
+    live.segment = live.segment.max(arena.ledger.segment()).saturating_add(1);
+    let hash = crate::arena::hash::state_hash(&arena);
+    if let Err(full) = arena.ledger.roll_segment(live.segment, arena.now_ms, hash) {
+        tracing::error!(site = %site, %full, "tacsim: a resumed field's segment line was not recorded");
+    }
     // Doc 32 cut CF.5 (Q-CF-18): a unit that left at the ramp after this snapshot was taken is
     // checked in already and out of the live record; the arena drops it.
     let gone: Vec<ObjId> = arena
@@ -227,7 +236,6 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         .module_state_mut::<FieldBook>()
         .map(FieldBook::next_task)
         .ok_or_else(|| "the field host is unavailable".to_owned())?;
-    live.segment = live.segment.saturating_add(1);
     live.at_ms = head.at_ms;
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(

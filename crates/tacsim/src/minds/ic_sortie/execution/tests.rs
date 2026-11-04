@@ -435,3 +435,23 @@ fn m8b_an_ungoverned_core_seals_under_the_floor_and_over_its_class() -> TestResu
     }
     Ok(())
 }
+
+/// **Doc 23 cut S.4b-1 (D-23-14; S.1's L1 deferral closed): the retained execution accepts the
+/// epoch's IC id.** A seal under `SortieId::Ic { hull, at_ic }` over its own hull validates and
+/// installs; one naming another hull, or no sortie at all, is refused.
+#[test]
+fn s4b1_an_ic_epoch_id_seals_a_retained_execution() -> TestResult {
+    let (mut execution, mut arena) = fixture(crate::minds::MIND_ABI, SOURCE)?;
+    execution.seal.sortie = SortieId::ic(UNIT, 500);
+    execution.validate()?;
+    let mut stranger = execution.clone();
+    stranger.seal.sortie = SortieId::ic(ObjId(9), 500);
+    check!(stranger.validate().is_err(), "another hull's epoch");
+    let mut none = execution.clone();
+    none.seal.sortie = SortieId::none();
+    check!(none.validate().is_err(), "no sortie");
+    arena.unit_mut(UNIT).ok_or("unit")?.seal = execution.seal.seal_ref();
+    execution.install(&mut arena)?;
+    check_eq!(arena.minds.get(&UNIT).ok_or("mind")?.dropped, None);
+    Ok(())
+}

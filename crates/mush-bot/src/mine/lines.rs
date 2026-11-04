@@ -163,6 +163,20 @@ pub const LEASE_PREVIEWED: &str = " signs it.";
 pub fn lease_previewed(go: &str) -> String {
     format!("{go}{LEASE_PREVIEWED}")
 }
+/// **A rig's launch, with the mind sealed aboard** (doc 23 cut S.4b-1; Q-38-29: the bot types the
+/// player's half): `+tv/<n> launch mind=<word> go`, or the stock `+tv/<n> launch go` with no
+/// word. `word` is a `mind=` word as `tacsim::surface::dispatch` reads it (`filed:<n>`, or a
+/// draft); doc 23 S.4b-2's licensed stories send it.
+#[must_use]
+pub fn launch(n: u8, word: Option<&str>) -> String {
+    match word {
+        Some(word) => format!("+tv/{n} launch mind={word} go"),
+        None => format!("+tv/{n} launch go"),
+    }
+}
+/// `tacsim::surface::dispatch::MIND_UNTITLED`'s tail (doc 23 D-23-22): a licensed mind over a
+/// hull not titled to the operator, refused at `go` where the claim path is composed.
+pub const MIND_UNTITLED: &str = "a licensed mind flies a hull titled to you";
 /// `tv::LEASED`'s head (`tv.rs:118`).
 pub const LEASE_SIGNED: &str = "Occator Water & Propellant leases you ";
 /// `tv::LEASE_LICENCE` (`tv.rs:145`).
@@ -1011,6 +1025,15 @@ mod tests {
     /// **Every parser, fed the game's own sentences** (doc 20 cut SM.12c-bot,
     /// B6 test 1): each needle a substring of the filled sentence it mirrors,
     /// so a changed game sentence breaks this test, not a loop.
+    /// **Doc 23 cut S.4b-1: the launch line and the untitled refusal**, against the game's own
+    /// parser and sentence.
+    #[test]
+    fn s4b1_the_launch_line_names_the_mind() {
+        assert_eq!(launch(1, None), "+tv/1 launch go");
+        assert_eq!(launch(2, Some("filed:7")), "+tv/2 launch mind=filed:7 go");
+        assert!(tacsim::surface::dispatch::MIND_UNTITLED.contains(MIND_UNTITLED));
+    }
+
     #[test]
     fn mine_lines_read_the_games_own_sentences() {
         // The rig's tells.

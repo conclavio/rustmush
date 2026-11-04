@@ -85,6 +85,41 @@ pub struct FacilityRecord {
     /// stored bytes are therefore unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cost: Option<FacilityCostDef>,
+    /// Doc 39 cut IN.3 (§4.12, Q-39-30): who may order here. Absent means
+    /// [`Customers::OwnerOnly`], so a facility that never opened its doors stores the bytes it
+    /// always did.
+    #[serde(default, skip_serializing_if = "Customers::is_owner_only")]
+    customers: Customers,
+}
+
+/// **Who may order at a facility** (doc 39 cut IN.3, §4.12, Q-39-30): the facility's own people
+/// only, or any principal with an account. The policy half carries it beside the cost model, so
+/// a change bumps the policy revision and an order drafted under the old terms re-validates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Customers {
+    /// Staff and those who act for the owner: the engine's gate before IN.3.
+    #[default]
+    OwnerOnly,
+    /// A shop: any principal with an `Active` account may order (the lane's works and yard).
+    Public,
+}
+
+impl Customers {
+    /// Whether this is the default, unopened policy.
+    #[must_use]
+    pub const fn is_owner_only(&self) -> bool {
+        matches!(self, Self::OwnerOnly)
+    }
+
+    /// The word `@facility/terms` reads and prints.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::OwnerOnly => "owner",
+            Self::Public => "public",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -98,6 +133,8 @@ struct FacilityRecordWire {
     policy_revision: u64,
     #[serde(default)]
     cost: Option<FacilityCostDef>,
+    #[serde(default)]
+    customers: Customers,
 }
 
 impl<'de> Deserialize<'de> for FacilityRecord {
@@ -114,6 +151,7 @@ impl<'de> Deserialize<'de> for FacilityRecord {
             wire.capacity_revision,
             wire.policy_revision,
             wire.cost,
+            wire.customers,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -131,7 +169,16 @@ impl FacilityRecord {
         capabilities: BTreeSet<CanonicalId>,
         maximum_slots: u32,
     ) -> Result<Self, IndustryRecordError> {
-        Self::from_parts(object, owner, capabilities, maximum_slots, 1, 1, None)
+        Self::from_parts(
+            object,
+            owner,
+            capabilities,
+            maximum_slots,
+            1,
+            1,
+            None,
+            Customers::OwnerOnly,
+        )
     }
 
     /// The same facility authored with its cost model (doc 39 cut IN.4), still at revision 1/1.
@@ -149,6 +196,15 @@ impl FacilityRecord {
         Ok(self)
     }
 
+    /// The same facility authored with its customer policy (doc 39 cut IN.3), still at
+    /// revision 1/1.
+    #[must_use]
+    pub const fn with_authored_customers(mut self, customers: Customers) -> Self {
+        self.customers = customers;
+        self
+    }
+
+    #[allow(clippy::too_many_arguments)] // the record's own fields, one each
     fn from_parts(
         object: ObjId,
         owner: PrincipalId,
@@ -157,6 +213,7 @@ impl FacilityRecord {
         capacity_revision: u64,
         policy_revision: u64,
         cost: Option<FacilityCostDef>,
+        customers: Customers,
     ) -> Result<Self, IndustryRecordError> {
         if maximum_slots == 0 || maximum_slots > MAX_FACILITY_SLOTS {
             return Err(IndustryRecordError::FacilitySlots {
@@ -191,6 +248,7 @@ impl FacilityRecord {
             capacity_revision,
             policy_revision,
             cost,
+            customers,
         })
     }
 
@@ -244,6 +302,20 @@ impl FacilityRecord {
             .as_ref()
             .map(|cost| cost.fee_minor(work_units, self.maximum_slots))
     }
+    /// Who may order here (doc 39 cut IN.3).
+    #[must_use]
+    pub const fn customers(&self) -> Customers {
+        self.customers
+    }
+    /// **The booking fee** (§4.12, Q-39-29): one slot-day at the facility's slot-hour, before
+    /// margin, rounded up to the whole credit; `None` on a facility the cost model does not
+    /// price.
+    #[must_use]
+    pub fn booking_fee_minor(&self) -> Option<u64> {
+        self.cost
+            .as_ref()
+            .map(|cost| cost.fee_minor_at(crate::cost::WORK_UNITS_PER_DAY, self.maximum_slots, 0))
+    }
     /// Whether `other` is this facility as authored, the revisions and the cost aside: the
     /// identity an applier refuses drift on (doc 39 cut IN.4 re-prices instead).
     #[must_use]
@@ -274,6 +346,30 @@ impl FacilityRecord {
             self.capacity_revision,
             policy_revision,
             cost,
+            self.customers,
+        )
+    }
+
+    /// **Open or close the doors** (doc 39 cut IN.3, Q-39-30): the customer policy replaced,
+    /// bumping the policy revision as [`Self::with_cost`] does. The capacity revision does not
+    /// move.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn with_customers(&self, customers: Customers) -> Result<Self, IndustryRecordError> {
+        let policy_revision = self
+            .policy_revision
+            .checked_add(1)
+            .ok_or(IndustryRecordError::RevisionOverflow)?;
+        Self::from_parts(
+            self.object,
+            self.owner.clone(),
+            self.capabilities.clone(),
+            self.maximum_slots,
+            self.capacity_revision,
+            policy_revision,
+            self.cost,
+            customers,
         )
     }
 
@@ -317,6 +413,7 @@ impl FacilityRecord {
             self.capacity_revision,
             policy_revision,
             self.cost,
+            self.customers,
         )
     }
 }
@@ -515,5 +612,48 @@ mod m8b_tests {
         )
         .expect("json");
         assert!(serde_json::from_value::<FacilityRecord>(value).is_err());
+    }
+}
+
+#[cfg(test)]
+mod in3_tests {
+    use super::*;
+
+    fn works() -> FacilityRecord {
+        FacilityRecord::new(ObjId(7), PrincipalId::Object(ObjId(1)), BTreeSet::new(), 2)
+            .expect("a facility")
+            .with_authored_cost(FacilityCostDef {
+                capital_major: 3_000_000,
+                lifetime_years: 25,
+                upkeep_permille: 20,
+                staff: 8,
+                wage_major: 150,
+                margin_permille: 250,
+            })
+            .expect("priced")
+    }
+
+    /// **Doc 39 cut IN.3** (Q-39-30): an unopened facility stores the bytes it always did; the
+    /// doors open with a policy-revision bump and read back; the booking fee is one slot-day of
+    /// §4.4's works row before margin (846.58 cr, billed 847).
+    #[test]
+    fn in3_the_customer_policy_is_policy_half_and_the_booking_is_a_slot_day() {
+        let shut = works();
+        let wire = serde_json::to_value(&shut).expect("json");
+        assert!(wire.get("customers").is_none(), "OwnerOnly is not written");
+        let open = shut.with_customers(Customers::Public).expect("open");
+        assert_eq!(open.policy_revision(), shut.policy_revision() + 1);
+        assert_eq!(open.capacity_revision(), shut.capacity_revision());
+        let back: FacilityRecord =
+            serde_json::from_value(serde_json::to_value(&open).expect("json")).expect("reads");
+        assert_eq!(back.customers(), Customers::Public);
+        assert!(back.same_identity(&shut), "the doors are not the identity");
+        assert_eq!(shut.booking_fee_minor(), Some(84_700));
+        assert_eq!(
+            FacilityRecord::new(ObjId(8), PrincipalId::Object(ObjId(1)), BTreeSet::new(), 1)
+                .expect("unpriced")
+                .booking_fee_minor(),
+            None
+        );
     }
 }

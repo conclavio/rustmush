@@ -1,3 +1,8 @@
+# Early world-system ideas
+
+Archived brainstorming, retained for context. These ideas are not a current roadmap;
+see the [design overview](../design.md) for the developed work.
+
 ### 1. Facts, beliefs, rumors, and lies
 
 Extend the NPC knowledge model into a proper epistemic system:
@@ -9,7 +14,7 @@ Extend the NPC knowledge model into a proper epistemic system:
 - Confidence and emotional valence.
 - “Who told me?” and “Who have I told?”
 
-NPCs could organically spread distorted information without modifying world canon. Investigation abilities could reveal contradictions or provenance. This would be much more interesting than ordinary vector memory and fits your existing memory seam in [PLAN.md](</C:/Users/faeni/cc/rustmush/docs/PLAN.md:112>).
+NPCs could organically spread distorted information without modifying world canon. Investigation abilities could reveal contradictions or provenance. This would be much more interesting than ordinary vector memory and fits your existing memory seam in [PLAN.md](../PLAN.md).
 
 ### 2. Factions, fronts, and clocks
 
@@ -24,7 +29,7 @@ Add deterministic long-running world pressures:
 
 The simulation decides that the Sabbat gained influence or a corporate extraction succeeded; the LLM only turns those state changes into rumors, news, NPC reactions, and scene hooks. This gives the world motion without allowing an LLM to invent permanent consequences.
 
-> **2026-09-01:** promoted and designed in full — see `scenes_factions_knowledge.md` §3. Factions are now first-class epistemic actors: typed-edge DAG (`ChapterOf`/`SubordinateTo`/`ContractedTo`/`FrontFor`), membership truth vs. knowledge-of-membership, `ControlRecord` territory with de jure/de facto/covert control kinds over abstract Regions, and clearance-gated intel pools generalizing the M12 NPC `principal`. Split into a **registry** (ships first, no dependencies) and this item's **simulation** (fronts/clocks, lands after the canon ledger).
+> **2026-09-01:** promoted and designed in full — see [scenes, factions, and knowledge](../design/scenes-factions-knowledge.md) §3. Factions are now first-class epistemic actors: typed-edge DAG (`ChapterOf`/`SubordinateTo`/`ContractedTo`/`FrontFor`), membership truth vs. knowledge-of-membership, `ControlRecord` territory with de jure/de facto/covert control kinds over abstract Regions, and clearance-gated intel pools generalizing the M12 NPC `principal`. Split into a **registry** (ships first, no dependencies) and this item's **simulation** (fronts/clocks, lands after the canon ledger).
 
 ### 3. Player-declared hooks and boundaries
 
@@ -98,7 +103,7 @@ These are perfect persistent-game primitives, particularly for Vampire and Shado
 
 NPCs can understand and negotiate them, but the engine owns their lifecycle. They also create story hooks naturally.
 
-> **2026-09-01:** obligations need faction-to-faction endpoints, not only character-to-character — a TacSim merc contract is exactly a typed obligation between factions (the `ContractedTo` edge plus this primitive), and Camarilla boon-credit doubles as a faction-scoped standing currency (see `scenes_factions_knowledge.md` §3.3).
+> **2026-09-01:** obligations need faction-to-faction endpoints, not only character-to-character — a TacSim merc contract is exactly a typed obligation between factions (the `ContractedTo` edge plus this primitive), and Camarilla boon-credit doubles as a faction-scoped standing currency (see [scenes, factions, and knowledge](../design/scenes-factions-knowledge.md) §3.3).
 
 ### 8. “Director” rather than omnipotent AI Storyteller
 
@@ -254,4 +259,4 @@ My top-five sequencing after your current hardening work would be:
 
 Those five reinforce each other: factions produce events, events create scenes, scenes update beliefs and canon, and player hooks determine which developments become playable stories. The LLM then acts as connective tissue and performance—not as the database, rules engine, or source of truth.
 
-> **Sequencing revised 2026-09-01** after the code review (full order in `scenes_factions_knowledge.md`): the **faction registry** moved to the front — it is cheap, has zero scene/canon dependencies, and immediately generalizes the shipped M12/M14 intel machinery — followed by the **ledger substrate** (module store-read seam, chunked-doc append helpers, transaction-boundary test rig: engine prerequisites the review surfaced), then durable scenes/Timestop → scene event log → safety → canon ledger → beliefs → faction *simulation* (fronts/clocks/territory) → director tools.
+> **Sequencing revised 2026-09-01** after the code review (full order in [scenes, factions, and knowledge](../design/scenes-factions-knowledge.md)): the **faction registry** moved to the front — it is cheap, has zero scene/canon dependencies, and immediately generalizes the shipped M12/M14 intel machinery — followed by the **ledger substrate** (module store-read seam, chunked-doc append helpers, transaction-boundary test rig: engine prerequisites the review surfaced), then durable scenes/Timestop → scene event log → safety → canon ledger → beliefs → faction *simulation* (fronts/clocks/territory) → director tools.

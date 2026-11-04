@@ -1,6 +1,6 @@
 //! **The example arena configs load** (cut AJ.4): `bots/arena/pilot.toml` and
 //! `bots/arena/commander.toml`, read by the bot's own `Config::load` exactly as
-//! `--config` reads them, validate, and say what `docs/bot.md` says they say.
+//! `--config` reads them, validate, and say what `docs/bot/guide.md` says they say.
 //! Offline: nothing here resolves a credential or opens a connection, and no
 //! model is asked anything.
 use std::path::PathBuf;

@@ -26,16 +26,9 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
+use mush_contract_tests::scan;
 
 /// One `<package>/<feature>` pair, the way cargo spells it on a command line
 /// with more than one `-p` selected.
@@ -254,7 +247,7 @@ fn allowlisted() -> BTreeSet<String> {
 
 #[test]
 fn every_toggleable_feature_is_built_by_a_ci_job() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("the CI workflow is part of the tree this policy governs");
     let declared = declared_features(&root);
@@ -294,7 +287,7 @@ fn every_toggleable_feature_is_built_by_a_ci_job() {
 
 #[test]
 fn the_scanner_still_finds_the_known_features() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let declared = declared_features(&root);
     let census: BTreeSet<String> = CENSUS.iter().map(|f| (*f).to_string()).collect();
     assert_eq!(
@@ -315,7 +308,7 @@ fn the_scanner_still_finds_the_known_features() {
 
 #[test]
 fn the_allowlist_states_a_reason() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let declared = declared_features(&root);
     for entry in ALLOWED {
         let name = pair(entry.package, entry.feature);

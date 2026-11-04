@@ -41,6 +41,8 @@ mod deliberation;
 mod driving_rig;
 #[path = "shard_10/field_carrier.rs"]
 mod field_carrier;
+#[path = "shard_10/field_fr4.rs"]
+mod field_fr4;
 #[path = "support/field/field_host_rig.rs"]
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]

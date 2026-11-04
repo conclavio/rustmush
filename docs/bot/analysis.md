@@ -13,10 +13,10 @@ inside the summary; it does not follow the recorded `run.json`, configuration,
 character, prompt or memory paths. A copied artifact therefore remains usable
 after the original workspace or game server disappears.
 
-Use [regression gates](bot-regression.md) to compare baseline and candidate
+Use [regression gates](regression.md) to compare baseline and candidate
 summaries against JSON thresholds for quality, validity, time, requests and cost.
 They add sample minimums and explicit failure/inconclusive results for CI.
-Use the [offline trace inspector](bot-traces.md) to investigate individual events
+Use the [offline trace inspector](traces.md) to investigate individual events
 and their recorded request/command associations after identifying a failing run.
 
 The version-1 analysis report contains:

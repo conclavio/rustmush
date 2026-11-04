@@ -27,6 +27,11 @@ pub(super) struct HostTransition {
 pub struct StartPermit {
     pub(super) unit: TacticalUnit,
     pub(super) actor: ObjId,
+    /// **The epoch's IC id the Open seals under** (doc 23 cut S.4b-1, D-23-14:
+    /// `SortieId::Ic { hull, at_ic }`, the launch's `(tv, launch_ic)`); `None` seals under the
+    /// book's packed ordinal, the claim path's own fixture shape. S.4b-2's surface producer
+    /// always names the epoch.
+    pub(super) sortie: Option<crate::arena::mind::SortieId>,
     _transition: HostTransition,
 }
 pub struct CloseEvent {
@@ -136,15 +141,9 @@ impl IcSealOutput for IcSortieOutput {
         self.row.open.execution.seal.unit
     }
     fn sortie(&self) -> u64 {
-        // Doc 23 cut S.1 (L1): the book's ordinal rides the arena kind until S.4; 0 is no
-        // ordinal (`Execution::validate` refuses it and any IC epoch's id).
-        self.row
-            .open
-            .execution
-            .seal
-            .sortie
-            .as_match_packed()
-            .unwrap_or(0)
+        // Doc 23 cut S.4b-1 (23-7): the book's ordinal is the Open's own field, which the
+        // Roll's `SortieNumber` carries; the seal's sortie is the epoch's id.
+        self.row.open.transition
     }
     fn transition(&self) -> u64 {
         self.row
@@ -273,19 +272,22 @@ impl IcSortieParticipant {
                 let execution = Execution::capture(
                     ctx.world(),
                     &facts,
-                    state.next_transition,
+                    start
+                        .sortie
+                        .unwrap_or(crate::arena::mind::SortieId::Packed(state.next_transition)),
                     &profiles,
                     &self.config.arena,
                     &self.config.minds,
                 )?;
                 let row = Record {
-                    format: 1,
+                    format: super::records::FORMAT,
                     open: Opening {
                         request,
                         operation: ctx.commit_token(),
                         action: ctx.action().clone(),
                         protocol: CapturedProtocol::capture(&self.config.claims),
                         dispatcher: start.actor,
+                        transition: state.next_transition,
                         withheld,
                         admission_digest: facts.binding_digest().map_err(bad)?,
                         at_ic: ctx.world().world_ic_now(),
@@ -507,8 +509,26 @@ pub(crate) fn fixture_start(
             .ok_or_else(|| bad("fixture unit"))?
             .clone(),
         actor,
+        sortie: None,
         _transition: HostTransition { _private: () },
     }))
+}
+
+/// **The fixture start sealed under an IC epoch's id** (doc 23 cut S.4b-1, D-23-14): the shape
+/// S.4b-2's surface producer mints, `SortieId::Ic { hull: unit, at_ic }`, through the same
+/// four owners, so the book's `Opening.transition` carries the ordinal the seal no longer does.
+#[cfg(test)]
+pub(crate) fn fixture_start_ic(
+    world: &World,
+    actor: ObjId,
+    unit: ObjId,
+    at_ic: i64,
+) -> Result<Arc<StartPermit>, ParticipantError> {
+    let mut permit = fixture_start(world, actor, unit)?;
+    Arc::get_mut(&mut permit)
+        .ok_or_else(|| bad("private fixture permit"))?
+        .sortie = Some(crate::arena::mind::SortieId::ic(unit, at_ic));
+    Ok(permit)
 }
 #[cfg(test)]
 pub(crate) fn fixture_close(

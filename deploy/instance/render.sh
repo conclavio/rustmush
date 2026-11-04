@@ -15,11 +15,12 @@
 #
 # Each trailing `binary` is preflighted with its own `--check-config` over the
 # rendered file — `mush-gateway` and `mush-server` for the split deployment,
-# `mushd` for the all-in-one. A binary that is not built yet is skipped with a
-# note rather than failing the render: the FIRST deploy of a box renders the
-# config before anything has been compiled. A binary that IS there and refuses
-# the config fails this script, and it does so before the caller has started or
-# reloaded a unit.
+# `mushd` for the all-in-one. A binary that is named but not built fails the
+# render, exactly as one that refuses the config does (doc 43 TS.0: a quiet
+# skip let the list here drift from the build line unnoticed). Every deploy
+# script builds before it renders; to render with no preflight at all, name no
+# binary. Either failure comes before the caller has started or reloaded a
+# unit.
 #
 # Nothing is installed until every check has passed: the render must carry no
 # unsubstituted `__TOKEN__` and no unresolved `EXTERNAL_IP=auto` marker, it must
@@ -109,8 +110,9 @@ for spec in "$@"; do
   read -r -a words <<<"$spec"
   binary="${words[0]}"
   if [ ! -x "$binary" ]; then
-    echo "$0: $binary is not built yet — skipping its preflight" >&2
-    continue
+    echo "$0: $binary is not built (no executable at that path); $OUT is untouched and nothing was started" >&2
+    rm -f "$STAGED"
+    exit 1
   fi
   if ! "${words[@]}" --check-config --config "$STAGED"; then
     echo "$0: $binary refuses the render; $OUT is untouched and nothing was started" >&2

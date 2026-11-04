@@ -55,21 +55,14 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use mush_contract_tests::scan;
 
 /// The exact source form of a live-backend gate, built at runtime so that this
 /// file does not match its own needle.
 fn redis_gate_needle() -> String {
     format!("env::var({:?})", "REDIS_URL")
-}
-
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
 }
 
 /// One discovered test function.
@@ -161,23 +154,6 @@ const PAID_OPT_INS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|name| name == "target") {
-                continue;
-            }
-            collect_rust_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
 /// The identifier of a function-defining line, if it is one.
 fn function_name(line: &str) -> Option<&str> {
     let rest = line
@@ -262,9 +238,7 @@ fn scan_file(path: &Path, relative: &str, out: &mut Vec<DiscoveredTest>) {
 
 fn discovered_tests(root: &Path) -> Vec<DiscoveredTest> {
     let crates_dir = root.join("crates");
-    let mut files = Vec::new();
-    collect_rust_files(&crates_dir, &mut files);
-    files.sort();
+    let files = scan::files(&crates_dir, &["rs"], &["target"]);
     let mut tests = Vec::new();
     for file in &files {
         let relative = file
@@ -556,7 +530,7 @@ fn a_module_of_a_group_binary_is_covered_by_the_binary_the_module_or_the_test() 
 
 #[test]
 fn every_backend_gated_proof_is_named_by_a_ci_job() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("the CI workflow is part of the tree this policy governs");
     let tests = discovered_tests(&root);
@@ -631,7 +605,7 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
 
 #[test]
 fn paid_opt_in_exemptions_are_live_and_the_cost_report_has_a_mock_ci_run() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let tests = discovered_tests(&root);
     for (path, name, flag, reason) in PAID_OPT_INS {
         assert!(!reason.is_empty());
@@ -676,7 +650,7 @@ fn paid_opt_in_exemptions_are_live_and_the_cost_report_has_a_mock_ci_run() {
 /// wears, and the census cannot quietly empty itself behind a rename.
 #[test]
 fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_backend() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let tests = discovered_tests(&root);
     let live: BTreeSet<&str> = tests
         .iter()
@@ -752,7 +726,7 @@ fn declares(root: &Path, package: &str, wanted: &str) -> bool {
 
 #[test]
 fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
-    let root = repo_root();
+    let root = scan::repo_root();
     // 10b §14.2, as corrected by the independent verify fold.
     let lanes = [
         GateLane {
@@ -827,25 +801,50 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
          L4 citation may be revisited, deliberately"
     );
 
-    // §14.3 criterion 4: the lane proofs are named by the *K8 kernel contracts*
-    // job, so a reviewer running CI runs them.
+    // §14.3 criterion 4: the lane proofs run on every CI run, so a reviewer
+    // running CI runs them. They were named line by line in the *K8 kernel
+    // contracts* job until doc 43 cut TS.1 deleted it as a re-run of the
+    // `test` matrix; what is pinned now is that the matrix cells which run
+    // them still do: rest-libs' workspace sweep excludes neither
+    // `mush-industry` (e7c4) nor `mush-contract-tests` (gate5_fault_matrix),
+    // and rest-server's sweep names mush-server's `world_task` binary
+    // (production_action_migrations::).
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("the CI workflow is part of the tree this policy governs");
-    for needle in [
-        "-p mush-industry --test e7c4",
-        "-p mush-contract-tests --test gate5_fault_matrix",
-        "-p mush-server --test world_task production_action_migrations::",
-    ] {
+    let sweep = |needle: &str| {
+        workflow
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with(needle))
+            .unwrap_or_else(|| {
+                panic!("10b §14.3 criterion 4: ci.yml no longer runs `{needle} ...`")
+            })
+    };
+    let rest_libs = sweep("cargo nextest run -P ci --workspace");
+    for package in ["mush-industry", "mush-contract-tests"] {
         assert!(
-            workflow.contains(needle),
-            "10b §14.3 criterion 4: `cargo test {needle}` must be named by a CI job"
+            !rest_libs
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|pair| pair == ["--exclude", package]),
+            "10b §14.3 criterion 4: the rest-libs sweep excludes {package}, so its lane \
+             proof runs in no CI job"
         );
     }
+    let rest_server = sweep("cargo nextest run -P ci -p mush-server --test commerce_composition");
+    assert!(
+        rest_server
+            .split_whitespace()
+            .any(|word| word == "world_task"),
+        "10b §14.3 criterion 4: the rest-server sweep no longer runs mush-server's \
+         world_task binary (production_action_migrations::)"
+    );
 }
 
 #[test]
 fn vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to() {
-    let root = repo_root();
+    let root = scan::repo_root();
     // (file relative to `crates/`, the test name §14 cites).
     let cited: [(&str, &str); 9] = [
         // L1+L2's go criterion.

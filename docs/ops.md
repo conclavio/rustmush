@@ -1313,7 +1313,12 @@ economy's per-party cap of live contracts
 (`mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY`) from 32 to 100 on 2026-10-26
 (O-19c): a one-IC-day smoke at 64 TVs ran green that day, and no whole 64-TV
 month is on record yet. `TACSIM_COHORT_IC_DAYS` (1 to 30, default 30) shortens the month; 5 is the
-smoke. The month at 30 TVs took about 7.5 minutes on the build box.
+smoke. The month at 30 TVs took about 7.5 minutes on the build box and 12
+minutes on conclav.dev (730 s), where `scripts/vps-gate.sh --kind cost-lane`
+runs it by default since doc 43 cut TS.21: its lens is absolute (5,000 us at
+the p99, no baseline file and no host in it), so the box it is read on is the
+whole of its gate. conclav.dev read the tick gate's minimum p99 at 887 us and
+the month's at 2,053 us at main `a2ef4075`.
 
 **Rollback.** The cut's decision (c) keeps the surface unload's hopper markers one
 real hour (`RingEntry.keep_s`; every other marker keeps the day). A build from
@@ -1682,8 +1687,10 @@ dispatch; the repository has been public since 2026-10-20, so hosted minutes
 are free — the billing block this note used to cite dates from the private
 repository of the project's first weeks), but a hosted runner is a shared
 runner: its delta gates the deterministic block alone, and the timing gate is
-live only on the host that blessed the baseline, the VPS (16c T-109). So the
-run that measures is still the owner's, by hand, on that box. It is one
+live only on the host that blessed the baseline: **conclav.dev** since doc 43
+cut TS.21 (D-43-6, 2026-11-03; conclav.io from 16c T-109 until then, below). So
+the run that measures is still the owner's, on that box: by hand as `ghrunner`,
+or `scripts/vps-gate.sh --kind harness`, which goes there by default. It is one
 command from the repository root, under bash (Linux, or Git Bash on Windows):
 
 ```sh
@@ -1750,8 +1757,11 @@ apart astride the crossroads, dealt into lances of four, each side under a
 scripted commander that is its own lowest unit: every squad ordered to engage at
 the warm-up's end, then one squad a minute stepped through hold, advance and
 withdraw while the others engage again, three orders a minute a side, for
-`TACSIM_LANCE_ARENA_S` (default 120) arena seconds. Under `TACSIM_ASSERT` it
-asserts, at any knob, W8 — the span of control and the orders per commander per
+`TACSIM_LANCE_ARENA_S` (default 120) arena seconds. Whatever `TACSIM_ASSERT`
+says (every check it makes is deterministic, so the CI job's nightly run and
+every `--kind harness` dispatch hold it; under the flag only until TS.21's
+finding, when its span pin had been red unseen since `5993ba20`) it asserts,
+at any knob, W8 — the span of control and the orders per commander per
 minute — within `[tacsim.command]`, that the ledger's `ordered` lines are
 exactly the orders the script gave, that the opening round landed on every
 standing unit, that the span never exceeds what the script holds, and that the
@@ -1767,8 +1777,10 @@ defaults** (`TACSIM_SEED` 2350, `TACSIM_LANCE_UNITS` 24,
 `at_defaults`) does it also assert the figures the defaults' fight gives, each
 held to that fight by fact pins (its end, and each first squad's standing
 machines at its minute-one mark and at the release): the span **equal** to the
-squads a side less one (each commander's second and third squads under its
-live orders at the read, its first squad released), the busiest commander
+squads a side (since `5993ba20`, re-pinned by record: blue's commander holds
+`blue-1` on a wreck that took the minute-one order and died before the
+release, beside its second and third squads; over the standing hulls alone each
+commander holds its second and third, the squads a side less one), the busiest commander
 minute **equal** to the squads a side, each side's release on the tape once
 for every machine its first squad stood, and the opening round plus one full
 minute a side on the tape. Off them a lance can be wiped out, reach its
@@ -1893,7 +1905,8 @@ under the host name `ccr-m4.5-linux-bless`, so its timing gate was dormant
 everywhere. The stale Windows file was removed in the same commit, so on the
 owner's Windows box the delta says `no baseline for windows` and passes.
 
-**The production VPS is the blessing host since 16c `T-109`** (the owner,
+**The production VPS was the blessing host from 16c `T-109` to doc 43 cut
+TS.21** (the owner,
 2026-10-09: the lenses follow the host the game runs on). The lenses are the
 conclav.io VPS's figures, and `arena.linux.json` is blessed **on the VPS under
 its own host name** (`srv1930616`, read from `/etc/hostname`; no `HOSTNAME`
@@ -1932,6 +1945,33 @@ the thresholds unchanged, the timing the VPS's at that tree, the gate live
 there as before. The in-tree pins (the D-UM-28 rows, the duel's and the
 field's hashes, the three ledger-line tables) moved in the code commit; the
 RNG's fold did not, so no draw and no outcome moved.
+
+**Re-blessed on conclav.dev** (doc 43 cut TS.21, D-43-6, 2026-11-04): the
+timing gate had been dormant everywhere since `linux/4/srv1930616` went away,
+and the owner moved it to conclav.dev rather than back onto conclav.io, whose
+dev1 and dev2 play no run can control. The timing block alone was re-blessed
+there, at main `a2ef4075`, by hand as `ghrunner` at the runner's `Nice=10` with
+`HOSTNAME` unset (so the host is `/etc/hostname`'s, as in every `gate.yml`
+job): the asserting lanes and the delta (the deterministic block and all four
+minds blocks equal, every lens held), the delta with `TACSIM_BASELINE_BLESS=1`
+over those reports, then the lanes and the delta again with the gate live
+(every figure within 4.3 per cent). The bless's timing leaves (the tempos,
+`setup_ms`, the window's milliseconds, the snapshot's encode and decode times,
+the run-only `assert`/`lens`) were carried onto main's file, and nothing else:
+the deterministic block and every earlier record stand byte for byte, and the
+`blessed` stanza gained a `harness_timing_update` record naming the host
+(`linux/32/hg.conclav.dev`), the five readings and the reason. The lenses did
+not move. Over five readings at that tree (two by hand, three gate runs) the
+wake p99 ran 6.36 to 7.90 ms and the window p99 12.2 to 15.0 ms: the slowest
+gate run is +19.7 per cent on the p99 against the blessed run, inside the
+bound, so a timing-only failure is still re-run once before it is believed.
+The lance lane was skipped in that bless: under `TACSIM_ASSERT` it fails a
+deterministic fact pin on main (its W8 span reads 3 where 2 is pinned; every
+nightly's `harness-lance.json` reads 3 back to 2026-10-19), which stopped
+`scripts/harness-weekly.sh`, and so `vps-gate.sh --kind harness`, before the
+delta. It was re-pinned by record from the commit that moved it, `5993ba20`
+(doc 43's cut notes, "The lance span"), and the lane now asserts whatever
+`TACSIM_ASSERT` says.
 
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A
@@ -1975,12 +2015,13 @@ Since test-strategy cut T.2 (2026-10-26) the owner's VPS boxes are
 
 | box | runner | labels | cores / memory | shares the box with |
 |---|---|---|---|---|
-| conclav.io | `conclav-vps` | `vps`, `conclav-io` | 8 / 31 GB | dev1, dev2 and the production Redis; the harness's blessing host |
-| conclav.dev | `conclav-dev` | `vps`, `conclav-dev` | 32 / 62 GB | nothing (added 2026-10-27) |
+| conclav.io | `conclav-vps` | `vps`, `conclav-io` | 8 / 31 GB | dev1, dev2 and the production Redis |
+| conclav.dev | `conclav-dev` | `vps`, `conclav-dev` | 32 / 62 GB | nothing (added 2026-10-27); the harness's blessing host since doc 43 cut TS.21 |
 
 The cut loop's gate (the workspace sweep that used to tie up the owner's Windows
 box for an hour a sub-cut) runs there, and so do the two by-hand scripts whose
-timing gates are live on conclav.io and nowhere else. From the box, under bash:
+timing gates are live on conclav.dev and nowhere else (doc 43 D-43-6; conclav.io
+until cut TS.21). From the box, under bash:
 
 ```sh
 scripts/vps-gate.sh                         # the sweep of the pushed branch, on whichever box is idle
@@ -1988,8 +2029,8 @@ scripts/vps-gate.sh --wip                   # the sweep of the WORKING TREE
 scripts/vps-gate.sh --runner conclav-dev    # pinned to a box: vps, conclav-dev or conclav-io
 scripts/vps-gate.sh --packages "tacsim mush-server"
 scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
-scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.io
-scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.io
+scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.dev
+scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.dev
 ```
 
 `--wip` pushes a commit of the working tree, uncommitted work and untracked
@@ -2010,10 +2051,14 @@ the one both boxes carry, so GitHub hands the job to whichever is idle;
 dispatches serialise among themselves; a runner takes one job at a time
 regardless, so two jobs never share a target directory. GitHub keeps one
 running and one pending run per group: a third dispatch while one runs and one
-waits replaces the waiting one. `harness` and `cost-lane` go to `conclav-io`
-unless the dispatch says otherwise (`vps-gate.sh` defaults them there): the
-timing gate is live on the host that blessed the baseline and dormant
-elsewhere. Each job sizes itself by the runner's name (the "Sized for the box"
+waits replaces the waiting one. `harness` and `cost-lane` go to `conclav-dev`
+unless the dispatch says otherwise (`vps-gate.sh` defaults them there, since
+doc 43 cut TS.21): the timing gate is live on the host that blessed the
+baseline, conclav.dev (`linux/32/hg.conclav.dev`), and dormant elsewhere,
+conclav.io and the hosted runners included, and the cost lane's absolute lens
+is read there too. The owner's ruling (D-43-6, 2026-11-03): conclav.dev has no
+other load and is close enough to conclav.io for timing, while a run on
+conclav.io would time dev1 and dev2's play, which no run can control. Each job sizes itself by the runner's name (the "Sized for the box"
 step): conclav.io compiles with six jobs and tests with nextest's `num-cpus`
 (eight), conclav.dev with 24 jobs and 32 test threads (`NEXTEST_TEST_THREADS`;
 its first sweep ran 16 at a load average of five, the tests waiting on clocks
@@ -2117,6 +2162,37 @@ re-registration (`gh api -X POST repos/conclavio/rustmush/actions/runners/<id>/l
 -f 'labels[]=conclav-io'` is how conclav.io got its own). The script's header
 says how to retire a runner.
 
+## The cut loop: what runs where (doc 43 §2.2, §2.3)
+
+**Locally**, on the owner's Windows box, a cut runs only what it touched, then
+the checks that are cheap and the CI cannot do for it, and sends the broad
+sweep to the VPS gate once:
+
+```sh
+cargo nextest run -j 8 -p <crate> --test <group> -E 'test(/^<module>::/)'   # what changed
+rustfmt --edition 2021 <changed files>       # never `cargo fmt --all` (the path length breaks it)
+cargo clippy -j 8 -p <crate> --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -j 8 -p <crate> --no-deps
+cargo nextest run -j 8 -p mush-contract-tests --test feature_matrix_inventory   --test panic_budget --test restriction_lints --test state_slot_owners
+scripts/vps-gate.sh                          # the broad sweep, once
+```
+
+The box caps at `-j 8` and one workspace build at a time, links test binaries
+with line tables only (full debuginfo hit the PDB ceiling), and cannot run the
+`cfg(unix)` stories at all: `cargo nextest run --workspace` on Windows is not a
+sweep of the tree. Linux-only stories, and any change that renames a log line
+or signal path they await, run on conclav.dev as `ghrunner` in a throwaway clone
+before the push; clock-bound stories run there as parallel variants
+(`variant-build.sh`/`variant-run.sh`), never one long run per hypothesis.
+
+**A cut that touches a hash-pinned file dispatches the harness kind before it
+is marked ready** (doc 43 rule #13): `scripts/vps-gate.sh --kind harness` on the
+cut's branch, and the run's delta against the committed baseline goes in the
+cut note. The files are doc 40 §4a's inventory (the pins recorded in
+docs/design/40-cut-notes.md, "§4a's inventory, at the base commit"). The PR's
+CI does not run the harness, so without the dispatch a mover is found only by
+the nightly's bisect after it merges.
+
 ## Test targets since T.3: the group binaries
 
 Since test-strategy cut T.3 (2026-10-26) a crate's integration tests are a few
@@ -2152,7 +2228,10 @@ cargo test -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_bles
 Two things to know. `cargo test`'s positional filter is a substring match on
 the full name, so `lane::` would also select `cost_lane::…` if both were modules
 of one group: the merge refused a group where a module's name is a suffix of
-another's, and a new module keeps that rule. And under plain multi-threaded
+another's, and a new module keeps that rule (for tacsim's shards
+`crates/mush-contract-tests/tests/ci_tacsim_shards.rs` refuses it since doc 43
+cut TS.0, and refuses a file under `tests/shard_N/` that no root declares, which
+would otherwise compile nowhere). And under plain multi-threaded
 `cargo test` a group's modules share one process and its statics (locks, global
 tracing subscribers); sweeps run under nextest, one process per test, as CI and
 the VPS gate do, and `cargo test` is for one test (`--exact`) or one module

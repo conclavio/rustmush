@@ -2509,7 +2509,7 @@ fn sm3b_two_acts_cannot_spend_one_margin() {
 
 /// Write `record` into the family through a typed transaction (staff's hand; `seed_pool`'s
 /// shape).
-fn put_record(rig: &mut Rig, record: RigRecord) {
+pub(crate) fn put_record(rig: &mut Rig, record: RigRecord) {
     let family = handles(&rig.tw).families.excursions;
     let engine = rig.tw.engine_mut();
     let prepared = {

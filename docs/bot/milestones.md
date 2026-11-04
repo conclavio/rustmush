@@ -3,10 +3,10 @@
 The bot remains a separate SSH player implementation. All executable profiles,
 scripts, captures and harness manifests use JSON. Markdown is documentation.
 
-The [five-wave social campaign roadmap](bot-social-campaign-plan.md) extends these
-foundations. [Wave 1](bot-conversation.md) adds conversation gates, managed speaking
+The [five-wave social campaign roadmap](social-campaign-plan.md) extends these
+foundations. [Wave 1](conversation.md) adds conversation gates, managed speaking
 floors, observer recaps, scene provenance and validated bot bookmarks.
-[Wave 2](bot-campaigns.md) adds certified rehearsal-world checkpoints, playable
+[Wave 2](campaigns.md) adds certified rehearsal-world checkpoints, playable
 branches, inherited character state, campaign quotas and sibling inspection.
 
 - [x] Runtime model profiles and session/lifetime provider cost accounting.
@@ -104,22 +104,22 @@ backend; native terminal interaction has not been automated. Clippy is clean.
 The normal/build dependency graph contains no game packages other than mush-bot.
 Tests use local HTTP stubs or response tapes and incur no live model charges.
 
-See [the bot guide](bot.md#local-terminal-ui) for controls and source examples.
-The [probe format](bot-probes.md) explains what these checks establish: exact
+See [the bot guide](guide.md#local-terminal-ui) for controls and source examples.
+The [probe format](probes.md) explains what these checks establish: exact
 answers and captured citations, without inferring semantic entailment or truth.
-The [regression guide](bot-regression.md) explains acceptance thresholds and
+The [regression guide](regression.md) explains acceptance thresholds and
 inconclusive results, including why observed differences are not significance tests.
 
-The [SillyTavern/TavernAI research](bot-prompting-research.md) informed the composer,
+The [SillyTavern/TavernAI research](prompting-research.md) informed the composer,
 lore eligibility, temporary state, voice selection and swappable local recall.
 A general plugin execution pipeline and semantic recall/summary jobs remain future work. Decisions
 about autonomous group authority, campaign persistence, extension execution and
-setting knowledge exports are recorded in [decision points](bot-decisions.md).
+setting knowledge exports are recorded in [decision points](decisions.md).
 
 
 ## Wave 5: adversarial playtesting and usability review
 
-The [playtesting guide](bot-playtesting.md) covers JSON testing missions, an exact
+The [playtesting guide](playtesting.md) covers JSON testing missions, an exact
 command permission gate, actor-local coverage, goal feedback, refutation batches,
 operator triage and a consolidated actionable backlog. Feedback and refutation
 use separate model-cost purposes and cannot act in the game or change IC beliefs.
@@ -131,6 +131,6 @@ exported-regression rerun. Blind packets keep the reveal mapping separate and
 support a human rating TUI and headless validation. v4 actor saves preserve mission
 allowances and reviews; old campaign hashes remain compatible.
 
-The [wave 5 plan and reviews](bot-wave5-plan.md) records validation and deliberate
+The [wave 5 plan and reviews](wave5-plan.md) records validation and deliberate
 limits: greedy reduction without global minimality, operator triage without
 semantic-proof claims, and live-model/human evaluations separate from fixture tapes.

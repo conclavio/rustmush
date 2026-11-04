@@ -216,7 +216,10 @@ async fn b36a_1_a_given_up_draw_does_not_brick_the_hull() {
     let lot = tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot");
     let found = lot_record(&mut rig, lot).expect("the cannon's lot is minted");
     assert_eq!(found.commodity().as_str(), "tacsim.part.weapon.cannon_105");
-    assert_eq!(provenance(&mut rig, lot).slot, cannon);
+    assert_eq!(
+        provenance(&mut rig, lot).stripped().map(|s| s.slot.clone()),
+        Some(cannon.clone())
+    );
     assert_eq!(
         assess(&rig, spare).component_conditions[&cannon],
         ComponentCondition::Missing,

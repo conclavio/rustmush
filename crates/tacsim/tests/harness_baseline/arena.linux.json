@@ -1,7 +1,7 @@
 {
   "blessed": {
-    "commit": "16320d7cb7696a2961272462b80b36df0007fdc7",
-    "date": "2026-10-12T20:17:57Z",
+    "commit": "a2ef407539ab67157faa6675861b3aa855cb4c78",
+    "date": "2026-11-04T02:05:12Z",
     "deterministic_update": {
       "cut": "M5r",
       "date": "2026-10-17",
@@ -104,8 +104,8 @@
       "source_sha256": "92987a0c26bc442ef87640f026dfea16dc0934739b5788607f4d3322b24e07ab"
     },
     "host": {
-      "cpus": 4,
-      "hostname": "srv1930616",
+      "cpus": 32,
+      "hostname": "hg.conclav.dev",
       "os": "linux"
     },
     "m6_deterministic_update": {
@@ -439,6 +439,108 @@
         "minds.ceiling_authored.inline_thinks": 1747,
         "minds.ceiling_authored.landings": 9231,
         "minds.ceiling_authored.thinks": 9227
+      }
+    },
+    "harness_timing_update": {
+      "cut": "doc 43 TS.21 (D-43-6), the timing baseline on conclav.dev",
+      "recorded_utc": "2026-11-04T02:50:00Z",
+      "measured_revision": "a2ef407539ab67157faa6675861b3aa855cb4c78 (main)",
+      "host": {
+        "cpus": 32,
+        "hostname": "hg.conclav.dev",
+        "os": "linux"
+      },
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev"
+      ],
+      "reason": "D-43-6 (the owner, 2026-11-03): the timing gate had been dormant everywhere since its blessing host, linux/4/srv1930616 (the old conclav.io plan), went away; conclav.io now carries dev1 and dev2's play, which no run can control, while conclav.dev (32 cores, AMD EPYC, nothing else on the box) has no other load and is close enough to conclav.io for timing. FR.5's rebless needs a live timing baseline to re-bless against.",
+      "procedure": "By hand as ghrunner in a throwaway clone of the measured revision, at the runner's Nice=10, HOSTNAME unset (the host read from /etc/hostname, as every gate.yml job reads it): (A) the lanes under TACSIM_ASSERT=1 with --skip tacsim_harness_lance, then the delta against main's file: deterministic block equal (106 fields), the four minds blocks equal, every lens held, every minds variant held=yes sound=yes; (B) the delta with TACSIM_BASELINE_BLESS=1 over A's reports; (C) the same lanes and delta again against the blessed file, the timing gate live: p50 -4.1%, p99 -3.6%, window p99 -4.3%. The lance lane was skipped because it fails a deterministic fact pin under TACSIM_ASSERT on main (W8 span_max 3 where 2 is pinned, harness.rs's at-defaults block; span_max 3 on every nightly back to 2026-10-19), which is no timing figure and none of this record's.",
+      "readings": {
+        "note": "wake p50 / wake p99 / window p99 ms of the CI cohort's arena lane at a2ef4075, each run's harness-arena.json",
+        "gate_41756575489": [
+          5.414,
+          7.896,
+          14.97
+        ],
+        "gate_41760419368": [
+          5.281,
+          7.213,
+          14.553
+        ],
+        "gate_41760428226": [
+          5.487,
+          6.644,
+          12.787
+        ],
+        "by_hand_A_blessed": [
+          5.467,
+          6.595,
+          12.777
+        ],
+        "by_hand_C": [
+          5.243,
+          6.358,
+          12.231
+        ]
+      },
+      "timing_policy": "Only the timing leaves moved, carried from bless B onto main's file: tempos, setup_ms, window.ms_max/ms_p50/ms_p95/ms_p99, snapshot.decode_ms_max/encode_ms/wake_plus_encode_ms_max, and the run-only thresholds.assert/lens (now the asserting run's); blessed.host/commit/date are conclav.dev's. Every other leaf, the deterministic block and every earlier record are main's, byte for byte (the leaves no path compares, such as perception.contacts_at_end, slope.refusals and the snapshot bytes, keep their old values). The lenses (20 ms per wake, 22/32 ms per window, the 40 ms engaged ceiling) did not move. Bless A is the median of five readings; the slowest, gate run 41756575489, is +19.7% on the p99 against it, inside the 20% bound, so a timing-only failure is re-run once before it is believed, as before.",
+      "fields": [
+        "tempos",
+        "setup_ms",
+        "window.ms_max",
+        "window.ms_p50",
+        "window.ms_p95",
+        "window.ms_p99",
+        "snapshot.decode_ms_max",
+        "snapshot.encode_ms",
+        "snapshot.wake_plus_encode_ms_max",
+        "thresholds.assert",
+        "thresholds.lens"
+      ],
+      "cost_lane": "The cost lane's lens is absolute (no baseline file): scripts/cost-lane.sh on conclav.dev at the same revision, under TACSIM_ASSERT=1, read the surface tick gate's minimum p99 887 us of five runs and the 30-TV IC month's surface-fire p99 2053 us, both under 5000 us, no breach, the month's wall 730 s.",
+      "previous": {
+        "tempos": [
+          {
+            "max_ms": 8.427,
+            "name": "arena_engaged",
+            "p50_ms": 4.326,
+            "p95_ms": 6.466,
+            "p99_ms": 7.584,
+            "period_ms": 500,
+            "pulses": 120
+          }
+        ],
+        "setup_ms": {
+          "arena_open": 7.604,
+          "boot": 51.334,
+          "generate": 5.975,
+          "killed_warming": 0,
+          "pack_apply": 29.762,
+          "terrain_convert": 2.462,
+          "warm_pulses": 47,
+          "warm_up": 179.211,
+          "window_open": 20.338
+        },
+        "window.ms_max": 15.896,
+        "window.ms_p50": 8.801,
+        "window.ms_p95": 11.946,
+        "window.ms_p99": 13.172,
+        "snapshot.decode_ms_max": 54.509,
+        "snapshot.encode_ms": {
+          "max": 17.005,
+          "p50": 15.454,
+          "p99": 16.121
+        },
+        "snapshot.wake_plus_encode_ms_max": 23.509,
+        "thresholds.assert": false,
+        "thresholds.lens": "report-only",
+        "blessed.host": {
+          "cpus": 4,
+          "hostname": "srv1930616",
+          "os": "linux"
+        },
+        "blessed.commit": "16320d7cb7696a2961272462b80b36df0007fdc7",
+        "blessed.date": "2026-10-12T20:17:57Z"
       }
     }
   },
@@ -807,15 +909,15 @@
     ]
   },
   "setup_ms": {
-    "arena_open": 7.604,
-    "boot": 51.334,
-    "generate": 5.975,
+    "arena_open": 591.496,
+    "boot": 55.66,
+    "generate": 4.307,
     "killed_warming": 0,
-    "pack_apply": 29.762,
-    "terrain_convert": 2.462,
+    "pack_apply": 19.198,
+    "terrain_convert": 1.474,
     "warm_pulses": 47,
-    "warm_up": 179.211,
-    "window_open": 20.338
+    "warm_up": 208.17,
+    "window_open": 12.332
   },
   "slope": {
     "refusals": 239,
@@ -835,16 +937,16 @@
     "bytes_max": 4867417,
     "bytes_mean": 4807618,
     "count": 7,
-    "decode_ms_max": 54.509,
+    "decode_ms_max": 48.576,
     "encode_ms": {
-      "max": 17.005,
-      "p50": 15.454,
-      "p99": 16.121
+      "max": 27.137,
+      "p50": 26.408,
+      "p99": 26.775
     },
     "every_ms": 5000,
     "hash_ok": true,
     "max_snapshot_bytes": 7340032,
-    "wake_plus_encode_ms_max": 23.509
+    "wake_plus_encode_ms_max": 32.144
   },
   "substeps": {
     "per_wake_max": 1,
@@ -854,21 +956,21 @@
   },
   "tempos": [
     {
-      "max_ms": 8.427,
+      "max_ms": 6.789,
       "name": "arena_engaged",
-      "p50_ms": 4.326,
-      "p95_ms": 6.466,
-      "p99_ms": 7.584,
+      "p50_ms": 5.467,
+      "p95_ms": 6.518,
+      "p99_ms": 6.595,
       "period_ms": 500,
       "pulses": 120
     }
   ],
   "thresholds": {
-    "assert": false,
+    "assert": true,
     "cut_a_p99_ms": 5.0,
     "cut_s_p99_ms": 20.0,
     "engaged_p99_ms": 40,
-    "lens": "report-only",
+    "lens": "per-wake-and-per-window",
     "max_cell_probes_per_pulse": 32000,
     "max_jam_checks_per_pulse": 2048,
     "max_ledger_bytes": 67108864,
@@ -900,10 +1002,10 @@
     "cell_probes_peak": 4987,
     "horizon_probes_peak": 4968,
     "jam_checks_peak": 677,
-    "ms_max": 15.896,
-    "ms_p50": 8.801,
-    "ms_p95": 11.946,
-    "ms_p99": 13.172,
+    "ms_max": 13.044,
+    "ms_p50": 10.753,
+    "ms_p95": 12.519,
+    "ms_p99": 12.777,
     "share_ops_peak": 108,
     "traces_peak": 967,
     "window_ms": 500,

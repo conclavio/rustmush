@@ -1,3 +1,9 @@
+# Scenes, factions, and knowledge
+
+This record preserves the ratified decisions and source review from September 2026.
+Its code observations describe that revision. Read the [design overview](../design.md)
+and [later decisions](README.md#superseded-decisions) for the current direction.
+
 > **Revised 2026-09-01** after a full code review (eight-agent survey of the scene/event/persistence/NPC/zone/ruleset seams). Decisions marked **RATIFIED** are settled: the module store-read seam, chunked JSON documents over streams for authoritative logs, the two-level IC time model, and §3's faction system — rewritten from a sketch into the full registry/simulation design. The faction registry is the next build.
 
 Your Timestop concept is the right center of gravity. I would define a scene as an explicit, durable envelope around play, while leaving ordinary room roleplay ambient and unrecorded unless someone deliberately opens a scene.
@@ -31,7 +37,7 @@ flowchart TD
 
 ## 1. First-class scenes and Timestop
 
-You already have most of the mechanical substrate: `Scene`, scene membership, module ownership, ruleset state, map blobs, hooks, and per-scene ticks in [module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:160>) and [module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:1833>).
+You already have most of the mechanical substrate: `Scene`, scene membership, module ownership, ruleset state, map blobs, hooks, and per-scene ticks in [module.rs](../../crates/mush-core/src/module.rs) and [module.rs](../../crates/mush-core/src/module.rs).
 
 The important change is that current scenes are explicitly transient and IDs restart at zero on boot. Narrative scenes need durable identities.
 
@@ -52,7 +58,7 @@ RuntimeSceneId(u64)  // optional per-boot scheduler/index identity
 
 Never reuse a durable scene ID after restart.
 
-**Migration note (code review):** the durable/runtime split hides real re-keying work. Persisted scene keys embed the per-boot `u64` today — `ruleset_state_key = "scene:{id}:state"` ([world.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/world.rs:1014>)) and the map-blob key ([module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:2024>)) — and the whole `Ctx`/tick/hook API is keyed on `SceneId(u64)`. Durable scenes must key their persisted docs by the ULID (otherwise rehydrated scenes get fresh runtime ids whose keys no longer match their docs — the exact interleaving hazard the boot purge contract exists to prevent), and that purge contract ([module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:172>)) needs an exemption: closed durable scenes' logs outlive the scene and must never be swept as orphans.
+**Migration note (code review):** the durable/runtime split hides real re-keying work. Persisted scene keys embed the per-boot `u64` today — `ruleset_state_key = "scene:{id}:state"` ([world.rs](../../crates/mush-core/src/world.rs)) and the map-blob key ([module.rs](../../crates/mush-core/src/module.rs)) — and the whole `Ctx`/tick/hook API is keyed on `SceneId(u64)`. Durable scenes must key their persisted docs by the ULID (otherwise rehydrated scenes get fresh runtime ids whose keys no longer match their docs — the exact interleaving hazard the boot purge contract exists to prevent), and that purge contract ([module.rs](../../crates/mush-core/src/module.rs)) needs an exemption: closed durable scenes' logs outlive the scene and must never be swept as orphans.
 
 ### Generic scene record
 
@@ -108,11 +114,11 @@ enum SceneStatus {
 
 Keep ruleset-specific initiative and combat state in the existing ruleset-state seam rather than putting WoD concepts into `SceneRecord`.
 
-`last_event_seq` deliberately does **not** live in `SceneRecord` — it gets its own tiny doc, otherwise every recorded pose rewrites the full participants/observers record (the scene-state pattern is already snapshot-per-change, [module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:1928>); don't double the amplification).
+`last_event_seq` deliberately does **not** live in `SceneRecord` — it gets its own tiny doc, otherwise every recorded pose rewrites the full participants/observers record (the scene-state pattern is already snapshot-per-change, [module.rs](../../crates/mush-core/src/module.rs); don't double the amplification).
 
 ### Scene time — two levels (RATIFIED)
 
-**Global IC clock.** Already built and already ratio-scaled: `GameClock { ic_ratio, epoch_offset }` with `ic = epoch_offset + now × ic_ratio` ([clock.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/clock.rs:44>)), configured from `mushd.toml [game]`. This is the classic WoD-MUSH convention — IC runs at a multiple of real time so nocturnal PCs can play during the RL day and long campaigns don't take literal months — and it stays a pure function of wall time, which scenes must not break for the rest of the game.
+**Global IC clock.** Already built and already ratio-scaled: `GameClock { ic_ratio, epoch_offset }` with `ic = epoch_offset + now × ic_ratio` ([clock.rs](../../crates/mush-core/src/clock.rs)), configured from `mushd.toml [game]`. This is the classic WoD-MUSH convention — IC runs at a multiple of real time so nocturnal PCs can play during the RL day and long campaigns don't take literal months — and it stays a pure function of wall time, which scenes must not break for the rest of the game.
 
 **Scene-local IC time.** A turn-based scene decouples from that clock the moment it begins. Rule: `event.ic_time = scene.ic_started_at + rounds_elapsed × ic_round_seconds`, where `ic_started_at` is captured from the global clock at `+timestop` and the ruleset supplies the round duration (3 IC seconds for a WoD combat turn; Shadowrun and TacSim declare their own). Freeform and downtime scenes just stamp the global clock per event. Consequences:
 
@@ -209,7 +215,7 @@ TurnToken {
 
 Tokens are resolved and attached by the driver, not presented by callers — a player cannot type a nonce. When a mechanical command dispatches, the driver binds the actor's current token to the in-flight action; NPC and LLM Storyteller completions carry the token they were issued when their turn began. Anything returning after the turn advances carries a stale token and is rejected.
 
-**Enforcement lives in two places (code review),** because NPC actions never pass command dispatch — they re-enter as async completions applied in mush-npc's completion handler (routed by module name in [world_task.rs](</C:/Users/faeni/cc/rustmush/crates/mush-server/src/world_task.rs:2342>)). So: (1) the command path checks tokens in the driver's `command_policy`; (2) mush-npc's stimulus→turn pipeline must consult scene membership *before* starting an LLM turn — a member of an exclusive turn-based scene gets no free-running wakeups (mush-npc subscribes to `Said` and would otherwise keep triggering agent turns off recorded scene speech) and acts only when handed a token. The clean dependency shape is a small read-only "is this object in an exclusive scene?" query on core, since core already owns scene membership — mush-npc should not depend on the scenes module's typed state.
+**Enforcement lives in two places (code review),** because NPC actions never pass command dispatch — they re-enter as async completions applied in mush-npc's completion handler (routed by module name in [world_task.rs](../../crates/mush-server/src/world_task.rs)). So: (1) the command path checks tokens in the driver's `command_policy`; (2) mush-npc's stimulus→turn pipeline must consult scene membership *before* starting an LLM turn — a member of an exclusive turn-based scene gets no free-running wakeups (mush-npc subscribes to `Said` and would otherwise keep triggering agent turns off recorded scene speech) and acts only when handed a token. The clean dependency shape is a small read-only "is this object in an exclusive scene?" query on core, since core already owns scene membership — mush-npc should not depend on the scenes module's typed state.
 
 ### Timestop command policy
 
@@ -236,7 +242,7 @@ On clean or crash restart:
 - Require facilitator resume or a configured quorum.
 - Never automatically advance a turn after restart.
 
-That requires replacing the current “purge stale scene keys on boot” contract in [module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:172>): durable scenes are keyed by ULID (no per-boot id collision to defend against), their records rehydrate as `Paused(ServerRestart)`, and their event-log docs are permanent. The purge sweep continues to apply only to legacy transient scenes (tactics-style), which keep the old contract.
+That requires replacing the current “purge stale scene keys on boot” contract in [module.rs](../../crates/mush-core/src/module.rs): durable scenes are keyed by ULID (no per-boot id collision to defend against), their records rehydrate as `Paused(ServerRestart)`, and their event-log docs are permanent. The purge sweep continues to apply only to legacy transient scenes (tactics-style), which keep the old contract.
 
 ## 2. Beliefs, rumors, and provenance
 
@@ -416,7 +422,7 @@ All three are asymmetric and faction-scoped; every change is a ledger event with
 
 ### 3.4 Intel pools — the faction as epistemic actor (generalizes M12)
 
-The shipped M12 informant loop files intel to `principal: Option<ObjId>` — one character ([profile.rs](</C:/Users/faeni/cc/rustmush/crates/mush-npc/src/profile.rs:125>)). Generalize, don't replace:
+The shipped M12 informant loop files intel to `principal: Option<ObjId>` — one character ([profile.rs](../../crates/mush-npc/src/profile.rs)). Generalize, don't replace:
 
 ```rust
 enum Principal {
@@ -658,7 +664,7 @@ Record semantic events, not rendered SSH/HTML output:
 
 Do not record command typos, ordinary error messages, LLM prompts, or transport formatting.
 
-The `witnesses` set must be captured when the event happens. Never recalculate it later from current location or perception. And "witness" needs a definition, because two plausible ones disagree — *present-and-could-perceive* vs. *was-actually-delivered-output* (linkdead-but-present characters, whispers, language, conceal-verdict ordering all split them). Rule: **a witness is what the delivery layer decided.** The recorded set is the outcome of the same per-recipient perception gate the output fan-out already runs ([world_task.rs](</C:/Users/faeni/cc/rustmush/crates/mush-server/src/world_task.rs:2274>)), captured from that single code path — so beliefs can never contradict what a player's client actually printed. The M14 director already uses this pattern for power use — `WorldEvent::PowerUsed` carries a pre-resolved witness set ([module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:464>)), though that set is NPC-only and director-computed, not captured from the delivery gate; scene recording extends the pre-resolved-set idea to speech and movement while sourcing it from the fan-out itself. The semantic `WorldEvent` abstraction ([module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:400>)) is the starting point, but today it carries no ids, no scene correlation, and (outside `PowerUsed`) no witness sets — those get added for recorded scenes. For long runs of events with an unchanged audience, record witness *deltas* against the scene's membership snapshot rather than a full `BTreeSet<ObjId>` per pose.
+The `witnesses` set must be captured when the event happens. Never recalculate it later from current location or perception. And "witness" needs a definition, because two plausible ones disagree — *present-and-could-perceive* vs. *was-actually-delivered-output* (linkdead-but-present characters, whispers, language, conceal-verdict ordering all split them). Rule: **a witness is what the delivery layer decided.** The recorded set is the outcome of the same per-recipient perception gate the output fan-out already runs ([world_task.rs](../../crates/mush-server/src/world_task.rs)), captured from that single code path — so beliefs can never contradict what a player's client actually printed. The M14 director already uses this pattern for power use — `WorldEvent::PowerUsed` carries a pre-resolved witness set ([module.rs](../../crates/mush-core/src/module.rs)), though that set is NPC-only and director-computed, not captured from the delivery gate; scene recording extends the pre-resolved-set idea to speech and movement while sourcing it from the fan-out itself. The semantic `WorldEvent` abstraction ([module.rs](../../crates/mush-core/src/module.rs)) is the starting point, but today it carries no ids, no scene correlation, and (outside `PowerUsed`) no witness sets — those get added for recorded scenes. For long runs of events with an unchanged audience, record witness *deltas* against the scene's membership snapshot rather than a full `BTreeSet<ObjId>` per pose.
 
 ### Canon event ledger
 
@@ -706,11 +712,11 @@ apply damage
 = one successful command transaction
 ```
 
-**Storage ruling.** `ModuleWrite::StreamAppend` is mandatory-capped — `maxlen` is a required field ([module.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/module.rs:105>)), trimmed inside every `XADD` ([redis.rs](</C:/Users/faeni/cc/rustmush/crates/mush-store/src/redis.rs:544>)) — and raw streams have two disqualifying failure modes for an authoritative log: the store writer retries whole batches on ambiguous failure, so `XADD *` entries can be **duplicated**; and a deterministically failing batch is **dropped**, losing its appends permanently ([persist.rs](</C:/Users/faeni/cc/rustmush/crates/mush-server/src/persist.rs:174>)). Ledgers therefore use **chunked immutable JSON documents**: events buffer into the current chunk doc, keyed `log:{scene_ulid}:{chunk_seq}` (module keys may contain `:`), one whole-doc `JsonSet` per append. That is idempotent on retry (a re-sent batch rewrites the same doc to the same bytes), covered by the existing per-namespace migration machinery (which skips streams entirely), enumerated by the normal boot scan, and commits atomically in the same batch as the state mutation. Chunk size bounds the per-write amplification — seal a chunk at a few KB and open the next key. Do not use a history ring that may discard old events.
+**Storage ruling.** `ModuleWrite::StreamAppend` is mandatory-capped — `maxlen` is a required field ([module.rs](../../crates/mush-core/src/module.rs)), trimmed inside every `XADD` ([redis.rs](../../crates/mush-store/src/redis.rs)) — and raw streams have two disqualifying failure modes for an authoritative log: the store writer retries whole batches on ambiguous failure, so `XADD *` entries can be **duplicated**; and a deterministically failing batch is **dropped**, losing its appends permanently ([persist.rs](../../crates/mush-server/src/persist.rs)). Ledgers therefore use **chunked immutable JSON documents**: events buffer into the current chunk doc, keyed `log:{scene_ulid}:{chunk_seq}` (module keys may contain `:`), one whole-doc `JsonSet` per append. That is idempotent on retry (a re-sent batch rewrites the same doc to the same bytes), covered by the existing per-namespace migration machinery (which skips streams entirely), enumerated by the normal boot scan, and commits atomically in the same batch as the state mutation. Chunk size bounds the per-write amplification — seal a chunk at a few KB and open the next key. Do not use a history ring that may discard old events.
 
 **Honesty about the boundary (code review).** Two caveats the driver design must own rather than assume away:
 
-- A handler that mutates the world and then errors does **not** roll back the mutation — the deferred persistence queue truncates ([cmd.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/cmd.rs:851>)), but world state already applied still flushes with the step. The mutation+event pairing is a **per-driver invariant enforced by helper shape** — one call that applies the mutation *and* queues both docs, so a driver physically cannot do one without the other — plus testkit assertions, not an engine transaction.
+- A handler that mutates the world and then errors does **not** roll back the mutation — the deferred persistence queue truncates ([cmd.rs](../../crates/mush-core/src/cmd.rs)), but world state already applied still flushes with the step. The mutation+event pairing is a **per-driver invariant enforced by helper shape** — one call that applies the mutation *and* queues both docs, so a driver physically cannot do one without the other — plus testkit assertions, not an engine transaction.
 - `gate_on_durable_ack` gates **output**, not state; RAM runs ahead of the store either way. For ledger-bearing commands, the deterministic-failure policy must be "surface loudly to staff and mark the scene damaged," never silent drop.
 
 ### Retcons

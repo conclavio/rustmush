@@ -2,8 +2,9 @@
 
 > **Historical plan.** This records the original milestone sequence, including
 > retired rulesets and superseded persistence choices. The current game is
-> TacSim, composed by `mush_server::boot::game_modules`; there is no `[rulesets]` selector.
-> For current behavior and remaining work, read [combat arena](design/16-combat-arena.md),
+> TacSim; there is no `[rulesets]` selector. Start with the [design overview](design.md)
+> and read the treaty rulings alongside the [later superseding decisions](design/README.md#superseded-decisions).
+> For the simulator, read [combat arena](design/16-combat-arena.md),
 > [its implementation record](design/16b-combat-implementation-plan.md), and
 > [the simulator backlog](design/16c-simulator-backlog.md).
 
