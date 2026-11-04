@@ -150,21 +150,28 @@ captives. The crew branch is one function, `load_crew(ctx, site, (casualty, carr
 operator)`, which every completed load should call wherever it runs. A written-off lease rig's crew step
 into the bay room before `tv::hand_back` (42-8): captive for a non-friend loader, aboard for a Friend's.
 
-**Gate.**
-- `field_gc5::gc5_a_non_friend_load_takes_custody_and_captures_the_crew` (256) and `…_at_512`: GC.5's
-  gate rewritten over `grounds_rig`'s two grounds, story (a′) to the load. Custody and the claim are as
-  before. The captain is `Captured { the Red Moth, the stranger }` from the load, stands in the Red Moth's
-  rooms and is out of the escort's seat. `+sortie/extract` and `+tv/1 leave` are refused with the held
-  line, `+sortie/condition` says "held aboard the Red Moth", and the stranger's `+ship/captives` names
-  them.
-- `field_gc5::gc5_review_the_captors_field_close_keeps_the_captive` (256) and `…_at_512`: the twin. The
-  captive is among the souls on the Red Moth's row in the second field, `crew_location` gives custody, and
-  the close leaves the record as it was.
-- `crew_custody::cr1_a_captured_hulls_hired_npc_goes_back_to_the_pool_and_off_the_roster` (256) and
-  `…_at_512`: the hire by `+sortie/crew` and `+sortie/hire`, the load, the NPC in the Slack Line, the
+**Gate.** Story (a′) to the load and its review twin are one script over both grounds, hoisted to
+`tests/support/field/custody_rig.rs` (declared in every shard root), so each ground's run can sit in a
+different shard.
+- GC.5's gate rewritten, `custody_rig::non_friend_load_captures_the_crew`: shard_1
+  `field_gc5::gc5_a_non_friend_load_takes_custody_and_captures_the_crew` (256) and shard_8
+  `crew_custody::cr1_a_non_friend_load_takes_custody_and_captures_the_crew_at_512`.
+  - Custody and the claim are as before.
+  - The captain is `Captured { the Red Moth, the stranger }` from the load, stands in the Red Moth's
+    rooms and is out of the escort's seat.
+  - `+sortie/extract` and `+tv/1 leave` are refused with the held line, `+sortie/condition` says "held
+    aboard the Red Moth", and the stranger's `+ship/captives` names them.
+- The twin, `custody_rig::captors_field_close_keeps_the_captive`: shard_1
+  `field_gc5::gc5_review_the_captors_field_close_keeps_the_captive` (256) and shard_8
+  `crew_custody::cr1_the_captors_field_close_keeps_the_captive_at_512`. The captive is among the souls on
+  the Red Moth's row in the second field, `crew_location` gives custody, and the close leaves the record as
+  it was.
+- shard_8 `crew_custody::cr1_a_captured_hulls_hired_npc_goes_back_to_the_pool_and_off_the_roster` (256)
+  and `…_at_512`: the hire by `+sortie/crew` and `+sortie/hire`, the load, the NPC in the Slack Line, the
   captain told, the action landed by the tick, `+sortie/contract` refused, the NPC on offer to a third
-  captain, no `Capture` row.
-- `crew_custody::cr1_the_captor_releases_a_captive_on_the_site` (256): `+ship/captives`, a refused
+  captain, no `Capture` row. The hire and the action land on the composed path (`land_composed`), since
+  both prepares read the world.
+- shard_8 `crew_custody::cr1_the_captor_releases_a_captive_on_the_site` (256): `+ship/captives`, a refused
   release, a captive's own `+ship` refused, the release to `Carrier`, the list empty.
 - In-source: `crew.rs` `cr1_a_non_friend_load_captures_the_crew` (replacing GC.5's abandonment test);
   `claim.rs` `cr1_a_capture_off_owned_ground_is_evidence_naming_captor_and_captive`.
@@ -187,10 +194,14 @@ into the bay room before `tv::hand_back` (42-8): captive for a non-friend loader
 - `+ship/release`'s two landings, and a written-off Friend's load's crew stepping aboard, are built here;
   the `extractable` widening for a released passenger stays CR.3's.
 
-**Cell delta (rule #14).** All of it lands in shard_1. `crew_custody` is pinned there by its `field_gc5` and `field_gc4` imports (doc 43 §10.2 asks a cut to say so). The two rewritten GC.5 tests became four, one per ground, and `crew_custody` adds three. Local Windows wall times (`-j 8`):
-- GC.5's gate: 39.1 s at 256, 39.6 s at 512;
-- the twin: 54.8 s at 256, 55.7 s at 512;
-- the NPC exit: 21.6 s at 256, 21.8 s at 512;
-- the release: 43.4 s.
-
-That is about 4.6 summed minutes against the two 256-only tests it replaces, which were not timed here. **Owed:** the figure from PR #408's JUnit (shard_1's `field_gc5::` and `crew_custody::` testcases against main's last green run), to replace this estimate.
+**Cell delta (rule #14).** Measured from the `<testcase time>` sums of the JUnit artifacts, against main's
+last green run, 41814093413 (3fb3e861).
+- **First PR run, 41820027413** (everything in shard_1). shard_1 went from 55.9 to 76.9 summed minutes and
+  from an 18.7 to a 24.0 min wall, which set the run's wall (the next cell was 20.1).
+  - `field_gc5::` went from 3.12 to 6.32 min. The two tests replaced had run 51.1 s and 67.2 s; their
+    four successors ran 62.5, 67.4, 79.9 and 78.4 s.
+  - `crew_custody::` added 3.01 min.
+  - The unchanged rest of shard_1 also ran 28 % slower on that runner (52.8 → 67.6 min).
+- **Moved.** By rule #14, the 512 runs and `crew_custody` moved to shard_8, the run's shortest
+  integration cell (11.9 min), through `custody_rig`. shard_1 keeps the two 256 runs.
+- **Final split (this PR's run after the move):** SHARD1_FINAL; SHARD8_FINAL.
