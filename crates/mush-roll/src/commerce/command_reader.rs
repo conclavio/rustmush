@@ -326,8 +326,18 @@ pub struct PaidHoldingView {
     /// the owner read hands the view over as a value.
     #[serde(skip)]
     renewal_operation: Option<mush_core::CommitToken>,
+    /// **The licence's concurrent seats** (doc 23 cut S.4b-3, D-23-16): how many hulls its
+    /// claims may hold at once (`PaidTerms::seats`), so a dispatch refuses a launch past them
+    /// before any rig leaves a bay. Never encoded, like `renewal_operation`.
+    #[serde(skip)]
+    seats: Option<u16>,
 }
 impl PaidHoldingView {
+    /// The licence's concurrent seats (doc 23 cut S.4b-3), when the read carried them.
+    #[must_use]
+    pub const fn seats(&self) -> Option<u16> {
+        self.seats
+    }
     #[must_use]
     pub const fn licence(&self) -> LicenceId {
         self.licence
@@ -907,6 +917,7 @@ pub(super) fn own_paid(
         selling,
         renewal,
         renewal_operation,
+        seats: Some(term.terms().seats().get()),
     })
 }
 
