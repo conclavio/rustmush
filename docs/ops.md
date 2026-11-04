@@ -2117,6 +2117,37 @@ re-registration (`gh api -X POST repos/conclavio/rustmush/actions/runners/<id>/l
 -f 'labels[]=conclav-io'` is how conclav.io got its own). The script's header
 says how to retire a runner.
 
+## The cut loop: what runs where (doc 43 §2.2, §2.3)
+
+**Locally**, on the owner's Windows box, a cut runs only what it touched, then
+the checks that are cheap and the CI cannot do for it, and sends the broad
+sweep to the VPS gate once:
+
+```sh
+cargo nextest run -j 8 -p <crate> --test <group> -E 'test(/^<module>::/)'   # what changed
+rustfmt --edition 2021 <changed files>       # never `cargo fmt --all` (the path length breaks it)
+cargo clippy -j 8 -p <crate> --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -j 8 -p <crate> --no-deps
+cargo nextest run -j 8 -p mush-contract-tests --test feature_matrix_inventory   --test panic_budget --test restriction_lints --test state_slot_owners
+scripts/vps-gate.sh                          # the broad sweep, once
+```
+
+The box caps at `-j 8` and one workspace build at a time, links test binaries
+with line tables only (full debuginfo hit the PDB ceiling), and cannot run the
+`cfg(unix)` stories at all: `cargo nextest run --workspace` on Windows is not a
+sweep of the tree. Linux-only stories, and any change that renames a log line
+or signal path they await, run on conclav.dev as `ghrunner` in a throwaway clone
+before the push; clock-bound stories run there as parallel variants
+(`variant-build.sh`/`variant-run.sh`), never one long run per hypothesis.
+
+**A cut that touches a hash-pinned file dispatches the harness kind before it
+is marked ready** (doc 43 rule #13): `scripts/vps-gate.sh --kind harness` on the
+cut's branch, and the run's delta against the committed baseline goes in the
+cut note. The files are doc 40 §4a's inventory (the pins recorded in
+docs/design/40-cut-notes.md, "§4a's inventory, at the base commit"). The PR's
+CI does not run the harness, so without the dispatch a mover is found only by
+the nightly's bisect after it merges.
+
 ## Test targets since T.3: the group binaries
 
 Since test-strategy cut T.3 (2026-10-26) a crate's integration tests are a few
@@ -2152,7 +2183,10 @@ cargo test -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_bles
 Two things to know. `cargo test`'s positional filter is a substring match on
 the full name, so `lane::` would also select `cost_lane::…` if both were modules
 of one group: the merge refused a group where a module's name is a suffix of
-another's, and a new module keeps that rule. And under plain multi-threaded
+another's, and a new module keeps that rule (for tacsim's shards
+`crates/mush-contract-tests/tests/ci_tacsim_shards.rs` refuses it since doc 43
+cut TS.0, and refuses a file under `tests/shard_N/` that no root declares, which
+would otherwise compile nowhere). And under plain multi-threaded
 `cargo test` a group's modules share one process and its statics (locks, global
 tracing subscribers); sweeps run under nextest, one process per test, as CI and
 the VPS gate do, and `cargo test` is for one test (`--exact`) or one module

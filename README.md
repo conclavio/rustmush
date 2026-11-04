@@ -52,9 +52,19 @@ Getting a dev Redis, in order of preference:
   `ssh -N -L 6379:127.0.0.1:6379 you@your-vps`.
 
 ```bash
-cargo nextest run --workspace
+cargo nextest run --workspace     # on Linux; see below for the Windows box
 cargo test --doc --workspace
 ```
+
+On the owner's Windows box that is not a sweep of the tree: the `cfg(unix)`
+stories do not build there, the box caps at `-j 8` and one workspace build at
+a time, and `cargo fmt --all` fails on the path length. The honest local recipe
+is to run only what the change touched (`cargo nextest run -j 8 -p <crate> ...`),
+`rustfmt` the changed files, clippy and rustdoc with `-D warnings`, and the four
+contract guards, then send the broad sweep to the VPS gate once
+(`scripts/vps-gate.sh`); a cut that touches a hash-pinned file also dispatches
+`scripts/vps-gate.sh --kind harness` before it is marked ready. The recipe in full
+is docs/ops.md, "The cut loop: what runs where".
 
 [cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked`) is the test
 runner, CI's and the box's: one process a test, every binary's tests in one pool, and
