@@ -547,10 +547,13 @@ pub(crate) fn lay_up(
         lay_up_rig(
             ctx,
             id,
-            map,
+            &mut MapRigRows {
+                map,
+                which: RigRows::Pool,
+                n,
+            },
             &RigPlan {
                 mark: registry_mark(&def.registry_prefix, n),
-                rows: RigRows::Pool,
                 place: RigPlace::Shed(shed),
                 interior: &interior,
                 spec: &spec,
@@ -596,10 +599,9 @@ pub(crate) fn lay_up(
             lay_up_rig(
                 ctx,
                 id,
-                map,
+                &mut MapRigRows { map, which, n },
                 &RigPlan {
                     mark: registry_mark(terms.registry_prefix, n),
-                    rows: which,
                     place: RigPlace::Shed(shed),
                     interior: &interior,
                     spec: &spec,
@@ -618,13 +620,60 @@ pub(crate) fn lay_up(
     Ok(())
 }
 
-/// What one rig is made from (doc 20 cut SM.12b: its mark, its row list and where it is placed
-/// named by the caller, so a yard's rigs are laid up by the same steps as the pool's).
+/// **Where one rig's lay-up row lives** (doc 39 cut IN.9, §4.13): a port map's row list
+/// ([`MapRigRows`]) or a yard commission's own record (`crate::port::commission`), the hull's
+/// [`crate::port::hull::HullRowSink`] shape.
+pub(crate) trait RigRowSink {
+    /// The row, once step 1 made it.
+    fn row(&self) -> Option<&RigRow>;
+    /// The row, mutable.
+    fn row_mut(&mut self) -> Option<&mut RigRow>;
+    /// Record the row step 1 made; refused for a design whose row list is not made.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming what is wrong.
+    fn push(&mut self, row: RigRow) -> Result<(), String>;
+    /// Write the owner's document.
+    fn save(&self, ctx: &mut Ctx<'_>);
+}
+
+/// **A port map's rig `n` among `which`'s rows** — the applier's and the yard's sink.
+pub(crate) struct MapRigRows<'m> {
+    /// The map.
+    pub map: &'m mut PortMap,
+    /// The row list.
+    pub which: RigRows,
+    /// The pool index.
+    pub n: u32,
+}
+
+impl RigRowSink for MapRigRows<'_> {
+    fn row(&self) -> Option<&RigRow> {
+        let index = rig_index(self.map, self.which, self.n)?;
+        rig_rows(self.map, self.which).get(index)
+    }
+    fn row_mut(&mut self) -> Option<&mut RigRow> {
+        let index = rig_index(self.map, self.which, self.n)?;
+        rig_rows_mut(self.map, self.which)?.get_mut(index)
+    }
+    fn push(&mut self, row: RigRow) -> Result<(), String> {
+        rig_rows_mut(self.map, self.which)
+            .ok_or("its design has no map row")?
+            .push(row);
+        Ok(())
+    }
+    fn save(&self, ctx: &mut Ctx<'_>) {
+        put_port_map(ctx, self.map);
+    }
+}
+
+/// What one rig is made from (doc 20 cut SM.12b: its mark and where it is placed named by the
+/// caller, so a yard's rigs are laid up by the same steps as the pool's; doc 39 cut IN.9: the row
+/// it is recorded in is the caller's [`RigRowSink`]).
 pub(crate) struct RigPlan<'a> {
     /// Its registry mark, the Thing's name.
     pub mark: String,
-    /// The row list it is recorded in.
-    pub rows: RigRows,
     /// Where it is created and placed.
     pub place: RigPlace,
     /// The pool unit's interior template.
@@ -639,16 +688,15 @@ pub(crate) struct RigPlan<'a> {
 
 /// Steps 1–5 for rig `plan.n`: the Thing, the unit, the rooms (dressed), the
 /// spaces (hopper, then cab with its member and its berths) and the hopper
-/// vault.
+/// vault. Doc 39 cut IN.9: the row is `sink`'s, written through it after every object made.
 pub(crate) fn lay_up_rig(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
-    map: &mut PortMap,
+    sink: &mut dyn RigRowSink,
     plan: &RigPlan<'_>,
 ) -> Result<(), String> {
     let RigPlan {
         ref mark,
-        rows: which,
         ref place,
         interior,
         spec,
@@ -657,26 +705,23 @@ pub(crate) fn lay_up_rig(
     } = *plan;
     let mark = mark.clone();
     // 1. The Thing, named by its mark, in the shed (doc 20 cut SM.12b: or a yard's bay room).
-    if rig_index(map, which, n).is_none() {
+    if sink.row().is_none() {
         let tv = ctx
             .w
             .create(ObjKind::Thing, &mark, ctx.actor, Some(place.room()))
             .map_err(|e| format!("{id}: rig {mark}: {e}"))?;
-        rig_rows_mut(map, which)
-            .ok_or_else(|| format!("{id}: rig {mark}: its design has no map row"))?
-            .push(RigRow {
-                n,
-                mark: mark.clone(),
-                tv: tv.0,
-                rooms: BTreeMap::new(),
-                vault: None,
-            });
-        put_port_map(ctx, map);
+        sink.push(RigRow {
+            n,
+            mark: mark.clone(),
+            tv: tv.0,
+            rooms: BTreeMap::new(),
+            vault: None,
+        })
+        .map_err(|e| format!("{id}: rig {mark}: {e}"))?;
+        sink.save(ctx);
     }
-    let index =
-        rig_index(map, which, n).ok_or_else(|| format!("{id}: rig {mark} has no map row"))?;
-    let row = |map: &PortMap| -> Option<RigRow> { rig_rows(map, which).get(index).cloned() };
-    let tv = row(map)
+    let tv = sink
+        .row()
         .map(|rig| ObjId(rig.tv))
         .ok_or_else(|| format!("{id}: rig {mark} has no map row"))?;
     // 2. The unit — only when no unit record (a held one included) claims it.
@@ -686,19 +731,20 @@ pub(crate) fn lay_up_rig(
     }
     // 3. The rooms, template order; then every pass, the dress.
     for room in &interior.rooms {
-        let made = row(map).is_some_and(|rig| rig.rooms.contains_key(&room.id));
+        let made = sink.row().is_some_and(|rig| rig.rooms.contains_key(&room.id));
         if !made {
             let obj = ctx
                 .w
                 .create(ObjKind::Room, &room.name, ctx.actor, None)
                 .map_err(|e| format!("{id}: rig {mark} room {}: {e}", room.id))?;
-            if let Some(rig) = rig_rows_mut(map, which).and_then(|rows| rows.get_mut(index)) {
+            if let Some(rig) = sink.row_mut() {
                 rig.rooms.insert(room.id.clone(), obj.0);
             }
-            put_port_map(ctx, map);
+            sink.save(ctx);
         }
     }
-    let rooms: BTreeMap<CanonicalId, ObjId> = row(map)
+    let rooms: BTreeMap<CanonicalId, ObjId> = sink
+        .row()
         .map(|rig| {
             rig.rooms
                 .iter()
@@ -766,7 +812,7 @@ pub(crate) fn lay_up_rig(
     // takes no control lease.
     ensure_console(ctx, tv, cab).map_err(|e| format!("{id}: rig {mark}: {e}"))?;
     // 5. The hopper vault (doc 20 §4.2): the system principal's, no scope.
-    if row(map).is_some_and(|rig| rig.vault.is_none()) {
+    if sink.row().is_some_and(|rig| rig.vault.is_none()) {
         let owner = hopper_owner().ok_or_else(|| {
             format!("{id}: rig {mark}: {VEHICLES_PRINCIPAL} is not a system principal id")
         })?;
@@ -784,10 +830,10 @@ pub(crate) fn lay_up_rig(
                 revision: 1,
             },
         );
-        if let Some(rig) = rig_rows_mut(map, which).and_then(|rows| rows.get_mut(index)) {
+        if let Some(rig) = sink.row_mut() {
             rig.vault = Some(vault.0);
         }
-        put_port_map(ctx, map);
+        sink.save(ctx);
     }
     Ok(())
 }
@@ -1052,10 +1098,10 @@ pub fn rigs_in_bay(w: &World, view: &HullView<'_>) -> Vec<RigInBay> {
             // house's lease word (`HOUSE_LEASE`), never "unlisted".
             let record = crate::port::yard::rig_lease(w, *obj);
             let record = record.as_ref();
-            let mark = rig_row(w, *obj).map_or_else(
-                || crate::port::coop::name_of(w, *obj),
-                |(_, rig)| rig.mark.clone(),
-            );
+            let mark = rig_row(w, *obj)
+                .map(|(_, rig)| rig)
+                .or_else(|| crate::port::owned::rig_row(w, *obj))
+                .map_or_else(|| crate::port::coop::name_of(w, *obj), |rig| rig.mark.clone());
             out.push(RigInBay {
                 slot: record.map_or(0, |record| record.slot),
                 tv: *obj,
@@ -1072,7 +1118,11 @@ pub fn rigs_in_bay(w: &World, view: &HullView<'_>) -> Vec<RigInBay> {
 /// **A rig's hopper vault** (doc 20 cut SM.3a): its rig row's `vault`.
 #[must_use]
 pub fn hopper_of(w: &World, tv: ObjId) -> Option<VaultId> {
-    rig_row(w, tv).and_then(|(_, rig)| rig.vault.map(VaultId))
+    rig_row(w, tv)
+        .map(|(_, rig)| rig)
+        // Doc 39 cut IN.9: a commissioned rig's register row.
+        .or_else(|| crate::port::owned::rig_row(w, tv))
+        .and_then(|rig| rig.vault.map(VaultId))
 }
 
 /// **A rig's map row** (doc 20 cut SM.3a) and the port map that holds it. **Doc 20 cut SM.12b**:

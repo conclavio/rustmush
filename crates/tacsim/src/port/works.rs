@@ -189,6 +189,10 @@ pub enum Then {
     Returned,
     /// Storage unpaid: the facility's stores take the goods, and it closes `Seized`.
     Seized,
+    /// **Doc 39 cut IN.9 (§4.13)**: a yard order's kit and part lots **consumed** in the escrow
+    /// (never moved), the commission's first half; it closes `Collected` and the commission
+    /// (`crate::port::commission`) lays the hull up.
+    Commissioned,
 }
 
 /// **One goods move a contract owes** — the bay's `OwedAct` shape: the act ordinal (the ledger's
@@ -221,6 +225,18 @@ impl WorksAct {
     ///
     /// A sentence naming what is wrong.
     pub fn check(&self) -> Result<(), String> {
+        if self.then == Then::Commissioned {
+            // The consumption names the escrow twice and lots only.
+            if self.act == 0
+                || self.from != self.to
+                || !self.goods.is_empty()
+                || self.lots.is_empty()
+                || self.lots.len() > MAX_MOVE_LOTS
+            {
+                return Err("a commission consumes lots in one escrow".into());
+            }
+            return Ok(());
+        }
         if self.act == 0
             || self.from == self.to
             || self.goods.len() > MAX_BILL_LINES
@@ -1007,6 +1023,12 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         return Err("That order is still settling.".to_owned());
     }
     let entry = here(ctx, front)?.0;
+    // Doc 39 cut IN.9: a delivered hull order is collected by its commission, never into a hold.
+    if then == Then::Collected
+        && let Some(lots) = kit_lots(ctx, &c)
+    {
+        return commission(ctx, &mut c, &entry, lots);
+    }
     let hold = docked_hold(ctx.w, ctx.actor, &entry, true)?;
     let (goods, lots) = escrow_contents(ctx, &c);
     if goods.is_empty() && lots.is_empty() {
@@ -1029,6 +1051,75 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let (by, escrow) = (ctx.actor, c.escrow());
     owe(ctx, &mut c, by, (escrow, hold), (goods, lots), then)?;
     say(ctx, format!("Order {}: {words} move into your hold.", c.id));
+    Ok(())
+}
+
+/// **A hull order's lots** (doc 39 cut IN.9): the escrow's lots when one of them is a hull kit,
+/// the kit first; `None` for any other order.
+fn kit_lots(ctx: &Ctx<'_>, c: &WorksContract) -> Option<Vec<(LotId, CanonicalId, u64)>> {
+    let mut lots = escrow_lots(ctx, c.escrow());
+    let kit = lots
+        .iter()
+        .position(|(_, good, _)| crate::port::commission::is_kit(good))?;
+    let first = lots.remove(kit);
+    lots.insert(0, first);
+    Some(lots)
+}
+
+/// **`+yard/collect` on a delivered hull order** (doc 39 cut IN.9, §4.13): the commission
+/// record first, then the one move that consumes the kit and the parts in the escrow.
+fn commission(
+    ctx: &mut Ctx<'_>,
+    c: &mut WorksContract,
+    entry: &CanonicalId,
+    lots: Vec<(LotId, CanonicalId, u64)>,
+) -> Result<(), String> {
+    use crate::port::commission::{Step, YardCommission, design_of_kit, next_mark};
+    let (kit, kit_good, _) = lots.first().cloned().ok_or(NO_ORDER)?;
+    let design = design_of_kit(&kit_good).ok_or("That order's kit names no design.")?;
+    let ship = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.definitions().specs.get(&design))
+        .and_then(|spec| spec.logistics.as_ref())
+        .ok_or("The yard has no plans for that design.")?
+        .drive
+        .is_some();
+    if crate::port::commission::commission(ctx.w, c.id).is_some() {
+        return Err("That order is already being commissioned.".to_owned());
+    }
+    let parts: Vec<LotId> = lots.iter().skip(1).map(|(lot, ..)| *lot).collect();
+    let (n, mark) = next_mark(ctx.w);
+    let record = YardCommission {
+        order: c.id,
+        work_order: c.order.ok_or(NO_ORDER)?,
+        facility: c.facility,
+        home: entry.clone(),
+        design,
+        requester: ctx.actor,
+        beneficiary: c.beneficiary.clone(),
+        mark: mark.clone(),
+        n,
+        ship,
+        kit,
+        parts,
+        step: Step::Consuming,
+        row: None,
+        hold: None,
+        at_ic: ctx.w.world_ic_now().at,
+    };
+    record.check()?;
+    crate::port::commission::put(ctx, &record);
+    let (by, escrow) = (ctx.actor, c.escrow());
+    owe(ctx, c, by, (escrow, escrow), (Vec::new(), lots), Then::Commissioned)?;
+    say(
+        ctx,
+        format!(
+            "Order {}: the yard commissions her as {mark}; she is handed over when the work is \
+             done.",
+            c.id
+        ),
+    );
     Ok(())
 }
 
@@ -1217,6 +1308,10 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
             Then::Supplied => put(ctx, c),
             Then::Collected => close(ctx, c, Close::Collected),
             Then::Seized => close(ctx, c, Close::Seized),
+            Then::Commissioned => {
+                crate::port::commission::consumed(ctx, c.id);
+                close(ctx, c, Close::Collected);
+            }
             Then::Returned => {
                 let failed = c
                     .order
@@ -1899,6 +1994,10 @@ impl ActionProvider for WorksProvider {
         // 3. The move.
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        if owed.then == Then::Commissioned {
+            self.consume(txn, &owed)?;
+            return self.landed(invocation, txn, (contract, act), prior.is_some());
+        }
         let from = EndpointRef(VaultId(owed.from));
         let to = EndpointRef(VaultId(owed.to));
         let mut incoming: BTreeMap<CanonicalId, u64> = BTreeMap::new();
@@ -1950,12 +2049,56 @@ impl ActionProvider for WorksProvider {
                     .map_err(|_| refused("a lot could not be pooled"))?;
             }
         }
+        self.landed(invocation, txn, (contract, act), prior.is_some())
+    }
+}
+
+impl WorksProvider {
+    /// **Doc 39 cut IN.9**: the commission's consumption — every lot still in the escrow, the
+    /// kit by its `workorder.output` lineage (the relay foundry's check), consumed in one bundle.
+    fn consume(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        owed: &WorksAct,
+    ) -> Result<(), mush_core::ActionError> {
+        let refused =
+            |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        let escrow = EndpointRef(VaultId(owed.from));
+        for lot in &owed.lots {
+            let record = txn
+                .get(&self.inventory.lots, lot)
+                .map_err(|_| refused("a lot cannot be read"))?
+                .cloned()
+                .filter(|l| l.endpoint() == escrow)
+                .ok_or_else(|| refused("a lot is no longer in the escrow"))?;
+            if crate::port::commission::is_kit(record.commodity())
+                && !matches!(record.lineage(), mush_inventory::Lineage::Origin { source }
+                    if source.provider == "industry" && source.kind == "workorder.output")
+            {
+                return Err(refused("the kit did not come from a work order"));
+            }
+            self.inventory
+                .consume_product(txn, &record)
+                .map_err(|_| refused("a lot could not be consumed"))?;
+        }
+        Ok(())
+    }
+
+    /// The ledger and the outcome of a landed move.
+    fn landed(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (contract, act): (u64, u32),
+        prior: bool,
+    ) -> Result<AuthoritativeActionOutput, mush_core::ActionError> {
+        let actor = invocation.actor();
         // 4. The ledger.
         let ledger = WorksLedger {
             contract,
             acts: act,
         };
-        let staged = if prior.is_some() {
+        let staged = if prior {
             txn.replace(&self.ledgers, &contract, ledger)
         } else {
             txn.insert(&self.ledgers, &contract, ledger)

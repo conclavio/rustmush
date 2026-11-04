@@ -607,14 +607,19 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
             standing: Standing::Charter(charter.contract),
         });
     }
-    let port = programme_port(w)?;
     let owner = PrincipalId::Object(pilot);
-    port.map
-        .hulls
-        .iter()
-        .map(|row| ObjId(row.hull))
-        .filter(|hull| titled_to(w, *hull, &owner))
-        .min()
+    let programme = programme_port(w).and_then(|port| {
+        port.map
+            .hulls
+            .iter()
+            .map(|row| ObjId(row.hull))
+            .filter(|hull| titled_to(w, *hull, &owner))
+            .min()
+    });
+    // Doc 39 cut IN.9 (§4.13): then a commissioned hull titled to the pilot or to an
+    // organization they act for, lowest id first — after every programme row.
+    programme
+        .or_else(|| crate::port::owned::helm_hulls(w, pilot).into_iter().min())
         .map(|hull| Helm {
             hull,
             standing: Standing::Title,

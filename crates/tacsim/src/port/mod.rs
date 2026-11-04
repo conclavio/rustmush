@@ -143,6 +143,8 @@ pub mod chart;
 pub mod chart_panel;
 /// Doc 20 cut SM.10: the Registry's mining claims (doc 20 §9).
 pub mod claims;
+/// Doc 39 cut IN.9: the yard commission — a kit lot to a hull somebody can sail (§4.13).
+pub mod commission;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -167,6 +169,8 @@ pub mod medical;
 /// and the restock of the house's drawn ask (doc 20 §7.3 "The mill").
 pub mod mill;
 pub mod orders;
+/// Doc 39 cut IN.9: the owned-hull register and the provenance (§4.13, Q-39-33).
+pub mod owned;
 pub mod passage;
 pub mod passenger;
 /// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).

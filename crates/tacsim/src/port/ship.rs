@@ -315,8 +315,18 @@ fn yard_view<'a>(
     view_with(w, port, row, &yard.def.unit, false, true)
 }
 
+/// **A commissioned hull's view** (doc 39 cut IN.9, §4.13): the register's row, through the
+/// programme port (the `+ship` and bay readers' frame), with the design as its fallback unit;
+/// never refitted, never a yard's.
+fn owned_view<'a>(w: &'a World, owned: &'a crate::port::owned::OwnedHull) -> Option<HullView<'a>> {
+    let row = owned.ship()?;
+    let port = crate::port::coop::programme_port(w)?;
+    view_with(w, port, row, &owned.design, false, false)
+}
+
 /// **The view of one programme hull** by its Thing. **Doc 20 cut SM.12b**: the yard rows are
-/// searched after every programme's hulls ([`HullView::yard`]).
+/// searched after every programme's hulls ([`HullView::yard`]). **Doc 39 cut IN.9**: then the
+/// owned-hull register (`crate::port::owned`).
 #[must_use]
 pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
     if let Some(port) = crate::port::coop::programme_ports(w)
@@ -326,9 +336,11 @@ pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
         let row = port.map.hulls.iter().find(|row| row.hull == hull.0)?;
         return view_of(w, port, row);
     }
-    let yard = crate::port::yard::yard_of_hull(w, hull)?;
-    let row = yard.row.hulls.iter().find(|row| row.hull == hull.0)?;
-    yard_view(w, &yard, row)
+    if let Some(yard) = crate::port::yard::yard_of_hull(w, hull) {
+        let row = yard.row.hulls.iter().find(|row| row.hull == hull.0)?;
+        return yard_view(w, &yard, row);
+    }
+    owned_view(w, crate::port::owned::owned(w, hull)?)
 }
 
 /// **The programme hull `room` belongs to**, and the room's template id (a
@@ -355,9 +367,14 @@ pub fn hull_of_room(w: &World, room: ObjId) -> Option<(HullView<'_>, CanonicalId
         })?;
         return Some((view_of(w, port, row)?, tid));
     }
-    let yard = crate::port::yard::yards(w)
+    let Some(yard) = crate::port::yard::yards(w)
         .into_iter()
-        .find(|yard| found(&yard.row.hulls).is_some())?;
+        .find(|yard| found(&yard.row.hulls).is_some())
+    else {
+        // Doc 39 cut IN.9: then the owned-hull register.
+        let (owned, _, tid) = crate::port::owned::ship_of_room(w, room)?;
+        return Some((owned_view(w, owned)?, tid));
+    };
     let (row, tid) = yard.row.hulls.iter().find_map(|row| {
         row.rooms
             .iter()
