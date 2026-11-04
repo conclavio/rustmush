@@ -1629,18 +1629,7 @@ impl InventoryFamilies {
         if from == to {
             return Err(InventoryError::MergeMismatch);
         }
-        let record = txn
-            .get(&self.lots, &lot)?
-            .cloned()
-            .ok_or(InventoryError::NoLot)?;
-        // The endpoint is re-checked rather than trusted: `from` decides the
-        // authority, so a lot that has already moved must not be movable by an offer
-        // that named where it used to be.
-        if record.endpoint() != from {
-            return Err(InventoryError::NoLot);
-        }
-        self.require_unheld_lot(txn, lot)?;
-        let moved = record.checked_relocate(record.revision(), to)?;
+        let moved = self.relocated(txn, lot, from, to)?;
         txn.replace(&self.lots, &lot, moved.clone())?;
         self.move_lots(txn, from, -1)?;
         self.move_lots(txn, to, 1)?;
@@ -1673,15 +1662,7 @@ impl InventoryFamilies {
             if moved.iter().any(|m| m.id() == *lot) {
                 return Err(InventoryError::AlreadyExists);
             }
-            let record = txn
-                .get(&self.lots, lot)?
-                .cloned()
-                .ok_or(InventoryError::NoLot)?;
-            if record.endpoint() != from {
-                return Err(InventoryError::NoLot);
-            }
-            self.require_unheld_lot(txn, *lot)?;
-            moved.push(record.checked_relocate(record.revision(), to)?);
+            moved.push(self.relocated(txn, *lot, from, to)?);
         }
         if moved.is_empty() {
             return Ok(moved);
@@ -1700,6 +1681,29 @@ impl InventoryFamilies {
             self.tally_lots(txn, to, &commodity, units)?;
         }
         Ok(moved)
+    }
+
+    /// **The one relocation of a lot's record** ([`Self::relocate`] and [`Self::relocate_lots`]
+    /// both come here, so `Lot::checked_relocate` keeps one caller): the lot read, its endpoint
+    /// re-checked rather than trusted (`from` decides the authority, so a lot that has already
+    /// moved must not be movable by an offer that named where it used to be), its hold refused,
+    /// and the moved record returned unwritten. It writes nothing and touches no pool.
+    fn relocated(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        lot: LotId,
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<Lot, InventoryError> {
+        let record = txn
+            .get(&self.lots, &lot)?
+            .cloned()
+            .ok_or(InventoryError::NoLot)?;
+        if record.endpoint() != from {
+            return Err(InventoryError::NoLot);
+        }
+        self.require_unheld_lot(txn, lot)?;
+        Ok(record.checked_relocate(record.revision(), to)?)
     }
 
     /// Consume one complete, identified lot into a durable product receipt.
