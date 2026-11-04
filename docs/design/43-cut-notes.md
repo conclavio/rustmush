@@ -175,7 +175,6 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
-
 ## TS.3b (2026-11-04) — the step audit
 
 Read-only. The question was: for the dozen modules of §2.4, where do each story's minutes go? Four buckets:
@@ -274,3 +273,82 @@ Named here for the record:
 
 Under D-43-12 the lever for these is the boot's cost itself (TS.3; a cached composed world is a question for
 the owner, not this audit), never a unit test in place of the story.
+
+## TS.4 (2026-11-04) — the hostile-input suites
+
+§5.1's parsers, each fed what an attacker or a broken peer can send. **No suite found a panic, an abort or an
+unbounded state**, so nothing landed `#[ignore]`d and no production code changed.
+
+- **The command line** (`mush-server/tests/world_task/hostile_lines.rs`). `boot::build_engine`, with the
+  TacSim layer on, is wrapped in a `TestWorld`. It runs 1,500 seeded lines as a plain player and 1,500 as God.
+  Most lines are built on a registered verb: a name or alias, a prefix character, switches, and edge tokens
+  (dbrefs, numbers past every width, splitters, markup, control and bidi characters, 600-character runs). The
+  rest are arbitrary text. The engine is shared, so earlier lines' objects and input contexts are in play. A
+  reach floor stops a vacuous pass: more than a quarter of each actor's lines must get an answer other than
+  `Huh?`. They measured 688 and 683 of 1,500. `ParsedArgs` gets its own contract property inline in
+  `mush-core/src/cmd.rs`: every shape, with `raw`, `lhs`/`rhs` and `rhs_list` checked against the split rule.
+- **The key parser and the caps replies** (`mush-net-ssh/tests/editor_proptest/key_parser.rs`). The input is
+  arbitrary bytes, plus bursts weighted to `ESC [ O _ P \ BEL`, split anywhere. The properties: no panic; no
+  control character in a `Char`/`Alt`; and the parser's carried state (its `Debug`) stays under 4 KiB after
+  256 KiB of an unterminated CSI, APC or DCS. Capability replies with each final (`c t u ~`) reach
+  `DeviceAttributes::parse`/`CellSize::parse` through the parser, and any text reaches them directly.
+- **Both Rhai engines** (`mush-mind/tests/sandbox/nesting.rs`, `mush-script/tests/script/nesting.rs`). There
+  are fifteen nesting shapes: parens, unary, arrays, maps, blocks, `if`, `while`, calls, interpolation,
+  closures (script only), flat `+`/`&&` chains, index and method chains. Each runs at the guard's edges, far
+  past it, and up to the 32 KiB source cap, at the top level and inside a function. Each runs on an explicit
+  2 MiB thread, the stack the minds pool and the world task get (nothing in the tree sets another), through
+  `Sandbox::compile`/`think` and through the script module's boot compile and dispatch. One deep compiles.
+  Twice the guard is refused with Rhai's "exceeds maximum complexity", the flat chains included. Unbounded
+  recursion faults at the call-level limit.
+- **mush-ipc** (`mush-ipc/tests/roundtrip/hostile_frames.rs`). Every sample frame of both directions is cut at
+  every byte behind a whole frame. The codec reads needs-more-bytes and `FrameReader` reads `UnexpectedEof`;
+  a cut at the boundary is a clean EOF. Six corrupt bodies behind a valid prefix, including length-bomb
+  `array32`/`str32` headers, are `InvalidData` after the leading frame, and the valid frame after them is
+  never reached. An oversized prefix faults without its body. Arbitrary bytes in any chunking, and sample
+  bodies with overwritten bytes, never panic.
+- **`client_command_strategy`** (`mush-proto/tests/decode_proptest.rs`) now generates every `ClientCommand`,
+  `Query` and `InvokeRequest` family. Before, it was missing `Invoke`, `Ack`, `Composing`, `Respond`,
+  `Picture` and `Query::Commands`. `variant_tag` matches all three enums with no wildcard, so a new variant
+  does not compile until it is listed. `strategy_reaches_every_variant` fails until the strategy draws it.
+
+**Departures from §7.** The fuzzer runs one shared engine, not a fresh `TestWorld` per case. A boot costs
+seconds and shared state reaches more handlers. The runner is seeded, so CI is deterministic and a failure
+prints its line. `mush-ipc` and `mush-server` gain `proptest` as a dev-dependency. `mush-proto`'s
+`tests/wire.rs` exhaustive round trip (doc 05 I12 C2) is not touched. The proptest round trip now covers
+every variant.
+
+**Summed minutes.** About +0.3: `hostile_lines` is 12 s, and the rest is under 4 s across five binaries.
+Every module joins a binary that already exists.
+
+## TS.20 (2026-11-04) — pinned reconstructions
+
+§7's four unpinned rebuilds of old content each get a pin. A pin is the shape the old version actually had, read
+from the commit before the change it rebuilds around and written into the test as fixed history. Pinning
+turned up drift in two of the four: those reconstructions had been carrying fields their version never wrote.
+
+- **`ooc_v3`** (`mush-atlas/tests/interior.rs`) is held to `V3_REBUILT_DIGEST`, like `ooc_v6` and
+  `staff_lobby_v4`. It cannot be the published digest (`74344b62…`, `44115c47`). The published version 3 has
+  the same 24 entries, and 20 are byte-equal, but four differ:
+  - the Welcome Hall's desc and sign: the shipped text is kept, which is why the upgrade plans one update;
+  - the three `Lounge <L>` exits' `l` segment: since 16b cut D.5, apply refuses it.
+
+  So the real bytes cannot boot, and a committed fixture of them would prove nothing. The doc comment lists the
+  four entries. A re-pin must confirm the rebuild still differs from version 3 in those four entries and no
+  others.
+- **The format-3 checkpoint body** (`mush-economy/tests/e2b.rs`) is held to `FORMAT_3_FOLD_FIELDS`, the 28
+  fields `FoldState` serialized at `b205438c^`. **Finding: the rebuild had drifted.** Besides
+  `title_lineage`, it carried `seizure_receipts` and `bay_refit_receipts`, two audits added after format 4
+  without a format bump, which format 3 never had. The rebuild now strips all three.
+- **The pre-O.1 replay** (`tacsim/tests/shard_1/replay.rs`) is held to `PRE_O1_REPLAY_KEYS`, the 18 keys
+  `Replay::to_document` wrote at `8c2f0388^`. It matched: `mode` was the only key added since.
+- **The R4 relay shape** (`mush-server/tests/split_boundary/relay_registry.rs`) is held by `assert_r4_shape`
+  to the registry, node, pair and half fields at `233fbb2e`. R4 and R7 are consecutive commits on `relay.rs`.
+  **Finding: the rebuild had drifted.** R7 added `losses` and each half's `damaged` as well as
+  `structural_version`, and the "R4" document still carried both. The rebuild now drops them, after asserting
+  they are empty and false (so R4 could express that state).
+
+**Departures from §7.** None of the four uses a committed fixture. Three rebuild documents from a live run,
+whose bytes depend on that run. The fourth is the OOC pack, whose published bytes no longer apply. So the pin
+is the version's field set, or its rebuilt digest, and the `golden/v12` template does not fit any of them.
+
+**Summed minutes.** Zero: four assertions in tests that already exist.

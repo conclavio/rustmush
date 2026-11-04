@@ -14,7 +14,7 @@
 //! [`Ruleset::projected_ability`](mush_ruleset::Ruleset::projected_ability) is
 //! deliberately left at its `None` default: `check` maps to no registered kernel
 //! action yet, so it stays on the legacy invoke path — one residual row, which
-//! `crates/mush-contract-tests/tests/npc_ability_residual.rs` can only watch
+//! `crates/mush-contract-tests/tests/engine_contracts/npc_ability_residual.rs` can only watch
 //! shrink.
 
 use std::sync::Arc;

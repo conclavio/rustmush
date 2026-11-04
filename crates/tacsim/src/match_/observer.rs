@@ -14,7 +14,7 @@
 //! The cockpit module builds what a **pilot** is sent, and doc 16 §1 says a
 //! pilot is told nothing about a unit their platform has not detected. This
 //! payload names every unit, so it lives here and the cockpit module never
-//! names it: `crates/mush-contract-tests/tests/arena_library.rs`'s
+//! names it: `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`'s
 //! `the_observer_has_no_path_into_a_pilot_feed` scans that file (and the text
 //! of `Arena::frames`) for this module's names. It is a **staff surface** and
 //! names object numbers on purpose.

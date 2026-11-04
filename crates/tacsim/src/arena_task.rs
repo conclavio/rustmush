@@ -6,7 +6,7 @@
 //! runtime: it owns one [`crate::arena::Arena`], a bounded inbox, a bounded egress, a timer
 //! driven by [`crate::arena::StepOutput::next_due_ms`], a watchdog at `tempo.stall_ms`, the
 //! unwind boundary, and a `watch` stop signal. It is deliberately **not** under
-//! `arena/`: the gate in `crates/mush-contract-tests/tests/arena_library.rs`
+//! `arena/`: the gate in `crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`
 //! refuses the word `tokio` in every file of that directory, and this file is the
 //! reason that gate can be strict.
 //!

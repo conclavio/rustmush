@@ -78,10 +78,6 @@ struct Roster {
 }
 
 impl Roster {
-    fn bare() -> Roster {
-        Roster::default()
-    }
-
     fn seeded(lane: String) -> Roster {
         Roster {
             seed_lane: Some(lane),
@@ -217,8 +213,9 @@ fn stocked_with(roster: Roster) -> Rig {
     rig
 }
 
+/// The shipped lane but IN.5's rows (see [`lane_variant`]).
 fn stocked() -> Rig {
-    stocked_with(Roster::bare())
+    stocked_with(Roster::seeded(lane_variant(LANE_VERSION, |_| {})))
 }
 
 /// Fold every write since the first boot and reboot onto the same roster.
@@ -843,8 +840,14 @@ fn docked_at_stickney(rig: &mut Rig, cargo: &[(&str, u64)]) -> (ObjId, HullRow) 
 }
 
 /// The lane's bytes as JSON, edited by `edit`, at `version`, re-signed.
+///
+/// Doc 39 cut IN.5: always without the refinery and the works
+/// (`lane_chain::strip_industry`). This suite's subject is Kasei's concentrate bid as IC10's
+/// plain bid, lapsed and re-posted by the clerk; since IN.5 it refreshes (the drip's) and the
+/// refine consumes what it buys.
 fn lane_variant(version: u32, edit: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    crate::support::lane_chain::strip_industry(&mut doc);
     doc["manifest"]["version"] = serde_json::json!(version);
     doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
     edit(&mut doc);

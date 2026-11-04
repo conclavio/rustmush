@@ -631,11 +631,12 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_495_100_000,
-        "14,951,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_595_100_000,
+        "15,951,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
-         SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000 \
-         and the two passengers' one-time 500cr purses"
+         SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000, \
+         Freeport Works' 1,000,000 (doc 39 cut IN.5) and the two passengers' one-time 500cr \
+         purses"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -687,8 +688,8 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
     let ceres = port_map(&tw, "ceres_port");
     let stickney = port_map(&tw, "stickney_port");
     // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh. Doc 20 cut SM.10: the Pallas
-    // Syndicate, a Ceres lane org, its eighth.
-    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 11);
+    // Syndicate, a Ceres lane org, its eighth. Doc 39 cut IN.5: Freeport Works its ninth.
+    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 12);
     sweep(&mut tw, 3_600);
     let snapshot = economy(&tw).snapshot();
     let treasury = snapshot
@@ -1915,9 +1916,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // cut SM.5: the four ore intakes) + 2 mills (doc 20 cut SM.12a), Stickney 3 + 4 + 2,
     // Luna 4 + 4 + 3, Deimos 2 + 2 + 4, Titan 3 + 4 + 2. The bid-only vendors' lines are
     // counted though they read Ready. Doc 36 cut GC.7: four munitions asks each at Ceres's
-    // Co-op and Stickney Yards.
+    // Co-op and Stickney Yards. Doc 39 cut IN.5: Freeport Works' vendor and carbon ask lines,
+    // and Kasei's refine.
     assert_eq!(
-        commerce_lines, 60,
+        commerce_lines, 63,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();

@@ -30,8 +30,23 @@ on:
         default: ""
         type: string
   schedule:
-    # Daily (the repo is public, so hosted-runner minutes are free).
-    - cron: "17 4 * * *"
+    # Daily (the repo is public, so hosted-runner minutes are free): Monday
+    # to Saturday here, and Sunday's run is the weekly one below, which runs
+    # every nightly job too (one run a day, not two on Sunday).
+    - cron: "17 4 * * 1-6"
+    # Doc 43 cut TS.2 (D-43-11): the weekly slot. The six jobs that were
+    # dispatch-only (M6 author acceptance and full replay, the M8 leak
+    # battery and House doctrines, the two bot win rates) admit this schedule
+    # by its string, `github.event.schedule == '17 4 * * 0'`, at the fast
+    # pulse (none of them sets MIND_PULSE_MS). The tier manifest
+    # (crates/mush-contract-tests/test-tiers.toml) reads a job's tier from
+    # its `if:`, so the string is the contract: change both together.
+    #
+    # The failure channel (D-43-3) is GitHub's own failed-workflow email,
+    # which goes to the account that last changed this cron syntax
+    # (GitHub's rule for scheduled workflows): the owner's, as the one who
+    # merges. No workflow step and no secret; docs/ops.md says how to check.
+    - cron: "17 4 * * 0"
 
 # The least any job needs: every job only checks the tree out, restores the
 # cargo and npm caches and uploads artifacts, and none of those uses the
@@ -68,8 +83,8 @@ jobs:
     # 1,000 ms pulse that is about three hours a story. Since 2026-10-28 their
     # harness reads `MIND_PULSE_MS` (`paid_purchase::mind_pulse`): unset or
     # empty is a 50 ms pulse, a rating in minutes; `1000` is production's pace.
-    # The owner's rule: the nightly schedule, which nobody watches, always runs
-    # at production's pace; a hand dispatch is fast unless it says
+    # The owner's rule: the nightly schedule always runs at production's pace
+    # (Sunday's weekly run too: it is the nightly as well); a hand dispatch is fast unless it says
     # `-f mind_pulse_ms=1000` (the `MIND_PULSE_MS` env on the story step).
     # Production pacing is untouched: the pulse is not a file key.
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -173,13 +188,14 @@ jobs:
       - name: Execute the exact M8 story
         run: cargo test --locked -p tacsim --test shard_9 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
-  # Dispatch-only, not on the schedule: M6's acceptance evidence (the author
+  # Weekly and by dispatch, not nightly: M6's acceptance evidence (the author
   # story plus a fresh thirty-match external comparison), re-run when the mind
   # port changes, and hours long (bound 360 min), longer than the nightly can
-  # carry. Doc 43 TS.2 gives the six dispatch-only jobs a weekly slot.
+  # carry. Doc 43 cut TS.2 (D-43-11) moved it, and the five jobs after it that
+  # were dispatch-only, onto the Sunday cron at the fast pulse.
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -208,12 +224,12 @@ jobs:
         with:
           name: m6-author-acceptance
           path: target/m6-acceptance-evidence/
-  # Dispatch-only for the same reason as the job above: a 900-second replay of
-  # twenty-four hulls that recomputes every think (bound 180 min), run when the
-  # mind kernel changes rather than every night (doc 43 TS.2 schedules it).
+  # Weekly and by dispatch, for the same reason as the job above: a 900-second
+  # replay of twenty-four hulls that recomputes every think (bound 180 min),
+  # run weekly and when the mind kernel changes rather than every night.
   mind-full-replay:
     name: M6 full-duration Class III replay
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -223,7 +239,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Recompute all thinks and substeps for twenty-four Class III hulls over 900 seconds
         run: cargo test -p tacsim --lib m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep -- --ignored --nocapture
-  # Doc 17h cut M8g G4 (D-UM-42), dispatch-only (G5): the leak battery. An ungoverned core
+  # Doc 17h cut M8g G4 (D-UM-42), dispatch-only (G5), weekly since doc 43 TS.2: the leak battery. An ungoverned core
   # sealing an unfiled draft aboard is learned by no witness and only through the built
   # channels; every test of the `m8_leaks` module is `#[ignore]`d, so this module filter is
   # the one place it runs (the gated-test inventory reads it). Doc 17h cut M8g G5: the
@@ -231,7 +247,7 @@ jobs:
   # world's three genuine Registry ratings (about 45 minutes), so the bound is 180.
   m8-leak-battery:
     name: M8 leak battery
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -242,14 +258,14 @@ jobs:
       - name: Every witness asks every question; only the built channels answer
         run: |
           cargo test -p tacsim --test shard_9 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
-  # Doc 17h M8 (the zero-PC story's precondition), dispatch-only: the launch's House
+  # Doc 17h M8 (the zero-PC story's precondition), weekly and by dispatch: the launch's House
   # combat doctrines (Meridiani, Coprates) win some, not all, of the Registry's trials
   # against Standard. The first runs every Trial case of the three House minds (about
   # five minutes); the second takes the two genuine Registry ratings through the named
   # launch and folds each one's result pages into procurement's score.
   m8-house-doctrines:
     name: M8 House doctrines win Registry trials
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -294,7 +310,7 @@ jobs:
     # another) and rest 47.5 min (29.7 min of tests, of which mushd, mush-server
     # and mush-gateway were 20.5, then the bot's 11.4). Integration is split in
     # three by an explicit list (.github/tacsim-integration-shards.txt, guarded
-    # by crates/mush-contract-tests/tests/ci_tacsim_shards.rs), and rest into
+    # by crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs), and rest into
     # lint, libs, servers and bot. Format, Clippy, the bot and the named steps
     # keep their command lines and only moved shard; the integration binaries
     # are named per shard, and the libs line names the four features the
@@ -560,7 +576,7 @@ jobs:
       # tacsim-minds cell (one binary, shard_2, holds their three modules), in
       # parallel with the shards. Their `name:` and `run:` lines are the same
       # in every cell's reading of this file, because the gated-test inventory
-      # (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs) covers
+      # (crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs) covers
       # each #[ignore]d test by finding its name here.
       # 17b cut M2.7 (doc 17 D-UM-28): the unit minds' cross-platform pin.
       # The stock corpus flown by the Rhai Standard Doctrine and a float-probe
@@ -829,7 +845,8 @@ jobs:
       - name: The TLS listener serves
         run: cargo test -p mush-net-web --features tls
       - name: Every toggleable feature is named by a job
-        run: cargo test -p mush-contract-tests --test feature_matrix_inventory
+        run: |
+          cargo test -p mush-contract-tests --test ci_policy feature_matrix_inventory::
 
   documentation:
     name: Workspace documentation
@@ -1072,7 +1089,7 @@ jobs:
       # 08j S4: without these the nine `*_redis_gated` proofs in
       # `crates/mushd/tests/durable_process/persistence.rs` and the two single-test twins take
       # their missing-`REDIS_URL` early return and pass everywhere as a silent
-      # skip. `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`
+      # skip. `crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs`
       # keeps this list honest.
       - name: Reboot-from-Redis-alone round trips
         run: |
@@ -1103,7 +1120,8 @@ jobs:
       - name: Start disposable Redis 8
         run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
       - name: Scale harness
-        run: cargo test --release -p mush-contract-tests --test scale_harness -- --ignored --test-threads=1 --nocapture
+        run: |
+          cargo test --release -p mush-contract-tests --test ci_policy scale_harness:: -- --ignored --test-threads=1 --nocapture
 
   # 16b cut AJ.4 (16c Q-AJ1): the external bot's win rate against the machine
   # — ten 1 v 1 matches flown by the real mush-bot binary, no model, against a
@@ -1112,12 +1130,12 @@ jobs:
   # figure is the `WIN RATE:` line and one `match` line each in the log (the
   # owner's target is seven in ten; below it is input for a later machine cut,
   # 16c Q-AJ5, not a failure). About seventy-five minutes, so it runs on
-  # demand only, never on push or on the daily schedule. It is the only job
+  # demand and weekly (doc 43 TS.2), never on push or nightly. It is the only job
   # that runs `arena_win_rate`, which is `#[ignore]` for exactly that reason.
   # Its sibling bot-muster-rate (below) flies the same bot from the muster.
   bot-win-rate:
     name: Bot win rate against the machine (report-only)
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -1131,13 +1149,14 @@ jobs:
       # The live commander lane `arena_live_commander_five_matches`
       # (crates/mush-bot/tests/arena_live_commander.rs) is deliberately run by
       # no job: it spends real money and CI never sets its variables (16c
-      # Q-AK4); naming it here is what the gated-test inventory asks of every
-      # ignored test. The lead runs it by hand with the key exported:
+      # Q-AK4). Its tier is by-hand in crates/mush-contract-tests/test-tiers.toml
+      # (doc 43 TS.2: a comment is a recipe, not a run). By hand, the key exported:
       # MUSH_BOT_LIVE_COMMANDER=1 cargo test -p mush-bot --test arena_live_commander -- --ignored --nocapture
       # 17b cut M1b.5: the same target's mind lane,
       # `the_bot_against_a_conditioned_t1_over_thirty_pooled_matches` (thirty
       # matches against the native stock mind, two to four hours), is the M1b
-      # gate's measure and run by hand, so this job names its own lane:
+      # gate's measure and run by hand (by-hand in test-tiers.toml), so this job
+      # names its own lane:
       # cargo test -p mush-bot --test arena_win_rate the_bot_against_a_conditioned_t1_over_thirty_pooled_matches -- --ignored --nocapture
       - name: Bot win rate
         run: cargo test -p mush-bot --test arena_win_rate arena_win_rate_over_ten_matches -- --ignored --nocapture
@@ -1148,12 +1167,12 @@ jobs:
   # above stays as the duel benchmark. REPORT-ONLY: it asserts only that ten
   # matches finished; the figure is the `WIN RATE FROM THE MUSTER:` line, one
   # `match` line each and the reading lines in the log. Up to about two hours,
-  # so it runs on demand only, never on push or on the daily schedule. It is
+  # so it runs on demand and weekly (doc 43 TS.2), never on push or nightly. It is
   # the only job that runs `arena_muster_rate`, which is `#[ignore]` for exactly
   # that reason.
   bot-muster-rate:
     name: Bot win rate from the muster (report-only)
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -1173,8 +1192,9 @@ jobs:
   # two at Ahuna Flank and two at Kerwan Floor (crates/mush-bot/tests/
   # mining_cohort.rs). About 8 minutes of world readiness and 25-35 of play, so
   # it is run by hand and no job runs it: not on push, not on a dispatch, not on
-  # the daily schedule. Naming it here is what the gated-test inventory asks of
-  # an ignored test. Its canary, the_mining_root_runs_under_the_bots_serde, is
+  # the daily schedule. Its tier is by-hand in crates/mush-contract-tests/test-tiers.toml,
+  # with its last run's revision (doc 43 TS.2: a comment is a recipe, not a run), as are
+  # the target's FR.0 and RS.0 smokes. Its canary, the_mining_root_runs_under_the_bots_serde, is
   # not ignored and runs under nextest in the `test` matrix's bot-stories cell.
   # By hand:
   # cargo test -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture
@@ -1185,9 +1205,9 @@ jobs:
   # the IC month sm12c_cost_lane_cohort_over_an_ic_month (crates/tacsim/tests/cost_lane.rs;
   # #[ignore]d, release-only; 30 TVs by the script, since the test's default 64 STOPs at the
   # economy's per-party live-contract cap; about 8 minutes on the build box at 30 TVs)
-  # are run by hand through scripts/cost-lane.sh, after scripts/harness-weekly.sh and never
-  # beside it, and no job runs them: not on push, not on a dispatch, not on the daily
-  # schedule. Naming the month here is what the gated-test inventory asks of an ignored test.
+  # are run through scripts/cost-lane.sh, after scripts/harness-weekly.sh and never beside
+  # it: gate.yml's `cost-lane` kind on conclav.dev (the month's tier is dispatch in
+  # crates/mush-contract-tests/test-tiers.toml, doc 43 TS.2); no job here runs them.
   # By hand (scripts/cost-lane.sh runs these two lines, kept equal by the C5 pin):
   # cargo test --release -p tacsim --test cost_lane sm12c_the_surface_tick_is_measured -- --exact --nocapture
   # cargo test --release -p tacsim --test cost_lane sm12c_cost_lane_cohort_over_an_ic_month -- --ignored --exact --test-threads=1 --nocapture
@@ -1196,8 +1216,8 @@ jobs:
   # gc12_the_field_pulse_is_measured_at_scale (crates/tacsim/tests/shard_1/field_scale.rs;
   # #[ignore]d, release, run on conclav.dev). Its figures
   # set FIELD_MAX_UNITS and live in doc 36's "As built (GC.12)". No job runs it: it is run by
-  # hand, or through gate.yml's sweep dispatch (doc 36 has the inputs). Naming it here is what
-  # the gated-test inventory asks of an ignored test. By hand:
+  # hand, or through gate.yml's sweep dispatch (doc 36 has the inputs). Its tier is by-hand in
+  # crates/mush-contract-tests/test-tiers.toml, with its last run's revision. By hand:
   # cargo test --release -p tacsim --test shard_1 gc12_the_field_pulse_is_measured_at_scale -- --ignored --exact --test-threads=1 --nocapture
 
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
