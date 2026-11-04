@@ -175,3 +175,180 @@ base `c252ec8d`. Summed, main → PR:
 
 No cell's wall is set by this cut, and no story moves to another shard.
 
+## TS.3b (2026-11-04) — the step audit
+
+Read-only. The question was: for the dozen modules of §2.4, where do each story's minutes go? Four buckets:
+- **boot**: composing the world, opening the site, the pad fixture;
+- **real-time wait**: a real clock, a tokio sleep, an arena window;
+- **work**: simulation CPU on a stepped clock;
+- **assertion**: reading back.
+
+The twelve are the nine §2.4 names (`knowing`, `claims`, `match_lifecycle`, `cockpit`, `mining`, `drones`,
+`plans`, `unloading`, `field_gc4`), plus `field_gc5` (5.8's family), `driving` and `vehicles`, the next-largest
+tacsim modules. The minutes are run 41827163605's JUnit, from main `4390f04c` on hosted 4-vCPU cells, after
+TS.16. The split is a source reading of every test of 30 s or more and of each rig. Its anchors are tests that
+do only one thing, such as a test that only boots. Per test it is good to about ±30 %, because a test shares
+its cell with three others. The per-module write-ups, with the evidence for every row, are kept outside the
+tree in the doc-43 notes folder (`ts3b-audit/`).
+
+| Module (cell) | Tests | Summed min | Boot | Wait | Work | Assert | Where the minutes go |
+|---|---|---|---|---|---|---|---|
+| **5.8 the field window**: `field_gc4` + `field_gc5` (shard_1) | 12 | 13.4 | 6.6 | **6.2** | 0.4 | 0.2 | gc4: the arena's wall-clock `disengage_s`: the kept journey's two 90-s fields, and 15-s fields in the four lane3 tests. gc5: the keyed boot (~33 s a test), then 15-s windows |
+| `claims` (shard_5) | 35 | 41.0 | 24.3 | 0 | 15.4 | 1.3 | 41 keyed worlds for 35 tests (a world = keyed `boot_over` + `stock` + Ahuna opened + pad, ~32–39 s) |
+| `plans` (shard_6) | 28 | 34.4 | 22.6 | 0 | 11.0 | 0.8 | 37 worlds for 28 tests; P3 and P10 build three each |
+| `drones` (shard_3) | 23 | 28.2 | 13.5 | 0 | 12.3 | 2.4 | work: T5's fixed 4,000 fires (473 s) and T9's 2 × 800 (311 s), ~0.1 s of debug CPU a fire |
+| `knowing` (shard_4) | 83 | 26.7 | 22.0 | 0 | 3.3 | 1.5 | keyed `stocked()` (~8 s) in every test; `on_pad` (~13 s, stepped fires) in the 41 SM.4/survey tests |
+| `cockpit` (shard_7) | 192 | 26.5 | 21.6 | 3.5 | 0.3 | 1.2 | the production-roster `Rig::boot` (~5 s) + a match check-out (~3 s) in ~150 tests; the wait is the ledger tape's 16-KiB chunk fill (`CHUNK_BYTES`, ~4–5 s a wait, 12 real-clock tests) |
+| `mining` (shard_7) | 26 | 23.5 | 19.3 | 0 | 3.5 | 0.7 | one keyed world + Ahuna + pad a test; M12 and M8e boot two in a loop; M8 rewarms four times |
+| `match_lifecycle` (shard_8) | 144 | 15.5 | 12.1 | 0.7 | 1.9 | 0.9 | ~190 compositions of the production roster (~3.2 s each) and 20 reboots |
+| `driving` (shard_1) | 22 | 13.9 | 11.9 | 0 | 1.6 | 0.5 | the keyed `stocked()` + `on_pad` (~32 s a world), one or two a test |
+| `vehicles` (shard_6) | 52 | 12.0 | 9.2 | 0 | 2.3 | 0.5 | one stocked world (~7 s) a test; three preflight tests build 22 worlds for 22 refusal sentences |
+| `unloading` (shard_8) | 24 | 8.9 | 7.8 | 0 | 0.7 | 0.4 | the keyed `stocked()` + `on_pad` rig (~19.5 s) in 20 of 24 tests |
+| **The twelve** | **641** | **244.0** | **170.9 (70 %)** | **10.4 (4 %)** | **52.6 (22 %)** | **10.3 (4 %)** | |
+
+**Measured, not read: wall against CPU.** To check the reading, the same twelve modules ran once on conclav.dev (main `7a535806`, `-P ci`, 8 threads). A cargo target runner wrapped every test process and recorded its wall time and its CPU time (`getrusage` of the child, user + sys). A test whose wall exceeds its CPU spent the difference waiting. The idle column is that difference, summed per module.
+
+| module | tests | wall min | CPU min | idle min (wall − CPU, per test, ≥ 0) | idle share |
+|---|---|---|---|---|---|
+| knowing | 83 | 19.1 | 19.1 | 0.0 | 0% |
+| claims | 35 | 14.4 | 14.4 | 0.0 | 0% |
+| cockpit | 192 | 12.6 | 9.2 | 3.5 | 27% |
+| plans | 28 | 11.6 | 11.6 | 0.0 | 0% |
+| match_lifecycle | 144 | 10.9 | 10.8 | 0.2 | 2% |
+| drones | 23 | 10.4 | 10.4 | 0.0 | 0% |
+| mining | 26 | 8.1 | 8.1 | 0.0 | 0% |
+| driving | 22 | 6.5 | 6.5 | 0.0 | 0% |
+| field_gc4 | 6 | 6.5 | 2.6 | 3.9 | 60% |
+| unloading | 24 | 6.0 | 6.0 | 0.0 | 0% |
+| vehicles | 52 | 4.7 | 4.7 | 0.0 | 0% |
+| field_gc5 | 4 | 2.1 | 1.4 | 0.7 | 32% |
+| **all** | 639 | 112.9 | 104.7 | 8.3 | 7% |
+
+The measurement agrees with the reading. Overall the twelve are 7 % idle; the reading put real-time wait at 4 %, and the idle figure also counts lock and I/O waits.
+- Nine modules are 0–2 % idle.
+- The idle time is in `field_gc4` (60 %), `field_gc5` (32 %) and `cockpit` (27 %).
+- The most idle single test is the gc4 journey kept at 90: 153 s idle of 204 s.
+- After it come the lane3 and gc5 tests at the rig default: ~13 s idle per 15-s field, ~27 s for two fields.
+- Then come cockpit's tape and reclaim waits, 9–21 s each.
+- The box runs these tests about 2.2 times faster than a hosted cell: 112.9 wall minutes against the hosted 244.
+
+**What the table says.**
+- **Real-time wait is 4 % of these minutes, and nearly all of it is 5.8's family and cockpit's ledger tape.**
+  - Nine of the twelve modules wait on no real clock at all. They are `TestWorld` suites, and every window in
+    them (`sweep(120)`, `T9_WINDOW`, the IC-hour spans) is a `set_now` jump costing one `fire_due`.
+  - The clock seam (TS.10) is therefore the lever for the field family and the arena-backed modules, not for the
+    bulk of tacsim's minutes.
+- **Boot is 70 %, and boot is CPU.** It is debug-build composition, content load, site generation and stepped
+    port fires. That puts it squarely in TS.3's reach: opt-level 1 for dependencies cut these cells' summed
+    minutes by about a fifth to a half on its first run (TS.3's note: −26 % for tacsim on the box, −27 % hosted).
+- **The 5.8 row after TS.16.**
+  - The four lane3 tests and the two one-field gc5 tests now run at the rig default of 15. The two-field tests
+    went from ~211–214 s to 66–70 s, and the one-field tests from ~115–123 s to 51–53 s: 75 s a field, as
+    constructed.
+  - One copied window is left inside the journey TS.16 kept at 90.
+    `gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift` sets `disengage_s = 90` for
+    the rig (`field_gc4.rs:190`), so both of its fields get it. Only the second field needs to stay open (the
+    drag happens inside it); the first does nothing inside its field. That is ~75 s of idle wall.
+  - CR.1 renamed §5.8's two gc5 tests (`…keeps_the_captive`, `…captures_the_crew`) and added `_at_512` twins
+    in shard_8 (`crew_custody`, 118.9 s).
+- **The arena clock is pausable today.** `match_lifecycle::af2_…a_minute_of_fire` runs 60 arena seconds under
+    `current_thread, start_paused` in 8.8 s. 25 cockpit tests on the paused clock average the same ~9 s as the
+    real-clock ones, and their tape waits cost nothing there. Doc 43c §0 has the consequence for TS.10.
+
+**Steps that boot a world to test one refusal** (Q-43-12's question; D-43-12 answers it: no unit rewrite).
+Named here for the record:
+- `vehicles`: `sm12b_the_yards_preflight_refuses_each_recorded_breach` (78.9 s),
+  `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach` (67.6 s) and
+  `sm3a_the_vehicles_line_names_what_is_missing` (39.3 s): 22 worlds for 22 sentences.
+- `match_lifecycle`: `af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason` (112.8 s): 32 compositions for
+  16 void reasons.
+- `claims`: C16, C2 and C23 build 4, 3 and 2 worlds to prove a text identical across deposit tables (413 s,
+  ~300 s of it boot). C21, C20 and C14b are single refusals (52–72 s).
+- `mining`: M9 opens a second site for one `MINE_CLAIMED` refusal (59 s).
+- `driving`: four refusal tests, at ~32 s of boot each.
+- `field_gc4`: `lane3_a_load_into_a_strangers_carrier_is_refused` boots three pilots on two sites and runs one
+  real 15-s field for one refusal line.
+- `knowing`: the cold-site and moved-rig refusals (23–25 s).
+- `cockpit`: `o1_start_refuses_a_mode_the_ground_does_not_declare`, and the two registry-collision checks.
+
+Under D-43-12 the lever for these is the boot's cost itself (TS.3; a cached composed world is a question for
+the owner, not this audit), never a unit test in place of the story.
+
+## TS.4 (2026-11-04) — the hostile-input suites
+
+§5.1's parsers, each fed what an attacker or a broken peer can send. **No suite found a panic, an abort or an
+unbounded state**, so nothing landed `#[ignore]`d and no production code changed.
+
+- **The command line** (`mush-server/tests/world_task/hostile_lines.rs`). `boot::build_engine`, with the
+  TacSim layer on, is wrapped in a `TestWorld`. It runs 1,500 seeded lines as a plain player and 1,500 as God.
+  Most lines are built on a registered verb: a name or alias, a prefix character, switches, and edge tokens
+  (dbrefs, numbers past every width, splitters, markup, control and bidi characters, 600-character runs). The
+  rest are arbitrary text. The engine is shared, so earlier lines' objects and input contexts are in play. A
+  reach floor stops a vacuous pass: more than a quarter of each actor's lines must get an answer other than
+  `Huh?`. They measured 688 and 683 of 1,500. `ParsedArgs` gets its own contract property inline in
+  `mush-core/src/cmd.rs`: every shape, with `raw`, `lhs`/`rhs` and `rhs_list` checked against the split rule.
+- **The key parser and the caps replies** (`mush-net-ssh/tests/editor_proptest/key_parser.rs`). The input is
+  arbitrary bytes, plus bursts weighted to `ESC [ O _ P \ BEL`, split anywhere. The properties: no panic; no
+  control character in a `Char`/`Alt`; and the parser's carried state (its `Debug`) stays under 4 KiB after
+  256 KiB of an unterminated CSI, APC or DCS. Capability replies with each final (`c t u ~`) reach
+  `DeviceAttributes::parse`/`CellSize::parse` through the parser, and any text reaches them directly.
+- **Both Rhai engines** (`mush-mind/tests/sandbox/nesting.rs`, `mush-script/tests/script/nesting.rs`). There
+  are fifteen nesting shapes: parens, unary, arrays, maps, blocks, `if`, `while`, calls, interpolation,
+  closures (script only), flat `+`/`&&` chains, index and method chains. Each runs at the guard's edges, far
+  past it, and up to the 32 KiB source cap, at the top level and inside a function. Each runs on an explicit
+  2 MiB thread, the stack the minds pool and the world task get (nothing in the tree sets another), through
+  `Sandbox::compile`/`think` and through the script module's boot compile and dispatch. One deep compiles.
+  Twice the guard is refused with Rhai's "exceeds maximum complexity", the flat chains included. Unbounded
+  recursion faults at the call-level limit.
+- **mush-ipc** (`mush-ipc/tests/roundtrip/hostile_frames.rs`). Every sample frame of both directions is cut at
+  every byte behind a whole frame. The codec reads needs-more-bytes and `FrameReader` reads `UnexpectedEof`;
+  a cut at the boundary is a clean EOF. Six corrupt bodies behind a valid prefix, including length-bomb
+  `array32`/`str32` headers, are `InvalidData` after the leading frame, and the valid frame after them is
+  never reached. An oversized prefix faults without its body. Arbitrary bytes in any chunking, and sample
+  bodies with overwritten bytes, never panic.
+- **`client_command_strategy`** (`mush-proto/tests/decode_proptest.rs`) now generates every `ClientCommand`,
+  `Query` and `InvokeRequest` family. Before, it was missing `Invoke`, `Ack`, `Composing`, `Respond`,
+  `Picture` and `Query::Commands`. `variant_tag` matches all three enums with no wildcard, so a new variant
+  does not compile until it is listed. `strategy_reaches_every_variant` fails until the strategy draws it.
+
+**Departures from §7.** The fuzzer runs one shared engine, not a fresh `TestWorld` per case. A boot costs
+seconds and shared state reaches more handlers. The runner is seeded, so CI is deterministic and a failure
+prints its line. `mush-ipc` and `mush-server` gain `proptest` as a dev-dependency. `mush-proto`'s
+`tests/wire.rs` exhaustive round trip (doc 05 I12 C2) is not touched. The proptest round trip now covers
+every variant.
+
+**Summed minutes.** About +0.3: `hostile_lines` is 12 s, and the rest is under 4 s across five binaries.
+Every module joins a binary that already exists.
+
+## TS.20 (2026-11-04) — pinned reconstructions
+
+§7's four unpinned rebuilds of old content each get a pin. A pin is the shape the old version actually had, read
+from the commit before the change it rebuilds around and written into the test as fixed history. Pinning
+turned up drift in two of the four: those reconstructions had been carrying fields their version never wrote.
+
+- **`ooc_v3`** (`mush-atlas/tests/interior.rs`) is held to `V3_REBUILT_DIGEST`, like `ooc_v6` and
+  `staff_lobby_v4`. It cannot be the published digest (`74344b62…`, `44115c47`). The published version 3 has
+  the same 24 entries, and 20 are byte-equal, but four differ:
+  - the Welcome Hall's desc and sign: the shipped text is kept, which is why the upgrade plans one update;
+  - the three `Lounge <L>` exits' `l` segment: since 16b cut D.5, apply refuses it.
+
+  So the real bytes cannot boot, and a committed fixture of them would prove nothing. The doc comment lists the
+  four entries. A re-pin must confirm the rebuild still differs from version 3 in those four entries and no
+  others.
+- **The format-3 checkpoint body** (`mush-economy/tests/e2b.rs`) is held to `FORMAT_3_FOLD_FIELDS`, the 28
+  fields `FoldState` serialized at `b205438c^`. **Finding: the rebuild had drifted.** Besides
+  `title_lineage`, it carried `seizure_receipts` and `bay_refit_receipts`, two audits added after format 4
+  without a format bump, which format 3 never had. The rebuild now strips all three.
+- **The pre-O.1 replay** (`tacsim/tests/shard_1/replay.rs`) is held to `PRE_O1_REPLAY_KEYS`, the 18 keys
+  `Replay::to_document` wrote at `8c2f0388^`. It matched: `mode` was the only key added since.
+- **The R4 relay shape** (`mush-server/tests/split_boundary/relay_registry.rs`) is held by `assert_r4_shape`
+  to the registry, node, pair and half fields at `233fbb2e`. R4 and R7 are consecutive commits on `relay.rs`.
+  **Finding: the rebuild had drifted.** R7 added `losses` and each half's `damaged` as well as
+  `structural_version`, and the "R4" document still carried both. The rebuild now drops them, after asserting
+  they are empty and false (so R4 could express that state).
+
+**Departures from §7.** None of the four uses a committed fixture. Three rebuild documents from a live run,
+whose bytes depend on that run. The fourth is the OOC pack, whose published bytes no longer apply. So the pin
+is the version's field set, or its rebuilt digest, and the `golden/v12` template does not fit any of them.
+
+**Summed minutes.** Zero: four assertions in tests that already exist.

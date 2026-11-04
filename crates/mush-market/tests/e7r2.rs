@@ -404,10 +404,14 @@ fn e7r2_p1_the_restock_creates_no_matter() {
             rest = &tail["pub fn ".len()..];
         }
     }
+    // Doc 39 cut IN.5: and its mirror, `shrink_ask`, which lowers an ask and moves no matter.
     assert_eq!(
         takers,
-        vec!["mush-market/src/api.rs: restock_ask".to_owned()],
-        "restock_ask is the only public function that takes a RestockSpec"
+        vec![
+            "mush-market/src/api.rs: restock_ask".to_owned(),
+            "mush-market/src/api.rs: shrink_ask".to_owned(),
+        ],
+        "restock_ask and shrink_ask are the only public functions that take a RestockSpec"
     );
 }
 

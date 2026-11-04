@@ -22,7 +22,7 @@
 //!   Willpower-backed `toy_roll` onto this action from a `&World`.
 //!
 //! This file deliberately reaches for **no** ambient entropy of any kind:
-//! `crates/mush-contract-tests/tests/provider_rng_policy.rs` scans every file
+//! `crates/mush-contract-tests/tests/ci_policy/provider_rng_policy.rs` scans every file
 //! containing `impl ActionProvider for` and fails if it names one. The toy's
 //! legacy, non-authoritative dice live in the parent module instead.
 

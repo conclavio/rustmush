@@ -502,6 +502,29 @@ fn i1_the_replay_fixture_scene_exercises_the_clamp_the_cover_and_the_wreck() {
     assert_eq!(leak(&text(&replay.to_document())), None);
 }
 
+/// Every key `Replay::to_document` wrote before 16b cut O.1: the function at
+/// `8c2f0388^` (doc 43 cut TS.20). Fixed history: never edited to follow today.
+const PRE_O1_REPLAY_KEYS: [&str; 18] = [
+    "record",
+    "record_version",
+    "match",
+    "arena",
+    "arena_digest",
+    "cell_cm",
+    "width",
+    "height",
+    "summary_ms",
+    "end_ms",
+    "outcome",
+    "reason",
+    "roster",
+    "keyframes",
+    "shots",
+    "destroyed",
+    "truncated",
+    "cut",
+];
+
 /// **16b cut O.1 (16c N11; plan item 39)**: a replay finished as a Hold carries
 /// the hold's words, and its document carries `"mode"` beside `outcome` and
 /// `reason` — which a replay written before the cut has no key for, and reads
@@ -525,6 +548,19 @@ fn o1_a_held_replay_carries_its_words_and_its_mode() {
     // A document written before the cut: no key, a skirmish, no tag.
     let mut old = document;
     old.as_object_mut().expect("an object").remove("mode");
+    // Doc 43 cut TS.20: the rebuilt document is held to the pre-O.1 key set,
+    // so a key a later cut adds cannot ride into it unnoticed.
+    let keys: Vec<&str> = old
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut want = PRE_O1_REPLAY_KEYS.to_vec();
+    want.sort_unstable();
+    let mut got = keys.clone();
+    got.sort_unstable();
+    assert_eq!(got, want, "the rebuilt document is not a pre-O.1 replay");
     let read = Replay::from_document(&old).expect("still a replay");
     assert_eq!(read.mode, tacsim::arena::MatchMode::Skirmish);
     let (header, _) = replay_lines(&read, 0, 0, &support::yard::terrain());

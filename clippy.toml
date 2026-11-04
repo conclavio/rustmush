@@ -25,7 +25,7 @@
 # other. So a `crates/<pkg>/clippy.toml` is not a harmless duplicate and not a
 # dead file — it is found before this one and silently drops all four allowances
 # for that crate, without having to mention them. The tripwire in
-# crates/mush-contract-tests/tests/clippy_test_allowances.rs scans for both
+# crates/mush-contract-tests/tests/ci_policy/clippy_test_allowances.rs scans for both
 # spellings.
 #
 # SCOPE — what the allowance actually covers, which is narrower than "tests":
@@ -39,7 +39,7 @@
 #
 # WHAT THE ALLOWANCES NOW SERVE (WS01-S12). The re-measurement landed and the
 # lints are on, per crate, at each crate root — `crates/mush-contract-tests/
-# tests/restriction_lints.rs` holds the whole table, including the count of
+# tests/ci_policy/restriction_lints.rs` holds the whole table, including the count of
 # every candidate that stayed off. These four keys have stopped being an input
 # to a future decision and become load-bearing: flipping one to `false` now
 # red-lights CI immediately, in every crate that denies that lint, over

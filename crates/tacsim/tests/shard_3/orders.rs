@@ -1712,9 +1712,12 @@ fn ic11_the_queue_runs_the_day_unattended() {
         assert_eq!(sale.lot.as_ref().map(|l| l.kind), Some(PaidKind::Deliver));
         assert!(sale.settled.is_some(), "each sale settled");
     }
-    assert_eq!(
-        bid_qty(&rig.tw, kasei_bid(&rig.tw, "metals")),
-        Some(sold_metals_bid - metals)
+    // Doc 39 cut IN.5: Kasei's bid refreshes within what the house can fund, so after a sale it
+    // stands at most at what the sale left.
+    assert!(
+        bid_qty(&rig.tw, kasei_bid(&rig.tw, "metals"))
+            .is_some_and(|left| left <= sold_metals_bid - metals),
+        "the sale took {metals} t off Kasei's bid"
     );
     let draws: Vec<mush_market::Quote> = market(&rig.tw)
         .quotes_of_buyer(&PrincipalId::Object(pilot))
@@ -1978,6 +1981,11 @@ fn aboard_at_stickney(rig: &mut Rig, cargo: &[(&str, u64)]) -> (ObjId, HullRow) 
 /// next sequence — one ticket, one debit, one journey, no notice for the retry; (c) a
 /// landing before the verify is verified done, nothing re-staged; (c') a landing the
 /// market mirror had not read before the reboot is re-staged at most once and replays.
+/// The submissions `who` made.
+fn by(queued: &[AuthoritativeSubmit], who: ObjId) -> usize {
+    queued.iter().filter(|s| s.actor == who).count()
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic11_a_reboot_mid_step_reruns_nothing() {
@@ -1985,12 +1993,11 @@ fn ic11_a_reboot_mid_step_reruns_nothing() {
     let mut rig = stocked();
     let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
     let hull = ObjId(row.hull);
-    let bid = kasei_bid(&rig.tw, "metals");
-    let wanted = bid_qty(&rig.tw, bid).expect("the bid");
     let out = order(&mut rig, pilot, "sell metals all");
     assert!(out.contains("Order 1 filed"), "{out}");
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 1, "the deliver leg");
+    // Doc 39 cut IN.5: the pilot's; Stickney's clerk refines and stocks the works on its own.
+    assert_eq!(by(&queued, pilot), 1, "the deliver leg");
     let staged = orders(&rig.tw, hull)
         .inflight
         .clone()
@@ -2021,11 +2028,8 @@ fn ic11_a_reboot_mid_step_reruns_nothing() {
         state_of(&rig.tw, ContractId(contract)),
         Some(ContractState::Settled { .. })
     ));
-    assert_eq!(
-        bid_qty(&rig.tw, bid),
-        Some(wanted - 20),
-        "one bid decrement"
-    );
+    // Doc 39 cut IN.5: Kasei's bid refreshes (re-posted within its funds), so the one sale
+    // quote above is the one decrement.
     let doc = orders(&rig.tw, hull);
     assert!(doc.hold.is_none(), "no hold");
     assert_eq!(doc.state, PlanState::Running);
@@ -2309,7 +2313,12 @@ fn ic11_a_staff_stand_down_holds_the_order_and_files_nothing() {
     let _ = order(&mut rig, pilot, "depart ceres");
     disconnect(&mut rig.tw, pilot);
     let (_, queued) = fire(&mut rig);
-    let late = queued.clone();
+    // Doc 39 cut IN.5: the burn alone; Stickney's clerk has acts of its own.
+    let late: Vec<AuthoritativeSubmit> = queued
+        .iter()
+        .filter(|s| s.actor == pilot)
+        .cloned()
+        .collect();
     assert_eq!(burn_keys(&queued).len(), 1);
     let out = run(&mut rig.tw, GOD, &format!("@tacsim/port clear #{}", hull.0));
     assert!(out.contains("The sailing plan holds at order 1."), "{out}");
@@ -2385,7 +2394,7 @@ fn ic11_a_lapsed_charter_holds_and_stages_nothing() {
     let hull = ObjId(row.hull);
     let _ = order(&mut rig, pilot, "sell metals all");
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 1);
+    assert_eq!(by(&queued, pilot), 1);
     let contract = orders(&rig.tw, hull)
         .inflight
         .and_then(|i| i.refs.contract)
@@ -2580,12 +2589,11 @@ fn ic11_a_long_downtime_raises_no_false_second_miss() {
     let mut rig = stocked();
     let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
     let hull = ObjId(row.hull);
-    let bid = kasei_bid(&rig.tw, "metals");
-    let wanted = bid_qty(&rig.tw, bid).expect("the bid");
     let _ = order(&mut rig, pilot, "sell metals all");
     disconnect(&mut rig.tw, pilot);
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 1, "the deliver leg");
+    // Doc 39 cut IN.5: the pilot's; Stickney's clerk refines and stocks the works on its own.
+    assert_eq!(by(&queued, pilot), 1, "the deliver leg");
     let staged = orders(&rig.tw, hull)
         .inflight
         .clone()
@@ -2619,7 +2627,16 @@ fn ic11_a_long_downtime_raises_no_false_second_miss() {
         state_of(&rig.tw, ContractId(contract)),
         Some(ContractState::Settled { .. })
     ));
-    assert_eq!(bid_qty(&rig.tw, bid), Some(wanted - 20), "one sale");
+    // Doc 39 cut IN.5: Kasei's bid refreshes (re-posted within its funds), so the sale is counted
+    // by its contract, not by the standing bid.
+    assert_eq!(
+        market(&rig.tw)
+            .quotes_of_seller(&PrincipalId::Object(pilot))
+            .filter(|q| q.contract.is_some())
+            .count(),
+        1,
+        "one sale"
+    );
     assert!(
         !log_texts(&rig.tw, hull)
             .iter()

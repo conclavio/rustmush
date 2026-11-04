@@ -1720,6 +1720,7 @@ mod tests {
     #[test]
     fn sm12a_each_mill_line_says_what_it_reads() {
         let mill = MillDef {
+            kind: crate::port::def::MillKind::Mill,
             ore: cid("metal_ore"),
             into: cid("metals"),
             ratio: FIVE_TWO,
