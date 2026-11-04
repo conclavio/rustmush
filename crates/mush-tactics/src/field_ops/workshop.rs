@@ -24,12 +24,6 @@ use crate::unit::{
     UnitError, UnitMutationOp, UnitMutationPlan, apply,
 };
 
-/// Scrap mass in kilograms yielded per remaining structural point during hull scrapping (`Q-S11`).
-pub const SCRAP_KG_PER_STRUCTURAL_POINT: u64 = 100;
-
-/// Fallback scrap mass in kilograms per non-destroyed section when no internals cell is configured.
-pub const FALLBACK_SECTION_SCRAP_KG: u64 = 1_000;
-
 /// Maximum detached component records retained in one [`WorkshopBook`].
 pub const MAX_STRIPPED_COMPONENTS: usize = 2_048;
 
@@ -146,8 +140,11 @@ pub struct ScrapYieldReport {
     pub hull: ObjId,
     /// Actor who executed the scrap operation.
     pub scrapped_by: ObjId,
-    /// Recoverable structural scrap mass in kilograms.
-    pub structural_scrap_kg: u64,
+    /// **The structural points the hull still held** (`Q-S11`; doc 39 cut IN.8): every section
+    /// and facet cell above its minimum. The host weighs them by the design's own figures (its
+    /// mass budget) and leaves out any section cell that is not structure (TacSim's heat pair);
+    /// this crate carries no kilograms a point.
+    pub structural_points: u64,
     /// Number of remaining unstripped salvageable components dismantled with the hull.
     pub dismantled_salvageable_components: usize,
     /// Resulting assessment (`OperationalState::Irrecoverable`).
@@ -245,9 +242,6 @@ pub struct WorkshopFacilityTariff {
     pub cost_per_structural_point_repair: u64,
     /// Work time in IC seconds per structural point repaired on a `Damaged` section.
     pub duration_ic_per_structural_point_repair: i64,
-    /// Structural points one tonne of `industrial_parts` restores (`Q-36-31`): a quote
-    /// consumes `ceil(points / this)` tonnes across every section it repairs or rebuilds.
-    pub structural_points_per_industrial_parts_t: u64,
     /// Base labour cost to reconstruct a `Destroyed` or `Wreck` section shell.
     pub base_cost_reconstruct_section: u64,
     /// Work time in IC seconds to reconstruct a `Destroyed` or `Wreck` section shell.
@@ -345,11 +339,6 @@ impl WorkshopFacilityTariff {
                 return Err(WorkshopError::InvalidTariff(field));
             }
         }
-        if self.structural_points_per_industrial_parts_t == 0 {
-            return Err(WorkshopError::InvalidTariff(
-                "structural_points_per_industrial_parts_t",
-            ));
-        }
         if self.min_multiplier_permille == 0
             || self.min_multiplier_permille > 1_000
             || self.max_multiplier_permille < 1_000
@@ -403,8 +392,6 @@ pub struct WorkshopCostQuote {
     pub components_to_rearm: BTreeMap<ComponentId, i64>,
     /// Structural points the quote restores across every section it repairs or rebuilds.
     pub structural_points: u64,
-    /// Tonnes of `industrial_parts` those points consume (`Q-36-31`), drawn from lots.
-    pub industrial_parts_t: u64,
     /// Total labour cost, minor units (excluding parts, replacement components and rounds).
     pub total_resource_cost: u64,
     /// Total estimated workshop duration in IC seconds.
@@ -743,24 +730,6 @@ impl WorkshopBook {
             }
         }
 
-        let structural_scrap_kg = if structural_points > 0 {
-            structural_points.saturating_mul(SCRAP_KG_PER_STRUCTURAL_POINT)
-        } else {
-            let surviving_sections = pre_assessment
-                .section_conditions
-                .values()
-                .filter(|c| {
-                    !matches!(
-                        c,
-                        SectionCondition::Destroyed | SectionCondition::Irrecoverable
-                    )
-                })
-                .count() as u64;
-            surviving_sections
-                .saturating_mul(FALLBACK_SECTION_SCRAP_KG)
-                .max(FALLBACK_SECTION_SCRAP_KG)
-        };
-
         let dismantled_salvageable_components = pre_assessment.surviving_components().len();
 
         let irrecoverable_cond = SectionCondition::Irrecoverable
@@ -809,7 +778,7 @@ impl WorkshopBook {
             ScrapYieldReport {
                 hull: unit.object(),
                 scrapped_by: actor,
-                structural_scrap_kg,
+                structural_points,
                 dismantled_salvageable_components,
                 final_assessment,
                 scrapped_at_ic: at_ic,
@@ -1601,13 +1570,9 @@ impl WorkshopBook {
             }
         }
 
-        let industrial_parts_t =
-            structural_points.div_ceil(tariff.structural_points_per_industrial_parts_t.max(1));
-
         Ok(WorkshopCostQuote {
             unit: unit.object(),
             structural_points,
-            industrial_parts_t,
             sections_to_repair,
             sections_to_reconstruct,
             components_to_repair,
@@ -2396,7 +2361,7 @@ mod tests {
             yield_report.final_assessment.state,
             OperationalState::Irrecoverable
         );
-        check_eq!(yield_report.structural_scrap_kg, 6_000);
+        check_eq!(yield_report.structural_points, 60);
         check_eq!(yield_report.dismantled_salvageable_components, 1);
 
         Ok(())
@@ -2611,7 +2576,6 @@ mod tests {
         let tariff = WorkshopFacilityTariff {
             cost_per_structural_point_repair: 25,
             duration_ic_per_structural_point_repair: 10,
-            structural_points_per_industrial_parts_t: 100,
             base_cost_reconstruct_section: 1_500,
             base_duration_ic_reconstruct_section: 240,
             cost_repair_component: 400,
@@ -2628,7 +2592,7 @@ mod tests {
         check_eq!(quote.components_to_rearm.get(&autocannon), Some(&20));
         check_eq!(quote.total_resource_cost, 200);
         check_eq!(quote.total_work_duration_ic, 30);
-        check_eq!((quote.structural_points, quote.industrial_parts_t), (0, 0));
+        check_eq!(quote.structural_points, 0);
         // The operator's multiplier scales costs, rounded up, and never durations.
         let dear = tariff.with_multiplier_permille(1_250)?;
         check_eq!(dear.cost_per_ammo_round, 13);

@@ -1383,10 +1383,10 @@ impl PixelView {
             }
             return KeyUse::Used;
         }
-        // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7 & SF.R16, D-35-14, D-35-16):
+        // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7, SF.R16 & SF.R24, D-35-14, D-35-16):
         // WASD translation, Arrow Keys pitch/yaw, Q/E roll, R/F closure pulse, X dampeners,
-        // C/Space 60 Hz guidance-assist clamp, `v` view mode toggle, while preserving digits '0'..'9'
-        // for global screen switching.
+        // `v` view mode toggle, while preserving digits '0'..'9' for global screen switching.
+        // (`c`/Space auto-solver removed in SF.R24.)
         if self.kind == PictureKind::Docking {
             if matches!(
                 key,
@@ -1458,9 +1458,6 @@ impl PixelView {
                         toggle_dampeners: true,
                         ..Default::default()
                     }),
-                    Key::Char('c' | 'C' | ' ') => {
-                        session.play_to_clamp();
-                    }
                     _ => {
                         stepped = false;
                     }
@@ -1746,6 +1743,20 @@ impl PixelView {
             .last_tick
             .map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
         self.last_tick = Some(now);
+        if self.kind == PictureKind::Docking
+            && let Some(ref mut session) = self.docking_session
+            && !session.clamped()
+        {
+            session.step_60fps(mush_pixel::docking::DockingClientInput::default());
+            self.last_sent = None;
+            self.docking_pic.invalidate_placements();
+            if session.clamped()
+                && self.docking_submitted_session.as_deref() != Some(session.session_id.as_str())
+            {
+                self.docking_submitted_session = Some(session.session_id.clone());
+                self.orders.push(session.format_tape_command());
+            }
+        }
         if self.kind == PictureKind::Replay && self.replay.playing {
             let ms = i64::try_from(dt.as_millis()).unwrap_or(0).min(1_000);
             self.replay.t_ms += ms * self.replay.speed();
@@ -3774,9 +3785,59 @@ mod tests {
         assert_eq!(v.docking_session().map(|s| s.pose.vx_mmps), Some(32));
         assert!(v.take_orders().is_empty(), "not yet clamped");
 
-        // Complete the 60 Hz client docking game (`c`) -> clamps all 5 gates and emits
-        // `+helm/dock tape dock-42-1 <rle>`:
+        // `c` and Space no longer invoke an auto-solver (`SF.R24`):
+        let frames_before = v.docking_session().map_or(0, |s| s.frames_stepped());
         assert_eq!(v.key(Key::Char('c'), t0), KeyUse::Used);
+        assert_eq!(v.key(Key::Char(' '), t0), KeyUse::Used);
+        assert_eq!(
+            v.docking_session().map_or(0, |s| s.frames_stepped()),
+            frames_before,
+            "`c` and Space must not auto-solve or advance the docking session"
+        );
+        assert!(!v.docking_session().is_some_and(|s| s.clamped()));
+
+        // Drive the TUI 60 Hz session to clamp using real player keys and 60 Hz coast ticks:
+        for _ in 0..1_200 {
+            if v.docking_session().is_some_and(|s| s.clamped()) {
+                break;
+            }
+            let s = v.docking_session().expect("session active");
+            let p = s.pose;
+            if p.dx_mm < -80 && p.vx_mmps < 160 {
+                let _ = v.key(Key::Char('d'), t0);
+            } else if p.dx_mm > 80 && p.vx_mmps > -160 {
+                let _ = v.key(Key::Char('a'), t0);
+            } else if p.dy_mm < -80 && p.vy_mmps < 160 {
+                let _ = v.key(Key::Char('w'), t0);
+            } else if p.dy_mm > 80 && p.vy_mmps > -160 {
+                let _ = v.key(Key::Char('s'), t0);
+            } else if p.pitch_mdeg < -500 && s.pitch_rate_mdeg_s < 350 {
+                let _ = v.key(Key::Up, t0);
+            } else if p.pitch_mdeg > 500 && s.pitch_rate_mdeg_s > -350 {
+                let _ = v.key(Key::Down, t0);
+            } else if p.yaw_mdeg > 500 && s.yaw_rate_mdeg_s > -350 {
+                let _ = v.key(Key::Left, t0);
+            } else if p.yaw_mdeg < -500 && s.yaw_rate_mdeg_s < 350 {
+                let _ = v.key(Key::Right, t0);
+            } else if p.roll_mdeg < -600 && s.roll_rate_mdeg_s < 450 {
+                let _ = v.key(Key::Char('e'), t0);
+            } else if p.roll_mdeg > 600 && s.roll_rate_mdeg_s > -450 {
+                let _ = v.key(Key::Char('q'), t0);
+            } else if p.lateral_aligned()
+                && p.attitude_aligned()
+                && p.roll_aligned()
+                && p.vx_mmps == 0
+                && p.vy_mmps == 0
+                && s.pitch_rate_mdeg_s == 0
+                && s.yaw_rate_mdeg_s == 0
+                && s.roll_rate_mdeg_s == 0
+                && p.vz_mmps < 300
+            {
+                let _ = v.key(Key::Char('r'), t0);
+            } else {
+                v.tick(t0);
+            }
+        }
         assert!(v.docking_session().is_some_and(|s| s.clamped()));
         let orders = v.take_orders();
         assert_eq!(orders.len(), 1);

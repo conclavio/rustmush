@@ -24,7 +24,7 @@ pub use bubble::{
     BubbleStepReport, CanopyBodyProjection, DERELICT_WINDOW_S, EmconPosture, FacetBand, HullStatus,
     LocalSpaceBubble, MAX_SUBSTEP_MS, ShipSectionId, ShipSectionState, SpaceCombatEvent,
     SpaceSectionConsequence, SpaceShipState, SubsystemCrit, admitted_party,
-    default_canopy_bodies_for_site, relation_feed_word,
+    compute_ephemeris_canopy_bodies, default_canopy_bodies_for_site, relation_feed_word,
 };
 pub use commands::{
     BridgeRole, HELM_HELP, HELM_SWITCHES, HELM_VERB, HOLOTANK_FEED, MINE_HELP, MINE_SWITCHES,
@@ -48,9 +48,10 @@ pub use docking::{
     DOCK_GATE_RANGE_Z_MM, DOCKING_FPS, DockingChallenge, DockingControlInput, DockingGateStatus,
     DockingInputTape, DockingOutcome, DockingRcsAuthority, DockingReplayReport, DockingSession,
     DockingStepperState, DockingTapeError, DockingTapeSpan, DockingTargetKind, SalvageTowRecord,
-    evaluate_docking_gates, parse_dock_text_order, replay_docking_tape, solve_docking_tape,
-    solve_hard_bounce_tape,
+    evaluate_docking_gates, parse_dock_text_order, replay_docking_tape,
 };
+#[cfg(test)]
+pub use docking::{solve_docking_tape, solve_hard_bounce_tape};
 pub use mining::{
     ActiveClusterMiningSession, CLUSTER_SESSION_IDLE_TIMEOUT_IC_SECS, ClusterRockSpec,
     ClusterSiteState, ClusterTenureOrder, ClusterZone, DRONE_SORTIE_IC_SECS, DRONE_SORTIE_YIELD_T,

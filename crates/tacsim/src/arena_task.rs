@@ -779,7 +779,7 @@ pub fn spawn_field(
     task_id: MatchId,
     custody: CustodyOut,
     cfgs: (&ArenaConfig, &MatchConfig, &SensorsConfig, &MindsConfig),
-    sources: &BTreeMap<[u8; 32], String>,
+    (sources, retained): (&BTreeMap<[u8; 32], String>, RetainedInstall<'_>),
     pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
     terms: FieldTerms,
@@ -791,7 +791,7 @@ pub fn spawn_field(
     for unit in &mut arena.units {
         unit.power = crate::arena::state::Power::Online;
     }
-    install_runners(&mut arena, sources)?;
+    install_field_runners(&mut arena, sources, retained)?;
     let callsigns = arena.callsigns();
     let (handle, join) = spawn(
         runtime,
@@ -820,12 +820,12 @@ pub fn resume_field(
     task_id: MatchId,
     mut arena: Arena,
     arena_cfg: &ArenaConfig,
-    sources: &BTreeMap<[u8; 32], String>,
+    (sources, retained): (&BTreeMap<[u8; 32], String>, RetainedInstall<'_>),
     pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
     terms: FieldTerms,
 ) -> Result<(ArenaHandle, JoinHandle<()>), crate::minds::InstallError> {
-    install_runners(&mut arena, sources)?;
+    install_field_runners(&mut arena, sources, retained)?;
     Ok(spawn(
         runtime,
         task_id,
@@ -918,6 +918,29 @@ pub enum SpawnError {
 /// **[`crate::minds::install_sealed_runners`] over `sources`** (17b cut
 /// M3.5), on the arena's own frozen doctrine — the one both entry points
 /// call, so a fresh and a resumed match install by one rule.
+/// **An IC field's retained install** (doc 23 cut S.4b-3, D-23-17): installs each claimed hull's
+/// runner through its claim's retained execution (the ABI and compile drops to the ROM) and names
+/// the hulls it installed.
+pub type RetainedInstall<'a> = &'a mut dyn FnMut(&mut Arena) -> std::collections::BTreeSet<ObjId>;
+
+/// **A field's runners**: the claimed hulls through `retained`, then the strict rule over the
+/// rest ([`crate::minds::install_sealed_runners_except`]).
+fn install_field_runners(
+    arena: &mut Arena,
+    sources: &BTreeMap<[u8; 32], String>,
+    retained: RetainedInstall<'_>,
+) -> Result<usize, crate::minds::InstallError> {
+    let skip = retained(arena);
+    let cfg = arena.arena_cfg.clone();
+    crate::minds::install_sealed_runners_except(
+        arena,
+        &cfg,
+        &|digest| sources.get(digest).cloned(),
+        &skip,
+    )
+    .map(|count| count.saturating_add(skip.len()))
+}
+
 fn install_runners(
     arena: &mut Arena,
     sources: &BTreeMap<[u8; 32], String>,

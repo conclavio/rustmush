@@ -24,6 +24,9 @@ mush-proto.workspace = true
 # `mush_ansi::panel::window_rows`, the TUI's own grid decoder, so line mode and the TUI cannot
 # disagree about a glyph. A pure leaf crate (mush-proto, serde_json, smol_str).
 mush-ansi.workspace = true
+# Doc 35c cut SF.R24 (D-35-14): `mush_pixel::docking` owns the one 60 Hz 6-DOF
+# docking kinematics stepper compiled into `tacsim`, the TUI, and the WASM.
+mush-pixel.workspace = true
 
 mush-comsys.workspace = true
 mush-faction.workspace = true
@@ -96,7 +99,6 @@ fault-injection = []
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-proto.workspace = true
-mush-pixel.workspace = true
 # 17g cut C3a: `minds::market_commands::tests`' panel projection test asks the
 # workspace's own projection lens (`assert_projection_text_clean`), as the
 # gateway's and the SSH TUI's projection tests do. A dev-dependency is no edge

@@ -651,149 +651,81 @@ impl DockingStepperState {
         }
     }
 
-    /// Bleed a signed velocity toward zero by at most `step`.
-    const fn bleed_i64(val: i64, step: i64) -> i64 {
-        if val > step {
-            val - step
-        } else if val < -step {
-            val + step
-        } else {
-            0
-        }
-    }
-
-    /// Bleed a signed angular rate toward zero by at most `step`.
-    const fn bleed_i32(val: i32, step: i32) -> i32 {
-        if val > step {
-            val - step
-        } else if val < -step {
-            val + step
-        } else {
-            0
-        }
-    }
-
-    /// Advance the 6-DOF collar state by a single 60 Hz frame (`16.67 ms`).
+    /// Advance the 6-DOF collar state by a single 60 Hz frame (`16.67 ms`) using the
+    /// shared [`mush_pixel::docking::step_docking_kinematics_60fps`] integrator (`D-35-14`, `SF.R24`).
     pub fn step_frame(
         &mut self,
         input: DockingControlInput,
         auth: &DockingRcsAuthority,
         target_tumble_mdeg_s: [i32; 3],
     ) {
-        if input.toggle_dampeners {
-            self.dampeners_on = !self.dampeners_on;
-        }
-
-        let tx = i64::from(input.trans_x.clamp(-1, 1));
-        let ty = i64::from(input.trans_y.clamp(-1, 1));
-        let tz = i64::from(input.closure_pulse.clamp(-1, 1));
-        let dpitch = i32::from(input.pitch_trim.clamp(-1, 1));
-        let dyaw = i32::from(input.yaw_trim.clamp(-1, 1));
-        let droll = i32::from(input.roll_trim.clamp(-1, 1));
-
-        self.pose.vel_x_mmps = self
-            .pose
-            .vel_x_mmps
-            .saturating_add(tx.saturating_mul(auth.trans_dv_mmps_per_frame));
-        self.pose.vel_y_mmps = self
-            .pose
-            .vel_y_mmps
-            .saturating_add(ty.saturating_mul(auth.trans_dv_mmps_per_frame));
-        self.pose.closure_mmps = self
-            .pose
-            .closure_mmps
-            .saturating_add(tz.saturating_mul(auth.closure_dv_mmps_per_frame));
-
-        self.pose.pitch_rate_mdeg_s = self
-            .pose
-            .pitch_rate_mdeg_s
-            .saturating_add(dpitch.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
-        self.pose.yaw_rate_mdeg_s = self
-            .pose
-            .yaw_rate_mdeg_s
-            .saturating_add(dyaw.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
-        self.pose.roll_rate_mdeg_s = self
-            .pose
-            .roll_rate_mdeg_s
-            .saturating_add(droll.saturating_mul(auth.roll_rate_mdeg_s_per_frame));
-
-        let mut frame_pulses = input.active_axis_pulses();
-
-        if self.dampeners_on {
-            if tx == 0 && self.pose.vel_x_mmps != 0 {
-                self.pose.vel_x_mmps =
-                    Self::bleed_i64(self.pose.vel_x_mmps, auth.damp_trans_mmps_per_frame);
-                frame_pulses = frame_pulses.saturating_add(1);
-            }
-            if ty == 0 && self.pose.vel_y_mmps != 0 {
-                self.pose.vel_y_mmps =
-                    Self::bleed_i64(self.pose.vel_y_mmps, auth.damp_trans_mmps_per_frame);
-                frame_pulses = frame_pulses.saturating_add(1);
-            }
-            if dpitch == 0 && self.pose.pitch_rate_mdeg_s != 0 {
-                self.pose.pitch_rate_mdeg_s = Self::bleed_i32(
-                    self.pose.pitch_rate_mdeg_s,
-                    auth.damp_attitude_mdeg_s_per_frame,
-                );
-                frame_pulses = frame_pulses.saturating_add(1);
-            }
-            if dyaw == 0 && self.pose.yaw_rate_mdeg_s != 0 {
-                self.pose.yaw_rate_mdeg_s = Self::bleed_i32(
-                    self.pose.yaw_rate_mdeg_s,
-                    auth.damp_attitude_mdeg_s_per_frame,
-                );
-                frame_pulses = frame_pulses.saturating_add(1);
-            }
-            if droll == 0 && self.pose.roll_rate_mdeg_s != 0 {
-                self.pose.roll_rate_mdeg_s =
-                    Self::bleed_i32(self.pose.roll_rate_mdeg_s, auth.damp_roll_mdeg_s_per_frame);
-                frame_pulses = frame_pulses.saturating_add(1);
-            }
-        }
-
+        let mut cam_pose = mush_pixel::docking::DockingCameraPose {
+            dx_mm: self.pose.lateral_x_mm,
+            dy_mm: self.pose.lateral_y_mm,
+            dz_mm: self.pose.range_z_mm,
+            pitch_mdeg: i64::from(self.pose.pitch_err_mdeg),
+            yaw_mdeg: i64::from(self.pose.yaw_err_mdeg),
+            roll_mdeg: i64::from(self.pose.roll_err_mdeg),
+            vx_mmps: self.pose.vel_x_mmps,
+            vy_mmps: self.pose.vel_y_mmps,
+            vz_mmps: self.pose.closure_mmps,
+        };
+        let mut rates = [
+            self.pose.pitch_rate_mdeg_s,
+            self.pose.yaw_rate_mdeg_s,
+            self.pose.roll_rate_mdeg_s,
+        ];
+        let mut rem_pos = [self.rem_x, self.rem_y, self.rem_z];
+        let mut rem_att = [self.rem_pitch, self.rem_yaw, self.rem_roll];
+        let client_input =
+            mush_pixel::docking::DockingClientInput::from_bitmask(input.to_bitmask());
+        let client_auth = mush_pixel::docking::DockingClientRcsAuthority {
+            trans_dv_mmps_per_frame: auth.trans_dv_mmps_per_frame,
+            closure_dv_mmps_per_frame: auth.closure_dv_mmps_per_frame,
+            attitude_rate_mdeg_s_per_frame: auth.attitude_rate_mdeg_s_per_frame,
+            roll_rate_mdeg_s_per_frame: auth.roll_rate_mdeg_s_per_frame,
+            damp_trans_mmps_per_frame: auth.damp_trans_mmps_per_frame,
+            damp_attitude_mdeg_s_per_frame: auth.damp_attitude_mdeg_s_per_frame,
+            damp_roll_mdeg_s_per_frame: auth.damp_roll_mdeg_s_per_frame,
+        };
+        let frame_pulses = mush_pixel::docking::step_docking_kinematics_60fps(
+            &mut cam_pose,
+            &mut rates,
+            &mut rem_pos,
+            &mut rem_att,
+            &mut self.dampeners_on,
+            client_input,
+            &client_auth,
+            target_tumble_mdeg_s,
+        );
+        self.pose.lateral_x_mm = cam_pose.dx_mm;
+        self.pose.lateral_y_mm = cam_pose.dy_mm;
+        self.pose.range_z_mm = cam_pose.dz_mm;
+        self.pose.vel_x_mmps = cam_pose.vx_mmps;
+        self.pose.vel_y_mmps = cam_pose.vy_mmps;
+        self.pose.closure_mmps = cam_pose.vz_mmps;
+        self.pose.pitch_err_mdeg = cam_pose
+            .pitch_mdeg
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            as i32;
+        self.pose.yaw_err_mdeg = cam_pose
+            .yaw_mdeg
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            as i32;
+        self.pose.roll_err_mdeg = cam_pose
+            .roll_mdeg
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            as i32;
+        self.pose.pitch_rate_mdeg_s = rates[0];
+        self.pose.yaw_rate_mdeg_s = rates[1];
+        self.pose.roll_rate_mdeg_s = rates[2];
+        self.rem_x = rem_pos[0];
+        self.rem_y = rem_pos[1];
+        self.rem_z = rem_pos[2];
+        self.rem_pitch = rem_att[0];
+        self.rem_yaw = rem_att[1];
+        self.rem_roll = rem_att[2];
         self.rcs_pulses = self.rcs_pulses.saturating_add(frame_pulses);
-
-        // Exact modulo-60 sub-frame integration (`35a` §5 #2):
-        let tot_x = self.pose.vel_x_mmps.saturating_add(self.rem_x);
-        self.pose.lateral_x_mm = self.pose.lateral_x_mm.saturating_add(tot_x / DOCKING_FPS);
-        self.rem_x = tot_x % DOCKING_FPS;
-
-        let tot_y = self.pose.vel_y_mmps.saturating_add(self.rem_y);
-        self.pose.lateral_y_mm = self.pose.lateral_y_mm.saturating_add(tot_y / DOCKING_FPS);
-        self.rem_y = tot_y % DOCKING_FPS;
-
-        let tot_z = self.pose.closure_mmps.saturating_add(self.rem_z);
-        self.pose.range_z_mm = self
-            .pose
-            .range_z_mm
-            .saturating_sub(tot_z / DOCKING_FPS)
-            .max(0);
-        self.rem_z = tot_z % DOCKING_FPS;
-
-        let net_pitch_rate = self
-            .pose
-            .pitch_rate_mdeg_s
-            .saturating_sub(target_tumble_mdeg_s[0]);
-        let tot_pitch = net_pitch_rate.saturating_add(self.rem_pitch);
-        self.pose.pitch_err_mdeg = self.pose.pitch_err_mdeg.saturating_add(tot_pitch / 60);
-        self.rem_pitch = tot_pitch % 60;
-
-        let net_yaw_rate = self
-            .pose
-            .yaw_rate_mdeg_s
-            .saturating_sub(target_tumble_mdeg_s[1]);
-        let tot_yaw = net_yaw_rate.saturating_add(self.rem_yaw);
-        self.pose.yaw_err_mdeg = self.pose.yaw_err_mdeg.saturating_add(tot_yaw / 60);
-        self.rem_yaw = tot_yaw % 60;
-
-        let net_roll_rate = self
-            .pose
-            .roll_rate_mdeg_s
-            .saturating_sub(target_tumble_mdeg_s[2]);
-        let tot_roll = net_roll_rate.saturating_add(self.rem_roll);
-        self.pose.roll_err_mdeg = self.pose.roll_err_mdeg.saturating_add(tot_roll / 60);
-        self.rem_roll = tot_roll % 60;
-
         self.frames_stepped = self.frames_stepped.saturating_add(1);
     }
 
@@ -973,6 +905,7 @@ pub fn parse_dock_text_order(order: &str) -> Option<DockingControlInput> {
 
 /// Deterministic closed-loop guidance helper that computes a valid [`DockingInputTape`]
 /// from `challenge.start_pose` into the 5-gate clamp envelope (`<= 3,600` frames).
+#[cfg(test)]
 #[must_use]
 pub fn solve_docking_tape(challenge: &DockingChallenge) -> DockingInputTape {
     let mut stepper = DockingStepperState::new(challenge.start_pose.clone());
@@ -1121,6 +1054,7 @@ pub fn solve_docking_tape(challenge: &DockingChallenge) -> DockingInputTape {
 
 /// Deterministic helper that generates a hard-impact [`DockingInputTape`] exceeding
 /// `DOCK_GATE_CLOSURE_MAX_MMPS` (`> 800 mm/s`) into `range_z_mm == 0` (`D-35-14`).
+#[cfg(test)]
 #[must_use]
 pub fn solve_hard_bounce_tape(challenge: &DockingChallenge) -> DockingInputTape {
     let mut stepper = DockingStepperState::new(challenge.start_pose.clone());

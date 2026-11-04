@@ -221,21 +221,21 @@ impl BayQuote {
         }
     }
 
-    /// **The kilograms the jobs' points consume** (Q-36-31; doc 39 cut IN.1, §4.10): yard
-    /// fittings at the tariff's rate, now to the kilogram rather than rounded up to a tonne a
-    /// job; no alloys until doc 39 cut IN.8 gives each design its own per-point figures. Drawn
-    /// through the hull's bale ([`super::Bale::draw`]).
+    /// **The kilograms the jobs' points consume** (Q-36-31; doc 39 cut IN.8, §4.8): the design's
+    /// own figures — its structure's alloys and its fittings a structural point, rounded up —
+    /// drawn through the hull's bale ([`super::Bale::draw`]). A design with no budget draws none.
     #[must_use]
-    pub fn bale_need(jobs: &[QuotedJob], tariff: &WorkshopFacilityTariff) -> super::Bale {
+    pub fn bale_need(
+        jobs: &[QuotedJob],
+        budget: Option<&crate::definitions::mass::MassBudget>,
+    ) -> super::Bale {
         let points = jobs
             .iter()
             .fold(0u64, |sum, job| sum.saturating_add(job.points));
-        super::Bale {
-            alloys_kg: 0,
-            fittings_kg: points
-                .saturating_mul(super::KG_PER_T)
-                .div_ceil(tariff.structural_points_per_industrial_parts_t.max(1)),
-        }
+        budget.map_or_else(super::Bale::default, |budget| super::Bale {
+            alloys_kg: budget.structure_kg_for(points),
+            fittings_kg: budget.fittings_kg_for(points),
+        })
     }
 
     /// The jobs a selector picks: `all`, a kind word (`armor`, `unjam`, `rearm`, …) or a
