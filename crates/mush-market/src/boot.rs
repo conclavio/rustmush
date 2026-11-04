@@ -68,10 +68,6 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
 /// within this many sweeps (ten minutes at the 60 s sweep).
 pub const HOLD_RECHECK_SWEEPS: u64 = 10;
 
-/// **How many sweeps a lot listing's staged reserve has to land** (doc 39 cut IN.6) before the
-/// reconcile arm reads a missing hold as one a crash never placed.
-pub const RESERVE_GRACE_SWEEPS: u64 = 2;
-
 /// The most lot listings one sweep fire reconciles (E7r2 P1).
 ///
 /// Bounded on records **visited** (D-LBK-5), with its own budget so it can never
@@ -341,22 +337,7 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
                 .collect()
         })
         .unwrap_or_default();
-    // Doc 39 cut IN.6: a reserve staged within the grace may still be landing.
-    let fresh: std::collections::BTreeSet<crate::ids::ListingId> = ctx
-        .w
-        .module_state_mut::<MarketStore>()
-        .map(|store| {
-            let now = store.sweeps;
-            store
-                .reserve_staged
-                .retain(|_, at| now.saturating_sub(*at) < RESERVE_GRACE_SWEEPS);
-            store.reserve_staged.keys().copied().collect()
-        })
-        .unwrap_or_default();
     for (id, endpoint, commodity, exact) in candidates {
-        if fresh.contains(&id) {
-            continue;
-        }
         let Ok(commodity) = mush_core::CanonicalId::new(&commodity) else {
             continue;
         };

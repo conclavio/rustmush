@@ -1002,7 +1002,7 @@ fn second(rig: &mut Rig) -> Fired {
 
 /// Fire and land the port tick until every port is stocked and listed (`drones.rs`'s).
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..80 {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -1020,7 +1020,7 @@ fn stock(rig: &mut Rig) {
         }
         let _ = fire(rig);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within 80 fires");
 }
 
 fn typed<K, V>(
@@ -3660,15 +3660,6 @@ fn sm12c_every_act_kind_counts_its_writes_at_the_port() {
         "the shipped batch (SM.12a 5)"
     );
     assert_eq!(constructed(&rig, "mill.restock"), 2, "SM.12a 2 handed");
-    // Doc 39 cut IN.6: the clerks seed the workshops' part stores after the bulk stock; settled
-    // before the yard opens, so its licence fire counts only its own writes.
-    for _ in 0..64 {
-        let t = rig.tw.world().now().saturating_add(6);
-        let fired = step_to(&mut rig, t);
-        if fired.ops.is_empty() && fired.landing_ops == 0 {
-            break;
-        }
-    }
     // Occator Rim opened: the house's licence item and its surveys.
     rig.variant = "the site clerk's seeds".to_owned();
     expecting(
@@ -4049,7 +4040,7 @@ fn cohort_lane(hulls: u32, rigs: u32, levers: &Levers) -> String {
 
 /// The shipped lane's digest (`tests/lane.rs`' `LANE_DIGEST`, lane v15 since doc 20 cut SM.12b).
 const SHIPPED_LANE_DIGEST: &str =
-    "ff131dc1de35305480a6d52b935a4275aa75feb7c13b3e97ab30c4783966d403";
+    "e42511e18432f479fcd7e31149fb7a61cbc7cc835b5adfe0251f84d51012ac42";
 
 /// **C7 — the cohort lane is the shipped lane but its levers** (O-21; the brief's L9.2): the
 /// 32-hull, 64-rig variant parses and verifies, carries `manifest.version == LANE_VERSION`, and

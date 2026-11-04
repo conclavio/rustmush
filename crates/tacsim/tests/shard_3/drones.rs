@@ -482,7 +482,7 @@ fn settle(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
 
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..80 {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -501,7 +501,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within 80 fires");
 }
 
 fn typed<K, V>(
@@ -3663,26 +3663,12 @@ fn sm12b_a_delivery_is_one_receipted_bundle() {
         if !had && let Some(licence) = yard(&rig.tw).licence {
             // The licence fire's every write, counted whole (nothing filtered out first): the
             // account, the economy's meta and the site map — item 8's three, and nothing else.
-            // Doc 39 cut IN.6: the one exception, a part lot ask the Ceres stock clerk lists in
-            // the same fire (the clerks seed the workshops' stores after the bulk stock) — its
-            // listing and the market's meta, which are no part of the licence.
-            let part_ask = ops.iter().any(|op| {
-                op.ns == "market"
-                    && op_key(op)
-                        .strip_prefix("market:listing:")
-                        .is_some_and(|id| {
-                            id.parse().ok().is_some_and(|id| {
-                                rig.tw
-                                    .world()
-                                    .module_state::<mush_market::MarketStore>()
-                                    .and_then(|m| m.listing(mush_market::ListingId(id)))
-                                    .is_some_and(|l| l.source.exact_lot().is_some())
-                            })
-                        })
-            });
+            // Doc 39 cut IN.6: the one exception, a journey's own tick (`atlas`), which lands in
+            // this fire or another by how many fires the boot took (the part rows lengthened
+            // it); it is no part of the licence.
             let keys: Vec<String> = ops
                 .iter()
-                .filter(|op| !(part_ask && op.ns == "market"))
+                .filter(|op| op.ns != "atlas")
                 .map(|op| format!("{}:{}", op.ns, op_key(op)))
                 .collect();
             println!("SM.12b T13 the licence fire's writes: {keys:?}");

@@ -170,13 +170,6 @@ pub struct MarketStore {
     /// seen on the next sweep rather than after the backoff. RAM only; retained with
     /// `hold_checked`, so bounded the same way.
     pub(crate) release_staged: BTreeMap<ListingId, u64>,
-    /// Doc 39 cut IN.6: the sweep number each lot listing's reserve was staged at
-    /// (`api::list_goods`). The reconcile arm leaves a listing whose hold has not landed alone
-    /// for [`crate::boot::RESERVE_GRACE_SWEEPS`] sweeps after it, so a sweep that runs between
-    /// the staging and its landing never withdraws a listing whose hold is on its way (and
-    /// strands the hold when it lands). RAM only: after a reboot the map is empty and a
-    /// listing a crash left unheld is withdrawn as before. Pruned by the arm past the grace.
-    pub(crate) reserve_staged: BTreeMap<ListingId, u64>,
     /// Doc 18 cut IC14 row 16: the market sweeps run this boot (RAM only).
     pub(crate) sweeps: u64,
     /// Doc 18 cut IC14 row 16: how many `hold_standing` reads the sweep made this boot

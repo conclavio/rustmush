@@ -767,13 +767,10 @@ fn seeded_rows(
     let mut seeded = 0usize;
     let mut rows = 0usize;
     let mut total = 0u64;
-    // Doc 39 cut IN.6: a part row is never a pool (its lots are never dissolved; the clerk
-    // seeds them last and lists each as its own lot ask), so it is no part of a port's
-    // readiness.
     for stock in row
         .stock
         .iter()
-        .filter(|s| good.is_none_or(|g| &s.good == g) && !crate::port_tick::is_part(&s.good))
+        .filter(|s| good.is_none_or(|g| &s.good == g))
     {
         rows = rows.saturating_add(1);
         let id = crate::port::families::StockIssueId::parse(&stock.id).ok_or(())?;
@@ -782,6 +779,12 @@ fn seeded_rows(
             continue;
         };
         total = total.saturating_add(receipt.qty);
+        // Doc 39 cut IN.6: a part row's lots are never dissolved (each is an identified part in
+        // the workshop's stores), so its receipt alone seeds it.
+        if crate::port_tick::is_part(&stock.good) {
+            seeded = seeded.saturating_add(1);
+            continue;
+        }
         let standing = ctx
             .action_state(&inventory.lots, &mush_inventory::record::LotId(receipt.lot))
             .map_err(|_| ())?;

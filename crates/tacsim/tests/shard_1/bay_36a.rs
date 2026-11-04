@@ -318,16 +318,7 @@ async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
         "nothing was taken: {:?}",
         bay_record(&rig, escort)
     );
-    // Doc 39 cut IN.6: the cannon comes from Occator's stores, which the clerk seeds after the
-    // port's bulk stock; one part from the stores an order, so the cannon alone.
-    for _ in 0..40 {
-        let quote = run(&mut rig.tw, pilot, &format!("+bay #{}", escort.0));
-        if !quote.contains("has no 105 mm cannon mount") {
-            break;
-        }
-        let (_, queued) = fire(&mut rig);
-        land_quietly(&mut rig, &queued);
-    }
+    // Doc 39 cut IN.6: one part from the workshop's stores an order, so the cannon alone.
     let taken = run(
         &mut rig.tw,
         pilot,

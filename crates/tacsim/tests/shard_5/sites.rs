@@ -656,7 +656,7 @@ fn status(tw: &mut TestWorld) -> String {
 
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..80 {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -677,7 +677,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within 80 fires");
 }
 
 fn typed<K, V>(
@@ -2773,16 +2773,6 @@ fn sm2_an_unreadable_site_map_closes_the_pad_and_never_the_desk() {
     assert!(queued.is_empty());
     let plan = run(&mut rig.tw, pilot, "+ship/plan ahuna");
     assert_eq!(plan.lines().nth(1), Some(closed.as_str()), "{plan}");
-    // Doc 39 cut IN.6: the clerks seed the workshops' part stores after the bulk stock;
-    // settled first, so the fires below carry only the depart's.
-    for _ in 0..64 {
-        let (_, queued) = fire(&mut rig);
-        let quiet = queued.is_empty();
-        land_all(&mut rig, &queued);
-        if quiet {
-            break;
-        }
-    }
     // The queue's depart holds on the same refusal, burning nothing.
     let out = run(&mut rig.tw, pilot, "+ship/order depart ahuna");
     assert!(

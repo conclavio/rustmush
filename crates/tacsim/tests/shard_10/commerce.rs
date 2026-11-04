@@ -492,7 +492,7 @@ fn stock_ready(tw: &mut TestWorld) -> (bool, String) {
 
 /// **Fire and land the port tick until both ports are stocked and listed.** Bounded.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..80 {
         if stock_ready(&mut rig.tw).0 {
             return;
         }
@@ -500,7 +500,7 @@ fn stock(rig: &mut Rig) {
         land_all(rig, &queued);
     }
     let (_, out) = stock_ready(&mut rig.tw);
-    panic!("the ports were not stocked within 40 fires:\n{out}");
+    panic!("the ports were not stocked within 80 fires:\n{out}");
 }
 
 /// Read one typed value through an owner-stamped transaction.
@@ -839,8 +839,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
             exchange.0
         ),
         format!(
-            "  ceres_port vendor occator: Occator Water & Propellant, storefront vault #{}; 2 of \
-             2 stock rows seeded. [ready]",
+            "  ceres_port vendor occator: Occator Water & Propellant, storefront vault #{}; 7 of \
+             7 stock rows seeded. [ready]",
             occator.0
         ),
         format!(
@@ -855,9 +855,13 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
         assert!(report.contains(&line), "want `{line}`:\n{report}");
     }
     let all = receipts(&mut rig.tw);
-    // Doc 36 cut GC.7: each port's four munitions rows.
-    assert_eq!(all.len(), 16, "Ceres 8 and Stickney 8");
-    for (id, receipt) in &all {
+    // Doc 36 cut GC.7: each port's four munitions rows; doc 39 cut IN.6: the part rows, Occator's
+    // five and Stickney Yards' thirteen, which are never pools.
+    assert_eq!(all.len(), 34, "Ceres 13 and Stickney 21");
+    for (id, receipt) in all
+        .iter()
+        .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
+    {
         assert_eq!(receipt.issue_id().expect("derives"), *id);
         assert_eq!(
             pool(&mut rig.tw, receipt.vault, receipt.good.as_str()),
@@ -901,10 +905,15 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     assert_eq!(receipts(&mut rig.tw).len(), 2, "the receipts survive");
     stock(&mut rig);
     let all = receipts(&mut rig.tw);
-    // Doc 36 cut GC.7: sixteen with the munitions rows.
-    assert_eq!(all.len(), 16);
+    // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
+    // eighteen part rows.
+    assert_eq!(all.len(), 34);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
-    for (_, receipt) in &all {
+    // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
+    for (_, receipt) in all
+        .iter()
+        .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
+    {
         *sums
             .entry((receipt.vault, receipt.good.to_string()))
             .or_insert(0) += receipt.qty;
@@ -2523,8 +2532,9 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
         assert_eq!(text, slate, "{}: the detail is restored", row.mark);
     }
     stock(&mut rig);
-    // Doc 36 cut GC.7: sixteen with the munitions rows.
-    assert_eq!(receipts(&mut rig.tw).len(), 16);
+    // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
+    // eighteen part rows.
+    assert_eq!(receipts(&mut rig.tw).len(), 34);
     no_refused_writes(&rig.tw);
 }
 

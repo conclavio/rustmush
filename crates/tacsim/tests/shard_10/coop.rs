@@ -566,7 +566,7 @@ fn commerce_ready(tw: &mut TestWorld) -> (bool, String) {
 /// (doc 18 cut IC8): the stock clerks mint, dissolve and list, one step a fire.
 /// Bounded; panics with the last report.
 fn ensure_stocked(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..80 {
         let (ready, _) = commerce_ready(&mut rig.tw);
         if ready {
             return;
@@ -587,7 +587,7 @@ fn ensure_stocked(rig: &mut Rig) {
         }
     }
     let (_, out) = commerce_ready(&mut rig.tw);
-    panic!("the ports were not stocked within 40 fires:\n{out}");
+    panic!("the ports were not stocked within 80 fires:\n{out}");
 }
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (`port_tick.rs`'s

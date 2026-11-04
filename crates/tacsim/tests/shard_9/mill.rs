@@ -250,9 +250,6 @@ fn stocked_with(roster: Roster) -> Rig {
     let mut rig = boot(roster);
     stock(&mut rig);
     set_rate(&mut rig.tw, 1);
-    // Doc 39 cut IN.6: the clerks seed and list the workshops' part stores after the bulk
-    // stock; settled here so every story below starts from an idle clerk.
-    fire_until_idle(&mut rig, 64);
     rig
 }
 
@@ -551,7 +548,7 @@ fn status(tw: &mut TestWorld) -> String {
 
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..80 {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -565,7 +562,7 @@ fn stock(rig: &mut Rig) {
         let queued = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within 80 fires");
 }
 
 /// A pilot on a gateway account of their own, standing at the Registry desk.

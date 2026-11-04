@@ -6,11 +6,11 @@
 //! workshop, at 1.2x) with its cannon destroyed.
 //!
 //! 1. The clerk has seeded Occator's stores: four `cannon_105` lots, each with a `Seeded` row,
-//!    listed one by one as lot asks.
+//!    at the storefront by the time the port reads ready.
 //! 2. `+bay` quotes the replace at 480 of labour and the part at its catalogue 28,000, from the
 //!    workshop's stores.
 //! 3. `+bay/order …=replace` escrows 28,480: the order takes the lowest-grade clean lot from the
-//!    stores, its lot ask withdrawn and the lot held for the order until the draw.
+//!    stores and held for the order until the draw.
 //! 4. The work done, the cannon is whole, the lot is consumed, its row reads `Seeded` with the
 //!    escort it went into, and the stores count one less: four, then three.
 //! 5. Three more refits empty the stores; the fifth replace refuses `NO_PART`, at the quote and
@@ -171,18 +171,12 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
     assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
     let escort = rigs_of(&rig.tw, pilot)[0];
 
-    // (1) The stores: four seeded cannons, each its own lot with a `Seeded` row; the clerk lists
-    // each as its own lot ask once its other work is done (the first is enough here).
+    // (1) The stores, seeded by the time the port reads ready: four cannons, each its own lot
+    // with a `Seeded` row, at Occator's storefront (no lot ask lists them: §4.5's stores are the
+    // workshop's, and the lane authors no part asks).
     let lots = seeded(&rig);
     assert_eq!(lots.len(), 4, "Occator seeds four cannons (Q-39-12)");
-    for _ in 0..60 {
-        if listed(&rig, lots[0]) {
-            break;
-        }
-        let (_, queued) = fire(&mut rig);
-        land_quietly(&mut rig, &queued);
-    }
-    assert!(listed(&rig, lots[0]), "the first lot is its own ask");
+    assert!(lots.iter().all(|lot| !listed(&rig, *lot)));
     assert_eq!(in_stores(&mut rig), 4);
     for lot in &lots {
         let row = provenance(&mut rig, *lot);
@@ -222,7 +216,7 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
         "{quote}"
     );
 
-    // (3) The order: 28,480 escrowed, the first lot taken from the stores, its ask withdrawn.
+    // (3) The order: 28,480 escrowed, the first lot taken from the stores.
     let done = refit(&mut rig, pilot, escort);
     assert_eq!(
         done.fee_minor, 2_848_000,
@@ -238,7 +232,6 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
         })
         .expect("the store's lot");
     assert_eq!(taken, lots[0], "the lowest-grade lot, first in seed order");
-    assert!(!listed(&rig, taken), "its ask came down");
 
     // (4) The cannon whole; the lot consumed, its row `Seeded` with the escort it went into; the
     // stores one less.
