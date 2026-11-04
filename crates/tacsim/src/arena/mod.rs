@@ -344,6 +344,7 @@ pub mod stock_mind;
 pub(crate) mod trace_runtime;
 pub mod view;
 pub mod weapons;
+pub mod eject;
 pub mod withdraw;
 pub mod wreck_cover;
 

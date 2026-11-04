@@ -61,6 +61,7 @@ pub mod carrier;
 pub(crate) mod close;
 pub(crate) mod commands;
 pub mod crew;
+pub mod eject;
 pub(crate) mod exit;
 pub(crate) mod ground;
 pub(crate) mod home;
@@ -306,6 +307,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(crew::CrewBook::default());
     // Doc 42 cut CR.1 (Q-42-26): the hired NPCs' exits owed to their rosters.
     reg.state(crew::NpcExits::default());
+    // Doc 42 cut CR.4: the ejects asked of running fields, awaiting the arena's read.
+    reg.state(eject::EjectBook::default());
     // Doc 42 cut CR.0 (Q-42-2): a captive's exits, and an ejectee's, are refused.
     reg.hook(mush_core::HookPoint::MoveAttempt, Arc::new(crew::HeldGate));
     reg.state(orders::Offered::default());

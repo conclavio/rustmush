@@ -3032,6 +3032,12 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 unit,
                 outcome,
             } => crate::field::exit::on_withdrawn(ctx, match_id, unit, outcome),
+            // Doc 42 cut CR.4: a pilot ejecting from a doomed unit.
+            ArenaOut::Ejected {
+                match_id,
+                unit,
+                outcome,
+            } => crate::field::eject::on_ejected(ctx, match_id, unit, outcome),
             // Doc 36 cut GC.1b: a carrier that settled mid-field taken in at its pad.
             ArenaOut::Joined {
                 match_id,

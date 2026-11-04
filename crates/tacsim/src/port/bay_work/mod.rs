@@ -324,7 +324,7 @@ fn carrier_of_bay(w: &World, room: ObjId) -> Option<ObjId> {
 
 /// **The site `carrier` stands on** (doc 41 cut RS.2): the site port she is docked at, else the
 /// site her bay is berthed on (`crate::surface::tick::hull_view_berth`), else none.
-fn site_of_carrier(w: &World, carrier: ObjId) -> Option<CanonicalId> {
+pub(crate) fn site_of_carrier(w: &World, carrier: ObjId) -> Option<CanonicalId> {
     match crate::port::ship::berth_of(w, carrier) {
         crate::port::ship::Berth::Docked { map, def } if def.site.is_some() => {
             Some(map.entry.clone())

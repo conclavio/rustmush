@@ -622,9 +622,14 @@ fn condition_of<'a>(
 /// **The crew's condition in `unit`** as its checked-in record stands ([`condition_of`] over its
 /// sections and their internals).
 fn unit_condition(w: &World, unit: ObjId) -> CrewCondition {
-    let Some(cells) = mush_tactics::module::unit_of(w, unit) else {
-        return CrewCondition::Fit;
-    };
+    mush_tactics::module::unit_of(w, unit).map_or(CrewCondition::Fit, cells_condition)
+}
+
+/// **The crew's condition in a unit whose cells are `cells`** ([`condition_of`] over its
+/// sections and their internals): the checked-in record's, or the arena's live row (doc 42 cut
+/// CR.4's eject, Q-42-13).
+#[must_use]
+pub(crate) fn cells_condition(cells: &mush_tactics::TacticalUnit) -> CrewCondition {
     let internals_cell = mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL).ok();
     condition_of(cells.sections().map(|(id, section)| {
         let internals = internals_cell
@@ -643,6 +648,45 @@ fn unit_condition(w: &World, unit: ObjId) -> CrewCondition {
             });
         (id.as_str(), section.condition.as_str(), internals)
     }))
+}
+
+/// **Whether a unit whose cells are `cells` is doomed** (doc 42 cut CR.4; Q-42-11): it could not
+/// bring its pilot home at a check-in — no power, no control, no motion, a wreck or irrecoverable
+/// ([`home`]'s negation) — or a control section is already damaged, so the next hit
+/// incapacitates. The arena reads it on its live row (`crate::arena::eject`), adding its own
+/// wreck, motion-disabled and disabled limits.
+#[must_use]
+pub(crate) fn doomed(cells: &mush_tactics::TacticalUnit) -> bool {
+    // A unit with no mobility profile is never doomed for want of motion (the withdraw's own
+    // power test, `crate::arena::withdraw`).
+    let unable = crate::field_ops::assess_tacsim_unit(cells, None)
+        .ok()
+        .is_none_or(|c| {
+            !home(&crate::field_ops::FieldUnitAssessment {
+                can_move: c.can_move || cells.mobility().is_none(),
+                ..c
+            })
+        });
+    unable || cells_condition(cells) != CrewCondition::Fit
+}
+
+/// Whether an assessed unit can bring its pilot home: power, control and motion, and neither a
+/// wreck nor irrecoverable ([`check_in`]'s rule).
+fn home(c: &crate::field_ops::FieldUnitAssessment) -> bool {
+    c.has_power
+        && c.has_control
+        && c.can_move
+        && !matches!(
+            c.state,
+            crate::field_ops::OperationalState::Wreck
+                | crate::field_ops::OperationalState::Irrecoverable
+        )
+}
+
+/// **Who is seated in `unit`**, if anyone (a reader for the gates).
+#[must_use]
+pub fn seated_in(w: &World, unit: ObjId) -> Option<ObjId> {
+    super::parties::seated(w, unit).map(|(who, _)| who)
 }
 
 /// The hull whose rooms `who` stands in, if any.
@@ -667,7 +711,7 @@ fn aboard(w: &World, site: &CanonicalId, hull: ObjId) -> CrewLocation {
 }
 
 /// The organizer of the party `unit` was in, while its field runs.
-fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
+pub(crate) fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
     let hosted = w.module_state::<super::FieldBook>()?.hosted(site)?;
     let party = hosted.live.party_of(unit)?;
     hosted
@@ -737,17 +781,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         };
         let assessment = crate::field_ops::assess_tacsim_unit(cells, None).ok();
         let condition = unit_condition(ctx.w, unit);
-        let home = assessment.as_ref().is_some_and(|c| {
-            c.has_power
-                && c.has_control
-                && c.can_move
-                && !matches!(
-                    c.state,
-                    crate::field_ops::OperationalState::Wreck
-                        | crate::field_ops::OperationalState::Irrecoverable
-                )
-        });
-        let location = if home {
+        let location = if assessment.as_ref().is_some_and(home) {
             CrewLocation::Unit { unit }
         } else {
             CrewLocation::Stranded {
@@ -1479,7 +1513,7 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
 }
 
 /// The safe port `who` knows (this module's head): the IC-return stamp's, else the fallback.
-fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPort> {
+pub(crate) fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPort> {
     crate::ic_return::last_port(w, who).or_else(|| {
         crate::ic_return::PORTS
             .iter()
@@ -1488,7 +1522,7 @@ fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPor
 }
 
 /// IC hours, rounded up.
-fn hours(seconds: i64) -> i64 {
+pub(crate) fn hours(seconds: i64) -> i64 {
     seconds.max(0).saturating_add(3_599) / 3_600
 }
 
@@ -1555,11 +1589,53 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Whether a Friend's recovery flight stands on `site` for `organizer` (this module's head).
-fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, organizer: Option<ObjId>) -> bool {
-    let Some(organizer) = organizer else {
-        return false;
+/// **Whether a rescue stands on `site` for `who`** (doc 42 Q-42-14, cut CR.4; this module's
+/// head): an open DT flight in the field there, on any duty, or a live rig lease whose rig stands
+/// on the site's ground, of the character's own party or a Friend's ([`friendly`]).
+fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, record: &CrewRecord) -> bool {
+    let (who, organizer) = (record.character, record.organizer);
+    // The hull the character is stranded in rescues nobody.
+    let own = match record.location {
+        CrewLocation::Stranded { unit, .. } | CrewLocation::Unit { unit } => Some(unit),
+        _ => None,
     };
+    let friend = |other: ObjId| friendly(ctx.w, who, organizer, other);
+    let rig = ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .is_some_and(|store| {
+            store.tv_leases_live().any(|lease| {
+                Some(lease.tv) != own
+                    && friend(lease.pilot)
+                    && match crate::surface::act::where_is(ctx.w, lease.tv) {
+                        crate::surface::act::Where::Ground { domain, .. } => {
+                            crate::surface::act::site_of_domain(ctx.w, domain).as_ref()
+                                == Some(site)
+                        }
+                        crate::surface::act::Where::Bay { .. }
+                        | crate::surface::act::Where::Elsewhere => false,
+                    }
+            })
+        });
+    rig || flight_on_site(ctx, site, &friend)
+}
+
+/// **Whether `other` is of `who`'s own party or a Friend's** (Q-42-14): `who` themself or their
+/// organizer, or a character sharing an organization either openly stands in (doc 36 cut GC.10's
+/// friendship, `super::parties::affiliations`).
+fn friendly(w: &World, who: ObjId, organizer: Option<ObjId>, other: ObjId) -> bool {
+    if other == who || Some(other) == organizer {
+        return true;
+    }
+    let theirs = super::parties::affiliations(w, other);
+    [Some(who), organizer]
+        .into_iter()
+        .flatten()
+        .any(|mine| !super::parties::affiliations(w, mine).is_disjoint(&theirs))
+}
+
+/// Whether an open DT flight in the field on `site` has an organizer `friend` accepts.
+fn flight_on_site(ctx: &Ctx<'_>, site: &CanonicalId, friend: &dyn Fn(ObjId) -> bool) -> bool {
     let Some(h) = ctx
         .w
         .module_state::<crate::detachment::sortie::SortieHandles>()
@@ -1582,11 +1658,79 @@ fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, organizer: Option<ObjId>) -
         ctx.action_state(&h.operations, &flight.operation)
             .ok()
             .flatten()
-            .is_some_and(|op| {
-                op.roster.organizer == organizer
-                    && op.roster.duty == crate::detachment::crew::CrewDuty::Recovery
-            })
+            .is_some_and(|op| friend(op.roster.organizer))
     })
+}
+
+/// **Whether an ejectee's capture is still on its way to `carrier`** (doc 42 cut CR.4; Q-42-12,
+/// Draft 0.3 42-5): a forced extraction whose draw named it. A raider's lift waits on it.
+#[must_use]
+pub(crate) fn capture_pending(w: &World, carrier: ObjId) -> bool {
+    w.module_state::<CrewBook>().is_some_and(|book| {
+        book.0.values().any(|record| {
+            record.extraction.as_ref().is_some_and(|coming| {
+                coming.forced
+                    && coming
+                        .capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.carrier == carrier)
+            })
+        })
+    })
+}
+
+/// **An eject's capture landing** (doc 42 cut CR.4; Q-42-12, Draft 0.3 42-5 (B)): when the
+/// carrier the draw named still stands on `site` and has not fallen, the ejectee steps aboard
+/// into its bay room and is held there by the captor, both told. `false` when it is gone, and
+/// the extraction then lands at a port.
+fn eject_captured(
+    ctx: &mut Ctx<'_>,
+    record: &CrewRecord,
+    capture: &EjectCapture,
+    site: &CanonicalId,
+) -> bool {
+    let carrier = capture.carrier;
+    let standing = crate::port::bay_work::site_of_carrier(ctx.w, carrier).as_ref() == Some(site)
+        && !super::eject::fallen(ctx.w, carrier);
+    let room = crate::port::ship::hull_view(ctx.w, carrier).and_then(|view| {
+        crate::port::vehicle::bay_rooms(ctx.w, &view)
+            .first()
+            .copied()
+    });
+    let (true, Some(room)) = (standing, room) else {
+        return false;
+    };
+    let who = record.character;
+    let now = ctx.w.world_ic_now().at;
+    if let CrewLocation::Stranded { unit, .. } = record.location {
+        release_seat(ctx, who, unit);
+    }
+    step_into(ctx, who, room);
+    put(ctx, self::capture(record, carrier, capture.captor, now));
+    let carrier_name = crate::port::coop::name_of(ctx.w, carrier);
+    ctx.out.sys_to_actor(
+        who,
+        "tacsim.field",
+        super::eject::EJECT_CAPTURED
+            .replace("{carrier}", &carrier_name)
+            .replace(
+                "{captor}",
+                &crate::port::coop::name_of(ctx.w, capture.captor),
+            ),
+    );
+    ctx.out.sys_to_actor(
+        capture.captor,
+        "tacsim.field",
+        super::eject::EJECT_CAPTOR_TOLD
+            .replace("{who}", &crate::port::coop::name_of(ctx.w, who))
+            .replace("{carrier}", &carrier_name),
+    );
+    tracing::info!(
+        who = who.0,
+        carrier = carrier.0,
+        "tacsim: an ejected pilot was captured"
+    );
+    true
 }
 
 /// **The host's tick, for crew** (this module's head): every extraction due lands, unless a
@@ -1625,10 +1769,20 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             | CrewLocation::Captured { .. }
             | CrewLocation::Processing { .. } => (None, None),
         };
+        // Doc 42 cut CR.4 (Q-42-12): an eject's drawn capture lands aboard the holder's carrier
+        // while it still stands on the site; gone or fallen, the pilot lands at a port.
+        if let (Some(capture), Some(site)) = (&coming.capture, &site)
+            && eject_captured(ctx, &record, capture, site)
+        {
+            continue;
+        }
+        // Q-42-14: a rescue of the character's own party or a Friend's on the site defers an
+        // asked-for or an uncaptured forced extraction, never an abandoned or a captured one.
         if let Some(site) = &site
             && !coming.abandoned
+            && coming.capture.is_none()
             && now < coming.due_ic.saturating_add(bound)
-            && rescue_on_site(ctx, site, record.organizer)
+            && rescue_on_site(ctx, site, &record)
         {
             continue;
         }
@@ -1845,8 +1999,16 @@ fn land(
         return;
     };
     // The seat: out of the hull, and out of any field still running around it.
-    if let Some(unit) = unit
-        && let Some((seated, station)) = super::parties::seated(ctx.w, unit)
+    if let Some(unit) = unit {
+        release_seat(ctx, who, unit);
+    }
+    land_at(ctx, record, port, dest, site);
+}
+
+/// **Release `who`'s seat in `unit`**, when they hold it: out of the hull, and out of any field
+/// still running around it (an extraction's landing, and doc 42 cut CR.4's eject).
+pub(crate) fn release_seat(ctx: &mut Ctx<'_>, who: ObjId, unit: ObjId) {
+    if let Some((seated, station)) = super::parties::seated(ctx.w, unit)
         && seated == who
     {
         // Doc 32 §15 (the review's CF-5a): the arena is told the seat is released, on every
@@ -1879,6 +2041,17 @@ fn land(
             );
         }
     }
+}
+
+/// **Land `record` at `port`'s arrival room `dest`** ([`land`]'s second half).
+fn land_at(
+    ctx: &mut Ctx<'_>,
+    record: CrewRecord,
+    port: &'static crate::ic_return::IcPort,
+    dest: ObjId,
+    site: Option<&CanonicalId>,
+) {
+    let who = record.character;
     let from = ctx.w.get(who).and_then(|object| object.location);
     if ctx.w.move_to(who, dest).is_err() {
         tracing::warn!(
