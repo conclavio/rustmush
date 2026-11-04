@@ -600,6 +600,98 @@ at the merge base (41827163605, `4390f04c`) against the PR's (41853059138), 414 
 20.8 s. The common tests moved −0.12 min in all; `cost_lane`'s C2/C3 cohort adds about 10 s for the house
 purchases it settles first (`sm12c_a_restart…` 69.1 → 78.8 s).
 
+## IN.7 — the part recipes (Q-39-22, Q-39-31)
+
+**Built.**
+
+- **The part recipes** (§4.3): `tacsim.industry.recipes` v2 (`content/industry/recipes-v2.json`, which replaces v1
+  in `game_seed_sources`) carries `fittings` unchanged and the table's thirteen part rows. They are the five
+  mounts and racks (`mount_105`, `mount_30`, `mount_mg`, `mount_laser`, `rack_lr`), the two sights, the two pods
+  and the four plants, each at the works with `output_lots: each`, with the table's inputs, outputs and work
+  units. The works' menu shows the latest published version of each recipe, so a kept world that holds v1 beside
+  v2 offers `fittings` once.
+- **The arm's part commission** (§4.11; IN.2's act):
+  - On the fire after a part recipe's delivery, the works arm finds the escrow's untraced part lot (a part good
+    with no provenance row) and owes IN.2's `Commission` under the facility's own bay ledger
+    (`bay_work::owe_commission`, ledger = the facility object, submitted as the requester).
+  - The act consumes the lot by its `workorder.output` lineage. It lays one lot a unit at grade 9, each with its
+    `Manufactured {order, facility}` row, in one bundle. The bay tick submits it on the next fire, and its ordinal
+    replay lands it once across a restart.
+  - Until the act lands, `+works/collect` answers "That order is still settling.", and a house order is not
+    collected. The ten-unit industry lot carries no row, so `+bay/fit` refuses it.
+  - A hull kit is not a part, so IN.9's yard commission does not meet this one.
+  - An order of a part recipe is capped at 32 parts, one commission's rows (`+works/quote`/`order` refuse
+    "The works lays at most 32 parts an order; order fewer.").
+- **Lot moves in one bundle** (`mush_inventory::InventoryFamilies::relocate_lots`): a collection of ten part lots
+  failed "a lot could not be moved", because ten single `relocate`s write one endpoint's census and tally keys ten
+  times and a bundle writes a key once. The works' move relocates its lots together.
+- **The stores index** (IN.6 left it to IN.7/IN.9): `stock::store_lots` finds a storefront's part lots by a bounded
+  walk of the lot family (16 pages of 256), not by the seeds' derived ids. A part made, scrapped or sold into a
+  storefront is now drawn by `Replace{lot: Store}` like a seeded one: traced, unfitted, clean, unheld but for its
+  own ask, and unclaimed.
+- **The disputed part** (the row's last clause): `bay_work::disputed` is a stripped part that its parent's record
+  lists under a claim (`claim_lots`) that is not vacated and whose filed contract has not ended. An unreadable
+  contract counts as live: fail closed. `+bay/fit` refuses it: "That part is disputed: it came off #… under claim
+  …, which is still open; nothing takes custody of it until the claim is settled." `disputed_refusal` is the
+  sentence for a build's custody too. `strip::list_under_claim` is staff's seam, `vacate_claim`'s pair, since no
+  ruled path strips under a claim (Q-36-33).
+- **The lane** (v26, relay v17; after CR.2's v23, IN.5's v24 and IN.9's v25):
+  - Stickney Yards bids strategic ore at 700: intake 12, refresh 2 a day, boards exchange and yard. This is
+    Q-39-31's Stickney bid; the Exchange's 600 at Ceres stays, so a hauler clears 100 a tonne.
+  - **The seeds retire** (Q-39-12): Occator's five part stock rows and the Yards' thirteen are gone, so the stores
+    hold what is made, scrapped or sold into them.
+  - The strip chain's head is `lane_chain::strip_part_recipes`, which `strip_industry` calls first. It puts the
+    rows back from `SEEDED_PARTS` and removes the bid. `shard_4/lane.rs::in7_strip_part_recipes_rebuilds_the_published_v24`
+    pins it against IN.5's v24 digest.
+- **Instrument boards from Luna**: no new row. Crisium Instruments' ask at Aitken Highport (900) is the source,
+  and the lane's own routes are the leg (Ceres → Luna → Voltaire → Stickney: Luna has no route back to Ceres, and
+  this leg passes no Kirkwood picket).
+
+**The story.** `shard_2/in7_part_recipes.rs::in7_strategic_ore_boards_and_fittings_become_ten_sights_at_stickney`
+(shard_2, the shard with the most room):
+1. A captain at Ceres with three tonnes of strategic ore and a titled scout in their Dray-P's bay sails to Luna.
+   They buy a tonne of boards at Crisium's ask and sail by Voltaire to Stickney.
+2. The scout is berthed and its sight wrecked. `+bay` quotes `NO_PART`: the seeds retired.
+3. A tonne of ore goes into the Yards' bid at 700, and three tonnes of fittings come off the Yards' ask.
+4. `+works/quote sight_visual` prints the bill and sixty work units, and a quantity of four is refused at 32
+   parts. The captain books the order and delivers the three lines, and the arm runs it.
+5. Delivered, the escrow holds one ten-unit industry lot with no row. `+bay/fit` refuses it, `+works/collect` is
+   settling, and the works' bay ledger owes the commission.
+6. The commission is submitted and the world restarts before it lands (the submission dropped, `reboot`). After
+   the restart it lands once: the ledger reads 1, the industry lot is gone, and there are ten one-unit lots at
+   grade 9 with `Manufactured` rows naming the order and the works.
+7. `+works/collect` puts the ten in the hold, and `+bay/fit` fits one to the scout. Its row reads manufactured,
+   fitted into the scout, and the sight is intact.
+8. The sight is stripped again and staff list it under an open claim. `+bay/fit` refuses it as disputed and
+   stages nothing.
+
+Seeds: the money, the ore in the hold, the bunkers, the scout's unit, title and placement, the wrecked sight, the
+open claim.
+
+**Departures from the row.**
+
+- **No 256/512 pair**: the cut is port-side (IN.2's, IN.4's and IN.6's precedent). The ore the story seeds is the
+  bot's to mine, and the bot mines metals and volatiles only (IN.5's note).
+- **"Refused at a build's custody"** is proved at `+bay/fit`'s custody. On this tree the yard's `+yard/deliver`
+  of part lots is IN.9's (#416, not merged). `disputed_refusal` is the one sentence for IN.9 to call there, with
+  `relocate_lots` for its multi-lot delivery.
+- **The strategic ask at Ceres is not authored**: the row names only the Stickney bid. The Exchange cannot ask
+  the good it bids (IN.5's rule), so strategic ore reaches the works from miners and haulers, who sell into the
+  700 bid or deliver into an order from their own hold.
+- **The seeds retire with no house restock**: with the lane's part stock gone, a workshop's stores are empty
+  until parts are made, scrapped or sold into them. A refit that wants a part from the stores now finds `NO_PART`
+  unless one is there, and the captain orders the part at the works and `+bay/fit`s it. A house order that keeps
+  the stores stocked is IN.10's arm (house orders) or a later cut. **Flagged for the owner.**
+
+**Other tests moved.**
+
+- `shard_2/in6_part_lot.rs` and `shard_1/bay_36a.rs::b36a_2_…` stock the stores they draw from by staff
+  (`driving_rig::seed_store_parts`: one-unit grade-9 lots with `Seeded` rows, as IN.6's stock row laid them),
+  since the lane seeds none. Their claims are unchanged.
+- The lane pins: `LANE_VERSION` 26 and the lane digest (`shard_4/lane.rs`, `cost_lane.rs`), relay v17 and its
+  digest (`relay_registry.rs`), and the version asserts (`drones`, `mill`, `sites`, `stations`, `boot_parity`).
+
+**Cell delta (rule #14).** `tacsim-integration-2`: _filled from the PR's JUnit_.
 ## IN.8 — the mass budget and scrap (Q-39-15, Q-39-16, Q-39-17, Q-39-25, Q-39-26)
 
 **Built.**
