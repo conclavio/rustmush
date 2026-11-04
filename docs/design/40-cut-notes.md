@@ -166,6 +166,15 @@ Built against doc 40 Draft 0.4 (§4.2, §5.2 and the FR.1 row of §6), one PR.
   the raider's leader `=clear` every party but the bystander's to aim the raid; a clear now returns
   to the raider's standing Hostile, so the story marks them `=friendly` instead (two lines, the
   same intent). No other test clears a standing mark.
+- **A refused join's letter** (found merging main): `on_joined` takes a refused arrival's party off
+  the live record but would have left its letter on the other parties' `stance_hostile`; `joining`
+  now drops a newly lettered party from every standing row before extending them, so the letter's
+  next holder opens under its own stances only.
+- **The story's host carrier sails home** before the field: after main's FR.2 and S.4b-T merged,
+  the 512 run under parallel load met doc 36 cut GC.1b's known race (the kernel refuses a join
+  while a mind's think is in flight at its encode: "a think awaits its answer on #395"), with the
+  neutral captain's carrier the only mind on the ground. With no mind on the ground the join is the
+  story's, not the race's; three parallel runs green at both sizes.
 - **Grounds**: FR.0's hoist of `field_story.rs`'s grounds into `tests/support/field` had not
   landed, so the story carries its own two-row table (cells from `field_gc10` and `field_story`).
   `driving_rig::en_route_at` is the one support addition (`en_route` for any site).

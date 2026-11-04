@@ -417,6 +417,11 @@ pub(crate) fn joining(
             let party = live
                 .next_party()
                 .ok_or("more parties are on the ground than a field letters")?;
+            // Doc 40 cut FR.1: a refused join (`on_joined`) frees its letter but leaves it on the
+            // other parties' standing rows; the letter's new holder opens under its own stances.
+            for row in &mut live.parties {
+                row.stance_hostile.retain(|of| *of != party);
+            }
             live.parties.push(FieldParty {
                 party,
                 key: entrant.key,

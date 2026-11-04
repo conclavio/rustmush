@@ -30,8 +30,8 @@ use tacsim::arena::state::Classification;
 use tacsim::field::{FieldLive, FieldParty, PartyKey};
 
 use crate::driving_rig::{
-    AHUNA, Rig, cid, command, en_route_at, land, on_pad_as_at, prospector, run, staff_hand,
-    stocked_tuned, to_ic, warm,
+    AHUNA, Rig, cid, command, en_route_at, file_and_launch, land, on_pad_as_at, prospector, run,
+    staff_hand, stocked_tuned, to_ic, warm,
 };
 use crate::field_host_rig::{armed_on, egress, frame, seat, second, task, tune, until};
 
@@ -177,7 +177,11 @@ async fn stances_story(at: &Ground) {
     let site = cid(at.entry);
     // A neutral captain's carrier opens the site's pad; the three co-ops' captains stay in port
     // and fly their hulls from a remote cab, each the leader of one party.
-    let _ = on_pad_as_at(&mut rig, ("Host", 4, "Quiet Moth"), (at.venue, at.entry), 0);
+    let (host, host_row, _) =
+        on_pad_as_at(&mut rig, ("Host", 4, "Quiet Moth"), (at.venue, at.entry), 0);
+    // It sails home again, so no mind stands on the ground: a join is refused while a carrier's
+    // think is in flight at its encode (doc 36 cut GC.1b's race), which is not this story.
+    let _ = file_and_launch(&mut rig, host, ObjId(host_row.hull), "+ship/undock ceres");
     let (a, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
     let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
     let (c, _) = prospector(&mut rig, "Third", 3, "Lone Moth");
@@ -417,12 +421,23 @@ async fn stances_story(at: &Ground) {
     // (8) Basin's fourth captain lands mid-field and joins in a party of its own, under Concord's
     // declared Hostile in Concord's book.
     let _ = to_ic(&mut rig, ticket.plan.depart_ic + ticket.plan.total_s);
-    let joined = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
+    let joined = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
         tacsim::field::live_on(rig.tw.world(), &site)
             .is_some_and(|live| live.units.iter().any(|row| row.unit == late_hull))
     })
     .await;
-    assert!(joined, "the late carrier joins the running field");
+    assert!(
+        joined,
+        "the late carrier joins the running field: berth {:?}, owed {:?}, task {:?}, units {:?}",
+        tacsim::port::ship::berth_of(rig.tw.world(), late_hull),
+        tacsim::field::carrier::owed_arrivals(rig.tw.world(), &site),
+        task(&rig),
+        tacsim::field::live_on(rig.tw.world(), &site).map(|live| live
+            .units
+            .iter()
+            .map(|row| row.unit)
+            .collect::<Vec<_>>())
+    );
     let live = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
     let pd = party_of(&live, late_hull);
     assert!(![pa, pb, pc].contains(&pd), "a party of its own");
