@@ -10,6 +10,7 @@ mod provider;
 mod records;
 pub(crate) mod registration;
 mod state;
+pub(crate) mod surface;
 
 pub use host::coverage::{
     AcknowledgedDeparture, CoveredDeparture, WithheldDeparture, WithheldOpen, WithheldUnadmitted,
@@ -24,6 +25,7 @@ pub use host::{
 };
 pub use participant::{CloseEvent, IcSortieParticipant, StartPermit};
 pub use state::IcSorties;
+pub use surface::{ClaimRead, SurfaceClose, claim_closed, claim_of, claim_seal, retained_source};
 
 /// **Whether the IC claim path is composed in `world`** (doc 23 cut S.4b-1): the seal owner's
 /// book is registered only by an Active mind-commerce composition `with_ic_minds`. Doc 23

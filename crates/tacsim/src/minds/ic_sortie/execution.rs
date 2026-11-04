@@ -23,7 +23,8 @@ fn bad(_: impl std::fmt::Display) -> ParticipantError {
 #[serde(deny_unknown_fields)]
 pub(super) struct Execution {
     pub(super) seal: MindSeal,
-    source: String,
+    // Doc 23 cut S.4b-2: read by `super::surface::retained_source` for a field's install.
+    pub(super) source: String,
     arena: ArenaConfig,
     classes: ClassTable,
 }

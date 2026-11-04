@@ -209,6 +209,17 @@ impl LaunchComposition {
             venue,
         })
     }
+    /// **The launch with IC mind claims opened in a rig's bay** (doc 23 cut S.4b-2, D-23-11,
+    /// D-23-21): the Active commerce composed `with_ic_minds_in_bays` and no fixed base, so a
+    /// licensed `+tv/<n> launch mind=filed:<n> go` opens the claim before the ramp.
+    ///
+    /// # Errors
+    ///
+    /// The commerce is not Active, or already composes IC custody.
+    pub fn with_ic_minds_in_bays(mut self) -> Result<Self, ModError> {
+        self.commerce = self.commerce.with_ic_minds_in_bays(Vec::new())?;
+        Ok(self)
+    }
     pub fn commerce(&self) -> &crate::composition::mind_commerce::MindCommerce {
         &self.commerce
     }

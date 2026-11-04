@@ -141,7 +141,7 @@ pub(crate) const IDLE_CYCLE: u8 = u8::MAX - 2;
 /// Whether `cycle` is a start's attempts key (a queued unload, a plan's step, the idle return),
 /// never a finish's retry.
 const fn start_cycle(cycle: u8) -> bool {
-    cycle == QUEUED_CYCLE || cycle == PLAN_CYCLE || cycle == IDLE_CYCLE
+    cycle == QUEUED_CYCLE || cycle == PLAN_CYCLE || cycle == IDLE_CYCLE || cycle == CLAIM_CYCLE
 }
 
 /// **The tick's RAM slot** (the brief's 3.5): retry bookkeeping and once-a-boot pages only;
@@ -364,8 +364,13 @@ fn retried_ordinals(state: &SurfaceTickState, tv: ObjId) -> Vec<(u32, u8)> {
 /// # Errors
 ///
 /// Any registration the registrar refuses.
-pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+pub(crate) fn register(
+    reg: &mut Registrar<'_>,
+    ic: Option<crate::minds::ic_sortie::IcHost>,
+) -> Result<(), ModError> {
     reg.state(SurfaceTickState::default());
+    // Doc 23 cut S.4b-2: the claim arm's slot, holding the composed IC host (if any).
+    crate::surface::mind_claim::register(reg, ic);
     reg.state(crate::port::tv::RigPointer::default());
     // Doc 20 cut SM.4b (the brief's decision P2): the drive orders the start's offer fixes.
     reg.state(crate::surface::act::ActOrders::default());
@@ -549,6 +554,9 @@ pub(crate) struct Candidate {
     plan_untold: bool,
     /// **Doc 20 cut SM.11** (lead ruling 6): a rig a day idle on the ground — the idle return.
     idle: bool,
+    /// **Doc 23 cut S.4b-2** (D-23-21): a rig whose mind claim is owed a transition — an
+    /// `Opening` cursor (its launch queued behind it) or a `Closing` one — the claim arm's.
+    claim: bool,
     order: (i64, u32),
 }
 
@@ -639,6 +647,30 @@ fn plan_untold(
 #[must_use]
 pub(crate) fn told_pair(last: &Outcome) -> (u32, u8) {
     (last.ordinal, last.mined.as_ref().map_or(0, |mined| mined.k))
+}
+
+/// **The attempts key's cycle for a mind claim's transition** (doc 23 cut S.4b-2): beside the
+/// other starts' cycles; never a finish's retries.
+pub(crate) const CLAIM_CYCLE: u8 = u8::MAX - 3;
+
+/// **A mind claim's attempts key** (doc 23 cut S.4b-2): `(tv, the ordinal the queued launch will
+/// take, CLAIM_CYCLE)`.
+fn claim_attempt(record: &RigRecord) -> ActKey {
+    (record.tv.0, record.ordinal.saturating_add(1), CLAIM_CYCLE)
+}
+
+/// **Whether `record`'s mind claim is owed a transition by the cursor alone** (the candidate's
+/// pure half; the book's half is read in the walk): an `Opening` cursor with nothing in flight,
+/// or a `Closing` one.
+fn claims(record: &RigRecord) -> Option<()> {
+    use crate::surface::excursion::ClaimCursor;
+    match record.claim.as_deref() {
+        Some(ClaimCursor::Opening { .. }) if record.act.is_none() && record.run.is_none() => {
+            Some(())
+        }
+        Some(ClaimCursor::Closing { .. }) => Some(()),
+        _ => None,
+    }
 }
 
 /// **A queued unload's attempts key** (doc 20 cut SM.8): `(tv, the ordinal its start will take,
@@ -760,9 +792,11 @@ pub(crate) fn candidates(
                 });
             // Doc 20 cut SM.8 (the brief's 3.9): a queued unload on an idle rig, outside its
             // start's back-off.
+            // Doc 23 cut S.4b-2: a launch queued behind its claim is the claim arm's, never SM.8's.
             let queued_at = record
                 .queued
                 .as_ref()
+                .filter(|queued| queued.launch.is_none())
                 .filter(|_| record.act.is_none() && record.run.is_none() && !orphaned)
                 .filter(|_| rest(queued_attempt(&record)))
                 .map(|queued| queued.at_ic);
@@ -807,9 +841,18 @@ pub(crate) fn candidates(
                         .is_none_or(|retry| *retry <= now)
                 })
                 .filter(|_| rest(idle_attempt(&record)));
+            let claim_at = claims(&record)
+                .filter(|_| rest(claim_attempt(&record)))
+                .map(|_| {
+                    record.queued.as_ref().map_or_else(
+                        || record.last.as_ref().map_or(0, |last| last.at_ic),
+                        |queued| queued.at_ic,
+                    )
+                });
             let at = due_at
                 .or(untold_at)
                 .or(started_at)
+                .or(claim_at)
                 .or(queued_at)
                 .or(untold_plan_at)
                 .or(plan_at)
@@ -824,6 +867,7 @@ pub(crate) fn candidates(
                 plan: plan_at.is_some(),
                 plan_untold: untold_plan_at.is_some(),
                 idle: idle_at.is_some(),
+                claim: claim_at.is_some(),
                 record,
             })
         })
@@ -1015,6 +1059,49 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                     );
                 }
                 Step::Refused
+            }
+            // Doc 23 cut S.4b-2 (D-23-21, D-23-23 step 1): a mind claim's transition, as its
+            // operator — the Open in the bay, then the queued launch; or the Close.
+            (None, _) if candidate.claim => {
+                if crate::surface::mind_claim::owed(ctx.w, record) {
+                    let key = claim_attempt(record);
+                    let operator = match record.claim.as_deref() {
+                        Some(
+                            crate::surface::excursion::ClaimCursor::Opening { operator, .. }
+                            | crate::surface::excursion::ClaimCursor::Closing { operator, .. },
+                        ) => *operator,
+                        _ => tv,
+                    };
+                    let pending = ctx.authoritative_pending(operator);
+                    match attempt_visit(state, key, pending) {
+                        Visit::PassOver | Visit::Page => {
+                            stats.passed_over = stats.passed_over.saturating_add(1);
+                            Step::Held
+                        }
+                        Visit::Submit => {
+                            let step = crate::surface::mind_claim::step(
+                                ctx,
+                                &mut fire,
+                                handles.surface_act.as_ref(),
+                                record,
+                            );
+                            note_step(state, key, step);
+                            match step {
+                                Step::Submitted => {
+                                    stats.submitted = stats.submitted.saturating_add(1);
+                                    stats.worked = stats.worked.saturating_add(1);
+                                }
+                                Step::Deferred => {
+                                    stats.deferred = stats.deferred.saturating_add(1);
+                                }
+                                Step::Idle | Step::Worked | Step::Refused | Step::Held => {}
+                            }
+                            step
+                        }
+                    }
+                } else {
+                    Step::Idle
+                }
             }
             // Doc 32 cut CF.1 (Q-CF-30): on a promoted site every start waits — a queued unload, a
             // plan's step (the plan pauses, and resumes when the flag clears) and the idle return.

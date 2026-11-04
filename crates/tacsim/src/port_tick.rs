@@ -353,7 +353,10 @@ pub(crate) fn register_with_coverage(
         (&action_refs, &outcome_refs),
         (inventory, burn),
         unit_authority,
-    )
+    )?;
+    // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots; doc 23 cut S.4b-2 hands it the
+    // composed IC host for the claim arm.
+    crate::surface::tick::register(reg, ic.map(|ic| ic.host.clone()))
 }
 
 /// **Every provider, the port's handles and its ticks** — the second half of
@@ -657,8 +660,6 @@ fn register_providers(
         Arc::new(port_tick),
     )?;
     reg.hook(HookPoint::Connected, Arc::new(ReconnectNotices));
-    // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
-    crate::surface::tick::register(reg)?;
     Ok(())
 }
 

@@ -544,12 +544,15 @@ pub(crate) fn index_room(w: &mush_core::World, domain: mush_sim::DomainId) -> Re
 }
 
 /// **Whether `unit` is left out of a field** (doc 36 cut GC.1; Q-36-44): a hull held by dedicated
-/// IC custody, which is a licensed mind's hold until doc 23 S.4b. `custody::check_out` refuses
-/// it, and admission is all or nothing (Q-CF-21), so one such hull used to close every field on
-/// its site. It is left on the ground instead, its claim untouched.
+/// IC custody that is not the surface host's claim — a hold in a fixed base, which
+/// `custody::check_out` refuses — since admission is all or nothing (Q-CF-21) and one such hull
+/// used to close every field on its site. It is left on the ground instead, its claim untouched.
+/// **Doc 23 cut S.4b-2** (D-23-15): a hold whose claim opened in a carrier's bay is the surface
+/// host's, which coexists with the field's mark, so the hull is admitted under its claim's seal.
 pub(super) fn held_out(w: &mush_core::World, unit: ObjId) -> bool {
     w.module_state::<mush_tactics::module::UnitStore>()
         .is_some_and(|store| store.is_ic_custodied(unit))
+        && mush_sim::ic_exclusion::held_in_hangar(w, unit).is_none()
 }
 
 /// **`record` with each `held` hull laid on it as a one-cell object** (doc 36 cut GC.1;
@@ -732,19 +735,30 @@ pub(super) fn custody_unit(
     let principal = entrant
         .leader
         .map(|id| crate::deliberation::CharacterRef::Character { id });
-    let seal = crate::match_::seal::seal_rom_for(
-        entrant.unit,
-        &cells,
-        &rule_weapons,
-        sortie,
-        &crate::match_::seal::IcSealConfig {
-            minds: &cfg.minds,
-            reflex: &cfg.arena.reflex,
-            principal,
-            impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
-        },
-    )
-    .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?;
+    // Doc 23 cut S.4b-2 (D-23-17 (a), D-23-23 step 3): a rig whose claim is open is admitted
+    // under the claim's own retained seal, never the ROM; the arena installs its runner from
+    // the claim's retained source (`arena_bridge::sealed_sources`). Every other entrant, and a
+    // claim the book no longer holds, seals the ROM as before.
+    let claimed = entrant
+        .claim
+        .and_then(|open| crate::minds::ic_sortie::claim_seal(ctx.w, open))
+        .filter(|seal| seal.unit == entrant.unit);
+    let seal = match claimed {
+        Some(seal) => seal,
+        None => crate::match_::seal::seal_rom_for(
+            entrant.unit,
+            &cells,
+            &rule_weapons,
+            sortie,
+            &crate::match_::seal::IcSealConfig {
+                minds: &cfg.minds,
+                reflex: &cfg.arena.reflex,
+                principal,
+                impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
+            },
+        )
+        .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?,
+    };
     let unit = CustodyUnit {
         id: entrant.unit,
         team: party,

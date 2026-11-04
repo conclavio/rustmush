@@ -913,8 +913,8 @@ fn assert_ic_plan_refused_without_effect(f: &mut Fixture, plan: crate::transitio
 /// **Doc 23 cut S.4b-1 (D-23-11, D-23-15): a carrier's bay is a hangar.** Under the composition
 /// that admits hangars, a hull `Interior` to a bay anchored `MovingObject { host: carrier }` is
 /// admitted, its record names the bay and the carrier (no base image), the hull alone is
-/// excluded (never the carrier or the bay), the freeze still refuses a placement write of the
-/// hull and a rewrite of the bay, and a reboot reconstructs the hold; the base-only composition
+/// excluded (never the carrier or the bay), the freeze (S.4b-2's re-scope) admits the ramp onto
+/// the carrier's domain and refuses a fixed room, and a reboot reconstructs the hold; the base-only composition
 /// refuses the same Open. A base-held record is unchanged in shape (no `hangar` key).
 #[test]
 fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
@@ -961,7 +961,24 @@ fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
             }
         )
         .is_err(),
-        "the hull is frozen in its hangar until S.4b-2 re-scopes the freeze"
+        "a fixed room is no hangar: refused"
+    );
+    // Doc 23 cut S.4b-2 (D-23-15): the freeze is re-anchoring only — the ramp onto the domain the
+    // carrier stands on is the epoch's host's move, and is admitted.
+    check!(
+        crate::transition::plan(
+            state,
+            f.world.world(),
+            &crate::transition::Transition::Place {
+                obj: f.unit,
+                parent: crate::SpatialParent::Direct {
+                    domain: f.domain,
+                    pose: crate::data::Pose::passive(crate::data::passive_rules_value(json!({}))?),
+                }
+            }
+        )
+        .is_ok(),
+        "the ramp onto the carrier's domain"
     );
     let cold = setup_in(persisted.clone(), true, false, Admission::Hangar)?;
     check_eq!(

@@ -215,6 +215,30 @@ impl IcCustodyView<'_> {
     /// Pure close projection through this owner's actual condition vocabulary
     /// and persisted unit codec. A digest is comparison data, never a mutation
     /// capability; the real participant must still prepare the same result.
+    /// **The Close's projection over the live hull** (doc 23 cut S.4b-2, D-23-15: "the
+    /// Close's physical image is the live hull"): the epoch's hosts (an IC field's check-in)
+    /// may have written the hull since the Open, so the hull is held to the Open's object and
+    /// definition and a revision no older than the Open's — its bytes only when the revision is
+    /// the Open's — and the close conditions are projected over it.
+    ///
+    /// # Errors
+    ///
+    /// The live hull is not the Open's, or the projection refuses.
+    pub fn project_live_close_unit_digest(
+        &self,
+        live: &TacticalUnit,
+        conditions: &UnitMutationPlan,
+        at: i64,
+    ) -> Result<DefinitionDigest, ParticipantError> {
+        let open = &self.record.open;
+        if !live_matches(open, live)? {
+            return Err(refused("live hull differs from its Open"));
+        }
+        let after = close_unit(live, conditions, at)?;
+        encode_unit_document(&open.record_schema, &after, None)
+            .map(|v| v.1)
+            .map_err(refused)
+    }
     pub fn project_close_unit_digest(
         &self,
         unit: &TacticalUnit,
@@ -481,6 +505,24 @@ impl BoundParticipant for BoundIcCustody<'_> {
         *self.book = self.after_book;
     }
 }
+/// **Whether `live` is the hull an Open held** (doc 23 cut S.4b-2, D-23-15): the Open's object
+/// and definition, at the Open's revision with its bytes, or at a later revision (a host's write
+/// under the claim, an IC field's check-in).
+fn live_matches(open: &Opening, live: &TacticalUnit) -> Result<bool, ParticipantError> {
+    if live.object() != open.unit
+        || live.schema() != &open.definition
+        || live.revision() < open.revision
+    {
+        return Ok(false);
+    }
+    if live.revision() > open.revision {
+        return Ok(true);
+    }
+    Ok(encode_unit_document(&open.record_schema, live, None)
+        .map_err(refused)?
+        .1
+        == open.unit_digest)
+}
 fn active<'a>(
     state: &'a UnitStore,
     unit: ObjId,
@@ -693,12 +735,12 @@ impl OwnerParticipant for IcCustodyParticipant {
                     .rows
                     .get(&open)
                     .ok_or_else(|| refused("open missing"))?;
+                // Doc 23 cut S.4b-2 (D-23-15): the Close is over the live hull, which the
+                // epoch's hosts may have written since the Open.
                 if old.closed.is_some()
                     || state.ic.active.get(&unit) != Some(&open)
-                    || old.open.unit_digest
-                        != before_record
-                            .payload_digest
-                            .ok_or_else(|| refused("digest"))?
+                    || before_record.payload_digest.is_none()
+                    || !live_matches(&old.open, before)?
                     || ctx.commit_token() == open
                     || state.ic.rows.contains_key(&ctx.commit_token())
                     || state.ic.rows.values().any(|r| {
@@ -917,11 +959,15 @@ pub(crate) fn load(data: &mut ModuleBootData, enabled: bool) -> Result<IcCustodi
 pub(crate) fn check_boot(state: &UnitStore) -> Result<(), ModError> {
     state.ic.ready().map_err(bad)?;
     for r in state.ic.rows.values().filter(|r| r.closed.is_none()) {
-        let (_, u, row) = active(state, r.open.unit, &r.open.record_schema).map_err(bad)?;
-        if u.schema() != &r.open.definition
-            || u.revision() != r.open.revision
-            || row.payload_digest != Some(r.open.unit_digest)
+        // Doc 23 cut S.4b-2 (D-23-15): a held hull checked out to an IC field across a restart is
+        // the field's to resume; its Close waits for it to come home.
+        if state.deployed.contains_key(&r.open.unit)
+            || state.boot_deployed.iter().any(|(u, _)| *u == r.open.unit)
         {
+            continue;
+        }
+        let (_, u, row) = active(state, r.open.unit, &r.open.record_schema).map_err(bad)?;
+        if row.payload_digest.is_none() || !live_matches(&r.open, u).map_err(bad)? {
             return Err(bad("IC held hull differs from its actual Open image"));
         }
     }

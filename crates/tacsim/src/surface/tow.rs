@@ -1622,6 +1622,11 @@ impl TowProvider {
         // cleared, its charge counted from the bay.
         if let Some(mut rig) = act::read_record(txn, &self.excursions, facts.casualty)? {
             if let Some(open) = rig.sortie.take() {
+                // Doc 23 cut S.4b-2 (Q-23-11): a salvage load closes the claim with the epoch,
+                // `RecoveredToBase` naming the recoverer.
+                rig.owe_claim_close(IcCloseKind::RecoveredToBase {
+                    base: facts.carrier,
+                });
                 *closing = Some((
                     facts.casualty,
                     crate::surface::black_box::BlackBoxLine::sortie_closed(

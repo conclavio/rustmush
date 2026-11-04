@@ -160,6 +160,7 @@ pub mod ground;
 /// Doc 17h cut M8a: `+hull/box`, the one surface over the black box.
 pub mod hull;
 pub mod key;
+pub(crate) mod mind_claim;
 pub mod mine;
 pub mod mined;
 pub mod opening;

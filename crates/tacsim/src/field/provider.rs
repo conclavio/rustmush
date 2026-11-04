@@ -304,6 +304,8 @@ impl FieldProvider {
         rig.run = None;
         rig.queued = None;
         rig.plan = None;
+        // Doc 23 cut S.4b-2: the claim's Close is owed with the epoch's (`Destroyed`).
+        rig.owe_claim_close(mush_roll::commerce::ic_claims::IcCloseKind::Destroyed);
         rig.check()
             .map_err(|_| integrity("a destroyed rig's record is out of bounds"))?;
         txn.replace(&self.excursions, &key, rig)

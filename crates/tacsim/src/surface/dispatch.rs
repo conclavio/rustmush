@@ -44,6 +44,12 @@ pub struct DispatchSeal {
     /// revoked one's that fell to the ROM; absent for a draft. Skipped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub licence: Option<u64>,
+    /// **The IC mind claim the seal is** (doc 23 cut S.4b-2, D-23-14): the claim's open token,
+    /// whose retained execution's seal these facts are taken from, so the claim's
+    /// `seal_digest` equals the open line's by construction. Absent for a seal the dispatch
+    /// took itself (a draft, the ROM, or any seal where the claim path is not composed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<mush_core::CommitToken>,
 }
 
 impl DispatchSeal {
@@ -418,6 +424,21 @@ pub(crate) fn seal_rom(
     )
 }
 
+/// **What the dispatch decided** (doc 23 cut S.4b-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Dispatched {
+    /// The dispatch sealed the hull itself (S.4a's dormant seal, a draft, the ROM).
+    Sealed(Box<DispatchSeal>),
+    /// **A filed mind that will fly, where the claim path is composed** (D-23-21): no seal is
+    /// taken here; the claim's Open is the one seal (D-23-14), opened before the launch.
+    Claim {
+        /// The licence the word resolved.
+        licence: u64,
+        /// The licence's state at `go` (`active` or `grace`), printed on the open line.
+        state: SealLicenceState,
+    },
+}
+
 /// **The dispatch's seal** (doc 17h cut M8e E4, E5), in the launch start's preparation:
 /// `None` with no `mind=` word; else the rig must carry a core, the word resolves
 /// ([`resolve`]) and the mind (or, for a lapsed or revoked licence, the ROM) is sealed over the
@@ -433,7 +454,7 @@ pub(crate) fn dispatch(
     txn: &mut ActionTxn<'_>,
     (actor, tv, launch_ic): (ObjId, ObjId, i64),
     word: Option<(&MindWord, Option<mush_org::OrgId>)>,
-) -> Result<Option<DispatchSeal>, ActionError> {
+) -> Result<Option<Dispatched>, ActionError> {
     let Some(word) = word else {
         return Ok(None);
     };
@@ -467,6 +488,21 @@ pub(crate) fn dispatch(
     {
         return Err(refuse(line));
     }
+    // Doc 23 cut S.4b-2 (D-23-21): where the claim path is composed, a filed mind that will fly
+    // opens its claim before the launch; the claim's capture is the seal.
+    if let Resolved::Held {
+        licence: Some(licence),
+        state,
+        ..
+    } = &resolved
+        && !impounded
+        && crate::minds::ic_sortie::claim_path_composed(world)
+    {
+        return Ok(Some(Dispatched::Claim {
+            licence: licence.get(),
+            state: *state,
+        }));
+    }
     let store = world
         .module_state::<TacsimStore>()
         .ok_or_else(|| refuse(MIND_UNAVAILABLE.to_owned()))?;
@@ -478,12 +514,12 @@ pub(crate) fn dispatch(
     if impounded {
         let seal = seal_rom(tv, &unit, sortie, actor, store, true)
             .map_err(|error| refuse(error.to_string()))?;
-        return Ok(Some(assemble(
+        return Ok(Some(Dispatched::Sealed(Box::new(assemble(
             &seal,
             SealLicenceState::Doctrine,
             None,
             None,
-        )));
+        )))));
     }
     let (seal, state, licence, holder) = match resolved {
         Resolved::Held {
@@ -509,7 +545,9 @@ pub(crate) fn dispatch(
         ),
     };
     let seal = seal.map_err(|error| refuse(error.to_string()))?;
-    Ok(Some(assemble(&seal, state, licence, holder)))
+    Ok(Some(Dispatched::Sealed(Box::new(assemble(
+        &seal, state, licence, holder,
+    )))))
 }
 
 /// **The dispatch's record of `seal`** under the licence's `state`, `licence` and `holder`:
@@ -531,6 +569,7 @@ pub(crate) fn assemble(
     DispatchSeal {
         facts,
         licence: licence.map(LicenceId::get),
+        open: None,
     }
 }
 

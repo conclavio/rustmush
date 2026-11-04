@@ -29,6 +29,22 @@ impl Composition {
         manifest: DefinitionRef,
         bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
     ) -> Result<Self, ModError> {
+        Self::build(manifest, bases, false)
+    }
+    /// **The composition whose claims open in a carrier's bay** (doc 23 cut S.4b-2, D-23-11):
+    /// as [`Composition::new`], with the exclusion admitting a bay as the claim's hangar
+    /// (`IcExclusionConfig::with_hangars`); `bases` may be empty.
+    pub(crate) fn with_hangars(
+        manifest: DefinitionRef,
+        bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
+    ) -> Result<Self, ModError> {
+        Self::build(manifest, bases, true)
+    }
+    fn build(
+        manifest: DefinitionRef,
+        bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
+        hangars: bool,
+    ) -> Result<Self, ModError> {
         let seal = mush_core::mechanics::DefinitionRegistryBuilder::new()
             .register(
                 mush_core::OwnerId::new(crate::NS).map_err(bad)?,
@@ -44,11 +60,19 @@ impl Composition {
             .iter()
             .map(|b| b.registration_descriptor())
             .collect::<Result<Vec<_>, _>>()?;
-        let exclusion = mush_sim::ic_exclusion::IcExclusionConfig::new(
-            claims.manifest().clone(),
-            claims.participants(),
-            bases,
-        )?;
+        let exclusion = if hangars {
+            mush_sim::ic_exclusion::IcExclusionConfig::with_hangars(
+                claims.manifest().clone(),
+                claims.participants(),
+                bases,
+            )?
+        } else {
+            mush_sim::ic_exclusion::IcExclusionConfig::new(
+                claims.manifest().clone(),
+                claims.participants(),
+                bases,
+            )?
+        };
         Ok(Self {
             claims,
             writer: IcWriter::new(),
