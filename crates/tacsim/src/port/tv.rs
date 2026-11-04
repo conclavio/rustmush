@@ -2443,7 +2443,9 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let rig = select_plan_word(ctx, slot, "plan clear").map_err(CmdError::msg)?;
             crate::surface::act::plan_clear_cmd(ctx, &rig)
         }
-        // Doc 36 cut GC.4: the tow's three acts, on the open ground only.
+        // Doc 36 cut GC.4: the tow's three acts, on the open ground only — but for doc 40 cut
+        // FR.5's two field acts (Q-40-7, Q-40-25): a tug inside a running field releases or
+        // withdraws with its casualty at the ramp, and a pair out at the ramp loads.
         Act::Tow { named, go } => {
             let rig = select_word(ctx, slot, "tow").map_err(CmdError::msg)?;
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
@@ -2451,12 +2453,20 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Act::Release { go } => {
             let rig = select_word(ctx, slot, "release").map_err(CmdError::msg)?;
+            if crate::field::field_of_unit(ctx.w, rig.tv).is_some() {
+                return crate::surface::tow::field_release_cmd(ctx, &rig, go);
+            }
             crate::surface::site_record::field_gate(ctx, rig.hull)?;
             crate::surface::tow::release_cmd(ctx, &rig, go)
         }
         Act::Load { go } => {
             let rig = select_word(ctx, slot, "load").map_err(CmdError::msg)?;
-            crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            if crate::field::field_of_unit(ctx.w, rig.tv).is_some() {
+                return crate::surface::tow::field_load_cmd(ctx, &rig, go);
+            }
+            if !crate::surface::tow::pair_exited(ctx, &rig) {
+                crate::surface::site_record::field_gate(ctx, rig.hull)?;
+            }
             crate::surface::tow::load_cmd(ctx, &rig, go)
         }
         // Doc 36 cut GC.5: a crate into the hopper, on the open ground only.

@@ -115,7 +115,7 @@
 //! 3. **A budget** (WS01-S11). Every production crate's count of `unwrap` /
 //!    `expect` / `panic!` / `unreachable!` / `todo!` / `unimplemented!` is
 //!    written down in `panic_budget/<crate>.txt` and enforced by
-//!    `crates/mush-contract-tests/tests/panic_budget.rs`. The surface may
+//!    `crates/mush-contract-tests/tests/ci_policy/panic_budget.rs`. The surface may
 //!    shrink freely; growing it is a diff a reviewer signs, and in the pre-auth
 //!    gateway crates it may not grow at all without a written reason.
 //!

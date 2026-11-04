@@ -15,7 +15,7 @@
 //! whose projection demanded a scene turn could not be reached from a command at
 //! all.
 //!
-//! **No ambient RNG**: `crates/mush-contract-tests/tests/provider_rng_policy.rs`
+//! **No ambient RNG**: `crates/mush-contract-tests/tests/ci_policy/provider_rng_policy.rs`
 //! scans every file containing `impl ActionProvider for`, and this one draws
 //! nothing.
 

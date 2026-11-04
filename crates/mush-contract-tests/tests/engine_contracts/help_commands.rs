@@ -35,9 +35,7 @@ fn help_dir() -> PathBuf {
         .join("help")
 }
 
-mod production_registry;
-
-use production_registry::production_composition;
+use crate::production_registry::production_composition;
 
 // ---- the tokenizer -----------------------------------------------------------
 
