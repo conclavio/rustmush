@@ -151,7 +151,46 @@ async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed(
             .units
             .iter()
             .find(|left| left.unit == *hull)
-            .expect("each raider hull is on the site record");
+            .unwrap_or_else(|| {
+                panic!(
+                    "raider hull #{} is not on the site record; carrier #{}; record units {:?}; \
+                     destroyed {:?}; where now {:?} ({:?}); its events {:#?}",
+                    hull.0,
+                    carrier.0,
+                    record
+                        .units
+                        .iter()
+                        .map(|left| (left.unit.0, left.condition))
+                        .collect::<Vec<_>>(),
+                    lines
+                        .iter()
+                        .filter_map(|line| match &line.kind {
+                            EventKind::UnitDestroyed { unit, .. } => Some(unit.0),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    rig.tw.world().get(*hull).and_then(|object| object.location),
+                    rig.tw
+                        .world()
+                        .get(*hull)
+                        .and_then(|object| object.location)
+                        .and_then(|at| rig.tw.world().get(at))
+                        .map(|at| at.name.clone()),
+                    lines
+                        .iter()
+                        .filter(|line| {
+                            let debug = format!("{:?}", line.kind);
+                            debug.contains(&hull.0.to_string())
+                                || debug.contains(&carrier.0.to_string())
+                        })
+                        .filter(|line| !matches!(
+                            line.kind,
+                            EventKind::PositionSummary { .. } | EventKind::Detected { .. }
+                        ))
+                        .map(|line| format!("{} {:?}", line.t_ms, line.kind))
+                        .collect::<Vec<_>>()
+                )
+            });
         assert_eq!(left.condition, LeftCondition::Wreck, "#{} fell", hull.0);
     }
     assert!(
