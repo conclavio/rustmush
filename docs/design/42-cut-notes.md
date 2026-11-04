@@ -204,4 +204,9 @@ last green run, 41814093413 (3fb3e861).
   - The unchanged rest of shard_1 also ran 28 % slower on that runner (52.8 → 67.6 min).
 - **Moved.** By rule #14, the 512 runs and `crew_custody` moved to shard_8, the run's shortest
   integration cell (11.9 min), through `custody_rig`. shard_1 keeps the two 256 runs.
-- **Final split (this PR's run after the move):** SHARD1_FINAL; SHARD8_FINAL.
+- **After the move, PR #412's run 41830026813:**
+  - shard_1 is 56.7 summed minutes (+0.8 on main), with `field_gc5::` going from 3.12 to 3.32 min. Its
+    wall is 18.3 min (main's was 18.7).
+  - shard_8 is 44.1 summed minutes (+14.8 on main's 29.3), of which `crew_custody::` is 4.65 min; the
+    rest of the shard's rise is that runner's speed. Its wall is 15.0 min (main's was 10.2).
+  - No integration cell sets a new wall: the run's slowest was 18.3 min, against main's 20.2.
