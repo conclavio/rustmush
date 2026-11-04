@@ -437,12 +437,12 @@ fn munitions_of(
         .iter()
         .find(|c| c.id.as_str() == local || c.id.as_str() == component)
         .and_then(|c| match &c.role {
-            crate::definitions::unit::ComponentRole::Weapon { weapon, .. } => {
-                store.definitions().weapons.get(weapon)
+            crate::definitions::unit::ComponentRole::Weapon { weapon: row, .. } => {
+                store.definitions().weapons.get(row)
             }
             _ => None,
         })
-        .map(|weapon| weapon.ammunition.clone())?;
+        .map(|row| row.ammunition.clone())?;
     let good = store.goods()?.munitions_for(ammunition.as_str())?;
     let per = good.munitions.as_ref()?.rounds_per_unit.max(1);
     Some((good.id.clone(), u64::from(per)))
@@ -506,12 +506,12 @@ fn works(
             let Some(ammo) = &anatomy.weapon_ammo_cell else {
                 return Ok(out);
             };
-            for weapon in &anatomy.weapon_components {
-                if !wanted(weapon.as_str()) {
+            for mount in &anatomy.weapon_components {
+                if !wanted(mount.as_str()) {
                     continue;
                 }
                 let addr = CellAddr::Component {
-                    component: weapon.clone(),
+                    component: mount.clone(),
                     cell: ammo.clone(),
                 };
                 let Some(cell) = cells.cell(&addr) else {
@@ -521,11 +521,11 @@ fn works(
                 if rounds <= 0 {
                     continue;
                 }
-                let Some((good, per_unit)) = munitions_of(w, &spec, weapon.as_str()) else {
+                let Some((good, per_unit)) = munitions_of(w, &spec, mount.as_str()) else {
                     continue;
                 };
                 out.push(TendWork::Rearm {
-                    component: weapon.as_str().to_owned(),
+                    component: mount.as_str().to_owned(),
                     good,
                     rounds,
                     per_unit,
