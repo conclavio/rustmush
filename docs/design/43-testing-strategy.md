@@ -729,6 +729,36 @@ and 175 after, with the `<module>::` prefix stripped: none gone, none new.
 `cargo nextest run -p mush-contract-tests --test ci_policy --test engine_contracts -E
 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners)::/)'`.
 
+### TS.7 client verbs are registered (§5.2)
+
+**Built**, as `engine_contracts::client_verbs` (on TS.11's branch). It has two contracts.
+
+- **Every command a client emits is a registered verb.** The TUI (`mush-net-ssh/src/tui/`, each file cut
+  at its first `#[cfg(test)]`) and the web client (`web/src/`, no `*.test.ts`, no fixtures) are
+  scanned for command-shaped string literals: a `+verb`/`@verb` with its `/switches`; an upper-case
+  cockpit line of two words or more, or one word in a send context; and a key table's or send helper's
+  argument (`Run(`, `Prefill(`, `cmd:`, `line:`, `sendLine(`, `orders.push(` and their kin). Each
+  head must resolve through the registry's own `lookup` against `production_composition()`, and
+  each literal switch must be one the spec declares. Exceptions go in
+  `client-verbs-allowlist.toml`, each with a reason; a switch-level row excuses that switch alone,
+  and a row no client line uses fails.
+- **Every client session type has a production constructor.** Each `pub struct *Session*` in the net
+  crates, mush-gateway and the pixel crates must be constructed (`Name::…`, `Name {`) somewhere in a
+  workspace crate's non-test source. All of them are today, `DockingClientSession` included (its
+  `from_feed` is called from `tui/pixel.rs` and `mush-pixel-wasm`).
+
+**What it found.** Two dead ends, both kept as allowlist rows marked KNOWN DEAD END, with what is
+owed:
+
+1. `DOCK …`: 52 literals in both clients. It is the docking keys' fallback when no local docking
+   session is open, and no verb parses it; docking is `+helm/dock`. This is §5.2's case, still
+   present.
+2. `+roll/last`: a key on both clients' dice screens. `+roll` declares no switches, so dispatch
+   answers `Unknown switch "/last" for +roll.`
+
+`+act` and `+actions` are answered by the gateway's bridge, before the registry. The other rows
+are labels.
+
 ### TS.16 the field tempo (§5.8, §10.2)
 
 **Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their
