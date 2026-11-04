@@ -14,13 +14,11 @@ import { describe, expect, it } from "vitest";
 import { decodeCockpitFrame, type CockpitContact } from "./cockpit";
 import {
   canvasClickHeadingDeg,
-  createWebDockingSession,
   dockOrderToFrameInput,
-  formatWebDockingTapeCommand,
+  dockOrderToInputMask,
   gateLine,
   gateWord,
   helmLine,
-  isWebDockingClamped,
   lockOrder,
   LOOK_MDEG_PER_S,
   nextLock,
@@ -30,19 +28,17 @@ import {
   pickCanvasContact,
   pictureCommand,
   pictureKey,
-  playWebDockingToClamp,
   predictedOffsetCm,
   spacePictureKey,
   speedLine,
   speedOutstanding,
   speedStep,
   steppedSpeed,
-  stepWebDockingFrame,
   stepZoomPermille,
   swingLook,
-  webDockingFeedOverlay,
   wrapMdeg,
 } from "./picture";
+import { FEED_SPACE_DOCKING, PixelModule } from "./pixel/wasm";
 import { PictureStore } from "./stores/picture.svelte";
 
 /** The committed fixture frame's contacts: hostile BA at 450 m, friendly RB
@@ -398,7 +394,9 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(store.spaceMode).toBe("docking");
   });
 
-  it("plays the 60 Hz web client docking game to clamp and formats +helm/dock tape <session_id> <rle>", () => {
+  it("plays the 60 Hz web client docking game in mush-pixel-wasm via player keys and formats +helm/dock tape <session_id> <rle>", () => {
+    const wasmBytes = readFileSync(resolve(process.cwd(), "src/lib/pixel/mush_pixel.wasm"));
+    const mod = new PixelModule(new WebAssembly.Instance(new WebAssembly.Module(wasmBytes)));
     const feed = {
       session_id: "dock-42-1",
       dx_mm: -480,
@@ -426,30 +424,76 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
         kg_per_pulse_batch: 1,
       },
     };
-    const session = createWebDockingSession(feed);
-    expect(session).not.toBeNull();
-    if (!session) return;
+    expect(mod.feed(FEED_SPACE_DOCKING, JSON.stringify(feed))).toBe(true);
+    const initial = mod.dockingState();
+    expect(initial).not.toBeNull();
+    expect(initial?.session_id).toBe("dock-42-1");
+
+    // `c`, `C`, and Space are NOT bound to any auto-solver (`SF.R24`):
+    expect(spacePictureKey("c", "docking")).toBeNull();
+    expect(spacePictureKey("C", "docking")).toBeNull();
+    expect(spacePictureKey(" ", "docking")).toBeNull();
 
     const rightKey = spacePictureKey("d", "docking");
     expect(rightKey).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS RIGHT" });
-    const rightInput = dockOrderToFrameInput("DOCK TRANS RIGHT");
-    expect(rightInput).not.toBeNull();
-    if (rightInput) {
-      stepWebDockingFrame(session, rightInput);
+    expect(dockOrderToFrameInput("DOCK TRANS RIGHT")?.transX).toBe(1);
+    const rightMask = dockOrderToInputMask("DOCK TRANS RIGHT");
+    expect(rightMask).toBe(1);
+    const afterOne = mod.stepDocking(rightMask ?? 0);
+    expect(afterOne?.feed.vx_mmps).toBe(32);
+    expect(afterOne?.clamped).toBe(false);
+
+    // Step the WASM session to clamp using real player keys and coast frames:
+    const pressKey = (key: string): number => {
+      const k = spacePictureKey(key, "docking");
+      if (!k || k.kind !== "dockOrder") return 0;
+      return dockOrderToInputMask(k.cmd) ?? 0;
+    };
+    let st = afterOne;
+    for (let i = 0; i < 1200 && st && !st.clamped; i += 1) {
+      const f = st.feed as Record<string, number>;
+      let mask = 0;
+      if (f.dx_mm < -80 && f.vx_mmps < 160) {
+        mask = pressKey("d");
+      } else if (f.dx_mm > 80 && f.vx_mmps > -160) {
+        mask = pressKey("a");
+      } else if (f.dy_mm < -80 && f.vy_mmps < 160) {
+        mask = pressKey("w");
+      } else if (f.dy_mm > 80 && f.vy_mmps > -160) {
+        mask = pressKey("s");
+      } else if (f.pitch_mdeg < -500 && f.pitch_rate_mdeg_s < 350) {
+        mask = pressKey("ArrowUp");
+      } else if (f.pitch_mdeg > 500 && f.pitch_rate_mdeg_s > -350) {
+        mask = pressKey("ArrowDown");
+      } else if (f.yaw_mdeg > 500 && f.yaw_rate_mdeg_s > -350) {
+        mask = pressKey("ArrowLeft");
+      } else if (f.yaw_mdeg < -500 && f.yaw_rate_mdeg_s < 350) {
+        mask = pressKey("ArrowRight");
+      } else if (f.roll_mdeg < -600 && f.roll_rate_mdeg_s < 450) {
+        mask = pressKey("e");
+      } else if (f.roll_mdeg > 600 && f.roll_rate_mdeg_s > -450) {
+        mask = pressKey("q");
+      } else if (
+        Math.abs(f.dx_mm) <= 250 &&
+        Math.abs(f.dy_mm) <= 250 &&
+        Math.abs(f.pitch_mdeg) <= 2000 &&
+        Math.abs(f.yaw_mdeg) <= 2000 &&
+        Math.abs(f.roll_mdeg) <= 3000 &&
+        f.vx_mmps === 0 &&
+        f.vy_mmps === 0 &&
+        f.pitch_rate_mdeg_s === 0 &&
+        f.yaw_rate_mdeg_s === 0 &&
+        f.roll_rate_mdeg_s === 0 &&
+        f.vz_mmps < 300
+      ) {
+        mask = pressKey("r");
+      }
+      st = mod.stepDocking(mask);
     }
-    expect(session.vxMmps).toBe(32);
-    expect(isWebDockingClamped(session)).toBe(false);
 
-    const clampKey = spacePictureKey("c", "docking");
-    expect(clampKey).toEqual({ kind: "dockOrder", cmd: "DOCK CLAMP ASSIST" });
-    expect(playWebDockingToClamp(session)).toBe(true);
-    expect(isWebDockingClamped(session)).toBe(true);
-
-    const overlay = webDockingFeedOverlay(session, feed);
-    expect(overlay.status).toBe("ALIGNED-READY");
-    expect(overlay.gates_green).toBe(5);
-
-    const cmd = formatWebDockingTapeCommand(session);
-    expect(cmd.startsWith("+helm/dock tape dock-42-1 ")).toBe(true);
+    expect(st?.clamped).toBe(true);
+    expect(st?.gates_green).toBe(5);
+    expect(st?.feed.status).toBe("ALIGNED-READY");
+    expect(st?.tape_command.startsWith("+helm/dock tape dock-42-1 ")).toBe(true);
   });
 });
