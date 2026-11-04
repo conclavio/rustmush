@@ -63,6 +63,10 @@ use crate::{arena, mine};
 /// **The ledger's bound for the run**: the production floor (`ArenaConfig::validate` refuses
 /// less than 1 MiB), so a segment rolls at three quarters of it.
 const MAX_BYTES: u64 = 1_048_576;
+/// **The field's idle bound for the run** (`[tacsim.field].idle_demote_s` and `disengage_s`):
+/// long enough that, once the raider stops firing, the black box fills to the roll before the
+/// field demotes (beat 6); the demotion and its void (beat 5) follow.
+const IDLE_DEMOTE_S: u32 = 480;
 /// The fixture design the wing flies: the line tank whose every survivable hit jams a part.
 const JAMMING_UNIT: &str = "fr7.unit.jamming_tank";
 /// Its pack.
@@ -318,6 +322,17 @@ async fn live(rig: &arena::Rig, ground: &Ground) -> Option<Value> {
         .await
         .ok()
         .flatten()
+}
+
+/// How many black-box chunk documents naming `field.<site>.` the store holds: the fill, at
+/// 16 KiB a chunk.
+async fn chunks(rig: &arena::Rig, ground: &Ground) -> usize {
+    let needle = format!("field.{}.", ground.entry);
+    rig.store
+        .module_keys(tacsim::NS)
+        .await
+        .map(|keys| keys.iter().filter(|key| key.contains(&needle)).count())
+        .unwrap_or(0)
 }
 
 /// The live record's segment.
@@ -608,8 +623,8 @@ async fn round_story(ground: &'static Ground) {
         |cfg| {
             cfg.tacsim.pack_paths = vec![pack.clone()];
             // Beat 5: the field demotes on its idle bound once the raider stops.
-            cfg.tacsim.field.disengage_s = 10;
-            cfg.tacsim.field.idle_demote_s = 20;
+            cfg.tacsim.field.disengage_s = IDLE_DEMOTE_S;
+            cfg.tacsim.field.idle_demote_s = IDLE_DEMOTE_S;
             // Beat 6: the black box at the production floor, a summary every second.
             cfg.tacsim.arena.ledger.max_bytes = MAX_BYTES;
             cfg.tacsim.arena.ledger.summary_ms = 1_000;
@@ -817,8 +832,13 @@ async fn round_story(ground: &'static Ground) {
     );
 
     // -- Beat 6: a segment rolled (FR.4), before the field demotes ----------------------------
+    // From here the raider types nothing until the void's offer (beat 5): the position summaries
+    // and the sensor passes fill the black box while the field waits out its idle bound.
+    let quiet_from = raider.seen.len();
     let mut rolled = 0;
-    for _ in 0..900 {
+    let waited = Instant::now();
+    let mut told = 0;
+    while waited.elapsed() < Duration::from_secs(IDLE_DEMOTE_S.into()) {
         let Some(record) = live(&rig, ground).await else {
             break;
         };
@@ -826,13 +846,21 @@ async fn round_story(ground: &'static Ground) {
         if rolled >= 2 {
             break;
         }
-        // Rounds keep the black box filling: on Concord, never again on the wing.
-        let _ = lock_and_fire(&mut raider, concord_letter, &gun).await;
-        raider.idle(Duration::from_secs(1)).await;
+        if waited.elapsed().as_secs() >= told {
+            told += 30;
+            println!(
+                "fr7: {} +{} s segment {rolled}, {} chunks shipped",
+                ground.venue,
+                started.elapsed().as_secs(),
+                chunks(&rig, ground).await
+            );
+        }
+        raider.idle(Duration::from_secs(2)).await;
     }
     assert!(
         rolled >= 2,
-        "the field rolls onto segment 2 (read {rolled})"
+        "the field rolls onto segment 2 before it demotes (read {rolled}, {} chunks)",
+        chunks(&rig, ground).await
     );
     println!(
         "fr7: {} +{} s the field is on segment {rolled}",
@@ -841,10 +869,14 @@ async fn round_story(ground: &'static Ground) {
     );
 
     // -- Beat 5: friendly fire voided at once (FR.2) ----------------------------------------
-    // The raider types nothing more until the offer: the field demotes on its idle bound.
-    let from = raider.seen.len();
+    // The raider has typed nothing since the jam: the field demotes on its idle bound.
+    let from = quiet_from;
     let offered = raider
-        .watch(from, lines::VOID_OFFERED.trim(), Duration::from_secs(300))
+        .watch(
+            from,
+            lines::VOID_OFFERED.trim(),
+            Duration::from_secs(u64::from(IDLE_DEMOTE_S) + 120),
+        )
         .await;
     let since = raider.seen.get(from..).unwrap_or("").to_owned();
     assert!(
