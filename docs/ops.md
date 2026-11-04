@@ -1757,8 +1757,11 @@ apart astride the crossroads, dealt into lances of four, each side under a
 scripted commander that is its own lowest unit: every squad ordered to engage at
 the warm-up's end, then one squad a minute stepped through hold, advance and
 withdraw while the others engage again, three orders a minute a side, for
-`TACSIM_LANCE_ARENA_S` (default 120) arena seconds. Under `TACSIM_ASSERT` it
-asserts, at any knob, W8 — the span of control and the orders per commander per
+`TACSIM_LANCE_ARENA_S` (default 120) arena seconds. Whatever `TACSIM_ASSERT`
+says (every check it makes is deterministic, so the CI job's nightly run and
+every `--kind harness` dispatch hold it; under the flag only until TS.21's
+finding, when its span pin had been red unseen since `5993ba20`) it asserts,
+at any knob, W8 — the span of control and the orders per commander per
 minute — within `[tacsim.command]`, that the ledger's `ordered` lines are
 exactly the orders the script gave, that the opening round landed on every
 standing unit, that the span never exceeds what the script holds, and that the
@@ -1774,8 +1777,10 @@ defaults** (`TACSIM_SEED` 2350, `TACSIM_LANCE_UNITS` 24,
 `at_defaults`) does it also assert the figures the defaults' fight gives, each
 held to that fight by fact pins (its end, and each first squad's standing
 machines at its minute-one mark and at the release): the span **equal** to the
-squads a side less one (each commander's second and third squads under its
-live orders at the read, its first squad released), the busiest commander
+squads a side (since `5993ba20`, re-pinned by record: blue's commander holds
+`blue-1` on a wreck that took the minute-one order and died before the
+release, beside its second and third squads; over the standing hulls alone each
+commander holds its second and third, the squads a side less one), the busiest commander
 minute **equal** to the squads a side, each side's release on the tape once
 for every machine its first squad stood, and the opening round plus one full
 minute a side on the tape. Off them a lance can be wiped out, reach its
@@ -1962,9 +1967,11 @@ gate run is +19.7 per cent on the p99 against the blessed run, inside the
 bound, so a timing-only failure is still re-run once before it is believed.
 The lance lane was skipped in that bless: under `TACSIM_ASSERT` it fails a
 deterministic fact pin on main (its W8 span reads 3 where 2 is pinned; every
-nightly's `harness-lance.json` reads 3 back to 2026-10-19), which stops
+nightly's `harness-lance.json` reads 3 back to 2026-10-19), which stopped
 `scripts/harness-weekly.sh`, and so `vps-gate.sh --kind harness`, before the
-delta until it is re-pinned or fixed.
+delta. It was re-pinned by record from the commit that moved it, `5993ba20`
+(doc 43's cut notes, "The lance span"), and the lane now asserts whatever
+`TACSIM_ASSERT` says.
 
 **A timing-only failure is re-run once before it is believed.** Two runs of one
 tree on one box have differed by 16 per cent at the p99 (16b cut N.1). A

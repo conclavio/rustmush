@@ -82,3 +82,49 @@ were docs-only. Summed minutes, main → PR:
 | **All cells** | | 637.1 | 693.0 | |
 
 No cell's wall is set by this cut, and no story moves to another shard.
+
+## TS.21b (2026-11-04) — the lance span, re-pinned by record
+
+The follow-up TS.21's departure owed. Under `TACSIM_ASSERT` the lance lane's at-defaults span pin read 3 where
+17b cut M4.5 pinned `squads_per_side - 1`, 2. That stopped `scripts/harness-weekly.sh` before its delta, so
+every `--kind harness` dispatch was red.
+
+**The culprit.** A first-parent bisect on conclav.dev ran from M4.5's `f19a88fb` (span 2) to `c44c0bb6` (3).
+It probed the lance lane alone and read `command.span_max` from `harness-lance.json`, in seven steps. It names
+`5993ba20`, "feat(tacsim): restore M5r doctrine and motor behavior" (2026-10-17, committed straight to main):
+its parent `d9e6ef1f` reads 2 and it reads 3. That commit moved the stock mind's doctrine and the motor and
+re-blessed the arena lane's baseline. It never ran the lance lane under the flag, and the delta does not read
+`harness-lance.json`.
+
+**Re-pin, not fix.** A probe of the live orders at the read, at `d9e6ef1f`, `5993ba20` and main `3cb04168`,
+shows the fight moved and the span did not:
+
+- In M4.5's fight `blue-1`'s #100003 was wrecked at 71,132 ms, before the minute-one mark.
+- Since `5993ba20` it outlives the mark, so `blue-1` stands three at 71,500 ms. The hull takes that order
+  (live until 161,500 ms) and is wrecked before the 90,000 ms release.
+- The release lands on standing machines only. A wreck keeps the order it died under on its mind row: 16b cut
+  AI.1, and M4.5's own `blue-2` #100011.
+- So blue's commander holds `blue-1` on that wreck alone, beside `blue-2` and `blue-3`. Red's holds `red-2` and
+  `red-3`.
+
+The span's definition (every live order a mind row holds, wrecks counted) and the release's are unchanged.
+Neither is a defect.
+
+**The pins that moved, and the evidence:**
+
+- The span: 2 → 3.
+- "Rests on no wreck" is re-stated exactly: the counted join equals the standing join plus `blue-1` under
+  blue's commander. The standing span holds at 2.
+- `blue-1`'s standing at 71,500 ms: 2 → 3.
+
+At main every other figure holds as M4.5 pinned it: no end, 131,500 ms, eight orders, a busiest minute of 3,
+five releases. `5993ba20` itself read four releases (`red-1` stood two at the release), and GC.2's `c2653243`
+moved that back. The end pin's prose now says neither side is out (red four wrecks and blue six at main, where
+M4.5's fight had five and seven). Verified under `TACSIM_ASSERT=1` at `3cb04168` on conclav.dev.
+
+**So it cannot drift unseen again.** `tacsim_harness_lance` now asserts whatever `TACSIM_ASSERT` says, because
+every check it makes is deterministic and its timing is report-only. The CI job still sets no `TACSIM_ASSERT`
+(D-H-8, D-16-19, held by `the_weekly_script_runs_the_ci_jobs_two_lines_verbatim`). It holds the lane's pins
+now, as does every `--kind harness` dispatch (rule #13).
+
+**Cell delta** (rule #14). Zero: the lane is `#[ignore]`d, and no ordinary test changed.
