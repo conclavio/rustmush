@@ -194,6 +194,17 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     ),
                     hours(BayQuote::secs(&quote.jobs, facility.class))
                 ));
+                // Doc 39 cut IN.4 (Q-39-9): the workshop's berth time at its slot-hour, before
+                // margin, which the operator's multiplier may not take the labour under.
+                if let Some((cost, berths)) = facility.cost {
+                    let secs = BayQuote::secs(&quote.jobs, FacilityClass::Workshop);
+                    let floor = cost.floor_minor_for_secs(u64::try_from(secs).unwrap_or(0), berths);
+                    lines.push(format!(
+                        "  {:<34} {:>12}  the berth's cost, before margin",
+                        "floor",
+                        money_minor(ctx, i64::try_from(floor).unwrap_or(i64::MAX))
+                    ));
+                }
                 let bale = super::record_of(ctx.w, hull).ok().and_then(|r| r.bale);
                 let (goods, after) = super::order_goods(&quote.jobs, bale);
                 if !goods.is_empty() {

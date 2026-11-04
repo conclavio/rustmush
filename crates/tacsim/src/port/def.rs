@@ -200,6 +200,37 @@ pub struct PortDef {
     /// site. Boxed, as `workshop` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub medical: Option<Box<MedicalDef>>,
+    /// **Doc 39 cut IN.4 (Q-39-24)** — the port's recovery service: its operator, slots and
+    /// cost model, the retrieval fee doc 41 quotes on a contract. A cost row only: no room is
+    /// opened for it here. Absent everywhere but Ceres (Tycho Mutual). Boxed, as `medical` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Box<RecoveryDef>>,
+}
+
+/// **A port's recovery service** (doc 39 cut IN.4; Q-39-24, Q-38-18): the crawler-and-lift
+/// operator's cost row. A retrieval's fee is its days at the slot's daily cost and the margin
+/// ([`RecoveryDef::retrieval_fee_minor`]); the passage's propellant is doc 41's to add.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryDef {
+    /// One of this entry's orgs: the operator.
+    pub operator: CanonicalId,
+    /// Retrievals the operator runs at once, `1..=`[`MAX_WORKSHOP_BERTHS`].
+    pub slots: u32,
+    /// The cost model (§4.4).
+    pub cost: mush_industry::FacilityCostDef,
+}
+
+impl RecoveryDef {
+    /// **The retrieval fee for `days` IC days** (Q-39-24), minor units: the days' work units
+    /// in one slot at the margin, rounded up to the whole credit.
+    #[must_use]
+    pub fn retrieval_fee_minor(&self, days: u64) -> u64 {
+        self.cost.fee_minor(
+            days.saturating_mul(mush_industry::cost::WORK_UNITS_PER_DAY),
+            self.slots,
+        )
+    }
 }
 
 /// The capability word a port's medical room holds (doc 36 cut GC.13), which crew treatment
@@ -244,8 +275,14 @@ pub struct WorkshopDef {
     pub capabilities: BTreeSet<CanonicalId>,
     /// Hulls the workshop holds at once, `1..=`[`MAX_WORKSHOP_BERTHS`]: the facility's slots.
     pub berths: u32,
-    /// The operator's multiplier on the tariff, per mille, within the tariff's own bounds.
+    /// The operator's multiplier on the tariff, per mille, within the tariff's own bounds and
+    /// never under the cost model's floor (doc 39 cut IN.4).
     pub multiplier_permille: u32,
+    /// **Doc 39 cut IN.4 (§4.4, Q-39-9)** — the workshop's cost model: stored on the
+    /// facility's policy half; its berth-hour is the floor `+bay` prints and the multiplier
+    /// may not go under. Absent, the workshop is unpriced by the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<mush_industry::FacilityCostDef>,
 }
 
 /// The most a prospecting licence's fee may be, major units (doc 20 cut SM.5).
@@ -1470,6 +1507,25 @@ impl PortDef {
         if let Some(medical) = &self.medical {
             self.check_medical(medical)?;
         }
+        // Doc 39 cut IN.4: the recovery service's cost row.
+        if let Some(recovery) = &self.recovery {
+            if !self.orgs.iter().any(|org| org.id == recovery.operator) {
+                return Err(format!(
+                    "recovery: operator {} is not one of this port's orgs",
+                    recovery.operator
+                ));
+            }
+            if !(1..=MAX_WORKSHOP_BERTHS).contains(&recovery.slots) {
+                return Err(format!(
+                    "recovery: slots must be 1..={MAX_WORKSHOP_BERTHS}, not {}",
+                    recovery.slots
+                ));
+            }
+            recovery
+                .cost
+                .check()
+                .map_err(|error| format!("recovery: {error}"))?;
+        }
         Ok(())
     }
 
@@ -1552,6 +1608,18 @@ impl PortDef {
                 tariff.max_multiplier_permille,
                 workshop.multiplier_permille
             ));
+        }
+        if let Some(cost) = &workshop.cost {
+            cost.check().map_err(|error| format!("workshop: {error}"))?;
+            // Q-39-9: the tariff's labour hour at the multiplier clears the berth-hour.
+            let floor = cost.floor_multiplier_permille(workshop.berths, tariff.labour_hour_minor());
+            if workshop.multiplier_permille < floor {
+                return Err(format!(
+                    "workshop: multiplier_permille {} is under the cost model's floor of {floor} \
+                     (the berth-hour over the tariff's labour hour)",
+                    workshop.multiplier_permille
+                ));
+            }
         }
         Ok(())
     }
@@ -2620,11 +2688,116 @@ mod tests {
             licence: None,
             workshop: None,
             medical: None,
+            recovery: None,
         }
     }
 
     fn refused(def: &PortDef) -> String {
         def.check().err().unwrap_or_else(|| "accepted".to_owned())
+    }
+
+    /// Doc 39 cut IN.4 (§4.4, Q-39-9): the lane's Ceres workshop costs 1,228.77 cr a day, a
+    /// berth-hour of 25.60 over two berths, which is 256 ‰ of the tariff's 100 cr hour; with
+    /// a payroll of thirty the floor is 1,006 ‰ and a multiplier of 1,000 is refused.
+    fn in4_workshop() -> WorkshopDef {
+        WorkshopDef {
+            room: "neighborhood.ceres_freeport.room.c14_dockmaster".to_owned(),
+            operator: cid("coop"),
+            capabilities: BTreeSet::from([cid("bay_refit")]),
+            berths: 2,
+            multiplier_permille: 1_200,
+            cost: Some(mush_industry::FacilityCostDef {
+                capital_major: 1_500_000,
+                lifetime_years: 20,
+                upkeep_permille: 30,
+                staff: 6,
+                wage_major: 150,
+                margin_permille: 250,
+            }),
+        }
+    }
+
+    #[test]
+    fn in4_an_operator_multiplier_under_the_floor_is_refused() {
+        let with = |edit: &dyn Fn(&mut WorkshopDef)| {
+            let mut def = port();
+            let mut block = in4_workshop();
+            edit(&mut block);
+            def.workshop = Some(Box::new(block));
+            refused(&def)
+        };
+        assert_eq!(with(&|_| {}), "accepted");
+        assert_eq!(with(&|w| w.cost = None), "accepted", "an unpriced workshop");
+        let heavy = |w: &mut WorkshopDef| {
+            if let Some(cost) = w.cost.as_mut() {
+                cost.staff = 30;
+            }
+        };
+        assert_eq!(
+            with(&|w| {
+                heavy(w);
+                w.multiplier_permille = 1_000;
+            }),
+            "workshop: multiplier_permille 1000 is under the cost model's floor of 1006 \
+             (the berth-hour over the tariff's labour hour)"
+        );
+        assert_eq!(
+            with(&|w| {
+                heavy(w);
+                w.multiplier_permille = 1_006;
+            }),
+            "accepted",
+            "the floor itself is allowed"
+        );
+        assert_eq!(
+            with(&|w| {
+                if let Some(cost) = w.cost.as_mut() {
+                    cost.lifetime_years = 0;
+                }
+            }),
+            format!(
+                "workshop: cost: lifetime_years must be 1..={}, not 0",
+                mush_industry::cost::MAX_LIFETIME_YEARS
+            )
+        );
+    }
+
+    /// Doc 39 cut IN.4 (Q-39-24): Tycho Mutual's recovery row, 2,068.96 cr a day in one slot;
+    /// a one-day retrieval at 25 % is 2,587 cr. The row's bounds refuse with their sentences.
+    #[test]
+    fn in4_the_recovery_row_is_bounded_and_prices_a_retrieval() {
+        let row = RecoveryDef {
+            operator: cid("coop"),
+            slots: 1,
+            cost: mush_industry::FacilityCostDef {
+                capital_major: 4_000_000,
+                lifetime_years: 15,
+                upkeep_permille: 40,
+                staff: 6,
+                wage_major: 150,
+                margin_permille: 250,
+            },
+        };
+        assert_eq!(row.cost.daily_cost_minor(), 206_896);
+        assert_eq!(row.retrieval_fee_minor(1), 258_700);
+        assert_eq!(row.retrieval_fee_minor(3), 775_900);
+        let with = |edit: &dyn Fn(&mut RecoveryDef)| {
+            let mut def = port();
+            let mut block = row.clone();
+            edit(&mut block);
+            def.recovery = Some(Box::new(block));
+            refused(&def)
+        };
+        assert_eq!(with(&|_| {}), "accepted");
+        assert_eq!(
+            with(&|r| r.operator = cid("nobody")),
+            "recovery: operator nobody is not one of this port's orgs"
+        );
+        assert_eq!(
+            with(&|r| r.slots = 0),
+            format!("recovery: slots must be 1..={MAX_WORKSHOP_BERTHS}, not 0")
+        );
+        assert!(with(&|r| r.cost.margin_permille = 9_999).starts_with("recovery: cost: margin"));
     }
 
     /// D-18-14: greedy chunks of 800,000, the remainder last, none for zero.
@@ -2851,6 +3024,7 @@ mod tests {
             licence: None,
             workshop: None,
             medical: None,
+            recovery: None,
         }
     }
 

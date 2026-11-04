@@ -566,3 +566,87 @@ fn vf_c1_a_facility_owner_is_never_a_system_principal() {
     ok(&mut tw, GOD, &format!("@facility/owner 7=#{}", pat.0));
     assert_eq!(facility(&tw, ObjId(7)).owner(), &PrincipalId::Object(pat));
 }
+
+// ---- Doc 39 cut IN.4: the cost model prices the order ----------------------
+
+/// **`order_price` from the facility's policy half** (doc 39 §4.4, Q-39-9, Q-39-32): facility
+/// #7 re-priced with §4.4's works row (3 M over 25 years, 2 % upkeep, eight at 150, 25 %
+/// margin; 1,693.16 cr a day over two slots) quotes and holds the customer's fittings order —
+/// six work units, here the test recipe's three at quantity two — at **265 cr** (264.56 rounded
+/// up to the whole credit), not one minor an input unit. The re-price bumps the policy
+/// revision, so a draft against the unpriced record is refused at submit.
+///
+/// `+works/quote fittings` is IN.3's verb and does not exist yet: this asserts the same figure
+/// through `@wo/quote` and the submitted hold, which is `order_price`.
+#[test]
+fn in4_order_price_is_the_fee_from_the_facilitys_cost_model() {
+    let (mut tw, families, budget) = scene(100_000);
+    let works = mush_industry::FacilityCostDef {
+        capital_major: 3_000_000,
+        lifetime_years: 25,
+        upkeep_permille: 20,
+        staff: 8,
+        wage_major: 150,
+        margin_permille: 250,
+    };
+    let stale = seed_order(&mut tw, &families, 0xC0, budget, 1);
+    let priced = facility(&tw, ObjId(7))
+        .with_cost(Some(works))
+        .expect("re-price");
+    assert_eq!(
+        priced.policy_revision(),
+        2,
+        "the re-price bumps the policy revision"
+    );
+    tw.world_mut()
+        .module_state_mut::<IndustryStore>()
+        .expect("industry")
+        .put_facility(priced);
+    let refusal = err(&mut tw, GOD, &format!("@wo/submit {stale}"));
+    assert!(
+        !refusal.is_empty(),
+        "a draft against the unpriced record is refused"
+    );
+
+    let (recipe, pinned) = alloy_recipe();
+    let order = WorkOrder::draft(
+        WorkOrderId(0xC1),
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        ObjId(7),
+        2,
+        1,
+        2,
+        recipe,
+        pinned,
+        2,
+        budget,
+        Some(endpoint(500)),
+        DeliveryTarget::Endpoint {
+            endpoint: endpoint(600),
+        },
+        EconomicVisibility::Parties,
+    )
+    .expect("draft a work order");
+    let id = order.id();
+    apply(tw.engine_mut(), &families, |txn| {
+        families.open_work_order(txn, order)
+    })
+    .expect("seed the order");
+    let quoted = ok(&mut tw, GOD, &format!("@wo/quote {id}"));
+    assert!(
+        quoted.contains("fee 265 cr, duration 6 work units"),
+        "{quoted}"
+    );
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    let held = snap(&tw)
+        .holds()
+        .find(|h| h.purpose == mush_industry::money::purpose(id) && h.status.is_held())
+        .map(|h| h.amount)
+        .expect("the order's hold");
+    assert_eq!(
+        held,
+        mush_economy::Amount::from_minor(26_500),
+        "the hold is fee(order)"
+    );
+}

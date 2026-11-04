@@ -357,6 +357,24 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     // (3) The workshop quote and the order.
     let quote = run(&mut rig.tw, pilot, &format!("+bay #{}", escort.0));
     assert!(quote.contains("stands in a workshop"), "{quote}");
+    // Doc 39 cut IN.4: the floor, Stickney's four berths at 1,228.77 cr a day each, over
+    // the work's hours.
+    let (here, priced) =
+        tacsim::port::bay_work::quote_here(rig.tw.world(), escort).expect("a quote");
+    let (cost, berths) = here
+        .cost
+        .expect("Stickney's workshop is priced by the model");
+    assert_eq!(berths, 4);
+    let secs = tacsim::port::bay_work::BayQuote::secs(&priced.jobs, FacilityClass::Workshop);
+    let floor = cost.floor_minor_for_secs(u64::try_from(secs).expect("secs"), berths);
+    assert!(
+        floor > 0 && floor < tacsim::port::bay_work::BayQuote::cost_minor(&priced.jobs),
+        "the floor is under the tariff's labour at 1x: {floor}"
+    );
+    assert!(
+        floor_line(&quote).contains(&format!("{}", floor / 100)),
+        "+bay prints the floor of {floor} minor: {quote}"
+    );
     assert!(
         quote.contains(&format!("rebuild {}", engine.as_str())),
         "{quote}"
@@ -535,6 +553,9 @@ async fn gc8_who_may_have_a_hull_worked_on() {
         quote.contains("Your right: lessee (repair and rearm)"),
         "{quote}"
     );
+    // Doc 39 cut IN.4: docked at Ceres, the bay's quote prints the port workshop's floor, the
+    // unjam's two IC hours of a Ceres berth (1,228.77 cr a day over two) = 51.20, billed 52.
+    assert!(floor_line(&quote).contains("52"), "{quote}");
     assert!(!tacsim::port::bay_work::permits(
         tacsim::port::bay_work::Right::Lessee,
         tacsim::port::bay_work::Act::Refit
@@ -577,6 +598,14 @@ async fn gc8_who_may_have_a_hull_worked_on() {
 }
 
 /// **A mechanic with Occator's `unit.maintain_refit`**, enrolled, funded, standing in `room`.
+/// The `floor` line of a `+bay` quote (doc 39 cut IN.4).
+pub(crate) fn floor_line(quote: &str) -> &str {
+    quote
+        .lines()
+        .find(|line| line.trim_start().starts_with("floor "))
+        .unwrap_or_else(|| panic!("no floor line: {quote}"))
+}
+
 pub(crate) fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
     let mechanic = crate::driving_rig::pilot(rig, "Mechanic", 3);
     let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");

@@ -202,15 +202,31 @@ pub fn any_hold(ctx: &Ctx<'_>, order: WorkOrderId) -> Option<Hold> {
         .cloned()
 }
 
-/// The money this order reserves: [`quote_price`] over the order's own pinned
-/// recipe and quantity, widened into an `Amount`. A saturating `u64` that does not
-/// fit `i64` clamps at `i64::MAX` rather than wrapping — the engine then refuses the
-/// placement on `InsufficientAvailable`, which is the honest answer.
+/// The money this order reserves, widened into an `Amount`: **`fee(order)`** (doc 39 cut
+/// IN.4, §4.4) when the order's facility carries a cost model on its policy half — the
+/// order's work units at the facility's slot-hour and margin — and otherwise
+/// [`quote_price`]'s one minor an input unit over the pinned recipe and quantity. The
+/// policy half is read live; the order pinned its `policy_revision` at draft and submit
+/// re-checks it, so a re-priced facility re-validates the order first. A saturating `u64`
+/// that does not fit `i64` clamps at `i64::MAX` rather than wrapping — the engine then
+/// refuses the placement on `InsufficientAvailable`, which is the honest answer.
 #[must_use]
-pub fn order_price(order: &WorkOrder) -> Amount {
-    Amount::from_minor(
-        i64::try_from(quote_price(order.pinned(), order.quantity())).unwrap_or(i64::MAX),
-    )
+pub fn order_price(w: &mush_core::World, order: &WorkOrder) -> Amount {
+    Amount::from_minor(i64::try_from(order_price_minor(w, order)).unwrap_or(i64::MAX))
+}
+
+/// [`order_price`] in minor units.
+#[must_use]
+pub fn order_price_minor(w: &mush_core::World, order: &WorkOrder) -> u64 {
+    w.module_state::<crate::IndustryStore>()
+        .and_then(|store| store.facility(order.facility()))
+        .and_then(|facility| {
+            facility.fee_minor(crate::workorder::quote_duration(
+                order.pinned(),
+                order.quantity(),
+            ))
+        })
+        .unwrap_or_else(|| quote_price(order.pinned(), order.quantity()))
 }
 
 /// What a budget operation refused on. `bond.rs`'s `BondError` shape, including
@@ -341,7 +357,7 @@ pub fn place(ctx: &mut Ctx<'_>, order: &WorkOrder) -> Result<HoldId, HoldError> 
     let plan = EconomyPlan {
         hold_ops: vec![HoldOp::Place {
             account: order.budget_account(),
-            amount: order_price(order),
+            amount: order_price(ctx.w, order),
             beneficiary: Some(order.beneficiary().clone()),
             purpose: purpose(id),
             expires: None,

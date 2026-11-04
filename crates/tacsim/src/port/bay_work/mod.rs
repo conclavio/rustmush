@@ -150,6 +150,16 @@ pub struct Facility {
     pub operator_account: AccountId,
     /// The operator's multiplier, per mille.
     pub multiplier_permille: u32,
+    /// Doc 39 cut IN.4: the port workshop's cost model and its berths, when authored — the
+    /// floor a quote prints.
+    pub cost: Option<(mush_industry::FacilityCostDef, u32)>,
+}
+
+/// The port workshop's cost model and berths (doc 39 cut IN.4).
+fn workshop_cost(def: &PortDef) -> Option<(mush_industry::FacilityCostDef, u32)> {
+    def.workshop
+        .as_ref()
+        .and_then(|workshop| workshop.cost.map(|cost| (cost, workshop.berths)))
 }
 
 /// Every port with a workshop, its room on this world and its map.
@@ -217,6 +227,7 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
                 operator,
                 operator_account,
                 multiplier_permille,
+                cost: workshop_cost(def),
             });
         }
     }
@@ -234,6 +245,7 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
             operator,
             operator_account,
             multiplier_permille,
+            cost: workshop_cost(def),
         });
     }
     let (bay, _) = interior_of(w, hull).ok_or("That hull is in no bay and no workshop.")?;
@@ -258,6 +270,7 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
         operator,
         operator_account,
         multiplier_permille,
+        cost: workshop_cost(def),
     })
 }
 
