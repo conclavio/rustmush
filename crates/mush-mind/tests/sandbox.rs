@@ -15,6 +15,10 @@ use mush_mind::{
     system_error, trace,
 };
 
+// Doc 43 cut TS.4: nested source against the depth guard.
+#[path = "sandbox/nesting.rs"]
+mod nesting;
+
 /// The ABI every test compiles under.
 const ABI: &str = "rhai=1.26.0;api=test;stock=test";
 
