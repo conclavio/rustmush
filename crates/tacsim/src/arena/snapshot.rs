@@ -1463,7 +1463,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 46] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 48] {
         let UnitState {
             id: _,
             team: _,
@@ -1488,6 +1488,7 @@ mod tests {
             jammer: _,
             ecm_on: _,
             eccm: _,
+            sensor_authored: _,
             receiver: _,
             weapons: _,
             profile: _,
@@ -1511,6 +1512,7 @@ mod tests {
             orders_window_s: _,
             orders_in_window: _,
             own_last_hit_ms: _,
+            coupled_to: _,
         } = unit;
         [
             "id",
@@ -1536,6 +1538,9 @@ mod tests {
             "jammer",
             "ecm_on",
             "eccm",
+            // Doc 40 cut FR.5: carried on purpose, and written only while the live
+            // sight differs from it (`af1_a_unit_is_carried_whole_by_its_derive`).
+            "sensor_authored",
             "receiver",
             "weapons",
             "profile",
@@ -1563,6 +1568,8 @@ mod tests {
             "orders_window_s",
             "orders_in_window",
             "own_last_hit_ms",
+            // Doc 40 cut FR.5 (§4.1 item 5): carried on purpose, and written only while coupled.
+            "coupled_to",
         ]
     }
 
@@ -1588,6 +1595,10 @@ mod tests {
             .map(every_unit_field)
             .expect("one unit")
             .into_iter()
+            // Doc 40 cut FR.5: written only when present, and an intact sight is not.
+            .filter(|field| *field != "sensor_authored")
+            // Doc 40 cut FR.5 (§4.1 item 5): likewise, and an uncoupled unit is not.
+            .filter(|field| *field != "coupled_to")
             .collect();
         assert_eq!(keys, named);
     }

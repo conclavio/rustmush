@@ -201,8 +201,29 @@ impl Execution {
         }
         // Prepare the current runner before touching runtime. This never changes the full
         // seal nor grants authority to mutate any physical owner or world row.
-        let runner = self.runner()?;
-        if self.seal.abi != crate::minds::MIND_ABI {
+        // Doc 23 cut S.4b-3 (D-23-17 (b)): a retained source that no longer compiles at this
+        // build is dropped to the ROM like an ABI change, per row, with `fault: compile` — never
+        // a refusal that would keep a field from opening.
+        self.validate()?;
+        let (runner, fault) = match self.runner() {
+            Ok(runner) => (runner, None),
+            Err(error)
+                if self.seal.abi == crate::minds::MIND_ABI
+                    && self.seal.engine == SealEngine::Scripted =>
+            {
+                tracing::warn!(
+                    unit = self.seal.unit.0,
+                    %error,
+                    "tacsim: a retained IC mind no longer compiles; it flies Standard Doctrine"
+                );
+                (
+                    crate::arena::mind::default_mind_runner(&self.arena),
+                    Some(smol_str::SmolStr::new_static("compile")),
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        if self.seal.abi != crate::minds::MIND_ABI || fault.is_some() {
             let unit = self.seal.unit;
             let mind = arena
                 .minds
@@ -253,7 +274,7 @@ impl Execution {
                         crate::arena::EventKind::MindDropped {
                             unit,
                             cause: "abi".into(),
-                            fault: None,
+                            fault: fault.clone(),
                             ops: None,
                         },
                         Vec::new(),

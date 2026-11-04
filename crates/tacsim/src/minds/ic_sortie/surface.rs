@@ -73,6 +73,27 @@ pub fn retained_source<'w>(world: &'w World, sha256: &[u8; 32]) -> Option<&'w st
         .map(|row| row.open.execution.source.as_str())
 }
 
+/// **How many active claims the book holds under the filed `licence`** (doc 23 cut S.4b-3,
+/// D-23-16: the licence seat): every active Open whose seal names that licence.
+#[must_use]
+pub fn active_under_licence(world: &World, licence: u64) -> usize {
+    let Some(state) = world.module_state::<IcSorties>() else {
+        return 0;
+    };
+    let word = licence.to_string();
+    state
+        .active
+        .values()
+        .filter_map(|open| state.rows.get(open))
+        .filter(|row| {
+            matches!(
+                &row.open.execution.seal.requested.origin,
+                crate::arena::profile_seal::MindOrigin::Filed { licence, .. } if licence.as_str() == word
+            )
+        })
+        .count()
+}
+
 /// **Whether the book holds `open` closed** (the Close's seam, §17.3: `rows[open].closed`).
 #[must_use]
 pub fn claim_closed(world: &World, open: CommitToken) -> Option<CommitToken> {

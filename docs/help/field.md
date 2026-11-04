@@ -343,9 +343,30 @@ title holder's or the landholder's leave is written in the site's evidence log.
 
 The captor reads who they hold with `+ship/captives` and lets one go with
 `+ship/release <name|#n>`, for nothing: docked at a port, the captive is set down
-in its arrivals; anywhere else they ride on aboard as a passenger. Handing a
-captive over at a port, the time limit on captivity and capture at an ejection are
-still being built.
+in its arrivals; anywhere else they ride on aboard as a passenger.
+
+**Handed over at a port.** When a captor's carrier docks at Ceres, Stickney, Luna,
+Deimos or Titan, every captive aboard is handed to the port's authority (the
+Freeport Registry at Ceres, Stickney Yards at Stickney, Concord Orbital Access at
+Luna, the Voltaire Bond Authority at Deimos, the Titan Concession Company at
+Titan). You are set down in the port's medical room, or its arrivals where it has
+none, and are in processing for an IC hour (`[tacsim.field].release_s`): you may
+go anywhere in the port and nowhere else. The authority charges a release fee of
+1,500 cr to your own account. If you cannot cover it, it stays with you as a debt,
+and you are released all the same. The captor is paid nothing. After the hour you
+are free, and the port is the one you know. Treatment begins as soon as you stand
+in the port.
+
+**The limit.** A captor who never docks cannot hold you for ever. Seven IC days
+after the capture (`[tacsim.field].captive_bound_s`), `+sortie/extract` works from
+captivity: a recovery service negotiates your passage and sets you down at the safe
+port you know after the usual delay. Before then it is refused with the time left.
+A captive the captor releases anywhere but a port rides on as a passenger and may
+ask for extraction the same way. If the captor's carrier is wrecked in a later
+field, you are stranded in the wreck like everyone aboard it, and the captivity
+ends with the hull.
+
+Capture at an ejection is still being built.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field

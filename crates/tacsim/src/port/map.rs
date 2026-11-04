@@ -82,6 +82,11 @@ pub struct PortMap {
     /// [`PORT_MAP_SCHEMA`] stays 1 (the IC4 L9 precedent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clerk: Option<ClerkRow>,
+    /// **Doc 42 cut CR.2** (Q-42-7): the clerk's `port.release_fee` grant on the authority's
+    /// root scope, `GrantId.0`, once submitted. Skipped when absent, so a map without an
+    /// authority encodes as before and [`PORT_MAP_SCHEMA`] stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_grant: Option<u64>,
     /// Per authored vendor org id, what part e made for it (cut IC8). Doc 18's
     /// `content.stock/<pack>/<entry>/<org>/<good>/<issue>` plan rows are this
     /// map's `vendors[org].stock[i]` (IC3 L3's one-document rule).
@@ -344,6 +349,7 @@ impl PortMap {
             orgs: BTreeMap::new(),
             hulls: Vec::new(),
             clerk: None,
+            release_grant: None,
             vendors: BTreeMap::new(),
             boards: BTreeMap::new(),
             emergencies: BTreeMap::new(),

@@ -1,8 +1,11 @@
 //! **Doc 42 — crew custody and capture**, the stories grown cut by cut (§7a; Q-42-25), over the
-//! composed world (`driving`'s keyed rig) on both grounds of `grounds_rig`. Story (a′)'s load
-//! itself is GC.5's rewritten gate (`field_gc5::non_friend_loaded`); this file carries what CR.1
-//! adds beside it.
+//! composed world (`driving`'s keyed rig) on both grounds of `grounds_rig`, in shard_8 for its
+//! room (doc 43 rule 2.3 #3, #14). Story (a′)'s load itself is GC.5's rewritten gate, hoisted to
+//! `custody_rig`: `field_gc5` runs it at 256 beside GC.5, and this file at 512.
 //!
+//! - **Cut CR.1, story (a′) to the load at 512** (Q-42-4, Q-42-16; Q-42-3 for the twin): GC.5's
+//!   gate and its review twin on Urvara Reach (`custody_rig::non_friend_load_captures_the_crew`,
+//!   `custody_rig::captors_field_close_keeps_the_captive`).
 //! - **Cut CR.1, the hired NPC's exit** (Q-42-5, Q-42-26): a captain hires Ilya Mendes at
 //!   Ceres's Slack Line through `+sortie/crew` and `+sortie/hire`; the NPC flies the escort, which
 //!   a stranger's rig loads into the stranger's carrier. At the load the NPC's seat is vacated, the
@@ -22,24 +25,14 @@
 use mush_core::ObjId;
 use tacsim::field::{CrewLocation, crew_of, npc_exit_of};
 
+use crate::custody_rig::{Loaded, attach_on, non_friend_loaded, powerless, quick, ramp_cell_on};
 use crate::driving_rig::{
     Rig, command, launched_at, on_pad_as_at, on_pad_with_at, run, said, staff_hand, station_room,
     stocked_tuned, teleport, to_cell_on,
 };
-use crate::field_gc4::powerless;
-use crate::field_gc5::{Loaded, attach_on, non_friend_loaded, ramp_cell_on};
-use crate::field_host_rig::{second, site_record_at, tune};
+use crate::field_host_rig::{second, site_record_at};
 use crate::grounds_rig::{AHUNA_FLANK, Ground, URVARA_REACH};
 use crate::site_record_rig::{staff, staff_member};
-
-/// Short tow stages, on the field host's lab tempo (`field_gc5`'s `quick`).
-fn quick(cfg: &mut tacsim::TacsimConfig) {
-    tune(cfg);
-    cfg.field.idle_demote_s = 3_600;
-    cfg.recovery.inspect_s = 30;
-    cfg.recovery.attach_s = 30;
-    cfg.recovery.load_s = 60;
-}
 
 /// The content's mining NPC at Ceres (`content/crew/ceres.json`).
 const MENDES: &str = "Ilya Mendes";
@@ -271,4 +264,43 @@ async fn cr1_the_captor_releases_a_captive_on_the_site() {
     assert!(empty.contains("You hold nobody aboard."), "{empty}");
     let condition = run(&mut rig.tw, a, "+sortie/condition");
     assert!(!condition.contains("held aboard"), "{condition}");
+}
+
+/// **GC.5's gate at 512** on Urvara Reach (`custody_rig::non_friend_load_captures_the_crew`;
+/// `field_gc5` runs it at 256).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr1_a_non_friend_load_takes_custody_and_captures_the_crew_at_512() {
+    crate::custody_rig::non_friend_load_captures_the_crew(&URVARA_REACH).await;
+}
+
+/// **GC.5's review twin at 512** on Urvara Reach (`custody_rig::captors_field_close_keeps_the_captive`;
+/// `field_gc5` runs it at 256).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr1_the_captors_field_close_keeps_the_captive_at_512() {
+    crate::custody_rig::captors_field_close_keeps_the_captive(&URVARA_REACH).await;
+}
+
+/// **CR.2's handover at 256, the fee paid** (`custody_rig::handover_at_ceres`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr2_the_captor_docks_at_ceres_and_the_captive_is_handed_over_and_released() {
+    crate::custody_rig::handover_at_ceres(&AHUNA_FLANK, true).await;
+}
+
+/// **CR.2's handover at 512, the fee unpaid** (`custody_rig::handover_at_ceres`): the release
+/// never waits on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr2_an_unpaid_release_fee_stands_and_the_captive_is_released_anyway_at_512() {
+    crate::custody_rig::handover_at_ceres(&URVARA_REACH, false).await;
+}
+
+/// **CR.3's held case at 256** (`custody_rig::held_past_the_bound`): a captor who never docks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it() {
+    crate::custody_rig::held_past_the_bound(&AHUNA_FLANK).await;
+}
+
+/// **CR.3's held case at 512** (`custody_rig::held_past_the_bound`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it_at_512() {
+    crate::custody_rig::held_past_the_bound(&URVARA_REACH).await;
 }
