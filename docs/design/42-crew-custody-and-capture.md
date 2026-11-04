@@ -855,7 +855,8 @@ each pass until the ledger shows it landed; until then the NPC stands in its hir
 but is not on offer; the `Capture` evidence
 row; the `capture:` standing grant; `+ship/captives` and `+ship/release`. Files: `surface/tow.rs`,
 `field/crew.rs`, `surface/claim.rs`, `port/voyage.rs` or `port/ship.rs` for the verbs. Story:
-(a′) to the load, at both sizes; the GC.5 gate and its twin rewritten.
+(a′) to the load, at both sizes; the GC.5 gate and its twin rewritten. **Built** — see
+[42-cut-notes.md](42-cut-notes.md) §CR.1.
 
 **CR.2 — The port handover and release.** Q-42-6, Q-42-7, Q-42-19. `PortDef.authority`,
 `release_fee_cr`, `release_s`; the docking hook (`sim_routes.rs:151–161`); the fee post and the

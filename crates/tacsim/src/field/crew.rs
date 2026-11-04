@@ -46,11 +46,17 @@
 //! same organizer as the stranded character's own party — stands on the site, at most
 //! `[tacsim.field].rescue_bound_s` past the due instant (the published bound).
 //!
-//! **Abandonment** (doc 36 cut GC.5; Q-36-52, the owner's ruling): a casualty loaded into a
-//! carrier that is not its crew's own party's or a Friend's leaves everyone still aboard it
-//! abandoned, until doc 42's cut CR.1 captures them instead (Q-38-22, Q-42-16). Their extraction starts the moment the load completes, as
-//! if each had asked for it (`abandoned_loaded`), and it is never deferred for a recovery
-//! flight ([`Extraction::abandoned`]). The hull stays with the carrier.
+//! **Capture at a load** (doc 42 cut CR.1; Q-38-22, Q-42-4, Q-42-5, Q-42-16, Q-42-21, Q-42-26):
+//! a casualty loaded into a carrier that is not its crew's own party's or a Friend's — a Neutral
+//! salvor's as much as a Hostile's — takes everyone still aboard it captive
+//! ([`captured_loaded`]): each leaves the seat, steps out into the carrier's bay room, and is
+//! held there by the carrier's operator, the captor. A captor who was no enemy of the captive
+//! pays [`STANDING_CAPTURE`] with each faction the captive openly stands in. A hired NPC keeps no
+//! crew record and is never captured: their seat is vacated and they go back to their hire port's
+//! pool room at once, and the roster's half — the contract and the reservation ended — is the
+//! `tacsim_crew_captured` action the tow tick submits as the organizer until it lands
+//! ([`npc_exit_loaded`], [`npc_exits`]). GC.5's abandonment, which this replaces, left the
+//! [`Extraction::abandoned`] flag on old records; it still reads.
 //!
 //! **Treatment** (doc 36 cut GC.13; Q-36-45): an injured or incapacitated character standing in
 //! a room of an IC port (`crate::ic_return::port_of_room`) is under treatment there, and is fit
@@ -469,8 +475,30 @@ pub fn crew_location(w: &World, who: ObjId) -> Option<CrewLocation> {
     aboard.or_else(|| crew_of(w, who).map(|record| record.location.clone()))
 }
 
-/// **Read the boot's crew records** (`on_world_loaded`).
+/// **Read the boot's crew records** (`on_world_loaded`), and the NPC exits still owed (doc 42
+/// cut CR.1).
 pub(crate) fn read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
+    if let Some(exits) = ctx.w.module_state_mut::<NpcExits>() {
+        for (key, value) in kv {
+            let Some(npc) = key
+                .as_str()
+                .strip_prefix(NPC_EXIT_PREFIX)
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(ObjId)
+            else {
+                continue;
+            };
+            match serde_json::from_value::<NpcExit>(value.clone()) {
+                Ok(exit) if exit.npc == npc && exit.format == NPC_EXIT_FORMAT => {
+                    exits.owed.insert(npc, exit);
+                }
+                _ => tracing::warn!(
+                    npc = npc.0,
+                    "tacsim: an owed NPC exit did not decode; it is ignored"
+                ),
+            }
+        }
+    }
     let Some(book) = ctx.w.module_state_mut::<CrewBook>() else {
         return;
     };
@@ -736,8 +764,15 @@ pub(crate) fn check_in_aboard(
 /// half): every character whose record holds them in `casualty` — aboard it, or stranded in it —
 /// is aboard `carrier` now, and any extraction they had asked for is cancelled. The caller
 /// (`crate::surface::tow`) has checked that the carrier is of the casualty's own party or a
-/// Friend's; a load into anyone else's bay is GC.5's abandonment.
-pub(crate) fn aboard_loaded(ctx: &mut Ctx<'_>, casualty: ObjId, carrier: ObjId) {
+/// Friend's; a load into anyone else's bay is a capture ([`captured_loaded`]). `room`, when given,
+/// is the carrier's bay room each soul steps out into first: a written-off lease rig goes to
+/// Occator's shed, not the bay, and its crew stay with the carrier (doc 42 Draft 0.3, 42-8).
+pub(crate) fn aboard_loaded(
+    ctx: &mut Ctx<'_>,
+    casualty: ObjId,
+    carrier: ObjId,
+    room: Option<ObjId>,
+) {
     let now = ctx.w.world_ic_now().at;
     let souls: Vec<CrewRecord> = ctx
         .w
@@ -754,6 +789,10 @@ pub(crate) fn aboard_loaded(ctx: &mut Ctx<'_>, casualty: ObjId, carrier: ObjId) 
         .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier));
     for record in souls {
         let who = record.character;
+        if let Some(room) = room {
+            vacate_seat(ctx, who, casualty);
+            step_into(ctx, who, room);
+        }
         put(ctx, record);
         ctx.out.sys_to_actor(who, "tacsim.field", line.clone());
     }
@@ -796,98 +835,514 @@ pub(crate) fn held_in(record: &CrewRecord, casualty: ObjId) -> bool {
     }
 }
 
-/// **The crew abandoned in a loaded casualty**: `{name}`, `{carrier}`, `{port}`, `{h}`.
-pub const ABANDONED: &str = "The {name} is hauled into the {carrier}'s bay, a carrier not of your party or a Friend's, with you still in it: you are abandoned, and an extraction to {port} is on its way, about {h} IC hours.";
+/// **The crew captured at a load** (doc 42 cut CR.1, Q-42-16): `{name}`, `{carrier}`,
+/// `{captor}`.
+pub const CAPTURED: &str = "The {name} is hauled into the {carrier}'s bay, a carrier not of your party or a Friend's, with you still in it: you are held aboard the {carrier}, in {captor}'s custody.";
+/// **The captor's line at a load that took crew** (doc 42 cut CR.1): `{carrier}`, `{who}`.
+pub const CAPTOR_TOLD: &str = "Aboard the {carrier} you now hold {who}. +ship/captives lists them; +ship/release <who> lets one go.";
+/// **What a capture costs a captor who was no enemy of the captive** (doc 42 Q-42-21,
+/// provisional): five points of the -100..100 scale with each faction the captive openly stands
+/// in. Not voidable.
+pub const STANDING_CAPTURE: i16 = -5;
+/// **The capture receipts' cause prefix** (doc 42 Q-42-21): `capture:<site tag>:<ordinal>:<captive>`.
+pub const CAPTURE_CAUSE: &str = "capture:";
+/// **The standing a capture moved**, told to the captor: `{who}`, `{factions}`, `{delta}`.
+pub const CAPTURE_STANDING: &str = "Carrying off {who}, who was no enemy of yours, moves your standing with {factions} by {delta}.";
+/// The reason every capture receipt records: `{who}`, `{site}`.
+const CAPTURE_REASON: &str = "Carried off {who}, who was no enemy, from {site}.";
 
-/// **A casualty loaded into a non-friend's bay** (doc 36 cut GC.5; Q-36-52, the owner's ruling):
-/// every character whose record holds them in `casualty` — aboard it, or stranded in it — is
-/// abandoned. Each is stranded on `site` in the hull and their extraction starts now, as if they
-/// had asked for it, to the safe port they know, never deferred for a recovery flight; one already
-/// on its way keeps its port and due instant and loses its deferral. The caller
+/// **One completed non-friend load, as the capture reads it** (doc 42 cut CR.1): the site and
+/// its last field's ordinal (the hostility read, Q-42-21), the casualty, the carrier, the
+/// carrier's bay room the captives step out into, and the captor (Q-42-4: the carrier's
+/// operator, the hull's custodian).
+pub(crate) struct LoadCapture<'a> {
+    /// The site.
+    pub site: &'a CanonicalId,
+    /// The site's last field ordinal (0: none).
+    pub ordinal: u32,
+    /// The casualty loaded.
+    pub casualty: ObjId,
+    /// The carrier it was loaded into.
+    pub carrier: ObjId,
+    /// The carrier's bay room.
+    pub room: ObjId,
+    /// The captor.
+    pub captor: ObjId,
+}
+
+/// **The crew captured in a casualty loaded into a non-friend's bay** (doc 42 cut CR.1; Q-38-22,
+/// Q-42-1, Q-42-16): every character whose record holds them in the casualty — aboard it, or
+/// stranded in it — leaves its seat, steps out into the carrier's bay room, and is held aboard
+/// the carrier by the captor from now. The body moves first and the record after, so the
+/// [`HeldGate`] never sees the move. Each is told; the captor is told once; and a captor who was
+/// no enemy of a captive pays the standing (Q-42-21). The captives, in record order. The caller
 /// (`crate::surface::tow`) has checked that the carrier is not of their party or a Friend's.
-pub(crate) fn abandoned_loaded(
-    ctx: &mut Ctx<'_>,
-    site: &CanonicalId,
-    casualty: ObjId,
-    carrier: ObjId,
-) {
+pub(crate) fn captured_loaded(ctx: &mut Ctx<'_>, load: &LoadCapture<'_>) -> Vec<ObjId> {
     let now = ctx.w.world_ic_now().at;
-    let delay = i64::from(super::config(ctx.w).extract_s);
     let held: Vec<CrewRecord> = ctx
         .w
         .module_state::<CrewBook>()
         .map(|book| {
             book.0
                 .values()
-                .filter(|record| held_in(record, casualty))
+                .filter(|record| held_in(record, load.casualty))
                 .cloned()
                 .collect()
         })
         .unwrap_or_default();
+    let name = crate::port::coop::name_of(ctx.w, load.casualty);
+    let carrier = crate::port::coop::name_of(ctx.w, load.carrier);
+    let captor = crate::port::coop::name_of(ctx.w, load.captor);
+    let mut taken = Vec::new();
     for record in held {
         let who = record.character;
-        let Some(port) = destination(ctx.w, who) else {
-            tracing::warn!(
-                who = who.0,
-                "tacsim: an abandoned character knows no safe port"
-            );
-            continue;
-        };
-        let next = abandon(&record, site, (port.id, delay), now);
-        let due = next.extraction.as_ref().map_or(now, |coming| coming.due_ic);
-        let name = crate::ic_return::PORTS
-            .iter()
-            .find(|known| Some(known.id) == next.extraction.as_ref().map(|c| c.port.as_str()))
-            .map_or(port.name, |known| known.name);
-        put(ctx, next);
+        vacate_seat(ctx, who, load.casualty);
+        step_into(ctx, who, load.room);
+        put(ctx, capture(&record, load.carrier, load.captor, now));
         ctx.out.sys_to_actor(
             who,
             "tacsim.field",
-            ABANDONED
-                .replace("{name}", &crate::port::coop::name_of(ctx.w, casualty))
-                .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier))
-                .replace("{port}", name)
-                .replace("{h}", &hours(due - now).to_string()),
+            CAPTURED
+                .replace("{name}", &name)
+                .replace("{carrier}", &carrier)
+                .replace("{captor}", &captor),
+        );
+        capture_standing(ctx, load, who);
+        taken.push(who);
+    }
+    if !taken.is_empty() {
+        let names: Vec<String> = taken
+            .iter()
+            .map(|who| crate::port::coop::name_of(ctx.w, *who))
+            .collect();
+        ctx.out.sys_to_actor(
+            load.captor,
+            "tacsim.field",
+            CAPTOR_TOLD
+                .replace("{carrier}", &carrier)
+                .replace("{who}", &names.join(", ")),
+        );
+    }
+    taken
+}
+
+/// **[`captured_loaded`]'s rule for one record**: held aboard `carrier` by `captor` since `now`,
+/// the condition kept, and any extraction or treatment gone (a captive asks for extraction only
+/// after the bound, cut CR.3).
+#[must_use]
+pub(crate) fn capture(record: &CrewRecord, carrier: ObjId, captor: ObjId, now: i64) -> CrewRecord {
+    let mut next = record.clone();
+    next.location = CrewLocation::Captured {
+        carrier,
+        captor,
+        since_ic: now,
+    };
+    next.extraction = None;
+    next.treatment = None;
+    next.at_ic = now;
+    next
+}
+
+/// **Vacate `who`'s seat in `unit`**, when they hold it (a load runs only outside a field, so no
+/// arena is told).
+fn vacate_seat(ctx: &mut Ctx<'_>, who: ObjId, unit: ObjId) {
+    let Some((seated, station)) = super::parties::seated(ctx.w, unit) else {
+        return;
+    };
+    if seated != who {
+        return;
+    }
+    if let Some(station) = mush_sim::StationId::new(station.as_str())
+        && let Err(error) = mush_sim::vacate_station(ctx, unit, &station, who)
+    {
+        tracing::warn!(
+            who = who.0,
+            unit = unit.0,
+            ?error,
+            "tacsim: a loaded casualty's seat did not vacate"
         );
     }
 }
 
-/// **[`abandoned_loaded`]'s rule for one record**: stranded on `site` in the hull it was in, with
-/// an extraction to `port` due `delay` from `now`, abandoned (an extraction already coming keeps
-/// its port and due instant).
-#[must_use]
-pub(crate) fn abandon(
-    record: &CrewRecord,
-    site: &CanonicalId,
-    (port, delay): (&str, i64),
-    now: i64,
-) -> CrewRecord {
-    let unit = match &record.location {
-        CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => *unit,
-        CrewLocation::Carrier { hull } | CrewLocation::Captured { carrier: hull, .. } => *hull,
-        CrewLocation::Port { .. } | CrewLocation::Processing { .. } => ObjId(0),
-    };
-    let mut next = record.clone();
-    next.location = CrewLocation::Stranded {
-        site: site.clone(),
-        unit,
-    };
-    next.extraction = Some(match &record.extraction {
-        Some(coming) => Extraction {
-            abandoned: true,
-            ..coming.clone()
-        },
-        None => Extraction {
-            port: SmolStr::new(port),
-            requested_ic: now,
-            due_ic: now.saturating_add(delay),
-            abandoned: true,
-            forced: false,
-            capture: None,
-        },
+/// **`who` steps out into `room`** — a carrier's bay room — by mush-sim's interior placement
+/// (the `+tv/<n> board` path), else a plain move. Never through the exit hooks: the crew's own
+/// moves never ask the [`HeldGate`].
+fn step_into(ctx: &mut Ctx<'_>, who: ObjId, room: ObjId) {
+    let from = ctx.w.get(who).and_then(|object| object.location);
+    if from == Some(room) {
+        return;
+    }
+    if let Err(error) = mush_sim::place_interior(ctx, who, room, None) {
+        tracing::warn!(who = who.0, room = room.0, %error, "tacsim: a loaded crew member's placement refused; moved instead");
+        if ctx.w.move_to(who, room).is_err() {
+            return;
+        }
+    }
+    ctx.out.pin_deferred();
+    ctx.emit_world_event(&WorldEvent::Moved {
+        who,
+        from,
+        to: room,
     });
-    next.at_ic = now;
-    next
+    ctx.show_room(who, room);
+}
+
+/// **The cause of the standing a capture writes** (doc 42 Q-42-21):
+/// `capture:<site tag>:<ordinal>:<captive>`, the site tag GC.10's.
+#[must_use]
+pub fn capture_cause(site: &CanonicalId, ordinal: u32, captive: ObjId) -> String {
+    let field = super::standing::cause_prefix(site, ordinal);
+    let tail = field.strip_prefix("field:").unwrap_or(&field);
+    format!("{CAPTURE_CAUSE}{tail}{}", captive.0)
+}
+
+/// **Whether `captor` held `captive` Hostile at the capture** (doc 42 Q-42-21): an organization
+/// of either declared Hostile on one of the other's (doc 40 cut FR.1's stance table, read now),
+/// or either stood behind fire in the site's last field (a GC.10 receipt of that field naming
+/// them). A field's private marks end with it (Q-CF-8) and leave no record, so a mark that was
+/// never followed by fire reads as no hostility.
+#[must_use]
+pub(crate) fn held_hostile(
+    w: &World,
+    site: &CanonicalId,
+    ordinal: u32,
+    captor: ObjId,
+    captive: ObjId,
+) -> bool {
+    if declared_hostile(w, captor, captive) {
+        return true;
+    }
+    if ordinal == 0 {
+        return false;
+    }
+    mush_faction::standing_causes(w, &super::standing::cause_prefix(site, ordinal))
+        .iter()
+        .filter_map(|cause| mush_faction::standing_receipt(w, cause))
+        .any(|receipt| receipt.subject == captor || receipt.subject == captive)
+}
+
+/// Whether an organization of `a` and one of `b` stand Hostile, either way (the stance table).
+fn declared_hostile(w: &World, a: ObjId, b: ObjId) -> bool {
+    use super::parties::Affiliation;
+    let Some(table) = w
+        .module_state::<mush_faction::FactionState>()
+        .filter(|table| !table.stances.is_empty())
+    else {
+        return false;
+    };
+    let side = |affiliation: &Affiliation| match affiliation {
+        Affiliation::Org(org) => mush_faction::StanceSide::Org(*org),
+        Affiliation::Faction(faction) => mush_faction::StanceSide::Faction(*faction),
+    };
+    let (mine, theirs) = (
+        super::parties::affiliations(w, a),
+        super::parties::affiliations(w, b),
+    );
+    mine.iter().any(|x| {
+        theirs.iter().any(|y| {
+            table.stance(side(x), side(y)) == mush_faction::Stance::Hostile
+                || table.stance(side(y), side(x)) == mush_faction::Stance::Hostile
+        })
+    })
+}
+
+/// **The capture's standing** (doc 42 Q-42-21): unless the captor held the captive Hostile, one
+/// grant against the captor with each faction the captive openly stands in, [`STANDING_CAPTURE`]
+/// each, not voidable. An identical retry writes nothing.
+fn capture_standing(ctx: &mut Ctx<'_>, load: &LoadCapture<'_>, captive: ObjId) {
+    if held_hostile(ctx.w, load.site, load.ordinal, load.captor, captive)
+        || ctx.w.get(load.captor).is_none_or(|object| {
+            !object.kind.is_actor() || object.flags.contains(mush_core::Flags::GOING)
+        })
+    {
+        return;
+    }
+    let effects: Vec<mush_faction::StandingEffect> = mush_faction::open_factions(ctx.w, captive)
+        .into_iter()
+        .take(8)
+        .map(|faction| mush_faction::StandingEffect {
+            faction,
+            delta: STANDING_CAPTURE,
+        })
+        .collect();
+    if effects.is_empty() {
+        return;
+    }
+    let who = crate::port::coop::name_of(ctx.w, captive);
+    let reason = CAPTURE_REASON
+        .replace("{who}", &who)
+        .replace("{site}", &super::admit::site_name(ctx, load.site));
+    let cause = capture_cause(load.site, load.ordinal, captive);
+    match mush_faction::record_standing(ctx, &cause, load.captor, &effects, &reason) {
+        Ok(true) => {
+            let factions = ctx
+                .w
+                .module_state::<mush_faction::FactionState>()
+                .map(|state| {
+                    effects
+                        .iter()
+                        .map(|effect| {
+                            state.factions.get(&effect.faction).map_or_else(
+                                || format!("faction {}", effect.faction.0),
+                                |faction| faction.name.to_string(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            ctx.out.sys_to_actor(
+                load.captor,
+                "tacsim.field",
+                CAPTURE_STANDING
+                    .replace("{who}", &who)
+                    .replace("{factions}", &factions)
+                    .replace("{delta}", &STANDING_CAPTURE.to_string()),
+            );
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(cause, %error, "tacsim: a capture's standing was refused");
+        }
+    }
+}
+
+// ---- the NPC exit (doc 42 Q-42-5, Q-42-26) ------------------------------------------------
+
+/// [`NpcExit::format`].
+pub const NPC_EXIT_FORMAT: u16 = 1;
+/// The owed NPC exits' key prefix: `tacsim:crew_exit:<npc>`.
+pub const NPC_EXIT_PREFIX: &str = "tacsim:crew_exit:";
+/// **A hired NPC's exit at a load**, told to the organizer (doc 42 Q-42-5): `{npc}`, `{name}`,
+/// `{carrier}`, `{room}`.
+pub const NPC_RETURNED: &str = "{npc} was flying the {name} when it was hauled into the {carrier}'s bay, a carrier not of your party or a Friend's: their contract with you ends, and they are back at {room}.";
+
+/// `tacsim:crew_exit:<npc>`.
+#[must_use]
+pub fn npc_exit_key(npc: ObjId) -> SmolStr {
+    SmolStr::new(format!("{NPC_EXIT_PREFIX}{}", npc.0))
+}
+
+/// **A hired NPC's exit owed to the roster** (doc 42 Q-42-26): the load did the world half — the
+/// seat vacated, the NPC in their hire port's pool room, the organizer told — and the tow tick
+/// submits `tacsim_crew_captured` as the organizer until the ledger shows the contract and the
+/// reservation gone. Until then the contract stands, so the NPC is not on offer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NpcExit {
+    /// [`NPC_EXIT_FORMAT`].
+    pub format: u16,
+    /// The NPC.
+    pub npc: ObjId,
+    /// The organizer: the contract's employer, the action's principal.
+    pub organizer: ObjId,
+    /// The IC instant of the load: the action's key.
+    pub recovered_ic: i64,
+}
+
+/// **The owed NPC exits, in RAM** (module state; loaded at boot, written through
+/// [`owe_npc_exit`]), and how many times each was submitted this boot.
+#[derive(Clone, Debug, Default)]
+pub struct NpcExits {
+    owed: BTreeMap<ObjId, NpcExit>,
+    tries: BTreeMap<ObjId, u32>,
+}
+
+/// **The exit owed for `npc`**, if any.
+#[must_use]
+pub fn npc_exit_of(w: &World, npc: ObjId) -> Option<&NpcExit> {
+    w.module_state::<NpcExits>()?.owed.get(&npc)
+}
+
+/// **The exits owed to `organizer`'s roster**, in NPC order (the action's offer).
+#[must_use]
+pub fn npc_exits_for(w: &World, organizer: ObjId) -> Vec<NpcExit> {
+    w.module_state::<NpcExits>()
+        .map(|book| {
+            book.owed
+                .values()
+                .filter(|exit| exit.organizer == organizer)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Write `exit` to RAM and the module's lane.
+fn owe_npc_exit(ctx: &mut Ctx<'_>, exit: NpcExit) {
+    match serde_json::to_value(&exit) {
+        Ok(value) => push_op(
+            ctx.out,
+            mush_core::ModuleWrite::JsonSet {
+                key: npc_exit_key(exit.npc),
+                value,
+            },
+        ),
+        Err(error) => {
+            tracing::error!(%error, "tacsim: an owed NPC exit did not encode");
+            return;
+        }
+    }
+    if let Some(book) = ctx.w.module_state_mut::<NpcExits>() {
+        book.tries.remove(&exit.npc);
+        book.owed.insert(exit.npc, exit);
+    }
+}
+
+/// **The NPC pool room for `npc`** (doc 42 Q-42-5): the room the NPC was authored in, their home,
+/// else the arrival room of the hire port the contract names.
+fn pool_room(w: &World, npc: ObjId, port: &str) -> Option<ObjId> {
+    w.get(npc)
+        .and_then(|object| object.home)
+        .filter(|home| {
+            w.get(*home).is_some_and(|room| {
+                room.kind == ObjKind::Room && !room.flags.contains(mush_core::Flags::GOING)
+            })
+        })
+        .or_else(|| {
+            crate::ic_return::PORTS
+                .iter()
+                .find(|known| known.id == port)
+                .and_then(|known| crate::ic_return::arrival_room(w, known))
+        })
+}
+
+/// **A hired NPC flying a casualty loaded into a non-friend's bay** (doc 42 cut CR.1; Q-42-5,
+/// Q-42-26): the world half of the exit, at once. The NPC seated in `casualty` under a crew
+/// contract leaves the seat and goes back to the hire port's pool room; the organizer is told;
+/// the roster's half is owed ([`NpcExit`]) and the tow tick submits it ([`npc_exits`]). An NPC
+/// with no contract, or nobody seated, is left alone. The NPC.
+pub(crate) fn npc_exit_loaded(ctx: &mut Ctx<'_>, casualty: ObjId, carrier: ObjId) -> Option<ObjId> {
+    let (npc, station) = super::parties::seated(ctx.w, casualty)?;
+    if ctx
+        .w
+        .get(npc)
+        .is_none_or(|object| object.kind != ObjKind::Npc)
+    {
+        return None;
+    }
+    let contracts = ctx
+        .w
+        .module_state::<crate::detachment::crew::CrewHandles>()?
+        .contracts
+        .clone();
+    let contract = ctx.action_state(&contracts, &npc).ok().flatten()?.clone();
+    let room = pool_room(ctx.w, npc, contract.terms.port.as_str())?;
+    if let Some(station) = mush_sim::StationId::new(station.as_str())
+        && let Err(error) = mush_sim::vacate_station(ctx, casualty, &station, npc)
+    {
+        tracing::warn!(
+            npc = npc.0,
+            unit = casualty.0,
+            ?error,
+            "tacsim: a captured hull's NPC seat did not vacate"
+        );
+    }
+    let from = ctx.w.get(npc).and_then(|object| object.location);
+    if from != Some(room) {
+        if ctx.w.move_to(npc, room).is_err() {
+            tracing::warn!(
+                npc = npc.0,
+                "tacsim: a captured hull's NPC could not go back to the pool"
+            );
+            return None;
+        }
+        let placed = ctx
+            .w
+            .module_state::<mush_sim::SpatialState>()
+            .is_some_and(|state| state.is_placed(npc));
+        if placed && let Err(error) = mush_sim::unplace(ctx, npc, "crew exit") {
+            tracing::warn!(npc = npc.0, %error, "tacsim: a returned NPC's placement did not clear");
+        }
+        ctx.emit_world_event(&WorldEvent::Moved {
+            who: npc,
+            from,
+            to: room,
+        });
+    }
+    owe_npc_exit(
+        ctx,
+        NpcExit {
+            format: NPC_EXIT_FORMAT,
+            npc,
+            organizer: contract.employer,
+            recovered_ic: ctx.w.world_ic_now().at,
+        },
+    );
+    let line = NPC_RETURNED
+        .replace("{npc}", &crate::port::coop::name_of(ctx.w, npc))
+        .replace("{name}", &crate::port::coop::name_of(ctx.w, casualty))
+        .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier))
+        .replace("{room}", &crate::port::coop::name_of(ctx.w, room));
+    ctx.out
+        .sys_to_actor(contract.employer, "tacsim.field", line);
+    Some(npc)
+}
+
+/// **The owed NPC exits' pass** (doc 42 Q-42-26; on the tow tick): an exit whose contract and
+/// reservation the ledger no longer shows for its organizer has landed and is forgotten; every
+/// other is submitted again as its organizer (`Fire::as_principal`).
+pub(crate) fn npc_exits(ctx: &mut Ctx<'_>) {
+    let owed: Vec<NpcExit> = ctx
+        .w
+        .module_state::<NpcExits>()
+        .map(|book| book.owed.values().cloned().collect())
+        .unwrap_or_default();
+    if owed.is_empty() {
+        return;
+    }
+    let Some(contracts) = ctx
+        .w
+        .module_state::<crate::detachment::crew::CrewHandles>()
+        .map(|handles| handles.contracts.clone())
+    else {
+        return;
+    };
+    let reservations = ctx
+        .w
+        .module_state::<crate::detachment::activation::ActivationHandles>()
+        .map(|handles| handles.reservations.clone());
+    let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
+    for exit in owed {
+        let Ok(contract) = ctx.action_state(&contracts, &exit.npc) else {
+            continue;
+        };
+        let contracted = contract.is_some_and(|c| c.employer == exit.organizer);
+        let reserved = match &reservations {
+            Some(handle) => match ctx.action_state(handle, &exit.npc) {
+                Ok(found) => found.is_some_and(|r| r.organizer == exit.organizer),
+                Err(_) => continue,
+            },
+            None => false,
+        };
+        if !contracted && !reserved {
+            push_op(
+                ctx.out,
+                mush_core::ModuleWrite::Del {
+                    key: npc_exit_key(exit.npc),
+                },
+            );
+            if let Some(book) = ctx.w.module_state_mut::<NpcExits>() {
+                book.owed.remove(&exit.npc);
+                book.tries.remove(&exit.npc);
+            }
+            tracing::info!(
+                npc = exit.npc.0,
+                "tacsim: a captured hull's NPC is off the roster"
+            );
+            continue;
+        }
+        let tries = ctx
+            .w
+            .module_state::<NpcExits>()
+            .and_then(|book| book.tries.get(&exit.npc).copied())
+            .unwrap_or(0);
+        if crate::detachment::crew::submit_captured(ctx, &mut fire, &exit, tries)
+            && let Some(book) = ctx.w.module_state_mut::<NpcExits>()
+        {
+            book.tries.insert(exit.npc, tries.saturating_add(1));
+        }
+    }
 }
 
 /// **A field's frames** (the host's branch, before the fire door): a pilot inside a hull whose
@@ -1406,6 +1861,184 @@ fn land(
     );
 }
 
+// ---- the captor's verbs (doc 42 cut CR.1; Q-42-9) -----------------------------------------
+
+/// `+ship/captives` with nobody held.
+pub const NO_CAPTIVES: &str = "You hold nobody aboard.";
+/// `+ship/captives`' row: `{name}`, `{n}`, `{carrier}`, `{condition}`, `{h}`.
+pub const CAPTIVE_ROW: &str =
+    "{name} (#{n}): held aboard the {carrier}, {condition}, for {h} IC h.";
+/// `+ship/release` naming nobody held.
+pub const NOT_HELD: &str = "You hold nobody aboard by that name. +ship/captives lists them.";
+/// The release, told to the captor: `{who}`.
+pub const RELEASED: &str = "You release {who}.";
+/// The release docked at an IC port, told to the released: `{captor}`, `{port}`.
+pub const RELEASED_AT_PORT: &str =
+    "{captor} releases you at {port}: you are set down in its arrivals, free.";
+/// The release anywhere else, told to the released: `{captor}`, `{carrier}`.
+pub const RELEASED_ABOARD: &str = "{captor} releases you aboard the {carrier}: you are a passenger now, free to leave at the next port.";
+
+/// **The captives `actor` holds**: held by them, or held aboard the hull they command.
+fn captives_of(w: &World, actor: ObjId) -> Vec<CrewRecord> {
+    let helm = crate::port::coop::helm_of(w, actor).map(|helm| helm.hull);
+    w.module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| match &record.location {
+                    CrewLocation::Captured {
+                        carrier, captor, ..
+                    } => *captor == actor || Some(*carrier) == helm,
+                    _ => false,
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **`+ship/captives`** (doc 42 Q-42-9): the captives the actor holds, each with the carrier,
+/// the condition and the IC hours held.
+///
+/// # Errors
+///
+/// None today; the signature is the verb's.
+pub(crate) fn captives_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let held = captives_of(ctx.w, actor);
+    if held.is_empty() {
+        ctx.out
+            .sys_to_actor(actor, "tacsim.field", NO_CAPTIVES.to_owned());
+        return Ok(());
+    }
+    let now = ctx.w.world_ic_now().at;
+    for record in held {
+        let CrewLocation::Captured {
+            carrier, since_ic, ..
+        } = record.location
+        else {
+            continue;
+        };
+        let condition = match record.condition {
+            CrewCondition::Fit => "fit",
+            CrewCondition::Injured => "injured",
+            CrewCondition::Incapacitated => "incapacitated",
+        };
+        let line = CAPTIVE_ROW
+            .replace(
+                "{name}",
+                &crate::port::coop::name_of(ctx.w, record.character),
+            )
+            .replace("{n}", &record.character.0.to_string())
+            .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier))
+            .replace("{condition}", condition)
+            .replace("{h}", &((now - since_ic).max(0) / 3_600).to_string());
+        ctx.out.sys_to_actor(actor, "tacsim.field", line);
+    }
+    Ok(())
+}
+
+/// **`+ship/release <who>`** (doc 42 Q-42-9): the captor lets one captive go, at will and for
+/// nothing. With the carrier docked at an IC port the captive is set down in its arrival room, at
+/// the port ([`CrewLocation::Port`]); anywhere else they stay where they stand, in the carrier's
+/// bay room, a passenger aboard it ([`CrewLocation::Carrier`]). Their condition stays.
+///
+/// # Errors
+///
+/// [`NOT_HELD`] for anyone the actor does not hold.
+pub(crate) fn release_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let raw = ctx.args.raw().trim().to_owned();
+    let held = captives_of(ctx.w, actor);
+    let wanted = raw.strip_prefix('#').and_then(|n| n.parse::<u32>().ok());
+    let mut named = held.into_iter().filter(|record| {
+        wanted.map_or_else(
+            || {
+                !raw.is_empty()
+                    && crate::port::coop::name_of(ctx.w, record.character)
+                        .to_ascii_lowercase()
+                        .starts_with(&raw.to_ascii_lowercase())
+            },
+            |n| record.character.0 == n,
+        )
+    });
+    let (Some(record), None) = (named.next(), named.next()) else {
+        return Err(CmdError::msg(NOT_HELD));
+    };
+    let CrewLocation::Captured { carrier, .. } = record.location else {
+        return Err(CmdError::msg(NOT_HELD));
+    };
+    let who = record.character;
+    let now = ctx.w.world_ic_now().at;
+    let port = match crate::port::ship::berth_of(ctx.w, carrier) {
+        crate::port::ship::Berth::Docked { def, .. } => crate::ic_return::PORTS
+            .iter()
+            .find(|known| known.id == def.venue.as_str()),
+        crate::port::ship::Berth::UnderWay | crate::port::ship::Berth::Elsewhere => None,
+    };
+    let landing =
+        port.and_then(|port| crate::ic_return::arrival_room(ctx.w, port).map(|room| (port, room)));
+    let captor = crate::port::coop::name_of(ctx.w, actor);
+    let line = if let Some((port, room)) = landing {
+        set_down(ctx, who, room);
+        if let Err(error) = crate::ic_return::stamp(ctx.w, who, port) {
+            tracing::warn!(who = who.0, %error, "tacsim: a released captive's last-port stamp did not write");
+        }
+        put(
+            ctx,
+            CrewRecord {
+                location: CrewLocation::Port {
+                    port: SmolStr::new(port.id),
+                },
+                at_ic: now,
+                ..record
+            },
+        );
+        RELEASED_AT_PORT
+            .replace("{captor}", &captor)
+            .replace("{port}", port.name)
+    } else {
+        put(
+            ctx,
+            CrewRecord {
+                location: CrewLocation::Carrier { hull: carrier },
+                at_ic: now,
+                ..record
+            },
+        );
+        RELEASED_ABOARD
+            .replace("{captor}", &captor)
+            .replace("{carrier}", &crate::port::coop::name_of(ctx.w, carrier))
+    };
+    ctx.out.sys_to_actor(who, "tacsim.field", line);
+    let done = RELEASED.replace("{who}", &crate::port::coop::name_of(ctx.w, who));
+    ctx.out.sys_to_actor(actor, "tacsim.field", done);
+    Ok(())
+}
+
+/// **Set `who` down in `dest`** (a release at a port): out of any placement, a plain move, the
+/// room told, and the arrival shown.
+fn set_down(ctx: &mut Ctx<'_>, who: ObjId, dest: ObjId) {
+    let from = ctx.w.get(who).and_then(|object| object.location);
+    if ctx.w.move_to(who, dest).is_err() {
+        tracing::warn!(who = who.0, "tacsim: a released captive's move refused");
+        return;
+    }
+    let placed = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|state| state.is_placed(who));
+    if placed && let Err(error) = mush_sim::unplace(ctx, who, "release") {
+        tracing::warn!(who = who.0, %error, "tacsim: a released captive's placement did not clear");
+    }
+    ctx.show_room(who, dest);
+    ctx.emit_world_event(&WorldEvent::Moved {
+        who,
+        from,
+        to: dest,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1519,36 +2152,23 @@ mod tests {
         assert!(loaded_aboard(&home, ObjId(40), ObjId(90), 500).is_none());
     }
 
-    /// **Doc 36 cut GC.5** (Q-36-52, the owner's ruling): a character inside a casualty loaded
-    /// into a non-friend's bay is stranded in it with an abandoned extraction due after the
-    /// delay; one already coming keeps its port and due instant and only loses its deferral; the
-    /// flag round-trips and is omitted when false.
+    /// **Doc 42 cut CR.1** (Q-38-22, Q-42-1, Q-42-16): a character inside a casualty loaded into a
+    /// non-friend's bay is held aboard the carrier by the captor from the load's instant; the
+    /// condition stays, an extraction asked for is gone; the record round-trips under the same
+    /// format, and the cause the standing writes is the GC.10 site tag's.
     #[test]
-    fn gc5_a_non_friend_load_abandons_the_crew_to_extraction() {
+    fn cr1_a_non_friend_load_captures_the_crew() {
         let site = CanonicalId::new("ahuna").expect("a site");
         let inside = CrewRecord {
             format: CREW_FORMAT,
             character: ObjId(7),
-            location: CrewLocation::Unit { unit: ObjId(40) },
+            location: CrewLocation::Stranded {
+                site: site.clone(),
+                unit: ObjId(40),
+            },
             condition: CrewCondition::Incapacitated,
             at_ic: 100,
             organizer: Some(ObjId(3)),
-            extraction: None,
-            treatment: None,
-        };
-        let left = abandon(&inside, &site, ("stickney", 3_600), 500);
-        assert_eq!(
-            left.location,
-            CrewLocation::Stranded {
-                site: site.clone(),
-                unit: ObjId(40)
-            }
-        );
-        let coming = left.extraction.clone().expect("the extraction starts");
-        assert!(coming.abandoned, "no recovery flight defers it");
-        assert_eq!((coming.requested_ic, coming.due_ic), (500, 4_100));
-        assert_eq!(coming.port.as_str(), "stickney");
-        let asked = CrewRecord {
             extraction: Some(Extraction {
                 port: SmolStr::new("ceres"),
                 requested_ic: 200,
@@ -1557,23 +2177,55 @@ mod tests {
                 forced: false,
                 capture: None,
             }),
-            ..inside
+            treatment: None,
         };
-        let kept = abandon(&asked, &site, ("stickney", 3_600), 500)
-            .extraction
-            .expect("still coming");
+        assert!(held_in(&inside, ObjId(40)), "the load carries them");
+        let held = capture(&inside, ObjId(90), ObjId(12), 500);
         assert_eq!(
-            (kept.port.as_str(), kept.due_ic, kept.abandoned),
-            ("ceres", 900, true)
+            held.location,
+            CrewLocation::Captured {
+                carrier: ObjId(90),
+                captor: ObjId(12),
+                since_ic: 500
+            }
         );
-        let wire = serde_json::to_value(&asked).expect("encodes");
+        assert_eq!(
+            held.condition,
+            CrewCondition::Incapacitated,
+            "the hurt stay hurt"
+        );
+        assert!(held.extraction.is_none(), "no extraction while held");
+        assert_eq!(held.at_ic, 500);
         assert!(
-            wire["extraction"].get("abandoned").is_none(),
-            "omitted when false"
+            held.in_custody() && leaves_alone(&held),
+            "a check-in leaves them alone"
+        );
+        assert!(
+            !held_in(&held, ObjId(40)),
+            "a second load carries them nowhere"
         );
         let back: CrewRecord =
-            serde_json::from_value(serde_json::to_value(&left).expect("encodes")).expect("decodes");
-        assert_eq!(back, left);
+            serde_json::from_value(serde_json::to_value(&held).expect("encodes")).expect("decodes");
+        assert_eq!(back, held);
+        let field = super::super::standing::cause_prefix(&site, 3);
+        let cause = capture_cause(&site, 3, ObjId(7));
+        assert_eq!(
+            cause.strip_prefix(CAPTURE_CAUSE),
+            field
+                .strip_prefix("field:")
+                .map(|tag| format!("{tag}7"))
+                .as_deref()
+        );
+        let exit = NpcExit {
+            format: NPC_EXIT_FORMAT,
+            npc: ObjId(55),
+            organizer: ObjId(3),
+            recovered_ic: 500,
+        };
+        let back: NpcExit =
+            serde_json::from_value(serde_json::to_value(&exit).expect("encodes")).expect("decodes");
+        assert_eq!(back, exit);
+        assert_eq!(npc_exit_key(ObjId(55)).as_str(), "tacsim:crew_exit:55");
     }
 
     /// A record for the doc 42 tests: `who`, injured, at `location`.

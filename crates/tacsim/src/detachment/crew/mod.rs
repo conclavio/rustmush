@@ -11,7 +11,11 @@ use mush_core::{
     CanonicalHash, CanonicalId, ClockRef, ClockStamp, Flags, GOD, ObjId, ObjKind, World,
 };
 pub use mush_tactics::field_ops::NpcMissionScope;
-pub use runtime::{CrewHandles, action_descriptor, outcome_descriptor, register};
+pub(crate) use runtime::submit_captured;
+pub use runtime::{
+    CAPTURED_ACTION, CapturedHandles, CrewHandles, action_descriptor, captured_action_descriptor,
+    captured_outcome_descriptor, outcome_descriptor, register, register_captured,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

@@ -27,6 +27,14 @@ pub(crate) fn register_preparation(
     let planning = planning::register(reg, actions, outcomes, unit_authority)?;
     let crew = crew::register(reg, actions, outcomes)?;
     let active = activation::register(reg, actions, outcomes, &planning, &crew, unit_authority)?;
+    // Doc 42 cut CR.1 (Q-42-26): a captured hull's NPC leaves the roster, over both families.
+    crew::register_captured(
+        reg,
+        actions,
+        outcomes,
+        &crew.contracts,
+        &active.reservations,
+    )?;
     sortie::register(
         reg,
         actions,

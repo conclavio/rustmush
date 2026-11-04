@@ -58,8 +58,11 @@
 //! stay with it until then (Q-36-21): nothing in the tow touches them. A completed load into a
 //! carrier of the crew's own party or a Friend's sets every character still aboard the casualty
 //! aboard the carrier, and cancels a pending extraction (Q-36-52's friendly half). A completed
-//! load into anyone else's carrier abandons them: the extraction starts for each on the spot,
-//! with no recovery-flight deferral (Q-36-52, doc 36 cut GC.5; `crate::field::crew`).
+//! load into anyone else's carrier captures them (doc 42 cut CR.1; Q-38-22, Q-42-16, replacing
+//! GC.5's abandonment): each steps out into the carrier's bay room held by the carrier's operator,
+//! and a hired NPC flying it goes back to the hire port's pool (`crate::field::crew`). The load's
+//! finish writes a `Capture` evidence row beside the `Recovery` one for every captive taken off
+//! owned ground without the title holder's or the landholder's authority (Q-42-22).
 
 use std::collections::BTreeMap;
 
@@ -123,7 +126,7 @@ pub const LOAD_FILED: &str =
 pub const LOADED: &str = "The {name} is aboard the {carrier}, in its bay.";
 /// **Doc 36 cut GC.5**: the load's preview into a carrier not of the casualty's party or a
 /// Friend's (Q-36-16): `{n}`, `{name}`, `{carrier}`, `{min}`.
-pub const LOAD_PREVIEW_FOREIGN: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. The {name} is not of the {carrier}'s party or a Friend's: aboard, it is in the {carrier}'s custody with a salvage claim owed, never its title, and anyone still inside it is abandoned to extraction. +tv/{n} load go";
+pub const LOAD_PREVIEW_FOREIGN: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. The {name} is not of the {carrier}'s party or a Friend's: aboard, it is in the {carrier}'s custody with a salvage claim owed, never its title, and anyone still inside it is held in your custody aboard the {carrier}. +tv/{n} load go";
 /// **Doc 36 cut GC.5**: the load's preview of a written-off lease rig (Q-36-29): `{n}`,
 /// `{name}`, `{carrier}`, `{min}`.
 pub const LOAD_PREVIEW_HAND_BACK: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. The {name} is an Occator write-off: loaded, it goes back to Occator, with no claim. +tv/{n} load go";
@@ -476,6 +479,10 @@ pub struct LoadFacts {
     pub in_bay: bool,
     /// The act's length, IC seconds (`[tacsim.recovery].load_s`), fixed by the server.
     pub secs: u32,
+    /// **Doc 42 cut CR.1** (Q-42-22): the characters the load's physical step took captive, for
+    /// the finish's `Capture` evidence rows. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captives: Vec<ObjId>,
 }
 
 /// **One server-written order** the offer fixes for its prepare (this module's head).
@@ -622,6 +629,13 @@ pub(crate) struct TowIndex(BTreeMap<ObjId, (CanonicalId, RecoveryOperation)>);
 /// **The tows the tick finished and has not yet told** (RAM): tug → (operator, act).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TowWatch(BTreeMap<ObjId, (ObjId, TowAct)>);
+
+/// **The captives each tug's load took, until its finish lands** (RAM; doc 42 cut CR.1): tug →
+/// (casualty, captives), read into the finish's [`LoadFacts::captives`] on every submission and
+/// dropped once the act is told. A restart between the load's physical step and its finish loses
+/// the list, and with it only the finish's `Capture` evidence rows: the captives stay held.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TowCaptives(BTreeMap<ObjId, (ObjId, Vec<ObjId>)>);
 
 /// The tow `tug` holds, as the RAM mirror last saw it.
 #[must_use]
@@ -1009,6 +1023,12 @@ fn load_facts(
         casualty_unit: cells,
         slot: load.slot.as_str().to_owned(),
         in_bay: act::where_is(w, casualty) == (Where::Bay { hull: carrier }),
+        captives: w
+            .module_state::<TowCaptives>()
+            .and_then(|taken| taken.0.get(&tug))
+            .filter(|(of, _)| *of == casualty)
+            .map(|(_, captives)| captives.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -1211,6 +1231,7 @@ pub(crate) fn register(
     reg.state(TowOrders::default());
     reg.state(TowIndex::default());
     reg.state(TowWatch::default());
+    reg.state(TowCaptives::default());
     reg.state(crate::surface::tender::TendApplied::default());
     reg.state(crate::surface::claim::ClaimMail::default());
     let (Some(action), Some(outcome)) = (actions.get(TOW_ACTION), outcomes.get(TOW_OUTCOME)) else {
@@ -1727,6 +1748,14 @@ impl TowProvider {
                         landholder: Some(landholder),
                         at_ic: at,
                     },
+                );
+                // Doc 42 cut CR.1 (Q-42-22): the same load carried crew off, each a row.
+                crate::surface::claim::log_captures(
+                    record,
+                    holder,
+                    landholder,
+                    &facts.captives,
+                    at,
                 );
             }
             crate::surface::salvage::hold(
@@ -2649,7 +2678,13 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                     .and_then(|index| index.0.get(&act.tug))
                     .map(|(_, op)| op.casualty());
                 if !promoted && let Some(casualty) = casualty {
-                    place_in_bay(ctx, &site, act.tug, casualty, carrier);
+                    let captives =
+                        place_in_bay(ctx, &site, (act.tug, act.operator), casualty, carrier);
+                    if !captives.is_empty()
+                        && let Some(taken) = ctx.w.module_state_mut::<TowCaptives>()
+                    {
+                        taken.0.insert(act.tug, (casualty, captives));
+                    }
                 }
                 let facts = casualty.and_then(|casualty| {
                     let ramp = crate::surface::tick::hull_view_berth(ctx.w, carrier)
@@ -2685,31 +2720,35 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     // Doc 36 cut GC.6 (Q-36-27): the salvage claims whose window has run, or which a contest
     // vacates.
     crate::surface::claim::tick(ctx);
+    // Doc 42 cut CR.1 (Q-42-26): the hired NPCs' roster exits a load owes.
+    crate::field::crew::npc_exits(ctx);
 }
 
 /// **The load's physical step**: the casualty into `carrier`'s bay, when its tug stands within
-/// a cell of the ramp and the bay has room for it, and the crew aboard it with it (Q-36-52's
-/// friendly half) or abandoned to extraction (Q-36-52, a non-friend's bay; doc 36 cut GC.5). A
-/// written-off lease rig goes back to Occator's shed instead (Q-36-29). Idempotent: a casualty in
-/// the bay (or the shed) already is left there.
+/// a cell of the ramp and the bay has room for it, and its crew with it — aboard the carrier for a
+/// friendly load (Q-36-52's friendly half), captive for anyone else's (doc 42 cut CR.1; Q-42-16),
+/// a hired NPC flying it back to the hire port's pool (Q-42-5). A written-off lease rig goes back
+/// to Occator's shed instead (Q-36-29), its crew first stepping out into the bay room (doc 42
+/// Draft 0.3, 42-8). Idempotent: a casualty in the bay (or the shed) already is left there. The
+/// captives taken, for the finish's evidence rows (Q-42-22).
 fn place_in_bay(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
-    tug: ObjId,
+    (tug, operator): (ObjId, ObjId),
     casualty: ObjId,
     carrier: ObjId,
-) {
+) -> Vec<ObjId> {
     if act::where_is(ctx.w, casualty) == (Where::Bay { hull: carrier })
         || crate::port::tv::in_shed(ctx.w, casualty)
     {
-        return;
+        return Vec::new();
     }
     let Some((entry, _, ramp, room, slot)) = crate::surface::tick::hull_view_berth(ctx.w, carrier)
     else {
-        return;
+        return Vec::new();
     };
     let Some((there, _, pose)) = on_ground(ctx.w, tug) else {
-        return;
+        return Vec::new();
     };
     if &entry != site
         || there != *site
@@ -2718,40 +2757,32 @@ fn place_in_bay(
             site_cell(pose.x_cm, pose.y_cm),
         ) > 1
     {
-        return;
+        return Vec::new();
     }
     let Some(load) = bay_load(ctx.w, carrier, Some(casualty)) else {
-        return;
+        return Vec::new();
     };
     let Some((_, _, mass, _, volume)) = unit_facts(ctx.w, casualty) else {
-        return;
+        return Vec::new();
     };
     if load
         .free()
         .check_can_load(mass.total_mass_kg(), volume)
         .is_err()
     {
-        return;
+        return Vec::new();
     }
     let friend = friendly(ctx, site, casualty, carrier);
     // Doc 36 cut GC.5 (Q-36-29): a written-off lease rig goes back to Occator's shed, not into
-    // the bay, with no claim.
+    // the bay, with no claim — its crew out into the bay room first (doc 42 Draft 0.3, 42-8).
     let written_off = crate::port::tv::written_off(ctx.w, casualty);
-    if written_off {
-        if !crate::port::tv::hand_back(ctx, casualty) {
-            return;
-        }
-    } else if let Err(error) = mush_sim::place_interior(ctx, casualty, room, Some(slot)) {
+    if !written_off && let Err(error) = mush_sim::place_interior(ctx, casualty, room, Some(slot)) {
         tracing::warn!(casualty = casualty.0, carrier = carrier.0, %error, "tacsim: a tow's load could not be placed in the bay; its finish records it");
-        return;
+        return Vec::new();
     }
-    // Q-36-52: the crew of a friendly load are aboard the carrier; anyone else's are abandoned,
-    // and their extraction starts now. A written-off rig is nobody's but Occator's, so whoever is
-    // still inside it is abandoned too.
-    if friend && !written_off {
-        crate::field::crew::aboard_loaded(ctx, casualty, carrier);
-    } else {
-        crate::field::crew::abandoned_loaded(ctx, site, casualty, carrier);
+    let captives = load_crew(ctx, site, (casualty, carrier, room), friend, operator);
+    if written_off && !crate::port::tv::hand_back(ctx, casualty) {
+        return captives;
     }
     let template = if written_off {
         HANDED_BACK
@@ -2764,6 +2795,40 @@ fn place_in_bay(
         .replace("{name}", &name(ctx.w, casualty))
         .replace("{carrier}", &name(ctx.w, carrier));
     crate::field::tell_site(ctx, site, &line);
+    captives
+}
+
+/// **The crew of a loaded casualty** (Q-36-52; doc 42 cut CR.1, Q-42-5, Q-42-16): aboard the
+/// carrier for a friendly load; for any other, captive, the captor the carrier's operator
+/// (Q-42-4: the hull's custodian, else the load's operator). A hired NPC flying a non-friend's
+/// load goes back to the pool either way. The seam RS.5 and FR.5 read: one call per completed
+/// load, wherever the load ran. The captives.
+fn load_crew(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    (casualty, carrier, room): (ObjId, ObjId, ObjId),
+    friend: bool,
+    operator: ObjId,
+) -> Vec<ObjId> {
+    if friend {
+        let written_off = crate::port::tv::written_off(ctx.w, casualty);
+        crate::field::crew::aboard_loaded(ctx, casualty, carrier, written_off.then_some(room));
+        return Vec::new();
+    }
+    let _ = crate::field::crew::npc_exit_loaded(ctx, casualty, carrier);
+    let ordinal = record_of(ctx, site).map_or(0, |record| record.ordinal);
+    let captor = custodian_of(ctx, site, carrier).unwrap_or(operator);
+    crate::field::crew::captured_loaded(
+        ctx,
+        &crate::field::crew::LoadCapture {
+            site,
+            ordinal,
+            casualty,
+            carrier,
+            room,
+            captor,
+        },
+    )
 }
 
 /// **Tell each tug's operator how its finished act landed**, once the record shows it gone.
@@ -2783,6 +2848,9 @@ fn tell_landed(
         }
         if let Some(watch) = ctx.w.module_state_mut::<TowWatch>() {
             watch.0.remove(&tug);
+        }
+        if let Some(taken) = ctx.w.module_state_mut::<TowCaptives>() {
+            taken.0.remove(&tug);
         }
         let slot = ctx
             .w
