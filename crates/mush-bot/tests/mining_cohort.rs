@@ -696,7 +696,7 @@ async fn sell_all(client: &mut arena::Client, n: u64) -> lines::SaleRead {
         client,
         &format!("+market/sell {n}=all"),
         &[" when the goods are in"],
-        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING, lines::SELL_BUSY],
     )
     .await;
     lines::sale_receipt(&text).expect("the sale's receipt")
