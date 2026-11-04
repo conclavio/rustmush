@@ -621,6 +621,42 @@ async fn typed(
     panic!("`{line}` kept answering {retry:?}");
 }
 
+/// **The story's float** (a staff seed, outside the bot's vocabulary): God opens a system
+/// source, the pilot reads its own account's id off `@account/list`, and God mints it 50,000.00cr.
+async fn float(god: &mut arena::Client, client: &mut arena::Client) {
+    let id = |text: &str, after: &str| {
+        text.split(after)
+            .nth(1)
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<u64>().ok()
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "no account id after {after:?}:
+{text}"
+                )
+            })
+    };
+    let opened = god
+        .say("@account/system in5_float=cr", "Opened account #")
+        .await;
+    let source = id(&opened, "Opened account #");
+    let listed = client.say("@account/list", " cr = ").await;
+    let row = listed
+        .lines()
+        .find(|line| line.trim_start().starts_with('#') && line.contains(" cr = "))
+        .unwrap_or_else(|| {
+            panic!(
+                "no cr account in the pilot's list:
+{listed}"
+            )
+        });
+    let pilot = id(row, "#");
+    god.say(&format!("@econ/mint {source}={pilot} 5000000"), "Minted")
+        .await;
+}
+
 /// `+market/list`'s rows, read by the bot's own parser.
 async fn board_rows(client: &mut arena::Client) -> Vec<lines::Listing> {
     let from = client.seen.len();
@@ -773,6 +809,11 @@ async fn production_story(miner: Miner) {
     if lift != Some(PRODUCTION_RATE) {
         mine::lift_rate(&mut god, PRODUCTION_RATE).await;
     }
+    // The seed (doc 43 rule 2.3 #4), as the in-process story's `@econ/mint`: the mining loop's
+    // earnings do not bunker the way out by Luna and Deimos and the way home, so God mints the
+    // pilot a working float from a system source of the story's own.
+    float(&mut god, &mut client).await;
+    stamp("God minted the pilot a 50,000.00cr float");
     // Ceres: the concentrate at the Exchange's ask, the carbon at Freeport Works', the bunkers,
     // the passage.
     let rows = board_rows(&mut client).await;
