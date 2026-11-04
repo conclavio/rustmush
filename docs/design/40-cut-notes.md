@@ -689,8 +689,10 @@ above, in order:
   - `f` is armed and holds `e` in reach, so the tempo is Engaged every pulse.
 
   `note_fire`'s fix does not touch this, so the gate keeps its 8 s idle bound, with the reason in its comment.
-  **For the owner:** should a leader's `+field/mark` also write the books of the unit parties whose hulls it
-  seats? That is host-side (GC.10/FR.1), and FR.5 does not build it.
+  **Ruled by the owner (2026-11-04): yes.** A leader's `+field/mark <hull>=friendly|hostile` also writes the
+  books of the unit parties whose hulls that leader seats, so one mark covers every hull they command. It is
+  host-side (GC.10/FR.1's mark path) and is built as its own small PR after FR.7. When that PR lands,
+  `field_gc10`'s void gate moves to `disengage_s`, as §4a expected, and its 8 s idle-bound comment goes.
 - **The relay** reads the carrier's world record. A relay damaged by a hit inside the running field therefore
   takes effect from the next field. The seam is named in `carrier_relay`'s doc comment: a host mirror of the
   kernel's part conditions would replace that read.
