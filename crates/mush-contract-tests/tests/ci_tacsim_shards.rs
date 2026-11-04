@@ -20,14 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
+use mush_contract_tests::scan;
 
 /// Shard number -> its targets, from the manifest's `N: target target ...` lines.
 fn manifest(text: &str) -> BTreeMap<u32, Vec<String>> {
@@ -71,7 +64,7 @@ fn tacsim_targets(root: &Path) -> BTreeSet<String> {
 
 #[test]
 fn every_tacsim_integration_target_runs_in_exactly_one_shard() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let path = root.join(".github/tacsim-integration-shards.txt");
     let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     let shards = manifest(&text);
@@ -102,7 +95,7 @@ fn every_tacsim_integration_target_runs_in_exactly_one_shard() {
 
 #[test]
 fn the_workflow_runs_every_listed_shard_and_no_other() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let manifest_path = root.join(".github/tacsim-integration-shards.txt");
     let shards = manifest(
         &fs::read_to_string(&manifest_path)
@@ -209,18 +202,6 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
-/// Every `.rs` file under `dir`, recursively.
-fn rust_files(dir: &Path, out: &mut BTreeSet<PathBuf>) {
-    for entry in fs::read_dir(dir).unwrap_or_else(|err| panic!("{}: {err}", dir.display())) {
-        let path = entry.expect("a readable directory entry").path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.insert(normalise(&path));
-        }
-    }
-}
-
 /// The shard roots `tests/shard_N.rs`, by target name, in name order.
 fn shard_roots(root: &Path) -> Vec<(String, PathBuf)> {
     let tests = root.join("crates/tacsim/tests");
@@ -240,7 +221,7 @@ fn shard_roots(root: &Path) -> Vec<(String, PathBuf)> {
 /// by its `mod` declarations (with `#[path]` siblings and subdirectories).
 #[test]
 fn every_file_under_a_shard_directory_is_declared_by_a_root() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let tests = root.join("crates/tacsim/tests");
     let mut reached: BTreeSet<PathBuf> = BTreeSet::new();
     let mut queue: Vec<(PathBuf, bool)> = shard_roots(&root)
@@ -273,7 +254,7 @@ fn every_file_under_a_shard_directory_is_declared_by_a_root() {
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("shard_"))
         {
-            rust_files(&path, &mut under_shards);
+            under_shards.extend(scan::rust_files(&path).iter().map(|file| normalise(file)));
         }
     }
     let orphans: Vec<&PathBuf> = under_shards.difference(&reached).collect();
@@ -291,7 +272,7 @@ fn every_file_under_a_shard_directory_is_declared_by_a_root() {
 /// tests in. The merge script refused this; the guard now does.
 #[test]
 fn no_module_name_in_a_shard_ends_with_another_in_the_same_shard() {
-    for (shard, path) in shard_roots(&repo_root()) {
+    for (shard, path) in shard_roots(&scan::repo_root()) {
         let source =
             fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         let names: BTreeSet<String> = mod_declarations(&source)

@@ -23,7 +23,9 @@
 //! install_prepared_action(`) is exempt. Both announcing names are distinct
 //! identifiers and never match.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use mush_contract_tests::scan;
 
 const SILENT_INSTALLS: [&str; 2] = ["install_prepared_action", "install_composed_action"];
 const REQUIRED_SEAM: &str = "install_composed_action_announcing(";
@@ -34,28 +36,6 @@ const REQUIRED_SEAM: &str = "install_composed_action_announcing(";
 /// and nothing else — its `TestWorld` installs fixture images with no audience
 /// by design, and its announcing helper wraps the seam this probe requires.
 const FIXTURE_CRATES: &[&str] = &["mush-contract-tests", "mush-testkit"];
-
-fn rust_sources(root: &Path, files: &mut Vec<PathBuf>) {
-    let mut entries = std::fs::read_dir(root)
-        .unwrap_or_else(|error| panic!("cannot scan {}: {error}", root.display()))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|error| panic!("cannot read entry in {}: {error}", root.display()));
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let kind = entry
-            .file_type()
-            .unwrap_or_else(|error| panic!("cannot inspect {}: {error}", path.display()));
-        if kind.is_dir() {
-            if entry.file_name() == "tests" || entry.file_name() == "target" {
-                continue;
-            }
-            rust_sources(&path, files);
-        } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "rs") {
-            files.push(path);
-        }
-    }
-}
 
 /// Whether `line` (already trimmed at the start) opens an inline module body:
 /// `mod name {` / `pub mod name {` / `pub(crate) mod name {`, with the brace
@@ -142,9 +122,8 @@ fn is_forbidden(line: &str) -> bool {
 
 #[test]
 fn production_commit_seams_install_prepared_actions_announcing() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut files = Vec::new();
-    rust_sources(&crates, &mut files);
+    let crates = scan::repo_root().join("crates");
+    let files = scan::files(&crates, &["rs"], &["tests", "target"]);
     assert!(
         files.len() > 100,
         "the probe found only {} sources under {}",

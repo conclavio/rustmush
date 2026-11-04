@@ -23,6 +23,12 @@
 # Add a row in the same commit as the reach, with a reason that says why one
 # crate writes another module's state. Do not add rows to quiet the scan.
 #
+# A row names its site by `path` (a production file, workspace-relative) or,
+# for a test-rig file under a crate's `tests/`, by `module =
+# "<crate>/tests::<module>"` — the file's module path less the test target's
+# group directory, so `crates/tacsim/tests/shard_3/drones.rs` is
+# `tacsim/tests::drones` and a reshard rewrites no row (doc 43 cut TS.8).
+#
 # WHAT THE CENSUS FOUND. Every cross-owner MUTATION in the tree goes through
 # `World::module_state_mut` — the unchecked accessor that carries no module
 # identity — and not one goes through `Ctx::state_mut`, which is the surface
@@ -47,14 +53,14 @@
 # ---------------------------------------------------------------------------
 
 [[site]]
-path = "crates/mush-server/tests/split_boundary/dt_physical_transitions.rs"
+module = "mush-server/tests::dt_physical_transitions"
 accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"
 reason = "Test-only post-ACK custody drift proves a real structural reanchor retains Tactics' own marker preimage independently of Sim's projection. A unit is created by the real Tactics command before preparing, acknowledging and refusing the move; no substitute owner or participant is used."
 
 [[site]]
-path = "crates/mush-server/tests/split_boundary/dt_physical_transitions.rs"
+module = "mush-server/tests::dt_physical_transitions"
 accessor = "World::module_state_mut"
 slot = "JourneyBook"
 owner = "sim"
@@ -75,7 +81,7 @@ owner = "sim"
 reason = "DT.2b2a pure admission tests seed and vary Sim journey state on a bare World to prove that held and underway carriers refuse even zero-projection reanchors. The fixture creates no embarkation intervals or crew authority."
 
 [[site]]
-path = "crates/mush-server/tests/split_boundary/dt_preparation_plans.rs"
+module = "mush-server/tests::dt_preparation_plans"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -324,70 +330,70 @@ reason = "World-task `#[cfg(test)]` rig: places objects in the sim's spatial ind
 # the failure this census exists to make impossible to ship.
 
 [[site]]
-path = "crates/mush-atlas/tests/review_window.rs"
+module = "mush-atlas/tests::review_window"
 accessor = "World::module_state_mut"
 slot = "NpcHostState"
 owner = "npc"
 reason = "14a's S1–S7 review reproduction (kept unchanged by S8): begins an NPC host turn by hand to complete an interface ability for the asker and watch who hears the reply."
 
 [[site]]
-path = "crates/mush-campaign/tests/common/mod.rs"
+module = "mush-campaign/tests::common"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = "Shared campaign harness: wires the sim's account oracle so `+focus` resolves."
 
 [[site]]
-path = "crates/mush-campaign/tests/e7c10.rs"
+module = "mush-campaign/tests::e7c10"
 accessor = "World::module_state_mut"
 slot = "ControlLeaseView"
 owner = "sim"
 reason = "E7 cut 10: drives the sim's control-lease view to set up a seat case."
 
 [[site]]
-path = "crates/mush-campaign/tests/e7c10.rs"
+module = "mush-campaign/tests::e7c10"
 accessor = "World::module_state_mut"
 slot = "FocusState"
 owner = "sim"
 reason = "E7 cut 10: sets the sim's focus state a campaign command then reads."
 
 [[site]]
-path = "crates/mush-campaign/tests/e7r2.rs"
+module = "mush-campaign/tests::e7r2"
 accessor = "World::module_state_mut"
 slot = "JourneyBook"
 owner = "sim"
 reason = "E7 residue 2: seeds the sim's journey book to stage a recovery case."
 
 [[site]]
-path = "crates/tacsim/tests/shard_1/s9_corridor.rs"
+module = "tacsim/tests::s9_corridor"
 accessor = "World::module_state_mut"
 slot = "JourneyBook"
 owner = "sim"
 reason = "S9.2: seeds one carrier journey along the seeded corridor so the atlas's journey listing and `travel.status` can be seen answering for it."
 
 [[site]]
-path = "crates/mush-campaign/tests/e7r2.rs"
+module = "mush-campaign/tests::e7r2"
 accessor = "World::module_state_mut"
 slot = "SpatialState"
 owner = "sim"
 reason = "E7 residue 2: places units in the sim's spatial index for the same case."
 
 [[site]]
-path = "crates/mush-economy/tests/e3b2.rs"
+module = "mush-economy/tests::e3b2"
 accessor = "World::module_state_mut"
 slot = "OrgStore"
 owner = "org"
 reason = "E3b2: seeds org records the economy case needs without composing `org`."
 
 [[site]]
-path = "crates/mush-propagation/tests/e7c11.rs"
+module = "mush-propagation/tests::e7c11"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = "E7 cut 11: wires the sim's account oracle for a propagation case."
 
 [[site]]
-path = "crates/tacsim/tests/shard_8/match_lifecycle.rs"
+module = "tacsim/tests::match_lifecycle"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -400,14 +406,14 @@ that makes every claim in the file a claim about accounts.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/coop.rs"
+module = "tacsim/tests::coop"
 accessor = "World::module_state_mut"
 slot = "NpcHostState"
 owner = "npc"
 reason = "Co-op NPC interface fixture: marks one dialogue turn in flight before applying its real world-loop completion, so private delivery and working-memory redaction are checked with the production provider."
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/coop.rs"
+module = "tacsim/tests::coop"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -420,7 +426,7 @@ fail-closed. The oracle is boot-hydrated by the host from the store, which a
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/commerce.rs"
+module = "tacsim/tests::commerce"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -433,7 +439,7 @@ which a `TestWorld` has none of, so the rig installs the fixed account map — t
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/voyage.rs"
+module = "tacsim/tests::voyage"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -446,7 +452,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_5/sites.rs"
+module = "tacsim/tests::sites"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -459,7 +465,7 @@ rig installs the fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_6/vehicles.rs"
+module = "tacsim/tests::vehicles"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -473,7 +479,7 @@ precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_9/excursions.rs"
+module = "tacsim/tests::excursions"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -487,7 +493,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/knowing.rs"
+module = "tacsim/tests::knowing"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -501,7 +507,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/support/field/driving_rig.rs"
+module = "tacsim/tests::support::field::driving_rig"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -515,7 +521,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_7/mining.rs"
+module = "tacsim/tests::mining"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -531,7 +537,7 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_8/unloading.rs"
+module = "tacsim/tests::unloading"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -549,7 +555,7 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_6/plans.rs"
+module = "tacsim/tests::plans"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -567,7 +573,7 @@ fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/drones.rs"
+module = "tacsim/tests::drones"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -581,7 +587,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/drones.rs"
+module = "tacsim/tests::drones"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
@@ -593,7 +599,7 @@ economy module's own path (the `port/licence.rs` row's precedent).
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_9/quarry.rs"
+module = "tacsim/tests::quarry"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -610,7 +616,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/support/claims.rs"
+module = "tacsim/tests::support::claims"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -630,7 +636,7 @@ precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/deposits.rs"
+module = "tacsim/tests::deposits"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -644,7 +650,7 @@ fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/plumbing.rs"
+module = "tacsim/tests::plumbing"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -658,7 +664,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/plumbing.rs"
+module = "tacsim/tests::plumbing"
 accessor = "World::module_state_mut"
 slot = "IndustryStore"
 owner = "industry"
@@ -672,7 +678,7 @@ the composed value. Test-only; production never writes the slot from tacsim.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_1/crew_treatment.rs"
+module = "tacsim/tests::crew_treatment"
 accessor = "World::module_state_mut"
 slot = "IndustryStore"
 owner = "industry"
@@ -686,7 +692,7 @@ the slot from tacsim (the PortApplier opens the facility through
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_9/sale.rs"
+module = "tacsim/tests::sale"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -699,7 +705,7 @@ which a `TestWorld` has none of, so the rig installs the fixed account map — t
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/orders.rs"
+module = "tacsim/tests::orders"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -712,7 +718,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/deliberation.rs"
+module = "tacsim/tests::deliberation"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -726,7 +732,7 @@ which a `TestWorld` has none of, so this harness installs the same map
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/resolution.rs"
+module = "tacsim/tests::resolution"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -740,7 +746,7 @@ exactly the same reason.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_7/cockpit.rs"
+module = "tacsim/tests::cockpit"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -752,7 +758,7 @@ oracle would prove nothing but that the oracle is unwired.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_7/cockpit.rs"
+module = "tacsim/tests::cockpit"
 accessor = "World::module_state_mut"
 slot = "FocusState"
 owner = "sim"
@@ -767,7 +773,7 @@ registers a fresh production composition, so it no longer writes this slot.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_8/match_lifecycle.rs"
+module = "tacsim/tests::match_lifecycle"
 accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"
@@ -782,7 +788,7 @@ through `mush_tactics::module::refit_unit`. Test-only; no production write.
 """
 
 [[site]]
-path = "crates/mush-tactics/tests/module.rs"
+module = "mush-tactics/tests::module"
 accessor = "World::module_state_mut"
 slot = "DeployedUnits"
 owner = "sim"
@@ -793,7 +799,7 @@ test empties it so what the boot keeps (or restores) is all it holds.
 """
 
 [[site]]
-path = "crates/tacsim/tests/harness.rs"
+module = "tacsim/tests::harness"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -805,7 +811,7 @@ the same boot-hydrated map `mush_server::boot` installs.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_lobby.rs"
+module = "mushd/tests::sim_lobby"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -817,7 +823,7 @@ to be installed here or every `SIM TEAM` in the file refuses.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_cockpit.rs"
+module = "mushd/tests::sim_cockpit"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -828,7 +834,7 @@ account and so does the focus the cockpit seat takes.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/observer_rule.rs"
+module = "mushd/tests::observer_rule"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -839,7 +845,7 @@ assertions need two pilots seated, and a slot belongs to an account.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_net.rs"
+module = "mushd/tests::sim_net"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -851,7 +857,7 @@ accounts have to hold slots and board before anybody is on a net.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_weapons.rs"
+module = "mushd/tests::sim_weapons"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -862,7 +868,7 @@ and take their stations before either of them can lock anything and fire.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_reflex.rs"
+module = "mushd/tests::sim_reflex"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -876,7 +882,7 @@ ACCOUNT.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_solo.rs"
+module = "mushd/tests::sim_solo"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -889,7 +895,7 @@ until this cut both sides needed a seated pilot to get one.
 """
 
 [[site]]
-path = "crates/mush-bot/tests/support/arena.rs"
+module = "mush-bot/tests::support::arena"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -903,7 +909,7 @@ this is its one site, and the bot's runtime graph carries no game crate.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_units.rs"
+module = "mushd/tests::sim_units"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -917,7 +923,7 @@ the write is at `SIM START`.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_range.rs"
+module = "mushd/tests::sim_range"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -930,7 +936,7 @@ human starting a match with the fill off, which only a range allows.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/arena_story.rs"
+module = "mushd/tests::arena_story"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -946,7 +952,7 @@ that.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_10/reset.rs"
+module = "tacsim/tests::reset"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -960,7 +966,7 @@ is unwired.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/definitions.rs"
+module = "tacsim/tests::definitions"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -973,7 +979,7 @@ applies the shipped pack through `mush_content::apply` and asserts the refusal.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/geology.rs"
+module = "tacsim/tests::geology"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -987,7 +993,7 @@ world rather than on a hand-made `Records`.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/knowing.rs"
+module = "tacsim/tests::knowing"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -1002,7 +1008,7 @@ warning.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/sim_rematch.rs"
+module = "mushd/tests::sim_rematch"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -1014,14 +1020,14 @@ a simulator slot belongs to an ACCOUNT.
 """
 
 [[site]]
-path = "crates/mush-propagation/tests/e7c11.rs"
+module = "mush-propagation/tests::e7c11"
 accessor = "World::module_state_mut"
 slot = "FocusState"
 owner = "sim"
 reason = "E7 cut 11: sets the sim's focus state for the same case."
 
 [[site]]
-path = "crates/mush-propagation/tests/e7c11.rs"
+module = "mush-propagation/tests::e7c11"
 accessor = "World::module_state_mut"
 slot = "ContactLedgerState"
 owner = "tactics"
@@ -1032,35 +1038,35 @@ projection is the point); only its harness writes it.
 """
 
 [[site]]
-path = "crates/mush-propagation/tests/e7c7.rs"
+module = "mush-propagation/tests::e7c7"
 accessor = "World::module_state_mut"
 slot = "ContactLedgerState"
 owner = "tactics"
 reason = "E7 cut 7: the same seeded contact ledger, one cut earlier."
 
 [[site]]
-path = "crates/mush-propagation/tests/e7c7.rs"
+module = "mush-propagation/tests::e7c7"
 accessor = "World::module_state_mut"
 slot = "SpatialState"
 owner = "sim"
 reason = "E7 cut 7: places emitters and observers in the sim's spatial index."
 
 [[site]]
-path = "crates/mush-server/tests/commerce_composition/e4c_bridge.rs"
+module = "mush-server/tests::e4c_bridge"
 accessor = "World::module_state_mut"
 slot = "CanonState"
 owner = "canon"
 reason = "E4c: seeds canon records the bridge case asserts on."
 
 [[site]]
-path = "crates/mush-server/tests/world_task/arena_bridge.rs"
+module = "mush-server/tests::arena_bridge"
 accessor = "World::module_state_mut"
 slot = "ArenaRegistry"
 owner = "tacsim"
 reason = "16b cut I.4: the rig opens its match through a hand-built CustodyOut with no MatchBook record, so `arena_bridge::watch`'s liveness check cannot pass there; its test module binds the watcher on the registry directly (`ArenaRegistry::bind_watcher`, the registry's own bookkeeping) and offers `ArenaMsg::Watch` itself, to pin that the staff picture reaches its watcher and no pilot through the real world loop."
 
 [[site]]
-path = "crates/mush-sim/tests/e7c6.rs"
+module = "mush-sim/tests::e7c6"
 accessor = "World::module_state_mut"
 slot = "ScenesState"
 owner = "scenes"
@@ -1071,14 +1077,14 @@ follows whatever that production reach does; retire it with that reach.
 """
 
 [[site]]
-path = "crates/mushd/tests/durable_process/m10c_e2e.rs"
+module = "mushd/tests::m10c_e2e"
 accessor = "World::module_state_mut"
 slot = "WeatherState"
 owner = "weather"
 reason = "M10c end-to-end: forces a weather cell so the rendered line is deterministic."
 
 [[site]]
-path = "crates/mushd/tests/durable_process/persistence.rs"
+module = "mushd/tests::persistence"
 accessor = "World::module_state_mut"
 slot = "NpcHostState"
 owner = "npc"
@@ -1095,7 +1101,7 @@ reason = "NPC memory restart fixture: seeds bounded recent events before spawnin
 # live one.
 
 [[site]]
-path = "crates/mush-core/tests/module_api.rs"
+module = "mush-core/tests::module_api"
 accessor = "World::module_state_insert"
 slot = "SeededSlot"
 owner = ""
@@ -1158,7 +1164,7 @@ test.
 """
 
 [[site]]
-path = "crates/mush-npc/tests/agents.rs"
+module = "mush-npc/tests::agents"
 accessor = "World::module_state_insert"
 slot = "fs"
 owner = ""
@@ -1169,7 +1175,7 @@ faction module.
 """
 
 [[site]]
-path = "crates/mush-npc/tests/agents.rs"
+module = "mush-npc/tests::agents"
 accessor = "World::module_state_insert"
 slot = "mush_faction"
 owner = ""
@@ -1180,7 +1186,7 @@ above.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lenses/front_door.rs"
+module = "mushd/tests::front_door"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -1375,7 +1381,7 @@ guard. The published refusal carries no character, revision or source detail.
 
 
 [[site]]
-path = "crates/mush-server/tests/commerce_composition/mind_commerce_composition.rs"
+module = "mush-server/tests::mind_commerce_composition"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -1447,7 +1453,7 @@ M7 test-only structured workshop fixture installs a strictly decoded marked Roll
 """
 
 [[site]]
-path = "crates/tacsim/tests/support/holdings.rs"
+module = "tacsim/tests::support::holdings"
 accessor = "World::module_state_mut"
 slot = "RollStore"
 owner = "roll"
@@ -1495,14 +1501,14 @@ scope and grants; no certificate, stock, quota or readiness state is fabricated.
 """
 
 [[site]]
-path = "crates/mush-bot/tests/arena_contract/lapse_producer.rs"
+module = "mush-bot/tests::lapse_producer"
 accessor = "World::module_state_mut"
 slot = "ArenaRegistry"
 owner = "tacsim"
 reason = "Test-only R14: seeds notice watches through the existing public integration seam, then renders actual egress-produced lapse events through the bot reader. No native order, match authority, or persistent state is created."
 
 [[site]]
-path = "crates/tacsim/tests/shard_8/match_lifecycle/resume_watch.rs"
+module = "tacsim/tests::match_lifecycle::resume_watch"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -1562,7 +1568,7 @@ owner = "economy"
 reason = "R8a takes the Exchange operating account id from economy's monotonic allocator, then opens its zero-balance account through mush_economy::open_account. Same allocator-only boundary as port/apply.rs; capitalization is an ordinary conserved post, never a direct balance mutation."
 
 [[site]]
-path = "crates/mush-contract-tests/tests/scale_harness.rs"
+module = "mush-contract-tests/tests::scale_harness"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
@@ -1577,7 +1583,7 @@ every `cargo test` run instead of only the ignored 100 000-entry run.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/quest_commissions.rs"
+module = "tacsim/tests::quest_commissions"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
@@ -1598,7 +1604,7 @@ owner = ""
 reason = "Doc 17h cut M8a fix round 1 (F10/F11): test-only. The `+hull/box` read's unit tests seed a TacsimStore whose black box holds crafted lines (an undecodable entry, a line short of its facts, a ledger that seals every entry) and whose dark flag is set, the shapes a booted world cannot be driven into without corrupting chunk documents. Production never seeds the slot; the boot loads it."
 
 [[site]]
-path = "crates/tacsim/tests/shard_9/ic_sortie_surface.rs"
+module = "tacsim/tests::ic_sortie_surface"
 accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"

@@ -50,6 +50,10 @@ mod ipc_authoritative_action;
 mod ipc_teardown;
 #[path = "split_boundary/ipc_window.rs"]
 mod ipc_window;
+/// Doc 43 cut TS.8: tacsim's lane strip chain, the one copy, for the relay registry's
+/// lane rebuilds.
+#[path = "../../tacsim/tests/support/lane_chain.rs"]
+mod lane_chain;
 #[path = "split_boundary/provisioning_smoke.rs"]
 mod provisioning_smoke;
 #[path = "split_boundary/quarantine_boot.rs"]
