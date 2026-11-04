@@ -94,8 +94,21 @@ mush-bot's `rs0_the_salvage_lines_are_closed` (the tender's lines). Re-run green
   `vehicles::sm3a_the_apply_lays_up_occators_rigs_and_every_hulls_bay` pins "tender: 2 of 2 made; 2 in
   the shed, 0 leased.", and `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach` the port map's
   12 rigs (8 + 2 escorts + 2 tenders).
-- **`field_director::gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses` pins its
-  meaning, not a roll.** It wore one raider hull and asserted the guard took exactly that one. The
+- **`field_director::gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses`: two
+  branches, by owner ruling.** On conclav.dev (three runs, identical) the guard's mind, which sorts
+  targets by `(range, id)` (`arena/mind.rs`), took the raid's carrier first under this lane's
+  object ids and wrecked it at 47 s; `raiders::lift_check` skips a wrecked carrier before
+  `withdrawal_due`, so the raid never turned for home and its hulls fought to the end. The owner
+  ruled on 2026-11-04: "a raider unit that loses its carrier would fight to the death since they
+  wouldn't have enough life support to scatter or wait for a pickup .. surrender potentially
+  depending on circumstances and personality .. fighting to death is easiest for now since we don't
+  have surrender yet". `field/raiders.rs` is unchanged (FR.3's, and #400 does not touch it); the
+  gate asserts whichever branch the record shows: (a) the carrier stands, the raid turns for home
+  at half losses and lifts with what stands, its losses where they fell; (b) the carrier is a
+  wreck on the site's record, no hull withdraws or boards, and every hull is a wreck there or stands
+  on the ground when the field closes.
+  Surrender by circumstance and personality is a future pointer in doc 42 §8. The earlier fixture
+  change stands too: It wore one raider hull and asserted the guard took exactly that one. The
   field's seed mixes the world's instant and a process salt (`match_::seed_for`), so on #397's first
   run the guard's first rounds at the worn hull missed, it turned on the whole hull and fell, and the
   raid stayed. Both hulls now come home worn, and the gate asserts the raid declares, loses at least

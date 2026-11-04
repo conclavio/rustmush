@@ -25,8 +25,13 @@
 //! touched once the director has landed it. (Doc 41 cut RS.1: the gate wore one hull and pinned
 //! that the guard took exactly it; the field's seed mixes the world's instant and a process salt,
 //! so the guard's first rounds at that hull missed on one draw, it turned on the whole one and
-//! fell. The gate now pins what it means — the raid declares, takes losses and leaves with what
-//! stands — not one roll.) A whole line tank is not
+//! fell; on another its first target was the carrier, which it wrecked. The owner ruled on
+//! 2026-11-04 that a raid stranded by its carrier's wreck fights to the death — no life support to
+//! scatter or wait for a pickup, and no surrender yet — so the gate accepts either branch and
+//! checks its invariants: (a) the carrier stands, the raid turns for home at half losses and
+//! lifts with what stands; (b) the carrier falls, no hull withdraws or boards, and every hull is
+//! a wreck on the site's record or stands on its ground when the field closes.) A whole line tank
+//! is not
 //! what the gate kills: lane 4 gave the guard full magazines against two whole hulls, and in
 //! 73 s of fire it wrecked only the raider's carrier, never a hull, then fell; the raiders had
 //! wrecked both rigs and the prospector's carrier first, and with its own carrier gone the raid
@@ -294,34 +299,77 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
         "the raid is its leader's party"
     );
 
-    // The guard's fire takes a worn hull, half of what launched: the raid turns for home, what
-    // stands boards, and its carrier lifts. Which falls, and whether the guard's fire takes the
-    // other on its way up the ramp, is read off the record, not assumed.
+    // Which way the fight goes is read off the record, not assumed (owner ruling 2026-11-04,
+    // doc 41 cut RS.1's note): (a) the carrier stands, the guard's fire takes a worn hull, half
+    // of what launched, and the raid turns for home with what stands; (b) the guard wrecks the
+    // carrier, and its hulls, with no life support to scatter or wait for a pickup, fight to the
+    // death (`raiders::lift_check`: a wrecked carrier never withdraws).
     let aboard = |rig: &Rig| {
         raiders
             .iter()
             .filter(|hull| mush_sim::pose_of(rig.tw.world(), **hull).is_none())
             .count()
     };
-    let left = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
-        mush_sim::pose_of(rig.tw.world(), barge).is_none() && aboard(rig) < raiders.len()
+    let killed =
+        |lines: &[LedgerEvent], unit: ObjId| kills(lines).iter().any(|(dead, _, _)| *dead == unit);
+    let decided = until(&mut rig, &mut rx, &mut lines, 300, |rig, lines| {
+        let lifted =
+            mush_sim::pose_of(rig.tw.world(), barge).is_none() && aboard(rig) < raiders.len();
+        let stranded = killed(lines, barge)
+            && (raiders.iter().all(|hull| killed(lines, *hull))
+                || site_record(rig).is_some_and(|record| record.promoted.is_none()));
+        lifted || stranded
     })
     .await;
     let record = site_record(&mut rig).expect("the record");
+    let withdrawing: Vec<bool> = raiders
+        .iter()
+        .map(|hull| tacsim::field::raiders::withdrawing(rig.tw.world(), *hull))
+        .collect();
     assert!(
-        left,
-        "the raid leaves with its losses; kills {:?}; the guard fired {:?} and hit {:?}; record units {:?}, withdrawing {:?}, aboard {}, guard standing {}",
+        decided,
+        "the raid either leaves with its losses or, its carrier wrecked, fights to the last; kills {:?}; the guard fired {:?} and hit {:?}; record units {:?}, withdrawing {withdrawing:?}, aboard {}, guard standing {}",
         kills(&lines),
         fire(&lines, guard),
         hits(&lines, guard),
         record.units,
-        raiders
-            .iter()
-            .map(|hull| tacsim::field::raiders::withdrawing(rig.tw.world(), *hull))
-            .collect::<Vec<_>>(),
         aboard(&rig),
         !kills(&lines).iter().any(|(unit, _, _)| *unit == guard)
     );
+    if killed(&lines, barge) {
+        // (b) Stranded: nobody turns for home or boards a wreck; every hull ends a wreck on the
+        // site's record or stands on its ground when the field closes, and the carrier is a wreck.
+        assert!(
+            withdrawing.iter().all(|going| !going),
+            "no raider withdraws once its carrier is a wreck: {withdrawing:?}"
+        );
+        assert_eq!(aboard(&rig), 0, "nobody boards a wrecked carrier");
+        let settled = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+            site_record(rig).is_some_and(|record| record.promoted.is_none())
+        })
+        .await;
+        assert!(settled, "the field settles over the stranded raid");
+        let record = site_record(&mut rig).expect("the record");
+        for hull in &raiders {
+            assert!(
+                record.units.iter().any(|left| left.unit == *hull)
+                    || mush_sim::pose_of(rig.tw.world(), *hull).is_some(),
+                "#{} is a wreck on the site's record or still standing on its ground: {:?}",
+                hull.0,
+                record.units
+            );
+        }
+        assert!(
+            record
+                .units
+                .iter()
+                .any(|left| left.unit == barge && left.condition == LeftCondition::Wreck),
+            "the carrier is a wreck where it stood: {:?}",
+            record.units
+        );
+        return;
+    }
+    // (a) The carrier lifted with what stood.
     // What it lost stays where it fell; the one that went home is aboard, not on the record.
     let settled = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
         site_record(rig).is_some_and(|record| record.promoted.is_none())
