@@ -207,6 +207,32 @@ tree in the doc-43 notes folder (`ts3b-audit/`).
 | `unloading` (shard_8) | 24 | 8.9 | 7.8 | 0 | 0.7 | 0.4 | the keyed `stocked()` + `on_pad` rig (~19.5 s) in 20 of 24 tests |
 | **The twelve** | **641** | **244.0** | **170.9 (70 %)** | **10.4 (4 %)** | **52.6 (22 %)** | **10.3 (4 %)** | |
 
+**Measured, not read: wall against CPU.** To check the reading, the same twelve modules ran once on conclav.dev (main `7a535806`, `-P ci`, 8 threads). A cargo target runner wrapped every test process and recorded its wall time and its CPU time (`getrusage` of the child, user + sys). A test whose wall exceeds its CPU spent the difference waiting. The idle column is that difference, summed per module.
+
+| module | tests | wall min | CPU min | idle min (wall − CPU, per test, ≥ 0) | idle share |
+|---|---|---|---|---|---|
+| knowing | 83 | 19.1 | 19.1 | 0.0 | 0% |
+| claims | 35 | 14.4 | 14.4 | 0.0 | 0% |
+| cockpit | 192 | 12.6 | 9.2 | 3.5 | 27% |
+| plans | 28 | 11.6 | 11.6 | 0.0 | 0% |
+| match_lifecycle | 144 | 10.9 | 10.8 | 0.2 | 2% |
+| drones | 23 | 10.4 | 10.4 | 0.0 | 0% |
+| mining | 26 | 8.1 | 8.1 | 0.0 | 0% |
+| driving | 22 | 6.5 | 6.5 | 0.0 | 0% |
+| field_gc4 | 6 | 6.5 | 2.6 | 3.9 | 60% |
+| unloading | 24 | 6.0 | 6.0 | 0.0 | 0% |
+| vehicles | 52 | 4.7 | 4.7 | 0.0 | 0% |
+| field_gc5 | 4 | 2.1 | 1.4 | 0.7 | 32% |
+| **all** | 639 | 112.9 | 104.7 | 8.3 | 7% |
+
+The measurement agrees with the reading. Overall the twelve are 7 % idle; the reading put real-time wait at 4 %, and the idle figure also counts lock and I/O waits.
+- Nine modules are 0–2 % idle.
+- The idle time is in `field_gc4` (60 %), `field_gc5` (32 %) and `cockpit` (27 %).
+- The most idle single test is the gc4 journey kept at 90: 153 s idle of 204 s.
+- After it come the lane3 and gc5 tests at the rig default: ~13 s idle per 15-s field, ~27 s for two fields.
+- Then come cockpit's tape and reclaim waits, 9–21 s each.
+- The box runs these tests about 2.2 times faster than a hosted cell: 112.9 wall minutes against the hosted 244.
+
 **What the table says.**
 - **Real-time wait is 4 % of these minutes, and nearly all of it is 5.8's family and cockpit's ledger tape.**
   - Nine of the twelve modules wait on no real clock at all. They are `TestWorld` suites, and every window in
@@ -215,7 +241,7 @@ tree in the doc-43 notes folder (`ts3b-audit/`).
     bulk of tacsim's minutes.
 - **Boot is 70 %, and boot is CPU.** It is debug-build composition, content load, site generation and stepped
     port fires. That puts it squarely in TS.3's reach: opt-level 1 for dependencies cut these cells' summed
-    minutes by about a fifth to a half on its first run (TS.3's note).
+    minutes by about a fifth to a half on its first run (TS.3's note: −26 % for tacsim on the box, −27 % hosted).
 - **The 5.8 row after TS.16.**
   - The four lane3 tests and the two one-field gc5 tests now run at the rig default of 15. The two-field tests
     went from ~211–214 s to 66–70 s, and the one-field tests from ~115–123 s to 51–53 s: 75 s a field, as
