@@ -78,6 +78,21 @@ pub(crate) enum Then {
     /// F-6's departure, run by the host for the NPC carrier): off the site's ground
     /// (`super::raiders::lift`).
     RaiderLift,
+    /// **Doc 40 cut FR.5 (Q-40-25)**: a casualty in tow, out at the ramp with its tug
+    /// ([`request_coupled`]); nothing runs for it — its tug's [`Then::TowLoad`] loads it.
+    Towed {
+        /// The tug.
+        tug: ObjId,
+    },
+    /// **Doc 40 cut FR.5 (Q-40-25)**: `+tv/<n> load` of a tug in tow inside a field: once the tug
+    /// and its casualty are both out, the tow's load as on open ground
+    /// (`crate::surface::tow::load_cmd`).
+    TowLoad {
+        /// The bay slot the player named.
+        slot: u8,
+        /// The casualty in tow.
+        casualty: ObjId,
+    },
 }
 
 /// **An exit asked for** (RAM).
@@ -169,7 +184,11 @@ pub(crate) fn request(
         Then::Lift { .. } | Then::RaiderLift => LIFT_ASKED
             .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
             .replace("{ordinal}", &ordinal.to_string()),
-        Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => EXIT_ASKED
+        Then::Rig { .. }
+        | Then::Sortie { .. }
+        | Then::Raider
+        | Then::Towed { .. }
+        | Then::TowLoad { .. } => EXIT_ASKED
             .replace("{unit}", &unit.0.to_string())
             .replace("{ordinal}", &ordinal.to_string()),
     };
@@ -188,15 +207,100 @@ pub(crate) fn request(
     Ok(())
 }
 
+/// **Ask the field to let a coupled pair go at the ramp standing at `ramp` (cm)** (doc 40 cut
+/// FR.5, Q-40-25; `crate::surface::tow::field_load_cmd`): `ArenaMsg::Withdraw` for the casualty
+/// and for its tug, the casualty judged by its tug and taken out first at the pulse's head
+/// (`crate::arena::withdraw`). Each is checked in by [`on_withdrawn`] through the ordinary exit;
+/// once both are out and the record names both, [`tick`] runs the tug's load as its player. A
+/// member already out (a pair one of whose asks the queue did not take) is not asked again.
+/// The caller tells the player.
+///
+/// # Errors
+///
+/// The sentence for the player: the pair is in no running field, already on its way out, or the
+/// field is busy.
+pub(crate) fn request_coupled(
+    ctx: &mut Ctx<'_>,
+    (tug, slot): (ObjId, u8),
+    casualty: ObjId,
+    ramp: (i64, i64),
+) -> Result<(), CmdError> {
+    let site = super::field_of_unit(ctx.w, tug)
+        .ok_or_else(|| CmdError::msg(WithdrawRefusal::NotHere.sentence()))?;
+    let (task, held) = ctx
+        .w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.hosted(&site))
+        .filter(|hosted| hosted.live.units.iter().any(|row| row.unit == tug))
+        .map(|hosted| {
+            let held = |unit: ObjId| hosted.live.units.iter().any(|row| row.unit == unit);
+            (hosted.task, [casualty, tug].map(held))
+        })
+        .ok_or_else(|| CmdError::msg("That field is not running yet; load once it has opened."))?;
+    if ctx
+        .w
+        .module_state::<ExitBook>()
+        .is_some_and(|book| book.0.contains_key(&tug))
+    {
+        return Err(CmdError::msg("That unit is already on its way out."));
+    }
+    let tasks = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .ok_or_else(|| CmdError::msg("The field host is unavailable."))?;
+    let requester = ctx.actor;
+    let asks = [
+        (casualty, held[0], Then::Towed { tug }),
+        (tug, held[1], Then::TowLoad { slot, casualty }),
+    ];
+    for (unit, held, then) in asks {
+        let asked = ctx
+            .w
+            .module_state::<ExitBook>()
+            .is_some_and(|book| book.0.contains_key(&unit));
+        if !held || asked {
+            continue;
+        }
+        tasks
+            .offer(
+                task,
+                crate::arena_task::ArenaMsg::Withdraw {
+                    unit,
+                    ramp: Some(ramp),
+                },
+            )
+            .map_err(|_| CmdError::msg("The field is busy; try the load again."))?;
+        if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
+            book.0.insert(
+                unit,
+                Exiting {
+                    requester,
+                    site: site.clone(),
+                    then,
+                    out: false,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 /// **The arena's answer to a tug's release** (doc 40 cut FR.5, §4.1 item 5, Q-40-7; the bridge's
-/// branch): for now traced only — the site record's tow retirement in the batch that takes the
-/// answer is `crate::surface::tow`'s, wired by the host half of the cut.
+/// branch): taken, the site record's tow is retired in the batch that takes the answer by the
+/// surface's own `release` op; refused, whoever ordered it hears why
+/// (`crate::surface::tow::on_field_released`).
 pub(crate) fn on_released(
-    _ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx<'_>,
     task: MatchId,
     tug: ObjId,
     outcome: Result<ObjId, String>,
 ) {
+    let site = ctx
+        .w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.site_of_task(task).cloned());
+    crate::surface::tow::on_field_released(ctx, site, tug, outcome.clone());
     match outcome {
         Ok(casualty) => tracing::debug!(
             task = task.0,
@@ -234,12 +338,17 @@ pub(crate) fn on_withdrawn(
             if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
                 book.0.remove(&unit);
             }
-            if let Some(asked) = asked {
-                ctx.out.sys_to_actor(
-                    asked.requester,
-                    "tacsim.field",
-                    refusal.sentence().to_owned(),
-                );
+            // Doc 40 cut FR.5 (Q-40-25): a coupled pair is refused as one — its tug's answer
+            // tells, with the tow's own not-at-ramp sentence.
+            let line = match asked.as_ref().map(|asked| &asked.then) {
+                Some(Then::Towed { .. }) => None,
+                Some(Then::TowLoad { slot, .. }) if refusal == WithdrawRefusal::NotAtRamp => {
+                    Some(crate::surface::tow::NOT_AT_RAMP.replace("{n}", &slot.to_string()))
+                }
+                _ => Some(refusal.sentence().to_owned()),
+            };
+            if let (Some(asked), Some(line)) = (asked, line) {
+                ctx.out.sys_to_actor(asked.requester, "tacsim.field", line);
             }
             return;
         }
@@ -322,7 +431,17 @@ pub(crate) fn on_withdrawn(
             .replace("{ordinal}", &ordinal.to_string()),
     };
     let mut told: BTreeSet<ObjId> = BTreeSet::new();
-    for who in asked.map(|asked| asked.requester).into_iter().chain(pilot) {
+    // Doc 40 cut FR.5 (Q-40-25): a casualty out with its tug is told by its tug's answer.
+    let towed = matches!(
+        asked.as_ref().map(|asked| &asked.then),
+        Some(Then::Towed { .. })
+    );
+    for who in asked
+        .map(|asked| asked.requester)
+        .into_iter()
+        .chain(pilot)
+        .filter(|_| !towed)
+    {
         if told.insert(who) {
             ctx.out.sys_to_actor(who, "tacsim.field", line.clone());
         }
@@ -427,14 +546,32 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             super::record::write_live(ctx, &live);
         }
         if let Some(book) = ctx.w.module_state::<ExitBook>() {
+            // Doc 40 cut FR.5 (Q-40-25): a tug's load waits for its casualty's exit too, unless
+            // the casualty's ask is no longer in flight (refused).
+            let pair_ready = |then: &Then| match then {
+                Then::TowLoad { casualty, .. } => {
+                    landed(*casualty) || !book.0.contains_key(casualty)
+                }
+                _ => true,
+            };
             ready.extend(
                 book.0
                     .iter()
-                    .filter(|(unit, asked)| asked.site == site && asked.out && landed(**unit))
+                    .filter(|(unit, asked)| {
+                        asked.site == site && asked.out && landed(**unit) && pair_ready(&asked.then)
+                    })
                     .map(|(unit, asked)| (*unit, asked.clone())),
             );
         }
     }
+    // A casualty out with its tug runs nothing of its own: its tug's load takes it.
+    ready.retain(|(unit, asked)| {
+        let towed = matches!(asked.then, Then::Towed { .. });
+        if towed && let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
+            book.0.remove(unit);
+        }
+        !towed
+    });
     // The owed writes after the prune, so a landed exit is never written twice; then each
     // recover, one an actor a pass, behind whatever that actor still has in flight.
     let mut busy = submit_owed(ctx);
@@ -454,6 +591,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             let what = match asked.then {
                 Then::Lift { .. } => "departure did not file",
                 Then::RaiderLift => "lift did not finish",
+                Then::TowLoad { .. } | Then::Towed { .. } => "load did not file",
                 Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => "recover did not start",
             };
             ctx.out.sys_to_actor(
@@ -500,6 +638,19 @@ fn continue_recover(
         }
         Then::Raider => super::raiders::board(ctx, unit, site),
         Then::RaiderLift => super::raiders::lift(ctx, unit, site),
+        // Doc 40 cut FR.5 (Q-40-25): the pair is out; the load runs as on open ground.
+        Then::TowLoad { slot, .. } => {
+            let rig = crate::port::tv::select_rig(
+                ctx,
+                Some(*slot),
+                crate::surface::excursion::ActKind::Drive,
+            )?;
+            if rig.tv != unit {
+                return Err("that slot holds another rig now".to_owned());
+            }
+            crate::surface::tow::load_cmd(ctx, &rig, true).map_err(|error| error.to_string())
+        }
+        Then::Towed { .. } => Ok(()),
     }
 }
 

@@ -132,7 +132,11 @@ pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Th
     let ramp = match then {
         Then::Raider => super::raiders::hull_ramp(ctx.w, unit),
         Then::Sortie { .. } => crate::detachment::sortie::field_ramp(ctx, unit),
-        Then::Rig { .. } | Then::Lift { .. } | Then::RaiderLift => None,
+        Then::Rig { .. }
+        | Then::Lift { .. }
+        | Then::RaiderLift
+        | Then::Towed { .. }
+        | Then::TowLoad { .. } => None,
     };
     let Some(ramp) = ramp else {
         return;

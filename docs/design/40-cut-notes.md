@@ -635,7 +635,8 @@ PR #410. One kernel rebless, built in §4.1's order. The base is `4390f04c`.
      - The coupled withdraw: a casualty is judged by its tug at the ramp and is withdrawn before it.
    - Host: `field/admit.rs` lifts the `carried` filter. A towed casualty is an entrant on its tug's party
      (`coupled_entrants`), the pair rides `FieldHost.tows`, and the casualty is never counted.
-   - `surface/tow.rs`'s half (below) went last on that file, after RS.5.
+   - `surface/tow.rs`'s half went last on that file, after RS.5. It is **FR.5b** (PR #433), split from #410 so
+     that #410 could merge first.
 
 **The join's install of a scripted seal** (doc 23 S.4b-3's need). Carried here as the kernel half, agreed with
 the S.4b session on 2026-11-04.
@@ -702,3 +703,60 @@ above, in order:
   After a release the casualty keeps its damage limits but may fire again. A casualty destroyed while coupled
   stays coupled, since a wreck is still towed.
 
+## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
+
+PR #433, off `main` after #410 and RS.5 (#415). #410 merged with story (a)'s stale expectation
+(`field_gc4.rs:317`: "the casualty rides as its tug's load"), so main was red on `tacsim-integration-1` until this
+PR.
+
+### What was built
+
+- **The trailer.** While a field runs, the kernel trails the casualty. `tow::follow` does nothing while the tug or its
+  casualty is in a running field, and the casualty checks in at its own row's pose.
+- **The drop.** `tow::set_down` sets the casualty down at its own pose and never on its tug's cell. Lane 3's P0-8
+  (the tug falls irrecoverable) stays green.
+- **Release as a field act.** `+tv/<n> release go` on a tug in a field goes to `field_release_cmd` (`port/tv.rs`):
+  - It sends `offer_field_release` and answers `FIELD_RELEASE_ORDERED`, or `FIELD_BUSY` when the queue is full.
+    The preview line is `FIELD_RELEASE_PREVIEW`.
+  - `exit::on_released`, on `Ok`, submits `TowOrder::Release { site, field: true }` in the same batch. The tow
+    retires on the site record and the pilot gets the ordinary `RELEASED` line.
+  - On `Err` it tells `FIELD_RELEASE_REFUSED`.
+  - A re-attach inside a field still waits (Q-CF-30).
+- **The coupled withdraw at the ramp** (Q-40-25). `+tv/<n> load go` on a tug in a field goes to `field_load_cmd`:
+  - It checks the bay's room first, then `exit::request_coupled` sends `ArenaMsg::Withdraw` for the casualty and
+    the tug with the ramp's position.
+  - Two new `Then` arms, `Towed` and `TowLoad`, follow the pair out. A refusal is told once, by the tug's answer;
+    `NotAtRamp` reads `tow::NOT_AT_RAMP`.
+  - Once both exits are on the record, the exit tick runs `tow::load_cmd` as the player. `TowOrder::Load`/`Loaded`
+    then run as on open ground, and `complete_load` is untouched.
+  - `+tv/<n> recover` and `+sortie/recover` still refuse a tug in tow.
+
+### Stories (conclav.dev)
+
+`tests/shard_10/field_fr5.rs`, new, each at Ahuna Flank (256) and Urvara Reach (512):
+- the casualty struck while towed, then released in the field by `+tv/<n> release go` (109 s each);
+- the tug falls and the casualty is dropped where it stands (50 s each);
+- a coupled pair withdrawn at the ramp by `+tv/<n> load go` under fire and loaded into the bay (69 s and 54 s).
+
+Story (a), `field_gc4::gc4_the_wingman_drags…`, keeps its claims. Three asserts move, each commented "Doc 40 cut
+FR.5": the casualty is in the field, it stands beside its tug rather than on it, and it is indexed at its own cell.
+It ran in 204 s.
+
+`field_fr5`, `field_gc4`, `field_carrier` and `field_gc2` passed 20 of 20. `mush-contract-tests` and `tacsim --lib`
+passed 2,208.
+
+### Departures
+
+- **Own carrier only.** The coupled load in a field offers only the rig's own carrier's ramp. The host cannot read
+  the tug's live pose against a Friend's carrier.
+- **A fixture instead of a first field.** The new stories lay the casualty on the site's index with the staff fixture
+  (GC.5's precedent) instead of fighting a first field. Story (a) still fights its first field.
+- **Hits read from the ledger.** The stories set `[tacsim.arena.ledger].summary_ms` to 100 (FR.4's knob), so the
+  hit lines reach the host while the field runs.
+- **The tug-falls story checks at demotion.** Once the tug was destroyed, the field closed within seconds in every
+  run, so the drop is read at demotion. The kernel gate `fr5_a_tug_destroyed_leaves_its_casualty_standing` holds
+  the uncoupling itself.
+- **One public reader.** `tow::field_stand(w, site, unit)` reads a unit's cell and `coupled_to` from the field's
+  last snapshot, for the stories.
+- **The release story's placement.** At Ahuna the powerless casualty was never seen at ramp + 3 from the stranger's
+  hull, so it stands at ramp + 4 and its tug at ramp + 5.
