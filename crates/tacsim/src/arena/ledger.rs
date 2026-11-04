@@ -708,6 +708,15 @@ pub enum EventKind {
         unit: ObjId,
         command: Box<super::detachment::DetachmentCommand>,
     },
+    /// **A new segment of an IC field's black box opens here** (doc 40 cut FR.4; Q-38-28,
+    /// Q-40-21): [`Ledger::roll_segment`]'s line, the first the segment counts. `seq`, the digest
+    /// and the shipped digest run on through it, so the segments are one chain; the field host
+    /// writes the chunks from this line on to the segment's own log. An OOC match never writes
+    /// one.
+    Segment {
+        /// The segment this line opens: `FieldLive.segment`, from 2.
+        segment: u32,
+    },
 }
 
 impl EventKind {
@@ -752,6 +761,7 @@ impl EventKind {
             EventKind::Aborted => "aborted",
             EventKind::Void => "void",
             EventKind::DetachmentCommanded { .. } => "detachment_commanded",
+            EventKind::Segment { .. } => "segment",
         }
     }
 }
@@ -849,6 +859,9 @@ pub struct Ledger {
     /// `bytes` in chunk order as it leaves. It is what the world's
     /// `log:match.<id>` can reproduce: see [`Ledger::shipped_digest`].
     shipped: Sha256,
+    /// **The segment being written** (doc 40 cut FR.4): `1` until [`Ledger::roll_segment`]
+    /// first opens another. `bytes_total` counts this segment's bytes only.
+    segment: u32,
 }
 
 /// **What a snapshot carries of the ledger** (16b cut AF.1; doc 16 §3.1
@@ -879,6 +892,22 @@ pub struct LedgerState {
     bytes_total: u64,
     digest: Vec<u8>,
     shipped: Vec<u8>,
+    /// **Doc 40 cut FR.4**: the segment, written only once a field has rolled, so every OOC
+    /// snapshot (and every field's first segment) encodes byte for byte as before and
+    /// `SNAPSHOT_FORMAT` stands.
+    #[serde(default = "first_segment", skip_serializing_if = "is_first_segment")]
+    segment: u32,
+}
+
+/// The segment a ledger opens in.
+const fn first_segment() -> u32 {
+    1
+}
+
+/// Whether `segment` is the first, which a snapshot leaves out.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference.
+const fn is_first_segment(segment: &u32) -> bool {
+    *segment == 1
 }
 
 impl Clone for Ledger {
@@ -893,6 +922,7 @@ impl Clone for Ledger {
             bytes_total: self.bytes_total,
             digest: self.digest.clone(),
             shipped: self.shipped.clone(),
+            segment: self.segment,
         }
     }
 }
@@ -906,6 +936,7 @@ impl std::fmt::Debug for Ledger {
             .field("closed", &self.closed.len())
             .field("last_closed_seq", &self.last_closed_seq)
             .field("flushed_upto", &self.flushed_upto)
+            .field("segment", &self.segment)
             .finish()
     }
 }
@@ -924,6 +955,7 @@ impl Ledger {
             bytes_total: 0,
             digest: Sha256::new(),
             shipped: Sha256::new(),
+            segment: first_segment(),
         }
     }
 
@@ -954,6 +986,7 @@ impl Ledger {
             bytes_total: self.bytes_total,
             digest: self.digest.serialize().to_vec(),
             shipped: self.shipped.serialize().to_vec(),
+            segment: self.segment,
         }
     }
 
@@ -974,6 +1007,7 @@ impl Ledger {
             bytes_total,
             digest,
             shipped,
+            segment,
         } = state;
         Ok(Ledger {
             cfg: cfg.clone(),
@@ -991,7 +1025,44 @@ impl Ledger {
             bytes_total,
             digest: resume_sha256(&digest, "digest")?,
             shipped: resume_sha256(&shipped, "shipped")?,
+            segment: segment.max(1),
         })
+    }
+
+    /// **Open segment `segment` of the black box** (doc 40 cut FR.4; Q-38-28, Q-40-21): the
+    /// byte bound starts again — `bytes_total` to nought, so the summaries' 90% and the
+    /// `Timeout` at 100% are a segment's — and one [`EventKind::Segment`] line is appended, the
+    /// first of the new segment's bytes. `seq`, the digest, the shipped digest and the chunk
+    /// numbering run on: the segments are one chain.
+    ///
+    /// No chunk is closed here. The field task's live roll closes the open chunk before the line
+    /// and again after it, so the line is a chunk of its own and every chunk is one segment's; a
+    /// resume's roll leaves the snapshot's open chunk open, because those bytes go to the new
+    /// segment's log whatever the roll does (`crate::field`'s boot).
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerFull`] only when one line is wider than `ledger.max_bytes`, which no config the
+    /// layer validates allows; the segment has opened all the same.
+    pub fn roll_segment(&mut self, segment: u32, t_ms: i64, hash: u64) -> Result<u64, LedgerFull> {
+        self.segment = segment;
+        self.bytes_total = 0;
+        self.append(t_ms, EventKind::Segment { segment }, Vec::new(), hash)
+    }
+
+    /// The segment being written: `1` until [`Ledger::roll_segment`] opens another.
+    #[must_use]
+    pub const fn segment(&self) -> u32 {
+        self.segment
+    }
+
+    /// **Whether the field task's live roll is due** (doc 40 cut FR.4; Q-40-21): this segment
+    /// holds at least three quarters of `ledger.max_bytes` (48 MiB of the 64 MiB default,
+    /// provisional).
+    #[must_use]
+    pub fn segment_full(&self) -> bool {
+        u128::from(self.bytes_total).saturating_mul(4)
+            >= u128::from(self.cfg.max_bytes).saturating_mul(3)
     }
 
     /// **Record one event**, answering its sequence number.
@@ -2198,5 +2269,52 @@ mod tests {
         )
         .expect("a legacy line");
         assert_eq!(legacy, bare);
+    }
+
+    /// **Doc 40 cut FR.4** (Q-38-28, Q-40-21): a roll resets the segment's byte count and runs
+    /// the chain on; a first-segment ledger's state carries no `segment` key, so no snapshot an
+    /// OOC match takes moves, and a rolled one's round-trips.
+    #[test]
+    fn fr4_a_roll_resets_the_segments_bytes_and_runs_the_chain_on() {
+        let mut log = ledger(4_096, 64);
+        let mut appended = 0_u64;
+        while !log.segment_full() {
+            appended = log.append(0, summary(4), Vec::new(), 7).expect("room");
+        }
+        assert!(log.bytes_total() * 4 >= 4_096 * 3);
+        let plain = serde_json::to_value(log.to_state()).expect("encodes");
+        assert!(plain.get("segment").is_none(), "{plain}");
+        let digest_before = log.digest();
+        let seq = log.roll_segment(2, 5_000, 7).expect("room");
+        assert_eq!(seq, appended + 1, "the line takes the next sequence");
+        assert_eq!(log.segment(), 2);
+        assert!(log.summaries_enabled());
+        assert!(!log.segment_full());
+        assert!(
+            log.bytes_total() > 0 && log.bytes_total() < 200,
+            "the line alone"
+        );
+        assert_ne!(log.digest(), digest_before, "the digest folds the line too");
+        let state = log.to_state();
+        let encoded = serde_json::to_value(&state).expect("encodes");
+        assert_eq!(encoded.get("segment"), Some(&serde_json::json!(2)));
+        let back = Ledger::from_state(
+            &LedgerConfig {
+                summary_ms: 5_000,
+                max_bytes: 4_096,
+                max_unflushed_chunks: 64,
+            },
+            serde_json::from_value(encoded).expect("decodes"),
+        )
+        .expect("resumes");
+        assert_eq!(back.segment(), 2);
+        assert_eq!(back.digest(), log.digest());
+        assert_eq!(back.to_state(), state);
+        // A segment fills again from nought: the bound is a segment's.
+        let mut log = back;
+        while !log.segment_full() {
+            log.append(5_000, summary(4), Vec::new(), 7)
+                .expect("a segment's room");
+        }
     }
 }
