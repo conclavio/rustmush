@@ -563,6 +563,14 @@ bulk mint, so a port boots in exactly main's fires.
 - `shard_1/driving.rs`'s site-map fixture is re-blessed: 18 IC seconds of extra stocking fires.
 - mush-market `e7r2`: `shrink_ask` joins `restock_ask` as a taker of `RestockSpec`.
 
+**A flake seen on this PR (doc 43 rule #7).** `shard_8/escort_lease.rs::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back`
+failed twice on the PR's CI (`tacsim-integration-8`) and once in three runs on conclav.dev on this tree. It passed
+2 of 2 there on main (`4390f04c`) and always on Windows. Each time the escort is destroyed during the fire
+exchange, before it drives to the ramp ("Your tank is destroyed and takes no orders"). The fight reads no industry
+row, so the likely cause is timing: the story's `until` loops fire on wall-clock steps, and Stickney's new port
+activity (the refine, the drip, the house purchases) adds work to every fire. Owed: a CF-train look at the story's
+fight budget (the exchange should stop at the first hit both ways, not let the intruder keep firing).
+
 **Cell delta (rule #14).** `tacsim-integration-2`: **+0.22 min**. The cell's sum is 21.51 → 21.73 min, main's run
 at the merge base (41827163605, `4390f04c`) against the PR's (41853059138), 414 → 415 tests. The new story takes
 20.8 s. The common tests moved −0.12 min in all; `cost_lane`'s C2/C3 cohort adds about 10 s for the house
