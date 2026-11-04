@@ -346,3 +346,12 @@ CR.1.
   captor's carrier.
 - The extraction's landing line for a captive is the ordinary `EXTRACTED` ("Your hull is still on the
   ground"): the tick has no site for a carrier.
+
+**Cell delta (rule #14).** Measured from the JUnit sums of PR #418's run 41851040446 against #417's run
+41846609530.
+- The two CR.3 stories ran 41.8 s and 42.1 s: +1.4 summed minutes in shard_8. On a faster runner,
+  `crew_custody::` read 6.55 against 6.56.
+- shard_8's wall is 12.5 min (15.5 before).
+- The run's slowest cell was shard_1 at 23.2 min, which this cut does not touch. Every shard_1 module ran
+  about 1.27× slower on that runner (`driving::` 14.0 → 18.7, `field_gc4::` 8.4 → 9.7), as doc 43 §5.8
+  warns the hosted machines vary.
