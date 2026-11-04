@@ -189,6 +189,10 @@ pub enum Then {
     Returned,
     /// Storage unpaid: the facility's stores take the goods, and it closes `Seized`.
     Seized,
+    /// **Doc 39 cut IN.5** (§4.3's `output_lots: pooled`): the delivery's bulk lot dissolved into
+    /// the escrow's pool where it lies, the arm's act on the fire after the delivery, so the
+    /// collection moves pools. Nothing more.
+    Pooled,
 }
 
 /// **One goods move a contract owes** — the bay's `OwedAct` shape: the act ordinal (the ledger's
@@ -221,8 +225,13 @@ impl WorksAct {
     ///
     /// A sentence naming what is wrong.
     pub fn check(&self) -> Result<(), String> {
+        // Doc 39 cut IN.5: a pooling act names one endpoint, its lots and no pool goods.
+        let pooling = self.then == Then::Pooled;
+        if pooling && (self.from != self.to || !self.goods.is_empty() || self.lots.is_empty()) {
+            return Err("a pooling act names one endpoint and the lots it dissolves".into());
+        }
         if self.act == 0
-            || self.from == self.to
+            || (self.from == self.to && !pooling)
             || self.goods.len() > MAX_BILL_LINES
             || self.lots.len() > MAX_MOVE_LOTS
             || (self.goods.is_empty() && self.lots.is_empty())
@@ -433,6 +442,11 @@ fn here(ctx: &Ctx<'_>, front: Front) -> Result<(CanonicalId, FacilityRecord), St
         if !rooms.contains(&room) {
             continue;
         }
+        // Doc 39 cut IN.5: the lane's works row is a room of the port (its spine, at both
+        // stations), which is the facility itself.
+        let authored = crate::port::plant::works_room(ctx.w, &entry, def)
+            .ok()
+            .flatten();
         let found = ctx
             .w
             .module_state::<mush_industry::IndustryStore>()
@@ -440,11 +454,12 @@ fn here(ctx: &Ctx<'_>, front: Front) -> Result<(CanonicalId, FacilityRecord), St
             .flat_map(|store| store.facilities())
             .find(|f| {
                 f.capabilities().contains(&capability)
-                    && ctx
-                        .w
-                        .get(f.object())
-                        .and_then(|o| o.location)
-                        .is_some_and(|at| rooms.contains(&at))
+                    && (Some(f.object()) == authored
+                        || ctx
+                            .w
+                            .get(f.object())
+                            .and_then(|o| o.location)
+                            .is_some_and(|at| rooms.contains(&at)))
             })
             .cloned();
         if let Some(found) = found {
@@ -496,7 +511,7 @@ fn docked_hold(
 
 /// **The facility's stores**: the vault on the facility object itself, owned by its owner —
 /// found, or opened on first need (a house order's source and sink; a seizure's destination).
-fn stores(ctx: &mut Ctx<'_>, facility: &FacilityRecord) -> Result<VaultId, String> {
+pub(crate) fn stores(ctx: &mut Ctx<'_>, facility: &FacilityRecord) -> Result<VaultId, String> {
     let backing = CustodyRef::Container(facility.object());
     if let Some(vault) = ctx
         .w
@@ -1009,6 +1024,10 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let entry = here(ctx, front)?.0;
     let hold = docked_hold(ctx.w, ctx.actor, &entry, true)?;
     let (goods, lots) = escrow_contents(ctx, &c);
+    // Doc 39 cut IN.5: a bulk output is pooled by the arm before it moves.
+    if !bulk_lots(&lots).is_empty() {
+        return Err("That order is still settling.".to_owned());
+    }
     if goods.is_empty() && lots.is_empty() {
         close(
             ctx,
@@ -1032,6 +1051,16 @@ fn collect(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The bulk lots among `lots`, the first of each good (doc 39 cut IN.5: one dissolve a pool an
+/// act, since a bundle mutates a pool's key once).
+fn bulk_lots(lots: &[(LotId, CanonicalId, u64)]) -> Vec<(LotId, CanonicalId, u64)> {
+    let mut seen = std::collections::BTreeSet::new();
+    lots.iter()
+        .filter(|(_, good, _)| !crate::port_tick::is_part(good) && seen.insert(good.clone()))
+        .cloned()
+        .collect()
+}
+
 fn describe(goods: &[Goods], lots: &[(LotId, CanonicalId, u64)]) -> String {
     let mut parts: Vec<String> = goods
         .iter()
@@ -1048,15 +1077,20 @@ fn escrow_contents(
     ctx: &Ctx<'_>,
     c: &WorksContract,
 ) -> (Vec<Goods>, Vec<(LotId, CanonicalId, u64)>) {
-    let goods = c
-        .bill
-        .iter()
-        .filter_map(|g| {
-            let units = pooled(ctx, c.escrow(), &g.good);
-            (units > 0).then(|| Goods {
-                good: g.good.clone(),
-                units,
-            })
+    // The bill's goods, and (doc 39 cut IN.5) the order's pooled outputs.
+    let mut named: Vec<CanonicalId> = c.bill.iter().map(|g| g.good.clone()).collect();
+    if let Some(order) = c.order.and_then(|o| work_order(ctx, o)) {
+        for line in order.pinned().outputs() {
+            if !named.contains(line.commodity()) {
+                named.push(line.commodity().clone());
+            }
+        }
+    }
+    let goods = named
+        .into_iter()
+        .filter_map(|good| {
+            let units = pooled(ctx, c.escrow(), &good);
+            (units > 0).then_some(Goods { good, units })
         })
         .collect();
     (goods, escrow_lots(ctx, c.escrow()))
@@ -1214,7 +1248,7 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
         c.acts = owed.act;
         c.owed = None;
         match owed.then {
-            Then::Supplied => put(ctx, c),
+            Then::Supplied | Then::Pooled => put(ctx, c),
             Then::Collected => close(ctx, c, Close::Collected),
             Then::Seized => close(ctx, c, Close::Seized),
             Then::Returned => {
@@ -1255,7 +1289,7 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
     true
 }
 
-fn landed(ctx: &Ctx<'_>, contract: u64) -> u32 {
+pub(crate) fn landed(ctx: &Ctx<'_>, contract: u64) -> u32 {
     let Some(handles) = ctx.w.module_state::<WorksHandles>() else {
         return 0;
     };
@@ -1366,6 +1400,22 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                         c.id
                     ),
                 );
+            }
+            // Doc 39 cut IN.5 (§4.3): a pooled output is dissolved in the escrow first.
+            let bulk = bulk_lots(&escrow_lots(ctx, c.escrow()));
+            if c.owed.is_none() && !bulk.is_empty() {
+                let (requester, escrow) = (c.requester, c.escrow());
+                if let Err(error) = owe(
+                    ctx,
+                    c,
+                    requester,
+                    (escrow, escrow),
+                    (Vec::new(), bulk),
+                    Then::Pooled,
+                ) {
+                    tracing::warn!(contract = c.id, %error, "tacsim: a works output was not pooled");
+                }
+                return;
             }
             if c.house {
                 house_collect(ctx, c, &facility);
@@ -1726,6 +1776,16 @@ fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>
             rows.insert(c.id.to_string(), value);
         }
     }
+    // Doc 39 cut IN.5: a works' house purchase in flight, keyed by its stores vault (a vault id,
+    // so never an escrow's), its destination the ungoverned stores.
+    for (stores, owed) in crate::port::supply::owed_moves(w, actor) {
+        if rows.len() >= MAX_OFFER_ROWS {
+            break;
+        }
+        if let Ok(value) = serde_json::to_value(&owed) {
+            rows.insert(stores.to_string(), value);
+        }
+    }
     (rows, plans)
 }
 
@@ -1901,9 +1961,34 @@ impl ActionProvider for WorksProvider {
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
         let from = EndpointRef(VaultId(owed.from));
         let to = EndpointRef(VaultId(owed.to));
+        // Doc 39 cut IN.5: a pooling act dissolves each bulk lot where it lies; nothing moves.
+        if owed.then == Then::Pooled {
+            let mut goods = std::collections::BTreeSet::new();
+            for lot in &owed.lots {
+                let record = txn
+                    .get(&self.inventory.lots, lot)
+                    .map_err(|_| refused("a lot cannot be read"))?
+                    .cloned()
+                    .filter(|l| l.endpoint() == from)
+                    .ok_or_else(|| refused("a lot is no longer where the act names it"))?;
+                if crate::port_tick::is_part(record.commodity())
+                    || !goods.insert(record.commodity().clone())
+                {
+                    return Err(refused("only one bulk lot a good is pooled in one act"));
+                }
+                self.inventory
+                    .dissolve(txn, from, *lot)
+                    .map_err(|_| refused("a lot could not be pooled"))?;
+            }
+        }
         let mut incoming: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         let mut lots = Vec::with_capacity(owed.lots.len());
-        for lot in &owed.lots {
+        let moving = if owed.then == Then::Pooled {
+            &[][..]
+        } else {
+            &owed.lots[..]
+        };
+        for lot in moving {
             let record = txn
                 .get(&self.inventory.lots, lot)
                 .map_err(|_| refused("a lot cannot be read"))?
@@ -1940,15 +2025,14 @@ impl ActionProvider for WorksProvider {
                 .map_err(|_| refused("the goods could not be moved"))?;
         }
         for lot in lots {
+            // A part moves as its lot; a bulk lot is pooled first (`Then::Pooled`: a bundle
+            // mutates a pool's tally once, so it cannot be moved and dissolved in one act).
+            if !crate::port_tick::is_part(lot.commodity()) {
+                return Err(refused("a bulk lot is pooled before it moves"));
+            }
             self.inventory
                 .relocate(txn, lot.id(), from, to)
                 .map_err(|_| refused("a lot could not be moved"))?;
-            // A bulk output pools where it lands, so the market sells it; a part stays a lot.
-            if !crate::port_tick::is_part(lot.commodity()) {
-                self.inventory
-                    .dissolve(txn, to, lot.id())
-                    .map_err(|_| refused("a lot could not be pooled"))?;
-            }
         }
         // 4. The ledger.
         let ledger = WorksLedger {

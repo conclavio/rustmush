@@ -966,7 +966,12 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// ports' `medical` blocks (Ceres's at the arrivals hall, the Co-op's, two beds; Stickney's at
 /// the customs hall, the Yard's, four beds), each opened as a `medical` facility that crew
 /// treatment reads; **v21 since doc 41 cut RS.1**: Occator's third lease design, the tender
-/// (`+tv/lease tender`, pool 2, 1,800 + 7,000 for 168 IC days, provisional). The port readiness report
+/// (`+tv/lease tender`, pool 2, 1,800 + 7,000 for 168 IC days, provisional); **v22 since doc 39
+/// cut IN.6**: the seeded part rows; **v23 since doc 39 cut IN.5**: Stickney's refinery (Kasei's
+/// `kind: refine` mill row, concentrate into alloys at five to four, and its bid's `refresh`) and
+/// works (Stickney Yards', its house purchase of Kasei's alloys), the Ceres works of Freeport Works
+/// (the new org, with the alloy and carbon bids that were the Exchange's), and the Exchange's
+/// carbon ask. The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -980,7 +985,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 39 cut IN.5), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -991,11 +996,17 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 22;
+pub const LANE_VERSION: u32 = 23;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
 pub const LANE_SOURCES: [(&str, &str); 1] = [("tacsim/content/lane/ceres_phobos.json", LANE_JSON)];
+/// **The industry recipes' pack id** (doc 39 cut IN.5, §4.3): the works' menu — `fittings`
+/// (five tonnes of alloys and one of carbon ore into five of fittings, six work units, pooled);
+/// IN.7 adds the part recipes and IN.9 the hulls, each at the pack's next version.
+pub const INDUSTRY_RECIPES_PACK: &str = "tacsim.industry.recipes";
+/// `crates/tacsim/content/industry/recipes-v1.json`.
+pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v1.json");
 /// The outbound route: Ceres Freeport by Kirkwood Depot to Stickney Yards.
 pub const LANE_ROUTE_OUT: &str = "ceres_stickney";
 /// The return route: Stickney Yards by Kirkwood Depot to Ceres Freeport.
@@ -1021,16 +1032,21 @@ pub fn lane_packs() -> Result<Vec<mush_content::Pack>, String> {
 /// **The game's own seed sources** (doc 18 cut IC2; lead ruling R2): the lane,
 /// named `<built-in …>`, which [`crate::verify_sources_with`] reads ahead of the
 /// operator's files when the game content is on, so the store loads the lane
-/// whose places the content latch applies and its routes materialize.
+/// whose places the content latch applies and its routes materialize; beside it the
+/// relay's manufacture recipe and (doc 39 cut IN.5, §4.3) the industry recipes, so every
+/// deploy with the game on publishes the works' menu ([`INDUSTRY_RECIPES_PACK`]).
 #[must_use]
 pub fn game_seed_sources() -> Vec<PackSource> {
     LANE_SOURCES
         .iter()
         .chain(
-            [(
-                "relays/manufacture-v1.json",
-                include_str!("../../content/relays/manufacture-v1.json"),
-            )]
+            [
+                (
+                    "relays/manufacture-v1.json",
+                    include_str!("../../content/relays/manufacture-v1.json"),
+                ),
+                ("industry/recipes-v1.json", INDUSTRY_RECIPES_JSON),
+            ]
             .iter(),
         )
         .map(|(name, bytes)| PackSource {

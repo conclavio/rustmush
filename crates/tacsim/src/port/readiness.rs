@@ -1017,6 +1017,16 @@ fn commerce_lines(
                         LineState::Ready,
                         format!("{head}: SOLD OUT: seeded {total} {unit}, 0 left{clause}."),
                     ),
+                    // Doc 39 cut IN.5: the ask is down for a works' house purchase, which
+                    // moves its lot and lets the list step re-list the rest; never a closed desk.
+                    Ok(_) if crate::port::supply::moving(w, row.vault, good) => push(
+                        Binding::Listings,
+                        LineState::Ready,
+                        format!(
+                            "{head}: {pool} {unit} in the storefront; a house purchase is moving \
+                             part of it, and the rest is listed after it."
+                        ),
+                    ),
                     Ok(_) => push(
                         Binding::Listings,
                         LineState::Pending,

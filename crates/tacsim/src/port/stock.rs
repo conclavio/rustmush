@@ -894,6 +894,11 @@ pub(crate) fn stock_step(
              the clerk's bound are never minted (re-author the port under the bound)"
         );
     }
+    // Doc 39 cut IN.5: a works' house purchase, ahead of the list step that re-lists what it
+    // moved out of the seller's pool.
+    if let Some(step) = crate::port::supply::supply_step(ctx, state, fire, clerk, &map, &def) {
+        return step;
+    }
     // 4–5. Every row is seeded: the drift check, then the list step.
     let mut due: Option<(mush_market::VendorId, u64, CanonicalId, u64, u64)> = None;
     // Doc 20 cut SM.12a (F1): the due ask's vendor org and its mills' target counters.

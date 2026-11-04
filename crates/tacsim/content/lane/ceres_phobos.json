@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 22,
+    "version": 23,
     "kind": "campaign_seed",
-    "digest": "af3f150ab9d9bf17107155944f94f6dba9297e8ceadb181a6c28f90f70a849d6",
+    "digest": "fe502fe18a29648e6ada25b04c446feb54e9ec13e6b099b914552053986d28fd",
     "requires": []
   },
   "entries": {
@@ -2746,7 +2746,8 @@
           { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" },
           { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" },
-          { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" }
+          { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" },
+          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport" }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2766,9 +2767,10 @@
             "structural_alloys": "stickney_port/kasei",
             "industrial_parts": "stickney_port/stickney_yards",
             "instrument_boards": "luna_port/crisium_instruments",
-            "carbon_feedstock": "titan_port/titan_concession"
+            "carbon_feedstock": "titan_port/titan_concession",
+            "carbon_ore": "ceres_port/freeport_exchange"
           },
-          "reference_minor": { "carbon_ore": 2500, "ice_ore": 1750, "metal_ore": 3500, "strategic_ore": 30000 },
+          "reference_minor": { "ice_ore": 1750, "metal_ore": 3500, "strategic_ore": 30000 },
           "buyout_major": 90000,
           "dormancy_real_days": 7,
           "per_account": 1,
@@ -2777,13 +2779,17 @@
         "vendors": [
           { "org": "freeport_exchange", "storefront": "neighborhood.ceres_freeport.item.exchange_manifold",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.sondergaard",
-            "stock": [ { "good": "metals", "qty": 4000, "grade": 50, "issue": 1 } ],
-            "asks":  [ { "good": "metals", "price_major": 200, "boards": ["exchange"] } ],
-            "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 7000, "as": "Freeport Works", "boards": ["exchange"] },
-                       { "good": "metal_ore", "price_major": 70, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } },
-                       { "good": "carbon_ore", "price_major": 50, "intake": 120, "boards": ["exchange"], "refresh": { "per_ic_day": 20, "cap": 120 } },
+            "stock": [ { "good": "metals", "qty": 4000, "grade": 50, "issue": 1 },
+                       { "good": "carbon_ore", "qty": 240, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "metals", "price_major": 200, "boards": ["exchange"] },
+                       { "good": "carbon_ore", "price_major": 60, "boards": ["exchange"] } ],
+            "bids":  [ { "good": "metal_ore", "price_major": 70, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } },
                        { "good": "strategic_ore", "price_major": 600, "intake": 12, "boards": ["exchange"], "refresh": { "per_ic_day": 2, "cap": 12 } } ],
             "mill":  [ { "ore": "metal_ore", "into": "metals", "ratio": { "ore": 5, "product": 2 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
+          { "org": "freeport_works", "storefront": "neighborhood.ceres_freeport.room.c15_maintenance",
+            "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.sondergaard",
+            "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 1000, "boards": ["exchange"] },
+                       { "good": "carbon_ore", "price_major": 50, "intake": 120, "boards": ["exchange"], "refresh": { "per_ic_day": 20, "cap": 120 } } ] },
           { "org": "occator", "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.qureshi",
             "stock": [ { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
@@ -2838,7 +2844,11 @@
                       "cost": { "capital_major": 4000000, "lifetime_years": 15, "upkeep_permille": 40,
                                 "staff": 6, "wage_major": 150, "margin_permille": 250 } },
         "medical": { "room": "neighborhood.ceres_freeport.room.c03_arrivals", "operator": "coop",
-                     "capabilities": ["medical"], "beds": 2 }
+                     "capabilities": ["medical"], "beds": 2 },
+        "works": { "room": "neighborhood.ceres_freeport.room.c15_maintenance", "operator": "freeport_works",
+                   "capabilities": ["tacsim.works"], "slots": 2, "customers": "public",
+                   "cost": { "capital_major": 3000000, "lifetime_years": 25, "upkeep_permille": 20,
+                             "staff": 8, "wage_major": 150, "margin_permille": 250 } }
       }
     },
     "stickney_port": {
@@ -2870,8 +2880,9 @@
                        { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "structural_alloys", "price_major": 450, "boards": ["exchange"] },
                        { "good": "propellant", "price_major": 60, "boards": ["exchange"] } ],
-            "bids":  [ { "good": "metals", "price_major": 280, "intake": 4000, "boards": ["receiving", "exchange"] },
-                       { "good": "volatiles", "price_major": 200, "intake": 9600, "boards": ["receiving", "exchange"] } ] },
+            "bids":  [ { "good": "metals", "price_major": 280, "intake": 4000, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 40, "cap": 4000 } },
+                       { "good": "volatiles", "price_major": 200, "intake": 9600, "boards": ["receiving", "exchange"] } ],
+            "mill":  [ { "kind": "refine", "ore": "metals", "into": "structural_alloys", "ratio": { "ore": 5, "product": 4 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
           { "org": "stickney_yards", "storefront": "neighborhood.stickney_yards.item.yard_spares",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.castillo_haugen",
             "stock": [ { "good": "industrial_parts", "qty": 5400, "grade": 50, "issue": 1 },
@@ -2910,7 +2921,16 @@
                       "cost": { "capital_major": 1500000, "lifetime_years": 20, "upkeep_permille": 30,
                                 "staff": 6, "wage_major": 150, "margin_permille": 250 } },
         "medical": { "room": "neighborhood.stickney_yards.room.p03_customs", "operator": "stickney_yards",
-                     "capabilities": ["medical"], "beds": 4 }
+                     "capabilities": ["medical"], "beds": 4 },
+        "refinery": { "room": "neighborhood.stickney_yards.room.p07_receiving", "operator": "kasei",
+                      "capabilities": ["smelt"],
+                      "cost": { "capital_major": 6000000, "lifetime_years": 30, "upkeep_permille": 20,
+                                "staff": 10, "wage_major": 150, "margin_permille": 0 } },
+        "works": { "room": "neighborhood.stickney_yards.room.p15_maintenance", "operator": "stickney_yards",
+                   "capabilities": ["tacsim.works"], "slots": 2, "customers": "public",
+                   "cost": { "capital_major": 3000000, "lifetime_years": 25, "upkeep_permille": 20,
+                             "staff": 8, "wage_major": 150, "margin_permille": 250 },
+                   "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] }
       }
     },
     "luna_port": {

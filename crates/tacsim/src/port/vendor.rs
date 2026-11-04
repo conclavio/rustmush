@@ -18,8 +18,9 @@
 //!   `vault.withdraw` grant** in the org's root scope (lead ruling L25: `authorize`
 //!   honours a direct grant with no membership), the **stock plan rows**, and the
 //!   **standing bids** (`mush_market::post_wanted`). An update re-prices an ask by
-//!   withdrawing its Draw listing (the stock arm relists), and revises a changed bid
-//!   in place. **The applier makes no Draw listing**: the stock arm lists once the
+//!   withdrawing its Draw listing (the stock arm relists), revises a changed bid
+//!   in place, and (doc 39 cut IN.5) retires a bid no longer authored — withdrawn, its
+//!   row forgotten — unless a sale into it is in progress. **The applier makes no Draw listing**: the stock arm lists once the
 //!   pool exists.
 //!
 //! The economy and org allocators are reached through `apply.rs`'s two helpers
@@ -43,7 +44,7 @@ use smol_str::SmolStr;
 use crate::economy::CREDIT;
 use crate::port::apply::{alloc_grant_id, alloc_vault_id, credit_scale, minor_of, room_by_key};
 use crate::port::coop::port_name;
-use crate::port::def::{PortDef, room_key};
+use crate::port::def::{PortDef, VendorDef, room_key};
 use crate::port::families::StockIssueId;
 use crate::port::map::{BidRow, ClerkRow, PortMap, StockRow, VendorRow};
 use crate::store::put_port_map;
@@ -62,6 +63,28 @@ pub const CLERK_CAPABILITY: &str = "vault.withdraw";
 /// # Errors
 ///
 /// A sentence naming the reference and what did not resolve.
+/// **A vendor's storefront object**: its authored item, or (doc 39 cut IN.5; §4.2's "the pool is
+/// the works'") the port's works room when the vendor names it, so the vendor's bids fill the
+/// works' stores — the vault `crate::port::works` finds on the facility.
+fn storefront_of(
+    w: &World,
+    id: &CanonicalId,
+    def: &PortDef,
+    vendor: &VendorDef,
+) -> Result<ObjId, String> {
+    let org = &vendor.org;
+    if def
+        .works
+        .as_ref()
+        .is_some_and(|works| works.room == vendor.storefront)
+    {
+        return crate::port::plant::works_room(w, id, def)?
+            .ok_or_else(|| format!("{id}: vendor {org}: storefront: the works room is not here"));
+    }
+    authored_object(w, &def.area, &vendor.storefront, "item")
+        .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))
+}
+
 pub(crate) fn authored_object(
     w: &World,
     area: &CanonicalId,
@@ -362,10 +385,10 @@ pub(crate) fn preflight(
                 }
             }
             None => {
-                let storefront = authored_object(w, &def.area, &vendor.storefront, "item")
-                    .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
+                let storefront = storefront_of(w, id, def, vendor)?;
+                // Doc 39 cut IN.5: or the spine itself, when it is the works room.
                 let room = w.get(storefront).and_then(|o| o.location);
-                if spine.is_none() || room != spine {
+                if spine.is_none() || (room != spine && Some(storefront) != spine) {
                     return Err(format!(
                         "{id}: vendor {org}: the storefront {} is not in the port's staff spine",
                         vendor.storefront
@@ -421,16 +444,23 @@ pub(crate) fn preflight(
                 return Err(sentence);
             }
         }
-        // 7. Bid drift: a recorded bid is never retired by an update, and a revision
-        // keeps the remaining intake in range. Doc 18 cut IC10 (decision 22): a cut of
-        // the authored intake by more than is left saturates at 0 — the bid stands
-        // exhausted — the same arithmetic the revise arm in `put` makes.
+        // 7. Bid drift: a revision keeps the remaining intake in range. Doc 18 cut IC10
+        // (decision 22): a cut of the authored intake by more than is left saturates at 0 —
+        // the bid stands exhausted — the same arithmetic the revise arm in `put` makes. Doc 39
+        // cut IN.5: a recorded bid no longer authored is retired by `put` (withdrawn, its row
+        // forgotten), unless a sale into it is in progress.
         for (good, bid) in &row.bids {
             let Some(now) = authored.and_then(|v| v.bids.iter().find(|b| &b.good == good)) else {
-                return Err(format!(
-                    "{id}: vendor {org} bid {good} is in the port map but no longer authored; bids \
-                     are never retired by a port update"
-                ));
+                if market
+                    .quotes_of_listing(ListingId(bid.listing))
+                    .any(|q| q.contract.is_some() && q.settled.is_none())
+                {
+                    return Err(format!(
+                        "{id}: vendor {org} bid {good} is no longer authored and a sale into it is \
+                         in progress; apply again once it settles"
+                    ));
+                }
+                continue;
             };
             if now.intake == bid.intake && now.price_major == bid.price_major {
                 continue;
@@ -545,8 +575,7 @@ pub(crate) fn put(
             .map_or_else(|| org.to_string(), |o| o.name.clone());
         // (e).3–4 Storefront, signatory and the storefront vault (unrecorded only).
         if !map.vendors.contains_key(org) {
-            let storefront = authored_object(ctx.w, &def.area, &vendor.storefront, "item")
-                .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
+            let storefront = storefront_of(ctx.w, id, def, vendor)?;
             let signatory = authored_object(ctx.w, &def.area, &vendor.signatory, "npc")
                 .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
             // Doc 18 cut IC14 row 30: the preflight's rule, re-run where the vault is made.
@@ -671,7 +700,10 @@ pub(crate) fn put(
             }
             put_port_map(ctx, map);
         }
-        // (e).8 The standing bids.
+        // (e).8 The standing bids. Doc 39 cut IN.5: first a recorded bid no longer authored is
+        // retired — its standing listing withdrawn and its row forgotten (the retire's rule,
+        // [`retire_listings`]) — so a bid that moves to another house of the port leaves this one.
+        retire_unauthored_bids(ctx, id, vendor, map)?;
         for bid in &vendor.bids {
             // Doc 19 cut A.4 (D-19-14): the port's reach premium rides the posting.
             let price = minor_of(crate::port::price::bid_price_major(ctx.w, def, bid), scale)
@@ -901,6 +933,48 @@ fn post_bid(
                 posted_ic: Some(ctx.w.world_ic_now().at),
             },
         );
+    }
+    put_port_map(ctx, map);
+    Ok(())
+}
+
+/// **Retire the vendor's recorded bids it no longer authors** (doc 39 cut IN.5: the Exchange's
+/// alloy and carbon bids moved to Freeport Works): each standing listing is withdrawn, then the
+/// rows are forgotten in one map write. The preflight refused a bid with a sale in progress.
+fn retire_unauthored_bids(
+    ctx: &mut Ctx<'_>,
+    id: &CanonicalId,
+    vendor: &VendorDef,
+    map: &mut PortMap,
+) -> Result<(), String> {
+    let org = &vendor.org;
+    let Some(row) = map.vendors.get(org) else {
+        return Ok(());
+    };
+    let retired: Vec<(CanonicalId, u64)> = row
+        .bids
+        .iter()
+        .filter(|(good, _)| !vendor.bids.iter().any(|bid| &bid.good == *good))
+        .map(|(good, bid)| (good.clone(), bid.listing))
+        .collect();
+    if retired.is_empty() {
+        return Ok(());
+    }
+    for (good, listing) in &retired {
+        let live = ctx
+            .w
+            .module_state::<MarketStore>()
+            .is_some_and(|market| market.listing(ListingId(*listing)).is_some());
+        if live {
+            mush_market::withdraw_listing(ctx, ListingId(*listing)).map_err(|error| {
+                format!("{id}: vendor {org} bid {good}: the retired bid's withdraw: {error:?}")
+            })?;
+        }
+    }
+    if let Some(row) = map.vendors.get_mut(org) {
+        for (good, _) in &retired {
+            row.bids.remove(good);
+        }
     }
     put_port_map(ctx, map);
     Ok(())
