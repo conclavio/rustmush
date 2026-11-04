@@ -141,7 +141,7 @@ pub use api::{
     fund_from_faucet, halt_source, hidden_seller_orgs, is_hidden_org, is_staff, list_goods,
     listing_lapsed, load_pack, may_list_vendor, may_view_listing, org_is_closed, org_may_trade,
     post_wanted, principal_account, refuse_market, register_vendor, restock_ask, retire_vendor,
-    revise_wanted, visible, withdraw_listing,
+    revise_wanted, shrink_ask, visible, withdraw_listing,
 };
 pub use boot::{HOLD_RECHECK_SWEEPS, RESERVE_GRACE_SWEEPS};
 pub use boot::{

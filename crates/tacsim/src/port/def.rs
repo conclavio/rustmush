@@ -24,6 +24,8 @@
 //! | `faction` (per org) | nothing until the faction cut (carried and validated, L16) |
 //! | `workshop` | the `PortApplier`'s part j (doc 36 cut GC.7): the room's `bay_refit` facility; the workshop quote (`crate::port::workshop`) |
 //! | `medical` | the `PortApplier`'s part k (doc 36 cut GC.13): the room's `medical` facility; crew treatment's faster time (`crate::field::crew`) |
+//! | `refinery` | the `PortApplier`'s part l (doc 39 cut IN.5): the room's `smelt` facility; the vendor's `kind: refine` mill rows (`crate::port::mill`) |
+//! | `works` | the `PortApplier`'s part m (doc 39 cut IN.5): the room's works facility, which `+works` fronts (`crate::port::works`); its house purchases (`crate::port::supply`) |
 //!
 //! Every number is an integer and every bound is checked twice: by
 //! [`PortDef::check`] (the entry alone) and by [`check_ports`] (the rules that
@@ -206,6 +208,97 @@ pub struct PortDef {
     /// opened for it here. Absent everywhere but Ceres (Tycho Mutual). Boxed, as `medical` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Box<RecoveryDef>>,
+    /// **Doc 39 cut IN.5 (Q-39-4, Q-39-5, Q-39-6)** — the port's refinery: a room of the port's
+    /// area opened as a facility of its operator holding the [`REFINE_CAPABILITY`], whose
+    /// house refines by its vendor's `kind: refine` mill rows. Absent everywhere but Stickney
+    /// (Kasei Metals). Boxed, as `recovery` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinery: Option<Box<RefineryDef>>,
+    /// **Doc 39 cut IN.5 (Q-39-4, Q-39-5, Q-39-31)** — the port's works: a room of the port's
+    /// area opened as a facility of its operator holding the works capability, which `+works`
+    /// fronts (`crate::port::works`), with its slots, cost model, customers and the house
+    /// purchases that keep its stores (`crate::port::supply`). Absent at a port without one and
+    /// at every site. Boxed, as `recovery` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub works: Option<Box<WorksDef>>,
+}
+
+/// "the workshop's", "the works'": a facility block's possessive, for the shared-room sentence.
+fn possessive(block: &str) -> String {
+    if block.ends_with('s') {
+        format!("the {block}'")
+    } else {
+        format!("the {block}'s")
+    }
+}
+
+/// The capability word a port's refinery holds (doc 39 cut IN.5; §4.2's `smelt`).
+pub const REFINE_CAPABILITY: &str = "smelt";
+
+/// **A port's refinery** (doc 39 cut IN.5; §4.2, §4.4's Kasei row): the house's refine is a mill
+/// row (`kind: refine`, Q-39-6), so the facility carries the cost model and the capability and
+/// takes no orders; its one slot is the record's floor, never booked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefineryDef {
+    /// `"<area>.<entry>"`: the room, which becomes the facility object itself.
+    pub room: String,
+    /// One of this entry's orgs, and a vendor of it with a `kind: refine` mill row.
+    pub operator: CanonicalId,
+    /// The facility's capabilities; must hold [`REFINE_CAPABILITY`], at most
+    /// `crate::pack::MAX_FACILITY_CAPABILITIES`.
+    pub capabilities: BTreeSet<CanonicalId>,
+    /// The cost model (§4.4): a house cost, never a fee.
+    pub cost: mush_industry::FacilityCostDef,
+}
+
+/// **A port's works** (doc 39 cut IN.5; §4.2, §4.4's works row; Q-39-4, Q-39-5): the room the
+/// facility is, its operator, its slots and cost model, who may order there (IN.3's
+/// `customers`), and the house purchases that stock its stores (Q-39-31). The numbers are
+/// provisional (the owner's economy rule of 2026-10-24).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorksDef {
+    /// `"<area>.<entry>"`: the room, which becomes the facility object itself (its order
+    /// crates lie there). It may be the port's spine, and a vendor's storefront may name it:
+    /// that vendor's stock is then the works' stores (§4.2's "the pool is the works'").
+    pub room: String,
+    /// One of this entry's orgs: the facility's owner.
+    pub operator: CanonicalId,
+    /// The facility's capabilities; must hold `crate::port::works::WORKS_CAPABILITY`, at most
+    /// `crate::pack::MAX_FACILITY_CAPABILITIES`.
+    pub capabilities: BTreeSet<CanonicalId>,
+    /// Orders the works runs at once, `1..=`[`MAX_WORKSHOP_BERTHS`]: the facility's slots.
+    pub slots: u32,
+    /// The cost model (§4.4): the fee and the booking fee read it.
+    pub cost: mush_industry::FacilityCostDef,
+    /// Who may order (IN.3, Q-39-30); the lane's works are `public`.
+    #[serde(default)]
+    pub customers: mush_industry::Customers,
+    /// **The house purchases** (§4.2's supply table, Q-39-31): goods the operator buys from
+    /// another house of this port into the works' stores. Empty for a works whose own bids
+    /// fill its stores.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buys: Vec<WorksBuyDef>,
+}
+
+/// The most house-purchase rows one works may author.
+pub const MAX_WORKS_BUYS: usize = 4;
+
+/// **One house purchase of a works** (doc 39 cut IN.5; §4.2, Q-39-31): while the works' stores
+/// hold less than `floor` of `good`, the stock clerk buys `lot` of it from `vendor`'s storefront
+/// at that vendor's ask, paid from the operator's account (`crate::port::supply`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorksBuyDef {
+    /// The good: one `vendor` asks.
+    pub good: CanonicalId,
+    /// The selling house: the org of one of this entry's vendors, not the works' operator.
+    pub vendor: CanonicalId,
+    /// The stores' level under which a purchase is made, `lot..=mush_market::MAX_QUANTITY`.
+    pub floor: u64,
+    /// Units one purchase moves, `1..=floor`; at most one purchase an IC day a row.
+    pub lot: u64,
 }
 
 /// **A port's recovery service** (doc 39 cut IN.4; Q-39-24, Q-38-18): the crawler-and-lift
@@ -1021,7 +1114,8 @@ pub struct VendorDef {
     /// The org that trades: one of this entry's orgs.
     pub org: CanonicalId,
     /// `<area>.<entry>` of an `item` in the port's `spine` room: the container
-    /// its storefront vault is backed by.
+    /// its storefront vault is backed by. **Doc 39 cut IN.5**: or the port's works room
+    /// itself, when it is the spine, so the vendor's stock is the works' stores.
     pub storefront: String,
     /// **The port's stock clerk** (doc 18 cut IC8, lead ruling L2; D-18-26 "a
     /// per-port clerk actor"): every vendor of one port names the same agent
@@ -1047,6 +1141,26 @@ pub struct VendorDef {
     /// vendor without a mill re-encodes byte-identically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mill: Vec<MillDef>,
+}
+
+/// **What a mill row converts** (doc 39 cut IN.5; §4.3's rule, Q-39-6): a one-input house
+/// conversion is a mill row, and its kind says whether the family rule binds it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MillKind {
+    /// An ore into its own family's good (doc 20's mills).
+    #[default]
+    Mill,
+    /// A good into another family's, at a refinery (doc 39's refine).
+    Refine,
+}
+
+impl MillKind {
+    /// Whether this is the default, `mill`.
+    #[must_use]
+    pub const fn is_mill(&self) -> bool {
+        matches!(self, Self::Mill)
+    }
 }
 
 /// **A mill's ratio** (doc 20 cut SM.12a; §7.3's "5 : 2"): `ore` tonnes of ore
@@ -1118,6 +1232,12 @@ pub struct MillRatio {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MillDef {
+    /// **Doc 39 cut IN.5 (Q-39-6)**: a `mill` turns an ore into its own family's good; a
+    /// `refine` turns one good into another family's (Kasei's concentrate into alloys) and
+    /// needs the port's refinery, operated by this vendor. Skipped when `mill`, so the ore
+    /// mills re-encode byte-identically.
+    #[serde(default, skip_serializing_if = "MillKind::is_mill")]
+    pub kind: MillKind,
     /// The ore milled: one of this vendor's `bids`.
     pub ore: CanonicalId,
     /// The product made: one of this vendor's `asks`, of the ore's family.
@@ -1526,6 +1646,154 @@ impl PortDef {
                 .cost
                 .check()
                 .map_err(|error| format!("recovery: {error}"))?;
+        }
+        // Doc 39 cut IN.5: the refinery and the works.
+        self.check_refinery()?;
+        if let Some(works) = &self.works {
+            self.check_works(works)?;
+        }
+        Ok(())
+    }
+
+    /// The rooms the entry opens as facilities, by block: no two blocks share one.
+    fn facility_rooms(&self) -> Vec<(&'static str, &str)> {
+        let mut rooms = Vec::new();
+        if let Some(workshop) = &self.workshop {
+            rooms.push(("workshop", workshop.room.as_str()));
+        }
+        if let Some(medical) = &self.medical {
+            rooms.push(("medical", medical.room.as_str()));
+        }
+        if let Some(refinery) = &self.refinery {
+            rooms.push(("refinery", refinery.room.as_str()));
+        }
+        if let Some(works) = &self.works {
+            rooms.push(("works", works.room.as_str()));
+        }
+        rooms
+    }
+
+    /// The facility capability set's shared bound: `word` held, at most the facility's cap.
+    fn holds_capability(capabilities: &BTreeSet<CanonicalId>, word: &str) -> bool {
+        capabilities.iter().any(|held| held.as_str() == word)
+            && capabilities.len() <= crate::pack::MAX_FACILITY_CAPABILITIES
+    }
+
+    /// **The refinery's bounds** (doc 39 cut IN.5): a refine row needs the port's refinery, and
+    /// the refinery's operator is the vendor that refines; the room in the area and no other
+    /// block's, the capability held, the cost in bounds. Each sentence starts `refinery: `.
+    fn check_refinery(&self) -> Result<(), String> {
+        let refiners: Vec<&CanonicalId> = self
+            .vendors
+            .iter()
+            .filter(|vendor| vendor.mill.iter().any(|mill| !mill.kind.is_mill()))
+            .map(|vendor| &vendor.org)
+            .collect();
+        let Some(refinery) = &self.refinery else {
+            return match refiners.first() {
+                Some(org) => Err(format!(
+                    "refinery: vendor {org} refines, and this port authors no refinery"
+                )),
+                None => Ok(()),
+            };
+        };
+        room_key(&self.area, &refinery.room).map_err(|detail| format!("refinery: {detail}"))?;
+        if let Some((block, _)) = self
+            .facility_rooms()
+            .into_iter()
+            .find(|(block, room)| *block != "refinery" && *room == refinery.room)
+        {
+            return Err(format!(
+                "refinery: the room is already {}",
+                possessive(block)
+            ));
+        }
+        if !self.orgs.iter().any(|org| org.id == refinery.operator) {
+            return Err(format!(
+                "refinery: operator {} is not one of this port's orgs",
+                refinery.operator
+            ));
+        }
+        if refiners.iter().any(|org| **org != refinery.operator) || refiners.is_empty() {
+            return Err(format!(
+                "refinery: its operator {} is the one vendor with a refine row",
+                refinery.operator
+            ));
+        }
+        if !Self::holds_capability(&refinery.capabilities, REFINE_CAPABILITY) {
+            return Err(format!(
+                "refinery: capabilities hold {REFINE_CAPABILITY} and at most {}",
+                crate::pack::MAX_FACILITY_CAPABILITIES
+            ));
+        }
+        refinery
+            .cost
+            .check()
+            .map_err(|error| format!("refinery: {error}"))
+    }
+
+    /// **The works' bounds** (doc 39 cut IN.5): the room in the area and no other block's, the
+    /// operator one of the entry's orgs, the works capability held, the slots and the cost in
+    /// bounds, and each house purchase from another vendor of this port that asks its good.
+    /// Each sentence starts `works: `.
+    fn check_works(&self, works: &WorksDef) -> Result<(), String> {
+        room_key(&self.area, &works.room).map_err(|detail| format!("works: {detail}"))?;
+        if let Some((block, _)) = self
+            .facility_rooms()
+            .into_iter()
+            .find(|(block, room)| *block != "works" && *room == works.room)
+        {
+            return Err(format!("works: the room is already {}", possessive(block)));
+        }
+        if !self.orgs.iter().any(|org| org.id == works.operator) {
+            return Err(format!(
+                "works: operator {} is not one of this port's orgs",
+                works.operator
+            ));
+        }
+        let capability = crate::port::works::WORKS_CAPABILITY;
+        if !Self::holds_capability(&works.capabilities, capability) {
+            return Err(format!(
+                "works: capabilities hold {capability} and at most {}",
+                crate::pack::MAX_FACILITY_CAPABILITIES
+            ));
+        }
+        if !(1..=MAX_WORKSHOP_BERTHS).contains(&works.slots) {
+            return Err(format!(
+                "works: slots must be 1..={MAX_WORKSHOP_BERTHS}, not {}",
+                works.slots
+            ));
+        }
+        works
+            .cost
+            .check()
+            .map_err(|error| format!("works: {error}"))?;
+        if works.buys.len() > MAX_WORKS_BUYS {
+            return Err(format!("works: at most {MAX_WORKS_BUYS} buys rows"));
+        }
+        let mut goods = BTreeSet::new();
+        for buy in &works.buys {
+            if !goods.insert(&buy.good) {
+                return Err(format!("works: buys {} is authored twice", buy.good));
+            }
+            let asks = self
+                .vendors
+                .iter()
+                .find(|vendor| vendor.org == buy.vendor && vendor.org != works.operator)
+                .is_some_and(|vendor| vendor.asks.iter().any(|ask| ask.good == buy.good));
+            if !asks {
+                return Err(format!(
+                    "works: buys {}: {} is not another vendor of this port that asks it",
+                    buy.good, buy.vendor
+                ));
+            }
+            if buy.lot == 0 || buy.lot > buy.floor || buy.floor > mush_market::MAX_QUANTITY {
+                return Err(format!(
+                    "works: buys {}: lot is 1..=floor, and floor at most {}",
+                    buy.good,
+                    mush_market::MAX_QUANTITY
+                ));
+            }
         }
         Ok(())
     }
@@ -2514,8 +2782,9 @@ pub fn check_ports(
                 }
             }
             // Doc 20 cut SM.12a (§7.3 "The mill"): a mill turns an ore into its own
-            // family's good (metal ore into metal concentrate, ice ore into water).
-            for mill in &vendor.mill {
+            // family's good (metal ore into metal concentrate, ice ore into water). Doc 39 cut
+            // IN.5 (Q-39-6): a refine row is the rule's one relaxation.
+            for mill in vendor.mill.iter().filter(|mill| mill.kind.is_mill()) {
                 let family = |good: &CanonicalId| {
                     goods
                         .good(good)
@@ -2690,6 +2959,8 @@ mod tests {
             workshop: None,
             medical: None,
             recovery: None,
+            refinery: None,
+            works: None,
         }
     }
 
@@ -3026,6 +3297,8 @@ mod tests {
             workshop: None,
             medical: None,
             recovery: None,
+            refinery: None,
+            works: None,
         }
     }
 
@@ -3473,6 +3746,7 @@ mod tests {
         per_day_t: u64,
     ) -> MillDef {
         MillDef {
+            kind: MillKind::Mill,
             ore: cid(ore),
             into: cid(into),
             ratio: MillRatio {
@@ -3629,6 +3903,102 @@ mod tests {
             "stickney_port: vendor kasei: mill ice_ore: ice_ore and metals are not one family's \
              goods"
         );
+    }
+
+    /// §4.4's works row.
+    fn in5_cost(margin_permille: u32) -> mush_industry::FacilityCostDef {
+        mush_industry::FacilityCostDef {
+            capital_major: 3_000_000,
+            lifetime_years: 25,
+            upkeep_permille: 20,
+            staff: 8,
+            wage_major: 150,
+            margin_permille,
+        }
+    }
+
+    /// **Doc 39 cut IN.5 (Q-39-5, Q-39-6)**: a refine row needs the port's refinery, run by the
+    /// vendor that refines; the works' room, capability, slots and house purchases are checked;
+    /// no two facility blocks share a room.
+    #[test]
+    fn in5_the_refinery_and_works_rules_refuse_with_their_sentences() {
+        let registry = "neighborhood.ceres_freeport.room.c05_registry".to_owned();
+        let refinery = |operator: &str| RefineryDef {
+            room: "neighborhood.ceres_freeport.room.c06_clearing".to_owned(),
+            operator: cid(operator),
+            capabilities: [cid(REFINE_CAPABILITY)].into_iter().collect(),
+            cost: in5_cost(0),
+        };
+        let refining = || {
+            let mut mill = sm12a_mill("metal_ore", "volatiles", (5, 4), 20, 40);
+            mill.kind = MillKind::Refine;
+            let mut def = port();
+            def.vendors.push(sm12a_vendor(vec![mill]));
+            def
+        };
+        let mut def = refining();
+        assert_eq!(
+            refused(&def),
+            "refinery: vendor coop refines, and this port authors no refinery"
+        );
+        def.refinery = Some(Box::new(refinery("coop")));
+        assert_eq!(refused(&def), "accepted");
+        def.refinery = Some(Box::new(refinery("trust")));
+        assert_eq!(
+            refused(&def),
+            "refinery: its operator trust is the one vendor with a refine row"
+        );
+        let mut lone = port();
+        lone.refinery = Some(Box::new(refinery("coop")));
+        assert_eq!(
+            refused(&lone),
+            "refinery: its operator coop is the one vendor with a refine row"
+        );
+
+        let works = |buys: Vec<WorksBuyDef>| WorksDef {
+            room: registry.clone(),
+            operator: cid("trust"),
+            capabilities: [cid(crate::port::works::WORKS_CAPABILITY)]
+                .into_iter()
+                .collect(),
+            slots: 2,
+            cost: in5_cost(250),
+            customers: mush_industry::Customers::Public,
+            buys,
+        };
+        let buy = |good: &str, vendor: &str, floor: u64, lot: u64| WorksBuyDef {
+            good: cid(good),
+            vendor: cid(vendor),
+            floor,
+            lot,
+        };
+        let with = |w: WorksDef| {
+            let mut def = refining();
+            def.refinery = Some(Box::new(refinery("coop")));
+            def.works = Some(Box::new(w));
+            refused(&def)
+        };
+        assert_eq!(with(works(vec![buy("metals", "coop", 10, 5)])), "accepted");
+        assert_eq!(
+            with(works(vec![buy("propellant", "coop", 10, 5)])),
+            "works: buys propellant: coop is not another vendor of this port that asks it"
+        );
+        assert_eq!(
+            with(works(vec![buy("metals", "coop", 10, 11)])),
+            "works: buys metals: lot is 1..=floor, and floor at most 100000"
+        );
+        let mut slotless = works(Vec::new());
+        slotless.slots = 0;
+        assert_eq!(with(slotless), "works: slots must be 1..=8, not 0");
+        let mut bare = works(Vec::new());
+        bare.capabilities.clear();
+        assert_eq!(
+            with(bare),
+            "works: capabilities hold tacsim.works and at most 32"
+        );
+        let mut shared = works(Vec::new());
+        shared.room = "neighborhood.ceres_freeport.room.c06_clearing".to_owned();
+        assert_eq!(with(shared), "refinery: the room is already the works'");
     }
 
     /// **Doc 20 cut SM.12a**: a vendor with no mill rows re-encodes with no `mill`

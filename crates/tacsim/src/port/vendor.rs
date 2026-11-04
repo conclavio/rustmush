@@ -43,13 +43,35 @@ use smol_str::SmolStr;
 use crate::economy::CREDIT;
 use crate::port::apply::{alloc_grant_id, alloc_vault_id, credit_scale, minor_of, room_by_key};
 use crate::port::coop::port_name;
-use crate::port::def::{PortDef, room_key};
+use crate::port::def::{PortDef, VendorDef, room_key};
 use crate::port::families::StockIssueId;
 use crate::port::map::{BidRow, ClerkRow, PortMap, StockRow, VendorRow};
 use crate::store::put_port_map;
 
 /// The capability the clerk is granted on each storefront (lead ruling L25).
 pub const CLERK_CAPABILITY: &str = "vault.withdraw";
+
+/// **A vendor's storefront object**: its authored item, or (doc 39 cut IN.5; §4.2's "the pool is
+/// the works'") the port's works room when the vendor names it, so the vendor's stock is the
+/// works' stores — the vault `crate::port::works` finds on the facility.
+fn storefront_of(
+    w: &World,
+    id: &CanonicalId,
+    def: &PortDef,
+    vendor: &VendorDef,
+) -> Result<ObjId, String> {
+    let org = &vendor.org;
+    if def
+        .works
+        .as_ref()
+        .is_some_and(|works| works.room == vendor.storefront)
+    {
+        return crate::port::plant::works_room(w, id, def)?
+            .ok_or_else(|| format!("{id}: vendor {org}: storefront: the works room is not here"));
+    }
+    authored_object(w, &def.area, &vendor.storefront, "item")
+        .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))
+}
 
 /// **An authored item or npc of a station pack, as a live object** (lead ruling L3):
 /// the reference split by [`room_key`]; the entry read from the station pack on the
@@ -362,10 +384,10 @@ pub(crate) fn preflight(
                 }
             }
             None => {
-                let storefront = authored_object(w, &def.area, &vendor.storefront, "item")
-                    .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
+                let storefront = storefront_of(w, id, def, vendor)?;
+                // Doc 39 cut IN.5: or the spine itself, when it is the works room.
                 let room = w.get(storefront).and_then(|o| o.location);
-                if spine.is_none() || room != spine {
+                if spine.is_none() || (room != spine && Some(storefront) != spine) {
                     return Err(format!(
                         "{id}: vendor {org}: the storefront {} is not in the port's staff spine",
                         vendor.storefront
@@ -545,8 +567,7 @@ pub(crate) fn put(
             .map_or_else(|| org.to_string(), |o| o.name.clone());
         // (e).3–4 Storefront, signatory and the storefront vault (unrecorded only).
         if !map.vendors.contains_key(org) {
-            let storefront = authored_object(ctx.w, &def.area, &vendor.storefront, "item")
-                .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
+            let storefront = storefront_of(ctx.w, id, def, vendor)?;
             let signatory = authored_object(ctx.w, &def.area, &vendor.signatory, "npc")
                 .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
             // Doc 18 cut IC14 row 30: the preflight's rule, re-run where the vault is made.
