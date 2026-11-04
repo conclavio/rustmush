@@ -22,48 +22,24 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
+use mush_contract_tests::scan;
 
 /// Every `.rs` file under `crates/*/src`, as (repo-relative path, contents).
 fn crate_sources() -> Vec<(String, String)> {
-    let root = repo_root();
-    let crates = root.join("crates");
-    let mut out = Vec::new();
-    let mut stack: Vec<PathBuf> = fs::read_dir(&crates)
-        .unwrap_or_else(|err| panic!("{} is unreadable: {err}", crates.display()))
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join("src"))
+    let root = scan::repo_root();
+    let sources: Vec<PathBuf> = scan::crate_dirs(&root)
+        .iter()
+        .map(|dir| dir.join("src"))
         .filter(|src| src.is_dir())
         .collect();
-    assert!(!stack.is_empty(), "no crates/*/src directories found");
-    while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)
-            .unwrap_or_else(|err| panic!("{} is unreadable: {err}", dir.display()))
-            .filter_map(Result::ok)
-        {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                let text = code_only(
-                    &fs::read_to_string(&path)
-                        .unwrap_or_else(|err| panic!("{} is unreadable: {err}", path.display())),
-                );
-                let name = path
-                    .strip_prefix(&root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.push((name, text));
-            }
-        }
+    assert!(!sources.is_empty(), "no crates/*/src directories found");
+    let mut out = Vec::new();
+    for path in sources.iter().flat_map(|src| scan::rust_files(src)) {
+        let text = code_only(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} is unreadable: {err}", path.display())),
+        );
+        out.push((scan::relative(&root, &path), text));
     }
     out.sort();
     out
@@ -173,7 +149,7 @@ fn the_crash_injection_seam_is_fenced_by_its_own_feature() {
 
 #[test]
 fn the_feature_is_off_by_default_and_on_only_for_the_kill_proofs() {
-    let root = repo_root();
+    let root = scan::repo_root();
 
     let server = manifest(&root.join("crates/mush-server/Cargo.toml"));
     let features = server

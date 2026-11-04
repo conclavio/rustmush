@@ -67,6 +67,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mush_contract_tests::scan;
 use mush_core::module::StateSlotInfo;
 use mush_core::{Engine, World};
 use mush_server::boot;
@@ -107,8 +108,13 @@ struct Baseline {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Site {
-    /// Workspace-relative path, forward slashes.
-    path: String,
+    /// A production site's workspace-relative path, forward slashes.
+    #[serde(default)]
+    path: Option<String>,
+    /// A test-rig site's module, `<crate>/tests::<module>` ([`site_key`]), in
+    /// place of a path a reshard would rewrite (doc 43 cut TS.8).
+    #[serde(default)]
+    module: Option<String>,
     /// The accessor, exactly one of [`ACCESSORS`].
     accessor: String,
     /// The slot as the source writes it (the turbofish type, or the leading
@@ -130,15 +136,6 @@ struct Observed {
     slot: String,
     /// What the census run was and what the pair means.
     note: String,
-}
-
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
 }
 
 fn baseline() -> Baseline {
@@ -369,6 +366,46 @@ fn hits_in(rel_path: &str, source: &str) -> Vec<Hit> {
     hits
 }
 
+/// Doc 43 cut TS.8: a test-rig file's key survives a reshard; a production
+/// file's is its path.
+#[test]
+fn a_test_rig_site_is_keyed_by_its_module_and_a_production_one_by_its_path() {
+    let root = scan::repo_root();
+    for (rel, key) in [
+        (
+            "crates/tacsim/tests/shard_3/drones.rs",
+            "tacsim/tests::drones",
+        ),
+        (
+            "crates/tacsim/tests/shard_5/drones.rs",
+            "tacsim/tests::drones",
+        ),
+        (
+            "crates/tacsim/tests/support/field/driving_rig.rs",
+            "tacsim/tests::support::field::driving_rig",
+        ),
+        ("crates/tacsim/tests/harness.rs", "tacsim/tests::harness"),
+        (
+            "crates/mushd/tests/sim_lenses/sim_lobby.rs",
+            "mushd/tests::sim_lobby",
+        ),
+        (
+            "crates/mush-campaign/tests/common/mod.rs",
+            "mush-campaign/tests::common",
+        ),
+        (
+            "crates/mush-sim/src/physical_tests.rs",
+            "crates/mush-sim/src/physical_tests.rs",
+        ),
+        (
+            "crates/mush-server/src/world_task/submission_disposition/tests/player_market_story.rs",
+            "crates/mush-server/src/world_task/submission_disposition/tests/player_market_story.rs",
+        ),
+    ] {
+        assert_eq!(site_key(&root, rel), key, "{rel}");
+    }
+}
+
 #[test]
 fn paired_and_triple_access_census_every_owner_argument() {
     let hits = hits_in(
@@ -402,36 +439,54 @@ fn paired_and_triple_access_census_every_owner_argument() {
 
 /// Every `.rs` file under `crates/`, workspace-relative with forward slashes.
 fn workspace_sources(root: &Path) -> Vec<(String, PathBuf)> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if entry.file_name() == "target" {
-                    continue;
-                }
-                walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(&root.join("crates"), &mut files);
-    files.sort();
-    files
+    scan::files(&root.join("crates"), &["rs"], &["target"])
         .into_iter()
         .map(|path| {
-            let rel = path
-                .strip_prefix(root)
-                .expect("walked from the root")
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = scan::relative(root, &path);
             (rel, path)
         })
         .collect()
+}
+
+impl Site {
+    /// The site this row names: its `path` or its `module`.
+    fn key(&self) -> &str {
+        self.path
+            .as_deref()
+            .or(self.module.as_deref())
+            .unwrap_or_default()
+    }
+}
+
+/// The key a `[[site]]` row names a site by (doc 43 cut TS.8). A production
+/// source is keyed by its workspace-relative path. A test-rig source — any file
+/// under a crate's `tests/` — is keyed `<crate>/tests::<module>`: its path under
+/// `tests/` as a module path, less a `mod.rs`, less the group directory of the
+/// test target that declares it (`shard_3/` beside `shard_3.rs`). So
+/// `crates/tacsim/tests/shard_3/drones.rs` is `tacsim/tests::drones`, and a
+/// reshard that moves it to `shard_5/` rewrites no row.
+fn site_key(root: &Path, rel: &str) -> String {
+    let Some((krate, under)) = rel
+        .strip_prefix("crates/")
+        .and_then(|rest| rest.split_once("/tests/"))
+        .filter(|(krate, _)| !krate.contains('/'))
+    else {
+        return rel.to_string();
+    };
+    let module = under.strip_suffix(".rs").unwrap_or(under);
+    let module = module.strip_suffix("/mod").unwrap_or(module);
+    let mut segments: Vec<&str> = module.split('/').collect();
+    if segments.len() > 1
+        && root
+            .join("crates")
+            .join(krate)
+            .join("tests")
+            .join(format!("{}.rs", segments[0]))
+            .is_file()
+    {
+        segments.remove(0);
+    }
+    format!("{krate}/tests::{}", segments.join("::"))
 }
 
 /// The crate a workspace-relative path belongs to, as a type path writes it
@@ -486,7 +541,7 @@ fn owner_mismatch(row: &Site, resolved: &BTreeSet<String>) -> String {
     format!(
         "{ALLOWLIST}: the row for {} / {} declares owner {:?}, but the production composition \
          says {:?}. Fix the row.",
-        row.path,
+        row.key(),
         row.slot,
         row.owner,
         if expected.is_empty() {
@@ -578,7 +633,7 @@ fn every_production_state_slot_has_exactly_one_owner() {
 /// would start no-opping has to be written down first.
 #[test]
 fn every_cross_owner_state_site_is_baselined() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let owners = owner_map();
     let short = short_owner_map(&owners);
     let list = baseline();
@@ -592,15 +647,44 @@ fn every_cross_owner_state_site_is_baselined() {
         assert!(
             !site.reason.trim().is_empty(),
             "{ALLOWLIST}: {} / {} carries no reason",
-            site.path,
+            site.key(),
             site.slot
         );
+        match (&site.path, &site.module) {
+            (Some(path), None) => assert!(
+                site_key(&root, path) == *path,
+                "{ALLOWLIST}: the row for {path} / {} names a test-rig file by path; key it \
+                 `module = {:?}` so a reshard does not rewrite it",
+                site.slot,
+                site_key(&root, path)
+            ),
+            (None, Some(module)) => assert!(
+                module.contains("/tests::"),
+                "{ALLOWLIST}: the row for {module} / {} is not `<crate>/tests::<module>`",
+                site.slot
+            ),
+            _ => panic!(
+                "{ALLOWLIST}: a row names its site by exactly one of `path` (production) and \
+                 `module` (test rig); {} / {} names {}",
+                site.key(),
+                site.slot,
+                if site.path.is_some() {
+                    "both"
+                } else {
+                    "neither"
+                }
+            ),
+        }
     }
     let declared: BTreeMap<(String, String, String), &Site> = list
         .site
         .iter()
-        .map(|s| ((s.path.clone(), s.accessor.clone(), s.slot.clone()), s))
+        .map(|s| ((s.key().to_string(), s.accessor.clone(), s.slot.clone()), s))
         .collect();
+    // Two test-rig files can share a module key (two targets each with a
+    // `common` module); a row keyed so would excuse both, so a needed key must
+    // name one file.
+    let mut files_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let mut needed: BTreeSet<(String, String, String)> = BTreeSet::new();
     let mut problems: Vec<String> = Vec::new();
@@ -616,16 +700,19 @@ fn every_cross_owner_state_site_is_baselined() {
             continue;
         };
         for hit in hits_in(&rel, &source) {
-            let key = (hit.path.clone(), hit.accessor.to_string(), hit.slot.clone());
+            let site = site_key(&root, &hit.path);
+            let key = (site.clone(), hit.accessor.to_string(), hit.slot.clone());
             // Seeding a slot is the accessor that can create an UNOWNED slot,
             // so every site of it is declared, resolvable or not.
             if hit.accessor == ACCESSORS[2] {
+                files_of.entry(site).or_default().insert(hit.path.clone());
                 needed.insert(key.clone());
                 match declared.get(&key) {
                     None => problems.push(format!(
-                        "{}: {} on {:?} is not in {ALLOWLIST}. Seeding a slot directly records \
-                         no owner, so every site of it is declared with its reason.",
-                        hit.path, hit.accessor, hit.slot
+                        "{}: {} on {:?} is not in {ALLOWLIST} (as {:?}). Seeding a slot \
+                         directly records no owner, so every site of it is declared with its \
+                         reason.",
+                        hit.path, hit.accessor, hit.slot, key.0
                     )),
                     Some(row) => {
                         let resolved = resolved_owners(&short, &hit.slot);
@@ -660,16 +747,18 @@ fn every_cross_owner_state_site_is_baselined() {
             if ours || foreign.is_empty() {
                 continue;
             }
+            files_of.entry(site).or_default().insert(hit.path.clone());
             needed.insert(key.clone());
             match declared.get(&key) {
                 None => problems.push(format!(
                     "{}: {} reaches {:?}, owned outside {caller_crate} — {}. Add a row to \
-                     {ALLOWLIST} saying why this crate writes another module's slot, or stop \
-                     writing it. WS03-S14 turns this into a refusal.",
+                     {ALLOWLIST} (as {:?}) saying why this crate writes another module's slot, \
+                     or stop writing it. WS03-S14 turns this into a refusal.",
                     hit.path,
                     hit.accessor,
                     hit.slot,
-                    foreign.join(", ")
+                    foreign.join(", "),
+                    key.0
                 )),
                 Some(row) => {
                     let resolved = resolved_owners(&short, &hit.slot);
@@ -678,6 +767,15 @@ fn every_cross_owner_state_site_is_baselined() {
                     }
                 }
             }
+        }
+    }
+
+    for (site, files) in &files_of {
+        if files.len() > 1 {
+            problems.push(format!(
+                "{ALLOWLIST}: {files:?} all resolve to the site key {site:?}, so one row would \
+                 excuse every one of them. Rename a module so each test-rig key names one file."
+            ));
         }
     }
 
@@ -747,7 +845,7 @@ fn no_baselined_site_reaches_through_the_checked_accessor() {
         .site
         .iter()
         .filter(|s| s.accessor == ACCESSORS[0])
-        .map(|s| format!("{} / {}", s.path, s.slot))
+        .map(|s| format!("{} / {}", s.key(), s.slot))
         .collect();
     assert!(
         through_ctx.is_empty(),

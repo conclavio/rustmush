@@ -8,7 +8,7 @@
 //! questions, and the design README's record of the decision. Hexadecimal
 //! digests, colours and ids are not hexes and are not matched.
 
-use std::path::{Path, PathBuf};
+use mush_contract_tests::scan;
 
 /// The files that may still say the word, because they record its removal.
 const HISTORY: &[&str] = &[
@@ -57,41 +57,16 @@ fn vocabulary() -> Vec<String> {
     ]
 }
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("the workspace root")
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            if matches!(name.as_ref(), "target" | ".git" | "node_modules" | "dist") {
-                continue;
-            }
-            walk(&path, out);
-        } else if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("rs" | "md" | "toml" | "json" | "txt")
-        ) {
-            out.push(path);
-        }
-    }
-}
-
 #[test]
 fn no_hex_grid_vocabulary_outside_the_history() {
-    let root = repo_root();
+    let root = scan::repo_root();
     let mut files = Vec::new();
     for top in ["crates", "docs"] {
-        walk(&root.join(top), &mut files);
+        files.extend(scan::files(
+            &root.join(top),
+            &["rs", "md", "toml", "json", "txt"],
+            &["target", ".git", "node_modules", "dist"],
+        ));
     }
     assert!(files.len() > 100, "the walk found the tree");
     let words = vocabulary();
@@ -124,7 +99,7 @@ fn no_hex_grid_vocabulary_outside_the_history() {
 
 #[test]
 fn the_history_files_exist() {
-    let root = repo_root();
+    let root = scan::repo_root();
     for file in HISTORY {
         assert!(
             root.join(file).is_file(),

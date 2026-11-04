@@ -79,35 +79,66 @@ pub struct GoodUnits {
     pub units: u64,
 }
 
-/// **A stripped part's provenance** (Q-36-37, Q-F6): written in the bundle that mints its lot.
+/// **Where a stripped part came from** (Q-36-37): the parent hull and the hand.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PartProvenance {
-    /// The lot: the key.
-    pub lot: LotId,
+pub struct Stripped {
     /// The hull it came off.
     pub parent_hull: ObjId,
     /// The parent hull's design.
     pub parent_schema: DefinitionRef,
     /// The slot it left, now `Missing` on the parent.
     pub slot: ComponentId,
-    /// **The hardware row it is** (doc 39 cut IN.1, Q-39-3): a weapon, sensor or plant row; it
-    /// fits every slot that names this row, whatever the unit.
-    pub definition: DefinitionRef,
-    /// Its condition when it came off (intact, damaged or jammed).
-    pub condition: ComponentCondition,
     /// The salvage claim it came off under, when a salvor stripped it.
     pub claim: Option<u64>,
-    /// Clean, or hot (Q-F6).
-    pub legality: ProvenanceLegalityStatus,
     /// Who took it off.
     pub stripped_by: ObjId,
     /// When, IC.
     pub stripped_at_ic: i64,
     /// Whether it came off in a scrapping, not a strip.
     pub scrapped: bool,
+}
+
+/// **How a part came to exist** (doc 39 cut IN.2, Q-39-13): every origin is traced, and only a
+/// stripped part can be hot (a made or seeded part has no claim to be hot under).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PartOrigin {
+    /// Taken off a hull by a strip, a scrap or a refit.
+    Stripped(Stripped),
+    /// Made by a work order at a facility (the part commission).
+    Manufactured {
+        /// The work order.
+        order: u64,
+        /// The facility's object.
+        facility: ObjId,
+    },
+    /// Minted from a vendor's stock row (the stock clerk's receipt).
+    Seeded {
+        /// The stock issue's key text ([`crate::port::families::StockIssueId`]).
+        receipt: String,
+    },
+}
+
+/// **A part's provenance** (Q-36-37, Q-F6; doc 39 cut IN.2): written in the bundle that mints
+/// its lot, keyed by the lot, and kept for the lot's whole life — a sale moves the lot itself,
+/// so the row follows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartProvenance {
+    /// The lot: the key.
+    pub lot: LotId,
+    /// **The hardware row it is** (doc 39 cut IN.1, Q-39-3): a weapon, sensor or plant row; it
+    /// fits every slot that names this row, whatever the unit.
+    pub definition: DefinitionRef,
+    /// Its condition (intact, damaged or jammed), whatever the origin.
+    pub condition: ComponentCondition,
+    /// Clean, or hot (Q-F6); only a stripped part is ever hot.
+    pub legality: ProvenanceLegalityStatus,
     /// The hull it was fitted into, once fitted (its lot is then consumed).
     pub fitted_into: Option<ObjId>,
+    /// How it came to exist.
+    pub origin: PartOrigin,
 }
 
 impl PartProvenance {
@@ -120,14 +151,52 @@ impl PartProvenance {
         )
     }
 
+    /// The strip it came from, when it was stripped.
+    #[must_use]
+    pub const fn stripped(&self) -> Option<&Stripped> {
+        match &self.origin {
+            PartOrigin::Stripped(s) => Some(s),
+            PartOrigin::Manufactured { .. } | PartOrigin::Seeded { .. } => None,
+        }
+    }
+
+    /// The hull it came off, when it was stripped.
+    #[must_use]
+    pub fn parent_hull(&self) -> Option<ObjId> {
+        self.stripped().map(|s| s.parent_hull)
+    }
+
+    /// The origin's word, as the requester reads it.
+    #[must_use]
+    pub const fn origin_word(&self) -> &'static str {
+        match &self.origin {
+            PartOrigin::Stripped(s) if s.scrapped => "scrapped",
+            PartOrigin::Stripped(_) => "stripped",
+            PartOrigin::Manufactured { .. } => "manufactured",
+            PartOrigin::Seeded { .. } => "seeded",
+        }
+    }
+
     /// Shape.
     ///
     /// # Errors
     ///
     /// A sentence naming what is wrong.
     pub fn check(&self) -> Result<(), String> {
-        if self.parent_hull.0 == 0 || self.stripped_by.0 == 0 {
-            return Err("a provenance names a hull and a hand".to_owned());
+        match &self.origin {
+            PartOrigin::Stripped(s) if s.parent_hull.0 == 0 || s.stripped_by.0 == 0 => {
+                return Err("a stripped part's provenance names a hull and a hand".to_owned());
+            }
+            PartOrigin::Manufactured { order, facility } if *order == 0 || facility.0 == 0 => {
+                return Err("a made part's provenance names its order and facility".to_owned());
+            }
+            PartOrigin::Seeded { receipt } if receipt.is_empty() || receipt.len() > 128 => {
+                return Err("a seeded part's provenance names its receipt".to_owned());
+            }
+            _ => {}
+        }
+        if self.is_hot() && self.stripped().is_none() {
+            return Err("only a stripped part can be hot".to_owned());
         }
         if !self.condition.is_salvageable() {
             return Err("a provenance's part is salvageable".to_owned());
@@ -181,6 +250,84 @@ pub enum OwedKind {
         /// The rightful owner who alone may clear it.
         rightful_owner: ObjId,
     },
+    /// **Hold an order's part** (doc 39 cut IN.2, Q-39-27's "reserved"): from the order to the
+    /// draw the lot is the order's, so no sale, move or split can take it ([`bay_holder`]).
+    Hold {
+        /// The order's sequence.
+        order: u32,
+        /// The part's lot.
+        lot: LotId,
+    },
+    /// Release the part a cancelled order held, where it lies.
+    Release {
+        /// The order's sequence.
+        order: u32,
+        /// The part's lot.
+        lot: LotId,
+    },
+    /// **The part commission** (doc 39 cut IN.2, §4.11): an untraced industry lot of a part is
+    /// consumed by its lineage and the one-unit lots minted, each with its provenance row, in
+    /// one bundle — so a part is fittable exactly when its row exists.
+    Commission {
+        /// The industry lot.
+        source: LotId,
+        /// The lineage it must carry.
+        lineage: CommissionSource,
+        /// The one-unit lots, a unit of the source each.
+        lots: Vec<LotMint>,
+    },
+}
+
+/// **The industry lineage a commission consumes** (doc 39 §4.11's two industry births).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommissionSource {
+    /// A work order's delivery (`industry`/`workorder.output`, `wo/<order>`): the lots carry
+    /// `Manufactured` rows naming the order.
+    WorkOrder {
+        /// The work order.
+        order: u64,
+    },
+    /// A bay refit's removed part (`industry`/`bay_refit`, the order): the lot carries a
+    /// `Stripped` row.
+    BayRefit {
+        /// The refit order.
+        order: u64,
+    },
+}
+
+impl CommissionSource {
+    /// Whether `lineage` is this source's industry lineage.
+    #[must_use]
+    pub fn matches(&self, lineage: &mush_inventory::Lineage) -> bool {
+        let (kind, id) = match self {
+            Self::WorkOrder { order } => ("workorder.output", format!("wo/{order:016x}")),
+            Self::BayRefit { order } => ("bay_refit", order.to_string()),
+        };
+        matches!(lineage, mush_inventory::Lineage::Origin { source }
+            if source.provider == "industry"
+                && source.kind == kind
+                && source.id == id.as_str()
+                && source.revision == Some(1))
+    }
+
+    /// Whether `origin` is the row this source gives a part.
+    #[must_use]
+    pub fn gives(&self, origin: &PartOrigin) -> bool {
+        match (self, origin) {
+            (Self::WorkOrder { order }, PartOrigin::Manufactured { order: made, .. }) => {
+                made == order
+            }
+            (Self::BayRefit { .. }, PartOrigin::Stripped(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+/// **The holder text a bay order holds its part under** (doc 39 cut IN.2).
+#[must_use]
+pub fn bay_holder(hull: ObjId, order: u32) -> String {
+    format!("tacsim.bay/{}/{order}", hull.0)
 }
 
 impl OwedKind {
@@ -191,6 +338,9 @@ impl OwedKind {
             Self::Draw { .. } => "draw",
             Self::Mint { .. } => "mint",
             Self::Hot { .. } => "hot",
+            Self::Hold { .. } => "hold",
+            Self::Release { .. } => "release",
+            Self::Commission { .. } => "commission",
         }
     }
 }
@@ -220,14 +370,22 @@ impl OwedAct {
     pub fn check(&self) -> Result<(), String> {
         let rows = match &self.kind {
             OwedKind::Draw { goods, .. } => goods.len(),
-            OwedKind::Mint { lots, .. } => lots.len(),
-            OwedKind::Hot { .. } => 0,
+            OwedKind::Mint { lots, .. } | OwedKind::Commission { lots, .. } => lots.len(),
+            OwedKind::Hot { .. } | OwedKind::Hold { .. } | OwedKind::Release { .. } => 0,
         };
         if self.act == 0 || rows > MAX_ACT_ROWS {
             return Err("an owed act has an ordinal and at most 32 rows".to_owned());
         }
         if !matches!(self.kind, OwedKind::Hot { .. }) && self.vault.is_none() {
-            return Err("a draw or a mint names its hold".to_owned());
+            return Err("a draw, a mint, a hold or a commission names its hold".to_owned());
+        }
+        if let OwedKind::Commission { lineage, lots, .. } = &self.kind
+            && (lots.is_empty()
+                || lots.iter().any(|l| {
+                    l.quantity != 1 || l.part.as_ref().is_none_or(|p| !lineage.gives(&p.origin))
+                }))
+        {
+            return Err("a commission mints one-unit parts with their rows".to_owned());
         }
         Ok(())
     }
@@ -365,7 +523,7 @@ pub(crate) fn register(
     actions: &BTreeMap<String, DefinitionRef>,
     outcomes: &BTreeMap<String, DefinitionRef>,
     inventory: Option<&InventoryFamilies>,
-) -> Result<(), ModError> {
+) -> Result<StateFamilyHandle<LotId, PartProvenance>, ModError> {
     use crate::port::families::family_descriptor;
     let ledgers = reg.state_family::<ObjId, BayLedger, _, _, _, _>(
         family_descriptor(BAY_WORK_FAMILY, "tacsim.bay_work_key.v1", "tacsim.bay_work")?,
@@ -408,10 +566,10 @@ pub(crate) fn register(
     reg.state(BayActHandles {
         action,
         ledgers,
-        parts,
+        parts: parts.clone(),
         inventory: inventory.cloned(),
     });
-    Ok(())
+    Ok(parts)
 }
 
 // ---- reads --------------------------------------------------------------------------------
@@ -456,6 +614,25 @@ pub fn lot(ctx: &mush_core::Ctx<'_>, lot: LotId) -> Result<Option<mush_inventory
     ctx.action_state(&inventory.lots, &lot)
         .map(|l| l.cloned())
         .map_err(|_| "The lot cannot be read.".to_owned())
+}
+
+/// **The hold on a lot**, when a listing or a bay order holds it (doc 39 cut IN.2).
+///
+/// # Errors
+///
+/// The sentence for an unwired or unreadable family.
+pub fn lot_hold(
+    ctx: &mush_core::Ctx<'_>,
+    lot: LotId,
+) -> Result<Option<mush_inventory::LotHold>, String> {
+    let inventory = ctx
+        .w
+        .module_state::<BayActHandles>()
+        .and_then(|h| h.inventory.clone())
+        .ok_or("The inventory is not wired to the bay.")?;
+    ctx.action_state(&inventory.lot_holds, &lot)
+        .map(|h| h.cloned())
+        .map_err(|_| "The lot's hold cannot be read.".to_owned())
 }
 
 /// **Submit `owed` as its actor** (the tick's swap: `ctx.actor` is set for the one call and
@@ -557,6 +734,86 @@ fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>
         }
     }
     (rows, plans)
+}
+
+impl BayActProvider {
+    /// **Lay a mint's lots into the hold**: the hold's room checked by the plan the offer
+    /// carried (doc 36a P2-4), then every lot minted under one `bay_<why>` origin.
+    #[allow(clippy::too_many_arguments)]
+    fn lay(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &Map<String, Value>,
+        endpoint: EndpointRef,
+        hull: ObjId,
+        act: u32,
+        why: &str,
+        lots: &[LotMint],
+    ) -> Result<(), mush_core::ActionError> {
+        let refused =
+            |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        // Doc 36a P2-4: what the lots lay in the hold must fit it, by the plan the offer
+        // carried for this hull; a hold the offer carried no plan for is ungoverned. The pools
+        // are read here, in the bundle that writes them.
+        if let Some(plan) = parameters
+            .get("plans")
+            .and_then(Value::as_object)
+            .and_then(|plans| plans.get(&hull.0.to_string()))
+        {
+            let plan = CapacityPlan(plan.clone());
+            // Doc 39 cut IN.1: a part weighs its catalogue mass, and the parts already aboard
+            // are read from the lot tally (a part never pools).
+            let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+            for row in lots {
+                let slot = bulk.entry(row.commodity.clone()).or_insert(0);
+                *slot = slot.saturating_add(row.quantity);
+            }
+            for (commodity, quantity) in &bulk {
+                let mut read = |good: &CanonicalId| {
+                    let pooled = self
+                        .inventory
+                        .pool(txn, endpoint, good)
+                        .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                        .map_err(|_| CapacityReadError)?;
+                    if !crate::port_tick::is_part(good) {
+                        return Ok(pooled);
+                    }
+                    self.inventory
+                        .lot_quantity(txn, endpoint, good)
+                        .map(|held| pooled.saturating_add(held))
+                        .map_err(|_| CapacityReadError)
+                };
+                PortCapacity
+                    .check(&plan, commodity, *quantity, &mut read)
+                    .map_err(|refusal| match refusal {
+                        CapacityRefusal::Refused { .. } => {
+                            refused("the hold has no room for the lots")
+                        }
+                        CapacityRefusal::Unreadable => refused("the hold's room cannot be read"),
+                    })?;
+            }
+        }
+        let mut rows = Vec::with_capacity(lots.len());
+        for row in lots {
+            let grade = Grade::new(row.grade).map_err(|_| invalid())?;
+            rows.push((row.commodity.clone(), row.quantity, grade, row.lot));
+        }
+        // One census write for every lot: one bundle writes a record once.
+        self.inventory
+            .mint_origins(
+                txn,
+                endpoint,
+                &rows,
+                &mush_economy::ExternalRef {
+                    provider: "tacsim".into(),
+                    kind: format!("bay_{why}").into(),
+                    id: format!("{}/{act}", hull.0).into(),
+                    revision: Some(u64::from(act)),
+                },
+            )
+            .map_err(|_| refused("the lots could not be laid in the hold"))?;
+        Ok(())
+    }
 }
 
 impl ActionProvider for BayActProvider {
@@ -699,7 +956,7 @@ impl ActionProvider for BayActProvider {
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
         let endpoint = owed.vault.map(|v| EndpointRef(VaultId(v)));
         match &owed.kind {
-            OwedKind::Draw { goods, fit, .. } => {
+            OwedKind::Draw { goods, fit, order } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
                 for row in goods {
                     let available = self
@@ -730,9 +987,11 @@ impl ActionProvider for BayActProvider {
                         .cloned()
                         .filter(|l| l.endpoint() == endpoint)
                         .ok_or_else(|| refused("the part's lot is not in the hold"))?;
+                    // Doc 39 cut IN.2: the order held the lot at its take; the draw ends the
+                    // hold as it consumes the lot.
                     self.inventory
-                        .consume_product(txn, &held)
-                        .map_err(|_| refused("the part's lot could not be taken"))?;
+                        .consume_held(txn, &held, &bay_holder(hull, *order))
+                        .map_err(|_| refused("the part's lot is not held for this order"))?;
                     let fitted = PartProvenance {
                         fitted_into: Some(hull),
                         ..record
@@ -743,76 +1002,78 @@ impl ActionProvider for BayActProvider {
             }
             OwedKind::Mint { why, lots } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
-                // Doc 36a P2-4: what the lots lay in the hold must fit it, by the plan the
-                // offer carried for this hull; a hold the offer carried no plan for is
-                // ungoverned. The pools are read here, in the bundle that writes them.
-                if let Some(plan) = parameters
-                    .get("plans")
-                    .and_then(Value::as_object)
-                    .and_then(|plans| plans.get(&hull.0.to_string()))
-                {
-                    let plan = CapacityPlan(plan.clone());
-                    // Doc 39 cut IN.1: a part weighs its catalogue mass, and the parts already
-                    // aboard are read from the lot tally (a part never pools).
-                    let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
-                    for row in lots {
-                        let slot = bulk.entry(row.commodity.clone()).or_insert(0);
-                        *slot = slot.saturating_add(row.quantity);
-                    }
-                    for (commodity, quantity) in &bulk {
-                        let mut read = |good: &CanonicalId| {
-                            let pooled = self
-                                .inventory
-                                .pool(txn, endpoint, good)
-                                .map(|pool| pool.map_or(0, |pool| pool.quantity))
-                                .map_err(|_| CapacityReadError)?;
-                            if !crate::port_tick::is_part(good) {
-                                return Ok(pooled);
-                            }
-                            self.inventory
-                                .lot_quantity(txn, endpoint, good)
-                                .map(|held| pooled.saturating_add(held))
-                                .map_err(|_| CapacityReadError)
-                        };
-                        PortCapacity
-                            .check(&plan, commodity, *quantity, &mut read)
-                            .map_err(|refusal| match refusal {
-                                CapacityRefusal::Refused { .. } => {
-                                    refused("the hold has no room for the lots")
-                                }
-                                CapacityRefusal::Unreadable => {
-                                    refused("the hold's room cannot be read")
-                                }
-                            })?;
-                    }
-                }
-                let mut rows = Vec::with_capacity(lots.len());
-                for row in lots {
-                    let grade = Grade::new(row.grade).map_err(|_| invalid())?;
-                    rows.push((row.commodity.clone(), row.quantity, grade, row.lot));
-                }
-                // One census write for every lot: one bundle writes a record once.
-                self.inventory
-                    .mint_origins(
-                        txn,
-                        endpoint,
-                        &rows,
-                        &mush_economy::ExternalRef {
-                            provider: "tacsim".into(),
-                            kind: format!("bay_{why}").into(),
-                            id: format!("{}/{act}", hull.0).into(),
-                            revision: Some(u64::from(act)),
-                        },
-                    )
-                    .map_err(|_| refused("the lots could not be laid in the hold"))?;
+                self.lay(txn, parameters, endpoint, hull, act, why, lots)?;
                 for row in lots {
                     if let Some(part) = &row.part {
-                        if part.lot != row.lot || part.parent_hull != hull {
+                        if part.lot != row.lot || part.parent_hull() != Some(hull) {
                             return Err(invalid());
                         }
                         txn.insert(&self.parts, &row.lot, part.clone())
                             .map_err(|_| refused("the part's provenance did not stage"))?;
                     }
+                }
+            }
+            OwedKind::Hold { order, lot } => {
+                let endpoint = endpoint.ok_or_else(invalid)?;
+                let record = txn
+                    .get(&self.parts, lot)
+                    .map_err(|_| refused("the part's provenance cannot be read"))?
+                    .cloned()
+                    .ok_or_else(|| refused("the bay holds only parts it can trace"))?;
+                if record.is_hot() || record.fitted_into.is_some() {
+                    return Err(refused("that part is hot, or already fitted"));
+                }
+                self.inventory
+                    .hold_lot(txn, endpoint, *lot, &bay_holder(hull, *order))
+                    .map_err(|_| refused("the part is not in the hold, or is held already"))?;
+            }
+            OwedKind::Release { order, lot } => {
+                // A release after the hold ended (the lot consumed, or never held) moves
+                // nothing; the ledger still advances, so the act lands once.
+                let holder = bay_holder(hull, *order);
+                let held = self
+                    .inventory
+                    .lot_hold(txn, *lot)
+                    .map_err(|_| refused("the part's hold cannot be read"))?
+                    .is_some_and(|h| h.holder() == holder);
+                if held {
+                    self.inventory
+                        .release_lot(txn, *lot, &holder)
+                        .map_err(|_| refused("the part's hold could not be released"))?;
+                }
+            }
+            OwedKind::Commission {
+                source,
+                lineage,
+                lots,
+            } => {
+                let endpoint = endpoint.ok_or_else(invalid)?;
+                let from = txn
+                    .get(&self.inventory.lots, source)
+                    .map_err(|_| refused("the industry lot cannot be read"))?
+                    .cloned()
+                    .filter(|l| l.endpoint() == endpoint && lineage.matches(l.lineage()))
+                    .ok_or_else(|| refused("no such industry lot is there to commission"))?;
+                // Conservation: a unit of the source a lot, the same good, nothing more.
+                let units = u64::try_from(lots.len()).map_err(|_| invalid())?;
+                if from.quantity() != units || lots.iter().any(|l| &l.commodity != from.commodity())
+                {
+                    return Err(invalid());
+                }
+                let mut rows = Vec::with_capacity(lots.len());
+                for row in lots {
+                    rows.push((row.lot, Grade::new(row.grade).map_err(|_| invalid())?));
+                }
+                self.inventory
+                    .commission_lots(txn, &from, &rows)
+                    .map_err(|_| refused("the industry lot could not be commissioned"))?;
+                for row in lots {
+                    let part = row.part.as_ref().ok_or_else(invalid)?;
+                    if part.lot != row.lot || !lineage.gives(&part.origin) {
+                        return Err(invalid());
+                    }
+                    txn.insert(&self.parts, &row.lot, part.clone())
+                        .map_err(|_| refused("the part's provenance did not stage"))?;
                 }
             }
             OwedKind::Hot {
@@ -824,7 +1085,7 @@ impl ActionProvider for BayActProvider {
                     .get(&self.parts, lot)
                     .map_err(|_| refused("the part's provenance cannot be read"))?
                     .cloned()
-                    .filter(|p| p.parent_hull == hull)
+                    .filter(|p| p.parent_hull() == Some(hull))
                     .ok_or_else(|| refused("no such part came off that hull"))?;
                 let claim_id = SalvageClaimId::new(*claim).map_err(|_| invalid())?;
                 let flagged = PartProvenance {
@@ -879,6 +1140,136 @@ impl ActionProvider for BayActProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row() -> DefinitionRef {
+        mush_core::DefinitionRegistryBuilder::new()
+            .register(
+                mush_core::mechanics::OwnerId::new("tacsim").expect("an owner"),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("sensor").expect("a kind"),
+                    DefinitionId::new("tacsim.sensor.visual_mk1").expect("an id"),
+                    1,
+                    json!({"fixture": true}),
+                )
+                .expect("a descriptor"),
+            )
+            .expect("registers")
+    }
+
+    fn part(origin: PartOrigin) -> PartProvenance {
+        PartProvenance {
+            lot: LotId(7),
+            definition: row(),
+            condition: ComponentCondition::Intact,
+            legality: ProvenanceLegalityStatus::CleanTitle,
+            fitted_into: None,
+            origin,
+        }
+    }
+
+    /// **Doc 39 cut IN.2 (Q-39-13)**: every origin is traced; only a stripped part can be hot;
+    /// each origin names what made it.
+    #[test]
+    fn in2_every_origin_is_traced_and_only_a_stripped_part_is_hot() {
+        let seeded = part(PartOrigin::Seeded {
+            receipt: "ab".repeat(32),
+        });
+        seeded.check().expect("a seeded part");
+        assert_eq!(seeded.origin_word(), "seeded");
+        assert_eq!(seeded.parent_hull(), None);
+        let made = part(PartOrigin::Manufactured {
+            order: 3,
+            facility: ObjId(9),
+        });
+        made.check().expect("a made part");
+        let hot = PartProvenance {
+            legality: ProvenanceLegalityStatus::ContrabandHotPart {
+                rightful_owner: ObjId(4),
+                reason: ContrabandReason::VacatedSalvageClaim {
+                    claim_id: SalvageClaimId::new(1).expect("a claim"),
+                },
+            },
+            ..made.clone()
+        };
+        assert!(hot.check().is_err(), "a made part is never hot");
+        assert!(
+            part(PartOrigin::Manufactured {
+                order: 0,
+                facility: ObjId(9)
+            })
+            .check()
+            .is_err()
+        );
+        assert!(
+            part(PartOrigin::Seeded {
+                receipt: String::new()
+            })
+            .check()
+            .is_err()
+        );
+        // The row's wire names its origin.
+        let wire = serde_json::to_value(&made).expect("encodes");
+        assert_eq!(wire["origin"]["manufactured"]["order"], 3);
+        let back: PartProvenance = serde_json::from_value(wire).expect("decodes");
+        assert_eq!(back, made);
+    }
+
+    /// **The part commission's shape** (doc 39 cut IN.2, §4.11): it consumes only its source's
+    /// industry lineage and mints one-unit parts whose rows that source gives.
+    #[test]
+    fn in2_a_commission_names_its_lineage_and_mints_one_unit_parts() {
+        let order = CommissionSource::WorkOrder { order: 0x2a };
+        let delivered = mush_inventory::Lineage::Origin {
+            source: mush_economy::ExternalRef {
+                provider: "industry".into(),
+                kind: "workorder.output".into(),
+                id: "wo/000000000000002a".into(),
+                revision: Some(1),
+            },
+        };
+        assert!(order.matches(&delivered));
+        assert!(!CommissionSource::WorkOrder { order: 0x2b }.matches(&delivered));
+        assert!(!CommissionSource::BayRefit { order: 0x2a }.matches(&delivered));
+        let made = PartOrigin::Manufactured {
+            order: 0x2a,
+            facility: ObjId(9),
+        };
+        assert!(order.gives(&made));
+        assert!(!CommissionSource::BayRefit { order: 0x2a }.gives(&made));
+        let mint = |quantity, origin: PartOrigin| LotMint {
+            lot: LotId(1),
+            commodity: CanonicalId::new("tacsim.part.sensor.visual_mk1").expect("an id"),
+            quantity,
+            grade: 9,
+            part: Some(part(origin)),
+        };
+        let owed = |lots| OwedAct {
+            act: 1,
+            by: ObjId(2),
+            vault: Some(5),
+            kind: OwedKind::Commission {
+                source: LotId(3),
+                lineage: order,
+                lots,
+            },
+            tries: 0,
+        };
+        owed(vec![mint(1, made.clone())])
+            .check()
+            .expect("a commission");
+        assert!(
+            owed(vec![mint(2, made.clone())]).check().is_err(),
+            "one unit a lot"
+        );
+        assert!(owed(Vec::new()).check().is_err(), "at least one part");
+        let seeded = PartOrigin::Seeded {
+            receipt: "ab".repeat(32),
+        };
+        assert!(
+            owed(vec![mint(1, seeded)]).check().is_err(),
+            "the source's row"
+        );
+    }
 
     #[test]
     fn gc8b_a_lot_id_is_derived_and_distinct_per_row() {

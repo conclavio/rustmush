@@ -361,10 +361,11 @@ trait InventoryCapacityExt: Sized {
 
 impl InventoryCapacityExt for mush_inventory::InventoryModule {
     /// Doc 36a P2-4: `@inv/dissolve` into a hull's hold consults the hold's capacity rule, the
-    /// one the market and the bay consult.
+    /// one the market and the bay consult. Doc 39 cut IN.2: a part is indivisible.
     fn with_pool_capacity_if(self, on: bool) -> Self {
         if on {
             self.with_pool_capacity(Arc::new(crate::port::market::PortCapacity))
+                .with_indivisible_goods(Arc::new(crate::port_tick::PartGoods))
         } else {
             self
         }
