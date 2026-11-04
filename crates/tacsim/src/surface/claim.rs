@@ -1371,17 +1371,40 @@ fn window_words(secs: i64) -> String {
     }
 }
 
-/// **Every custody record on every lane site's record**, with its site.
+/// **Every custody record on every lane site's record** (plus any space derelict custody in
+/// [`crate::space::tick::SpaceBubbleBook::space_custody`], `SF.R19`), with its site.
 fn custody_rows(ctx: &Ctx<'_>) -> Vec<(CanonicalId, SalvageCustody)> {
-    let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() else {
-        return Vec::new();
-    };
     let mut rows = Vec::new();
-    for site in crate::surface::chart::lane_sites(ctx.w) {
-        let key = SiteKey(site.entry.clone());
-        if let Ok(Some(record)) = ctx.action_state(&handles.families.sites, &key) {
-            for row in &record.custody {
-                rows.push((site.entry.clone(), row.clone()));
+    if let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() {
+        for site in crate::surface::chart::lane_sites(ctx.w) {
+            let key = SiteKey(site.entry.clone());
+            if let Ok(Some(record)) = ctx.action_state(&handles.families.sites, &key) {
+                for row in &record.custody {
+                    rows.push((site.entry.clone(), row.clone()));
+                }
+            }
+        }
+    }
+    if let Some(book) = ctx.w.module_state::<crate::space::tick::SpaceBubbleBook>() {
+        let fallback_site = CanonicalId::new("freeport").ok().or_else(|| {
+            crate::port::voyage::lane_ports(ctx.w)
+                .into_iter()
+                .next()
+                .and_then(|(_, map)| map.map(|m| m.entry.clone()))
+        });
+        for row in book.space_custody.values() {
+            if rows.iter().any(|(_, r)| r.hull == row.hull) {
+                continue;
+            }
+            let site = match crate::port::ship::berth_of(ctx.w, row.carrier) {
+                crate::port::ship::Berth::Docked { map, .. } => Some(map.entry.clone()),
+                _ => match crate::port::ship::berth_of(ctx.w, row.hull) {
+                    crate::port::ship::Berth::Docked { map, .. } => Some(map.entry.clone()),
+                    _ => fallback_site.clone(),
+                },
+            };
+            if let Some(site_id) = site {
+                rows.push((site_id, row.clone()));
             }
         }
     }
@@ -1460,8 +1483,209 @@ fn split_go(rest: &str) -> (String, bool) {
     }
 }
 
-/// Submit `order` as `actor` through the tow action.
+/// Apply `order` directly when `order.hull()` is a space derelict held in
+/// [`crate::space::tick::SpaceBubbleBook::space_custody`] (`SF.R19`, `Q-36-46`).
+fn submit_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) -> Option<bool> {
+    let hull = order.hull();
+    let is_space = ctx
+        .w
+        .module_state::<crate::space::tick::SpaceBubbleBook>()
+        .is_some_and(|b| b.space_custody.contains_key(&hull));
+    if !is_space {
+        return None;
+    }
+    let now_ic = ctx.w.world_ic_now().at;
+    match order {
+        ClaimOrder::File {
+            contract,
+            window_end,
+            now_real,
+            told,
+            ..
+        } => {
+            let book = ctx
+                .w
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+            let custody = book.space_custody.get_mut(&hull)?;
+            if custody.holder != actor || custody.claim != ClaimSeam::Owed {
+                return Some(false);
+            }
+            let Ok(claim) = open_claim(custody, *contract, (*now_real, *window_end)) else {
+                return Some(false);
+            };
+            custody.claim = ClaimSeam::Filed {
+                contract: *contract,
+            };
+            custody.file = Some(Box::new(claim));
+            custody.told.clone_from(told);
+            custody.told.truncate(MAX_WITNESSES);
+            Some(true)
+        }
+        ClaimOrder::Contest {
+            ground,
+            window_end,
+            now_real,
+            ..
+        } => {
+            if now_real >= window_end {
+                return Some(false);
+            }
+            let updated_file = {
+                let book = ctx
+                    .w
+                    .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+                let custody = book.space_custody.get_mut(&hull)?;
+                if let ContestGround::UnlawfulRecovery { evidence } = ground
+                    && evidence_of(custody, actor).as_ref() != Some(evidence)
+                {
+                    return Some(false);
+                }
+                if matches!(ground, ContestGround::BarePriorTitle)
+                    && custody
+                        .file
+                        .as_ref()
+                        .is_none_or(|file| file.prior_owner != actor)
+                {
+                    return Some(false);
+                }
+                let mut file = custody.file.as_deref().cloned()?;
+                file.deadline_real_s = *window_end;
+                if file.contest(actor, ground.clone(), *now_real).is_err() {
+                    return Some(false);
+                }
+                custody.file = Some(Box::new(file.clone()));
+                file
+            };
+            if let Some(sb) = ctx
+                .w
+                .module_state_mut::<mush_tactics::field_ops::SalvageClaimBook>()
+            {
+                let _ = sb.submit_contest(updated_file.id, actor, ground.clone(), *now_real);
+            }
+            Some(true)
+        }
+        ClaimOrder::Report { to, .. } => {
+            if *to == actor || to.0 == 0 {
+                return Some(false);
+            }
+            let book = ctx
+                .w
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+            let custody = book.space_custody.get_mut(&hull)?;
+            let mut evidence = evidence_of(custody, actor)?;
+            evidence.holder = *to;
+            if !custody.evidence.contains(&evidence) {
+                if custody.evidence.len() >= MAX_EVIDENCE {
+                    return Some(false);
+                }
+                custody.evidence.push(evidence);
+            }
+            Some(true)
+        }
+        ClaimOrder::Inspect { .. } => {
+            let book = ctx
+                .w
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+            let custody = book.space_custody.get_mut(&hull)?;
+            let operation = custody.operation?;
+            let read = SalvageEvidenceRecord {
+                operation_id: operation,
+                casualty: hull,
+                holder: actor,
+                kind: SalvageEvidenceKind::RecoveredBlackBox {
+                    hull,
+                    read_at_ic: now_ic,
+                },
+            };
+            if !custody
+                .evidence
+                .iter()
+                .any(|e| e.holder == actor && e.operation_id == operation)
+            {
+                if custody.evidence.len() >= MAX_EVIDENCE {
+                    return Some(false);
+                }
+                custody.evidence.push(read);
+            }
+            Some(true)
+        }
+        ClaimOrder::Settle {
+            settlement,
+            window_end,
+            now_real,
+            ..
+        } => {
+            let (claim_id, status) = {
+                let book = ctx
+                    .w
+                    .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+                let custody = book.space_custody.get_mut(&hull)?;
+                if *settlement == Settlement::Withdrawn {
+                    custody.claim = ClaimSeam::Owed;
+                    custody.file = None;
+                    return Some(true);
+                }
+                if *settlement == Settlement::HandedBack {
+                    book.space_custody.remove(&hull);
+                    return Some(true);
+                }
+                let mut file = custody.file.as_deref().cloned()?;
+                file.deadline_real_s = *window_end;
+                let Ok(status) = file.adjudicate(*now_real) else {
+                    return Some(false);
+                };
+                let awarded = matches!(file.state, SalvageClaimState::AwardedToClaimant { .. });
+                if awarded != (*settlement == Settlement::Award) {
+                    return Some(false);
+                }
+                if !matches!(status, CustodyTitleStatus::ResolvedTitle { .. }) {
+                    return Some(false);
+                }
+                let id = file.id;
+                book.space_custody.remove(&hull);
+                if let Some(derelict) = book.derelicts.get_mut(&hull) {
+                    derelict.salvage_title_status = Some(status.clone());
+                }
+                (id, status)
+            };
+            if let Some(sb) = ctx
+                .w
+                .module_state_mut::<mush_tactics::field_ops::SalvageClaimBook>()
+            {
+                let _ = sb.adjudicate_claim(claim_id, *now_real);
+            }
+            let _ = status;
+            Some(true)
+        }
+        ClaimOrder::AtRisk { entry, .. } => {
+            let book = ctx
+                .w
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+            let custody = book.space_custody.get_mut(&hull)?;
+            if custody.holder != actor {
+                return Some(false);
+            }
+            let list = match custody.file.as_mut() {
+                Some(file) => &mut file.documented_repairs_at_risk,
+                None => &mut custody.at_risk,
+            };
+            if !list.contains(entry) {
+                if list.len() >= MAX_AT_RISK {
+                    return Some(false);
+                }
+                list.push(entry.clone());
+            }
+            Some(true)
+        }
+        ClaimOrder::AuthorizeBlock { .. } => None,
+    }
+}
+
+/// Submit `order` as `actor` through the tow action (or directly on `SpaceBubbleBook::space_custody` for space hulls).
 fn submit(ctx: &mut Ctx<'_>, actor: ObjId, order: ClaimOrder, tag: u32) -> bool {
+    if let Some(ok) = submit_space_claim_order(ctx, actor, &order) {
+        return ok;
+    }
     let hull = order.hull();
     crate::surface::tow::submit(
         ctx,
@@ -2103,7 +2327,7 @@ fn inspect_cmd(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
     let (site, row) = named(ctx, word)?;
     let label = name(ctx.w, row.hull);
     let me = ctx.actor;
-    if !aboard(ctx.w, me, row.carrier) {
+    if !aboard(ctx.w, me, row.carrier) && !aboard(ctx.w, me, row.hull) {
         return Err(CmdError::msg(
             NO_BAY_ACCESS
                 .replace("{name}", &label)
@@ -2113,7 +2337,12 @@ fn inspect_cmd(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
     let lines = ctx
         .w
         .module_state::<crate::store::TacsimStore>()
-        .map_or(0, |store| store.black_box(row.hull).len());
+        .map_or(0, |store| store.black_box(row.hull).len())
+        .max(
+            ctx.w
+                .module_state::<mush_tactics::field_ops::SalvageClaimBook>()
+                .map_or(0, |sb| sb.black_box_tape_for_hull(row.hull).len()),
+        );
     let lines_text = match lines {
         0 => "it holds no lines".to_owned(),
         1 => "one line".to_owned(),

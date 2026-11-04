@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 21, "lane v21 since doc 39 cut IN.6");
+    assert_eq!(LANE_VERSION, 22, "lane v22 since doc 39 cut IN.6");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -2510,7 +2510,10 @@ fn sm12a_only_the_mill_restocks() {
 /// mint moved from `.mint_origin(` to `.mint_origins(` (a part row mints one identified lot a
 /// unit, any other row one lot as before), so the clerk is counted under the second verb; the
 /// part commission mints nothing (`commission_lots` lays an industry lot back as one-unit
-/// lots of the same quantity).
+/// lots of the same quantity). **Doc 41 cut RS.1**: `.debit(` twice in `surface/tow.rs`, the
+/// tender's — its finish draws the work's munitions and the bale's tonnes from its stores, and
+/// `stores open` takes a tonne of each line into the bale: matter spent on a hull or held as the
+/// bale's kilograms (IN.1's accounting, as the bay's draw), never made.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2540,6 +2543,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
+            ("tacsim/src/surface/tow.rs".to_owned(), 2),
         ]
     );
 }

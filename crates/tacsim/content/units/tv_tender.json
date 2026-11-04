@@ -1,0 +1,287 @@
+{
+  "entries": {
+    "tacsim.unit.tv_tender": {
+      "def": {
+        "class": "vehicle",
+        "components": [
+          {
+            "id": "power",
+            "role": {
+              "capability": "tacsim.power",
+              "initial": "off",
+              "kind": "power",
+              "plant": "tacsim.plant.light_mk1",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ]
+            },
+            "section": "chassis"
+          },
+          {
+            "id": "visual_sensor",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            },
+            "section": "boom"
+          }
+        ],
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 40
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              },
+              {
+                "section": "boom",
+                "weight": 20
+              }
+            ]
+          }
+        ],
+        "interior": {
+          "berths_slot": {
+            "id": "berths",
+            "maximum_items": 1
+          },
+          "exits": [],
+          "gauges": {
+            "stores": [
+              "cab"
+            ]
+          },
+          "rooms": [
+            {
+              "desc": "A one-seat cab under a scratched canopy, the seat empty and its harness clipped back. Where a driver's hands would rest a teleoperation repeater blinks green, carrying the bridge's commands down the link and the rig's cameras back up it. A stores gauge sits by the canopy frame, and an Occator Water & Propellant lease tag is riveted under it. Behind the seat a tow hitch's control box is bolted to the bulkhead, its plate stamped RECOVERY. The air is thin and cold and smells of grease.",
+              "details": {
+                "hitch box": "A recovery hitch's controls: a heavier coupling than a prospector's, rated to three times the rig's own mass.",
+                "repeater": "A sealed box with a green link light and a red one. Green means the bridge has the rig; red means nobody does, and the rig sits still until somebody does.",
+                "seat": "Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; rigs like this one are driven from the bridge.",
+                "stores gauge": "Tonnes and cubic metres in the stores bin against its two limits, 2.7 t and 4.8 m3, and a second dial for the opened bale's alloys and fittings, in kilograms."
+              },
+              "id": "cab",
+              "kind": "walkable",
+              "name": "Cab",
+              "short_desc": "One empty seat behind a scratched canopy, a repeater blinking where the hands would go, a stores gauge by the frame."
+            },
+            {
+              "desc": "The stores bin behind the cab where a prospector carries its hopper: racked crates of rounds, a tonne of alloy bar and a tonne of yard fittings under a strapped tarpaulin. Not a place anyone walks.",
+              "id": "stores",
+              "kind": "store",
+              "name": "Stores"
+            }
+          ],
+          "space": "cab",
+          "store": "stores"
+        },
+        "label": "Tender terrain vehicle",
+        "logistics": {
+          "berths": 1,
+          "dry_mass_t": 7,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 2800,
+          "recovery_profile": "recovery_optimized",
+          "stowage": {
+            "stores": {
+              "accepts": [
+                "stow.bulk"
+              ],
+              "limits": {
+                "si.mass_kg": 2700,
+                "si.volume_l": 4800
+              }
+            }
+          },
+          "tender": {
+            "reach_cm": 1500,
+            "stores": "stores"
+          }
+        },
+        "mobility": {
+          "tracked": {
+            "accel_cms2": 50,
+            "brake_cms2": 100,
+            "max_speed_cms": 300,
+            "reverse_factor_pct": 50,
+            "turn_rate_mdeg_s": 20000
+          }
+        },
+        "note": "Doc 41 cut RS.1 (Q-41-1): the tender, the prospector's chassis without the drill, 7 t dry (provisional), unarmed, one teleoperated cab. Its stores take bulk (munitions, structural alloys and yard fittings): 2.7 t / 4.8 m3, a tonne of alloys and a tonne of fittings beside a magazine (provisional; the plan's 2,000 kg held the two tonnes and nothing else). logistics.tender names the stores and the reach, one cell (1,500 cm, the tow's); logistics.recovery_profile recovery_optimized tows three times its mass (Q-41-27). Occator leases it beside the escort (+tv/lease tender).",
+        "sections": [
+          {
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ],
+            "facets": [
+              {
+                "armor": 40,
+                "id": "front"
+              },
+              {
+                "armor": 30,
+                "id": "left"
+              },
+              {
+                "armor": 30,
+                "id": "right"
+              },
+              {
+                "armor": 30,
+                "id": "rear"
+              },
+              {
+                "armor": 20,
+                "id": "top"
+              }
+            ],
+            "id": "chassis",
+            "internals": 120
+          },
+          {
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              }
+            ],
+            "facets": [
+              {
+                "armor": 20,
+                "id": "left"
+              },
+              {
+                "armor": 20,
+                "id": "right"
+              },
+              {
+                "armor": 20,
+                "id": "top"
+              }
+            ],
+            "id": "stores",
+            "internals": 80
+          },
+          {
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 90
+              }
+            ],
+            "facets": [],
+            "id": "boom",
+            "internals": 40,
+            "struck_through": {
+              "facet": "top",
+              "section": "chassis"
+            }
+          }
+        ],
+        "sensor_height_cm": 250,
+        "silhouettes": [
+          {
+            "band": "front",
+            "height_cm": 250,
+            "width_cm": 300
+          },
+          {
+            "band": "left",
+            "height_cm": 250,
+            "width_cm": 600
+          },
+          {
+            "band": "right",
+            "height_cm": 250,
+            "width_cm": 600
+          },
+          {
+            "band": "rear",
+            "height_cm": 250,
+            "width_cm": 300
+          },
+          {
+            "band": "top",
+            "height_cm": 300,
+            "width_cm": 600
+          }
+        ],
+        "stowage_volume_l": 28000
+      },
+      "kind": "unit"
+    }
+  },
+  "manifest": {
+    "digest": "7e2d0f1d5782f1cabb647b576a2e5ea71e03a19d7274f45795d776224cd5ce84",
+    "id": "tacsim.pack.tv_tender",
+    "kind": "rules_definition",
+    "requires": [
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}

@@ -210,6 +210,14 @@ pub fn is_wreck(unit: &mush_tactics::TacticalUnit) -> bool {
 /// The caller ([`crate::arena::state::Arena::new`]) applies the two halves this
 /// cannot: the weapons of a [`Consequence::RemoveWeapons`] section (and of a wreck)
 /// leave the table, and a unit with no weapons and no motion opens `disabled`.
+/// Apply a [`Consequence::Slow`] percentage (`1..=100`) to an existing slow
+/// cap (`100` when unimpaired). Both ground arena and space bubbles take `min`
+/// so repeated hits against an already-stripped section never compound.
+#[must_use]
+pub fn apply_slow_consequence(current_slow_pct: u8, percent: u8) -> u8 {
+    current_slow_pct.min(percent.clamp(1, 100))
+}
+
 #[must_use]
 pub fn entry_consequences(
     unit: &mush_tactics::TacticalUnit,
@@ -241,7 +249,7 @@ pub fn entry_consequences(
                     entry.limits.motion_disabled = true;
                 }
                 Consequence::Slow { percent } => {
-                    entry.limits.slow_pct = entry.limits.slow_pct.min((*percent).clamp(1, 100));
+                    entry.limits.slow_pct = apply_slow_consequence(entry.limits.slow_pct, *percent);
                 }
                 // 16b cut M.4 (`B-47`): ORed in, so a record with both tracks
                 // destroyed opens closed both ways, whichever is read first.
@@ -1268,7 +1276,7 @@ impl Arena {
             Consequence::DestroyUnit => self.destroy_unit(target, t_ms, by, journal),
             Consequence::Slow { percent } => {
                 if let Some(state) = self.unit_mut(target) {
-                    state.limits.slow_pct = state.limits.slow_pct.min((*percent).clamp(1, 100));
+                    state.limits.slow_pct = apply_slow_consequence(state.limits.slow_pct, *percent);
                 }
             }
             // **16b cut M.4** (16c `B-47`): ORed in. Before M.4 the second

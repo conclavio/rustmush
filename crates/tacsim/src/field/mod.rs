@@ -157,9 +157,13 @@ pub struct FieldBook {
     /// **Carriers settled on a running field's site and not in it** (doc 36 cut GC.1; Q-36-4),
     /// by site: each owed its admission at its pad, which the kernel's join (GC.1b) makes.
     pub(crate) arrivals: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
-    /// **Arrivals the kernel refused to join** (doc 36 cut GC.1b), by site: not asked again while
-    /// that field runs.
-    pub(crate) join_refused: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
+    /// **Launches whose join is with the kernel** (doc 40 cut FR.3; §4.4 step 3), by site: the
+    /// join's answer is a launch's, not an arrival's ([`carrier::on_joined`]).
+    pub(crate) launching: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
+    /// **Launches the kernel refused, back aboard** (doc 40 cut FR.3; Q-40-20, §4.4 step 4), by
+    /// site: each put down at its ramp and offered again at the next tick, until taken or the
+    /// field demotes, and counted by the one count meanwhile.
+    pub(crate) relaunch: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
     /// **The snapshot each site's raider lift check last ran at** (doc 36 cut GC.0), in arena
     /// milliseconds: the check decodes the whole snapshot, so it is paced
     /// ([`raiders::LIFT_CHECK_MS`]).

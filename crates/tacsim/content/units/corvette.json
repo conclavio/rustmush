@@ -3,7 +3,7 @@
     "id": "tacsim.pack.corvette",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "94940951d934feaacc846a260bf8727bf7e593ae9f62061a230506ef15e4e873",
+    "digest": "3394eae4801bb3b356f1b5bcb51953ecfcdac39705da9265ab79545821df130f",
     "requires": [
       {
         "id": "tacsim.pack.plants",
@@ -89,6 +89,15 @@
         "heat_dissipation_per_s": 30,
         "logistics": {
           "dry_mass_t": 240,
+          "drive": {
+            "class": "patrol_corvette",
+            "law": {
+              "flip": {
+                "accel_mg": 500,
+                "exhaust_kms": 12000
+              }
+            }
+          },
           "stowage": {
             "cargo": { "accepts": ["stow.bulk"], "limits": { "si.mass_kg": 100000, "si.volume_l": 120000 } },
             "propellant": { "accepts": ["stow.propellant"], "limits": { "si.mass_kg": 80000 } },

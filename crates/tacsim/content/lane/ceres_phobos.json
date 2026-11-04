@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 21,
+    "version": 22,
     "kind": "campaign_seed",
-    "digest": "e42511e18432f479fcd7e31149fb7a61cbc7cc835b5adfe0251f84d51012ac42",
+    "digest": "af3f150ab9d9bf17107155944f94f6dba9297e8ceadb181a6c28f90f70a849d6",
     "requires": []
   },
   "entries": {
@@ -2824,7 +2824,10 @@
           "designs": [
             { "word": "escort", "unit": "tacsim.unit.tv_escort", "pool": 2, "registry_prefix": "OWP-ES-",
               "fee_major": 2500, "deposit_major": 15000, "term_ic_days": 168,
-              "tools": [ "tacsim.tool.battery_mk1" ], "gate": "escort" } ] },
+              "tools": [ "tacsim.tool.battery_mk1" ], "gate": "escort" },
+            { "word": "tender", "unit": "tacsim.unit.tv_tender", "pool": 2, "registry_prefix": "OWP-TD-",
+              "fee_major": 1800, "deposit_major": 7000, "term_ic_days": 168,
+              "tools": [ "tacsim.tool.battery_mk1" ] } ] },
         "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3,
                      "claim_stake_major": 2000, "claim_term_major": 2000 },
         "workshop": { "room": "neighborhood.ceres_freeport.room.c14_dockmaster", "operator": "occator",

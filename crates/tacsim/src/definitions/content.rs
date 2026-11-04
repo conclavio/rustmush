@@ -800,6 +800,23 @@ pub const TV_ESCORT: &str = "tacsim.unit.tv_escort";
 pub const EXTENSIONS_ESCORT: [(&str, &str); 1] =
     [("tacsim/content/units/tv_escort.json", TV_ESCORT_JSON)];
 
+/// `crates/tacsim/content/units/tv_tender.json` (doc 41 cut RS.1).
+pub const TV_TENDER_JSON: &str = include_str!("../../content/units/tv_tender.json");
+
+/// The tender's pack id.
+pub const TV_TENDER_PACK: &str = "tacsim.pack.tv_tender";
+
+/// **The tender terrain vehicle** (doc 41 cut RS.1; §4.1, Q-41-1): the prospector's chassis
+/// without the drill, 7 t dry, unarmed, a 2.7 t / 4.8 m³ `stow.bulk` stores compartment named by
+/// `logistics.tender`, and the `recovery_optimized` tow coupling (3×, Q-41-27). Class `vehicle`,
+/// never fielded in an arena. Occator leases it into a Dray-P's bay (`+tv/lease tender`).
+pub const TV_TENDER: &str = "tacsim.unit.tv_tender";
+
+/// **The tender, one unit schema and no row of its own** (doc 41 cut RS.1), fielded **last**,
+/// after every earlier table, so none moves.
+pub const EXTENSIONS_TENDER: [(&str, &str); 1] =
+    [("tacsim/content/units/tv_tender.json", TV_TENDER_JSON)];
+
 /// `crates/tacsim/content/units/corvette.json` (doc 35b cut SF.R12).
 pub const CORVETTE_JSON: &str = include_str!("../../content/units/corvette.json");
 
@@ -948,7 +965,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// berths at 1x), each opened as a `bay_refit` facility; **v19 since doc 36 cut GC.13**: both
 /// ports' `medical` blocks (Ceres's at the arrivals hall, the Co-op's, two beds; Stickney's at
 /// the customs hall, the Yard's, four beds), each opened as a `medical` facility that crew
-/// treatment reads. The port readiness report
+/// treatment reads; **v21 since doc 41 cut RS.1**: Occator's third lease design, the tender
+/// (`+tv/lease tender`, pool 2, 1,800 + 7,000 for 168 IC days, provisional). The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -962,7 +980,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 39 cut IN.6), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -973,7 +991,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 21;
+pub const LANE_VERSION: u32 = 22;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1144,6 +1162,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_MARS_CANYON.as_slice(),
         EXTENSIONS_ESCORT.as_slice(),
         EXTENSIONS_CORVETTE.as_slice(),
+        EXTENSIONS_TENDER.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

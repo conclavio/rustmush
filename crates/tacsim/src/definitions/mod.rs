@@ -76,7 +76,7 @@ pub use core::CoreDef;
 pub use goods::{Consumable, GoodClass, GoodDef, GoodsTable, MeasureDef};
 pub use logistics::{
     BayDef, BaySlotDef, BerthsSlotDef, DriveDef, DriveLaw, EgressDef, InteriorDef, InteriorExitDef,
-    InteriorRoomDef, InteriorRoomKind, LogisticsDef, StowageDef,
+    InteriorRoomDef, InteriorRoomKind, LogisticsDef, RecoveryProfile, StowageDef, TenderDef,
 };
 pub use plant::PlantDef;
 pub use resolution::ResolutionDef;

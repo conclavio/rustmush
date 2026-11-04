@@ -1017,6 +1017,14 @@ fn take(
     let in_facility = ctx.w.get(ctx.actor).and_then(|o| o.location) == Some(facility.room)
         || (facility.carrier == Some(hull)
             && (crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull)
+                || crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor).is_some_and(
+                    |aboard_hull| {
+                        matches!(
+                            crate::port::ship::berth_of(ctx.w, aboard_hull),
+                            crate::port::ship::Berth::Docked { map, .. } if map.entry == facility.port
+                        )
+                    },
+                )
                 || ctx.w.get(ctx.actor).and_then(|o| o.location)
                     == ctx.w.get(hull).and_then(|o| o.location)));
     if !in_facility {
@@ -1567,14 +1575,19 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         close_cancelled(ctx, record, "the facility could not take the fee");
         return;
     }
-    if let Some(plan) = plan
-        && let Err(error) = mush_tactics::module::apply_plan(ctx, hull, &plan)
-    {
-        tracing::error!(
-            hull = hull.0, contract = order.contract, %error,
-            "tacsim: a paid bay order's work was refused by the unit; staff refund the fee and \
-             repair by hand"
-        );
+    if let Some(plan) = plan {
+        if let Err(error) = mush_tactics::module::apply_plan(ctx, hull, &plan) {
+            tracing::error!(
+                hull = hull.0, contract = order.contract, %error,
+                "tacsim: a paid bay order's work was refused by the unit; staff refund the fee and \
+                 repair by hand"
+            );
+        } else if let Some(book) = ctx
+            .w
+            .module_state_mut::<crate::space::tick::SpaceBubbleBook>()
+        {
+            book.derelicts.remove(&hull);
+        }
     }
     let mut record = record;
     if let Some(row) = record.order.as_mut() {

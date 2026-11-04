@@ -494,6 +494,29 @@ pub struct SiteRecord {
     /// landholder delegated on is byte-identical to GC.6's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub land_grants: Vec<crate::surface::claim::LandGrant>,
+    /// **The launches accepted onto this ground and not yet down** (doc 40 cut FR.3; Q-40-24), in
+    /// hull order, at most [`FIELD_MAX_UNITS`]: written by the launch's own transaction, so the
+    /// one count (`field::parties::site_population`) sees a launch in flight, and the
+    /// launch cycle (Q-40-19) reads each carrier's last one. Omitted while empty, so a record
+    /// nothing launched onto is byte-identical to RS.3's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<PendingLaunch>,
+}
+
+/// **One launch accepted onto a site and not yet down** (doc 40 cut FR.3; Q-40-24): the hull,
+/// the carrier it leaves, and the IC instant its launch cycle opened (a slot after the first of
+/// one launch opens a cycle later). A row is live from its instant until its landing is due and
+/// a cycle has passed ([`SiteRecord::pending_live`]); past that it is stale, counted by nobody,
+/// and dropped by the record's next launch. The abort drops it at once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingLaunch {
+    /// The hull going down.
+    pub hull: ObjId,
+    /// The carrier it leaves.
+    pub carrier: ObjId,
+    /// The IC instant its cycle opened.
+    pub accepted_ic: i64,
 }
 
 /// [`SiteRecord::side`]'s default: the shipped side.
@@ -575,7 +598,85 @@ impl SiteRecord {
             custody: Vec::new(),
             unlawful: Vec::new(),
             land_grants: Vec::new(),
+            pending: Vec::new(),
         }
+    }
+
+    /// **The pending launches still live at `now_ic`** (doc 40 cut FR.3; Q-40-24): each row
+    /// whose landing (`accepted_ic` plus `launch_s`) and one cycle (`cycle_ic`) have not both
+    /// passed.
+    pub fn pending_live(
+        &self,
+        now_ic: i64,
+        launch_s: u32,
+        cycle_ic: i64,
+    ) -> impl Iterator<Item = &PendingLaunch> {
+        self.pending.iter().filter(move |row| {
+            now_ic
+                < row
+                    .accepted_ic
+                    .saturating_add(i64::from(launch_s))
+                    .saturating_add(cycle_ic)
+        })
+    }
+
+    /// **The IC instant `carrier`'s launch cycle frees** (doc 40 cut FR.3; Q-40-19): a cycle
+    /// after the latest live row it launched into the open field (accepted at or after its
+    /// promotion; a launch before the field opened is no pour into it), `None` when it has none
+    /// or no field is open.
+    #[must_use]
+    pub fn cycle_free_at(
+        &self,
+        carrier: ObjId,
+        now_ic: i64,
+        launch_s: u32,
+        cycle_ic: i64,
+    ) -> Option<i64> {
+        let opened = self.promoted.as_ref()?.at_ic;
+        self.pending_live(now_ic, launch_s, cycle_ic)
+            .filter(|row| row.carrier == carrier && row.accepted_ic >= opened)
+            .map(|row| row.accepted_ic.saturating_add(cycle_ic))
+            .max()
+    }
+
+    /// **Record `row`, dropping the stale ones** (doc 40 cut FR.3): kept in hull order; a hull
+    /// already pending keeps its first row.
+    ///
+    /// # Errors
+    ///
+    /// [`SiteRefused::UnitsFull`] past [`FIELD_MAX_UNITS`] live rows.
+    pub fn add_pending(
+        &mut self,
+        row: PendingLaunch,
+        now_ic: i64,
+        launch_s: u32,
+        cycle_ic: i64,
+    ) -> Result<(), SiteRefused> {
+        let live: Vec<PendingLaunch> = self
+            .pending_live(now_ic, launch_s, cycle_ic)
+            .cloned()
+            .collect();
+        self.pending = live;
+        match self
+            .pending
+            .binary_search_by_key(&row.hull, |held| held.hull)
+        {
+            Ok(_) => Ok(()),
+            Err(at) => {
+                if self.pending.len() >= usize::try_from(FIELD_MAX_UNITS).unwrap_or(usize::MAX) {
+                    return Err(SiteRefused::UnitsFull);
+                }
+                self.pending.insert(at, row);
+                Ok(())
+            }
+        }
+    }
+
+    /// **Drop `hull`'s pending launch** (doc 40 cut FR.3; the abort): whether it had one.
+    pub fn drop_pending(&mut self, hull: ObjId) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|row| row.hull != hull);
+        self.pending.len() != before
     }
 
     /// The record's key, derived from the value (the families rule: writers derive the key from
@@ -1008,6 +1109,16 @@ impl SiteRecord {
         {
             return Err("a field's exits are at most the field cap of units, in order".to_owned());
         }
+        if self.pending.len() > usize::try_from(FIELD_MAX_UNITS).unwrap_or(usize::MAX)
+            || self.pending.windows(2).any(|pair| match pair {
+                [a, b] => a.hull >= b.hull,
+                _ => false,
+            })
+        {
+            return Err(
+                "a site's pending launches are at most the field cap of hulls, in order".to_owned(),
+            );
+        }
         if self.units.len() > MAX_LEFT_UNITS {
             return Err(format!(
                 "a site record indexes at most {MAX_LEFT_UNITS} units"
@@ -1128,12 +1239,11 @@ fn kind_ok(kind: &GroundKind) -> bool {
 /// the fight named, never who marked whom (Q-CF-7).
 pub const FIELD_OPEN: &str =
     "Field {ordinal} is being fought on {site}. Surface work there waits until it settles.";
-/// **A launch onto a promoted site** (doc 32 cut CF.2; Q-CF-17): `{site}`, `{ordinal}`. The field
-/// runs at human speed and the world outside it at the campaign's, so a fight is over before
-/// anyone launched now could reach it; launches wait for it to settle.
-pub const FIELD_LAUNCH: &str = "Field {ordinal} is being fought on {site}. No launch goes down \
-     onto it until it settles: the fight runs at human speed and will be over before you could \
-     join it.";
+/// **A launch inside its carrier's launch cycle** (doc 40 cut FR.3; Q-40-19, replacing CF.2's
+/// `FIELD_LAUNCH`): `{site}`, `{ordinal}`, `{carrier}`, `{seconds}` the wall seconds left. A
+/// carrier puts one hull down into a running field a cycle, so a bay cannot pour.
+pub const LAUNCH_CYCLE: &str = "Field {ordinal} is being fought on {site}, and the {carrier} \
+     puts one hull down into it a cycle: the next can launch in {seconds} s.";
 /// The start's message for the same refusal (the prepare cannot name the site's display name).
 pub const FIELD_OPEN_CODE: &str = "a field is being fought on that site; surface work waits";
 /// `+tv/map`'s line on a promoted site: `{site}`, `{ordinal}`.
@@ -2333,5 +2443,88 @@ mod tests {
         let back: SiteRecord = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(back, site);
         assert!(text.contains(r#"["remains",0,5]"#), "compact rows");
+    }
+
+    /// Doc 40 cut FR.3 (Q-40-19, Q-40-24): a pending row is live through its landing and one
+    /// cycle, the carrier's cycle frees a cycle after its latest row, a hull is pending once, the
+    /// abort drops it, a stale row goes at the next write, and an empty list keeps no key.
+    #[test]
+    fn fr3_pending_launches_count_cycle_and_go_stale() {
+        let (launch_s, cycle_ic) = (300, 1_440);
+        let mut site = record();
+        assert!(
+            !serde_json::to_string(&site)
+                .unwrap_or_default()
+                .contains("pending")
+        );
+        let row = |hull: u32, carrier: u32, accepted_ic: i64| PendingLaunch {
+            hull: ObjId(hull),
+            carrier: ObjId(carrier),
+            accepted_ic,
+        };
+        assert_eq!(
+            site.add_pending(row(20, 9, 1_000), 1_000, launch_s, cycle_ic),
+            Ok(())
+        );
+        assert_eq!(
+            site.add_pending(row(21, 9, 2_440), 1_000, launch_s, cycle_ic),
+            Ok(())
+        );
+        assert_eq!(
+            site.add_pending(row(20, 9, 5_000), 1_000, launch_s, cycle_ic),
+            Ok(()),
+            "a hull already pending keeps its first row"
+        );
+        assert_eq!(site.pending.len(), 2);
+        assert_eq!(site.pending[0].accepted_ic, 1_000);
+        assert_eq!(site.check(), Ok(()));
+        // No field open: no cycle. A launch accepted before the promotion opens none either.
+        assert_eq!(
+            site.cycle_free_at(ObjId(9), 1_000, launch_s, cycle_ic),
+            None
+        );
+        assert!(
+            site.promote(999, PromotedBy::Staff { staff: ObjId(1) })
+                .is_ok()
+        );
+        let mut early = site.clone();
+        if let Some(open) = early.promoted.as_mut() {
+            open.at_ic = 2_441;
+        }
+        assert_eq!(
+            early.cycle_free_at(ObjId(9), 1_000, launch_s, cycle_ic),
+            None
+        );
+        // The second slot opened a cycle later, so the carrier frees a cycle after it.
+        assert_eq!(
+            site.cycle_free_at(ObjId(9), 1_000, launch_s, cycle_ic),
+            Some(3_880)
+        );
+        assert_eq!(
+            site.cycle_free_at(ObjId(8), 1_000, launch_s, cycle_ic),
+            None
+        );
+        // Live through the landing and one cycle, then stale for the count and the cycle.
+        assert_eq!(site.pending_live(2_739, launch_s, cycle_ic).count(), 2);
+        assert_eq!(site.pending_live(2_740, launch_s, cycle_ic).count(), 1);
+        assert_eq!(site.pending_live(4_180, launch_s, cycle_ic).count(), 0);
+        assert_eq!(
+            site.cycle_free_at(ObjId(9), 4_180, launch_s, cycle_ic),
+            None
+        );
+        // The abort drops a row; the next write drops the stale ones.
+        assert!(site.drop_pending(ObjId(21)));
+        assert!(!site.drop_pending(ObjId(21)));
+        assert_eq!(
+            site.add_pending(row(22, 9, 9_000), 9_000, launch_s, cycle_ic),
+            Ok(())
+        );
+        assert_eq!(site.pending, vec![row(22, 9, 9_000)]);
+        let text = serde_json::to_string(&site).unwrap_or_else(|e| panic!("{e}"));
+        let back: SiteRecord = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, site);
+        // Out of order is refused by the check.
+        site.pending.insert(0, row(30, 9, 9_000));
+        assert!(site.check().is_err());
     }
 }

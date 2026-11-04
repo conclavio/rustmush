@@ -32,6 +32,33 @@ async fn fixture_keyed(store: &InMemoryStore, geology: bool) -> TestResult<Rig> 
     fixture_capped(store, geology, None).await
 }
 /// [`fixture_keyed`] with `[tacsim.field].max_units` at `field_cap` (doc 36a §11 row 5).
+/// **The ground and the knobs one story runs under** (doc 40 cut FR.3; Q-38-29's both sizes):
+/// the site every shared helper reads (`pulse`'s clerk, `staff_place_on_ahuna`, `promoted_by`,
+/// `until_hosted`, `two_pilot_fixture`), and the field's cap and launch cycle. A story outside a
+/// [`STORY`] scope stands on Ahuna Flank with the shipped knobs, as every story before the cut.
+#[derive(Clone, Copy)]
+struct Story {
+    /// The site's port entry.
+    site: &'static str,
+    /// `[tacsim.field].max_units`, when not the shipped cap.
+    cap: Option<u32>,
+    /// `[tacsim.field].launch_cycle_s`, when not the shipped cycle.
+    cycle_s: Option<u32>,
+}
+
+tokio::task_local! {
+    static STORY: Story;
+}
+
+/// The story's scope, else Ahuna Flank with the shipped knobs.
+fn story() -> Story {
+    STORY.try_with(|story| *story).unwrap_or(Story {
+        site: "ahuna_port",
+        cap: None,
+        cycle_s: None,
+    })
+}
+
 async fn fixture_capped(
     store: &InMemoryStore,
     geology: bool,
@@ -39,8 +66,11 @@ async fn fixture_capped(
 ) -> TestResult<Rig> {
     let mut config = mush_config::config::Config::default();
     config.tacsim.enabled = true;
-    if let Some(cap) = field_cap {
+    if let Some(cap) = field_cap.or(story().cap) {
         config.tacsim.field.max_units = cap;
+    }
+    if let Some(cycle) = story().cycle_s {
+        config.tacsim.field.launch_cycle_s = cycle;
     }
     let llm = Arc::new(mush_llm::LlmService::from_config(
         &mush_llm::LlmConfig::default(),
@@ -871,7 +901,7 @@ async fn field_commander_fixture_capped(
             .module_state::<tacsim::TacsimStore>()
             .ok_or("tacsim")?
             .port_maps()
-            .find(|m| m.entry.as_str() == "ahuna_port")
+            .find(|m| m.entry.as_str() == story().site)
             .and_then(|m| m.domain)
             .ok_or("field site domain")?;
         (
@@ -1223,7 +1253,7 @@ async fn pair_field_fixture(
         .module_state::<tacsim::TacsimStore>()
         .ok_or("tacsim")?
         .port_maps()
-        .find(|m| m.entry.as_str() == "ahuna_port")
+        .find(|m| m.entry.as_str() == story().site)
         .and_then(|m| m.domain)
         .ok_or("Ahuna domain")?;
     let mut opened = false;
@@ -1231,7 +1261,7 @@ async fn pair_field_fixture(
         let status = text(&mut rig.world, GOD, "@tacsim/port status");
         if status
             .lines()
-            .any(|l| l.contains("ahuna_port site:") && l.ends_with("[ready]"))
+            .any(|l| l.contains(&format!("{} site:", story().site)) && l.ends_with("[ready]"))
         {
             opened = true;
             break;
@@ -1836,7 +1866,7 @@ async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> Te
         .module_state::<tacsim::TacsimStore>()
         .ok_or("tacsim")?
         .port_maps()
-        .filter(|m| m.entry.as_str() != "ahuna_port")
+        .filter(|m| m.entry.as_str() != story().site)
         .filter_map(|m| m.site.as_ref().and_then(|s| s.clerk).map(ObjId))
         .collect();
     let now = world.world().now() + seconds;
@@ -4203,7 +4233,7 @@ fn staff_place_on_ahuna(world: &mut TestWorld, unit: ObjId, cell: (i64, i64)) ->
         .module_state::<tacsim::TacsimStore>()
         .ok_or("tacsim")?
         .port_maps()
-        .find(|m| m.entry.as_str() == "ahuna_port")
+        .find(|m| m.entry.as_str() == story().site)
         .and_then(|m| m.domain)
         .ok_or("Ahuna domain")?;
     let pose = tacsim::surface::excursion::cell_pose([cell.0, cell.1], 90_000)?;
@@ -4711,6 +4741,16 @@ impl AccountIdentity for PilotAccounts {
 async fn two_pilot_fixture(
     store: &InMemoryStore,
 ) -> TestResult<(Rig, [ObjId; 2], [ObjId; 2], ObjId)> {
+    two_pilot_fixture_launching(store, 2).await
+}
+
+/// [`two_pilot_fixture`] on the story's ground ([`story`]), the activation launching the first
+/// `launched` slots (one or both); slot 2 left aboard is the reinforcement doc 40 cut FR.3's
+/// story launches into the running field.
+async fn two_pilot_fixture_launching(
+    store: &InMemoryStore,
+    launched: usize,
+) -> TestResult<(Rig, [ObjId; 2], [ObjId; 2], ObjId)> {
     use mush_org::unit_authority::{UnitCapability, UnitScope};
     use tacsim::detachment::sortie::Phase;
     let (mut rig, _) = rented_mining_fixture(store).await?;
@@ -4777,7 +4817,7 @@ async fn two_pilot_fixture(
         .module_state::<tacsim::TacsimStore>()
         .ok_or("tacsim")?
         .port_maps()
-        .find(|m| m.entry.as_str() == "ahuna_port")
+        .find(|m| m.entry.as_str() == story().site)
         .and_then(|m| m.domain)
         .ok_or("Ahuna domain")?;
     let mut opened = false;
@@ -4785,7 +4825,7 @@ async fn two_pilot_fixture(
         let status = text(&mut rig.world, GOD, "@tacsim/port status");
         if status
             .lines()
-            .any(|l| l.contains("ahuna_port site:") && l.ends_with("[ready]"))
+            .any(|l| l.contains(&format!("{} site:", story().site)) && l.ends_with("[ready]"))
         {
             opened = true;
             break;
@@ -4883,30 +4923,41 @@ async fn two_pilot_fixture(
         "+sortie/activate 1:1=combat",
     )
     .await?;
-    commit(
-        &mut rig.world,
-        store,
-        rig.organizer,
-        "+sortie/launch 1:1=all",
-    )
-    .await?;
+    let out: Vec<ObjId> = units.iter().copied().take(launched).collect();
+    if launched > 0 {
+        commit(
+            &mut rig.world,
+            store,
+            rig.organizer,
+            if launched == 1 {
+                "+sortie/launch 1:1=1"
+            } else {
+                "+sortie/launch 1:1=all"
+            },
+        )
+        .await?;
+    }
     for _ in 0..60 {
-        let mut out = true;
-        for unit in units {
-            out &= flight(&rig.world, unit, 1)?.phase == Phase::Field;
+        let mut down = true;
+        for unit in &out {
+            down &= flight(&rig.world, *unit, 1)?.phase == Phase::Field;
         }
-        if out {
+        if down {
             break;
         }
         pulse(&mut rig.world, store, 6).await?;
     }
-    for unit in units {
+    for unit in out {
         assert_eq!(
             flight(&rig.world, unit, 1)?.phase,
             Phase::Field,
             "#{} is out on the site",
             unit.0
         );
+    }
+    // Nothing out, nothing to refresh: the first pilot is answered as the leader.
+    if launched == 0 {
+        return Ok((rig, units, pilots, pilots[0]));
     }
     // The roster settles its leader under the succession policy's own interval.
     commit(&mut rig.world, store, rig.organizer, "+sortie/refresh 1:1").await?;
@@ -4954,7 +5005,7 @@ fn promoted_by(world: &TestWorld) -> TestResult<Option<tacsim::surface::site_rec
         .action_state()
         .get(
             &h.families.sites,
-            &tacsim::surface::site_record::SiteKey(mush_core::CanonicalId::new("ahuna_port")?),
+            &tacsim::surface::site_record::SiteKey(mush_core::CanonicalId::new(story().site)?),
         )?
         .and_then(|record| record.promoted.clone())
         .map(|open| open.by))
@@ -4966,7 +5017,7 @@ async fn until_hosted(
     store: &InMemoryStore,
     rx: &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
 ) -> TestResult<tacsim::field::FieldLive> {
-    let site = mush_core::CanonicalId::new("ahuna_port")?;
+    let site = mush_core::CanonicalId::new(story().site)?;
     for _ in 0..60 {
         if let Some(live) = tacsim::field::live_on(world.world(), &site) {
             return Ok(live);
@@ -5195,4 +5246,260 @@ async fn dt_launch_refuses_what_the_field_cap_could_not_hold() -> TestResult {
     assert!(flight(&rig.world, rig.unit, 1).is_err(), "no flight");
     assert_eq!(count_ground(&rig.world)?, 2, "nothing went down");
     Ok(())
+}
+
+/// Where doc 40 cut FR.3's story stands its first escort and the bystander it fires on, by
+/// ground: Ahuna Flank's cells (CF.6's), and Urvara Reach's the same offsets from its pad.
+fn fr3_cells(site: &str) -> ((i64, i64), (i64, i64)) {
+    if site == "urvara_port" {
+        ((228, 254), (246, 254))
+    } else {
+        ((100, 126), (118, 126))
+    }
+}
+
+/// The story's site record's pending launches (doc 40 cut FR.3; Q-40-24).
+fn pending_launches(
+    world: &TestWorld,
+) -> TestResult<Vec<tacsim::surface::site_record::PendingLaunch>> {
+    let h = world
+        .world()
+        .module_state::<tacsim::port::families::PortHandles>()
+        .ok_or("port handles")?;
+    Ok(world
+        .engine()
+        .action_state()
+        .get(
+            &h.families.sites,
+            &tacsim::surface::site_record::SiteKey(mush_core::CanonicalId::new(story().site)?),
+        )?
+        .map(|record| record.pending.clone())
+        .unwrap_or_default())
+}
+
+/// **Doc 40 cut FR.3 — reinforcement** (Q-38-25, Q-40-19, Q-40-20, Q-40-24; §4.4 steps 2 to 5,
+/// the unlicensed half): two players fly one operation; the activation puts the first escort
+/// down, and the second stays aboard the carrier on the pad. The first escort's fire order on a
+/// bystander's hull opens the field. Then, through the production command paths:
+/// - the organizer's `+sortie/launch` of the second escort goes down into the running field,
+///   its pending row on the site record naming the hull and the carrier;
+/// - a second launch inside the carrier's cycle is refused with the seconds left;
+/// - `+sortie/cancel-launch` is the abort: the row goes and the cycle frees, so the launch
+///   again is taken at once;
+/// - the hull lands at the ramp on the IC clock, and the next field tick checks it out and
+///   offers its join: it stands within the director's spread of the ramp at the next pulse, in
+///   its operation's party, flying (its pilot's cockpit frame), on the live record.
+async fn fr3_reinforcement() -> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, units, pilots, _) = two_pilot_fixture_launching(&store, 1).await?;
+    let (first, second) = (units[0], units[1]);
+    let (at, aimed) = fr3_cells(story().site);
+    // The first escort rebuilt as an armed design (a staff hand, as the open-ground ENGAGE gate
+    // does: no armed rig is leased).
+    ordinary(&mut rig.world, GOD, &format!("@unit/remove #{}", first.0))?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", first.0),
+    )?;
+    staff_place_on_ahuna(&mut rig.world, first, at)?;
+    let bystander = bystander_at(&mut rig.world, "tacsim.unit.line_tank", aimed)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+
+    // The first shot opens the field; the second escort is still aboard, with no flight.
+    commit(&mut rig.world, &store, pilots[0], "+field/fire E").await?;
+    let live = until_hosted(&mut rig.world, &store, &mut rx).await?;
+    assert!(live.party_of(first).is_some() && live.party_of(bystander).is_some());
+    assert!(
+        live.party_of(second).is_none(),
+        "the second escort is aboard"
+    );
+    assert!(flight(&rig.world, second, 1).is_err(), "and has no flight");
+
+    // (1) The launch into the running field is accepted, its pending row on the record.
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=2",
+    )
+    .await?;
+    let pending = pending_launches(&rig.world)?;
+    assert!(
+        pending
+            .iter()
+            .any(|row| row.hull == second && row.carrier == rig.carrier),
+        "the launch's pending row: {pending:?}"
+    );
+    assert_eq!(flight(&rig.world, second, 1)?.phase, Phase::Departing);
+
+    // (2) A second launch inside the cycle is refused with the seconds left.
+    let again = commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=2",
+    )
+    .await;
+    assert!(
+        again.as_ref().is_err_and(|error| {
+            let error = error.to_string();
+            error.contains("puts one hull down into it a cycle") && error.contains(" s.")
+        }),
+        "a launch inside the cycle is refused: {:?}",
+        again.map_err(|error| error.to_string())
+    );
+
+    // (3) The abort: the row goes, the cycle frees, the launch again is taken.
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/cancel-launch 1:1=2",
+    )
+    .await?;
+    assert_eq!(flight(&rig.world, second, 1)?.phase, Phase::Cancelled);
+    assert!(
+        !pending_launches(&rig.world)?
+            .iter()
+            .any(|row| row.hull == second),
+        "the abort drops the row"
+    );
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=2",
+    )
+    .await?;
+    assert!(
+        pending_launches(&rig.world)?
+            .iter()
+            .any(|row| row.hull == second)
+    );
+
+    // (4) The landing at the ramp, then the field tick's join within the director's spread.
+    let site = mush_core::CanonicalId::new(story().site)?;
+    let mut joined = None;
+    for _ in 0..120 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if let Some(frame) = arena_frame(&rig.world, pilots[1])
+            && frame.unit == second
+        {
+            joined = Some(frame);
+            break;
+        }
+    }
+    let frame = joined.ok_or_else(|| {
+        format!(
+            "the second escort never flew in the field: flight {:?}, live party {:?}, deployed {}, at {:?}",
+            flight(&rig.world, second, 2).map(|f| f.phase),
+            tacsim::field::live_on(rig.world.world(), &site).map(|live| live.party_of(second)),
+            mush_sim::deployed::is_deployed(rig.world.world(), second),
+            mush_sim::pose_of(rig.world.world(), second),
+        )
+    })?;
+    assert_eq!(flight(&rig.world, second, 2)?.phase, Phase::Field);
+    let live = tacsim::field::live_on(rig.world.world(), &site).ok_or("the field runs")?;
+    assert_eq!(
+        live.party_of(second),
+        live.party_of(first),
+        "the reinforcement fights in its operation's party"
+    );
+    assert_eq!(Some(frame.party), live.party_of(second));
+    assert!(mush_sim::deployed::is_deployed(rig.world.world(), second));
+    let landed = flight(&rig.world, second, 2)?.ramp;
+    let ramp = tacsim::surface::excursion::site_cell(landed.x_cm, landed.y_cm);
+    let ramp = [ramp.0, ramp.1];
+    let (x, y) = frame.cell.ok_or("the reinforcement's cell")?;
+    let spread = i64::from(tacsim::field::raiders::LAUNCH_SPREAD_CELLS);
+    assert!(
+        (i64::from(x) - ramp[0]).abs() <= spread && (i64::from(y) - ramp[1]).abs() <= spread,
+        "it stands within the spread of the ramp {ramp:?}: ({x}, {y})"
+    );
+    Ok(())
+}
+
+/// [`fr3_reinforcement`] on Ahuna Flank, 256 a side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr3_a_second_escort_launches_into_the_running_field_on_ahuna() -> TestResult {
+    STORY
+        .scope(
+            Story {
+                site: "ahuna_port",
+                cap: None,
+                cycle_s: None,
+            },
+            fr3_reinforcement(),
+        )
+        .await
+}
+
+/// [`fr3_reinforcement`] on Urvara Reach, 512 a side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr3_a_second_escort_launches_into_the_running_field_on_urvara() -> TestResult {
+    STORY
+        .scope(
+            Story {
+                site: "urvara_port",
+                cap: None,
+                cycle_s: None,
+            },
+            fr3_reinforcement(),
+        )
+        .await
+}
+
+/// **Doc 40 cut FR.3 — the one count** (Q-40-24): with `[tacsim.field].max_units` at two and
+/// only the carrier on the ground, slot 1's launch is accepted and its pending row holds the
+/// second place while it is still aboard; slot 2's launch a moment later is refused at its
+/// prepare with CF.2's cap line, though the ground holds one. Before the row, both went down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr3_the_pending_row_counts_a_launch_still_aboard() -> TestResult {
+    STORY
+        .scope(
+            Story {
+                site: "ahuna_port",
+                cap: Some(2),
+                cycle_s: None,
+            },
+            async {
+                use tacsim::detachment::sortie::Phase;
+                let store = InMemoryStore::new();
+                let (mut rig, units, _, _) = two_pilot_fixture_launching(&store, 0).await?;
+                commit(
+                    &mut rig.world,
+                    &store,
+                    rig.organizer,
+                    "+sortie/launch 1:1=1",
+                )
+                .await?;
+                assert_eq!(flight(&rig.world, units[0], 1)?.phase, Phase::Departing);
+                let refused = commit(
+                    &mut rig.world,
+                    &store,
+                    rig.organizer,
+                    "+sortie/launch 1:1=2",
+                )
+                .await;
+                assert!(
+                    refused
+                        .as_ref()
+                        .is_err_and(|error| error.to_string().contains("rigs out already")),
+                    "the second launch is refused by the pending row: {:?}",
+                    refused.map_err(|error| error.to_string())
+                );
+                assert!(flight(&rig.world, units[1], 1).is_err(), "no second flight");
+                Ok(())
+            },
+        )
+        .await
 }

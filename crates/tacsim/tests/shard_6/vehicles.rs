@@ -1458,7 +1458,8 @@ fn sm3a_the_apply_lays_up_occators_rigs_and_every_hulls_bay() {
     assert_eq!(
         line.text,
         "ceres_port vehicles: 8 of 8 made and titled to Occator Water & Propellant; 8 in the \
-         shed, 0 leased. escort: 2 of 2 made; 2 in the shed, 0 leased."
+         shed, 0 leased. escort: 2 of 2 made; 2 in the shed, 0 leased. tender: 2 of 2 made; 2 in \
+         the shed, 0 leased."
     );
     assert!(!tacsim::port::gated(Binding::Vehicles));
     assert!(tacsim::port::enrol_gate(&report).is_ok());
@@ -3760,7 +3761,7 @@ fn sm3a_the_rig_pools_preflight_refuses_each_recorded_breach() {
         &mut rig,
         "the block dropped",
         &[&format!(
-            "ceres_port: the port map {key} records 10 rigs but the entry has no vehicles \
+            "ceres_port: the port map {key} records 12 rigs but the entry has no vehicles \
              block; rigs are never retired by a port update"
         )],
     );

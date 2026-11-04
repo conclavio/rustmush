@@ -355,11 +355,11 @@ pack (the plant and fittings recipes are IN.5's and IN.7's content), the holds' 
   `Release` at the storefront. An empty store refuses with `NO_PART`; nothing is escrowed. The store pick runs
   after the take's dry run (a seeded part comes in intact, as the dry run fits one), so a doomed order keeps the
   engine's refusal.
-- **The seeds** (Q-39-12; lane v21 on the branch, v22 once RS.1's #397 lands; relay v12, then v13): part `stock`
+- **The seeds** (Q-39-12; lane v22, relay v13, after RS.1's v21/v12): part `stock`
   rows only (grade 9, issue 1). Occator at Ceres holds four each of `cannon_105`, `mg_coax`, `visual_mk1`,
   `plant.vehicle_mk1` and `plant.light_mk1`; Stickney Yards six of all thirteen part rows. `MAX_VENDOR_ROWS`
   16 → 24 (the Yards carry 18 stock rows). The strip chain's head is `lane_chain::strip_part_seeds`, called first
-  by `strip_ladder`, so every chain rebuilding an older lane still hits its published digest.
+  by `strip_tender` (RS.1's v21 strip), so every chain rebuilding an older lane still hits its published digest.
 - **Readiness counts a part row seeded once its receipt exists** (its lots are never dissolved, so IN.2's rule
   read it as never seeded): a port reads ready only when its stores are seeded. The clerk mints the part rows after
   the bulk rows, asks and bids (`stock_step`: `seed_step(parts: false)` … `bid_step`, then
@@ -415,9 +415,8 @@ only once its stores are seeded. `shard_10/commerce.rs`: the receipt counts 16 �
 licence-fire census leaves out a journey's `atlas` tick, whose fire moves with the boot's length.
 `shard_1/bay_36a.rs` `b36a_2_a…` orders the cannon alone (one store part an order) and lets the order's hold land
 before its cancel. `shard_9/mill.rs`'s pack-apply story waits 64 fires after the apply (it adds the part rows). The
-lane pins: `LANE_VERSION` 21, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `e42511e1…`, relay v12 `e38f2f19…`
+lane pins: `LANE_VERSION` 22, `LANE_DIGEST`/`SHIPPED_LANE_DIGEST` `af3f150a…`, relay v13 `c55ce471…`
 (`relay_registry.rs`, `boot_parity.rs`, `shard_10/stations.rs`), and the version asserts in `shard_3/drones.rs`,
-`shard_5/sites.rs`, `shard_9/mill.rs`, `cost_lane.rs` and `shard_4/lane.rs`. All of them move again with the v22
-bump.
+`shard_5/sites.rs`, `shard_9/mill.rs`, `cost_lane.rs` and `shard_4/lane.rs`.
 
-**Cell delta (rule #14).** To be read off the PR run's JUnit after the v22 bump.
+**Cell delta (rule #14).** To be read off the PR run's JUnit.
