@@ -5405,8 +5405,17 @@ fn rig_out_or_busy(ctx: &Ctx<'_>, tv: ObjId) -> bool {
 /// buyout and the recall until it is returned or repossessed. `{n}` is the lowest
 /// live slot among them, else `?`; `None` when the hull carries none.
 pub(crate) fn bay_slot_word(w: &World, view: &HullView<'_>) -> Option<String> {
-    let rigs = rigs_in_bay(w, view);
-    let records = live_on_hull(w, view.hull());
+    // Doc 39 cut IN.9 (§4.13): a titled rig is its holder's own cargo and rides along; the
+    // buyout's and the refit's "still in the bay" never counts it.
+    let titled = |tv: ObjId| crate::port::owned::rig_row(w, tv).is_some();
+    let rigs: Vec<_> = rigs_in_bay(w, view)
+        .into_iter()
+        .filter(|rig| !titled(rig.tv))
+        .collect();
+    let records: Vec<_> = live_on_hull(w, view.hull())
+        .into_iter()
+        .filter(|record| !titled(record.tv))
+        .collect();
     if rigs.is_empty() && records.is_empty() {
         return None;
     }

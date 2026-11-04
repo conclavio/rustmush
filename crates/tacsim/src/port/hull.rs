@@ -748,7 +748,9 @@ pub(crate) fn lay_up_one(
     }
     // 3. The rooms, template order; then every pass, the dress.
     for room in &interior.rooms {
-        let made = sink.row().is_some_and(|row| row.rooms.contains_key(&room.id));
+        let made = sink
+            .row()
+            .is_some_and(|row| row.rooms.contains_key(&room.id));
         if !made {
             let obj = ctx
                 .w

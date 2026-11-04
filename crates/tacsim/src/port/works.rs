@@ -104,9 +104,12 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               +works/order <recipe> [qty][=<org>]  book it: an escrow and the \
                               booking fee (one slot-day, forfeit on a cancel).\n\
                               +works/deliver <order>=<good> <qty>  move bill goods from your docked \
-                              hold into the escrow; the order starts when the bill is covered.\n\
+                              hold into the escrow (a part as its lots); the order starts when the \
+                              bill is covered.\n\
                               +works/collect <order>          the output (or a cancelled bill) into \
-                              your docked hold.\n\
+                              your docked hold; at a yard, the hull's commission: she is handed \
+                              over docked here (a ship) or on the workshop floor (a rig), titled to \
+                              you, her magazines empty.\n\
                               +works/cancel <order>           before half the work is done: the \
                               bill back, the booking fee and the work done so far forfeit.";
 /// The switches.
@@ -1155,7 +1158,14 @@ fn commission(
     record.check()?;
     crate::port::commission::put(ctx, &record);
     let (by, escrow) = (ctx.actor, c.escrow());
-    owe(ctx, c, by, (escrow, escrow), (Vec::new(), lots), Then::Commissioned)?;
+    owe(
+        ctx,
+        c,
+        by,
+        (escrow, escrow),
+        (Vec::new(), lots),
+        Then::Commissioned,
+    )?;
     say(
         ctx,
         format!(
@@ -2108,6 +2118,7 @@ impl WorksProvider {
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
         let escrow = EndpointRef(VaultId(owed.from));
+        let mut lots = Vec::with_capacity(owed.lots.len());
         for lot in &owed.lots {
             let record = txn
                 .get(&self.inventory.lots, lot)
@@ -2121,10 +2132,11 @@ impl WorksProvider {
             {
                 return Err(refused("the kit did not come from a work order"));
             }
-            self.inventory
-                .consume_product(txn, &record)
-                .map_err(|_| refused("a lot could not be consumed"))?;
+            lots.push(record);
         }
+        self.inventory
+            .consume_products(txn, &lots)
+            .map_err(|_| refused("a lot could not be consumed"))?;
         Ok(())
     }
 

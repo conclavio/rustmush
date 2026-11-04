@@ -243,11 +243,9 @@ pub fn commissions(w: &World) -> Vec<YardCommission> {
 /// re-issued (L12).
 #[must_use]
 pub fn next_mark(w: &World) -> (u32, String) {
-    let n = w
-        .module_state::<TacsimStore>()
-        .map_or(0, |store| {
-            u32::try_from(store.yard.commissions.len()).unwrap_or(u32::MAX)
-        });
+    let n = w.module_state::<TacsimStore>().map_or(0, |store| {
+        u32::try_from(store.yard.commissions.len()).unwrap_or(u32::MAX)
+    });
     (n, registry_mark(BUILT_PREFIX, n))
 }
 
@@ -381,6 +379,17 @@ fn step(ctx: &mut Ctx<'_>, record: &mut YardCommission) -> Result<(), String> {
         Step::Laying => lay(ctx, &id, record, &yard),
         Step::Placed => {
             let obj = record.object().ok_or("the commission has no hull yet")?;
+            if !record.ship {
+                // A rig stands on the workshop floor as a berthed hull does: in the room, with
+                // no simulation placement (the stow places her in a bay).
+                let room = yard
+                    .workshop
+                    .ok_or("the yard's port has no workshop room for a rig")?;
+                if ctx.w.get(obj).and_then(|o| o.location) != Some(room) {
+                    ctx.w.move_to(obj, room).map_err(|e| e.to_string())?;
+                }
+                return Ok(());
+            }
             let placed = ctx
                 .w
                 .module_state::<mush_sim::data::SpatialState>()
@@ -390,24 +399,17 @@ fn step(ctx: &mut Ctx<'_>, record: &mut YardCommission) -> Result<(), String> {
             if placed {
                 return Ok(());
             }
-            if record.ship {
-                let y_cm = (BUILT_SHIP_ROW.saturating_add(i64::from(record.n)))
-                    .saturating_mul(crate::port::hull::HULL_SPACING_CM);
-                let pose = mush_sim::data::Pose {
-                    x_cm: 0,
-                    y_cm,
-                    z_cm: 0,
-                    heading_mdeg: 0,
-                    posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
-                        .map_err(|e| e.to_string())?,
-                };
-                mush_sim::place(ctx, obj, yard.domain, pose)
-            } else {
-                let room = yard
-                    .workshop
-                    .ok_or("the yard's port has no workshop room for a rig")?;
-                mush_sim::place_interior(ctx, obj, room, None)
-            }
+            let y_cm = (BUILT_SHIP_ROW.saturating_add(i64::from(record.n)))
+                .saturating_mul(crate::port::hull::HULL_SPACING_CM);
+            let pose = mush_sim::data::Pose {
+                x_cm: 0,
+                y_cm,
+                z_cm: 0,
+                heading_mdeg: 0,
+                posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
+                    .map_err(|e| e.to_string())?,
+            };
+            mush_sim::place(ctx, obj, yard.domain, pose)
         }
         Step::Titled => {
             let obj = record.object().ok_or("the commission has no hull yet")?;
@@ -480,10 +482,7 @@ fn step(ctx: &mut Ctx<'_>, record: &mut YardCommission) -> Result<(), String> {
             Ok(())
         }
         Step::Registered => {
-            let body = record
-                .row
-                .clone()
-                .ok_or("the commission has no hull yet")?;
+            let body = record.row.clone().ok_or("the commission has no hull yet")?;
             crate::port::owned::put_owned(
                 ctx,
                 &OwnedHull {

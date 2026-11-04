@@ -95,7 +95,9 @@ fn carrier_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
         .find(|hull| {
             ctx.w.get(*hull).is_some_and(|o| {
                 o.name.eq_ignore_ascii_case(word)
-                    || o.aliases.iter().any(|alias| alias.eq_ignore_ascii_case(word))
+                    || o.aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(word))
             })
         })
         .ok_or_else(|| "There is no such carrier.".to_owned())
@@ -328,8 +330,18 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
         .module_state::<TacsimStore>()
         .and_then(|s| s.bay_hull(hull))
     {
-        if row.berth.is_some() {
-            lines.push("  Berthed in this workshop; +bay/stow returns her to her carrier.".into());
+        match &row.berth {
+            // Doc 39 cut IN.9: the yard's berth names no carrier.
+            Some(berth) if berth.carrier.is_none() => lines.push(
+                "  Built on this floor; +bay/stow <hull>=<carrier> puts her in a carrier's bay."
+                    .into(),
+            ),
+            Some(_) => {
+                lines.push(
+                    "  Berthed in this workshop; +bay/stow returns her to her carrier.".into(),
+                );
+            }
+            None => {}
         }
         if row.scrapped_ic.is_some() {
             lines.push("  Scrapped: an irrecoverable shell.".into());

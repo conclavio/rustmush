@@ -576,8 +576,7 @@ fn berth_stands(ctx: &Ctx<'_>, actor: ObjId, record: &BayHull) -> Result<(), Str
         // A yard berth: no carrier to serve her, nothing to refuse.
         return Ok(());
     };
-    if carrier_right(ctx.w, actor, carrier) || right_held_by(ctx, berth.by, record.hull).is_some()
-    {
+    if carrier_right(ctx.w, actor, carrier) || right_held_by(ctx, berth.by, record.hull).is_some() {
         return Ok(());
     }
     Err(
@@ -637,6 +636,13 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
         return None;
     }
     if holds_title(ctx.w, actor, hull) {
+        return Some(Right::Title);
+    }
+    // Doc 39 cut IN.9 (§4.13): a commissioned hull titled to an organization the actor acts for
+    // is theirs to work as its title holder's officer.
+    if crate::port::owned::owned(ctx.w, hull).is_some()
+        && crate::port::owned::titled_for(ctx.w, hull, actor)
+    {
         return Some(Right::Title);
     }
     if unit_grant(ctx, hull, UnitCapability::MaintainRefit) {
@@ -978,6 +984,9 @@ pub fn source_carrier(w: &World, hull: ObjId, facility: &Facility) -> Result<Obj
                 _ => None,
             }
         })
+        // Doc 39 cut IN.9: a hull the yard built on the floor draws from a carrier her title
+        // holder holds docked at this port (the first load is a rearm from the hold, Q-39-36).
+        .or_else(|| crate::port::owned::titled_carrier_at(w, hull, facility.port.as_ref()?))
         .ok_or(no_carrier)?;
     match crate::port::ship::berth_of(w, carrier) {
         crate::port::ship::Berth::Docked { map, .. }

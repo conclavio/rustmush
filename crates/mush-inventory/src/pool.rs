@@ -1680,6 +1680,52 @@ impl InventoryFamilies {
         Ok(())
     }
 
+    /// **Consume several complete, identified lots** (doc 39 cut IN.9: a yard commission's kit
+    /// and parts, one escrow): [`Self::consume_product`] for each, with the endpoint census and
+    /// the lot tallies summed and staged once per key, so several lots at one endpoint consume in
+    /// one transaction.
+    ///
+    /// # Errors
+    /// Refuses a missing, moved, changed or held lot, or the same lot twice; nothing is written
+    /// on an error.
+    pub fn consume_products(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        expected: &[Lot],
+    ) -> Result<(), InventoryError> {
+        let mut census: std::collections::BTreeMap<EndpointRef, i64> =
+            std::collections::BTreeMap::new();
+        let mut tallies: std::collections::BTreeMap<(EndpointRef, CanonicalId), i128> =
+            std::collections::BTreeMap::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for lot in expected {
+            if !seen.insert(lot.id()) {
+                return Err(InventoryError::NoLot);
+            }
+            let actual = txn
+                .get(&self.lots, &lot.id())?
+                .ok_or(InventoryError::NoLot)?;
+            if actual != lot {
+                return Err(InventoryError::NoLot);
+            }
+            self.require_no_hold(txn, lot.id())?;
+            *census.entry(lot.endpoint()).or_insert(0) -= 1;
+            *tallies
+                .entry((lot.endpoint(), lot.commodity().clone()))
+                .or_insert(0) -= i128::from(lot.quantity());
+        }
+        for (endpoint, delta) in census {
+            self.move_lots(txn, endpoint, delta)?;
+        }
+        for ((endpoint, commodity), delta) in tallies {
+            self.tally_lots(txn, endpoint, &commodity, delta)?;
+        }
+        for lot in expected {
+            txn.remove(&self.lots, &lot.id())?;
+        }
+        Ok(())
+    }
+
     /// Merge several lots into one. Every parent is consumed; the child records
     /// all of them.
     ///

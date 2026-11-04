@@ -233,10 +233,13 @@ pub(crate) fn write<T: Serialize>(ctx: &mut Ctx<'_>, key: String, record: &T) {
         );
         serde_json::json!({})
     });
-    crate::store::push_op(ctx.out, ModuleWrite::JsonSet {
+    crate::store::push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
             key: key.into(),
             value,
-        });
+        },
+    );
 }
 
 /// Install a register row and queue its document.
@@ -478,11 +481,7 @@ fn runner_of(w: &World, carrier: ObjId) -> Option<ObjId> {
 /// carrier's), in the lowest bay slot no stored lease on that carrier holds. Never stored, so
 /// `repossess` never ends it.
 #[must_use]
-pub fn title_view_for(
-    w: &World,
-    tv: ObjId,
-    pilot: ObjId,
-) -> Option<crate::port::tv::TvLease> {
+pub fn title_view_for(w: &World, tv: ObjId, pilot: ObjId) -> Option<crate::port::tv::TvLease> {
     let rig = rig_row(w, tv)?;
     let (carrier, _) = carrier_bay_of(w, tv)?;
     if !titled_for(w, tv, pilot) {
@@ -539,4 +538,28 @@ pub fn title_views_for(w: &World, actor: ObjId) -> Vec<crate::port::tv::TvLease>
         .filter_map(|row| row.rig().map(|_| row.hull))
         .filter_map(|tv| title_view_for(w, tv, actor))
         .collect()
+}
+
+/// **A carrier `obj`'s title holder holds docked at port `entry`** (doc 39 cut IN.9): the
+/// lowest-id hull — commissioned or programme — titled to the same principal and docked there.
+/// The hold a yard-built rig's first rearm draws from (Q-39-36).
+#[must_use]
+pub fn titled_carrier_at(w: &World, obj: ObjId, entry: &CanonicalId) -> Option<ObjId> {
+    owned(w, obj)?;
+    let economy = w.module_state::<EconomyStore>()?;
+    let owner = economy.snapshot().asset(obj)?.title_owner.clone();
+    let mut hulls: Vec<ObjId> = crate::port::coop::programme_ports(w)
+        .iter()
+        .flat_map(|port| port.map.hulls.iter().map(|row| ObjId(row.hull)))
+        .chain(ships(w))
+        .collect();
+    hulls.sort();
+    hulls.into_iter().find(|hull| {
+        economy
+            .snapshot()
+            .asset(*hull)
+            .is_some_and(|asset| asset.title_owner == owner)
+            && matches!(crate::port::ship::berth_of(w, *hull),
+                crate::port::ship::Berth::Docked { map, .. } if &map.entry == entry)
+    })
 }

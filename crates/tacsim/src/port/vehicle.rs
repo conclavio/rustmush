@@ -731,7 +731,9 @@ pub(crate) fn lay_up_rig(
     }
     // 3. The rooms, template order; then every pass, the dress.
     for room in &interior.rooms {
-        let made = sink.row().is_some_and(|rig| rig.rooms.contains_key(&room.id));
+        let made = sink
+            .row()
+            .is_some_and(|rig| rig.rooms.contains_key(&room.id));
         if !made {
             let obj = ctx
                 .w
@@ -1101,7 +1103,10 @@ pub fn rigs_in_bay(w: &World, view: &HullView<'_>) -> Vec<RigInBay> {
             let mark = rig_row(w, *obj)
                 .map(|(_, rig)| rig)
                 .or_else(|| crate::port::owned::rig_row(w, *obj))
-                .map_or_else(|| crate::port::coop::name_of(w, *obj), |rig| rig.mark.clone());
+                .map_or_else(
+                    || crate::port::coop::name_of(w, *obj),
+                    |rig| rig.mark.clone(),
+                );
             out.push(RigInBay {
                 slot: record.map_or(0, |record| record.slot),
                 tv: *obj,

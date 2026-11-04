@@ -1249,15 +1249,12 @@ enum Edit {
 /// **The goods a standing order trades** (doc 39 cut IN.1): every row but a part, which is an
 /// identified lot the market sells as itself (doc 39 §4.11), never a quantity of a pool.
 fn orderable(goods: &GoodsTable) -> impl Iterator<Item = &crate::definitions::GoodDef> {
-    goods
-        .goods
-        .iter()
-        .filter(|good| {
-            !matches!(
-                good.class,
-                crate::definitions::GoodClass::Part | crate::definitions::GoodClass::Kit
-            )
-        })
+    goods.goods.iter().filter(|good| {
+        !matches!(
+            good.class,
+            crate::definitions::GoodClass::Part | crate::definitions::GoodClass::Kit
+        )
+    })
 }
 
 fn match_good(goods: &GoodsTable, word: &str) -> Option<CanonicalId> {

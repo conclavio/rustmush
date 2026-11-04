@@ -2973,6 +2973,8 @@ impl ActionProvider for SurfaceDoneProvider {
             .filter(|record| record.live())
             .cloned()
             .chain(crate::port::yard::house_rigs(w, actor))
+            // Doc 39 cut IN.9: and the actor's titled rigs, as title views.
+            .chain(crate::port::owned::title_views_for(w, actor))
             .collect();
         // Physical NPC operators finish their own admitted work, with the real
         // lease retained as its financial contract. Completion needs no proxy

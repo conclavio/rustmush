@@ -490,7 +490,9 @@ pub(crate) fn pack_facts(pack: &Pack) -> YardPack {
 }
 
 /// The yard unit's bays and their room templates (the unit's own, never a refit's).
-pub(crate) fn unit_bays(interior: &crate::definitions::InteriorDef) -> Vec<(BayDef, InteriorRoomDef)> {
+pub(crate) fn unit_bays(
+    interior: &crate::definitions::InteriorDef,
+) -> Vec<(BayDef, InteriorRoomDef)> {
     interior
         .bays
         .iter()

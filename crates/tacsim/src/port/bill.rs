@@ -292,9 +292,21 @@ mod tests {
                     .and_then(|lines| lines.iter().find(|l| l["commodity"] == good))
                     .and_then(|l| l["units"].as_u64())
             };
-            assert_eq!(units("structural_alloys"), Some(b.alloys_t), "{id}'s alloys");
-            assert_eq!(units("industrial_parts"), Some(b.fittings_t), "{id}'s fittings");
-            assert_eq!(def["work_units"].as_u64(), Some(b.work_units()), "{id}'s days");
+            assert_eq!(
+                units("structural_alloys"),
+                Some(b.alloys_t),
+                "{id}'s alloys"
+            );
+            assert_eq!(
+                units("industrial_parts"),
+                Some(b.fittings_t),
+                "{id}'s fittings"
+            );
+            assert_eq!(
+                def["work_units"].as_u64(),
+                Some(b.work_units()),
+                "{id}'s days"
+            );
             assert_eq!(
                 def["outputs"][0]["commodity"].as_str(),
                 Some(format!("tacsim.hull_kit.{id}").as_str()),
@@ -304,6 +316,10 @@ mod tests {
         }
         let escort = bill("tacsim.unit.tv_escort");
         assert_eq!(escort.days, 2, "an 8 t hull is the two-day floor");
-        assert_eq!(escort.parts.len(), 4, "a cannon, a coaxial gun, a sight and a plant");
+        assert_eq!(
+            escort.parts.len(),
+            4,
+            "a cannon, a coaxial gun, a sight and a plant"
+        );
     }
 }
