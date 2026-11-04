@@ -632,6 +632,17 @@ runs `npm` only.
 
 Doc 43 has no cut-notes file; each cut's note lands here.
 
+### TS.14 release check on pull requests (D-43-10)
+
+**Built.** The `lint` cell gains one step after Clippy: `cargo check --locked --release -p mushd -p
+mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls`, the release job's package and
+feature set. A `cfg(not(debug_assertions))` break now fails the PR. Thin LTO and the real SPA embed
+stay with the nightly release job. The embed guard (`mush-net-web/build.rs`) refuses a release build
+with no `web/dist/index.html`. The lint cell builds no SPA, so the step writes a one-line placeholder
+when the file is missing: the check is of the Rust, not the bundle.
+
+**The cost (rule #14, §8.1).** On this PR's run ([41876942230](https://github.com/conclavio/rustmush/actions/runs/41876942230)) the step took **2.9 min**, cold for the release profile, in a lint cell of about 10.5 min (Clippy 4.0, the M7 memory-size limits 2.9). The run's wall was tacsim-integration-1 at 22.8 min, so the check stays in the lint cell; it moves to a cell of its own only if the cell ever sets the wall.
+
 ### TS.2 inventory tiers and configuration (§5.9, §10.3)
 
 **Built.** `crates/mush-contract-tests/test-tiers.toml` gives every gated test (an `#[ignore]`d,

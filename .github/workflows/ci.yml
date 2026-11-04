@@ -544,6 +544,23 @@ jobs:
       - name: Clippy
         if: matrix.shard == 'lint'
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Doc 43 cut TS.14 (D-43-10): the three binaries type-checked in the
+      # release profile with native TLS, so a `cfg(not(debug_assertions))`
+      # break fails the pull request instead of the nightly's release job.
+      # Thin LTO and the real SPA embed stay that job's (nightly). The embed
+      # guard (crates/mush-net-web/build.rs) refuses a release build with no
+      # web/dist/index.html, and this cell builds no SPA, so the step writes a
+      # placeholder when none is there: the check is of the Rust, not the
+      # bundle. Its minutes are measured on TS.14's own PR run; it moves to a
+      # cell of its own if it ever sets the wall (doc 43 §8.1).
+      - name: Release-profile check of the binaries
+        if: matrix.shard == 'lint'
+        run: |
+          if [ ! -f web/dist/index.html ]; then
+            mkdir -p web/dist
+            printf '<!doctype html><title>release check placeholder</title>\n' > web/dist/index.html
+          fi
+          cargo check --locked --release -p mushd -p mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls
       # Keep memory-size enforcement scoped to the M7 owners, including
       # standalone integration-test targets as well as library fixtures.
       # 2026-10-26 (cut T.0): once, in the lint shard. The step had no `if:`
