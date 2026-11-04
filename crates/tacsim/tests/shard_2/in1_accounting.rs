@@ -137,6 +137,8 @@ fn done(rig: &mut Rig, hull: ObjId) -> tacsim::port::bay_work::BayOrder {
     let order = record(rig, hull).order.expect("an order");
     let _ = to_ic(rig, order.due_ic + 60);
     let _ = to_ic(rig, order.due_ic + 600);
+    // Doc 39 cut IN.2: a fit holds its lot a fire before it draws.
+    let _ = to_ic(rig, order.due_ic + 1_200);
     let order = record(rig, hull).order.expect("an order");
     assert_eq!(order.status, OrderStatus::Done, "{order:?}");
     order
@@ -281,7 +283,7 @@ async fn in1_a_cannon_stripped_at_stickney_fits_a_heavy_and_a_patch_opens_a_bale
     assert_eq!(found.quantity(), 1);
     assert_eq!(found.endpoint(), EndpointRef(vault), "in the Dray's hold");
     let part = provenance(&mut rig, lot);
-    assert_eq!(part.parent_hull, escort);
+    assert_eq!(part.parent_hull(), Some(escort));
     assert_eq!(
         part.definition.key().id.as_str(),
         "tacsim.weapon.cannon_105",

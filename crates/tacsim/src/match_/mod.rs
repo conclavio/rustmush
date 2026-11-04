@@ -105,8 +105,9 @@ mod verbs;
 
 pub use arena_def::{
     ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, custody_unit, definition_for,
-    opening_cell_pose, opening_pose, resolution_for, sensor_height_cm, sensor_profile,
-    stock_definition, stock_resolution, tracked_rules, unit_profile, weapon_summaries,
+    opening_cell_pose, opening_pose, resolution_for, seal_armament, sensor_height_cm,
+    sensor_profile, stock_definition, stock_resolution, tracked_rules, unit_profile,
+    weapon_summaries,
 };
 pub(crate) use centre::record_roster;
 pub use centre::{

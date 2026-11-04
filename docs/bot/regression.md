@@ -88,8 +88,8 @@ Aggregating a matrix deliberately compares its combined results. Different mixes
 of actors, variants or probe frequencies can change that aggregate; select
 comparable experiments when drawing conclusions. Variant IDs identify recorded
 actor specifications and path selectors. They do not prove that referenced file
-contents or the game world stayed unchanged. See [analysis](bot-analysis.md) and
-[capture comparison](bot.md#planning-and-comparing-experiments) for those limits.
+contents or the game world stayed unchanged. See [analysis](analysis.md) and
+[capture comparison](guide.md#planning-and-comparing-experiments) for those limits.
 
 ## Missing evidence and comparability
 
@@ -97,7 +97,7 @@ Acceptance checks require an explicit unattended-run marker (`debug.enabled:
 false`) in each selected run. Interactive cast debugging is inconclusive,
 including debugger sessions that never held a phase. Legacy summaries missing
 this marker are also inconclusive; rerun unattended to establish a baseline.
-See [phase debugging](bot-cast-debug.md) for how those runs are recorded.
+See [phase debugging](cast-debug.md) for how those runs are recorded.
 
 Missing data never becomes a zero value or a passed gate. Inconclusive checks
 include insufficient samples, unknown outcomes, incomplete relevant metrics,
@@ -118,7 +118,7 @@ identities on both sides. Rewording a question or changing expected answers
 changes the rubric revision; rerun both experiments with the same rubric for a
 comparable pair of summaries. A valid citation establishes that an excerpt exists in the
 supplied capture. It does not prove the truth of that excerpt or that it supports
-the answer semantically. See [probe evidence rules](bot-probes.md).
+the answer semantically. See [probe evidence rules](probes.md).
 
 Cost means use each actor's session ledger once. Group totals can overlap, and
 lifetime ledgers span other experiments, so neither is added. All requests need

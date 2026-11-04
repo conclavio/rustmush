@@ -92,7 +92,7 @@ pub mod workorder;
 pub use cost::FacilityCostDef;
 pub use custody::IndustryCustodyProvider;
 pub use facility::{
-    CapacityGuardValidator, FACILITY_CLASS, FacilityRecord, MAX_FACILITY_CAPABILITIES,
+    CapacityGuardValidator, Customers, FACILITY_CLASS, FacilityRecord, MAX_FACILITY_CAPABILITIES,
     MAX_FACILITY_SLOTS, facility_capacity_key, facility_key, facility_of_key, facility_resource,
 };
 pub use facts::IndustryFactProvider;
@@ -130,10 +130,10 @@ pub use seams::{
     MAX_TENURE_CLAIMS, MAX_TENURE_GAME_BYTES, MAX_TENURE_SUMMARY_BYTES, SystemOpener,
     SystemOpening, TenureAct, TenureAuthority, TenureKind, TenureOutcome,
 };
-pub use store::{DraftDrift, FacilityQuarantine, IndustryStore, Quarantine};
+pub use store::{DraftDrift, FacilityQuarantine, IndustryStore, Quarantine, may_order};
 pub use workorder::{
     DeliveryTarget, InterruptionCause, MAX_RESERVATIONS_PER_ORDER, MAX_WORK_ORDER_INPUTS,
-    MAX_WORK_ORDER_QUANTITY, MAX_WORK_ORDERS_PER_REQUESTER, PRODUCTION_CADENCE_SECS,
+    MAX_WORK_ORDER_QUANTITY, MAX_WORK_ORDERS_PER_REQUESTER, OutputLots, PRODUCTION_CADENCE_SECS,
     PRODUCTION_MAX_CATCH_UP, PRODUCTION_UNITS_PER_OCCURRENCE, PinnedRecipe, ProductionJob,
     ProductionSchedule, RecipeAuthority, RecipeLine, RecipeRef, WorkOrder, WorkOrderId,
     WorkOrderState, derive_work_order_id, wo_holder, wo_holder_text,

@@ -3,17 +3,17 @@
 Status: wave 1, the constrained wave 2 foundation, wave 3 social foundation and
 wave 4 daily-life/learning foundation implemented, 2026-09-10. Wave 5 now adds
 bounded missions, usability feedback/refutation, adversarial fixture reduction and
-blind review. See [wave 5 behavior and limits](bot-playtesting.md) and
-[its plan and reviews](bot-wave5-plan.md).
-[Wave 4 behavior and limits](bot-life.md) and [its plan and reviews](bot-wave4-plan.md)
+blind review. See [wave 5 behavior and limits](playtesting.md) and
+[its plan and reviews](wave5-plan.md).
+[Wave 4 behavior and limits](life.md) and [its plan and reviews](wave4-plan.md)
 cover quiet routines, map invalidation, cited lessons and bounded character growth.
-[Wave 3 behavior and limits](bot-social.md) and [its plan and reviews](bot-wave3-plan.md)
+[Wave 3 behavior and limits](social.md) and [its plan and reviews](wave3-plan.md)
 cover scoped background, relationships, observed commitments and perspective inspection.
-[Wave 2 behavior and limits](bot-campaigns.md) includes
+[Wave 2 behavior and limits](campaigns.md) includes
 the tape-only rehearsal adapter, branch controls and the pending production/paid
-adapter contracts. See [the wave-2 plan and reviews](bot-wave2-plan.md).
-See [conversation and scene observation](bot-conversation.md) for shipped behavior,
-controls and deliberate limits, and [the wave-1 reviews](bot-wave1-plan.md).
+adapter contracts. See [the wave-2 plan and reviews](wave2-plan.md).
+See [conversation and scene observation](conversation.md) for shipped behavior,
+controls and deliberate limits, and [the wave-1 reviews](wave1-plan.md).
 Baseline: the external bot laboratory and character/cast studio published in `a79afef`.
 
 The aim is a usable foundation for all twenty proposed additions, with natural
@@ -344,6 +344,6 @@ external bot as an independent comparison client. Choose engine-side ownership
 of authoritative state deliberately; do not automatically combine the two agent
 implementations because a prototype worked.
 
-Existing foundations: [milestones](bot-milestones.md), [decision points](bot-decisions.md),
-[cast debugging](bot-cast-debug.md), [studio](bot-studio.md),
-[probes](bot-probes.md), and [regression gates](bot-regression.md).
+Existing foundations: [milestones](milestones.md), [decision points](decisions.md),
+[cast debugging](cast-debug.md), [studio](studio.md),
+[probes](probes.md), and [regression gates](regression.md).

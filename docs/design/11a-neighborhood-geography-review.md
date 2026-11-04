@@ -63,7 +63,7 @@ recommendation is to replace it, keeping only the invariants that were expensive
 `crates/mush-canon/src/data.rs` `CanonDraft`, `CanonEvent`. Docs 03 §5, 06 §§5–7, §9.1, §10, D1;
 07 §9; 09 C8; 09b; 10 §2, 1A, 6A, T1, §16 item 9, §20, C16A/C19A/C20A; 10b §3 cut table, cuts 1
 and 6; 12/13; `PLAN.md` treaty rulings 3, 4, 8; `docs/help/{worldgen,spatial,route,jobs,faction,
-npc,llm}.md`; `docs/scenes_factions_knowledge.md` §3.5. Cites are **path + symbol** and **doc §**;
+npc,llm}.md`; `docs/design/scenes-factions-knowledge.md` §3.5. Cites are **path + symbol** and **doc §**;
 line numbers are deliberately absent (08i §8's rule).
 
 ---

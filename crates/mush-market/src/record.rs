@@ -538,6 +538,12 @@ pub enum Supply {
         commodity: LotCommodity,
         /// The grade the listing advertises, carried onto the buyer's lot.
         grade: u8,
+        /// **The exact lot sold** (doc 39 cut IN.2, Q-39-27): a listing that sells one
+        /// identified lot (a part) holds that lot rather than reserving pool quantity, and
+        /// its sale hands **the lot itself** to the buyer — the same id, grade and
+        /// lineage, never a tranche. `None` is the pooled listing, byte-identical to IC0's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lot: Option<mush_inventory::LotId>,
     },
     /// **Doc 18 cut IC8 — a standing bid** (§4.3 "Bids that take real lots"; lead
     /// ruling L14). The listing's `seller` is the **bidding** org, its `price` the bid
@@ -575,7 +581,21 @@ impl Supply {
                 endpoint,
                 commodity,
                 grade,
+                ..
             } => Some((endpoint.0, &commodity.0, *grade)),
+            Supply::Stock { .. }
+            | Supply::Market { .. }
+            | Supply::Procurement { .. }
+            | Supply::Wanted { .. } => None,
+        }
+    }
+
+    /// The exact lot a `Supply::Lot` listing sells (doc 39 cut IN.2), `None` for a pooled
+    /// listing and every other arm.
+    #[must_use]
+    pub const fn exact_lot(&self) -> Option<mush_inventory::LotId> {
+        match self {
+            Supply::Lot { lot, .. } => *lot,
             Supply::Stock { .. }
             | Supply::Market { .. }
             | Supply::Procurement { .. }
@@ -613,6 +633,8 @@ pub enum LotMatter {
         commodity: mush_core::CanonicalId,
         /// The grade the listing advertises.
         grade: u8,
+        /// The exact lot it sells (doc 39 cut IN.2), or `None` for pooled quantity.
+        lot: Option<mush_inventory::LotId>,
     },
     /// The drawn listing: `Supply::Stock` on a lot entry.
     Draw {
@@ -1070,6 +1092,10 @@ pub struct PaidLot {
     /// Deliver, 1..=96 bytes of lowercase hex.
     #[serde(default)]
     pub marker: Option<SmolStr>,
+    /// The exact lot a hold-backed sale hands over (doc 39 cut IN.2): the same lot id goes to
+    /// the buyer. `None` for a pooled sale, a draw and a deliver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot: Option<mush_inventory::LotId>,
 }
 
 impl PaidLot {
@@ -1085,6 +1111,11 @@ impl PaidLot {
         }
         if self.grade > mush_inventory::MAX_GRADE {
             return Err(RecordError("a paid lot's grade is out of range"));
+        }
+        if self.lot.is_some() && self.kind != PaidKind::Hold {
+            return Err(RecordError(
+                "only a hold-backed sale hands over an exact lot",
+            ));
         }
         match (self.kind, self.draw_by, self.marker.as_deref()) {
             (PaidKind::Draw, Some(by), None) if by >= self.accepted_at => Ok(()),

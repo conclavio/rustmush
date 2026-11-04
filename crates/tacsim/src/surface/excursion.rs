@@ -1240,6 +1240,136 @@ pub struct RigRecord {
     /// line. Skipped when `None` (schema 1 stands: pre-launch, no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sortie: Option<OpenSortie>,
+    /// **The rig's IC mind claim cursor** (doc 23 cut S.4b-1, D-23-13 as amended by D-23-21;
+    /// round 2's 23-4): beside [`RigRecord::sortie`], never on [`OpenSortie`], because every
+    /// path that closes an epoch takes the `OpenSortie` and under D-23-21 none exists at the
+    /// Open. `None` for a rig with no held mind. Written by S.4b-2's `go` (`Opening`) and its
+    /// surface claim arm (every later state); nothing in S.4b-1 writes it. Skipped when
+    /// `None` (schema 1 stands: every S.1–S.3 record decodes byte for byte).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<Box<ClaimCursor>>,
+}
+
+/// **The pending-launch protocol's cursor** (doc 23 §17.3, D-23-13/D-23-21/D-23-23; doc 40
+/// §4.4): the durable state of one rig's IC mind claim, moved only by a surface fire that
+/// **observes** the claim book (never on a request id: the host's inbox is RAM). `Closed` and
+/// `Refused` are terminal and stand until the operator's next `go` replaces them; a `go` over
+/// `Opening`, `Open` or `Closing` is refused ("that rig's mind claim is still open").
+///
+/// The five steps (D-23-23) read it so: (1) `go` writes `Opening` with the rig in its bay and
+/// queues the ramp behind it ([`QueuedLaunch`]); the next fire submits the Open as the
+/// operator; the fire that observes the book's active row writes `Open` and starts the queued
+/// launch; an Open refused for good (or past `[tacsim.minds].claim_tries`) writes `Refused` and
+/// cancels the launch, nothing having left the bay. (2) the ramp runs as today. (3) at the
+/// landing the field reads the cursor: `Open` installs the claim's retained execution at the
+/// join, anything else seals the ROM. (4) a refused join goes back aboard with the cursor
+/// untouched. (5) a launch cancelled after `Open`, or a ramp that lands nobody, writes
+/// `Closing { kind: PoweredDownInBase { base: <the hangar's hull> } }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClaimCursor {
+    /// `go` minted the Open; the next fire submits it. The rig is in its bay.
+    Opening {
+        /// Who launched it: the Open is submitted as this principal (D-23-5).
+        operator: ObjId,
+        /// The licence the `mind=` word resolved (a filed mind's).
+        licence: u64,
+        /// The organisation the operator acts for (`org=`), if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<u64>,
+        /// The IC instant of `go`: the epoch's id is `SortieId::ic(tv, launch_ic)`, the seal's
+        /// sortie at the Open and the queued launch's excursion id alike (D-23-14).
+        launch_ic: i64,
+        /// Submissions refused retryably so far (bounded by `[tacsim.minds].claim_tries`).
+        #[serde(default, skip_serializing_if = "is_zero_u8")]
+        tries: u8,
+    },
+    /// The book's active row names this open token; the queued launch may start.
+    Open {
+        /// The claim's open commit.
+        open: mush_core::CommitToken,
+        /// Who launched it; the Close is submitted as this principal.
+        operator: ObjId,
+    },
+    /// A finish closed the epoch (or the launch was cancelled); the next fire submits the Close.
+    Closing {
+        /// The claim's open commit.
+        open: mush_core::CommitToken,
+        /// The close kind the finish wrote.
+        kind: ClaimCloseKind,
+        /// Who launched it (the paths that close an epoch clear the excursion that named them).
+        operator: ObjId,
+    },
+    /// The book's row is closed. Terminal.
+    Closed {
+        /// The claim's open commit.
+        open: mush_core::CommitToken,
+        /// The claim's close commit.
+        close: mush_core::CommitToken,
+    },
+    /// The Open was refused for good; the queued launch was cancelled. Terminal.
+    Refused {
+        /// The Roll's word, said to the operator once.
+        reason: smol_str::SmolStr,
+        /// When.
+        at_ic: i64,
+    },
+}
+
+impl ClaimCursor {
+    /// **Whether the claim is still owed or held** (`Opening`, `Open`, `Closing`): a `go` over
+    /// it is refused, and the licence and compute seats count it (D-23-16).
+    #[must_use]
+    pub const fn is_live(&self) -> bool {
+        matches!(
+            self,
+            ClaimCursor::Opening { .. } | ClaimCursor::Open { .. } | ClaimCursor::Closing { .. }
+        )
+    }
+
+    /// The open token, once the book holds one.
+    #[must_use]
+    pub const fn open(&self) -> Option<mush_core::CommitToken> {
+        match self {
+            ClaimCursor::Open { open, .. }
+            | ClaimCursor::Closing { open, .. }
+            | ClaimCursor::Closed { open, .. } => Some(*open),
+            ClaimCursor::Opening { .. } | ClaimCursor::Refused { .. } => None,
+        }
+    }
+}
+
+/// **A launch over a live claim cursor** (doc 23 §17.3): the claim's relaunch guard.
+pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
+
+/// **The four close kinds the claim and the epoch share** (`IcCloseKind`; doc 23 §17.2), as the
+/// cursor carries them from a finish to the fire that submits the Close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClaimCloseKind {
+    /// `+tv/recover`'s `Done`, staff `home` into its own hull.
+    ReturnedToBase {
+        /// The hangar's hull.
+        base: ObjId,
+    },
+    /// A launch cancelled after its Open, or a ramp that landed nobody (D-23-23 step 5).
+    PoweredDownInBase {
+        /// The hangar's hull.
+        base: ObjId,
+    },
+    /// The rig's hull is irrecoverable (GC.3's `close_destroyed`).
+    Destroyed,
+    /// A second carrier's completion or a salvage load (S.3's R1, Q-23-11).
+    RecoveredToBase {
+        /// The recoverer.
+        base: ObjId,
+    },
+}
+
+/// serde's `skip_serializing_if` for [`ClaimCursor::Opening`]'s `tries`.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference
+const fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
 }
 
 /// **An open seal epoch on a rig** (doc 23 cut S.1, the lead's L5): its id, the hangar it left,
@@ -1314,6 +1444,28 @@ pub struct Queued {
     /// The excursion that recover closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excursion: Option<ExcursionId>,
+    /// **A launch queued behind its claim** (doc 23 cut S.4b-1, D-23-21): what the fire that
+    /// observes the claim's active row starts, with `kind` [`ActKind::Launch`]. Nothing in
+    /// S.4b-1 queues one ([`RigRecord::check`] refuses it until S.4b-2's `go` does). Boxed: the
+    /// rig record rides many a tick's frame (the M7 stack-size lint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<Box<QueuedLaunch>>,
+}
+
+/// **The launch a `go` queued behind its claim** (doc 23 cut S.4b-1, D-23-21; the seam doc 40's
+/// FR.3 lands on): the start's own words, kept so the fire that sees the claim open starts
+/// exactly the launch the operator typed, at the excursion id fixed at `go`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedLaunch {
+    /// The IC instant of `go`, the excursion's and the epoch's id (`ExcursionId { tv,
+    /// launch_ic }`; `SortieId::ic(tv, launch_ic)`), equal to the cursor's `Opening.launch_ic`.
+    pub launch_ic: i64,
+    /// The `mind=` word as typed (a filed licence: `filed:<n>`).
+    pub mind: smol_str::SmolStr,
+    /// The organisation the operator acts for (`org=`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<u64>,
 }
 
 /// A slot word a record may carry: `1..=MAX_BAY_ITEMS`.
@@ -1347,6 +1499,7 @@ impl RigRecord {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         }
     }
 
@@ -1377,6 +1530,7 @@ impl RigRecord {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         }
     }
 
@@ -1607,7 +1761,8 @@ impl RigRecord {
         }
         // Doc 20 cut SM.8 (lead ruling 1): a queued unload waits on an idle rig — no act, no run.
         if let Some(queued) = &self.queued {
-            if queued.kind != ActKind::Unload {
+            // Doc 23 cut S.4b-1: the launch a claim holds back is S.4b-2's to queue.
+            if queued.kind != ActKind::Unload || queued.launch.is_some() {
                 return Err("only an unload is queued".to_owned());
             }
             if queued.after > self.ordinal || queued.after == 0 {
@@ -2803,6 +2958,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         }
     }
 
@@ -3894,9 +4050,106 @@ mod tests {
                     tv: ObjId(900),
                     launch_ic: 1_000,
                 }),
+                launch: None,
             }),
             ..sample()
         }
+    }
+
+    /// **Doc 23 cut S.4b-1 (D-23-13/D-23-21/D-23-23): the claim cursor and the queued launch.**
+    /// A record with no claim serializes with no `claim` key, so every S.1–S.3 record decodes
+    /// and re-encodes byte for byte; each cursor state round-trips strictly under its `state`
+    /// word; `Opening`, `Open` and `Closing` are live (a `go` over them is refused, the seats
+    /// count them), `Closed` and `Refused` are terminal; the open token is read once the book
+    /// holds one; and a queued launch is refused by the record's check until S.4b-2 queues it.
+    #[test]
+    fn s4b1_the_claim_cursor_and_the_queued_launch() {
+        let plain = sample();
+        let value = serde_json::to_value(&plain).expect("encodes");
+        assert!(value.get("claim").is_none(), "no claim, no key");
+        let back: RigRecord = serde_json::from_value(value).expect("decodes");
+        assert_eq!(back, plain);
+        let open = mush_core::CommitToken::from_bytes([7; 16]);
+        let close = mush_core::CommitToken::from_bytes([8; 16]);
+        let states = [
+            (
+                ClaimCursor::Opening {
+                    operator: ObjId(42),
+                    licence: 7,
+                    org: None,
+                    launch_ic: 1_000,
+                    tries: 0,
+                },
+                "opening",
+                true,
+                None,
+            ),
+            (
+                ClaimCursor::Open {
+                    open,
+                    operator: ObjId(42),
+                },
+                "open",
+                true,
+                Some(open),
+            ),
+            (
+                ClaimCursor::Closing {
+                    open,
+                    kind: ClaimCloseKind::PoweredDownInBase { base: ObjId(500) },
+                    operator: ObjId(42),
+                },
+                "closing",
+                true,
+                Some(open),
+            ),
+            (
+                ClaimCursor::Closed { open, close },
+                "closed",
+                false,
+                Some(open),
+            ),
+            (
+                ClaimCursor::Refused {
+                    reason: "You hold no licence 7.".into(),
+                    at_ic: 1_010,
+                },
+                "refused",
+                false,
+                None,
+            ),
+        ];
+        for (cursor, word, live, token) in states {
+            let record = RigRecord {
+                claim: Some(Box::new(cursor.clone())),
+                ..sample()
+            };
+            assert_eq!(record.check(), Ok(()));
+            let value = serde_json::to_value(&record).expect("encodes");
+            assert_eq!(value["claim"]["state"], serde_json::json!(word));
+            let back: RigRecord = serde_json::from_value(value).expect("decodes");
+            assert_eq!(back, record);
+            assert_eq!(cursor.is_live(), live, "{word}");
+            assert_eq!(cursor.open(), token, "{word}");
+        }
+        let unknown = serde_json::json!({"state": "open", "open": open, "operator": 42, "x": 1});
+        assert!(
+            serde_json::from_value::<ClaimCursor>(unknown).is_err(),
+            "strict"
+        );
+        let mut launch = queued_unload();
+        if let Some(queued) = launch.queued.as_mut() {
+            queued.launch = Some(Box::new(QueuedLaunch {
+                launch_ic: 1_000,
+                mind: "filed:7".into(),
+                org: None,
+            }));
+        }
+        assert_eq!(
+            launch.check(),
+            Err("only an unload is queued".to_owned()),
+            "S.4b-2 queues the launch behind its claim"
+        );
     }
 
     /// An unload act at `ordinal` moving `goods`, filed `how`.

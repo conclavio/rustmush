@@ -466,6 +466,281 @@ pub fn capture(
     }
 }
 
+/// **What a cancelled order forfeits from its budget** (doc 39 cut IN.3, §4.12, Q-39-29), minor
+/// units: the work units it ran, at the facility's fee — the slot-hours it held, at the margin
+/// — capped at the hold. Nothing is consumed before delivery, so the bill returns whole and this
+/// is the only charge a Running cancel carries beside the booking fee. 0 for an order that never
+/// ran, and at a facility the cost model does not price.
+#[must_use]
+pub fn cancel_forfeit_minor(w: &mush_core::World, order: &WorkOrder, held: u64) -> u64 {
+    let ran = order
+        .schedule()
+        .map_or(0, crate::workorder::ProductionSchedule::progress_units);
+    if ran == 0 {
+        return 0;
+    }
+    w.module_state::<crate::IndustryStore>()
+        .and_then(|store| store.facility(order.facility()))
+        .and_then(|facility| facility.fee_minor(ran))
+        .map_or(0, |fee| fee.min(held))
+}
+
+/// **Capture part of the budget and release the rest** — a cancelled order's elapsed fee
+/// (doc 39 cut IN.3). One post through the economy's own partial-capture seam, under the
+/// order's settlement key, so the sweep's retry is the same post.
+///
+/// # Errors
+/// [`HoldError`] as [`capture`].
+pub fn capture_part(
+    ctx: &mut Ctx<'_>,
+    order: WorkOrderId,
+    hold: &Hold,
+    payee: AccountId,
+    minor: u64,
+) -> Result<(), HoldError> {
+    let amount = Amount::from_minor(i64::try_from(minor).map_err(|_| HoldError::NoHold)?);
+    let debit = amount.checked_neg().ok_or(HoldError::NoHold)?;
+    let n = attempt_of(ctx, order, hold.id);
+    let memo = SmolStr::new_static("industry.wo.forfeit");
+    let plan = EconomyPlan {
+        hold_ops: vec![HoldOp::Capture {
+            hold: hold.id,
+            amount,
+        }],
+        description: format!("work order {order} cancelled: the elapsed work's fee forfeit"),
+        ..EconomyPlan::new(
+            wo_settle_key(order, n),
+            hold.placed_by.clone(),
+            cause(order),
+            vec![
+                RequestedLine {
+                    account: hold.account,
+                    delta: debit,
+                    memo: memo.clone(),
+                },
+                RequestedLine {
+                    account: payee,
+                    delta: amount,
+                    memo,
+                },
+            ],
+        )
+    };
+    match mush_economy::capture_engine_reservation_part(ctx, &plan, hold.id, payee, amount) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
+        Ok(PostOutcome::NeedsApproval(_)) => Err(HoldError::NeedsApproval),
+        Err(error) => Err(refuse(error)),
+    }
+}
+
+// ---- doc 39 cut IN.3: the order contract's booking fee and storage ----------
+
+/// The purpose namespace of an order contract's booking fee (doc 39 cut IN.3, §4.12, Q-39-29):
+/// one of `mush_economy::ENGINE_OWNED_RESERVATIONS`, so the payer cannot `@hold/release` it.
+pub const BOOKING_PURPOSE: &str = "industry.booking";
+
+/// The booking fee's purpose for contract `contract` — one value, built in one place.
+#[must_use]
+pub fn booking_purpose(contract: u64) -> HoldPurpose {
+    HoldPurpose::Reservation {
+        kind: SmolStr::new_static(BOOKING_PURPOSE),
+        id: contract,
+    }
+}
+
+fn booking_cause(contract: u64) -> EconomicCause {
+    EconomicCause::Internal {
+        kind: SmolStr::new_static("industry.contract"),
+        id: contract,
+    }
+}
+
+/// The live booking hold of `contract`, found by purpose.
+#[must_use]
+pub fn booking_hold(world: &mush_core::World, contract: u64) -> Option<Hold> {
+    let want = booking_purpose(contract);
+    world
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .holds()
+        .find(|h| h.purpose == want && h.status.is_held())
+        .cloned()
+}
+
+/// **Hold the booking fee** (§4.12): one slot-day on the payer's `account`, under
+/// `industry.booking/{contract}`. The engine refuses an account that cannot cover it, before
+/// anything is written.
+///
+/// # Errors
+/// [`HoldError`]: no economy, an engine refusal, or no hold after the post.
+pub fn place_booking(
+    ctx: &mut Ctx<'_>,
+    contract: u64,
+    account: AccountId,
+    payer: &PrincipalId,
+    beneficiary: &PrincipalId,
+    minor: u64,
+) -> Result<HoldId, HoldError> {
+    if ctx.w.module_state::<EconomyStore>().is_none() {
+        return Err(HoldError::NoEconomy);
+    }
+    let amount = Amount::from_minor(i64::try_from(minor).map_err(|_| HoldError::NoHold)?);
+    let plan = EconomyPlan {
+        hold_ops: vec![HoldOp::Place {
+            account,
+            amount,
+            beneficiary: Some(beneficiary.clone()),
+            purpose: booking_purpose(contract),
+            expires: None,
+        }],
+        description: format!("order {contract} booking fee"),
+        ..EconomyPlan::new(
+            IdempotencyKey::new(
+                SmolStr::new_static("industry.booking.hold"),
+                SmolStr::new(contract.to_string()),
+            ),
+            payer.clone(),
+            booking_cause(contract),
+            Vec::new(),
+        )
+    };
+    match mush_economy::post(ctx, &plan) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {}
+        Ok(PostOutcome::NeedsApproval(_)) => return Err(HoldError::NeedsApproval),
+        Err(error) => return Err(refuse(error)),
+    }
+    booking_hold(ctx.w, contract)
+        .map(|h| h.id)
+        .ok_or(HoldError::NoHold)
+}
+
+/// **Settle the booking fee**: forfeit it to `capture_to` (a cancel, an unfunded order) or
+/// release it to the payer (`None`: the order ran to delivery, or never drafted). A hold
+/// already settled is a no-op.
+///
+/// # Errors
+/// [`HoldError`] for an engine refusal.
+pub fn settle_booking(
+    ctx: &mut Ctx<'_>,
+    contract: u64,
+    capture_to: Option<AccountId>,
+) -> Result<(), HoldError> {
+    let Some(hold) = booking_hold(ctx.w, contract) else {
+        return Ok(());
+    };
+    let key = IdempotencyKey::new(
+        SmolStr::new_static("industry.booking.settle"),
+        SmolStr::new(contract.to_string()),
+    );
+    let plan = match capture_to {
+        Some(payee) => {
+            let memo = SmolStr::new_static("industry.booking");
+            EconomyPlan {
+                hold_ops: vec![HoldOp::Capture {
+                    hold: hold.id,
+                    amount: hold.amount,
+                }],
+                description: format!("order {contract} booking fee forfeit"),
+                ..EconomyPlan::new(
+                    key,
+                    hold.placed_by.clone(),
+                    booking_cause(contract),
+                    vec![
+                        RequestedLine {
+                            account: hold.account,
+                            delta: hold.amount.checked_neg().ok_or(HoldError::NoHold)?,
+                            memo: memo.clone(),
+                        },
+                        RequestedLine {
+                            account: payee,
+                            delta: hold.amount,
+                            memo,
+                        },
+                    ],
+                )
+            }
+        }
+        None => EconomyPlan {
+            hold_ops: vec![HoldOp::Release { hold: hold.id }],
+            description: format!("order {contract} booking fee released"),
+            ..EconomyPlan::new(
+                key,
+                hold.placed_by.clone(),
+                booking_cause(contract),
+                Vec::new(),
+            )
+        },
+    };
+    match mush_economy::settle_engine_reservation(ctx, &plan, hold.id, capture_to) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
+        Ok(PostOutcome::NeedsApproval(_)) => Err(HoldError::NeedsApproval),
+        Err(error) => Err(refuse(error)),
+    }
+}
+
+/// **Charge one day of storage** (§4.12): `minor` from the payer's `account` to the facility's
+/// `payee`, under `industry.storage/{contract}/{day}` so a retried day posts once. The engine
+/// refuses an account that cannot cover it, which is the facility's cue to take the goods.
+///
+/// # Errors
+/// [`HoldError`] for an engine refusal (`InsufficientAvailable` among them).
+pub fn charge_storage(
+    ctx: &mut Ctx<'_>,
+    (contract, day): (u64, u32),
+    payer: &PrincipalId,
+    account: AccountId,
+    payee: AccountId,
+    minor: u64,
+) -> Result<(), HoldError> {
+    let amount = Amount::from_minor(i64::try_from(minor).map_err(|_| HoldError::NoHold)?);
+    let memo = SmolStr::new_static("industry.storage");
+    let plan = EconomyPlan {
+        description: format!("order {contract} storage, day {day}"),
+        ..EconomyPlan::new(
+            IdempotencyKey::new(
+                SmolStr::new_static("industry.storage"),
+                SmolStr::new(format!("{contract}/{day}")),
+            ),
+            payer.clone(),
+            booking_cause(contract),
+            vec![
+                RequestedLine {
+                    account,
+                    delta: amount.checked_neg().ok_or(HoldError::NoHold)?,
+                    memo: memo.clone(),
+                },
+                RequestedLine {
+                    account: payee,
+                    delta: amount,
+                    memo,
+                },
+            ],
+        )
+    };
+    match mush_economy::post(ctx, &plan) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
+        Ok(PostOutcome::NeedsApproval(_)) => Err(HoldError::NeedsApproval),
+        Err(error) => Err(refuse(error)),
+    }
+}
+
+/// The account the facility's fees are paid **to** for an order paid from `budget`
+/// (`payee_account`'s rule, over the live facility record).
+#[must_use]
+pub fn facility_payee_account(
+    ctx: &Ctx<'_>,
+    facility: ObjId,
+    budget: AccountId,
+) -> Option<AccountId> {
+    let owner = ctx
+        .w
+        .module_state::<crate::store::IndustryStore>()?
+        .facility(facility)?
+        .owner()
+        .clone();
+    payee_account(ctx, budget, &owner)
+}
+
 // ---- the accounts, validated at the EDIT (check_bond_accounts' shape) ------
 
 /// Why a work order's money accounts do not resolve. One typed code so the
@@ -714,7 +989,19 @@ pub fn sweep(ctx: &mut Ctx<'_>, families: &crate::IndustryFamilies) {
                     }
                 }
             } else {
-                release(ctx, id, &hold)
+                // Doc 39 cut IN.3 (Q-39-29): a cancel after production started forfeits the
+                // elapsed work's fee to the facility and releases the rest.
+                let held = u64::try_from(hold.amount.minor()).unwrap_or(0);
+                let forfeit = if *order.state() == crate::workorder::WorkOrderState::Cancelled {
+                    cancel_forfeit_minor(ctx.w, &order, held)
+                } else {
+                    0
+                };
+                match (forfeit, facility_payee(ctx, &order, hold.account)) {
+                    (0, _) | (_, None) => release(ctx, id, &hold),
+                    (minor, Some(payee)) if minor >= held => capture(ctx, id, &hold, payee),
+                    (minor, Some(payee)) => capture_part(ctx, id, &hold, payee, minor),
+                }
             };
             match outcome {
                 Ok(()) => settled += 1,

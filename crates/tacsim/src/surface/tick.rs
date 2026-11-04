@@ -3370,6 +3370,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -3431,6 +3432,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -3602,6 +3604,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -3725,6 +3728,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         }
     }
 
@@ -3953,6 +3957,7 @@ mod tests {
             after: 5,
             at_ic,
             excursion: None,
+            launch: None,
         });
         record
     }
@@ -4314,7 +4319,25 @@ mod tests {
                 .all(|c| !c.3),
             "a live plan is never idle"
         );
-        // The plan untold.
+    }
+
+    /// **A plan untold is a candidate even inside the step's back-off** (doc 20 cut SM.11). Its
+    /// own test since doc 23 cut S.4b-1 (`RigRecord` grew its claim cursor and `Queued` its
+    /// queued launch, and this record tipped the candidates test's stack frame over the M7
+    /// memory-size limits again, as S.1's open sortie once did).
+    #[test]
+    fn sm11_a_plan_untold_is_a_candidate_inside_its_back_off() {
+        let now = 100_000;
+        let current = PlanReads {
+            lessee: &lessee_7,
+            shown: &shown_current,
+            helm: &helm_8,
+        };
+        let mut resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        resting.backoff.insert((1, 6, PLAN_CYCLE), 100);
         let mut untold = planned(1, 1_000);
         if let Some(plan) = untold.plan.as_mut() {
             plan.seq = 2;

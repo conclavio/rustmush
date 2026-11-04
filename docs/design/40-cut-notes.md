@@ -329,3 +329,132 @@ that `857a61bf` merged. So the two runs differ only by this cut.
 
 No cell's wall moved because of FR.0, so nothing moves shard (rule #3).
 
+
+## FR.4 — segments (Q-38-28, Q-40-21)
+
+Row: §6 FR.4. Base `a2ef4075`.
+
+**Built.**
+
+- **`Ledger::roll_segment(segment, t_ms, hash)`** (`arena/ledger.rs`): `bytes_total` → 0, so the summaries' 90%
+  and the `Timeout` at 100% are a segment's, then one `segment` line (`EventKind::Segment { segment }`, the
+  segment it opens, from 2) — the first byte the new segment counts. `seq`, `digest`, `shipped` and the chunk
+  numbering run on, so the segments are one chain. The ledger carries its segment (`Ledger::segment`, 1 until
+  a roll); `LedgerState.segment` is `serde(default = 1, skip_serializing_if = 1)`, so every OOC snapshot and
+  every field's first segment encodes byte for byte as before. `Ledger::segment_full` is the threshold: at
+  least three quarters of `max_bytes` (48 MiB of 64, provisional).
+- **The live roll** (`arena_task.rs`, `Task::snapshot_if_due`): past the due check, a task under the field
+  host's terms whose segment is full closes the open chunk and queues every closed one, rolls, and closes
+  and queues the line as a chunk of its own; the period's snapshot is then encoded and queued behind it, so
+  it is the new segment's head with nothing open. An OOC task (no `FieldTerms`) never rolls.
+- **The host's half** (`field/segment.rs`, `note_chunk`, called at the head of the bridge's `on_chunk`): a
+  chunk whose first line is a `segment` line for a later segment than the live record's moves
+  `FieldLive.segment` onto it and writes the live record in the chunk's own batch, before the chunk is
+  filed. So the line's chunk is the new log's first, and the head snapshot that follows it is written
+  beside a live record already on the new segment.
+- **The resume's roll** (`field/boot.rs`): right after the snapshot decodes, `live.segment = max(live,
+  snapshot's ledger) + 1` and the ledger rolls onto it at the snapshot's millisecond; the line is the
+  resume's first. It replaces the old `segment += 1`. The max keeps every opening on a fresh log even when
+  the store holds a live record a roll moved past its last snapshot.
+- `FieldLive.segment`'s doc now says it counts rolls as well as openings; the staff report spells the line
+  `segment segment=<n>`.
+
+**Divergences from §6's row and §4.5.**
+
+- §4.5 says the host bumps `FieldLive.segment` "in the host's batch" of the snapshot. The host reads the
+  roll off the tape instead (the `segment` line's own chunk): the task's queue keeps at most one waiting
+  snapshot and a newer one replaces it at the back, behind chunks the new segment closed, so a snapshot-borne
+  bump could file those chunks under the old log. The line rides ahead of the head in the same queue, so the
+  head's batch still finds the live record on the new segment.
+- The segment line is a chunk of its own on a live roll (one small chunk a roll). That makes every chunk one
+  segment's and leaves the head with no open bytes, so a resume from the head files nothing of the last
+  segment under the next. A resume's roll leaves the snapshot's open chunk open: those bytes went to the new
+  segment's log before this cut too.
+
+**The story** (`tests/shard_10/field_fr4.rs`; shard_10, "the room for growth" in the shard list):
+`fr4_ahuna_a_field_rolls_resumes_from_the_head_and_keeps_every_chunk` and
+`fr4_urvara_a_field_rolls_resumes_from_the_head_and_keeps_every_chunk`, on `grounds_rig`'s `AHUNA_FLANK` and
+`URVARA_REACH`. A's `+field/fire E` at B's hull opens a field with `[tacsim.arena.ledger].max_bytes` lowered to
+48 KiB (the test knob), `summary_ms` 100 and `snapshot_ms` 2,000. The story asserts:
+
+- the field rolls in its first minute, and the live record is on segment 2 at the roll's millisecond (the head);
+- the world restarts there, and the field resumes on segment 3, its `segment` line at the head's millisecond with
+  the head's sequence plus one;
+- the world holds `field.<site>.<ordinal>.1`, `.2` and `.3` of the one field: segment 1's chunks from 1 with no
+  segment line, segment 2 opening on the next chunk with the line alone, segment 3 on the chunk after it;
+- read in chunk order, every chunk is numbered once and the lines are one sequence with no gap.
+
+Unit tests: `arena::ledger::tests::fr4_a_roll_resets_the_segments_bytes_and_runs_the_chain_on` (the threshold,
+the reset, the chain, no `segment` key before a roll and a round trip after) and
+`field::segment::tests::fr4_a_rolled_chunk_opens_its_segment_and_no_other_chunk_does`.
+
+**§4a's OOC pins.** None moves, against FR.0's inventory above: OOC tasks never roll, and a ledger that has not
+rolled encodes no new key, so `SNAPSHOT_FORMAT` 19 and `FIELD_LIVE_FORMAT` 1 stand. The new `EventKind` variant
+is written only by a roll. The draw-label set is untouched. The pin rows were re-run on this branch (below).
+
+### Pins run (§4a, rule #13)
+
+- **The pin rows**: gate sweep [41761095972](https://github.com/conclavio/rustmush/actions/runs/41761095972) on
+  conclav.dev, head `dda59126`, with FR.0 run A's filter widened to run C's rows (`arena::`, `arena::rng::`,
+  `match_lifecycle::m3_start_writes…`) and `field_fr4::`. **1,617 tests, 0 failed, 2,275 s.** Each §4a row's test
+  passed:
+  - `twin::m4_5_the_stock_pool…`, `motor::m1a1_the_shipped_duel_hashes_as_before` and `motor::gc1b_…`;
+  - `reflex::m3_the_j_fields…`, `minds::m2_the_memory_codec…`;
+  - `the_draw_label_set_is_pinned`, `adding_a_label_shifts_no_existing_draw`;
+  - `content::the_pinned_digests_are_the_shipped_ones`, `m2_the_standard_doctrine_source_is_pinned` and
+    `m5rules_default_seal_identities_are_pinned`;
+  - the 16 `af1_` snapshot tests and `field::record::`;
+  - the field gates: `field_gc2::` (2), `field_gc4::` (6), `field_gc10::` (2) and `field_story::` (4).
+
+  `M2_CROSS_PLATFORM_PINS` row 0–3 is the `tacsim-minds` cell's by-name step on the PR run (green).
+- **The harness kind**: [41761096467](https://github.com/conclavio/rustmush/actions/runs/41761096467) on
+  conclav.io, 4 of 8 failed. Three are timing lenses:
+  - `arena_minds`: wake p99 23.3 ms against 20 ms, window p99 45.3 ms against 32 ms;
+  - `arena_step`: window p99 33.9 ms against 22 ms;
+  - `arena_authored_reach`: wake p99 26.4 ms against 20 ms.
+
+  The fourth is `lance` W8 (span 3 where 2), which TS.21's own harness runs on conclav.dev (41756575489,
+  41760419368) also fail. Every variant reads `sound=true` and every snapshot `hash_ok=true`. No harness path rolls
+  (an OOC task has no `FieldTerms`).
+  **Main fails the same four on the same box**, with the same assertions and similar figures:
+  [41763746775](https://github.com/conclavio/rustmush/actions/runs/41763746775), `main` at `ea602323`, `authored_reach`
+  wake p99 22.3 ms, `arena_step` window p99 33.7 ms, the minds verdict 0 of 4, and `lance` W8. So the kind's red
+  is the box's timing and the known W8 read, both TS.21's to re-bless (doc 43 amendment 6), not this cut's.
+
+### Cell minutes (rule #14)
+
+**+1.6 summed minutes on `tacsim-integration-10`**: the two stories, 45.0 s (Ahuna) + 51.9 s (Urvara), on the PR's
+CI run [41761064794](https://github.com/conclavio/rustmush/actions/runs/41761064794) (head `dda59126`). That run is
+set against main's [41754225803](https://github.com/conclavio/rustmush/actions/runs/41754225803) at `c0d123a9`;
+main's two merges after it, up to this branch's base `a2ef4075`, were docs only.
+
+- **New tests**: the two stories, plus two unit tests in `tacsim-lib` (0.0 s each).
+- **Test counts**: no other cell's count moved.
+- **The cell's sum** read 50.2 → 28.3 min and its Test step 16 m 25 s → 9 m 42 s: the host, not the cut.
+- **Every other cell** moved both ways by up to 26 min with identical tests (`tacsim-integration-1` −25.9,
+  `rest-server` +16.4, `tacsim-lib` +17.0); the total read 637.1 → 604.0.
+- **Shards**: no cell's wall is set by this cut, and nothing moves shard.
+
+## FR.5 — carried in: the join-during-think await (found 2026-11-04, before the cut)
+
+Not built yet. This records a finding so FR.5 does not rediscover it: doc 38 §9.3's "the join-during-think await",
+with the evidence from the GC.1b shard-10 flake.
+
+- **What fails.** `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` failed at
+  `field_carrier.rs:725` on PR #389's runs 41764030040 and 41767085311, and passed alone. `gc1_…` fails at line 420
+  the same way. Under load the kernel answers both arrivals' joins for real with `match recovery capacity refused: a
+  think awaits its answer on #395: the batch was not delivered before the encode`.
+- **Why.** `arena_task.rs` takes `waiting.joins` in (`Task::join`, then `Arena::join`'s recovery-capacity encode)
+  before `Task::pulse`, and only the pulse's head runs `await_thinks`. A join that lands while the last pulse's think
+  batch is outstanding meets `SnapshotError::Awaiting`. Every unseated hull on the field thinks (the carrier on the
+  pad, a rig out). On a loaded cell each late pulse steps more arena time, so more pulses carry a batch.
+- **FR.5's item.** Await the outstanding batch before the joins are taken in (`arena/*` is FR.5's alone, doc 38
+  §9.2). The other half of the failure is FR.3's: `carrier::on_joined`'s refusal drops the kept arrival and puts it
+  in `join_refused`, never to be asked again. FR.3 builds the retry.
+- **Evidence** (conclav.dev; 3–5 processes of the shard_10 binary at once, `field_carrier::`, `--test-threads=6`,
+  `taskset` to 4 cores):
+  - beat-counted waits: 4 of 18 failed, while the base passed 15 of 15 on the same rig. No wait length helps.
+  - every core class at `think_ms` 5000 (the config ceiling): 2 of 30 failed, against 3 of 30 for the unchanged
+    control run beside it.
+- **Stopgap.** `.config/nextest.toml` retries the gc1b story twice (a pass on retry reports FLAKY). Remove it when
+  FR.3's retry lands.

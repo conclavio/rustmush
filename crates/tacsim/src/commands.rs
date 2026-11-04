@@ -379,6 +379,40 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::surface::claim::salvage_cmd),
     )?;
+    // ---- Doc 39 cut IN.3 (§4.12; Q-39-28..30): `+works` and `+yard`, Authoritative ----
+    //
+    // The bare verb and `/quote` read; `/order` is one escrow vault, one booking hold (the
+    // economy's own API) and exactly ONE `@wo/draft` submission as the actor; `/deliver` and
+    // `/collect` exactly ONE `tacsim_works` goods move; `/cancel` exactly ONE `@wo/cancel`.
+    // `+claim`'s rule, so both verbs take the `Authoritative` class in the same bracket.
+    reg.command(
+        CommandSpec {
+            name: crate::port::works::Front::Works.verb().into(),
+            shape: ArgShape::Raw,
+            switches: crate::port::works::WORKS_SWITCHES
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::works::WORKS_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::works::works_cmd),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: crate::port::works::Front::Yard.verb().into(),
+            shape: ArgShape::Raw,
+            switches: crate::port::works::WORKS_SWITCHES
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::works::WORKS_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::works::yard_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // Survey acceptance creates an economy offer and queues one authoritative
     // record. Occator funds only a landed record; successful soundings earn it.

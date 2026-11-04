@@ -1134,6 +1134,18 @@ impl SurfaceActProvider {
                     "that rig's last trip is still open; staff must bring it home first",
                 ));
             }
+            // Doc 23 cut S.4b-1 (§17.3): the claim's relaunch guard, as `sortie` is the epoch's
+            // — a rig whose mind claim is owed or held does not launch again.
+            if record
+                .claim
+                .as_deref()
+                .is_some_and(crate::surface::excursion::ClaimCursor::is_live)
+            {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    crate::surface::excursion::CLAIM_STILL_OPEN,
+                ));
+            }
             let mut counts = ExcursionCounts::default();
             for &other in world {
                 if let Some(found) = read_record(txn, &self.excursions, ObjId(other))?
@@ -3071,6 +3083,7 @@ impl ActionProvider for SurfaceDoneProvider {
                             after: ordinal,
                             at_ic: act.due_ic,
                             excursion: record.excursion.as_ref().map(|open| open.id),
+                            launch: None,
                         });
                         // Doc 20 cut SM.11 (the reviewer's F9): a plan's recover that brought ore
                         // home is a trip; an empty one is not.
@@ -3412,6 +3425,7 @@ impl ActionProvider for SurfaceDoneProvider {
                         after: ordinal,
                         at_ic: act.due_ic,
                         excursion: *excursion,
+                        launch: None,
                     });
                 }
                 moved = done_moved;

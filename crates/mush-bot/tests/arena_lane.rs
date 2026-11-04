@@ -5319,7 +5319,7 @@ fn a_pause_through_the_boarding_and_the_start_loses_that_match() {
 
 /// **The game's 17b cut M5.3: a run started while its match runs reads its
 /// row `flown by its mind`, follows the match and boards back** (the design
-/// note's M5.3 gate evidence; `docs/bot.md`, "Taking the tank back": "start
+/// note's M5.3 gate evidence; `docs/bot/guide.md`, "Taking the tank back": "start
 /// it again for the same side and it walks to the centre, reads its own row
 /// on the board as `flown by its mind`, follows that match, and boards back
 /// from its team room"). The server's match is running with the bot's slot

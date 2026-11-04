@@ -311,7 +311,13 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
     let Some(families) = crate::module::lot_supply(ctx.w) else {
         return;
     };
-    let candidates: Vec<(crate::ids::ListingId, mush_inventory::EndpointRef, String)> = ctx
+    type Candidate = (
+        crate::ids::ListingId,
+        mush_inventory::EndpointRef,
+        String,
+        Option<mush_inventory::LotId>,
+    );
+    let candidates: Vec<Candidate> = ctx
         .w
         .module_state::<MarketStore>()
         .map(|store| {
@@ -320,16 +326,33 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
                 .take(budget)
                 .filter_map(|listing| {
                     listing.source.lot().map(|(endpoint, commodity, _)| {
-                        (listing.id, endpoint, commodity.as_str().to_owned())
+                        (
+                            listing.id,
+                            endpoint,
+                            commodity.as_str().to_owned(),
+                            listing.source.exact_lot(),
+                        )
                     })
                 })
                 .collect()
         })
         .unwrap_or_default();
-    for (id, endpoint, commodity) in candidates {
+    for (id, endpoint, commodity, exact) in candidates {
         let Ok(commodity) = mush_core::CanonicalId::new(&commodity) else {
             continue;
         };
+        // Doc 39 cut IN.2: a lot-transfer listing's hold is the lot's own.
+        if let Some(lot) = exact {
+            let holder = crate::lot::listing_holder_text(id);
+            let held = ctx
+                .action_state(&families.lot_holds, &lot)
+                .ok()
+                .flatten()
+                .is_some_and(|h| h.holder() == holder);
+            if held {
+                continue;
+            }
+        }
         let Ok(reservation) = crate::lot::listing_reservation(id, endpoint, &commodity) else {
             continue;
         };

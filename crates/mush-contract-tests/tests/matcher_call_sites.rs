@@ -39,8 +39,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use mush_contract_tests::scan;
 use serde::Deserialize;
 
 /// The checked-in audit, beside this crate's `Cargo.toml`.
@@ -86,51 +87,14 @@ struct SiteRow {
 // The source walk
 // ---------------------------------------------------------------------------
 
-/// The workspace's `crates/` directory.
-fn crates_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates/<pkg> has a crates/ parent")
-        .to_path_buf()
-}
-
-/// Every `.rs` file under `dir`, sorted, so the walk is reproducible.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return files;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            files.extend(rust_files(&path));
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    files
-}
-
 /// Every production source: `crates/*/src/**/*.rs`, keyed by its path relative
 /// to `crates/` with forward slashes, the definition excluded.
-fn production_sources(crates: &Path) -> Vec<(String, String)> {
-    let entries = fs::read_dir(crates)
-        .unwrap_or_else(|err| panic!("{} is not readable: {err}", crates.display()));
-    let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    dirs.sort();
+fn production_sources(root: &Path) -> Vec<(String, String)> {
+    let crates = root.join("crates");
     let mut sources = Vec::new();
-    for dir in dirs {
-        if !dir.join("Cargo.toml").is_file() {
-            continue;
-        }
-        for path in rust_files(&dir.join("src")) {
-            let relative = path
-                .strip_prefix(crates)
-                .unwrap_or(&path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
+    for dir in scan::crate_dirs(root) {
+        for path in scan::rust_files(&dir.join("src")) {
+            let relative = scan::relative(&crates, &path);
             if relative == DEFINITION {
                 continue;
             }
@@ -140,199 +104,6 @@ fn production_sources(crates: &Path) -> Vec<(String, String)> {
         }
     }
     sources
-}
-
-// ---------------------------------------------------------------------------
-// Stripping (the panic budget's own two passes, carried here as its rig is)
-// ---------------------------------------------------------------------------
-
-/// Blank every comment and every string or character literal, keeping each
-/// newline so line numbers survive. `//`, `///` and `//!` all run to the end of
-/// the line; block comments nest.
-fn strip_comments_and_literals(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let mut out = bytes.to_vec();
-    let len = bytes.len();
-    let mut i = 0;
-    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
-        for slot in &mut out[from..to] {
-            if *slot != b'\n' {
-                *slot = b' ';
-            }
-        }
-    };
-    while i < len {
-        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
-            let start = i;
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-            blank(&mut out, start, i);
-            continue;
-        }
-        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
-            let start = i;
-            let mut depth = 0usize;
-            while i < len {
-                if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
-                    depth += 1;
-                    i += 2;
-                    continue;
-                }
-                if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
-                    depth -= 1;
-                    i += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                    continue;
-                }
-                i += 1;
-            }
-            blank(&mut out, start, i.min(len));
-            continue;
-        }
-        let ident_before = i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-        // `b"…"`, `b'c'`, `br"…"`: blank the prefix and let the arms below take
-        // the literal itself.
-        if !ident_before
-            && bytes[i] == b'b'
-            && i + 1 < len
-            && (bytes[i + 1] == b'"'
-                || bytes[i + 1] == b'\''
-                || (bytes[i + 1] == b'r'
-                    && i + 2 < len
-                    && (bytes[i + 2] == b'"' || bytes[i + 2] == b'#')))
-        {
-            out[i] = b' ';
-            i += 1;
-            continue;
-        }
-        // A raw string has no escapes and is closed by `"` plus its hashes.
-        if !ident_before
-            && bytes[i] == b'r'
-            && i + 1 < len
-            && (bytes[i + 1] == b'"' || bytes[i + 1] == b'#')
-        {
-            let mut j = i + 1;
-            let mut hashes = 0usize;
-            while j < len && bytes[j] == b'#' {
-                hashes += 1;
-                j += 1;
-            }
-            if j < len && bytes[j] == b'"' {
-                let mut terminator = String::from('"');
-                for _ in 0..hashes {
-                    terminator.push('#');
-                }
-                let body = j + 1;
-                let end = src[body..]
-                    .find(&terminator)
-                    .map_or(len, |rel| body + rel + terminator.len());
-                blank(&mut out, i, end);
-                i = end;
-                continue;
-            }
-        }
-        // An ordinary string, whose escapes may hide the closing quote.
-        if bytes[i] == b'"' {
-            let start = i;
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                let closing = bytes[i] == b'"';
-                i += 1;
-                if closing {
-                    break;
-                }
-            }
-            blank(&mut out, start, i.min(len));
-            continue;
-        }
-        // A quote is a character literal only when one character later comes
-        // its twin; otherwise it opens a lifetime and is ordinary code.
-        if bytes[i] == b'\'' {
-            if i + 1 < len && bytes[i + 1] == b'\\' {
-                let mut j = i + 2;
-                while j < len && bytes[j] != b'\'' {
-                    j += 1;
-                }
-                let end = (j + 1).min(len);
-                blank(&mut out, i, end);
-                i = end;
-                continue;
-            }
-            if let Some(c) = src[i + 1..].chars().next() {
-                let after = i + 1 + c.len_utf8();
-                if after < len && bytes[after] == b'\'' {
-                    blank(&mut out, i, after + 1);
-                    i = after + 1;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    String::from_utf8(out).expect("blanking whole byte ranges leaves valid UTF-8")
-}
-
-/// The attribute that puts an item out of a production build.
-const CFG_TEST: &str = "#[cfg(test)]";
-
-/// Blank each `#[cfg(test)]` item, brace-counted from the attribute to its
-/// matching close — a `mod tests { … }` at the end of a file, or one in the
-/// middle of it. An attribute whose item is not brace-delimited (`#[cfg(test)]
-/// use super::*;`) reaches its `;` first and is left alone. Input must already be
-/// stripped, so a brace inside a string cannot throw the depth off.
-fn blank_cfg_test_items(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let mut out = bytes.to_vec();
-    let mut search = 0;
-    while let Some(rel) = src[search..].find(CFG_TEST) {
-        let at = search + rel;
-        let mut cursor = at + CFG_TEST.len();
-        let mut open = None;
-        while cursor < bytes.len() {
-            match bytes[cursor] {
-                b'{' => {
-                    open = Some(cursor);
-                    break;
-                }
-                b';' => break,
-                _ => cursor += 1,
-            }
-        }
-        let Some(open) = open else {
-            search = at + CFG_TEST.len();
-            continue;
-        };
-        let mut depth = 0usize;
-        let mut end = open;
-        while end < bytes.len() {
-            match bytes[end] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            end += 1;
-        }
-        let stop = end.min(bytes.len().saturating_sub(1));
-        for slot in &mut out[at..=stop] {
-            if *slot != b'\n' {
-                *slot = b' ';
-            }
-        }
-        search = stop + 1;
-    }
-    String::from_utf8(out).expect("blanking whole byte ranges leaves valid UTF-8")
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +319,7 @@ fn census(sources: &[(String, String)]) -> BTreeMap<(String, String), Vec<usize>
         if !text.contains(NEEDLE) {
             continue;
         }
-        let stripped = blank_cfg_test_items(&strip_comments_and_literals(text));
+        let stripped = scan::blank_cfg_test_items(&scan::strip_comments_and_literals(text));
         for (line, function) in call_sites(&stripped) {
             found
                 .entry((file.clone(), function))
@@ -560,7 +331,7 @@ fn census(sources: &[(String, String)]) -> BTreeMap<(String, String), Vec<usize>
 }
 
 fn read_pin() -> Pin {
-    let path = crates_dir().join("mush-contract-tests").join(PIN);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(PIN);
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("{} is unreadable: {err}", path.display()));
     toml::from_str(&text).unwrap_or_else(|err| panic!("{} does not parse: {err}", path.display()))
@@ -572,7 +343,7 @@ fn read_pin() -> Pin {
 
 #[test]
 fn every_matcher_call_site_is_listed_with_its_guard() {
-    let found = census(&production_sources(&crates_dir()));
+    let found = census(&production_sources(&scan::repo_root()));
     assert!(
         found.len() >= CENSUS_FLOOR,
         "the scan found {} `{NEEDLE}` sites, under the floor of {CENSUS_FLOOR} — a scan that \

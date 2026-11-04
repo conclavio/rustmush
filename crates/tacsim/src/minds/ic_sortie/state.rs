@@ -33,15 +33,9 @@ impl IcSorties {
         for r in rows {
             r.validate()?;
             let open = r.open.operation;
-            // Doc 23 cut S.1 (L1): the book's transition order rides the arena kind of
-            // `SortieId` until S.4; an IC epoch's id is no ordinal of this book.
-            let sortie = r
-                .open
-                .execution
-                .seal
-                .sortie
-                .as_match_packed()
-                .ok_or_else(|| bad("an IC epoch's id in the claim book"))?;
+            // Doc 23 cut S.4b-1 (23-7): the book's transition order is the Open's own field;
+            // the seal's sortie may be the epoch's IC id.
+            let sortie = r.open.transition;
             if s.rows.len() >= MAX_HISTORY
                 || !commits.insert(open)
                 || !requests.insert(r.open.request)
@@ -106,7 +100,7 @@ impl IcSorties {
         self.ready()?;
         row.validate()?;
         if row.closed.is_some()
-            || row.open.execution.seal.sortie.as_match_packed() != Some(self.next_transition)
+            || row.open.transition != self.next_transition
             || self.rows.len() >= MAX_HISTORY
             || self.active.len() >= MAX_OPEN
             || self.request_used(row.open.request)

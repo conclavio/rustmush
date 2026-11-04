@@ -1,5 +1,5 @@
 //! The canon event ledger data model (design:
-//! `docs/scenes_factions_knowledge.md` §5).
+//! `docs/design/scenes-factions-knowledge.md` §5).
 //!
 //! Canon events are the durable **consequences** selected from scene and world
 //! activity — the things that *became true*, as opposed to the full transcript

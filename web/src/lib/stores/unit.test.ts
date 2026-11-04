@@ -933,8 +933,10 @@ describe("the unit panel leaks no definition body", () => {
 });
 
 describe("the widgets and the screen are keyed and branched as the panes need", () => {
-  // Same source-probe convention: no component harness exists on this
-  // client (vitest runs `environment: "node"`, no jsdom).
+  // Same source-probe convention: this file runs in `environment: "node"`.
+  // A component harness does exist (`@testing-library/svelte` under
+  // `// @vitest-environment jsdom`, e.g. components/QuarryScreen.test.ts);
+  // doc 43 TS.19 turns these probes into mounted assertions.
   const read = (p: string): string => readFileSync(resolve(process.cwd(), p), "utf8");
 
   it("KeyValue keys its rows by index, so no producer id can throw the block", () => {

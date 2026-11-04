@@ -109,7 +109,7 @@ suggestion-only growth, revision changes and unresumable commands. TUI rendering
 tests include the new bot/cast panels. All model responses in these tests are
 local tapes/stubs; there are no live provider charges.
 
-Deliberate limits remain visible in [the guide](bot-life.md): exact transcript
+Deliberate limits remain visible in [the guide](life.md): exact transcript
 receipts and lesson interpretations are fallible, a relocated shop needs new
 observations or a cited report, procedures are authored/revisioned candidates,
 and a manual scheduler clock does not advance fictional time. An engine-NPC

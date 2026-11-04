@@ -80,6 +80,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mush_contract_tests::scan;
+
 /// The six candidates, in the order `MEASURED`'s counts are written.
 const LINTS: [&str; 6] = [
     "clippy::unwrap_used",
@@ -198,15 +200,6 @@ const SILENCER_HEADS: [&str; 8] = [
     "#[cfg_attr(",
 ];
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
-
 // ---------------------------------------------------------------------------
 // Reading the tree
 // ---------------------------------------------------------------------------
@@ -272,24 +265,6 @@ struct CrateFacts {
     silenced: BTreeMap<String, BTreeSet<String>>,
 }
 
-/// Every `.rs` file under `dir`, sorted, so the walk is reproducible.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return files;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            files.extend(rust_files(&path));
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    files
-}
-
 /// The crate roots of `crate_dir`: the lib, the bin beside it, and anything
 /// under `src/bin/`. A root added later is picked up here without an edit, so
 /// a new binary cannot enter the tree exempt.
@@ -303,7 +278,7 @@ fn crate_roots(crate_dir: &Path) -> Vec<PathBuf> {
     }
     let bin_dir = crate_dir.join("src").join("bin");
     if bin_dir.is_dir() {
-        roots.extend(rust_files(&bin_dir));
+        roots.extend(scan::rust_files(&bin_dir));
     }
     roots
 }
@@ -341,7 +316,7 @@ fn read_tree(root: &Path) -> BTreeMap<String, CrateFacts> {
                 .roots
                 .insert(relative(&path), lints_named_by(&text, &DENY_HEADS));
         }
-        for path in rust_files(&dir.join("src")) {
+        for path in scan::rust_files(&dir.join("src")) {
             let text =
                 fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
             let silenced = lints_named_by(&text, &SILENCER_HEADS);
@@ -440,7 +415,7 @@ fn audit(measured: &[(&str, [u32; 6])], tree: &BTreeMap<String, CrateFacts>) -> 
 /// already paid for, and nothing under `src/` takes one of those denies back.
 #[test]
 fn every_crate_root_denies_the_lints_it_has_already_paid_for() {
-    let tree = read_tree(&repo_root());
+    let tree = read_tree(&scan::repo_root());
     if let Err(report) = audit(&MEASURED, &tree) {
         panic!("{report}");
     }
@@ -451,7 +426,7 @@ fn every_crate_root_denies_the_lints_it_has_already_paid_for() {
 /// that the tree is the size the measurement covered.
 #[test]
 fn the_measurement_covers_every_crate_in_the_workspace() {
-    let tree = read_tree(&repo_root());
+    let tree = read_tree(&scan::repo_root());
     let measured: BTreeSet<&str> = MEASURED.iter().map(|(name, _)| *name).collect();
     let present: BTreeSet<&str> = tree.keys().map(String::as_str).collect();
     assert_eq!(

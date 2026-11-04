@@ -318,6 +318,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::port::bay_work::act::action_descriptor(
         &outcome_refs,
     )?);
+    // Doc 39 cut IN.3: the order contract's goods moves.
+    actions.push(crate::port::works::action_descriptor(&outcome_refs)?);
     // Doc 36 cut GC.4: the tow.
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -435,12 +437,23 @@ fn register_providers(
     // registered only when the inventory cell is filled (its prepare mints through
     // the delegated inventory families); the definitions register regardless.
     let stock_action = action_refs.get(crate::port::stock::STOCK_ACTION).cloned();
+    // Doc 36 cut GC.8b: the bay's ledger and part families, unconditionally, and its
+    // `tacsim_bay_work` provider when the inventory cell is filled (the mill's rule). Doc 39
+    // cut IN.2: before the stock clerk, whose part seeds write their provenance rows.
+    let bay_parts = crate::port::bay_work::act::register(
+        reg,
+        action_refs,
+        outcome_refs,
+        inventory_families.as_ref(),
+    )?;
+    // Doc 39 cut IN.3: the order contract's ledger family and its goods-move provider.
+    crate::port::works::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     register_stock(
         reg,
         stock_action.as_ref(),
         stock_outcome,
         &port_families,
-        inventory_families.as_ref(),
+        (inventory_families.as_ref(), bay_parts),
     )?;
     // Doc 18 cut IC9: `tacsim_port_burn` — registered only when the inventory cell
     // is filled (its prepare debits through the delegated families) AND the drive
@@ -606,14 +619,6 @@ fn register_providers(
     // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
     // tick, unconditionally (no policy, no visit).
     crate::procurement::register(reg, action_refs, outcome_refs)?;
-    // Doc 36 cut GC.8b: the bay's ledger and part families, unconditionally, and its
-    // `tacsim_bay_work` provider when the inventory cell is filled (the mill's rule).
-    crate::port::bay_work::act::register(
-        reg,
-        action_refs,
-        outcome_refs,
-        inventory_families.as_ref(),
-    )?;
     // Doc 36 cut GC.4: the tow's provider, its black box handle closing a loaded casualty's
     // epoch, and its RAM slots.
     crate::surface::tow::register(
@@ -682,6 +687,8 @@ fn register_outcomes(
     outcomes.push(crate::procurement::outcome_descriptor()?);
     // Doc 36 cut GC.8b: the bay's inventory acts.
     outcomes.push(crate::port::bay_work::act::outcome_descriptor()?);
+    // Doc 39 cut IN.3: the order contract's goods moves.
+    outcomes.push(crate::port::works::outcome_descriptor()?);
     // Doc 36 cut GC.4: the tow.
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -1031,7 +1038,10 @@ fn register_stock(
     action: Option<&DefinitionRef>,
     outcome: DefinitionRef,
     families: &PortFamilies,
-    inventory: Option<&InventoryFamilies>,
+    (inventory, parts): (
+        Option<&InventoryFamilies>,
+        StateFamilyHandle<mush_inventory::LotId, crate::port::bay_work::act::PartProvenance>,
+    ),
 ) -> Result<(), ModError> {
     let (Some(action), Some(inventory)) = (action, inventory) else {
         return Ok(());
@@ -1043,6 +1053,7 @@ fn register_stock(
             outcome,
             receipts: families.port_stock.clone(),
             inventory: inventory.clone(),
+            parts,
         },
     )
 }
@@ -2042,6 +2053,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::passenger::tick(ctx);
     // Doc 36 cut GC.8a: the bay's due repair orders.
     crate::port::bay_work::tick(ctx);
+    // Doc 39 cut IN.3: the works arm (submit, deliver, return, collect, storage).
+    crate::port::works::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
@@ -2492,6 +2505,17 @@ pub fn read_pool(
     }
     tally_value(ctx.action_state(&inventory.lot_tally, &key))
         .map(|held| pooled.saturating_add(held))
+}
+
+/// **The parts are indivisible** (doc 39 cut IN.2, Q-39-27): the inventory's split, merge and
+/// dissolve refuse a `class: part` good, answered through [`is_part`].
+#[derive(Debug)]
+pub struct PartGoods;
+
+impl mush_inventory::IndivisibleGoods for PartGoods {
+    fn indivisible(&self, commodity: &CanonicalId) -> bool {
+        is_part(commodity)
+    }
 }
 
 /// **Whether `commodity` is a part** (doc 39 cut IN.1): the goods table lets only a part's id

@@ -27,14 +27,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The workspace root, from this crate's manifest directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/<pkg> has a workspace root two levels up")
-        .to_path_buf()
-}
+use mush_contract_tests::scan;
 
 /// The `[toolchain]` table of a `rust-toolchain.toml`, as rustup reads it.
 struct Pin {
@@ -158,7 +151,7 @@ fn workflow_files(root: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn the_repo_pins_an_exact_rust_toolchain_with_the_components_ci_gates_need() {
-    let path = repo_root().join("rust-toolchain.toml");
+    let path = scan::repo_root().join("rust-toolchain.toml");
     let text = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!(
             "{} is missing ({err}); without it rustup resolves whatever `stable` is on the day, \
@@ -189,7 +182,7 @@ fn the_repo_pins_an_exact_rust_toolchain_with_the_components_ci_gates_need() {
 /// one file too many: the loser is edited, believed, and enforces nothing.
 #[test]
 fn no_second_toolchain_file_sits_beside_the_pin() {
-    let legacy = repo_root().join("rust-toolchain");
+    let legacy = scan::repo_root().join("rust-toolchain");
     assert!(
         !legacy.is_file(),
         "{} exists beside rust-toolchain.toml; rustup reads one of them and the other is a \
@@ -200,7 +193,7 @@ fn no_second_toolchain_file_sits_beside_the_pin() {
 
 #[test]
 fn no_workflow_names_a_rust_version_of_its_own() {
-    let root = repo_root();
+    let root = scan::repo_root();
     for path in workflow_files(&root) {
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("{} is not readable: {err}", path.display()));

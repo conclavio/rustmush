@@ -263,6 +263,20 @@ impl MarketStore {
             .and_then(|set| set.iter().next().copied())
     }
 
+    /// **Every live lot listing over one `(endpoint, commodity)`** (doc 39 cut IN.2): one
+    /// pooled listing, or any number of lot-transfer listings each holding its own lot.
+    pub fn lot_listings_of(
+        &self,
+        endpoint: mush_inventory::EndpointRef,
+        commodity: &mush_core::CanonicalId,
+    ) -> impl Iterator<Item = &Listing> {
+        self.by_lot_pool
+            .get(&(endpoint, SmolStr::new(commodity.as_str())))
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.listings.get(id))
+    }
+
     /// **The Draw quotes in flight on one storefront pool** (doc 20 cut SM.12a; the rule
     /// tacsim's stock arm read since doc 18 cut IC8): `(undrawn, in_flight)` — Σ quantity
     /// over unsettled Draw quotes on `(endpoint, commodity)` whose goods have not yet
@@ -310,10 +324,12 @@ impl MarketStore {
                 endpoint,
                 commodity,
                 grade,
+                lot,
             } => Some(LotMatter::Hold {
                 endpoint: endpoint.0,
                 commodity: commodity.0.clone(),
                 grade: *grade,
+                lot: *lot,
             }),
             Supply::Stock { vault } => {
                 // Doc 18 cut IC14 row 14 (lead ruling L8): the kind frozen at

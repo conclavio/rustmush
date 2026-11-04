@@ -361,6 +361,10 @@ pub struct TacsimStore {
     /// ([`crate::port::bay_work::BayHull`]): its berth and its open or last repair order.
     /// Persisted through [`put_bay_hull`]; an unreadable one holds its hull.
     pub(crate) bay_hulls: BTreeMap<ObjId, crate::port::bay_work::BayHullState>,
+    /// **Doc 39 cut IN.3** — `tacsim:works:{id}`: each order contract
+    /// ([`crate::port::works::WorksContract`]), keyed by its escrow vault. Persisted through
+    /// [`put_works`]; an unreadable one is held (the arm skips it) until staff repair it.
+    pub(crate) works: BTreeMap<u64, crate::port::works::WorksState>,
     /// **Doc 20 cut SM.3b** (§8; lead ruling 1) — `tacsim:tv:{tv}`: each rig's
     /// normal-lane projection ([`crate::surface::excursion::TvRec`]), keyed by the
     /// terrain vehicle's id. Written only by the `tacsim.surface` tick through
@@ -616,6 +620,24 @@ impl TacsimStore {
     /// Every readable enrolment, in account order.
     pub fn enrolments(&self) -> impl Iterator<Item = &crate::port::coop::Enrolment> {
         self.enrolments.values()
+    }
+
+    /// **Every readable order contract** (doc 39 cut IN.3), in id order.
+    #[must_use]
+    pub fn works_contracts(&self) -> Vec<crate::port::works::WorksContract> {
+        self.works
+            .values()
+            .filter_map(|state| match state {
+                crate::port::works::WorksState::Present(c) => Some((**c).clone()),
+                crate::port::works::WorksState::Unreadable => None,
+            })
+            .collect()
+    }
+
+    /// **One order contract** (doc 39 cut IN.3), as the store holds it.
+    #[must_use]
+    pub fn works_contract(&self, id: u64) -> Option<&crate::port::works::WorksState> {
+        self.works.get(&id)
     }
 
     /// **One hull's bay record** (doc 36 cut GC.8), as the store holds it; `None` when no
@@ -2036,6 +2058,36 @@ pub(crate) fn put_licence(ctx: &mut Ctx<'_>, record: &crate::port::licence::Lice
 /// structurally unreachable; if it ever happened, it logs and writes a minimal
 /// `{schema, lease}` body so **the key still exists** — which loads as unreadable
 /// and bars only that lease until staff repair it.
+/// **Install an order contract and queue its document** (doc 39 cut IN.3): the RAM row, then
+/// one whole-document `JsonSet` ([`put_bay_hull`]'s shape).
+pub(crate) fn put_works(ctx: &mut Ctx<'_>, contract: &crate::port::works::WorksContract) {
+    let key = contract.key();
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.works.insert(
+            contract.id,
+            crate::port::works::WorksState::Present(Box::new(contract.clone())),
+        );
+    }
+    let value = match serde_json::to_value(contract) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                contract = contract.id, %error,
+                "tacsim: an order contract did not serialize; a minimal document is written so \
+                 the key stays claimed. Repair the document by hand."
+            );
+            serde_json::json!({ "id": contract.id })
+        }
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: key.into(),
+            value,
+        },
+    );
+}
+
 /// **Install a hull's bay record and queue its document** (doc 36 cut GC.8): the RAM row,
 /// then one whole-document `JsonSet` ([`put_tv_lease`]'s shape).
 pub(crate) fn put_bay_hull(ctx: &mut Ctx<'_>, record: &crate::port::bay_work::BayHull) {
@@ -2541,6 +2593,14 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // staff repair the document.
             store.licence_keys.insert(SmolStr::new(key));
             load_licence(&mut store, key, value);
+        } else if let Some(rest) = key.strip_prefix(crate::port::works::WORKS_PREFIX) {
+            // Doc 39 cut IN.3. The claim is the KEY's (the R8 rule): a contract that will not
+            // read is held (the arm skips it) until staff repair the document.
+            let Ok(id) = rest.parse::<u64>() else {
+                tracing::warn!(%key, "tacsim: an order contract has an unreadable key; skipped");
+                continue;
+            };
+            load_works(&mut store, key, id, value);
         } else if key.starts_with(crate::port::bay_work::BAY_PREFIX) {
             // Doc 36 cut GC.8. The claim is the KEY's (the R8 rule): a bay record that will
             // not read holds its hull (no berth, stow or order) until staff repair it.
@@ -2859,6 +2919,35 @@ fn load_licence(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
 /// and held to the identity rule (`record.lease` is its key's). Any failure keeps the
 /// key claimed as unreadable, with whatever of its pilot, hull and TV the raw body
 /// still names (so the right pilot's `+tv` reads dark and the right hull is held).
+fn load_works(store: &mut TacsimStore, key: &str, id: u64, value: &serde_json::Value) {
+    use crate::port::works::{WorksContract, WorksState};
+    let record = serde_json::from_value::<WorksContract>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|record| record.check().map(|()| record))
+        .and_then(|record| {
+            if record.id == id {
+                Ok(record)
+            } else {
+                Err("the record disagrees with its own key".to_owned())
+            }
+        });
+    match record {
+        Ok(record) => {
+            store
+                .works
+                .insert(id, WorksState::Present(Box::new(record)));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: an order contract is unreadable; it is held until staff repair the \
+                 document"
+            );
+            store.works.insert(id, WorksState::Unreadable);
+        }
+    }
+}
+
 fn load_bay_hull(store: &mut TacsimStore, key: &str, hull: ObjId, value: &serde_json::Value) {
     use crate::port::bay_work::{BayHull, BayHullState};
     let record = serde_json::from_value::<BayHull>(value.clone())
