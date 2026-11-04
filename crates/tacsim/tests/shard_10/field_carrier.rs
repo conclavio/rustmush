@@ -638,10 +638,11 @@ fn settled(rig: &Rig, hull: ObjId) -> bool {
 /// under way to Ahuna Flank when CF.3's field opens there. The first two settle on the pad
 /// together and the host letters each a party of its own; the kernel's answer for the lower-
 /// lettered of them is a refusal, which takes its row and its party off the live record — a
-/// middle party gone. The third settles after that: its party must take the lowest letter free,
-/// the one the refusal gave back, never a letter in use (the old `nth(len)` reused the last
-/// party's). The live record passes its own check throughout, and a restart resumes the field
-/// with both arrivals in it under the same letters.
+/// middle party gone. Since doc 40 cut FR.3 (Q-40-20) the refused hull is asked again at the
+/// next tick, and its retry takes the lowest letter free, the one its refusal gave back; the
+/// third settles after that and takes the next free letter, never a letter in use (the old
+/// `nth(len)` reused the last party's). The live record passes its own check throughout, and a
+/// restart resumes the field with every arrival in it under the same letters.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival() {
@@ -749,10 +750,28 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
     );
     let kept_letter = letter_of(&after, kept).expect("the kept arrival's letter");
 
-    // (3) The third settles into the gap: the host letters it the lowest free letter, the one the
-    // refusal gave back, the moment it takes it in. (The kernel may still refuse it for real while
-    // a mind's think is in flight at the encode, GC.1b's deferred root fix; the letter is the
-    // host's either way, and a refused hull is not asked again while this field runs.)
+    // (3) Doc 40 cut FR.3 (Q-40-20): the refused hull is asked again at the next tick, and the
+    // host letters its retry the lowest free letter — the one its refusal gave back. The third
+    // settles after it and takes the next free letter, never one in use. (The kernel may still
+    // refuse either for real while a mind's think is in flight at the encode, GC.1b's deferred
+    // root fix; the letters are the host's either way.)
+    let mut retried = None;
+    for _ in 0..10 {
+        retried = tacsim::field::live_on(rig.tw.world(), &site)
+            .filter(|live| letter_of(live, refused).is_some());
+        if retried.is_some() {
+            break;
+        }
+        let _ = second(&mut rig);
+    }
+    let retried = retried.expect("the host asks the refused arrival again");
+    assert_eq!(
+        letter_of(&retried, refused),
+        Some(freed),
+        "the retry takes the lowest free letter: {:?}",
+        retried.parties
+    );
+    assert!(retried.check().is_ok(), "{:?}", retried.parties);
     let _ = to_ic(&mut rig, arrival(&third_ticket));
     // Read before any egress is pumped: the kernel's answer lands at the next pump.
     let mut lettered = None;
@@ -766,33 +785,29 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
     }
     let taken = lettered.expect("the host takes the third arrival in");
     let third_letter = letter_of(&taken, third_hull).expect("the third is lettered");
-    assert_eq!(
-        third_letter, freed,
-        "the lowest free letter, never one in use: {:?}",
+    assert!(
+        third_letter != kept_letter && Some(third_letter) != letter_of(&taken, refused),
+        "a free letter, never one in use: {:?}",
         taken.parties
     );
-    assert_ne!(third_letter, kept_letter);
     assert_eq!(letter_of(&taken, kept), Some(kept_letter));
     assert!(taken.check().is_ok(), "{:?}", taken.parties);
-    // The kernel's answer: joined, or refused and off the record.
+    // The kernel's answers, unrefused now: each joined, or refused and off the record.
     assert!(
-        until_refusing(&mut rig, &mut rx, &mut lines, refused, 30, |rig, _| {
+        until(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
             tacsim::field::live_on(rig.tw.world(), &site).is_some_and(|live| {
                 live.units
                     .iter()
-                    .all(|row| row.unit != third_hull || row.arrived)
+                    .filter(|row| row.unit == third_hull || row.unit == refused)
+                    .all(|row| row.arrived)
             })
         })
         .await,
-        "the kernel answers the third's join"
+        "the kernel answers both joins"
     );
     let joined = tacsim::field::live_on(rig.tw.world(), &site).expect("the live record");
     let third_in = letter_of(&joined, third_hull);
-    assert!(
-        third_in.is_none_or(|letter| letter == freed),
-        "{:?}",
-        joined.parties
-    );
+    let refused_in = letter_of(&joined, refused);
     assert_eq!(letter_of(&joined, kept), Some(kept_letter));
     assert!(joined.check().is_ok(), "{:?}", joined.parties);
     assert!(task(&rig).is_some(), "the field runs on");
@@ -816,7 +831,7 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
     assert!(resumed.check().is_ok(), "{:?}", resumed.parties);
     assert_eq!(letter_of(&resumed, kept), Some(kept_letter));
     assert_eq!(letter_of(&resumed, third_hull), third_in);
-    assert!(resumed.units.iter().all(|row| row.unit != refused));
+    assert_eq!(letter_of(&resumed, refused), refused_in);
     assert_eq!(
         tacsim::field::field_of_unit(rig.tw.world(), kept),
         Some(site),

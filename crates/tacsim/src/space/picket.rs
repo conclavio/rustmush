@@ -8,10 +8,10 @@
 //!    - [`CARRIER_PARTY`] (`PartyId::nth(0)` = `'A'`): The player's `Dray-P` carrier.
 //!    - [`CUSTOMS_CORVETTE_PARTY`] (`PartyId::nth(1)` = `'B'`): **Republic Customs Corvette**
 //!      (`Relation::Neutral` toward the carrier under the bubble's inspecting flag, Q-40-22;
-//!      `Relation::Hostile` toward the Belt Raider), flown by a compiled [`RhaiRunner`] executing `kirkwood_picket.rhai`.
+//!      `Relation::Hostile` toward the Belt Raider), flown by a compiled [`crate::minds::MindPool`] runner executing `kirkwood_picket.rhai`.
 //!    - [`BELT_RAIDER_PARTY`] (`PartyId::nth(2)` = `'C'`): **Belt Raider** (`Relation::Hostile`
 //!      toward both the carrier and the Republic Customs Corvette), flown by a compiled
-//!      [`RhaiRunner`] executing `belt_raider.rhai`.
+//!      [`crate::minds::MindPool`] runner executing `belt_raider.rhai`.
 //! 2. **Light-lagged radio hail (`D-35-10`, `35a` §4 row 2)**:
 //!    - Computes light propagation delay via [`mush_propagation::resolve_delivery`] and emits
 //!      both hull narration and a structured `"tacsim:notice"` event ordering the carrier to
@@ -1013,7 +1013,7 @@ pub fn run_sealed_mind_on_pool(
     Some(answers.pop()?.result)
 }
 
-/// Compile and run one Rhai [`MindRunner::think`] step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`, `SF.R22`).
+/// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`, `SF.R22`).
 ///
 /// Builds a propagation-gated [`MindView`] (`mush_propagation::resolve_detection`) so the AI mind
 /// sees only contacts that pass inverse-square IR / EMCON detection, installs the runner via
@@ -1205,7 +1205,7 @@ pub fn run_space_rhai_think_with_seal(
     Some((result, contact_map))
 }
 
-/// Compile and run one Rhai [`MindRunner::think`] step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
+/// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
 pub fn run_space_rhai_think(
     bubble: &LocalSpaceBubble,
     ship_id: &str,
@@ -1221,7 +1221,7 @@ pub fn run_space_rhai_think(
     )
 }
 
-/// Run one Rhai [`MindRunner::think`] step for a collector drone sortie (`drone_mining.rhai`, `SF.R14`, `SF.R22`, `D-35-13`).
+/// Run one Rhai [`crate::minds::MindPool`] think step for a collector drone sortie (`drone_mining.rhai`, `SF.R14`, `SF.R22`, `D-35-13`).
 #[must_use]
 pub fn run_drone_rhai_think(
     store: Option<&crate::store::TacsimStore>,

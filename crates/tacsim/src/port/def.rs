@@ -68,8 +68,9 @@ pub const MAX_PORT_ORGS: usize = 16;
 pub const MAX_PORT_ROUTES: usize = 8;
 /// The most vendors one port entry may author (applied from cut IC8).
 pub const MAX_PORT_VENDORS: usize = 16;
-/// The most stock, ask or bid rows one vendor may author.
-pub const MAX_VENDOR_ROWS: usize = 16;
+/// The most stock, ask or bid rows one vendor may author (24 since doc 39 cut IN.6: Stickney
+/// Yards stocks the thirteen part rows beside its five bulk goods).
+pub const MAX_VENDOR_ROWS: usize = 24;
 /// The most mill rows one vendor may author (doc 20 cut SM.12a).
 pub const MAX_VENDOR_MILLS: usize = 4;
 /// The most tonnes of ore (and so of product) one mill ratio may name (doc 20

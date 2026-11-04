@@ -43,6 +43,10 @@ const LOOKLESS: &[(&str, &str)] = &[
         "a mining terrain vehicle, never in the arena: its look comes with its own cut",
     ),
     (
+        "tacsim.unit.tv_tender",
+        "the tender (doc 41 cut RS.1), the prospector's chassis, never in the arena: it takes the prospector's look when that cut lands",
+    ),
+    (
         "tacsim.unit.conduct_carrier",
         "the unarmed Safe Conduct proving carrier (doc 17f M7.6), loaded only for the Registry's Conduct trials: its look comes with its own cut",
     ),

@@ -17,7 +17,7 @@
 use mush_core::{CmdError, Ctx, ObjId};
 use mush_tactics::CellAddr;
 
-use super::{BayHullState, BayQuote, FacilityClass, OrderStatus, quote_here};
+use super::{BayHullState, BayJob, BayQuote, FacilityClass, OrderStatus, quote_here};
 use crate::port::coop::{money_minor, say};
 use crate::store::TacsimStore;
 
@@ -183,6 +183,22 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     money_minor(ctx, i64::try_from(job.cost_minor).unwrap_or(i64::MAX)),
                     hours(secs)
                 ));
+                // Doc 39 cut IN.6 (Q-39-11): the part from the stores, at its catalogue price,
+                // beside the labour — or `NO_PART` when the stores hold none.
+                if let BayJob::Replace {
+                    component,
+                    lot: None,
+                } = &job.job
+                {
+                    lines.push(match super::store_part(ctx, hull, &facility, component) {
+                        Ok(_) => format!(
+                            "    {:<32} {:>12}  from the workshop's stores",
+                            "the part",
+                            money_minor(ctx, i64::try_from(job.part_minor).unwrap_or(i64::MAX))
+                        ),
+                        Err(why) => format!("    {why}"),
+                    });
+                }
             }
             if !quote.jobs.is_empty() {
                 lines.push(format!(
@@ -190,7 +206,7 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     "all",
                     money_minor(
                         ctx,
-                        i64::try_from(BayQuote::cost_minor(&quote.jobs)).unwrap_or(i64::MAX)
+                        i64::try_from(BayQuote::fee_minor(&quote.jobs)).unwrap_or(i64::MAX)
                     ),
                     hours(BayQuote::secs(&quote.jobs, facility.class))
                 ));

@@ -231,7 +231,24 @@ the site has settled:
   will move at. Inspecting and attaching take IC time. A tug in tow only
   drives, releases (`+tv/<n> release go`) or loads, and a casualty in tow
   starts nothing. A tow survives a server restart, and a field that opens over
-  it admits the pair coupled, at the tow's rate.
+  it admits the pair coupled, at the tow's rate. The tow counts the casualty
+  laden: her hopper's ore, her hold's goods and the hulls in her bay. Any rig
+  tows up to twice its own mass; the tender's recovery coupling tows three
+  times its mass.
+- **The tender.** Occator leases a support rig (`+tv/lease tender`) whose
+  stores carry munitions, structural alloys and yard fittings. In its
+  carrier's bay, `+tv/<n> stores load <qty> <good> go` takes goods from the
+  hold, and `+tv/<n> stores open go` opens its bale, a tonne of alloys and a
+  tonne of fittings that the work then uses by the kilogram (`+tv/<n> stores`
+  shows both). On the ground, within a cell of a unit, it clears a jammed part
+  (`+tv/<n> unjam <unit>[=<part>] go`), patches a damaged section
+  (`+tv/<n> stabilize <unit>[=<section>] [<points>|all] go`) and refills a
+  magazine from its stores (`+tv/<n> rearm <unit>[=<part>] go`). Each takes
+  three times a workshop's time and draws the same materials. The bare
+  command shows the work, the draw and the time. A destroyed part or section
+  still needs a workshop. While it works the tender does nothing else. A field
+  that opens over the site stops the work, and the work goes on when the
+  field settles. Nothing is paid between players.
 - **The load.** Beside its carrier's ramp, `+tv/<n> load go` lifts the casualty
   into the bay, where `+bay` quotes its repair (`help ships`). Loaded into your
   own party's or a Friend's carrier, it is home. Loaded into anyone else's, it

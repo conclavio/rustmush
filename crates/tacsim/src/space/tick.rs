@@ -2296,6 +2296,7 @@ impl mush_core::ActionProvider for BubbleInputProvider {
                 recovery: None,
                 sortie: None,
                 claim: None,
+                bale: None,
             };
             let rig_staged = if prior_rig.is_some() {
                 txn.replace(&self.excursions, &key, rig_record)

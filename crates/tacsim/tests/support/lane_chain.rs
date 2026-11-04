@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v20 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v21 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -21,10 +21,63 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.6 (lane v22): the seeded part rows taken out**: every vendor's `stock` and
+/// `asks` row of a `tacsim.part.*` good, so a strip chain rebuilds a lane before v22
+/// (idempotent).
+pub fn strip_part_seeds(doc: &mut Value) {
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    // `get_mut`, never `IndexMut`: indexing a missing key inserts it.
+    for entry in entries.values_mut() {
+        let Some(vendors) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for vendor in vendors {
+            for side in ["stock", "asks"] {
+                if let Some(rows) = vendor.get_mut(side).and_then(Value::as_array_mut) {
+                    rows.retain(|row| {
+                        !row["good"]
+                            .as_str()
+                            .is_some_and(|good| good.starts_with("tacsim.part."))
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// **Doc 41 cut RS.1 (lane v21): Occator's tender design taken out** of the vehicles' designs,
+/// so a strip chain rebuilds a lane before v21 (idempotent); lane v22's [`strip_part_seeds`]
+/// first.
+pub fn strip_tender(doc: &mut Value) {
+    strip_part_seeds(doc);
+    for entry in doc["entries"]
+        .as_object_mut()
+        .into_iter()
+        .flat_map(|entries| entries.values_mut())
+    {
+        // `get_mut`, never `IndexMut`: indexing would write `null` into every entry it misses.
+        if let Some(designs) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vehicles"))
+            .and_then(|vehicles| vehicles.get_mut("designs"))
+            .and_then(Value::as_array_mut)
+        {
+            designs.retain(|design| design.get("word").and_then(Value::as_str) != Some("tender"));
+        }
+    }
+}
+
 /// **Doc 39 cut IN.1 (lane v20): the ladder's three prices put back** — Kasei's alloy ask 450 →
 /// 400, Stickney Yards' fittings ask 520 → 400, the Co-op's fittings bid 600 → 560 — so a strip
-/// chain rebuilds a lane before v20 (idempotent).
+/// chain rebuilds a lane before v20 (idempotent); lane v21's [`strip_tender`] first.
 pub fn strip_ladder(doc: &mut Value) {
+    strip_tender(doc);
     for (port, org, side, good, was) in [
         ("stickney_port", "kasei", "asks", "structural_alloys", 400),
         (
