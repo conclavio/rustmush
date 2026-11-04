@@ -967,14 +967,17 @@ jobs:
       # The disposable-store remedy this step also ships. It cannot be RUN here
       # (it stops a systemd unit, flushes a Redis and rewrites a data dir as
       # root), so what CI holds is that it stays well-formed and clean. The
-      # render and the two dev1 deploy scripts are parsed for the same reason —
-      # they run as root on a box nobody wants to debug at 2am — but only
-      # `bash -n`: they have never been through `shellcheck`, and a gate is
-      # added with its findings fixed, not with a backlog attached.
+      # render and the deploy scripts are parsed for the same reason — they
+      # run as root on a box nobody wants to debug at 2am. A gate is added with
+      # its findings fixed, not with a backlog attached: since doc 43 cut
+      # TS.13 every tracked script under deploy/ and scripts/ goes through
+      # `shellcheck` (the doorway and runner provisioning, the VPS gate and
+      # the bake among them, which were in no list), found by `git ls-files`
+      # so a new script cannot be left off.
       - name: The instance reset and deploy scripts are well-formed
         run: |
+          git ls-files -z 'deploy/*.sh' 'scripts/*.sh' | xargs -0 shellcheck
           bash -n scripts/reset-instance.sh
-          shellcheck scripts/reset-instance.sh
           bash scripts/tests/reset-instance.sh
           bash -n deploy/instance/render.sh
           bash -n deploy/dev1/deploy.sh
