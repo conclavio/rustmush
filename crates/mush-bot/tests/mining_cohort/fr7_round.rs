@@ -18,7 +18,7 @@
 //! **The beats, in order** (each its own section below):
 //! 1. **The raid of a declared-Hostile co-op** (FR.1): the raider types `+faction/stance
 //!    Basin=Concord/hostile`; the captain's `+sortie/launch <op>=1` puts the miner's rig 1 down
-//!    the carrier's ramp; the raider's `+field/mark W=hostile` on it opens the field; Basin's
+//!    the carrier's ramp; the raider's `+field/mark <bearing>=hostile` ([`approach`]) on it opens the field; Basin's
 //!    party holds Concord's Hostile on the live record from admission, and the raider's cockpit
 //!    `LOCK`/`FIRE` lands on Concord.
 //! 2. **Reinforcement from the pad** (FR.3): the captain's `+sortie/launch <op>=2` into the
@@ -178,26 +178,49 @@ fn named(engine: &mush_core::Engine, name: &str) -> ObjId {
         .unwrap_or_else(|| panic!("no object called {name}"))
 }
 
+/// **Where the raider comes from on a ground**: its cell's offset from the ramp's, its heading,
+/// and the bearing word its `+field/mark` names the rigs at the ramp by.
+#[derive(Clone, Copy, Debug)]
+struct Approach {
+    from_ramp: (i64, i64),
+    heading: u32,
+    mark: &'static str,
+}
+
+/// The raider's approach on `ground`: sixteen cells due east of the ramp facing west, its `W`
+/// (Urvara Reach); on Ahuna Flank the ramp's row is out of sight from the east (the raider saw
+/// only the carrier there), so from the south, facing north, its `N`.
+fn approach(ground: &Ground) -> Approach {
+    if ground.side == 256 {
+        Approach {
+            from_ramp: (0, -12),
+            heading: 0,
+            mark: "N",
+        }
+    } else {
+        Approach {
+            from_ramp: (16, 0),
+            heading: WEST,
+            mark: "W",
+        }
+    }
+}
+
 /// **Where the story stands on `ground`**: off the carrier's stern ramp cell (its pad's cell less
-/// four rows, `driving_rig::RAMP_CELL` on every site), the raider's hull sixteen cells due east
-/// of it facing west, so the rigs that come down the ramp are its `W` and the nearest flight
-/// there; the wing's three cells west of the raider and three north (its `NW`); the casualty
-/// one cell east of the ramp, between the raider and the rig that lands there and within a cell of
-/// it, so nothing stands between the raider and the casualty (beat 3; `field_fr5` found a
-/// powerless casualty west of the ramp unseen at Ahuna). Answers
-/// `(raider, wing, casualty)`.
+/// four rows, `driving_rig::RAMP_CELL` on every site), the raider's hull by its [`approach`], so
+/// the rigs that come down the ramp are the nearest flight on its mark's bearing; the wing three
+/// cells west of the raider and three north; the casualty one cell east of the ramp, within a
+/// cell of the rig that lands there (beat 3). Answers `(raider, wing, casualty)`.
 fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
     let (x, y) = tacsim::surface::excursion::site_pad_cm(&engine.world, &cid(ground.entry));
     let cell = i64::from(tacsim::surface::ground::SITE_CELL_CM);
     let ramp = (x.div_euclid(cell), y.div_euclid(cell) - 4);
-    [
-        (ramp.0 + 16, ramp.1),
-        (ramp.0 + 13, ramp.1 + 3),
-        (ramp.0 + 1, ramp.1),
-    ]
+    let (dx, dy) = approach(ground).from_ramp;
+    let raider = (ramp.0 + dx, ramp.1 + dy);
+    [raider, (raider.0 - 3, raider.1 + 3), (ramp.0 + 1, ramp.1)]
 }
 
-/// **A hull of `design` on `ground` at `cell`, facing west** (the fixture, as
+/// **A hull of `design` on `ground` at `cell`, facing `heading`** (the fixture, as
 /// `field_host_rig::armed_on`).
 fn placed(
     engine: &mut mush_core::Engine,
@@ -205,6 +228,7 @@ fn placed(
     design: &str,
     name: &str,
     cell: (i64, i64),
+    heading: u32,
 ) -> ObjId {
     let domain = engine
         .world
@@ -230,7 +254,8 @@ fn placed(
             .create(mush_core::ObjKind::Thing, name, GOD, None)
             .expect("the hull's object");
         mush_tactics::module::create_unit(ctx, hull, &spec).expect("the hull's unit record");
-        let pose = tacsim::surface::excursion::cell_pose([cell.0, cell.1], WEST).expect("a pose");
+        let pose =
+            tacsim::surface::excursion::cell_pose([cell.0, cell.1], heading).expect("a pose");
         mush_sim::place(ctx, hull, mush_sim::DomainId(domain), pose).expect("on the ground");
         hull
     })
@@ -246,7 +271,7 @@ fn armed_seated(
     cell: (i64, i64),
     pilot: ObjId,
 ) -> ObjId {
-    let hull = placed(engine, ground, design, name, cell);
+    let hull = placed(engine, ground, design, name, cell, approach(ground).heading);
     staff_hand(engine, |ctx| {
         ctx.actor = pilot;
         let console = ctx.w.get(pilot).and_then(|object| object.location);
@@ -356,7 +381,14 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground) -> (Vec<String>, Hul
     let hulls = Hulls {
         raider: armed_seated(engine, ground, LINE_TANK, "Basin Hound", at_raider, raider),
         wing: armed_seated(engine, ground, JAMMING_UNIT, "Basin Whelp", at_wing, wing),
-        casualty: placed(engine, ground, PROSPECTOR, "Stranded Rig", at_casualty),
+        casualty: placed(
+            engine,
+            ground,
+            PROSPECTOR,
+            "Stranded Rig",
+            at_casualty,
+            WEST,
+        ),
         casualty_cell: at_casualty,
     };
     let plan = worn_plan(engine, hulls.wing);
@@ -966,7 +998,8 @@ async fn round_story(ground: &'static Ground) {
     // Beat 3a: the tow struck before the field (rig 1 takes the stranded rig in tow).
     let tow_a = tow_struck_before_field(&mut god, &mut cap, ground, &hulls).await;
 
-    let text = pilot_reads("raider", &mut raider, "+field/mark W=hostile").await;
+    let mark = format!("+field/mark {}=hostile", approach(ground).mark);
+    let text = pilot_reads("raider", &mut raider, &mark).await;
     let mut opened = None;
     for _ in 0..60 {
         if let Some(record) = live(&rig, ground).await {
