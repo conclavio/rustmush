@@ -512,6 +512,8 @@ bulk mint, so a port boots in exactly main's fires.
   `stickney_ceres`, whose legs carry no hazard. The detour adds about 11 real minutes a site at the 3,600 rate.
   Seed: God mints the pilot a 50,000.00cr float from a system source of the story's own (`@account/system … =tacsim.credit`, the
   pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
+  The closing check reads `@tacsim/port status`: no line pending, missing or flagged but the two the story's rate
+  brings, the rate line itself and Occator's house rig stopped under a claim after the IC month the lift runs.
   by-hand: _the revision and walls of the conclav.dev run_.
 
 **Departures from the row.**
