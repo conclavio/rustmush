@@ -272,3 +272,75 @@ this cut.
   whose tests are identical in both runs (`bot`'s +0.33 is 0.02 s of new tests and 19.8 s of noise).
 
 No cell's wall moved because of RS.0, so nothing moves shard (rule #3).
+
+## RS.2 — the bay away from port (2026-11-04)
+
+Row: §6 RS.2; Q-41-5..7, Q-38-16, Q-36-35. **One marker: Q-41-7** (no fee away from port, expensive to
+reverse). No lane rows: lane v22 (IN.6) stands, v23 stays free.
+
+**Built** (`port/bay_work/{mod,command,record}.rs`, the one writer of `port/bay_work/*` this wave).
+
+- **`facility_of`'s fourth case** (Q-41-5). A hull in a carrier's bay whose carrier is not docked at a port
+  with a workshop operator (on a site, under way, at a port without one) stands in `FacilityClass::CarrierBay`
+  with `Facility.port: None`, `operator: None`, the tariff at 1,000 ‰ and `site` the site she stands on
+  (`site_of_carrier`: the site port she is docked at, else `hull_view_berth`'s). The docked-only refusal
+  string is gone; "in no bay and no workshop" and "in no carrier's bay" are the refusals left.
+  `Facility::away()` names the case.
+- **`carrier_of_bay` reads the yards** (round-2 item 41-16). `bay_carriers` lists every port map's hull rows
+  and its site row's yard hulls, the two sources `world_hulls` reads, so the Occator Yard's Dray-P bay is a
+  facility for the house rigs. **The IN.9 seam** is `bay_carriers`' doc: `tacsim.owned_hulls` joins there.
+- **The yard's rearm through the bay.** `leases` reads a house rig's view (`yard::rig_lease`, the one lessee
+  reader) as well as the stored leases, so the dispatcher holds the lessee's right (repair and rearm) over its
+  rigs in the yard hull's bay. Nothing orders that rearm yet: `rearm_ic_secs` retires when IN.9's dispatcher
+  does (§4.2).
+- **`source_carrier` without the port.** A carrier bay's hold is her carrier's, wherever she is; the workshop
+  case still needs the berth's carrier docked at that port.
+- **No fee contract away from port** (Q-41-7). `BayOrder.contract` is `Option<u64>` (an old record's number
+  reads as `Some`); away from port `take` files nothing, `fee_minor` is 0, the payer account is not asked for,
+  the cancel releases nothing and `complete` pays nobody. The payee of a filed fee is now read off the
+  contract's organization party (`payee`), so an order taken docked is paid to that port's operator wherever
+  the carrier has sailed since (the old `facility_operator` refused the fee once she undocked). The quote
+  prints "no fee" in the price column and "away from port (at 2x the workshop's time, from her hold; no
+  fee)"; the taken line says "No fee away from port: her crew does the work".
+- **The "needs a workshop" line** names the workshops, nearest first by the lane (`workshop_refusal`): "Salt
+  Moth's machine_gun is destroyed: a workshop must replace it — the <room> at Ceres Freeport, or the <room>
+  at Stickney Yards." Nearest is the fewest route hops from her site (breadth first over every port's
+  `routes`), then the lane's order; under way, the lane's order. The quote's elsewhere lines and the order's
+  refusal both print it; docked, the old "berth the hull at the port's workshop" stands.
+- **`+bay/fit` from the hold away from port** (Q-41-6): the `Replace` a fit makes passes the class check in a
+  carrier bay away from port, at 2×, from her hold (the hold lot check is GC.8b's). Docked, fit stays the
+  workshop's. A plain `replace` is refused away from port (IN.6's store does not reach a carrier).
+- **Bay acts wait under a field** (Q-41-5, RS.1's tend precedent). No order is taken while a field is open
+  on her site (the `FIELD_OPEN` line). `wait_under_field` runs before each open order's finish in the bay's
+  tick: a field on the order's site pauses it (`BayOrder.paused`, its IC seconds left), and the fire that finds
+  the site settled resumes it, due that long after. An order whose draw is already owed is past the work and
+  is not paused. `+bay` shows "waiting under a field with …h left". Nothing of `field/crew.rs` or
+  `surface/tow.rs` is written (CR.1's); the field is read through `tow::record_or_new`.
+- `+bay`'s help names the bay away from port and the fit there.
+
+**Story.** `crates/tacsim/tests/shard_10/field_rs2.rs`, `rs2_ahuna_…` (256) and `rs2_urvara_…` (512), one
+body: the captain leases the escort and a prospector and sails to the site; the escort, in the bay, has a
+damaged cannon, a hull 40 points down and a destroyed machine gun. `+bay` quotes the mend and the armour at
+2× with no fee and the machine gun's workshop line (Ceres before Stickney); `+bay/order …=replace` is refused
+with it; `+bay/order …=mend,armor` is taken with no contract, due at twice the tariff's seconds, drawing a
+tonne of alloys and a tonne of fittings from her hold into the bale. A stranger's mark over the prospector
+opens a field: the order pauses, `+bay` says so, the field settles and the order resumes later than first
+due. The crew works on the site until half an hour before the work is due (the hop is 70 IC minutes, the work longer), the Dray-P sails for Ceres (`leave=2`), and the order finishes under way: the cannon intact, the hull
+whole, the tonnes gone from the hold, nobody paid. Re-run green: `bay_gc8` (its fee contract read as
+`Some`), `in6_part_lot`.
+
+**Divergences.**
+
+- **The bay works at a port without a workshop too**, not only on a site and under way: Q-41-5's "wherever
+  she is not docked" read as "not docked at a workshop", since the hold is aboard and nothing supplies her
+  there either.
+- **Ordered from aboard.** Away from port an order is taken by anyone aboard her carrier, not only from
+  inside the bay room (docked, the old rule stands).
+- **"Nearest by the lane" is route hops**, not passage time; the lane has no distance table the bay could
+  read cheaply. Every site routes to Ceres alone, so Ceres is first from any site.
+- **`+bay/fit` away from port is built but not in the story**: a traced lot in a carrier's hold needs a
+  workshop strip first (GC.8b's fixture), which the site story never visits. It is the `fit_job` path GC.8b's
+  story covers, with the class check relaxed.
+- **The yard's rearm is the right, not an act**: no production caller orders a house rig's rearm until IN.9.
+
+**Cell cost (rule #14).** Pending the PR run's JUnit; filled in on the PR.

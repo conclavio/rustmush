@@ -31,8 +31,16 @@
 //!   taken off becomes a lot in the hold with its provenance; a scrapped hull becomes
 //!   `structural_alloys` and a lot per salvageable part.
 //!
-//! A carrier bay works only while its carrier is docked at a port with a workshop, whose
-//! operator is paid; the workshop supplies a replaced part, the hold everything else.
+//! - **Away from port** (doc 41 cut RS.2; Q-41-5..7, Q-38-16): a carrier's bay works wherever
+//!   she is not docked at a port with a workshop — on a site, under way, at a port with none —
+//!   for the minor jobs at [`crate::port::bay_work::CARRIER_TIME_FACTOR`], from her own hold, and fits a traced part
+//!   from that hold (`+bay/fit`, Q-41-6). Nobody is paid there: no fee contract is filed, the
+//!   time is the price (Q-41-7, **expensive to reverse**). A rebuild or a replace is refused
+//!   with the line naming the workshops, nearest first by the lane. Under a field on her site
+//!   an order waits, its time left kept, and resumes when the site settles.
+//!
+//! Docked at a port with a workshop, a carrier bay's operator is paid; the workshop supplies a
+//! replaced part, the hold everything else.
 
 pub mod act;
 pub mod command;
@@ -140,7 +148,8 @@ pub const ALLOYS_GOOD: &str = "structural_alloys";
 // ---- where the work is done -------------------------------------------------------------
 
 /// **A facility a hull stands in** (Q-36-35): its class, the room, and the port whose
-/// workshop's operator is paid and supplies the parts.
+/// workshop's operator is paid and supplies the parts — none for a carrier's bay away from port
+/// (doc 41 cut RS.2).
 #[derive(Clone, Debug)]
 pub struct Facility {
     /// The class.
@@ -149,17 +158,28 @@ pub struct Facility {
     pub room: ObjId,
     /// The carrier, for a carrier bay.
     pub carrier: Option<ObjId>,
-    /// The port entry.
-    pub port: CanonicalId,
-    /// The operator org.
-    pub operator: OrgId,
-    /// Its scoped credit account.
-    pub operator_account: AccountId,
-    /// The operator's multiplier, per mille.
+    /// The port entry whose workshop serves; `None` for a carrier's bay away from port.
+    pub port: Option<CanonicalId>,
+    /// The operator org and its scoped credit account: who is paid. `None` away from port,
+    /// where nobody is (Q-41-7).
+    pub operator: Option<(OrgId, AccountId)>,
+    /// The operator's multiplier, per mille (1,000 away from port: the tariff's own time).
     pub multiplier_permille: u32,
     /// Doc 39 cut IN.4: the port workshop's cost model and its berths, when authored — the
     /// floor a quote prints.
     pub cost: Option<(mush_industry::FacilityCostDef, u32)>,
+    /// Doc 41 cut RS.2: the site her carrier stands on away from port, when she stands on one —
+    /// a field open there holds the bay's work (Q-41-5).
+    pub site: Option<CanonicalId>,
+}
+
+impl Facility {
+    /// Whether this is a carrier's bay away from port (doc 41 cut RS.2): no operator, no fee,
+    /// no store.
+    #[must_use]
+    pub const fn away(&self) -> bool {
+        self.port.is_none()
+    }
 }
 
 /// The port workshop's cost model and berths (doc 39 cut IN.4).
@@ -194,9 +214,10 @@ fn operator_of(def: &PortDef, map: &PortMap) -> Option<(OrgId, AccountId, u32)> 
 /// **The workshop's stores** (doc 39 cut IN.6, Q-39-11): the operator org's storefront at
 /// `facility`'s port, the same vault its stock rows and its bids fill.
 fn stores_of<'w>(w: &'w World, facility: &Facility) -> Option<&'w crate::port::map::VendorRow> {
+    let port = facility.port.as_ref()?;
     let (_, def, map) = crate::port::market::ports(w)
         .into_iter()
-        .find(|(id, _, _)| *id == facility.port)?;
+        .find(|(id, _, _)| id == port)?;
     map?.vendors.get(&def.workshop.as_ref()?.operator)
 }
 
@@ -269,19 +290,128 @@ pub fn claimed_store_lots(w: &World) -> std::collections::BTreeSet<LotId> {
         .collect()
 }
 
-/// **The carrier whose vehicle bay is `room`**, and that bay's room: every programme hull the
-/// port maps record, asked for its bay rooms.
-fn carrier_of_bay(w: &World, room: ObjId) -> Option<ObjId> {
-    let store = w.module_state::<TacsimStore>()?;
-    store.port_maps().find_map(|map| {
-        map.hulls.iter().find_map(|row| {
-            let hull = ObjId(row.hull);
-            let view = crate::port::ship::hull_view(w, hull)?;
-            crate::port::vehicle::bay_rooms(w, &view)
-                .contains(&room)
-                .then_some(hull)
+/// **Every hull a bay may belong to** (doc 41 cut RS.2, round-2 item 41-16): the hulls the port
+/// maps record and the yards' hulls their site rows record — the two sources
+/// `crate::surface::recovery::world_hulls` reads, read here off every map without resolving
+/// the yards. **The seam for doc 39's IN.9**: its `tacsim.owned_hulls` register joins these two
+/// here once it lands, and nothing else in the bay changes.
+fn bay_carriers(w: &World) -> Vec<ObjId> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    store
+        .port_maps()
+        .flat_map(|map| {
+            let yard = map
+                .site
+                .as_ref()
+                .and_then(|site| site.yard.as_ref())
+                .map(|yard| yard.hulls.as_slice())
+                .unwrap_or_default();
+            map.hulls.iter().chain(yard).map(|row| ObjId(row.hull))
         })
+        .collect()
+}
+
+/// **The carrier whose vehicle bay is `room`**: every hull [`bay_carriers`] names, asked for
+/// its bay rooms.
+fn carrier_of_bay(w: &World, room: ObjId) -> Option<ObjId> {
+    bay_carriers(w).into_iter().find(|hull| {
+        crate::port::ship::hull_view(w, *hull)
+            .is_some_and(|view| crate::port::vehicle::bay_rooms(w, &view).contains(&room))
     })
+}
+
+/// **The site `carrier` stands on** (doc 41 cut RS.2): the site port she is docked at, else the
+/// site her bay is berthed on (`crate::surface::tick::hull_view_berth`), else none.
+fn site_of_carrier(w: &World, carrier: ObjId) -> Option<CanonicalId> {
+    match crate::port::ship::berth_of(w, carrier) {
+        crate::port::ship::Berth::Docked { map, def } if def.site.is_some() => {
+            Some(map.entry.clone())
+        }
+        crate::port::ship::Berth::Docked { .. } | crate::port::ship::Berth::UnderWay => None,
+        crate::port::ship::Berth::Elsewhere => {
+            crate::surface::tick::hull_view_berth(w, carrier).map(|(entry, ..)| entry)
+        }
+    }
+}
+
+/// **The workshops that may do what a carrier's bay may not** (doc 41 cut RS.2, Q-36-35): every
+/// port with a workshop room, as `the <room> at <port>`, nearest first by the lane — the fewest
+/// route hops from `from` (a port entry), then the lane's order; the lane's order alone when
+/// `from` is none (a carrier under way).
+fn workshop_names(w: &World, from: Option<&CanonicalId>) -> Vec<String> {
+    let ports = crate::port::market::ports(w);
+    // Hops by venue, breadth first over every port's routes.
+    let mut hops: BTreeMap<CanonicalId, u32> = BTreeMap::new();
+    let start = from.and_then(|entry| {
+        ports
+            .iter()
+            .find(|(id, _, _)| id == entry)
+            .map(|(_, def, _)| def.venue.clone())
+    });
+    if let Some(start) = start {
+        let mut frontier = vec![start.clone()];
+        hops.insert(start, 0);
+        let mut depth = 0_u32;
+        while !frontier.is_empty() && depth < 16 {
+            depth = depth.saturating_add(1);
+            let mut next = Vec::new();
+            for venue in &frontier {
+                let Some((_, def, _)) = ports.iter().find(|(_, def, _)| def.venue == *venue) else {
+                    continue;
+                };
+                for to in def.routes.keys() {
+                    if !hops.contains_key(to) {
+                        hops.insert(to.clone(), depth);
+                        next.push(to.clone());
+                    }
+                }
+            }
+            frontier = next;
+        }
+    }
+    let mut found: Vec<(u32, usize, String)> = workshops(w)
+        .into_iter()
+        .enumerate()
+        .map(|(at, (_, def, _, room))| {
+            let room = w
+                .get(room)
+                .map_or_else(|| "workshop".to_owned(), |o| o.name.clone());
+            let port = crate::port::coop::port_name(def);
+            let far = hops.get(&def.venue).copied().unwrap_or(u32::MAX);
+            (far, at, format!("the {room} at {port}"))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, _, name)| name).collect()
+}
+
+/// **The refusal for work `facility` may not do** (Q-36-35): docked, berth at the port's
+/// workshop; away from port (doc 41 cut RS.2), what is wrong and the workshops that would do
+/// it, nearest first — `Salt Moth's cannon is destroyed: a workshop must replace it — the
+/// <room> at Ceres Freeport, or the <room> at Stickney Yards.`
+fn workshop_refusal(w: &World, hull: ObjId, facility: &Facility, job: &BayJob) -> String {
+    if !facility.away() {
+        return "That work needs a workshop; berth the hull at the port's workshop.".to_owned();
+    }
+    let name = crate::port::coop::name_of(w, hull);
+    let short = job.target().rsplit('.').next().unwrap_or(job.target());
+    let what = match job {
+        BayJob::Replace { .. } => {
+            format!("{name}'s {short} is destroyed: a workshop must replace it")
+        }
+        BayJob::Rebuild { .. } => {
+            format!("{name}'s {short} is wrecked: a workshop must rebuild it")
+        }
+        _ => format!("{name}'s {} needs a workshop", job.describe()),
+    };
+    let names = workshop_names(w, facility.site.as_ref());
+    match names.split_last() {
+        None => format!("{what}; no workshop on the lane takes the work."),
+        Some((last, [])) => format!("{what} — {last}."),
+        Some((last, rest)) => format!("{what} — {}, or {last}.", rest.join(", ")),
+    }
 }
 
 /// The bay room and slot a hull stands in, when it stands in a space's interior.
@@ -308,11 +438,11 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
                 class: FacilityClass::Workshop,
                 room,
                 carrier: None,
-                port,
-                operator,
-                operator_account,
+                port: Some(port),
+                operator: Some((operator, operator_account)),
                 multiplier_permille,
                 cost: workshop_cost(def),
+                site: None,
             });
         }
     }
@@ -326,37 +456,49 @@ pub fn facility_of(w: &World, hull: ObjId) -> Result<Facility, String> {
             class: FacilityClass::Workshop,
             room,
             carrier: Some(hull),
-            port: map.entry.clone(),
-            operator,
-            operator_account,
+            port: Some(map.entry.clone()),
+            operator: Some((operator, operator_account)),
             multiplier_permille,
             cost: workshop_cost(def),
+            site: None,
         });
     }
     let (bay, _) = interior_of(w, hull).ok_or("That hull is in no bay and no workshop.")?;
     let carrier = carrier_of_bay(w, bay).ok_or("That hull is in no carrier's bay.")?;
-    let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(w, carrier)
-    else {
-        return Err(
-            "A carrier's bay works on its hulls only while she is docked at a port with a \
-             workshop to supply it."
-                .to_owned(),
-        );
-    };
-    let (operator, operator_account, multiplier_permille) = operator_of(def, map).ok_or(
-        "A carrier's bay works on its hulls only while she is docked at a port with a workshop \
-         to supply it.",
-    )?;
+    if let crate::port::ship::Berth::Docked { map, def } = crate::port::ship::berth_of(w, carrier)
+        && let Some((operator, operator_account, multiplier_permille)) = operator_of(def, map)
+    {
+        return Ok(Facility {
+            class: FacilityClass::CarrierBay,
+            room: bay,
+            carrier: Some(carrier),
+            port: Some(map.entry.clone()),
+            operator: Some((operator, operator_account)),
+            multiplier_permille,
+            cost: workshop_cost(def),
+            site: None,
+        });
+    }
+    // Doc 41 cut RS.2 (Q-41-5): the fourth case — her carrier on a site, under way or at a port
+    // with no workshop. The minor jobs from her own hold, nobody paid (Q-41-7).
     Ok(Facility {
         class: FacilityClass::CarrierBay,
         room: bay,
         carrier: Some(carrier),
-        port: map.entry.clone(),
-        operator,
-        operator_account,
-        multiplier_permille,
-        cost: workshop_cost(def),
+        port: None,
+        operator: None,
+        multiplier_permille: 1_000,
+        cost: None,
+        site: site_of_carrier(w, carrier),
     })
+}
+
+/// **The field open on the site a carrier's bay stands on, away from port** (doc 41 cut RS.2,
+/// Q-41-5; Q-CF-30): the bay's work waits under it as a surface act does. Her bay's rigs are
+/// not in the field (GC.3's rule); only the clock of the work stops.
+fn field_over(ctx: &Ctx<'_>, facility: &Facility) -> Option<crate::surface::site_record::FieldId> {
+    let site = facility.site.as_ref()?;
+    crate::surface::tow::record_or_new(ctx, site).open_field()
 }
 
 // ---- who may ----------------------------------------------------------------------------
@@ -461,12 +603,17 @@ fn unit_grant(ctx: &Ctx<'_>, hull: ObjId, capability: UnitCapability) -> bool {
     )
 }
 
-/// Whether `actor` is the live lessee of the rig `hull`.
+/// Whether `actor` is the live lessee of the rig `hull` — or, for a yard's house rig, its
+/// dispatcher, whom the house view names its pilot (doc 41 cut RS.2: the yard's rearm through
+/// the bay; `crate::port::yard::rig_lease`, the one lessee reader).
 fn leases(w: &World, actor: ObjId, hull: ObjId) -> bool {
-    w.module_state::<TacsimStore>().is_some_and(|s| {
-        s.tv_leases_on(hull)
-            .any(|l| l.pilot == actor && l.status == crate::port::tv::TvLeaseStatus::Active)
-    })
+    let active = |l: &crate::port::tv::TvLease| {
+        l.pilot == actor && l.status == crate::port::tv::TvLeaseStatus::Active
+    };
+    w.module_state::<TacsimStore>()
+        .is_some_and(|s| s.tv_leases_on(hull).any(active))
+        || (crate::port::yard::is_yard_rig(w, hull)
+            && crate::port::yard::rig_lease(w, hull).is_some_and(|l| active(&l)))
 }
 
 /// **The right `ctx.actor` holds over `hull`** (Q-36-33), strongest first: title, a
@@ -801,15 +948,20 @@ pub fn order_goods(jobs: &[QuotedJob], bale: Option<Bale>) -> (Vec<GoodUnits>, O
 }
 
 /// **The carrier whose hold serves `hull` at `facility`**: the carrier whose bay it stands in,
-/// or the carrier it was berthed from, docked at the facility's port.
+/// wherever she is (doc 41 cut RS.2: GC.8b's rule without the port — her hold is aboard), or
+/// the carrier it was berthed from, docked at the facility's port.
 ///
 /// # Errors
 ///
 /// The sentence for a hull with no carrier here.
 pub fn source_carrier(w: &World, hull: ObjId, facility: &Facility) -> Result<ObjId, String> {
-    let carrier = match facility.class {
-        FacilityClass::CarrierBay => facility.carrier,
-        FacilityClass::Workshop => facility.carrier.or_else(|| {
+    let no_carrier = "That hull came off no carrier, so there is no hold to draw from or lay into.";
+    if facility.class == FacilityClass::CarrierBay {
+        return facility.carrier.ok_or_else(|| no_carrier.to_owned());
+    }
+    let carrier = facility
+        .carrier
+        .or_else(|| {
             match w
                 .module_state::<TacsimStore>()
                 .and_then(|s| s.bay_hull(hull))
@@ -817,11 +969,14 @@ pub fn source_carrier(w: &World, hull: ObjId, facility: &Facility) -> Result<Obj
                 Some(BayHullState::Present(row)) => row.berth.as_ref().map(|b| b.carrier),
                 _ => None,
             }
-        }),
-    }
-    .ok_or("That hull came off no carrier, so there is no hold to draw from or lay into.")?;
+        })
+        .ok_or(no_carrier)?;
     match crate::port::ship::berth_of(w, carrier) {
-        crate::port::ship::Berth::Docked { map, .. } if map.entry == facility.port => Ok(carrier),
+        crate::port::ship::Berth::Docked { map, .. }
+            if facility.port.as_ref() == Some(&map.entry) =>
+        {
+            Ok(carrier)
+        }
         _ => Err("Her carrier is not docked at this port, so her hold is not here.".to_owned()),
     }
 }
@@ -1014,14 +1169,27 @@ fn take(
         return Err("That hull has been scrapped.".to_owned());
     }
     let (facility, quote) = quote_here(ctx.w, hull)?;
+    // Doc 41 cut RS.2 (Q-41-5, Q-CF-30): no bay work starts under a field on her site.
+    if let Some(field) = field_over(ctx, &facility)
+        && let Some(site) = &facility.site
+    {
+        return Err(crate::surface::site_record::promoted_refusal(
+            &field,
+            &crate::surface::act::site_name(ctx.w, site),
+        ));
+    }
     let in_facility = ctx.w.get(ctx.actor).and_then(|o| o.location) == Some(facility.room)
+        // Doc 41 cut RS.2: away from port, the work in her bay is ordered from aboard her.
+        || (facility.away()
+            && facility.carrier.is_some()
+            && crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor) == facility.carrier)
         || (facility.carrier == Some(hull)
             && (crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull)
                 || crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor).is_some_and(
                     |aboard_hull| {
                         matches!(
                             crate::port::ship::berth_of(ctx.w, aboard_hull),
-                            crate::port::ship::Berth::Docked { map, .. } if map.entry == facility.port
+                            crate::port::ship::Berth::Docked { map, .. } if facility.port.as_ref() == Some(&map.entry)
                         )
                     },
                 )
@@ -1037,24 +1205,33 @@ fn take(
     let picked = match &fit {
         Some((lot, part)) => {
             let job = fit_job(ctx.w, hull, &quote, selector, *lot, part)?;
-            if job.job.needs() > facility.class {
-                return Err(
-                    "That work needs a workshop; berth the hull at the port's workshop.".to_owned(),
-                );
+            // Doc 41 cut RS.2 (Q-41-6): away from port, a traced part from her hold fits in
+            // her bay — the one part change that needs no store. Docked, the port's workshop
+            // fits it.
+            if job.job.needs() > facility.class && !facility.away() {
+                return Err(workshop_refusal(ctx.w, hull, &facility, &job.job));
             }
             Some(vec![job])
         }
         None => quote.select(selector),
     };
     let picked = picked.ok_or_else(|| {
-        if quote.elsewhere.iter().any(|j| {
-            selector.eq_ignore_ascii_case(j.job.kind_word())
-                || selector.eq_ignore_ascii_case(j.job.target())
-        }) {
-            "That work needs a workshop; berth the hull at the port's workshop.".to_owned()
-        } else {
-            "Nothing in the quote matches that; +bay/quote lists the work.".to_owned()
-        }
+        quote
+            .elsewhere
+            .iter()
+            .find(|j| {
+                selector.eq_ignore_ascii_case(j.job.kind_word())
+                    || selector.eq_ignore_ascii_case(j.job.target())
+                    || j.job
+                        .target()
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|short| selector.eq_ignore_ascii_case(short))
+            })
+            .map_or_else(
+                || "Nothing in the quote matches that; +bay/quote lists the work.".to_owned(),
+                |j| workshop_refusal(ctx.w, hull, &facility, &j.job),
+            )
     })?;
     if picked.len() > MAX_ORDER_JOBS {
         return Err("Too many jobs for one order; order them in parts.".to_owned());
@@ -1131,38 +1308,47 @@ fn take(
         }
         Some(vault.0)
     };
-    let fee_minor = i64::try_from(BayQuote::fee_minor(&picked)).map_err(|_| "Fee too large.")?;
     let unit_revision = mush_tactics::module::unit_of(ctx.w, hull)
         .map(TacticalUnit::revision)
         .ok_or(NO_HULL)?;
-    let payer = crate::port::credit::own_account(ctx.w, ctx.actor)
-        .map(|a| a.id)
-        .ok_or("You hold no credit account to pay from.")?;
-    let now = ctx.w.now();
-    let spec = fee_spec(
-        payer,
-        facility.operator,
-        facility.operator_account,
-        ctx.actor,
-        Amount::from_minor(fee_minor),
-        now,
-    );
-    let contract = mush_economy::offer_contract(ctx, spec).map_err(|e| {
-        tracing::error!(%e, hull = hull.0, "tacsim: +bay/order: the fee contract was not offered");
-        "The workshop could not write the order; nothing changed.".to_owned()
-    })?;
-    match mush_economy::accept_contract(ctx, contract) {
-        Ok(AcceptOutcome::Accepted { .. }) => {}
-        other => {
-            tracing::warn!(contract = contract.0, outcome = ?other, "tacsim: +bay/order: the escrow was not placed");
-            let _ = mush_economy::cancel_contract(ctx, contract);
-            ctx.out.pin_deferred();
-            return Err(format!(
-                "You cannot cover the fee of {}.",
-                crate::port::coop::money_minor(ctx, fee_minor)
-            ));
+    // Doc 41 cut RS.2 (Q-41-7, expensive to reverse): away from port nobody is paid — no fee
+    // contract is filed and the order's fee is nil; the time (2x) is the price.
+    let (fee_minor, contract) = match facility.operator {
+        None => (0, None),
+        Some((operator, operator_account)) => {
+            let fee_minor =
+                i64::try_from(BayQuote::fee_minor(&picked)).map_err(|_| "Fee too large.")?;
+            let payer = crate::port::credit::own_account(ctx.w, ctx.actor)
+                .map(|a| a.id)
+                .ok_or("You hold no credit account to pay from.")?;
+            let now = ctx.w.now();
+            let spec = fee_spec(
+                payer,
+                operator,
+                operator_account,
+                ctx.actor,
+                Amount::from_minor(fee_minor),
+                now,
+            );
+            let contract = mush_economy::offer_contract(ctx, spec).map_err(|e| {
+                tracing::error!(%e, hull = hull.0, "tacsim: +bay/order: the fee contract was not offered");
+                "The workshop could not write the order; nothing changed.".to_owned()
+            })?;
+            match mush_economy::accept_contract(ctx, contract) {
+                Ok(AcceptOutcome::Accepted { .. }) => {}
+                other => {
+                    tracing::warn!(contract = contract.0, outcome = ?other, "tacsim: +bay/order: the escrow was not placed");
+                    let _ = mush_economy::cancel_contract(ctx, contract);
+                    ctx.out.pin_deferred();
+                    return Err(format!(
+                        "You cannot cover the fee of {}.",
+                        crate::port::coop::money_minor(ctx, fee_minor)
+                    ));
+                }
+            }
+            (fee_minor, Some(contract.0))
         }
-    }
+    };
     let started = ctx.w.world_ic_now().at;
     let secs = BayQuote::secs(&picked, facility.class);
     record.orders = record.orders.saturating_add(1);
@@ -1174,7 +1360,7 @@ fn take(
         class: facility.class,
         jobs: picked,
         fee_minor,
-        contract: contract.0,
+        contract,
         munitions_vault: vault,
         part_vault: store_lot.as_ref().map(|(_, vault, _, _)| *vault),
         goods,
@@ -1186,6 +1372,7 @@ fn take(
         status: OrderStatus::Open,
         closed_ic: None,
         note: None,
+        paused: None,
     };
     record.order = Some(order.clone());
     // Doc 39 cut IN.2 (Q-39-27's "reserved"): an order that fits a part from a lot holds that
@@ -1250,10 +1437,13 @@ fn close_order(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str, release: bool
     let Some(order) = record.order.as_mut() else {
         return;
     };
-    if !matches!(
-        mush_economy::cancel_contract(ctx, ContractId(order.contract)),
-        Ok(true)
-    ) {
+    // Doc 41 cut RS.2: an order away from port filed no fee, so there is none to release.
+    if let Some(contract) = order.contract
+        && !matches!(
+            mush_economy::cancel_contract(ctx, ContractId(contract)),
+            Ok(true)
+        )
+    {
         tracing::error!(
             contract = order.contract,
             "tacsim: a bay order's fee contract did not cancel; its refund retries in the \
@@ -1425,8 +1615,12 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Some(order) = record.open().cloned() else {
         return;
     };
-    // An owed act (the part's hold) lands before the work is finished.
-    if ctx.w.world_ic_now().at < order.due_ic || order.draw_act.is_some() || record.owed.is_some() {
+    // An owed act (the part's hold) lands before the work is finished; a field holds it.
+    if ctx.w.world_ic_now().at < order.due_ic
+        || order.draw_act.is_some()
+        || record.owed.is_some()
+        || order.paused.is_some()
+    {
         return;
     }
     if let Some(note) = refused_now(ctx.w, hull, &order) {
@@ -1557,19 +1751,21 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
             return;
         }
     };
-    let operator = facility_operator(ctx.w, &order);
-    let paid = operator.is_some_and(|operator| {
-        matches!(
-            mush_economy::accept_contract_as(
-                ctx,
-                ContractId(order.contract),
-                &PrincipalId::Organization(operator)
-            ),
-            Ok(AcceptOutcome::Accepted {
-                activated: true,
-                ..
-            })
-        )
+    // Doc 41 cut RS.2 (Q-41-7): an order away from port filed no fee and pays nobody.
+    let paid = order.contract.is_none_or(|contract| {
+        payee(ctx.w, contract).is_some_and(|operator| {
+            matches!(
+                mush_economy::accept_contract_as(
+                    ctx,
+                    ContractId(contract),
+                    &PrincipalId::Organization(operator)
+                ),
+                Ok(AcceptOutcome::Accepted {
+                    activated: true,
+                    ..
+                })
+            )
+        })
     });
     if !paid {
         close_cancelled(ctx, record, "the facility could not take the fee");
@@ -1759,24 +1955,20 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
 }
 
-/// The operator org of the port an order's facility belongs to.
-fn facility_operator(w: &World, order: &BayOrder) -> Option<OrgId> {
-    match order.class {
-        FacilityClass::Workshop => workshops(w)
-            .into_iter()
-            .find(|(_, _, _, room)| *room == order.facility)
-            .and_then(|(_, def, map, _)| operator_of(def, map))
-            .map(|(org, _, _)| org),
-        FacilityClass::CarrierBay => {
-            let carrier = carrier_of_bay(w, order.facility)?;
-            match crate::port::ship::berth_of(w, carrier) {
-                crate::port::ship::Berth::Docked { map, def } => {
-                    operator_of(def, map).map(|(org, _, _)| org)
-                }
-                _ => None,
-            }
-        }
-    }
+/// **The operator org a fee contract pays** (doc 41 cut RS.2): the one organization party
+/// [`fee_spec`] bound when the order was taken — read off the contract, so an order taken in a
+/// docked carrier's bay is paid to that port's operator wherever she has sailed since.
+fn payee(w: &World, contract: u64) -> Option<OrgId> {
+    w.module_state::<EconomyStore>()?
+        .snapshot()
+        .contract(ContractId(contract))?
+        .consent
+        .parties
+        .iter()
+        .find_map(|party| match party {
+            PrincipalId::Organization(org) => Some(*org),
+            _ => None,
+        })
 }
 
 /// **The bay's arm of the `tacsim.port` fire**: every owed inventory act is settled, then every
@@ -1801,7 +1993,50 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         .map(TacsimStore::bay_open_hulls)
         .unwrap_or_default();
     for hull in open {
-        finish(ctx, hull);
+        if !wait_under_field(ctx, hull) {
+            finish(ctx, hull);
+        }
+    }
+}
+
+/// **A carrier bay's order under a field** (doc 41 cut RS.2, Q-41-5; RS.1's tend precedent,
+/// Q-41-3): when a field opens on the site her carrier stands on, the open order is paused, its
+/// IC time left kept; on the fire that finds the site settled it resumes, due that much later.
+/// An order whose draw is already owed is past the work and is not paused. Whether the order
+/// waits now.
+fn wait_under_field(ctx: &mut Ctx<'_>, hull: ObjId) -> bool {
+    let Ok(mut record) = record_of(ctx.w, hull) else {
+        return false;
+    };
+    let Some(order) = record.open() else {
+        return false;
+    };
+    if order.class != FacilityClass::CarrierBay || order.draw_act.is_some() {
+        return false;
+    }
+    let facility = order.facility;
+    let field = facility_of(ctx.w, hull)
+        .ok()
+        .filter(|f| f.room == facility)
+        .and_then(|f| field_over(ctx, &f));
+    let now = ctx.w.world_ic_now().at;
+    let Some(row) = record.order.as_mut() else {
+        return false;
+    };
+    match (field.is_some(), row.paused) {
+        (true, Some(_)) => true,
+        (false, None) => false,
+        (true, None) => {
+            row.paused = Some(row.due_ic.saturating_sub(now).max(1));
+            put_bay_hull(ctx, &record);
+            true
+        }
+        (false, Some(left)) => {
+            row.due_ic = now.saturating_add(left).max(row.started_ic);
+            row.paused = None;
+            put_bay_hull(ctx, &record);
+            false
+        }
     }
 }
 
