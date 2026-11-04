@@ -255,6 +255,8 @@ fn compose_domain_modules<E>(
                     facts.push(Arc::new(
                         crate::port::passenger::facts::PassengerFactProvider::default(),
                     ));
+                    // Doc 41 cut RS.5: the retrieval's delivery fact.
+                    facts.push(Arc::new(crate::surface::retrieval::RetrievalFactProvider));
                 }
                 facts
             })

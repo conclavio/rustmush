@@ -112,6 +112,7 @@ pub const fn permits(right: Right, act: Act) -> bool {
         Right::Grant => !matches!(act, Act::Scrap),
         Right::Lessee => matches!(act, Act::Repair | Act::Rearm | Act::Berth),
         Right::Salvor => matches!(act, Act::Repair | Act::Berth),
+        Right::Retrieval => matches!(act, Act::Berth),
     }
 }
 
@@ -549,6 +550,9 @@ fn right_held_by(ctx: &Ctx<'_>, actor: ObjId, hull: ObjId) -> Option<Right> {
     if leases(ctx.w, actor, hull) {
         return Some(Right::Lessee);
     }
+    if custody.is_none() && crate::surface::retrieval::held_by(ctx.w, hull, actor).is_some() {
+        return Some(Right::Retrieval);
+    }
     custody.map(|_| Right::Salvor)
 }
 
@@ -638,6 +642,9 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
         || crate::port::coop::helm_of(ctx.w, actor).is_some_and(|h| h.hull == hull)
     {
         return Some(Right::Lessee);
+    }
+    if custody.is_none() && crate::surface::retrieval::held_by(ctx.w, hull, actor).is_some() {
+        return Some(Right::Retrieval);
     }
     custody.map(|_| Right::Salvor)
 }
@@ -2089,6 +2096,7 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
                 .to_owned(),
         );
     }
+    let port = map.entry.clone();
     let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
     let used = ctx
         .w
@@ -2108,6 +2116,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
         at_ic: ctx.w.world_ic_now().at,
     });
     put_bay_hull(ctx, &record);
+    // Doc 41 cut RS.5 (Q-41-8): the first handover — berthed into the destination's workshop
+    // by the acceptor's hand.
+    let _ = crate::surface::retrieval::deliver(ctx, hull, &port, ctx.actor);
     Ok(room)
 }
 
@@ -2150,6 +2161,17 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
         .map_err(|e| format!("Her bay will not take her: {e}"))?;
     record.berth = None;
     put_bay_hull(ctx, &record);
+    // Doc 41 cut RS.5 (Q-41-8): the second handover — stowed into the poster's own carrier
+    // docked at the destination.
+    if let crate::port::ship::Berth::Docked { map, .. } =
+        crate::port::ship::berth_of(ctx.w, row.carrier)
+        && let Some(order) = crate::surface::retrieval::held_by(ctx.w, hull, ctx.actor)
+        && crate::port::coop::helm_holder(ctx.w, row.carrier)
+            .is_some_and(|helm| crate::surface::retrieval::acts_for(ctx.w, helm, &order.poster))
+    {
+        let entry = map.entry.clone();
+        let _ = crate::surface::retrieval::deliver(ctx, hull, &entry, ctx.actor);
+    }
     Ok(row.carrier)
 }
 

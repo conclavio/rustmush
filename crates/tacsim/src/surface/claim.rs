@@ -1781,6 +1781,16 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("inspect") {
         return inspect_cmd(ctx, raw.trim());
     }
+    // Doc 41 cut RS.5 (Q-41-9): the retrieval's three verbs.
+    if ctx.switches.has("retrieve") {
+        return crate::surface::retrieval::retrieve_cmd(ctx, &raw);
+    }
+    if ctx.switches.has("jobs") {
+        return crate::surface::retrieval::jobs_cmd(ctx);
+    }
+    if ctx.switches.has("accept") {
+        return crate::surface::retrieval::accept_cmd(ctx, &raw);
+    }
     if !raw.trim().is_empty() {
         return Err(CmdError::msg(SALVAGE_USAGE));
     }

@@ -113,6 +113,12 @@ family = "campaign.crew"
 note = "E7 cut 10 (10b 3.10 B7/B8): the player-facing crew call -- +crewcall/list shows the seats the viewer's own audience membership admits and nothing about an operation it does not, and +crewcall/apply is +seat/accept under the name the call publishes. It writes the same bounded whole-document campaign.seat records the +seat verbs do (seat_grant:{op}:{id}, a strict TryFrom wire re-running MAX_SEAT_OFFERS_PER_OPERATION/MAX_SEAT_CHANNELS/MAX_AUDIENCE and a deterministic key) and takes no part in authority or prepared mechanics: accepting seizes NOTHING, no legality check reads a SeatGrant, and the live control authority is cut 5's billet, the narrowed ChannelGrant and K6's lease. Matchmaking standing is a crew-call eligibility input only (R6) and never an in-world principal."
 
 [[handler]]
+name = "+debts"
+category = "legacy-post-image"
+family = "economy.obligation"
+note = "Doc 41 cut RS.5 (Q-41-13): +debts is a pure read of the actor's one-term ruleset debts (mush_economy::debts_of). /pay <id> is ONE post through the economy's own API (mush_economy::pay_debt: the amount from the debtor's account, the obligation Satisfied in the same step, refused with nothing written when the account cannot cover it), under the debtor's own debit authority. No tacsim document is written. Future family: the obligation as a typed economy record."
+
+[[handler]]
 name = "+faction"
 category = "legacy-post-image"
 family = "faction.stance"

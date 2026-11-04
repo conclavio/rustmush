@@ -191,8 +191,20 @@ pub const CHARGE_LINE: &str = "{section} {cost}";
 pub const CHARGE_PART: &str =
     "{charge} is taken from your {deposit} deposit and {refund} is released.";
 /// The restoration beyond the deposit (GC.9): `{deposit}`.
-pub const CHARGE_WHOLE: &str =
-    "that is more than your {deposit} deposit, so Occator keeps all of it.";
+pub const CHARGE_WHOLE: &str = "that is more than your {deposit} deposit, so Occator keeps all \
+     of it and {debt} more is owed as a debt (+debts).";
+/// The wear allowance (doc 41 cut RS.5, Q-41-12): `{allowance}`.
+pub const CHARGE_ALLOWANCE: &str = ", less a wear allowance of {allowance}";
+/// A retrieval's fee on a repossession (doc 41 cut RS.5, Q-38-6): `{fee}`.
+pub const CHARGE_FEE: &str = " Its retrieval, {fee}, is charged too.";
+/// What is owed beyond the deposit (doc 41 cut RS.5, Q-41-13): `{debt}`.
+pub const CHARGE_DEBT: &str = " {debt} is owed beyond the deposit, as a debt (+debts).";
+/// A repossession that charges the restoration (doc 41 cut RS.5, Q-38-6): `{mark}`, `{name}`.
+pub const REPOSSESSED_CHARGED: &str =
+    "Occator took {mark} back from the {name} when her charter ended.";
+/// A repossessed rig left on a site (doc 41 cut RS.5, Q-41-9): `{mark}`, `{site}`.
+pub const REPOSSESSED_LEFT: &str = "Occator repossessed {mark} where it lies on {site} when your \
+     charter ended, and has posted its retrieval.";
 /// The return's preview of a rig past repair (GC.9: the tariff quotes no restoration of an
 /// irrecoverable hull, so the charge is the whole deposit): `{mark}`, `{deposit}`, `{n}`.
 pub const RETURN_PREVIEW_PAST_REPAIR: &str = "You hand {mark} back to Occator; it is past repair, so Occator rebuilds it before it is leased again and keeps all of your {deposit} deposit. +tv/{n} lease return go signs it.";
@@ -1096,6 +1108,10 @@ pub struct TvLease {
     /// where it fell, Occator's ([`WRITE_OFF_RULE`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub written_off: bool,
+    /// **Doc 41 cut RS.5 (Q-41-14)**: the IC second the rig was first read a wreck inside its
+    /// own carrier's bay — Q-38-7's second write-off clock, cleared if it is mended first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wreck_aboard_ic: Option<i64>,
 }
 
 /// The longest mark a record may carry, bytes.
@@ -1177,6 +1193,7 @@ impl TvLease {
             ended_at_ic: None,
             repossessed: false,
             written_off: false,
+            wreck_aboard_ic: None,
         }
     }
 
@@ -3665,13 +3682,32 @@ pub struct RestorationCharge {
     /// components installed in it (repaired, replaced or rearmed). [`UNIT_FITTINGS`] for a
     /// component installed at unit level.
     pub lines: Vec<(String, i64)>,
-    /// The whole restoration, minor units (the lines' sum).
+    /// The whole restoration, minor units: the lines' sum less [`Self::allowance_minor`].
     pub total_minor: i64,
+    /// **Doc 41 cut RS.5 (Q-41-12)**: the wear allowance, minor units — structural points down
+    /// by at most a tenth of the hull's total points are charged nothing; components are
+    /// charged whole.
+    pub allowance_minor: i64,
     /// The tariff quotes no restoration of an irrecoverable hull: the charge is the deposit.
     pub past_repair: bool,
 }
 
 impl RestorationCharge {
+    /// **What is owed beyond the deposit** (doc 41 cut RS.5, Q-41-13): the restoration and
+    /// `fee_minor` (a retrieval's) less `deposit_minor` — a one-term debt. A rig past repair
+    /// owes the fee alone (the wreck's rule takes the deposit whole).
+    #[must_use]
+    pub fn debt_minor(&self, deposit_minor: i64, fee_minor: i64) -> i64 {
+        if self.past_repair {
+            fee_minor.max(0)
+        } else {
+            self.total_minor
+                .saturating_add(fee_minor)
+                .saturating_sub(deposit_minor)
+                .max(0)
+        }
+    }
+
     /// What the deposit pays: the restoration, capped at `deposit_minor`.
     #[must_use]
     pub fn charged_minor(&self, deposit_minor: i64) -> i64 {
@@ -3724,6 +3760,7 @@ pub fn restoration_charge(
         return Ok(RestorationCharge {
             lines: Vec::new(),
             total_minor: 0,
+            allowance_minor: 0,
             past_repair: true,
         });
     }
@@ -3802,13 +3839,33 @@ pub fn restoration_charge(
             quote.total_resource_cost
         ));
     }
+    // Doc 41 cut RS.5 (Q-41-12): the wear allowance — a tenth of the hull's structural points
+    // free, taken off the structural points the quote repairs or rebuilds.
+    let structural =
+        |addr: &CellAddr| matches!(addr, CellAddr::Section { .. } | CellAddr::Facet { .. });
+    let hull_points: u64 = unit
+        .cells()
+        .filter(|(addr, _)| structural(addr))
+        .map(|(_, cell)| u64::try_from(cell.max).unwrap_or(0))
+        .sum();
+    let quoted_points: u64 = quote
+        .sections_to_repair
+        .iter()
+        .chain(&quote.sections_to_reconstruct)
+        .map(missing)
+        .sum();
+    let allowance = (hull_points / 10)
+        .min(quoted_points)
+        .saturating_mul(per_point)
+        .min(sum);
     let minor = |cost: u64| i64::try_from(cost).unwrap_or(i64::MAX);
     Ok(RestorationCharge {
         lines: by_section
             .into_iter()
             .map(|(section, cost)| (section, minor(cost)))
             .collect(),
-        total_minor: minor(sum),
+        total_minor: minor(sum.saturating_sub(allowance)),
+        allowance_minor: minor(allowance),
         past_repair: false,
     })
 }
@@ -3826,8 +3883,18 @@ fn charge_text(ctx: &Ctx<'_>, template: &str, charge: &RestorationCharge, deposi
         .collect::<Vec<_>>()
         .join(", ");
     let charged = charge.charged_minor(deposit);
+    let lines = if charge.allowance_minor > 0 {
+        format!(
+            "{lines}{}",
+            CHARGE_ALLOWANCE.replace("{allowance}", &money(ctx, charge.allowance_minor))
+        )
+    } else {
+        lines
+    };
     let settle = if charge.total_minor > deposit {
-        CHARGE_WHOLE.replace("{deposit}", &money(ctx, deposit))
+        CHARGE_WHOLE
+            .replace("{deposit}", &money(ctx, deposit))
+            .replace("{debt}", &money(ctx, charge.debt_minor(deposit, 0)))
     } else {
         CHARGE_PART
             .replace("{charge}", &money(ctx, charged))
@@ -4168,6 +4235,12 @@ fn take(
     go: bool,
 ) -> Result<(), CmdError> {
     let now = ctx.w.world_ic_now().at;
+    // Doc 41 cut RS.5 (Q-41-13): the desk refuses a delinquent debtor, naming the amount, and
+    // reinstates the debt so the next sweep tries it once more (pinned: a refusal's writes).
+    if let Some(line) = crate::surface::retrieval::desk_refusal(ctx) {
+        ctx.out.pin_deferred();
+        return Err(CmdError::msg(line));
+    }
     let plan = match plan_take(ctx, named, design) {
         Ok(plan) => plan,
         Err(TakeRefusal::Line(line)) => return Err(CmdError::msg(line)),
@@ -4384,6 +4457,7 @@ fn take(
         ended_at_ic: None,
         repossessed: false,
         written_off: false,
+        wreck_aboard_ic: None,
     };
     if let Err(error) = record.check() {
         tracing::error!(lease = lease.0, %error, "tacsim: +tv/lease: the record does not check; it is written anyway so the lease is not lost");
@@ -4711,6 +4785,101 @@ pub fn in_shed(w: &World, tv: ObjId) -> bool {
     )
 }
 
+/// **Whether `tv` is one of Occator's lease rigs**: any lease record names it.
+#[must_use]
+pub fn is_lease_rig(w: &World, tv: ObjId) -> bool {
+    w.module_state::<TacsimStore>().is_some_and(|store| {
+        store.tv_leases.values().any(|state| match state {
+            TvLeaseState::Present(record) => record.tv == tv,
+            TvLeaseState::Unreadable { tv: named, .. } => *named == Some(tv),
+        })
+    })
+}
+
+/// **Hand back every written-off rig aboard `carrier`** (doc 41 cut RS.5, Q-41-14): a rig
+/// Occator wrote off while it lay in a carrier's bay is Occator's property aboard a player's
+/// carrier until that carrier docks at the lessor's port, where the docking hook runs this.
+pub(crate) fn hand_back_aboard(ctx: &mut Ctx<'_>, carrier: ObjId) {
+    let aboard: Vec<ObjId> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            store
+                .tv_leases
+                .values()
+                .filter_map(|state| match state {
+                    TvLeaseState::Present(record) if record.written_off && !record.live() => {
+                        Some(record.tv)
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for tv in aboard {
+        if crate::surface::act::where_is(ctx.w, tv)
+            == (crate::surface::act::Where::Bay { hull: carrier })
+            && crate::surface::retrieval::order_of(ctx.w, tv).is_none_or(|o| !o.active())
+        {
+            let _ = hand_back(ctx, tv);
+        }
+    }
+}
+
+/// **Open the one-term debt a lease's charge leaves** (doc 41 cut RS.5, Q-41-13): `amount`
+/// from the lessee's account to Occator's, due now, under the actor's own authority (the
+/// lessee at their return, GOD on a tick). Logged when the economy refuses; nothing else.
+fn open_debt(
+    ctx: &mut Ctx<'_>,
+    record: &TvLease,
+    (pilot_account, lessor_account): (AccountId, AccountId),
+    amount: i64,
+) -> Option<mush_economy::ObligationId> {
+    if amount <= 0 {
+        return None;
+    }
+    match mush_economy::create_debt(
+        ctx,
+        pilot_account,
+        lessor_account,
+        Amount::from_minor(amount),
+        crate::surface::retrieval::DEBT_NAMESPACE,
+    ) {
+        Ok(id) => Some(id),
+        Err(error) => {
+            tracing::error!(lease = record.lease, %error, amount, "tacsim: a lease charge's debt could not be opened");
+            None
+        }
+    }
+}
+
+/// **Post Occator's retrieval of a rig left on a site** (doc 41 cut RS.5, Q-41-9): destination
+/// the lessor's port, from Occator's account, at Tycho's quote. The fee, for the lessee's
+/// charge; `0` when nothing was posted (no recovery row, a job open already, Occator short).
+fn post_lessor_retrieval(
+    ctx: &mut Ctx<'_>,
+    tv: ObjId,
+    (lessor, lessor_account): (&PrincipalId, AccountId),
+    destination: &CanonicalId,
+) -> i64 {
+    if crate::surface::retrieval::order_of(ctx.w, tv).is_some_and(|o| o.active()) {
+        return 0;
+    }
+    match crate::surface::retrieval::post(
+        ctx,
+        tv,
+        (lessor.clone(), lessor_account),
+        destination.clone(),
+        None,
+    ) {
+        Ok(order) => order.floor_minor,
+        Err(why) => {
+            tracing::error!(tv = tv.0, %why, "tacsim: Occator could not post a rig's retrieval");
+            0
+        }
+    }
+}
+
 /// **Hand a written-off rig back to Occator** (doc 36 cut GC.5; Q-36-29): it goes into the shed,
 /// where the next take restores it to spec (GC.9). Answers whether it went.
 pub(crate) fn hand_back(ctx: &mut Ctx<'_>, tv: ObjId) -> bool {
@@ -4793,11 +4962,45 @@ pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
     for record in live {
         let at_home =
             hull_view(ctx.w, record.hull).is_some_and(|view| in_bay_of(ctx.w, &view, record.tv));
-        if at_home {
-            continue;
-        }
-        let Some(left) = left_out_since(ctx, record.tv) else {
-            continue;
+        // Doc 41 cut RS.5 (Q-41-14): Q-38-7's second clock — a wreck inside its own carrier's
+        // bay for the bar from the first tick that reads it so.
+        let aboard_since = if at_home {
+            let wreck = wrecked(ctx.w, record.tv);
+            match (wreck, record.wreck_aboard_ic) {
+                (true, None) => {
+                    put_tv_lease(
+                        ctx,
+                        &TvLease {
+                            wreck_aboard_ic: Some(now),
+                            ..record.clone()
+                        },
+                    );
+                    continue;
+                }
+                (false, Some(_)) => {
+                    put_tv_lease(
+                        ctx,
+                        &TvLease {
+                            wreck_aboard_ic: None,
+                            ..record.clone()
+                        },
+                    );
+                    continue;
+                }
+                (true, Some(since)) => Some(since),
+                (false, None) => continue,
+            }
+        } else {
+            None
+        };
+        let left = match aboard_since {
+            Some(since) => since,
+            None => {
+                let Some(left) = left_out_since(ctx, record.tv) else {
+                    continue;
+                };
+                left
+            }
         };
         if now < left.saturating_add(bar) {
             continue;
@@ -4820,8 +5023,17 @@ pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
                 continue;
             }
         }
+        // Doc 41 cut RS.5 (the survey's `capture: None` hole): a write-off captures the deposit
+        // or waits — an unresolved lessor account never releases it to the lessee.
+        let Some(lessor_account) = lessor.account else {
+            tracing::error!(
+                lease = record.lease,
+                "tacsim: a write-off waits: Occator's account does not resolve"
+            );
+            continue;
+        };
         if record.status == TvLeaseStatus::Active {
-            let capture = lessor.account.map(|account| (&lessor.principal, account));
+            let capture = Some((&lessor.principal, lessor_account));
             if let Err(error) = settle_deposit(ctx, &record, capture) {
                 tracing::error!(lease = record.lease, %error, "tacsim: a rig left out could not have its deposit captured; the write-off is tried again");
                 continue;
@@ -4836,11 +5048,35 @@ pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
                 ..record.clone()
             },
         );
-        if !matches!(
-            crate::surface::act::where_is(ctx.w, record.tv),
-            crate::surface::act::Where::Ground { .. }
-        ) {
-            let _ = hand_back(ctx, record.tv);
+        // Doc 41 cut RS.5 (Q-41-9, Q-41-14): a rig on the ground stays there and Occator posts
+        // its retrieval, the lessee charged the fee as a debt; one aboard its carrier waits for
+        // the carrier's docking at the lessor's port; any other goes back to the shed now.
+        match crate::surface::act::where_is(ctx.w, record.tv) {
+            crate::surface::act::Where::Ground { .. } => {
+                let destination = programme_port(ctx.w).map(|port| port.entry.clone());
+                if let Some(destination) = destination {
+                    let fee = post_lessor_retrieval(
+                        ctx,
+                        record.tv,
+                        (&lessor.principal, lessor_account),
+                        &destination,
+                    );
+                    if let Some(pilot_account) =
+                        crate::port::credit::own_account(ctx.w, record.pilot).map(|a| a.id)
+                    {
+                        let _ = open_debt(ctx, &record, (pilot_account, lessor_account), fee);
+                    }
+                }
+            }
+            crate::surface::act::Where::Bay { hull }
+                if !matches!(
+                    crate::port::ship::berth_of(ctx.w, hull),
+                    crate::port::ship::Berth::Docked { map, .. }
+                        if programme_port(ctx.w).is_some_and(|port| port.entry == map.entry)
+                ) => {}
+            _ => {
+                let _ = hand_back(ctx, record.tv);
+            }
         }
         ctx.out.sys_to_actor(
             record.pilot,
@@ -4973,6 +5209,19 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
     };
     let charged = captured && charge.is_some();
     let forfeit = captured && !charged;
+    // Doc 41 cut RS.5 (Q-41-13): what the restoration costs beyond the deposit is a one-term
+    // debt, opened by the lessee's own return (their own debit authority).
+    if charged
+        && let Some((charge, account, _)) = charge
+        && let Some(pilot_account) = plan.pilot_account
+    {
+        open_debt(
+            ctx,
+            &record,
+            (pilot_account, account),
+            charge.debt_minor(record.deposit_minor, 0),
+        );
+    }
     // c. The placement: back in the shed (a written-off wreck stays where it fell).
     match plan.lessor.shed {
         _ if plan.write_off => {}
@@ -5081,11 +5330,20 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         if super::boarding::occupied(w, record.tv) {
             return Err(format!("rig {} still contains crew", record.mark));
         }
-        // Doc 20 cut SM.3b (decision 13): a rig out on a site or mid-act holds the hull
-        // (`BAY_PAGE`) rather than being pulled off the ground under a live record. Doc 32 cut
-        // CF.6c: a wreck out of the bay never comes back, so it is written off instead.
-        let wreck = !in_bay_of(w, &view, record.tv) && wrecked(w, record.tv);
-        if !wreck && rig_out_or_busy(ctx, record.tv) {
+        // Doc 20 cut SM.3b (decision 13): a rig mid-act holds the hull (`BAY_PAGE`) rather than
+        // being pulled off the ground under a live record. Doc 32 cut CF.6c: a wreck out of the
+        // bay never comes back, so it is written off instead. Doc 41 cut RS.5 (Q-41-9): a rig
+        // left idle on a site is repossessed where it lies, and Occator posts its retrieval.
+        let out = !in_bay_of(w, &view, record.tv);
+        let wreck = out && wrecked(w, record.tv);
+        let left = out && on_the_ground(w, record.tv);
+        if !wreck
+            && (if left {
+                rig_busy(ctx, record.tv)
+            } else {
+                rig_out_or_busy(ctx, record.tv)
+            })
+        {
             return Err(format!("rig {} is out on a site or busy", record.mark));
         }
         // DT-4: the lease return's detachment gate, for the same reason.
@@ -5096,7 +5354,7 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             ));
         }
         match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
-            _ if wreck => {}
+            _ if wreck || left => {}
             Ok((0, _)) => {}
             Ok(_) => {
                 return Err(format!(
@@ -5137,22 +5395,78 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         .shed
         .ok_or_else(|| "Occator has no shed recorded".to_owned())?;
     let name = hull_name(w, hull);
-    records.sort_by_key(|record| (record.slot, record.lease));
+    let destination = port.entry.clone();
+    // Doc 41 cut RS.5 (Q-38-6, Q-41-12): GC.9's assessment, with the wear allowance, priced
+    // now while the port is borrowed; a wreck's rule takes the deposit whole and is not quoted.
+    let charges: Vec<Option<RestorationCharge>> = records
+        .iter()
+        .map(|record| {
+            let out = !in_bay_of(w, &view, record.tv);
+            (!(out && wrecked(w, record.tv)))
+                .then(|| restoration_charge(w, &port, record.tv).ok())
+                .flatten()
+        })
+        .collect();
+    let mut records: Vec<(TvLease, Option<RestorationCharge>)> =
+        records.into_iter().zip(charges).collect();
+    records.sort_by_key(|(record, _)| (record.slot, record.lease));
     let mut done = 0_usize;
-    for record in records {
+    for (record, charge) in records {
         let now = ctx.w.world_ic_now().at;
-        let wreck = hull_view(ctx.w, hull).is_some_and(|view| !in_bay_of(ctx.w, &view, record.tv))
-            && wrecked(ctx.w, record.tv);
-        // 1. The deposit, by the term (D16), before the lease ends; doc 32 cut CF.6c: a wreck's
-        // captured whatever the term.
+        let out = hull_view(ctx.w, hull).is_some_and(|view| !in_bay_of(ctx.w, &view, record.tv));
+        let wreck = out && wrecked(ctx.w, record.tv);
+        let left = out && on_the_ground(ctx.w, record.tv);
+        let site = crate::surface::tow::ground_pose(ctx.w, record.tv).map(|(site, _)| site);
+        // Doc 41 cut RS.5 (Q-38-6): the retrieval's fee, Tycho's quote, charged when Occator
+        // posts one (a rig left on the ground); priced before the deposit settles.
+        let fee = if left {
+            crate::surface::retrieval::floor_minor(ctx.w, record.tv, &destination).unwrap_or(0)
+        } else {
+            0
+        };
+        let restoration = charge.as_ref().map_or(0, |c| c.total_minor);
+        // 1. The deposit, before the lease ends: doc 32 cut CF.6c, a wreck's captured whatever
+        // the term; past the term captured whole (D16); within it, doc 41 cut RS.5 (Q-41-13):
+        // the restoration and the fee taken from it, the rest released, and what they come to
+        // beyond it a debt.
+        let mut owed = 0_i64;
         let forfeit = match record.status {
-            TvLeaseStatus::Forfeit | TvLeaseStatus::Returned => true,
+            TvLeaseStatus::Forfeit | TvLeaseStatus::Returned => {
+                owed = restoration.saturating_add(fee);
+                true
+            }
             TvLeaseStatus::Active => {
                 let ended_by_staff = !economy_lease_live(ctx.w, &lessor.principal, &record);
-                let capture = ((wreck || now >= record.term_ends_ic) && !ended_by_staff)
-                    .then_some((&lessor.principal, lessor_account));
-                match settle_deposit(ctx, &record, capture) {
-                    Ok(deposit) => deposit == Deposit::Captured,
+                let whole = (wreck || now >= record.term_ends_ic) && !ended_by_staff;
+                let due = restoration.saturating_add(fee);
+                let settled = if ended_by_staff || (!whole && due == 0) {
+                    settle_deposit(ctx, &record, None)
+                } else if whole {
+                    owed = if wreck {
+                        fee
+                    } else {
+                        due.saturating_sub(record.deposit_minor).max(0)
+                    };
+                    settle_deposit(ctx, &record, Some((&lessor.principal, lessor_account)))
+                } else {
+                    owed = due.saturating_sub(record.deposit_minor).max(0);
+                    charge_deposit(
+                        ctx,
+                        &record,
+                        &lessor.principal,
+                        lessor_account,
+                        due.min(record.deposit_minor),
+                    )
+                    .map(|charged| {
+                        if charged {
+                            Deposit::Captured
+                        } else {
+                            Deposit::Released
+                        }
+                    })
+                };
+                match settled {
+                    Ok(deposit) => deposit == Deposit::Captured && (whole || due == 0),
                     Err(error) => {
                         return Err(format!(
                             "rig {}'s deposit (hold #{}) will not settle: {error}; the lease \
@@ -5175,13 +5489,15 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             }
             Err(error) => return Err(format!("rig {}'s lease will not end: {error}", record.mark)),
         }
-        // 3. The rig, back in the shed (from the bay, or wherever a live record's rig
-        // stands).
+        // 3. The rig, back in the shed from the bay (or wherever a live record's rig stands
+        // off the ground); doc 41 cut RS.5 (Q-41-9): a rig on the ground stays where it lies,
+        // Occator's, and is retrieved.
         let in_shed = ctx.w.module_state::<SpatialState>().is_some_and(|st| {
             matches!(st.parent_of(record.tv), SpatialParent::Interior { space, .. } if space == shed)
         });
         if !in_shed
             && !wreck
+            && !left
             && let Err(error) = mush_sim::place_interior(ctx, record.tv, shed, None)
         {
             tracing::error!(tv = record.tv.0, %error, "tacsim: a repossession: invariant breach: the rig could not go back to the shed; staff place it by hand");
@@ -5195,9 +5511,35 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             ..record.clone()
         };
         put_tv_lease(ctx, &returned);
-        // 5. The pilot, told.
-        let line = if wreck {
+        // 5. Doc 41 cut RS.5 (Q-41-9, Q-41-13): the retrieval for a rig on the ground, and
+        // the debt beyond the deposit (a tick's or staff's act, never another character's).
+        if wreck || left {
+            let _ = post_lessor_retrieval(
+                ctx,
+                record.tv,
+                (&lessor.principal, lessor_account),
+                &destination,
+            );
+        }
+        if let Some(pilot_account) =
+            crate::port::credit::own_account(ctx.w, record.pilot).map(|a| a.id)
+        {
+            let _ = open_debt(ctx, &record, (pilot_account, lessor_account), owed);
+        }
+        // 6. The pilot, told.
+        let mut line = if wreck {
             WRITTEN_OFF.replace("{mark}", &record.mark)
+        } else if restoration > 0 && !left && !forfeit {
+            REPOSSESSED_CHARGED
+                .replace("{mark}", &record.mark)
+                .replace("{name}", &name)
+        } else if left {
+            REPOSSESSED_LEFT.replace("{mark}", &record.mark).replace(
+                "{site}",
+                &site
+                    .as_ref()
+                    .map_or_else(|| "a site".to_owned(), |s| site_name(ctx.w, s)),
+            )
         } else if forfeit {
             REPOSSESSED_FORFEIT
                 .replace("{mark}", &record.mark)
@@ -5208,6 +5550,21 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
                 .replace("{name}", &name)
                 .replace("{deposit}", &money(ctx, record.deposit_minor))
         };
+        if let Some(charge) = charge.as_ref().filter(|c| !c.is_nothing()) {
+            line.push(' ');
+            line.push_str(&charge_text(
+                ctx,
+                "Its restoration: {lines}, {total} in all.",
+                charge,
+                record.deposit_minor,
+            ));
+        }
+        if fee > 0 {
+            line.push_str(&CHARGE_FEE.replace("{fee}", &money(ctx, fee)));
+        }
+        if owed > 0 {
+            line.push_str(&CHARGE_DEBT.replace("{debt}", &money(ctx, owed)));
+        }
         crate::port_tick::notify(ctx, record.pilot, &line);
         tracing::info!(
             lease = record.lease,
@@ -5218,6 +5575,35 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         done = done.saturating_add(1);
     }
     Ok(done)
+}
+
+/// **Whether `tv` stands `Direct` on a domain** (doc 41 cut RS.5): a rig left on a site.
+fn on_the_ground(w: &World, tv: ObjId) -> bool {
+    matches!(
+        crate::surface::act::where_is(w, tv),
+        crate::surface::act::Where::Ground { .. }
+    )
+}
+
+/// A site entry's name, as the repossession tells it.
+fn site_name(w: &World, site: &CanonicalId) -> String {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(entry, _, _)| entry == site)
+        .map_or_else(|| site.to_string(), |(_, def, _)| port_name(def))
+}
+
+/// **Whether `tv` is mid-act** (doc 41 cut RS.5): an act or a mining run in flight — what still
+/// holds a hull's repossession for a rig left on a site, where an open excursion no longer does.
+fn rig_busy(ctx: &Ctx<'_>, tv: ObjId) -> bool {
+    match rig_flight(ctx, tv) {
+        Ok(RigFlight::Busy { .. } | RigFlight::Drilling { .. }) => true,
+        Ok(_) => false,
+        Err(error) => {
+            tracing::warn!(tv = tv.0, %error, "tacsim: a rig's excursion record does not read");
+            true
+        }
+    }
 }
 
 /// **What a rig's `tacsim.excursion` record says it is doing** (doc 20 cut SM.3b; the fixer
@@ -5435,6 +5821,7 @@ mod tests {
             ended_at_ic: None,
             repossessed: false,
             written_off: false,
+            wreck_aboard_ic: None,
         }
     }
 
