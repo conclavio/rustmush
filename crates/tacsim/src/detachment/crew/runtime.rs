@@ -304,3 +304,223 @@ impl ActionProvider for Provider {
             .with_eligible_witnesses(vec![invocation.principal().clone()]))
     }
 }
+
+// ---- doc 42 cut CR.1: a captured hull's NPC leaves the roster (Q-42-5, Q-42-26) ------------
+
+pub const CAPTURED_ACTION: &str = "tacsim_crew_captured";
+pub const CAPTURED_OUTCOME: &str = "tacsim_crew_captured_result";
+#[derive(Clone, Debug)]
+pub struct CapturedHandles {
+    pub action: DefinitionRef,
+}
+fn captured_refused() -> ActionError {
+    crate::port_tick::port_error(
+        ActionErrorCode::ProviderRejected,
+        "No captured hull's crew exit is owed to you for that NPC",
+    )
+}
+pub fn captured_outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    descriptor(
+        "outcome",
+        CAPTURED_OUTCOME,
+        json!({"format":1,"fields":["npc","employer","recovered_ic"]}),
+    )
+}
+/// **`tacsim_crew_captured`** (doc 42 Q-42-26, Draft 0.4): the tacsim module's one action over
+/// both families an NPC's hire holds — the contract and the roster reservation — so a captured
+/// hull's NPC leaves the roster in one bundle.
+pub fn captured_action_descriptor(
+    outcomes: &BTreeMap<String, DefinitionRef>,
+) -> Result<DefinitionDescriptor, ModError> {
+    let outcome = outcomes
+        .get(CAPTURED_OUTCOME)
+        .cloned()
+        .ok_or_else(|| bad("crew captured outcome missing"))?;
+    descriptor(
+        "action",
+        CAPTURED_ACTION,
+        json!({"format":1,"subject":"self_actor","targets":0,
+            "families":[FAMILY, crate::detachment::activation::RESERVATIONS]}),
+    )
+    .map(|d| d.as_current().with_references(vec![outcome]))
+}
+/// Register `tacsim_crew_captured` over the contracts and the activation's reservations (after
+/// both are registered).
+pub fn register_captured(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcomes: &BTreeMap<String, DefinitionRef>,
+    contracts: &StateFamilyHandle<ObjId, CrewContract>,
+    reservations: &StateFamilyHandle<ObjId, crate::detachment::activation::Reservation>,
+) -> Result<(), ModError> {
+    let action = actions
+        .get(CAPTURED_ACTION)
+        .cloned()
+        .ok_or_else(|| bad("crew captured action missing"))?;
+    let outcome = outcomes
+        .get(CAPTURED_OUTCOME)
+        .cloned()
+        .ok_or_else(|| bad("crew captured outcome missing"))?;
+    reg.action_provider(
+        action.clone(),
+        CapturedProvider {
+            action: action.clone(),
+            outcome,
+            contracts: contracts.clone(),
+            reservations: reservations.clone(),
+        },
+    )?;
+    reg.state(CapturedHandles { action });
+    Ok(())
+}
+/// **Submit an owed exit as its organizer** (doc 42 Q-42-26): one closed call through
+/// `Fire::as_principal`, the NPC the agent. The key is `tacsim.crew/<npc>/captured/<recovered_ic>`
+/// with this boot's try ordinal after it (the bay's owed-act precedent), so a refused try never
+/// blocks the next. Whether it was submitted.
+pub(crate) fn submit_captured(
+    ctx: &mut mush_core::Ctx<'_>,
+    fire: &mut crate::port_tick::Fire,
+    exit: &crate::field::NpcExit,
+    tries: u32,
+) -> bool {
+    let Some(action) = ctx
+        .w
+        .module_state::<CapturedHandles>()
+        .map(|handles| handles.action.clone())
+    else {
+        return false;
+    };
+    let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
+        "tacsim.crew/{}/captured/{}/{tries}",
+        exit.npc.0, exit.recovered_ic
+    )) else {
+        return false;
+    };
+    let parameters = json!({ "npc": exit.npc.0.to_string() });
+    fire.as_principal(ctx, exit.npc, exit.organizer, |ctx| {
+        ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
+    })
+    .is_ok()
+}
+struct CapturedProvider {
+    action: DefinitionRef,
+    outcome: DefinitionRef,
+    contracts: StateFamilyHandle<ObjId, CrewContract>,
+    reservations: StateFamilyHandle<ObjId, crate::detachment::activation::Reservation>,
+}
+/// The chosen NPC and the load's instant the offer fixed for it.
+fn captured_chosen(invocation: &ActionInvocation) -> Result<(ObjId, i64), ActionError> {
+    if invocation.subject() != &PerceivedRef::SelfActor
+        || !invocation.targets().is_empty()
+        || invocation.principal()
+            != &(PrincipalId::Object {
+                id: invocation.actor(),
+            })
+    {
+        return Err(captured_refused());
+    }
+    let p = invocation
+        .parameters()
+        .as_object()
+        .ok_or_else(captured_refused)?;
+    let npc = p
+        .get("npc")
+        .and_then(Value::as_str)
+        .ok_or_else(captured_refused)?;
+    let at = p
+        .get("exits")
+        .and_then(Value::as_object)
+        .and_then(|exits| exits.get(npc))
+        .and_then(Value::as_i64)
+        .ok_or_else(captured_refused)?;
+    let id = npc
+        .parse::<u32>()
+        .ok()
+        .filter(|id| *id > 0)
+        .map(ObjId)
+        .ok_or_else(captured_refused)?;
+    Ok((id, at))
+}
+impl ActionProvider for CapturedProvider {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        captured_chosen(invocation).map(|_| ())
+    }
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        if !crate::surface::act::self_query(action, &self.action, query) {
+            return Ok(None);
+        }
+        let owed = crate::field::crew::npc_exits_for(&engine.world, query.actor());
+        if owed.is_empty() {
+            return Ok(None);
+        }
+        let exits: serde_json::Map<String, Value> = owed
+            .iter()
+            .map(|exit| (exit.npc.0.to_string(), json!(exit.recovered_ic)))
+            .collect();
+        let choices = exits.keys().cloned().collect();
+        crate::surface::act::offer_draft(
+            action,
+            engine,
+            json!({ "exits": exits }),
+            vec![crate::surface::act::parameter(
+                "npc",
+                true,
+                ProjectedParameterKind::Choice { choices },
+            )?],
+            (
+                "crew-captured",
+                "End a captured hull's crew contract",
+                "A hired NPC whose hull a non-friend loaded leaves your roster.",
+            ),
+        )
+        .map(Some)
+    }
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let (npc, recovered_ic) = captured_chosen(invocation)?;
+        let actor = invocation.actor();
+        let world = ctx.world().map_err(|_| captured_refused())?;
+        // The world half stands: the load owed this exit to this organizer at this instant.
+        crate::field::crew::npc_exit_of(world, npc)
+            .filter(|exit| exit.organizer == actor && exit.recovered_ic == recovered_ic)
+            .ok_or_else(captured_refused)?;
+        let mut ended = false;
+        let contract = txn
+            .get(&self.contracts, &npc)
+            .map_err(|_| captured_refused())?
+            .cloned();
+        if contract.is_some_and(|c| c.npc == npc && c.employer == actor) {
+            txn.remove(&self.contracts, &npc)
+                .map_err(|_| captured_refused())?;
+            ended = true;
+        }
+        let reservation = txn
+            .get(&self.reservations, &npc)
+            .map_err(|_| captured_refused())?
+            .cloned();
+        if reservation.is_some_and(|r| r.entity == npc && r.organizer == actor) {
+            txn.remove(&self.reservations, &npc)
+                .map_err(|_| captured_refused())?;
+            ended = true;
+        }
+        if !ended {
+            return Err(captured_refused());
+        }
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({"npc": npc, "employer": actor, "recovered_ic": recovered_ic}),
+        )
+        .map_err(|_| captured_refused())?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}

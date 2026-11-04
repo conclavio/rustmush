@@ -84,7 +84,9 @@ use mush_core::{ArgShape, CanonicalId, CommandSpec, Ctx, ObjId, TickCadence, Wor
 use crate::arena::PartyId;
 use crate::arena_task::MatchId;
 pub use commands::mark_from_order;
-pub use crew::{CrewCondition, CrewLocation, CrewRecord, crew_location, crew_of};
+pub use crew::{
+    CrewCondition, CrewLocation, CrewRecord, NpcExit, crew_location, crew_of, npc_exit_of,
+};
 /// CF.5's exit acknowledgement, read by a pilot client (doc 32 G-4).
 pub use exit::EXIT_ASKED;
 pub use parties::friends_on_ground;
@@ -302,6 +304,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());
     reg.state(crew::CrewBook::default());
+    // Doc 42 cut CR.1 (Q-42-26): the hired NPCs' exits owed to their rosters.
+    reg.state(crew::NpcExits::default());
     // Doc 42 cut CR.0 (Q-42-2): a captive's exits, and an ejectee's, are refused.
     reg.hook(mush_core::HookPoint::MoveAttempt, Arc::new(crew::HeldGate));
     reg.state(orders::Offered::default());

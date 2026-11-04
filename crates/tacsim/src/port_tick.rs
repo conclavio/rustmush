@@ -310,6 +310,10 @@ pub(crate) fn register_with_coverage(
         &outcome_refs,
     )?);
     actions.push(crate::detachment::crew::action_descriptor(&outcome_refs)?);
+    // Doc 42 cut CR.1 (Q-42-26): a captured hull's NPC leaves the roster.
+    actions.push(crate::detachment::crew::captured_action_descriptor(
+        &outcome_refs,
+    )?);
     actions.push(crate::detachment::activation::action_descriptor(
         &outcome_refs,
     )?);
@@ -683,6 +687,7 @@ fn register_outcomes(
     let mut outcomes = outcome_descriptors(test_world)?;
     outcomes.push(crate::detachment::planning::outcome_descriptor()?);
     outcomes.push(crate::detachment::crew::outcome_descriptor()?);
+    outcomes.push(crate::detachment::crew::captured_outcome_descriptor()?);
     outcomes.push(crate::detachment::activation::outcome_descriptor()?);
     outcomes.push(crate::detachment::sortie::outcome_descriptor()?);
     outcomes.push(crate::procurement::outcome_descriptor()?);
