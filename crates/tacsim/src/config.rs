@@ -1970,6 +1970,8 @@ pub struct TacsimConfig {
 pub const FIELD_DISENGAGE_S: std::ops::RangeInclusive<u32> = 10..=3_600;
 /// **Doc 36 cut GC.11**: the band `[tacsim.field].raid_field_s` must sit in, seconds.
 pub const FIELD_RAID_S: std::ops::RangeInclusive<u32> = 60..=7_200;
+/// **Doc 40 cut FR.3** (Q-40-19): the band `[tacsim.field].launch_cycle_s` must sit in, seconds.
+pub const FIELD_LAUNCH_CYCLE_S: std::ops::RangeInclusive<u32> = 10..=600;
 
 /// **The shortest and longest idle bound a server may set** (doc 36 cut GC.2, Q-36-5): the
 /// demotion interval's own range.
@@ -2024,6 +2026,11 @@ pub struct FieldConfig {
     /// **Doc 36 cut GC.11** (Q-36-55): seconds of arena time a director raid spends in a promoted
     /// field before it turns for home (1,200, provisional: twenty wall-clock minutes).
     pub raid_field_s: u32,
+    /// **Doc 40 cut FR.3** (Q-38-25, Q-40-19): wall-clock seconds between two hulls one carrier
+    /// puts down into a running field (60, provisional), so a bay cannot pour: one hull a carrier
+    /// a cycle, a launch of several slots one a cycle in slot order, and a second launch inside
+    /// the cycle refused with the seconds left.
+    pub launch_cycle_s: u32,
 }
 
 impl Default for FieldConfig {
@@ -2040,6 +2047,7 @@ impl Default for FieldConfig {
             raid_director: false,
             raid_lost_permille: 500,
             raid_field_s: 1_200,
+            launch_cycle_s: 60,
         }
     }
 }
@@ -2121,7 +2129,22 @@ impl FieldConfig {
                 self.raid_field_s
             ));
         }
+        if !FIELD_LAUNCH_CYCLE_S.contains(&self.launch_cycle_s) {
+            return Err(format!(
+                "[tacsim.field].launch_cycle_s must be {} to {} (it is {})",
+                FIELD_LAUNCH_CYCLE_S.start(),
+                FIELD_LAUNCH_CYCLE_S.end(),
+                self.launch_cycle_s
+            ));
+        }
         Ok(())
+    }
+
+    /// **The launch cycle in IC seconds at `rate`** (doc 40 cut FR.3): the wall-clock cycle
+    /// times the world's IC seconds a wall second (a paused clock counts as one).
+    #[must_use]
+    pub fn launch_cycle_ic(&self, rate: u32) -> i64 {
+        i64::from(self.launch_cycle_s).saturating_mul(i64::from(rate.max(1)))
     }
 
     /// The interval in arena milliseconds.

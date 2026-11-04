@@ -25,6 +25,12 @@
 //! - **It departs mid-field only live, on the leave-behind confirmation** (Q-H10; doc 32 F-6,
 //!   ruled 2026-10-31): a live `+ship/lift` naming every unit out removes it from the field
 //!   outright (`crate::field::exit`); [`departure_refusal`] is a queued departure's gate.
+//! - **It launches into the running field** (doc 40 cut FR.3; Q-38-25, Q-40-19, §4.4): a
+//!   `+sortie/launch` from its pad — there at promotion or arrived by F-6 — is accepted under the
+//!   cap over the one count and its launch cycle (the prepare), lands at its ramp on the IC clock
+//!   as ever, and the field tick takes the landed hull in (`join_launches`): checked out under
+//!   the field's mark and offered as a join at the ramp with the director's spread. A join the
+//!   kernel refuses goes back aboard and is offered again at the next tick (Q-40-20).
 
 use mush_core::{CanonicalId, Ctx, ObjId, World};
 
@@ -227,8 +233,8 @@ pub fn departure_refusal(w: &World, hull: ObjId) -> Option<String> {
 /// **The carriers settled on `site`'s ground outside its running field** (doc 36 cut GC.1;
 /// Q-36-4): a hull that arrived by voyage after admission. Q-CF-16 puts everyone on the ground
 /// in the field, so each is owed its admission at its pad as a unit of its own party, which the
-/// kernel's join makes ([`join_arrivals`], GC.1b). A launch from it is already refused while the site is promoted
-/// (`FIELD_LAUNCH`, Q-CF-17). A hull left out under a licensed mind (Q-36-44) is no arrival, and
+/// kernel's join makes ([`join_arrivals`], GC.1b). Once in, it launches as any carrier on the
+/// pad does (doc 40 cut FR.3, Q-38-25). A hull left out under a licensed mind (Q-36-44) is no arrival, and
 /// neither is a carrier that left this field by doc 32 F-6 (`record` names its exit, or its exit
 /// is in flight: `crate::field::exit::leaving`): it stands on the pad outside the field until its
 /// departure lifts it, and the host never takes it in again while that field runs.
@@ -306,7 +312,8 @@ pub(crate) fn note_arrivals(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     }
     .unwrap_or_default();
     if book.hosted(site).is_none() {
-        book.join_refused.remove(site);
+        book.launching.remove(site);
+        book.relaunch.remove(site);
     }
     for hull in now.difference(&before) {
         tracing::info!(site = %site, hull = hull.0, "tacsim: a carrier settled mid-field; it is owed its admission at its pad");
@@ -317,7 +324,7 @@ pub(crate) fn note_arrivals(ctx: &mut Ctx<'_>, site: &CanonicalId) {
 /// Q-36-4): `{name}`, `{n}` the ordinal. A ship setting down is a physical fact anyone there
 /// observes, never whose it is.
 pub const ARRIVED_IN_FIELD: &str = "The {name} has set down on the pad and is in field {n}; \
-     nothing launches from it while the field runs.";
+     it launches into the field one hull a cycle.";
 
 /// **Take every owed arrival on `site` into its running field** (doc 36 cut GC.1b; Q-36-4), at
 /// the tick after it is seen: each is checked out under the field's mark, given its row on the
@@ -326,19 +333,23 @@ pub const ARRIVED_IN_FIELD: &str = "The {name} has set down on the pad and is in
 /// sent to the kernel as
 /// [`crate::arena_task::ArenaMsg::Join`] at its pad pose ([`pad_poses`]), which admits it at the
 /// next pulse. The row is written beside the check-out, so a restart before the kernel took it
-/// finds the row and the resume joins it again (`super::boot`). A hull the kernel refused is not
-/// asked again while this field runs.
+/// finds the row and the resume joins it again (`super::boot`). A hull the kernel refused is
+/// asked again at the next tick (doc 40 cut FR.3, Q-40-20), until taken or the field demotes.
 pub(crate) fn join_arrivals(ctx: &mut Ctx<'_>, site: &CanonicalId) {
-    let refused = ctx
-        .w
-        .module_state::<FieldBook>()
-        .and_then(|book| book.join_refused.get(site).cloned())
-        .unwrap_or_default();
     for hull in owed_arrivals(ctx.w, site) {
-        if refused.contains(&hull) {
-            continue;
-        }
-        match join(ctx, site, hull) {
+        let pose = ctx
+            .w
+            .module_state::<FieldBook>()
+            .and_then(|book| book.hosted(site))
+            .map(|hosted| hosted.task)
+            .and_then(|task| {
+                ctx.w
+                    .module_state::<crate::arena_bridge::ArenaRegistry>()?
+                    .ground_of(task)
+            })
+            .ok_or_else(|| "the field's task is gone".to_owned())
+            .and_then(|ground| pad_pose(ctx.w, site, &ground.terrain, hull));
+        match pose.and_then(|pose| join(ctx, site, hull, pose, PAD_SPREAD_CELLS)) {
             Ok(()) => {
                 if let Some(book) = ctx.w.module_state_mut::<FieldBook>()
                     && let Some(owed) = book.arrivals.get_mut(site)
@@ -513,20 +524,26 @@ pub(crate) fn pad_pose(
         .ok_or_else(|| format!("#{} has no pad pose", hull.0))
 }
 
-/// One arrival's join ([`join_arrivals`]).
-fn join(ctx: &mut Ctx<'_>, site: &CanonicalId, hull: ObjId) -> Result<(), String> {
+/// One hull's join at `pose`, the kernel standing it within `spread` cells: an arrival's at its
+/// pad ([`join_arrivals`]), a launch's at its ramp ([`join_launches`]).
+fn join(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    hull: ObjId,
+    pose: mush_sim::data::Pose,
+    spread: u16,
+) -> Result<(), String> {
     let (task, live) = ctx
         .w
         .module_state::<FieldBook>()
         .and_then(|book| book.hosted(site))
         .map(|hosted| (hosted.task, hosted.live.clone()))
         .ok_or_else(|| "no field runs there".to_owned())?;
-    let (ground, tasks) = ctx
+    let tasks = ctx
         .w
         .module_state::<crate::arena_bridge::ArenaRegistry>()
-        .and_then(|registry| Some((registry.ground_of(task)?, registry.tasks().clone())))
+        .map(|registry| registry.tasks().clone())
         .ok_or_else(|| "the field's task is gone".to_owned())?;
-    let pose = pad_pose(ctx.w, site, &ground.terrain, hull)?;
     let joining = joining(ctx, site, &live, hull, pose)?;
     // Doc 36a lane 3 (P0-8): the site's record must have a row for everyone on the ground.
     if let Some(domain) = super::parties::site_domain(ctx.w, site) {
@@ -541,7 +558,7 @@ fn join(ctx: &mut Ctx<'_>, site: &CanonicalId, hull: ObjId) -> Result<(), String
         unit: Box::new(joining.unit),
         pilot: joining.pilot,
         host: joining.host,
-        spread: PAD_SPREAD_CELLS,
+        spread,
     };
     if tasks.offer(task, message).is_err() {
         let _ = mush_tactics::custody::check_in(ctx, hull, None);
@@ -554,8 +571,236 @@ fn join(ctx: &mut Ctx<'_>, site: &CanonicalId, hull: ObjId) -> Result<(), String
     {
         registry.bind_joining(hull, task, controller, armed);
     }
-    tracing::info!(site = %site, hull = hull.0, task = task.0, "tacsim: an arriving carrier is joining the field");
+    tracing::info!(site = %site, hull = hull.0, task = task.0, "tacsim: a hull is joining the field");
     Ok(())
+}
+
+/// **A launch taken into a running field**, told to everyone on the site (doc 40 cut FR.3;
+/// Q-38-25): `{name}`, `{carrier}`, `{n}` the ordinal. A hull coming down a ramp is a physical
+/// fact anyone there observes.
+pub const LAUNCHED_IN_FIELD: &str = "The {name} comes down the {carrier}'s ramp into field {n}.";
+
+/// **A launch the field would not take yet**, told to its operator (doc 40 cut FR.3; Q-40-20):
+/// `{name}`, `{n}`. It is back aboard and goes down again at the next tick.
+pub const LAUNCH_BACK_ABOARD: &str = "The {name} could not come down into field {n} yet: it is \
+     back aboard and goes down again at the next tick.";
+
+/// **The launches the field sent back aboard on `site`** (doc 40 cut FR.3; Q-40-20): each goes
+/// down again at the next tick, and the one count holds it meanwhile
+/// ([`super::parties::site_population`]).
+#[must_use]
+pub(crate) fn relaunching(w: &World, site: &CanonicalId) -> Vec<ObjId> {
+    w.module_state::<FieldBook>()
+        .and_then(|book| book.relaunch.get(site))
+        .map(|hulls| hulls.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// **Whether `unit` is a launch the field sent back aboard** (doc 40 cut FR.3): its flight is
+/// still on the surface, so the flights' tick must not read it home.
+#[must_use]
+pub fn relaunching_unit(w: &World, unit: ObjId) -> bool {
+    w.module_state::<FieldBook>()
+        .is_some_and(|book| book.relaunch.values().any(|hulls| hulls.contains(&unit)))
+}
+
+/// **How a launch's join is sealed** (doc 40 cut FR.3; §4.4 step 3, D-23-23), read off the
+/// rig's record: an `Open` claim flies the claim's own seal, which doc 23 S.4b-2 installs at the
+/// join (`IcHost::resume`); anything else — no claim, or one owed, refused or closed — the ROM,
+/// as every entrant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LaunchSeal {
+    /// The ROM.
+    Rom,
+    /// The open claim's seal.
+    Claim(mush_core::CommitToken),
+}
+
+/// [`LaunchSeal`] for `hull`, read through the command lens.
+pub(crate) fn launch_seal(ctx: &Ctx<'_>, hull: ObjId) -> LaunchSeal {
+    let claim = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|handles| {
+            ctx.action_state(
+                &handles.families.excursions,
+                &crate::surface::excursion::RigKey(hull),
+            )
+            .ok()
+            .flatten()
+            .and_then(|record| record.claim.as_deref().cloned())
+        });
+    match claim {
+        Some(crate::surface::excursion::ClaimCursor::Open { open, .. }) => LaunchSeal::Claim(open),
+        _ => LaunchSeal::Rom,
+    }
+}
+
+/// **A joined launch's pilot takes its cockpit** (doc 40 cut FR.3): the seat the live row names,
+/// still sat in, is bound to the field's task as an admission binds it (`arena_bridge`'s
+/// check-out: never a watcher, the seat's channels at the check-out's epoch), so the frames
+/// the kernel sends for the hull reach its pilot.
+fn seat_joined_pilot(
+    ctx: &mut Ctx<'_>,
+    task: crate::arena_task::MatchId,
+    unit: ObjId,
+    live: &super::FieldLive,
+) {
+    let Some((pilot, station)) = live
+        .units
+        .iter()
+        .find(|row| row.unit == unit)
+        .and_then(|row| row.pilot.clone())
+    else {
+        return;
+    };
+    if super::parties::seated(ctx.w, unit).is_none_or(|(sat, _)| sat != pilot) {
+        return;
+    }
+    let Some(registry) = ctx
+        .w
+        .module_state_mut::<crate::arena_bridge::ArenaRegistry>()
+    else {
+        return;
+    };
+    registry.unbind_watcher(pilot);
+    registry.bind_pilot(pilot, task, unit);
+    match crate::arena::state::Channel::parse(&station) {
+        Some(channel) => registry.set_epoch(unit, channel, 1),
+        None => {
+            for channel in crate::arena::state::Channel::ALL {
+                registry.set_epoch(unit, channel, 1);
+            }
+        }
+    }
+}
+
+/// `unit`'s current DT flight, through the command lens.
+fn launch_flight(ctx: &Ctx<'_>, unit: ObjId) -> Option<crate::detachment::sortie::Flight> {
+    let handles = ctx
+        .w
+        .module_state::<crate::detachment::sortie::SortieHandles>()?;
+    let head = ctx.action_state(&handles.heads, &unit).ok()??;
+    ctx.action_state(&handles.flights, &head.flight)
+        .ok()
+        .flatten()
+        .cloned()
+}
+
+/// **The pending entrants on `site`** (doc 40 cut FR.3; §4.4's launch rule), in unit order then
+/// the ones aboard: each hull whose DT flight landed on this site (`Phase::Field`, its epoch
+/// open) and that the running field does not hold — standing on the promoted ground, not named
+/// by the live record, not checked out, not held out, not towed, not out at the ramp — or that the
+/// field sent back aboard ([`relaunching`]). Each with its flight, and whether it is aboard.
+pub(crate) fn launches(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+) -> Vec<(ObjId, crate::detachment::sortie::Flight, bool)> {
+    let Some(live) = ctx
+        .w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .map(|hosted| hosted.live.clone())
+    else {
+        return Vec::new();
+    };
+    let Some(domain) = super::parties::site_domain(ctx.w, site) else {
+        return Vec::new();
+    };
+    let record = super::close::site_record(ctx, site);
+    let carried = record
+        .as_ref()
+        .map(crate::surface::tow::carried)
+        .unwrap_or_default();
+    let landed = |unit: ObjId| {
+        launch_flight(ctx, unit).filter(|flight| {
+            flight.phase == crate::detachment::sortie::Phase::Field
+                && flight.site == *site
+                && flight.epoch.is_some()
+                && flight.closed.is_none()
+        })
+    };
+    super::parties::on_ground(ctx.w, domain)
+        .into_iter()
+        .filter(|unit| {
+            !is_carrier(ctx.w, *unit)
+                && !live.units.iter().any(|row| row.unit == *unit)
+                && !live.owed_exits.iter().any(|owed| owed.unit == *unit)
+                && !mush_sim::deployed::is_deployed(ctx.w, *unit)
+                && !super::admit::held_out(ctx.w, *unit)
+                && !carried.contains_key(unit)
+                && !record.as_ref().is_some_and(|record| record.exited(*unit))
+                && !super::exit::leaving(ctx.w, site, *unit)
+        })
+        .map(|unit| (unit, false))
+        .chain(
+            relaunching(ctx.w, site)
+                .into_iter()
+                .map(|unit| (unit, true)),
+        )
+        .filter_map(|(unit, aboard)| landed(unit).map(|flight| (unit, flight, aboard)))
+        .collect()
+}
+
+/// **Take every pending entrant on `site` into its running field** (doc 40 cut FR.3; §4.4 steps
+/// 3 and 4, Q-40-20), at the tick after it lands: one aboard is put down at its ramp again
+/// first; each is checked out under the field's mark and offered as
+/// [`crate::arena_task::ArenaMsg::Join`] where it stands, the kernel standing it within the
+/// director's spread ([`super::raiders::LAUNCH_SPREAD_CELLS`]) at the next pulse, through
+/// [`joining`] and [`on_joined`]. Its row is written beside the check-out, as an arrival's is. A
+/// hull that cannot be offered goes back aboard to try again at the next tick, never left on the
+/// ground outside the field (Q-CF-21). A hull under an `Open` claim waits for doc 23 S.4b-2's
+/// install of the claim's seal ([`LaunchSeal`]); no world composes the claim path yet.
+pub(crate) fn join_launches(ctx: &mut Ctx<'_>, site: &CanonicalId) {
+    for (hull, flight, aboard) in launches(ctx, site) {
+        if let LaunchSeal::Claim(open) = launch_seal(ctx, hull) {
+            tracing::warn!(site = %site, hull = hull.0, open = ?open, "tacsim: a launch under an open mind claim waits for its seal's install (doc 23 S.4b-2)");
+            continue;
+        }
+        if aboard && let Err(error) = mush_sim::place(ctx, hull, flight.domain, flight.ramp.clone())
+        {
+            tracing::warn!(site = %site, hull = hull.0, %error, "tacsim: a launch back aboard could not go down to its ramp yet");
+            continue;
+        }
+        let joined = mush_sim::pose_of(ctx.w, hull)
+            .ok_or_else(|| format!("#{} is not on the ground", hull.0))
+            .and_then(|(_, pose)| join(ctx, site, hull, pose, super::raiders::LAUNCH_SPREAD_CELLS));
+        match joined {
+            Ok(()) => {
+                if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
+                    if let Some(back) = book.relaunch.get_mut(site) {
+                        back.remove(&hull);
+                    }
+                    book.launching.entry(site.clone()).or_default().insert(hull);
+                }
+                tracing::info!(site = %site, hull = hull.0, "tacsim: a launch is joining the field at its ramp");
+            }
+            Err(why) => {
+                tracing::warn!(site = %site, hull = hull.0, reason = %why, "tacsim: a launch could not be taken into the field yet; it goes back aboard");
+                back_aboard(ctx, site, hull, &flight);
+            }
+        }
+    }
+}
+
+/// **A launch back aboard** (doc 40 cut FR.3; Q-40-20): into its bay berth, noted to go down
+/// again at the next tick. Its flight stays on the surface and its epoch open: the bay is its own
+/// carrier's.
+fn back_aboard(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    hull: ObjId,
+    flight: &crate::detachment::sortie::Flight,
+) {
+    if let Err(error) =
+        mush_sim::place_interior(ctx, hull, flight.bay_room, Some(flight.bay_slot.clone()))
+    {
+        tracing::error!(site = %site, hull = hull.0, %error, "tacsim: a refused launch could not go back aboard");
+        return;
+    }
+    if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
+        book.relaunch.entry(site.clone()).or_default().insert(hull);
+    }
 }
 
 /// The host's live record of `site`, replaced and written. A record that breaks its own
@@ -578,7 +823,8 @@ fn set_live(ctx: &mut Ctx<'_>, site: &CanonicalId, live: super::FieldLive) {
 
 /// **The kernel's answer to a join** (the bridge's branch; doc 36 cut GC.1b): taken in, the site
 /// is told; refused, the hull is checked back in as it went out, its row leaves the live record,
-/// and it is not asked again while this field runs.
+/// and it is asked again at the next tick (doc 40 cut FR.3, Q-40-20). A launch's answer
+/// ([`join_launches`]) is told as a launch, and a refused launch goes back aboard first.
 pub(crate) fn on_joined(
     ctx: &mut Ctx<'_>,
     task: crate::arena_task::MatchId,
@@ -592,7 +838,25 @@ pub(crate) fn on_joined(
     }) else {
         return;
     };
+    let launch = ctx
+        .w
+        .module_state_mut::<FieldBook>()
+        .and_then(|book| book.launching.get_mut(&site))
+        .is_some_and(|hulls| hulls.remove(&unit));
     match outcome {
+        Ok(name) if launch => {
+            tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a launch joined the field at its ramp");
+            seat_joined_pilot(ctx, task, unit, &live);
+            let carrier = launch_flight(ctx, unit).map_or_else(
+                || "carrier".to_owned(),
+                |flight| crate::port::coop::name_of(ctx.w, flight.carrier),
+            );
+            let line = LAUNCHED_IN_FIELD
+                .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
+                .replace("{carrier}", &carrier)
+                .replace("{n}", &live.field.ordinal.to_string());
+            super::tell_site(ctx, &site, &line);
+        }
         Ok(name) => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: an arriving carrier joined the field");
             let line = ARRIVED_IN_FIELD
@@ -604,10 +868,17 @@ pub(crate) fn on_joined(
             tracing::warn!(site = %site, hull = unit.0, reason = %why, "tacsim: the field refused an arriving carrier; it stands outside the field");
             let _ = mush_tactics::custody::check_in(ctx, unit, None);
             let mut live = live;
+            let party = live.party_of(unit);
             live.units.retain(|row| row.unit != unit);
-            // Its own party of one, when the join lettered one for it.
+            // Its own party of one, when the join lettered one for it; a launch's roster party
+            // when nobody else in the field holds it (the join lettered it).
             live.parties
                 .retain(|party| party.key != super::record::PartyKey::Unit { unit });
+            if launch && let Some(party) = party {
+                let held = live.units.iter().any(|row| row.party == party);
+                live.parties.retain(|row| held || row.party != party);
+            }
+            let ordinal = live.field.ordinal;
             set_live(ctx, &site, live);
             if let Some(registry) = ctx
                 .w
@@ -615,8 +886,15 @@ pub(crate) fn on_joined(
             {
                 registry.unbind_joining(unit, task);
             }
-            if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
-                book.join_refused.entry(site).or_default().insert(unit);
+            if launch && let Some(flight) = launch_flight(ctx, unit) {
+                back_aboard(ctx, &site, unit, &flight);
+                ctx.out.sys_to_actor(
+                    flight.operator,
+                    "tacsim.field",
+                    LAUNCH_BACK_ABOARD
+                        .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
+                        .replace("{n}", &ordinal.to_string()),
+                );
             }
         }
     }
