@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c85c9a642b122f79defb65edce27f7c92347ba933470aa03fde6a43584e557ac # shrinks to history = [Title { object: 1, owner: 3 }, Lien { object: 1, creditor: 1, amount: 0 }, Transfer { object: 1, to: 1, release_liens: false }]

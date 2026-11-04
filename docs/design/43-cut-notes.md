@@ -416,3 +416,49 @@ upload.
 
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
+
+## TS.5a (2026-11-04) — the generated lifecycle, part one
+
+§7's row has three parts. This PR lands the first two: the state machine with the invariants as its model,
+and the check that a generated history's checkpoint boot equals its whole replay. The fault matrix as
+sequences is TS.5b.
+
+- **The state machine** (`mush-economy/tests/e2a/lifecycle.rs`) replaces `e2a.rs`'s fixed-seed
+  conservation fuzz. That fuzz had one instrument, two-line transfers and no shrinking.
+  - The inputs are histories of up to 47 steps, run against the pure engine: pay, place, capture, release
+    and expire a hold, title, transfer (with or without releasing liens), assign, unassign, encumber,
+    release a lien, and resubmit an earlier plan.
+  - After every step the model checks:
+    - conservation;
+    - the held projection equals the account's `Held` holds;
+    - invariant 23's available floor;
+    - invariant 26's cap;
+    - invariant 24: a hold leaves `Held` once and captures at most what it held, and an `Expire` without a
+      deadline never posts;
+    - invariants 12 and 13: no lien rides a title move, a moved title loses its assignment and maintenance
+      payer, and an asset is never assigned to its own owner;
+    - a posted plan resubmitted is `AlreadyPosted`.
+  - `the_histories_reach_every_kind_of_post` is the reach floor: every step kind posts somewhere in a fixed
+    sample.
+  - Mutation check: with invariant 12's `Encumbered` refusal disabled, the property fails and shrinks to a
+    three-step history (title, lien, transfer).
+- **Checkpoint boot equals whole replay** (`mush-economy/tests/e2b/lifecycle_replay.rs`).
+  - Histories of the economy's own staff verbs run through `TestWorld`:
+    - `@econ/mint`, `@econ/pay`;
+    - `@hold/place`, `@hold/capture`, `@hold/release`;
+    - `@asset/title`, `/transfer`, `/assign`, `/unassign`, `/lien`, `/release`.
+  - The sweep fires at random points, with the checkpoint cadence at 4 and the tail at 3.
+  - The written store is booted twice: as written, which resumes from the newest checkpoint, and with every
+    checkpoint document and the boot manifest removed, which replays the whole journal. The two snapshots
+    must be equal to each other, and to the live one.
+  - Its reach floor: every verb succeeds somewhere, and some boot resumes from a checkpoint. The floor caught
+    the generator's own gap on its first run. Only a hold placed `for=` someone can be captured
+    (`api.rs:710`), and unfunded accounts rarely placed at all, so the cast now starts funded and places
+    with a beneficiary.
+
+**Departures from §7.** It ships in two PRs. The pure engine has no custody provider, so custody is covered
+only through the module rig's title and lien verbs. `@vault` deposit and withdraw need a vault and a carried
+object, and wait for TS.5b's sequences. No minimised failure exists yet to keep as a regression: none was
+found.
+
+**Summed minutes.** About +0.05: 0.7 s in `e2a` and 2.3 s in `e2b`.
