@@ -146,6 +146,20 @@ mod tests {
             (163, 55, 12),
             "the Dray-P: 157,500 and 52,500 kg and the loss, twelve days"
         );
+        // Doc 41 cut RS.6a (Q-41-15): Tycho's two designs are billed like any other.
+        let crawler = bill("tacsim.unit.tycho_crawler");
+        assert_eq!(
+            (crawler.alloys_t, crawler.fittings_t, crawler.days),
+            (100, 34, 7),
+            "the 130 t crawler: a week in the yard"
+        );
+        assert_eq!(crawler.parts.len(), 2, "a plant and a sight");
+        let lifter = bill("tacsim.unit.tycho_lifter");
+        assert_eq!(
+            (lifter.alloys_t, lifter.fittings_t, lifter.days),
+            (441, 147, 30),
+            "the 600 t lifter: a month in the yard"
+        );
         // The shipped hull pack is the bills, row for row: bulk lines, kit, days.
         let pack: serde_json::Value =
             serde_json::from_str(crate::definitions::content::INDUSTRY_HULLS_JSON)

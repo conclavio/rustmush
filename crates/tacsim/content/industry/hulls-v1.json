@@ -1,11 +1,4 @@
 {
-  "manifest": {
-    "digest": "3df60e4518dae14ba82bc742b905bbd24997535931306f54eb79276afa00c938",
-    "id": "tacsim.industry.hulls",
-    "kind": "rules_definition",
-    "requires": [],
-    "version": 1
-  },
   "entries": {
     "dray": {
       "def": {
@@ -141,6 +134,67 @@
         "work_units": 48
       },
       "kind": "recipe"
+    },
+    "tycho_crawler": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 100
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 34
+          }
+        ],
+        "label": "Tycho crawler hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tycho_crawler",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 168
+      },
+      "kind": "recipe"
+    },
+    "tycho_lifter": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 441
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 147
+          }
+        ],
+        "label": "Tycho lifter hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tycho_lifter",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 720
+      },
+      "kind": "recipe"
     }
+  },
+  "manifest": {
+    "digest": "374620f27944b1b4104ef682efeb2c1a75945f786cf55d54d73b15b5a3658999",
+    "id": "tacsim.industry.hulls",
+    "kind": "rules_definition",
+    "requires": [],
+    "version": 1
   }
 }

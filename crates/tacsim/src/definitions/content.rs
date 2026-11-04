@@ -817,6 +817,38 @@ pub const TV_TENDER: &str = "tacsim.unit.tv_tender";
 pub const EXTENSIONS_TENDER: [(&str, &str); 1] =
     [("tacsim/content/units/tv_tender.json", TV_TENDER_JSON)];
 
+/// `crates/tacsim/content/units/tycho_crawler.json` (doc 41 cut RS.6a).
+pub const TYCHO_CRAWLER_JSON: &str = include_str!("../../content/units/tycho_crawler.json");
+
+/// The crawler's pack id.
+pub const TYCHO_CRAWLER_PACK: &str = "tacsim.pack.tycho_crawler";
+
+/// **Tycho Mutual's heavy recovery crawler** (doc 41 cut RS.6a; §4.4, Q-41-15, Q-41-29): 130 t
+/// dry, tracked, unarmed, a crew of two, the `heavy` tow coupling (twice its mass, laden). Class
+/// `vehicle`, never fielded in an arena. Rides in a lifter's bay.
+pub const TYCHO_CRAWLER: &str = "tacsim.unit.tycho_crawler";
+
+/// `crates/tacsim/content/units/tycho_lifter.json` (doc 41 cut RS.6a).
+pub const TYCHO_LIFTER_JSON: &str = include_str!("../../content/units/tycho_lifter.json");
+
+/// The lifter's pack id.
+pub const TYCHO_LIFTER_PACK: &str = "tacsim.pack.tycho_lifter";
+
+/// **Tycho Mutual's heavy lifter** (doc 41 cut RS.6a; §4.4, Q-41-15): the Dray-P's hull grown to
+/// 600 t dry, one recovery bay of two places (the crawler and a 300 t load). Class `hauler`, never
+/// fielded.
+pub const TYCHO_LIFTER: &str = "tacsim.unit.tycho_lifter";
+
+/// **Tycho's two designs, two unit schemas and no row of their own** (doc 41 cut RS.6a), fielded
+/// **last**, after every earlier table, so none moves.
+pub const EXTENSIONS_TYCHO: [(&str, &str); 2] = [
+    (
+        "tacsim/content/units/tycho_crawler.json",
+        TYCHO_CRAWLER_JSON,
+    ),
+    ("tacsim/content/units/tycho_lifter.json", TYCHO_LIFTER_JSON),
+];
+
 /// `crates/tacsim/content/units/corvette.json` (doc 35b cut SF.R12).
 pub const CORVETTE_JSON: &str = include_str!("../../content/units/corvette.json");
 
@@ -1172,6 +1204,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_ESCORT.as_slice(),
         EXTENSIONS_CORVETTE.as_slice(),
         EXTENSIONS_TENDER.as_slice(),
+        EXTENSIONS_TYCHO.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

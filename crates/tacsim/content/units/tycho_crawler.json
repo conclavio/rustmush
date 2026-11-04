@@ -1,0 +1,282 @@
+{
+  "entries": {
+    "tacsim.unit.tycho_crawler": {
+      "def": {
+        "class": "vehicle",
+        "components": [
+          {
+            "id": "power",
+            "role": {
+              "capability": "tacsim.power",
+              "initial": "off",
+              "kind": "power",
+              "plant": "tacsim.plant.vehicle_mk1",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ]
+            },
+            "section": "chassis"
+          },
+          {
+            "id": "visual_sensor",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            },
+            "section": "boom"
+          }
+        ],
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 40
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              },
+              {
+                "section": "boom",
+                "weight": 20
+              }
+            ]
+          }
+        ],
+        "interior": {
+          "berths_slot": {
+            "id": "berths",
+            "maximum_items": 2
+          },
+          "exits": [],
+          "gauges": {
+            "stores": [
+              "cab"
+            ]
+          },
+          "rooms": [
+            {
+              "desc": "Two seats side by side high over the tracks, under a canopy ribbed against falling rock. Between them a winch console carries the coupling's load cells, a tension dial and a big red release under a hinged guard. A teleoperation repeater sits beside the console for the days the crawler is driven from the lifter's bridge. Every panel wears the Tycho Mutual roundel and a fleet number. The air is cold and smells of hydraulic oil.",
+              "details": {
+                "repeater": "A sealed box with a green link light and a red one: green, the lifter has the crawler; red, the crew in the seats does.",
+                "roundel": "TYCHO MUTUAL ASSURANCE & SALVAGE, CERES, and a fleet number under it.",
+                "winch console": "The heavy coupling's controls: load cells, a tension dial, and a release under a guard. The plate reads RATED TWICE OWN MASS, LADEN CASUALTY."
+              },
+              "id": "cab",
+              "kind": "walkable",
+              "name": "Cab",
+              "short_desc": "Two seats high over the tracks, a winch console between them, the Tycho Mutual roundel on every panel."
+            },
+            {
+              "desc": "A locker under the cab: chain, shackles, cutting gear and a tonne of blocking timber. Not a place anyone walks.",
+              "id": "stores",
+              "kind": "store",
+              "name": "Stores"
+            }
+          ],
+          "space": "cab",
+          "store": "stores"
+        },
+        "label": "Tycho recovery crawler",
+        "logistics": {
+          "berths": 2,
+          "dry_mass_t": 130,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 3200,
+          "recovery_profile": "heavy",
+          "stowage": {
+            "stores": {
+              "accepts": [
+                "stow.bulk"
+              ],
+              "limits": {
+                "si.mass_kg": 3000,
+                "si.volume_l": 6000
+              }
+            }
+          }
+        },
+        "mobility": {
+          "tracked": {
+            "accel_cms2": 25,
+            "brake_cms2": 60,
+            "max_speed_cms": 200,
+            "reverse_factor_pct": 50,
+            "turn_rate_mdeg_s": 8000
+          }
+        },
+        "note": "Doc 41 cut RS.6a (Q-41-15, Q-41-29): Tycho Mutual's heavy recovery crawler, 130 t dry (provisional), tracked, unarmed, a crew of two. logistics.recovery_profile heavy tows twice its mass on the casualty's laden mass (Q-41-27), so it takes a Dray-P at 256 t with two wrecked rigs aboard. Its own stores are a tool locker (3 t / 6 m3 stow.bulk). It rides in a Tycho lifter's bay; a registered design the Stickney yard builds at its bill.",
+        "sections": [
+          {
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ],
+            "facets": [
+              {
+                "armor": 80,
+                "id": "front"
+              },
+              {
+                "armor": 60,
+                "id": "left"
+              },
+              {
+                "armor": 60,
+                "id": "right"
+              },
+              {
+                "armor": 60,
+                "id": "rear"
+              },
+              {
+                "armor": 40,
+                "id": "top"
+              }
+            ],
+            "id": "chassis",
+            "internals": 900
+          },
+          {
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              }
+            ],
+            "facets": [
+              {
+                "armor": 20,
+                "id": "left"
+              },
+              {
+                "armor": 20,
+                "id": "right"
+              },
+              {
+                "armor": 20,
+                "id": "top"
+              }
+            ],
+            "id": "stores",
+            "internals": 300
+          },
+          {
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 90
+              }
+            ],
+            "facets": [],
+            "id": "boom",
+            "internals": 120,
+            "struck_through": {
+              "facet": "top",
+              "section": "chassis"
+            }
+          }
+        ],
+        "sensor_height_cm": 500,
+        "silhouettes": [
+          {
+            "band": "front",
+            "height_cm": 520,
+            "width_cm": 900
+          },
+          {
+            "band": "left",
+            "height_cm": 520,
+            "width_cm": 1800
+          },
+          {
+            "band": "right",
+            "height_cm": 520,
+            "width_cm": 1800
+          },
+          {
+            "band": "rear",
+            "height_cm": 520,
+            "width_cm": 900
+          },
+          {
+            "band": "top",
+            "height_cm": 900,
+            "width_cm": 1800
+          }
+        ],
+        "stowage_volume_l": 380000
+      },
+      "kind": "unit"
+    }
+  },
+  "manifest": {
+    "digest": "8e8d1ead844ad1dcc50f6200409e0385dc878557565c263f257cc3a4673577b8",
+    "id": "tacsim.pack.tycho_crawler",
+    "kind": "rules_definition",
+    "requires": [
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}
