@@ -4,8 +4,8 @@
 # `tacsim-harness` job runs it (16b cut U.3; 16c T-37 and Q29; D-16-19).
 #
 # The CI job runs daily on a shared runner, where the timing gate is dormant
-# (the baseline is blessed on the VPS, 16c T-109), so the run that measures is
-# the owner's, on that box. This is that run as one command, from anywhere in
+# (the baseline is blessed on conclav.dev, doc 43 D-43-6; on conclav.io from 16c
+# T-109 until then), so the run that measures is the owner's, on that box. This is that run as one command, from anywhere in
 # the tree:
 #
 #   scripts/harness-weekly.sh
@@ -35,8 +35,12 @@
 # everywhere. Since 16c T-109 (the owner, 2026-10-09) the lenses are the
 # production VPS's (conclav.io) and the baseline is blessed THERE under the
 # box's own host name, so the timing gate is live on the VPS and dormant on
-# every other host, ALIEN18 included; run this script on the VPS with dev1's
-# centre idle.
+# every other host, ALIEN18 included. Since doc 43 cut TS.21 (D-43-6, the owner
+# 2026-11-03) the blessing host is conclav.dev (`hg.conclav.dev`, 32 cores,
+# nothing else on it; `scripts/vps-gate.sh --kind harness` goes there by
+# default): conclav.io carries dev1 and dev2's play, which no run can control.
+# The lenses did not move; the timing block did, by a `harness_timing_update`
+# record in the baseline's `blessed` stanza.
 #
 # What asserts where:
 #   * this script exports TACSIM_ASSERT=1, so every lane asserts its absolutes

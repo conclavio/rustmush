@@ -7,9 +7,10 @@ name: Gate (VPS)
 # cargo-nextest at the version .config/nextest.toml names:
 #   * conclav.io  (runner `conclav-vps`, labels `vps` and `conclav-io`): 8
 #     cores, 31 GB, shared with the dev1/dev2 game servers and the production
-#     Redis; the host whose name blessed the harness baseline;
+#     Redis;
 #   * conclav.dev (runner `conclav-dev`, labels `vps` and `conclav-dev`): 32
-#     cores, 62 GB, nothing else on it (added 2026-10-27).
+#     cores, 62 GB, nothing else on it (added 2026-10-27); the host whose name
+#     blessed the harness baseline since doc 43 cut TS.21 (D-43-6).
 # The `runner` input is the label: `vps` (the default) is the one both carry,
 # so whichever box is idle takes the job; `conclav-dev` and `conclav-io` pin
 # it. The cut loop's gate runs HERE instead of on the owner's Windows box
@@ -46,12 +47,13 @@ name: Gate (VPS)
 # `ci-bot` profile; its nine-minute mining canary was the sweep's tail); or
 # only the packages the dispatch names.
 # `harness` and `cost-lane` run scripts/harness-weekly.sh and
-# scripts/cost-lane.sh by their own rules: conclav.io is the host whose host
-# name blessed the harness baseline (16c T-109), so the timing gate is LIVE
-# there and dormant on conclav.dev as on a hosted runner (scripts/vps-gate.sh
-# pins those two kinds to `conclav-io` unless told otherwise); the owner
-# dispatches them on a box not serving players (pre-launch: dev1 and dev2 are
-# the owner's own smokes).
+# scripts/cost-lane.sh by their own rules: conclav.dev is the host whose host
+# name blessed the harness baseline (doc 43 D-43-6, cut TS.21; conclav.io's
+# from 16c T-109 until then), so the timing gate is LIVE there and dormant on
+# conclav.io as on a hosted runner, and the cost lane's absolute lens is read
+# there too (scripts/vps-gate.sh pins those two kinds to `conclav-dev` unless
+# told otherwise): conclav.dev serves no players, and a run on conclav.io
+# would time dev1 and dev2's play as much as the arena.
 
 on:
   workflow_dispatch:
@@ -62,7 +64,7 @@ on:
         options: [sweep, harness, cost-lane]
         default: sweep
       runner:
-        description: "the box, by label: vps (either: whichever is idle), conclav-dev (32 cores) or conclav-io (8 cores; the harness's blessing host)"
+        description: "the box, by label: vps (either: whichever is idle), conclav-dev (32 cores; the harness's blessing host) or conclav-io (8 cores)"
         type: choice
         options: [vps, conclav-dev, conclav-io]
         default: vps
