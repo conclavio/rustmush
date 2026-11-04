@@ -1100,8 +1100,9 @@ fn sm2_the_lane_carries_six_sites() {
             "{venue}"
         );
     }
-    // Doc 20 cut SM.10 appends the Pallas Syndicate after the Registry.
-    let [.., registry, last] = ceres.orgs.as_slice() else {
+    // Doc 20 cut SM.10 appends the Pallas Syndicate after the Registry, and doc 39 cut IN.5
+    // Freeport Works after it.
+    let [.., registry, last, _] = ceres.orgs.as_slice() else {
         panic!("orgs");
     };
     assert_eq!(
@@ -2781,10 +2782,12 @@ fn sm2_an_unreadable_site_map_closes_the_pad_and_never_the_desk() {
     );
     for _ in 0..3 {
         let (_, queued) = fire(&mut rig);
+        // Doc 39 cut IN.5: Stickney's clerk has acts of its own (the works' house purchase);
+        // what may not stage is a burn.
         assert!(
             queued
                 .iter()
-                .all(|s| s.action.key().owner.as_str() != tacsim::NS),
+                .all(|s| s.action.key().id.as_str() != tacsim::port::burn::BURN_ACTION),
             "nothing is burned"
         );
         land_all(&mut rig, &queued);

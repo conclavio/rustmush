@@ -1190,8 +1190,8 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
             .map(|v| v.get("mill").is_some())
             .collect()
     };
-    // Doc 39 cut IN.5: Freeport Works' vendor, second, mills nothing; the strip chain takes it.
-    assert_eq!(vendors(&doc), vec![true, false, true, false]);
+    // Doc 39 cut IN.5: Freeport Works' vendor, last, mills nothing; the strip chain takes it.
+    assert_eq!(vendors(&doc), vec![true, true, false, false]);
     strip_mill(&mut doc);
     assert_eq!(vendors(&doc), vec![false, false, false]);
     // Doc 20 cut SM.12b: the yard goes with the mills (a yard names a mill row).

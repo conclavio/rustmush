@@ -3,7 +3,7 @@
 //!
 //! The story (doc 39 §6, the IN.5 row; the bot plays the whole of it over SSH at 256 and 512 in
 //! `mush-bot/tests/mining_cohort.rs`, `in5_`): a captain at Ceres buys concentrate and a tonne of
-//! carbon ore at the Exchange's asks, sails to Stickney Yards and sells the concentrate into
+//! carbon ore at the Exchange's and Freeport Works' asks, sails to Stickney Yards and sells the concentrate into
 //! Kasei's bid. Kasei refines it on the next fires (five tonnes to four), and its alloy ask
 //! restocks by the milled tonnes. The captain buys five tonnes of alloys at that ask, books a
 //! fittings batch at the Stickney works through `+works`, delivers the alloys and the carbon from
@@ -402,23 +402,22 @@ async fn in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres() {
     }
     let freeport_works = &port_map(&rig.tw, CERES).vendors[&cid("freeport_works")];
     assert_eq!(
-        freeport_works.bids.keys().map(|g| g.as_str()).collect::<Vec<_>>(),
-        [CARBON, ALLOYS],
-        "the alloy and carbon bids are Freeport Works'"
-    );
-    assert_eq!(
         Some(freeport_works.vault),
         stores(&rig, CERES, "room.c15_maintenance").map(|v| v.0),
-        "Freeport Works' bids fill the works' stores"
+        "Freeport Works' storefront is the works' stores"
+    );
+    assert!(
+        listed(&rig, CERES, "freeport_works", CARBON).is_some(),
+        "Freeport Works asks its carbon"
     );
 
-    // ---- Ceres: the concentrate and the carbon at the Exchange's asks ----
+    // ---- Ceres: the concentrate at the Exchange's ask, the carbon at Freeport Works' ----
     let (captain, row) = prospector(&mut rig, "Smith", 1, "Long Ox");
     let account = mint(&mut rig, captain);
     let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
     teleport(&mut rig.tw, captain, exchange);
     buy(&mut rig, captain, CERES, "freeport_exchange", METALS, 20);
-    buy(&mut rig, captain, CERES, "freeport_exchange", CARBON, 1);
+    buy(&mut rig, captain, CERES, "freeport_works", CARBON, 1);
     let hold = hold_vault_of(&rig.tw, &row);
     assert_eq!(hold_pool(&mut rig.tw, hold, METALS), 20);
     assert_eq!(hold_pool(&mut rig.tw, hold, CARBON), 1);

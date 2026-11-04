@@ -22,11 +22,10 @@ pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
 /// **Doc 39 cut IN.5 (lane v23): the refinery and the works taken out** — Stickney's `refinery`
-/// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, the
-/// Freeport Works org and vendor (its alloy and carbon bids back on the Exchange's row, the alloy
-/// bid under its old `as` name, in their old places), and the Exchange's carbon stock and ask — so
-/// a strip chain rebuilds a lane before v23 (idempotent). The programme's carbon reference goes
-/// back from the Exchange's listing to its fixed 25.00cr.
+/// and `works` blocks, Kasei's refine row and its bid's `refresh`, Ceres's `works` block, and the
+/// Freeport Works org and vendor (its carbon stock and ask) — so a strip chain rebuilds a lane
+/// before v23 (idempotent). The programme's carbon reference goes back from Freeport Works'
+/// listing to its fixed 25.00cr.
 pub fn strip_industry(doc: &mut Value) {
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
@@ -85,34 +84,8 @@ pub fn strip_industry(doc: &mut Value) {
     if let Some(orgs) = def.get_mut("orgs").and_then(Value::as_array_mut) {
         orgs.retain(|org| org["id"] != "freeport_works");
     }
-    let Some(vendors) = def.get_mut("vendors").and_then(Value::as_array_mut) else {
-        return;
-    };
-    let had_works = vendors.iter().any(|vendor| vendor["org"] == "freeport_works");
-    vendors.retain(|vendor| vendor["org"] != "freeport_works");
-    let Some(exchange) = vendors
-        .iter_mut()
-        .find(|vendor| vendor["org"] == "freeport_exchange")
-    else {
-        return;
-    };
-    for side in ["stock", "asks"] {
-        if let Some(rows) = exchange.get_mut(side).and_then(Value::as_array_mut) {
-            rows.retain(|row| row["good"] != "carbon_ore");
-        }
-    }
-    if had_works && let Some(bids) = exchange.get_mut("bids").and_then(Value::as_array_mut) {
-        bids.insert(
-            0,
-            serde_json::json!({ "good": "structural_alloys", "price_major": 520, "intake": 7000,
-                                "as": "Freeport Works", "boards": ["exchange"] }),
-        );
-        bids.insert(
-            2,
-            serde_json::json!({ "good": "carbon_ore", "price_major": 50, "intake": 120,
-                                "boards": ["exchange"],
-                                "refresh": { "per_ic_day": 20, "cap": 120 } }),
-        );
+    if let Some(vendors) = def.get_mut("vendors").and_then(Value::as_array_mut) {
+        vendors.retain(|vendor| vendor["org"] != "freeport_works");
     }
 }
 

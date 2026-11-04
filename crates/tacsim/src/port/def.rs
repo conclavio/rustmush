@@ -252,7 +252,7 @@ pub struct RefineryDef {
 pub struct WorksDef {
     /// `"<area>.<entry>"`: the room, which becomes the facility object itself (its order
     /// crates lie there). It may be the port's spine, and a vendor's storefront may name it:
-    /// that vendor's bids then fill the works' stores (§4.2's "the pool is the works'").
+    /// that vendor's stock is then the works' stores (§4.2's "the pool is the works'").
     pub room: String,
     /// One of this entry's orgs: the facility's owner.
     pub operator: CanonicalId,
@@ -1106,7 +1106,7 @@ pub struct VendorDef {
     pub org: CanonicalId,
     /// `<area>.<entry>` of an `item` in the port's `spine` room: the container
     /// its storefront vault is backed by. **Doc 39 cut IN.5**: or the port's works room
-    /// itself, when it is the spine, so the vendor's bids fill the works' stores.
+    /// itself, when it is the spine, so the vendor's stock is the works' stores.
     pub storefront: String,
     /// **The port's stock clerk** (doc 18 cut IC8, lead ruling L2; D-18-26 "a
     /// per-port clerk actor"): every vendor of one port names the same agent

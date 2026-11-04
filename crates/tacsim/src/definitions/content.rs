@@ -969,9 +969,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// (`+tv/lease tender`, pool 2, 1,800 + 7,000 for 168 IC days, provisional); **v22 since doc 39
 /// cut IN.6**: the seeded part rows; **v23 since doc 39 cut IN.5**: Stickney's refinery (Kasei's
 /// `kind: refine` mill row, concentrate into alloys at five to four, and its bid's `refresh`) and
-/// works (Stickney Yards', its house purchase of Kasei's alloys), the Ceres works of Freeport Works
-/// (the new org, with the alloy and carbon bids that were the Exchange's), and the Exchange's
-/// carbon ask. The port readiness report
+/// works (Stickney Yards', its house purchase of Kasei's alloys), and the Ceres works of Freeport
+/// Works (the new org), which stocks and asks carbon ore. The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///

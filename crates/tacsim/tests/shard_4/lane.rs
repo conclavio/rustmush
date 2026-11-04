@@ -68,9 +68,9 @@ use support::ground::{UNSIGNED, sign};
 /// cut IN.4 (the workshops' cost model and Tycho Mutual's recovery row; was `10fcdaa6…` at v19).
 /// Doc 39 cut IN.6: v22, the seeded part rows at Occator and Stickney Yards (was `790ab79b…` at
 /// v21).
-/// Doc 39 cut IN.5: v23, Stickney's refinery and works, the Ceres works and Freeport Works, the
-/// Exchange's carbon ask (was `af3f150a…` at v22).
-const LANE_DIGEST: &str = "fe502fe18a29648e6ada25b04c446feb54e9ec13e6b099b914552053986d28fd";
+/// Doc 39 cut IN.5: v23, Stickney's refinery and works, the Ceres works and Freeport Works with its
+/// carbon ask (was `af3f150a…` at v22).
+const LANE_DIGEST: &str = "5b35ec9cdbb8ff8e2c99384841ba7e13c893ef2b1bdeecbb53a16f8a948cf299";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";

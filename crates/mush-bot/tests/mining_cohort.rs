@@ -525,7 +525,7 @@ async fn salvage_smoke(miner: Miner) {
 /// mining lane plays its loop — kit-up, the hop, the mine, home, the hold sold into the Exchange's
 /// ore bid — and then the bot types the production run's half, every line in its closed
 /// vocabulary and every answer read by its own reader ([`mush_bot::mine::lane::works`]): at Ceres
-/// it buys concentrate and a tonne of carbon ore at the Exchange's asks, bunkers and sails to
+/// it buys concentrate at the Exchange's ask and a tonne of carbon ore at Freeport Works', bunkers and sails to
 /// Stickney Yards, sells the concentrate into Kasei's bid, watches Kasei's alloy ask restock by the
 /// refine's tonnes, buys five tonnes of alloys there, books `fittings` at the works, delivers the
 /// alloys and the carbon from its hold, collects five tonnes of fittings once the arm has pooled
@@ -630,7 +630,7 @@ async fn sell_all(client: &mut arena::Client, n: u64) -> lines::SaleRead {
         client,
         &format!("+market/sell {n}=all"),
         &[" when the goods are in"],
-        &[lines::GOODS_WAIT],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
     )
     .await;
     lines::sale_receipt(&text).expect("the sale's receipt")
@@ -664,8 +664,9 @@ async fn bunker(client: &mut arena::Client, port: &str) {
     panic!("the bunkers for {port} never covered the plan");
 }
 
-/// Board at the gallery, file the passage to `port` once every bought good is aboard, and wait
-/// for the hull to dock there; then ashore.
+/// Board at the gallery, file the passage to `port` once every bought good is aboard and every
+/// sold one has left (the hand-overs settle on the market's sweep), and wait for the hull to dock
+/// there; then ashore.
 async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
     typed(client, "+ship/board", &[lines::BOARDED], &[]).await;
     let from = client.seen.len();
@@ -673,7 +674,7 @@ async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
         client,
         &format!("+ship/undock {port}"),
         &[lines::CLEARANCE],
-        &[lines::GOODS_WAIT],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
     )
     .await;
     assert!(
@@ -744,10 +745,11 @@ async fn production_story(miner: Miner) {
     if lift != Some(PRODUCTION_RATE) {
         mine::lift_rate(&mut god, PRODUCTION_RATE).await;
     }
-    // Ceres: the concentrate and the carbon at the Exchange's asks, the bunkers, the passage.
+    // Ceres: the concentrate at the Exchange's ask, the carbon at Freeport Works', the bunkers,
+    // the passage.
     let rows = board_rows(&mut client).await;
     let concentrate = works::ask_row(&rows, "metal concentrate").expect("the concentrate ask");
-    let carbon = works::ask_row(&rows, "carbon ore").expect("the Exchange's carbon ask");
+    let carbon = works::ask_row(&rows, "carbon ore").expect("Freeport Works' carbon ask");
     let (concentrate, carbon) = (concentrate.number, carbon.number);
     buy(&mut client, concentrate, 20).await;
     buy(&mut client, carbon, 1).await;
