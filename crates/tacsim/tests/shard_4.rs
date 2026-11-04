@@ -47,6 +47,8 @@ mod field_host_rig;
 mod field_raiders_rig;
 #[path = "shard_4/geology.rs"]
 mod geology;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_4/knowing.rs"]
 mod knowing;
 #[path = "shard_4/lane.rs"]

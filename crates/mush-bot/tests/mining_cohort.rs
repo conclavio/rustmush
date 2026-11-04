@@ -249,6 +249,142 @@ async fn canary() {
     drop(rig);
 }
 
+/// **Doc 40 cut FR.0's smoke: the bot on Urvara Reach** (the first 512 site, its pockets numbered
+/// to `P1024`). The canary's drive at `--mine urvara`: the bot's own lane kits up at Ceres, flies
+/// to Urvara, launches and scans, over its own SSH session in line mode. Then, on the same session
+/// and through the bot's own closed vocabularies ([`in_vocabulary`] and
+/// `mush_bot::mine::lane::field::in_vocabulary`, both asserted before each line goes), it drives
+/// rig 1 to `G1000`, the first four-digit pocket east of the pad (the pad's own pocket is `G993`),
+/// reads the arrival with the bot's own address parser, and types `+field/void`, read by the bot's
+/// own `void_answer` as nothing to void (no field ran). `#[ignore]`d, run by name:
+///
+/// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored fr0_ --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 40 cut FR.0's Urvara smoke: a hop and a launch, minutes; run by name"]
+async fn fr0_the_bot_drives_to_a_four_digit_pocket_on_urvara_and_types_void() {
+    tokio::time::timeout(Duration::from_secs(30 * 60), urvara_smoke())
+        .await
+        .expect("the Urvara smoke finishes inside 30 minutes");
+}
+
+async fn urvara_smoke() {
+    use mush_bot::mine::lane::field;
+    let started = std::time::Instant::now();
+    let miner = Miner {
+        account: "urvara",
+        character: "Urvara",
+        site: Site::Urvara,
+    };
+    let rig = mine::boot(&[miner]).await;
+    let mut god = arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+    let mut client =
+        arena::Client::login(&rig, miner.account, arena::PILOT_PASSWORD, miner.character).await;
+    let hull = hull_name("urvara+Urvara").expect("the hull name");
+    let mut lane = Lane::new(
+        Site::Urvara,
+        Settings {
+            hull,
+            epoch_unix_ms: mine::unix_now_ms(),
+        },
+        miner.character.to_owned(),
+    );
+    // The canary's two phases around the rate lift.
+    let lift = mine::rate_lift(mine::LIFTED_RATE);
+    let drive_started = std::time::Instant::now();
+    let bound = Duration::from_secs(28 * 60);
+    let enrolled_now = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
+    mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| enrolled_now(lane) || lane.reached(Milestone::Scanned),
+        bound,
+    )
+    .await;
+    if let (Some(rate), true) = (lift, enrolled_now(&lane)) {
+        mine::lift_rate(&mut god, rate).await;
+    }
+    let (wall, _) = mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| lane.reached(Milestone::Scanned),
+        bound,
+    )
+    .await;
+    let report = lane.report();
+    let seen = client.seen.clone();
+    let beat = lane.beat().as_str();
+    let fail = |why: &str| canary_failed(&seen, &report, beat, why);
+    if let Some(result) = lane.result() {
+        fail(&format!("the lane ended: {}", result.outcome));
+    }
+    for milestone in [
+        Milestone::ArrivedSite,
+        Milestone::Launched,
+        Milestone::Scanned,
+    ] {
+        if !lane.reached(milestone) {
+            fail(&format!("{milestone:?} was not reached in {wall} s"));
+        }
+    }
+    println!("urvara: scanned on Urvara Reach after {wall} s");
+    // The lane filed its sounding with the scan; a drive typed while the rig sounds is refused
+    // ("Rig 1 is sounding"), so the sounding is heard out first. The lane is not ticked again, so
+    // it never chooses a pocket of its own.
+    let from = client
+        .seen
+        .rfind("Rig 1 starts its sounding")
+        .unwrap_or(client.seen.len());
+    assert!(
+        client
+            .watch(from, lines::SOUNDED, Duration::from_secs(5 * 60))
+            .await,
+        "the lane's sounding is heard:\n{}",
+        client.seen.get(from..).unwrap_or("")
+    );
+
+    // The four-digit drive, in the bot's own words.
+    let addr = "G1000";
+    assert!(lines::is_addr(addr), "{addr} is an address");
+    let drive = format!("+tv/1 drive {addr} go");
+    assert!(in_vocabulary(&drive), "{drive}");
+    let from = client.seen.len();
+    client.send(&drive).await;
+    let arrival = format!("{}{addr}", lines::ARRIVED);
+    let arrived = client
+        .watch(from, &arrival, Duration::from_secs(10 * 60))
+        .await;
+    let since = client.seen.get(from..).unwrap_or("").to_owned();
+    assert!(
+        arrived && lines::has_addr(&lines::normalise(&since), lines::ARRIVED, addr),
+        "rig 1 arrives at {addr}; since the drive:\n{since}"
+    );
+    println!(
+        "urvara: +{} s rig 1 arrives at {addr}",
+        started.elapsed().as_secs()
+    );
+
+    // `+field/void`, in the captain's field vocabulary: nothing to void, no field ran.
+    assert!(field::in_vocabulary("+field/void"));
+    let (answered, text) = client
+        .answer("+field/void", &[lines::NOTHING_TO_VOID, lines::VOIDED])
+        .await;
+    assert_eq!(
+        (answered, lines::void_answer(&lines::normalise(&text))),
+        (Some(0), Some(false)),
+        "+field/void answers nothing to void:\n{text}"
+    );
+    println!(
+        "urvara: +{} s +field/void answered: {}",
+        started.elapsed().as_secs(),
+        lines::NOTHING_TO_VOID
+    );
+    client.close().await;
+    god.close().await;
+    drop(rig);
+}
+
 /// **The canary failed**: the client's last 4 KiB and the lane's report
 /// printed, then a panic naming the beat. An engine-under-feature finding,
 /// reported and never worked around (revision 2's F5).

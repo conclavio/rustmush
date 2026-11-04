@@ -45,6 +45,8 @@ mod field_carrier;
 mod field_host_rig;
 #[path = "support/field/field_raiders_rig.rs"]
 mod field_raiders_rig;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_10/ic_sortie_voyages.rs"]
 mod ic_sortie_voyages;
 #[path = "shard_10/landing.rs"]

@@ -41,6 +41,8 @@ mod field_host_rig;
 mod field_raiders_rig;
 #[path = "shard_9/field_story.rs"]
 mod field_story;
+#[path = "support/field/grounds_rig.rs"]
+mod grounds_rig;
 #[path = "shard_9/ic_sortie_surface.rs"]
 mod ic_sortie_surface;
 #[path = "shard_9/m8_leaks.rs"]

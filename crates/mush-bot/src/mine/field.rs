@@ -750,6 +750,9 @@ pub fn in_vocabulary(line: &str) -> bool {
     if ["+field", "CONTACTS", "+tv/1 board", "+tv/1 leave"].contains(&line) {
         return true;
     }
+    if round_word(line) {
+        return true;
+    }
     // The one page: the captain's own party, to its escort by name.
     if let Some((name, word)) = line.strip_prefix("page ").and_then(|r| r.split_once('=')) {
         return (1..=32).contains(&name.len())
@@ -788,6 +791,55 @@ pub fn in_vocabulary(line: &str) -> bool {
     false
 }
 
+/// **Doc 40's field words** (cut FR.0, Q-40-23), each in closed form: `+field/void` (the
+/// leader cancels the standing its party's fire on a friend cost), `+sortie/launch <op>=<n|all>`
+/// (a launch into a running field, Q-40-19), `+tv/<n> release` and `+tv/<n> release go` (a
+/// release, a field act once FR.5 lands), and `+faction/stance <mine>=<other>/<allied|neutral|hostile>`
+/// (FR.1's declaration, Q-40-11). Shared by the captain ([`in_vocabulary`]) and the escort.
+pub fn round_word(line: &str) -> bool {
+    if line == "+field/void" {
+        return true;
+    }
+    let number = |s: &str| {
+        (1..=10).contains(&s.len()) && !s.starts_with('0') && s.bytes().all(|b| b.is_ascii_digit())
+    };
+    if let Some(rest) = line.strip_prefix("+sortie/launch ") {
+        let Some((op, count)) = rest.split_once('=') else {
+            return false;
+        };
+        return op.split(':').count() <= 3
+            && op.split(':').all(number)
+            && (count == "all" || (count.len() <= 2 && number(count)));
+    }
+    if let Some(rest) = line.strip_prefix("+tv/") {
+        let Some((rig, verb)) = rest.split_once(' ') else {
+            return false;
+        };
+        return rig.len() <= 2 && number(rig) && matches!(verb, "release" | "release go");
+    }
+    if let Some(rest) = line.strip_prefix("+faction/stance ") {
+        // An organization's name as the faction and co-op verbs take it: a `#` dbref, or a name
+        // of letters, digits, spaces, hyphens, apostrophes, full stops and underscores.
+        let name = |s: &str| {
+            (1..=64).contains(&s.len())
+                && s.trim() == s
+                && (s.strip_prefix('#').is_some_and(number)
+                    || (s.starts_with(|c: char| c.is_ascii_alphanumeric())
+                        && s.chars().all(|c| {
+                            c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '\'' | '.' | '_')
+                        })))
+        };
+        let Some((mine, rest)) = rest.split_once('=') else {
+            return false;
+        };
+        let Some((other, stance)) = rest.rsplit_once('/') else {
+            return false;
+        };
+        return name(mine) && name(other) && matches!(stance, "allied" | "neutral" | "hostile");
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,7 +861,17 @@ mod tests {
             "+tv/1 mine metals go",
             "+tv/1 launch go",
             "+tv/1 drive F224 go",
+            "+tv/1 drive G1000 go",
             "+tv/1 mine volatiles go",
+            // Doc 40 cut FR.0: the round's words.
+            "+field/void",
+            "+sortie/launch 3=all",
+            "+sortie/launch 8589934593:1:1=1",
+            "+tv/1 release",
+            "+tv/2 release go",
+            "+faction/stance Ardent Co-op=Skulks/hostile",
+            "+faction/stance #12=#40/allied",
+            "+faction/stance tacsim.raider=Ceres Mining Co-op/neutral",
         ] {
             assert!(in_vocabulary(good), "{good}");
         }
@@ -829,6 +891,20 @@ mod tests {
             "+tv/1 drive here go",
             "+tv/1 mine gold go",
             "+tv/3 launch go",
+            "+field/void now",
+            "+field/void\n@boot me",
+            "+sortie/launch 3",
+            "+sortie/launch 3=0",
+            "+sortie/launch x=all",
+            "+tv/0 release",
+            "+tv/1 release now",
+            "+tv/1 tow release",
+            "+faction/stance A=B/war",
+            "+faction/stance A=B",
+            "+faction/stance =B/hostile",
+            "+faction/stance A=B;@destroy #1/hostile",
+            "+faction/stance  A=B/hostile",
+            "@faction/stance A=B/hostile",
         ] {
             assert!(!in_vocabulary(bad), "{bad}");
         }
