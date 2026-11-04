@@ -1,0 +1,417 @@
+{
+  "entries": {
+    "fittings": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 5
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          }
+        ],
+        "label": "Fittings batch",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "industrial_parts",
+            "units": 5
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 6
+      },
+      "kind": "recipe"
+    },
+    "mount_105": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 3
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          }
+        ],
+        "label": "Main-gun mount",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.weapon.cannon_105",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 120
+      },
+      "kind": "recipe"
+    },
+    "mount_30": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          }
+        ],
+        "label": "Autocannon mount",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.weapon.autocannon_30",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 60
+      },
+      "kind": "recipe"
+    },
+    "mount_laser": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 2
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 1
+          }
+        ],
+        "label": "Laser mount",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.weapon.laser_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 160
+      },
+      "kind": "recipe"
+    },
+    "mount_mg": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          }
+        ],
+        "label": "Coaxial mounts",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.weapon.mg_coax",
+            "units": 10
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 24
+      },
+      "kind": "recipe"
+    },
+    "plant_hauler": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 25
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 8
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 2
+          }
+        ],
+        "label": "Hauler plant",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.plant.hauler_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 480
+      },
+      "kind": "recipe"
+    },
+    "plant_light": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          }
+        ],
+        "label": "Light plants",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.plant.light_mk1",
+            "units": 5
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 60
+      },
+      "kind": "recipe"
+    },
+    "plant_vehicle": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 2
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          }
+        ],
+        "label": "Vehicle plant",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.plant.vehicle_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 96
+      },
+      "kind": "recipe"
+    },
+    "plant_walker": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 3
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          }
+        ],
+        "label": "Walker plant",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.plant.walker_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 120
+      },
+      "kind": "recipe"
+    },
+    "pod_eccm": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "strategic_ore",
+            "units": 3
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          }
+        ],
+        "label": "ECCM pods",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.sensor.eccm_mk1",
+            "units": 10
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 120
+      },
+      "kind": "recipe"
+    },
+    "pod_ecm": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "strategic_ore",
+            "units": 3
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          }
+        ],
+        "label": "ECM pods",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.sensor.ecm_mk1",
+            "units": 10
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 120
+      },
+      "kind": "recipe"
+    },
+    "rack_lr": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          }
+        ],
+        "label": "Long-range rack",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.weapon.missile_lr",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 72
+      },
+      "kind": "recipe"
+    },
+    "sight_thermal": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "strategic_ore",
+            "units": 3
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 3
+          }
+        ],
+        "label": "Thermal sights",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.sensor.thermal_mk1",
+            "units": 10
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 120
+      },
+      "kind": "recipe"
+    },
+    "sight_visual": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "strategic_ore",
+            "units": 2
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 1
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 3
+          }
+        ],
+        "label": "Visual sights",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.sensor.visual_mk1",
+            "units": 10
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 60
+      },
+      "kind": "recipe"
+    }
+  },
+  "manifest": {
+    "digest": "503cc2403c98532f67f126c54e68fbdba5155b218dea8fad9b2f5ad47edb84e1",
+    "id": "tacsim.industry.recipes",
+    "kind": "rules_definition",
+    "requires": [],
+    "version": 2
+  }
+}

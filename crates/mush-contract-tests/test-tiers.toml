@@ -154,6 +154,7 @@ id = "mush-server/src/world_task/submission_disposition/tests/player_market_stor
 tier = "nightly"
 job = "mind-commerce-acceptance"
 config = "MIND_PULSE_MS=1000"
+note = "Owner: the M7 market story (doc 17g C2a). Red at production pace on the nightlies of 10-30, 10-31 and 11-02, each time the story's own timing, not the product: the holder's renewal (#230), the engine's busy back-pressure on a typed step (c56dfcde) and the buyer's recall notice (8245c88e). Green on 11-03 and 11-04 (10-28 and 10-29 not re-read)."
 
 [[test]]
 id = "mush-server/src/world_task/submission_disposition/tests/player_market_typed.rs::typed_market_story_quote_pay_complete_panels_resale_and_restart"
@@ -271,6 +272,32 @@ by_hand = "5e03f6d2"
 id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_ahuna"
 tier = "by-hand"
 by_hand = "5e03f6d2"
+
+# Doc 40 FR.7's round story at 256 and 512, about an hour each: both passed by hand on
+# conclav.dev and through gate.yml's sweep (run 41904925552) at the revision named (40 cut notes,
+# FR.7b). No dispatch-only job or
+# gate.yml kind runs it yet (the sweep kind has no `via` script), so it is by-hand.
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
+tier = "by-hand"
+by_hand = "c969ec3f"
+
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
+tier = "by-hand"
+by_hand = "c969ec3f"
+
+# Doc 39 IN.5's production story, the bot over SSH: both passed side by side on conclav.dev
+# at cdd30329 (Ahuna 1,895 s, Urvara 1,897 s; 39 cut notes, IN.5).
+[[test]]
+id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_ahuna"
+tier = "by-hand"
+by_hand = "cdd30329"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_urvara"
+tier = "by-hand"
+by_hand = "cdd30329"
 
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.

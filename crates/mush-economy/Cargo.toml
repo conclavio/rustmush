@@ -19,6 +19,8 @@ tracing.workspace = true
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-proto.workspace = true
+# Doc 43 cut TS.5: the generated lifecycle (tests/e2a/lifecycle.rs).
+proptest = { workspace = true }
 
 [lints]
 workspace = true

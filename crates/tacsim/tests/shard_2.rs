@@ -63,6 +63,8 @@ mod in3_order_contract;
 mod in5_production;
 #[path = "shard_2/in6_part_lot.rs"]
 mod in6_part_lot;
+#[path = "shard_2/in7_part_recipes.rs"]
+mod in7_part_recipes;
 #[path = "shard_2/in8_mass_scrap.rs"]
 mod in8_mass_scrap;
 #[path = "shard_2/minds.rs"]

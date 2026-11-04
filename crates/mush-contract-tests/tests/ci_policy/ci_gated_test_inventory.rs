@@ -1654,3 +1654,45 @@ fn x() {
         ["FIELD_RAID", "GC12_ARENA_S", "MY_ROLE", "TACSIM_SEED"]
     );
 }
+
+/// **The nightly names its cause** (doc 43 TS.2, D-43-3; 2026-11-04). The
+/// `nightly-report` job writes one line per job of ci.yml into a scheduled
+/// run's summary, and it can only report a job its `needs` names. A job added
+/// to the file and not to that list would be red in silence there.
+#[test]
+fn the_nightly_report_waits_for_every_job() {
+    let root = scan::repo_root();
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml");
+    let jobs: BTreeSet<String> = job_tiers(&ci)
+        .into_keys()
+        .filter(|job| job != "nightly-report")
+        .collect();
+    let needs_line = workflow_lines(&ci)
+        .into_iter()
+        .find(|line| {
+            line.job == Some("nightly-report") && line.text.trim_start().starts_with("needs:")
+        })
+        .expect("ci.yml has a nightly-report job with a one-line `needs: [...]`")
+        .text;
+    let needs: BTreeSet<String> = needs_line
+        .trim_start()
+        .trim_start_matches("needs:")
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|job| job.trim().to_string())
+        .filter(|job| !job.is_empty())
+        .collect();
+    assert!(
+        jobs.len() > 10,
+        "found only {jobs:?}: the job reader is broken"
+    );
+    let missing: Vec<&String> = jobs.difference(&needs).collect();
+    let stale: Vec<&String> = needs.difference(&jobs).collect();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "nightly-report's `needs` must name every other job of ci.yml: missing {missing:?}, \
+         no such job {stale:?}"
+    );
+}
