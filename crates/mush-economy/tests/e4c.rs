@@ -36,6 +36,8 @@ use mush_testkit::{TestWorld, text_of};
 
 #[path = "e4c/fact_revision.rs"]
 mod fact_revision;
+#[path = "e4c/retrieval.rs"]
+mod retrieval;
 #[path = "e4c/scoped_facts.rs"]
 mod scoped_facts;
 

@@ -6341,6 +6341,351 @@ pub fn award_salvage_title(
     api::post_with(ctx, &plan, PostAuth::Injected(&auth))
 }
 
+// ---- the retrieval contract (doc 41 cut RS.5; Q-41-8, Q-38-6) ----------------------------
+
+/// Everything [`post_retrieval`] needs (doc 41 cut RS.5, Q-41-8). Like [`SalvageClaimSpec`],
+/// deliberately **not** an [`EconomicContract`]: the id, the consent hash, the acceptances and
+/// the state are the economy's to fill in.
+#[derive(Clone, Debug)]
+pub struct RetrievalSpec {
+    /// A short human label for `@contract/show`.
+    pub name: SmolStr,
+    /// The poster: the hull's title holder, who pays. The contract's issuer and first party.
+    pub poster: PrincipalId,
+    /// The poster's account the fee is escrowed from at posting.
+    pub poster_account: AccountId,
+    /// The hull to be retrieved: the poster must hold its title throughout.
+    pub hull: ObjId,
+    /// The fee, escrowed whole at posting and paid whole on delivery.
+    pub fee: Amount,
+    /// The delivery fact (the host's `tacsim.retrieval.delivered`): the one condition beside
+    /// the title, answered by the host's provider once a handover act lands the hull at the
+    /// destination.
+    pub delivered: ExternalRef,
+    /// The contract's one deadline, World IC seconds: the acceptance and performance windows'
+    /// sum, which the host keeps on its own record (the deadline is hashed into the consent).
+    pub deadline_ic: i64,
+}
+
+/// **Whether `c` is a retrieval contract**, and on which hull (doc 41 cut RS.5, Q-41-8): one
+/// consideration, the fee, from the issuer; nothing delivered, split or outcome-bound; exactly
+/// two conditions — the issuer holding the hull's title and one external fact (the delivery);
+/// a `WorldIc` deadline; `Public`; and at most one party beside the issuer (the acceptor).
+#[must_use]
+pub fn retrieval_contract_hull(c: &EconomicContract) -> Option<ObjId> {
+    let consent = &c.consent;
+    let issuer = principal_key(&c.issuer);
+    let others = consent
+        .parties
+        .iter()
+        .filter(|p| principal_key(p) != issuer)
+        .count();
+    if consent.managed.is_some()
+        || consent.parties.first().map(principal_key) != Some(issuer)
+        || others > 1
+        || consent.parties.len() != others + 1
+        || !consent.terms.deliverables.is_empty()
+        || !consent.terms.split.is_empty()
+        || !consent.terms.outcomes.is_empty()
+        || consent.visibility != EconomicVisibility::Public
+        || consent
+            .deadline
+            .is_none_or(|d| d.clock != EconomicClock::WorldIc)
+    {
+        return None;
+    }
+    match consent.terms.consideration.as_slice() {
+        [fee] if principal_key(&fee.from) == issuer && fee.amount.minor() > 0 => {}
+        _ => return None,
+    }
+    match consent.conditions.as_slice() {
+        [
+            TypedCondition::TitleHeld { object, by },
+            TypedCondition::Fact { .. },
+        ] if principal_key(by) == issuer => Some(*object),
+        _ => None,
+    }
+}
+
+/// The retrieval contract `id`, when it is one.
+fn retrieval_of(ctx: &Ctx<'_>, id: ContractId) -> Option<EconomicContract> {
+    live_contract(ctx, id).filter(|c| retrieval_contract_hull(c).is_some())
+}
+
+/// **Who accepted retrieval `c`**: the party beside the issuer, if any.
+#[must_use]
+pub fn retrieval_acceptor(c: &EconomicContract) -> Option<&PrincipalId> {
+    retrieval_contract_hull(c)?;
+    let issuer = principal_key(&c.issuer);
+    c.consent
+        .parties
+        .iter()
+        .find(|p| principal_key(p) != issuer)
+}
+
+/// **Post a retrieval** (doc 41 cut RS.5; Q-41-8, Q-38-6): one public contract whose shape
+/// [`retrieval_contract_hull`] recognises, issued by the poster, its fee escrowed at posting
+/// from the poster's account under the poster's own debit authority (the escrow plan's actor
+/// is the poster principal, as [`accept_contract_as`]'s is), so a poster who cannot cover the
+/// fee posts nothing. With the poster its only party the contract is in force at once; the
+/// acceptor joins through [`accept_retrieval`]. Until then the remainder names the poster, so
+/// nothing could pay a stranger, and `expire` at the deadline refunds the escrow.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] for a frozen economy, a non-positive fee or a deadline not
+/// in the future; [`ContractError::NoSuchAsset`] for a hull with no live title the poster
+/// holds; every structural refusal; whatever the escrow's acceptance refuses (the poster's
+/// funds). Nothing is written when the checks refuse; an escrow the economy refuses leaves
+/// the offered contract cancelled.
+pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<ContractId, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if spec.fee.minor() <= 0 {
+        return Err(ContractError::Infeasible("a retrieval pays a positive fee"));
+    }
+    if spec.deadline_ic <= ctx.w.world_ic_now().at {
+        return Err(ContractError::Infeasible("the deadline has passed"));
+    }
+    if spec.name.is_empty() || spec.name.len() > MAX_CONTRACT_NAME_BYTES {
+        return Err(ContractError::TooLarge("the name is empty or too long"));
+    }
+    let titled = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().asset(spec.hull))
+        .is_some_and(|asset| {
+            principal_key(&asset.title_owner) == principal_key(&spec.poster)
+                && matches!(
+                    asset.lifecycle,
+                    crate::record::AssetLifecycle::Active
+                        | crate::record::AssetLifecycle::Abandoned
+                )
+        });
+    if !titled {
+        return Err(ContractError::NoSuchAsset(spec.hull));
+    }
+    let now = ctx.w.now();
+    let consent = ConsentSurface {
+        fact_consent: None,
+        managed: None,
+        parties: vec![spec.poster.clone()],
+        terms: ContractTerms {
+            consideration: vec![Consideration {
+                from: spec.poster.clone(),
+                account: spec.poster_account,
+                amount: spec.fee,
+            }],
+            deliverables: Vec::new(),
+            split: Vec::new(),
+            remainder_to: spec.poster_account,
+            on_expiry: Expiry::Refund,
+            outcomes: Vec::new(),
+        },
+        conditions: vec![
+            TypedCondition::TitleHeld {
+                object: spec.hull,
+                by: spec.poster.clone(),
+            },
+            TypedCondition::Fact {
+                fact: spec.delivered,
+            },
+        ],
+        deadline: Some(EconomicDeadline {
+            clock: EconomicClock::WorldIc,
+            at: spec.deadline_ic,
+        }),
+        visibility: EconomicVisibility::Public,
+        scope: None,
+        adjudicator: None,
+        evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Fact],
+    };
+    let mut c = EconomicContract {
+        id: ContractId(0),
+        issuer: spec.poster.clone(),
+        name: spec.name,
+        consent_hash: [0u8; 32],
+        consent,
+        acceptances: Vec::new(),
+        satisfied: vec![None, None],
+        escrow: Vec::new(),
+        state: ContractState::Offered,
+        settle_attempts: 0,
+        created_at: now,
+        amendments: 0,
+        generation_started_at: now,
+        disputed_at: None,
+        canon_published: None,
+        roster_locked: false,
+        deposits: Vec::new(),
+        agreements: Vec::new(),
+        pending: None,
+        roles: ContractRoles {
+            author: Some(spec.poster.clone()),
+            payer: Some(spec.poster.clone()),
+            ..ContractRoles::default()
+        },
+        revision: 1,
+        real_deadline_extension_secs: 0,
+        paused_real_remaining_secs: None,
+    };
+    {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        let outcomes = store.canon_outcome_kinds();
+        crate::contract::check_structure(&c, &outcomes)?;
+        check_offerable(&c, store.snapshot())?;
+    }
+    let id = {
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("no economy"))?;
+        store.alloc_contract().ok_or(ContractError::TooLarge(
+            "the contract-id allocator is exhausted",
+        ))?
+    };
+    c.id = id;
+    c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    api::put_contract(ctx, c.clone()).map_err(ContractError::Refused)?;
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        api::persist_meta(ctx.out, meta);
+    }
+    match accept_core_as(ctx, c, spec.poster.clone(), spec.poster) {
+        Ok(AcceptOutcome::Accepted { .. }) => Ok(id),
+        Ok(AcceptOutcome::NeedsApproval(_)) => {
+            unwind(ctx, id, ContractState::Cancelled);
+            Err(ContractError::Infeasible(
+                "the poster's account needs an approval to escrow the fee",
+            ))
+        }
+        Err(error) => {
+            unwind(ctx, id, ContractState::Cancelled);
+            Err(error)
+        }
+    }
+}
+
+/// **Accept a retrieval** (doc 41 cut RS.5, Q-41-8): `acceptor` joins contract `id` as its
+/// second party and accepts it in one write, with the fee's remainder pointed at
+/// `acceptor_account` — the one thing the generic engine lacks, since `acting_party` admits
+/// only a named party, so `@contract/accept` stays closed to strangers. Guarded by the shape:
+/// only a live retrieval with no acceptor yet, whose escrow the poster placed at posting.
+///
+/// The poster's acceptance is re-bound to the joined consent: the retrieval's shape is the
+/// poster's standing offer to whoever accepts it, and the shape check here is that offer's
+/// whole content — the fee, the hull, the fact and the deadline are unchanged; only the
+/// acceptor's name and account are filled in.
+///
+/// Authority: the acceptor escrows nothing, so no debit authority is asked; a character
+/// accepts for themselves (`ctx.actor`), and an organization only through the wiring's
+/// [`crate::contract::PartyCap::Accept`] (the host's house acceptor, run on a tick).
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] for a contract that is not a live retrieval, an acceptor who
+/// is the poster or who may not accept, or an account the acceptor does not own;
+/// [`ContractError::State`] when it already has an acceptor or is not in force;
+/// [`ContractError::Infeasible`] for a frozen economy.
+pub fn accept_retrieval(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    acceptor: &PrincipalId,
+    acceptor_account: AccountId,
+) -> Result<(), ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let standing = match acceptor {
+        PrincipalId::Object(who) => *who == ctx.actor,
+        PrincipalId::Organization(_) => {
+            crate::module::party_cap(ctx.w, acceptor, crate::contract::PartyCap::Accept)
+        }
+        _ => false,
+    };
+    if !standing {
+        return Err(ContractError::NoStanding);
+    }
+    let owns = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().account(acceptor_account).cloned())
+        .is_some_and(|account| {
+            principal_key(&account.owner) == principal_key(acceptor)
+                && account.status == AccountStatus::Active
+        });
+    if !owns {
+        return Err(ContractError::NoStanding);
+    }
+    let mut c = retrieval_of(ctx, id).ok_or(ContractError::NoStanding)?;
+    if principal_key(&c.issuer) == principal_key(acceptor) {
+        return Err(ContractError::NoStanding);
+    }
+    if retrieval_acceptor(&c).is_some()
+        || c.state != ContractState::Active
+        || c.pending.is_some()
+        || !c.fully_accepted()
+        || c.escrow.is_empty()
+    {
+        return Err(ContractError::State(id));
+    }
+    let now = ctx.w.now();
+    c.consent.parties.push(acceptor.clone());
+    c.consent.terms.remainder_to = acceptor_account;
+    c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    for acceptance in &mut c.acceptances {
+        acceptance.consent_hash = c.consent_hash;
+    }
+    c.acceptances.push(Acceptance {
+        party: acceptor.clone(),
+        at: now,
+        consent_hash: c.consent_hash,
+    });
+    c.roster_locked = true;
+    save(ctx, c).map_err(ContractError::Refused)?;
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
+/// **Cancel a retrieval** (doc 41 cut RS.5, Q-41-11): the host's clerk ends a lapsed
+/// acceptor's contract through the ordinary unwind, the escrow back to the poster, before it
+/// posts a fresh one for the house. Answers whether the contract is terminal afterwards; one
+/// already terminal writes nothing.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] when `id` is not a retrieval, or the economy is frozen.
+pub fn cancel_retrieval(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let c = retrieval_of(ctx, id).ok_or(ContractError::Infeasible("no such retrieval"))?;
+    if c.state.is_terminal() {
+        return Ok(true);
+    }
+    unwind(ctx, id, ContractState::Cancelled);
+    Ok(live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -306,6 +306,9 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
         Some(super::Right::Salvor) => {
             "  Your right: salvage custody (repair at your own risk).".to_owned()
         }
+        Some(super::Right::Retrieval) => {
+            "  Your right: retrieval (berth and stow, for the job's handover).".to_owned()
+        }
         None => "  You hold no right to have this hull worked on.".to_owned(),
     });
     if let Some(BayHullState::Present(row)) = ctx

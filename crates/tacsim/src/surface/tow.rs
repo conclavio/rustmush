@@ -133,6 +133,12 @@ pub const LOAD_PREVIEW_HAND_BACK: &str = "Rig {n} can load the {name} into the {
 /// **Doc 36 cut GC.5**: the load done into a salvor's custody: `{name}`, `{carrier}`.
 pub const LOADED_CUSTODY: &str =
     "The {name} is aboard the {carrier}, in its bay, held in custody pending a salvage claim.";
+/// **Doc 41 cut RS.5 (Q-41-8)**: the load's preview under a retrieval the carrier's operator
+/// holds: `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const LOAD_PREVIEW_RETRIEVAL: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. You hold the {name}'s retrieval: aboard, it is held for the job, not as salvage, until you hand it over at the job's port. +tv/{n} load go";
+/// **Doc 41 cut RS.5 (Q-41-8)**: the load done under a retrieval: `{name}`, `{carrier}`.
+pub const LOADED_RETRIEVAL: &str =
+    "The {name} is aboard the {carrier}, in its bay, held for its retrieval.";
 /// **Doc 36 cut GC.5**: a written-off lease rig handed back: `{name}`.
 pub const HANDED_BACK: &str =
     "The {name} is an Occator write-off: it is handed back to Occator, with no claim.";
@@ -471,6 +477,11 @@ pub struct LoadFacts {
     /// **Doc 36 cut GC.5**: a written-off casualty stands in Occator's shed (the finish's fact,
     /// as `in_bay` is for any other).
     pub handed_back: bool,
+    /// **Doc 41 cut RS.5 (Q-41-8)**: the custodian holds an active retrieval on the casualty —
+    /// retrieval custody: no salvage row, no `Recovery` log, no claim, and a written-off rig
+    /// stays in the bay for the hand-back at the destination.
+    #[serde(default)]
+    pub retrieval: bool,
     /// The casualty's unit record now (the library pins its revision across the tow).
     pub casualty_unit: TacticalUnit,
     /// The bay's slot id.
@@ -1006,11 +1017,15 @@ fn load_facts(
     let (site, _, tug_pose) = on_ground(w, tug)?;
     let (cells, _, _, _, volume) = unit_facts(w, casualty)?;
     let load = bay_load(w, carrier, Some(casualty))?;
+    let custodian = custodian_of(ctx, &site, carrier);
     Some(LoadFacts {
         secs: recovery_config(w).load_s,
         friendly: friendly(ctx, &site, casualty, carrier),
         own_carrier: own_or_friends(ctx, &site, tug, carrier),
-        custodian: custodian_of(ctx, &site, carrier),
+        // Doc 41 cut RS.5 (Q-41-8): the third case beside the friend rule and a foreign load.
+        retrieval: custodian
+            .is_some_and(|who| crate::surface::retrieval::held_by(w, casualty, who).is_some()),
+        custodian,
         written_off: crate::port::tv::written_off(w, casualty),
         handed_back: crate::port::tv::in_shed(w, casualty),
         site,
@@ -1596,7 +1611,9 @@ impl ActionProvider for TowProvider {
                             now,
                             &mut closing,
                         )?;
-                        if facts.written_off {
+                        if facts.retrieval {
+                            "retrieval".to_owned()
+                        } else if facts.written_off {
                             "handed_back".to_owned()
                         } else if facts.friendly {
                             "loaded".to_owned()
@@ -1723,7 +1740,7 @@ impl TowProvider {
         // Doc 36 cut GC.5 (Q-36-16, Q-36-29): a load into a carrier that is not the casualty's own
         // party's or a Friend's puts it in that carrier's operator's custody with a claim owed;
         // a written-off lease rig is Occator's alone and is handed back with none.
-        if facts.written_off || facts.friendly {
+        if facts.written_off || facts.friendly || facts.retrieval {
             record.custody.retain(|row| row.hull != facts.casualty);
         } else {
             let holder = facts.custodian.unwrap_or(operator);
@@ -2550,7 +2567,9 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
             .replace("{min}", &min)
     };
     if !go {
-        let preview = if facts.written_off {
+        let preview = if facts.retrieval {
+            LOAD_PREVIEW_RETRIEVAL
+        } else if facts.written_off {
             LOAD_PREVIEW_HAND_BACK
         } else if facts.friendly {
             LOAD_PREVIEW
@@ -2798,9 +2817,13 @@ fn place_in_bay(
         return Vec::new();
     }
     let friend = friendly(ctx, site, casualty, carrier);
+    // Doc 41 cut RS.5 (Q-41-8): under a retrieval the carrier's operator holds, the rig goes into
+    // the bay, and a written-off one is handed back at the destination, not here on the site.
+    let retrieval = custodian_of(ctx, site, carrier)
+        .is_some_and(|who| crate::surface::retrieval::held_by(ctx.w, casualty, who).is_some());
     // Doc 36 cut GC.5 (Q-36-29): a written-off lease rig goes back to Occator's shed, not into
     // the bay, with no claim — its crew out into the bay room first (doc 42 Draft 0.3, 42-8).
-    let written_off = crate::port::tv::written_off(ctx.w, casualty);
+    let written_off = crate::port::tv::written_off(ctx.w, casualty) && !retrieval;
     if !written_off && let Err(error) = mush_sim::place_interior(ctx, casualty, room, Some(slot)) {
         tracing::warn!(casualty = casualty.0, carrier = carrier.0, %error, "tacsim: a tow's load could not be placed in the bay; its finish records it");
         return Vec::new();
@@ -2809,8 +2832,15 @@ fn place_in_bay(
     if written_off && !crate::port::tv::hand_back(ctx, casualty) {
         return captives;
     }
+    // Doc 41 cut RS.5: a write-off handed back here by a load that held no retrieval leaves
+    // nothing to retrieve; Occator's job is withdrawn, its escrow back.
+    if written_off {
+        crate::surface::retrieval::withdraw(ctx, casualty);
+    }
     let template = if written_off {
         HANDED_BACK
+    } else if retrieval {
+        LOADED_RETRIEVAL
     } else if friend {
         LOADED
     } else {
