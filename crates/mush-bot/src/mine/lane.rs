@@ -44,6 +44,8 @@ pub mod escort;
 pub mod field;
 #[path = "salvage.rs"]
 pub mod salvage;
+#[path = "works.rs"]
+pub mod works;
 
 use std::collections::{BTreeSet, VecDeque};
 

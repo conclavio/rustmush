@@ -169,6 +169,8 @@ pub mod mill;
 pub mod orders;
 pub mod passage;
 pub mod passenger;
+/// Doc 39 cut IN.5: a port's refinery and works rooms, opened as their operators' facilities.
+pub mod plant;
 /// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).
 pub mod price;
 pub mod proceeds;
@@ -183,6 +185,8 @@ pub mod site;
 /// Doc 20 cut SM.4b: the `site.map` feed and `+tv/map` (doc 20 §10).
 pub mod site_map;
 pub mod stock;
+/// Doc 39 cut IN.5: a works' house purchases, from another house of the port into its stores.
+pub mod supply;
 pub mod survey;
 mod traffic;
 pub mod tv;
