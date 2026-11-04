@@ -254,6 +254,89 @@ story 20.3 → 18.1 s with the fit's extra fire. On the same PR run `tacsim-inte
 wall-clock `until_refusing` deadline; it passed on main's run at the merge base and locally in 20 s on this branch), a
 timing flake outside the cut.
 
+## IN.3 — the order contract (Q-39-7, Q-39-28, Q-39-29, Q-39-30)
+
+**Built.**
+
+- **`customers: Public | OwnerOnly`** (Q-39-30) on `FacilityRecord`'s policy half (`mush_industry::Customers`,
+  skipped when `OwnerOnly`, so an unopened facility's bytes are unchanged); `with_customers` bumps the policy
+  revision as `with_cost` does, and `install_authored_facility` re-terms in place. **`may_order`** (staff, the
+  owner's `acts_for`, or any principal with an `Active` account at a Public facility) is the one gate
+  `@wo/draft`, `@wo/submit` and the offer's facility book ask. `@facility/terms <obj>=public|owner
+  [<capital>/<years>/<upkeep>/<staff>/<wage>/<margin>]` is the staff hand until a lane row authors both.
+- **The deadline at duration + TTL** (Q-39-28): `wo_submit` reserves materials and the slot to
+  `now + work_units × 3,600 + RESERVATION_TTL_SECS` (`mush_inventory::reserve_for` /
+  `reservation_deadline_after`, `IndustryFamilies::reserve_slot_for`); `@wo/restamp` renews the materials to
+  the remaining work plus the TTL (`renew_for`). `reserve`, `renew` and `reserve_slot` keep their signatures.
+- **The hold at `fee(order)`**: IN.4's `order_price`, unchanged.
+- **The cutoff** (Q-39-29): `provider::cancel_cutoff` refuses a cancel from `AwaitingDelivery`
+  (`CANCEL_DONE`) and from a holding order past half its work units (`CANCEL_PAST_HALF`), in the provider, so
+  `@wo/cancel` is bound too. An order on the server-authored `unfunded` list (now projected for `WoCancel`
+  as for `WoDeliver`) is past no cutoff: its exit stays open.
+- **The forfeit**: the sweep settles a cancelled order's budget by `capture_part` of
+  `money::cancel_forfeit_minor` — the facility's fee for the work units it ran, capped at the hold — and
+  releases the rest through the economy's partial-capture seam; an order that never ran is released whole.
+  Nothing is consumed before delivery, so the bill returns whole (round 2's 39-4).
+- **The booking fee**: `money::place_booking` / `settle_booking` hold one slot-day
+  (`FacilityRecord::booking_fee_minor`, the slot-hour × 24 at margin 0, rounded up to the credit) under the
+  new engine-owned namespace **`industry.booking`** (`mush_economy::ENGINE_OWNED_RESERVATIONS`), forfeit to the
+  facility on a cancel or an unfunded order, released at delivery. `money::charge_storage` posts one storage
+  day under `industry.storage/{contract}/{day}`.
+- **`@wo/draft`'s body is `commands::draft`** over a parsed `commands::Draft`, and `commands::submit` is
+  public: the front books and the arm submits, delivers and cancels through `@wo`'s own records and gates.
+- **The contract** (`tacsim::port::works`): `WorksContract` (`tacsim:works:{id}`, the id its escrow vault's)
+  records the requester, the payer (the requester) and the beneficiary (the requester, or the organization an
+  officer names with `=<org>`), the bill, the work units, the booking, the bound work order, the delivery
+  instant and the storage days. The **escrow** is a vault of the requester's on a crate object of its own in
+  the facility (one vault a backing). The one goods move a step owes is the authoritative act
+  **`tacsim_works`** under the contract's ledger ordinal (`tacsim.works_ledger`): pools moved, lots relocated
+  (a bulk lot dissolved where it lands, a part kept a lot), the destination hold's room checked by the plan
+  the offer carried — the bay act's shape.
+- **`+works` and `+yard`** (Authoritative): the bare verb lists the facility's recipes, its free slots and
+  your orders; `/quote <recipe> [qty]`, `/order <recipe> [qty][=<org>]`, `/deliver <order>=<good> <qty>` (from
+  the docked hold, admitted by the market's own gate), `/collect <order>`, `/cancel <order>` (the
+  requester's alone). A front finds its facility as the one carrying `tacsim.works` / `tacsim.yard` in a room
+  of the actor's port.
+- **The arm** (`works::tick`, on the port tick after the bay's): binds a landed draft (a bounded walk of
+  the work-order family for the requester's order sourced from the escrow); submits a covered order in
+  booking order while the facility has a slot free (**two orders for one slot queue**), placing its budget
+  hold first, and cancels it as the facility when the payer cannot fund it; delivers an `AwaitingDelivery`
+  order; on delivery releases the booking; on a cancel forfeits the booking and returns the escrow's
+  contents to the requester's docked hold (else they wait for `/collect`); collects a **house** order (the
+  beneficiary the facility's owner: no booking, sourced from and collected to the facility's stores);
+  and after **28 IC days** uncollected charges one slot-day a day, the facility's stores taking the goods
+  when the account runs dry.
+
+**The story.** `shard_2/in3_order_contract.rs::in3_a_twenty_day_plant_order_at_stickney_runs_to_collection`:
+a captain and a stranger sail Dray-Ps to Stickney Yards; at the Service Counter's works (2 slots, §4.4's
+works row, Public, owned by the Yards) the captain quotes and books two 20-day hauler-plant orders, delivers
+both bills from the hold, and both run; the stranger books and supplies a fittings batch, which queues; the
+Yards' officer cannot cancel it; at day 3 the captain cancels the second plant — the bill returns to the hold
+whole and exactly the booking fee plus the work units run are forfeit to the Yards — and the freed slot runs
+the stranger's order; past day 7 the first plant's materials are still held (deadline = the work + the TTL);
+at day 11 its cancel is refused; at day 20 the arm delivers it, `+works/collect` puts the plant in the hold,
+the fee is paid and nothing stays held; 28 IC days after the stranger's delivery, two storage days are
+charged. Seeds (doc 43 rule #4): the works facility (`@facility/open`, `/owner`, `/terms`), a test recipe
+pack (the plant and fittings recipes are IN.5's and IN.7's content), the holds' goods, the officer's grant.
+
+**Departures from the row.**
+
+- **No lane rows.** The works rows and their rooms are IN.5's, the yard row IN.9's, and the lane is held by
+  RS.1 for v21, so the story seeds the works and `+yard` answers "There is no yard at this port." until IN.9.
+- **No 256/512 pair.** The contract is port-side; §6 runs a story at both sizes "where the ground is in it"
+  (IN.2's and IN.4's precedent).
+- **The payer is always the requester.** `check_wo_accounts` refuses a budget account that is not the
+  requester's, so an officer's order for an organization pays from the officer's account and only the
+  beneficiary is the organization; an organization-paid order needs an officer's hold on the org's account,
+  a later cut.
+- **A purchase at the port's asks straight into the escrow** is not built; `/deliver` takes the hold's goods.
+- **The part commission still has no producer**: a part recipe's output is collected as the industry lot
+  (`output_lots: each`), untraced; the arm's commission is IN.7's, with its row's restart story.
+- **The storage day is the booking fee** (a slot-day at margin 0), and a seizure moves the goods to the
+  facility's stores vault (opened on the facility object on first need).
+
+**Cell delta (rule #14).** tacsim-integration-2: _filled from the PR's JUnit_.
+
 ## IN.6 — the part lot at the workshop (Q-39-11, Q-39-12)
 
 **Built.**

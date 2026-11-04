@@ -35,16 +35,19 @@ fn vf_g2_engine_owned_reservations_is_a_money_table() {
     // Doc 20 cut SM.3a added the third — the terrain vehicle's deposit on the
     // pilot's own account, a MONEY hold.
     // R8a adds the relay message's prepaid account reservation, also MONEY.
+    // Doc 39 cut IN.3 adds the order contract's booking fee, also MONEY.
     assert_eq!(
         mush_economy::ENGINE_OWNED_RESERVATIONS,
         [
             "campaign.operation",
             "industry.workorder",
             "tacsim.tv.deposit",
-            "relay.message"
+            "relay.message",
+            "industry.booking"
         ],
-        "four entries, all MONEY holds: the campaign operation's bond, the work \
-         order's budget, the terrain vehicle's deposit and a relay message's prepaid fee. A lot reservation is a K4b \
+        "five entries, all MONEY holds: the campaign operation's bond, the work \
+         order's budget, the terrain vehicle's deposit, a relay message's prepaid fee and an \
+         order contract's booking fee. A lot reservation is a K4b \
          `ReservationRecord` and cannot be named here (10b §15.5, fold G2)"
     );
     for kind in mush_economy::ENGINE_OWNED_RESERVATIONS {

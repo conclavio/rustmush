@@ -434,3 +434,27 @@ main's two merges after it, up to this branch's base `a2ef4075`, were docs only.
 - **Every other cell** moved both ways by up to 26 min with identical tests (`tacsim-integration-1` −25.9,
   `rest-server` +16.4, `tacsim-lib` +17.0); the total read 637.1 → 604.0.
 - **Shards**: no cell's wall is set by this cut, and nothing moves shard.
+
+## FR.5 — carried in: the join-during-think await (found 2026-11-04, before the cut)
+
+Not built yet. This records a finding so FR.5 does not rediscover it: doc 38 §9.3's "the join-during-think await",
+with the evidence from the GC.1b shard-10 flake.
+
+- **What fails.** `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` failed at
+  `field_carrier.rs:725` on PR #389's runs 41764030040 and 41767085311, and passed alone. `gc1_…` fails at line 420
+  the same way. Under load the kernel answers both arrivals' joins for real with `match recovery capacity refused: a
+  think awaits its answer on #395: the batch was not delivered before the encode`.
+- **Why.** `arena_task.rs` takes `waiting.joins` in (`Task::join`, then `Arena::join`'s recovery-capacity encode)
+  before `Task::pulse`, and only the pulse's head runs `await_thinks`. A join that lands while the last pulse's think
+  batch is outstanding meets `SnapshotError::Awaiting`. Every unseated hull on the field thinks (the carrier on the
+  pad, a rig out). On a loaded cell each late pulse steps more arena time, so more pulses carry a batch.
+- **FR.5's item.** Await the outstanding batch before the joins are taken in (`arena/*` is FR.5's alone, doc 38
+  §9.2). The other half of the failure is FR.3's: `carrier::on_joined`'s refusal drops the kept arrival and puts it
+  in `join_refused`, never to be asked again. FR.3 builds the retry.
+- **Evidence** (conclav.dev; 3–5 processes of the shard_10 binary at once, `field_carrier::`, `--test-threads=6`,
+  `taskset` to 4 cores):
+  - beat-counted waits: 4 of 18 failed, while the base passed 15 of 15 on the same rig. No wait length helps.
+  - every core class at `think_ms` 5000 (the config ceiling): 2 of 30 failed, against 3 of 30 for the unchanged
+    control run beside it.
+- **Stopgap.** `.config/nextest.toml` retries the gc1b story twice (a pass on retry reports FLAKY). Remove it when
+  FR.3's retry lands.

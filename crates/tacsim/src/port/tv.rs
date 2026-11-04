@@ -6339,6 +6339,7 @@ mod tests {
             after: 5,
             at_ic: 2_000,
             excursion: None,
+            launch: None,
         });
         assert!(
             !rig_parked(Some(&unloading), pilot, true, None),

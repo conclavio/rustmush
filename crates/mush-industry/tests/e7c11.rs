@@ -185,7 +185,9 @@ fn vf_g1_the_delegated_quantity_seam_is_in_production_and_unblocked() {
         "`with_quantity_delegates` delegates the families at composition"
     );
     let provider = production("mush-industry/src/provider.rs");
-    for needle in [".reserve(txn", ".consume(", ".release(txn"] {
+    // Doc 39 cut IN.3: the submit reserves through `reserve_for` (the deadline at the order's
+    // duration plus the TTL), the same delegated verb with a lead.
+    for needle in [".reserve_for(txn", ".consume(", ".release(txn"] {
         assert!(
             provider.contains(needle),
             "an industry-owned prepare already drives the delegated inventory \

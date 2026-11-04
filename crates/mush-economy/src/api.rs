@@ -3117,11 +3117,17 @@ pub(crate) fn contract_principal() -> PrincipalId {
 /// widen what `authorize_hold` refuses after boot), and the platform runs one game
 /// (the single-game direction), so the game's namespace sits beside the engine
 /// crates' namespaces rather than behind a registration seam that does not exist.
+///
+/// **Doc 39 cut IN.3** adds `"industry.booking"` — an order contract's booking fee (one
+/// slot-day), held on the payer's account when the order is booked and forfeit to the
+/// facility on a cancel. Only the contract's engine may settle it, so the payer cannot
+/// `@hold/release` a booking out from under a queued order.
 pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &[
     "campaign.operation",
     "industry.workorder",
     "tacsim.tv.deposit",
     "relay.message",
+    "industry.booking",
 ];
 
 /// Whether `purpose` is a reservation in an [`ENGINE_OWNED_RESERVATIONS`] namespace.
@@ -3639,7 +3645,8 @@ mod engine_reservation_tests {
                 "campaign.operation",
                 "industry.workorder",
                 "tacsim.tv.deposit",
-                "relay.message"
+                "relay.message",
+                "industry.booking"
             ]
         );
         for kind in ENGINE_OWNED_RESERVATIONS {

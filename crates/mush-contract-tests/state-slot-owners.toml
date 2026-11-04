@@ -109,6 +109,13 @@ owner = ""
 reason = "Test-only observation fixture seeds a FocusState to compare direct console, remote and proxy reach. It supplies no typed Sim control lease; production Ready requires the independent lease witness."
 
 [[site]]
+path = "crates/tacsim/src/surface/dispatch/tests.rs"
+accessor = "World::module_state_insert"
+slot = "IcSorties"
+owner = ""
+reason = "Doc 23 cut S.4b-1: a pure test of D-23-22's gate seeds an empty, unloaded seal-owner book on a bare World only to make claim_path_composed answer true. No claim, head or audit is seeded; the composed claim path is exercised by the M7 gate."
+
+[[site]]
 path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
 accessor = "World::module_state_insert"
 slot = "units"
