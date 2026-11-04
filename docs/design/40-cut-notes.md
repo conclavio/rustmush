@@ -292,5 +292,28 @@ sounding with the scan), so the test now hears the sounding out first.
 
 ### Cell minutes
 
-CELL_MINUTES
+**The delta is one new test of 0.03 s in the `bot` cell; no other cell gained or lost a test.** Measured from
+the JUnit of #364's last green CI run, [41747090228](https://github.com/conclavio/rustmush/actions/runs/41747090228)
+on head `857a61bf`, against main's run just before it,
+[41746078482](https://github.com/conclavio/rustmush/actions/runs/41746078482) on `f299aaf0`, which is the main
+that `857a61bf` merged. So the two runs differ only by this cut.
+
+- **New tests**: `mine::lines::tests::fr0_every_pocket_of_a_512_site_is_an_address` (`bot`, 0.03 s).
+- **No CI time from the rest**:
+  - The Urvara smoke is `#[ignore]` and runs by name only.
+  - The words' cases extend existing tests.
+  - The hoist moves no test.
+  - §4a's inventory ran as gate dispatches, not in CI.
+- **Each cell's test count**: the same in both runs except `bot` (735 → 736).
+- **Summed minutes per cell, main → PR**: `bot` 11.10 → 11.83; `bot-stories` 27.18 → 28.29;
+  `tacsim-integration-9` (`field_story`'s shard) 50.82 → 30.73; `tacsim-integration-1` 78.86 → 56.57;
+  `tacsim-integration-6` 34.24 → 44.04; `tacsim-integration-7` 37.17 → 46.51; `rest-server-boundary` 36.90 →
+  19.21; total 665.46 → 564.79.
+- **These movements are host noise, not this cut.** They run both ways, from −22.3 to +9.8 minutes, in cells
+  whose tests are identical in both runs. They are led by long single tests:
+  - `mill::sm12a_a_month_of_milling…` −61 s;
+  - `field_story::s2_the_field_story_at_512` −38 s, a story whose only change here is where its `Ground` table
+    is declared.
+
+No cell's wall moved because of FR.0, so nothing moves shard (rule #3).
 
