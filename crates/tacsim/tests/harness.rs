@@ -2,7 +2,7 @@
 //! `11-h-implementation-plan.md` §3.3 and D-H-8).
 //!
 //! What this is. One `#[ignore]` measurement, run by the CI `tacsim-harness` job
-//! on `workflow_dispatch` and the weekly schedule (report-only, `--release`,
+//! on `workflow_dispatch` and the daily schedule (report-only, `--release`,
 //! `--nocapture`, `harness.json` kept as an artifact) and locally by hand. It
 //! composes the **production** composition root — the same calls
 //! `mush_server::boot::game_modules` makes, read out of
