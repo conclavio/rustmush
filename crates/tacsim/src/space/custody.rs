@@ -19,12 +19,11 @@
 //!    - [`record_space_combat_to_black_box`] records [`SpaceCombatEvent`] hits (`TorpedoHit`,
 //!      `LaserHit`, `RailgunHit`) and open-epoch disablement (`ShipDisabledDerelict`) as
 //!      [`BlackBoxFlightEntry::CombatDamageRecorded`] entries inside [`SalvageClaimBook`].
-//! 3. **48-Hour Registry Salvage Claims (`doc 27a`, `D-35-12`, `D-35-14`)**:
-//!    - [`register_derelict_salvage_in_book`] records a clamped derelict recovery
-//!      in [`SalvageClaimBook`] (`record_physical_attach`, `record_bay_load`, and
-//!      `resolve_hull_recovery_custody`), opening the 48 real-hour (`172,800 s`) Registry
-//!      contest window when recovered by a non-owner or resolving title immediately on
-//!      self-recovery.
+//! 3. **The space custody (doc 41 cut RS.8, Q-36-46)**: a towed derelict's
+//!    [`SalvageCustody`] row lives in [`SpaceCustodyBook`], one durable
+//!    `tacsim:space:custody:{domain}` document a recovery domain (a space site has no
+//!    `SiteRecord`); `+salvage` files, contests and settles it through the ground's own
+//!    `crate::surface::claim` paths, on the one `claim_window_s` window.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -44,17 +43,17 @@ use crate::definitions::unit::{
     ARMOR_CELL, Consequence, HEAT_CELL, HEAT_SINK_CELL, INTERNALS_CELL, UnitSpec,
 };
 use crate::field_ops::{
-    BlackBoxFlightEntry, ComponentCondition, CustodyTitleStatus, FieldOpsError,
-    FieldUnitAssessment, GroundTenure, OperationalState, RecoveryAuthorityContext, RecoveryOpId,
-    SalvageClaimBook, apply_ic_condition_handoff,
+    BlackBoxFlightEntry, ComponentCondition, FieldOpsError, FieldUnitAssessment, GroundTenure,
+    OperationalState, SalvageClaimBook, apply_ic_condition_handoff,
 };
 use crate::port::ship::SHIP_DAMAGE;
 use crate::space::bubble::{
-    DERELICT_WINDOW_S, FacetBand, HullStatus, ShipSectionId, ShipSectionState, SpaceCombatEvent,
-    SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
+    DERELICT_LIFE_SUPPORT_S, FacetBand, HullStatus, ShipSectionId, ShipSectionState,
+    SpaceCombatEvent, SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
 };
 use crate::space::docking::DockingRcsAuthority;
 use crate::space::weapons::{LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube};
+use crate::surface::salvage::SalvageCustody;
 
 /// Capability id used to persist space-only subsystem crits (`PdcOffline`, `SensorDegraded`,
 /// `RadiatorDamaged`, `DriveDegraded`), per-PDC `operational` flags, and `slow_pct` across
@@ -707,8 +706,7 @@ pub fn space_ship_from_tactical_unit_with_spec(
     {
         ship.status = HullStatus::DisabledDerelict {
             epoch_open: true,
-            life_support_remaining_s: DERELICT_WINDOW_S,
-            salvage_contest_window_s: DERELICT_WINDOW_S,
+            life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
         };
     }
 
@@ -1100,52 +1098,155 @@ pub fn record_space_combat_to_black_box(
     Ok(recorded)
 }
 
-/// Register a clamped derelict recovery inside `doc 27a`'s authoritative
-/// [`SalvageClaimBook`], recording the physical tow attachment (`TowAttached`), carrier/port
-/// berth recovery (`EpochClosedInBay`), and resolving custody into either an immediate
-/// self-recovery title or a 48-hour (`172,800 s`) [`CustodyTitleStatus::PendingSalvageClaim`]
-/// (`D-35-12`, `D-35-14`, `Q-S1`, `Q-S2`, `Q-S14`, `Q-S15`).
-///
-/// # Errors
-/// Returns [`FieldOpsError::Salvage`] if object identifiers are invalid or a duplicate
-/// active claim already exists for `derelict_obj`.
-#[allow(clippy::too_many_arguments)]
-pub fn register_derelict_salvage_in_book(
-    salvage_book: &mut SalvageClaimBook,
-    operation_id: RecoveryOpId,
-    derelict_obj: ObjId,
-    tug_obj: ObjId,
-    recoverer_obj: ObjId,
-    prior_owner_obj: ObjId,
-    port_base_obj: ObjId,
-    attached_at_ic: i64,
-    filed_at_real_s: i64,
-) -> Result<CustodyTitleStatus, FieldOpsError> {
-    let authority_ctx = RecoveryAuthorityContext {
-        recoverer: recoverer_obj,
-        unit_title_holder: prior_owner_obj,
-        has_owner_authorization: recoverer_obj == prior_owner_obj,
-        has_landholder_authorization: false,
-        ground_tenure_at_attach: GroundTenure::Unclaimed,
-    };
+/// Most custody rows one recovery domain's document holds, as a ground site's record does.
+pub const MAX_SPACE_CUSTODY: usize = 32;
 
-    salvage_book
-        .record_physical_attach(
-            operation_id,
-            derelict_obj,
-            tug_obj,
-            &authority_ctx,
-            attached_at_ic,
-        )
-        .map_err(FieldOpsError::Salvage)?;
+/// **The space custody** (doc 41 cut RS.8, Q-36-46): the [`SalvageCustody`] rows of towed
+/// derelicts, grouped by the domain each was recovered in, each group one durable
+/// `tacsim:space:custody:{domain}` document. A hull stands in at most one row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpaceCustodyBook {
+    by_domain: BTreeMap<mush_sim::DomainId, Vec<SalvageCustody>>,
+}
 
-    salvage_book
-        .record_bay_load(operation_id, port_base_obj, attached_at_ic)
-        .map_err(FieldOpsError::Salvage)?;
+impl SpaceCustodyBook {
+    /// The row naming `hull`.
+    #[must_use]
+    pub fn get(&self, hull: &ObjId) -> Option<&SalvageCustody> {
+        self.rows().find(|row| row.hull == *hull)
+    }
 
-    salvage_book
-        .resolve_hull_recovery_custody(operation_id, filed_at_real_s)
-        .map_err(FieldOpsError::Salvage)
+    /// The row naming `hull`, mutably.
+    pub fn get_mut(&mut self, hull: &ObjId) -> Option<&mut SalvageCustody> {
+        self.by_domain
+            .values_mut()
+            .flat_map(|rows| rows.iter_mut())
+            .find(|row| row.hull == *hull)
+    }
+
+    /// Whether a row names `hull`.
+    #[must_use]
+    pub fn contains_key(&self, hull: &ObjId) -> bool {
+        self.get(hull).is_some()
+    }
+
+    /// The domain whose document holds `hull`'s row.
+    #[must_use]
+    pub fn domain_of(&self, hull: ObjId) -> Option<mush_sim::DomainId> {
+        self.by_domain
+            .iter()
+            .find(|(_, rows)| rows.iter().any(|row| row.hull == hull))
+            .map(|(domain, _)| *domain)
+    }
+
+    /// Put `row` in `domain`'s document, replacing any row naming its hull. `false`, and nothing
+    /// written, when the document is full ([`MAX_SPACE_CUSTODY`]).
+    pub fn insert(&mut self, domain: mush_sim::DomainId, row: SalvageCustody) -> bool {
+        let _ = self.remove(&row.hull);
+        let rows = self.by_domain.entry(domain).or_default();
+        if rows.len() >= MAX_SPACE_CUSTODY {
+            if rows.is_empty() {
+                self.by_domain.remove(&domain);
+            }
+            return false;
+        }
+        rows.push(row);
+        true
+    }
+
+    /// Take `hull`'s row out; an emptied document goes.
+    pub fn remove(&mut self, hull: &ObjId) -> Option<SalvageCustody> {
+        let domain = self.domain_of(*hull)?;
+        let rows = self.by_domain.get_mut(&domain)?;
+        let at = rows.iter().position(|row| row.hull == *hull)?;
+        let row = rows.remove(at);
+        if rows.is_empty() {
+            self.by_domain.remove(&domain);
+        }
+        Some(row)
+    }
+
+    /// Every row, by domain then filing order.
+    pub fn rows(&self) -> impl Iterator<Item = &SalvageCustody> {
+        self.by_domain.values().flatten()
+    }
+
+    /// The documents: each domain and its rows.
+    #[must_use]
+    pub fn documents(&self) -> &BTreeMap<mush_sim::DomainId, Vec<SalvageCustody>> {
+        &self.by_domain
+    }
+
+    /// Restore one domain's document as read from the store.
+    pub fn restore(&mut self, domain: mush_sim::DomainId, rows: Vec<SalvageCustody>) {
+        if rows.is_empty() {
+            self.by_domain.remove(&domain);
+        } else {
+            self.by_domain.insert(domain, rows);
+        }
+    }
+}
+
+/// **The pin a clamp starts** (doc 41 cut RS.8, Q-36-46; doc 35b §3, doc 35c §6.3): the
+/// derelict's title as the economy holds it and everyone who answers for it, open space's
+/// `GroundTenure::Unclaimed`, and the witnesses the bubble's presence rows name: the helm of
+/// every other carrier in the tug's bubble. A derelict the economy has no title for is titled
+/// first to whoever really held her (her helm, her raider leader, her last pilot, her owner);
+/// one nobody held stays untitled, and her claim cannot be filed.
+pub fn pin_at_clamp(
+    ctx: &mut Ctx<'_>,
+    derelict: ObjId,
+    tug: ObjId,
+    pinned_ic: i64,
+) -> crate::surface::claim::TenurePin {
+    let titled = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|store| store.snapshot().asset(derelict).is_some());
+    if !titled && let Some(holder) = super::tick::resolve_hull_prior_owner(ctx.w, derelict, tug) {
+        ensure_space_hull_titled(ctx, derelict, holder);
+    }
+    let (title, answerers) = crate::surface::claim::title_of(ctx.w, derelict);
+    let mut witnesses: Vec<crate::surface::claim::Witness> = Vec::new();
+    if let Some(active) = ctx
+        .w
+        .module_state::<super::tick::SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull(tug))
+    {
+        for (carrier, _, _, _) in active.all_carrier_hulls() {
+            if carrier == tug || carrier == derelict {
+                continue;
+            }
+            if let Some(holder) = crate::port::coop::helm_holder(ctx.w, carrier)
+                && holder != ctx.actor
+                && !witnesses.iter().any(|w| w.holder == holder)
+            {
+                witnesses.push(crate::surface::claim::Witness {
+                    holder,
+                    unit: carrier,
+                    kind: crate::surface::claim::WitnessKind::Sensor,
+                });
+            }
+        }
+    }
+    witnesses.truncate(crate::surface::claim::MAX_WITNESSES);
+    crate::surface::claim::TenurePin {
+        casualty: derelict,
+        tug,
+        recoverer: ctx.actor,
+        answering: answerers.first().copied(),
+        answerers: if matches!(title, Some(mush_org::PrincipalId::Object(_))) {
+            Vec::new()
+        } else {
+            answerers
+        },
+        title,
+        owner_grant: None,
+        landholder_authorized: false,
+        tenure: GroundTenure::Unclaimed,
+        witnesses,
+        pinned_ic,
+    }
 }
 
 /// Real UTC seconds now (`w.now()`), clamped to at least `1` (`SF.R19`, `35b` §6.8 #14).
