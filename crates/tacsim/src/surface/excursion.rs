@@ -1446,9 +1446,10 @@ pub struct Queued {
     pub excursion: Option<ExcursionId>,
     /// **A launch queued behind its claim** (doc 23 cut S.4b-1, D-23-21): what the fire that
     /// observes the claim's active row starts, with `kind` [`ActKind::Launch`]. Nothing in
-    /// S.4b-1 queues one ([`RigRecord::check`] refuses it until S.4b-2's `go` does).
+    /// S.4b-1 queues one ([`RigRecord::check`] refuses it until S.4b-2's `go` does). Boxed: the
+    /// rig record rides many a tick's frame (the M7 stack-size lint).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launch: Option<QueuedLaunch>,
+    pub launch: Option<Box<QueuedLaunch>>,
 }
 
 /// **The launch a `go` queued behind its claim** (doc 23 cut S.4b-1, D-23-21; the seam doc 40's
@@ -4138,11 +4139,11 @@ mod tests {
         );
         let mut launch = queued_unload();
         if let Some(queued) = launch.queued.as_mut() {
-            queued.launch = Some(QueuedLaunch {
+            queued.launch = Some(Box::new(QueuedLaunch {
                 launch_ic: 1_000,
                 mind: "filed:7".into(),
                 org: None,
-            });
+            }));
         }
         assert_eq!(
             launch.check(),
