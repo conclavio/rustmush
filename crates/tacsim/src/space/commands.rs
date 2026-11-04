@@ -117,7 +117,9 @@ pub const MINE_HELP: &str = "\
 pub const TAC_VERB: &str = "+tac";
 
 /// All switches supported by `+tac`.
-pub const TAC_SWITCHES: [&str; 7] = ["status", "scan", "lock", "beam", "torp", "railgun", "pdc"];
+pub const TAC_SWITCHES: [&str; 8] = [
+    "status", "scan", "lock", "beam", "torp", "railgun", "pdc", "hail",
+];
 
 /// Help text for `+tac`.
 pub const TAC_HELP: &str = "\
@@ -128,7 +130,8 @@ pub const TAC_HELP: &str = "\
 +tac/beam [<contact>]                 Fire offensive laser mounts at a detected hostile contact.
 +tac/torp [<contact>[=<count>]]       Launch torpedo salvo (default 1) at a detected hostile contact.
 +tac/railgun [<contact>]              Fire spinal/turret railguns at a detected hostile contact.
-+tac/pdc <auto|manual|point|offense>  Configure point-defence autocannons or dual-mode laser mounts.";
++tac/pdc <auto|manual|point|offense>  Configure point-defence autocannons or dual-mode laser mounts.
++tac/hail <target>[=<message>]        Transmit a light-lagged radio hail (`d / c`, `D-35-10`).";
 
 /// Feed identifier for the 3D holotank tactical display (`SF.2`, `SF.7`).
 pub const HOLOTANK_FEED: &str = "space.holotank";
@@ -825,7 +828,7 @@ fn build_tier1_space_panel_payloads(
         }],
         "torpedoes": [],
     });
-    let tier1_dv_mps = mush_tactics::module::unit_of(w, hull)
+    let mut tier1_ship = mush_tactics::module::unit_of(w, hull)
         .and_then(|u| {
             super::custody::space_ship_from_tactical_unit(
                 u,
@@ -837,19 +840,42 @@ fn build_tier1_space_panel_payloads(
             )
             .ok()
         })
-        .map_or_else(
-            || {
-                super::bubble::SpaceShipState::new_dray(
-                    format!("ship.{}", hull.0),
-                    &callsign,
-                    crate::arena::party::PartyId::BLUE,
-                    [0, 0, 0],
-                    [0, 0, 0],
-                )
-                .delta_v_mps
-            },
-            |s| s.delta_v_mps,
-        );
+        .unwrap_or_else(|| {
+            super::bubble::SpaceShipState::new_dray(
+                format!("ship.{}", hull.0),
+                &callsign,
+                crate::arena::party::PartyId::BLUE,
+                [0, 0, 0],
+                [0, 0, 0],
+            )
+        });
+    if let Some(ledger) = book.propellant_ledger(hull) {
+        let live_kg = ledger.effective_live_kg(ledger.last_vault_tank_t);
+        tier1_ship.propellant_kg =
+            u32::try_from(live_kg.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+        tier1_ship.recompute_drive_kinematics();
+    }
+    let hp: u32 = tier1_ship
+        .sections
+        .values()
+        .map(|sec| sec.internals + sec.facets.values().sum::<u32>())
+        .sum();
+    let max_hp: u32 = tier1_ship
+        .sections
+        .values()
+        .map(|sec| sec.max_internals + sec.facets.values().sum::<u32>())
+        .sum();
+    let hull_pct = hp
+        .saturating_mul(100)
+        .checked_div(max_hp)
+        .map_or(100, |pct| i64::from(pct).clamp(0, 100));
+    let tier1_dv_mps = tier1_ship.delta_v_mps;
+    let mut heat_permille = tier1_ship.heat_permille;
+    if let Some(cs) = book.cluster_sessions.get(&hull)
+        && cs.frontier_bloom_heat > 0
+    {
+        heat_permille = heat_permille.max(cs.frontier_bloom_heat.saturating_mul(10).min(1_000));
+    }
     let cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
@@ -860,8 +886,8 @@ fn build_tier1_space_panel_payloads(
         "prograde_bearing_deg": 0.0,
         "prograde_pitch_deg": 0.0,
         "delta_v_mps": tier1_dv_mps,
-        "heat_permille": 0,
-        "hull_pct": 100,
+        "heat_permille": heat_permille,
+        "hull_pct": hull_pct,
         "pdc_mode": "AUTO",
         "emcon": "STD",
         "bodies": bodies_json,
@@ -1894,6 +1920,94 @@ pub(crate) fn nearest_return_port_for_hull(w: &World, _hull: ObjId) -> Option<St
         .into_iter()
         .next()
         .map(|(pid, _, _, _)| pid.as_str().to_owned())
+}
+
+/// Execute `hull`'s queued linkdead return plan once its grace window expires (`SF.R23`, `D-35-7`):
+/// recouples a hull in `free_flights` or `cluster_sessions` (when not inside an active bubble)
+/// onto a `CarrierJourney` toward `port_word`.
+pub(crate) fn execute_linkdead_return_journey(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    port_word: &str,
+) -> Result<(), CmdError> {
+    let in_tier1 = ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.active_for_hull(hull).is_none()
+            && (b.free_flights.contains_key(&hull) || b.cluster_sessions.contains_key(&hull))
+    });
+    if !in_tier1 {
+        return Ok(());
+    }
+    let lower = port_word.to_ascii_lowercase();
+    let open_ports = open_port_places(ctx.w);
+    let matched = open_ports
+        .iter()
+        .find(|(place_id, label, _, def)| {
+            place_id.as_str().eq_ignore_ascii_case(&lower)
+                || def.venue.as_str().eq_ignore_ascii_case(&lower)
+                || label.to_ascii_lowercase().contains(&lower)
+        })
+        .or_else(|| open_ports.first())
+        .cloned()
+        .ok_or_else(|| CmdError::msg("No open port available for linkdead return plan."))?;
+    let (target_place, _, dest_host, dest_def) = matched;
+    let dest_domain = ctx
+        .w
+        .module_state::<SpatialState>()
+        .and_then(|s| s.domain_of_host(dest_host))
+        .map(|d| d.id)
+        .ok_or_else(|| CmdError::msg("Destination port has no active domain."))?;
+    let pose_val = mush_sim::passive_rules_value(serde_json::json!({}))
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    let dest_parent = mush_sim::SpatialParent::Direct {
+        domain: dest_domain,
+        pose: mush_sim::Pose::passive(pose_val),
+    };
+    let origin_host = open_ports
+        .iter()
+        .map(|(_, _, host, _)| *host)
+        .find(|&h| h != dest_host)
+        .unwrap_or(hull);
+    let leg_secs = 3_600_u32;
+    let leg_def =
+        mush_sim::LegDef::new(dest_host, leg_secs).map_err(|e| CmdError::msg(e.to_string()))?;
+    let drive_class =
+        mush_core::CanonicalId::new("fusion_torch").map_err(|e| CmdError::msg(e.to_string()))?;
+    let route_id = mush_core::CanonicalId::new(format!("return_{}", target_place.as_str()))
+        .unwrap_or(target_place);
+    let route_def = mush_sim::RouteDef::new(
+        route_id,
+        (origin_host, dest_host),
+        vec![leg_def],
+        drive_class,
+        1,
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+    let now = ctx.w.world_ic_now();
+    if mush_sim::pose_of(ctx.w, hull).is_some() {
+        let _ = mush_sim::move_carrier_subtree(ctx, hull, None);
+    }
+    mush_sim::recouple_carrier_journey(ctx, hull, route_def, dest_parent, vec![leg_secs], &now)
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.free_flights.remove(&hull);
+        book.cluster_sessions.remove(&hull);
+    }
+    if let Some(mut voyage) =
+        ctx.w
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(|s| match s.voyage_state(hull) {
+                crate::port::voyage::VoyageState::Present(v) => Some(v.clone()),
+                crate::port::voyage::VoyageState::Absent
+                | crate::port::voyage::VoyageState::Unreadable => None,
+            })
+    {
+        if let Some(dep) = &mut voyage.departed {
+            dep.to_venue = dest_def.venue;
+            dep.depart_ic = now.at;
+        }
+        crate::store::put_voyage(ctx, &voyage);
+    }
+    Ok(())
 }
 
 fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
@@ -3276,6 +3390,7 @@ pub fn tac_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("torp") => tac_torp(ctx),
         Some("railgun") => tac_railgun(ctx),
         Some("pdc") => tac_pdc(ctx),
+        Some("hail") => tac_hail(ctx),
         Some(other) => Err(CmdError::msg(format!("Unknown +tac switch: /{other}."))),
     };
     if res.is_ok() {
@@ -3378,6 +3493,99 @@ fn tac_scan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
     }
     push_space_panels(ctx, hull);
+    Ok(())
+}
+
+fn tac_hail(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let (hull, _) = require_aboard_and_seat(ctx, None)?;
+    let raw = ctx.args.raw().trim().to_owned();
+    if raw.is_empty() {
+        return Err(CmdError::msg(
+            "Usage: +tac/hail <target>[=<message>] [range_m=<distance_m>]",
+        ));
+    }
+    let mut explicit_range_m: Option<i64> = None;
+    let mut cleaned_tokens = Vec::new();
+    for tok in raw.split_whitespace() {
+        if let Some(rest) = tok.strip_prefix("range_m=")
+            && let Ok(val) = rest.parse::<i64>()
+        {
+            explicit_range_m = Some(val.max(0));
+        } else {
+            cleaned_tokens.push(tok);
+        }
+    }
+    let cleaned = cleaned_tokens.join(" ");
+    let (target_tok, message) = match cleaned.split_once('=') {
+        Some((t, m)) => (t.trim(), m.trim()),
+        None => (
+            cleaned.trim(),
+            "Requesting transponder verification and vector check.",
+        ),
+    };
+    let sender_label = display_name(ctx.w, hull);
+    let mut dest_hull = hull;
+    let mut distance_m = explicit_range_m.unwrap_or(super::picket::CORVETTE_STANDOFF_M);
+
+    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>()
+        && let Some(active) = book.active_for_hull(hull)
+    {
+        let own_ship_id = active.carrier_ship_id_for(hull);
+        if let Some(own_ship) = active.bubble.ships.get(own_ship_id) {
+            let lower = target_tok.to_ascii_lowercase();
+            let parsed_obj = target_tok
+                .strip_prefix('#')
+                .or_else(|| target_tok.strip_prefix("ship."))
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(ObjId);
+            for (ship_id, ship) in &active.bubble.ships {
+                if ship_id == own_ship_id {
+                    continue;
+                }
+                if !is_bubble_ship_detected(own_ship, ship, active.bubble.ic_timestamp_s) {
+                    continue;
+                }
+                let chull = active
+                    .hull_for_ship_id(ship_id)
+                    .unwrap_or(active.interdictor_hull);
+                if ship_id.eq_ignore_ascii_case(target_tok)
+                    || ship.callsign.to_ascii_lowercase().contains(&lower)
+                    || parsed_obj == Some(chull)
+                {
+                    if explicit_range_m.is_none() {
+                        distance_m = super::picket::distance_3d_m(own_ship.pos_m, ship.pos_m);
+                    }
+                    if active.carriers.contains_key(&chull) {
+                        dest_hull = chull;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    let (lag_s, lag_ms) = super::picket::queue_or_deliver_light_lagged_hail(
+        ctx,
+        dest_hull,
+        sender_label,
+        message,
+        distance_m,
+    );
+    let delivery_note = if lag_s == 0 {
+        "delivered immediately".to_owned()
+    } else {
+        format!("queued for T+{lag_s}s")
+    };
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Radio hail transmitted toward `{target_tok}` (range {} m, one-way light-lag +{}.{:03}s; {delivery_note}).",
+            distance_m.max(0),
+            lag_ms / 1_000,
+            lag_ms % 1_000,
+        ),
+    );
     Ok(())
 }
 
@@ -3762,9 +3970,13 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .and_then(|b| b.active_for_hull(hull))
             .and_then(|active| {
                 let own_ship_id = active.carrier_ship_id_for(hull);
+                let own_ship = active.bubble.ships.get(own_ship_id)?;
                 let mut fallback = None;
                 for (ship_id, ship) in &active.bubble.ships {
                     if ship_id == own_ship_id {
+                        continue;
+                    }
+                    if !is_bubble_ship_detected(own_ship, ship, active.bubble.ic_timestamp_s) {
                         continue;
                     }
                     let contact_hull = active
@@ -3833,6 +4045,12 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
 
+    if ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.active_for_hull(hull).is_some() && !b.cluster_sessions.contains_key(&hull)
+    }) {
+        return Err(CmdError::msg(NO_SUCH_CONTACT));
+    }
+
     let cluster_id = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -3855,11 +4073,13 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     let burned_kg = debit_hull_propellant_for_dv(ctx, hull, 12, true)?;
 
+    let now_ic = ctx.w.world_ic_now().at;
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(session) = book.cluster_sessions.get_mut(&hull)
     {
         session.approaching_rock = Some(spec.letter);
         session.matched_rock = None;
+        session.last_activity_ic_s = now_ic;
     }
 
     let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
@@ -3932,12 +4152,14 @@ fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let dv_mps = ((rel_speed_mmps as u64).div_ceil(1_000)).max(1);
     let burned_kg = debit_hull_propellant_for_dv(ctx, hull, dv_mps, true)?;
 
+    let now_ic = ctx.w.world_ic_now().at;
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(session) = book.cluster_sessions.get_mut(&hull)
     {
         session.ship_vel_mmps = spec.vel_mmps;
         session.approaching_rock = None;
         session.matched_rock = Some(spec.letter);
+        session.last_activity_ic_s = now_ic;
     }
 
     let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
@@ -4029,12 +4251,13 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
 
-    let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(ctx.actor), now_ic);
+    let customs_principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, ctx.actor);
+    let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(customs_principal), now_ic);
 
     if manifest.unlicensed_strategic_ore_kg > 0 {
         match super::picket::assess_customs_fine_and_advance_front(
             ctx,
-            ctx.actor,
+            customs_principal,
             hull,
             manifest.unlicensed_strategic_ore_kg,
         ) {
@@ -4084,33 +4307,34 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 // on `CUSTOMS_ASSERTION_TITLE`, and clear the ship (`ClearedAfterSeizure`)!
                 let front_id = super::picket::seize_contraband_and_advance_front(
                     ctx,
-                    ctx.actor,
+                    customs_principal,
                     hull,
                     manifest.unlicensed_strategic_ore_kg,
                 );
                 let front_raw = front_id.map(|f| f.0);
 
-                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-                    && let Some(active) = book.active_for_hull_mut(hull)
-                {
-                    let carrier_party = active.carrier_party_for(hull);
-                    active.bubble.set_party_relation(
-                        super::picket::CUSTOMS_CORVETTE_PARTY,
-                        carrier_party,
-                        Some(Mark::Friendly),
-                    );
-                    if let Some(picket) = active.picket.as_mut() {
-                        picket.set_inspection_status_for(
-                            hull,
-                            super::picket::PicketInspectionStatus::ClearedAfterSeizure,
+                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+                    book.mined_strategic_blocks.remove(&hull);
+                    if let Some(active) = book.active_for_hull_mut(hull) {
+                        let carrier_party = active.carrier_party_for(hull);
+                        active.bubble.set_party_relation(
+                            super::picket::CUSTOMS_CORVETTE_PARTY,
+                            carrier_party,
+                            Some(Mark::Friendly),
                         );
-                        picket.set_inspection_outcome_for(
-                            hull,
-                            super::picket::PicketInspectionOutcome::ContrabandSeized {
-                                seized_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
-                                front_id: front_raw,
-                            },
-                        );
+                        if let Some(picket) = active.picket.as_mut() {
+                            picket.set_inspection_status_for(
+                                hull,
+                                super::picket::PicketInspectionStatus::ClearedAfterSeizure,
+                            );
+                            picket.set_inspection_outcome_for(
+                                hull,
+                                super::picket::PicketInspectionOutcome::ContrabandSeized {
+                                    seized_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
+                                    front_id: front_raw,
+                                },
+                            );
+                        }
                     }
                 }
 
@@ -4186,7 +4410,9 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
 
-    let front_id = super::picket::record_ran_the_picket_incident(ctx, ctx.actor, hull).map(|f| f.0);
+    let customs_principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, ctx.actor);
+    let front_id =
+        super::picket::record_ran_the_picket_incident(ctx, customs_principal, hull).map(|f| f.0);
 
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(active) = book.active_for_hull_mut(hull)
@@ -4349,6 +4575,7 @@ fn resolve_docking_target(
     if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
         if let Some(active) = book.active_for_hull(hull) {
             let own_ship_id = active.carrier_ship_id_for(hull);
+            let own_ship = active.bubble.ships.get(own_ship_id);
             let parsed_obj = trimmed
                 .strip_prefix('#')
                 .or_else(|| trimmed.strip_prefix("ship."))
@@ -4357,6 +4584,11 @@ fn resolve_docking_target(
             let mut operational_fallback = None;
             for (ship_id, ship) in &active.bubble.ships {
                 if ship_id == own_ship_id {
+                    continue;
+                }
+                if own_ship.is_some_and(|o| {
+                    !is_bubble_ship_detected(o, ship, active.bubble.ic_timestamp_s)
+                }) {
                     continue;
                 }
                 let contact_hull = active
@@ -4484,9 +4716,15 @@ fn validate_docking_initiation_gates(
             ));
         }
         let own_ship_id = active.carrier_ship_id_for(hull);
+        let own_ship = active.bubble.ships.get(own_ship_id);
         let own_party = active.carrier_party_for(hull);
         for (ship_id, ship) in &active.bubble.ships {
             if ship_id == own_ship_id {
+                continue;
+            }
+            if own_ship
+                .is_some_and(|o| !is_bubble_ship_detected(o, ship, active.bubble.ic_timestamp_s))
+            {
                 continue;
             }
             if ship.status == HullStatus::Operational
@@ -5576,7 +5814,9 @@ fn mine_ping(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             Some((s, site))
         })
         .ok_or_else(|| {
-            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+            CmdError::msg(
+                "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
+            )
         })?;
     let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
         CmdError::msg("Orbital cluster definition is not available in the applied pack.")
@@ -5597,6 +5837,7 @@ fn mine_ping(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
     {
+        sess_mut.last_activity_ic_s = now_ic;
         for spec in &specs {
             sess_mut
                 .pings
@@ -5690,7 +5931,9 @@ fn mine_stake(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.cluster_sessions.get(&hull).cloned())
         .ok_or_else(|| {
-            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+            CmdError::msg(
+                "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
+            )
         })?;
     let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
         CmdError::msg("Orbital cluster definition is not available in the applied pack.")
@@ -5809,7 +6052,9 @@ fn mine_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.cluster_sessions.get(&hull).cloned())
         .ok_or_else(|| {
-            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+            CmdError::msg(
+                "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
+            )
         })?;
     let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
         CmdError::msg("Orbital cluster definition is not available in the applied pack.")
@@ -5938,6 +6183,15 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Enforce the Freeport Registry prospecting licence (`D-35-13`).
     require_prospecting_licence(ctx.w, ctx.actor)?;
 
+    // Verify the hull is a `Dray-P` (`dray_p`) prospector variant (`D-35-13`, `SF.R23`).
+    let is_prospector =
+        crate::port::ship::hull_view(ctx.w, hull).is_some_and(|v| v.is_prospector());
+    if !is_prospector {
+        return Err(CmdError::msg(
+            "Mining laser requires a `Dray-P` prospector hull (`+coop/refit prospector`).",
+        ));
+    }
+
     let raw = ctx.args.raw().trim();
     let parts: Vec<&str> = raw.split_whitespace().collect();
     let rock_token = parts
@@ -5954,7 +6208,9 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             Some((s, site))
         })
         .ok_or_else(|| {
-            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+            CmdError::msg(
+                "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
+            )
         })?;
     let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
         CmdError::msg("Orbital cluster definition is not available in the applied pack.")
@@ -6017,7 +6273,7 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .vaults
         .get(&spec.letter)
         .ok_or_else(|| CmdError::msg("Rock deposit vault is not laid up."))?;
-    let avail_t = super::mining::rock_pool_tonnes(ctx, rock_vault, family);
+    let avail_t = super::mining::rock_uncommitted_pool_tonnes(ctx, rock_vault, family);
     if avail_t == 0 {
         return Err(CmdError::msg(format!(
             "Block {} `{}` deposit is exhausted (0 t remaining).",
@@ -6032,39 +6288,48 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .min(hold_cap_t.saturating_sub(used_t))
         .min(avail_t);
 
-    // Check if this is unleased/claim-jumped frontier extraction (`doc 35` §7.4): generate
-    // thermal bloom (`+18` heat) and flag claim-jump, without scripting any rival spawn inside
-    // `+mine/laser` (`35a` §3 #9).
+    // Check if this is unleased/claim-jumped frontier extraction (`doc 35` §7.4, `SF.R23`):
+    // look up tenure directly in `PortHandles::families.claims` so a holder mining their own
+    // staked block is never flagged as claim-jumping.
     let is_frontier_unleased = cluster.zone() == super::mining::ClusterZone::Frontier
-        && super::mining::cluster_rock_tenure_word(ctx, &session.cluster, spec, ctx.actor, now_ic)
-            != format!(
-                "your claim (until {}, contest window {}d)",
-                crate::port::licence::ic_stamp(now_ic + crate::surface::tenure::CLAIM_TERM_IC_SECS),
-                crate::surface::tenure::CONTEST_WINDOW_IC_SECS / 86_400
-            );
+        && spec.tenure != crate::port::def::Tenure::Commons
+        && !super::mining::actor_holds_cluster_block_claim(
+            ctx,
+            &session.cluster,
+            spec.letter,
+            ctx.actor,
+            now_ic,
+        );
 
     let mut bloom_note = String::new();
-    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-        && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
-    {
-        sess_mut.active_laser = Some(super::mining::LaserExtractionCycle {
-            rock_letter: spec.letter,
-            family,
-            started_ic: now_ic,
-            due_ic,
-            yield_t,
-            operator: ctx.actor,
-        });
-        if is_frontier_unleased {
-            sess_mut.frontier_bloom_heat = sess_mut
-                .frontier_bloom_heat
-                .saturating_add(super::mining::FRONTIER_LASER_BLOOM_HEAT);
-            sess_mut.claim_jump_flagged = true;
-            bloom_note = format!(
-                " [FRONTIER BLOOM +{} heat (total {}); unleased extraction flagged]",
-                super::mining::FRONTIER_LASER_BLOOM_HEAT,
-                sess_mut.frontier_bloom_heat
-            );
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        if family == crate::surface::OreFamily::StrategicElements {
+            book.mined_strategic_blocks
+                .entry(hull)
+                .or_default()
+                .insert((session.cluster.clone(), spec.letter));
+        }
+        if let Some(sess_mut) = book.cluster_sessions.get_mut(&hull) {
+            sess_mut.last_activity_ic_s = now_ic;
+            sess_mut.active_laser = Some(super::mining::LaserExtractionCycle {
+                rock_letter: spec.letter,
+                family,
+                started_ic: now_ic,
+                due_ic,
+                yield_t,
+                operator: ctx.actor,
+            });
+            if is_frontier_unleased {
+                sess_mut.frontier_bloom_heat = sess_mut
+                    .frontier_bloom_heat
+                    .saturating_add(super::mining::FRONTIER_LASER_BLOOM_HEAT);
+                sess_mut.claim_jump_flagged = true;
+                bloom_note = format!(
+                    " [FRONTIER BLOOM +{} heat (total {}); unleased extraction flagged]",
+                    super::mining::FRONTIER_LASER_BLOOM_HEAT,
+                    sess_mut.frontier_bloom_heat
+                );
+            }
         }
     }
 
@@ -6135,7 +6400,9 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             Some((s, site))
         })
         .ok_or_else(|| {
-            CmdError::msg("Ship is not in an orbital cluster; use `+helm/cluster <id>` first.")
+            CmdError::msg(
+                "Ship is not in an orbital cluster; use `+helm/autopilot <cluster_id>` first.",
+            )
         })?;
     let cluster = super::mining::cluster_by_id(ctx.w, &session.cluster).ok_or_else(|| {
         CmdError::msg("Orbital cluster definition is not available in the applied pack.")
@@ -6200,7 +6467,7 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .vaults
         .get(&spec.letter)
         .ok_or_else(|| CmdError::msg("Rock deposit vault is not laid up."))?;
-    let avail_t = super::mining::rock_pool_tonnes(ctx, rock_vault, family);
+    let avail_t = super::mining::rock_uncommitted_pool_tonnes(ctx, rock_vault, family);
     if avail_t == 0 {
         return Err(CmdError::msg(format!(
             "Block {} `{}` deposit is exhausted (0 t remaining).",
@@ -6210,6 +6477,15 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 
     let now_ic = ctx.w.world_ic_now().at;
+    let is_frontier_unleased = cluster.zone() == super::mining::ClusterZone::Frontier
+        && spec.tenure != crate::port::def::Tenure::Commons
+        && !super::mining::actor_holds_cluster_block_claim(
+            ctx,
+            &session.cluster,
+            spec.letter,
+            ctx.actor,
+            now_ic,
+        );
     let due_ic = now_ic.saturating_add(super::mining::DRONE_SORTIE_IC_SECS);
     let mut launched_ids = Vec::new();
     let mut drone_excursions = Vec::new();
@@ -6250,27 +6526,37 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let _ = super::tick::submit_drone_excursions(ctx, hull, drone_excursions);
 
-    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-        && let Some(sess_mut) = book.cluster_sessions.get_mut(&hull)
-    {
-        for (slot, excursion_id, mind_seal, mind_memory, mind_think_seq, mind_last_trace) in
-            &launched_ids
-        {
-            sess_mut
-                .active_drones
-                .push(super::mining::DroneSortieState {
-                    slot: *slot,
-                    excursion_id: *excursion_id,
-                    rock_letter: spec.letter,
-                    family,
-                    due_ic,
-                    yield_t: super::mining::DRONE_SORTIE_YIELD_T,
-                    operator: ctx.actor,
-                    mind_seal: mind_seal.clone(),
-                    mind_memory: mind_memory.clone(),
-                    mind_think_seq: *mind_think_seq,
-                    mind_last_trace: mind_last_trace.clone(),
-                });
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        if family == crate::surface::OreFamily::StrategicElements {
+            book.mined_strategic_blocks
+                .entry(hull)
+                .or_default()
+                .insert((session.cluster.clone(), spec.letter));
+        }
+        if let Some(sess_mut) = book.cluster_sessions.get_mut(&hull) {
+            sess_mut.last_activity_ic_s = now_ic;
+            if is_frontier_unleased {
+                sess_mut.claim_jump_flagged = true;
+            }
+            for (slot, excursion_id, mind_seal, mind_memory, mind_think_seq, mind_last_trace) in
+                &launched_ids
+            {
+                sess_mut
+                    .active_drones
+                    .push(super::mining::DroneSortieState {
+                        slot: *slot,
+                        excursion_id: *excursion_id,
+                        rock_letter: spec.letter,
+                        family,
+                        due_ic,
+                        yield_t: super::mining::DRONE_SORTIE_YIELD_T,
+                        operator: ctx.actor,
+                        mind_seal: mind_seal.clone(),
+                        mind_memory: mind_memory.clone(),
+                        mind_think_seq: *mind_think_seq,
+                        mind_last_trace: mind_last_trace.clone(),
+                    });
+            }
         }
     }
 

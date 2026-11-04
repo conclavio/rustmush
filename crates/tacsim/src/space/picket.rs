@@ -593,8 +593,27 @@ pub fn should_open_kirkwood_picket(w: &World, _hull: ObjId, domain: mush_sim::Do
     false
 }
 
-/// Inspect the carrier hull's live `stow.ore` vault and the pilot's Freeport Registry
-/// prospecting licence (`licence_gate`) and `tacsim.claims` tenure (`D-35-11`, `35a` §1).
+/// Resolve the customs principal (`ObjId`) responsible for `hull`'s manifest and fines (`SF.R23`, `35b` §5 #15):
+/// prefers the hull's live Co-op charter tenant or active `EconomyStore` asset title holder
+/// (`crate::port::coop::helm_holder`), falling back to `fallback_actor`.
+#[must_use]
+pub fn resolve_hull_customs_principal(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
+    if let Some(holder) = crate::port::coop::helm_holder(w, hull) {
+        return holder;
+    }
+    if let Some(PrincipalId::Object(owner)) = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().asset(hull))
+        .map(|a| a.title_owner.clone())
+        && owner != hull
+    {
+        return owner;
+    }
+    fallback_actor
+}
+
+/// Inspect the carrier hull's live `stow.ore` vault and the hull principal's Freeport Registry
+/// prospecting licence (`licence_gate`) and per-block `tacsim.claims` tenure (`D-35-11`, `SF.R23`, `35b` §5 #15).
 #[must_use]
 pub fn inspect_hull_manifest(
     ctx: &Ctx<'_>,
@@ -619,30 +638,56 @@ pub fn inspect_hull_manifest(
         manifest.ice_ore_kg = read_kg("ice_ore");
         manifest.carbon_ore_kg = read_kg("carbon_ore");
     }
-    if let Some(actor) = pilot {
-        manifest.licensed = licence_gate(ctx.w, actor, now_ic).is_ok();
-        let account_hash = crate::port::licence::gateway_account(ctx.w, actor)
-            .map(mush_core::AccountId::canonical_hash);
-        if let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() {
+    if let Some(raw_actor) = pilot {
+        let principal_actor = resolve_hull_customs_principal(ctx.w, hull, raw_actor);
+        manifest.licensed = licence_gate(ctx.w, principal_actor, now_ic).is_ok()
+            || licence_gate(ctx.w, raw_actor, now_ic).is_ok();
+
+        let mined_blocks = ctx
+            .w
+            .module_state::<super::tick::SpaceBubbleBook>()
+            .and_then(|b| b.mined_strategic_blocks.get(&hull))
+            .filter(|blocks| !blocks.is_empty())
+            .cloned();
+
+        if let Some(blocks) = mined_blocks {
+            manifest.has_registered_claim = blocks.iter().all(|(site, letter)| {
+                super::mining::actor_holds_cluster_block_claim(
+                    ctx,
+                    site,
+                    *letter,
+                    principal_actor,
+                    now_ic,
+                ) || super::mining::actor_holds_cluster_block_claim(
+                    ctx, site, *letter, raw_actor, now_ic,
+                )
+            });
+        } else {
             'search: for cluster in super::mining::all_orbital_clusters(ctx.w) {
                 let site = cluster.id.clone();
                 for rock in &cluster.rocks {
-                    let key = crate::surface::claims::BlockKey {
-                        site: site.clone(),
-                        letter: rock.letter,
-                    };
-                    if let Ok(Some(tenure)) = ctx.action_state(&handles.families.claims, &key)
-                        && let Some(claim) = &tenure.claim
+                    if !rock
+                        .spectral
+                        .families()
+                        .contains(&crate::surface::OreFamily::StrategicElements)
                     {
-                        let holds = claim.holder == PrincipalId::Object(actor)
-                            || match (claim.account, account_hash) {
-                                (Some(acc), Some(acc_hash)) => acc.canonical_hash() == acc_hash,
-                                _ => false,
-                            };
-                        if holds {
-                            manifest.has_registered_claim = true;
-                            break 'search;
-                        }
+                        continue;
+                    }
+                    if super::mining::actor_holds_cluster_block_claim(
+                        ctx,
+                        &site,
+                        rock.letter,
+                        principal_actor,
+                        now_ic,
+                    ) || super::mining::actor_holds_cluster_block_claim(
+                        ctx,
+                        &site,
+                        rock.letter,
+                        raw_actor,
+                        now_ic,
+                    ) {
+                        manifest.has_registered_claim = true;
+                        break 'search;
                     }
                 }
             }
@@ -654,26 +699,38 @@ pub fn inspect_hull_manifest(
     manifest
 }
 
-/// Emit a light-lagged radio hail (`mush_propagation::light_delay_secs`) from the
-/// Republic Customs Corvette to the carrier hull and publish a structured `"tacsim:notice"`
-/// event to every bridge crew member aboard (`D-35-10`, `doc 35` §9 Story 1 step 2, `35a` §4).
-pub fn emit_light_lagged_picket_hail(
-    ctx: &mut Ctx<'_>,
-    hull: ObjId,
-    distance_m: i64,
-) -> (u64, u64) {
-    let dist_u64 = u64::try_from(distance_m.max(0)).unwrap_or(0);
-    let lag_ms_u64 = super::commands::vacuum_light_lag_ms(dist_u64);
-    let lag_s = lag_ms_u64 / 1_000;
-    let text = format!(
-        "[RADIO +{}.{:03}s light-lag ({} m)] Republic Customs Corvette: \"Heave-to under 10 m/s (|dv| < 10.0 m/s) and run +helm/submit for Freeport Registry manifest & claim inspection.\"",
-        lag_ms_u64 / 1_000,
-        lag_ms_u64 % 1_000,
-        dist_u64,
-    );
-    crate::port::voyage::narrate_hull(ctx, hull, &text);
+/// Queued light-lagged radio hail awaiting delivery at `deliver_at_real_s` (`now + d/c`, `D-35-10`, `SF.R23`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingLightLagHail {
+    /// Destination hull [`ObjId`].
+    pub hull: ObjId,
+    /// Sender label (e.g., `"Republic Customs Corvette"`).
+    pub sender: String,
+    /// Hail body message.
+    pub message: String,
+    /// Distance in metres (`d`).
+    pub distance_m: u64,
+    /// Whole seconds of one-way light-lag (`d / c`).
+    pub light_lag_s: u64,
+    /// Milliseconds of one-way light-lag (`(d * 1000) / c`).
+    pub light_lag_ms: u64,
+    /// Wall-clock real second (`ctx.w.now()`) at or after which the hail arrives at `hull`.
+    pub deliver_at_real_s: i64,
+}
 
-    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull)
+/// Deliver a [`PendingLightLagHail`] to `hail.hull` and its bridge crew on `"tacsim:notice"` (`D-35-10`, `SF.R23`).
+pub fn deliver_light_lagged_hail_now(ctx: &mut Ctx<'_>, hail: &PendingLightLagHail) {
+    let text = format!(
+        "[RADIO +{}.{:03}s light-lag ({} m)] {}: \"{}\"",
+        hail.light_lag_ms / 1_000,
+        hail.light_lag_ms % 1_000,
+        hail.distance_m,
+        hail.sender,
+        hail.message,
+    );
+    crate::port::voyage::narrate_hull(ctx, hail.hull, &text);
+
+    if let Some(view) = crate::port::ship::hull_view(ctx.w, hail.hull)
         && let Some(airlock) = view.airlock()
     {
         let crew: Vec<ObjId> = ctx
@@ -689,10 +746,10 @@ pub fn emit_light_lagged_picket_hail(
             .collect();
         let payload = json!({
             "kind": "picket_hail",
-            "sender": "Republic Customs Corvette",
-            "distance_m": dist_u64,
-            "light_lag_s": lag_s,
-            "light_lag_ms": lag_ms_u64,
+            "sender": hail.sender,
+            "distance_m": hail.distance_m,
+            "light_lag_s": hail.light_lag_s,
+            "light_lag_ms": hail.light_lag_ms,
             "max_heave_to_mps": 10,
             "text": text,
         });
@@ -707,7 +764,86 @@ pub fn emit_light_lagged_picket_hail(
             );
         }
     }
+}
+
+/// Deliver all due [`PendingLightLagHail`]s whose `deliver_at_real_s <= ctx.w.now()` (`D-35-10`, `SF.R23`).
+pub fn step_pending_light_lag_hails(ctx: &mut Ctx<'_>) {
+    let now_real_s = ctx.w.now();
+    let due_hails: Vec<PendingLightLagHail> = {
+        let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() else {
+            return;
+        };
+        if book.pending_light_lag_hails.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        let mut remaining = Vec::new();
+        for hail in book.pending_light_lag_hails.drain(..) {
+            if now_real_s >= hail.deliver_at_real_s {
+                due.push(hail);
+            } else {
+                remaining.push(hail);
+            }
+        }
+        book.pending_light_lag_hails = remaining;
+        due
+    };
+    for hail in &due_hails {
+        deliver_light_lagged_hail_now(ctx, hail);
+    }
+}
+
+/// Emit or queue a light-lagged radio hail (`mush_propagation::light_delay_secs`) from `sender`
+/// to `hull` at range `distance_m` (`D-35-10`, `SF.R23`).
+///
+/// When `lag_s == 0` (`distance_m < LIGHT_SPEED_MPS`, e.g. 6 km standoff = 20 ms), the hail arrives
+/// within the current 1 Hz tick and is delivered immediately. When `lag_s >= 1`, the hail is queued
+/// in `SpaceBubbleBook::pending_light_lag_hails` and delivered on `space_tick` at `now + lag_s`.
+pub fn queue_or_deliver_light_lagged_hail(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    sender: impl Into<String>,
+    message: impl Into<String>,
+    distance_m: i64,
+) -> (u64, u64) {
+    let dist_u64 = u64::try_from(distance_m.max(0)).unwrap_or(0);
+    let lag_ms_u64 = super::commands::vacuum_light_lag_ms(dist_u64);
+    let lag_s = lag_ms_u64 / 1_000;
+    let hail = PendingLightLagHail {
+        hull,
+        sender: sender.into(),
+        message: message.into(),
+        distance_m: dist_u64,
+        light_lag_s: lag_s,
+        light_lag_ms: lag_ms_u64,
+        deliver_at_real_s: ctx
+            .w
+            .now()
+            .saturating_add(i64::try_from(lag_s).unwrap_or(0)),
+    };
+    if lag_s == 0 {
+        deliver_light_lagged_hail_now(ctx, &hail);
+    } else if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
+        book.pending_light_lag_hails.push(hail);
+    }
     (lag_s, lag_ms_u64)
+}
+
+/// Emit a light-lagged radio hail (`mush_propagation::light_delay_secs`) from the
+/// Republic Customs Corvette to the carrier hull and publish a structured `"tacsim:notice"`
+/// event to every bridge crew member aboard (`D-35-10`, `doc 35` §9 Story 1 step 2, `35a` §4, `SF.R23`).
+pub fn emit_light_lagged_picket_hail(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    distance_m: i64,
+) -> (u64, u64) {
+    queue_or_deliver_light_lagged_hail(
+        ctx,
+        hull,
+        "Republic Customs Corvette",
+        "Heave-to under 10 m/s (|dv| < 10.0 m/s) and run +helm/submit for Freeport Registry manifest & claim inspection.",
+        distance_m,
+    )
 }
 
 fn minimal_space_arena_definition() -> Option<ArenaDefinition> {

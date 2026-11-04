@@ -10010,3 +10010,577 @@ fn sfr22_authoring_ii_clusters_from_pack_sealed_minds_and_drone_excursions() {
         assert_eq!(exc.site.as_str(), "ceres_halo");
     }
 }
+
+fn lane_with_sfr23_cluster() -> &'static str {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    let clusters = doc["entries"]["kirkwood_depot"]["def"]["clusters"]
+        .as_array_mut()
+        .expect("clusters array");
+    let kg = clusters
+        .iter_mut()
+        .find(|c| c["id"] == "kirkwood_gap_3_1")
+        .expect("kirkwood_gap_3_1 cluster");
+    kg["rocks"][0]["spectral"] = serde_json::json!("S-TYPE");
+    kg["rocks"][0]["gross_t"] = serde_json::json!(5);
+    kg["rocks"][0]["tenure"] = serde_json::json!("open");
+    kg["rocks"][1]["spectral"] = serde_json::json!("M-TYPE");
+    kg["rocks"][1]["gross_t"] = serde_json::json!(120);
+    kg["rocks"][1]["tenure"] = serde_json::json!("open");
+    kg["rocks"][2]["spectral"] = serde_json::json!("M-TYPE");
+    kg["rocks"][2]["gross_t"] = serde_json::json!(120);
+    kg["rocks"][2]["tenure"] = serde_json::json!("open");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    Box::leak(signed.into_boxed_str())
+}
+
+/// **Doc 35c §9 cut `SF.R23` ("Mining and sensing remainders", `35b` §5 #15, `D-35-10`, `D-35-7`)**:
+/// 1. `+mine/*` outside an orbital cluster recommends `+helm/autopilot <cluster_id>`, and an
+///    un-refitted standard `Dray` (`tacsim.unit.dray`) is refused `+mine/laser` (`is_prospector`).
+/// 2. The cluster clerk (`site_state.clerk`) and block places are laid up at the cluster's host room
+///    in `TacsimStore`, never inside a carrier hull.
+/// 3. Staking Block A (`+mine/stake A metals`) and then mining Block A (`+mine/laser A`) in a
+///    `Frontier` cluster (`kirkwood_gap_3_1`) checks live `PortHandles::families.claims` via
+///    `actor_holds_cluster_block_claim` and does NOT flag `claim_jump_flagged` or `frontier_bloom_heat`.
+/// 4. Two `Dray-P` hulls (`hull_1` and `hull_2`) mining `4 t` each from a `5 t` deposit (Block A)
+///    both complete cleanly (`4 t` + `1 t` = `5 t` conserved) and `pending_space_mine_draws` empties
+///    without jamming the clerk.
+/// 5. Disconnecting `pilot_2` (`Inbound::ConnDown` with `DisconnectKind::Lost`) while `hull_2` is in
+///    the `kirkwood_gap_3_1` cluster session queues `linkdead_hulls[&hull_2]` and, once the 120s
+///    wall grace window expires on `space_tick`, executes the queued return journey back to Ceres.
+/// 6. Staking Block B (`+mine/stake B strategic_elements`) does NOT exempt `strategic_ore` mined from
+///    an unleased Block C (`+mine/laser C strategic_elements`) when `hull_1` submits at the Kirkwood
+///    Customs Picket (`inspect_hull_manifest` checks per-block tenure on `mined_strategic_blocks`).
+/// 7. In the Kirkwood bubble, an undetected contact (`Belt Raider` in `Ghost` at 120 km) is refused by
+///    `+helm/dock` and `+helm/approach` with `"No such contact."` and its `target_pos` is `null` on
+///    in-flight torpedoes in `holotank_feed`; `+tac/hail` at long range (`d >= c`) queues a
+///    `PendingLightLagHail` and delivers it on `space_tick` at `t + d/c`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr23_mining_and_sensing_remainders() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_sfr23_cluster()),
+        ..Roster::default()
+    });
+
+    // Charter 3 hulls at Ceres Freeport:
+    // - `hull_1` (`pilot_1`): refitted `Dray-P`
+    // - `hull_2` (`pilot_2`): refitted `Dray-P`
+    // - `hull_std` (`pilot_std`): un-refitted standard `Dray`
+    let (pilot_1, row_1) = chartered(&mut rig, "MinerOne", 1);
+    let hull_1 = ObjId(row_1.hull);
+    let vault_1 = hold_vault(&rig.tw, &row_1);
+
+    let pilot_2 = pilot(&mut rig, "MinerTwo", 2);
+    let enrol_2 = run(&mut rig.tw, pilot_2, "+coop/enrol Second Miner");
+    assert!(enrol_2.contains("now the Second Miner"), "{enrol_2}");
+    let charter_2 = tacsim::port::live_charter(rig.tw.world(), pilot_2).expect("charter 2");
+    let row_2 = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_2.hull.0)
+        .expect("hull 2 row");
+    let hull_2 = ObjId(row_2.hull);
+    let vault_2 = hold_vault(&rig.tw, &row_2);
+
+    let pilot_std = pilot(&mut rig, "StdPilot", 3);
+    let enrol_std = run(&mut rig.tw, pilot_std, "+coop/enrol Plain Hauler");
+    assert!(enrol_std.contains("now the Plain Hauler"), "{enrol_std}");
+    let charter_std = tacsim::port::live_charter(rig.tw.world(), pilot_std).expect("charter std");
+    let row_std = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_std.hull.0)
+        .expect("hull std row");
+    let hull_std = ObjId(row_std.hull);
+    let vault_std = hold_vault(&rig.tw, &row_std);
+
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot_1, desk);
+    assert!(
+        run(&mut rig.tw, pilot_1, "+coop/refit prospector").contains("Dray-P"),
+        "refit hull_1 to Dray-P"
+    );
+    teleport(&mut rig.tw, pilot_2, desk);
+    assert!(
+        run(&mut rig.tw, pilot_2, "+coop/refit prospector").contains("Dray-P"),
+        "refit hull_2 to Dray-P"
+    );
+
+    seed_pool(&mut rig, vault_1, "propellant", 80, LotId(2301));
+    seed_pool(&mut rig, vault_1, "provisions", 150, LotId(2302));
+    seed_pool(&mut rig, vault_2, "propellant", 80, LotId(2303));
+    seed_pool(&mut rig, vault_2, "provisions", 150, LotId(2304));
+    seed_pool(&mut rig, vault_std, "propellant", 55, LotId(2305));
+    seed_pool(&mut rig, vault_std, "provisions", 50, LotId(2306));
+
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_1);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot_2, gallery);
+    let _ = run(&mut rig.tw, pilot_2, "+ship/board");
+    teleport(&mut rig.tw, pilot_std, gallery);
+    let _ = run(&mut rig.tw, pilot_std, "+ship/board");
+
+    // 1a. Outside a cluster, `+mine/ping` recommends `+helm/autopilot <cluster_id>`:
+    let outside_ping = run(&mut rig.tw, pilot_1, "+mine/ping");
+    assert!(
+        outside_ping.contains("+helm/autopilot <cluster_id>")
+            && !outside_ping.contains("+ship/undock <cluster_id>"),
+        "expected +helm/autopilot <cluster_id> in refusal, got: {outside_ping}"
+    );
+
+    let _ = run(&mut rig.tw, pilot_1, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot_2, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot_std, "+licence/buy go");
+    sweep(&mut rig.tw, 6);
+
+    // Fly all 3 hulls to `kirkwood_gap_3_1`:
+    for p in [pilot_1, pilot_2, pilot_std] {
+        let out = run(&mut rig.tw, p, "+ship/undock kirkwood_gap_3_1 throttle=500");
+        assert!(out.contains("kirkwood_gap_3_1"), "{out}");
+    }
+    let undock_burns = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &undock_burns);
+    let _ = fire_quietly(&mut rig);
+    let launch_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &launch_submits);
+
+    let arrival_ic = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        book.free_flights[&hull_1]
+            .cluster_arrival_ic_s
+            .unwrap()
+            .max(book.free_flights[&hull_2].cluster_arrival_ic_s.unwrap())
+            .max(book.free_flights[&hull_std].cluster_arrival_ic_s.unwrap())
+    };
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let t0 = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(t0);
+    let _ = rig.tw.fire_due(t0.saturating_mul(1_000));
+    let open_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &open_submits);
+    let t_seed = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t_seed);
+    let _ = rig.tw.fire_due(t_seed.saturating_mul(1_000));
+    let seed_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &seed_submits);
+
+    // 2. Verify cluster clerk (`site_state.clerk`) is laid up at the cluster's host room, never inside a carrier hull:
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let site = book
+            .cluster_sites
+            .get(&cid("kirkwood_gap_3_1"))
+            .expect("kirkwood_gap_3_1 laid up");
+        assert!(
+            site.host_room != hull_1 && site.host_room != hull_2 && site.host_room != hull_std,
+            "cluster host_room (#{}) must not be a carrier hull",
+            site.host_room.0
+        );
+        let clerk_loc = rig.tw.world().get(site.clerk).and_then(|o| o.location);
+        assert_eq!(
+            clerk_loc,
+            Some(site.host_room),
+            "cluster clerk must reside at site.host_room, never inside a carrier hull"
+        );
+    }
+
+    // 1b. Verify the standard un-refitted `Dray` (`hull_std`) is refused `+mine/laser`:
+    let std_laser = run(&mut rig.tw, pilot_std, "+mine/laser A");
+    assert!(
+        std_laser.contains("Mining laser requires a `Dray-P` prospector hull"),
+        "standard Dray must be refused +mine/laser: {std_laser}"
+    );
+
+    // 3. `pilot_1` and `pilot_2` ping the cluster, `pilot_1` stakes Block A (`+mine/stake A metals`),
+    //    lands the claim transaction, and both `hull_1` and `hull_2` approach and match velocity with Block A (`5 t` deposit):
+    for p in [pilot_1, pilot_2] {
+        let ping_out = run(&mut rig.tw, p, "+mine/ping");
+        assert!(ping_out.contains("Block A"), "{ping_out}");
+    }
+    let ping_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &ping_submits);
+    let stake_a = run(&mut rig.tw, pilot_1, "+mine/stake A metals");
+    assert!(
+        stake_a.contains("Filed Freeport Registry claim stake on Block A"),
+        "{stake_a}"
+    );
+    let stake_a_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &stake_a_submits);
+
+    for p in [pilot_1, pilot_2] {
+        let _ = run(&mut rig.tw, p, "+helm/approach A");
+    }
+    let app_a = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_a);
+    for _ in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let sub = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &sub);
+    }
+    for p in [pilot_1, pilot_2] {
+        let m = run(&mut rig.tw, p, "+helm/match A");
+        assert!(m.contains("RCS velocity match locked on Block A"), "{m}");
+    }
+    let match_a = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &match_a);
+
+    // Verify `pilot_1` mining staked Block A in Frontier `kirkwood_gap_3_1` is NOT flagged as claim-jumping,
+    // and Tier-1 `space.cockpit` panel payload has live `delta_v_mps > 0` and `hull_pct == 100`:
+    let laser_1_events = rig.tw.run(pilot_1, "+mine/laser A");
+    let laser_1 = said(&rig.tw, &laser_1_events, pilot_1);
+    assert!(
+        laser_1.contains("Mining laser engaged on Block A") && !laser_1.contains("FRONTIER BLOOM"),
+        "mining own staked block in Frontier cluster must not trigger claim-jump bloom: {laser_1}"
+    );
+    {
+        let sess_1 = &rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .cluster_sessions[&hull_1];
+        assert!(
+            !sess_1.claim_jump_flagged && sess_1.frontier_bloom_heat == 0,
+            "staked block holder must have claim_jump_flagged == false and frontier_bloom_heat == 0"
+        );
+    }
+    let status_events = rig.tw.run(pilot_1, "+helm/status");
+    let tier1_cockpit = status_events
+        .iter()
+        .find_map(|(_, ev)| match ev {
+            OutputEvent::Panel { feed, data, .. }
+                if feed.as_str() == tacsim::space::SPACE_COCKPIT_FEED =>
+            {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .expect("Tier-1 space.cockpit panel");
+    assert!(
+        tier1_cockpit["delta_v_mps"].as_i64().unwrap_or(0) > 0,
+        "Tier-1 space.cockpit must report live delta_v_mps > 0: {tier1_cockpit}"
+    );
+    assert_eq!(tier1_cockpit["hull_pct"].as_i64(), Some(100));
+
+    // 4. `hull_2` also starts `+mine/laser A` (`4 t`) against the `5 t` Block A deposit while `hull_1`'s
+    //    `4 t` laser cycle is still running:
+    let laser_2 = run(&mut rig.tw, pilot_2, "+mine/laser A");
+    assert!(
+        laser_2.contains("Mining laser engaged on Block A"),
+        "{laser_2}"
+    );
+
+    // Step 3 ticks so `hull_1` (`4 t`) and `hull_2` (clamped to remaining `1 t`) both settle through
+    // the cluster clerk and the third tick prunes `pending_space_mine_draws` empty without jamming:
+    for tick_idx in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let work_submits = drain_space_and_industry(&mut rig.tw);
+        if tick_idx == 2 {
+            assert!(
+                work_submits.is_empty(),
+                "cluster clerk must not submit further draws once Block A is exhausted"
+            );
+        }
+        land_all(&mut rig, &work_submits);
+    }
+    assert_eq!(
+        pool(&mut rig.tw, vault_1, "metal_ore"),
+        4,
+        "hull_1 must receive 4 t of metal_ore from Block A"
+    );
+    assert_eq!(
+        pool(&mut rig.tw, vault_2, "metal_ore"),
+        1,
+        "hull_2 must receive the remaining 1 t of metal_ore from the 5 t Block A deposit"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .pending_space_mine_draws
+            .is_empty(),
+        "pending_space_mine_draws must be pruned empty once Block A reaches 0 t without jamming the clerk"
+    );
+
+    // 5. Disconnect `pilot_2` (`Inbound::ConnDown` with `DisconnectKind::Lost`) while `hull_2` is in
+    //    `kirkwood_gap_3_1` and verify `execute_linkdead_return_journey` launches `hull_2` back to
+    //    Ceres Freeport once the 120s linkdead grace window expires:
+    let pilot_2_conns: Vec<u64> = (1..=64)
+        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(pilot_2))
+        .collect();
+    assert!(!pilot_2_conns.is_empty());
+    for conn in pilot_2_conns {
+        let mut out = mush_core::Outbox::new();
+        let mut fx = mush_core::Effects::new();
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: pilot_2,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .linkdead_state(hull_2)
+            .is_some_and(|ld| !ld.grace_expired && ld.queued_return_port.is_some()),
+        "cluster-session hull must enter linkdead_hulls when its crew loses connection"
+    );
+    let t_ld_exp = rig
+        .tw
+        .world()
+        .now()
+        .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
+    rig.tw.set_now(t_ld_exp);
+    let _ = rig.tw.fire_due(t_ld_exp.saturating_mul(1_000));
+    assert!(
+        !rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .cluster_sessions
+            .contains_key(&hull_2),
+        "expired linkdead grace window must remove hull_2 from cluster_sessions"
+    );
+    assert!(
+        matches!(
+            journey(&rig.tw, hull_2).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ),
+        "expired linkdead grace window must execute the queued return CarrierJourney for hull_2"
+    );
+
+    // 6. Per-block customs manifest inspection (`D-35-10`, `35b` §5 #15):
+    //    `pilot_1` stakes Block B (`+mine/stake B strategic_elements`), then mines 4 t of
+    //    `strategic_ore` from the UNLEASED Block C (`+mine/laser C strategic_elements`):
+    let stake_b = run(&mut rig.tw, pilot_1, "+mine/stake B strategic_elements");
+    assert!(
+        stake_b.contains("Filed Freeport Registry claim stake on Block B"),
+        "{stake_b}"
+    );
+    let stake_b_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &stake_b_submits);
+
+    let _ = run(&mut rig.tw, pilot_1, "+helm/approach C");
+    let app_c = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_c);
+    for _ in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let sub = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &sub);
+    }
+    let match_c = run(&mut rig.tw, pilot_1, "+helm/match C");
+    assert!(
+        match_c.contains("RCS velocity match locked on Block C"),
+        "{match_c}"
+    );
+    let match_c_sub = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &match_c_sub);
+
+    let laser_c = run(&mut rig.tw, pilot_1, "+mine/laser C strategic_elements");
+    assert!(
+        laser_c.contains("extracting 4 t `strategic_ore`"),
+        "{laser_c}"
+    );
+    let t_c = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t_c);
+    let _ = rig.tw.fire_due(t_c.saturating_mul(1_000));
+    let work_c = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &work_c);
+    assert_eq!(pool(&mut rig.tw, vault_1, "strategic_ore"), 4);
+
+    // Return `hull_1` to Ceres Freeport and fly `ceres_stickney` into the Kirkwood Customs Picket:
+    let _ = run(&mut rig.tw, pilot_1, "+helm/autopilot ceres");
+    let ret_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &ret_burn);
+    let ret_arr = journey(&rig.tw, hull_1)
+        .and_then(|j| j.arrival_at())
+        .expect("return arrival");
+    let _ = to_ic(&mut rig, ret_arr);
+    for _ in 0..2 {
+        let (_, q) = fire(&mut rig);
+        land_all(&mut rig, &q);
+    }
+
+    let (undock_kw_out, kw_queued) =
+        undock(&mut rig, pilot_1, "+ship/undock stickney throttle=500");
+    assert!(
+        undock_kw_out.contains("Clearance filed for Stickney Yards"),
+        "{undock_kw_out}"
+    );
+    let pending_kw = voyage(&rig.tw, hull_1)
+        .and_then(|v| v.pending)
+        .expect("a filed passage");
+    land_all(&mut rig, &kw_queued);
+    for _ in 0..2 {
+        let (_, q) = fire(&mut rig);
+        land_all(&mut rig, &q);
+    }
+    let _ = to_ic(
+        &mut rig,
+        pending_kw.plan.depart_ic + i64::from(pending_kw.plan.legs[0].secs),
+    );
+
+    // 7a. In the Kirkwood bubble, the lurking `Belt Raider` is in `Ghost` at 120 km (`!is_bubble_ship_detected`):
+    //     Verify `+helm/dock <raider_id>` and `+helm/approach <raider_id>` never name `"Belt Raider"`
+    //     or leak the undetected ship's range/speed:
+    let raider_id = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .unwrap()
+        .active_for_hull(hull_1)
+        .unwrap()
+        .picket
+        .as_ref()
+        .unwrap()
+        .raider_ship_id
+        .clone();
+    let dock_ghost = run(&mut rig.tw, pilot_1, &format!("+helm/dock {raider_id}"));
+    assert!(
+        !dock_ghost.contains("Belt Raider"),
+        "+helm/dock on an undetected Ghost contact must never name it in refusals: {dock_ghost}"
+    );
+    let app_ghost = run(&mut rig.tw, pilot_1, &format!("+helm/approach {raider_id}"));
+    assert!(
+        !app_ghost.contains("Belt Raider") && app_ghost.contains("No such contact."),
+        "+helm/approach on an undetected Ghost contact must refuse with No such contact without naming it: {app_ghost}"
+    );
+
+    // Verify `holotank_feed` masks `target_pos` (`null`) on a torpedo targeting an undetected contact:
+    {
+        let mut test_bubble = {
+            let book = rig
+                .tw
+                .world()
+                .module_state::<tacsim::space::SpaceBubbleBook>()
+                .unwrap();
+            book.active_for_hull(hull_1).unwrap().bubble.clone()
+        };
+        let own_ship_id = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .active_for_hull(hull_1)
+            .unwrap()
+            .carrier_ship_id_for(hull_1)
+            .to_owned();
+        let raider_id = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .active_for_hull(hull_1)
+            .unwrap()
+            .picket
+            .as_ref()
+            .unwrap()
+            .raider_ship_id
+            .clone();
+        test_bubble.torpedoes.push(tacsim::space::InFlightTorpedo {
+            id: 99,
+            shooter_id: own_ship_id.clone(),
+            target_id: raider_id,
+            pos_m: [1_000, 0, 0],
+            pos_rem_um: [0, 0, 0],
+            vel_mmps: [500_000, 0, 0],
+            accel_mps2: 120,
+            remaining_dv_mmps: 4_000_000,
+            warhead_damage: 180,
+            integrity: 100,
+            tti_s: 120,
+            flight_elapsed_ms: 0,
+            max_flight_ms: 45_000,
+            dv_exhausted_emitted: false,
+        });
+        let feed = test_bubble.holotank_feed(&own_ship_id);
+        let torp_json = &feed["torpedoes"].as_array().expect("torpedoes array")[0];
+        assert!(
+            torp_json["target_pos"].is_null(),
+            "torpedo targeting an undetected Ghost contact must not leak target_pos in holotank_feed: {torp_json}"
+        );
+    }
+
+    // 7b. Verify `+tac/hail` at long range (`range_m=600000000` = `600,000 km`, `2.00 s` light-lag)
+    //     queues a `PendingLightLagHail` and delivers it on `space_tick` after `d / c` (`2 s`):
+    let hail_queued = run(
+        &mut rig.tw,
+        pilot_1,
+        "+tac/hail ceres=Requesting vector check range_m=600000000",
+    );
+    assert!(
+        hail_queued.contains("queued for T+2s"),
+        "expected queued light-lag hail output, got: {hail_queued}"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .pending_light_lag_hails
+            .len(),
+        1,
+        "long-range hail (d >= c) must be queued in pending_light_lag_hails"
+    );
+
+    // Heave-to and advance 6 wall seconds so `space_tick` both brakes the carrier under 10 m/s
+    // AND delivers the queued `2.001 s` light-lagged hail!
+    let _ = run(&mut rig.tw, pilot_1, "+helm/thrust 600 -1000 0 0");
+    let mut hail_delivered = false;
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let evs = rig.tw.fire_due(next_r * 1_000);
+        if said(&rig.tw, &evs, pilot_1).contains("[RADIO +2.001s light-lag") {
+            hail_delivered = true;
+        }
+    }
+    let _ = run(&mut rig.tw, pilot_1, "+helm/thrust 0");
+    let brake_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake_submits);
+    assert!(
+        hail_delivered,
+        "queued light-lag hail must be delivered on space_tick once wall time reaches now + d/c"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .pending_light_lag_hails
+            .is_empty(),
+        "pending_light_lag_hails must be empty after delivery"
+    );
+
+    // 6b. Run `+helm/submit`: even though `pilot_1` staked `strategic_elements` on Block B,
+    //     `hull_1` mined its `4 t` of `strategic_ore` from the UNLEASED Block C, so per-block
+    //     `inspect_hull_manifest` detects `4,000 kg` of unlicensed `strategic_ore`!
+    let submit_out = run(&mut rig.tw, pilot_1, "+helm/submit");
+    assert!(
+        submit_out.contains("4000 kg unlicensed `strategic_ore`"),
+        "per-block inspect_hull_manifest must detect unlicensed strategic_ore mined from Block C despite Block B claim: {submit_out}"
+    );
+}
