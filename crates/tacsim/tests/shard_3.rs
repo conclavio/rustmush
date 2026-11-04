@@ -33,6 +33,8 @@ mod capacity;
 mod claim_rig;
 #[path = "shard_3/composition_edges.rs"]
 mod composition_edges;
+#[path = "support/field/custody_rig.rs"]
+mod custody_rig;
 #[path = "shard_3/definitions.rs"]
 mod definitions;
 #[path = "shard_3/deposits.rs"]
