@@ -291,10 +291,15 @@ lto = "thin"
 [profile.dev]
 debug = "line-tables-only"
 
-# Doc 43 cut TS.3 (measurement, Q-43-4): every non-workspace dependency at
-# opt-level 1 in dev and test builds. The shards are CPU-bound and the
-# 2026-10-18 measurement above read link time only; this branch reads the
-# test minutes per cell against main. Adopted only if a cell's summed minutes
-# fall by a fifth or more (D-43-4).
+# Doc 43 cut TS.3 (Q-43-4, D-43-4): every non-workspace dependency at
+# opt-level 1 in dev and test builds. The 2026-10-18 note above read link
+# time only; the stories are CPU-bound (TS.3b: 70 percent of the dozen
+# biggest modules' minutes are world boot, debug-build CPU). Measured
+# 2026-11-04 on main 7a535806: summed test minutes -27 percent over the CI
+# cells (two runs against main's last three; 11 of 18 cells down a fifth or
+# more), and -26 percent on conclav.dev's whole tacsim sweep (every binary
+# -20 to -36, main against itself +-0); a cold build of tacsim's tests 190 s
+# -> 198 s. opt-level 2 for the seven hottest crates measured worse (-21).
+# Every warm target dir pays one dependency rebuild.
 [profile.dev.package."*"]
 opt-level = 1
