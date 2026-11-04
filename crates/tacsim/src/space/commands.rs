@@ -2420,11 +2420,12 @@ pub(crate) struct ResolvedSpaceCluster {
 }
 
 /// Resolve an orbital cluster token (`ceres_halo`, `pallas_inclined_belt`, etc.) for `+ship/undock` (`SF.R17`).
-pub(crate) fn resolve_cluster_by_query(
-    _w: &World,
-    query: &str,
-) -> Option<ResolvedSpaceCluster> {
-    let cluster = super::mining::OrbitalClusterId::parse(query.trim())?;
+pub(crate) fn resolve_cluster_by_query(_w: &World, query: &str) -> Option<ResolvedSpaceCluster> {
+    let trimmed = query.trim().to_ascii_lowercase();
+    if trimmed == "pallas" {
+        return None;
+    }
+    let cluster = super::mining::OrbitalClusterId::parse(&trimmed)?;
     let id = cluster.canonical_id()?;
     let anchor_body = mush_core::CanonicalId::new(cluster.anchor_body()).ok()?;
     Some(ResolvedSpaceCluster {
@@ -2434,16 +2435,14 @@ pub(crate) fn resolve_cluster_by_query(
     })
 }
 
-/// Resolve a sky celestial body token (`neptune`, `triton`, etc.) for `+ship/undock` (`SF.R17`).
-pub(crate) fn resolve_sky_body_by_query(
-    w: &World,
-    query: &str,
-) -> Option<mush_core::CanonicalId> {
+/// Resolve an outer-system sky celestial body token (`neptune`, `triton`, etc.) for `+ship/undock` (`SF.R17`).
+pub(crate) fn resolve_sky_body_by_query(w: &World, query: &str) -> Option<mush_core::CanonicalId> {
     let store = w.module_state::<crate::TacsimStore>()?;
     let lane = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK).ok()?;
     let version = store.applied_in(w, &lane)?;
     let (sky, _) = crate::port::voyage::lane_sky_of(w, version).ok()?;
     let body_cid = mush_core::CanonicalId::new(query.trim().to_ascii_lowercase()).ok()?;
+    crate::sky::outer_catalog().get(&body_cid)?;
     let now_ic = w.world_ic_now().at;
     sky.position_km(&body_cid, now_ic).map(|_| body_cid)
 }

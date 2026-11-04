@@ -8254,7 +8254,10 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
     //     and that a second `+helm/dock` while a session is open is refused without resetting `started_wall_s`:
     let _ = to_ic(&mut rig_dock, arrival_dock - 10);
     let dec_dock = run(&mut rig_dock.tw, pilot_dock, "+helm/decouple");
-    assert!(dec_dock.contains("Decoupled from corridor leg"), "{dec_dock}");
+    assert!(
+        dec_dock.contains("Decoupled from corridor leg"),
+        "{dec_dock}"
+    );
     assert!(matches!(
         journey(&rig_dock.tw, hull_dock).map(|j| j.state().clone()),
         Some(mush_sim::JourneyState::Promoted { .. })

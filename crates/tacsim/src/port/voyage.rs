@@ -1619,7 +1619,8 @@ pub(crate) fn plan_space_undock_on(
     )?;
     if !explicit_throttle
         && plan.burn_t > basis.tank
-        && basis.spec.drive.throttle_permille > crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE
+        && basis.spec.drive.throttle_permille
+            > crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE
     {
         for permille in [
             MIN_THROTTLE_PERMILLE,
@@ -4076,7 +4077,7 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
             hull,
             from_for_space.as_ref(),
             &pending.to_venue,
-            &plan,
+            plan,
         );
     }
     state.filed_seen.remove(&hull.0);
