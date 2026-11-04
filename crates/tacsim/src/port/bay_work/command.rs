@@ -42,8 +42,10 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     carrier's bay and +bay/stow <hull> puts it back. Munitions come from the carrier's hold \
     when the work is done; armour and rebuilds draw from the hull's bale, which the first repair \
     opens with a tonne each of structural alloys and industrial parts from the hold, topped up \
-    by the tonne when it runs short. In a workshop, +bay/fit <hull>=<slot> <lot> fits a traced \
-    part from the hold into any slot of its kind (a hot part is refused), +bay/strip \
+    by the tonne when it runs short. Away from port a carrier's bay works from her own hold for \
+    no fee, and waits while a field is open on her site. In a workshop, or in a carrier's bay \
+    away from port, +bay/fit <hull>=<slot> <lot> fits a traced part from the hold into any slot \
+    of its kind (a hot part is refused). In a workshop, +bay/strip \
     <hull>=<part> takes a part \
     off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up into \
     structural alloys and parts.";
@@ -150,6 +152,27 @@ fn hours(secs: i64) -> String {
     format!("{}h{:02}", minutes.div_euclid(60), minutes.rem_euclid(60))
 }
 
+/// **What a taken order says**: its jobs, the fee held and the IC time — no fee away from port
+/// (doc 41 cut RS.2, Q-41-7).
+fn taken_line(ctx: &Ctx<'_>, order: &super::BayOrder) -> String {
+    let words: Vec<String> = order.jobs.iter().map(|j| j.job.describe()).collect();
+    let fee = if order.contract.is_some() {
+        format!(
+            "{} is held until the work is done",
+            money_minor(ctx, order.fee_minor)
+        )
+    } else {
+        "No fee away from port: her crew does the work".to_owned()
+    };
+    format!(
+        "Order {} taken in the {}: {}. {fee}, in {} IC time.",
+        order.seq,
+        order.class.word(),
+        words.join(", "),
+        hours(order.due_ic.saturating_sub(order.started_ic))
+    )
+}
+
 /// The quote and the record, as lines.
 fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     let name = crate::port::coop::name_of(ctx.w, hull);
@@ -162,6 +185,11 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
         Ok((facility, quote)) => {
             let factor = match facility.class {
                 FacilityClass::Workshop => String::new(),
+                // Doc 41 cut RS.2 (Q-41-7): away from port the crew's labour is unpaid.
+                FacilityClass::CarrierBay if facility.away() => format!(
+                    " away from port (at {}x the workshop's time, from her hold; no fee)",
+                    super::CARRIER_TIME_FACTOR
+                ),
                 FacilityClass::CarrierBay => {
                     format!(" (at {}x the workshop's time)", super::CARRIER_TIME_FACTOR)
                 }
@@ -171,6 +199,13 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 hull.0,
                 facility.class.word()
             ));
+            let price = |ctx: &Ctx<'_>, minor: u64| {
+                if facility.away() {
+                    "no fee".to_owned()
+                } else {
+                    money_minor(ctx, i64::try_from(minor).unwrap_or(i64::MAX))
+                }
+            };
             lines.extend(doll(ctx.w, hull));
             if quote.jobs.is_empty() && quote.elsewhere.is_empty() {
                 lines.push("  Nothing needs doing.".to_owned());
@@ -180,7 +215,7 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 lines.push(format!(
                     "  {:<34} {:>12}  {}",
                     job.job.describe(),
-                    money_minor(ctx, i64::try_from(job.cost_minor).unwrap_or(i64::MAX)),
+                    price(ctx, job.cost_minor),
                     hours(secs)
                 ));
                 // Doc 39 cut IN.6 (Q-39-11): the part from the stores, at its catalogue price,
@@ -204,10 +239,7 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 lines.push(format!(
                     "  {:<34} {:>12}  {}",
                     "all",
-                    money_minor(
-                        ctx,
-                        i64::try_from(BayQuote::fee_minor(&quote.jobs)).unwrap_or(i64::MAX)
-                    ),
+                    price(ctx, BayQuote::fee_minor(&quote.jobs)),
                     hours(BayQuote::secs(&quote.jobs, facility.class))
                 ));
                 // Doc 39 cut IN.4 (Q-39-9): the workshop's berth time at its slot-hour, before
@@ -242,11 +274,19 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 }
             }
             for job in &quote.elsewhere {
-                lines.push(format!(
-                    "  {:<34} needs a {}",
-                    job.job.describe(),
-                    job.job.needs().word()
-                ));
+                // Doc 41 cut RS.2: away from port the line names the workshops, nearest first.
+                lines.push(if facility.away() {
+                    format!(
+                        "  {}",
+                        super::workshop_refusal(ctx.w, hull, &facility, &job.job)
+                    )
+                } else {
+                    format!(
+                        "  {:<34} needs a {}",
+                        job.job.describe(),
+                        job.job.needs().word()
+                    )
+                });
             }
         }
         Err(why) => {
@@ -281,6 +321,10 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
         }
         if let Some(order) = &row.order {
             let state = match order.status {
+                OrderStatus::Open if order.paused.is_some() => format!(
+                    "open, waiting under a field with {} left",
+                    hours(order.paused.unwrap_or(0).max(0))
+                ),
                 OrderStatus::Open => format!(
                     "open, done in {}",
                     hours(order.due_ic.saturating_sub(ctx.w.world_ic_now().at).max(0))
@@ -291,11 +335,15 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     order.note.as_deref().unwrap_or("no reason recorded")
                 ),
             };
+            let fee = if order.contract.is_some() {
+                money_minor(ctx, order.fee_minor)
+            } else {
+                "no fee".to_owned()
+            };
             lines.push(format!(
-                "  Order {}: {} for {}, {state}.",
+                "  Order {}: {} for {fee}, {state}.",
                 order.seq,
                 order.class.word(),
-                money_minor(ctx, order.fee_minor)
             ));
         }
     }
@@ -323,20 +371,8 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let (hull, work) = raw.split_once('=').ok_or(BAY_USAGE)?;
             let hull = hull_named(ctx, hull)?;
             let taken = super::take_order(ctx, hull, work.trim())?;
-            let order = taken.order;
-            let fee = money_minor(ctx, order.fee_minor);
-            let words: Vec<String> = order.jobs.iter().map(|j| j.job.describe()).collect();
-            say(
-                ctx,
-                format!(
-                    "Order {} taken in the {}: {}. {fee} is held until the work is done, in {} \
-                     IC time.",
-                    order.seq,
-                    order.class.word(),
-                    words.join(", "),
-                    hours(order.due_ic.saturating_sub(order.started_ic))
-                ),
-            );
+            let line = taken_line(ctx, &taken.order);
+            say(ctx, line);
             return Ok(());
         }
         if ctx.switches.has("fit") || ctx.switches.has("strip") {
@@ -357,19 +393,8 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let (slot, lot) = rest.trim().split_once(' ').ok_or(BAY_USAGE)?;
             let lot = mush_inventory::LotId::parse(lot).ok_or("That is not a lot.")?;
             let order = super::fit_order(ctx, hull, slot, lot)?.order;
-            let words: Vec<String> = order.jobs.iter().map(|j| j.job.describe()).collect();
-            let fee = money_minor(ctx, order.fee_minor);
-            say(
-                ctx,
-                format!(
-                    "Order {} taken in the {}: {}. {fee} is held until the work is done, in {} \
-                     IC time.",
-                    order.seq,
-                    order.class.word(),
-                    words.join(", "),
-                    hours(order.due_ic.saturating_sub(order.started_ic))
-                ),
-            );
+            let line = taken_line(ctx, &order);
+            say(ctx, line);
             return Ok(());
         }
         let hull = hull_named(ctx, &raw)?;

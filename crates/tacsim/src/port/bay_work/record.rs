@@ -98,8 +98,9 @@ pub struct BayOrder {
     /// the workshop's stores (doc 39 cut IN.6).
     pub fee_minor: i64,
     /// The fee contract, `ContractId.0`: the requester's escrow, captured by the operator at
-    /// completion or cancelled.
-    pub contract: u64,
+    /// completion or cancelled. `None` for an order in a carrier's bay away from port, which
+    /// files no fee (doc 41 cut RS.2, Q-41-7).
+    pub contract: Option<u64>,
     /// The hold the order's goods come from (`VaultId.0`), when it draws any (doc 36 cut
     /// GC.8b): munitions for a rearm, `industrial_parts` for its points, a fitted part's lot.
     pub munitions_vault: Option<u64>,
@@ -132,6 +133,10 @@ pub struct BayOrder {
     pub closed_ic: Option<i64>,
     /// Why it was cancelled, when it was.
     pub note: Option<String>,
+    /// **IC seconds left when a field on her carrier's site paused the work** (doc 41 cut RS.2,
+    /// Q-41-5); `None` while it runs. Resumed, the order is due that long after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<i64>,
 }
 
 /// **One hull's bay record.**
