@@ -19,9 +19,8 @@
 //! **What is a fixture.** The armed hulls are made and seated by staff hand (CF.2's fixture), the
 //! co-ops are factions made and staffed by `@faction/create` and `@faction/add` (GC.10's
 //! precedent: mush-org has no membership verb, so an organization's stance is exercised on the
-//! declare path only). Every declaration, mark and clear is a player's command. The two grounds
-//! are this file's own table: FR.0's hoist of `field_story.rs`'s grounds into `tests/support/field`
-//! has not landed.
+//! declare path only). Every declaration, mark and clear is a player's command. The two sites are
+//! FR.0's `grounds_rig` (the field story's grounds); the hulls' cells are this file's own.
 
 use mush_core::{GOD, ObjId};
 use tacsim::arena::PartyId;
@@ -30,42 +29,37 @@ use tacsim::arena::state::Classification;
 use tacsim::field::{FieldLive, FieldParty, PartyKey};
 
 use crate::driving_rig::{
-    AHUNA, Rig, cid, command, en_route_at, file_and_launch, land, on_pad_as_at, prospector, run,
+    Rig, cid, command, en_route_at, file_and_launch, land, on_pad_as_at, prospector, run,
     staff_hand, stocked_tuned, to_ic, warm,
 };
 use crate::field_host_rig::{armed_on, egress, frame, seat, second, task, tune, until};
+use crate::grounds_rig::{AHUNA_FLANK, Ground, Placed, URVARA_REACH};
 
-/// A site cell and a heading, millidegrees.
-type Placed = ((i64, i64), u32);
-
-/// **The ground one run stands on**: the site and where its three armed hulls stand. Basin's
-/// hull is Concord's nearest neighbour due east, Halo's off to the north or south.
-struct Ground {
-    /// The site's port entry.
-    entry: &'static str,
-    /// Its `+ship/undock` word.
-    venue: &'static str,
+/// **Where one run stands**: one of the field story's two grounds (FR.0's `grounds_rig`) and where
+/// this story's three armed hulls stand on it. Basin's hull is Concord's nearest neighbour due
+/// east, Halo's off to the north or south.
+struct Stand {
+    /// The site.
+    ground: &'static Ground,
     /// Concord's hull.
     concord: Placed,
     /// Basin's hull, east of Concord's.
     basin: Placed,
-    /// Halo's hull, north of Concord's.
+    /// Halo's hull, north or south of Concord's.
     halo: Placed,
 }
 
 /// **Ahuna Flank at 256 a side**: `field_gc10`'s two cells, and Halo south of Concord.
-const AHUNA_FLANK: Ground = Ground {
-    entry: AHUNA,
-    venue: "ahuna",
+const ON_AHUNA: Stand = Stand {
+    ground: &AHUNA_FLANK,
     concord: ((110, 124), 90_000),
     basin: ((114, 124), 270_000),
     halo: ((110, 128), 90_000),
 };
 
-/// **Urvara Reach at 512 a side**: `field_story`'s fight row, across the 256 line.
-const URVARA_REACH: Ground = Ground {
-    entry: "urvara_port",
-    venue: "urvara",
+/// **Urvara Reach at 512 a side**: the field story's fight row, across the 256 line.
+const ON_URVARA: Stand = Stand {
+    ground: &URVARA_REACH,
     concord: ((258, 268), 90_000),
     basin: ((262, 268), 270_000),
     halo: ((258, 262), 90_000),
@@ -73,12 +67,12 @@ const URVARA_REACH: Ground = Ground {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fr1_declared_stances_at_256() {
-    stances_story(&AHUNA_FLANK).await;
+    stances_story(&ON_AHUNA).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fr1_declared_stances_at_512() {
-    stances_story(&URVARA_REACH).await;
+    stances_story(&ON_URVARA).await;
 }
 
 /// `who` joins `faction` openly at `level` (2 is an officer).
@@ -172,13 +166,17 @@ fn mark(rig: &mut Rig, who: ObjId, line: &str) -> String {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn stances_story(at: &Ground) {
+async fn stances_story(at: &Stand) {
     let mut rig = stocked_tuned(tune);
-    let site = cid(at.entry);
+    let site = cid(at.ground.entry);
     // A neutral captain's carrier opens the site's pad; the three co-ops' captains stay in port
     // and fly their hulls from a remote cab, each the leader of one party.
-    let (host, host_row, _) =
-        on_pad_as_at(&mut rig, ("Host", 4, "Quiet Moth"), (at.venue, at.entry), 0);
+    let (host, host_row, _) = on_pad_as_at(
+        &mut rig,
+        ("Host", 4, "Quiet Moth"),
+        (at.ground.venue, at.ground.entry),
+        0,
+    );
     // It sails home again, so no mind stands on the ground: a join is refused while a carrier's
     // think is in flight at its encode (doc 36 cut GC.1b's race), which is not this story.
     let _ = file_and_launch(&mut rig, host, ObjId(host_row.hull), "+ship/undock ceres");
@@ -186,7 +184,7 @@ async fn stances_story(at: &Ground) {
     let (b, _) = prospector(&mut rig, "Other", 2, "Tally Moth");
     let (c, _) = prospector(&mut rig, "Third", 3, "Lone Moth");
     let place = |rig: &mut Rig, name: &str, (cell, heading): Placed, pilot: ObjId| {
-        let hull = armed_on(rig, at.entry, name, cell, heading);
+        let hull = armed_on(rig, at.ground.entry, name, cell, heading);
         seat(rig, hull, pilot);
         hull
     };
@@ -303,8 +301,11 @@ async fn stances_story(at: &Ground) {
     assert!(hostile_of(pc).is_empty(), "{parties:?}");
 
     // A fourth captain, in Basin, is under way to the site.
-    let (d, d_row, _, ticket) =
-        en_route_at(&mut rig, ("Late", 5, "Late Moth"), (at.venue, at.entry));
+    let (d, d_row, _, ticket) = en_route_at(
+        &mut rig,
+        ("Late", 5, "Late Moth"),
+        (at.ground.venue, at.ground.entry),
+    );
     let late_hull = ObjId(d_row.hull);
     join(&mut rig, "Basin", d, 2);
 
