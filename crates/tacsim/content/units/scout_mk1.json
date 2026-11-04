@@ -3,7 +3,7 @@
     "id": "tacsim.pack.scout_mk1",
     "version": 4,
     "kind": "rules_definition",
-    "digest": "b0d865e5e4b774f678a74fb81eeac115bb2a9b328540960a94bd0be700d6a36a",
+    "digest": "659f53035bc6010742d7f8c20a71a374e1c12f3d5837af25e89d06663731c5e1",
     "requires": [
       {
         "id": "tacsim.pack.autocannon_30",
@@ -19,6 +19,10 @@
       },
       {
         "id": "tacsim.pack.cores",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
         "version": 1
       }
     ]
@@ -115,6 +119,7 @@
             "section": "hull",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.light_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

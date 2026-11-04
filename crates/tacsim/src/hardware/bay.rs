@@ -5,11 +5,12 @@
 //! The bay refits a hull within the fielded units (never the governed or
 //! twin core roots, which only the core refit fits), one part out and one in
 //! on one mount ([`crate::refit`]), with the heat pair as the derivable
-//! section cells. A part is stocked as `tacsim.part.<component>` — the
-//! component's id within its unit, so a cannon taken off one variant fits
-//! another — and a core is no part at all: the catalogue names none, so no
-//! bay offer can move a core.
+//! section cells. A part is stocked as `tacsim.part.<kind>.<row>` — the
+//! hardware row its slot names (doc 39 cut IN.1, Q-39-3, Q-39-35), so a cannon
+//! taken off a line tank fits a heavy — and a core is no part at all: the
+//! catalogue names none, so no bay offer can move a core.
 use super::RefitBay;
+use crate::definitions::PartRow;
 use crate::definitions::unit::INTACT;
 use mush_core::{
     CanonicalId, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, ModError,
@@ -41,17 +42,22 @@ pub(crate) fn recipe_descriptor() -> Result<DefinitionDescriptor, ModError> {
     .map_err(bad)
 }
 
-/// **TacSim's part catalogue**: a component's part is its id within its unit;
-/// a core is no part.
-pub(crate) struct ShippedParts;
+/// **TacSim's part catalogue** (doc 39 cut IN.1, Q-39-3): a component's part is the hardware
+/// row its slot names, from the catalogue's part index; a core is no part.
+pub(crate) struct ShippedParts {
+    parts: Arc<BTreeMap<CanonicalId, PartRow>>,
+}
+impl ShippedParts {
+    /// Over `parts`, the catalogue's index ([`crate::definitions::Catalog::parts`]).
+    pub(crate) fn new(parts: BTreeMap<CanonicalId, PartRow>) -> Self {
+        Self {
+            parts: Arc::new(parts),
+        }
+    }
+}
 impl BayPartCatalog for ShippedParts {
     fn commodity(&self, component: &DefinitionRef) -> Option<CanonicalId> {
-        let id = component.key().id.as_str();
-        let part = id.rsplit('.').next()?;
-        if component.key().owner.as_str() != crate::NS || part == "core" || part == id {
-            return None;
-        }
-        CanonicalId::new(format!("tacsim.part.{part}")).ok()
+        part_row(&self.parts, component).map(|row| row.commodity.clone())
     }
     fn grade(&self, removed: &ComponentState) -> Option<Grade> {
         Grade::new(if removed.installed().condition.as_str() == INTACT {
@@ -63,10 +69,23 @@ impl BayPartCatalog for ShippedParts {
     }
 }
 
-/// **The part a component stocks as** (doc 36 cut GC.8b): the catalogue's own answer, so a
-/// part the bay strips or scraps is the same commodity a refit takes out.
-pub(crate) fn part_commodity(component: &DefinitionRef) -> Option<CanonicalId> {
-    ShippedParts.commodity(component)
+/// **The part `component` is in `parts`**: TacSim's own components only.
+fn part_row<'a>(
+    parts: &'a BTreeMap<CanonicalId, PartRow>,
+    component: &DefinitionRef,
+) -> Option<&'a PartRow> {
+    if component.key().owner.as_str() != crate::NS {
+        return None;
+    }
+    parts.get(&CanonicalId::new(component.key().id.as_str()).ok()?)
+}
+
+/// **The part a component stocks as** (doc 36 cut GC.8b; doc 39 cut IN.1): the catalogue's own
+/// answer, so a part the bay strips or scraps is the same commodity a refit takes out, and the
+/// hardware row it fits.
+pub(crate) fn part_of(w: &mush_core::World, component: &DefinitionRef) -> Option<PartRow> {
+    let store = w.module_state::<crate::store::TacsimStore>()?;
+    part_row(&store.definitions().parts, component).cloned()
 }
 
 /// The grade a part goes to stores at: intact, or worn (damaged or jammed).
@@ -81,6 +100,7 @@ pub(crate) fn config(
     instrument: mush_economy::InstrumentId,
     recipe: DefinitionRef,
     fielded: BTreeSet<DefinitionRef>,
+    parts: BTreeMap<CanonicalId, PartRow>,
     economy_owner: DefinitionRef,
 ) -> Result<BayRefitConfig, ModError> {
     let payment = BayPaymentPolicy {
@@ -105,7 +125,7 @@ pub(crate) fn config(
         BTreeMap::from([(site.facility, EndpointRef(site.stores))]),
         fielded,
         derived,
-        Arc::new(ShippedParts),
+        Arc::new(ShippedParts::new(parts)),
         economy_owner,
     )
     .map_err(bad)
@@ -131,11 +151,18 @@ mod tests {
             .expect("registers")
     }
 
-    /// A part is its component's id within its unit, so the cannon off one
-    /// variant is the cannon of another; a core is no part.
+    /// **Doc 39 cut IN.1** (Q-39-3): a part is the hardware row its slot names, so the cannon
+    /// off a line tank is the heavy's; a core is no part, nor another owner's component.
     #[test]
-    fn ud4b_a_part_is_its_mount_component_and_a_core_is_none() {
-        let parts = ShippedParts;
+    fn in1_a_part_is_its_slots_hardware_row_and_a_core_is_none() {
+        let catalog = crate::definitions::Catalog::build_fielded(
+            &crate::TacsimRuleset::default()
+                .loaded_packs()
+                .expect("the shipped packs load"),
+            crate::NS,
+        )
+        .expect("the shipped catalogue builds");
+        let parts = ShippedParts::new(catalog.parts.clone());
         let of = |id| {
             parts
                 .commodity(&component(crate::NS, id))
@@ -143,13 +170,26 @@ mod tests {
         };
         assert_eq!(
             of("tacsim.unit.line_tank.cannon").as_deref(),
-            Some("tacsim.part.cannon")
+            Some("tacsim.part.weapon.cannon_105")
         );
         assert_eq!(
-            of("tacsim.unit.line_tank_laser.cannon"),
+            of("tacsim.unit.heavy_mk1.cannon"),
             of("tacsim.unit.line_tank.cannon")
         );
+        assert_eq!(
+            of("tacsim.unit.dray.power").as_deref(),
+            Some("tacsim.part.plant.hauler_mk1")
+        );
+        assert_eq!(
+            of("tacsim.unit.tv_escort.power").as_deref(),
+            Some("tacsim.part.plant.vehicle_mk1")
+        );
+        assert_eq!(
+            of("tacsim.unit.line_tank_ecm.ecm_pod").as_deref(),
+            Some("tacsim.part.sensor.ecm_mk1")
+        );
         assert_eq!(of("tacsim.unit.line_tank.core"), None);
+        assert_eq!(of("tacsim.unit.corvette.power"), None, "an unpriced plant");
         assert_eq!(parts.commodity(&component("other", "x.cannon")), None);
     }
 }

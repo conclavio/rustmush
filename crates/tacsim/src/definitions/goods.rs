@@ -2,7 +2,7 @@
 //! table" and "The validator"; D-18-13 as amended by R7, D-18-28 as replaced by
 //! R7, D-18-39, D-18-40).
 //!
-//! Sixteen sale items in one tacsim-owned compiled-in document,
+//! Twenty-nine sale items in one tacsim-owned compiled-in document,
 //! `crates/tacsim/content/market/goods.json`: eleven from doc 10 S4A's ten
 //! families (doc 19 cut A.8 added `instrument_boards` and `carbon_feedstock`, the
 //! moon ports' goods; v2; doc 20 cut SM.3a added the four run-of-mine ores,
@@ -10,7 +10,8 @@
 //! stowage tag `stow.ore`, which a terrain vehicle's hopper and a Dray-P's hold
 //! accept and a standard Dray's does not — doc 20 §7.3, Q-20-1; v3; doc 36 cut GC.7 added
 //! the four munitions goods, `ammo_ap_30`, `ammo_ball_762`, `ammo_he_105` and `ammo_missile`,
-//! each naming the ammunition family it loads; v4) and one
+//! each naming the ammunition family it loads; v4; doc 39 cut IN.1 added the thirteen part rows,
+//! class `part`, `tacsim.part.<kind>.<row>`, one each at the row's kilograms; v5) and one
 //! aggregate (`provisions`, class `ship_supply`, no family; Q-18-3). A top-level `measures` registry (`si.mass_kg` → kg, `si.volume_l` →
 //! L) names doc 06 D3's measures, and every row carries its binding mass **and**
 //! packed volume per unit, so a later measure is a data key on both sides and
@@ -106,7 +107,7 @@ pub struct GoodDef {
     /// The commodity family, one of doc 10 S4A's ten; `None` only for a
     /// non-trade class.
     pub family: Option<CanonicalId>,
-    /// Trade good, or a ship's supply.
+    /// Trade good, a ship's supply, or a part (doc 39 cut IN.1).
     pub class: GoodClass,
     /// The unit the inventory counts in (`t`, `crew_day`).
     pub ledger_unit: SmolStr,
@@ -162,7 +163,17 @@ pub enum GoodClass {
     Trade,
     /// A ship's supply (provisions).
     ShipSupply,
+    /// **A part** (doc 39 cut IN.1, Q-39-2): one hardware row a slot names, counted `each`, of
+    /// no family, spelled `tacsim.part.<kind>.<row>` ([`PART_PREFIX`]; Q-39-35).
+    Part,
 }
+
+/// **The prefix every part good's id carries** (doc 39 Q-39-3, Q-39-35): `tacsim.part.`, then
+/// the row's kind (`weapon`, `sensor`, `plant`) and the row.
+pub const PART_PREFIX: &str = "tacsim.part.";
+
+/// The unit a part is counted and quoted in.
+pub const PART_UNIT: &str = "each";
 
 impl GoodClass {
     /// The class word, as the table writes it and the catalog tags carry it.
@@ -171,6 +182,7 @@ impl GoodClass {
         match self {
             GoodClass::Trade => "trade",
             GoodClass::ShipSupply => "ship_supply",
+            GoodClass::Part => "part",
         }
     }
 }
@@ -290,6 +302,34 @@ impl GoodsTable {
                     ));
                 }
                 _ => {}
+            }
+            // Doc 39 cut IN.1: a part is a hardware row, one each, of no family; and only a
+            // part carries the part prefix.
+            if good.class == GoodClass::Part {
+                if good.family.is_some() {
+                    return Err(row_error(name, id, "a part names no family"));
+                }
+                if good.ledger_unit != PART_UNIT || good.quote_unit != PART_UNIT {
+                    return Err(row_error(
+                        name,
+                        id,
+                        format!("a part is counted and quoted `{PART_UNIT}`"),
+                    ));
+                }
+                let row = id.as_str().strip_prefix(PART_PREFIX).unwrap_or_default();
+                if row.split('.').count() != 2 || row.split('.').any(str::is_empty) {
+                    return Err(row_error(
+                        name,
+                        id,
+                        format!("a part is spelled `{PART_PREFIX}<kind>.<row>`"),
+                    ));
+                }
+            } else if id.as_str().starts_with(PART_PREFIX) {
+                return Err(row_error(
+                    name,
+                    id,
+                    format!("only a part's id begins `{PART_PREFIX}`"),
+                ));
             }
             for (field, unit) in [
                 ("ledger_unit", &good.ledger_unit),

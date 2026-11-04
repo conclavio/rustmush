@@ -279,6 +279,8 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     // The work's industrial parts ride in the hold too (the yard sells them at Stickney; GC.7's
     // gate covers the buying, so staff stock them here).
     seed_hold(&mut rig, &row, "industrial_parts", 40, 9_700);
+    // Doc 39 cut IN.1: each hull's first repair opens its bale with a tonne of alloys too.
+    seed_hold(&mut rig, &row, "structural_alloys", 2, 9_701);
 
     // ---- To Stickney Yards ----
     load(&mut rig, &row, 60, 40, 9_500);
@@ -665,7 +667,7 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
     let gun_lot = tacsim::port::bay_work::act::lot_id(escort, 1, 0).expect("the lot");
     let lot = lot_record(&mut rig, gun_lot).expect("the part's lot");
     assert_eq!(lot.endpoint(), EndpointRef(vault), "in the Dray's hold");
-    assert_eq!(lot.commodity().as_str(), "tacsim.part.machine_gun");
+    assert_eq!(lot.commodity().as_str(), "tacsim.part.weapon.mg_coax");
     assert_eq!(lot.quantity(), 1);
     let part = provenance(&mut rig, gun_lot);
     assert_eq!(part.parent_hull, escort);

@@ -351,7 +351,8 @@ fn a4_the_moving_sky_posts_the_premium_of_the_planners_reach() {
             "structural_alloys",
             520,
         ),
-        ("ceres_port", &ceres, "coop", "industrial_parts", 560),
+        // Doc 39 cut IN.1: the Co-op's fittings bid at 600 (lane v20's ladder).
+        ("ceres_port", &ceres, "coop", "industrial_parts", 600),
     ] {
         let (_, posted) = posted_bid(&tw, port, org, good);
         let reach = reach_for(tw.world(), def, &cid(good))
@@ -739,6 +740,11 @@ fn a8_the_old_ports_suppliers_move_as_designed() {
             .unwrap_or_else(|| panic!("{entry} {good}: a v7 supplier"));
         println!("{entry} bid {good}: v8 {now:?}, v7 {then:?}");
         assert_eq!(now, then, "{entry} {good}: the bid's suppliers are v7's");
+        // Doc 39 cut IN.1 moved the Co-op's authored fittings bid (560 → 600, lane v20); its
+        // suppliers, the reach just asserted, are still v7's.
+        if good == "industrial_parts" {
+            continue;
+        }
         assert_eq!(
             bid_price_major(shipped.world(), def, authored_bid(def, good)),
             bid_price_major(v7.world(), &v7_def, authored_bid(&v7_def, good)),

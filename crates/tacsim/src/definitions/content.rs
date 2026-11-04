@@ -42,6 +42,7 @@
 //! | `weapons/mg_coax.json` | `tacsim.pack.mg_coax` | rules | never |
 //! | `sensors/visual_mk1.json` | `tacsim.pack.visual_mk1` | rules | never |
 //! | `cores/cores.json` | `tacsim.pack.cores` | rules | never (17b cut M3.1) |
+//! | `plants/plants.json` | `tacsim.pack.plants` | rules | never (doc 39 cut IN.1) |
 //! | `units/line_tank.json` | `tacsim.pack.line_tank` | rules | never |
 //! | `resolution.json` | `tacsim.pack.resolution` | rules | never |
 //! | `atlas/proving_ground.json` | `tacsim.proving_ground` | atlas region | the content latch, at a first boot |
@@ -178,6 +179,8 @@ pub const MG_COAX_JSON: &str = include_str!("../../content/weapons/mg_coax.json"
 pub const VISUAL_MK1_JSON: &str = include_str!("../../content/sensors/visual_mk1.json");
 /// `crates/tacsim/content/cores/cores.json` (17b cut M3.1).
 pub const CORES_JSON: &str = include_str!("../../content/cores/cores.json");
+/// `crates/tacsim/content/plants/plants.json` (doc 39 cut IN.1).
+pub const PLANTS_JSON: &str = include_str!("../../content/plants/plants.json");
 /// `crates/tacsim/content/units/line_tank.json`.
 pub const LINE_TANK_JSON: &str = include_str!("../../content/units/line_tank.json");
 /// `crates/tacsim/content/resolution.json`.
@@ -449,6 +452,10 @@ pub const RESOLUTION: &str = "tacsim.resolution.stock";
 /// (Class I), the line core (II) and the command core (III), which every
 /// shipped chassis but the range's target fits one of.
 pub const CORES: &str = "tacsim.pack.cores";
+
+/// **The plants pack** (doc 39 cut IN.1; Q-39-35): the six power plants every shipped chassis's
+/// `power` component names, four of them priced parts.
+pub const PLANTS: &str = "tacsim.pack.plants";
 
 /// The Class I core (`tacsim.pack.cores`): the scout's and the drone's.
 pub const CORE_DOCTRINE: &str = "tacsim.core.doctrine";
@@ -955,7 +962,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cut IN.1), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -966,7 +973,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 19;
+pub const LANE_VERSION: u32 = 20;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1041,13 +1048,17 @@ pub fn extension_sources_of(rows: &[(&str, &str)]) -> Vec<PackSource> {
 /// `line_tank.json`, which requires it from its version 3 — and every chassis
 /// of the extension tables after it does too, which this table being ahead of
 /// all of them satisfies.
-pub const SOURCES: [(&str, &str); 9] = [
+///
+/// **Doc 39 cut IN.1** puts the plants pack ([`PLANTS`]) after it, before every chassis, each of
+/// which requires it for its power component's plant.
+pub const SOURCES: [(&str, &str); 10] = [
     ("tacsim/content/ammunition/he_105.json", HE_105_JSON),
     ("tacsim/content/ammunition/ball_762.json", BALL_762_JSON),
     ("tacsim/content/weapons/cannon_105.json", CANNON_105_JSON),
     ("tacsim/content/weapons/mg_coax.json", MG_COAX_JSON),
     ("tacsim/content/sensors/visual_mk1.json", VISUAL_MK1_JSON),
     ("tacsim/content/cores/cores.json", CORES_JSON),
+    ("tacsim/content/plants/plants.json", PLANTS_JSON),
     ("tacsim/content/units/line_tank.json", LINE_TANK_JSON),
     ("tacsim/content/resolution.json", RESOLUTION_JSON),
     (

@@ -3,10 +3,14 @@
     "id": "tacsim.pack.tv_prospector",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "26744d62f2c42b4cd1a2c4a9d6af0cedd290ae6095c5cc5c10c77ad8c2c1bc49",
+    "digest": "2d03e9c0a53217b3e2a4b102b925274dc0fa6b90490a7e5e69bb137583f0f27f",
     "requires": [
       {
         "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
         "version": 1
       }
     ]
@@ -54,6 +58,7 @@
             "section": "chassis",
             "role": {
               "kind": "power",
+              "plant": "tacsim.plant.light_mk1",
               "capability": "tacsim.power",
               "states": ["off", "starting", "online"],
               "initial": "off"

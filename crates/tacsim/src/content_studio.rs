@@ -258,6 +258,12 @@ fn shipped_docs() -> Vec<DocSpec> {
             bytes: CORES_JSON,
         },
         DocSpec {
+            id: "tacsim.pack.plants",
+            repo_path: "plants/plants.json",
+            family: "component",
+            bytes: crate::definitions::content::PLANTS_JSON,
+        },
+        DocSpec {
             id: crate::hardware::PACK,
             repo_path: "hardware/governed_hardware.json",
             family: "component",
@@ -2470,8 +2476,9 @@ mod tests {
             catalog
                 .get("goods")
                 .and_then(Value::as_array)
-                // Doc 36 cut GC.7: sixteen with the four munitions goods.
-                .is_some_and(|a| a.len() == 16)
+                // Doc 36 cut GC.7: sixteen with the four munitions goods; doc 39 cut IN.1:
+                // twenty-nine with the thirteen parts.
+                .is_some_and(|a| a.len() == 29)
         );
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)
