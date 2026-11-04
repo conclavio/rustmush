@@ -14,9 +14,10 @@
 #      committed) and fetches the embedded SPA over TLS, verified against that
 #      certificate, byte-equal to web/dist/index.html;
 #   3. boots `mush-server` and `mush-gateway` as the split pair, sees the
-#      gateway attach over the IPC socket, and plays one front-door session over
-#      SSH: `create` (a service request across the boundary) and `look` (a verb
-#      the world task answers).
+#      gateway's IPC handshake in its log, and plays one front-door session
+#      over SSH with a PTY (the front door refuses a session without one):
+#      `create`, which crosses the boundary as a service request and is
+#      answered "Account created." only on the server's reply, then `look`.
 #
 # Usage: scripts/release-smoke.sh [<binary dir>]   (default target/release)
 # Linux (the IPC socket is a unix path). Needs openssl, curl and ssh. Logs and
@@ -154,14 +155,23 @@ wait_for "mush-gateway listening for SSH on $ssh_port" 180 port_open "$ssh_port"
   sleep 5
   printf 'QUIT\r\n'
   sleep 2
-} | timeout 60 ssh -T -p "$ssh_port" \
+} | timeout 60 ssh -tt -p "$ssh_port" \
   -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o LogLevel=ERROR play@127.0.0.1 > "$work/session.log" 2>&1 || true
 echo "::group::the SSH session"
 cat "$work/session.log"
 echo "::endgroup::"
-if ! grep -qi 'smokebot' "$work/session.log"; then
-  echo "release-smoke: the session never named the account it created" >&2
+# The handshake: the gateway attached to the server over the IPC socket.
+if ! grep -q '"handshake ok"' "$work/mush-gateway.log"; then
+  echo "release-smoke: the gateway logged no IPC handshake with the server" >&2
   exit 1
 fi
-echo "release-smoke: one front-door session crossed the split (create, look)"
+# `create` crosses the boundary: the gateway reserves the account and asks the
+# server to make the player (a CreatePlayer service request); "Account
+# created." is written only on the server's reply. (A PTY echoes the input, so
+# the account's name in the transcript would prove nothing.)
+if ! grep -q 'Account created\.' "$work/session.log"; then
+  echo "release-smoke: no \"Account created.\" from the split pair" >&2
+  exit 1
+fi
+echo "release-smoke: the gateway and the server handshook, and one front-door session crossed the split (create, look)"
