@@ -428,3 +428,92 @@ JUnit, the merged head 1fbd149e). The cell's sum reads 25.10 → 37.44 min, main
 slower, unrelated ones too (`twin::m2_gate_a_on_a_mixed_pool` 28.1 → 52.5 s, `moon_ports::a8_titan_throttle…` 42.7 →
 64.0 s), and no test ran faster. The other changed tests run no longer for the cut: the stores are minted inside the
 bulk mint, so a port boots in exactly main's fires.
+
+## IN.9 — the yard and the handover (Q-39-14, Q-39-18, Q-39-19, Q-39-20, Q-39-33, Q-39-36)
+
+**Built.** The expensive-to-reverse marker cut (Q-39-33): the register and the provenance, built as ruled.
+
+- **The register** — `tacsim:owned_hull:{hull}` (`port::owned::OwnedHull`): the hull, the design, the fresh mark
+  (`SYB-01`, `SYB-02`, …, one a commission, never re-issued), the home port, the provenance id and the lay-up row
+  (`OwnedBody::Ship(HullRow)` or `Rig(RigRow)`). It is never a programme row: the applier's preflight and `hull_line`
+  do not read it, so the pool stays the seed. It is read **after** the programme and yard rows by `hull_view`,
+  `hull_of_room`, `helm_of` (a hull titled to the pilot or to an org the pilot `acts_for`, lowest id first),
+  `world_hulls` (so `tow.rs::carriers_at` and the second-carrier recovery see a yard-built carrier; `tow.rs` is not
+  edited), `bay_carriers` (RS.2's seam behind `carrier_of_bay` and `facility_of`), `carrier_right` and `right_of`
+  (an org's officer works its hull as title holder), `hopper_of`, the rig tools and battery reads and `world_rigs`.
+- **The provenance** — `tacsim:hull_provenance:{order}`: the order, the work order, the hull, the facility, the
+  design's pack digest, the kit lot, the part lots fitted and the instant.
+- **The commission** — `tacsim:commission:{order}` (`port::commission::YardCommission`). `+yard/collect` on a
+  delivered hull order writes the record first, then owes one `tacsim_works` move (`Then::Commissioned`) that
+  **consumes** the kit lot (its `workorder.output` lineage checked, the relay foundry's shape) and the part lots in
+  the escrow, through the new `InventoryFamilies::consume_products` (the census and tallies summed per key: the
+  inventory stages an endpoint's lot census once a transaction, so two `consume_product` calls at one escrow are
+  refused). When the works ledger shows it landed the record steps on, and the port tick (`commission::tick`, run
+  before `works::tick` so a consumption settled in a fire is laid up on the next) runs Laying → Placed → Titled →
+  Vault → Emptied → Provenance → Registered → Berthed, each idempotent and recorded. The lay-up is the applier's own
+  `hull::lay_up_one` / `vehicle::lay_up_rig`, now writing through a `HullRowSink` / `RigRowSink` (the port map's
+  `MapRows` / `MapRigRows`, or the commission's record). A ship is placed docked on the yard port's domain with a
+  hold vault the beneficiary's; a rig stands on the port's workshop floor (a location, no simulation placement, as a
+  berthed hull does) with a yard berth row naming no carrier. Magazines are emptied by one plan (Q-39-36).
+- **The bill from the design** (`port::bill`, Q-39-14): §4.8's partition and §4.7's bill. The escort is 3 t of
+  alloys, 1 t of fittings, four parts and the line core, two days; the Dray and the Dray-P 163 t, 55 t and a hauler
+  plant, twelve days (doc 39's 2,565/855 kg and 157,500/52,500 kg). The hull recipe pack `tacsim.industry.hulls` v1
+  (`content/industry/hulls-v1.json`, in `game_seed_sources`) carries one recipe a buildable design (the bulk lines,
+  `work_units` = days × 24, one kit `output_lots: each`, `requires: tacsim.yard`), pinned row for row to
+  `design_bill` by `port::bill`'s test. A yard order's bill adds the design's part lines; a part is delivered as its
+  lots.
+- **Kits** — goods v6: `class: kit`, five `tacsim.hull_kit.<design>` rows (escort, prospector, tender, Dray,
+  Dray-P), no mass of their own and stowage `stow.kit`, which no hold accepts (the gauges never list them);
+  `MAX_GOODS` 32 → 48; never orderable on the market.
+- **`+bay/stow <hull>[=<carrier>]`** (§4.13, §8.4: this document's verb): the named carrier docked here, the actor's
+  run of her, a lessee or salvor only to the row's own carrier, a free bay slot whose mass limit takes her catalogue
+  mass; the custody refusal ("The <name> is in <custodian>'s custody; only they may move her.") before the right.
+  `BerthRow.carrier` and `bay_room` are optional (old rows read `Some`); `+bay` reads a yard berth as "Built on this
+  floor". The first rearm draws from a carrier the hull's title holder holds docked at the port.
+- **The title view for rigs** (`owned::title_view`): a commissioned rig in the bay of a carrier the pilot has the run
+  of, or out on the ground by her `tacsim:tv:{tv}` projection's hull, read as `TvLease::house_view`'s shape with the
+  carrier's hold, by `rig_lease`, `live_on_hull`, boarding and the surface act's rig readers. `repossess` skips a
+  titled rig, and `bay_slot_word` (the buyout's and refit's "still in the bay") never counts one.
+
+**The story.** `shard_6/yard_in9.rs`, three tests through the production commands:
+
+- `in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over` (port-side): a captain who enrolled and handed
+  the charter straight back orders a Dray-P at Stickney; twelve days later `+yard/collect` hands her over docked,
+  titled to them, `SYB-01`, a register row and a provenance, and `helm_of` gives them her helm. `+yard/quote
+  tv_escort` prints the design's bill and two days; the bill comes from the Dray-P's hold in two deliveries (the bulk,
+  then the four part lots); two days on, `+yard/collect` writes the commission, **staff stop it after the lay-up and
+  the placement** (no title, no register row), and the next fire finishes it. The escort stands on the workshop
+  floor titled to them, magazines empty, the provenance naming the four lots; `+bay` quotes her clean but for the
+  rearm ("0/2000 rounds", "Built on this floor"); `+bay/order …=rearm` loads her from the Dray-P's hold;
+  `+bay/stow escort=<Dray-P>` puts her in the Dray-P's bay, and `facility_of` names the Dray-P. Granted office in the
+  Co-op, the captain orders a second escort `=org:<coop>`, collects it titled to the Co-op, stows it as its officer and
+  reaches it by its title view; a crewmate without office reaches neither.
+- `in9_ahuna_…` and `in9_urvara_…` (256 and 512): a second captain's chartered Dray-P stands on the pad with a leased
+  tug. The yard builds the first captain a Dray-P and an escort; she is stowed, the captain boards the Dray-P at
+  Stickney's gallery (`+ship/board`, the register's helm) and sails by Ceres to the site, walks to the bay
+  (`+tv/bay in`), `+tv/1 board` and `+tv/1 launch go` by the title view. Disabled and indexed (GC.6's staff fixture),
+  the escort is towed by the second captain's tug and loaded into **their** programme Dray-P; that Dray-P sails to
+  Ceres, returns its own leased tug, and `+coop/buyout` writes the title transfer with the titled escort still in her
+  bay.
+
+Seeds: the yard facility (`@facility/open`, `/owner`, `/terms`) until lane v24 authors the row; the Dray-P's bill
+and, on the ground, the escort's in their escrows; the escort's bill and the munitions in the Dray-P's hold; the
+money; the officer's grant; the captain's move to Stickney; the escort's disablement and its index row.
+
+**Departures from the row.**
+
+- **The lane's `yard` row at `room.p14_slipway`** waits on IN.5's lane v23 (#414): it is lane v24, a `PortDef.yard`
+  block of IN.5's `WorksDef` shape (capability `tacsim.yard`) and a new atlas room. Until then the facility is a seed.
+- **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
+  bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
+  which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.
+  The five designs that already carry both blocks are the buildable ones, and only they have kits and recipes.
+- **`+yard/deliver` buys no parts at the port's asks**: the lane authors no part asks (IN.6). A part line comes from
+  a lot the requester holds in the docked hold.
+- **"The bot types it"**: the stories type every player line through the rig's command path (`run`), the field
+  stories' precedent; no `mush-bot` vocabulary is added (IN.11's).
+- **A pilot with two hulls**: `helm_of` takes the charter, then the programme rows, then the register; `+ship/helm
+  <hull>` (doc 18 P2's seat) is not built. The story's captain hands the charter back so the yard-built Dray-P is
+  their one helm.
+
+**Cell delta (rule #14).** tacsim-integration-6: _filled from the PR's JUnit_.
