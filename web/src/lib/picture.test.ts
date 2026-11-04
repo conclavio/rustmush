@@ -451,40 +451,51 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     };
     let st = afterOne;
     for (let i = 0; i < 1200 && st && !st.clamped; i += 1) {
-      const f = st.feed as Record<string, number>;
+      const f = st.feed;
+      const dx = Number(f.dx_mm ?? 0);
+      const dy = Number(f.dy_mm ?? 0);
+      const vx = Number(f.vx_mmps ?? 0);
+      const vy = Number(f.vy_mmps ?? 0);
+      const vz = Number(f.vz_mmps ?? 0);
+      const pitch = Number(f.pitch_mdeg ?? 0);
+      const yaw = Number(f.yaw_mdeg ?? 0);
+      const roll = Number(f.roll_mdeg ?? 0);
+      const pitchRate = Number(f.pitch_rate_mdeg_s ?? 0);
+      const yawRate = Number(f.yaw_rate_mdeg_s ?? 0);
+      const rollRate = Number(f.roll_rate_mdeg_s ?? 0);
       let mask = 0;
-      if (f.dx_mm < -80 && f.vx_mmps < 160) {
+      if (dx < -80 && vx < 160) {
         mask = pressKey("d");
-      } else if (f.dx_mm > 80 && f.vx_mmps > -160) {
+      } else if (dx > 80 && vx > -160) {
         mask = pressKey("a");
-      } else if (f.dy_mm < -80 && f.vy_mmps < 160) {
+      } else if (dy < -80 && vy < 160) {
         mask = pressKey("w");
-      } else if (f.dy_mm > 80 && f.vy_mmps > -160) {
+      } else if (dy > 80 && vy > -160) {
         mask = pressKey("s");
-      } else if (f.pitch_mdeg < -500 && f.pitch_rate_mdeg_s < 350) {
+      } else if (pitch < -500 && pitchRate < 350) {
         mask = pressKey("ArrowUp");
-      } else if (f.pitch_mdeg > 500 && f.pitch_rate_mdeg_s > -350) {
+      } else if (pitch > 500 && pitchRate > -350) {
         mask = pressKey("ArrowDown");
-      } else if (f.yaw_mdeg > 500 && f.yaw_rate_mdeg_s > -350) {
+      } else if (yaw > 500 && yawRate > -350) {
         mask = pressKey("ArrowLeft");
-      } else if (f.yaw_mdeg < -500 && f.yaw_rate_mdeg_s < 350) {
+      } else if (yaw < -500 && yawRate < 350) {
         mask = pressKey("ArrowRight");
-      } else if (f.roll_mdeg < -600 && f.roll_rate_mdeg_s < 450) {
+      } else if (roll < -600 && rollRate < 450) {
         mask = pressKey("e");
-      } else if (f.roll_mdeg > 600 && f.roll_rate_mdeg_s > -450) {
+      } else if (roll > 600 && rollRate > -450) {
         mask = pressKey("q");
       } else if (
-        Math.abs(f.dx_mm) <= 250 &&
-        Math.abs(f.dy_mm) <= 250 &&
-        Math.abs(f.pitch_mdeg) <= 2000 &&
-        Math.abs(f.yaw_mdeg) <= 2000 &&
-        Math.abs(f.roll_mdeg) <= 3000 &&
-        f.vx_mmps === 0 &&
-        f.vy_mmps === 0 &&
-        f.pitch_rate_mdeg_s === 0 &&
-        f.yaw_rate_mdeg_s === 0 &&
-        f.roll_rate_mdeg_s === 0 &&
-        f.vz_mmps < 300
+        Math.abs(dx) <= 250 &&
+        Math.abs(dy) <= 250 &&
+        Math.abs(pitch) <= 2000 &&
+        Math.abs(yaw) <= 2000 &&
+        Math.abs(roll) <= 3000 &&
+        vx === 0 &&
+        vy === 0 &&
+        pitchRate === 0 &&
+        yawRate === 0 &&
+        rollRate === 0 &&
+        vz < 300
       ) {
         mask = pressKey("r");
       }
