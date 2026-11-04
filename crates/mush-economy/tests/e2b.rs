@@ -24,7 +24,6 @@ use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
 
-
 // Doc 43 cut TS.5: generated histories, checkpoint boot against whole replay.
 #[path = "e2b/lifecycle_replay.rs"]
 mod lifecycle_replay;
