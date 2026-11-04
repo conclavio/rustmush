@@ -648,7 +648,18 @@ changed.
 (shard_8, CF.6c's gate: the escort drives home while the field stays up). §7's row names `cf6c`, but its body
 acts inside the field, so it is the family's representative rather than a candidate.
 
-**Rule #14, shard_1's summed minutes.** Before: main's run
-[41749664818](https://github.com/conclavio/rustmush/actions/runs/41749664818) at `f94b1e26`, 220 tests,
-**52.3 summed minutes**, wall 16 m 16 s; the six tests 209.2 + 206.8 + 203.7 + 119.6 + 116.3 + 109.8 = 965.4 s.
-After (locally, Windows, nextest `-j 8`, before the PR run): the six at 42.6 + 42.8 + 42.9 + 56.2 + 57.5 + 58.8 = 300.8 s; the PR run's JUnit figure replaces this line.
+**Rule #14, shard_1's summed minutes.** Runner speed moved the cell more than the cut did. The like-for-like
+pair is two runs taken under the same parallel wave-1 load, where the 214 untouched tests sum within 3 %
+(60.2 and 62.0 minutes):
+
+| Run | Head | Cell, summed | The six | The 214 others | Wall |
+|---|---|---|---|---|---|
+| main [41754225803](https://github.com/conclavio/rustmush/actions/runs/41754225803) | `c0d123a9` | 78.3 min | 1,086.2 s | 60.2 min | 23 m 54 s |
+| PR [41757602966](https://github.com/conclavio/rustmush/actions/runs/41757602966) | `51722d5e` | 68.9 min | 416.6 s | 62.0 min | 21 m 40 s |
+
+The delta is **−9.4 summed minutes**, with the six tests saving 11.2. A quiet main run
+([41749664818](https://github.com/conclavio/rustmush/actions/runs/41749664818) at `f94b1e26`) summed 52.3
+minutes, with the six at 965.4 s and a wall of 16 m 16 s. Its 214 others ran 1.7× faster, which puts the six
+at about 245 s at that speed and the cell near 40 summed minutes, the §7 estimate of −12. Locally (Windows,
+nextest) the six take 300.8 s. The wall under load is still the queue's, not this cell's: TS.10's clock seam
+is the structural half.
