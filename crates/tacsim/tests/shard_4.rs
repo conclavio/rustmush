@@ -37,6 +37,8 @@ mod claim_rig;
 mod conditions;
 #[path = "shard_4/core_replacement.rs"]
 mod core_replacement;
+#[path = "support/field/custody_rig.rs"]
+mod custody_rig;
 #[path = "support/field/driving_rig.rs"]
 mod driving_rig;
 #[path = "shard_4/economy.rs"]

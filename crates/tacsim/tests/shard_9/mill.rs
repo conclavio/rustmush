@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 23, "lane v23 since doc 39 cut IN.5");
+    assert_eq!(LANE_VERSION, 24, "lane v24 since doc 39 cut IN.5");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -2605,10 +2605,11 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
 
 /// **The receipt kinds a mint may carry are a closed set** (doc 39 cut IN.1, Q-39-8's second
 /// pin): over `crates/tacsim/src`'s production text, the `ExternalRef` each minting file builds
-/// names one of four kinds — the stock clerk's `port.stock`, the remains scrap's
-/// `remains_scrap`, and the bay's `bay_strip` and `bay_scrap` (its `bay_{why}`, where the only
-/// `why`s `owe_mint` is handed are `strip` and `scrap`). A new kind is a new kind of matter's
-/// origin, and the matter story (IN.11) sums by them.
+/// names one of five kinds — the stock clerk's `port.stock`, the remains scrap's
+/// `remains_scrap`, and the bay's `bay_strip`, `bay_scrap` and `bay_return` (its `bay_{why}`,
+/// where the only `why`s `owe_mint` is handed are `strip`, and through `settle_or_owe` doc 39
+/// cut IN.8's `scrap` and `return`). A new kind is a new kind of matter's origin, and the matter
+/// story (IN.11) sums by them.
 #[test]
 fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
     let files = production_files("tacsim/src");
@@ -2641,14 +2642,17 @@ fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
     assert_eq!(tacsim::port::STOCK_SOURCE_KIND, "port.stock");
     // The bay's `why`: the strip's and the scrap's, and nothing else.
     let strip = text("tacsim/src/port/bay_work/strip.rs");
-    let whys: Vec<&str> = strip
-        .match_indices("owe_mint(ctx, record, act_no, vault.0, \"")
-        .map(|(at, needle)| {
-            let rest = &strip[at + needle.len()..];
-            &rest[..rest.find('"').expect("a closed literal")]
+    let strip = strip.as_str();
+    let whys: Vec<&str> = ["owe_mint(ctx, record, act_no, vault.0, \"", "(act_no, \""]
+        .into_iter()
+        .flat_map(|needle| {
+            strip.match_indices(needle).map(|(at, needle)| {
+                let rest = &strip[at + needle.len()..];
+                &rest[..rest.find('"').expect("a closed literal")]
+            })
         })
         .collect();
-    assert_eq!(whys, ["strip", "scrap"]);
+    assert_eq!(whys, ["strip", "scrap", "return"]);
     assert_eq!(
         occurrences(&files, "owe_mint("),
         vec![("tacsim/src/port/bay_work/strip.rs".to_owned(), 3)]

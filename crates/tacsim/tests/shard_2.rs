@@ -33,6 +33,8 @@ mod vertex;
 mod claim_rig;
 #[path = "shard_2/content.rs"]
 mod content;
+#[path = "support/field/custody_rig.rs"]
+mod custody_rig;
 #[path = "support/field/driving_rig.rs"]
 mod driving_rig;
 #[path = "shard_2/e7r1.rs"]
@@ -61,6 +63,8 @@ mod in3_order_contract;
 mod in5_production;
 #[path = "shard_2/in6_part_lot.rs"]
 mod in6_part_lot;
+#[path = "shard_2/in8_mass_scrap.rs"]
+mod in8_mass_scrap;
 #[path = "shard_2/minds.rs"]
 mod minds;
 #[path = "shard_2/minds_pool.rs"]

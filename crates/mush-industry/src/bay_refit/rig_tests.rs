@@ -51,7 +51,6 @@ fn tariff() -> mush_tactics::field_ops::WorkshopFacilityTariff {
     mush_tactics::field_ops::WorkshopFacilityTariff {
         cost_per_structural_point_repair: 100,
         duration_ic_per_structural_point_repair: 36,
-        structural_points_per_industrial_parts_t: 100,
         base_cost_reconstruct_section: 80_000,
         base_duration_ic_reconstruct_section: 28_800,
         cost_repair_component: 20_000,

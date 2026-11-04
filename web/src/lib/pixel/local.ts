@@ -5,6 +5,7 @@
 import type { PictureKind, SpaceCameraMode } from "../picture";
 import wasmUrl from "./mush_pixel.wasm?url";
 import {
+  type DockingStepState,
   FEED_CHART,
   FEED_COCKPIT,
   FEED_MAP,
@@ -140,6 +141,27 @@ export class LocalPicture {
     if (hash === this.#shown) return false;
     this.#shown = hash;
     return true;
+  }
+
+  /** Synchronize `docking` feed into WASM and step the active 60 Hz `space.docking` session by one
+   * frame (`mask` packed per `DockingClientInput::to_bitmask`, `D-35-14`, `SF.R24`). */
+  stepDocking(docking: unknown, mask: number): DockingStepState | null {
+    if (typeof this.#m.stepDocking !== "function") return null;
+    if (docking !== this.#docking) {
+      this.#m.feed(FEED_SPACE_DOCKING, docking == null ? null : JSON.stringify(docking));
+      this.#docking = docking;
+    }
+    return this.#m.stepDocking(mask);
+  }
+
+  /** Synchronize `docking` feed into WASM and return the current 60 Hz `space.docking` session state (`D-35-14`, `SF.R24`). */
+  dockingState(docking: unknown): DockingStepState | null {
+    if (typeof this.#m.dockingState !== "function") return null;
+    if (docking !== this.#docking) {
+      this.#m.feed(FEED_SPACE_DOCKING, docking == null ? null : JSON.stringify(docking));
+      this.#docking = docking;
+    }
+    return this.#m.dockingState();
   }
 
   /** Draw `kind` for `lookMdeg` over the held keyframes: whether a new frame is

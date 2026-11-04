@@ -864,11 +864,13 @@ obligation; Draft 0.3 (42-7): the fee is `create_sanction_obligation` under a `p
 authored for each authority, settled through doc 41 RS.5's `+debts/pay` (CR.2 waits on RS.5 or
 lands after it); the release into the arrival room, the stamp, treatment picking them up. Files:
 `port/def.rs`, the lane content (version bump), `composition/sim_routes.rs`, `field/crew.rs`.
-Story: (a′) whole, both sizes, the bot typing the captive's half.
+Story: (a′) whole, both sizes, the bot typing the captive's half. **Built** — see
+[42-cut-notes.md](42-cut-notes.md) §CR.2.
 
 **CR.3 — The bound and the held case.** Q-42-8, Q-42-9, Q-42-15. `captive_bound_s`;
 `+sortie/extract` from captivity after the bound; the release at will's two landings; the
 captor's wreck. Files: `field/crew.rs`, `mush-config`. Story: (e), both sizes, with a restart.
+**Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.3.
 
 **CR.4 — Ejection.** Q-42-10, Q-42-11, Q-42-12, Q-42-13, Q-42-14. `+sortie/eject`; the doomed
 test on live cells; the holding query to the arena task; the deterministic draw and

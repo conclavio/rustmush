@@ -788,13 +788,11 @@ impl Arena {
             let touched = Arena::plan_touches_bands(&plan);
             self.set_unit(shot.target, post, touched);
             // Doc 36 cut GC.2: a jammed gun leaves the weapon table as a shot-off
-            // turret's does, its rounds kept for the check-in.
-            if let Some(PartStruck {
-                part: Some((component, JAMMED)),
-                ..
-            }) = &part
-            {
-                self.drop_weapons(shot.target, |weapon| weapon.id == component.as_str());
+            // turret's does, its rounds kept for the check-in — since doc 40 cut FR.5
+            // (§4.1 item 4, Q-40-3, Q-40-6) through the one derivation every kind of
+            // part answers to, run once the part's op has landed.
+            if part.as_ref().is_some_and(|struck| struck.part.is_some()) {
+                self.apply_part_effects(shot.target);
             }
             // **16b cut Q.6**: and the shooter's count is inside the guard with
             // it. The result record's `hits` (doc 16 §4) is what a pilot reads
@@ -1333,7 +1331,7 @@ impl Arena {
     /// them, with their held-shot rows — a slot on a gun the hull no longer
     /// carries is a decision about nothing. The other guns' slots keep their
     /// numbers.
-    fn drop_weapons(
+    pub(crate) fn drop_weapons(
         &mut self,
         target: ObjId,
         going: impl Fn(&crate::arena::state::WeaponSummary) -> bool,
@@ -1444,6 +1442,10 @@ impl Arena {
             // applies to a pass that does not run.
             state.receiver = None;
         }
+        // Doc 40 cut FR.5 (§4.1 item 5, Q-40-7): a tug destroyed drops its tow — the casualty
+        // stands where it is, its tug's last cell behind it. (A casualty destroyed stays coupled:
+        // a wreck is still towed.)
+        self.drop_tow(target);
         self.contacts.clear_viewer(target);
         // A wreck owns no destination. Release its reservation before another
         // same-side request chooses a formation fan cell.
@@ -1912,6 +1914,59 @@ impl Arena {
             })
             .collect()
     }
+
+    /// **One certain round of `damage` on `target`'s front band, landed** (a test's strike, by
+    /// the impact's own path): shot `seq` from `shooter`, journalled into `journal`.
+    #[cfg(test)]
+    pub(crate) fn strike_for_test(
+        &mut self,
+        shooter: ObjId,
+        target: ObjId,
+        seq: u64,
+        damage: u32,
+        journal: &mut Vec<Notice>,
+    ) {
+        let (Some(from), Some(at)) = (
+            self.unit(shooter).map(|state| state.pose.clone()),
+            self.unit(target).map(|state| state.pose.clone()),
+        ) else {
+            return;
+        };
+        let terrain = &self.definition.terrain;
+        let shot = crate::arena::weapons::Shot {
+            seq,
+            shooter,
+            weapon: SmolStr::new("cannon"),
+            contact: crate::arena::state::ContactId(seq),
+            target,
+            rounds: 1,
+            fired_at_ms: self.now_ms,
+            impact_at_ms: self.now_ms,
+            range_cm: 1_000,
+            aim_x_cm: at.x_cm,
+            aim_y_cm: at.y_cm,
+            aim_cell: terrain.cell_of(&at),
+            from_x_cm: from.x_cm,
+            from_y_cm: from.y_cm,
+            from_cell: terrain.cell_of(&from),
+            from_height_cm: 150,
+            damage,
+            resolution: Resolution::blind("front", 3_000, Cover::None),
+        };
+        let drawn = self.shot_draw(seq, 1);
+        let now = self.now_ms;
+        self.apply_hit(
+            &shot,
+            &Resolution {
+                p_permille: 1_000,
+                ..Resolution::blind("front", 3_000, Cover::None)
+            },
+            1,
+            now,
+            drawn,
+            journal,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2243,6 +2298,101 @@ mod tests {
                 .is_some_and(|state| state.weapons.is_empty()),
             "a jammed cannon does not come into the next match"
         );
+    }
+
+    /// **Doc 40 cut FR.5's kernel gate** (§4.1 item 4, Q-40-3's sensor row, end to
+    /// end): a survivable round through the turret that jams the sight there leaves
+    /// the hull blind — `sensor` `None`, the authored row kept — and its contacts are
+    /// not cleared at once, as a wreck's are, but left to the loss band; a round that
+    /// damages it instead leaves it at half its authored range, and the derivation
+    /// run again does not halve it twice.
+    #[test]
+    fn fr5_a_hit_that_jams_the_sight_blinds_the_hull_and_one_that_damages_it_halves_it() {
+        let sight = mush_tactics::ComponentId::new("visual_sensor").expect("a component");
+        for (word, chances) in [
+            (
+                JAMMED,
+                crate::arena::resolution::ComponentHits {
+                    jam_permille: 1_000,
+                    damage_permille: 0,
+                },
+            ),
+            (
+                DAMAGED,
+                crate::arena::resolution::ComponentHits {
+                    jam_permille: 0,
+                    damage_permille: 1_000,
+                },
+            ),
+        ] {
+            let mut arena = duel();
+            let authored = arena
+                .unit(BLUE)
+                .and_then(|state| state.sensor.clone())
+                .unwrap_or_else(|| panic!("blue sees"));
+            if let Some(state) = arena.unit_mut(BLUE) {
+                state.profile.component_hits = chances;
+            }
+            // A few seconds of sight first, so blue holds red when its sight goes.
+            for wall in (100..=4_000).step_by(100) {
+                arena.step_settled(wall, &[], &[]);
+            }
+            let held = arena.contacts.of(BLUE).count();
+            assert!(held > 0, "blue holds red before the hit");
+            let seq = (1..400_u64)
+                .find(|seq| {
+                    arena
+                        .choose_section(BLUE, "front", *seq)
+                        .is_some_and(|(section, _)| section == "turret")
+                        && arena
+                            .part_struck(BLUE, "turret", *seq)
+                            .and_then(|part| part.part)
+                            .is_some_and(|(id, struck)| id == sight && struck == word)
+                })
+                .unwrap_or_else(|| panic!("some shot {word} the sight"));
+            let mut journal: Vec<Notice> = Vec::new();
+            arena.apply_hit(
+                &front_shot(seq, 400),
+                &Resolution {
+                    p_permille: 1_000,
+                    ..Resolution::blind("front", 3_000, Cover::None)
+                },
+                1,
+                10,
+                arena.shot_draw(seq, 1),
+                &mut journal,
+            );
+            let live = |arena: &Arena| {
+                let state = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
+                (
+                    state.sensor.as_ref().map(|sensor| sensor.max_range_cells),
+                    state.sensor_authored.clone(),
+                )
+            };
+            let expected = if word == JAMMED {
+                None
+            } else {
+                Some(authored.max_range_cells / 2)
+            };
+            assert_eq!(live(&arena), (expected, Some(authored.clone())), "{word}");
+            assert_eq!(
+                arena.contacts.of(BLUE).count(),
+                held,
+                "{word}: the contacts age out; they are not cleared"
+            );
+            arena.apply_part_effects(BLUE);
+            assert_eq!(
+                live(&arena),
+                (expected, Some(authored.clone())),
+                "{word}: no compounding"
+            );
+            assert!(
+                arena
+                    .unit(BLUE)
+                    .is_some_and(|state| !state.weapons.is_empty()),
+                "{word}: the cannon was not struck and still fires"
+            );
+        }
     }
 
     /// **Doc 36 cut GC.2** (Q-36-38): a hit that stops in the armour touches no

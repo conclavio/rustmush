@@ -238,12 +238,17 @@ pub enum OwedKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fit_at: Option<u64>,
     },
-    /// Mint lots into the hold.
+    /// Mint lots into the hold, or (doc 39 cut IN.8) a workshop scrap's or a bale return's into
+    /// the operator's stores.
     Mint {
-        /// Why: `strip` or `scrap`.
+        /// Why: `strip`, `scrap` or `return`.
         why: String,
         /// The lots.
         lots: Vec<LotMint>,
+        /// **What lands with it** (doc 39 cut IN.8): the holder's credit and the shop bale, for
+        /// a workshop scrap or a return; `None` for a strip.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        settle: Option<Box<super::scrap::Settlement>>,
     },
     /// Flag a stripped part hot: the claim it came off under was vacated.
     Hot {
@@ -1012,7 +1017,7 @@ impl ActionProvider for BayActProvider {
                         .map_err(|_| refused("the part's provenance did not stage"))?;
                 }
             }
-            OwedKind::Mint { why, lots } => {
+            OwedKind::Mint { why, lots, .. } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
                 self.lay(txn, parameters, endpoint, hull, act, why, lots)?;
                 for row in lots {

@@ -83,6 +83,18 @@ interface PixelExports {
   mp_wanted_looks?(): number;
   mp_looks?(len: number): number;
   mp_preview?(len: number): number;
+  mp_docking_step?(mask: number): number;
+  mp_docking_state?(): number;
+}
+
+/** 60 Hz 6-DOF client docking session state returned by `mp_docking_step` / `mp_docking_state` (`D-35-14`, `SF.R24`). */
+export interface DockingStepState {
+  session_id: string;
+  clamped: boolean;
+  gates_green: number;
+  frames_stepped: number;
+  tape_command: string;
+  feed: Record<string, unknown>;
 }
 
 /** The look check's answer (`mush_pixel::design::LookCheck`). */
@@ -240,6 +252,29 @@ export class PixelModule {
     if (side === 0) return null;
     const rgba = new Uint8ClampedArray(this.#x.memory.buffer, this.#x.mp_pixels(), side * side * 4).slice();
     return { side, rgba };
+  }
+
+  /** Step the active 60 Hz `space.docking` client session in WASM by one frame (`mask` packed per
+   * `DockingClientInput::to_bitmask`) and return the updated state (`D-35-14`, `SF.R24`). */
+  stepDocking(mask: number): DockingStepState | null {
+    if (typeof this.#x.mp_docking_step !== "function" || typeof this.#x.mp_output !== "function") {
+      return null;
+    }
+    const len = this.#x.mp_docking_step(mask >>> 0);
+    if (len === 0) return null;
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    return JSON.parse(text) as DockingStepState;
+  }
+
+  /** Read the current 60 Hz `space.docking` client session state in WASM without stepping (`D-35-14`, `SF.R24`). */
+  dockingState(): DockingStepState | null {
+    if (typeof this.#x.mp_docking_state !== "function" || typeof this.#x.mp_output !== "function") {
+      return null;
+    }
+    const len = this.#x.mp_docking_state();
+    if (len === 0) return null;
+    const text = new TextDecoder().decode(new Uint8Array(this.#x.memory.buffer, this.#x.mp_output(), len));
+    return JSON.parse(text) as DockingStepState;
   }
 
   #fetchWanted(): void {

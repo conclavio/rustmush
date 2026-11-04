@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 23,
+    "version": 24,
     "kind": "campaign_seed",
-    "digest": "5b35ec9cdbb8ff8e2c99384841ba7e13c893ef2b1bdeecbb53a16f8a948cf299",
+    "digest": "0d07927c914abdf61b7cc32304e4aa1b396c767e2128ef8136f0da8bc4370caa",
     "requires": []
   },
   "entries": {
@@ -2726,6 +2726,8 @@
       "def": {
         "location": "ceres_freeport",
         "venue": "ceres",
+        "authority": "freeport_registry",
+        "release_fee_cr": 1500,
         "area": "neighborhood.ceres_freeport",
         "gallery": "neighborhood.ceres_freeport.room.c01_berth_gallery",
         "rooms": {
@@ -2856,6 +2858,8 @@
       "def": {
         "location": "stickney_yards",
         "venue": "stickney",
+        "authority": "stickney_yards",
+        "release_fee_cr": 1500,
         "area": "neighborhood.stickney_yards",
         "gallery": "neighborhood.stickney_yards.room.p01_berth_gallery",
         "rooms": {
@@ -2938,6 +2942,8 @@
       "def": {
         "location": "aitken_highport",
         "venue": "luna",
+        "authority": "orbital_access",
+        "release_fee_cr": 1500,
         "area": "neighborhood.aitken_highport",
         "gallery": "neighborhood.aitken_highport.room.l01_berth_gallery",
         "rooms": {
@@ -2991,6 +2997,8 @@
       "def": {
         "location": "voltaire_anchorage",
         "venue": "deimos",
+        "authority": "voltaire_bond",
+        "release_fee_cr": 1500,
         "area": "neighborhood.voltaire_anchorage",
         "gallery": "neighborhood.voltaire_anchorage.room.d01_berth_gallery",
         "rooms": {
@@ -3031,6 +3039,8 @@
       "def": {
         "location": "ligeia_terminal",
         "venue": "titan",
+        "authority": "titan_concession",
+        "release_fee_cr": 1500,
         "area": "neighborhood.ligeia_terminal",
         "gallery": "neighborhood.ligeia_terminal.room.t01_berth_gallery",
         "rooms": {
