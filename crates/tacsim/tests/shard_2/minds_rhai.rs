@@ -3583,20 +3583,30 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `4_924_910_240_422_684_525` / `0f0ad87d…` / `0d2ba00b…`,
 /// `8_909_812_314_400_105_102` / `212d8fe2…` / `c2dc08a7…`, and row 2's ledger
 /// digest `b51e9f23…`.
+///
+/// **Doc 40 cut FR.5 re-pins rows 0 and 1** (the round's one kernel rebless,
+/// doc 40 §4a): `line_to` traces the wrecks the fire trace walks and a jammed
+/// or damaged part takes its effect, so rows 0 and 1 fight differently — their
+/// stopping times move 176,250 → 180,250 and 235,250 → 177,500, and every hash
+/// with them. Row 2 is unmoved, byte for byte (no wreck on a line, no part
+/// struck to an effect); row 3, the float probe, is unmoved with its 3,600 thinks
+/// and the 369098751 bitmask. Read on Linux (conclav.dev); Windows is ci.yml's
+/// same step. Were: `12_465_543_414_996_090_189` / `20f549f1…` / `6349d78a…`,
+/// `6_776_313_200_826_027_730` / `a019a970…` / `1c1fd95e…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
-        176250,
-        12465543414996090189,
-        "20f549f1a534e378fecac90545c2b8b551b0401d13de52c3fe3c158b19695451",
-        "6349d78ad1b2fd07f9db1c057a8509eb231ba834079295fa4f3bab08cbfa2da1",
+        180250,
+        15586863211666066749,
+        "cde0021ec66db3e7c863fc7e5d2a1f011f35b8a8a25aa45c13280d86c6eb4214",
+        "05d2d1f5b663ec7b18c20f19ab86017dfc70070961429395127131c2b4cc37ab",
     ),
     (
         2351,
-        235250,
-        6776313200826027730,
-        "a019a9706423db9d95b17dbe61cd2bc6b44a182a7ac54dd9ca30233c42ae707f",
-        "1c1fd95e1c4bf66bc161969a857c500ddcda90a6bd3f8c60d5de4a1ae7b287fb",
+        177500,
+        4191525885588509762,
+        "aee4969fc9b274cfd3a78c070205a6ca4a5c44d97c5ccff5dcbd39ece6384422",
+        "25d919aa526b7630e33c4f9b782187649b7073fcd6c217a07a74d76b5bce39e8",
     ),
     (
         2352,
