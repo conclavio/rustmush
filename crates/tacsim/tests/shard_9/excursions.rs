@@ -120,13 +120,6 @@ fn fitted_tactics() -> mush_tactics::TacticsModule {
 /// **The test world's layer the launch composes over** (doc 17h cut M8g G1): enabled, the
 /// shipped game content, a test world, the conduct carrier — what the launch prepares its catalog from and then
 /// configures (with the inventory and the unit authority).
-/// **Whether the M8 world's launch layer runs a field at the field stories' tempo** (doc 23 cut
-/// S.4b-3): set once by `m8_world::m8_world_field` before its first boot. Process-wide, which is
-/// safe because nextest runs each test in a process of its own and the CI job runs the M8 stories
-/// one exact test at a time; the plain M8 stories never set it.
-pub(crate) static LAUNCH_FIELD_TUNE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 pub(crate) fn launch_layer() -> tacsim::TacsimRuleset {
     // The named launch story's layer: a proving budget that admits the three Houses' full
     // Registry trials in one UTC day, and the unarmed proving carrier before any catalogue
@@ -136,16 +129,6 @@ pub(crate) fn launch_layer() -> tacsim::TacsimRuleset {
         ..TacsimConfig::default()
     };
     cfg.minds.proving_daily_unit_minutes = 100_000;
-    // Doc 23 cut S.4b-3: the field stories' fast field inside the checked bounds (S.4b-T's
-    // `claim_tune`: the commerce's preparation validates `[tacsim]` as production does).
-    if LAUNCH_FIELD_TUNE.load(std::sync::atomic::Ordering::Acquire) {
-        cfg.arena.tempo.quiet_ms = 100;
-        cfg.arena.tempo.alert_ms = 100;
-        cfg.arena.tempo.engaged_ms = 100;
-        cfg.arena.tempo.substep_max_ms = 100;
-        cfg.arena.snapshot_ms = 1_000;
-        cfg.field.disengage_s = 15;
-    }
     tacsim::TacsimRuleset::with_game_content(cfg, true)
         .with_test_world(true)
         .with_conduct_carrier()

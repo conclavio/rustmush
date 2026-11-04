@@ -549,20 +549,10 @@ pub(crate) fn m8_world_with_claims() -> M8World {
 }
 
 /// **The claims world on `site`, with `n_rigs` rigs** (doc 23 cut S.4b-3): [`m8_world_with_claims`]
-/// on any site (`(venue, entry)`), at the stock tempo — the Registry's rating arenas run at it,
-/// and the field tune would multiply their pulses. [`M8World::field_tempo`] tunes it for a field
-/// once the licence is bought.
+/// on any site (`(venue, entry)`). The field runs at the stock tempo: a tuned layer would also run
+/// the Registry's rating arenas at it, and a reboot to retune after the purchase loses it.
 pub(crate) fn m8_world_field(site: (&str, &str), n_rigs: usize) -> M8World {
     m8_world_in(None, true, site, n_rigs)
-}
-
-impl M8World {
-    /// **The field stories' tempo from here on** (doc 23 cut S.4b-3): the launch layer tuned for a
-    /// field ([`crate::excursions::LAUNCH_FIELD_TUNE`]) and the world rebooted under it.
-    pub(crate) fn field_tempo(self) -> M8World {
-        crate::excursions::LAUNCH_FIELD_TUNE.store(true, std::sync::atomic::Ordering::Release);
-        self.reboot()
-    }
 }
 
 fn m8_world_in(
@@ -2670,7 +2660,6 @@ async fn licensed_field_story(at: &FieldSite) {
     let mut world = m8_world_field((at.venue, at.entry), 2);
     let (_, _, listing) = rate_and_list_coprates(&mut world).await;
     let paid = buy(&mut world, listing);
-    let mut world = world.field_tempo();
     let (pilot, tv, second_tv) = (world.pilot, world.tvs[0], world.tvs[1]);
     for rig_tv in [tv, second_tv] {
         crate::ic_sortie_surface::fit(
@@ -2760,7 +2749,7 @@ async fn licensed_field_story(at: &FieldSite) {
     assert_eq!(queued.len(), 1, "one promotion: {out}");
     crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
             crate::field_host_rig::task(rig).is_some()
         })
         .await,
@@ -2786,7 +2775,7 @@ async fn licensed_field_story(at: &FieldSite) {
         })
     };
     assert!(
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 30, |_, lines| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |_, lines| {
             sealed_line(lines).is_some()
         })
         .await,
@@ -2816,7 +2805,7 @@ async fn licensed_field_story(at: &FieldSite) {
     assert_eq!(queued.len(), 1, "one clear: {out}");
     crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the clear lands");
     assert!(
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 90, |rig, _| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 400, |rig, _| {
             crate::field_host_rig::task(rig).is_none()
         })
         .await,
@@ -2826,7 +2815,7 @@ async fn licensed_field_story(at: &FieldSite) {
     let _ = crate::driving_rig::act_go(&mut rig, pilot, "+tv/1 recover go");
     let _ = crate::driving_rig::finish(&mut rig, tv, pilot);
     let closed =
-        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
             tacsim::ic_claim_closed(rig.tw.world(), open).is_some()
         })
         .await;
