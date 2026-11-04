@@ -2052,6 +2052,13 @@ pub struct FieldConfig {
     /// **Doc 42 cut CR.3** (Q-42-8; doc 27 Q-F4's cap): IC seconds from a capture after which a
     /// captive may ask for extraction from captivity (604,800, provisional: seven IC days).
     pub captive_bound_s: u32,
+    /// **The field's dice seed, pinned** (doc 40 cut FR.5's follow-up; a test and replay knob):
+    /// `None` (the default, and production's) seeds each field from `crate::match_::seed_for`,
+    /// its ordinal, the world's clock at admission and the process's salt; `Some(seed)` seeds
+    /// every field this world admits with `seed`, so a scripted field story draws the same dice
+    /// whatever lane content or world clock went before it. Not in `[tacsim.field]`: no deploy
+    /// sets it. Doc 43c's clock seam (TS.10) is its long-term home.
+    pub seed: Option<u64>,
 }
 
 impl Default for FieldConfig {
@@ -2071,6 +2078,7 @@ impl Default for FieldConfig {
             launch_cycle_s: 60,
             release_s: 3_600,
             captive_bound_s: 604_800,
+            seed: None,
         }
     }
 }
