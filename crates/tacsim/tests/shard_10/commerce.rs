@@ -856,8 +856,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
             exchange.0
         ),
         format!(
-            "  ceres_port vendor occator: Occator Water & Propellant, storefront vault #{}; 7 of \
-             7 stock rows seeded. [ready]",
+            "  ceres_port vendor occator: Occator Water & Propellant, storefront vault #{}; 2 of \
+             2 stock rows seeded. [ready]",
             occator.0
         ),
         format!(
@@ -874,8 +874,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     let all = receipts(&mut rig.tw);
     // Doc 36 cut GC.7: each port's four munitions rows; doc 39 cut IN.6: the part rows, Occator's
     // five and Stickney Yards' thirteen, which are never pools; doc 39 cut IN.5: Freeport Works'
-    // carbon row.
-    assert_eq!(all.len(), 35, "Ceres 14 and Stickney 21");
+    // carbon row; doc 39 cut IN.7: the part rows retired.
+    assert_eq!(all.len(), 17, "Ceres 9 and Stickney 8");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
@@ -925,8 +925,9 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     stock(&mut rig);
     let all = receipts(&mut rig.tw);
     // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
-    // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row.
-    assert_eq!(all.len(), 35);
+    // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
+    // cut IN.7: seventeen, the part rows retired.
+    assert_eq!(all.len(), 17);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -2567,8 +2568,9 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     }
     stock(&mut rig);
     // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
-    // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row.
-    assert_eq!(receipts(&mut rig.tw).len(), 35);
+    // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
+    // cut IN.7: seventeen, the part rows retired.
+    assert_eq!(receipts(&mut rig.tw).len(), 17);
     no_refused_writes(&rig.tw);
 }
 

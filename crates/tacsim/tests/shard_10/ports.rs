@@ -1917,9 +1917,9 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // Luna 4 + 4 + 3, Deimos 2 + 2 + 4, Titan 3 + 4 + 2. The bid-only vendors' lines are
     // counted though they read Ready. Doc 36 cut GC.7: four munitions asks each at Ceres's
     // Co-op and Stickney Yards. Doc 39 cut IN.5: Freeport Works' vendor and carbon ask lines,
-    // and Kasei's refine.
+    // and Kasei's refine. Doc 39 cut IN.7: Stickney Yards' strategic-ore bid.
     assert_eq!(
-        commerce_lines, 63,
+        commerce_lines, 64,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();
