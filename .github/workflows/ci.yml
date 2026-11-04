@@ -36,7 +36,7 @@ on:
 # The least any job needs: every job only checks the tree out, restores the
 # cargo and npm caches and uploads artifacts, and none of those uses the
 # workflow's token for more than reading. Without this block the token
-# carries the repository's default permissions into all 18 jobs, which is
+# carries the repository's default permissions into every job, which is
 # CodeQL's actions/missing-workflow-permissions, one alert per job.
 permissions:
   contents: read
@@ -152,6 +152,10 @@ jobs:
       - name: Execute the exact M8 story
         run: cargo test --locked -p tacsim --test shard_9 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
+  # Dispatch-only, not on the schedule: M6's acceptance evidence (the author
+  # story plus a fresh thirty-match external comparison), re-run when the mind
+  # port changes, and hours long (bound 360 min), longer than the nightly can
+  # carry. Doc 43 TS.2 gives the six dispatch-only jobs a weekly slot.
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
     if: github.event_name == 'workflow_dispatch'
@@ -183,6 +187,9 @@ jobs:
         with:
           name: m6-author-acceptance
           path: target/m6-acceptance-evidence/
+  # Dispatch-only for the same reason as the job above: a 900-second replay of
+  # twenty-four hulls that recomputes every think (bound 180 min), run when the
+  # mind kernel changes rather than every night (doc 43 TS.2 schedules it).
   mind-full-replay:
     name: M6 full-duration Class III replay
     if: github.event_name == 'workflow_dispatch'
@@ -752,9 +759,10 @@ jobs:
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
 
-  # WS24-S4 (fu10-1): the Test step's `cargo test --workspace` above compiles
-  # every crate exactly ONCE, with its default features. Everything that is off
-  # by default is therefore code no job compiles — and `mush-gateway --features
+  # WS24-S4 (fu10-1): the `test` matrix above compiles every crate with its
+  # default features (rest-libs adds four: mush-sim's and mush-housing's
+  # debug-checks, mush-server's and tacsim's fault-injection). Everything else
+  # that is off by default is therefore code no job compiles — and `mush-gateway --features
   # tls` is not an optional extra, it is the PRODUCTION build of the proxyless
   # split deploy. Before this job, `tls` appeared nowhere in this file and the
   # native-HTTPS path was first compiled at redeploy on the VPS.
@@ -1018,9 +1026,9 @@ jobs:
       # WS01-S11: the world task must never panic, so the number of places it
       # could is budgeted per crate under panic_budget/ and only a reviewed
       # diff raises one. The same target refuses `panic = "abort"`, which would
-      # make WS01-S4's catch_unwind boundary inert. It also runs under the
-      # cross-platform `test` job's `--workspace`; it is named here so the log
-      # says which contract failed.
+      # make WS01-S4's catch_unwind boundary inert. It also runs in the `test`
+      # matrix's rest-libs cell; it is named here so the log says which
+      # contract failed.
       - name: The production panic surface and the panic=abort firewall
         run: cargo test -p mush-contract-tests --test panic_budget
       # WS01-S12: the other half of the same rule. Where a crate's production
@@ -1084,7 +1092,7 @@ jobs:
           # inventory requires its name here.
           cargo test -p mushd --test durable_process durability_e2e::clean_shutdown_drains_and_snapshots -- --exact --test-threads=1
           cargo test -p mushd --test durable_process durability_e2e::relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1
-      # 08j S4: without these the seven `*_redis_gated` proofs in
+      # 08j S4: without these the nine `*_redis_gated` proofs in
       # `crates/mushd/tests/durable_process/persistence.rs` and the two single-test twins take
       # their missing-`REDIS_URL` early return and pass everywhere as a silent
       # skip. `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`
@@ -1190,7 +1198,7 @@ jobs:
   # it is run by hand and no job runs it: not on push, not on a dispatch, not on
   # the daily schedule. Naming it here is what the gated-test inventory asks of
   # an ignored test. Its canary, the_mining_root_runs_under_the_bots_serde, is
-  # not ignored and runs in the test job's `cargo test -p mush-bot` step above.
+  # not ignored and runs under nextest in the `test` matrix's bot-stories cell.
   # By hand:
   # cargo test -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture
 
