@@ -516,6 +516,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             raid_field_s: cfg.field.raid_field_s,
             launch_cycle_s: cfg.field.launch_cycle_s,
             release_s: cfg.field.release_s,
+            captive_bound_s: cfg.field.captive_bound_s,
         },
     };
     // **16b cut Q.7**: the arena's own values, checked here and nowhere else.

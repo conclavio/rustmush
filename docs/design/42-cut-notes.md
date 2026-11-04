@@ -299,3 +299,59 @@ stands in a port room. CR.0's gates already treat `Processing` as Q-42-2 asks.
 - shard_8's wall goes from 15.0 to 15.5 min. The run's slowest integration cell is 19.4 min (main's
   41827163605 had 19.3), so no cell sets a new wall.
 - The lane-count edits to `sites::` (shard_5) and `vehicles::` (shard_6) move no time.
+
+## CR.3 — the bound and the held case
+
+Q-42-8, Q-42-9, Q-42-15. A captor who never docks can hold a captive only up to the bound. A captive the
+captor releases away from a port can ask for extraction. A captor's carrier wrecked in a later field
+strands its captives like the rest of its crew.
+
+**Config.** `[tacsim.field].captive_bound_s`, 604,800 (seven IC days), banded 60 to 2,592,000
+(`FIELD_CAPTIVE_BOUND_S`). It is documented in mush-config's table and mapped in
+`mush-server/src/config_ext.rs`.
+
+**The bound** (`field/crew.rs`).
+- `refusal(w, who, Gate::Extract)` reads a `Captured` record's `since_ic` against the bound. Before it
+  passes, the refusal is `HELD_BOUND` ("You are held aboard the {carrier}. In about {h} IC h…"). Every
+  other gate keeps CR.0's `HELD`, so nothing else opens.
+- The bound is IC time from the record, so a restart resumes it and a freeze pauses it.
+- Past the bound, `extract_cmd` takes the request (`may_extract`), telling `EXTRACT_RELEASE`.
+- The crew tick's existing `Captured => (None, None)` arm lands it as any extraction: no seat to vacate,
+  the body moved to the safe port, `Port`.
+- A handover at a port overtakes a pending extraction (`hand_over` clears it).
+
+**The released passenger** (Q-42-9's widening). `may_extract` also takes `Carrier { hull }` when `hull` is
+not the hull the character commands and they stand aboard it. `+ship/release`'s two landings were built in
+CR.1.
+
+**The captor's wreck** (Q-42-15). `check_in` asks `wrecked_captive` first:
+- when a captive's carrier checks in and `aboard()` reads it stranded (GC.3's `CrewStranded`), the captive
+  is `Stranded { site, unit: carrier }`, the condition kept, custody gone, told `STRANDED`;
+- a sound carrier's check-in still leaves the captive alone (CR.0's `leaves_alone`).
+
+**Gate.**
+- `shard_8 crew_custody::cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it` (256) and
+  `…_at_512`, through `custody_rig::held_past_the_bound`, with the bound at 600 IC s:
+  - after GC.5's load, `+sortie/extract` refuses with the time left;
+  - a crash and reboot keeps `Captured` with the same `since_ic`;
+  - past the bound, the request is taken;
+  - after `extract_s` the captain is `Port`, and the captor's `+ship/captives` is empty.
+- In-source: `cr3_a_captors_wreck_strands_its_captives`. CR.0's `cr0_the_held_gate_refuses_by_hold` now
+  also pins the extract refusal's time and its opening past the bound.
+
+**Divergences from §7's row.**
+- Story (e)'s wreck half is an in-source gate on the check-in rule, not a fought loss. A second field that
+  takes the captor's carrier's hull (GC.3's fixture, a third party firing on the Red Moth) would add a
+  field run a ground for one branch of `check_in`. It is owed to the next story that fights over a
+  captor's carrier.
+- The extraction's landing line for a captive is the ordinary `EXTRACTED` ("Your hull is still on the
+  ground"): the tick has no site for a carrier.
+
+**Cell delta (rule #14).** Measured from the JUnit sums of PR #418's run 41851040446 against #417's run
+41846609530.
+- The two CR.3 stories ran 41.8 s and 42.1 s: +1.4 summed minutes in shard_8. On a faster runner,
+  `crew_custody::` read 6.55 against 6.56.
+- shard_8's wall is 12.5 min (15.5 before).
+- The run's slowest cell was shard_1 at 23.2 min, which this cut does not touch. Every shard_1 module ran
+  about 1.27× slower on that runner (`driving::` 14.0 → 18.7, `field_gc4::` 8.4 → 9.7), as doc 43 §5.8
+  warns the hosted machines vary.

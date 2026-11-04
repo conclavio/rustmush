@@ -292,3 +292,15 @@ async fn cr2_the_captor_docks_at_ceres_and_the_captive_is_handed_over_and_releas
 async fn cr2_an_unpaid_release_fee_stands_and_the_captive_is_released_anyway_at_512() {
     crate::custody_rig::handover_at_ceres(&URVARA_REACH, false).await;
 }
+
+/// **CR.3's held case at 256** (`custody_rig::held_past_the_bound`): a captor who never docks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it() {
+    crate::custody_rig::held_past_the_bound(&AHUNA_FLANK).await;
+}
+
+/// **CR.3's held case at 512** (`custody_rig::held_past_the_bound`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it_at_512() {
+    crate::custody_rig::held_past_the_bound(&URVARA_REACH).await;
+}

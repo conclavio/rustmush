@@ -571,3 +571,62 @@ pub(crate) async fn handover_at_ceres(at: &Ground, paid: bool) {
         "Ceres is the port A knows"
     );
 }
+
+/// **Doc 42 cut CR.3's story (e), the held case, on `at`'s ground** (Q-42-3, Q-42-8): a captor
+/// who never docks. After GC.5's load, with a bound of ten IC minutes:
+/// - `+sortie/extract` refuses with the time left;
+/// - a restart keeps the captive's record, and the bound still runs from the capture's instant;
+/// - past the bound the same verb is taken ("negotiates");
+/// - after `extract_s` the captain stands at the safe port they know, `Port`, no longer in anyone's
+///   custody, and the captor's `+ship/captives` is empty.
+pub(crate) async fn held_past_the_bound(at: &Ground) {
+    let mut rig = stocked_tuned(|cfg| {
+        quick(cfg);
+        cfg.field.captive_bound_s = 600;
+    });
+    let Loaded {
+        a,
+        b,
+        b_carrier,
+        mut rx,
+        ..
+    } = non_friend_loaded(&mut rig, at).await;
+    let since = match crew_of(rig.tw.world(), a).map(|c| c.location.clone()) {
+        Some(CrewLocation::Captured {
+            carrier, since_ic, ..
+        }) if carrier == b_carrier => since_ic,
+        other => panic!("A is not held aboard the Red Moth: {other:?}"),
+    };
+    let early = run(&mut rig.tw, a, "+sortie/extract");
+    assert!(
+        early.contains("You are held aboard the Red Moth.") && early.contains("In about"),
+        "{early}"
+    );
+
+    // A restart while captured keeps the record and the bound.
+    let mut rig = crate::driving_rig::crash(rig, &mut rx, &[a, b]).await;
+    let kept = crew_of(rig.tw.world(), a).map(|c| c.location.clone());
+    assert!(
+        matches!(kept, Some(CrewLocation::Captured { carrier, since_ic, .. }) if carrier == b_carrier && since_ic == since),
+        "the restart keeps the capture: {kept:?}"
+    );
+
+    // Past the bound: the recovery service negotiates the release.
+    let _ = crate::driving_rig::to_ic(&mut rig, since + 600);
+    let (out, _) = command(&mut rig, a, "+sortie/extract");
+    assert!(out.contains("negotiates your passage"), "{out}");
+    let due = crew_of(rig.tw.world(), a)
+        .and_then(|c| c.extraction.as_ref().map(|e| e.due_ic))
+        .expect("the extraction is on its way");
+    let _ = crate::driving_rig::to_ic(&mut rig, due);
+    assert!(
+        seconds_until(&mut rig, 30, |rig| matches!(
+            crew_of(rig.tw.world(), a).map(|c| &c.location),
+            Some(CrewLocation::Port { .. })
+        )),
+        "A is at a safe port: {:?}",
+        crew_of(rig.tw.world(), a)
+    );
+    let captives = run(&mut rig.tw, b, "+ship/captives");
+    assert!(captives.contains("You hold nobody aboard."), "{captives}");
+}
