@@ -352,3 +352,67 @@ whose bytes depend on that run. The fourth is the OOC pack, whose published byte
 is the version's field set, or its rebuilt digest, and the `golden/v12` template does not fit any of them.
 
 **Summed minutes.** Zero: four assertions in tests that already exist.
+
+## TS.12 (2026-11-04) — the partition experiment, measured
+
+Q-43-5 / D-43-5. This was a measurement on branch `claude/ts12-partition-experiment` (draft PR #422), never
+merged.
+- **The layout.** tacsim's ten `shard_N.rs` roots became four domain roots over the same module files, with no
+  file moved:
+  - `domain_field`: 34 modules, the field, crew, bay and sortie journeys;
+  - `domain_economy`: 31 modules, the surface, market, claims, plans, mining and drones;
+  - `domain_arena`: 29 modules, the arena, cockpit, match lifecycle and minds;
+  - `domain_world`: 10 modules, knowing, vehicles, voyage, chart and ephemeris.
+- **The cells.** Every `tacsim-integration-N` cell built all four binaries and ran
+  `cargo nextest run --partition hash:N/10` over them. `harness` (cell 1) and `cost_lane` (cell 2) ran first, as
+  today.
+- **The runs.** Three attempts of run 41873443102, against main's runs 41870246223 (`7a535806`, the branch's
+  base), 41870167197 and 41827163605.
+- **The compile figures** are cargo's `Finished` lines in each cell's log. **The job and test minutes** are from
+  the jobs API and the JUnit.
+
+| Run | Compile + link, mean a cell (s) | Cells' compile, summed (min) | Slowest cell's job (min) | Fastest (min) | Spread | Tacsim summed test min (10 cells) |
+|---|---|---|---|---|---|---|
+| main 41870246223 | 215 | 35.8 | 23.1 | 12.5 | 1.85 | 523 |
+| main 41870167197 | 217 | 36.1 | 21.7 | 12.2 | 1.77 | 461 |
+| main 41827163605 | 197 | 32.8 | 19.4 | 10.4 | 1.86 | 435 |
+| TS.12 a1 | 249 | 41.5 | 24.6 | 11.6 | 2.12 | 484 |
+| TS.12 a2 | 233 | 38.8 | 23.8 | 9.3 | 2.54 | 485 |
+| TS.12 a3 | 226 | 37.7 | 21.8 | 10.6 | 2.05 | 460 |
+
+The TS.12 summed column leaves out harness and cost_lane (about 5 min), whose JUnit the experiment did not
+upload.
+
+**Reading**
+- **The link cost is small.**
+  - A cell compiles and links in 236 s on average against main's 210 s: about +26 s a cell, or 4–5 runner-minutes
+    a run.
+  - The hosted runner links the four binaries in parallel on its four cores. After the lib, the four domain
+    binaries took 38–45 s together (cells 1 and 2, where they built second).
+- **The wall is a wash.**
+  - Cell 2 was the slowest in two attempts: 24.6 and 23.8 min. That is the experiment's own artifact: cost_lane,
+    which runs alone, went serially before cell 2's hash share.
+  - Without cell 2 the slowest cell was 20.9, 21.2 and 21.8 min, against main's 19.4–23.1.
+- **The hash does not balance by time.**
+  - Spread (slowest over fastest job) was 2.05–2.54 against main's 1.77–1.86.
+  - The same cell's summed minutes varied up to 2× between attempts (cell 10: 50, 25, 29), and the partition is
+    deterministic, so that variation is the hosted machine's speed.
+  - Neither layout escapes that noise, but the hash layout never has to be rebalanced.
+- **The reshard cost it removes.**
+  - There were five layout changes in eight days (§2.4). Each was a `git mv`, `mod` lines, run lines and (until
+    TS.8) state-slot rows, and each was judged on several runs.
+  - Under partition, a new test module is one `mod` line in its domain root, and no shard ever moves.
+- **What adoption would also need** (not built here):
+  - the guards rewritten for domain roots (`ci_tacsim_shards`, the gated-test inventory's `shard_4` line, and
+    the `tacsim-minds` steps' `--test shard_2` names);
+  - the M8 jobs' `--test shard_9` lines;
+  - cost_lane given its own cell or run inside the partition.
+- **One test failed in all three attempts:** `field_gc4::gc4_the_wingman_drags…` at `field_gc4.rs:317`.
+  - It also failed on #423 and on #429 (a web-only diff on the standard layout), so it is a race in main's own
+    code.
+  - Still, 3 of 3 under partition against 0 of 4 on main's runs means the neighbour mix the hash gives it makes the
+    race likelier. Adopting the partition would first need that race found (rule 2.3 #7). The record is in the
+    doc-43 notes folder.
+
+D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
+cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
