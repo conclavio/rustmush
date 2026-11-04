@@ -1273,6 +1273,17 @@ pub(crate) fn on_pad_as(
     name: &str,
     n_rigs: usize,
 ) -> (ObjId, HullRow, Vec<ObjId>) {
+    on_pad_as_at(rig, (who, seed, name), ("ahuna", "ahuna_port"), n_rigs)
+}
+
+/// **[`on_pad_as`] on any site** (doc 23 cut S.4b-3, `driving_rig`'s twin): `(venue, entry)` the
+/// `+ship/undock` word and the site's port entry.
+pub(crate) fn on_pad_as_at(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (venue, entry): (&str, &str),
+    n_rigs: usize,
+) -> (ObjId, HullRow, Vec<ObjId>) {
     let (pilot, row) = prospector(rig, who, seed, name);
     for _ in 0..n_rigs {
         lease_one(rig, pilot);
@@ -1288,28 +1299,27 @@ pub(crate) fn on_pad_as(
     let hull = ObjId(row.hull);
     // Doc 20 cut SM.6 (D2): a keyed site's pad is closed until its clerk has opened every
     // deposit (an unkeyed site reads Ready at once, and this fires nothing).
-    open_ahuna(rig);
-    let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    open_site(rig, entry);
+    let t = file_and_launch(rig, pilot, hull, &format!("+ship/undock {venue}"));
     let _ = to_ic(rig, arrival_of(&t));
     assert!(
         matches!(
             tacsim::port::ship::berth_of(rig.tw.world(), hull),
-            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "ahuna_port"
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == entry
         ),
-        "the hull is settled on Ahuna Flank's pad"
+        "the hull is settled on {entry}'s pad"
     );
     let tvs = rigs_of(&rig.tw, pilot);
     assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
 }
 
-/// **Open Ahuna Flank** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the landed
-/// bundles' typed post-images for a reboot; the port fires it took (0 when it is open already,
-/// as an unkeyed site always is).
-fn open_ahuna(rig: &mut Rig) -> u32 {
+/// **Open the site `entry`** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the
+/// landed bundles' typed post-images for a reboot; the port fires it took (0 when it is open
+/// already, as an unkeyed site always is).
+fn open_site(rig: &mut Rig, entry: &str) -> u32 {
     let mut kept = Vec::new();
-    let fires =
-        support::sites::open_site_keeping(&mut rig.tw, "ahuna_port", &mut |ops| kept.push(ops));
+    let fires = support::sites::open_site_keeping(&mut rig.tw, entry, &mut |ops| kept.push(ops));
     for ops in kept {
         keep(rig, ops);
     }

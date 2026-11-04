@@ -825,6 +825,64 @@ pub(crate) fn put(
             }
         }
     }
+    release_grant(ctx, id, def, map, clerk)
+}
+
+/// **The capability the port authority's release fee is levied under** (doc 42 cut CR.2,
+/// Q-42-7, Draft 0.3 42-7): held by the port's clerk on the authority's root scope.
+pub const RELEASE_FEE_CAPABILITY: &str = "port.release_fee";
+
+/// **(e).10 The release fee's grant** (doc 42 cut CR.2): the port's clerk holds
+/// [`RELEASE_FEE_CAPABILITY`] on the authority's root scope, so the handover levies the fee as
+/// the authority's operator (the Registry fine's shape, `create_sanction_obligation`), never under
+/// anyone's debit authority. Once, recorded on the map; nothing at a port without an authority.
+fn release_grant(
+    ctx: &mut Ctx<'_>,
+    id: &CanonicalId,
+    def: &PortDef,
+    map: &mut PortMap,
+    clerk: ObjId,
+) -> Result<(), String> {
+    let Some(authority) = def.authority.as_ref() else {
+        return Ok(());
+    };
+    if map.release_grant.is_some() {
+        return Ok(());
+    }
+    let (org_id, root_scope) = org_row(map, id, authority)?;
+    let grant_id = alloc_grant_id(ctx).map_err(|e| format!("{id}: authority {authority}: {e}"))?;
+    let capability = CapabilityId::new(RELEASE_FEE_CAPABILITY)
+        .ok_or_else(|| format!("{id}: {RELEASE_FEE_CAPABILITY} is not a capability id"))?;
+    let plan = OrgMutationPlan::of(vec![OrgMutationOp::PutGrant {
+        grant: CapabilityGrant {
+            id: grant_id,
+            org: org_id,
+            grantee: clerk,
+            capability,
+            scope: ScopeSelector::Exact(root_scope),
+            limit: None,
+            delegable: false,
+            valid_from: None,
+            valid_until: None,
+            revision: 1,
+        },
+    }]);
+    mush_org::submit(
+        ctx,
+        &plan,
+        OrgAction {
+            action: SmolStr::new_static("grant.create"),
+            org: Some(org_id),
+            detail: serde_json::json!({
+                "port": format!("{}/{id}", map.pack),
+                "org": authority.to_string(),
+                "clerk": clerk.0,
+            }),
+        },
+    )
+    .map_err(|e| format!("{id}: authority {authority}: the release fee's grant: {e}"))?;
+    map.release_grant = Some(grant_id.0);
+    put_port_map(ctx, map);
     Ok(())
 }
 

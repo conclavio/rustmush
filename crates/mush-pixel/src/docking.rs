@@ -271,6 +271,14 @@ impl DockingClientInput {
         }
     }
 
+    const fn decode_axis(bits: u16) -> i8 {
+        match bits & 0b11 {
+            0b01 => 1,
+            0b10 => -1,
+            _ => 0,
+        }
+    }
+
     /// Pack this frame's control inputs into the 16-bit RLE wire bitmask (`D-35-14`).
     #[must_use]
     pub const fn to_bitmask(&self) -> u16 {
@@ -288,6 +296,46 @@ impl DockingClientInput {
             mask |= 1 << 13;
         }
         mask
+    }
+
+    /// Unpack a 16-bit RLE wire bitmask into a [`DockingClientInput`] (`D-35-14`).
+    #[must_use]
+    pub const fn from_bitmask(mask: u16) -> Self {
+        Self {
+            trans_x: Self::decode_axis(mask),
+            trans_y: Self::decode_axis(mask >> 2),
+            closure_pulse: Self::decode_axis(mask >> 4),
+            pitch_trim: Self::decode_axis(mask >> 6),
+            yaw_trim: Self::decode_axis(mask >> 8),
+            roll_trim: Self::decode_axis(mask >> 10),
+            toggle_dampeners: (mask & (1 << 12)) != 0,
+            abort: (mask & (1 << 13)) != 0,
+        }
+    }
+
+    /// Return the number of active RCS thruster axes firing in this frame (`0..=6`).
+    #[must_use]
+    pub const fn active_axis_pulses(&self) -> u32 {
+        let mut count = 0u32;
+        if self.trans_x != 0 {
+            count += 1;
+        }
+        if self.trans_y != 0 {
+            count += 1;
+        }
+        if self.closure_pulse != 0 {
+            count += 1;
+        }
+        if self.pitch_trim != 0 {
+            count += 1;
+        }
+        if self.yaw_trim != 0 {
+            count += 1;
+        }
+        if self.roll_trim != 0 {
+            count += 1;
+        }
+        count
     }
 }
 
@@ -322,6 +370,126 @@ impl Default for DockingClientRcsAuthority {
             damp_roll_mdeg_s_per_frame: 120,
         }
     }
+}
+
+const fn bleed_i64(val: i64, step: i64) -> i64 {
+    if val > step {
+        val - step
+    } else if val < -step {
+        val + step
+    } else {
+        0
+    }
+}
+
+const fn bleed_i32(val: i32, step: i32) -> i32 {
+    if val > step {
+        val - step
+    } else if val < -step {
+        val + step
+    } else {
+        0
+    }
+}
+
+/// Shared 60 Hz 6-DOF integer kinematics integrator (`D-35-14`, `SF.R24`).
+///
+/// Steps `pose`, angular `rates_mdeg_s` (`[pitch, yaw, roll]`), and modulo-60 sub-frame
+/// remainders (`rem_pos_mm`, `rem_att_mdeg`) by one `16.67 ms` frame and returns the
+/// number of active RCS axis pulses fired during the frame (including coupled dampeners).
+/// Compiled into `tacsim`, the SSH TUI (`mush-net-ssh`), and the browser WASM (`mush-pixel-wasm`)
+/// as the single 6-DOF docking kinematics implementation.
+#[allow(clippy::too_many_arguments)]
+pub fn step_docking_kinematics_60fps(
+    pose: &mut DockingCameraPose,
+    rates_mdeg_s: &mut [i32; 3],
+    rem_pos_mm: &mut [i64; 3],
+    rem_att_mdeg: &mut [i32; 3],
+    dampeners_on: &mut bool,
+    input: DockingClientInput,
+    auth: &DockingClientRcsAuthority,
+    target_tumble_mdeg_s: [i32; 3],
+) -> u32 {
+    if input.toggle_dampeners {
+        *dampeners_on = !*dampeners_on;
+    }
+
+    let tx = i64::from(input.trans_x.clamp(-1, 1));
+    let ty = i64::from(input.trans_y.clamp(-1, 1));
+    let tz = i64::from(input.closure_pulse.clamp(-1, 1));
+    let dpitch = i32::from(input.pitch_trim.clamp(-1, 1));
+    let dyaw = i32::from(input.yaw_trim.clamp(-1, 1));
+    let droll = i32::from(input.roll_trim.clamp(-1, 1));
+
+    pose.vx_mmps = pose
+        .vx_mmps
+        .saturating_add(tx.saturating_mul(auth.trans_dv_mmps_per_frame));
+    pose.vy_mmps = pose
+        .vy_mmps
+        .saturating_add(ty.saturating_mul(auth.trans_dv_mmps_per_frame));
+    pose.vz_mmps = pose
+        .vz_mmps
+        .saturating_add(tz.saturating_mul(auth.closure_dv_mmps_per_frame));
+    rates_mdeg_s[0] =
+        rates_mdeg_s[0].saturating_add(dpitch.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
+    rates_mdeg_s[1] =
+        rates_mdeg_s[1].saturating_add(dyaw.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
+    rates_mdeg_s[2] =
+        rates_mdeg_s[2].saturating_add(droll.saturating_mul(auth.roll_rate_mdeg_s_per_frame));
+
+    let mut frame_pulses = input.active_axis_pulses();
+
+    if *dampeners_on {
+        if tx == 0 && pose.vx_mmps != 0 {
+            pose.vx_mmps = bleed_i64(pose.vx_mmps, auth.damp_trans_mmps_per_frame);
+            frame_pulses = frame_pulses.saturating_add(1);
+        }
+        if ty == 0 && pose.vy_mmps != 0 {
+            pose.vy_mmps = bleed_i64(pose.vy_mmps, auth.damp_trans_mmps_per_frame);
+            frame_pulses = frame_pulses.saturating_add(1);
+        }
+        if dpitch == 0 && rates_mdeg_s[0] != 0 {
+            rates_mdeg_s[0] = bleed_i32(rates_mdeg_s[0], auth.damp_attitude_mdeg_s_per_frame);
+            frame_pulses = frame_pulses.saturating_add(1);
+        }
+        if dyaw == 0 && rates_mdeg_s[1] != 0 {
+            rates_mdeg_s[1] = bleed_i32(rates_mdeg_s[1], auth.damp_attitude_mdeg_s_per_frame);
+            frame_pulses = frame_pulses.saturating_add(1);
+        }
+        if droll == 0 && rates_mdeg_s[2] != 0 {
+            rates_mdeg_s[2] = bleed_i32(rates_mdeg_s[2], auth.damp_roll_mdeg_s_per_frame);
+            frame_pulses = frame_pulses.saturating_add(1);
+        }
+    }
+
+    let tot_x = pose.vx_mmps.saturating_add(rem_pos_mm[0]);
+    pose.dx_mm = pose.dx_mm.saturating_add(tot_x / 60);
+    rem_pos_mm[0] = tot_x % 60;
+
+    let tot_y = pose.vy_mmps.saturating_add(rem_pos_mm[1]);
+    pose.dy_mm = pose.dy_mm.saturating_add(tot_y / 60);
+    rem_pos_mm[1] = tot_y % 60;
+
+    let tot_z = pose.vz_mmps.saturating_add(rem_pos_mm[2]);
+    pose.dz_mm = pose.dz_mm.saturating_sub(tot_z / 60).max(0);
+    rem_pos_mm[2] = tot_z % 60;
+
+    let net_pitch = rates_mdeg_s[0].saturating_sub(target_tumble_mdeg_s[0]);
+    let tot_pitch = net_pitch.saturating_add(rem_att_mdeg[0]);
+    pose.pitch_mdeg = pose.pitch_mdeg.saturating_add(i64::from(tot_pitch / 60));
+    rem_att_mdeg[0] = tot_pitch % 60;
+
+    let net_yaw = rates_mdeg_s[1].saturating_sub(target_tumble_mdeg_s[1]);
+    let tot_yaw = net_yaw.saturating_add(rem_att_mdeg[1]);
+    pose.yaw_mdeg = pose.yaw_mdeg.saturating_add(i64::from(tot_yaw / 60));
+    rem_att_mdeg[1] = tot_yaw % 60;
+
+    let net_roll = rates_mdeg_s[2].saturating_sub(target_tumble_mdeg_s[2]);
+    let tot_roll = net_roll.saturating_add(rem_att_mdeg[2]);
+    pose.roll_mdeg = pose.roll_mdeg.saturating_add(i64::from(tot_roll / 60));
+    rem_att_mdeg[2] = tot_roll % 60;
+
+    frame_pulses
 }
 
 /// Client-side 60 Hz 6-DOF docking session stepper and RLE input-tape recorder (`Q-35-5`, `D-35-14`, `SF.R16`).
@@ -440,26 +608,6 @@ impl DockingClientSession {
         self.frames_stepped
     }
 
-    const fn bleed_i64(val: i64, step: i64) -> i64 {
-        if val > step {
-            val - step
-        } else if val < -step {
-            val + step
-        } else {
-            0
-        }
-    }
-
-    const fn bleed_i32(val: i32, step: i32) -> i32 {
-        if val > step {
-            val - step
-        } else if val < -step {
-            val + step
-        } else {
-            0
-        }
-    }
-
     /// Step the local 6-DOF collar pose by one 60 Hz frame (`16.67 ms`) and append `input`
     /// to the bounded RLE tape (`<= 3,600` frames).
     pub fn step_60fps(&mut self, input: DockingClientInput) {
@@ -476,100 +624,63 @@ impl DockingClientSession {
             self.spans.push((mask, 1));
         }
 
-        if input.toggle_dampeners {
-            self.dampeners_on = !self.dampeners_on;
-        }
-
+        let mut rates = [
+            self.pitch_rate_mdeg_s,
+            self.yaw_rate_mdeg_s,
+            self.roll_rate_mdeg_s,
+        ];
+        let mut rem_pos = [self.rem_x, self.rem_y, self.rem_z];
+        let mut rem_att = [self.rem_pitch, self.rem_yaw, self.rem_roll];
         let auth = self.rcs_authority;
-        let tx = i64::from(input.trans_x.clamp(-1, 1));
-        let ty = i64::from(input.trans_y.clamp(-1, 1));
-        let tz = i64::from(input.closure_pulse.clamp(-1, 1));
-        let dpitch = i32::from(input.pitch_trim.clamp(-1, 1));
-        let dyaw = i32::from(input.yaw_trim.clamp(-1, 1));
-        let droll = i32::from(input.roll_trim.clamp(-1, 1));
-
-        self.pose.vx_mmps = self
-            .pose
-            .vx_mmps
-            .saturating_add(tx.saturating_mul(auth.trans_dv_mmps_per_frame));
-        self.pose.vy_mmps = self
-            .pose
-            .vy_mmps
-            .saturating_add(ty.saturating_mul(auth.trans_dv_mmps_per_frame));
-        self.pose.vz_mmps = self
-            .pose
-            .vz_mmps
-            .saturating_add(tz.saturating_mul(auth.closure_dv_mmps_per_frame));
-        self.pitch_rate_mdeg_s = self
-            .pitch_rate_mdeg_s
-            .saturating_add(dpitch.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
-        self.yaw_rate_mdeg_s = self
-            .yaw_rate_mdeg_s
-            .saturating_add(dyaw.saturating_mul(auth.attitude_rate_mdeg_s_per_frame));
-        self.roll_rate_mdeg_s = self
-            .roll_rate_mdeg_s
-            .saturating_add(droll.saturating_mul(auth.roll_rate_mdeg_s_per_frame));
-
-        if self.dampeners_on {
-            if tx == 0 && self.pose.vx_mmps != 0 {
-                self.pose.vx_mmps =
-                    Self::bleed_i64(self.pose.vx_mmps, auth.damp_trans_mmps_per_frame);
-            }
-            if ty == 0 && self.pose.vy_mmps != 0 {
-                self.pose.vy_mmps =
-                    Self::bleed_i64(self.pose.vy_mmps, auth.damp_trans_mmps_per_frame);
-            }
-            if dpitch == 0 && self.pitch_rate_mdeg_s != 0 {
-                self.pitch_rate_mdeg_s =
-                    Self::bleed_i32(self.pitch_rate_mdeg_s, auth.damp_attitude_mdeg_s_per_frame);
-            }
-            if dyaw == 0 && self.yaw_rate_mdeg_s != 0 {
-                self.yaw_rate_mdeg_s =
-                    Self::bleed_i32(self.yaw_rate_mdeg_s, auth.damp_attitude_mdeg_s_per_frame);
-            }
-            if droll == 0 && self.roll_rate_mdeg_s != 0 {
-                self.roll_rate_mdeg_s =
-                    Self::bleed_i32(self.roll_rate_mdeg_s, auth.damp_roll_mdeg_s_per_frame);
-            }
-        }
-
-        let tot_x = self.pose.vx_mmps.saturating_add(self.rem_x);
-        self.pose.dx_mm = self.pose.dx_mm.saturating_add(tot_x / 60);
-        self.rem_x = tot_x % 60;
-
-        let tot_y = self.pose.vy_mmps.saturating_add(self.rem_y);
-        self.pose.dy_mm = self.pose.dy_mm.saturating_add(tot_y / 60);
-        self.rem_y = tot_y % 60;
-
-        let tot_z = self.pose.vz_mmps.saturating_add(self.rem_z);
-        self.pose.dz_mm = self.pose.dz_mm.saturating_sub(tot_z / 60).max(0);
-        self.rem_z = tot_z % 60;
-
-        let net_pitch = self
-            .pitch_rate_mdeg_s
-            .saturating_sub(self.target_tumble_mdeg_s[0]);
-        let tot_pitch = net_pitch.saturating_add(self.rem_pitch);
-        self.pose.pitch_mdeg = self
-            .pose
-            .pitch_mdeg
-            .saturating_add(i64::from(tot_pitch / 60));
-        self.rem_pitch = tot_pitch % 60;
-
-        let net_yaw = self
-            .yaw_rate_mdeg_s
-            .saturating_sub(self.target_tumble_mdeg_s[1]);
-        let tot_yaw = net_yaw.saturating_add(self.rem_yaw);
-        self.pose.yaw_mdeg = self.pose.yaw_mdeg.saturating_add(i64::from(tot_yaw / 60));
-        self.rem_yaw = tot_yaw % 60;
-
-        let net_roll = self
-            .roll_rate_mdeg_s
-            .saturating_sub(self.target_tumble_mdeg_s[2]);
-        let tot_roll = net_roll.saturating_add(self.rem_roll);
-        self.pose.roll_mdeg = self.pose.roll_mdeg.saturating_add(i64::from(tot_roll / 60));
-        self.rem_roll = tot_roll % 60;
+        let _ = step_docking_kinematics_60fps(
+            &mut self.pose,
+            &mut rates,
+            &mut rem_pos,
+            &mut rem_att,
+            &mut self.dampeners_on,
+            input,
+            &auth,
+            self.target_tumble_mdeg_s,
+        );
+        self.pitch_rate_mdeg_s = rates[0];
+        self.yaw_rate_mdeg_s = rates[1];
+        self.roll_rate_mdeg_s = rates[2];
+        self.rem_x = rem_pos[0];
+        self.rem_y = rem_pos[1];
+        self.rem_z = rem_pos[2];
+        self.rem_pitch = rem_att[0];
+        self.rem_yaw = rem_att[1];
+        self.rem_roll = rem_att[2];
 
         self.frames_stepped = self.frames_stepped.saturating_add(1);
+    }
+
+    /// Return the number of currently satisfied alignment gates (`0..=5`).
+    #[must_use]
+    pub const fn gates_green(&self) -> u8 {
+        let mut gates_green = 0u8;
+        if self.pose.lateral_aligned()
+            && self.pose.vx_mmps.abs() <= 300
+            && self.pose.vy_mmps.abs() <= 300
+        {
+            gates_green += 1;
+        }
+        if self.pose.attitude_aligned()
+            && self.pitch_rate_mdeg_s.abs() <= 500
+            && self.yaw_rate_mdeg_s.abs() <= 500
+        {
+            gates_green += 1;
+        }
+        if self.pose.roll_aligned() && self.roll_rate_mdeg_s.abs() <= 500 {
+            gates_green += 1;
+        }
+        if self.pose.closure_safe() {
+            gates_green += 1;
+        }
+        if self.pose.dz_mm >= 0 && self.pose.dz_mm <= 500 {
+            gates_green += 1;
+        }
+        gates_green
     }
 
     /// Return whether all 5 clamp alignment gates (including `dz_mm <= 500`) are satisfied.
@@ -739,28 +850,7 @@ impl DockingClientSession {
             "roll_rate_mdeg_s".to_owned(),
             Value::from(self.roll_rate_mdeg_s),
         );
-        let mut gates_green = 0u8;
-        if self.pose.lateral_aligned()
-            && self.pose.vx_mmps.abs() <= 300
-            && self.pose.vy_mmps.abs() <= 300
-        {
-            gates_green += 1;
-        }
-        if self.pose.attitude_aligned()
-            && self.pitch_rate_mdeg_s.abs() <= 500
-            && self.yaw_rate_mdeg_s.abs() <= 500
-        {
-            gates_green += 1;
-        }
-        if self.pose.roll_aligned() && self.roll_rate_mdeg_s.abs() <= 500 {
-            gates_green += 1;
-        }
-        if self.pose.closure_safe() {
-            gates_green += 1;
-        }
-        if self.pose.dz_mm >= 0 && self.pose.dz_mm <= 500 {
-            gates_green += 1;
-        }
+        let gates_green = self.gates_green();
         obj.insert("dampeners".to_owned(), Value::from(self.dampeners_on));
         obj.insert("gates_green".to_owned(), Value::from(gates_green));
         obj.insert(

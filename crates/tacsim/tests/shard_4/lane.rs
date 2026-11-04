@@ -68,7 +68,8 @@ use support::ground::{UNSIGNED, sign};
 /// cut IN.4 (the workshops' cost model and Tycho Mutual's recovery row; was `10fcdaa6…` at v19).
 /// Doc 39 cut IN.6: v22, the seeded part rows at Occator and Stickney Yards (was `790ab79b…` at
 /// v21).
-const LANE_DIGEST: &str = "af3f150ab9d9bf17107155944f94f6dba9297e8ceadb181a6c28f90f70a849d6";
+/// Doc 42 cut CR.2: v23, the IC ports' `authority` and `release_fee_cr` (was `af3f150a…` at v22).
+const LANE_DIGEST: &str = "ed54305983ce323431574b703decc15f72741acbd030567de9927e732aa24c19";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -244,8 +245,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        22,
-        "lane v22 since doc 39 cut IN.6 (v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        23,
+        "lane v23 since doc 42 cut CR.2 (v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

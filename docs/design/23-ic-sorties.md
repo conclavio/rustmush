@@ -1529,6 +1529,15 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   stories at 256 and 512 (a world that both holds a filed licence and runs a field), the join's
   install, the seats at `go`, the drop and the wall, the carried memory and M8g's stories. *As
   built: [23-cut-notes.md](23-cut-notes.md) S.4b-2.*
+  **S.4b-3** (2026-11-04) built:
+  - the field stories at 256 and 512 (a licensed mind admitted under its claim's seal flies a
+    field, which demotes, and its Close lands over the field-written hull);
+  - the licence seat at `go`;
+  - the cancelled launch's `PoweredDownInBase`;
+  - the field's retained install with the ABI and compile drops.
+
+  It leaves the join's host half (on FR.5's #410) and the carried memory. *As built:
+  [23-cut-notes.md](23-cut-notes.md) S.4b-3.*
 
 **S.4b-T — the testimony producer (small; independent; may start now).** D-23-19:
 `EarnedContacts::admit` fed from the field log's own-sensor `Classified` lines as each chunk

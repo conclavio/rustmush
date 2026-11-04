@@ -154,6 +154,9 @@ impl CarrierHooks for TacsimCarrierHooks {
         if crate::port::ship::hull_view(ctx.w, hull).is_none() {
             return false;
         }
+        // Doc 42 cut CR.2 (Q-42-6, Draft 0.3 42-3): persons first: every captive aboard is
+        // handed to the port's authority before any hull hook of this arrival runs.
+        crate::field::crew::hand_over(ctx, hull);
         let (docks, notice) = crate::port::voyage::arrival_lines(ctx.w, journey);
         crate::port::voyage::narrate_hull(ctx, hull, &docks);
         crate::port::passenger::voyage_event(ctx, hull, &docks);

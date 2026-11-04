@@ -459,3 +459,52 @@ From the PR run's JUnit (`41815089235`, at `a31f9f49`, green):
   a PR cell. It passed on conclav.dev in 895 s (gate run `41815082693`) and locally in 1,194 s.
 
 Rule #13's harness kind is green at `41808113918`.
+
+## S.4b-3 (2026-11-04): licensed minds in the field (§17.5–§17.6, §17.10; D-23-16, D-23-17, D-23-23 step 5)
+
+Built on `claude/s4b3-field-minds` off `main` `4390f04c` (S.4b-2 = #403 merged), one PR. It runs beside FR.5's #410, which builds the join's kernel half (`arena/join.rs` installing a scripted seal handed its source); the host half rides this PR.
+
+### What landed
+
+- **The licence seat at `go` (D-23-16).**
+  - A filed mind's `go` is refused before any rig leaves a bay once its licence's seats are held: the book's active claims under the licence (`ic_sortie::active_under_licence`) plus every other rig's claim still opening (the `Opening` cursors the launch caps' loop reads), against the paid licence's seats.
+  - The seats come from the paid terms through `PaidHoldingView::seats` (mush-roll, never encoded). An owner licence dispatches with no seat cap.
+  - The sentence is `MIND_SEATS_HELD` ("Licence {licence} already flies {held} of its {seats} seats; bring a hull home first.").
+- **A launch cancelled after its Open (D-23-23 step 5).**
+  - When the claim arm's tries are spent with the claim open but its queued launch never started (the charge, the caps), the `claim: refused` start writes `Closing { PoweredDownInBase { base: <the hangar's hull> } }` and clears the queue. The arm then closes the claim with the rig in its bay.
+  - The operator hears `CLAIM_CANCELLED` once. A claim never opened still ends `Refused` (S.4b-2).
+- **The field installs a claim's retained mind (D-23-17).**
+  - A field's admission and its resume install each claimed hull through `IcHost::resume(open)?.install` (`arena_bridge::ic_retained`), which drops a seal of another ABI to the ROM, journalled once. The strict rule then covers the rest (`install_sealed_runners_except`); OOC installs are unchanged.
+  - The field's resume, which passes no `sources`, no longer fails on a claimed hull.
+  - `Execution::install` drops a retained source that no longer compiles at this build to the ROM, with `mind_dropped { cause: abi, fault: compile }` and the compiler's words traced. The boot audit records such a row instead of refusing the whole book.
+- **The field stories' harness.**
+  - `excursions::on_pad_as_at` (any site).
+  - `m8_world::m8_world_field` (the claims world on any site, two rigs).
+  - `m8_world::into_field_rig`, which hands the M8 world's live world to `driving_rig` after its rating. The field half does not reboot, because a `driving_rig` reboot composes no launch.
+  - **The field runs at the stock tempo.** A tuned layer also runs the Registry's rating arenas at its 100 ms tempo, which multiplied their pulses past the twenty-minute cap. A reboot to retune after the purchase lost the pilot's licence read.
+
+### Tests
+
+- **`tacsim` lib:** `minds::ic_sortie::execution::tests::s4b3_a_retained_source_that_no_longer_compiles_drops_to_the_rom`.
+- **`tacsim --test shard_9`, the field stories** (ignored; the M8 gate stories run them). In the claims world on Ahuna Flank (`…_at_256`) and on Urvara Reach (`…_at_512`), with one genuine rating and the paid one-seat Pin over two rigs bound to the governed Class II root and titled to the pilot:
+  1. rig 1's claim opens in the bay and it launches under the claim's seal;
+  2. rig 2's `go` under the same Pin is refused with `MIND_SEATS_HELD`;
+  3. the raider marks rig 1 Hostile and the field opens. Rig 1 is admitted under its claim's own seal: the field's `mind_sealed` line names the filed mind, the Pin's licence, `active` and the claim's card digest. It flies twenty seconds with no `mind_dropped` and no `mind_fault`;
+  4. the raiders withdraw (`@field/raiders/withdraw`, the field story's own ending) and the field demotes. Clearing a mark returns a party to its standing Hostile, so it does not end a field;
+  5. `+tv/1 recover go` is landed on the composed path, and the composed ticks land the recover's finish and the claim's Close over the field-written hull. Rig 2's `go` then files.
+
+  **Both passed on conclav.dev** (gate run `41854426069`): 512 in 1,170 s and 256 in 1,197 s. The 256 story finished just inside the gate profile's twenty-minute cap; the CI M8 job (`cargo test`) has no such cap.
+
+### Deferred, and why
+
+- **The join's host half:** waits for FR.5's #410 (the kernel half, `arena/join.rs`), to be folded in once #410 is on `main`.
+- **The carried memory (D-23-18):** `UnitReturn` carries no mind memory, and the arena side of the end-of-match return is FR.5's in this wave.
+- **M8g's "To S.4b" stories.**
+
+### Hash pins (rule #13)
+
+No pinned file is touched. `install_sealed_runners` keeps its exact rule for every OOC arena; only an IC field's spawn and resume take the retained path. The harness kind is dispatched before ready.
+
+### Cost (rule #14)
+
+From the PR run's JUnit once it lands.

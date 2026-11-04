@@ -100,10 +100,26 @@ pub fn install_sealed_runners(
     cfg: &ArenaConfig,
     sources: &dyn Fn(&[u8; 32]) -> Option<String>,
 ) -> Result<usize, InstallError> {
+    install_sealed_runners_except(arena, cfg, sources, &std::collections::BTreeSet::new())
+}
+
+/// **[`install_sealed_runners`] over every scripted hull but `installed`** (doc 23 cut S.4b-3): an
+/// IC field installs each claimed hull through its claim's retained execution first (the ABI and
+/// compile drops, D-23-17), then this strict rule over the rest.
+///
+/// # Errors
+///
+/// As [`install_sealed_runners`].
+pub fn install_sealed_runners_except(
+    arena: &mut Arena,
+    cfg: &ArenaConfig,
+    sources: &dyn Fn(&[u8; 32]) -> Option<String>,
+    skip: &std::collections::BTreeSet<ObjId>,
+) -> Result<usize, InstallError> {
     let mut compiled: BTreeMap<[u8; 32], Arc<dyn MindRunner>> = BTreeMap::new();
     let mut installed: BTreeMap<ObjId, Arc<dyn MindRunner>> = BTreeMap::new();
     for unit in &arena.units {
-        if unit.seal.engine != SealEngine::Scripted {
+        if unit.seal.engine != SealEngine::Scripted || skip.contains(&unit.id) {
             continue;
         }
         let source = sources(&unit.seal.digest).ok_or(InstallError::NoSource {

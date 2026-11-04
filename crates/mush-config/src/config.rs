@@ -118,6 +118,8 @@
 //! | `[tacsim.field].raid_director` | `false` | **Doc 36 cut GC.11** (Q-36-41): the raid director on the surface tick seeds, launches and declares the content's raiders by each one's schedule (`content/field/raiders.json`); off, raiders are staff-run only |
 //! | `[tacsim.field].raid_lost_permille` | `500` | **Doc 36 cut GC.11** (Q-36-55, provisional): the share of the hulls a director raid launched, per mille, whose loss turns it for home; `1` to `1000` |
 //! | `[tacsim.field].raid_field_s` | `1200` | **Doc 36 cut GC.11** (Q-36-55, provisional): seconds of arena time a director raid spends in a promoted field before it turns for home; `60` to `7200` |
+//! | `[tacsim.field].captive_bound_s` | `604800` | **Doc 42 cut CR.3** (Q-42-8, provisional; doc 27 Q-F4's cap): IC seconds from a capture after which a captive may ask for extraction from captivity; `60` to `2592000` |
+//! | `[tacsim.field].release_s` | `3600` | **Doc 42 cut CR.2** (Q-42-7, provisional): IC seconds a captive handed over at an IC port spends in processing before release; `60` to `86400` |
 //! | `[tacsim.field].launch_cycle_s` | `60` | **Doc 40 cut FR.3** (Q-40-19, provisional): wall-clock seconds between two hulls one carrier puts down into a running field; a second launch inside the cycle is refused with the seconds left; `10` to `600` |
 //! | `[tacsim.minds].fill_class` | `"I"` | Default AI fill class cap when its lead has selected none; pilot minds use `max_class` independently, and every seal also respects its rating and chassis core |
 //! | `[tacsim.minds].max_class` | `"III"` | Operator maximum for pilot and AI fill minds; `0`, `I`, `II` or `III` |
@@ -911,6 +913,12 @@ pub struct TacsimFieldCfg {
     /// Doc 40 cut FR.3 (Q-40-19): wall-clock seconds between two hulls one carrier puts down into
     /// a running field (60).
     pub launch_cycle_s: u32,
+    /// Doc 42 cut CR.2 (Q-42-7): IC seconds a captive handed over at a port spends in processing
+    /// before release (3600).
+    pub release_s: u32,
+    /// Doc 42 cut CR.3 (Q-42-8): IC seconds from a capture after which a captive may ask for
+    /// extraction (604800).
+    pub captive_bound_s: u32,
 }
 
 impl Default for TacsimFieldCfg {
@@ -928,6 +936,8 @@ impl Default for TacsimFieldCfg {
             raid_lost_permille: 500,
             raid_field_s: 1_200,
             launch_cycle_s: 60,
+            release_s: 3_600,
+            captive_bound_s: 604_800,
         }
     }
 }

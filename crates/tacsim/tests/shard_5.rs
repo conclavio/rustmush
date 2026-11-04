@@ -31,6 +31,8 @@ mod vertex;
 mod claim_rig;
 #[path = "shard_5/claims.rs"]
 mod claims;
+#[path = "support/field/custody_rig.rs"]
+mod custody_rig;
 #[path = "support/field/driving_rig.rs"]
 mod driving_rig;
 #[path = "support/field/field_host_rig.rs"]

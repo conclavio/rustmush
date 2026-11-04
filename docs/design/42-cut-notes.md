@@ -150,21 +150,28 @@ captives. The crew branch is one function, `load_crew(ctx, site, (casualty, carr
 operator)`, which every completed load should call wherever it runs. A written-off lease rig's crew step
 into the bay room before `tv::hand_back` (42-8): captive for a non-friend loader, aboard for a Friend's.
 
-**Gate.**
-- `field_gc5::gc5_a_non_friend_load_takes_custody_and_captures_the_crew` (256) and `…_at_512`: GC.5's
-  gate rewritten over `grounds_rig`'s two grounds, story (a′) to the load. Custody and the claim are as
-  before. The captain is `Captured { the Red Moth, the stranger }` from the load, stands in the Red Moth's
-  rooms and is out of the escort's seat. `+sortie/extract` and `+tv/1 leave` are refused with the held
-  line, `+sortie/condition` says "held aboard the Red Moth", and the stranger's `+ship/captives` names
-  them.
-- `field_gc5::gc5_review_the_captors_field_close_keeps_the_captive` (256) and `…_at_512`: the twin. The
-  captive is among the souls on the Red Moth's row in the second field, `crew_location` gives custody, and
-  the close leaves the record as it was.
-- `crew_custody::cr1_a_captured_hulls_hired_npc_goes_back_to_the_pool_and_off_the_roster` (256) and
-  `…_at_512`: the hire by `+sortie/crew` and `+sortie/hire`, the load, the NPC in the Slack Line, the
+**Gate.** Story (a′) to the load and its review twin are one script over both grounds, hoisted to
+`tests/support/field/custody_rig.rs` (declared in every shard root), so each ground's run can sit in a
+different shard.
+- GC.5's gate rewritten, `custody_rig::non_friend_load_captures_the_crew`: shard_1
+  `field_gc5::gc5_a_non_friend_load_takes_custody_and_captures_the_crew` (256) and shard_8
+  `crew_custody::cr1_a_non_friend_load_takes_custody_and_captures_the_crew_at_512`.
+  - Custody and the claim are as before.
+  - The captain is `Captured { the Red Moth, the stranger }` from the load, stands in the Red Moth's
+    rooms and is out of the escort's seat.
+  - `+sortie/extract` and `+tv/1 leave` are refused with the held line, `+sortie/condition` says "held
+    aboard the Red Moth", and the stranger's `+ship/captives` names them.
+- The twin, `custody_rig::captors_field_close_keeps_the_captive`: shard_1
+  `field_gc5::gc5_review_the_captors_field_close_keeps_the_captive` (256) and shard_8
+  `crew_custody::cr1_the_captors_field_close_keeps_the_captive_at_512`. The captive is among the souls on
+  the Red Moth's row in the second field, `crew_location` gives custody, and the close leaves the record as
+  it was.
+- shard_8 `crew_custody::cr1_a_captured_hulls_hired_npc_goes_back_to_the_pool_and_off_the_roster` (256)
+  and `…_at_512`: the hire by `+sortie/crew` and `+sortie/hire`, the load, the NPC in the Slack Line, the
   captain told, the action landed by the tick, `+sortie/contract` refused, the NPC on offer to a third
-  captain, no `Capture` row.
-- `crew_custody::cr1_the_captor_releases_a_captive_on_the_site` (256): `+ship/captives`, a refused
+  captain, no `Capture` row. The hire and the action land on the composed path (`land_composed`), since
+  both prepares read the world.
+- shard_8 `crew_custody::cr1_the_captor_releases_a_captive_on_the_site` (256): `+ship/captives`, a refused
   release, a captive's own `+ship` refused, the release to `Carrier`, the list empty.
 - In-source: `crew.rs` `cr1_a_non_friend_load_captures_the_crew` (replacing GC.5's abandonment test);
   `claim.rs` `cr1_a_capture_off_owned_ground_is_evidence_naming_captor_and_captive`.
@@ -187,10 +194,164 @@ into the bay room before `tv::hand_back` (42-8): captive for a non-friend loader
 - `+ship/release`'s two landings, and a written-off Friend's load's crew stepping aboard, are built here;
   the `extractable` widening for a released passenger stays CR.3's.
 
-**Cell delta (rule #14).** All of it lands in shard_1. `crew_custody` is pinned there by its `field_gc5` and `field_gc4` imports (doc 43 §10.2 asks a cut to say so). The two rewritten GC.5 tests became four, one per ground, and `crew_custody` adds three. Local Windows wall times (`-j 8`):
-- GC.5's gate: 39.1 s at 256, 39.6 s at 512;
-- the twin: 54.8 s at 256, 55.7 s at 512;
-- the NPC exit: 21.6 s at 256, 21.8 s at 512;
-- the release: 43.4 s.
+**Cell delta (rule #14).** Measured from the `<testcase time>` sums of the JUnit artifacts, against main's
+last green run, 41814093413 (3fb3e861).
+- **First PR run, 41820027413** (everything in shard_1). shard_1 went from 55.9 to 76.9 summed minutes and
+  from an 18.7 to a 24.0 min wall, which set the run's wall (the next cell was 20.1).
+  - `field_gc5::` went from 3.12 to 6.32 min. The two tests replaced had run 51.1 s and 67.2 s; their
+    four successors ran 62.5, 67.4, 79.9 and 78.4 s.
+  - `crew_custody::` added 3.01 min.
+  - The unchanged rest of shard_1 also ran 28 % slower on that runner (52.8 → 67.6 min).
+- **Moved.** By rule #14, the 512 runs and `crew_custody` moved to shard_8, the run's shortest
+  integration cell (11.9 min), through `custody_rig`. shard_1 keeps the two 256 runs.
+- **After the move, PR #412's run 41830026813:**
+  - shard_1 is 56.7 summed minutes (+0.8 on main), with `field_gc5::` going from 3.12 to 3.32 min. Its
+    wall is 18.3 min (main's was 18.7).
+  - shard_8 is 44.1 summed minutes (+14.8 on main's 29.3), of which `crew_custody::` is 4.65 min; the
+    rest of the shard's rise is that runner's speed. Its wall is 15.0 min (main's was 10.2).
+  - No integration cell sets a new wall: the run's slowest was 18.3 min, against main's 20.2.
 
-That is about 4.6 summed minutes against the two 256-only tests it replaces, which were not timed here. **Owed:** the figure from PR #408's JUnit (shard_1's `field_gc5::` and `crew_custody::` testcases against main's last green run), to replace this estimate.
+## CR.2 — the port handover and release
+
+Q-42-6, Q-42-7, Q-42-19, with Draft 0.3's 42-2, 42-3 and 42-7. A captor's carrier that docks at an IC port
+hands every captive aboard to the port's authority. After an IC hour of processing the captive is free at
+that port, and the release fee is levied on their own account, paid or owed.
+
+**Content: lane v23 / relay v14.** Each IC port entry gains:
+- `authority`: Ceres `freeport_registry`, Stickney `stickney_yards`, Luna `orbital_access`, Deimos
+  `voltaire_bond`, Titan `titan_concession`;
+- `release_fee_cr`: 1,500.
+
+`PortDef` validates both: the authority must be one of the entry's orgs, and a fee needs an authority and
+is at least 1. The lane digest is `ed543059…` and the relay's `476bf7d8…`. The strip
+`lane_chain::strip_release_authority` heads the chain (`strip_part_seeds` calls it first). The pins moved
+are:
+- tacsim: `cost_lane.rs`, `shard_4/lane.rs`, `shard_5/sites.rs`, `shard_10/stations.rs`,
+  `shard_3/drones.rs`, `shard_9/mill.rs`;
+- mush-server: `boot_parity.rs`, `relay_registry.rs`.
+
+**Config.** `[tacsim.field].release_s`, 3,600, banded 60 to 86,400 (`FIELD_RELEASE_S`). It is documented in
+mush-config's table and mapped in `mush-server/src/config_ext.rs`.
+
+**The authority's grant** (`port/vendor.rs`, part (e).10). At apply, the port's stock clerk is granted
+`port.release_fee` (`RELEASE_FEE_CAPABILITY`, added to the composition's capability vocabulary) on the
+authority's root scope, once. The grant is recorded as `PortMap.release_grant`, skipped while absent, so
+`PORT_MAP_SCHEMA` stays 1. The clerk is the levier, as the vendor's `vault.withdraw` grant already makes
+it the vendor's.
+
+**The handover** (`field/crew.rs`, `hand_over(ctx, hull)`).
+- It runs from `composition/sim_routes.rs`'s `arrived` before the arrival's lines and hooks (42-3's
+  persons-first rule), and again on the crew tick's `custody_pass`, which catches a lost callback.
+- It selects only records still `Captured { carrier: hull }`, so a duplicate callback, a replay or a
+  restart finds nobody twice.
+- Each captive is set down in the port's medical room (`port::medical::room`), else its arrival room.
+- The record is written `Processing { port, release_due_ic: now + release_s, charge: None }`.
+- The captive hears `HANDED_OVER`; the captor hears `HANDED_OVER_CAPTOR`, with nothing paid.
+
+**The fee** (`levy_release`). One `mush_economy::create_sanction_obligation` (the Registry fine's shape):
+- one period due now, grace 1;
+- the debit is the captive's own account, the credit the authority's account;
+- `levied_by` is the clerk, under `port.release_fee` on the authority's root scope;
+- the inspection key is `release:<captive>:<release_due_ic>`.
+
+The record's `charge` is filled once it is created. An obligation already carrying the key is adopted, not
+levied twice. A refusal leaves `charge` empty, and the crew tick tries again. The economy's sweep settles
+it at once when the account covers it; otherwise it stands as an obligation, which RS.5's `+debts` lists
+and `+debts/pay` settles.
+
+**The release** (`release_processed`, on the crew tick). At `release_due_ic` the character:
+- is set down in the port's arrival room, unless they already stand in one of its rooms;
+- is stamped with the port as the one they know;
+- becomes `Port { port }` and is told `PROCESSED`.
+
+The release never waits on the fee (FO-12). Treatment (GC.13) begins at the handover, since the captive
+stands in a port room. CR.0's gates already treat `Processing` as Q-42-2 asks.
+
+**Gate.**
+- `shard_8 crew_custody::cr2_the_captor_docks_at_ceres_and_the_captive_is_handed_over_and_released` (256,
+  the fee paid) and `cr2_an_unpaid_release_fee_stands_and_the_captive_is_released_anyway_at_512` (512,
+  the fee unpaid). Both use one script, `custody_rig::handover_at_ceres`, after story (a′)'s load:
+  - the stranger lifts for Ceres (`+ship/lift ceres leave=1`) and docks;
+  - the captain is in processing at Ceres, standing in a Ceres room, with the fee's obligation named;
+  - `+sortie/condition` says "in processing at Ceres", and the captor's `+ship/captives` is empty;
+  - paid: the obligation is `Satisfied` and 1,500 cr have left the account;
+  - unpaid (a staff hand empties the available credit first): the obligation stands unsatisfied;
+  - after the hour the captain is `Port { ceres }` and Ceres is the port they know.
+- In-source: `crew.rs` `cr2_the_release_key_and_the_processing_band`.
+
+**Divergences from §7's row.**
+- The inspection key is `release:<captive>:<release_due_ic>`, not `…:<since_ic>`. `Processing` does not
+  carry the capture's instant, and a retried levy must rebuild the key from the record. It is still one
+  key per handover.
+- The handover also runs on the crew tick, not only in the docking hook. The arrival hook is
+  production's first chance, and the tick catches anything it missed.
+- The bot does not type the captive's half in this PR's tests: they type it as the player on the
+  production command path. The bot-over-SSH story is a dispatch-tier run, owed and named here.
+- A space `PortBerth` docking (Q-42-6's second trigger) is CR.6's seam: it calls `hand_over` when the
+  space track's crew state exists.
+- RS.5's `+debts`, as #415 builds it, lists only `Ruleset`-cause one-term debts. The release fee is a
+  `Sanction`-cause one-shot, so it is not a `+debts` row until `debts_of` and `pay_debt` take it. That
+  widening is CR.2's, after RS.5 merges.
+
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of PR #417's run
+41846609530 against #412's run 41830026813, which first put `crew_custody` in shard_8.
+- shard_8's `crew_custody::` goes from 4.65 to 6.56 summed minutes: +1.9 for the two CR.2 stories.
+- shard_8's wall goes from 15.0 to 15.5 min. The run's slowest integration cell is 19.4 min (main's
+  41827163605 had 19.3), so no cell sets a new wall.
+- The lane-count edits to `sites::` (shard_5) and `vehicles::` (shard_6) move no time.
+
+## CR.3 — the bound and the held case
+
+Q-42-8, Q-42-9, Q-42-15. A captor who never docks can hold a captive only up to the bound. A captive the
+captor releases away from a port can ask for extraction. A captor's carrier wrecked in a later field
+strands its captives like the rest of its crew.
+
+**Config.** `[tacsim.field].captive_bound_s`, 604,800 (seven IC days), banded 60 to 2,592,000
+(`FIELD_CAPTIVE_BOUND_S`). It is documented in mush-config's table and mapped in
+`mush-server/src/config_ext.rs`.
+
+**The bound** (`field/crew.rs`).
+- `refusal(w, who, Gate::Extract)` reads a `Captured` record's `since_ic` against the bound. Before it
+  passes, the refusal is `HELD_BOUND` ("You are held aboard the {carrier}. In about {h} IC h…"). Every
+  other gate keeps CR.0's `HELD`, so nothing else opens.
+- The bound is IC time from the record, so a restart resumes it and a freeze pauses it.
+- Past the bound, `extract_cmd` takes the request (`may_extract`), telling `EXTRACT_RELEASE`.
+- The crew tick's existing `Captured => (None, None)` arm lands it as any extraction: no seat to vacate,
+  the body moved to the safe port, `Port`.
+- A handover at a port overtakes a pending extraction (`hand_over` clears it).
+
+**The released passenger** (Q-42-9's widening). `may_extract` also takes `Carrier { hull }` when `hull` is
+not the hull the character commands and they stand aboard it. `+ship/release`'s two landings were built in
+CR.1.
+
+**The captor's wreck** (Q-42-15). `check_in` asks `wrecked_captive` first:
+- when a captive's carrier checks in and `aboard()` reads it stranded (GC.3's `CrewStranded`), the captive
+  is `Stranded { site, unit: carrier }`, the condition kept, custody gone, told `STRANDED`;
+- a sound carrier's check-in still leaves the captive alone (CR.0's `leaves_alone`).
+
+**Gate.**
+- `shard_8 crew_custody::cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it` (256) and
+  `…_at_512`, through `custody_rig::held_past_the_bound`, with the bound at 600 IC s:
+  - after GC.5's load, `+sortie/extract` refuses with the time left;
+  - a crash and reboot keeps `Captured` with the same `since_ic`;
+  - past the bound, the request is taken;
+  - after `extract_s` the captain is `Port`, and the captor's `+ship/captives` is empty.
+- In-source: `cr3_a_captors_wreck_strands_its_captives`. CR.0's `cr0_the_held_gate_refuses_by_hold` now
+  also pins the extract refusal's time and its opening past the bound.
+
+**Divergences from §7's row.**
+- Story (e)'s wreck half is an in-source gate on the check-in rule, not a fought loss. A second field that
+  takes the captor's carrier's hull (GC.3's fixture, a third party firing on the Red Moth) would add a
+  field run a ground for one branch of `check_in`. It is owed to the next story that fights over a
+  captor's carrier.
+- The extraction's landing line for a captive is the ordinary `EXTRACTED` ("Your hull is still on the
+  ground"): the tick has no site for a carrier.
+
+**Cell delta (rule #14).** Measured from the JUnit sums of PR #418's run 41851040446 against #417's run
+41846609530.
+- The two CR.3 stories ran 41.8 s and 42.1 s: +1.4 summed minutes in shard_8. On a faster runner,
+  `crew_custody::` read 6.55 against 6.56.
+- shard_8's wall is 12.5 min (15.5 before).
+- The run's slowest cell was shard_1 at 23.2 min, which this cut does not touch. Every shard_1 module ran
+  about 1.27× slower on that runner (`driving::` 14.0 → 18.7, `field_gc4::` 8.4 → 9.7), as doc 43 §5.8
+  warns the hosted machines vary.

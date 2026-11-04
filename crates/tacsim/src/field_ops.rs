@@ -17,27 +17,26 @@ pub use mush_tactics::field_ops::{
     CONTEST_WINDOW_AVAILABLE_REAL_SECS, ComponentCondition, ComponentProvenance, ConditionError,
     ContestGround, ContestSuccessReason, ContrabandReason, CustodyAction, CustodyTitleStatus,
     DEFAULT_MAX_ATTACH_DISTANCE_CM, DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM,
-    DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT, DEFAULT_UNJAM_SPARE_PARTS_KG,
-    FALLBACK_SECTION_SCRAP_KG, FieldAuthorityKind, FieldCloseOutcome, FieldCustodyLedger,
-    FieldCustodyRecord, FieldEngineeringActionKind, FieldEngineeringBook, FieldEngineeringError,
-    FieldEngineeringLogEntry, FieldEpochDisposition, FieldInspectionReport, FieldPose,
-    FieldTenderState, FieldUnitAssessment, GroundTenure, LoadIntoBayRequest, LoadedCasualtyOutcome,
-    MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES,
-    MAX_FIELD_CUSTODY_UNITS, MAX_FIELD_ENGINEERING_LOGS, MAX_FIELD_TENDERS,
-    MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS, MAX_STRIPPED_COMPONENTS,
-    MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS, NpcMissionScope, OperationalState,
-    ProvenanceLegalityStatus, RecoveryAuthorityContext, RecoveryBook, RecoveryEntitlement,
-    RecoveryError, RecoveryOpId, RecoveryOperation, RecoveryStage, ReplacementPartSpec,
-    SCRAP_KG_PER_STRUCTURAL_POINT, SalvageClaim, SalvageClaimBook, SalvageClaimId,
-    SalvageClaimState, SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord,
-    SalvageSubject, ScrapYieldReport, SectionCondition, StripAuthorization,
-    StrippedComponentRecord, TowEvaluation, TowRigProfile, TugInspectionContext,
-    UnitAnatomyProfile, UnitExpenseCategory, UnitExpensePolicy, UnitMassProfile, WorkshopBook,
-    WorkshopCostQuote, WorkshopError, WorkshopFacilityTariff, WorkshopOperationKind,
-    WorkshopWorkOrderRecord, assess_tactical_unit, check_custody_action_allowed,
-    effective_component_condition, effective_section_condition, evaluate_recovery_entitlement,
-    ic_condition_plan, inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille,
-    tow_mass_ratio_permille_for, tow_speed_factor_permille, validate_close_outcome,
+    DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT, DEFAULT_UNJAM_SPARE_PARTS_KG, FieldAuthorityKind,
+    FieldCloseOutcome, FieldCustodyLedger, FieldCustodyRecord, FieldEngineeringActionKind,
+    FieldEngineeringBook, FieldEngineeringError, FieldEngineeringLogEntry, FieldEpochDisposition,
+    FieldInspectionReport, FieldPose, FieldTenderState, FieldUnitAssessment, GroundTenure,
+    LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_AUTHORITATIVE_RECOVERY_RECORDS,
+    MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES, MAX_FIELD_CUSTODY_UNITS,
+    MAX_FIELD_ENGINEERING_LOGS, MAX_FIELD_TENDERS, MAX_RECOVERY_OPERATIONS, MAX_SALVAGE_CLAIMS,
+    MAX_STRIPPED_COMPONENTS, MAX_TOW_MASS_RATIO_PERMILLE, MAX_WORKSHOP_ORDERS, NpcMissionScope,
+    OperationalState, ProvenanceLegalityStatus, RecoveryAuthorityContext, RecoveryBook,
+    RecoveryEntitlement, RecoveryError, RecoveryOpId, RecoveryOperation, RecoveryStage,
+    ReplacementPartSpec, SalvageClaim, SalvageClaimBook, SalvageClaimId, SalvageClaimState,
+    SalvageContest, SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject,
+    ScrapYieldReport, SectionCondition, StripAuthorization, StrippedComponentRecord, TowEvaluation,
+    TowRigProfile, TugInspectionContext, UnitAnatomyProfile, UnitExpenseCategory,
+    UnitExpensePolicy, UnitMassProfile, WorkshopBook, WorkshopCostQuote, WorkshopError,
+    WorkshopFacilityTariff, WorkshopOperationKind, WorkshopWorkOrderRecord, assess_tactical_unit,
+    check_custody_action_allowed, effective_component_condition, effective_section_condition,
+    evaluate_recovery_entitlement, ic_condition_plan, inspect_field_unit, scaled_tow_speed_cms,
+    tow_mass_ratio_permille, tow_mass_ratio_permille_for, tow_speed_factor_permille,
+    validate_close_outcome,
 };
 use mush_tactics::{
     CellAddr, CellId, ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply,
@@ -1528,7 +1527,7 @@ mod tests {
             scrap_report.final_assessment.state,
             OperationalState::Irrecoverable
         );
-        check!(scrap_report.structural_scrap_kg > 0);
+        check!(scrap_report.structural_points > 0);
 
         Ok(())
     }

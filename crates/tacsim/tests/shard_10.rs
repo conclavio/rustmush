@@ -35,6 +35,8 @@ mod claim_rig;
 mod commerce;
 #[path = "shard_10/coop.rs"]
 mod coop;
+#[path = "support/field/custody_rig.rs"]
+mod custody_rig;
 #[path = "shard_10/deliberation.rs"]
 mod deliberation;
 #[path = "support/field/driving_rig.rs"]
