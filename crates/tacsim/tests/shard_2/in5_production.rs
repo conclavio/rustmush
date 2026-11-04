@@ -29,8 +29,8 @@ use tacsim::port::works::{WorksContract, WorksState};
 
 use crate::driving_rig::{
     Rig, board, cid, drain, file_and_launch, fire, hold_pool, hold_vault_of, ic_now, land_all,
-    land_quietly, load, no_refused_writes, port_map, prospector, run, station_room, stocked,
-    store, sweep, teleport, to_ic,
+    land_quietly, load, no_refused_writes, port_map, prospector, run, station_room, stocked, store,
+    sweep, teleport, to_ic,
 };
 
 const CERES: &str = "ceres_port";
@@ -165,7 +165,11 @@ fn buy(rig: &mut Rig, pilot: ObjId, entry: &str, vendor: &str, good: &str, qty: 
     let listing = market(rig)
         .lot_listing_of(endpoint, &cid(good))
         .unwrap_or_else(|| panic!("{vendor} lists {good}"));
-    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {listing}={qty}"));
+    let quoted = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/quote {listing}={qty}"),
+    );
     assert!(quoted.contains("Quote #"), "{quoted}");
     let quote = market(rig)
         .quotes_of_buyer(&mush_org::PrincipalId::Object(pilot))
@@ -177,7 +181,10 @@ fn buy(rig: &mut Rig, pilot: ObjId, entry: &str, vendor: &str, good: &str, qty: 
     assert!(!draw.is_empty(), "{accepted}");
     land_all(rig, &draw);
     for _ in 0..30 {
-        if market(rig).quote(quote).is_some_and(|q| q.drawn_at.is_some()) {
+        if market(rig)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some())
+        {
             return;
         }
         fire_landing(rig);
@@ -373,14 +380,11 @@ fn facility_at(rig: &Rig, entry: &str, local: &str) -> mush_industry::FacilityRe
 /// The works' stores vault at `entry` (the vault on the facility object).
 fn stores(rig: &Rig, entry: &str, local: &str) -> Option<VaultId> {
     let room = station_room(&rig.tw, entry, local);
-    rig.tw
-        .world()
-        .module_state::<EconomyStore>()
-        .and_then(|s| {
-            s.snapshot()
-                .vault_by_backing(&mush_economy::CustodyRef::Container(room))
-                .map(|v| v.id)
-        })
+    rig.tw.world().module_state::<EconomyStore>().and_then(|s| {
+        s.snapshot()
+            .vault_by_backing(&mush_economy::CustodyRef::Container(room))
+            .map(|v| v.id)
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -394,11 +398,17 @@ async fn in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres() {
     // ---- The lane's rows, applied ----
     let refinery = facility_at(&rig, STICKNEY, "room.p07_receiving");
     assert!(refinery.offers(&[cid("smelt")].into_iter().collect()));
-    for (entry, local) in [(STICKNEY, "room.p15_maintenance"), (CERES, "room.c15_maintenance")] {
+    for (entry, local) in [
+        (STICKNEY, "room.p15_maintenance"),
+        (CERES, "room.c15_maintenance"),
+    ] {
         let works = facility_at(&rig, entry, local);
         assert!(works.offers(&[cid("tacsim.works")].into_iter().collect()));
         assert_eq!(works.maximum_slots(), 2);
-        assert!(!works.customers().is_owner_only(), "{entry}: the works is public");
+        assert!(
+            !works.customers().is_owner_only(),
+            "{entry}: the works is public"
+        );
     }
     let freeport_works = &port_map(&rig.tw, CERES).vendors[&cid("freeport_works")];
     assert_eq!(
@@ -424,7 +434,14 @@ async fn in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres() {
 
     // ---- Stickney: the concentrate into Kasei's bid, and the refine ----
     board(&mut rig, captain);
-    sail(&mut rig, captain, &row, "+ship/undock stickney", STICKNEY, 9_500);
+    sail(
+        &mut rig,
+        captain,
+        &row,
+        "+ship/undock stickney",
+        STICKNEY,
+        9_500,
+    );
     ashore(&mut rig, captain);
     let kasei_exchange = station_room(&rig.tw, STICKNEY, "room.p08_exchange");
     teleport(&mut rig.tw, captain, kasei_exchange);
@@ -541,8 +558,8 @@ async fn in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres() {
         .expect("the works handles")
         .ledgers
         .clone();
-    let moved = crate::driving_rig::typed(&mut rig.tw, &ledgers, &works_stores.0)
-        .map(|ledger| ledger.acts);
+    let moved =
+        crate::driving_rig::typed(&mut rig.tw, &ledgers, &works_stores.0).map(|ledger| ledger.acts);
     assert_eq!(moved, Some(2), "two lots moved into the works' stores");
     let paid = |act: u32| {
         let key = mush_economy::IdempotencyKey::new(

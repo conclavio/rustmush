@@ -1530,9 +1530,7 @@ fn port_of(w: &World, facility: &FacilityRecord) -> Option<CanonicalId> {
         .find(|(entry, def, _)| {
             // Doc 39 cut IN.5: or the port's authored works room is the facility itself.
             at.is_some_and(|at| crate::port::market::port_rooms(w, def).contains(&at))
-                || crate::port::plant::works_room(w, entry, def)
-                    .ok()
-                    .flatten()
+                || crate::port::plant::works_room(w, entry, def).ok().flatten()
                     == Some(facility.object())
         })
         .map(|(entry, ..)| entry)

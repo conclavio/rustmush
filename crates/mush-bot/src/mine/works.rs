@@ -108,7 +108,10 @@ pub fn booked(window: &str) -> Option<u64> {
 /// Whether `window` tells that `order` is delivered at the works.
 #[must_use]
 pub fn delivered(window: &str, order: u64) -> bool {
-    lines::has(&lines::normalise(window), &format!("Order {order}{DELIVERED}"))
+    lines::has(
+        &lines::normalise(window),
+        &format!("Order {order}{DELIVERED}"),
+    )
 }
 
 /// Whether `window` holds a delivery of the bill into `order`'s escrow.
@@ -151,12 +154,7 @@ pub fn row_quantity(row: &Listing) -> Option<u64> {
         .split_once(" — wanted ")
         .or_else(|| row.text.split_once(" — "))?
         .1;
-    after
-        .split(' ')
-        .next()?
-        .replace(',', "")
-        .parse()
-        .ok()
+    after.split(' ').next()?.replace(',', "").parse().ok()
 }
 
 /// The ask whose row holds `label` (case-insensitive) and is not `wanted`, with its quantity.
@@ -237,12 +235,18 @@ mod tests {
             154
         ));
         assert!(!delivered("Order 1540 is delivered at the works: ", 154));
-        assert!(supplied("5 structural_alloys moves into order 154's escrow.", 154));
+        assert!(supplied(
+            "5 structural_alloys moves into order 154's escrow.",
+            154
+        ));
         assert!(collected(
             "Order 154: 5 industrial_parts move into your hold.",
             154
         ));
-        assert!(!collected("Order 154 is closed; its escrow was empty.", 154));
+        assert!(!collected(
+            "Order 154 is closed; its escrow was empty.",
+            154
+        ));
         assert_eq!(
             quote_fee(
                 "fittings x1: bill 5 structural_alloys, 1 carbon_ore; 1 IC days (6 work units); \

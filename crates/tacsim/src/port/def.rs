@@ -3973,7 +3973,7 @@ mod tests {
         );
         assert_eq!(
             with(works(vec![buy("metals", "coop", 10, 11)])),
-            "works: buys metals: lot is 1..=floor, and floor at most 1000000"
+            "works: buys metals: lot is 1..=floor, and floor at most 100000"
         );
         let mut slotless = works(Vec::new());
         slotless.slots = 0;

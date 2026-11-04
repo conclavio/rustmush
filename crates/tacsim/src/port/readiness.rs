@@ -946,10 +946,10 @@ fn commerce_lines(
             // Doc 39 cut IN.5: and the lot a works' house purchase is moving out from under its
             // lowered ask.
             let moving = crate::port::supply::moving(ctx, row.vault, good);
-            let Some((net, milled)) = unlisted
-                .ok()
-                .and_then(|u| pool.checked_sub(u).map(|net| (net.saturating_sub(moving), u)))
-            else {
+            let Some((net, milled)) = unlisted.ok().and_then(|u| {
+                pool.checked_sub(u)
+                    .map(|net| (net.saturating_sub(moving), u))
+            }) else {
                 push(
                     Binding::Listings,
                     LineState::Flagged,

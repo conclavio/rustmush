@@ -439,7 +439,12 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
     settle(&mut rig, 2);
     swept(&mut rig);
     assert_eq!(*order_of(&mut rig, b).state(), WorkOrderState::Cancelled);
-    assert_eq!(contract(&rig, b).closed, Some(Close::Cancelled), "{:?}", contract(&rig, b));
+    assert_eq!(
+        contract(&rig, b).closed,
+        Some(Close::Cancelled),
+        "{:?}",
+        contract(&rig, b)
+    );
     assert_eq!(
         hold_pool(&mut rig.tw, captain_hold, ALLOYS),
         24,

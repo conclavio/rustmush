@@ -1539,8 +1539,18 @@ fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
     assert_eq!(syndicate[0].capital_major, 50_000);
     assert_eq!(syndicate[0].faction.as_str(), "syndicate");
     // Appended last, and doc 39 cut IN.5's Freeport Works after it.
-    let tail: Vec<&str> = ceres.orgs.iter().rev().take(2).map(|org| org.id.as_str()).collect();
-    assert_eq!(tail, ["freeport_works", "pallas_syndicate"], "appended last");
+    let tail: Vec<&str> = ceres
+        .orgs
+        .iter()
+        .rev()
+        .take(2)
+        .map(|org| org.id.as_str())
+        .collect();
+    assert_eq!(
+        tail,
+        ["freeport_works", "pallas_syndicate"],
+        "appended last"
+    );
     let Some(PackEntry::Port(occator)) = pack.entry(&cid("occator_port")) else {
         panic!("occator_port is a port entry");
     };

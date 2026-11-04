@@ -2,7 +2,7 @@
 //! works buys `structural_alloys` from Kasei's storefront next door at Kasei's ask, paid from
 //! Stickney Yards' account — "a receipted in-kind transfer from Kasei's storefront pool to the
 //! works' pool at the ask, paid from Stickney Yards' account" — whenever its stores hold less than
-//! the row's floor, one lot an IC day a row (the lane's `works.buys`, [`WorksBuyDef`]). The stores
+//! the row's floor, one lot an IC day a row (the lane's `works.buys`, [`WorksBuyDef`](crate::port::def::WorksBuyDef)). The stores
 //! are what a house order at the works draws from (IN.3's house orders); a player's order sources
 //! from the player's own hold.
 //!
@@ -23,7 +23,7 @@
 //! throughout, so a buyer never finds it gone. Whether the ask is already down is read off durable
 //! state: the pool's excess over the listing and its undrawn quotes (net of the mills' unlisted
 //! units) is the lot exactly while the move is owed. Meanwhile the drift check and the readiness
-//! report count that lot as moving ([`moving`]), and the clerk's arm does nothing else at that port.
+//! report count that lot as moving (`moving`), and the clerk's arm does nothing else at that port.
 //!
 //! **What it never does.** It never buys for a player, never lets the stores pass the floor by more
 //! than a lot, and never moves a lot whose payment has not posted. A re-authored row (its good or
@@ -109,7 +109,10 @@ pub(crate) fn supply_step(
     map: &PortMap,
     def: &PortDef,
 ) -> Option<Step> {
-    let works = def.works.as_deref().filter(|works| !works.buys.is_empty())?;
+    let works = def
+        .works
+        .as_deref()
+        .filter(|works| !works.buys.is_empty())?;
     let room = crate::port::plant::works_room(ctx.w, &map.entry, def)
         .ok()
         .flatten()?;
@@ -195,7 +198,8 @@ pub(crate) fn supply_step(
                 units: buy.lot - excess,
             };
             return Some(
-                match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::shrink_ask(ctx, spec)) {
+                match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::shrink_ask(ctx, spec))
+                {
                     Ok(Ok(_)) => Step::Worked,
                     Ok(Err(error)) => {
                         warn_once(state, stores, &buy.good, &format!("{error:?}"));
@@ -211,8 +215,8 @@ pub(crate) fn supply_step(
         .w
         .module_state::<crate::port::works::WorksHandles>()
         .and_then(|handles| handles.action.clone())?;
-    let key = IdempotencyKeyText::parse_canonical(format!("{SUPPLY_KEY}/{stores}/{act}/{tries}"))
-        .ok()?;
+    let key =
+        IdempotencyKeyText::parse_canonical(format!("{SUPPLY_KEY}/{stores}/{act}/{tries}")).ok()?;
     let step = swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
         ctx.submit_authoritative(
             action,
@@ -320,7 +324,9 @@ fn start(
             )
         };
         match mush_economy::post(ctx, &plan) {
-            Ok(mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_)) => {
+            Ok(
+                mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_),
+            ) => {
                 return Some(Step::Worked);
             }
             other => warn_once(state, stores, &buy.good, &format!("{other:?}")),

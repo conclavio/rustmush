@@ -677,12 +677,15 @@ async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
         &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
     )
     .await;
-    assert!(
-        client
-            .watch(from, &lines::docks(hull), Duration::from_secs(20 * 60))
-            .await,
-        "{hull} docks at {port} inside 20 minutes"
-    );
+    if !client
+        .watch(from, &lines::docks(hull), Duration::from_secs(20 * 60))
+        .await
+    {
+        panic!(
+            "{hull} did not dock at {port} inside 20 minutes; the client's last 4 KiB:\n{}",
+            mush_bot::tail(&client.seen, 4 * 1024)
+        );
+    }
     typed(client, "+ship/leave", &[lines::ASHORE], &[]).await;
 }
 

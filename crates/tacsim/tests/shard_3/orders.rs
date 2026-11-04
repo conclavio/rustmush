@@ -2314,7 +2314,11 @@ fn ic11_a_staff_stand_down_holds_the_order_and_files_nothing() {
     disconnect(&mut rig.tw, pilot);
     let (_, queued) = fire(&mut rig);
     // Doc 39 cut IN.5: the burn alone; Stickney's clerk has acts of its own.
-    let late: Vec<AuthoritativeSubmit> = queued.iter().filter(|s| s.actor == pilot).cloned().collect();
+    let late: Vec<AuthoritativeSubmit> = queued
+        .iter()
+        .filter(|s| s.actor == pilot)
+        .cloned()
+        .collect();
     assert_eq!(burn_keys(&queued).len(), 1);
     let out = run(&mut rig.tw, GOD, &format!("@tacsim/port clear #{}", hull.0));
     assert!(out.contains("The sailing plan holds at order 1."), "{out}");
