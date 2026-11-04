@@ -175,10 +175,13 @@ impl CarrierHooks for TacsimCarrierHooks {
             && def.site.is_none()
         {
             let entry = map.entry.clone();
+            let (venue, port) = (def.venue.clone(), crate::port::coop::port_name(def));
             crate::surface::retrieval::on_docked(ctx, hull, &entry);
             if let Some(helm) = crate::port::coop::helm_holder(ctx.w, hull) {
                 let _ = crate::surface::retrieval::deliver(ctx, hull, &entry, helm);
             }
+            // Doc 41 cut RS.7 (Q-41-25): port security fines her master's proven acts.
+            crate::surface::security::on_docked(ctx, hull, &venue, &port);
         }
         if let crate::port::ship::Berth::Docked { map, def } =
             crate::port::ship::berth_of(ctx.w, hull)

@@ -17,7 +17,7 @@ const HISTORY: &[&str] = &[
     "docs/design/14-spatial-room-system.md",
     "docs/design/14a-spatial-owner-questions.md",
     "docs/design/README.md",
-    "crates/mush-contract-tests/tests/hex_vocabulary.rs",
+    "crates/mush-contract-tests/tests/engine_contracts/hex_vocabulary.rs",
 ];
 
 /// The grid vocabulary, lower-cased. Each is a substring of a lower-cased line;

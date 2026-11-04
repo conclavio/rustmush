@@ -16,7 +16,7 @@
 //! world task (doc 14 P9).
 
 // WS01-S12: a new crate is born with every panic-shaped restriction lint denied,
-// and `crates/mush-contract-tests/tests/restriction_lints.rs` holds it there.
+// and `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` holds it there.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -438,6 +438,58 @@ story (c) at 256 and 512).
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
 
+## RS.7 — port security (2026-11-04)
+
+Row: §6 RS.7; Q-41-24, Q-41-25, Q-38-20, doc 27 Q-S4. No lane rows (v23 stays IN.5's). Built on RS.5's
+branch (#415): the fine is RS.5's one-term debt.
+
+**Built.**
+
+- **The record** (`tacsim` `surface/security.rs`): `SecurityRecord` at `tacsim:security:{actor}` (store
+  field, `put_security`, an R8 loader arm) holding `ProvenAct { site, act, proof, proven_ic, debt }`, at
+  most 64 rows (a full record drops its oldest settled row). `Proof::Vacated` or
+  `Proof::Reported { by }`. A row's identity is the site plus the act's kind, actor, subject and instant,
+  so one act is proven once.
+- **Proof at the vacate**: `claim::tick`, after a `Vacate` settlement whose vacating contest was
+  `ProvenUnlawfulRecovery`, copies the site's `Recovery` row on that hull by the custodian (or, when the
+  ring has dropped it, the row as the custody knew it) to the custodian's record.
+- **Proof by report**: `+salvage/report <site>[=<who>|#<hull>] registry` (RS.0's ruled form; one
+  command, no `go`, as the bot's line has it) reads the site's log directly. The reporter's evidence
+  (Q-S4): a witness pinned on a live custody row over the act's hull (`evidence_of`), or the reporter's
+  own `known` row on the site learned within one IC day after the act. Refusals: no such site, nothing
+  logged, no evidence, already before the registry, oneself.
+- **The fine at docking** (`security::on_docked`, from `TacsimCarrierHooks::arrived` beside
+  `retrieval::on_docked`): at a Registry port — `SECURITY_VENUES` `ceres`, `stickney`, by venue — for the
+  carrier's master (`helm_holder`) and operator (her title holder when a character), every proven unfined
+  row is fined by kind (`Pickup` 500, `Scrap` 2,000, `Recovery` 5,000 cr; `Vacated` and `Capture` none)
+  as a one-term debt to the Freeport Registry's account under `tacsim.debt`, paid in the same step when
+  the account covers it (`pay_debt`), the debt's id written on the row (the receipt). Each still-delinquent
+  fine is reinstated (`reinstate_debt`) at every docking there.
+- **The quarantine**: `DepartRefusalKind::Quarantined` in `prepare_departure` while a fine stands owed
+  against the master or operator, with the ruled line; the queued-departure arm reports the line.
+  `+debts/pay` lifts it.
+
+**Story.** `tacsim` `tests/shard_5/port_security_rs7.rs`, story (b) extended at 512 (Urvara) and 256
+(Ahuna): O's two unlawful recoveries, one vacated on T's `recovery` contest (proven), one left bare; O
+docks at Ceres short, is fined 5,000 cr for the proven one only, held, refused `+debts/pay` short, paid
+once funded, released; T reports the bare one to the registry on T's sensor record, L cannot.
+
+**Divergences.**
+
+- **Proven rows are copied, not moved**: the site's ring keeps them. Moving them would be a site-record
+  write, which only the tow action makes; the security record is what the docking reads and dedups by the
+  row's identity, so a row left in the ring is never charged twice.
+- **The whole fine is the debt** when the account cannot cover it, rather than the shortfall alone: the
+  fine is paid in one post or not at all, as the customs fine is.
+- **An organization operating a carrier** answers through its helm holder only: `UnlawfulAct.actor` is a
+  character, so an organization has no rows of its own.
+- **The bare-row case is a `Recovery`**: story (b)'s bare row is O's unreported recovery of `d`, not a
+  pickup; a crate pickup would leave ore in O's hopper and hold the departure (`HopperLoaded`). The rule is
+  kind-blind: no row is fined unless proven.
+- **Security venues are a constant**, not a lane field, to take no lane version.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
 ## RS.8 — the space seams (2026-11-04)
 
 Row: §6 RS.8; Q-41-26, Q-36-46, Q-36-47. The owner moved it from the space track to the programme

@@ -25,15 +25,15 @@ workspace = true
 # sheet / vitals / NPC-grounding fixtures drive the `toy` test ruleset instead.
 # The normal dependency above stays featureless.
 mush-testkit = { workspace = true, features = ["toy-ruleset"] }
-# The rule-1 allowlist tripwire (tests/legacy_handler_allowlist.rs) composes the
+# The rule-1 allowlist tripwire (tests/ci_policy/legacy_handler_allowlist.rs) composes the
 # production command registry the way `mush-server`'s `build_engine` does.
 mush-config.workspace = true
 mush-llm.workspace = true
 mush-server.workspace = true
-# Doc 33 cut GG.0: the golden-set lint (tests/ipc_golden_frames.rs) reads the
+# Doc 33 cut GG.0: the golden-set lint (tests/engine_contracts/ipc_golden_frames.rs) reads the
 # boundary protocol's version to insist a set is recorded for it.
 mush-ipc.workspace = true
-# H3: the scale harness (tests/scale_harness.rs) seeds an economy world and drives
+# H3: the scale harness (tests/ci_policy/scale_harness.rs) seeds an economy world and drives
 # the real store writer.
 mush-economy.workspace = true
 mush-org.workspace = true
@@ -45,10 +45,10 @@ mush-ruleset.workspace = true
 # the "nothing was refused" claim cannot be met by a boot that applied nothing.
 mush-atlas.workspace = true
 # Doc 21: the pixel picture's sight heights are pinned to the atlas's
-# (tests/pixel_sight_heights.rs); mush-pixel itself does not depend on it.
+# (tests/engine_contracts/pixel_sight_heights.rs); mush-pixel itself does not depend on it.
 mush-pixel.workspace = true
 mush-jobs.workspace = true
-# 16b cut A.1: the two arena gates doc 16 §8 names (tests/arena_library.rs) read
+# 16b cut A.1: the two arena gates doc 16 §8 names (tests/engine_contracts/arena_library.rs) read
 # the arena library's source tree and its pinned draw-label set. 16b cut T.3 adds
 # the third — the custody markers are the only unit writes during a match — which
 # runs a real match over the placement graph, so `mush-sim` comes with it.
