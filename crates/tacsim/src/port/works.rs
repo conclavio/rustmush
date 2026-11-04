@@ -604,6 +604,36 @@ fn bill_of(pinned: &mush_industry::PinnedRecipe, quantity: u32) -> Vec<Goods> {
         .collect()
 }
 
+/// **A hull recipe's part lines** (doc 39 cut IN.9): the design its kit builds, one part a slot
+/// from the design's bill (`crate::port::bill`), times the quantity. None for a recipe whose
+/// output is no kit.
+fn design_parts(w: &World, pinned: &mush_industry::PinnedRecipe, quantity: u32) -> Vec<Goods> {
+    let Some(design) = pinned
+        .outputs()
+        .iter()
+        .find_map(|line| crate::port::commission::design_of_kit(line.commodity()))
+    else {
+        return Vec::new();
+    };
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let Some(goods) = store.goods() else {
+        return Vec::new();
+    };
+    crate::port::bill::design_bill(store.definitions(), goods, &design)
+        .map(|bill| {
+            bill.part_lines()
+                .into_iter()
+                .map(|(good, units)| Goods {
+                    good,
+                    units: units.saturating_mul(u64::from(quantity)),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn bill_text(bill: &[Goods]) -> String {
     bill.iter()
         .map(|g| format!("{} {}", g.units, g.good.as_str()))
@@ -870,7 +900,11 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         let _ = mush_industry::money::settle_booking(ctx, vault.0, None);
         e.to_string()
     })?;
-    let bill = bill_of(&pinned, quantity);
+    let mut bill = bill_of(&pinned, quantity);
+    // Doc 39 cut IN.9 (§4.7): a hull's parts are the design's, one a slot, delivered as lots.
+    if front == Front::Yard {
+        bill.extend(design_parts(ctx.w, &pinned, quantity));
+    }
     let contract = WorksContract {
         id: vault.0,
         front,
@@ -982,21 +1016,31 @@ fn deliver(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             good.as_str()
         ));
     }
-    let (by, escrow) = (ctx.actor, c.escrow());
-    owe(
-        ctx,
-        &mut c,
-        by,
-        (from, escrow),
+    // Doc 39 cut IN.9: a part moves as its lots, one each, never as a pool.
+    let moved = if crate::port_tick::is_part(&good) {
+        let lots: Vec<_> = escrow_lots(ctx, from)
+            .into_iter()
+            .filter(|(_, held, _)| *held == good)
+            .take(usize::try_from(units).unwrap_or(usize::MAX))
+            .collect();
+        if u64::try_from(lots.len()).unwrap_or(0) < units {
+            return Err(format!(
+                "That hold carries no {units} loose {} lots.",
+                good.as_str()
+            ));
+        }
+        (Vec::new(), lots)
+    } else {
         (
             vec![Goods {
                 good: good.clone(),
                 units,
             }],
             Vec::new(),
-        ),
-        Then::Supplied,
-    )?;
+        )
+    };
+    let (by, escrow) = (ctx.actor, c.escrow());
+    owe(ctx, &mut c, by, (from, escrow), moved, Then::Supplied)?;
     say(
         ctx,
         format!(

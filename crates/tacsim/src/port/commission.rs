@@ -44,7 +44,7 @@ use crate::port::vehicle::{RigPlace, RigPlan, RigRowSink};
 /// The commission's document prefix: `tacsim:commission:{order}`.
 pub const COMMISSION_PREFIX: &str = "tacsim:commission:";
 /// The prefix of a hull kit good: `tacsim.hull_kit.<design>` (§4.13's `class: kit` row).
-pub const KIT_PREFIX: &str = "tacsim.hull_kit.";
+pub const KIT_PREFIX: &str = crate::definitions::goods::KIT_PREFIX;
 /// The prefix of a unit design id.
 pub const UNIT_PREFIX: &str = "tacsim.unit.";
 /// The registry prefix of a yard-built hull's mark: `SYB-01`, `SYB-02`, … (a fresh mark a

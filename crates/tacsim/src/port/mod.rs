@@ -132,6 +132,8 @@ pub mod apply;
 /// Doc 36 cut GC.8a: the bay's repair order, its facility classes and rights, berth and stow,
 /// and `+bay`.
 pub mod bay_work;
+/// Doc 39 cut IN.9: the design's bill — §4.8's partition and §4.7's bill (Q-39-14).
+pub mod bill;
 pub mod board;
 pub mod burn;
 pub mod buyout;

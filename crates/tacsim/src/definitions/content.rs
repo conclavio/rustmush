@@ -1027,10 +1027,15 @@ pub fn game_seed_sources() -> Vec<PackSource> {
     LANE_SOURCES
         .iter()
         .chain(
-            [(
-                "relays/manufacture-v1.json",
-                include_str!("../../content/relays/manufacture-v1.json"),
-            )]
+            [
+                (
+                    "relays/manufacture-v1.json",
+                    include_str!("../../content/relays/manufacture-v1.json"),
+                ),
+                // Doc 39 cut IN.9: the yard's hull recipes (each row pinned to its design's
+                // bill, `crate::port::bill`).
+                ("industry/hulls-v1.json", INDUSTRY_HULLS_JSON),
+            ]
             .iter(),
         )
         .map(|(name, bytes)| PackSource {
@@ -1039,6 +1044,10 @@ pub fn game_seed_sources() -> Vec<PackSource> {
         })
         .collect()
 }
+
+/// **The yard's hull recipes** (doc 39 cut IN.9, §4.7): `tacsim.industry.hulls` v1, one recipe
+/// a buildable design, each a kit lot from its bill's bulk lines over its days.
+pub const INDUSTRY_HULLS_JSON: &str = include_str!("../../content/industry/hulls-v1.json");
 
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.

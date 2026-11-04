@@ -1252,7 +1252,12 @@ fn orderable(goods: &GoodsTable) -> impl Iterator<Item = &crate::definitions::Go
     goods
         .goods
         .iter()
-        .filter(|good| good.class != crate::definitions::GoodClass::Part)
+        .filter(|good| {
+            !matches!(
+                good.class,
+                crate::definitions::GoodClass::Part | crate::definitions::GoodClass::Kit
+            )
+        })
 }
 
 fn match_good(goods: &GoodsTable, word: &str) -> Option<CanonicalId> {
