@@ -1719,6 +1719,7 @@ fn queued_refused(rig: &mut Rig, (who, tv, hull): (ObjId, ObjId, ObjId), code: &
         after: record.ordinal,
         at_ic: ic_now(&rig.tw),
         excursion: None,
+        launch: None,
     });
     put_record(rig, record.clone());
     let next = record.ordinal + 1;
@@ -2015,6 +2016,7 @@ fn sm8_a_start_overtaken_by_the_state_is_refused_at_the_start() {
         after: record.ordinal,
         at_ic: ic_now(&rig.tw),
         excursion: None,
+        launch: None,
     });
     put_record(&mut rig, record.clone());
     let next = record.ordinal + 1;

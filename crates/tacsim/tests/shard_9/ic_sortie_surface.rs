@@ -2832,3 +2832,59 @@ fn m8e_the_filed_path_refuses_in_a_commerce_world() {
     );
     no_refused_writes(&rig.tw);
 }
+
+/// **Doc 23 cut S.4b-1 (§17.3): a live mind claim holds the rig in its bay.** Through the
+/// composed launch path, a rig whose `RigRecord.claim` is `Opening`, `Open` or `Closing` (a
+/// staff write here; S.4b-2's `go` and claim arm write it) is refused `+tv/1 launch go` with the
+/// claim's relaunch guard, nothing leaving the bay; a terminal cursor (`Refused`, `Closed`) is
+/// replaced by the next `go`, which launches as a stock rig's. No S.1–S.3 record carries the
+/// key, so the rest of the file runs unchanged.
+#[test]
+fn s4b1_a_live_claim_cursor_holds_the_rig_in_its_bay() {
+    use tacsim::surface::excursion::{CLAIM_STILL_OPEN, ClaimCloseKind, ClaimCursor};
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let open = mush_core::CommitToken::from_bytes([7; 16]);
+    let live = [
+        ClaimCursor::Opening {
+            operator: pilot,
+            licence: 7,
+            org: None,
+            launch_ic: 1,
+            tries: 0,
+        },
+        ClaimCursor::Open {
+            open,
+            operator: pilot,
+        },
+        ClaimCursor::Closing {
+            open,
+            kind: ClaimCloseKind::PoweredDownInBase {
+                base: ObjId(row.hull),
+            },
+            operator: pilot,
+        },
+    ];
+    for cursor in live {
+        let mut record = record_of(&mut rig.tw, tv)
+            .unwrap_or_else(|| tacsim::surface::RigRecord::fresh_unread(tv));
+        record.claim = Some(Box::new(cursor.clone()));
+        crate::excursions::put_record(&mut rig, record);
+        let refused = start_refusal(&mut rig, pilot, "+tv/1 launch go").expect("refused");
+        assert!(refused.contains(CLAIM_STILL_OPEN), "{cursor:?}: {refused}");
+        assert!(in_bay(&rig.tw, tv, &row), "nothing left the bay");
+    }
+    let mut record = record_of(&mut rig.tw, tv).expect("the record");
+    record.claim = Some(Box::new(ClaimCursor::Refused {
+        reason: "You hold no licence 7.".into(),
+        at_ic: 1,
+    }));
+    crate::excursions::put_record(&mut rig, record);
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    assert!(
+        record_of(&mut rig.tw, tv).is_some_and(|record| record.act.is_some()),
+        "a terminal cursor does not hold the rig"
+    );
+    no_refused_writes(&rig.tw);
+}

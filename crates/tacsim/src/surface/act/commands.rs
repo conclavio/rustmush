@@ -1999,6 +1999,22 @@ pub(super) fn richest_read(
 /// # Errors
 ///
 /// The first [`Refusal`] in that order.
+/// **Whether `other`'s run works the pocket `[px, py]` on `site`**, its record read in this
+/// frame alone: `mine_plan` keeps no rig record in its own frame (the M7 stack-size lint; doc 23
+/// cut S.4b-1's cursor grew the record past the threshold there). `Err(())` when the record
+/// cannot be read.
+fn runs_on(
+    reads: &dyn SurfaceReads,
+    other: ObjId,
+    site: &CanonicalId,
+    pocket: [i64; 2],
+) -> Result<bool, ()> {
+    let found = reads.rig(other).map_err(|_| ())?;
+    Ok(found
+        .and_then(|record| record.run)
+        .is_some_and(|run| run.site == *site && run.pocket == pocket))
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one ordered gate list
 pub(crate) fn mine_plan(
     w: &World,
@@ -2099,11 +2115,7 @@ pub(crate) fn mine_plan(
         }
     }
     for other in world_rigs(w).into_iter().filter(|other| *other != rig.tv) {
-        let found = reads.rig(other).map_err(|_| dark())?;
-        if found
-            .and_then(|record| record.run)
-            .is_some_and(|run| run.site == stand.site && run.pocket == [px, py])
-        {
+        if runs_on(reads, other, &stand.site, [px, py]).map_err(|()| dark())? {
             return Err(Refusal::Locked);
         }
     }

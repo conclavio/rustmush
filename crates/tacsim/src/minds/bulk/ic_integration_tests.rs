@@ -838,6 +838,20 @@ impl IcWorld {
             true,
         )
     }
+    /// Doc 23 cut S.4b-1: a start sealed under the hull's IC epoch id (D-23-14).
+    fn ticket_ic(
+        &self,
+        actor: ObjId,
+        hull: ObjId,
+        licence: u64,
+        at_ic: i64,
+    ) -> TestResult<IcHostTicket> {
+        Ok(self.host.enqueue_start(
+            &ic_sortie::fixture_start_ic(&self.engine.world, actor, hull, at_ic)?,
+            LicenceId::new(licence)?,
+            vec![],
+        )?)
+    }
     fn ticket(&self, actor: ObjId, hull: ObjId, licence: u64) -> TestResult<IcHostTicket> {
         Ok(self.host.enqueue_start(
             &ic_sortie::fixture_start(&self.engine.world, actor, hull)?,
@@ -1169,13 +1183,57 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     for hull in owned.hulls {
         owned.command(&format!("@asset/transfer #{}=#{}", hull.0, GOD.0))?;
     }
-    let owner = owned.ticket(GOD, first, 1)?;
+    // Doc 23 cut S.4b-1 (D-23-14, 23-7): this Open seals under the hull's IC epoch id, which
+    // the book accepts, while the book's ordinal rides `Opening.transition` and the Roll's,
+    // custody's and the exclusion's `sortie` keep carrying it; a reboot reconstructs the book.
+    let epoch = crate::arena::mind::SortieId::ic(first, 4_200);
+    let owner = owned.ticket_ic(GOD, first, 1, 4_200)?;
     owned.land(&owner, 12_000_011, first, false)?;
     let claim = one(rows(&owned.disk, "roll", "roll_mind_ic_claim"))?;
     check_eq!(
         claim.get("open").and_then(|o| o.get("capacity")),
         Some(&json!({"kind":"owned_dispatch"}))
     );
+    let book = one(owned
+        .disk
+        .iter()
+        .filter(|((ns, key), _)| ns == crate::NS && key.starts_with("ic_sortie:"))
+        .map(|(_, row)| row.clone())
+        .collect())?;
+    let transition = book
+        .get("open")
+        .and_then(|o| o.get("transition"))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("the Open's transition")?;
+    check_eq!(book.get("format"), Some(&json!(2)));
+    check_eq!(
+        claim
+            .get("open")
+            .and_then(|o| o.get("sortie"))
+            .and_then(serde_json::Value::as_u64),
+        Some(transition),
+        "the Roll's SortieNumber is the book's ordinal"
+    );
+    check_eq!(
+        owned
+            .host
+            .resume(&owned.engine.world, token(12_000_011))?
+            .seal()
+            .sortie,
+        epoch
+    );
+    let after = owned.snapshot();
+    let cold_owned = owned.reboot(f, &after)?;
+    check_eq!(
+        cold_owned
+            .host
+            .resume(&cold_owned.engine.world, token(12_000_011))?
+            .seal()
+            .sortie,
+        epoch,
+        "the book reconstructs an IC-id Open from its transition"
+    );
+    drop(cold_owned);
     chartered_owner(f, &mut owned, first)?;
     eprintln!("M7_STORY phase=ic_composed event=complete");
     Ok(())
