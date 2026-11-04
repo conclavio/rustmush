@@ -3,8 +3,8 @@
 Research date: 2026-09-09. This document preserves the baseline and proposals from
 the review. The subsequent implementation now includes prompt composition and
 inspection, eligible lore, temporary character state and selected voice examples;
-see [the bot guide](bot.md#composed-prompts-and-inspection) for the implemented JSON
-formats and [milestones](bot-milestones.md) for remaining work. Characters,
+see [the bot guide](guide.md#composed-prompts-and-inspection) for the implemented JSON
+formats and [milestones](milestones.md) for remaining work. Characters,
 executable scripts and profiles remain JSON; this Markdown file is documentation.
 
 The most useful next addition is a prompt composer with inspectable contributions.
@@ -83,15 +83,15 @@ ablations; request captures; provider cost accounting; and experiment matrices.
 
 The baseline composition examined during the review was relatively coarse:
 
-- [`Prompts`](../crates/mush-bot/src/experiment.rs) selects a decision or question
+- [`Prompts`](../../crates/mush-bot/src/experiment.rs) selects a decision or question
   system string and appends a supplement. Context controls mostly enable fields
   or bound their byte sizes.
-- [`App::context`](../crates/mush-bot/src/runner.rs) gathers character, speech,
+- [`App::context`](../../crates/mush-bot/src/runner.rs) gathers character, speech,
   instructions, terminal history, references, recalled experiences and routes into
   one JSON object.
-- [`Brain::prepare`](../crates/mush-bot/src/model.rs) sends the system string,
+- [`Brain::prepare`](../../crates/mush-bot/src/model.rs) sends the system string,
   serialized context and optional runner question. Captures preserve that request.
-- [`Knowledge`](../crates/mush-bot/src/knowledge.rs) retrieves lexical matches
+- [`Knowledge`](../../crates/mush-bot/src/knowledge.rs) retrieves lexical matches
   from bundled help and supplied documents. It has no per-entry character
   knowledge eligibility model.
 

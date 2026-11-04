@@ -84,3 +84,77 @@ procedure reading, the right, the at-risk list, the land grant). Re-run unchange
 **Cell cost (rule #14).** shard_2 gains the two story tests (local Windows debug: 32.4 s at 512, 29.7 s at 256);
 shard_1 gains `b36a_rs3_…` (bay_36a's 14 tests ran in 19.9 s). The PR run's JUnit deltas are recorded on the
 PR.
+
+## RS.0 — the vocabulary (2026-11-03)
+
+Row: §6 RS.0; Q-38-29. PR [#385](https://github.com/conclavio/rustmush/pull/385), base `a2ef4075`.
+
+**Built.** `crates/mush-bot/src/mine/salvage.rs`, mounted as `mine::lane::salvage` beside CR.0's `crew` (the
+`#[path]` sibling under `lane`). The captain's (`field::in_vocabulary`) and the escort's
+(`escort::in_vocabulary`) closed vocabularies both admit `salvage::in_vocabulary`, each line in closed form:
+
+| Line | Form admitted | Whose verb |
+|---|---|---|
+| `+tv/<n> pickup`, `+tv/<n> scrap` | `[<object>] [go]`, `<n>` 1–99, `<object>` a decimal object number, no leading zero | doc 36 GC.5, GC.6 (shipped) |
+| `+salvage`, `/claim`, `/contest`, `/inspect`, `/report`, `/authorize` | `+salvage/claim <hull> [go]`; `/contest <hull>[=recovery\|procedure\|right] [go]`; `/inspect <hull>`; `/report <hull>=<who> [go]`; `/authorize <hull>=<who> [until=<n>] [go]` and `/authorize <site>/<block>=<who> [until=<n>] [go]` | doc 36, RS.3 (shipped) |
+| `+salvage/retrieve`, `/jobs`, `/accept` | `/retrieve <hull>[=<port>] [fee=<cr>] [go]`; `/jobs`; `/accept <job> [go]` | RS.5 (Q-41-9; "the bot learns the three") |
+| `+salvage/report … registry` | `/report <site>[=<who>\|#<hull>] registry` | RS.7 (Q-41-24) |
+| `+bay`, `/quote`, `/order`, `/fit`, `/strip`, `/scrap`, `/cancel`, `/berth`, `/stow` | `+bay <hull>`; `/order <hull>=<work>[,…]` (the seven kinds or a section or part word); `/fit <hull>=<slot> <lot>` (`lot#` and 16 hex digits); `/strip <hull>=<part>`; `/stow <hull>[=<carrier>]`; the rest `<hull>` | GC.8a/b (shipped); RS.4 the bay-to-bay `/stow` |
+
+A `<hull>` is `#<id>` or a name (letters, digits, spaces, `-`, `'`, `.`, at most 48); a `<who>` `#<id>` or a
+plain name; a site, a port, a slot, a section or a part a lowercase word. Nothing beginning `@`, and no line
+over 160 bytes or with a line break.
+
+`salvage::answer` reads the server's answers as one of fourteen `Answer`s: the claim's (not in custody,
+previewed, filed, filed already), the contest's (previewed on any ground, filed, no ground for any of the five
+reasons, window closed), the rig's scrap (previewed, done, no remains, not the title holder) and pickup
+(previewed or queued, no crate). `rs0_the_salvage_answers_match_the_game` holds each to tacsim's own
+`surface::claim` and `surface::salvage` constants through the development dependency (`lines`' precedent),
+and `rs0_the_salvage_lines_are_closed` the forms both ways.
+
+**Taken already, not repeated.** `+field/void` and the four-digit address parser (`lines::is_addr`) are doc
+40 FR.0's; `+sortie/condition` is doc 42 CR.0's; `+tv/<n> tow|load|release` are GC.4's and FR.0's. Doc 39's
+IN.11 row names `+bay/order replace` as its vocabulary: RS.0's `+bay/order` form admits `replace` with the
+other six kinds, so IN.11 reads it rather than adds it.
+
+**Story.** `crates/mush-bot/tests/mining_cohort.rs`, `rs0_the_bot_types_the_salvage_words_on_urvara` (512) and
+`rs0_the_bot_types_the_salvage_words_on_ahuna` (256), one body (`salvage_smoke`), `#[ignore]`d and run by name
+(`cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored rs0_ --nocapture --test-threads 1`): the
+production root booted in the test binary, the bot's own lane over its own SSH session in line mode, the
+canary's two phases around the rate lift. The lane kits up at Ceres, lifts to the site and launches rig 1; then
+the bot types story (b)'s `+salvage/claim <hull>`, `+salvage/contest <hull>=recovery` and `+tv/1 scrap`, each
+asserted in `field::in_vocabulary` before it goes, and `salvage::answer` classifies each answer. **Passed on
+the owner's Windows box, 2026-11-03:** Urvara Reach launched at +321 s, the three answered at +330 s (no
+salvage custody names the hull; no remains lie within a cell of rig 1); Ahuna Flank launched at +352 s,
+answered at +356 s; 687 s for both.
+
+**Divergences.**
+
+- The row's acceptance reads the lines on a site with nothing recovered: the answers classified are the
+  refusals (`NOT_IN_CUSTODY`, `NO_REMAINS`). The filed claim, the contest preview and the break-up are read
+  by the same reader against the game's own sentences in the unit test; RS.3's `salvage_close` story and
+  RS.9's whole stories play them on a real casualty.
+- RS.5's and RS.7's forms are admitted before the game has them, at doc 41's ruled grammar, as FR.0 admitted
+  `+faction/stance` before FR.1. `+bay/return` (doc 39 IN.8) has no ruled grammar yet and is left to IN.8;
+  `+debts` and `+debts/pay` (RS.5) and the tender's `+tv/<n> stores open|unjam|stabilize|rearm` (RS.1) are
+  outside the row and left to those cuts.
+- No lane plays the lines yet; the stories grow them from RS.1 on.
+
+**Cell cost (rule #14).** **The delta is two new tests of 0.02 s in all, in the `bot` cell; no other cell gained
+or lost a test.** Measured from the JUnit of #385's CI run
+[41760031062](https://github.com/conclavio/rustmush/actions/runs/41760031062) on head `3424a895`, against
+main's last CI run [41754225803](https://github.com/conclavio/rustmush/actions/runs/41754225803) on `c0d123a9`.
+Main since then (`a2ef4075`) differs from `c0d123a9` only in `40-cut-notes.md`, so the two runs differ only by
+this cut.
+
+- **New tests**: `mine::lane::salvage::tests::rs0_the_salvage_answers_match_the_game` (0.01 s) and
+  `…::rs0_the_salvage_lines_are_closed` (0.008 s), both `bot`. The two SSH smokes are `#[ignore]` and run by
+  name only.
+- **Each cell's test count**: the same in both runs except `bot` (736 → 738).
+- **Summed minutes per cell, main → PR**: `bot` 11.80 → 12.13; `bot-stories` 26.58 → 28.24; `rest-server`
+  48.83 → 65.47; `rest-server-boundary` 20.90 → 36.84; `tacsim-integration-7` 48.51 → 27.53;
+  `tacsim-integration-6` 45.24 → 24.80; total 637.12 → 673.04.
+- **These movements are host noise, not this cut.** They run both ways, from −21.0 to +16.6 minutes, in cells
+  whose tests are identical in both runs (`bot`'s +0.33 is 0.02 s of new tests and 19.8 s of noise).
+
+No cell's wall moved because of RS.0, so nothing moves shard (rule #3).

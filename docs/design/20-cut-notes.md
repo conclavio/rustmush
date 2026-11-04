@@ -5020,7 +5020,7 @@ Verified: `rustfmt --check --edition 2024` on the four files; `cargo clippy -p t
 
 9. **CI** (`.github/workflows/ci.yml`). One comment block, after `bot-muster-rate` and before the `# 16b cut H` comment, naming the cohort and its by-hand command (O-28 default (i)). No job.
 
-10. **The user guide** (`docs/bot.md`). A `## Mining pilot` section covering the beats, headless and model-free play, every refusal verbatim, the name rule as `hull_name` applies it, the measured time and `max_seconds = 2700`, the records and the report's `mine` block, and an example.
+10. **The user guide** (`docs/bot/guide.md`). A `## Mining pilot` section covering the beats, headless and model-free play, every refusal verbatim, the name rule as `hull_name` applies it, the measured time and `max_seconds = 2700`, the records and the report's `mine` block, and an example.
 
 11. **The one changed assertion** (`crates/mush-bot/tests/arena_e2e.rs`): `the_command_line_refuses_what_the_pilot_cannot_fly`'s headless sentence becomes "headless play requires a goal and [model], --arena, --mine, or --script".
 

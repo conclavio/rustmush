@@ -112,6 +112,8 @@ if ! command -v redis-server > /dev/null; then
   # Redis Open Source from packages.redis.io, the suite named after the
   # box's Ubuntu release (noble on conclav.io, resolute on conclav.dev; the
   # repository has both). The Ubuntu archive's own redis has no modules.
+  # The box's own file, read for VERSION_CODENAME:
+  # shellcheck source=/dev/null
   . /etc/os-release
   curl -fsSL https://packages.redis.io/gpg | gpg --dearmor --yes -o /usr/share/keyrings/redis-archive-keyring.gpg
   echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb ${VERSION_CODENAME} main" \

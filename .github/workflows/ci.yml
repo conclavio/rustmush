@@ -36,10 +36,22 @@ on:
 # The least any job needs: every job only checks the tree out, restores the
 # cargo and npm caches and uploads artifacts, and none of those uses the
 # workflow's token for more than reading. Without this block the token
-# carries the repository's default permissions into all 18 jobs, which is
+# carries the repository's default permissions into every job, which is
 # CodeQL's actions/missing-workflow-permissions, one alert per job.
 permissions:
   contents: read
+
+# Doc 43 cut TS.15: a newer push to a pull request's branch cancels the run it
+# supersedes (18 of the last 100 PR runs finished superseded). Everything else
+# keeps every run: the bisect and the shard rebalances read main's JUnit run by
+# run. That is why the group is per-ref only for pull requests and per-run for
+# push, schedule and dispatch. GitHub keeps at most one running and one pending
+# run in a group, and a newer queued run cancels the pending one even with
+# `cancel-in-progress: false`, so one shared main group would still drop runs
+# whenever three pushes landed inside one run's hour (Q-43-14).
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -152,6 +164,10 @@ jobs:
       - name: Execute the exact M8 story
         run: cargo test --locked -p tacsim --test shard_9 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
+  # Dispatch-only, not on the schedule: M6's acceptance evidence (the author
+  # story plus a fresh thirty-match external comparison), re-run when the mind
+  # port changes, and hours long (bound 360 min), longer than the nightly can
+  # carry. Doc 43 TS.2 gives the six dispatch-only jobs a weekly slot.
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
     if: github.event_name == 'workflow_dispatch'
@@ -183,6 +199,9 @@ jobs:
         with:
           name: m6-author-acceptance
           path: target/m6-acceptance-evidence/
+  # Dispatch-only for the same reason as the job above: a 900-second replay of
+  # twenty-four hulls that recomputes every think (bound 180 min), run when the
+  # mind kernel changes rather than every night (doc 43 TS.2 schedules it).
   mind-full-replay:
     name: M6 full-duration Class III replay
     if: github.event_name == 'workflow_dispatch'
@@ -714,6 +733,22 @@ jobs:
               exit 1
               ;;
           esac
+      # Doc 43 cut TS.1: the one step of the old `kernel-contracts` job that ran
+      # nowhere else (every other line there re-ran tests the matrix's sweeps
+      # already run). The live provider remains an explicit, owner-funded
+      # opt-in; this exact test filter exercises its report path with no
+      # external provider or key, and without `TACSIM_LLM_COST_RUN` the sweep
+      # above runs the same test as an early return. The harness binary is
+      # this cell's (manifest line 1), already built by the sweep.
+      # `ci_gated_test_inventory` pins this step by its name.
+      - name: The LLM cost report with a mock provider
+        if: matrix.shard == 'tacsim-integration-1'
+        env:
+          TACSIM_LLM_COST_RUN: "1"
+          TACSIM_LLM_COST_MOCK: "1"
+          TACSIM_LLM_COST_MINUTES: "0.1"
+          TACSIM_LLM_COST_UNITS: "4"
+        run: cargo test -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
       - name: Test the bot on its own feature set
         if: matrix.shard == 'bot'
         run: |
@@ -752,9 +787,10 @@ jobs:
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
 
-  # WS24-S4 (fu10-1): the Test step's `cargo test --workspace` above compiles
-  # every crate exactly ONCE, with its default features. Everything that is off
-  # by default is therefore code no job compiles — and `mush-gateway --features
+  # WS24-S4 (fu10-1): the `test` matrix above compiles every crate with its
+  # default features (rest-libs adds four: mush-sim's and mush-housing's
+  # debug-checks, mush-server's and tacsim's fault-injection). Everything else
+  # that is off by default is therefore code no job compiles — and `mush-gateway --features
   # tls` is not an optional extra, it is the PRODUCTION build of the proxyless
   # split deploy. Before this job, `tls` appeared nowhere in this file and the
   # native-HTTPS path was first compiled at redeploy on the VPS.
@@ -967,14 +1003,17 @@ jobs:
       # The disposable-store remedy this step also ships. It cannot be RUN here
       # (it stops a systemd unit, flushes a Redis and rewrites a data dir as
       # root), so what CI holds is that it stays well-formed and clean. The
-      # render and the two dev1 deploy scripts are parsed for the same reason —
-      # they run as root on a box nobody wants to debug at 2am — but only
-      # `bash -n`: they have never been through `shellcheck`, and a gate is
-      # added with its findings fixed, not with a backlog attached.
+      # render and the deploy scripts are parsed for the same reason — they
+      # run as root on a box nobody wants to debug at 2am. A gate is added with
+      # its findings fixed, not with a backlog attached: since doc 43 cut
+      # TS.13 every tracked script under deploy/ and scripts/ goes through
+      # `shellcheck` (the doorway and runner provisioning, the VPS gate and
+      # the bake among them, which were in no list), found by `git ls-files`
+      # so a new script cannot be left off.
       - name: The instance reset and deploy scripts are well-formed
         run: |
+          git ls-files -z 'deploy/*.sh' 'scripts/*.sh' | xargs -0 shellcheck
           bash -n scripts/reset-instance.sh
-          shellcheck scripts/reset-instance.sh
           bash scripts/tests/reset-instance.sh
           bash -n deploy/instance/render.sh
           bash -n deploy/dev1/deploy.sh
@@ -988,69 +1027,6 @@ jobs:
           bash -n deploy/dev2-split/gateway-swap.sh
           bash scripts/tests/gateway-swap.sh
           bash scripts/tests/check-web-bundle.sh
-
-  kernel-contracts:
-    name: K8 kernel contracts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - name: Five-gate and lifecycle contracts
-        run: |
-          cargo test -p mush-contract-tests --lib
-          cargo test -p mush-contract-tests --test gate5_fault_matrix
-          cargo test -p mush-contract-tests --test schedule_source
-          cargo test -p mush-contract-tests --test ci_gated_test_inventory
-      # The live provider remains an explicit, owner-funded opt-in. This exact
-      # test filter exercises its report path with no external provider or key.
-      - name: The LLM cost report with a mock provider
-        env:
-          TACSIM_LLM_COST_RUN: "1"
-          TACSIM_LLM_COST_MOCK: "1"
-          TACSIM_LLM_COST_MINUTES: "0.1"
-          TACSIM_LLM_COST_UNITS: "4"
-        run: cargo test -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
-      # WS01-S11: the world task must never panic, so the number of places it
-      # could is budgeted per crate under panic_budget/ and only a reviewed
-      # diff raises one. The same target refuses `panic = "abort"`, which would
-      # make WS01-S4's catch_unwind boundary inert. It also runs under the
-      # cross-platform `test` job's `--workspace`; it is named here so the log
-      # says which contract failed.
-      - name: The production panic surface and the panic=abort firewall
-        run: cargo test -p mush-contract-tests --test panic_budget
-      # WS01-S12: the other half of the same rule. Where a crate's production
-      # count for one of the six panic-shaped restriction lints is already zero,
-      # its crate root denies that lint and the compiler holds it there. This
-      # target carries the measurement the per-crate sets were cut from, and
-      # fails if a root drops a deny, if a deny appears that the record does not
-      # back, if an `#[allow]` under src/ takes an enabled lint back, or if a new
-      # crate arrives unmeasured.
-      - name: The per-crate restriction lints
-        run: cargo test -p mush-contract-tests --test restriction_lints
-      # 10b §14.3 criterion 4 (E7 cut 11 independent verify fold, G5/F7): every
-      # E7k lane's proof must run in a package that can SEE the crate that owns
-      # the lane. `mush-contract-tests` declares no `mush-industry` dependency,
-      # so L4 (`industry.workorder`) is proven by the industry suite itself —
-      # the `industry.workorder.completed` boundary fact and the production
-      # source's cursor.
-      - name: E7k lane proofs
-        run: |
-          cargo test -p mush-industry --test e7c4
-      - name: Production migrations and compatibility declarations
-        run: |
-          cargo test -p mush-server --test world_task production_action_migrations::
-          cargo test -p mush-server --lib k8_5_production_compositions_publish_command_compatibility
-          # WS04-S8: the gate above composes `boot::game_modules` — the roster a
-          # server boots — instead of a hand-assembled list. This second cell is
-          # the ordered golden of that roster, so a module added, dropped or
-          # reordered fails a named test here rather than being re-certified in
-          # silence.
-          cargo test -p mush-server --lib the_ci_gated_composition_is_the_boot_composition
 
   redis-faults:
     name: K8 Redis and process-fault matrix
@@ -1084,7 +1060,7 @@ jobs:
           # inventory requires its name here.
           cargo test -p mushd --test durable_process durability_e2e::clean_shutdown_drains_and_snapshots -- --exact --test-threads=1
           cargo test -p mushd --test durable_process durability_e2e::relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1
-      # 08j S4: without these the seven `*_redis_gated` proofs in
+      # 08j S4: without these the nine `*_redis_gated` proofs in
       # `crates/mushd/tests/durable_process/persistence.rs` and the two single-test twins take
       # their missing-`REDIS_URL` early return and pass everywhere as a silent
       # skip. `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`
@@ -1190,7 +1166,7 @@ jobs:
   # it is run by hand and no job runs it: not on push, not on a dispatch, not on
   # the daily schedule. Naming it here is what the gated-test inventory asks of
   # an ignored test. Its canary, the_mining_root_runs_under_the_bots_serde, is
-  # not ignored and runs in the test job's `cargo test -p mush-bot` step above.
+  # not ignored and runs under nextest in the `test` matrix's bot-stories cell.
   # By hand:
   # cargo test -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture
 
@@ -1284,65 +1260,6 @@ jobs:
           name: tacsim-harness-report
           path: harness*.json
           if-no-files-found: error
-
-  definition-wire-fixtures:
-    name: K8 definition and wire fixtures
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - name: Canonical definition and action wire goldens
-        run: |
-          cargo test -p mush-core mechanics::tests::canonical_encoding_and_digest_have_a_golden_wire_contract -- --exact
-          cargo test -p mush-core mechanics::tests::definition_identity_and_registry_fingerprint_have_golden_contracts -- --exact
-          cargo test -p mush-core action::tests::request_uid_wire_form_is_fixed_and_strict -- --exact
-          cargo test -p mush-core authoritative::tests::key_and_bundle_wire_are_strict -- --exact
-          cargo test -p mush-core clock::tests::clock_stamp_wire_shape_is_strict_and_cross_clock_math_fails -- --exact
-          cargo test -p mush-contract-tests tests::definitions_are_stable_and_installed_exactly -- --exact
-      - name: Generated protocol bindings are current
-        run: |
-          cargo test -p mush-proto --features ts --test ts_export
-          git diff --exit-code web/src/lib/proto
-
-  direct-rand-policy:
-    name: K8 direct-rand policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p mush-contract-tests --test provider_rng_policy
-
-  truth-serialization-policy:
-    name: K8 truth-serialization policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain (pinned by rust-toolchain.toml)
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
-      - name: Private truth has no serde contract
-        run: cargo test -p mush-contract-tests --test truth_serialization_policy
-      - name: Public action surfaces stay redacted
-        run: |
-          cargo test -p mush-core offer::tests::projected_offer_hides_internal_binding_and_builds_server_parameters -- --exact
-          cargo test -p mush-contract-tests tests::brace_offer_projects_no_hidden_clock_and_routes_to_the_same_provider -- --exact
-          cargo test -p mush-contract-tests tactical_gate::tests::tactical_keyframe_line_receipt_and_llm_surfaces_share_one_redacted_dto -- --exact
-          cargo test -p mush-server --test split_boundary ipc_authoritative_action::authenticated_action_transfers_ownership_only_after_exact_intent -- --exact
-          cargo test -p mush-gateway --lib bridge_common::projection_tests::line_action_list_renders_only_projected_presentation -- --exact
-          cargo test -p mush-net-ssh --lib tui::render::tests::view_rows_reproduce_actions_and_never_leak_undeclared_fields -- --exact
 
   web:
     runs-on: ubuntu-latest

@@ -1773,9 +1773,10 @@ describe("the cockpit feeds", () => {
 
   it("the shell mounts the one command box, and the screens' own markup follows 16b cut B.1", () => {
     // Probes in the whitelist's style, for the Svelte halves the pure tests
-    // cannot reach (this file runs in node and mounts nothing; the one jsdom
-    // mount is `components/CockpitScreen.test.ts`, 16b cut B.2). Each one
-    // fails on the code before cut B.1.
+    // cannot reach (this file runs in node and mounts nothing; the jsdom
+    // mounts are the `components/*.test.ts` files under
+    // `// @vitest-environment jsdom`, and doc 43 TS.19 moves these probes
+    // there). Each one fails on the code before cut B.1.
     const read = (name: string): string =>
       readFileSync(resolve(process.cwd(), `src/components/${name}`), "utf8");
 

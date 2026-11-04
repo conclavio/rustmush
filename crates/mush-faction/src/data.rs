@@ -1,4 +1,4 @@
-//! The faction registry data model (design: scenes_factions_knowledge.md §3,
+//! The faction registry data model (design: docs/design/scenes-factions-knowledge.md §3,
 //! registry half) and its persistence keys.
 //!
 //! Live state is one [`FactionState`] in a typed module state slot on the

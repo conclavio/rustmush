@@ -827,20 +827,45 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
          L4 citation may be revisited, deliberately"
     );
 
-    // §14.3 criterion 4: the lane proofs are named by the *K8 kernel contracts*
-    // job, so a reviewer running CI runs them.
+    // §14.3 criterion 4: the lane proofs run on every CI run, so a reviewer
+    // running CI runs them. They were named line by line in the *K8 kernel
+    // contracts* job until doc 43 cut TS.1 deleted it as a re-run of the
+    // `test` matrix; what is pinned now is that the matrix cells which run
+    // them still do: rest-libs' workspace sweep excludes neither
+    // `mush-industry` (e7c4) nor `mush-contract-tests` (gate5_fault_matrix),
+    // and rest-server's sweep names mush-server's `world_task` binary
+    // (production_action_migrations::).
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("the CI workflow is part of the tree this policy governs");
-    for needle in [
-        "-p mush-industry --test e7c4",
-        "-p mush-contract-tests --test gate5_fault_matrix",
-        "-p mush-server --test world_task production_action_migrations::",
-    ] {
+    let sweep = |needle: &str| {
+        workflow
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with(needle))
+            .unwrap_or_else(|| {
+                panic!("10b §14.3 criterion 4: ci.yml no longer runs `{needle} ...`")
+            })
+    };
+    let rest_libs = sweep("cargo nextest run -P ci --workspace");
+    for package in ["mush-industry", "mush-contract-tests"] {
         assert!(
-            workflow.contains(needle),
-            "10b §14.3 criterion 4: `cargo test {needle}` must be named by a CI job"
+            !rest_libs
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|pair| pair == ["--exclude", package]),
+            "10b §14.3 criterion 4: the rest-libs sweep excludes {package}, so its lane \
+             proof runs in no CI job"
         );
     }
+    let rest_server = sweep("cargo nextest run -P ci -p mush-server --test commerce_composition");
+    assert!(
+        rest_server
+            .split_whitespace()
+            .any(|word| word == "world_task"),
+        "10b §14.3 criterion 4: the rest-server sweep no longer runs mush-server's \
+         world_task binary (production_action_migrations::)"
+    );
 }
 
 #[test]
