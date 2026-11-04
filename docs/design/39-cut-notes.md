@@ -516,4 +516,7 @@ money; the officer's grant; the captain's move to Stickney; the escort's disable
   <hull>` (doc 18 P2's seat) is not built. The story's captain hands the charter back so the yard-built Dray-P is
   their one helm.
 
-**Cell delta (rule #14).** tacsim-integration-6: _filled from the PR's JUnit_.
+**Cell delta (rule #14).** `tacsim-integration-6`: **+2.76 min** for the three new tests (the port half 48.0 s,
+Ahuna 64.5 s, Urvara 53.3 s on PR run 41850018642's JUnit, head `e6b0f82c`). The cell's sum reads 46.35 → 50.16 min
+against main's run at the merge base (41827163605, `4390f04c`), 80 → 83 tests; the other +1.05 min is spread over
+the unchanged tests (runner speed), none of which this cut touches.
