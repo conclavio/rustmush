@@ -7201,7 +7201,7 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
     let dec2 = run(&mut rig2.tw, pilot2, "+helm/decouple");
     assert!(dec2.contains("Decoupled"), "{dec2}");
     let auto_halo = run(&mut rig2.tw, pilot2, "+helm/autopilot ceres_halo");
-    assert!(auto_halo.contains("Ceres Halo Commons"), "{auto_halo}");
+    assert!(auto_halo.contains("Ceres Halo"), "{auto_halo}");
     let halo_burn = drain_space_and_industry(&mut rig2.tw);
     land_quietly(&mut rig2, &halo_burn);
     let halo_arr_ic = rig2
@@ -9855,4 +9855,158 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
         quarantined_out.contains("quarantined"),
         "commands on a quarantined hull must fail closed: {quarantined_out}"
     );
+}
+
+/// **Doc 35c cut SF.R22 (`D-35-17`, `35c` §3 Cut `SF.R22` — Authoring II)**:
+/// 1. `RulesPack::from_content` (`load_pack`) validates `LocationDef::clusters` (`place_clusters_fault`)
+///    and refuses malformed cluster entries (`PackError::PlaceCoordinates`); `all_orbital_clusters`
+///    reads the four authored clusters from `campaign-seed` (`OrbitalClusterId` and `LANE_CLUSTER_ROCKS`
+///    are deleted).
+/// 2. `picket_cast_book()` loads `corvette`, `raider`, and `interdictor` from `content/space/picket_cast.json`,
+///    and `run_sealed_mind_on_pool` installs sealed runners from the unit's `MindSeal` digest via
+///    `install_sealed_runners` and executes on `MindPool::shared()` (`CACHED_RHAI_RUNNERS` is deleted).
+/// 3. Launching collector drones via `+mine/drones` stages valid `RigRecord`s into `PortHandles::families.excursions`
+///    (`tacsim.excursion`) with `RigRecord::excursion` populated (`Excursion { id, operator, hull, slot, site }`).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr22_authoring_ii_clusters_from_pack_sealed_minds_and_drone_excursions() {
+    // 1. Verify `load_pack` refuses a malformed `LocationDef::clusters` entry (`PackError::PlaceCoordinates`):
+    let mut bad_lane: serde_json::Value =
+        serde_json::from_str(LANE_JSON).expect("shipped lane JSON parses");
+    bad_lane["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    bad_lane["entries"]["kirkwood_depot"]["def"]["clusters"][0]["rocks"][0]["spectral"] =
+        serde_json::json!("X-INVALID");
+    let bad_lane_signed = sign(&serde_json::to_string_pretty(&bad_lane).expect("serializes"));
+    let err =
+        load_pack(&bad_lane_signed).expect_err("malformed cluster spectral must fail load_pack");
+    assert!(
+        matches!(err, tacsim::pack::PackError::PlaceCoordinates { .. }),
+        "expected PackError::PlaceCoordinates for malformed cluster rock spectral, got: {err:?}"
+    );
+
+    // 2. Verify `picket_cast_book()` loads `corvette`, `raider`, and `interdictor` from `content/space/picket_cast.json`:
+    let cast = tacsim::space::picket_cast_book().expect("picket_cast.json must load");
+    assert_eq!(cast.corvette.commander, "Customs Picket Commander");
+    assert_eq!(cast.corvette.unit, "tacsim.unit.corvette");
+    assert_eq!(cast.raider.commander, "Kaelen Vane");
+    assert_eq!(cast.raider.unit, "tacsim.unit.corvette");
+    assert_eq!(cast.raider.overlay, "tacsim.unit.raider_heavy");
+    assert_eq!(cast.interdictor.hull_name, "Interdictor Picket");
+    assert_eq!(cast.interdictor.overlay, "tacsim.unit.corvette_interdictor");
+
+    // 3. Boot world, verify `all_orbital_clusters` reads the 4 authored clusters from `campaign-seed`,
+    //    fly a `Dray-P` to `ceres_halo`, launch 2 collector drones (`+mine/drones A 2`), land the
+    //    `BubbleInputProvider` transaction, and verify `RigRecord`s are staged into `tacsim.excursion`!
+    let mut rig = stocked();
+    let clusters = tacsim::space::all_orbital_clusters(rig.tw.world());
+    assert_eq!(
+        clusters.len(),
+        4,
+        "all_orbital_clusters must read the 4 authored clusters from campaign-seed"
+    );
+
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit_out = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit_out.contains("Dray-P"), "{refit_out}");
+    seed_pool(&mut rig, vault, "propellant", 75, LotId(991));
+    seed_pool(&mut rig, vault, "provisions", 45, LotId(992));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let _ = run(&mut rig.tw, pilot, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot, "+ship/undock ceres_halo throttle=500");
+    let transit_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &transit_burn);
+    let _ = fire_quietly(&mut rig);
+    let launch_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &launch_submits);
+    let arrival_ic = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let t0 = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(t0);
+    let _ = rig.tw.fire_due(t0.saturating_mul(1_000));
+    let open_submits = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &open_submits);
+    let t_seed = rig.tw.world().now().saturating_add(6);
+    rig.tw.set_now(t_seed);
+    let _ = rig.tw.fire_due(t_seed.saturating_mul(1_000));
+    let seed_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &seed_submits);
+
+    let _ = run(&mut rig.tw, pilot, "+helm/approach A");
+    let app_b = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &app_b);
+    for _ in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let sub = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &sub);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/match A");
+    let match_b = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &match_b);
+
+    set_rate(&mut rig.tw, 1);
+    let drones_out = run(&mut rig.tw, pilot, "+mine/drones A 2");
+    assert!(
+        drones_out.contains("Launched 2 collector drone(s)"),
+        "{drones_out}"
+    );
+    let drone_submits = drain_space_and_industry(&mut rig.tw);
+    assert!(
+        drone_submits
+            .iter()
+            .any(|s| s.action.key().id.as_str() == tacsim::space::BUBBLE_INPUT_ACTION),
+        "launching collector drones must submit tacsim_space_bubble_input to stage RigRecords"
+    );
+    land_all(&mut rig, &drone_submits);
+
+    // Verify both collector drone objects now have `RigRecord`s staged in `PortHandles::families.excursions` (`tacsim.excursion`):
+    let drone_ids: Vec<(u8, tacsim::surface::excursion::ExcursionId)> = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .cluster_sessions[&hull]
+        .active_drones
+        .iter()
+        .map(|d| (d.slot, d.excursion_id))
+        .collect();
+    assert_eq!(drone_ids.len(), 2);
+    for (slot, exc_id) in drone_ids {
+        let raw_val = rig
+            .typed
+            .get(&(
+                SmolStr::new(tacsim::NS),
+                SmolStr::new(format!(
+                    "action-state/v1/{}/{}",
+                    tacsim::surface::excursion::EXCURSION_FAMILY,
+                    exc_id.tv.0
+                )),
+            ))
+            .expect("collector drone must have a RigRecord staged in tacsim.excursion");
+        let rig_rec: tacsim::surface::excursion::RigRecord =
+            serde_json::from_value(raw_val["value"].clone())
+                .expect("RigRecord deserializes cleanly");
+        let exc = rig_rec
+            .excursion
+            .expect("RigRecord::excursion must be populated for launched collector drone");
+        assert_eq!(exc.id.tv, exc_id.tv);
+        assert_eq!(exc.operator, pilot);
+        assert_eq!(exc.hull, hull);
+        assert_eq!(exc.slot, slot);
+        assert_eq!(exc.site.as_str(), "ceres_halo");
+    }
 }

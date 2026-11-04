@@ -680,7 +680,9 @@ pub(crate) fn venue_name(w: &World, venue: &CanonicalId) -> String {
     if let Some((name, _)) = port_of_venue(w, venue) {
         return name;
     }
-    if let Some(cluster) = crate::space::OrbitalClusterId::parse(venue.as_str()) {
+    if let Some(cluster) = crate::space::cluster_by_id(w, venue)
+        .or_else(|| crate::space::lookup_orbital_cluster(w, venue.as_str()))
+    {
         return format!("{} ({})", cluster.display_name(), cluster.as_str());
     }
     venue.to_string()
