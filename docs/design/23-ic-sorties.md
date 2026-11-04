@@ -1498,6 +1498,23 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   panic budget and restriction lints; the SM.12c cost lane re-run with the claim arm's write
   (`other.ic_mind_transition`, two per epoch); the M7 stack-size lint on `RigRecord`.
 - **Not in S.4b:** §17.9's "neither's" list.
+- **Built in two slices** (2026-11-03, the lead's ruling when the cut started; each its own PR
+  off `main`, the owner merging). At `a2ef4075` three facts made step 1 larger than one PR:
+  (a) no world but the claim path's own test worlds composes it (`with_ic_minds` is called only
+  from tests; production boot composes no mind commerce, nor does the surface or field
+  harness); (b) the exclusion admitted an Open only into a `ConfiguredIcBase` on a
+  `FixedDomain`, so a bay could not be the hangar; (c) the book refused `SortieId::Ic` and read
+  its ordinal off the seal. **S.4b-1** builds what stands on its own and no player can reach:
+  D-23-22's refusal at `go` (where the claim path is composed); the dispatch's and the DT
+  launch's seals over the armament (D-23-14); `Opening.transition` with every ordinal reader
+  moved onto it and `SortieId::Ic` accepted (23-7); the exclusion's hangar image for a bay
+  (`IcExclusionConfig::with_hangars`, the freeze unchanged); and the protocol's types —
+  `RigRecord.claim: ClaimCursor`, `Queued.launch: QueuedLaunch`, `StartPermit.sortie` — with
+  the cursor's relaunch guard at `go`. **S.4b-2** builds the rest of the list above on those
+  seams: the composition and the harness, the production `HostTransition`, `go` writing
+  `Opening` and queueing the launch, the surface claim arm, the re-scoped freeze, `custody_unit`
+  from `IcHost::resume`, the seats, the drop, the carried memory and the stories. *As built:
+  [23-cut-notes.md](23-cut-notes.md) S.4b-1, with the seams doc 40's FR.3 lands on.*
 
 **S.4b-T — the testimony producer (small; independent; may start now).** D-23-19:
 `EarnedContacts::admit` fed from the field log's own-sensor `Classified` lines as each chunk

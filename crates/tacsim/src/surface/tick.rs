@@ -3370,6 +3370,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -3431,6 +3432,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -3602,6 +3604,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -3725,6 +3728,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            claim: None,
         }
     }
 
@@ -3953,6 +3957,7 @@ mod tests {
             after: 5,
             at_ic,
             excursion: None,
+            launch: None,
         });
         record
     }

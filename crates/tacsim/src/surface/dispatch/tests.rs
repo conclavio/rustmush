@@ -406,8 +406,10 @@ fn s4b1_the_dispatch_seals_an_armed_rig_over_its_armament() -> TestResult {
     let escort = crate::definitions::to_tactical_unit(spec, binding, TV)?;
     let armament = crate::match_::seal_armament(&catalog, &escort);
     check!(!armament.is_empty(), "the escort is armed");
-    let mut store = TacsimStore::default();
-    store.definitions = Arc::new(catalog);
+    let store = TacsimStore {
+        definitions: Arc::new(catalog),
+        ..TacsimStore::default()
+    };
     let sortie = SortieId::ic(TV, 500);
     let rom = seal_rom(TV, &escort, sortie, OPERATOR, &store, false)?;
     let field = crate::match_::seal::seal_rom_for(
@@ -450,13 +452,14 @@ fn s4b1_the_dispatch_seals_an_armed_rig_over_its_armament() -> TestResult {
 /// `TitleFence`, which reads the same two fields.
 #[test]
 fn s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open() -> TestResult {
+    use crate::minds::ic_sortie::IcSorties;
     let mut world = mush_core::World::new_minimal();
     check_eq!(
         untitled_refusal(&world, OPERATOR, TV),
         None,
         "no claim path: S.4a's dormant seal, nothing read"
     );
-    world.module_state_insert(crate::minds::ic_sortie::IcSorties::default());
+    world.module_state_insert(IcSorties::default());
     check!(crate::minds::ic_sortie::claim_path_composed(&world));
     let line = untitled_refusal(&world, OPERATOR, TV).ok_or("refused")?;
     check_eq!(

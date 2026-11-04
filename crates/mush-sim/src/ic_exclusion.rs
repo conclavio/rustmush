@@ -109,14 +109,14 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 /// S.4b-1). Never evidence of a later return.
 #[derive(Clone, Debug, PartialEq)]
 enum AnchorImage {
-    Base(BaseImage),
-    Hangar(HangarImage),
+    Base(Box<BaseImage>),
+    Hangar(Box<HangarImage>),
 }
 impl OpenImage {
     fn anchor(&self) -> Result<AnchorImage, ParticipantError> {
         match (&self.base, &self.hangar) {
-            (Some(base), None) => Ok(AnchorImage::Base(base.clone())),
-            (None, Some(hangar)) => Ok(AnchorImage::Hangar(hangar.clone())),
+            (Some(base), None) => Ok(AnchorImage::Base(Box::new(base.clone()))),
+            (None, Some(hangar)) => Ok(AnchorImage::Hangar(Box::new(hangar.clone()))),
             _ => Err(error("exactly one admission anchor")),
         }
     }
@@ -796,7 +796,7 @@ fn admit_world(
         domain,
     };
     base.validate(&placement)?;
-    Ok((placement, AnchorImage::Base(base)))
+    Ok((placement, AnchorImage::Base(Box::new(base))))
 }
 /// **A hull in a carrier's bay** (doc 23 cut S.4b-1, D-23-11): admitted only where the
 /// composition admits hangars, for a hull `Interior` to a live interior anchored `MovingObject
@@ -837,7 +837,7 @@ fn admit_hangar(
         carrier: host,
     };
     hangar.validate(placement)?;
-    Ok((placement.clone(), AnchorImage::Hangar(hangar)))
+    Ok((placement.clone(), AnchorImage::Hangar(Box::new(hangar))))
 }
 impl OwnerParticipant for IcExclusionParticipant {
     type State = IcExclusions;
@@ -884,8 +884,8 @@ impl OwnerParticipant for IcExclusionParticipant {
                     &self.config,
                 )?;
                 let (base_image, hangar) = match &base {
-                    AnchorImage::Base(b) => (Some(b.clone()), None),
-                    AnchorImage::Hangar(h) => (None, Some(h.clone())),
+                    AnchorImage::Base(b) => (Some((**b).clone()), None),
+                    AnchorImage::Hangar(h) => (None, Some((**h).clone())),
                 };
                 let record = Record {
                     format: 1,
