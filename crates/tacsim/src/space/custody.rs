@@ -56,6 +56,11 @@ use crate::space::bubble::{
 use crate::space::docking::DockingRcsAuthority;
 use crate::space::weapons::{LaserMount, PdcMount, RailgunMount, TorpedoTube};
 
+/// Capability id used to persist space-only subsystem crits (`PdcOffline`, `SensorDegraded`,
+/// `RadiatorDamaged`, `DriveDegraded`), per-PDC `operational` flags, and `slow_pct` across
+/// `check_in_space_unit` / `check_out_space_unit` (`D-35-1`, `SF.R20`).
+pub const SPACE_SUBSYSTEMS_CAPABILITY: &str = "tacsim.space.subsystems";
+
 /// Space-only hull parameters that do not exist on [`UnitSpec`] (`D-35-1`, `35b` §4 & §8 `SF.R15`):
 /// 6-DOF RCS thruster authority, weapon/point-defense mounts, and `mush-pixel` 3D model archetype.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,6 +209,7 @@ pub fn apply_space_unit_overlay(ship: &mut SpaceShipState, overlay: &SpaceUnitOv
     ship.railguns = overlay.railguns.clone();
     ship.pdcs = overlay.pdcs.clone();
     ship.decoys_remaining = overlay.decoys_remaining;
+    ship.pixel_model = overlay.pixel_model.to_owned();
 }
 
 fn parse_ship_section_id(word: &str) -> Option<ShipSectionId> {
@@ -356,21 +362,10 @@ pub fn apply_unit_spec_to_space_ship(ship: &mut SpaceShipState, spec: &UnitSpec)
                     accel_mg,
                     exhaust_kms,
                 } => {
+                    ship.base_rated_accel_mg = accel_mg;
                     ship.rated_accel_mg = accel_mg;
                     ship.exhaust_kms = exhaust_kms;
-                    let hull_drive = crate::port::passage::HullDrive {
-                        class: drive.class.clone(),
-                        law: drive.law,
-                        payload_ceiling_kg: logistics.payload_ceiling_kg,
-                        throttle_permille: crate::port::passage::MAX_THROTTLE_PERMILLE,
-                    };
-                    let dry_kg = u64::from(logistics.dry_mass_t).saturating_mul(1_000);
-                    let payload_kg = u64::from(ship.propellant_kg);
-                    if let Some(accel) =
-                        crate::port::passage::flip_accel_mps2(&hull_drive, dry_kg, payload_kg)
-                    {
-                        ship.max_accel_mps2 = (accel.ceil() as i64).max(1);
-                    }
+                    ship.recompute_drive_kinematics();
                 }
                 DriveLaw::Coast { .. } => {}
             }
@@ -479,10 +474,6 @@ pub fn space_ship_from_tactical_unit_with_spec(
     let resolved_spec = spec.or_else(|| unit_spec_for_id(base_id));
     if let Some(s) = resolved_spec {
         apply_unit_spec_to_space_ship(&mut ship, s);
-        if matches!(base_id, "tacsim.unit.corvette" | "tacsim.unit.raider_heavy") {
-            ship.max_accel_mps2 = 60;
-            ship.delta_v_mps = 9_500;
-        }
     }
 
     let internals_cell = CellId::new(INTERNALS_CELL).map_err(FieldOpsError::Unit)?;
@@ -563,7 +554,29 @@ pub fn space_ship_from_tactical_unit_with_spec(
         }
     }
 
-    // Read hull `heat` and `heat_sink` cells (`D-35-1`, `SF.R15`).
+    // Reapply authored `Slow` consequences for any destroyed sections (`D-35-1`, `SF.R20`).
+    let mut next_slow_pct = ship.slow_pct;
+    let mut any_slow = false;
+    for sec in ship.sections.values() {
+        if sec.internals == 0 {
+            for cons in &sec.consequences {
+                if let SpaceSectionConsequence::Slow { percent } = *cons {
+                    let clamped = u8::try_from(percent.clamp(1, 100)).unwrap_or(100);
+                    next_slow_pct =
+                        crate::arena::damage::apply_slow_consequence(next_slow_pct, clamped);
+                    any_slow = true;
+                }
+            }
+        }
+    }
+    if any_slow {
+        ship.slow_pct = next_slow_pct;
+        if !ship.crits.contains(&SubsystemCrit::DriveDegraded) {
+            ship.crits.push(SubsystemCrit::DriveDegraded);
+        }
+    }
+
+    // Read hull `heat` and `heat_sink` cells (`D-35-1`, `SF.R15`, `SF.R20`).
     if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str()) {
         if let Ok(heat_cell) = CellId::new(HEAT_CELL)
             && let Some(cell) = unit.cell(&CellAddr::Section {
@@ -581,6 +594,9 @@ pub fn space_ship_from_tactical_unit_with_spec(
             && cell.current > 0
         {
             ship.cooling_rate_permille_s = u16::try_from(cell.current.min(1_000)).unwrap_or(30);
+            if cell.current < cell.max && !ship.crits.contains(&SubsystemCrit::RadiatorDamaged) {
+                ship.crits.push(SubsystemCrit::RadiatorDamaged);
+            }
         }
     }
 
@@ -598,15 +614,52 @@ pub fn space_ship_from_tactical_unit_with_spec(
         }
     }
 
-    let drive_zero = ship
-        .sections
-        .get(&ShipSectionId::Drive)
-        .is_some_and(|s| s.internals == 0);
-    let hull_zero = ship
-        .sections
-        .get(&ShipSectionId::Hull)
-        .is_some_and(|s| s.internals == 0);
-    if drive_zero || hull_zero {
+    // Restore persisted space subsystem crits (`PdcOffline`, `SensorDegraded`, `RadiatorDamaged`,
+    // `DriveDegraded`), stripped PDC mounts, and `slow_pct` (`D-35-1`, `SF.R20`).
+    if let Ok(cap_id) = mush_tactics::CapabilityId::new(SPACE_SUBSYSTEMS_CAPABILITY)
+        && let Some(cap) = unit.capability(&mush_tactics::CapabilityKey {
+            id: cap_id,
+            source: None,
+        })
+    {
+        let data = cap.data();
+        if let Some(crits_val) = data.get("crits")
+            && let Ok(saved_crits) = serde_json::from_value::<Vec<SubsystemCrit>>(crits_val.clone())
+        {
+            for crit in saved_crits {
+                if !ship.crits.contains(&crit) {
+                    ship.crits.push(crit);
+                }
+            }
+        }
+        if let Some(stripped_val) = data.get("stripped_pdcs")
+            && let Ok(stripped_ids) = serde_json::from_value::<Vec<String>>(stripped_val.clone())
+        {
+            for pdc in &mut ship.pdcs {
+                if stripped_ids.iter().any(|id| id == &pdc.id) {
+                    pdc.operational = false;
+                }
+            }
+        }
+        if ship.crits.contains(&SubsystemCrit::PdcOffline)
+            && ship.pdcs.iter().all(|p| p.operational)
+            && let Some(first_pdc) = ship.pdcs.first_mut()
+        {
+            first_pdc.operational = false;
+        }
+        if let Some(slow_val) = data.get("slow_pct").and_then(serde_json::Value::as_u64)
+            && let Ok(saved_slow) = u8::try_from(slow_val.clamp(1, 100))
+        {
+            ship.slow_pct = crate::arena::damage::apply_slow_consequence(ship.slow_pct, saved_slow);
+        }
+    }
+
+    ship.recompute_drive_accel();
+
+    if ship
+        .carrier_damage()
+        .has(crate::carrier_damage::CarrierLoss::RefusesLift)
+    {
         ship.status = HullStatus::DisabledDerelict {
             epoch_open: true,
             life_support_remaining_s: DERELICT_WINDOW_S,
@@ -641,6 +694,9 @@ pub fn build_space_damage_mutation_plan(
 
     let all_ship_sections_zero = !ship.sections.is_empty()
         && ship.sections.values().all(|s| s.internals == 0)
+        && ship
+            .carrier_damage()
+            .has(crate::carrier_damage::CarrierLoss::Wrecked)
         && matches!(
             ship.status,
             HullStatus::DisabledDerelict {
@@ -712,21 +768,40 @@ pub fn build_space_damage_mutation_plan(
         }
     }
 
-    // 4. Optional hull `heat` cell (`D-35-1`).
-    if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str())
-        && let Ok(heat_cell) = CellId::new(HEAT_CELL)
-    {
-        let heat_addr = CellAddr::Section {
-            section: hull_sec,
-            cell: heat_cell,
-        };
-        if let Some(before_heat) = before.cell(&heat_addr) {
-            let target_heat = i64::from(ship.heat_permille).clamp(before_heat.min, before_heat.max);
-            if before_heat.current != target_heat {
-                ops.push(UnitMutationOp::SetCell {
-                    addr: heat_addr,
-                    value: target_heat,
-                });
+    // 4. Optional hull `heat` and `heat_sink` cells (`D-35-1`, `SF.R20`).
+    if let Ok(hull_sec) = SectionId::new(ShipSectionId::Hull.id_str()) {
+        if let Ok(heat_cell) = CellId::new(HEAT_CELL) {
+            let heat_addr = CellAddr::Section {
+                section: hull_sec.clone(),
+                cell: heat_cell,
+            };
+            if let Some(before_heat) = before.cell(&heat_addr) {
+                let target_heat =
+                    i64::from(ship.heat_permille).clamp(before_heat.min, before_heat.max);
+                if before_heat.current != target_heat {
+                    ops.push(UnitMutationOp::SetCell {
+                        addr: heat_addr,
+                        value: target_heat,
+                    });
+                }
+            }
+        }
+        if ship.crits.contains(&SubsystemCrit::RadiatorDamaged)
+            && let Ok(sink_cell) = CellId::new(HEAT_SINK_CELL)
+        {
+            let sink_addr = CellAddr::Section {
+                section: hull_sec,
+                cell: sink_cell,
+            };
+            if let Some(before_sink) = before.cell(&sink_addr) {
+                let target_sink =
+                    (before_sink.max / 2).clamp(before_sink.min.max(1), before_sink.max);
+                if before_sink.current != target_sink {
+                    ops.push(UnitMutationOp::SetCell {
+                        addr: sink_addr,
+                        value: target_sink,
+                    });
+                }
             }
         }
     }
@@ -755,7 +830,72 @@ pub fn build_space_damage_mutation_plan(
             .0
     };
 
-    apply_ic_condition_handoff(before, &after_cells, resolved_spec, at_ic)
+    let (mut post_unit, assessment, mut plan_opt) =
+        apply_ic_condition_handoff(before, &after_cells, resolved_spec, at_ic)?;
+
+    // 6. Persist space-only subsystem crits (`PdcOffline`, `SensorDegraded`, `RadiatorDamaged`,
+    //    `DriveDegraded`), stripped PDC mounts, and `slow_pct` across check-in (`D-35-1`, `SF.R20`).
+    let stripped_pdcs: Vec<String> = ship
+        .pdcs
+        .iter()
+        .filter(|p| !p.operational)
+        .map(|p| p.id.clone())
+        .collect();
+    let has_subsystem_state =
+        !ship.crits.is_empty() || !stripped_pdcs.is_empty() || ship.slow_pct < 100;
+    let subsys_key = mush_tactics::CapabilityKey {
+        id: mush_tactics::CapabilityId::new(SPACE_SUBSYSTEMS_CAPABILITY)
+            .map_err(FieldOpsError::Unit)?,
+        source: None,
+    };
+    let cap_op = if has_subsystem_state {
+        let cap_schema = before
+            .capabilities()
+            .next()
+            .and_then(|k| before.capability(k))
+            .map(|rv| rv.schema().clone())
+            .unwrap_or_else(|| before.schema().clone());
+        let rules = mush_core::RulesValue::new(
+            cap_schema,
+            serde_json::json!({
+                "crits": ship.crits,
+                "stripped_pdcs": stripped_pdcs,
+                "slow_pct": ship.slow_pct,
+            }),
+        )
+        .map_err(|_| FieldOpsError::Unit(mush_tactics::UnitError::EmptyId))?;
+        if before.capability(&subsys_key) != Some(&rules) {
+            Some(UnitMutationOp::GrantCapability {
+                key: subsys_key,
+                rules,
+            })
+        } else {
+            None
+        }
+    } else if before.capability(&subsys_key).is_some() {
+        Some(UnitMutationOp::RevokeCapability { key: subsys_key })
+    } else {
+        None
+    };
+
+    if let Some(op) = cap_op {
+        let mut combined_ops = plan_opt
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.ops().to_vec());
+        combined_ops.push(op);
+        let new_plan = UnitMutationPlan::new(
+            combined_ops,
+            Some(before.revision()),
+            Some(SmolStr::new_static("ic_combat_return")),
+        )
+        .map_err(FieldOpsError::Unit)?;
+        post_unit = apply(before, &new_plan, at_ic)
+            .map_err(FieldOpsError::Unit)?
+            .0;
+        plan_opt = Some(new_plan);
+    }
+
+    Ok((post_unit, assessment, plan_opt))
 }
 
 /// Check out a live hull [`TacticalUnit`] into a space bubble via

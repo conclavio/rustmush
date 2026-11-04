@@ -812,6 +812,31 @@ fn build_tier1_space_panel_payloads(
         }],
         "torpedoes": [],
     });
+    let tier1_dv_mps = mush_tactics::module::unit_of(w, hull)
+        .and_then(|u| {
+            super::custody::space_ship_from_tactical_unit(
+                u,
+                format!("ship.{}", hull.0),
+                &callsign,
+                crate::arena::party::PartyId::BLUE,
+                [0, 0, 0],
+                [0, 0, 0],
+            )
+            .ok()
+        })
+        .map_or_else(
+            || {
+                super::bubble::SpaceShipState::new_dray(
+                    format!("ship.{}", hull.0),
+                    &callsign,
+                    crate::arena::party::PartyId::BLUE,
+                    [0, 0, 0],
+                    [0, 0, 0],
+                )
+                .delta_v_mps
+            },
+            |s| s.delta_v_mps,
+        );
     let cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
@@ -821,7 +846,7 @@ fn build_tier1_space_panel_payloads(
         "speed_mps": speed_mps,
         "prograde_bearing_deg": 0.0,
         "prograde_pitch_deg": 0.0,
-        "delta_v_mps": 4_500,
+        "delta_v_mps": tier1_dv_mps,
         "heat_permille": 0,
         "hull_pct": 100,
         "pdc_mode": "AUTO",
@@ -1071,10 +1096,11 @@ fn helm_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 let non_prop_payload = basis
                     .payload
                     .saturating_sub(basis.tank.saturating_mul(1_000));
+                let payload_kg = non_prop_payload.saturating_add(live_kg);
                 let dv_mps = crate::port::passage::remaining_dv_mps_for_propellant(
                     &basis.spec.drive,
                     basis.spec.dry_kg,
-                    non_prop_payload,
+                    payload_kg,
                     live_kg,
                 )
                 .unwrap_or(0);
@@ -1446,30 +1472,30 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tick,
     )?;
 
-    if let Some((ship_id, max_accel_mps2)) = active_carrier_ship_and_max_accel(ctx.w, hull) {
+    let mut effective_accel_mmps2: Option<[i64; 3]> = None;
+    if let Some((ship_id, max_accel_mmps2)) = active_carrier_ship_and_max_accel_mmps2(ctx.w, hull) {
         let scale = i64::from(thrust_permille);
-        let thrust_mps2 = if scale == 0 {
+        let thrust_mmps2 = if scale == 0 {
             [0, 0, 0]
         } else {
-            let ax = (max_accel_mps2 * scale * i64::from(burn_dir[0])) / 1_000_000;
-            let ay = (max_accel_mps2 * scale * i64::from(burn_dir[1])) / 1_000_000;
-            let az = (max_accel_mps2 * scale * i64::from(burn_dir[2])) / 1_000_000;
-            if ax == 0 && ay == 0 && az == 0 {
-                [
-                    i64::from(burn_dir[0].signum()),
-                    i64::from(burn_dir[1].signum()),
-                    i64::from(burn_dir[2].signum()),
-                ]
-            } else {
-                [ax, ay, az]
-            }
+            let dir_mag = super::weapons::isqrt_i128(
+                (burn_dir[0] as i128).pow(2)
+                    + (burn_dir[1] as i128).pow(2)
+                    + (burn_dir[2] as i128).pow(2),
+            )
+            .max(1) as i64;
+            [
+                (max_accel_mmps2 * scale * i64::from(burn_dir[0])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[1])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[2])) / (1_000 * dir_mag),
+            ]
         };
         let events = apply_bubble_command(
             ctx.w,
             hull,
-            BubbleInputCommand::CommandBurn {
-                ship_id,
-                thrust_mps2,
+            BubbleInputCommand::CommandBurnMmps2 {
+                ship_id: ship_id.clone(),
+                thrust_mmps2,
                 force_into_reserve,
             },
         );
@@ -1485,14 +1511,68 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 )));
             }
         }
+        effective_accel_mmps2 = ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull))
+            .and_then(|a| a.bubble.ships.get(&ship_id))
+            .map(|s| s.thrust_mmps2);
         sync_bubble_propellant_to_ledger(ctx, hull);
+    } else if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.free_flight_for_hull(hull).is_some())
+    {
+        let max_accel_mmps2 =
+            if let Ok((basis, live_kg)) = live_hull_basis_and_propellant_kg(ctx, hull) {
+                let non_prop_payload = basis
+                    .payload
+                    .saturating_sub(basis.tank.saturating_mul(1_000));
+                let payload_kg = non_prop_payload.saturating_add(live_kg);
+                let accel_mps2 = crate::port::passage::flip_accel_mps2(
+                    &basis.spec.drive,
+                    basis.spec.dry_kg,
+                    payload_kg,
+                )
+                .unwrap_or(0.0);
+                ((accel_mps2 * 1_000.0).round() as i64).max(1)
+            } else {
+                645
+            };
+        let scale = i64::from(thrust_permille);
+        let thrust_mmps2 = if scale == 0 {
+            [0, 0, 0]
+        } else {
+            let dir_mag = super::weapons::isqrt_i128(
+                (burn_dir[0] as i128).pow(2)
+                    + (burn_dir[1] as i128).pow(2)
+                    + (burn_dir[2] as i128).pow(2),
+            )
+            .max(1) as i64;
+            [
+                (max_accel_mmps2 * scale * i64::from(burn_dir[0])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[1])) / (1_000 * dir_mag),
+                (max_accel_mmps2 * scale * i64::from(burn_dir[2])) / (1_000 * dir_mag),
+            ]
+        };
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(ff) = book.free_flight_for_hull_mut(hull)
+        {
+            ff.thrust_mmps2 = thrust_mmps2;
+            ff.burn_remaining_ic_s = (thrust_mmps2 != [0, 0, 0]).then_some(60);
+        }
+        effective_accel_mmps2 = Some(thrust_mmps2);
     }
+
+    let accel_clause = effective_accel_mmps2.map_or_else(String::new, |a| {
+        format!(", accel=({}, {}, {}) mm/s²", a[0], a[1], a[2])
+    });
 
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
         format!(
-            "Helm thrust set: {thrust_permille}‰ burn=({}, {}, {}) (standing order `{}` rev {}).",
+            "Helm thrust set: {thrust_permille}‰ burn=({}, {}, {}){accel_clause} (standing order `{}` rev {}).",
             burn_dir[0],
             burn_dir[1],
             burn_dir[2],
@@ -3111,11 +3191,16 @@ fn active_carrier_ship_and_roll(w: &World, hull: ObjId) -> Option<(String, i32)>
     Some((ship_id.to_owned(), ship.attitude_deg.2))
 }
 
-fn active_carrier_ship_and_max_accel(w: &World, hull: ObjId) -> Option<(String, i64)> {
+fn active_carrier_ship_and_max_accel_mmps2(w: &World, hull: ObjId) -> Option<(String, i64)> {
     let active = w.module_state::<SpaceBubbleBook>()?.active_for_hull(hull)?;
     let ship_id = active.carrier_ship_id_for(hull);
     let ship = active.bubble.ships.get(ship_id)?;
-    Some((ship_id.to_owned(), ship.max_accel_mps2.max(1)))
+    let max_mmps2 = if ship.max_accel_mmps2 > 0 {
+        ship.max_accel_mmps2
+    } else {
+        ship.max_accel_mps2.saturating_mul(1_000).max(1)
+    };
+    Some((ship_id.to_owned(), max_mmps2))
 }
 
 fn active_carrier_attitude(w: &World, hull: ObjId) -> Option<(String, i32, i32)> {
@@ -4795,6 +4880,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                         interdictor_ship,
                                         now.at,
                                     );
+                                    super::tick::destroy_unclaimed_npc_hull(
+                                        ctx,
+                                        active.interdictor_hull,
+                                    );
                                 }
                                 if let Some(picket) = &active.picket {
                                     if picket.corvette_hull != active.interdictor_hull
@@ -4807,6 +4896,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                             corvette_ship,
                                             now.at,
                                         );
+                                        super::tick::destroy_unclaimed_npc_hull(
+                                            ctx,
+                                            picket.corvette_hull,
+                                        );
                                     }
                                     if picket.raider_hull != active.interdictor_hull
                                         && let Some(raider_ship) =
@@ -4817,6 +4910,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                             picket.raider_hull,
                                             raider_ship,
                                             now.at,
+                                        );
+                                        super::tick::destroy_unclaimed_npc_hull(
+                                            ctx,
+                                            picket.raider_hull,
                                         );
                                     }
                                 }
@@ -5228,8 +5325,8 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             pin: Some(pin),
             file: salvage_claim.map(Box::new),
             told: told.clone(),
-            at_risk: Vec::new(),
             evidence: Vec::new(),
+            at_risk: Vec::new(),
         };
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.space_custody.insert(clamped_derelict, custody_row);
@@ -5320,6 +5417,8 @@ pub fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, None)?;
     let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
+    let hold_cap_t = super::mining::hull_hold_capacity_tonnes(ctx.w, hull);
+    let hold_cap_kg = super::mining::hull_hold_capacity_kg(ctx.w, hull);
     let Some(session) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -5329,9 +5428,8 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.actor,
             "tacsim.space",
             format!(
-                "Mining status aboard {}: not in an orbital cluster (`stow.ore` hold: {used_t}/{} t).",
+                "Mining status aboard {}: not in an orbital cluster (`stow.ore` hold: {used_t}/{hold_cap_t} t).",
                 display_name(ctx.w, hull),
-                super::mining::DRAY_P_HOLD_CAPACITY_T
             ),
         );
         return Ok(());
@@ -5356,7 +5454,7 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.actor,
         "tacsim.space",
         format!(
-            "Mining status aboard {} in {} (`{}`): pos=({}, {}, {}) m, vel=({}, {}, {}) mm/s, matched={matched}, laser={laser_desc}, active drones={}/{}, frontier bloom heat={}, `stow.ore` hold={used_t}/{} t ({} kg capacity).",
+            "Mining status aboard {} in {} (`{}`): pos=({}, {}, {}) m, vel=({}, {}, {}) mm/s, matched={matched}, laser={laser_desc}, active drones={}/{}, frontier bloom heat={}, `stow.ore` hold={used_t}/{hold_cap_t} t ({hold_cap_kg} kg capacity).",
             display_name(ctx.w, hull),
             session.cluster.display_name(),
             session.cluster.as_str(),
@@ -5369,8 +5467,6 @@ fn mine_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             session.active_drones.len(),
             crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR,
             session.frontier_bloom_heat,
-            super::mining::DRAY_P_HOLD_CAPACITY_T,
-            super::mining::DRAY_P_HOLD_CAPACITY_KG,
         ),
     );
     Ok(())
@@ -5821,10 +5917,10 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
 
     let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
-    if used_t >= super::mining::DRAY_P_HOLD_CAPACITY_T {
+    let hold_cap_t = super::mining::hull_hold_capacity_tonnes(ctx.w, hull);
+    if used_t >= hold_cap_t {
         return Err(CmdError::msg(format!(
-            "`stow.ore` hold is at capacity ({used_t}/{} t).",
-            super::mining::DRAY_P_HOLD_CAPACITY_T
+            "`stow.ore` hold is at capacity ({used_t}/{hold_cap_t} t)."
         )));
     }
     let rock_vault = *site
@@ -5843,7 +5939,7 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
     let due_ic = now_ic.saturating_add(super::mining::LASER_CYCLE_IC_SECS);
     let yield_t = super::mining::LASER_CYCLE_YIELD_T
-        .min(super::mining::DRAY_P_HOLD_CAPACITY_T.saturating_sub(used_t))
+        .min(hold_cap_t.saturating_sub(used_t))
         .min(avail_t);
 
     // Check if this is unleased/claim-jumped frontier extraction (`doc 35` §7.4): generate
@@ -6001,10 +6097,10 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
 
     let used_t = super::mining::hull_hold_used_tonnes(ctx, hull);
-    if used_t >= super::mining::DRAY_P_HOLD_CAPACITY_T {
+    let hold_cap_t = super::mining::hull_hold_capacity_tonnes(ctx.w, hull);
+    if used_t >= hold_cap_t {
         return Err(CmdError::msg(format!(
-            "`stow.ore` hold is at capacity ({used_t}/{} t).",
-            super::mining::DRAY_P_HOLD_CAPACITY_T
+            "`stow.ore` hold is at capacity ({used_t}/{hold_cap_t} t)."
         )));
     }
     let rock_vault = *site
