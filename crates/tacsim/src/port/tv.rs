@@ -1791,9 +1791,30 @@ enum Act {
 /// GC.6 `scrap`, as first words; since doc 41 cut RS.1 the tender's `unjam`, `stabilize`, `rearm`
 /// and `stores`).
 const ACT_WORDS: [&str; 24] = [
-    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill", "unload", "plan", "tow", "release", "load", "pickup", "scrap",
-    "unjam", "stabilize", "rearm", "stores",
+    "lease",
+    "launch",
+    "recover",
+    "dump",
+    "scan",
+    "survey",
+    "sound",
+    "forget",
+    "quiet",
+    "drive",
+    "map",
+    "mine",
+    "drill",
+    "unload",
+    "plan",
+    "tow",
+    "release",
+    "load",
+    "pickup",
+    "scrap",
+    "unjam",
+    "stabilize",
+    "rearm",
+    "stores",
 ];
 
 /// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the

@@ -849,7 +849,10 @@ mod tests {
             })
         );
         check_eq!(TowRigProfile::Standard.cap_permille(), 2_000);
-        check_eq!(TowRigProfile::RecoveryOptimized.max_casualty_mass_kg(7_000), 21_000);
+        check_eq!(
+            TowRigProfile::RecoveryOptimized.max_casualty_mass_kg(7_000),
+            21_000
+        );
         Ok(())
     }
 

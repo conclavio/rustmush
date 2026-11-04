@@ -2047,14 +2047,20 @@ impl TowProvider {
         match step {
             TendStep::Pause => {
                 if !promoted || paused.is_some() {
-                    return Err(port_error(ActionErrorCode::Conflict, "no field to pause for"));
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "no field to pause for",
+                    ));
                 }
                 *paused = Some(act.due_ic.saturating_sub(now).max(1));
                 return Ok("paused".to_owned());
             }
             TendStep::Resume => {
                 let Some(left) = *paused else {
-                    return Err(port_error(ActionErrorCode::Conflict, "the act is not paused"));
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "the act is not paused",
+                    ));
                 };
                 if promoted {
                     return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
@@ -2067,7 +2073,10 @@ impl TowProvider {
             TendStep::Lost { .. } | TendStep::Finish { .. } => {}
         }
         if promoted || paused.is_some() || act.due_ic > now {
-            return Err(port_error(ActionErrorCode::Conflict, "the tend act is not due"));
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "the tend act is not due",
+            ));
         }
         record.tows.take_act(tv);
         let TendStep::Finish { draw } = step else {
@@ -2182,9 +2191,9 @@ impl TowProvider {
                         .map_err(|_| refused("stores_no_tonne"))?;
                 }
                 let existed = rig.is_some();
-                let mut record =
-                    rig.take()
-                        .unwrap_or_else(|| crate::surface::excursion::RigRecord::fresh_unread(tv));
+                let mut record = rig
+                    .take()
+                    .unwrap_or_else(|| crate::surface::excursion::RigRecord::fresh_unread(tv));
                 record.bale = Some(crate::port::bay_work::Bale {
                     alloys_kg: crate::port::bay_work::KG_PER_T,
                     fittings_kg: crate::port::bay_work::KG_PER_T,

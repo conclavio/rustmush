@@ -23,8 +23,8 @@ use tacsim::arena::ledger::LedgerEvent;
 use tacsim::surface::tow::TowStage;
 
 use crate::driving_rig::{
-    Rig, act_go, command, finish, ic_now, land, on_pad_as_at, on_pad_with_at, ramp_at,
-    run, seed_hold, seed_pool, staff_hand, stocked_tuned, to_cell_on, to_ic, warm,
+    Rig, act_go, command, finish, ic_now, land, on_pad_as_at, on_pad_with_at, ramp_at, run,
+    seed_hold, seed_pool, staff_hand, stocked_tuned, to_cell_on, to_ic, warm,
 };
 use crate::field_host_rig::{
     armed_on, egress, seat, second, set_section, site_record_at, task, tune, until,
@@ -174,14 +174,25 @@ async fn tender_on(ground: &Ground) {
         cfg.recovery.attach_s = 30;
     });
     // The captain's party: the escort (rig 1) and the tender (rig 2) in a Dray-P's bay.
-    let (a, row, tvs) = on_pad_with_at(&mut rig, ("Pilot", 1, "Salt Moth"), ground.site(), |rig, pilot| {
-        mint(rig, pilot);
-        crate::driving_rig::at_counter(rig, pilot);
-        let escort = run(&mut rig.tw, pilot, "+tv/lease escort go");
-        assert!(escort.contains("Occator Water & Propellant leases you "), "{escort}");
-        let tender = run(&mut rig.tw, pilot, "+tv/lease tender go");
-        assert!(tender.contains("Occator Water & Propellant leases you "), "{tender}");
-    });
+    let (a, row, tvs) = on_pad_with_at(
+        &mut rig,
+        ("Pilot", 1, "Salt Moth"),
+        ground.site(),
+        |rig, pilot| {
+            mint(rig, pilot);
+            crate::driving_rig::at_counter(rig, pilot);
+            let escort = run(&mut rig.tw, pilot, "+tv/lease escort go");
+            assert!(
+                escort.contains("Occator Water & Propellant leases you "),
+                "{escort}"
+            );
+            let tender = run(&mut rig.tw, pilot, "+tv/lease tender go");
+            assert!(
+                tender.contains("Occator Water & Propellant leases you "),
+                "{tender}"
+            );
+        },
+    );
     let (escort, tender) = (tvs[0], tvs[1]);
     assert_eq!(
         tacsim::surface::tender::tender_def(rig.tw.world(), tender).map(|d| d.reach_cm),
@@ -257,9 +268,14 @@ async fn tender_on(ground: &Ground) {
     assert_eq!(cannon(&rig, escort), "jammed");
 
     // The stranger, whose mark opens each field; and its two prospectors for the laden tow.
-    let (b, _, others) =
-        on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), ground.site(), 2);
-    let hound = armed_on(&mut rig, ground.entry, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
+    let (b, _, others) = on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), ground.site(), 2);
+    let hound = armed_on(
+        &mut rig,
+        ground.entry,
+        "Red Hound",
+        (ramp.0 - 8, ramp.1),
+        90_000,
+    );
     seat(&mut rig, hound, b);
     seat(&mut rig, tender, a);
     // The laden casualty (Q-41-29): the stranger's prospector, 7 t of ore in her hopper and no
@@ -273,7 +289,13 @@ async fn tender_on(ground: &Ground) {
     to_cell_on(&mut rig, ground.entry, casualty, (ramp.0 + 2, ramp.1));
     to_cell_on(&mut rig, ground.entry, tug, (ramp.0 + 1, ramp.1));
     let hopper = tacsim::port::vehicle::hopper_of(rig.tw.world(), casualty).expect("a hopper");
-    seed_pool(&mut rig, hopper, "metal_ore", 7, mush_inventory::LotId(9_504));
+    seed_pool(
+        &mut rig,
+        hopper,
+        "metal_ore",
+        7,
+        mush_inventory::LotId(9_504),
+    );
     mutate(
         &mut rig,
         casualty,
@@ -289,13 +311,19 @@ async fn tender_on(ground: &Ground) {
     // The previews (Q-41-3): the tariff's time at three times, the draw named.
     let preview = run(&mut rig.tw, a, &format!("+tv/2 unjam #{}", escort.0));
     assert!(
-        preview.contains("clear the jam") && preview.contains("10 kg of yard fittings")
+        preview.contains("clear the jam")
+            && preview.contains("10 kg of yard fittings")
             && preview.contains("about 360 IC minutes"),
         "{preview}"
     );
-    let preview = run(&mut rig.tw, a, &format!("+tv/2 stabilize #{}=hull", escort.0));
+    let preview = run(
+        &mut rig.tw,
+        a,
+        &format!("+tv/2 stabilize #{}=hull", escort.0),
+    );
     assert!(
-        preview.contains("patch 40 points of hull") && preview.contains("400 kg of yard fittings")
+        preview.contains("patch 40 points of hull")
+            && preview.contains("400 kg of yard fittings")
             && preview.contains("about 72 IC minutes"),
         "{preview}"
     );
@@ -303,8 +331,14 @@ async fn tender_on(ground: &Ground) {
     assert!(far.contains("no tender"), "{far}");
 
     // (1) The jam cleared, through a field.
-    tend_through_a_field(&mut rig, ground, (&mut rx, &mut lines), (a, b, tender), &format!("+tv/2 unjam #{}", escort.0))
-        .await;
+    tend_through_a_field(
+        &mut rig,
+        ground,
+        (&mut rx, &mut lines),
+        (a, b, tender),
+        &format!("+tv/2 unjam #{}", escort.0),
+    )
+    .await;
     assert_ne!(cannon(&rig, escort), "jammed", "the jam is cleared");
     // (2) The hull patched, through a field.
     tend_through_a_field(
@@ -317,8 +351,14 @@ async fn tender_on(ground: &Ground) {
     .await;
     assert_eq!(cell(&rig, escort, &internals), full, "the hull is whole");
     // (3) The magazine refilled from the stores, through a field.
-    tend_through_a_field(&mut rig, ground, (&mut rx, &mut lines), (a, b, tender), &format!("+tv/2 rearm #{}", escort.0))
-        .await;
+    tend_through_a_field(
+        &mut rig,
+        ground,
+        (&mut rx, &mut lines),
+        (a, b, tender),
+        &format!("+tv/2 rearm #{}", escort.0),
+    )
+    .await;
     let short = magazine - 10;
     assert_eq!(
         cell(&rig, escort, &ammo),
@@ -330,7 +370,10 @@ async fn tender_on(ground: &Ground) {
         .and_then(|record| record.bale)
         .expect("the bale");
     assert_eq!(bale.fittings_kg, 1_000 - 10 - 400, "the bale's fittings");
-    assert_eq!(bale.alloys_kg, 1_000, "no alloys until IN.8's per-point figures");
+    assert_eq!(
+        bale.alloys_kg, 1_000,
+        "no alloys until IN.8's per-point figures"
+    );
     let shown = run(&mut rig.tw, a, "+tv/2 stores");
     let left = 20 - u64::try_from(short.min(20)).expect("rounds");
     assert!(

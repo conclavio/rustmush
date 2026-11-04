@@ -71,8 +71,7 @@ pub const TENDER_WORDS: [&str; 4] = ["rearm", "stabilize", "stores", "unjam"];
 pub const TEND_USAGE: &str = "Usage: +tv/<n> unjam <unit>[=<part>] [go], +tv/<n> stabilize <unit>[=<section>] [<points>|all] [go], +tv/<n> rearm <unit>[=<part>] [go], +tv/<n> stores [go], +tv/<n> stores load <qty> <good> [go] or +tv/<n> stores open [go].";
 
 /// The rig is no tender: `{n}`.
-pub const NOT_A_TENDER: &str =
-    "Rig {n} is no tender: it carries no stores to tend from. Occator leases one: +tv/lease tender.";
+pub const NOT_A_TENDER: &str = "Rig {n} is no tender: it carries no stores to tend from. Occator leases one: +tv/lease tender.";
 
 /// Nothing in reach: `{n}`, `{name}`.
 pub const TEND_NOT_IN_REACH: &str = "The {name} is not within a cell of rig {n}.";
@@ -84,12 +83,10 @@ pub const TEND_NOTHING: &str = "The {name} has {what}; rig {n} has nothing to do
 pub const TEND_PREVIEW: &str = "Rig {n} can {work} on the {name}, drawing {draw}; it takes about {min} IC minutes. +tv/{n} {verb} {arg} go";
 
 /// Filed: `{n}`, `{name}`, `{work}`, `{min}`.
-pub const TEND_FILED: &str =
-    "Rig {n} sets to work on the {name}: {work}, about {min} IC minutes. It does nothing else until it is done.";
+pub const TEND_FILED: &str = "Rig {n} sets to work on the {name}: {work}, about {min} IC minutes. It does nothing else until it is done.";
 
 /// The stores cannot cover the work: `{n}`, `{need}`, `{have}`.
-pub const TEND_SHORT: &str =
-    "Rig {n}'s stores cannot cover it: the work draws {need}, and the stores and the bale hold {have}.";
+pub const TEND_SHORT: &str = "Rig {n}'s stores cannot cover it: the work draws {need}, and the stores and the bale hold {have}.";
 
 /// A rearm the stores hold no rounds for: `{n}`, `{part}`, `{good}`.
 pub const NO_ROUNDS_ABOARD: &str = "Rig {n} has no rounds aboard for {part} ({good}).";
@@ -121,12 +118,10 @@ pub const BALE_OPEN: &str =
     "Its bale is open: {alloys} kg of structural alloys and {fittings} kg of yard fittings.";
 
 /// The bale, unopened.
-pub const BALE_SHUT: &str =
-    "Its bale is unopened: +tv/<n> stores open takes a tonne of alloys and a tonne of fittings into it.";
+pub const BALE_SHUT: &str = "Its bale is unopened: +tv/<n> stores open takes a tonne of alloys and a tonne of fittings into it.";
 
 /// The load preview: `{n}`, `{qty}`, `{good}`, `{carrier}`.
-pub const STORES_LOAD_PREVIEW: &str =
-    "Rig {n} can take {qty} {good} into its stores from the {carrier}'s hold. +tv/{n} stores load {qty} {good} go";
+pub const STORES_LOAD_PREVIEW: &str = "Rig {n} can take {qty} {good} into its stores from the {carrier}'s hold. +tv/{n} stores load {qty} {good} go";
 
 /// Loaded: `{n}`, `{qty}`, `{good}`.
 pub const STORES_LOADED: &str = "Rig {n}'s stores take {qty} {good} from the hold.";
@@ -139,7 +134,8 @@ pub const STORES_OPENED: &str =
     "Rig {n}'s bale is open: a tonne of structural alloys and a tonne of yard fittings.";
 
 /// The bale is open already: `{n}`.
-pub const BALE_ALREADY: &str = "Rig {n}'s bale is open already; the work tops it up from the stores a tonne at a time.";
+pub const BALE_ALREADY: &str =
+    "Rig {n}'s bale is open already; the work tops it up from the stores a tonne at a time.";
 
 /// The stores lack a tonne of a line: `{n}`, `{good}`.
 pub const STORES_NO_TONNE: &str = "Rig {n}'s stores hold no whole tonne of {good} to open.";
@@ -272,10 +268,9 @@ impl TendWork {
 /// gives each design its own `fittings_kg_per_point`.
 #[must_use]
 pub fn fittings_kg_per_point() -> u64 {
-    crate::definitions::workshop::workshop_tariff()
-        .map_or(10, |tariff| {
-            KG_PER_T.div_ceil(tariff.structural_points_per_industrial_parts_t.max(1))
-        })
+    crate::definitions::workshop::workshop_tariff().map_or(10, |tariff| {
+        KG_PER_T.div_ceil(tariff.structural_points_per_industrial_parts_t.max(1))
+    })
 }
 
 /// **A tend act's start facts**, fixed by the command for the start's prepare.
@@ -418,7 +413,11 @@ fn bale_of(ctx: &Ctx<'_>, tv: ObjId) -> Option<Bale> {
 fn unit_parts(
     w: &World,
     unit: ObjId,
-) -> Option<(TacticalUnit, crate::definitions::UnitSpec, UnitAnatomyProfile)> {
+) -> Option<(
+    TacticalUnit,
+    crate::definitions::UnitSpec,
+    UnitAnatomyProfile,
+)> {
     let cells = mush_tactics::module::unit_of(w, unit)?.clone();
     let spec = crate::carrier_damage::spec_of(w, &cells)?.clone();
     let anatomy = crate::field_ops::anatomy_for_unit_spec(&spec).ok()?;
@@ -539,7 +538,11 @@ fn works(
 }
 
 /// A section's internals short of their maximum, points.
-fn internals_missing(cells: &TacticalUnit, anatomy: &UnitAnatomyProfile, section: &SectionId) -> i64 {
+fn internals_missing(
+    cells: &TacticalUnit,
+    anatomy: &UnitAnatomyProfile,
+    section: &SectionId,
+) -> i64 {
     let Some(cell) = &anatomy.internals_cell else {
         return 0;
     };
@@ -840,7 +843,8 @@ pub fn parse(verb: &str, words: &[String]) -> Result<TendAct, CmdError> {
 /// The line that refuses.
 pub(crate) fn tend_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, act: TendAct) -> Result<(), CmdError> {
     let n = rig.slot.to_string();
-    let def = tender_def(ctx.w, rig.tv).ok_or_else(|| CmdError::msg(NOT_A_TENDER.replace("{n}", &n)))?;
+    let def =
+        tender_def(ctx.w, rig.tv).ok_or_else(|| CmdError::msg(NOT_A_TENDER.replace("{n}", &n)))?;
     match act {
         TendAct::Show => show(ctx, rig),
         TendAct::Load { qty, good, go } => load(ctx, rig, qty, &good, go),
@@ -878,7 +882,13 @@ fn show(ctx: &mut Ctx<'_>, rig: &act::RigAt) -> Result<(), CmdError> {
 }
 
 /// `+tv/<n> stores load <qty> <good> [go]`.
-fn load(ctx: &mut Ctx<'_>, rig: &act::RigAt, qty: u64, good: &str, go: bool) -> Result<(), CmdError> {
+fn load(
+    ctx: &mut Ctx<'_>,
+    rig: &act::RigAt,
+    qty: u64,
+    good: &str,
+    go: bool,
+) -> Result<(), CmdError> {
     let n = rig.slot.to_string();
     let w: &World = ctx.w;
     if act::where_is(w, rig.tv) != (Where::Bay { hull: rig.hull }) {
@@ -889,11 +899,14 @@ fn load(ctx: &mut Ctx<'_>, rig: &act::RigAt, qty: u64, good: &str, go: bool) -> 
         .map_err(|_| CmdError::msg(STORES_NOT_BULK.replace("{good}", good)))?;
     let (accepted, _) = crate::port::tv::hopper_goods_of(w, rig.tv).ok_or_else(dark)?;
     if !accepted.contains(&good) {
-        return Err(CmdError::msg(STORES_NOT_BULK.replace("{good}", good.as_str())));
+        return Err(CmdError::msg(
+            STORES_NOT_BULK.replace("{good}", good.as_str()),
+        ));
     }
     let view = crate::port::ship::hull_view(w, rig.hull).ok_or_else(dark)?;
     let hold = crate::port::ship::hold_vault(w, &view).ok_or_else(dark)?;
-    let have = crate::port_tick::read_available(ctx, EndpointRef(hold), &good).map_err(|_| dark())?;
+    let have =
+        crate::port_tick::read_available(ctx, EndpointRef(hold), &good).map_err(|_| dark())?;
     if have < qty {
         return Err(CmdError::msg(
             HOLD_SHORT
@@ -1235,7 +1248,9 @@ pub(crate) fn finish(
     work: &TendWork,
     (secs, now): (i64, i64),
 ) -> TendStep {
-    let lost = |why: &str| TendStep::Lost { why: why.to_owned() };
+    let lost = |why: &str| TendStep::Lost {
+        why: why.to_owned(),
+    };
     let w: &World = ctx.w;
     let Some(def) = tender_def(w, tv) else {
         return lost("the rig is no tender");
@@ -1283,7 +1298,10 @@ pub(crate) fn finish(
         &before,
         &after,
         None,
-        Some(smol_str::SmolStr::new(format!("tacsim.tender.{}", work.verb()))),
+        Some(smol_str::SmolStr::new(format!(
+            "tacsim.tender.{}",
+            work.verb()
+        ))),
     );
     match plan {
         Ok(Some(plan)) => {
@@ -1292,7 +1310,11 @@ pub(crate) fn finish(
             }
         }
         Ok(None) => return lost("there was nothing left to do"),
-        Err(error) => return TendStep::Lost { why: error.to_string() },
+        Err(error) => {
+            return TendStep::Lost {
+                why: error.to_string(),
+            };
+        }
     }
     TendStep::Finish {
         draw: Box::new(TendDraw {
@@ -1338,10 +1360,7 @@ pub(crate) fn due_step(
 
 /// **A pause or a resume** submitted for `act`, and the operator told.
 pub(crate) fn step(ctx: &mut Ctx<'_>, site: &CanonicalId, act: &tow::TowAct, step: TendStep) {
-    let TowStage::Tend {
-        target, paused, ..
-    } = &act.stage
-    else {
+    let TowStage::Tend { target, paused, .. } = &act.stage else {
         return;
     };
     let slot = slot_of(ctx.w, act.tug);
@@ -1475,7 +1494,11 @@ mod tests {
             section: "hull".to_owned(),
             points: 50,
         };
-        assert_eq!(patch.secs(), 5_400, "a 50-point patch is an IC hour and a half");
+        assert_eq!(
+            patch.secs(),
+            5_400,
+            "a 50-point patch is an IC hour and a half"
+        );
         assert_eq!(patch.need().0.fittings_kg, 500);
         assert_eq!(patch.need().0.alloys_kg, 0, "no alloys until IN.8");
         let rearm = TendWork::Rearm {

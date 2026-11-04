@@ -37,8 +37,7 @@ pub use mush_tactics::field_ops::{
     WorkshopWorkOrderRecord, assess_tactical_unit, check_custody_action_allowed,
     effective_component_condition, effective_section_condition, evaluate_recovery_entitlement,
     ic_condition_plan, inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille,
-    tow_mass_ratio_permille_for,
-    tow_speed_factor_permille, validate_close_outcome,
+    tow_mass_ratio_permille_for, tow_speed_factor_permille, validate_close_outcome,
 };
 use mush_tactics::{
     CellAddr, CellId, ComponentId, SectionId, TacticalUnit, UnitError, UnitMutationPlan, apply,
