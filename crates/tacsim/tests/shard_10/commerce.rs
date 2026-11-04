@@ -1872,10 +1872,16 @@ fn ic8_port_sellers_and_party_caps_are_the_port_institutions() {
         PortPartyCaps.has_cap(w, &org(&ceres_map, "coop_trust"), PartyCap::Accept),
         "the Trust"
     );
+    // Doc 41 cut RS.5 (Q-41-11): the recovery operator accepts a retrieval at the window's end;
+    // it sells nothing.
+    assert!(
+        PortPartyCaps.has_cap(w, &org(&ceres_map, "tycho_mutual"), PartyCap::Accept),
+        "Tycho Mutual"
+    );
+    assert!(!PortVenueGate.port_seller(w, &ceres, &org(&ceres_map, "tycho_mutual")));
     for no in [
         PrincipalId::Object(pilot),
         org(&ceres_map, "ceres_clearing"),
-        org(&ceres_map, "tycho_mutual"),
         PrincipalId::Organization(unrelated),
     ] {
         assert!(!PortPartyCaps.has_cap(w, &no, PartyCap::Accept), "{no:?}");

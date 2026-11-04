@@ -5069,11 +5069,12 @@ pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
                 }
             }
             crate::surface::act::Where::Bay { hull }
-                if !matches!(
-                    crate::port::ship::berth_of(ctx.w, hull),
-                    crate::port::ship::Berth::Docked { map, .. }
-                        if programme_port(ctx.w).is_some_and(|port| port.entry == map.entry)
-                ) => {}
+                if hull == record.hull
+                    && !matches!(
+                        crate::port::ship::berth_of(ctx.w, hull),
+                        crate::port::ship::Berth::Docked { map, .. }
+                            if programme_port(ctx.w).is_some_and(|port| port.entry == map.entry)
+                    ) => {}
             _ => {
                 let _ = hand_back(ctx, record.tv);
             }

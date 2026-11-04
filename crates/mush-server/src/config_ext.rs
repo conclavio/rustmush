@@ -815,7 +815,8 @@ fn recovery_config(
         .contains(&cfg.retrieval_window_ic_days)
     {
         return Err(format!(
-            "[tacsim.recovery]: `retrieval_window_ic_days` is between 1 and {} IC days; `{}` is              a window no retrieval can run",
+            "[tacsim.recovery]: `retrieval_window_ic_days` is between 1 and {} IC days; `{}` is \
+             a window no retrieval can run",
             tacsim::surface::retrieval::MAX_RETRIEVAL_WINDOW_IC_DAYS,
             cfg.retrieval_window_ic_days
         ));

@@ -2107,7 +2107,8 @@ pub(crate) fn put_retrieval(ctx: &mut Ctx<'_>, order: &crate::surface::retrieval
         Err(error) => {
             tracing::error!(
                 hull = order.hull.0, %error,
-                "tacsim: a retrieval record did not serialize; a minimal document is written so                  the key stays claimed. Repair the document by hand."
+                "tacsim: a retrieval record did not serialize; a minimal document is written so \
+                 the key stays claimed. Repair the document by hand."
             );
             serde_json::json!({ "schema": order.schema, "hull": order.hull.0 })
         }
@@ -3004,7 +3005,8 @@ fn load_retrieval(store: &mut TacsimStore, key: &str, hull: ObjId, value: &serde
         Err(error) => {
             tracing::error!(
                 %key, %error,
-                "tacsim: a retrieval record is unreadable; its job is held until staff repair                  the document"
+                "tacsim: a retrieval record is unreadable; its job is held until staff repair \
+                 the document"
             );
             store.retrievals.insert(hull, RetrievalSlot::Unreadable);
         }
