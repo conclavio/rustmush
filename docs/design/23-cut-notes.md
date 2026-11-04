@@ -448,4 +448,14 @@ The harness kind is dispatched on the PR's branch before it is marked ready.
 
 ### Cost (rule #14)
 
-Recorded from the PR run's JUnit once it lands.
+From the PR run's JUnit (`41815089235`, at `a31f9f49`, green):
+
+- **`tacsim-integration-9`: +0.41 summed minutes.** The one new shard_9 story,
+  `s4b2_an_open_refused_for_good_cancels_the_queued_launch`, takes 24.5 s. The cell now sums
+  53.3 min.
+- **`rest-libs`: +0.03 s,** for the tactics test.
+- **The mush-sim test's additions** are inside an existing test.
+- **The licensed-rig story is dispatch-only** (the `m8-gate-stories` matrix), so it adds nothing to
+  a PR cell. It passed on conclav.dev in 895 s (gate run `41815082693`) and locally in 1,194 s.
+
+Rule #13's harness kind is green at `41808113918`.
