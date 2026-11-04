@@ -94,7 +94,8 @@ pub struct BayOrder {
     pub class: FacilityClass,
     /// The jobs, as quoted.
     pub jobs: Vec<QuotedJob>,
-    /// The fee, minor units (labour; the same in either class).
+    /// The fee, minor units: the labour (the same in either class) and the price of a part from
+    /// the workshop's stores (doc 39 cut IN.6).
     pub fee_minor: i64,
     /// The fee contract, `ContractId.0`: the requester's escrow, captured by the operator at
     /// completion or cancelled.
@@ -102,6 +103,12 @@ pub struct BayOrder {
     /// The hold the order's goods come from (`VaultId.0`), when it draws any (doc 36 cut
     /// GC.8b): munitions for a rearm, `industrial_parts` for its points, a fitted part's lot.
     pub munitions_vault: Option<u64>,
+    /// **Where the order's part lies** (doc 39 cut IN.6): the operator's storefront vault
+    /// (`VaultId.0`) for a part from the workshop's stores, which the order holds from its take
+    /// to its draw; `None` for a part fitted from the hold, which lies in
+    /// [`BayOrder::munitions_vault`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_vault: Option<u64>,
     /// The goods the order draws from that hold at completion (GC.8b).
     #[serde(default)]
     pub goods: Vec<super::act::GoodUnits>,

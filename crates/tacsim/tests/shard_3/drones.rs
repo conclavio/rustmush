@@ -3663,8 +3663,26 @@ fn sm12b_a_delivery_is_one_receipted_bundle() {
         if !had && let Some(licence) = yard(&rig.tw).licence {
             // The licence fire's every write, counted whole (nothing filtered out first): the
             // account, the economy's meta and the site map — item 8's three, and nothing else.
+            // Doc 39 cut IN.6: the one exception, a part lot ask the Ceres stock clerk lists in
+            // the same fire (the clerks seed the workshops' stores after the bulk stock) — its
+            // listing and the market's meta, which are no part of the licence.
+            let part_ask = ops.iter().any(|op| {
+                op.ns == "market"
+                    && op_key(op)
+                        .strip_prefix("market:listing:")
+                        .is_some_and(|id| {
+                            id.parse().ok().is_some_and(|id| {
+                                rig.tw
+                                    .world()
+                                    .module_state::<mush_market::MarketStore>()
+                                    .and_then(|m| m.listing(mush_market::ListingId(id)))
+                                    .is_some_and(|l| l.source.exact_lot().is_some())
+                            })
+                        })
+            });
             let keys: Vec<String> = ops
                 .iter()
+                .filter(|op| !(part_ask && op.ns == "market"))
                 .map(|op| format!("{}:{}", op.ns, op_key(op)))
                 .collect();
             println!("SM.12b T13 the licence fire's writes: {keys:?}");
@@ -3680,7 +3698,7 @@ fn sm12b_a_delivery_is_one_receipted_bundle() {
                 sorted, want,
                 "the licence fire writes item 8's three and nothing else"
             );
-            licence_writes = Some(ops.len());
+            licence_writes = Some(keys.len());
         }
         fold_module_ops_into(&mut rig.store, ops);
         for submit in &queued {
@@ -3854,7 +3872,7 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut Value)) -> String {
 /// it is SM.12a's published v14, digest for digest; `strip_yard` is idempotent.
 #[test]
 fn sm12b_strip_yard_rebuilds_the_published_v14() {
-    assert_eq!(LANE_VERSION, 20, "lane v20 since doc 39 cut IN.1");
+    assert_eq!(LANE_VERSION, 21, "lane v21 since doc 39 cut IN.6");
     let pack = load_pack(&lane_variant(14, |doc| {
         support::drones::strip_designs(doc);
         support::drones::strip_yard(doc);

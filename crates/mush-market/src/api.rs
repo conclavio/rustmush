@@ -959,6 +959,10 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                 lot: exact_lot,
             },
         );
+        if staged && let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+            let at = store.sweeps;
+            store.reserve_staged.insert(id, at);
+        }
         if !staged {
             // The composition wired a lot supply and the action is not registered:
             // that is a composition defect, not a player error. Take the document back

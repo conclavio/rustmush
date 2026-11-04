@@ -127,6 +127,13 @@ pub const SETTLING: &str =
     "That hull's last work is still settling in the bay's stores; try again shortly.";
 /// The good a section's points consume (Q-36-31).
 pub const PARTS_GOOD: &str = "industrial_parts";
+/// **`NO_PART`** (doc 39 cut IN.6, Q-39-11): an empty store refuses a replace, as `NO_HULL`
+/// refuses the desk. `{part}` is the part row's label.
+pub const NO_PART: &str =
+    "The workshop has no {part} in its stores; +market/list the yard, or bring one in the hold.";
+/// A replace order fits one part from the stores (doc 39 cut IN.6).
+pub const ONE_STORE_PART: &str =
+    "The workshop fits one part from its stores an order; order the other replaces after it.";
 /// The structural good a repair's bale holds beside the fittings (doc 39 cut IN.1, §4.10).
 pub const ALLOYS_GOOD: &str = "structural_alloys";
 
@@ -182,6 +189,84 @@ fn operator_of(def: &PortDef, map: &PortMap) -> Option<(OrgId, AccountId, u32)> 
         AccountId(row.account?),
         workshop.multiplier_permille,
     ))
+}
+
+/// **The workshop's stores** (doc 39 cut IN.6, Q-39-11): the operator org's storefront at
+/// `facility`'s port, the same vault its stock rows and its bids fill.
+fn stores_of<'w>(w: &'w World, facility: &Facility) -> Option<&'w crate::port::map::VendorRow> {
+    let (_, def, map) = crate::port::market::ports(w)
+        .into_iter()
+        .find(|(id, _, _)| *id == facility.port)?;
+    map?.vendors.get(&def.workshop.as_ref()?.operator)
+}
+
+/// **The part a slot stocks as and its catalogue price** (doc 39 cut IN.1, IN.6): the good, its
+/// label and its reference, minor units.
+fn part_price(
+    w: &World,
+    hull: ObjId,
+    component: &ComponentId,
+) -> Option<(CanonicalId, String, u64)> {
+    let definition = mush_tactics::module::unit_of(w, hull)?
+        .component(component)?
+        .definition
+        .clone();
+    let row = crate::hardware::bay::part_of(w, &definition)?;
+    let good = w
+        .module_state::<TacsimStore>()?
+        .goods()?
+        .good(&row.commodity)?
+        .clone();
+    Some((
+        row.commodity,
+        good.label.clone(),
+        good.reference_major.saturating_mul(100),
+    ))
+}
+
+/// **The lot a replace of `component` takes from the stores** (doc 39 cut IN.6): the
+/// lowest-grade clean lot of the slot's row there, with its price.
+///
+/// # Errors
+///
+/// [`NO_PART`] naming the part, or the sentence for a workshop with no stores.
+pub(crate) fn store_part(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    facility: &Facility,
+    component: &ComponentId,
+) -> Result<(crate::port::stock::StoreLot, u64, u64), String> {
+    let (good, label, price) = part_price(ctx.w, hull, component)
+        .ok_or_else(|| NO_PART.replace("{part}", component.as_str()))?;
+    let row = stores_of(ctx.w, facility).ok_or("That workshop keeps no stores.")?;
+    crate::port::stock::store_lots(ctx, row, &good, &claimed_store_lots(ctx.w))
+        .first()
+        .map(|lot| (*lot, row.vault, price))
+        .ok_or_else(|| NO_PART.replace("{part}", &label))
+}
+
+/// **The store lots open bay orders have taken** (doc 39 cut IN.6): the clerk lists none of
+/// them again, and no second order takes one.
+#[must_use]
+pub fn claimed_store_lots(w: &World) -> std::collections::BTreeSet<LotId> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return std::collections::BTreeSet::new();
+    };
+    store
+        .bay_open_hulls()
+        .into_iter()
+        .filter_map(|hull| match store.bay_hull(hull) {
+            Some(BayHullState::Present(row)) => row.open().cloned(),
+            _ => None,
+        })
+        .filter(|order| order.part_vault.is_some())
+        .flat_map(|order| {
+            order.jobs.into_iter().filter_map(|j| match j.job {
+                BayJob::Replace { lot, .. } => lot,
+                _ => None,
+            })
+        })
+        .collect()
 }
 
 /// **The carrier whose vehicle bay is `room`**, and that bay's room: every programme hull the
@@ -632,7 +717,7 @@ pub fn quote_here(w: &World, hull: ObjId) -> Result<(Facility, BayQuote), String
         .module_state::<TacsimStore>()
         .ok_or("TacSim is not loaded.")?;
     let goods = store.goods().ok_or("The goods table is not loaded.")?;
-    let quote = jobs::quote(
+    let mut quote = jobs::quote(
         &unit,
         &spec,
         &anatomy,
@@ -641,6 +726,12 @@ pub fn quote_here(w: &World, hull: ObjId) -> Result<(Facility, BayQuote), String
         &tariff,
         facility.class,
     )?;
+    // Doc 39 cut IN.6: a replaced part comes from the stores at its catalogue price.
+    for job in quote.jobs.iter_mut().chain(quote.elsewhere.iter_mut()) {
+        if let BayJob::Replace { component, .. } = &job.job {
+            job.part_minor = part_price(w, hull, component).map_or(0, |(_, _, price)| price);
+        }
+    }
     Ok((facility, quote))
 }
 
@@ -901,6 +992,7 @@ fn fit_job(
             component,
             lot: Some(lot),
         },
+        part_minor: 0,
         ..job
     })
 }
@@ -978,6 +1070,33 @@ fn take(
     let custody = custody_for(ctx, ctx.actor, right, hull);
     dry_run(ctx, hull, ctx.actor, &custody, &picked, &fitted)
         .map_err(|error| format!("That work cannot be done as ordered: {error}."))?;
+    let mut picked = picked;
+    // (After the dry run, which fits a part from the stores intact, as a seeded one is.)
+    // Doc 39 cut IN.6 (Q-39-11): a replace takes the lowest-grade clean lot of the slot's row
+    // from the workshop's stores, at its catalogue price, held from the take to the draw.
+    let mut store_lot = None;
+    if fit.is_none() {
+        let mut replaces = picked
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| matches!(j.job, BayJob::Replace { lot: None, .. }))
+            .map(|(i, _)| i);
+        if let Some(at) = replaces.next() {
+            if replaces.next().is_some() {
+                return Err(ONE_STORE_PART.to_owned());
+            }
+            let job = &mut picked[at];
+            let BayJob::Replace { component, lot } = &mut job.job else {
+                return Err("That slot has no part to replace.".to_owned());
+            };
+            let (found, vault, price) = store_part(ctx, hull, &facility, component)?;
+            let part = act::provenance(ctx, found.lot)?
+                .ok_or_else(|| NO_PART.replace("{part}", component.as_str()))?;
+            *lot = Some(found.lot);
+            job.part_minor = price;
+            store_lot = Some((found, vault, component.clone(), part.condition));
+        }
+    }
     // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
     let (mut goods, mut bale_after) = order_goods(&picked, record.bale);
     let vault = if goods.is_empty() && fit.is_none() {
@@ -1004,7 +1123,7 @@ fn take(
         }
         Some(vault.0)
     };
-    let fee_minor = i64::try_from(BayQuote::cost_minor(&picked)).map_err(|_| "Fee too large.")?;
+    let fee_minor = i64::try_from(BayQuote::fee_minor(&picked)).map_err(|_| "Fee too large.")?;
     let unit_revision = mush_tactics::module::unit_of(ctx.w, hull)
         .map(TacticalUnit::revision)
         .ok_or(NO_HULL)?;
@@ -1049,6 +1168,7 @@ fn take(
         fee_minor,
         contract: contract.0,
         munitions_vault: vault,
+        part_vault: store_lot.as_ref().map(|(_, vault, _, _)| *vault),
         goods,
         draw_act: None,
         bale_after,
@@ -1063,7 +1183,13 @@ fn take(
     // Doc 39 cut IN.2 (Q-39-27's "reserved"): an order that fits a part from a lot holds that
     // lot from now to the draw, so no sale, move or split takes it meanwhile. The hold is an
     // act the port tick lands; one refused every try cancels the order.
-    if let (Some((lot, _)), Some(vault)) = (&fit, vault) {
+    // Doc 39 cut IN.6: a part from the stores is held the same way, at the storefront.
+    let held = match (&fit, vault, &store_lot) {
+        (Some((lot, _)), Some(vault), _) => Some((*lot, vault)),
+        (None, _, Some((found, vault, _, _))) => Some((found.lot, *vault)),
+        _ => None,
+    };
+    if let Some((lot, vault)) = held {
         let act = next_act(ctx, &record);
         record.acts = act;
         record.owed = Some(Box::new(OwedAct {
@@ -1072,7 +1198,7 @@ fn take(
             vault: Some(vault),
             kind: OwedKind::Hold {
                 order: order.seq,
-                lot: *lot,
+                lot,
             },
             tries: 0,
         }));
@@ -1081,6 +1207,8 @@ fn take(
         tracing::error!(%error, hull = hull.0, "tacsim: +bay/order wrote a record that fails its own check");
     }
     put_bay_hull(ctx, &record);
+    // A store lot standing in its own ask is withdrawn by the stock clerk, who listed it, on
+    // its next step (`port::stock`'s `claimed_step`); the order's hold waits for that.
     Ok(Taken { order })
 }
 
@@ -1093,9 +1221,10 @@ fn close_cancelled(ctx: &mut Ctx<'_>, record: BayHull, note: &str) {
 fn close_order(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str, release: bool) {
     let held = record.order.as_ref().and_then(|order| {
         order.jobs.iter().find_map(|j| match &j.job {
-            BayJob::Replace { lot: Some(lot), .. } => {
-                order.munitions_vault.map(|vault| (order.seq, *lot, vault))
-            }
+            BayJob::Replace { lot: Some(lot), .. } => order
+                .part_vault
+                .or(order.munitions_vault)
+                .map(|vault| (order.seq, *lot, vault)),
             _ => None,
         })
     });
@@ -1309,7 +1438,9 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         .and_then(|facility| source_hold(ctx.w, hull, &facility))
         .ok()
         .map(|vault| vault.0);
-    if still.is_none() || still != order.munitions_vault {
+    // Doc 39 cut IN.6: an order whose only draw is a part from the stores has no hold to keep.
+    let holdless = order.munitions_vault.is_none() && order.part_vault.is_some();
+    if !holdless && (still.is_none() || still != order.munitions_vault) {
         close_cancelled(
             ctx,
             record,
@@ -1338,11 +1469,12 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
     record.owed = Some(Box::new(OwedAct {
         act,
         by: order.requester,
-        vault: order.munitions_vault,
+        vault: order.munitions_vault.or(order.part_vault),
         kind: OwedKind::Draw {
             order: order.seq,
             goods: order.goods.clone(),
             fit,
+            fit_at: order.part_vault,
         },
         tries: 0,
     }));
@@ -1526,6 +1658,17 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
         return;
     }
     if ctx.authoritative_pending(owed.by) {
+        return;
+    }
+    // Doc 39 cut IN.6: a store lot still in its own ask waits, without a try, for the clerk to
+    // withdraw it.
+    if let OwedKind::Hold { lot, .. } = &owed.kind
+        && act::lot_hold(ctx, *lot)
+            .ok()
+            .flatten()
+            .is_some_and(|h| h.holder().starts_with("listing/"))
+        && record.open().is_some_and(|o| o.part_vault.is_some())
+    {
         return;
     }
     if owed.tries >= act::MAX_ACT_TRIES {

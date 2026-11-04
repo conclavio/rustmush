@@ -1013,8 +1013,8 @@ fn sm2_the_lane_carries_six_sites() {
     // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
     // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 20,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1"
+        LANE_VERSION, 21,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 39 cut IN.6"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -2773,6 +2773,16 @@ fn sm2_an_unreadable_site_map_closes_the_pad_and_never_the_desk() {
     assert!(queued.is_empty());
     let plan = run(&mut rig.tw, pilot, "+ship/plan ahuna");
     assert_eq!(plan.lines().nth(1), Some(closed.as_str()), "{plan}");
+    // Doc 39 cut IN.6: the clerks seed the workshops' part stores after the bulk stock;
+    // settled first, so the fires below carry only the depart's.
+    for _ in 0..64 {
+        let (_, queued) = fire(&mut rig);
+        let quiet = queued.is_empty();
+        land_all(&mut rig, &queued);
+        if quiet {
+            break;
+        }
+    }
     // The queue's depart holds on the same refusal, burning nothing.
     let out = run(&mut rig.tw, pilot, "+ship/order depart ahuna");
     assert!(

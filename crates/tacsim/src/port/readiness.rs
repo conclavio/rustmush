@@ -767,10 +767,13 @@ fn seeded_rows(
     let mut seeded = 0usize;
     let mut rows = 0usize;
     let mut total = 0u64;
+    // Doc 39 cut IN.6: a part row is never a pool (its lots are never dissolved; the clerk
+    // seeds them last and lists each as its own lot ask), so it is no part of a port's
+    // readiness.
     for stock in row
         .stock
         .iter()
-        .filter(|s| good.is_none_or(|g| &s.good == g))
+        .filter(|s| good.is_none_or(|g| &s.good == g) && !crate::port_tick::is_part(&s.good))
     {
         rows = rows.saturating_add(1);
         let id = crate::port::families::StockIssueId::parse(&stock.id).ok_or(())?;
@@ -905,7 +908,12 @@ fn commerce_lines(
     // ---- listings, per ask ----
     for vendor in &def.vendors {
         let org = &vendor.org;
-        for ask in &vendor.asks {
+        // Doc 39 cut IN.6: a part ask is a listing a lot, never a pool's (`seeded_rows`).
+        for ask in vendor
+            .asks
+            .iter()
+            .filter(|ask| !crate::port_tick::is_part(&ask.good))
+        {
             let good = &ask.good;
             let unit = unit_word(goods, good);
             let head = format!("{entry} ask {org} {good}");

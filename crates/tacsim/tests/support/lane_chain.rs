@@ -21,10 +21,41 @@ pub const WIDE_SITE_ROWS: [&str; 4] = [
 pub const MUNITIONS_GOODS: [&str; 4] =
     ["ammo_ap_30", "ammo_ball_762", "ammo_he_105", "ammo_missile"];
 
+/// **Doc 39 cut IN.6 (lane v21): the seeded part rows taken out** — every vendor's `stock` and
+/// `asks` row of a `tacsim.part.*` good — so a strip chain rebuilds a lane before v21
+/// (idempotent).
+pub fn strip_part_seeds(doc: &mut Value) {
+    let Some(entries) = doc["entries"].as_object_mut() else {
+        return;
+    };
+    // `get_mut`, never `IndexMut`: indexing a missing key inserts it.
+    for entry in entries.values_mut() {
+        let Some(vendors) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for vendor in vendors {
+            for side in ["stock", "asks"] {
+                if let Some(rows) = vendor.get_mut(side).and_then(Value::as_array_mut) {
+                    rows.retain(|row| {
+                        !row["good"]
+                            .as_str()
+                            .is_some_and(|good| good.starts_with("tacsim.part."))
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// **Doc 39 cut IN.1 (lane v20): the ladder's three prices put back** — Kasei's alloy ask 450 →
 /// 400, Stickney Yards' fittings ask 520 → 400, the Co-op's fittings bid 600 → 560 — so a strip
-/// chain rebuilds a lane before v20 (idempotent).
+/// chain rebuilds a lane before v20 (idempotent); the v21 rows first ([`strip_part_seeds`]).
 pub fn strip_ladder(doc: &mut Value) {
+    strip_part_seeds(doc);
     for (port, org, side, good, was) in [
         ("stickney_port", "kasei", "asks", "structural_alloys", 400),
         (

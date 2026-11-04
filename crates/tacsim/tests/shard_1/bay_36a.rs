@@ -318,12 +318,30 @@ async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
         "nothing was taken: {:?}",
         bay_record(&rig, escort)
     );
+    // Doc 39 cut IN.6: the cannon comes from Occator's stores, which the clerk seeds after the
+    // port's bulk stock; one part from the stores an order, so the cannon alone.
+    for _ in 0..40 {
+        let quote = run(&mut rig.tw, pilot, &format!("+bay #{}", escort.0));
+        if !quote.contains("has no 105 mm cannon mount") {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
     let taken = run(
         &mut rig.tw,
         pilot,
-        &format!("+bay/order #{}=rebuild,replace", escort.0),
+        &format!("+bay/order #{}=rebuild,cannon", escort.0),
     );
     assert!(taken.contains("taken in the workshop"), "{taken}");
+    // The order's hold on the store's lot lands first (no cancel while it settles).
+    for _ in 0..8 {
+        if bay_record(&rig, escort).owed.is_none() {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
     let cancelled = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", escort.0));
     assert!(cancelled.contains("cancelled"), "{cancelled}");
 }

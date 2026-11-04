@@ -250,6 +250,9 @@ fn stocked_with(roster: Roster) -> Rig {
     let mut rig = boot(roster);
     stock(&mut rig);
     set_rate(&mut rig.tw, 1);
+    // Doc 39 cut IN.6: the clerks seed and list the workshops' part stores after the bulk
+    // stock; settled here so every story below starts from an idle clerk.
+    fire_until_idle(&mut rig, 64);
     rig
 }
 
@@ -1122,7 +1125,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 20, "lane v20 since doc 39 cut IN.1");
+    assert_eq!(LANE_VERSION, 21, "lane v21 since doc 39 cut IN.6");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -2660,7 +2663,8 @@ fn sm12a_a_pack_apply_adds_the_mills_to_a_kept_world() {
         None,
         "not before its restock"
     );
-    fire_until_idle(&mut rig, 24);
+    // Doc 39 cut IN.6: the apply adds the part rows too, which the clerks seed last.
+    fire_until_idle(&mut rig, 64);
     let milled = ledger(&rig.tw, EXCHANGE, "metal_ore").expect("the ledger");
     assert_eq!((milled.batches, milled.ore_t), (2, 40));
     assert_eq!(counter(&rig.tw, EXCHANGE, "metal_ore"), Some(16));

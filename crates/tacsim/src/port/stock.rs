@@ -611,6 +611,139 @@ pub(crate) fn swapped(result: Result<(), SwapRefused>) -> Step {
     }
 }
 
+/// **Mint, then dissolve, row by row in authored order** (`stock_step`'s steps 1–3): the bulk
+/// rows (`parts` false), or — doc 39 cut IN.6 — the part rows, which the clerk seeds last, after
+/// every ask is listed and every bid stands, so the stores' scores of lots never hold up a port's
+/// boot. `uncarried` counts the rows the clerk's offer does not carry.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn seed_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    def: &PortDef,
+    action: &DefinitionRef,
+    parts: bool,
+    uncarried: &mut usize,
+) -> Option<Step> {
+    let handles = ctx.w.module_state::<PortHandles>().cloned()?;
+    let Some(inventory) = handles.inventory.clone() else {
+        return Some(Step::Refused);
+    };
+    let carried = clerk_rows(ctx.w, clerk);
+    for vendor in &def.vendors {
+        let Some(row) = map.vendors.get(&vendor.org) else {
+            continue;
+        };
+        for stock in row
+            .stock
+            .iter()
+            .filter(|s| crate::port_tick::is_part(&s.good) == parts)
+        {
+            if !carried.contains_key(&stock.id) {
+                *uncarried = uncarried.saturating_add(1);
+                continue;
+            }
+            if state.stock_skipped.contains(&stock.id) {
+                continue;
+            }
+            let Some(id) = StockIssueId::parse(&stock.id) else {
+                tracing::error!(
+                    entry = %map.entry, org = %vendor.org, good = %stock.good,
+                    "tacsim: a recorded stock row names no issue id; repair the port map"
+                );
+                return Some(Step::Refused);
+            };
+            let Ok(receipt) = receipt_at(ctx, &handles.families.port_stock, &id) else {
+                return Some(Step::Refused);
+            };
+            if receipt.is_some() {
+                state.stock_attempts.remove(&stock.id);
+            }
+            match receipt {
+                None => {
+                    let attempts = state.stock_attempts.get(&stock.id).copied().unwrap_or(0);
+                    if attempts >= MAX_STOCK_ATTEMPTS && !ctx.authoritative_pending(clerk) {
+                        if state.stock_skipped.len() < MAX_CLERK_ROWS {
+                            state.stock_skipped.insert(stock.id.clone());
+                        }
+                        state.stock_attempts.remove(&stock.id);
+                        tracing::warn!(
+                            entry = %map.entry, org = %vendor.org, good = %stock.good,
+                            issue = %stock.id,
+                            attempts,
+                            "tacsim: a stock row's mint never lands; the clerk skips it this \
+                             boot and stocks the rest (repair the port map row)"
+                        );
+                        continue;
+                    }
+                    let key = format!("{STOCK_KEY_PREFIX}{}", stock.id);
+                    let Ok(key) = IdempotencyKeyText::parse_canonical(key) else {
+                        return Some(Step::Refused);
+                    };
+                    let parameters = json!({ "issue": stock.id });
+                    let step = swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
+                        ctx.submit_authoritative(
+                            action.clone(),
+                            PerceivedRef::SelfActor,
+                            Vec::new(),
+                            parameters,
+                            key,
+                        );
+                    }));
+                    if step == Step::Submitted
+                        && (state.stock_attempts.contains_key(&stock.id)
+                            || state.stock_attempts.len() < MAX_CLERK_ROWS)
+                    {
+                        state
+                            .stock_attempts
+                            .insert(stock.id.clone(), attempts.saturating_add(1));
+                    }
+                    return Some(step);
+                }
+                // Doc 39 cut IN.2: a part's lots are never dissolved; they are listed one by
+                // one ([`part_ask_step`]).
+                Some(_) if crate::port_tick::is_part(&stock.good) => {}
+                Some(receipt) => {
+                    let standing = ctx
+                        .action_state(&inventory.lots, &LotId(receipt.lot))
+                        .map(|lot| lot.is_some());
+                    match standing {
+                        Err(_) => return Some(Step::Refused),
+                        Ok(false) => {}
+                        Ok(true) => {
+                            let Some(dissolve) =
+                                mush_inventory::action_ref(ctx.reg, InventoryVerb::Dissolve)
+                            else {
+                                return Some(Step::Refused);
+                            };
+                            let key = format!("{DISSOLVE_KEY_PREFIX}{}", stock.id);
+                            let Ok(key) = IdempotencyKeyText::parse_canonical(key) else {
+                                return Some(Step::Refused);
+                            };
+                            let parameters = json!({
+                                "endpoint": receipt.vault.0.to_string(),
+                                "lot": LotId(receipt.lot).to_string(),
+                            });
+                            return Some(swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
+                                ctx.submit_authoritative(
+                                    dissolve,
+                                    PerceivedRef::SelfActor,
+                                    Vec::new(),
+                                    parameters,
+                                    key,
+                                );
+                            })));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// **The stock arm** (doc 18 §4.3 "The driver"; D-18-26, D-18-32; lead ruling L5): one
 /// step for the port's clerk this fire — the first that is due, in authored order: mint
 /// a row with no receipt, dissolve a minted lot still standing at the storefront, then
@@ -641,125 +774,36 @@ pub(crate) fn stock_step(
     if let Some(step) = emergency_step(ctx, state, fire, clerk, &map, &def) {
         return step;
     }
+    // Doc 39 cut IN.6: then a store lot a bay order has taken, its ask withdrawn for the order.
+    if let Some(step) = claimed_step(ctx, fire, clerk, &map) {
+        return step;
+    }
     let Some(action) = state.stock_action.clone() else {
         return Step::Idle;
     };
     let Some(handles) = ctx.w.module_state::<PortHandles>().cloned() else {
         return Step::Refused;
     };
-    let Some(inventory) = handles.inventory.clone() else {
+    if handles.inventory.is_none() {
         return Step::Refused;
-    };
+    }
     // 1–3. Mint, then dissolve, row by row in authored order. Doc 18 cut IC14 row 29
     // (lead ruling L24): a row the clerk's offer does not carry, or whose mint was
     // refused `MAX_STOCK_ATTEMPTS` times, is skipped (warned once a boot) and the step
     // goes on to the next row — it never stalls the port's arm.
-    let carried = clerk_rows(ctx.w, clerk);
     let mut uncarried = 0_usize;
-    for vendor in &def.vendors {
-        let Some(row) = map.vendors.get(&vendor.org) else {
-            continue;
-        };
-        for stock in &row.stock {
-            if !carried.contains_key(&stock.id) {
-                uncarried = uncarried.saturating_add(1);
-                continue;
-            }
-            if state.stock_skipped.contains(&stock.id) {
-                continue;
-            }
-            let Some(id) = StockIssueId::parse(&stock.id) else {
-                tracing::error!(
-                    entry = %map.entry, org = %vendor.org, good = %stock.good,
-                    "tacsim: a recorded stock row names no issue id; repair the port map"
-                );
-                return Step::Refused;
-            };
-            let Ok(receipt) = receipt_at(ctx, &handles.families.port_stock, &id) else {
-                return Step::Refused;
-            };
-            if receipt.is_some() {
-                state.stock_attempts.remove(&stock.id);
-            }
-            match receipt {
-                None => {
-                    let attempts = state.stock_attempts.get(&stock.id).copied().unwrap_or(0);
-                    if attempts >= MAX_STOCK_ATTEMPTS && !ctx.authoritative_pending(clerk) {
-                        if state.stock_skipped.len() < MAX_CLERK_ROWS {
-                            state.stock_skipped.insert(stock.id.clone());
-                        }
-                        state.stock_attempts.remove(&stock.id);
-                        tracing::warn!(
-                            entry = %map.entry, org = %vendor.org, good = %stock.good,
-                            issue = %stock.id,
-                            attempts,
-                            "tacsim: a stock row's mint never lands; the clerk skips it this \
-                             boot and stocks the rest (repair the port map row)"
-                        );
-                        continue;
-                    }
-                    let key = format!("{STOCK_KEY_PREFIX}{}", stock.id);
-                    let Ok(key) = IdempotencyKeyText::parse_canonical(key) else {
-                        return Step::Refused;
-                    };
-                    let parameters = json!({ "issue": stock.id });
-                    let step = swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
-                        ctx.submit_authoritative(
-                            action.clone(),
-                            PerceivedRef::SelfActor,
-                            Vec::new(),
-                            parameters,
-                            key,
-                        );
-                    }));
-                    if step == Step::Submitted
-                        && (state.stock_attempts.contains_key(&stock.id)
-                            || state.stock_attempts.len() < MAX_CLERK_ROWS)
-                    {
-                        state
-                            .stock_attempts
-                            .insert(stock.id.clone(), attempts.saturating_add(1));
-                    }
-                    return step;
-                }
-                // Doc 39 cut IN.2: a part's lots are never dissolved; they are listed one by
-                // one ([`part_ask_step`]).
-                Some(_) if crate::port_tick::is_part(&stock.good) => {}
-                Some(receipt) => {
-                    let standing = ctx
-                        .action_state(&inventory.lots, &LotId(receipt.lot))
-                        .map(|lot| lot.is_some());
-                    match standing {
-                        Err(_) => return Step::Refused,
-                        Ok(false) => {}
-                        Ok(true) => {
-                            let Some(dissolve) =
-                                mush_inventory::action_ref(ctx.reg, InventoryVerb::Dissolve)
-                            else {
-                                return Step::Refused;
-                            };
-                            let key = format!("{DISSOLVE_KEY_PREFIX}{}", stock.id);
-                            let Ok(key) = IdempotencyKeyText::parse_canonical(key) else {
-                                return Step::Refused;
-                            };
-                            let parameters = json!({
-                                "endpoint": receipt.vault.0.to_string(),
-                                "lot": LotId(receipt.lot).to_string(),
-                            });
-                            return swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
-                                ctx.submit_authoritative(
-                                    dissolve,
-                                    PerceivedRef::SelfActor,
-                                    Vec::new(),
-                                    parameters,
-                                    key,
-                                );
-                            }));
-                        }
-                    }
-                }
-            }
-        }
+    if let Some(step) = seed_step(
+        ctx,
+        state,
+        fire,
+        clerk,
+        &map,
+        &def,
+        &action,
+        false,
+        &mut uncarried,
+    ) {
+        return step;
     }
     if uncarried > 0 && state.stock_uncarried.insert(map.entry.clone()) {
         tracing::warn!(
@@ -854,10 +898,6 @@ pub(crate) fn stock_step(
         }
     }
     let Some((vendor, vault, good, price_major, pool)) = due else {
-        // Doc 39 cut IN.2: a seeded part not yet listed is listed as its own lot ask.
-        if let Some(step) = part_ask_step(ctx, state, fire, clerk, &map, &def) {
-            return step;
-        }
         // Doc 20 cut SM.5 (lead ruling 4): the intake drip, before the lapsed-bid
         // re-post (which never touches a refresh row).
         if let Some(step) = drip_step(ctx, state, fire, clerk, &map, &def) {
@@ -868,7 +908,15 @@ pub(crate) fn stock_step(
         if let Some(step) = crate::port::mill::mill_step(ctx, state, fire, clerk, &map, &def) {
             return step;
         }
-        return bid_step(ctx, state, fire, clerk, &map, &def);
+        // Doc 39 cut IN.2: a seeded part not yet listed is listed as its own lot ask. Doc 39
+        // cut IN.6: the part rows are minted and listed last, so the stores' scores of lots
+        // never hold up a pooled ask, a bid, the drip or the mill.
+        return match bid_step(ctx, state, fire, clerk, &map, &def) {
+            Step::Idle => seed_step(ctx, state, fire, clerk, &map, &def, &action, true, &mut 0)
+                .or_else(|| part_ask_step(ctx, state, fire, clerk, &map, &def))
+                .unwrap_or(Step::Idle),
+            step => step,
+        };
     };
     let Some(price) = ask_price(ctx.w, price_major) else {
         return Step::Refused;
@@ -920,10 +968,141 @@ pub(crate) fn stock_step(
     }
 }
 
+/// **A part lot in a vendor's stores** (doc 39 cut IN.6, Q-39-11): a seeded lot of one good
+/// still at the storefront, free or standing in its own lot ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StoreLot {
+    /// The lot.
+    pub lot: LotId,
+    /// Its grade.
+    pub grade: u8,
+    /// The lot ask that holds it, when one does (withdrawn when a bay order takes the lot).
+    pub listing: Option<ListingId>,
+}
+
+/// **The lots of `good` in `row`'s stores** (doc 39 cut IN.6): each seeded lot of the vendor's
+/// stock rows of `good` still at the storefront, unfitted, held by nothing but its own lot ask
+/// and claimed by no open bay order (`claimed`), lowest grade first. Only the seeds are read:
+/// a part sold, made or scrapped into the stores is IN.7's and IN.9's.
+pub(crate) fn store_lots(
+    ctx: &Ctx<'_>,
+    row: &crate::port::map::VendorRow,
+    good: &CanonicalId,
+    claimed: &std::collections::BTreeSet<LotId>,
+) -> Vec<StoreLot> {
+    let Some(handles) = ctx.w.module_state::<PortHandles>().cloned() else {
+        return Vec::new();
+    };
+    let Some(inventory) = handles.inventory.clone() else {
+        return Vec::new();
+    };
+    let storefront = EndpointRef(VaultId(row.vault));
+    let market = ctx.w.module_state::<MarketStore>();
+    let mut found = Vec::new();
+    for stock in row.stock.iter().filter(|s| &s.good == good) {
+        let Some(id) = StockIssueId::parse(&stock.id) else {
+            continue;
+        };
+        if !matches!(
+            receipt_at(ctx, &handles.families.port_stock, &id),
+            Ok(Some(_))
+        ) {
+            continue;
+        }
+        for n in 0..stock.qty {
+            let lot = seed_lot_id(&id, n);
+            if claimed.contains(&lot) {
+                continue;
+            }
+            let Some(here) = ctx
+                .action_state(&inventory.lots, &lot)
+                .ok()
+                .flatten()
+                .filter(|l| l.endpoint() == storefront)
+                .cloned()
+            else {
+                continue;
+            };
+            if !matches!(
+                crate::port::bay_work::act::provenance(ctx, lot),
+                Ok(Some(part)) if part.fitted_into.is_none() && !part.is_hot()
+            ) {
+                continue;
+            }
+            let listing = market.and_then(|m| {
+                m.lot_listings()
+                    .find(|l| l.source.exact_lot() == Some(lot))
+                    .map(|l| l.id)
+            });
+            let holder = ctx.action_state(&inventory.lot_holds, &lot).ok();
+            let free = match (holder.flatten(), listing) {
+                (None, _) => true,
+                (Some(hold), Some(listing)) => {
+                    hold.holder() == mush_market::listing_holder_text(listing)
+                }
+                (Some(_), None) => false,
+            };
+            if free {
+                found.push(StoreLot {
+                    lot,
+                    grade: here.grade().get(),
+                    listing,
+                });
+            }
+        }
+    }
+    found.sort_by_key(|s| (s.grade, s.lot));
+    found
+}
+
+/// **The ask of a store lot a bay order has taken** (doc 39 cut IN.6): the clerk withdraws it,
+/// as the one who listed it, so the listing's hold is given back and the order's can land
+/// (`bay_work` waits for that without spending a try). One a fire, the first in listing order.
+fn claimed_step(ctx: &mut Ctx<'_>, fire: &mut Fire, clerk: ObjId, map: &PortMap) -> Option<Step> {
+    let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+    if claimed.is_empty() {
+        return None;
+    }
+    let vaults: std::collections::BTreeSet<u64> = map.vendors.values().map(|r| r.vault).collect();
+    let listing = ctx.w.module_state::<MarketStore>().and_then(|m| {
+        m.lot_listings()
+            .filter(|l| {
+                l.source
+                    .exact_lot()
+                    .is_some_and(|lot| claimed.contains(&lot))
+                    && l.source
+                        .lot()
+                        .is_some_and(|(endpoint, ..)| vaults.contains(&endpoint.vault().0))
+            })
+            .map(|l| l.id)
+            .min()
+    })?;
+    Some(
+        match fire.as_principal(ctx, clerk, clerk, |ctx| {
+            mush_market::withdraw_listing(ctx, listing)
+        }) {
+            Ok(Ok(())) => Step::Worked,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    listing = listing.0,
+                    ?error,
+                    "tacsim: the stock clerk could not withdraw a store lot's ask for a bay order"
+                );
+                Step::Refused
+            }
+            Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+                Step::Deferred
+            }
+            Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+        },
+    )
+}
+
 /// **The part asks** (doc 39 cut IN.2, Q-39-27's "sold"): a seeded part is listed as **a lot
 /// ask** — one hold-backed listing of that one lot (`Supply::Lot` naming it), so its sale hands
 /// the lot itself, its id and its `Seeded` row, to the buyer. One listing a fire: the first
-/// seeded lot of a part ask's good still at the storefront, unheld and unlisted. An ask the
+/// seeded lot of a part ask's good still at the storefront, unheld, unlisted and taken by no bay
+/// order, for a good with no lot ask standing (doc 39 cut IN.6: one a good at a time). An ask the
 /// market refused today waits for the next IC day, as the pooled asks do.
 fn part_ask_step(
     ctx: &mut Ctx<'_>,
@@ -936,6 +1115,8 @@ fn part_ask_step(
     let handles = ctx.w.module_state::<PortHandles>().cloned()?;
     let inventory = handles.inventory.clone()?;
     let today = ctx.w.world_ic_now().at.div_euclid(IC_DAY);
+    // Doc 39 cut IN.6: a lot a bay order has taken from the stores is never listed again.
+    let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
     let mut due = None;
     'vendors: for vendor in &def.vendors {
         let Some(row) = map.vendors.get(&vendor.org) else {
@@ -944,6 +1125,14 @@ fn part_ask_step(
         let Some(vendor_id) = row.vendor else {
             continue;
         };
+        // Doc 39 cut IN.6: a vendor at the market's listing bound lists no more lots; the
+        // unlisted ones stay in the stores, which the workshop draws from all the same.
+        if ctx.w.module_state::<MarketStore>().is_some_and(|m| {
+            m.listings_of_vendor(mush_market::VendorId(vendor_id))
+                >= mush_market::MAX_LISTINGS_PER_VENDOR
+        }) {
+            continue;
+        }
         let storefront = EndpointRef(VaultId(row.vault));
         for ask in vendor
             .asks
@@ -955,6 +1144,19 @@ fn part_ask_step(
                 .get(&(row.vault, ask.good.clone()))
                 .is_some_and(|day| *day == today)
             {
+                continue;
+            }
+            // Doc 39 cut IN.6: one lot ask a part good stands at a time; the next lot is listed
+            // when it sells or a bay order takes it.
+            let standing = ctx.w.module_state::<MarketStore>().is_some_and(|m| {
+                m.lot_listings().any(|l| {
+                    l.source.exact_lot().is_some()
+                        && l.source.lot().is_some_and(|(endpoint, commodity, _)| {
+                            endpoint == storefront && *commodity == ask.good
+                        })
+                })
+            });
+            if standing {
                 continue;
             }
             for stock in row.stock.iter().filter(|s| s.good == ask.good) {
@@ -982,7 +1184,7 @@ fn part_ask_step(
                     let listed = ctx.w.module_state::<MarketStore>().is_some_and(|m| {
                         m.lot_listings().any(|l| l.source.exact_lot() == Some(lot))
                     });
-                    if held || listed {
+                    if held || listed || claimed.contains(&lot) {
                         continue;
                     }
                     due = Some((
