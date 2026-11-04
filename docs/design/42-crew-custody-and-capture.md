@@ -870,6 +870,7 @@ Story: (a′) whole, both sizes, the bot typing the captive's half. **Built** �
 **CR.3 — The bound and the held case.** Q-42-8, Q-42-9, Q-42-15. `captive_bound_s`;
 `+sortie/extract` from captivity after the bound; the release at will's two landings; the
 captor's wreck. Files: `field/crew.rs`, `mush-config`. Story: (e), both sizes, with a restart.
+**Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.3.
 
 **CR.4 — Ejection.** Q-42-10, Q-42-11, Q-42-12, Q-42-13, Q-42-14. `+sortie/eject`; the doomed
 test on live cells; the holding query to the arena task; the deterministic draw and

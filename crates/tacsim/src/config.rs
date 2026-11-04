@@ -1983,6 +1983,10 @@ pub const FIELD_EXTRACT_S: std::ops::RangeInclusive<u32> = 60..=604_800;
 /// **The longest rescue bound** (doc 32 cut CF.5): an IC day.
 pub const FIELD_RESCUE_BOUND_S: u32 = 86_400;
 
+/// **Doc 42 cut CR.3** (Q-42-8): the band `[tacsim.field].captive_bound_s` must sit in: an IC
+/// minute, thirty IC days.
+pub const FIELD_CAPTIVE_BOUND_S: std::ops::RangeInclusive<u32> = 60..=2_592_000;
+
 /// **Doc 42 cut CR.2** (Q-42-7): the band `[tacsim.field].release_s` must sit in: an IC minute, an
 /// IC day.
 pub const FIELD_RELEASE_S: std::ops::RangeInclusive<u32> = 60..=86_400;
@@ -2038,6 +2042,9 @@ pub struct FieldConfig {
     /// **Doc 42 cut CR.2** (Q-42-7): IC seconds a captive handed over at a port spends in
     /// processing before release (3,600, provisional: one IC hour).
     pub release_s: u32,
+    /// **Doc 42 cut CR.3** (Q-42-8; doc 27 Q-F4's cap): IC seconds from a capture after which a
+    /// captive may ask for extraction from captivity (604,800, provisional: seven IC days).
+    pub captive_bound_s: u32,
 }
 
 impl Default for FieldConfig {
@@ -2056,6 +2063,7 @@ impl Default for FieldConfig {
             raid_field_s: 1_200,
             launch_cycle_s: 60,
             release_s: 3_600,
+            captive_bound_s: 604_800,
         }
     }
 }
@@ -2097,6 +2105,14 @@ impl FieldConfig {
                 FIELD_EXTRACT_S.start(),
                 FIELD_EXTRACT_S.end(),
                 self.extract_s
+            ));
+        }
+        if !FIELD_CAPTIVE_BOUND_S.contains(&self.captive_bound_s) {
+            return Err(format!(
+                "[tacsim.field].captive_bound_s must be {} to {} (it is {})",
+                FIELD_CAPTIVE_BOUND_S.start(),
+                FIELD_CAPTIVE_BOUND_S.end(),
+                self.captive_bound_s
             ));
         }
         if !FIELD_RELEASE_S.contains(&self.release_s) {

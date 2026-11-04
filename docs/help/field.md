@@ -350,7 +350,16 @@ and you are released all the same. The captor is paid nothing. After the hour yo
 are free, and the port is the one you know. Treatment begins as soon as you stand
 in the port.
 
-The time limit on captivity and capture at an ejection are still being built.
+**The limit.** A captor who never docks cannot hold you for ever. Seven IC days
+after the capture (`[tacsim.field].captive_bound_s`), `+sortie/extract` works from
+captivity: a recovery service negotiates your passage and sets you down at the safe
+port you know after the usual delay. Before then it is refused with the time left.
+A captive the captor releases anywhere but a port rides on as a passenger and may
+ask for extraction the same way. If the captor's carrier is wrecked in a later
+field, you are stranded in the wreck like everyone aboard it, and the captivity
+ends with the hull.
+
+Capture at an ejection is still being built.
 
 A control-section kill incapacitates you at once: "Your head is gone and you with
 it, for now: you are incapacitated." A stranded pilot is told so when the field

@@ -375,8 +375,47 @@ pub fn held(w: &World, who: ObjId) -> Option<ObjId> {
 /// processing on movement. `None` passes.
 #[must_use]
 pub fn refusal(w: &World, who: ObjId, gate: Gate) -> Option<String> {
-    let hold = crew_of(w, who)?.hold()?;
+    let record = crew_of(w, who)?;
+    // Doc 42 cut CR.3 (Q-42-8): a captive may ask for extraction once the bound has passed; before
+    // it, the refusal names the time left.
+    if gate == Gate::Extract
+        && let CrewLocation::Captured {
+            carrier, since_ic, ..
+        } = record.location
+    {
+        let due = since_ic.saturating_add(i64::from(super::config(w).captive_bound_s));
+        let left = due - w.world_ic_now().at;
+        return (left > 0).then(|| {
+            HELD_BOUND
+                .replace("{carrier}", &crate::port::coop::name_of(w, carrier))
+                .replace("{h}", &hours(left).to_string())
+        });
+    }
+    let hold = record.hold()?;
     refusal_for(w, &hold, gate)
+}
+
+/// **A captive's extraction before the bound** (doc 42 cut CR.3, Q-42-8): `{carrier}`, `{h}`.
+pub const HELD_BOUND: &str = "You are held aboard the {carrier}. In about {h} IC h a recovery service may negotiate your release: +sortie/extract then.";
+/// **An extraction asked for from captivity, or as a passenger** (doc 42 cut CR.3; Q-42-8,
+/// Q-42-9): `{port}`, `{h}`.
+pub const EXTRACT_RELEASE: &str = "Extraction requested. A recovery service negotiates your passage and sets you down at {port} in about {h} IC h.";
+
+/// **Whether `who` may ask for extraction where their record stands** (doc 42 cut CR.3): a
+/// stranded or incapacitated character inside their unit (Q-CF-39); a captive past the bound
+/// (the gate has read it, Q-42-8); or a passenger released aboard a hull not their own (Q-42-9's
+/// widening: `Carrier { hull }` on a hull other than the one they command).
+fn may_extract(w: &World, who: ObjId, record: &CrewRecord) -> bool {
+    match &record.location {
+        CrewLocation::Captured { .. } => true,
+        CrewLocation::Carrier { hull } => {
+            crate::port::coop::helm_of(w, who).is_none_or(|helm| helm.hull != *hull)
+                && inside(w, who, *hull)
+        }
+        _ => record
+            .extractable()
+            .is_some_and(|unit| inside(w, who, unit)),
+    }
 }
 
 /// [`refusal`]'s rule for one [`Hold`].
@@ -667,6 +706,19 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         return;
     }
     let prior = crew_of(ctx.w, pilot).cloned();
+    // Doc 42 cut CR.3 (Q-42-15): a captor's carrier whose hull fell strands everyone aboard,
+    // captives included; custody ends with the hull.
+    if let Some(stranded) = prior
+        .as_ref()
+        .and_then(|record| wrecked_captive(record, site, unit, aboard(ctx.w, site, unit)))
+    {
+        put(ctx, stranded);
+        let line = STRANDED
+            .replace("{unit}", &unit.0.to_string())
+            .replace("{site}", &super::admit::site_name(ctx, site));
+        ctx.out.sys_to_actor(pilot, "tacsim.field", line);
+        return;
+    }
     if prior.as_ref().is_some_and(leaves_alone) {
         return;
     }
@@ -733,6 +785,32 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
             .replace("{site}", &super::admit::site_name(ctx, site));
         ctx.out.sys_to_actor(pilot, "tacsim.field", line);
     }
+}
+
+/// **[`check_in`]'s rule for a captive whose carrier checks in** (doc 42 cut CR.3, Q-42-15):
+/// held aboard `unit` and the carrier's own check-in strands its souls (`at` is
+/// [`aboard`]'s reading) — stranded in the wreck on `site`, the condition kept, custody gone.
+/// Anyone else, and a captive of a sound carrier, is `None`.
+#[must_use]
+pub(crate) fn wrecked_captive(
+    record: &CrewRecord,
+    site: &CanonicalId,
+    unit: ObjId,
+    at: CrewLocation,
+) -> Option<CrewRecord> {
+    let CrewLocation::Captured { carrier, .. } = record.location else {
+        return None;
+    };
+    if carrier != unit || !matches!(at, CrewLocation::Stranded { .. }) {
+        return None;
+    }
+    let mut next = record.clone();
+    next.location = CrewLocation::Stranded {
+        site: site.clone(),
+        unit,
+    };
+    next.extraction = None;
+    Some(next)
 }
 
 /// **Whether a check-in leaves `record` alone** (doc 36a §11 row 4; doc 42 Q-42-3, Q-42-12): an
@@ -1440,10 +1518,13 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .replace("{h}", &hours(coming.due_ic - now).to_string()),
         ));
     }
-    record
-        .extractable()
-        .filter(|unit| inside(ctx.w, actor, *unit))
-        .ok_or_else(|| CmdError::msg(NOT_STRANDED))?;
+    if !may_extract(ctx.w, actor, &record) {
+        return Err(CmdError::msg(NOT_STRANDED));
+    }
+    let negotiated = matches!(
+        record.location,
+        CrewLocation::Captured { .. } | CrewLocation::Carrier { .. }
+    );
     if ctx.w.world_timeline().is_frozen() {
         return Err(CmdError::msg(
             "World time is frozen; ask again once it resumes.",
@@ -1463,9 +1544,13 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.sys_to_actor(
         actor,
         "tacsim.field",
-        EXTRACT_TAKEN
-            .replace("{port}", port.name)
-            .replace("{h}", &hours(delay).to_string()),
+        (if negotiated {
+            EXTRACT_RELEASE
+        } else {
+            EXTRACT_TAKEN
+        })
+        .replace("{port}", port.name)
+        .replace("{h}", &hours(delay).to_string()),
     );
     Ok(())
 }
@@ -2148,6 +2233,9 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, hull: ObjId) {
                     release_due_ic: due,
                     charge: None,
                 },
+                // Doc 42 cut CR.3: an extraction asked for after the bound is overtaken by the
+                // handover.
+                extraction: None,
                 at_ic: now,
                 ..record
             },
@@ -2565,6 +2653,41 @@ mod tests {
         assert!(cfg.validate().is_err());
     }
 
+    /// **Doc 42 cut CR.3** (Q-42-15): a captive of a carrier whose own check-in strands its souls
+    /// is stranded in the wreck, custody gone; a sound carrier's check-in, or another unit's,
+    /// leaves the captive alone.
+    #[test]
+    fn cr3_a_captors_wreck_strands_its_captives() {
+        let site = CanonicalId::new("ahuna").expect("a site");
+        let held = record_at(
+            ObjId(7),
+            CrewLocation::Captured {
+                carrier: ObjId(90),
+                captor: ObjId(12),
+                since_ic: 100,
+            },
+        );
+        let wreck = CrewLocation::Stranded {
+            site: site.clone(),
+            unit: ObjId(90),
+        };
+        let left = wrecked_captive(&held, &site, ObjId(90), wreck.clone()).expect("stranded");
+        assert_eq!(left.location, wreck);
+        assert!(!left.in_custody() && left.extractable() == Some(ObjId(90)));
+        assert_eq!(left.condition, held.condition, "the condition kept");
+        assert!(
+            wrecked_captive(
+                &held,
+                &site,
+                ObjId(90),
+                CrewLocation::Carrier { hull: ObjId(90) }
+            )
+            .is_none(),
+            "a sound carrier keeps its captive"
+        );
+        assert!(wrecked_captive(&held, &site, ObjId(91), wreck).is_none());
+    }
+
     /// A record for the doc 42 tests: `who`, injured, at `location`.
     fn record_at(who: ObjId, location: CrewLocation) -> CrewRecord {
         CrewRecord {
@@ -2769,12 +2892,35 @@ mod tests {
         assert_eq!(held(&w, who), Some(carrier));
         for gate in gates {
             let line = refusal(&w, who, gate).expect("a captive is refused");
-            assert_eq!(
-                line,
-                HELD.replace("{carrier}", &crate::port::coop::name_of(&w, carrier))
-            );
             assert!(line.starts_with("You are held aboard the "), "{line}");
+            if gate == Gate::Extract {
+                // Doc 42 cut CR.3 (Q-42-8): the time left to the bound.
+                assert!(line.contains("In about 168 IC h"), "{line}");
+            } else {
+                assert_eq!(
+                    line,
+                    HELD.replace("{carrier}", &crate::port::coop::name_of(&w, carrier))
+                );
+            }
         }
+        // Doc 42 cut CR.3: past the bound the captive may ask; nothing else opens.
+        let saved = book.clone();
+        book.0.insert(
+            who,
+            record_at(
+                who,
+                CrewLocation::Captured {
+                    carrier,
+                    captor: ObjId(12),
+                    since_ic: now - 604_800,
+                },
+            ),
+        );
+        w.module_state_insert(book.clone());
+        assert!(refusal(&w, who, Gate::Extract).is_none());
+        assert!(refusal(&w, who, Gate::Move).is_some());
+        book = saved;
+        w.module_state_insert(book.clone());
         let mut ejectee = record_at(
             who,
             CrewLocation::Stranded {
