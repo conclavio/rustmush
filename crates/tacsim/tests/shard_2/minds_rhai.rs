@@ -86,7 +86,8 @@ use tacsim::arena::state::{
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::arena::stock_mind::{
-    NativeStockMind, Weights, best_hostile, cell_point, health_permille, line_to, view_ranges,
+    Ground, NativeStockMind, Weights, best_hostile, cell_point, health_permille, line_to,
+    view_ranges,
 };
 use tacsim::arena::weapons::WeaponBand;
 use tacsim::arena_task::MatchId;
@@ -651,6 +652,7 @@ impl Kept {
             view: &self.view,
             memory: &self.memory,
             map: &self.map,
+            wrecks: &[],
             card: &self.card,
             program: &self.program,
             profile_token: self.profile_token,
@@ -1448,6 +1450,7 @@ fn parity_at(moment: &Moment, unit: ObjId) -> Exercised {
                 view: &moment.view,
                 memory: &[],
                 map: &moment.map,
+                wrecks: &[],
                 card: &moment.card,
                 program: &moment.program,
                 profile_token: moment.profile_token,
@@ -2744,7 +2747,10 @@ fn kernels_by_hand(view: &MindView, def: &ArenaDefinition) -> Memory {
         )
         .map_or(MemValue::Unit, |id| MemValue::Int(contact_int(id))),
     );
-    put("line", MemValue::Bool(line_to(def, here, plot)));
+    put(
+        "line",
+        MemValue::Bool(line_to(&Ground::bare(def), here, plot)),
+    );
     put(
         "stand",
         cell_value(motor::stand_off_cell(
@@ -2820,6 +2826,7 @@ fn kernels_on(runner: &RhaiRunner, view: &Arc<MindView>, arena: &Arena) -> Memor
         view,
         memory: &[],
         map: &arena.definition,
+        wrecks: &arena.mind_wrecks(),
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),
@@ -3287,6 +3294,7 @@ fn m2_a_fresh_memory_writes_the_fourteen_keys_as_t1_does() {
                 view: &view,
                 memory: &[],
                 map: &arena.definition,
+                wrecks: &arena.mind_wrecks(),
                 card: &card,
                 program: &runtime.program,
                 profile_token: runtime.token(),
@@ -3890,6 +3898,7 @@ fn think_on_row(arena: &mut Arena, source: &str, memory: &[u8]) -> ThinkResult {
         view: &view,
         memory,
         map: &arena.definition,
+        wrecks: &arena.mind_wrecks(),
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),
@@ -3990,6 +3999,7 @@ fn m3_slots_line_to_and_the_op_ceiling_are_read_off_the_row() {
         view: &view,
         memory: &[],
         map: &three.definition,
+        wrecks: &three.mind_wrecks(),
         card: &card,
         program: &runtime.program,
         profile_token: runtime.token(),
@@ -4439,6 +4449,7 @@ fn m3_a_resume_between_n_and_n_plus_one_reproduces_the_hash_sequence_at_three_ca
             view: &view,
             memory: &memory,
             map: &control.definition,
+            wrecks: &control.mind_wrecks(),
             card: &card,
             program: &runtime.program,
             profile_token: runtime.token(),

@@ -1860,26 +1860,16 @@ async fn arena_loop(mut task: Task) {
                         task.arena.stage_card(unit, change);
                     }
                 }
-                // Doc 32 cut CF.2: the leaders' marks, before the step.
-                for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
-                    task.arena.mark_party(by, of, mark);
+                // Doc 40 cut FR.5 (§4.1 item 1, Q-40-10): the last pulse's think batch is
+                // awaited and its answers written HERE, ahead of the head's field acts, so a
+                // join (or a withdrawal) encodes an arena whose answers have landed and never
+                // meets `SnapshotError::Awaiting`. The pulse's own await below then finds
+                // nothing in flight. An OOC match has no field acts, so its order is unchanged.
+                if let Err(reason) = task.await_thinks().await {
+                    let _ = task.void_now(wall, &reason).await;
+                    return;
                 }
-                // Doc 32 cut CF.5: the units leaving at the ramp, before the
-                // step, each answered behind the ledger.
-                for (unit, ramp) in std::mem::take(&mut waiting.withdrawals) {
-                    let outcome = task.arena.withdraw(unit, ramp).map(Box::new);
-                    task.queue_withdrawn(unit, outcome);
-                }
-                // Doc 36 cut GC.1b: the units taken in at their pads, before the step, each
-                // answered behind the ledger.
-                // Doc 36 cut GC.11: the homes of parties arriving mid-field, before their joins.
-                for zone in std::mem::take(&mut waiting.homes).into_values() {
-                    task.home(zone);
-                }
-                for (unit, (custody, pilot, host, spread)) in std::mem::take(&mut waiting.joins) {
-                    let outcome = task.join(*custody, pilot, &host, spread);
-                    task.queue_joined(unit, outcome);
-                }
+                task.apply_field_acts(&mut waiting);
                 match task.pulse(wall, &controls, &intents).await {
                     // 16b cut U.1: from the base, never from now.
                     Pulse::Again(next_due_ms) => {
@@ -1921,6 +1911,27 @@ impl Task {
         };
         quiet_for(self.arena.clock.last_engaged_signal_ms()) >= i64::from(terms.disengage_ms)
             || quiet_for(self.arena.clock.last_shot_ms()) >= i64::from(terms.idle_demote_ms)
+    }
+
+    /// **The pulse head's field acts** (doc 32 cuts CF.2, CF.5; doc 36 cuts GC.1b, GC.11), in
+    /// their order: the leaders' marks, the units leaving at the ramp, the homes of parties
+    /// arriving mid-field, then their joins — each withdrawal and join answered behind the
+    /// ledger. Doc 40 cut FR.5: the caller awaits the think batch first ([`Task::await_thinks`]).
+    fn apply_field_acts(&mut self, waiting: &mut PrePulse) {
+        for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
+            self.arena.mark_party(by, of, mark);
+        }
+        for (unit, ramp) in std::mem::take(&mut waiting.withdrawals) {
+            let outcome = self.arena.withdraw(unit, ramp).map(Box::new);
+            self.queue_withdrawn(unit, outcome);
+        }
+        for zone in std::mem::take(&mut waiting.homes).into_values() {
+            self.home(zone);
+        }
+        for (unit, (custody, pilot, host, spread)) in std::mem::take(&mut waiting.joins) {
+            let outcome = self.join(*custody, pilot, &host, spread);
+            self.queue_joined(unit, outcome);
+        }
     }
 
     /// **One pulse**: the unwind boundary, the watchdog, and the publication of
@@ -4408,6 +4419,63 @@ mod tests {
                 .unwrap_or_default()
                 .contains("\"kind\":\"void\""),
             "the unwind boundary journals no void line"
+        );
+    }
+
+    /// **Doc 40 cut FR.5** (§4.1 item 1, Q-40-10; the gc1b finding in `40-cut-notes.md`): a
+    /// join offered while the last pulse's think batch is in flight is refused by name when it
+    /// is taken in first — GC.1b's order — and taken in once the head awaits the batch before
+    /// its field acts, as the loop now does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fr5_a_join_is_taken_in_after_the_batch_in_flight_lands() {
+        let gate = Gated::closed();
+        let (mut task, mut world, _senders) = minded_task(gate.clone(), 5_000);
+        task.arena.end = crate::arena::party::EndCondition::Host;
+        task.terms = Some(FieldTerms {
+            disengage_ms: 60_000,
+            idle_demote_ms: 600_000,
+        });
+        let host = crate::arena::FieldHost {
+            every_class: true,
+            weapons_hold: true,
+            ..crate::arena::FieldHost::default()
+        };
+        let arrival = ObjId(77);
+        let _ = pulse_until_a_batch(&mut task, 0).await;
+        called(&gate, 1);
+        let refused = task.join(
+            tank(arrival, PartyId::RED, pose(4_500, 4_500)),
+            None,
+            &host,
+            8,
+        );
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|reason| reason.contains("a think awaits its answer")),
+            "GC.1b's order meets the batch in flight: {refused:?}"
+        );
+        assert!(task.arena.unit(arrival).is_none());
+        gate.set(true);
+        task.await_thinks().await.expect("the batch lands");
+        let mut waiting = PrePulse::default();
+        waiting.joins.insert(
+            arrival,
+            (
+                Box::new(tank(arrival, PartyId::RED, pose(4_500, 4_500))),
+                None,
+                host,
+                8,
+            ),
+        );
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.unit(arrival).is_some(), "taken in");
+        assert!(
+            drained(&mut world).iter().any(|out| matches!(
+                out,
+                ArenaOut::Joined { unit, outcome: Ok(_), .. } if *unit == arrival
+            )),
+            "answered behind the ledger"
         );
     }
 }

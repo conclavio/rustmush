@@ -774,6 +774,7 @@ pub(crate) mod fixture {
             rule_sample: None,
             view: Arc::new(view),
             map: Arc::new(map()),
+            wrecks: Vec::new(),
             seed: 42,
             unit: UNIT,
             think_seq: 7,

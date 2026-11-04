@@ -92,7 +92,7 @@ use tacsim::arena::mind::{MindRunner, MindView, ThinkJob, ThinkResult, decode_me
 use tacsim::arena::perception::{DriveOutcome, FrameNotice, MindObjective};
 use tacsim::arena::state::{Arena, ContactId, CostRow, EndReason, PartyId};
 use tacsim::arena::stock_mind::{
-    NativeStockMind, StockMemory, Weights, best_hostile_ranked, health_permille, line_to,
+    Ground, NativeStockMind, StockMemory, Weights, best_hostile_ranked, health_permille, line_to,
     row_range_cm, would_overheat,
 };
 use tacsim::config::ReflexConfig;
@@ -568,6 +568,7 @@ fn play_on(
                 view: &view,
                 memory: &memory,
                 map: &clone.definition,
+                wrecks: &clone.mind_wrecks(),
                 card: &card,
                 program: &runtime.program,
                 profile_token: runtime.token(),
@@ -949,7 +950,14 @@ fn shadow(arena: &Arena, cfg: &ReflexConfig, thought: &Thought) -> Divergences {
             && let Some(held) = arena.contacts.resolve(unit, target)
         {
             let pure = match (view.cell, row.cell) {
-                (Some(own), Some(cell)) => line_to(def, own, cell),
+                (Some(own), Some(cell)) => line_to(
+                    &Ground {
+                        def,
+                        wrecks: &arena.mind_wrecks(),
+                    },
+                    own,
+                    cell,
+                ),
                 _ => true,
             };
             if pure != live_line(arena, unit, held.target) {
@@ -1382,7 +1390,7 @@ fn m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cove
             if !def.terrain.passable_for(CostRow::Tracked, x, y) {
                 continue;
             }
-            if line_to(&def, own, (x, y)) {
+            if line_to(&Ground::bare(&def), own, (x, y)) {
                 clear.get_or_insert((x, y));
             } else {
                 blocked.get_or_insert((x, y));
@@ -1421,15 +1429,15 @@ fn m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cove
     // The live line: the physics' trace under the reflex's own predicate —
     // the very reader the shadow's `line` counter uses ([`live_line`]).
     let has_line = |arena: &Arena| live_line(arena, red, blue);
-    assert!(line_to(&def, own, clear));
+    assert!(line_to(&Ground::bare(&def), own, clear));
     assert!(has_line(&arena), "the plot is the truth");
     put(&mut arena, blocked);
     assert!(!has_line(&arena), "the physics traces the live cell");
     assert!(
-        line_to(&def, own, clear),
+        line_to(&Ground::bare(&def), own, clear),
         "the stock mind traces the plot it holds"
     );
-    assert!(!line_to(&def, own, blocked));
+    assert!(!line_to(&Ground::bare(&def), own, blocked));
 }
 
 /// **The probe's line rules count what they name** (17b cut M1b.2; the M1b.2
