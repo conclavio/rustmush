@@ -664,7 +664,7 @@ Each row is set against FR.0's inventory and was read on conclav.dev.
 | `field_scale` at 100 | Engaged p99 6.375 ms (GC.12) | Engaged p99 **7.831 ms**, worst 500 ms window 14.851 ms (lattice); 9 units: 0.275 ms | the effect derivation in the pulse. Measured by hand in release on the owner's Windows box, because the harness held conclav.dev at the time. The 40 ms budget stands. |
 | The contract guards | 34 files green | green (163 tests) | |
 
-**The harness kind on conclav-dev** (rule #13): green at `4e35bd57`, run
+**The harness kind on conclav-dev** (rule #13): green at `ef63b21f`, run
 [41860284848](https://github.com/conclavio/rustmush/actions/runs/41860284848). Three runs before it found the moves
 above, in order:
 - [41848864284](https://github.com/conclavio/rustmush/actions/runs/41848864284): the cold check and W8.
