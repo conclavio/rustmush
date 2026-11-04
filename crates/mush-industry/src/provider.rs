@@ -1292,7 +1292,8 @@ pub fn draftable_facilities(
         if store.is_facility_quarantined(facility.object()) {
             continue;
         }
-        if !(staff || mush_economy::acts_for(&engine.world, actor, facility.owner())) {
+        // Doc 39 cut IN.3 (Q-39-30): a Public facility is in every account holder's book.
+        if !(staff || crate::store::may_order(&engine.world, actor, facility)) {
             continue;
         }
         out.push(facility.clone());
@@ -2005,7 +2006,9 @@ impl ActionProvider for IndustryProvider {
         // longer materialise output for an order whose budget reservation vanished —
         // the hole R1's own comment believed the `hold != 0` check had closed.
         let mut fixed = json!({ "now": engine.world.world_ic_now() });
-        if self.verb == IndustryVerb::WoDeliver
+        // Doc 39 cut IN.3 (Q-39-29): the cancel reads the same list — an order whose budget
+        // vanished is past no cutoff, so its exit stays open.
+        if matches!(self.verb, IndustryVerb::WoDeliver | IndustryVerb::WoCancel)
             && let Some(map) = fixed.as_object_mut()
         {
             map.insert(
@@ -3439,6 +3442,20 @@ impl IndustryProvider {
         }
         let holder = wo_holder(id).map_err(|source| refuse(&source))?;
         let mut reservations = Vec::new();
+        let total_units = order
+            .pinned()
+            .work_units()
+            .checked_mul(u64::from(order.quantity()))
+            .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
+        // ---- doc 39 cut IN.3 (§4.12, Q-39-28): the deadline is the work plus the TTL ----
+        //
+        // Every hold an order places lives as long as its production does and then the
+        // ordinary TTL, so a 20-day order's materials and slot do not lapse on the seventh day
+        // (round 2's 2.2.3). One work unit is one cadence of the production schedule.
+        let lead = i64::try_from(total_units)
+            .ok()
+            .and_then(|units| units.checked_mul(PRODUCTION_CADENCE_SECS))
+            .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
         // money Hold → materials → capacity → destination (the fixed order). The
         // Hold is the submit command's E4b1 economy post; its id is recorded on
         // the order below.
@@ -3457,22 +3474,24 @@ impl IndustryProvider {
                 let rid = self
                     .families
                     .inventory
-                    .reserve(txn, source, line.commodity(), &holder, amount, now)
+                    .reserve_for(txn, source, line.commodity(), &holder, amount, now, lead)
                     .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
                 reservations.push(rid);
             }
         }
         let capacity = self
             .families
-            .reserve_slot(txn, order.facility(), order.facility_slots(), &holder, now)
+            .reserve_slot_for(
+                txn,
+                order.facility(),
+                order.facility_slots(),
+                &holder,
+                now,
+                lead,
+            )
             .map_err(|source| refuse(&source))?;
         reservations.push(capacity);
 
-        let total_units = order
-            .pinned()
-            .work_units()
-            .checked_mul(u64::from(order.quantity()))
-            .ok_or_else(|| error(ActionErrorCode::BoundsExceeded, WO_REFUSED))?;
         let production = self.open_schedule(txn, &order, now, actor, total_units)?;
         // The placed hold, denormalized onto the record. It is an INDEX, never the
         // authority: `money::live_hold` finds the reservation by purpose, so an
@@ -3848,6 +3867,25 @@ impl IndustryProvider {
             data.insert("order".to_owned(), json!(id.to_string()));
             return Ok(format!("{id} was already terminal."));
         }
+        // ---- doc 39 cut IN.3 (§4.12, Q-39-29): the cutoff ----
+        //
+        // The work done is the facility's: no cancel once production has finished, and none
+        // once more than half the order's work units are done, so a funded requester cannot
+        // hold a slot to the end and walk away (review 2 #9). An order whose budget vanished
+        // (the server-authored `unfunded` list) is past no cutoff: cancelling it is the exit
+        // the sweep's page names.
+        let unfunded = parameters
+            .get(crate::money::UNFUNDED_ORDERS)
+            .and_then(Value::as_array)
+            .is_some_and(|named| {
+                named
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|named| named == id.0.to_string())
+            });
+        if !unfunded && let Some(refusal) = cancel_cutoff(&order) {
+            return Err(error(ActionErrorCode::ProviderRejected, refusal));
+        }
         let holder = wo_holder(id).map_err(|source| refuse(&source))?;
         if order.state().holds_resources() {
             if !order.pinned().inputs().is_empty()
@@ -3974,9 +4012,18 @@ impl IndustryProvider {
                 if record.state() != mush_core::ReservationState::Held {
                     continue;
                 }
+                // Doc 39 cut IN.3: renewed for the work still to do, plus the TTL.
                 self.families
                     .inventory
-                    .renew(txn, source, line.commodity(), rid, record.revision(), now)
+                    .renew_for(
+                        txn,
+                        source,
+                        line.commodity(),
+                        rid,
+                        record.revision(),
+                        now,
+                        remaining_secs(&order),
+                    )
                     .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
             }
         }
@@ -4091,6 +4138,40 @@ impl IndustryProvider {
             revision: Some(1),
         }
     }
+}
+
+/// The cutoff's refusal for an order that has finished its work.
+pub const CANCEL_DONE: &str = "That order's work is done; it can no longer be cancelled.";
+/// The cutoff's refusal for an order past half its work units.
+pub const CANCEL_PAST_HALF: &str =
+    "That order is past half its work; it can no longer be cancelled.";
+
+/// **Whether `order` is past the cancel cutoff** (doc 39 cut IN.3, §4.12, Q-39-29): the refusal
+/// for an order awaiting delivery, or one more than half of whose work units are done; `None`
+/// when it may still be cancelled.
+#[must_use]
+pub fn cancel_cutoff(order: &WorkOrder) -> Option<&'static str> {
+    if *order.state() == WorkOrderState::AwaitingDelivery {
+        return Some(CANCEL_DONE);
+    }
+    let past_half = order.schedule().is_some_and(|schedule| {
+        u128::from(schedule.progress_units()) * 2 > u128::from(schedule.total_units())
+    });
+    (order.state().holds_resources() && past_half).then_some(CANCEL_PAST_HALF)
+}
+
+/// **The work an order still has to do, seconds** (doc 39 cut IN.3): its schedule's remaining
+/// units at one cadence each; 0 without a schedule. Saturates, so a restamp of an absurd order
+/// stamps the latest deadline rather than none.
+fn remaining_secs(order: &WorkOrder) -> i64 {
+    order.schedule().map_or(0, |schedule| {
+        let units = schedule
+            .total_units()
+            .saturating_sub(schedule.progress_units());
+        i64::try_from(units)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(PRODUCTION_CADENCE_SECS)
+    })
 }
 
 /// **Whether this order's production was started on a world-time generation that is

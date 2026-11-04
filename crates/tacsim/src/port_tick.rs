@@ -318,6 +318,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::port::bay_work::act::action_descriptor(
         &outcome_refs,
     )?);
+    // Doc 39 cut IN.3: the order contract's goods moves.
+    actions.push(crate::port::works::action_descriptor(&outcome_refs)?);
     // Doc 36 cut GC.4: the tow.
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
@@ -442,6 +444,8 @@ fn register_providers(
         outcome_refs,
         inventory_families.as_ref(),
     )?;
+    // Doc 39 cut IN.3: the order contract's ledger family and its goods-move provider.
+    crate::port::works::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     register_stock(
         reg,
         stock_action.as_ref(),
@@ -679,6 +683,8 @@ fn register_outcomes(
     outcomes.push(crate::procurement::outcome_descriptor()?);
     // Doc 36 cut GC.8b: the bay's inventory acts.
     outcomes.push(crate::port::bay_work::act::outcome_descriptor()?);
+    // Doc 39 cut IN.3: the order contract's goods moves.
+    outcomes.push(crate::port::works::outcome_descriptor()?);
     // Doc 36 cut GC.4: the tow.
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
     if let Some(ic) = ic {
@@ -2037,6 +2043,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::passenger::tick(ctx);
     // Doc 36 cut GC.8a: the bay's due repair orders.
     crate::port::bay_work::tick(ctx);
+    // Doc 39 cut IN.3: the works arm (submit, deliver, return, collect, storage).
+    crate::port::works::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

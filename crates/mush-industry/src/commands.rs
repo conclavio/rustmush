@@ -67,7 +67,12 @@ fn key(text: &str) -> Result<IdempotencyKeyText, CmdError> {
 /// The handler performs **no** mutation of its own and emits no success line:
 /// the mechanic is the provider's and the confirmation is the receipt's, held
 /// behind the durable ack.
-fn submit(
+/// **Submit one industry verb as `ctx.actor`**, under a fresh discriminated key (doc 39 cut
+/// IN.3 makes it public: the order contract's arm submits, delivers and cancels through it).
+///
+/// # Errors
+/// Industry not composed on this server.
+pub fn submit(
     ctx: &mut Ctx<'_>,
     verb: IndustryVerb,
     parameters: serde_json::Value,
@@ -1034,6 +1039,82 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         );
         return Ok(());
     }
+    // ---- doc 39 cut IN.3: the customer policy and the cost model, staff-authored ----
+    //
+    // `@facility/terms <object>=public|owner [<capital>/<years>/<upkeep>/<staff>/<wage>/<margin>]`
+    // (the upkeep and the margin per mille). The lane's facility rows author both through the
+    // applier (IN.4's `cost`, this cut's `customers`); this is the staff hand a seed and a repair
+    // use until a row exists. Each half that changes bumps the policy revision, so a drafted
+    // order re-validates.
+    if ctx.switches.has("terms") {
+        const USAGE: &str = "Usage: @facility/terms <object>=public|owner                              [<capital>/<years>/<upkeep>/<staff>/<wage>/<margin>]";
+        if !crate::store::is_staff(ctx.w, ctx.actor) {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        }
+        let Ok(id) = ctx.args.lhs().trim().trim_start_matches('#').parse::<u32>() else {
+            return Err(CmdError::msg(USAGE));
+        };
+        let Some(facility) = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(ObjId(id)).cloned())
+        else {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        };
+        let rhs = ctx.args.rhs().unwrap_or_default().to_owned();
+        let mut words = rhs.split_whitespace();
+        let customers = match words.next() {
+            Some("public") => crate::facility::Customers::Public,
+            Some("owner") => crate::facility::Customers::OwnerOnly,
+            _ => return Err(CmdError::msg(USAGE)),
+        };
+        let cost = match words.next() {
+            None => facility.cost().copied(),
+            Some(spec) => {
+                let n: Vec<u64> = spec
+                    .split('/')
+                    .map(str::parse::<u64>)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| CmdError::msg(USAGE))?;
+                let [capital, years, upkeep, staff, wage, margin] = n[..] else {
+                    return Err(CmdError::msg(USAGE));
+                };
+                let narrow = |v: u64| u32::try_from(v).map_err(|_| CmdError::msg(USAGE));
+                Some(crate::cost::FacilityCostDef {
+                    capital_major: capital,
+                    lifetime_years: narrow(years)?,
+                    upkeep_permille: narrow(upkeep)?,
+                    staff: narrow(staff)?,
+                    wage_major: wage,
+                    margin_permille: narrow(margin)?,
+                })
+            }
+        };
+        let mut updated = facility.clone();
+        if cost != facility.cost().copied() {
+            updated = updated
+                .with_cost(cost)
+                .map_err(|error| CmdError::msg(error.to_string()))?;
+        }
+        if customers != facility.customers() {
+            updated = updated
+                .with_customers(customers)
+                .map_err(|error| CmdError::msg(error.to_string()))?;
+        }
+        let policy = updated.policy_revision();
+        crate::store::persist_facility(ctx.out, &updated);
+        if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+            store.put_facility(updated);
+        }
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Facility #{id}: customers {}; policy revision {policy}.",
+                customers.word()
+            ),
+        );
+        return Ok(());
+    }
     if ctx.switches.has("show") {
         let Ok(id) = ctx.args.lhs().trim().parse::<u32>() else {
             ctx.out.info(ctx.actor, NO_SUCH_FACILITY);
@@ -1165,86 +1246,22 @@ fn cmd_wo(
             .next()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("obj:{}", ctx.actor.0));
-        let Some((_recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
-            // Fog + fail-closed: an unknown or retired recipe is indistinguishable.
-            return Err(CmdError::msg("No such recipe."));
-        };
-        let Some(facility_rec) = ctx
-            .w
-            .module_state::<IndustryStore>()
-            .and_then(|store| store.facility(facility).cloned())
-        else {
-            return Err(CmdError::msg(NO_SUCH_FACILITY));
-        };
-        // C2/D2 (independent verify fold): only staff, the facility's owner, or an
-        // org/role the actor `acts_for` may draft here — the facility record's own
-        // "org/role scope" language, and cut 3's `extraction_authorized` shape. A
-        // stranger gets NO_SUCH_FACILITY byte-for-byte: a facility they may not run
-        // reveals neither its existence nor its capabilities (the fog rule). This
-        // closes the durable-DoS where any actor held a competitor's finite slots.
-        if !crate::store::is_staff(ctx.w, ctx.actor)
-            && !mush_economy::acts_for(ctx.w, ctx.actor, facility_rec.owner())
-        {
-            return Err(CmdError::msg(NO_SUCH_FACILITY));
-        }
-        // R4: a facility whose capacity book was lost is quarantined; refuse until
-        // reconciled rather than letting a fresh order overbook a phantom slot.
-        if ctx
-            .w
-            .module_state::<IndustryStore>()
-            .is_some_and(|store| store.is_facility_quarantined(facility))
-        {
-            return Err(CmdError::msg("That facility is unavailable."));
-        }
-        if !facility_rec.offers(pinned.requires()) {
-            return Err(CmdError::msg("That facility cannot run that recipe."));
-        }
-        // ---- E7r1: R1 — the money accounts, validated at the EDIT ----
-        //
-        // `check_bond_accounts`' exact shape (E7 cut 9 fold, C8) and for the same
-        // reason: the *placement* side is saved by the engine (invariants 25/26
-        // refuse a hold on somebody else's account, or an unfunded one), but the
-        // *capture* side was validated nowhere, so an order could run all the way to
-        // `Completed` and then have nowhere to pay. Both ends resolve here, before
-        // anything is drafted.
-        if let Err(refusal) = crate::money::check_wo_accounts(
+        return draft(
             ctx,
-            ctx.actor,
-            &PrincipalId::Object(ctx.actor),
-            mush_economy::AccountId(account),
-            facility_rec.owner(),
-        ) {
-            return Err(CmdError::msg(refusal.public()));
-        }
-        // C2/D2 (m2): a per-requester cap. Terminal orders are never pruned, so
-        // without this a single actor could grow the family (and hold a rival's
-        // slots) without bound with cheap drafts.
-        if active_work_orders(ctx, families, ctx.actor) >= MAX_WORK_ORDERS_PER_REQUESTER {
-            return Err(CmdError::msg(
-                "you already hold the maximum number of open work orders",
-            ));
-        }
-        let pinned_json = serde_json::to_string(&pinned)
-            .map_err(|_| CmdError::msg("that recipe could not be pinned"))?;
-        // WS02-S5: `facility_slots`, `capacity_revision`, `policy_revision` and
-        // `digest` are gone. `IndustryVerb::WoDraft`'s projection no longer
-        // declares them, so `ProjectedParameterSchema::validate` would refuse this
-        // submission for naming a key the offer does not carry — and the provider
-        // reads all four out of the offer's own books, which is the point: this
-        // command's copy of them was only ever a suggestion.
-        let params = json!({
-            "facility": facility.0,
-            "pack": pack.as_str(),
-            "version": version,
-            "recipe": recipe_id.as_str(),
-            "quantity": quantity,
-            "account": account,
-            "source": source,
-            "destination": destination,
-            "beneficiary": beneficiary,
-            "pinned": pinned_json,
-        });
-        return submit(ctx, IndustryVerb::WoDraft, params, "wo.draft");
+            families,
+            recipes,
+            &Draft {
+                pack,
+                recipe: recipe_id,
+                version,
+                facility,
+                quantity,
+                account,
+                source,
+                destination,
+                beneficiary,
+            },
+        );
     }
     if ctx.switches.has("submit") {
         let order_arg = ctx.args.lhs().trim().to_owned();
@@ -1261,10 +1278,9 @@ fn cmd_wo(
                 .w
                 .module_state::<IndustryStore>()
                 .and_then(|store| store.facility(order.facility()).cloned());
-            let authorized = facility_rec.as_ref().is_some_and(|facility| {
-                crate::store::is_staff(ctx.w, ctx.actor)
-                    || mush_economy::acts_for(ctx.w, ctx.actor, facility.owner())
-            });
+            let authorized = facility_rec
+                .as_ref()
+                .is_some_and(|facility| crate::store::may_order(ctx.w, ctx.actor, facility));
             if !authorized {
                 return Err(CmdError::msg(NO_SUCH_FACILITY));
             }
@@ -1552,6 +1568,134 @@ fn cmd_wo(
     Ok(())
 }
 
+/// **One drafted order's terms**, parsed (doc 39 cut IN.3): what `@wo/draft` reads off its
+/// line, and what `+works/order` and `+yard/order` hand [`draft`] directly.
+#[derive(Clone, Debug)]
+pub struct Draft {
+    /// The recipe's pack.
+    pub pack: CanonicalId,
+    /// The recipe's id in it.
+    pub recipe: CanonicalId,
+    /// The pack version.
+    pub version: u32,
+    /// The facility.
+    pub facility: ObjId,
+    /// How many.
+    pub quantity: u32,
+    /// The budget account.
+    pub account: u64,
+    /// The material source endpoint (0 for none).
+    pub source: u64,
+    /// The destination endpoint.
+    pub destination: u64,
+    /// The beneficiary, in the economy's principal spelling.
+    pub beneficiary: String,
+}
+
+/// **Draft one work order as `ctx.actor`** — `@wo/draft`'s whole gate and submission over
+/// parsed terms (doc 39 cut IN.3: the one path `+works` and `+yard` book through, so the
+/// order contract drafts against the same records `@wo` does).
+///
+/// # Errors
+/// The refusal the actor reads.
+pub fn draft(
+    ctx: &mut Ctx<'_>,
+    families: &IndustryFamilies,
+    recipes: &std::sync::Arc<dyn RecipeAuthority>,
+    terms: &Draft,
+) -> Result<(), CmdError> {
+    let Draft {
+        pack,
+        recipe: recipe_id,
+        version,
+        facility,
+        quantity,
+        account,
+        source,
+        destination,
+        beneficiary,
+    } = terms.clone();
+    let Some((_recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
+        // Fog + fail-closed: an unknown or retired recipe is indistinguishable.
+        return Err(CmdError::msg("No such recipe."));
+    };
+    let Some(facility_rec) = ctx
+        .w
+        .module_state::<IndustryStore>()
+        .and_then(|store| store.facility(facility).cloned())
+    else {
+        return Err(CmdError::msg(NO_SUCH_FACILITY));
+    };
+    // C2/D2 (independent verify fold): only staff, the facility's owner, or an
+    // org/role the actor `acts_for` may draft here — the facility record's own
+    // "org/role scope" language, and cut 3's `extraction_authorized` shape. A
+    // stranger gets NO_SUCH_FACILITY byte-for-byte: a facility they may not run
+    // reveals neither its existence nor its capabilities (the fog rule). This
+    // closes the durable-DoS where any actor held a competitor's finite slots.
+    // Doc 39 cut IN.3 (Q-39-30): or any principal with an account at a Public facility.
+    if !crate::store::may_order(ctx.w, ctx.actor, &facility_rec) {
+        return Err(CmdError::msg(NO_SUCH_FACILITY));
+    }
+    // R4: a facility whose capacity book was lost is quarantined; refuse until
+    // reconciled rather than letting a fresh order overbook a phantom slot.
+    if ctx
+        .w
+        .module_state::<IndustryStore>()
+        .is_some_and(|store| store.is_facility_quarantined(facility))
+    {
+        return Err(CmdError::msg("That facility is unavailable."));
+    }
+    if !facility_rec.offers(pinned.requires()) {
+        return Err(CmdError::msg("That facility cannot run that recipe."));
+    }
+    // ---- E7r1: R1 — the money accounts, validated at the EDIT ----
+    //
+    // `check_bond_accounts`' exact shape (E7 cut 9 fold, C8) and for the same
+    // reason: the *placement* side is saved by the engine (invariants 25/26
+    // refuse a hold on somebody else's account, or an unfunded one), but the
+    // *capture* side was validated nowhere, so an order could run all the way to
+    // `Completed` and then have nowhere to pay. Both ends resolve here, before
+    // anything is drafted.
+    if let Err(refusal) = crate::money::check_wo_accounts(
+        ctx,
+        ctx.actor,
+        &PrincipalId::Object(ctx.actor),
+        mush_economy::AccountId(account),
+        facility_rec.owner(),
+    ) {
+        return Err(CmdError::msg(refusal.public()));
+    }
+    // C2/D2 (m2): a per-requester cap. Terminal orders are never pruned, so
+    // without this a single actor could grow the family (and hold a rival's
+    // slots) without bound with cheap drafts.
+    if active_work_orders(ctx, families, ctx.actor) >= MAX_WORK_ORDERS_PER_REQUESTER {
+        return Err(CmdError::msg(
+            "you already hold the maximum number of open work orders",
+        ));
+    }
+    let pinned_json = serde_json::to_string(&pinned)
+        .map_err(|_| CmdError::msg("that recipe could not be pinned"))?;
+    // WS02-S5: `facility_slots`, `capacity_revision`, `policy_revision` and
+    // `digest` are gone. `IndustryVerb::WoDraft`'s projection no longer
+    // declares them, so `ProjectedParameterSchema::validate` would refuse this
+    // submission for naming a key the offer does not carry — and the provider
+    // reads all four out of the offer's own books, which is the point: this
+    // command's copy of them was only ever a suggestion.
+    let params = json!({
+        "facility": facility.0,
+        "pack": pack.as_str(),
+        "version": version,
+        "recipe": recipe_id.as_str(),
+        "quantity": quantity,
+        "account": account,
+        "source": source,
+        "destination": destination,
+        "beneficiary": beneficiary,
+        "pinned": pinned_json,
+    });
+    submit(ctx, IndustryVerb::WoDraft, params, "wo.draft")
+}
+
 /// Count one requester's non-terminal work orders, bounded on records visited
 /// (D-LBK-5), and stopping as soon as the cap is reached (C2/D2 m2). Never a
 /// completeness claim: a truncated walk simply under-counts, which fails closed
@@ -1696,7 +1840,14 @@ pub fn register(
             name: "@facility".into(),
             // E7r2 P0a: `owner` is a new SUB-VERB on an existing primary verb, so the
             // pinned allowlist gains no stanza and `PINNED_BASELINE` does not move.
-            switches: vec!["open".into(), "owner".into(), "list".into(), "show".into()],
+            // Doc 39 cut IN.3: `terms`, likewise a sub-verb.
+            switches: vec![
+                "open".into(),
+                "owner".into(),
+                "terms".into(),
+                "list".into(),
+                "show".into(),
+            ],
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
