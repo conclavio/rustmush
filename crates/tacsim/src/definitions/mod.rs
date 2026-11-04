@@ -49,6 +49,7 @@ pub mod core;
 pub mod core_replacement;
 pub mod goods;
 pub mod logistics;
+pub mod mass;
 pub mod plant;
 pub mod resolution;
 pub mod resources;
@@ -269,6 +270,9 @@ pub struct Catalog {
     /// stocks as. A component whose row has no part good (a core, a relay socket, an unpriced
     /// plant) has no entry and comes off no hull.
     pub parts: BTreeMap<CanonicalId, PartRow>,
+    /// **Each design's mass budget, by unit entry id** (doc 39 cut IN.8, §4.8): the partition
+    /// its repair draws and its scrap yields by. A design the yard does not partition has none.
+    pub budgets: BTreeMap<CanonicalId, mass::MassBudget>,
     /// The resolution tables, by entry id.
     pub resolutions: BTreeMap<CanonicalId, ResolutionDef>,
     /// Every minted reference, by entry id — the exact identity a persisted
@@ -590,6 +594,15 @@ impl Catalog {
                 .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
             out.bindings.insert(id.clone(), binding);
             out.index_parts(id, &sourced.def)?;
+            if let Some(budget) = mass::partition(
+                id,
+                &sourced.def,
+                &goods::goods_table()?,
+                &out.cores,
+                &out.parts,
+            )? {
+                out.budgets.insert(id.clone(), budget);
+            }
             out.specs.insert(id.clone(), sourced.def.clone());
         }
         out.units = catalog.freeze();
@@ -655,6 +668,15 @@ impl Catalog {
             );
         }
         Ok(())
+    }
+
+    /// **A design's mass budget** (doc 39 cut IN.8), by its unit entry id.
+    #[must_use]
+    pub fn budget_of(&self, unit: &str) -> Option<&mass::MassBudget> {
+        self.budgets
+            .iter()
+            .find(|(id, _)| id.as_str() == unit)
+            .map(|(_, budget)| budget)
     }
 
     /// **The part a component stocks as** (doc 39 cut IN.1), by the component's definition id

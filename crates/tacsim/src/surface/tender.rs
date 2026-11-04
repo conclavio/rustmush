@@ -18,9 +18,8 @@
 //! **Time** is the tariff's base for the same work at [`TENDER_TIME_FACTOR`] (the workshop 1, a
 //! carrier bay `CARRIER_TIME_FACTOR` 2, the tender 3; Q-41-3): an unjam is a component repair, a
 //! stabilize a structural point each, a rearm a component's rearm. **The draw** (Q-41-2): an
-//! unjam the library's fittings, a stabilize the tariff's kilograms a point
-//! ([`fittings_kg_per_point`], alloys none until doc 39 IN.8 gives each design its per-point
-//! figures), both through the bale; a rearm whole units of the mount's munitions good from the
+//! unjam the library's fittings, a stabilize the target design's own alloys and fittings a
+//! structural point (doc 39 cut IN.8's mass budget, [`TendWork::need`]), both through the bale; a rearm whole units of the mount's munitions good from the
 //! stores (`div_ceil`, the bay's rule). **No money** moves (Q-41-4): the library's
 //! `billed_credits` is computed and dropped.
 //!
@@ -209,9 +208,13 @@ impl TendWork {
         }
     }
 
-    /// **What it draws** (Q-41-2): the bale's kilograms, and units of a munitions good.
+    /// **What it draws** (Q-41-2; doc 39 cut IN.8): the bale's kilograms — a stabilize at the
+    /// target design's `budget`, nothing for a design with none — and units of a munitions good.
     #[must_use]
-    pub fn need(&self) -> (Bale, Option<(CanonicalId, u64)>) {
+    pub fn need(
+        &self,
+        budget: Option<&crate::definitions::mass::MassBudget>,
+    ) -> (Bale, Option<(CanonicalId, u64)>) {
         match self {
             Self::Unjam { .. } => (
                 Bale {
@@ -220,15 +223,16 @@ impl TendWork {
                 },
                 None,
             ),
-            Self::Stabilize { points, .. } => (
-                Bale {
-                    alloys_kg: 0,
-                    fittings_kg: u64::try_from(*points)
-                        .unwrap_or(0)
-                        .saturating_mul(fittings_kg_per_point()),
-                },
-                None,
-            ),
+            Self::Stabilize { points, .. } => {
+                let points = u64::try_from(*points).unwrap_or(0);
+                (
+                    budget.map_or_else(Bale::default, |budget| Bale {
+                        alloys_kg: budget.structure_kg_for(points),
+                        fittings_kg: budget.fittings_kg_for(points),
+                    }),
+                    None,
+                )
+            }
             Self::Rearm {
                 good,
                 rounds,
@@ -263,14 +267,12 @@ impl TendWork {
     }
 }
 
-/// **Yard fittings a structural point consumes, kg** (Q-41-2): the tariff's figure
-/// (`structural_points_per_industrial_parts_t`), the constant doc 41 names until doc 39's IN.8
-/// gives each design its own `fittings_kg_per_point`.
-#[must_use]
-pub fn fittings_kg_per_point() -> u64 {
-    crate::definitions::workshop::workshop_tariff().map_or(10, |tariff| {
-        KG_PER_T.div_ceil(tariff.structural_points_per_industrial_parts_t.max(1))
-    })
+/// **The fittings a structural point of `target` consumes, whole kg** (Q-41-2; doc 39 cut
+/// IN.8): the field-engineering library's per-point figure, from the design's budget rounded up
+/// to a kilogram (its own `billed_credits` is dropped and the draw is [`TendWork::need`]'s).
+fn library_kg_per_point(w: &World, target: ObjId) -> u64 {
+    crate::definitions::mass::hull_budget(w, target)
+        .map_or(0, |(_, budget)| budget.fittings_kg_for(1))
 }
 
 /// **A tend act's start facts**, fixed by the command for the start's prepare.
@@ -598,7 +600,7 @@ fn run_library(
     tv: ObjId,
     target: &mut TacticalUnit,
     (pose, anatomy): (FieldPose, &UnitAnatomyProfile),
-    work: &TendWork,
+    (work, kg_per_point): (&TendWork, u64),
     (secs, now): (i64, i64),
 ) -> Result<(), String> {
     let result = match work {
@@ -627,7 +629,7 @@ fn run_library(
                 anatomy,
                 &id,
                 *points,
-                fittings_kg_per_point(),
+                kg_per_point,
                 false,
                 false,
                 secs,
@@ -1130,7 +1132,8 @@ fn work(
     // What the stores and the bale hold for it.
     let dark = || CmdError::msg(crate::port::tv::TV_DARK.replace("{name}", &rig.mark));
     let (_, contents) = stores_contents(ctx, rig.tv).ok_or_else(dark)?;
-    let need = job.need();
+    let budget = crate::definitions::mass::hull_budget(ctx.w, target).map(|(_, budget)| budget);
+    let need = job.need(budget.as_ref());
     if let TendWork::Rearm {
         component, good, ..
     } = &job
@@ -1166,7 +1169,7 @@ fn work(
         other => other,
     };
     let need = if matches!(job, TendWork::Rearm { .. }) {
-        job.need()
+        job.need(None)
     } else {
         need
     };
@@ -1271,7 +1274,8 @@ pub(crate) fn finish(
         return lost("the stores cannot be read");
     };
     let bale = bale_of(ctx, tv);
-    let need = work.need();
+    let budget = crate::definitions::mass::hull_budget(w, target).map(|(_, budget)| budget);
+    let need = work.need(budget.as_ref());
     let (bale_after, debit) = draw_of(bale, &need);
     if !covers(&contents, &debit) {
         return lost("the stores ran short");
@@ -1289,7 +1293,7 @@ pub(crate) fn finish(
         tv,
         &mut after,
         (target_pose, &anatomy),
-        work,
+        (work, library_kg_per_point(w, target)),
         (secs, now),
     ) {
         return TendStep::Lost { why };
@@ -1499,8 +1503,21 @@ mod tests {
             5_400,
             "a 50-point patch is an IC hour and a half"
         );
-        assert_eq!(patch.need().0.fittings_kg, 500);
-        assert_eq!(patch.need().0.alloys_kg, 0, "no alloys until IN.8");
+        // Doc 39 cut IN.8: the escort's own figures, 0.86 and 0.29 kg a point.
+        let escort = crate::definitions::mass::MassBudget {
+            dry_mass_kg: 8_000,
+            parts_kg: 4_330,
+            core_kg: 250,
+            structure_kg: 2_565,
+            fittings_kg: 855,
+            points: 2_990,
+            share_permille: 750,
+            parts_minor: 6_150_000,
+            core_minor: 800_000,
+        };
+        let need = patch.need(Some(&escort)).0;
+        assert_eq!((need.alloys_kg, need.fittings_kg), (43, 15));
+        assert_eq!(patch.need(None).0, Bale::default(), "no budget, no draw");
         let rearm = TendWork::Rearm {
             component: "cannon".to_owned(),
             good: CanonicalId::new("ammo_ball_762").expect("an id"),
@@ -1508,18 +1525,25 @@ mod tests {
             per_unit: 100,
         };
         assert_eq!(
-            rearm.need().1,
+            rearm.need(None).1,
             Some((CanonicalId::new("ammo_ball_762").expect("an id"), 3)),
             "whole units of the mount's good"
         );
         // Through the bale: an unopened bale opens with a tonne of each; an open one draws
         // kilograms until a line runs short.
-        let (after, debit) = draw_of(None, &patch.need());
+        let need = patch.need(Some(&escort));
+        let (after, debit) = draw_of(None, &need);
         assert_eq!(debit.len(), 2, "a tonne of each opened");
-        assert_eq!(after.map(|b| b.fittings_kg), Some(500));
-        let (after, debit) = draw_of(after, &patch.need());
+        assert_eq!(
+            after.map(|b| (b.alloys_kg, b.fittings_kg)),
+            Some((957, 985))
+        );
+        let (after, debit) = draw_of(after, &need);
         assert!(debit.is_empty(), "the bale covers it");
-        assert_eq!(after.map(|b| b.fittings_kg), Some(0));
+        assert_eq!(
+            after.map(|b| (b.alloys_kg, b.fittings_kg)),
+            Some((914, 970))
+        );
     }
 
     /// `register_tender` fed from the compartment.

@@ -9,7 +9,7 @@
 //! - `+bay/order <hull>=<work>`: `all`, a kind (`armor`, `rebuild`, `mend`, `unjam`,
 //!   `replace`, `rearm`) or a section or part, comma-separated.
 //! - `+bay/fit <hull>=<slot> <lot>`: replace a part from a lot in the carrier's hold.
-//! - `+bay/strip <hull>=<part>`, `+bay/scrap <hull>`.
+//! - `+bay/strip <hull>=<part>`, `+bay/scrap <hull>`, `+bay/return <hull>` (doc 39 cut IN.8).
 //! - `+bay/cancel <hull>`, `+bay/berth <hull>`, `+bay/stow <hull>`.
 //!
 //! A hull is named by `#<id>` or by its name in the room the actor stands in.
@@ -24,14 +24,14 @@ use crate::store::TacsimStore;
 /// The verb.
 pub const BAY_VERB: &str = "+bay";
 /// Its switches.
-pub const BAY_SWITCHES: [&str; 8] = [
-    "quote", "order", "cancel", "berth", "stow", "fit", "strip", "scrap",
+pub const BAY_SWITCHES: [&str; 9] = [
+    "quote", "order", "cancel", "berth", "stow", "fit", "strip", "scrap", "return",
 ];
 /// The grammar.
 pub const BAY_USAGE: &str = "Usage: +bay[/quote] <hull>, +bay/order <hull>=<work>, \
                              +bay/fit <hull>=<slot> <lot>, +bay/strip <hull>=<part>, \
-                             +bay/scrap <hull>, +bay/cancel <hull>, +bay/berth <hull>, \
-                             +bay/stow <hull>";
+                             +bay/scrap <hull>, +bay/return <hull>, +bay/cancel <hull>, \
+                             +bay/berth <hull>, +bay/stow <hull>";
 /// The help text.
 pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stands: a carrier's \
     vehicle bay does armour, mending, unjamming and recharging at twice the time; a port \
@@ -47,8 +47,11 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     away from port, +bay/fit <hull>=<slot> <lot> fits a traced part from the hold into any slot \
     of its kind (a hot part is refused). In a workshop, +bay/strip \
     <hull>=<part> takes a part \
-    off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up into \
-    structural alloys and parts.";
+    off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up: the \
+    workshop takes her alloys and parts into its stores and pays her holder a fifth of what she \
+    is worth less her parts for the structure, and the parts' used value less their removal. \
+    The holder's +bay/return <hull> sells her bale's unused kilograms back to the workshop at \
+    the reference.";
 
 /// `#<id>`, or a thing of that name in the actor's room — never a scrapped shell by name (doc
 /// 36a P1-7).
@@ -254,7 +257,7 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                     ));
                 }
                 let bale = super::record_of(ctx.w, hull).ok().and_then(|r| r.bale);
-                let (goods, after) = super::order_goods(&quote.jobs, bale);
+                let (goods, after) = super::order_goods(ctx.w, hull, &quote.jobs, bale);
                 if !goods.is_empty() {
                     let words: Vec<String> = goods
                         .iter()
@@ -400,14 +403,35 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let hull = hull_named(ctx, &raw)?;
         if ctx.switches.has("scrap") {
             let scrapped = super::strip::scrap(ctx, hull)?;
+            let credit = money_minor(
+                ctx,
+                i64::try_from(scrapped.credit_minor).unwrap_or(i64::MAX),
+            );
             say(
                 ctx,
                 format!(
-                    "#{} is broken up: {} t of structural alloys and {} part(s) go to the \
-                     carrier's hold.",
+                    "#{} is broken up: {} kg of structural alloys ({} t to the workshop's \
+                     stock) and {} part(s) go to its stores, for {credit}.",
                     hull.0,
+                    scrapped.yield_kg,
                     scrapped.alloys_t,
                     scrapped.parts.len()
+                ),
+            );
+            return Ok(());
+        }
+        if ctx.switches.has("return") {
+            let returned = super::strip::return_bale(ctx, hull)?;
+            let credit = money_minor(
+                ctx,
+                i64::try_from(returned.credit_minor).unwrap_or(i64::MAX),
+            );
+            say(
+                ctx,
+                format!(
+                    "#{}'s bale goes back to the workshop: {} kg of alloys and {} kg of \
+                     fittings, for {credit}.",
+                    hull.0, returned.bale.alloys_kg, returned.bale.fittings_kg
                 ),
             );
             return Ok(());

@@ -3,7 +3,7 @@
 //! written through `crate::store::put_bay_hull` (the `TvLease` pattern: RAM, then one
 //! `JsonSet`); an unreadable one holds its hull (no berth, stow or order) until staff repair it.
 
-use mush_core::ObjId;
+use mush_core::{CanonicalId, ObjId};
 use mush_sim::SlotId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -241,6 +241,32 @@ impl Bale {
             after: have,
         })
     }
+}
+
+/// The key prefix of a workshop's shop bale (doc 39 cut IN.8): `tacsim:shopbale:{port}`.
+pub const SHOP_BALE_PREFIX: &str = "tacsim:shopbale:";
+
+/// **A workshop's shop bale** (doc 39 cut IN.8, §4.10; round 2's 39-2): the kilograms of each
+/// bulk good the facility has taken in under a tonne — a scrap's fraction and a returned hull
+/// bale — kept durably until they make a tonne, which mints into the operator's pool. One a
+/// port's workshop. `pending` names the hull whose owed mint will set it, so no second scrap or
+/// return reads it meanwhile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShopBale {
+    /// The workshop's port entry: the key.
+    pub port: CanonicalId,
+    /// The kilograms of each good, each under a tonne.
+    pub kg: Bale,
+    /// The hull and act whose mint, when it lands, writes this bale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<(ObjId, u32)>,
+}
+
+/// A shop bale's key.
+#[must_use]
+pub fn shop_bale_key(port: &CanonicalId) -> SmolStr {
+    SmolStr::new(format!("{SHOP_BALE_PREFIX}{port}"))
 }
 
 /// **A lot stripped under a pending salvage claim** (doc 41 §4.6).
