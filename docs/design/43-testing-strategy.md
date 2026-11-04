@@ -632,6 +632,71 @@ runs `npm` only.
 
 Doc 43 has no cut-notes file; each cut's note lands here.
 
+### TS.2 inventory tiers and configuration (§5.9, §10.3)
+
+**Built.** `crates/mush-contract-tests/test-tiers.toml` gives every gated test (an `#[ignore]`d,
+`REDIS_URL`-reading or `RUN_*`-opt-in test, 72 of them at this cut) a tier — `pr`, `nightly`,
+`weekly`, `dispatch`, `by-hand` — and the configuration its run sets, one row per test and
+configuration or per file (`<prefix>::*`). `ci_gated_test_inventory`'s new
+`every_gated_test_declares_its_tier_and_the_workflow_agrees` holds each row to the workflows: a job's
+tier is read from its job-level `if:`; the job must run the test by a command, where a comment no
+longer counts and an ignored test needs `--ignored` or `--run-ignored`; the job must set the row's
+`config` pairs; an opt-in test's row must name its flag; a `by-hand` row carries `by_hand`, the
+`by-hand:` tag, as the revision of its last recorded run, or `never` with a note. The VPS gate is
+`job = "gate.yml:<kind>"` with the script it runs as `via`. A row with no test and a test with no row
+both fail, so a cut that adds a gated story declares its tier in the same PR (§10.3).
+
+**What the tightening found.** Besides the comment-only coverage §5.9 named, the census counted a
+`cargo nextest run … --test mining_cohort` line as running the target's four ignored tests, which
+nextest never runs without `--run-ignored`: the four-bot cohort and the FR.0/RS.0 smokes. They are
+`by-hand` now with their revisions, as are GC.12's field scale, the live commander and the thirty
+pooled matches. Three opt-in tests have no recorded live run and say `never`: the two
+`RUN_LLM_SMOKE` smokes and the live LLM cost run. The cost lane's month is `dispatch` on
+`gate.yml:cost-lane` (TS.21's run at `a2ef4075`); the harness has a `dispatch` row beside its nightly
+one, `TACSIM_ASSERT=1` through `harness-weekly.sh`.
+
+**The weekly slot (D-43-11).** The daily cron is Monday to Saturday (`17 4 * * 1-6`) and Sunday's is
+`17 4 * * 0`, so Sunday has one run that is both the nightly and the weekly, not two. The six jobs
+that were dispatch-only admit `github.event.schedule == '17 4 * * 0'` at the fast pulse.
+
+**`gate.yml`'s `env` input** exports `NAME=VALUE` pairs to every later step of any kind, refusing the
+names the workflow or toolchain owns (`REDIS_URL`, `CARGO_*`, `RUST*`, `NEXTEST_*`, `PATH`, the
+runner's); `scripts/vps-gate.sh --env` sends it, and only when given, so an older ref still
+dispatches.
+
+**The failure channel (D-43-3)** needs no workflow change; docs/ops.md says what the owner checks
+(GitHub mails a scheduled run's failure to the account that last changed the cron lines, which is
+the merger of this cut).
+
+**Rule #14.** No cell changes: the new test is seconds in `rest-libs`.
+
+### TS.18 variant identities (§5.9)
+
+**Built**, on TS.2's manifest. A row may now name a test that is not gated, with a non-default
+`config`: a variant, with its own tier and last run. A census reads every variable tacsim's and the
+bot's tests pass by name (a literal, or a `const` of the same file) to `env::var`, `env::var_os`,
+`knob` or an `env_*` helper; 71 at this cut. Each must be in some row's `config` or declared a
+`[[knob]]` with a kind: `opt-in`, `size`, `measurement`, `report`, `bless`, `secret` or
+`plumbing`. A stale knob fails, and so does an opt-in that no row sets. A declared `opt-in` makes
+the test that returns early unless it is set a gated test, so it needs a row.
+
+**§5.9's variants, named.**
+
+| Variable | Entry |
+|---|---|
+| `FIELD_RAID=director` | by-hand row on `a_captain_and_its_escort_fight_the_raider_in_an_ic_field`; recorded once by this cut, `2c4b1c03`: gate run 41874705027 on conclav.dev through `--env FIELD_RAID=director` (the input's first use), passed in 584 s |
+| `MINE_RATE=24` | by-hand row on the canary, `77d2f56c` (gate run 40431777853, 528 s, when 24 was the default) |
+| `GC12_SIZES`, `GC12_ARENA_S` | `size` knobs: the recorded runs used the defaults |
+| `GC12_ASSERT=1` | by-hand row, `never`: both recorded runs were report-only |
+| `TACSIM_HOLD_LANE=1` | `opt-in` knob, by-hand row at O.1's gate `8c2f0388`. Before this cut the flag matched no opt-in spelling, so the inventory neither registered nor exempted it (16c Q-O3) |
+| `TACSIM_SNAPSHOT_OFF`, `TACSIM_FRAME_WORKERS` | `measurement` knobs |
+| `TACSIM_MINDS_VARIANTS`, `TACSIM_SIGHT_ORIGINS`, the harness and cost-lane sizes | `size` knobs |
+| `MUSH_BOT_LIVE_FROM_MUSTER=1` | in the live commander's by-hand row: its last run was the muster form |
+| `MUSH_BOT_WIN_RATE_*`, `MUSH_BOT_MIND_RATE_*` | `size` knobs |
+| `RELIEF_PREVIEW`, `MUSH_CAMPAIGN_START` | `report` and `plumbing` |
+
+**Rule #14.** No cell changes.
+
 ### TS.16 the field tempo (§5.8, §10.2)
 
 **Built.** Test-only, two tunes in shard_1. `field_gc4::lane3_tune` and `field_gc5::quick` drop their
