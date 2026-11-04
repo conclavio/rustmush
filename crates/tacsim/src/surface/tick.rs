@@ -4319,7 +4319,25 @@ mod tests {
                 .all(|c| !c.3),
             "a live plan is never idle"
         );
-        // The plan untold.
+    }
+
+    /// **A plan untold is a candidate even inside the step's back-off** (doc 20 cut SM.11). Its
+    /// own test since doc 23 cut S.4b-1 (`RigRecord` grew its claim cursor and `Queued` its
+    /// queued launch, and this record tipped the candidates test's stack frame over the M7
+    /// memory-size limits again, as S.1's open sortie once did).
+    #[test]
+    fn sm11_a_plan_untold_is_a_candidate_inside_its_back_off() {
+        let now = 100_000;
+        let current = PlanReads {
+            lessee: &lessee_7,
+            shown: &shown_current,
+            helm: &helm_8,
+        };
+        let mut resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        resting.backoff.insert((1, 6, PLAN_CYCLE), 100);
         let mut untold = planned(1, 1_000);
         if let Some(plan) = untold.plan.as_mut() {
             plan.seq = 2;
