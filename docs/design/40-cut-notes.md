@@ -108,8 +108,20 @@ ship's `party` wire `1`/`2`/`3` both ways, symmetric marks, `None` clears, `Own`
 relations as `Relation`; `sfr15_…` uses `PartyId::nth(0)`. The space lib tests and the shard 10 `sfr*` stories
 pass on Windows (16/16 `voyage::sfr*`, including `sfr8`'s restart). No field story at 256 or 512 touches the space track, so neither size's story moves.
 
-**Cell delta.** One lib unit test added, no story added or lengthened: the tacsim lib cell and shard 10 are
-unchanged within noise (to be read from the PR run's JUnit).
+**Cell delta** (rule #14). About zero, and every move the sums show is runner noise. The figures come from
+the JUnit of #363's green CI run `41728581154` (head `eb9b7359`), set against main's last CI run before it,
+`41715071762` at `f1b2a1e4`; main's later merges up to #363's base `ac525cc6` were docs-only and ran no CI.
+They are cross-checked against main's run at the #363 merge, `41733188761` (`fe212f4a`). Summed minutes,
+main → PR → merge:
+
+| Cell | Tests | Main | PR | Merge | Read |
+|---|---|---|---|---|---|
+| tacsim-lib | 2113 → 2114 | 21.3 | 37.4 | 36.1 | The new test is 0.0 s, and the 14 `space::` tests sum to 0.0 min on all three runs. The +16 min is in the other 2,099 tests (21.2 → 37.4 → 36.1). |
+| tacsim-integration-10 (shard 10) | 357 | 27.5 | 47.9 | 36.2 | The 16 `voyage::sfr*` stories FR.6 touched went 2.3 → 4.1 → 3.1. The 341 tests it did not touch went 25.2 → 43.8 → 33.1, the same factor (about 1.75× on the PR run, 1.3× on the merge run). |
+| Every other cell | — | 549.4 | 557.8 | 553.7 | Untouched by FR.6. Cells moved both ways by up to 26 min on the PR run (rest-server −25.8, shard 3 +11.8) and up to 29 min on the merge run (shard 4 −28.6, shard 5 +22.2). |
+| **All cells** | | 598.2 | 643.1 | 626.0 | |
+
+No cell's wall is set by this cut, and no story moves to another shard.
 
 ## FR.1 (2026-11-03) — stances (§4.2; Q-38-23, Q-40-11..14, round 2's 40-3)
 
