@@ -335,122 +335,9 @@ pub(super) fn snapshot(
             operation,
             slot,
             unit,
-        } => {
-            let (op, flight) = selected(read, h, *operation, *slot)?;
-            if flight.key.unit != *unit
-                || (actor != operation.organizer && actor != flight.operator)
-                || flight.phase != Phase::Field
-                || !facts::at_ramp(world, &flight)
-                || !(crate::detachment::planning::projection::physically_aboard(
-                    world,
-                    actor,
-                    flight.carrier,
-                ) || crate::detachment::planning::projection::physically_aboard(
-                    world,
-                    actor,
-                    flight.key.unit,
-                ))
-            {
-                return Err(
-                    "Return unavailable. Bring the unit physically to the carrier's ramp.".into(),
-                );
-            }
-            let berth = facts::berth(world, flight.carrier)?;
-            if berth.domain != flight.domain
-                || berth.bay_room != flight.bay_room
-                || berth.bay_slot != flight.bay_slot
-            {
-                return Err("Carrier's recovery berth changed.".into());
-            }
-            let mut next = flight.clone();
-            let recovery = facts::recover_unit(world, &op.roster, &flight)?;
-            next.phase = Phase::Returning;
-            next.returner = Some(actor);
-            next.revision = next
-                .revision
-                .checked_add(1)
-                .ok_or("Flight revision exhausted.")?;
-            next.due = due(intent.ic.clone(), crate::surface::excursion::RECOVER_S)?;
-            let mut patch = Snapshot::new(*operation)?;
-            patch.observations.push(json!({"recovery":recovery,"parent":world.module_state::<mush_sim::SpatialState>().map(|s|s.parent_of(*unit))}));
-            // Doc 36 cut GC.0 (Q-36-17): a unit recovering under its own power leaves the site's
-            // unit index in this commit.
-            let site = crate::surface::site_record::SiteKey(berth.entry.clone());
-            let record = read.get(&h.ports.sites, &site)?;
-            if let Some(after) =
-                crate::surface::site_record::left_under_own_power(record.as_ref(), *unit)
-            {
-                patch.site_records.push(Write {
-                    before: record,
-                    after,
-                });
-            }
-            patch.flights.push(Write {
-                before: Some(flight),
-                after: next,
-            });
-            patch
-        }
-        Command::Cancel { operation, slot } => {
-            let (_, flight) = selected(read, h, *operation, *slot)?;
-            if actor != operation.organizer
-                || flight.phase != Phase::Departing
-                || !facts::in_bay(world, &flight)
-            {
-                return Err("Only an unlaunched member can be cancelled.".into());
-            }
-            let mut next = flight.clone();
-            next.phase = Phase::Cancelled;
-            next.revision = next
-                .revision
-                .checked_add(1)
-                .ok_or("Flight revision exhausted.")?;
-            let mut patch = Snapshot::new(*operation)?;
-            drop_pending(read, h, &mut patch, &flight)?;
-            patch.flights.push(Write {
-                before: Some(flight),
-                after: next,
-            });
-            patch
-        }
-        Command::End { operation: id } => {
-            let old = operation(read, h, *id)?;
-            if actor != id.organizer || old.ended.is_some() {
-                return Err("Operation unavailable.".into());
-            }
-            let mut next = old.clone();
-            next.ended = Some(intent.ic.clone());
-            let mut patch = Snapshot::new(*id)?;
-            // End cancels only departures still physically aboard. Field epochs
-            // remain open and recoverable; a disappeared member is unresolved.
-            for row in &old.roster.plan.slots {
-                let unit = row.unit.ok_or("Unit unavailable.")?;
-                if read.get(&h.heads, &unit)?.is_some() {
-                    let (_, flight) = current(read, h, unit)?;
-                    if flight.operation == *id
-                        && flight.phase == Phase::Departing
-                        && facts::in_bay(world, &flight)
-                    {
-                        let mut next = flight.clone();
-                        next.phase = Phase::Cancelled;
-                        next.revision = next
-                            .revision
-                            .checked_add(1)
-                            .ok_or("Flight revision exhausted.")?;
-                        drop_pending(read, h, &mut patch, &flight)?;
-                        patch.flights.push(Write {
-                            before: Some(flight),
-                            after: next,
-                        });
-                    }
-                }
-            }
-            patch.record = Some(Box::new(Write {
-                before: Some(old),
-                after: next,
-            }));
-            patch
-        }
+        } => recover(world, read, h, actor, intent, (operation, slot, unit))?,
+        Command::Cancel { operation, slot } => cancel(world, read, h, actor, operation, slot)?,
+        Command::End { operation: id } => end(world, read, h, actor, intent, id)?,
         Command::Finish {
             flight: key,
             revision,
@@ -922,6 +809,146 @@ fn finish(
         before: Some(flight),
         after: next,
     });
+    Ok(patch)
+}
+/// **`+sortie/recover`'s prepare**: a field member at its carrier's ramp starts home. Its own
+/// function, as `launch` and `finish` are, so its flight records stay out of `snapshot`'s frame
+/// (the M7 stack-size lint).
+fn recover(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    actor: ObjId,
+    intent: &Intent,
+    (operation, slot, unit): (&OperationId, &u16, &ObjId),
+) -> Result<Snapshot, String> {
+    let (op, flight) = selected(read, h, *operation, *slot)?;
+    if flight.key.unit != *unit
+        || (actor != operation.organizer && actor != flight.operator)
+        || flight.phase != Phase::Field
+        || !facts::at_ramp(world, &flight)
+        || !(crate::detachment::planning::projection::physically_aboard(
+            world,
+            actor,
+            flight.carrier,
+        ) || crate::detachment::planning::projection::physically_aboard(
+            world,
+            actor,
+            flight.key.unit,
+        ))
+    {
+        return Err("Return unavailable. Bring the unit physically to the carrier's ramp.".into());
+    }
+    let berth = facts::berth(world, flight.carrier)?;
+    if berth.domain != flight.domain
+        || berth.bay_room != flight.bay_room
+        || berth.bay_slot != flight.bay_slot
+    {
+        return Err("Carrier's recovery berth changed.".into());
+    }
+    let mut next = flight.clone();
+    let recovery = facts::recover_unit(world, &op.roster, &flight)?;
+    next.phase = Phase::Returning;
+    next.returner = Some(actor);
+    next.revision = next
+        .revision
+        .checked_add(1)
+        .ok_or("Flight revision exhausted.")?;
+    next.due = due(intent.ic.clone(), crate::surface::excursion::RECOVER_S)?;
+    let mut patch = Snapshot::new(*operation)?;
+    patch.observations.push(json!({"recovery":recovery,"parent":world.module_state::<mush_sim::SpatialState>().map(|s|s.parent_of(*unit))}));
+    // Doc 36 cut GC.0 (Q-36-17): a unit recovering under its own power leaves the site's
+    // unit index in this commit.
+    let site = crate::surface::site_record::SiteKey(berth.entry.clone());
+    let record = read.get(&h.ports.sites, &site)?;
+    if let Some(after) = crate::surface::site_record::left_under_own_power(record.as_ref(), *unit) {
+        patch.site_records.push(Write {
+            before: record,
+            after,
+        });
+    }
+    patch.flights.push(Write {
+        before: Some(flight),
+        after: next,
+    });
+    Ok(patch)
+}
+/// **`+sortie/cancel-launch`'s prepare**: an unlaunched member is cancelled, its pending launch
+/// dropped (doc 40 cut FR.3). Its own function for `snapshot`'s frame.
+fn cancel(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    actor: ObjId,
+    operation: &OperationId,
+    slot: &u16,
+) -> Result<Snapshot, String> {
+    let (_, flight) = selected(read, h, *operation, *slot)?;
+    if actor != operation.organizer
+        || flight.phase != Phase::Departing
+        || !facts::in_bay(world, &flight)
+    {
+        return Err("Only an unlaunched member can be cancelled.".into());
+    }
+    let mut next = flight.clone();
+    next.phase = Phase::Cancelled;
+    next.revision = next
+        .revision
+        .checked_add(1)
+        .ok_or("Flight revision exhausted.")?;
+    let mut patch = Snapshot::new(*operation)?;
+    drop_pending(read, h, &mut patch, &flight)?;
+    patch.flights.push(Write {
+        before: Some(flight),
+        after: next,
+    });
+    Ok(patch)
+}
+/// **`+sortie/end`'s prepare**: the operation ends, cancelling the departures still aboard and
+/// dropping their pending launches (doc 40 cut FR.3). Its own function for `snapshot`'s frame.
+fn end(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    actor: ObjId,
+    intent: &Intent,
+    id: &OperationId,
+) -> Result<Snapshot, String> {
+    let old = operation(read, h, *id)?;
+    if actor != id.organizer || old.ended.is_some() {
+        return Err("Operation unavailable.".into());
+    }
+    let mut next = old.clone();
+    next.ended = Some(intent.ic.clone());
+    let mut patch = Snapshot::new(*id)?;
+    // End cancels only departures still physically aboard. Field epochs
+    // remain open and recoverable; a disappeared member is unresolved.
+    for row in &old.roster.plan.slots {
+        let unit = row.unit.ok_or("Unit unavailable.")?;
+        if read.get(&h.heads, &unit)?.is_some() {
+            let (_, flight) = current(read, h, unit)?;
+            if flight.operation == *id
+                && flight.phase == Phase::Departing
+                && facts::in_bay(world, &flight)
+            {
+                let mut next = flight.clone();
+                next.phase = Phase::Cancelled;
+                next.revision = next
+                    .revision
+                    .checked_add(1)
+                    .ok_or("Flight revision exhausted.")?;
+                drop_pending(read, h, &mut patch, &flight)?;
+                patch.flights.push(Write {
+                    before: Some(flight),
+                    after: next,
+                });
+            }
+        }
+    }
+    patch.record = Some(Box::new(Write {
+        before: Some(old),
+        after: next,
+    }));
     Ok(patch)
 }
 /// **The abort's half of the pending row** (doc 40 cut FR.3; Q-40-24, §4.4 step 5): a departure
