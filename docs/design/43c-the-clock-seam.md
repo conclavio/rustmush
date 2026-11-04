@@ -108,7 +108,7 @@ impl TimeSource {
 The rules:
 
 - **One handle per process, made at composition.**
-  - `ServerDeps` carries it into `world_task::spawn`.
+  - `ServerDeps` (`world_task.rs:1173`) carries it into the `spawn_persist_with_gateway*` family (`:1425`–`:1666`).
   - `mushd`'s `inprocess.rs` and mush-server's `boot.rs` build `System`; a rig builds `Tokio`.
   - The arena receives a clone in `spawn_arena`, `spawn_field` and `resume_arena` (`arena_bridge.rs:2003`,
     `:2015`), through the bridge, which already threads config into every spawn.
