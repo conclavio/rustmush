@@ -945,15 +945,25 @@ impl Arena {
             // **16b cut U.2** (16c `T-29`): the jamming memo goes with the index it
             // was folded over — motion is about to move the poses it read.
             self.jam_fold.clear();
+            // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-7): the trailers, `(tug slot, casualty
+            // slot)`, read once before the loop — empty in every match without a tow, so each
+            // unit pays one `Option` test here and one empty-list test below.
+            let tows = crate::arena::tow::trailers(&self.units);
             let terrain = &self.definition.terrain;
             let index = &mut self.index;
             for slot in 0..self.units.len() {
                 let Some(unit) = self.units.get_mut(slot) else {
                     continue;
                 };
+                // A casualty under tow never moves on its own: its tug sets it below.
+                if unit.coupled_to.is_some() {
+                    unit.blocked = false;
+                    continue;
+                }
                 let id = unit.id;
                 let from = terrain.cell_of(&unit.pose);
                 let outcome = integrate(unit, dt_ms, terrain, index, end_ms, occupied_stop_ms);
+                let heading_mdeg = unit.pose.heading_mdeg;
                 if outcome.moved
                     && let Some(from) = from
                     && let Some(to) = terrain.cell_of(&unit.pose)
@@ -963,6 +973,18 @@ impl Arena {
                     // next must see where this one went, or two units enter one
                     // cell in one substep.
                     index.move_unit(id, from, to);
+                    // Doc 40 cut FR.5 (Q-40-7): its trailer takes the cell it just left,
+                    // in its own turn, so the index never holds two units in one cell.
+                    if let Some(&(_, trailer)) = tows.iter().find(|(tug, _)| *tug == slot) {
+                        crate::arena::tow::trail(
+                            &mut self.units,
+                            trailer,
+                            from,
+                            heading_mdeg,
+                            terrain,
+                            index,
+                        );
+                    }
                 }
                 // **One edge for three readers** (16b cut M.3; 16c `T-04`,
                 // `B-27`, §5's Q22): the ledger's `blocked` line, the pilot's

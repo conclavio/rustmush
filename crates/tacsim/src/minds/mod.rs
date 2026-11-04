@@ -180,7 +180,9 @@ pub use content::{
 };
 pub use pool::{BatchFailed, BatchHandle, MindPool};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
-pub use sealed::{InstallError, install_sealed_runners, install_sealed_runners_except};
+pub use sealed::{
+    InstallError, install_sealed_runner, install_sealed_runners, install_sealed_runners_except,
+};
 
 /// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
@@ -774,6 +776,7 @@ pub(crate) mod fixture {
             rule_sample: None,
             view: Arc::new(view),
             map: Arc::new(map()),
+            wrecks: Vec::new(),
             seed: 42,
             unit: UNIT,
             think_seq: 7,

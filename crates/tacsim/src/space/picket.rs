@@ -999,6 +999,7 @@ pub fn run_sealed_mind_on_pool(
         view,
         memory: memory.to_vec(),
         map,
+        wrecks: Vec::new(),
         card,
         program,
         profile_token,

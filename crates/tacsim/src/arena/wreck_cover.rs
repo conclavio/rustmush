@@ -73,6 +73,18 @@ impl Arena {
             .collect()
     }
 
+    /// **Every cell a wreck stands in**, in unit order — what a think is handed beside the map
+    /// (doc 40 cut FR.5, §4.1 item 3): `line_to` leaves its own two ends out, as the fire trace
+    /// does. Empty on a field with no wreck, so the walk is the terrain's alone.
+    #[must_use]
+    pub fn mind_wrecks(&self) -> Vec<(u16, u16)> {
+        self.units
+            .iter()
+            .filter(|unit| unit.limits.wreck)
+            .filter_map(|unit| self.definition.terrain.cell_of(&unit.pose))
+            .collect()
+    }
+
     /// **The first wreck cell on the interior of the line from `a` to `b`**, walked from the
     /// line's canonical end as every arena line is (16c `B-56`), or `None`. A wreck in either
     /// end's own cell is not on the line.

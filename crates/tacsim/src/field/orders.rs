@@ -181,6 +181,88 @@ pub(crate) enum Step {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Offered(BTreeMap<ObjId, ((MatchId, u64, u64), i64)>);
 
+/// **The delivered orders a damaged relay is holding back** (doc 40 cut FR.5, Q-40-5; RAM,
+/// module state): recipient unit → (task, fence epoch, sequence) and the world second the order
+/// was first seen under a damaged relay. A restart forgets it and the delay runs again from the
+/// next visit, which is a later order, never an earlier one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RelayLate(BTreeMap<ObjId, ((MatchId, u64, u64), i64)>);
+
+/// **The relay word of the carrier of `party`** (doc 40 cut FR.5, Q-40-5): the first unit of the
+/// party whose record carries a relay part (only the Halcyon does, `halcyon.json`), with its
+/// part's condition.
+///
+/// **A seam, named**: the word is read off the carrier's **world** record — the condition it
+/// brought into the field, so a relay an earlier field jammed holds the party's orders until the
+/// bay clears it. A part the kernel jams or damages **inside** this field changes the arena's
+/// copy of the record, which reaches the world at the carrier's check-in; until the host is told
+/// the kernel's live word (a mirror of the carrier's part conditions, fed by the `hit` line's
+/// part op), a mid-field relay hit takes effect from the next field. Swap the read here for that
+/// mirror and nothing else moves.
+fn carrier_relay(
+    w: &mush_core::World,
+    live: &super::record::FieldLive,
+    party: crate::arena::state::PartyId,
+) -> Option<(ObjId, mush_tactics::field_ops::ComponentCondition)> {
+    live.units
+        .iter()
+        .filter(|row| row.party == party)
+        .find_map(|row| {
+            let record = mush_tactics::module::unit_of(w, row.unit)?;
+            crate::arena::part_effects::relay_condition(record).map(|word| (row.unit, word))
+        })
+}
+
+/// **The damaged-relay delay of `carrier`**, wall milliseconds: its unit's component effects
+/// (its own table, the resolution pack's, else the compiled
+/// [`crate::arena::resolution::COMPONENT_EFFECTS`]).
+fn relay_delay_ms(w: &mush_core::World, carrier: ObjId) -> u32 {
+    let effects = w
+        .module_state::<crate::TacsimStore>()
+        .zip(mush_tactics::module::unit_of(w, carrier))
+        .map_or(
+            crate::arena::resolution::COMPONENT_EFFECTS,
+            |(store, record)| crate::match_::unit_profile(store.definitions(), record).effects(),
+        );
+    effects.relay.damaged_delay_ms
+}
+
+/// **Whether a delivered order may be offered to the kernel now** (doc 40 cut FR.5, Q-40-5): a
+/// carrier relay that reads jammed holds every order of its party until the field ends or the
+/// part is unjammed; one that reads damaged lets each order through its delay after it was
+/// first seen here ([`RelayLate`]); otherwise, and for a party with no relay, at once.
+fn relay_passes(
+    ctx: &mut Ctx<'_>,
+    live: &super::record::FieldLive,
+    party: crate::arena::state::PartyId,
+    unit: ObjId,
+    key: (MatchId, u64, u64),
+) -> bool {
+    use mush_tactics::field_ops::ComponentCondition;
+    let Some((carrier, word)) = carrier_relay(ctx.w, live, party) else {
+        return true;
+    };
+    match word {
+        ComponentCondition::Jammed => false,
+        ComponentCondition::Damaged => {
+            let delay_ms = i64::from(relay_delay_ms(ctx.w, carrier));
+            let now = ctx.w.now();
+            let Some(book) = ctx.w.module_state_mut::<RelayLate>() else {
+                return true;
+            };
+            let since = match book.0.get(&unit) {
+                Some((at, since)) if *at == key => *since,
+                _ => {
+                    book.0.insert(unit, (key, now));
+                    now
+                }
+            };
+            now.saturating_sub(since).saturating_mul(1_000) >= delay_ms
+        }
+        _ => true,
+    }
+}
+
 /// **How long an offered order may take to stand**, world seconds. The kernel refuses an order
 /// it cannot take without a word — its issuer's unit wrecked or gone from the field, the fence
 /// moved, the deadline past — so an order the recipient's own frame does not show standing
@@ -300,6 +382,11 @@ pub(crate) fn step(
         .and_then(|offered| offered.0.get(&unit).copied());
     let key = (task, fence, order.sequence);
     if offered.is_none_or(|(at, _)| at != key) {
+        // Doc 40 cut FR.5 (Q-40-5): the party's carrier relay decides whether the order may
+        // reach the kernel yet.
+        if !relay_passes(ctx, &live, party, unit, key) {
+            return Step::Waiting;
+        }
         let authority = DetachmentAuthority {
             detachment: roster.id().0,
             revision: roster.revision(),

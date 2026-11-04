@@ -608,6 +608,12 @@ pub enum Refusal {
     /// so `API_VERSION` stands.
     #[error("that profile cannot be switched to now")]
     Profile,
+    /// **`STARTUP` on a hull whose plant is jammed or destroyed** (doc 40 cut FR.5, §4.1 item
+    /// 4, Q-40-4): the plant's part condition word, read live
+    /// (`crate::arena::part_effects::plant_condition`), says it cannot run. A jam lasts the
+    /// field; unjam restores `STARTUP`, never the power.
+    #[error("that unit's plant will not start")]
+    Plant,
 }
 
 impl Refusal {
@@ -638,6 +644,8 @@ impl Refusal {
             Refusal::Unlawful => "unlawful",
             // 17b cut M5.2: a profile switch's one word.
             Refusal::Profile => "profile",
+            // Doc 40 cut FR.5 (Q-40-4): a jammed or destroyed plant.
+            Refusal::Plant => "plant",
         }
     }
 }
@@ -1467,7 +1475,8 @@ pub fn drain_pending(arena: &mut Arena, unit: ObjId) -> Vec<Intent> {
 /// # Errors
 ///
 /// [`Refusal::Unknown`] for a unit this arena does not hold, [`Refusal::Wreck`]
-/// for a wreck. A ledger that has reached its byte bound does **not** fail the
+/// for a wreck, [`Refusal::Plant`] for a plant whose part reads jammed or destroyed
+/// (doc 40 cut FR.5). A ledger that has reached its byte bound does **not** fail the
 /// transition: the black box is a record, not an authority (see
 /// [`crate::arena::ledger::LedgerFull`]).
 pub fn resolve_startup(arena: &mut Arena, unit: ObjId, at_ms: i64) -> Result<(), Refusal> {
@@ -1476,6 +1485,18 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId, at_ms: i64) -> Result<(),
     };
     if state.limits.wreck {
         return Err(Refusal::Wreck);
+    }
+    // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-4): a plant whose part reads jammed or
+    // destroyed does not start — refused by name, so a pilot's STARTUP cannot bring
+    // back a plant the field jammed.
+    if crate::arena::part_effects::plant_condition(&state.unit).is_some_and(|condition| {
+        matches!(
+            condition,
+            mush_tactics::field_ops::ComponentCondition::Jammed
+                | mush_tactics::field_ops::ComponentCondition::Destroyed
+        )
+    }) {
+        return Err(Refusal::Plant);
     }
     if state.power != Power::Off {
         return Ok(());
@@ -2521,6 +2542,8 @@ mod tests {
             Refusal::Unknown,
             // 16b cut O.2.
             Refusal::NoJammer,
+            // Doc 40 cut FR.5.
+            Refusal::Plant,
         ]
         .map(|refusal| refusal.as_str());
         let unique: std::collections::BTreeSet<&str> = words.iter().copied().collect();
