@@ -44,7 +44,8 @@ pub use recovery::{
     LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
     MAX_TOW_MASS_RATIO_PERMILLE, RecoveryBook, RecoveryError, RecoveryOpId, RecoveryOperation,
     RecoveryStage, TowEvaluation, TowRigProfile, TugInspectionContext, UnitMassProfile,
-    inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_speed_factor_permille,
+    inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_mass_ratio_permille_for,
+    tow_speed_factor_permille,
 };
 pub use salvage::{
     AdjustedSalvageClaimDeadline, AtRiskRepairEntry, AuthoritativeRecoveryRecord,

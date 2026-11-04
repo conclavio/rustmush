@@ -800,6 +800,23 @@ pub const TV_ESCORT: &str = "tacsim.unit.tv_escort";
 pub const EXTENSIONS_ESCORT: [(&str, &str); 1] =
     [("tacsim/content/units/tv_escort.json", TV_ESCORT_JSON)];
 
+/// `crates/tacsim/content/units/tv_tender.json` (doc 41 cut RS.1).
+pub const TV_TENDER_JSON: &str = include_str!("../../content/units/tv_tender.json");
+
+/// The tender's pack id.
+pub const TV_TENDER_PACK: &str = "tacsim.pack.tv_tender";
+
+/// **The tender terrain vehicle** (doc 41 cut RS.1; §4.1, Q-41-1): the prospector's chassis
+/// without the drill, 7 t dry, unarmed, a 2.7 t / 4.8 m³ `stow.bulk` stores compartment named by
+/// `logistics.tender`, and the `recovery_optimized` tow coupling (3×, Q-41-27). Class `vehicle`,
+/// never fielded in an arena. Occator leases it into a Dray-P's bay (`+tv/lease tender`).
+pub const TV_TENDER: &str = "tacsim.unit.tv_tender";
+
+/// **The tender, one unit schema and no row of its own** (doc 41 cut RS.1), fielded **last**,
+/// after every earlier table, so none moves.
+pub const EXTENSIONS_TENDER: [(&str, &str); 1] =
+    [("tacsim/content/units/tv_tender.json", TV_TENDER_JSON)];
+
 /// `crates/tacsim/content/units/corvette.json` (doc 35b cut SF.R12).
 pub const CORVETTE_JSON: &str = include_str!("../../content/units/corvette.json");
 
@@ -1144,6 +1161,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_MARS_CANYON.as_slice(),
         EXTENSIONS_ESCORT.as_slice(),
         EXTENSIONS_CORVETTE.as_slice(),
+        EXTENSIONS_TENDER.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

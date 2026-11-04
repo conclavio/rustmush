@@ -2566,6 +2566,8 @@ fn m3_every_shipped_chassis_binds_its_core() {
             Some((content::CORE_LINE, "turret", CoreClass::II)),
         ),
         (content::CORVETTE, None),
+        // Doc 41 cut RS.1: the tender, no core (Class 0, as the prospector).
+        (content::TV_TENDER, None),
     ];
     assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
     for (entry, fitted) in expected {

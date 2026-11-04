@@ -927,6 +927,8 @@ const FIELDED_EXTRAS: [&str; 17] = [
     content::TV_ESCORT,
     // Doc 35b cut SF.R12: the customs patrol corvette adds one unit schema.
     content::CORVETTE,
+    // Doc 41 cut RS.1: the tender adds one unit schema, mounting the stock sight.
+    content::TV_TENDER,
 ];
 
 /// **The stock game is unmoved, and the fielded game is it plus the five** —

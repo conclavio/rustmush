@@ -1240,6 +1240,12 @@ pub struct RigRecord {
     /// line. Skipped when `None` (schema 1 stands: pre-launch, no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sortie: Option<OpenSortie>,
+    /// **The tender's opened bale** (doc 41 cut RS.1; §4.1, Q-41-2; doc 39 IN.1's accounting,
+    /// the twin of `BayHull.bale`): the kilograms of structural alloys and yard fittings debited
+    /// from the stores in whole tonnes and not yet consumed. Written only by the tow action's
+    /// `stores` and `tended` ops. Skipped when `None` (schema 1 stands: pre-launch, no migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bale: Option<crate::port::bay_work::Bale>,
 }
 
 /// **An open seal epoch on a rig** (doc 23 cut S.1, the lead's L5): its id, the hangar it left,
@@ -1347,6 +1353,7 @@ impl RigRecord {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
         }
     }
 
@@ -1377,6 +1384,7 @@ impl RigRecord {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
         }
     }
 
@@ -2803,6 +2811,7 @@ mod tests {
             sortie: None,
             field_crew: None,
             field_work: None,
+            bale: None,
         }
     }
 

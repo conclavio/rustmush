@@ -152,10 +152,32 @@ pub enum TowRigProfile {
     Standard,
     /// Dedicated recovery vehicle or heavy tow-rig optimization (`FO-13`, `Q-S6`).
     RecoveryOptimized,
+    /// **Doc 41 cut RS.1** (Q-41-27): a heavy crawler — the optimized speed factor at the
+    /// standard cap.
+    Heavy,
+}
+
+impl TowRigProfile {
+    /// **The profile's tonnage cap** in permille of the tug's mass (doc 41 cut RS.1, Q-41-27,
+    /// Q-38-18): `Standard` and `Heavy` 2×, `RecoveryOptimized` 3× (provisional).
+    #[must_use]
+    pub const fn cap_permille(self) -> u64 {
+        match self {
+            Self::Standard | Self::Heavy => 2_000,
+            Self::RecoveryOptimized => 3_000,
+        }
+    }
+
+    /// The heaviest casualty a tug of `tug_mass_kg` takes under this profile, kg.
+    #[must_use]
+    pub const fn max_casualty_mass_kg(self, tug_mass_kg: u64) -> u64 {
+        tug_mass_kg.saturating_mul(self.cap_permille()) / 1_000
+    }
 }
 
 /// Compute the casualty-to-tug mass ratio in permille (`1_000` = `1.0×`, `2_000` = `2.0×`)
-/// after validating the inclusive `2×` tonnage ceiling (`FO-13`, `Q-S6`).
+/// after validating the inclusive `2×` tonnage ceiling of [`TowRigProfile::Standard`]
+/// (`FO-13`, `Q-S6`).
 ///
 /// # Errors
 /// Returns [`RecoveryError::ZeroDryMass`] if either mass is `0`, or
@@ -164,12 +186,27 @@ pub fn tow_mass_ratio_permille(
     tug_mass_kg: u64,
     casualty_mass_kg: u64,
 ) -> Result<u64, RecoveryError> {
+    tow_mass_ratio_permille_for(tug_mass_kg, casualty_mass_kg, TowRigProfile::Standard)
+}
+
+/// [`tow_mass_ratio_permille`] under `profile`'s cap ([`TowRigProfile::cap_permille`], doc 41
+/// cut RS.1, Q-41-27).
+///
+/// # Errors
+/// Returns [`RecoveryError::ZeroDryMass`] if either mass is `0`, or
+/// [`RecoveryError::ExceedsTonnageCap`] if the casualty passes the profile's cap.
+pub fn tow_mass_ratio_permille_for(
+    tug_mass_kg: u64,
+    casualty_mass_kg: u64,
+    profile: TowRigProfile,
+) -> Result<u64, RecoveryError> {
     if tug_mass_kg == 0 || casualty_mass_kg == 0 {
         return Err(RecoveryError::ZeroDryMass);
     }
     let max_casualty_mass_kg = tug_mass_kg
-        .checked_mul(2)
-        .ok_or(RecoveryError::MassOverflow)?;
+        .checked_mul(profile.cap_permille())
+        .ok_or(RecoveryError::MassOverflow)?
+        / 1_000;
     if casualty_mass_kg > max_casualty_mass_kg {
         return Err(RecoveryError::ExceedsTonnageCap {
             tug_mass_kg,
@@ -192,10 +229,12 @@ pub fn tow_speed_factor_permille(
     casualty_mass_kg: u64,
     profile: TowRigProfile,
 ) -> Result<u32, RecoveryError> {
-    let ratio_permille = tow_mass_ratio_permille(tug_mass_kg, casualty_mass_kg)?;
+    let ratio_permille = tow_mass_ratio_permille_for(tug_mass_kg, casualty_mass_kg, profile)?;
     let factor = match profile {
         TowRigProfile::Standard => 850_u64.saturating_sub((ratio_permille * 300) / 1_000),
-        TowRigProfile::RecoveryOptimized => 950_u64.saturating_sub((ratio_permille * 225) / 1_000),
+        TowRigProfile::RecoveryOptimized | TowRigProfile::Heavy => {
+            950_u64.saturating_sub((ratio_permille * 225) / 1_000)
+        }
     };
     u32::try_from(factor.max(1)).map_err(|_| RecoveryError::MassOverflow)
 }
@@ -350,7 +389,7 @@ pub fn inspect_field_unit(
     let target = assessment.unit;
     let tow_evaluation = tug_ctx.map(|ctx| {
         let casualty_mass_kg = mass.total_mass_kg();
-        let max_casualty_mass_kg = ctx.tug_mass_kg.saturating_mul(2);
+        let max_casualty_mass_kg = ctx.rig_profile.max_casualty_mass_kg(ctx.tug_mass_kg);
         let mass_ratio_permille =
             (ctx.tug_mass_kg > 0).then(|| casualty_mass_kg.saturating_mul(1_000) / ctx.tug_mass_kg);
         let distance_cm = ctx.tug_pose.distance_cm_to(&pose);
@@ -1501,13 +1540,14 @@ pub enum RecoveryError {
     MassOverflow,
     /// Tug base speed was `0`.
     ZeroTugBaseSpeed,
-    /// Casualty total mass exceeds `2 × tug_mass_kg` (`FO-13`, `Q-S6`).
+    /// Casualty total mass exceeds the profile's cap (`2 × tug_mass_kg` for
+    /// [`TowRigProfile::Standard`]; `FO-13`, `Q-S6`, doc 41 Q-41-27).
     ExceedsTonnageCap {
         /// Tug total mass in kg.
         tug_mass_kg: u64,
         /// Casualty total mass in kg.
         casualty_mass_kg: u64,
-        /// Maximum allowed casualty mass (`2 * tug_mass_kg`).
+        /// Maximum allowed casualty mass under the profile's cap.
         max_casualty_mass_kg: u64,
     },
     /// Operation id was `0`.
@@ -1690,7 +1730,7 @@ impl fmt::Display for RecoveryError {
                 max_casualty_mass_kg,
             } => write!(
                 f,
-                "casualty mass {casualty_mass_kg} kg exceeds 2x tug mass cap ({max_casualty_mass_kg} kg for {tug_mass_kg} kg tug)"
+                "casualty mass {casualty_mass_kg} kg exceeds the tug's tow cap ({max_casualty_mass_kg} kg for {tug_mass_kg} kg tug)"
             ),
             Self::ZeroOperationId => f.write_str("recovery operation id must be non-zero"),
             Self::ZeroRevision => f.write_str("recovery operation revision must be non-zero"),
