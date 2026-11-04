@@ -20,7 +20,13 @@ use crate::field_raiders_rig::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed() {
-    let mut rig = stocked_tuned(tune);
+    // The fight runs to the raider's destruction, so a lull while the guard and a raider hull
+    // have lost each other must not demote the field around a standing raider (doc 40 FR.5's
+    // cut note): the rig's 10 s disengage is raised for this story alone.
+    let mut rig = stocked_tuned(|cfg| {
+        tune(cfg);
+        cfg.field.disengage_s = 60;
+    });
     // A prospector works the ground east of the pad; beside it stands an armed hull a hired NPC
     // sits in, no roster and no player behind it.
     let (a, row, a_tvs) = on_pad(&mut rig, 1);

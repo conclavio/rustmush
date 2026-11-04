@@ -730,6 +730,23 @@ went red on main once IN.5 (#414) merged after this cut.
   back and the story has no tender. cf6c withdraws as soon as the escort has fired and taken its first hit,
   the intruder ceasing fire too. Its point is the withdrawal, and a failure names the exchange and the seed.
 - **Long term**: doc 43c's clock seam (TS.10) is this knob's home, with a world clock a test can pin.
+- **cf6** (`shard_1 field_raiders::cf6_a_seeded_raider_fights_with_nobody_connected…`), also red on main
+  without the pin, is the same luck in another form. The guard and a raider hull lost each other, the carrier
+  fell, and the field demoted on the rig's 10 s disengage with that hull alive and healthy. A healthy hull
+  leaves no row on the site record. The story's point is a fight to the raider's destruction, so its rig alone
+  raises `disengage_s` to 60 (#458). cf6c's gate stays ignored, its tier by hand at `4390f04c`, until #458's
+  follow-up makes its fight survivable.
+- **Known gap: the ramp exit's boarding window** (not built; nothing exercises it yet). A raider's withdrawal
+  is let go by the arena at its carrier's ramp and checked in beside it, but `raiders::board` runs only once
+  the record names the `exit`. A carrier wrecked inside that window would leave the hull on the site's ground,
+  in no field and aboard nothing. The owner's ruling for when it is built (2026-11-04, "back in the field"):
+  a withdrawal counts only once the raider is aboard. If the carrier is wrecked before the boarding lands, the
+  raider stays on the site as a stranded unit in the field, and under the earlier ruling it fights to the
+  death; the pad is never an exit. The lead's choice of shape: board in `exit::on_withdrawn` for
+  `Then::Raider`, in the batch that lets the hull go. A raider hull aboard a carrier wrecked later is lost with
+  it, a Wreck on the site record that stays in the wreck's bay (doc 41's salvage and the laden-mass tow,
+  Q-41-29, carry it). Scope: raider boarding only. Whether the same window exists for a player's hull at the
+  ramp is to be checked when this is built.
 
 ## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
 
