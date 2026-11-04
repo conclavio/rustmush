@@ -107,7 +107,7 @@ pub const MAX_UNLAWFUL: usize = 64;
 pub const AWARD_ISSUER: &str = crate::port::hull::REGISTRY_ISSUER;
 
 /// `+salvage` usage.
-pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/inspect <hull> or +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go].";
+pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/report <site>[=<who>|#<hull>] registry, +salvage/inspect <hull> or +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go].";
 /// Nothing to list.
 pub const NO_CLAIMS: &str = "You stand in no salvage claim.";
 /// No custody record names the hull: `{hull}`.
@@ -411,7 +411,7 @@ pub fn answerers_of(w: &World, hull: ObjId, title: &PrincipalId) -> Vec<ObjId> {
 }
 
 /// **The title of `hull` now**, and everyone who answers for it ([`answerers_of`]).
-fn title_of(w: &World, hull: ObjId) -> (Option<PrincipalId>, Vec<ObjId>) {
+pub(crate) fn title_of(w: &World, hull: ObjId) -> (Option<PrincipalId>, Vec<ObjId>) {
     let title = w
         .module_state::<EconomyStore>()
         .and_then(|store| store.snapshot().asset(hull).map(|a| a.title_owner.clone()));
@@ -1420,7 +1420,7 @@ fn custody_rows(ctx: &Ctx<'_>) -> Vec<(CanonicalId, SalvageCustody)> {
                 .next()
                 .and_then(|(_, map)| map.map(|m| m.entry.clone()))
         });
-        for row in book.space_custody.values() {
+        for row in book.space_custody.rows() {
             if rows.iter().any(|(_, r)| r.hull == row.hull) {
                 continue;
             }
@@ -1511,9 +1511,20 @@ fn split_go(rest: &str) -> (String, bool) {
     }
 }
 
-/// Apply `order` directly when `order.hull()` is a space derelict held in
-/// [`crate::space::tick::SpaceBubbleBook::space_custody`] (`SF.R19`, `Q-36-46`).
+/// Apply `order` when `order.hull()` is a space derelict held in
+/// [`crate::space::tick::SpaceBubbleBook::space_custody`] (`SF.R19`; doc 41 cut RS.8,
+/// Q-36-46), then write the domain's `tacsim:space:custody` document.
 fn submit_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) -> Option<bool> {
+    let applied = apply_space_claim_order(ctx, actor, order)?;
+    if applied {
+        crate::space::tick::persist_space_state(ctx);
+    }
+    Some(applied)
+}
+
+/// The space custody's half of [`submit_space_claim_order`]: the row's change, as the tow
+/// action's prepare makes it on a site's record.
+fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) -> Option<bool> {
     let hull = order.hull();
     let is_space = ctx
         .w
@@ -1558,38 +1569,29 @@ fn submit_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder)
             if now_real >= window_end {
                 return Some(false);
             }
-            let updated_file = {
-                let book = ctx
-                    .w
-                    .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
-                let custody = book.space_custody.get_mut(&hull)?;
-                if let ContestGround::UnlawfulRecovery { evidence } = ground
-                    && evidence_of(custody, actor).as_ref() != Some(evidence)
-                {
-                    return Some(false);
-                }
-                if matches!(ground, ContestGround::BarePriorTitle)
-                    && custody
-                        .file
-                        .as_ref()
-                        .is_none_or(|file| file.prior_owner != actor)
-                {
-                    return Some(false);
-                }
-                let mut file = custody.file.as_deref().cloned()?;
-                file.deadline_real_s = *window_end;
-                if file.contest(actor, ground.clone(), *now_real).is_err() {
-                    return Some(false);
-                }
-                custody.file = Some(Box::new(file.clone()));
-                file
-            };
-            if let Some(sb) = ctx
+            let book = ctx
                 .w
-                .module_state_mut::<mush_tactics::field_ops::SalvageClaimBook>()
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+            let custody = book.space_custody.get_mut(&hull)?;
+            if let ContestGround::UnlawfulRecovery { evidence } = ground
+                && evidence_of(custody, actor).as_ref() != Some(evidence)
             {
-                let _ = sb.submit_contest(updated_file.id, actor, ground.clone(), *now_real);
+                return Some(false);
             }
+            if matches!(ground, ContestGround::BarePriorTitle)
+                && custody
+                    .file
+                    .as_ref()
+                    .is_none_or(|file| file.prior_owner != actor)
+            {
+                return Some(false);
+            }
+            let mut file = custody.file.as_deref().cloned()?;
+            file.deadline_real_s = *window_end;
+            if file.contest(actor, ground.clone(), *now_real).is_err() {
+                return Some(false);
+            }
+            custody.file = Some(Box::new(file));
             Some(true)
         }
         ClaimOrder::Report { to, .. } => {
@@ -1643,46 +1645,35 @@ fn submit_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder)
             now_real,
             ..
         } => {
-            let (claim_id, status) = {
-                let book = ctx
-                    .w
-                    .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
-                let custody = book.space_custody.get_mut(&hull)?;
-                if *settlement == Settlement::Withdrawn {
-                    custody.claim = ClaimSeam::Owed;
-                    custody.file = None;
-                    return Some(true);
-                }
-                if *settlement == Settlement::HandedBack {
-                    book.space_custody.remove(&hull);
-                    return Some(true);
-                }
-                let mut file = custody.file.as_deref().cloned()?;
-                file.deadline_real_s = *window_end;
-                let Ok(status) = file.adjudicate(*now_real) else {
-                    return Some(false);
-                };
-                let awarded = matches!(file.state, SalvageClaimState::AwardedToClaimant { .. });
-                if awarded != (*settlement == Settlement::Award) {
-                    return Some(false);
-                }
-                if !matches!(status, CustodyTitleStatus::ResolvedTitle { .. }) {
-                    return Some(false);
-                }
-                let id = file.id;
-                book.space_custody.remove(&hull);
-                if let Some(derelict) = book.derelicts.get_mut(&hull) {
-                    derelict.salvage_title_status = Some(status.clone());
-                }
-                (id, status)
-            };
-            if let Some(sb) = ctx
+            let book = ctx
                 .w
-                .module_state_mut::<mush_tactics::field_ops::SalvageClaimBook>()
-            {
-                let _ = sb.adjudicate_claim(claim_id, *now_real);
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
+            let custody = book.space_custody.get_mut(&hull)?;
+            if *settlement == Settlement::Withdrawn {
+                custody.claim = ClaimSeam::Owed;
+                custody.file = None;
+                return Some(true);
             }
-            let _ = status;
+            if *settlement == Settlement::HandedBack {
+                book.space_custody.remove(&hull);
+                return Some(true);
+            }
+            let mut file = custody.file.as_deref().cloned()?;
+            file.deadline_real_s = *window_end;
+            let Ok(status) = file.adjudicate(*now_real) else {
+                return Some(false);
+            };
+            let awarded = matches!(file.state, SalvageClaimState::AwardedToClaimant { .. });
+            if awarded != (*settlement == Settlement::Award) {
+                return Some(false);
+            }
+            if !matches!(status, CustodyTitleStatus::ResolvedTitle { .. }) {
+                return Some(false);
+            }
+            book.space_custody.remove(&hull);
+            if let Some(derelict) = book.derelicts.get_mut(&hull) {
+                derelict.salvage_title_status = Some(status);
+            }
             Some(true)
         }
         ClaimOrder::AtRisk { entry, .. } => {
@@ -1772,6 +1763,10 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return authorize_cmd(ctx, word.trim(), who, until, go);
     }
     if ctx.switches.has("report") {
+        // Doc 41 cut RS.7 (Q-41-24): the registry's form reads the site's log, not a custody row.
+        if let Some(head) = raw.trim().strip_suffix(" registry") {
+            return crate::surface::security::report_cmd(ctx, head);
+        }
         let (rest, go) = split_go(&raw);
         let (word, who) = rest
             .split_once('=')
@@ -1780,6 +1775,16 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("inspect") {
         return inspect_cmd(ctx, raw.trim());
+    }
+    // Doc 41 cut RS.5 (Q-41-9): the retrieval's three verbs.
+    if ctx.switches.has("retrieve") {
+        return crate::surface::retrieval::retrieve_cmd(ctx, &raw);
+    }
+    if ctx.switches.has("jobs") {
+        return crate::surface::retrieval::jobs_cmd(ctx);
+    }
+    if ctx.switches.has("accept") {
+        return crate::surface::retrieval::accept_cmd(ctx, &raw);
     }
     if !raw.trim().is_empty() {
         return Err(CmdError::msg(SALVAGE_USAGE));
@@ -1843,6 +1848,16 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// `+salvage/claim <hull> [go]`.
+/// **File the custodian's claim on the hull `word` names** (doc 41 cut RS.8, Q-36-46):
+/// `+salvage/claim <hull> go`, for `+helm/tow`, so a space tow files on the ground's one path.
+///
+/// # Errors
+///
+/// The line that refuses.
+pub(crate) fn tow_files_salvage(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
+    claim_cmd(ctx, word, true)
+}
+
 fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
     let (site, row) = named(ctx, word)?;
     let label = name(ctx.w, row.hull);
@@ -2489,6 +2504,40 @@ fn why_vacated(file: &SalvageClaim) -> &'static str {
     }
 }
 
+/// Whether a claim was vacated on a proven unlawful recovery (a `recovery` contest).
+fn vacated_on_recovery(file: &SalvageClaim) -> bool {
+    use mush_tactics::field_ops::ContestSuccessReason;
+    matches!(
+        file.contests
+            .iter()
+            .find_map(|contest| contest.valid_to_vacate.clone()),
+        Some(ContestSuccessReason::ProvenUnlawfulRecovery)
+    )
+}
+
+/// **The recovery a `recovery` vacate proves** (doc 41 cut RS.7): the site's `Recovery` row on
+/// the hull by the custodian, the latest; when the ring has dropped it, the row as the custody
+/// knew it.
+fn proven_recovery(ctx: &Ctx<'_>, site: &CanonicalId, row: &SalvageCustody) -> UnlawfulAct {
+    crate::surface::tow::record_or_new(ctx, site)
+        .unlawful
+        .iter()
+        .rev()
+        .find(|act| {
+            act.kind == UnlawfulKind::Recovery
+                && act.actor == row.holder
+                && act.subject == row.hull.0
+        })
+        .cloned()
+        .unwrap_or_else(|| UnlawfulAct {
+            kind: UnlawfulKind::Recovery,
+            actor: row.holder,
+            subject: row.hull.0,
+            landholder: row.pin.as_ref().and_then(TenurePin::landholder),
+            at_ic: row.recovered_ic,
+        })
+}
+
 /// **Whether an organization's hull is under a live lease or charter** (doc 41 Q-41-22, doc 36
 /// Q-36-29): a rig lease, or a programme charter; such a hull is never awarded by salvage.
 fn leased_or_chartered(w: &World, hull: ObjId) -> bool {
@@ -2655,6 +2704,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             && let Some(owner) = title_of(ctx.w, row.hull).0
         {
             crate::port::bay_work::hold_for(ctx, row.hull, owner);
+        }
+        // Doc 41 cut RS.7 (Q-41-24): a `recovery` contest's vacate is the registry's finding, so
+        // the recovery it vacated is proven and goes port-side.
+        if settlement == Settlement::Vacate && vacated_on_recovery(file) {
+            let act = proven_recovery(ctx, &site, &row);
+            let _ = crate::surface::security::prove(
+                ctx,
+                &site,
+                &act,
+                crate::surface::security::Proof::Vacated,
+            );
         }
         // Doc 41 §4.6: every lot the hull's record lists under this claim is flagged hot.
         if settlement == Settlement::Vacate

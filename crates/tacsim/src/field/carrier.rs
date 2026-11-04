@@ -501,6 +501,7 @@ pub(crate) fn joining(
             end: crate::arena::party::EndCondition::Host,
             every_class: true,
             weapons_hold: true,
+            tows: Vec::new(),
         },
         live,
     })
@@ -557,8 +558,10 @@ fn join(
     let message = crate::arena_task::ArenaMsg::Join {
         unit: Box::new(joining.unit),
         pilot: joining.pilot,
-        host: joining.host,
+        host: Box::new(joining.host),
         spread,
+        // Doc 40 cut FR.5: S.4b-3's host half hands the retained source.
+        source: None,
     };
     if tasks.offer(task, message).is_err() {
         let _ = mush_tactics::custody::check_in(ctx, hull, None);

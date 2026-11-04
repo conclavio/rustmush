@@ -609,7 +609,7 @@ pub const STAND_TRIES: usize = 2;
 /// its ceiling.
 fn nearer_in_line<'v>(
     view: &'v MindView,
-    def: &ArenaDefinition,
+    def: &Ground<'_>,
     weights: &Weights,
     (health, prefer): (u32, Option<ContactId>),
     blocked: &ViewContact,
@@ -622,6 +622,34 @@ fn nearer_in_line<'v>(
     contact(view, id).filter(|row| line_between(def, view.cell, row.cell))
 }
 
+/// **The ground a mind's line is traced over** (doc 40 cut FR.5, §4.1 item 3; Q-40-8): the map
+/// and the cells the field's wrecks stand in ([`ThinkJob::wrecks`]) — the ground the fire trace
+/// walks (`crate::arena::wreck_cover`). Dereferences to the map, so every other read of the
+/// think reads the definition as before.
+#[derive(Clone, Copy, Debug)]
+pub struct Ground<'a> {
+    /// The arena's definition.
+    pub def: &'a ArenaDefinition,
+    /// The wrecks' cells, in unit order; a line's own two ends are left out at the trace.
+    pub wrecks: &'a [(u16, u16)],
+}
+
+impl<'a> Ground<'a> {
+    /// The map alone: a field with no wreck.
+    #[must_use]
+    pub const fn bare(def: &'a ArenaDefinition) -> Ground<'a> {
+        Ground { def, wrecks: &[] }
+    }
+}
+
+impl std::ops::Deref for Ground<'_> {
+    type Target = ArenaDefinition;
+
+    fn deref(&self) -> &ArenaDefinition {
+        self.def
+    }
+}
+
 /// **Whether a shot from `own` would have a line to the plot's `cell`** (doc 17
 /// §7's kernel `line_to(contact)`): `mush_atlas::trace_cells` over the ground
 /// from the hull's eye to the cell's eye, both [`DEFAULT_SENSOR_HEIGHT_CM`]
@@ -630,20 +658,36 @@ fn nearer_in_line<'v>(
 /// walk to the target's **live** cell at the hull's own eye height — the
 /// divergence `line`, with the eye height folded into it (every stock hull's
 /// eye is the default).
+///
+/// **Doc 40 cut FR.5** (§4.1 item 3, Q-40-8): over the terrain with every wreck's cell but the
+/// line's two ends read as a wall (`wreck_cover::WithWrecks`), as the fire
+/// trace walks it, so a mind no longer fires through a wreck; with no wreck, over the terrain.
 #[must_use]
-pub fn line_to(def: &ArenaDefinition, own: (u16, u16), cell: (u16, u16)) -> bool {
+pub fn line_to(ground: &Ground<'_>, own: (u16, u16), cell: (u16, u16)) -> bool {
     let eye = i32::try_from(DEFAULT_SENSOR_HEIGHT_CM).unwrap_or(i32::MAX);
-    let trace = mush_atlas::trace::trace_cells(
-        &def.terrain,
-        mush_atlas::trace::Eye {
-            cell: own,
-            height_cm: eye,
-        },
-        mush_atlas::trace::Eye {
-            cell,
-            height_cm: eye,
-        },
-    );
+    let from = mush_atlas::trace::Eye {
+        cell: own,
+        height_cm: eye,
+    };
+    let to = mush_atlas::trace::Eye {
+        cell,
+        height_cm: eye,
+    };
+    let wrecks: Vec<(u16, u16)> = ground
+        .wrecks
+        .iter()
+        .copied()
+        .filter(|wreck| *wreck != own && *wreck != cell)
+        .collect();
+    let trace = if wrecks.is_empty() {
+        mush_atlas::trace::trace_cells(&ground.def.terrain, from, to)
+    } else {
+        let grid = crate::arena::wreck_cover::WithWrecks {
+            terrain: &ground.def.terrain,
+            wrecks: &wrecks,
+        };
+        mush_atlas::trace::trace_cells(&grid, from, to)
+    };
     trace.sight.is_clear_or_partial() && trace.target_cover != Cover::Full
 }
 
@@ -653,12 +697,12 @@ pub fn line_to(def: &ArenaDefinition, own: (u16, u16), cell: (u16, u16)) -> bool
 /// `pub(crate)` since 17b cut M2.3: the unit-mind API's `line_to` kernel
 /// (`crate::minds`) wraps this one body — never a second.
 pub(crate) fn line_between(
-    def: &ArenaDefinition,
+    ground: &Ground<'_>,
     own: Option<(u16, u16)>,
     cell: Option<(u16, u16)>,
 ) -> bool {
     match (own, cell) {
-        (Some(own), Some(cell)) => line_to(def, own, cell),
+        (Some(own), Some(cell)) => line_to(ground, own, cell),
         _ => true,
     }
 }
@@ -831,7 +875,10 @@ impl MindRunner for NativeStockMind {
         let intents = self.decide(
             job.view,
             &mut memory,
-            job.map,
+            &Ground {
+                def: job.map,
+                wrecks: job.wrecks,
+            },
             job.view.objective.as_ref(),
             job.t_ms,
             job.lands_ms,
@@ -918,7 +965,7 @@ impl NativeStockMind {
         &self,
         view: &MindView,
         mem: &mut StockMemory,
-        def: &ArenaDefinition,
+        def: &Ground<'_>,
         hold: Option<&HoldObjective>,
         t_ms: i64,
         lands_ms: i64,
@@ -938,7 +985,7 @@ impl NativeStockMind {
         &self,
         view: &MindView,
         mem: &mut StockMemory,
-        def: &ArenaDefinition,
+        def: &Ground<'_>,
         hold: Option<&HoldObjective>,
         t_ms: i64,
         lands_ms: i64,
@@ -1704,7 +1751,7 @@ impl NativeStockMind {
     fn withdraw_stand<'v>(
         &self,
         view: &'v MindView,
-        def: &ArenaDefinition,
+        def: &Ground<'_>,
         health: u32,
         arrived: bool,
         ranges: &Ranges,
@@ -1741,7 +1788,7 @@ impl NativeStockMind {
     fn stand<'v>(
         &self,
         view: &'v MindView,
-        def: &ArenaDefinition,
+        def: &Ground<'_>,
         health: u32,
         ranges: &Ranges,
         sector: Option<(u32, u32)>,
@@ -2118,7 +2165,10 @@ mod tests {
         NativeStockMind::with(&arena.arena_cfg.reflex).decide(
             view,
             memory,
-            &arena.definition,
+            &Ground {
+                def: &arena.definition,
+                wrecks: &arena.mind_wrecks(),
+            },
             None,
             t_ms,
             t_ms.saturating_add(arena.substep_len_ms()),
@@ -2343,7 +2393,7 @@ mod tests {
             panic!("on the window");
         };
         assert_eq!(Some(cell), b.cell);
-        assert!(line_to(def, own, cell), "open ground");
+        assert!(line_to(&Ground::bare(def), own, cell), "open ground");
         assert_eq!(
             stand_off_of(def, &before, a, 30_000),
             stand_off_of(def, &after, b, 30_000)
@@ -2742,7 +2792,10 @@ mod tests {
         NativeStockMind::with(&arena.arena_cfg.reflex).decide(
             view,
             memory,
-            &arena.definition,
+            &Ground {
+                def: &arena.definition,
+                wrecks: &arena.mind_wrecks(),
+            },
             Some(hold),
             t_ms,
             t_ms.saturating_add(arena.substep_len_ms()),

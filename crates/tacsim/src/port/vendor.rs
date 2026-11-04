@@ -43,13 +43,35 @@ use smol_str::SmolStr;
 use crate::economy::CREDIT;
 use crate::port::apply::{alloc_grant_id, alloc_vault_id, credit_scale, minor_of, room_by_key};
 use crate::port::coop::port_name;
-use crate::port::def::{PortDef, room_key};
+use crate::port::def::{PortDef, VendorDef, room_key};
 use crate::port::families::StockIssueId;
 use crate::port::map::{BidRow, ClerkRow, PortMap, StockRow, VendorRow};
 use crate::store::put_port_map;
 
 /// The capability the clerk is granted on each storefront (lead ruling L25).
 pub const CLERK_CAPABILITY: &str = "vault.withdraw";
+
+/// **A vendor's storefront object**: its authored item, or (doc 39 cut IN.5; §4.2's "the pool is
+/// the works'") the port's works room when the vendor names it, so the vendor's stock is the
+/// works' stores — the vault `crate::port::works` finds on the facility.
+fn storefront_of(
+    w: &World,
+    id: &CanonicalId,
+    def: &PortDef,
+    vendor: &VendorDef,
+) -> Result<ObjId, String> {
+    let org = &vendor.org;
+    if def
+        .works
+        .as_ref()
+        .is_some_and(|works| works.room == vendor.storefront)
+    {
+        return crate::port::plant::works_room(w, id, def)?
+            .ok_or_else(|| format!("{id}: vendor {org}: storefront: the works room is not here"));
+    }
+    authored_object(w, &def.area, &vendor.storefront, "item")
+        .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))
+}
 
 /// **An authored item or npc of a station pack, as a live object** (lead ruling L3):
 /// the reference split by [`room_key`]; the entry read from the station pack on the
@@ -362,10 +384,10 @@ pub(crate) fn preflight(
                 }
             }
             None => {
-                let storefront = authored_object(w, &def.area, &vendor.storefront, "item")
-                    .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
+                let storefront = storefront_of(w, id, def, vendor)?;
+                // Doc 39 cut IN.5: or the spine itself, when it is the works room.
                 let room = w.get(storefront).and_then(|o| o.location);
-                if spine.is_none() || room != spine {
+                if spine.is_none() || (room != spine && Some(storefront) != spine) {
                     return Err(format!(
                         "{id}: vendor {org}: the storefront {} is not in the port's staff spine",
                         vendor.storefront
@@ -545,8 +567,7 @@ pub(crate) fn put(
             .map_or_else(|| org.to_string(), |o| o.name.clone());
         // (e).3–4 Storefront, signatory and the storefront vault (unrecorded only).
         if !map.vendors.contains_key(org) {
-            let storefront = authored_object(ctx.w, &def.area, &vendor.storefront, "item")
-                .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
+            let storefront = storefront_of(ctx.w, id, def, vendor)?;
             let signatory = authored_object(ctx.w, &def.area, &vendor.signatory, "npc")
                 .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
             // Doc 18 cut IC14 row 30: the preflight's rule, re-run where the vault is made.
@@ -825,6 +846,64 @@ pub(crate) fn put(
             }
         }
     }
+    release_grant(ctx, id, def, map, clerk)
+}
+
+/// **The capability the port authority's release fee is levied under** (doc 42 cut CR.2,
+/// Q-42-7, Draft 0.3 42-7): held by the port's clerk on the authority's root scope.
+pub const RELEASE_FEE_CAPABILITY: &str = "port.release_fee";
+
+/// **(e).10 The release fee's grant** (doc 42 cut CR.2): the port's clerk holds
+/// [`RELEASE_FEE_CAPABILITY`] on the authority's root scope, so the handover levies the fee as
+/// the authority's operator (the Registry fine's shape, `create_sanction_obligation`), never under
+/// anyone's debit authority. Once, recorded on the map; nothing at a port without an authority.
+fn release_grant(
+    ctx: &mut Ctx<'_>,
+    id: &CanonicalId,
+    def: &PortDef,
+    map: &mut PortMap,
+    clerk: ObjId,
+) -> Result<(), String> {
+    let Some(authority) = def.authority.as_ref() else {
+        return Ok(());
+    };
+    if map.release_grant.is_some() {
+        return Ok(());
+    }
+    let (org_id, root_scope) = org_row(map, id, authority)?;
+    let grant_id = alloc_grant_id(ctx).map_err(|e| format!("{id}: authority {authority}: {e}"))?;
+    let capability = CapabilityId::new(RELEASE_FEE_CAPABILITY)
+        .ok_or_else(|| format!("{id}: {RELEASE_FEE_CAPABILITY} is not a capability id"))?;
+    let plan = OrgMutationPlan::of(vec![OrgMutationOp::PutGrant {
+        grant: CapabilityGrant {
+            id: grant_id,
+            org: org_id,
+            grantee: clerk,
+            capability,
+            scope: ScopeSelector::Exact(root_scope),
+            limit: None,
+            delegable: false,
+            valid_from: None,
+            valid_until: None,
+            revision: 1,
+        },
+    }]);
+    mush_org::submit(
+        ctx,
+        &plan,
+        OrgAction {
+            action: SmolStr::new_static("grant.create"),
+            org: Some(org_id),
+            detail: serde_json::json!({
+                "port": format!("{}/{id}", map.pack),
+                "org": authority.to_string(),
+                "clerk": clerk.0,
+            }),
+        },
+    )
+    .map_err(|e| format!("{id}: authority {authority}: the release fee's grant: {e}"))?;
+    map.release_grant = Some(grant_id.0);
+    put_port_map(ctx, map);
     Ok(())
 }
 

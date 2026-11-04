@@ -451,9 +451,15 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
 /// **The queue drained, the house's share landed** (doc 20 cut SM.12b): the Occator Yard's
 /// dispatcher works Occator Rim in every keyed world, its drones' plan steps and unloads queued by
 /// the ticks; they are landed here, quietly, and the rest — the players' and the clerks' — handed
-/// back, so what a typed line or a fire is counted to have queued is the players' world's.
+/// back, so what a typed line or a fire is counted to have queued is the players' world's. Doc 39
+/// cut IN.5: Stickney's clerk too, which refines Kasei's concentrate and stocks the works.
 async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
-    let house = tacsim::port::yard::dispatchers(rig.tw.world());
+    let mut house = tacsim::port::yard::dispatchers(rig.tw.world());
+    house.extend(
+        port_map(&rig.tw, "stickney_port")
+            .clerk
+            .map(|clerk| ObjId(clerk.thing)),
+    );
     let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
         .into_iter()
         .partition(|submit| house.contains(&submit.actor));
@@ -756,6 +762,52 @@ fn newest_quote(tw: &TestWorld, buyer: ObjId) -> mush_market::QuoteId {
 
 fn listed_qty(tw: &TestWorld, id: ListingId) -> Option<u64> {
     market(tw).listing(id).map(|l| l.quantity)
+}
+
+/// The alloys in the Stickney works' stores: what its house purchases moved (doc 39 cut IN.5).
+fn works_alloys(tw: &mut TestWorld) -> u64 {
+    let works = station_room(tw, "stickney_port", "room.p15_maintenance");
+    let stores = economy(tw)
+        .snapshot()
+        .vault_by_backing(&mush_economy::CustodyRef::Container(works))
+        .map(|v| v.id);
+    stores.map_or(0, |stores| pool(tw, stores, "structural_alloys"))
+}
+
+/// The tonnes of concentrate Kasei's refine has milled (doc 39 cut IN.5), from its ledger.
+fn kasei_refined(tw: &TestWorld) -> u64 {
+    kasei_refine(tw).map_or(0, |ledger| ledger.ore_t)
+}
+
+/// Kasei's refine ledger (doc 39 cut IN.5).
+fn kasei_refine(tw: &TestWorld) -> Option<tacsim::port::mill::MillLedger> {
+    let handle = tw
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .expect("the port handles")
+        .families
+        .mills
+        .clone();
+    let id = tacsim::port::mill::MillId::derive(
+        &cid(LANE_PACK),
+        &cid("stickney_port"),
+        &cid("kasei"),
+        &cid("metals"),
+    )
+    .expect("a mill id");
+    tw.engine()
+        .action_state()
+        .get(&handle, &id)
+        .ok()
+        .flatten()
+        .cloned()
+}
+
+/// Kasei's standing concentrate bid now, through the port map (doc 39 cut IN.5: the bid
+/// refreshes, so its listing id moves).
+fn kasei_metals_now(tw: &TestWorld) -> Option<u64> {
+    let listing = port_map(tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].listing;
+    listed_qty(tw, ListingId(listing))
 }
 
 fn price_of(tw: &TestWorld, id: ListingId) -> i64 {
@@ -1702,9 +1754,11 @@ async fn ic12_part_one_a_leg_by_hand() {
         pool(&mut rig.tw, coop_store, "provisions"),
         food_seeded - food
     );
-    assert_eq!(
-        listed_qty(&rig.tw, metals_bid),
-        Some(metals_intake - metals)
+    // Doc 39 cut IN.5: Kasei's concentrate bid refreshes (re-posted within its funds), so it is
+    // read through the port map and stands at most at what the sale left.
+    assert!(
+        kasei_metals_now(&rig.tw).is_some_and(|q| q <= metals_intake - metals),
+        "the sale took {metals} t off Kasei's bid"
     );
     assert_eq!(listed_qty(&rig.tw, ice_bid), Some(ice_intake - ice));
     let kasei_store = VaultId(kasei.vault);
@@ -1890,6 +1944,8 @@ async fn ic12_part_two_the_queue_runs_the_return() {
     stock(&mut rig).await;
     let ceres_asks = asks_of(&rig.tw, "ceres_port");
     let stickney_asks = asks_of(&rig.tw, "stickney_port");
+    // Doc 39 cut IN.5: what the Stickney works' house purchases had moved when the asks were read.
+    let works_at_stock = works_alloys(&mut rig.tw);
     let receipts_at_stock = receipts(&mut rig.tw).len();
 
     let wren = pilot(&mut rig, "Wren", "wrenacct").await;
@@ -2098,13 +2154,16 @@ async fn ic12_part_two_the_queue_runs_the_return() {
             .map(|c| c.state),
         Some(ContractState::Settled { .. })
     ));
-    assert_eq!(
-        listed_qty(&rig.tw, metals_bid),
-        Some(bid_before),
+    // Doc 39 cut IN.5: Kasei's bid refreshes (re-posted within its funds), so the one sale above
+    // is the decrement, and the standing bid is at most what it was.
+    assert!(
+        kasei_metals_now(&rig.tw).is_some_and(|q| q <= bid_before),
         "one bid decrement"
     );
+    // Doc 39 cut IN.5: the refine mills what Kasei buys, so the concentrate is its pool and
+    // what its refine ledger took.
     assert_eq!(
-        pool(&mut rig.tw, kasei_store, "metals"),
+        pool(&mut rig.tw, kasei_store, "metals") + kasei_refined(&rig.tw),
         outfit.metals,
         "Kasei +20 once"
     );
@@ -2244,9 +2303,13 @@ async fn ic12_part_two_the_queue_runs_the_return() {
     // The statement's margin and share, computed from the posted prices: each sale's
     // margin over the Ceres reference ask, its share floored at the frozen permille.
     let (mut margins, mut billed) = (0_i64, 0_i64);
+    // Doc 39 cut IN.5: Kasei's concentrate bid refreshes, so its standing listing is read anew.
+    let metals_now = ListingId(
+        port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].listing,
+    );
     for (bid, ask, qty) in [
         (
-            metals_bid,
+            metals_now,
             listing_of(&rig.tw, "ceres_port", "freeport_exchange", "metals"),
             outfit.metals,
         ),
@@ -2285,17 +2348,40 @@ async fn ic12_part_two_the_queue_runs_the_return() {
         .chain(stickney_asks.iter())
         .map(|(id, _, _)| (id.0, listed_qty(&rig.tw, *id).unwrap_or(0)))
         .collect();
-    let bought = |asks: &[(ListingId, String, u64)], good: &str| -> u64 {
+    let bought = |asks: &[(ListingId, String, u64)], good: &str| -> i64 {
         asks.iter()
             .filter(|(_, g, _)| g == good)
-            .map(|(id, _, seeded)| seeded - remaining[&id.0])
+            .map(|(id, _, seeded)| {
+                i64::try_from(*seeded).expect("fits")
+                    - i64::try_from(remaining[&id.0]).expect("fits")
+            })
             .sum()
+    };
+    // Doc 39 cut IN.5: Kasei's alloy ask also rose by the refine's tonnes it restocked (its
+    // `mill_listed` counter) and fell by the Stickney works' house purchases since the asks were
+    // read; neither is a sale.
+    let refined_alloys = port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")]
+        .mill_listed
+        .get(&cid("metals"))
+        .copied()
+        .unwrap_or(0);
+    let works_bought = works_alloys(&mut rig.tw) - works_at_stock;
+    let bought = |asks: &[(ListingId, String, u64)], good: &str| -> u64 {
+        let mut sold = bought(asks, good);
+        if good == "structural_alloys" {
+            sold += i64::try_from(refined_alloys).expect("fits");
+            sold -= i64::try_from(works_bought).expect("fits");
+        }
+        u64::try_from(sold).expect("a sale is never negative")
     };
     assert_eq!(bought(&ceres_asks, "metals"), outfit.metals);
     assert_eq!(bought(&ceres_asks, "volatiles"), outfit.ice);
     assert_eq!(bought(&ceres_asks, "propellant"), outfit.fuel);
     assert_eq!(bought(&ceres_asks, "provisions"), outfit.food);
-    assert_eq!(pool(&mut rig.tw, kasei_store, "metals"), outfit.metals);
+    assert_eq!(
+        pool(&mut rig.tw, kasei_store, "metals") + kasei_refined(&rig.tw),
+        outfit.metals
+    );
     assert_eq!(pool(&mut rig.tw, kasei_store, "volatiles"), outfit.ice);
     assert_eq!(pool(&mut rig.tw, hold, "metals"), 0);
     assert_eq!(pool(&mut rig.tw, hold, "volatiles"), 0);

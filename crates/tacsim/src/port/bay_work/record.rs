@@ -79,6 +79,9 @@ pub enum Right {
     Lessee,
     /// A salvor holding custody under a pending claim: repair at their own risk.
     Salvor,
+    /// **Doc 41 cut RS.5 (Q-41-8)**: the acceptor of an active retrieval on the hull — berth and
+    /// stow only (a Salvor without the repair), until the delivery clears it.
+    Retrieval,
 }
 
 /// **One repair order** (Q-36-32, Q-36-40).

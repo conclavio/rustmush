@@ -1013,8 +1013,8 @@ fn sm2_the_lane_carries_six_sites() {
     // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
     // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 22,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6"
+        LANE_VERSION, 27,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 42 cut CR.2, v24 since doc 39 cut IN.5, v26 since doc 39 cut IN.7, v27 since doc 39 cut IN.9"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -1100,8 +1100,9 @@ fn sm2_the_lane_carries_six_sites() {
             "{venue}"
         );
     }
-    // Doc 20 cut SM.10 appends the Pallas Syndicate after the Registry.
-    let [.., registry, last] = ceres.orgs.as_slice() else {
+    // Doc 20 cut SM.10 appends the Pallas Syndicate after the Registry, and doc 39 cut IN.5
+    // Freeport Works after it.
+    let [.., registry, last, _] = ceres.orgs.as_slice() else {
         panic!("orgs");
     };
     assert_eq!(
@@ -2781,10 +2782,12 @@ fn sm2_an_unreadable_site_map_closes_the_pad_and_never_the_desk() {
     );
     for _ in 0..3 {
         let (_, queued) = fire(&mut rig);
+        // Doc 39 cut IN.5: Stickney's clerk has acts of its own (the works' house purchase);
+        // what may not stage is a burn.
         assert!(
             queued
                 .iter()
-                .all(|s| s.action.key().owner.as_str() != tacsim::NS),
+                .all(|s| s.action.key().id.as_str() != tacsim::port::burn::BURN_ACTION),
             "nothing is burned"
         );
         land_all(&mut rig, &queued);
@@ -2950,7 +2953,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 14 update, 0 retire, 22 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 28 create, 16 update, 0 retire, 20 unchanged"
         )),
         "{plan}"
     );
@@ -2961,7 +2964,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 14 updated, 0 retired, 22 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 16 updated, 0 retired, 20 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3005,7 +3008,7 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 14 updated, 0 retired, 22 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 28 created, 16 updated, 0 retired, 20 unchanged."
         )),
         "{plan}\n{apply}"
     );

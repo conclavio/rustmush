@@ -46,12 +46,21 @@
 //! unpromoted site, before the finish is submitted: the placement is the load's physical
 //! completion, and the finish then records it whatever has happened since.
 //!
-//! **A tow in a promoted field** (Q-36-20) is admitted coupled (`crate::field::admit`): the tug
-//! enters the kernel at the tow rate on wall time, and the casualty rides as its load, held off
-//! the kernel's ground, so it is neither seen nor struck while carried. When the field settles,
-//! the casualty stands at the tug's cell, still in tow (`crate::field::close`); a tug the field
-//! left a casualty or a wreck ends the tow there ([`SiteRecord::demote`]). Releasing inside a
-//! promoted field is not built: every surface act on a promoted site waits (Q-CF-30).
+//! **A tow in a promoted field** (Q-36-20; doc 40 cut FR.5, Q-40-7) is admitted coupled
+//! (`crate::field::admit`): the tug enters the kernel at the tow rate on wall time, and the
+//! casualty is a kernel unit of its tug's party that trails it cell for cell, seen and struck by
+//! its own geometry. While the field runs the surface never stacks it on its tug (`follow`);
+//! when the field settles, each stands at its own check-in pose, still in tow
+//! (`crate::field::close`, `set_down`); a tug the field left a casualty or a wreck ends the
+//! tow there ([`SiteRecord::demote`]). Two tow acts reach into a running field (Q-40-7,
+//! Q-40-25); every other surface act on a promoted site still waits (Q-CF-30):
+//!
+//! - **`+tv/<n> release [go]`** (`field_release_cmd`) sends the kernel `ArenaMsg::Release`;
+//!   its answer (`on_field_released`) retires the tow on the site's record by the same
+//!   `release` op the surface uses, submitted in the batch that takes the answer.
+//! - **`+tv/<n> load [go]`** (`field_load_cmd`) withdraws the tug and its casualty together at
+//!   the carrier's ramp (`crate::field::exit::request_coupled`); once both are checked in and
+//!   the record names both exits, the load runs as on open ground (`load_cmd`).
 //!
 //! **The load** closes the casualty's epoch `RecoveredToBase { carrier }`, naming the tug as its
 //! recoverer, and takes it off the site's unit index (Q-36-17). Its licence and compute seats
@@ -133,6 +142,12 @@ pub const LOAD_PREVIEW_HAND_BACK: &str = "Rig {n} can load the {name} into the {
 /// **Doc 36 cut GC.5**: the load done into a salvor's custody: `{name}`, `{carrier}`.
 pub const LOADED_CUSTODY: &str =
     "The {name} is aboard the {carrier}, in its bay, held in custody pending a salvage claim.";
+/// **Doc 41 cut RS.5 (Q-41-8)**: the load's preview under a retrieval the carrier's operator
+/// holds: `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const LOAD_PREVIEW_RETRIEVAL: &str = "Rig {n} can load the {name} into the {carrier}'s bay; it takes about {min} IC minutes. You hold the {name}'s retrieval: aboard, it is held for the job, not as salvage, until you hand it over at the job's port. +tv/{n} load go";
+/// **Doc 41 cut RS.5 (Q-41-8)**: the load done under a retrieval: `{name}`, `{carrier}`.
+pub const LOADED_RETRIEVAL: &str =
+    "The {name} is aboard the {carrier}, in its bay, held for its retrieval.";
 /// **Doc 36 cut GC.5**: a written-off lease rig handed back: `{name}`.
 pub const HANDED_BACK: &str =
     "The {name} is an Occator write-off: it is handed back to Occator, with no claim.";
@@ -471,6 +486,11 @@ pub struct LoadFacts {
     /// **Doc 36 cut GC.5**: a written-off casualty stands in Occator's shed (the finish's fact,
     /// as `in_bay` is for any other).
     pub handed_back: bool,
+    /// **Doc 41 cut RS.5 (Q-41-8)**: the custodian holds an active retrieval on the casualty —
+    /// retrieval custody: no salvage row, no `Recovery` log, no claim, and a written-off rig
+    /// stays in the bay for the hand-back at the destination.
+    #[serde(default)]
+    pub retrieval: bool,
     /// The casualty's unit record now (the library pins its revision across the tow).
     pub casualty_unit: TacticalUnit,
     /// The bay's slot id.
@@ -507,6 +527,10 @@ pub enum TowOrder {
     Release {
         /// The site.
         site: CanonicalId,
+        /// **Doc 40 cut FR.5 (Q-40-7)**: the kernel let go inside the running field already
+        /// (`on_field_released`), so the record's tow is retired on a promoted site too.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        field: bool,
     },
     /// `+tv/<n> load go`.
     Load {
@@ -636,6 +660,34 @@ pub(crate) struct TowWatch(BTreeMap<ObjId, (ObjId, TowAct)>);
 /// the list, and with it only the finish's `Capture` evidence rows: the captives stay held.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TowCaptives(BTreeMap<ObjId, (ObjId, Vec<ObjId>)>);
+
+/// **The releases ordered inside a running field** (RAM; doc 40 cut FR.5, Q-40-7): tug → who
+/// ordered it, the site, and the casualty once the kernel's answer took. An answered row is the
+/// record's `release` owed ([`on_field_released`]), submitted again by the tick while its actor
+/// is busy and dropped once the record no longer holds the tow.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FieldReleases(BTreeMap<ObjId, FieldRelease>);
+
+/// One row of [`FieldReleases`].
+#[derive(Clone, Debug)]
+struct FieldRelease {
+    /// Who ordered it (the record's `release` is submitted as them).
+    actor: ObjId,
+    /// The site.
+    site: CanonicalId,
+    /// The casualty the kernel let go, once it answered.
+    answered: Option<ObjId>,
+}
+
+/// **Whether `tug` and its casualty both left the open field at the ramp** (doc 40 cut FR.5,
+/// Q-40-25): the record names both exits, so the load runs as on open ground.
+fn pair_out(record: &SiteRecord, tug: ObjId) -> bool {
+    record.exited(tug)
+        && record
+            .tows
+            .towing(tug)
+            .is_some_and(|op| record.exited(op.casualty()))
+}
 
 /// The tow `tug` holds, as the RAM mirror last saw it.
 #[must_use]
@@ -1006,11 +1058,15 @@ fn load_facts(
     let (site, _, tug_pose) = on_ground(w, tug)?;
     let (cells, _, _, _, volume) = unit_facts(w, casualty)?;
     let load = bay_load(w, carrier, Some(casualty))?;
+    let custodian = custodian_of(ctx, &site, carrier);
     Some(LoadFacts {
         secs: recovery_config(w).load_s,
         friendly: friendly(ctx, &site, casualty, carrier),
         own_carrier: own_or_friends(ctx, &site, tug, carrier),
-        custodian: custodian_of(ctx, &site, carrier),
+        // Doc 41 cut RS.5 (Q-41-8): the third case beside the friend rule and a foreign load.
+        retrieval: custodian
+            .is_some_and(|who| crate::surface::retrieval::held_by(w, casualty, who).is_some()),
+        custodian,
         written_off: crate::port::tv::written_off(w, casualty),
         handed_back: crate::port::tv::in_shed(w, casualty),
         site,
@@ -1232,6 +1288,7 @@ pub(crate) fn register(
     reg.state(TowIndex::default());
     reg.state(TowWatch::default());
     reg.state(TowCaptives::default());
+    reg.state(FieldReleases::default());
     reg.state(crate::surface::tender::TendApplied::default());
     reg.state(crate::surface::claim::ClaimMail::default());
     let (Some(action), Some(outcome)) = (actions.get(TOW_ACTION), outcomes.get(TOW_OUTCOME)) else {
@@ -1387,7 +1444,7 @@ impl ActionProvider for TowProvider {
             TowOrder::Scrap { facts } => facts.site.clone(),
             TowOrder::Claim { order } => order.site().clone(),
             TowOrder::Attached { site, .. }
-            | TowOrder::Release { site }
+            | TowOrder::Release { site, .. }
             | TowOrder::Loaded { site, .. }
             | TowOrder::Tended { site, .. } => site.clone(),
         };
@@ -1484,11 +1541,13 @@ impl ActionProvider for TowProvider {
                     }
                 }
             }
-            TowOrder::Release { .. } => {
+            TowOrder::Release { field, .. } => {
                 // Doc 36a P1-10 (Q-CF-30): a release draining after a hostile mark promoted the
                 // site waits like every other surface act; otherwise the retired tow's casualty
-                // is neither fielded nor carried, and the demotion drops it.
-                if promoted {
+                // is neither fielded nor carried, and the demotion drops it. Doc 40 cut FR.5
+                // (Q-40-7): a release the kernel took inside the field retires the tow here, so
+                // the surface and the kernel agree.
+                if promoted && !field {
                     return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
                 }
                 // Doc 36 cut GC.6 (Q-36-26): a release starts the tenure again.
@@ -1528,7 +1587,9 @@ impl ActionProvider for TowProvider {
                 }
             }
             TowOrder::Load { facts } => {
-                if promoted {
+                // Doc 40 cut FR.5 (Q-40-25): a pair the field let go at the ramp loads as on
+                // open ground.
+                if promoted && !pair_out(&record, tv) {
                     return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
                 }
                 let op = record
@@ -1596,7 +1657,9 @@ impl ActionProvider for TowProvider {
                             now,
                             &mut closing,
                         )?;
-                        if facts.written_off {
+                        if facts.retrieval {
+                            "retrieval".to_owned()
+                        } else if facts.written_off {
                             "handed_back".to_owned()
                         } else if facts.friendly {
                             "loaded".to_owned()
@@ -1604,7 +1667,7 @@ impl ActionProvider for TowProvider {
                             "custody".to_owned()
                         }
                     }
-                    _ if promoted => "interrupted".to_owned(),
+                    _ if promoted && !pair_out(&record, tv) => "interrupted".to_owned(),
                     _ => "refused:it never reached the bay".to_owned(),
                 }
             }
@@ -1723,7 +1786,7 @@ impl TowProvider {
         // Doc 36 cut GC.5 (Q-36-16, Q-36-29): a load into a carrier that is not the casualty's own
         // party's or a Friend's puts it in that carrier's operator's custody with a claim owed;
         // a written-off lease rig is Occator's alone and is handed back with none.
-        if facts.written_off || facts.friendly {
+        if facts.written_off || facts.friendly || facts.retrieval {
             record.custody.retain(|row| row.hull != facts.casualty);
         } else {
             let holder = facts.custodian.unwrap_or(operator);
@@ -2477,7 +2540,13 @@ pub(crate) fn release_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Resu
         return Ok(());
     }
     let actor = ctx.actor;
-    if !submit(ctx, actor, rig.tv, TowOrder::Release { site }, 0) {
+    if !submit(
+        ctx,
+        actor,
+        rig.tv,
+        TowOrder::Release { site, field: false },
+        0,
+    ) {
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
     ctx.out.sys_to_actor(actor, "tacsim.tow", line);
@@ -2550,7 +2619,9 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
             .replace("{min}", &min)
     };
     if !go {
-        let preview = if facts.written_off {
+        let preview = if facts.retrieval {
+            LOAD_PREVIEW_RETRIEVAL
+        } else if facts.written_off {
             LOAD_PREVIEW_HAND_BACK
         } else if facts.friendly {
             LOAD_PREVIEW
@@ -2573,6 +2644,313 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
     ctx.out.sys_to_actor(actor, "tacsim.tow", fill(LOAD_FILED));
+    Ok(())
+}
+
+// ---- the tow inside a running field (doc 40 cut FR.5) ----------------------------------------
+
+/// The release previewed inside a field: `{n}`, `{name}`, `{ordinal}`.
+pub const FIELD_RELEASE_PREVIEW: &str = "Rig {n} can let go of the {name} inside field {ordinal}: it stands where it is, out of tow. +tv/{n} release go";
+/// The release ordered inside a field: `{n}`, `{name}`, `{ordinal}`.
+pub const FIELD_RELEASE_ORDERED: &str =
+    "Rig {n} lets go of the {name} at field {ordinal}'s next pulse.";
+/// The kernel refused the release: `{n}`, `{name}`, `{why}`.
+pub const FIELD_RELEASE_REFUSED: &str = "Rig {n} could not let go of the {name}: {why}.";
+/// The coupled load previewed inside a field: `{n}`, `{name}`, `{carrier}`, `{ordinal}`,
+/// `{min}`.
+pub const FIELD_LOAD_PREVIEW: &str = "Rig {n} can haul the {name} up the {carrier}'s ramp and out of field {ordinal} with it, then load it into the bay; the load takes about {min} IC minutes once both are out. +tv/{n} load go";
+/// The coupled load ordered: `{n}`, `{name}`, `{ordinal}`.
+pub const FIELD_LOAD_ASKED: &str = "Rig {n} makes for the ramp with the {name}: both leave field {ordinal} at the next pulse if the rig stands beside the ramp and can move under its own power; the load into the bay follows.";
+/// A busy field: the release or the load is not taken.
+pub const FIELD_BUSY: &str = "The field is busy; try again.";
+
+/// **Whether `rig`'s tow is out of the open field at the ramp** (doc 40 cut FR.5, Q-40-25): the
+/// site's record names the tug's exit and its casualty's, so `+tv/<n> load` passes the field's
+/// gate as on open ground.
+#[must_use]
+pub(crate) fn pair_exited(ctx: &Ctx<'_>, rig: &act::RigAt) -> bool {
+    on_ground(ctx.w, rig.tv)
+        .and_then(|(site, _, _)| record_of(ctx, &site))
+        .is_some_and(|record| pair_out(&record, rig.tv))
+}
+
+/// **`+tv/<n> release [go]` on a tug inside a running field** (this module's head; doc 40 cut
+/// FR.5, Q-40-7): a field act — `ArenaMsg::Release` to the site's task, applied at the next
+/// pulse's head and answered by [`on_field_released`].
+///
+/// # Errors
+///
+/// The line that refuses.
+pub(crate) fn field_release_cmd(
+    ctx: &mut Ctx<'_>,
+    rig: &act::RigAt,
+    go: bool,
+) -> Result<(), CmdError> {
+    let n = rig.slot.to_string();
+    let site = crate::field::field_of_unit(ctx.w, rig.tv)
+        .ok_or_else(|| CmdError::msg(NOT_ON_GROUND.replace("{n}", &n)))?;
+    let record = record_or_busy(ctx, &site);
+    let casualty = record
+        .tows
+        .towing(rig.tv)
+        .map(RecoveryOperation::casualty)
+        .ok_or_else(|| CmdError::msg(NOT_TOWING.replace("{n}", &n)))?;
+    let (task, ordinal) = ctx
+        .w
+        .module_state::<crate::field::FieldBook>()
+        .and_then(|book| book.hosted(&site))
+        .map(|hosted| (hosted.task, hosted.live.field.ordinal))
+        .ok_or_else(|| {
+            CmdError::msg("That field is not running yet; let go once it has opened.")
+        })?;
+    let fill = |line: &str| {
+        line.replace("{n}", &n)
+            .replace("{name}", &name(ctx.w, casualty))
+            .replace("{ordinal}", &ordinal.to_string())
+    };
+    if !go {
+        let line = fill(FIELD_RELEASE_PREVIEW);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.tow", line);
+        return Ok(());
+    }
+    let line = fill(FIELD_RELEASE_ORDERED);
+    if !crate::arena_bridge::offer_field_release(ctx, task, rig.tv) {
+        return Err(CmdError::msg(FIELD_BUSY));
+    }
+    let actor = ctx.actor;
+    if let Some(book) = ctx.w.module_state_mut::<FieldReleases>() {
+        book.0.insert(
+            rig.tv,
+            FieldRelease {
+                actor,
+                site,
+                answered: None,
+            },
+        );
+    }
+    ctx.out.sys_to_actor(actor, "tacsim.tow", line);
+    Ok(())
+}
+
+/// **The kernel's answer to a release inside a field** (doc 40 cut FR.5, Q-40-7; called by
+/// `crate::field::exit::on_released`): taken, the record's tow is retired by the surface's own
+/// `release` op ([`TowOrder::Release`] with `field`), submitted in the batch that takes the
+/// answer, and whoever ordered it hears the surface's [`RELEASED`] line; refused, they hear why.
+pub(crate) fn on_field_released(
+    ctx: &mut Ctx<'_>,
+    site: Option<CanonicalId>,
+    tug: ObjId,
+    outcome: Result<ObjId, String>,
+) {
+    let asked = ctx
+        .w
+        .module_state_mut::<FieldReleases>()
+        .and_then(|book| book.0.remove(&tug));
+    // A release whose order the host forgot (a restart in between) is the tug's pilot's.
+    let pilot = || {
+        let site = site.as_ref()?;
+        ctx.w
+            .module_state::<crate::field::FieldBook>()
+            .and_then(|book| book.hosted(site))
+            .and_then(|hosted| hosted.live.units.iter().find(|row| row.unit == tug))
+            .and_then(|row| row.pilot.as_ref().map(|(pilot, _)| *pilot))
+    };
+    let (actor, site) = match asked {
+        Some(asked) => (Some(asked.actor), Some(asked.site)),
+        None => (pilot(), site.clone()),
+    };
+    let slot = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_lease_on(tug))
+        .map_or_else(|| tug.0.to_string(), |lease| lease.slot.to_string());
+    match outcome {
+        Ok(casualty) => {
+            let (Some(actor), Some(site)) = (actor, site) else {
+                tracing::warn!(
+                    tug = tug.0,
+                    "tacsim: a release in a field has nobody to retire its tow as"
+                );
+                return;
+            };
+            if let Some(book) = ctx.w.module_state_mut::<FieldReleases>() {
+                book.0.insert(
+                    tug,
+                    FieldRelease {
+                        actor,
+                        site,
+                        answered: Some(casualty),
+                    },
+                );
+            }
+            submit_field_releases(ctx);
+            let line = RELEASED
+                .replace("{n}", &slot)
+                .replace("{name}", &name(ctx.w, casualty));
+            ctx.out.sys_to_actor(actor, "tacsim.tow", line);
+        }
+        Err(why) => {
+            let casualty = site
+                .as_ref()
+                .and_then(|site| record_of(ctx, site))
+                .and_then(|record| record.tows.towing(tug).map(RecoveryOperation::casualty));
+            if let Some(actor) = actor {
+                let line = FIELD_RELEASE_REFUSED
+                    .replace("{n}", &slot)
+                    .replace(
+                        "{name}",
+                        &casualty.map_or_else(|| "casualty".to_owned(), |c| name(ctx.w, c)),
+                    )
+                    .replace("{why}", &why);
+                ctx.out.sys_to_actor(actor, "tacsim.tow", line);
+            }
+        }
+    }
+}
+
+/// **Submit the record's `release` for every release the kernel took** (doc 40 cut FR.5): one
+/// an actor not already busy; a row whose record no longer holds that tow is spent, and so is an
+/// unanswered one whose field is gone (its answer never comes).
+fn submit_field_releases(ctx: &mut Ctx<'_>) {
+    let gone: Vec<ObjId> = ctx
+        .w
+        .module_state::<FieldReleases>()
+        .map(|book| {
+            book.0
+                .iter()
+                .filter(|(_, row)| {
+                    row.answered.is_none()
+                        && ctx
+                            .w
+                            .module_state::<crate::field::FieldBook>()
+                            .and_then(|fields| fields.hosted(&row.site))
+                            .is_none()
+                })
+                .map(|(tug, _)| *tug)
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(book) = ctx.w.module_state_mut::<FieldReleases>() {
+        for tug in gone {
+            book.0.remove(&tug);
+        }
+    }
+    let rows: Vec<(ObjId, ObjId, CanonicalId, ObjId)> = ctx
+        .w
+        .module_state::<FieldReleases>()
+        .map(|book| {
+            book.0
+                .iter()
+                .filter_map(|(tug, row)| {
+                    row.answered
+                        .map(|casualty| (*tug, row.actor, row.site.clone(), casualty))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (tug, actor, site, casualty) in rows {
+        let held = record_of(ctx, &site).is_some_and(|record| {
+            record
+                .tows
+                .towing(tug)
+                .is_some_and(|op| op.casualty() == casualty)
+        });
+        if !held {
+            if let Some(book) = ctx.w.module_state_mut::<FieldReleases>() {
+                book.0.remove(&tug);
+            }
+            continue;
+        }
+        if ctx.authoritative_pending(actor) {
+            continue;
+        }
+        let _ = submit(ctx, actor, tug, TowOrder::Release { site, field: true }, 0);
+    }
+}
+
+/// **`+tv/<n> load [go]` on a tug inside a running field** (this module's head; doc 40 cut FR.5,
+/// Q-40-25): the coupled withdraw at the rig's own carrier's ramp — the tug and its casualty
+/// asked out together (`crate::field::exit::request_coupled`), judged by the tug beside the ramp
+/// under its own power; once both are checked in, the load runs as on open ground. The bay's
+/// room is read first, as the surface load reads it.
+///
+/// # Errors
+///
+/// The line that refuses.
+pub(crate) fn field_load_cmd(
+    ctx: &mut Ctx<'_>,
+    rig: &act::RigAt,
+    go: bool,
+) -> Result<(), CmdError> {
+    let n = rig.slot.to_string();
+    let site = crate::field::field_of_unit(ctx.w, rig.tv)
+        .ok_or_else(|| CmdError::msg(NOT_ON_GROUND.replace("{n}", &n)))?;
+    let record = record_or_busy(ctx, &site);
+    if record.tows.act_of(rig.tv).is_some() {
+        return Err(CmdError::msg(TOW_BUSY.replace("{n}", &n)));
+    }
+    let op = record
+        .tows
+        .towing(rig.tv)
+        .cloned()
+        .ok_or_else(|| CmdError::msg(NOT_TOWING.replace("{n}", &n)))?;
+    let casualty = op.casualty();
+    let label = name(ctx.w, casualty);
+    // A casualty the field does not hold (and that is not already out) cannot go out with it.
+    if crate::field::field_of_unit(ctx.w, casualty).as_ref() != Some(&site)
+        && !record.exited(casualty)
+    {
+        return Err(CmdError::msg(
+            crate::surface::site_record::promoted_refusal(
+                &record
+                    .open_field()
+                    .unwrap_or(crate::surface::site_record::FieldId {
+                        site: site.clone(),
+                        ordinal: record.ordinal,
+                    }),
+                &act::site_name(ctx.w, &site),
+            ),
+        ));
+    }
+    // The rig's own carrier, berthed on this site: the ramp the kernel judges the tug against.
+    let carrier = rig.hull;
+    let ramp = crate::surface::tick::hull_view_berth(ctx.w, carrier)
+        .filter(|(entry, ..)| *entry == site)
+        .map(|(_, _, ramp, _, _)| (ramp.x_cm, ramp.y_cm))
+        .ok_or_else(|| CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)))?;
+    let carrier_name = name(ctx.w, carrier);
+    let volume = unit_facts(ctx.w, casualty).map_or(0, |(_, _, _, _, volume)| volume);
+    match bay_room_of(ctx.w, carrier, Some(casualty)) {
+        Some(room) => {
+            if let Err(error) = room.check_can_load(op.casualty_mass().total_mass_kg(), volume) {
+                return Err(CmdError::msg(
+                    BAY_NO_ROOM
+                        .replace("{carrier}", &carrier_name)
+                        .replace("{name}", &label)
+                        .replace("{why}", &why(&error)),
+                ));
+            }
+        }
+        None => return Err(CmdError::msg(NOT_AT_RAMP.replace("{n}", &n))),
+    }
+    let ordinal = record.open_field().map_or(0, |field| field.ordinal);
+    if !go {
+        let min = minutes(recovery_config(ctx.w).load_s).to_string();
+        let line = FIELD_LOAD_PREVIEW
+            .replace("{n}", &n)
+            .replace("{name}", &label)
+            .replace("{carrier}", &carrier_name)
+            .replace("{ordinal}", &ordinal.to_string())
+            .replace("{min}", &min);
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.tow", line);
+        return Ok(());
+    }
+    crate::field::exit::request_coupled(ctx, (rig.tv, rig.slot), casualty, ramp)?;
+    let line = FIELD_LOAD_ASKED
+        .replace("{n}", &n)
+        .replace("{name}", &label)
+        .replace("{ordinal}", &ordinal.to_string());
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.tow", line);
     Ok(())
 }
 
@@ -2667,7 +3045,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 continue;
             }
             if act.due_ic <= now {
-                due.push((site.clone(), promoted, act.clone()));
+                // Doc 40 cut FR.5 (Q-40-25): a pair out at the ramp loads as on open ground.
+                let held = promoted && !pair_out(&record, act.tug);
+                due.push((site.clone(), held, act.clone()));
             }
         }
     }
@@ -2747,6 +3127,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     crate::surface::claim::tick(ctx);
     // Doc 42 cut CR.1 (Q-42-26): the hired NPCs' roster exits a load owes.
     crate::field::crew::npc_exits(ctx);
+    // Doc 40 cut FR.5 (Q-40-7): the record's `release` each release taken in a field still owes.
+    submit_field_releases(ctx);
 }
 
 /// **The load's physical step**: the casualty into `carrier`'s bay, when its tug stands within
@@ -2798,9 +3180,13 @@ fn place_in_bay(
         return Vec::new();
     }
     let friend = friendly(ctx, site, casualty, carrier);
+    // Doc 41 cut RS.5 (Q-41-8): under a retrieval the carrier's operator holds, the rig goes into
+    // the bay, and a written-off one is handed back at the destination, not here on the site.
+    let retrieval = custodian_of(ctx, site, carrier)
+        .is_some_and(|who| crate::surface::retrieval::held_by(ctx.w, casualty, who).is_some());
     // Doc 36 cut GC.5 (Q-36-29): a written-off lease rig goes back to Occator's shed, not into
     // the bay, with no claim — its crew out into the bay room first (doc 42 Draft 0.3, 42-8).
-    let written_off = crate::port::tv::written_off(ctx.w, casualty);
+    let written_off = crate::port::tv::written_off(ctx.w, casualty) && !retrieval;
     if !written_off && let Err(error) = mush_sim::place_interior(ctx, casualty, room, Some(slot)) {
         tracing::warn!(casualty = casualty.0, carrier = carrier.0, %error, "tacsim: a tow's load could not be placed in the bay; its finish records it");
         return Vec::new();
@@ -2809,8 +3195,15 @@ fn place_in_bay(
     if written_off && !crate::port::tv::hand_back(ctx, casualty) {
         return captives;
     }
+    // Doc 41 cut RS.5: a write-off handed back here by a load that held no retrieval leaves
+    // nothing to retrieve; Occator's job is withdrawn, its escrow back.
+    if written_off {
+        crate::surface::retrieval::withdraw(ctx, casualty);
+    }
     let template = if written_off {
         HANDED_BACK
+    } else if retrieval {
+        LOADED_RETRIEVAL
     } else if friend {
         LOADED
     } else {
@@ -2914,11 +3307,18 @@ fn tell_landed(
 
 // ---- the coupled drive and the field ------------------------------------------------------
 
-/// **Stand `tug`'s casualty on the tug's cell** (the drive's placement, the field's demotion).
+/// **Stand `tug`'s casualty on the tug's cell** (the drive's placement). Doc 40 cut FR.5
+/// (Q-40-7): never while either is a running field's — the kernel trails the casualty on the
+/// cell its tug left, and its own row stands it at check-in.
 pub(crate) fn follow(ctx: &mut Ctx<'_>, tug: ObjId) {
     let Some(casualty) = coupled(ctx.w, tug).map(RecoveryOperation::casualty) else {
         return;
     };
+    if crate::field::field_of_unit(ctx.w, tug).is_some()
+        || crate::field::field_of_unit(ctx.w, casualty).is_some()
+    {
+        return;
+    }
     let Some((domain, pose)) = mush_sim::pose_of(ctx.w, tug) else {
         return;
     };
@@ -2943,11 +3343,15 @@ pub(crate) fn carried(record: &SiteRecord) -> BTreeMap<ObjId, (ObjId, u32)> {
         .collect()
 }
 
-/// **At a field's demotion, every carried casualty stands at its tug's cell**, indexed there as
-/// it was before (Q-36-20): `left` gains its entry at the new pose. A tug that left the surface
-/// (irrecoverable; doc 36a lane 3, P0-8) leaves its casualty indexed where it stands.
+/// **At a field's demotion (or a check-in at the ramp), every casualty in tow the field did not
+/// check in itself keeps its row**, indexed as it was before (Q-36-20): `left` gains its entry at
+/// the casualty's own pose. Doc 40 cut FR.5 (Q-40-7): the casualty is a kernel unit trailing its
+/// tug, so a fielded one is checked in at its own row's pose (`crate::field::close`) and skipped
+/// here, and one that is not (out at the ramp before its tug, or never admitted) stands where it
+/// is — never moved onto its tug's cell. A tug that left the surface (irrecoverable; doc 36a
+/// lane 3, P0-8) leaves its casualty indexed where it stands.
 pub(crate) fn set_down(
-    ctx: &mut Ctx<'_>,
+    ctx: &Ctx<'_>,
     site: &CanonicalId,
     fielded: &[ObjId],
     left: &mut Vec<crate::surface::site_record::LeftUnit>,
@@ -2956,7 +3360,7 @@ pub(crate) fn set_down(
     let Some(record) = record_of(ctx, site) else {
         return;
     };
-    for (casualty, (tug, _)) in carried(&record) {
+    for (casualty, _) in carried(&record) {
         if fielded.contains(&casualty) || left.iter().any(|row| row.unit == casualty) {
             continue;
         }
@@ -2968,21 +3372,13 @@ pub(crate) fn set_down(
         else {
             continue;
         };
-        // Doc 36a lane 3 (P0-8): a tug that fell irrecoverable left the surface before this runs
-        // (`close::demote_units`' remains), so its casualty stands where it was held out — at its
-        // own pose, which the index keeps. The tow itself ends with the remains.
-        let at_tug = mush_sim::pose_of(ctx.w, tug);
-        let Some((domain, pose)) = at_tug
-            .clone()
-            .or_else(|| mush_sim::pose_of(ctx.w, casualty))
-        else {
+        // Doc 40 cut FR.5 (Q-40-7): the casualty's own pose, never its tug's. Doc 36a lane 3
+        // (P0-8): a tug that fell irrecoverable left the surface before this runs
+        // (`close::demote_units`' remains), and its casualty stands where it is too. The tow
+        // itself ends with the remains.
+        let Some((_, pose)) = mush_sim::pose_of(ctx.w, casualty) else {
             continue;
         };
-        if at_tug.is_some()
-            && let Err(error) = mush_sim::place(ctx, casualty, domain, pose.clone())
-        {
-            tracing::warn!(tug = tug.0, casualty = casualty.0, %error, "tacsim: a carried casualty could not be set down at its tug");
-        }
         let at = crate::surface::site_record::SitePose {
             x_cm: pose.x_cm,
             y_cm: pose.y_cm,
@@ -3001,20 +3397,47 @@ pub(crate) fn set_down(
 /// no such unit in it.
 #[must_use]
 pub fn admitted_speed_cms(w: &World, site: &CanonicalId, unit: ObjId) -> Option<u32> {
+    snapshot_row(w, site, unit)?
+        .get("mobility")?
+        .get("max_speed_cms")?
+        .as_u64()
+        .and_then(|cms| u32::try_from(cms).ok())
+}
+
+/// **Where a running field last stood `unit`, and the tug it trails** (doc 40 cut FR.5,
+/// Q-40-7), read off the field's last snapshot as [`admitted_speed_cms`] reads it: its site cell
+/// and its `coupled_to`. `None` with no field, no snapshot yet or no such unit in it.
+#[must_use]
+pub fn field_stand(
+    w: &World,
+    site: &CanonicalId,
+    unit: ObjId,
+) -> Option<((i64, i64), Option<ObjId>)> {
+    let row = snapshot_row(w, site, unit)?;
+    let pose = row.get("pose")?;
+    let x = pose.get("x_cm")?.as_i64()?;
+    let y = pose.get("y_cm")?.as_i64()?;
+    let tug = row
+        .get("coupled_to")
+        .and_then(Value::as_u64)
+        .and_then(|id| u32::try_from(id).ok())
+        .map(ObjId);
+    Some(((x.div_euclid(1_000), y.div_euclid(1_000)), tug))
+}
+
+/// `unit`'s row in the field's last snapshot on `site`.
+fn snapshot_row(w: &World, site: &CanonicalId, unit: ObjId) -> Option<Value> {
     let document = w
         .module_state::<crate::field::FieldBook>()?
         .snapshot(site)?;
     // The arena's state rides the document as one JSON string (`crate::arena::snapshot`).
     let state: Value = serde_json::from_str(document.get("state")?.as_str()?).ok()?;
-    let row = state.get("units")?.as_array()?.iter().find(|row| {
+    state.get("units")?.as_array()?.iter().find_map(|row| {
         row.get("id")
             .and_then(Value::as_u64)
             .is_some_and(|id| id == u64::from(unit.0))
-    })?;
-    row.get("mobility")?
-        .get("max_speed_cms")?
-        .as_u64()
-        .and_then(|cms| u32::try_from(cms).ok())
+            .then(|| row.clone())
+    })
 }
 
 /// **The room `hull`'s bay has free now** (Q-S8, Q-36-15, Q-36-54), `except` one unit counted as

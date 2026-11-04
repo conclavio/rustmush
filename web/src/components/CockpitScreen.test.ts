@@ -27,6 +27,7 @@ import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import CockpitScreen from "./CockpitScreen.svelte";
+import { onlyReaches } from "./reach";
 import { NOT_IN_A_COCKPIT } from "$lib/cockpit";
 import type { GameApp } from "$lib/game.svelte";
 import { CockpitStore } from "$lib/stores/cockpit.svelte";
@@ -128,6 +129,25 @@ afterEach(() => {
   HTMLCanvasElement.prototype.getContext = original;
 });
 
+/** **What the screen may touch on the app** (16b cut B.2), its picture
+ * included: the payload it was handed, the box it prefills, the helm its keys
+ * order through, the mind readout's two members, and the picture's own store
+ * and the sky chart it draws space behind.
+ * A WHITELIST and not a list of forbidden names on purpose: a blocklist passes
+ * for every member it forgets, and `GameApp` grows. Every mount below enforces
+ * it ({@link onlyReaches}); nothing here sends (`submit`, `runBinding`,
+ * `client`, `act`), and the orders are prefills. */
+const COCKPIT_REACH = [
+  "cockpit",
+  "focusComposer",
+  "helm",
+  "mindReadoutOpen",
+  "refreshMindTrace",
+  "picture",
+  // The picture's space views read the sky chart's frame (see PictureView.test.ts).
+  "chart",
+] as const;
+
 /** Mount the screen on a bare cockpit store; nothing fed yet. Doc 21 cut
  * G.3c: the picture above the map reaches for its own store and two spies,
  * `setPicture` (ask for it or stop it) and `helm` (its arrow keys' orders). */
@@ -145,7 +165,10 @@ function mount(): {
     picture.on = on;
     picture.lookMdeg = look;
   });
-  const app = { cockpit, focusComposer, picture, setPicture, helm: vi.fn() } as unknown as GameApp;
+  const { app } = onlyReaches(
+    { cockpit, focusComposer, picture, setPicture, helm: vi.fn() } as unknown as GameApp,
+    COCKPIT_REACH,
+  );
   const { unmount } = render(CockpitScreen, { props: { app } });
   return { app, cockpit, focusComposer, setPicture, unmount };
 }

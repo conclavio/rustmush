@@ -528,6 +528,23 @@ fn inventory(tw: &TestWorld) -> mush_inventory::InventoryFamilies {
         .clone()
 }
 
+/// **What the Stickney works' house purchase took out of `vault`** (doc 39 cut IN.5): Kasei's
+/// alloys moved into the works' stores, which a seeded pool's count adds back; 0 for any other
+/// pool.
+fn bought_out(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
+    let kasei = VaultId(port_map(tw, "stickney_port").vendors[&cid("kasei")].vault);
+    if vault != kasei || good != "structural_alloys" {
+        return 0;
+    }
+    let room = station_room(tw, "stickney_port", "room.p15_maintenance");
+    let stores = tw.world().module_state::<EconomyStore>().and_then(|s| {
+        s.snapshot()
+            .vault_by_backing(&mush_economy::CustodyRef::Container(room))
+            .map(|v| v.id)
+    });
+    stores.map_or(0, |stores| pool(tw, stores, good))
+}
+
 fn pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
     let families = inventory(tw);
     let key = mush_inventory::pool_key(EndpointRef(vault), &cid(good)).expect("a pool key");
@@ -839,8 +856,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
             exchange.0
         ),
         format!(
-            "  ceres_port vendor occator: Occator Water & Propellant, storefront vault #{}; 7 of \
-             7 stock rows seeded. [ready]",
+            "  ceres_port vendor occator: Occator Water & Propellant, storefront vault #{}; 2 of \
+             2 stock rows seeded. [ready]",
             occator.0
         ),
         format!(
@@ -856,15 +873,17 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     }
     let all = receipts(&mut rig.tw);
     // Doc 36 cut GC.7: each port's four munitions rows; doc 39 cut IN.6: the part rows, Occator's
-    // five and Stickney Yards' thirteen, which are never pools.
-    assert_eq!(all.len(), 34, "Ceres 13 and Stickney 21");
+    // five and Stickney Yards' thirteen, which are never pools; doc 39 cut IN.5: Freeport Works'
+    // carbon row; doc 39 cut IN.7: the part rows retired.
+    assert_eq!(all.len(), 17, "Ceres 9 and Stickney 8");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
     {
         assert_eq!(receipt.issue_id().expect("derives"), *id);
         assert_eq!(
-            pool(&mut rig.tw, receipt.vault, receipt.good.as_str()),
+            pool(&mut rig.tw, receipt.vault, receipt.good.as_str())
+                + bought_out(&mut rig.tw, receipt.vault, receipt.good.as_str()),
             receipt.qty
         );
         assert!(
@@ -906,8 +925,9 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     stock(&mut rig);
     let all = receipts(&mut rig.tw);
     // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
-    // eighteen part rows.
-    assert_eq!(all.len(), 34);
+    // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
+    // cut IN.7: seventeen, the part rows retired.
+    assert_eq!(all.len(), 17);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -919,7 +939,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
             .or_insert(0) += receipt.qty;
     }
     for ((vault, good), sum) in sums {
-        assert_eq!(pool(&mut rig.tw, vault, &good), sum, "{good}");
+        let held = pool(&mut rig.tw, vault, &good) + bought_out(&mut rig.tw, vault, &good);
+        assert_eq!(held, sum, "{good}");
     }
     no_refused_writes(&rig.tw);
 }
@@ -1405,10 +1426,10 @@ fn ic8_the_board_counts_down_to_sold_out() {
         ),
         "{report}"
     );
-    // C07 lines: the three asks, then the alloy bid and (doc 20 cut SM.5) the four ore
-    // intakes.
+    // C07 lines: the three asks and (doc 39 cut IN.5) Freeport Works' carbon ask, then the
+    // alloy bid and (doc 20 cut SM.5) the four ore intakes.
     let lines = board(&out);
-    assert_eq!(lines.len(), 8, "{out}");
+    assert_eq!(lines.len(), 9, "{out}");
     assert!(
         lines[1].starts_with("  water ice: 100.00cr/t, 9,600 t left (Occator"),
         "{out}"
@@ -1418,13 +1439,17 @@ fn ic8_the_board_counts_down_to_sold_out() {
         "{out}"
     );
     assert!(
-        lines[3].starts_with(
+        lines[3].starts_with("  carbon ore, run-of-mine: 60.00cr/t, 240 t left (Freeport Works"),
+        "{out}"
+    );
+    assert!(
+        lines[4].starts_with(
             "  wanted, structural alloy stock: 520.00cr/t, 7,000 t more (Freeport Works;"
         ),
         "{out}"
     );
     // Doc 20 cut SM.5: the Exchange's three ore intakes in authored order, then Occator's.
-    for (line, want) in lines[4..8].iter().zip([
+    for (line, want) in lines[5..9].iter().zip([
         "  wanted, metal ore, run-of-mine: 70.00cr/t, 240 t more (Freeport Exchange",
         "  wanted, carbon ore, run-of-mine: 50.00cr/t, 120 t more (Freeport Exchange",
         "  wanted, strategic ore, run-of-mine: 600.00cr/t, 12 t more (Freeport Exchange",
@@ -1872,10 +1897,16 @@ fn ic8_port_sellers_and_party_caps_are_the_port_institutions() {
         PortPartyCaps.has_cap(w, &org(&ceres_map, "coop_trust"), PartyCap::Accept),
         "the Trust"
     );
+    // Doc 41 cut RS.5 (Q-41-11): the recovery operator accepts a retrieval at the window's end;
+    // it sells nothing.
+    assert!(
+        PortPartyCaps.has_cap(w, &org(&ceres_map, "tycho_mutual"), PartyCap::Accept),
+        "Tycho Mutual"
+    );
+    assert!(!PortVenueGate.port_seller(w, &ceres, &org(&ceres_map, "tycho_mutual")));
     for no in [
         PrincipalId::Object(pilot),
         org(&ceres_map, "ceres_clearing"),
-        org(&ceres_map, "tycho_mutual"),
         PrincipalId::Organization(unrelated),
     ] {
         assert!(!PortPartyCaps.has_cap(w, &no, PartyCap::Accept), "{no:?}");
@@ -2129,6 +2160,8 @@ fn ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded() {
             "  metal concentrate: not yet on the board (Freeport Exchange).".to_owned(),
             "  water ice: not yet on the board (Occator Water & Propellant).".to_owned(),
             "  reaction mass: not yet on the board (Occator Water & Propellant).".to_owned(),
+            // Doc 39 cut IN.5: Freeport Works' carbon ask.
+            "  carbon ore, run-of-mine: not yet on the board (Freeport Works).".to_owned(),
             "  wanted, structural alloy stock: not buying (Freeport Works).".to_owned(),
             // Doc 20 cut SM.5: the four ore intakes, in the same form.
             "  wanted, metal ore, run-of-mine: not buying (Freeport Exchange).".to_owned(),
@@ -2488,7 +2521,9 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     for entry in ["ceres_port", "stickney_port"] {
         let map = port_map(&rig.tw, entry);
         assert!(map.clerk.is_some(), "{entry}: the clerk");
-        assert_eq!(map.vendors.len(), 3, "{entry}: the vendors");
+        // Doc 39 cut IN.5: Freeport Works is Ceres's fourth.
+        let vendors = if entry == "ceres_port" { 4 } else { 3 };
+        assert_eq!(map.vendors.len(), vendors, "{entry}: the vendors");
         assert!(!map.boards.is_empty(), "{entry}: the boards");
         for row in map.vendors.values() {
             assert!(row.vendor.is_some() && row.grant.is_some());
@@ -2533,8 +2568,9 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     }
     stock(&mut rig);
     // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
-    // eighteen part rows.
-    assert_eq!(receipts(&mut rig.tw).len(), 34);
+    // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
+    // cut IN.7: seventeen, the part rows retired.
+    assert_eq!(receipts(&mut rig.tw).len(), 17);
     no_refused_writes(&rig.tw);
 }
 

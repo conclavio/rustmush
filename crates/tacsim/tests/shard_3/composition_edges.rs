@@ -53,7 +53,10 @@ fn the_game_crates_workspace_edges_are_the_recorded_set() {
     // (`mush-campaign`, `mush-config`, `mush-housing`, `mush-mail`, `mush-party`,
     // `mush-privileges`, `mush-scenes`, `mush-script`, `mush-store`,
     // `mush-weather`, `mush-worldgen`).
-    const RECORDED: [&str; 23] = [
+    // Doc 35c cut SF.R24 (D-35-14): 23 -> 24, `mush-pixel` (`mush_pixel::docking`
+    // is the single 60 Hz 6-DOF docking kinematics stepper shared by `tacsim`,
+    // the TUI, and the WASM).
+    const RECORDED: [&str; 24] = [
         "mush-ansi",
         "mush-atlas",
         "mush-canon",
@@ -71,6 +74,7 @@ fn the_game_crates_workspace_edges_are_the_recorded_set() {
         "mush-mind",
         "mush-npc",
         "mush-org",
+        "mush-pixel",
         "mush-propagation",
         "mush-proto",
         "mush-roll",

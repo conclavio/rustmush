@@ -333,6 +333,7 @@ impl ProbeArena {
             view: &view,
             memory: b"{}",
             map: &self.arena.definition,
+            wrecks: &self.arena.mind_wrecks(),
             card: &runtime.card,
             program: &runtime.program,
             profile_token: runtime.token(),

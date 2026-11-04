@@ -107,6 +107,7 @@ impl Harness {
             view: &Arc::new(view),
             memory,
             map: &self.map,
+            wrecks: &[],
             card: &self.card,
             program: &self.program,
             profile_token: ProfileToken {

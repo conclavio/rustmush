@@ -1,7 +1,7 @@
 # 16c `T-45` (16b cut D.5): the command-shaped tokens in `docs/help/*.md` that
 # are deliberately not verbs the world registry answers.
 #
-# `tests/help_commands.rs` takes the first word of every inline-code span and of
+# `tests/engine_contracts/help_commands.rs` takes the first word of every inline-code span and of
 # every line inside a fenced block, keeps it when it starts with `@` or `+` or is
 # written in capitals with at least three letters, and demands that each one
 # resolve against the production registry. A row here says "this one is not a

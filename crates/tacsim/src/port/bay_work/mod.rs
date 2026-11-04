@@ -113,6 +113,7 @@ pub const fn permits(right: Right, act: Act) -> bool {
         Right::Grant => !matches!(act, Act::Scrap),
         Right::Lessee => matches!(act, Act::Repair | Act::Rearm | Act::Berth),
         Right::Salvor => matches!(act, Act::Repair | Act::Berth),
+        Right::Retrieval => matches!(act, Act::Berth),
     }
 }
 
@@ -555,6 +556,9 @@ fn right_held_by(ctx: &Ctx<'_>, actor: ObjId, hull: ObjId) -> Option<Right> {
     if leases(ctx.w, actor, hull) {
         return Some(Right::Lessee);
     }
+    if custody.is_none() && crate::surface::retrieval::held_by(ctx.w, hull, actor).is_some() {
+        return Some(Right::Retrieval);
+    }
     custody.map(|_| Right::Salvor)
 }
 
@@ -653,6 +657,9 @@ pub fn right_of(ctx: &Ctx<'_>, hull: ObjId) -> Option<Right> {
         || crate::port::coop::helm_of(ctx.w, actor).is_some_and(|h| h.hull == hull)
     {
         return Some(Right::Lessee);
+    }
+    if custody.is_none() && crate::surface::retrieval::held_by(ctx.w, hull, actor).is_some() {
+        return Some(Right::Retrieval);
     }
     custody.map(|_| Right::Salvor)
 }
@@ -1125,6 +1132,9 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
             rightful_owner.0
         ));
     }
+    if let Some(refusal) = disputed_refusal(ctx.w, &part) {
+        return Err(refusal);
+    }
     if part.fitted_into.is_some() {
         return Err("That part has already been fitted.".to_owned());
     }
@@ -1132,6 +1142,37 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
         return Err("That part is held for a sale or another order.".to_owned());
     }
     take(ctx, hull, slot, Some((lot, part)))
+}
+
+/// **The claim a disputed part is held under** (doc 39 cut IN.7, §4.11; doc 41 §4.6): a
+/// stripped part its parent hull's record lists under a claim that is not vacated and whose
+/// filed contract has not ended (an unreadable one counts as live: fail closed). Who owns it is
+/// the claim's to decide, so no fit or build takes custody of it meanwhile.
+#[must_use]
+pub fn disputed(w: &World, part: &act::PartProvenance) -> Option<u64> {
+    let parent = part.parent_hull()?;
+    let listed = record_of(w, parent)
+        .ok()?
+        .claim_lots
+        .into_iter()
+        .find(|listed| listed.lot == part.lot.0 && listed.vacated.is_none())?;
+    let ended = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(ContractId(listed.claim)).cloned())
+        .is_some_and(|c| c.state.is_terminal());
+    (!ended).then_some(listed.claim)
+}
+
+/// The refusal a custody reads for a disputed part (doc 39 cut IN.7): `+bay/fit` here, and a
+/// build's delivery of a part into its escrow.
+#[must_use]
+pub fn disputed_refusal(w: &World, part: &act::PartProvenance) -> Option<String> {
+    disputed(w, part).map(|claim| {
+        format!(
+            "That part is disputed: it came off #{} under claim {claim}, which is still open;              nothing takes custody of it until the claim is settled.",
+            part.parent_hull().map_or(0, |h| h.0)
+        )
+    })
 }
 
 /// The `Replace` job for `slot` in `quote`, fitted from `lot`, when `part` fits it.
@@ -2138,6 +2179,7 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
                 .to_owned(),
         );
     }
+    let port = map.entry.clone();
     let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
     let used = ctx
         .w
@@ -2163,6 +2205,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
         at_ic: ctx.w.world_ic_now().at,
     });
     put_bay_hull(ctx, &record);
+    // Doc 41 cut RS.5 (Q-41-8): the first handover — berthed into the destination's workshop
+    // by the acceptor's hand.
+    let _ = crate::surface::retrieval::deliver(ctx, hull, &port, ctx.actor);
     Ok(room)
 }
 
@@ -2250,6 +2295,16 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId, carrier: Option<ObjId>) -> Result<Ob
     record.berth = None;
     record.held_for = None;
     put_bay_hull(ctx, &record);
+    // Doc 41 cut RS.5 (Q-41-8): the second handover — stowed into the poster's own carrier
+    // docked at the destination.
+    if let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, target)
+        && let Some(order) = crate::surface::retrieval::held_by(ctx.w, hull, ctx.actor)
+        && crate::port::coop::helm_holder(ctx.w, target)
+            .is_some_and(|helm| crate::surface::retrieval::acts_for(ctx.w, helm, &order.poster))
+    {
+        let entry = map.entry.clone();
+        let _ = crate::surface::retrieval::deliver(ctx, hull, &entry, ctx.actor);
+    }
     Ok(target)
 }
 

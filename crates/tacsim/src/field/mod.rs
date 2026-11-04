@@ -309,6 +309,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Doc 42 cut CR.0 (Q-42-2): a captive's exits, and an ejectee's, are refused.
     reg.hook(mush_core::HookPoint::MoveAttempt, Arc::new(crew::HeldGate));
     reg.state(orders::Offered::default());
+    // Doc 40 cut FR.5 (Q-40-5): the orders a damaged carrier relay holds back.
+    reg.state(orders::RelayLate::default());
     reg.state(home::Asked::default());
     // Doc 23 cut S.4b-T (D-23-19): the earned-contacts index this host feeds and the quirk
     // claim reads.

@@ -1122,7 +1122,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 22, "lane v22 since doc 39 cut IN.6");
+    assert_eq!(LANE_VERSION, 27, "lane v27 since doc 39 cut IN.9");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1155,13 +1155,25 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
             40,
         )
     };
+    // Doc 39 cut IN.5: and Kasei's refine, concentrate into alloys at 5 : 4.
+    let refine = (
+        "stickney_port".to_owned(),
+        "kasei".to_owned(),
+        "metals".to_owned(),
+        "structural_alloys".to_owned(),
+        (5, 4),
+        20,
+        40,
+    );
     assert_eq!(
         mills,
         vec![
             row(EXCHANGE, "metal_ore", "metals"),
             row(OCCATOR, "ice_ore", "volatiles"),
+            refine,
         ],
-        "the shipped lane's two mills, 5 : 2, 20 t a batch, at most 40 t an IC day"
+        "the shipped lane's two mills, 5 : 2, and its refine, 5 : 4, 20 t a batch, at most 40 t \
+         an IC day"
     );
     let pack = load_pack(&lane_variant(13, strip_mill)).expect("the v13 shape verifies");
     assert_eq!(
@@ -1178,7 +1190,8 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
             .map(|v| v.get("mill").is_some())
             .collect()
     };
-    assert_eq!(vendors(&doc), vec![true, true, false]);
+    // Doc 39 cut IN.5: Freeport Works' vendor, last, mills nothing; the strip chain takes it.
+    assert_eq!(vendors(&doc), vec![true, true, false, false]);
     strip_mill(&mut doc);
     assert_eq!(vendors(&doc), vec![false, false, false]);
     // Doc 20 cut SM.12b: the yard goes with the mills (a yard names a mill row).
@@ -1371,12 +1384,13 @@ fn sm12a_the_daily_rate_binds_and_the_next_ic_day_resumes() {
 /// One fire with the one-act check (12a-M11): at most one queued submission by the Ceres
 /// clerk, and when there is one, no listing and no `ceres_port` map document written.
 fn checked_fire(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
+    let stickney = stickney_listings(rig);
     let queued = fire(rig);
-    one_act(rig, &queued);
+    one_act(rig, &queued, &stickney);
     queued
 }
 
-fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit]) {
+fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String]) {
     let clerk = clerk(&rig.tw);
     let by_clerk = queued.iter().filter(|s| s.actor == clerk).count();
     assert!(
@@ -1384,12 +1398,48 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit]) {
         "the clerk made {by_clerk} submissions in one fire"
     );
     if by_clerk == 1 {
+        // Doc 39 cut IN.5: Stickney's clerk has daily work of its own (Kasei's bid drip, the
+        // works' house purchase); its writes are not the Ceres clerk's.
+        // Its listings before the fire (one it withdrew) and after (one it posted, with the
+        // market's allocator).
+        let after = stickney_listings(rig);
+        let posted = after.iter().any(|key| !stickney.contains(key));
+        let ceres: Vec<&String> = rig
+            .last_keys
+            .iter()
+            .filter(|key| {
+                !key.contains("stickney_port")
+                    && !stickney.contains(key)
+                    && !after.contains(key)
+                    && !(posted && key.as_str() == "market:meta")
+            })
+            .collect();
         assert!(
-            rig.last_keys.is_empty(),
-            "the clerk submitted and wrote {:?} in one fire",
-            rig.last_keys
+            ceres.is_empty(),
+            "the clerk submitted and wrote {ceres:?} in one fire"
         );
     }
+}
+
+/// The keys of every listing Stickney's vendors hold before a fire (doc 39 cut IN.5), so a
+/// listing that fire withdraws is still known to be theirs.
+fn stickney_listings(rig: &Rig) -> Vec<String> {
+    let vendors: Vec<u64> = port_map(&rig.tw, "stickney_port")
+        .vendors
+        .values()
+        .filter_map(|row| row.vendor)
+        .collect();
+    rig.tw
+        .world()
+        .module_state::<MarketStore>()
+        .map(|market| {
+            market
+                .live_listings()
+                .filter(|listing| vendors.contains(&listing.vendor.0))
+                .map(|listing| format!("market:listing:{}", listing.id.0))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Settle with the one-act check on every sweep.
@@ -1398,9 +1448,10 @@ fn checked_settle(rig: &mut Rig, contract: ContractId) {
         if settled(&rig.tw, contract) {
             return;
         }
+        let stickney = stickney_listings(rig);
         sweep(rig, 31);
         let queued = drain(&mut rig.tw);
-        one_act(rig, &queued);
+        one_act(rig, &queued, &stickney);
         land_queue(rig, &queued);
     }
     panic!("contract #{contract} did not settle");
@@ -1523,8 +1574,8 @@ fn sm12a_the_drip_acts_first_and_one_act_a_fire() {
 /// **A replayed batch is refused and moves nothing** (D3): ordinal 1's kept submission landed
 /// again is refused "that batch is already milled" and ordinal 2 with no ore waiting "nothing
 /// is due at that mill" (both at the prepare); a submission naming a mill that is not among the
-/// clerk's rows is refused at the resolve, and one made as another port's clerk naming the
-/// Exchange's mill is never offered. Each leaves both ledgers and the storefront's pools as
+/// clerk's rows is refused at the resolve, and so is one made as another port's clerk naming the
+/// Exchange's mill (doc 39 cut IN.5: Stickney's clerk refines, so it is offered the action). Each leaves both ledgers and the storefront's pools as
 /// they were, read from the engine.
 #[test]
 fn sm12a_a_replayed_batch_is_refused_and_moves_nothing() {
@@ -1572,8 +1623,9 @@ fn sm12a_a_replayed_batch_is_refused_and_moves_nothing() {
         "refused at the resolve"
     );
     unchanged(&mut rig);
-    // Another port's clerk naming the Exchange's mill: Stickney's clerk has no mill, so the
-    // action is not offered to it at all.
+    // Another port's clerk naming the Exchange's mill: doc 39 cut IN.5 gave Stickney's clerk
+    // Kasei's refine, so the action is offered to it, and the Exchange's mill is not among its
+    // choices: refused at the resolve.
     let mut elsewhere = batch.clone();
     elsewhere.actor = ObjId(
         port_map(&rig.tw, "stickney_port")
@@ -1583,7 +1635,7 @@ fn sm12a_a_replayed_batch_is_refused_and_moves_nothing() {
     );
     elsewhere.parameters["ordinal"] = serde_json::json!(2);
     let refused = land(&mut rig, &elsewhere).expect_err("another port's clerk is refused");
-    assert_eq!(refused, "that action is not currently offered");
+    assert_eq!(refused, "Resolve(InvalidParameters)");
     unchanged(&mut rig);
     no_refused_writes(&rig.tw);
 }

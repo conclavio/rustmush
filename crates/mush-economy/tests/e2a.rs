@@ -1,6 +1,7 @@
 //! E2a end-to-end tests — build an `EconomySnapshot`, drive the pure posting engine
 //! against the nine §7.1 invariants (§17.1 journal tests 1–7) plus reversal
-//! idempotency, plan-hash determinism, the boundedness caps, and a conservation fuzz.
+//! idempotency, plan-hash determinism, the boundedness caps, and (doc 43 cut TS.5) the
+//! generated lifecycle in `e2a/lifecycle.rs`.
 
 use mush_core::ObjId;
 use mush_economy::{
@@ -10,6 +11,11 @@ use mush_economy::{
     plan_hash, plan_reversal, validate,
 };
 use mush_org::PrincipalId;
+
+// Doc 43 cut TS.5: the generated lifecycle (it replaces the fixed-seed
+// conservation fuzz).
+#[path = "e2a/lifecycle.rs"]
+mod lifecycle;
 
 // ---- builders -------------------------------------------------------------
 
@@ -497,57 +503,4 @@ fn stale_expected_revision_is_refused() {
             found: Some(1)
         }
     ));
-}
-
-#[test]
-fn fuzz_never_panics_and_preserves_conservation() {
-    // Deterministic pseudo-random plans; every ACCEPTED post preserves per-instrument
-    // conservation (zero-sum), and nothing panics/overflows.
-    let mut s = snap(
-        &[("gold", 2)],
-        vec![
-            account(1, "gold", CreditPolicy::unbounded(), 0),
-            account(2, "gold", CreditPolicy::unbounded(), 0),
-            account(3, "gold", CreditPolicy::unbounded(), 0),
-        ],
-    );
-    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
-    let mut next = || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed
-    };
-    let mut txid = 1u64;
-    for _ in 0..2000 {
-        let a = 1 + (next() % 3);
-        let b = 1 + (next() % 3);
-        if a == b {
-            continue;
-        }
-        // Wide amounts (to about ±2^39, far inside i64) to probe the arithmetic;
-        // the i64 bounds themselves are not reached here.
-        let amt = (next() as i64).wrapping_rem(1 << 40).wrapping_sub(1 << 39);
-        let p = plan(
-            "fuzz",
-            &format!("k{txid}"),
-            vec![line(a, -amt, ""), line(b, amt, "")],
-        );
-        match validate(&p, &s, &env(&mush_economy::AllowAll)) {
-            PlanResult::Post(prepared) => {
-                let (s2, _tx) = apply(&s, &prepared, TransactionId(txid), txid, 1000);
-                s = s2;
-                txid += 1;
-            }
-            PlanResult::Refused(_)
-            | PlanResult::AlreadyPosted(_)
-            | PlanResult::NeedsApproval(_) => {}
-        }
-        // Conservation invariant holds after every step (zero-sum ledger).
-        assert_eq!(
-            instrument_sum(&s, "gold"),
-            0,
-            "gold conservation broke at txid {txid}"
-        );
-    }
 }

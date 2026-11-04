@@ -6786,6 +6786,7 @@ fn m1b5_a_newer_order_is_obeyed_after_an_early_end() {
             view: &Arc::new(view.clone()),
             memory: &bytes,
             map: &arena.definition,
+            wrecks: &arena.mind_wrecks(),
             card: &card,
             program: &runtime.program,
             profile_token: runtime.token(),

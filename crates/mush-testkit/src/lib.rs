@@ -31,7 +31,7 @@
 //! (`mushd`, `mush-server`, `mush-gateway`) rather than a world.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
-// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(
@@ -267,6 +267,42 @@ impl TestWorld {
             &mut fx,
         );
         out.take()
+    }
+
+    /// [`TestWorld::run`] a line that must succeed: no error-styled line came
+    /// back (a refusal, a usage line, `Huh?`). Returns the output for the
+    /// assertions after it.
+    ///
+    /// The common case of seeding state through the verb that makes it rather
+    /// than writing a module's slot by fiat (doc 43 cut TS.6, the fiat budget
+    /// in `mush-contract-tests`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the line answered with an error, naming the line and what it
+    /// said.
+    pub fn exec_ok(&mut self, actor: ObjId, line: &str) -> Vec<(Audience, OutputEvent)> {
+        let out = self.run(actor, line);
+        let errors: Vec<String> = out
+            .iter()
+            .filter_map(|(_, event)| match event {
+                OutputEvent::Sys(text)
+                    if text
+                        .spans()
+                        .iter()
+                        .any(|s| s.tag.as_deref() == Some("error")) =>
+                {
+                    Some(text.to_plain_text())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "`{line}` was refused: {}",
+            errors.join(" | ")
+        );
+        out
     }
 
     /// Dispatch one input line as `actor` and return both the queued output

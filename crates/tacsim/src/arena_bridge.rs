@@ -3092,6 +3092,12 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                     crate::field::carrier::on_joined(ctx, match_id, unit, outcome);
                 }
             }
+            // Doc 40 cut FR.5 (§4.1 item 5): a tug that let its casualty go inside a field.
+            ArenaOut::Released {
+                match_id,
+                tug,
+                outcome,
+            } => crate::field::exit::on_released(ctx, match_id, tug, outcome),
         }
     }
     // **16b cut N.2** (doc 16 §6 "Provider failure"): the one in-world sentence, said
@@ -5569,6 +5575,17 @@ pub(crate) fn offer_field_detachment(
         IntentKind::DetachmentCommand(Box::new(command)),
     )
     .is_ok()
+}
+
+/// **A tug's release, offered to its field's task** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): the
+/// host's `+tv/<n> release` on a promoted site sends [`ArenaMsg::Release`], applied at the next
+/// pulse's head and answered by `crate::field::exit::on_released`. Answers whether the task took
+/// it; a full or gone task did not, and the host says so.
+pub(crate) fn offer_field_release(ctx: &mut Ctx<'_>, task: MatchId, tug: ObjId) -> bool {
+    ctx.w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks.clone())
+        .is_some_and(|tasks| tasks.offer(task, ArenaMsg::Release { tug }).is_ok())
 }
 
 /// Offer the current host fences before controller commands. A full queue keeps

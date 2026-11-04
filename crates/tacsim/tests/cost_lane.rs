@@ -401,7 +401,7 @@ fn latches(tw: &TestWorld) -> BTreeMap<String, (u32, String)> {
 /// **The loaded lane is the roster's** (S3): `LANE_PACK`'s latch at `(LANE_VERSION, the roster's
 /// digest)`, and `LANE_VERSION` 15.
 fn assert_lane(rig: &Rig) {
-    assert_eq!(LANE_VERSION, 22, "the cost lane moves no lane version");
+    assert_eq!(LANE_VERSION, 27, "the cost lane moves no lane version");
     let latched = latches(&rig.tw).get(LANE_PACK).cloned();
     assert_eq!(
         latched,
@@ -4040,7 +4040,7 @@ fn cohort_lane(hulls: u32, rigs: u32, levers: &Levers) -> String {
 
 /// The shipped lane's digest (`tests/lane.rs`' `LANE_DIGEST`, lane v15 since doc 20 cut SM.12b).
 const SHIPPED_LANE_DIGEST: &str =
-    "af3f150ab9d9bf17107155944f94f6dba9297e8ceadb181a6c28f90f70a849d6";
+    "ef0b16923cc7df7475d4961a774e4396e9dcdc2100601b024cb36fe35bd30d9c";
 
 /// **C7 — the cohort lane is the shipped lane but its levers** (O-21; the brief's L9.2): the
 /// 32-hull, 64-rig variant parses and verifies, carries `manifest.version == LANE_VERSION`, and
@@ -4051,7 +4051,7 @@ const SHIPPED_LANE_DIGEST: &str =
 #[test]
 fn sm12c_the_cohort_lane_is_the_shipped_lane_but_its_levers() {
     let _lock = shared();
-    assert_eq!(LANE_VERSION, 22);
+    assert_eq!(LANE_VERSION, 27);
     assert_eq!(
         load_pack(LANE_JSON)
             .expect("the lane")
@@ -5762,8 +5762,45 @@ fn player_landed(rig: &Rig, kind: &str) -> u64 {
 /// **C2's world** (the brief's L6): the shipped lane at rate 24, four Dray-P pilots of two rigs
 /// each settled on the pads of Ahuna Flank, Juling Shadow, Kerwan Floor and Occator Rim beside the
 /// yard's two rigs — ten TVs, the most the shipped lane fields; the cohort ready to play.
+/// The Stickney works' stores' alloys (doc 39 cut IN.5).
+fn works_alloys(rig: &mut Rig) -> u64 {
+    let works = station_room(&rig.tw, "stickney_port", "room.p15_maintenance");
+    let stores = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|s| {
+            s.snapshot()
+                .vault_by_backing(&mush_economy::CustodyRef::Container(works))
+                .map(|v| v.id)
+        });
+    stores.map_or(0, |stores| pool(&mut rig.tw, stores, "structural_alloys"))
+}
+
+/// **The Stickney works' house purchases, settled before the cohort** (doc 39 cut IN.5): a lot an
+/// IC day into its stores until they reach their 10 t floor, so the cohort's quiet points see
+/// Stickney's clerk idle (the cohort measures Ceres and its sites; Stickney's clerk is not its
+/// subject).
+fn settle_house_purchases(rig: &mut Rig) {
+    for _ in 0..4 {
+        for _ in 0..24 {
+            let _ = fire(rig);
+        }
+        if works_alloys(rig) >= 10 {
+            return;
+        }
+        let rate = i64::from(world_rate(&rig.tw).max(1));
+        let now = ic_now(&rig.tw);
+        let next = (now.div_euclid(DAY) + 1) * DAY + 60;
+        let t = rig.tw.world().now() + (next - now + rate - 1) / rate;
+        let _ = step_to(rig, t);
+    }
+    panic!("the Stickney works' stores did not reach their floor in four IC days");
+}
+
 fn c2_world() -> (Rig, Cohort) {
     let mut rig = stocked(Roster::default());
+    settle_house_purchases(&mut rig);
     let mut cohort = Cohort::default();
     for (index, (who, seed, name, venue, entry)) in C2_PILOTS.into_iter().enumerate() {
         let (pilot, row) = kit_up(&mut rig, (who, seed, name), 2);
@@ -6499,12 +6536,26 @@ fn c3_arm(point: Option<u32>) -> ArmEnd {
                             "tacsim" | "inventory" | "industry" | "market"
                         )),
                     "C3: the point was not quiet: fire {k} wrote {:?} / queued {:?}; tighten \
-                     cohort_quiet",
+                     cohort_quiet {:?}",
                     fired.ops,
                     fired
                         .queued
                         .iter()
                         .map(|s| s.action.key().id.to_string())
+                        .collect::<Vec<_>>(),
+                    fired
+                        .ops
+                        .iter()
+                        .filter_map(|op| op.key.strip_prefix("market:listing:"))
+                        .filter_map(|id| id.parse::<u64>().ok())
+                        .filter_map(|id| {
+                            let m = rig.tw.world().module_state::<mush_market::MarketStore>()?;
+                            let l = m.listing(mush_market::ListingId(id))?;
+                            Some(format!(
+                                "{id}: {:?} {:?} q{}",
+                                l.vendor, l.catalog.code, l.quantity
+                            ))
+                        })
                         .collect::<Vec<_>>()
                 );
             }

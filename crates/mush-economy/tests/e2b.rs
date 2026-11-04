@@ -24,6 +24,9 @@ use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
 
+// Doc 43 cut TS.5: generated histories, checkpoint boot against whole replay.
+#[path = "e2b/lifecycle_replay.rs"]
+mod lifecycle_replay;
 const NS: &str = "economy";
 
 fn boot() -> TestWorld {
@@ -1008,6 +1011,40 @@ fn j4_a_narrowed_boot_without_a_usable_checkpoint_asks_for_the_whole_fetch() {
     assert_eq!(bal(&clamped, 1), 121);
 }
 
+/// Every field `FoldState` serialized at checkpoint format 3: the struct at
+/// `b205438c^`, the commit before DT.2a moved the format to 4 (doc 43 cut
+/// TS.20). Fixed history: never edited to follow today's struct.
+const FORMAT_3_FOLD_FIELDS: [&str; 28] = [
+    "coverage_receipts",
+    "paid_resale_receipts",
+    "charter_pending_receipts",
+    "charter_transfer_receipts",
+    "core_receipts",
+    "refit_receipts",
+    "update_receipts",
+    "filing_receipts",
+    "purchase_receipts",
+    "renewal_receipts",
+    "house_renewal_receipts",
+    "covered_seq",
+    "running",
+    "last_touch",
+    "touches",
+    "running_held",
+    "last_hold_touch",
+    "journal_assets",
+    "journal_holds",
+    "hold_terminal_at",
+    "max_hold_id",
+    "last_custody",
+    "max_custody_vault",
+    "consumed_approval",
+    "max_consumed_approval",
+    "max_txid",
+    "reversed",
+    "created_count",
+];
+
 /// DT.2a: title authority survives a current checkpoint and RAM-tail eviction;
 /// an older checkpoint cannot fabricate its missing title history. The narrowed
 /// loader must request the retained prefix, then replay the complete journal.
@@ -1114,11 +1151,31 @@ fn dt_title_lineage_checkpoint_preserves_history_and_old_format_replays_whole() 
     let mut old_body = persisted.clone();
     patch(&mut old_body, &checkpoint.head_key, |head| {
         head["format"] = serde_json::json!(3);
-        head["body"]["fold"]
-            .as_object_mut()
-            .expect("fold")
-            .remove("title_lineage");
+        let fold = head["body"]["fold"].as_object_mut().expect("fold");
+        // Format 4's field, and the two receipt audits added after it
+        // (seizure, bay refit) that format 3 never carried.
+        for field in ["title_lineage", "seizure_receipts", "bay_refit_receipts"] {
+            fold.remove(field);
+        }
     });
+    // Doc 43 cut TS.20: the rebuilt body is held to format 3's own field set,
+    // so a field a later format adds cannot ride into the "format 3" body
+    // unnoticed. A new field here is stripped above or this pin is wrong.
+    let old_fold = &old_body
+        .iter()
+        .find(|(key, _)| key == &checkpoint.head_key)
+        .expect("head")
+        .1["body"]["fold"];
+    let fields: Vec<&str> = old_fold
+        .as_object()
+        .expect("fold")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(
+        fields.iter().all(|f| FORMAT_3_FOLD_FIELDS.contains(f)),
+        "the rebuilt format-3 fold carries a field format 3 never had: {fields:?}"
+    );
     assert!(matches!(
         load(&mut tw, old_body.clone(), floor),
         Err(ModError::RetryFullFetch { .. })

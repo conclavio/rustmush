@@ -84,6 +84,9 @@ pub struct ThinkContext {
     pub view: Arc<MindView>,
     /// The map — the arena's own definition (`ThinkJob::map`).
     pub map: Arc<ArenaDefinition>,
+    /// The wrecks' cells (`ThinkJob::wrecks`, doc 40 cut FR.5): what `line_to` traces beside
+    /// the map. Few or none, so held by value.
+    pub wrecks: Vec<(u16, u16)>,
     /// The match seed (`ThinkJob::seed`): `rand`'s key.
     pub seed: u64,
     /// The hull (`ThinkJob::unit`): `rand`'s label.
@@ -142,6 +145,7 @@ impl ThinkContext {
         ThinkContext {
             view: Arc::clone(job.view),
             map: Arc::clone(job.map),
+            wrecks: job.wrecks.to_vec(),
             seed: job.seed,
             unit: job.unit,
             think_seq: job.think_seq,

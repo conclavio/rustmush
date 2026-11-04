@@ -1535,7 +1535,7 @@ and `mush_authoritative_last_replay_writes`. Alert on `slot_held` staying 1 whil
 filling their top bucket (a bundle at the cap). `@stats` renders the same lane
 as one line. Every number is an aggregate; no token, hash, owner or key is
 exposed. The scale harness that exercises this lane on demand
-(`crates/mush-contract-tests/tests/scale_harness.rs`) runs in the CI `scale`
+(`crates/mush-contract-tests/tests/ci_policy/scale_harness.rs`) runs in the CI `scale`
 job on `workflow_dispatch` or the daily schedule, never on push. The same
 harness reports the economy's cold journal replay phase by phase
 (`scale_cold_journal_replay_phases`, scales from `SCALE_PROFILE_SCALES`,
@@ -2031,7 +2031,16 @@ scripts/vps-gate.sh --packages "tacsim mush-server"
 scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
 scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.dev
 scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.dev
+scripts/vps-gate.sh --env "MINE_RATE=24" --extra "--run-ignored only -E 'test(/^mining_cohort::/)'" --packages mush-bot
+                                            # a configuration: NAME=VALUE pairs, any kind
 ```
+
+`--env` (gate.yml's `env` input, doc 43 cut TS.2) exports its pairs to every
+later step of the run, so a dispatch can select a variant no hosted job sets
+(doc 43 §5.9). Values cannot hold spaces, and gate.yml refuses the names the
+workflow or the toolchain owns (`REDIS_URL` is the `redis` input's; `CARGO_*`,
+`RUST*`, `NEXTEST_*`, `PATH`, the runner's own). The script sends the input only
+when it is given, so it still dispatches a branch whose gate.yml predates it.
 
 `--wip` pushes a commit of the working tree, uncommitted work and untracked
 files included, to `gate/<branch>` (never to the branch itself; the index and
@@ -2173,7 +2182,7 @@ cargo nextest run -j 8 -p <crate> --test <group> -E 'test(/^<module>::/)'   # wh
 rustfmt --edition 2021 <changed files>       # never `cargo fmt --all` (the path length breaks it)
 cargo clippy -j 8 -p <crate> --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc -j 8 -p <crate> --no-deps
-cargo nextest run -j 8 -p mush-contract-tests --test feature_matrix_inventory   --test panic_budget --test restriction_lints --test state_slot_owners
+cargo nextest run -j 8 -p mush-contract-tests --test ci_policy --test engine_contracts -E 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners)::/)'
 scripts/vps-gate.sh                          # the broad sweep, once
 ```
 
@@ -2192,6 +2201,51 @@ cut note. The files are doc 40 §4a's inventory (the pins recorded in
 docs/design/40-cut-notes.md, "§4a's inventory, at the base commit"). The PR's
 CI does not run the harness, so without the dispatch a mover is found only by
 the nightly's bisect after it merges.
+
+**Every gated test declares its tier** (doc 43 cut TS.2). A test that passes
+without running when nobody gives it what it needs — `#[ignore]`d, reading
+`REDIS_URL`, or opting in by a `RUN_*` flag — has a row in
+`crates/mush-contract-tests/test-tiers.toml`: `pr` (a ci.yml job with no `if:`),
+`nightly` (the daily schedule), `weekly` (the Sunday cron, `17 4 * * 0`),
+`dispatch` (a dispatch-only job, or the VPS gate's `harness`/`cost-lane` kinds),
+or `by-hand` (no job; the row's `by_hand` is the revision of the last recorded
+run), with the configuration that run sets. `ci_gated_test_inventory` holds the
+rows to the workflows: the job must be on the row's tier, run the test by a
+command (a ci.yml comment is a recipe, not a run; an ignored test needs
+`--ignored` or `--run-ignored`) and set the row's configuration. **A cut that
+adds a gated story adds its row in the same pull request**; a programme story
+on the `dispatch` or `by-hand` tier is put in a weekly job or carries its
+by-hand revision in the row and in its cut note (doc 43 §10.3). After a by-hand
+run, the commit that records its figures moves `by_hand` to the revision it ran
+at.
+
+**A switch in a story is a configuration** (doc 43 cut TS.18). A test that
+reads an environment variable has a variant for every value nobody runs. Every
+variable tacsim's and the bot's tests read is either named in a row's `config`
+(a variant row may name a test that is not gated, with its non-default
+configuration, its tier and its last run: `FIELD_RAID=director`, `MINE_RATE=24`)
+or declared a `[[knob]]` in the same file with its kind: `opt-in` (the test
+returns early unless it is set, so it is gated and has rows), `size` (the
+default is what the rows cover), `measurement`, `report`, `bless`, `secret` or
+`plumbing`. `every_variable_a_story_reads_is_a_named_configuration_or_a_declared_knob`
+refuses a new variable with neither. To run a variant on the box, dispatch it
+with `scripts/vps-gate.sh --env "NAME=VALUE"` and move the row's `by_hand` to
+the revision it ran at.
+
+**The nightly's failure channel** (doc 43 D-43-3) is GitHub's own email for a
+failed scheduled run. GitHub sends a scheduled workflow's notifications to the
+account that last changed the `cron` lines in `ci.yml`, so the owner checks two
+things: that the last commit touching those lines is theirs (a merge they made
+of doc 43 TS.2 counts), and that *Settings → Notifications → Actions* has
+"Send notifications for failed workflows only" with email on. A run that went
+red then mails the owner the next morning; nothing in the workflow sends it.
+The run itself names its cause: on the schedule and on a dispatch, ci.yml's
+`nightly-report` job waits for every other job and writes one line per job
+into the run's summary, failed ones first, each failure also an error
+annotation (`ci_gated_test_inventory` refuses a job its `needs` leaves out).
+An artifact upload that fails (the service's ECONNRESET of nightly #1553) no
+longer fails a test cell: the JUnit and the M6 evidence uploads continue on
+error and the next step warns that the cell's JUnit is missing.
 
 ## Test targets since T.3: the group binaries
 
@@ -2213,7 +2267,11 @@ mush-gateway (13: `split_halves`, the one group with an allowed exception to
 the suffix rule below — `restart_survival` is a suffix of
 `web_restart_survival`, so under `cargo test` the filter `restart_survival::`
 selects both modules and nextest's anchored `test(/^restart_survival::/)` is
-the line to use). The tests that re-exec their own binary for a child half
+the line to use), and since doc 43 cut TS.11 (T.3c) mush-contract-tests (33:
+`ci_policy`, the tree's and the workflows' own gates, three of the four guards
+among them, and `engine_contracts`, the compiled registry's contracts and
+`state_slot_owners`; `production_registry` is the one module three of
+`engine_contracts`' share). The tests that re-exec their own binary for a child half
 (mushd's `world_panic_exit`, mush-gateway's `authoritative_process_kill` and
 `server_panic_relaunch`) name it by the full `<module>::<fn>` id. A test's
 name is `<module>::<fn>`, and every run line translates as `--test <name>` →
@@ -2229,7 +2287,7 @@ Two things to know. `cargo test`'s positional filter is a substring match on
 the full name, so `lane::` would also select `cost_lane::…` if both were modules
 of one group: the merge refused a group where a module's name is a suffix of
 another's, and a new module keeps that rule (for tacsim's shards
-`crates/mush-contract-tests/tests/ci_tacsim_shards.rs` refuses it since doc 43
+`crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs` refuses it since doc 43
 cut TS.0, and refuses a file under `tests/shard_N/` that no root declares, which
 would otherwise compile nowhere). And under plain multi-threaded
 `cargo test` a group's modules share one process and its statics (locks, global
@@ -2237,7 +2295,7 @@ tracing subscribers); sweeps run under nextest, one process per test, as CI and
 the VPS gate do, and `cargo test` is for one test (`--exact`) or one module
 with `--test-threads=1`. A new test file is a `mod` line in the group that fits
 (for tacsim, the shard with the most room). The gated-test inventory
-(`crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`) reads a group's
+(`crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs`) reads a group's
 modules and ci.yml's `--test <group> <module>::` lines the way it read whole
 targets. Run lines in design notes written before T.3 name the old targets;
 translate them as above.
