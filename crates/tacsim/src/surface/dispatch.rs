@@ -95,6 +95,10 @@ pub use crate::minds::market_commands::words::NOT_FOR_ORG as MIND_NOT_FOR_ORG;
 pub const MIND_NO_DRAFT: &str = "You have no draft {word}.";
 /// **The rig carries no core**: nothing but the ROM is sealed aboard.
 pub const MIND_NO_CORE: &str = "That rig carries no core; only Standard Doctrine flies it.";
+/// **A licence whose seats are all held** (doc 23 cut S.4b-3, D-23-16): the launch is refused at
+/// `go`, before any rig leaves a bay. `{licence}`, `{held}`, `{seats}`.
+pub const MIND_SEATS_HELD: &str =
+    "Licence {licence} already flies {held} of its {seats} seats; bring a hull home first.";
 /// **The holdings are not composed here** (a world with no Roll holdings seam).
 pub const MIND_UNAVAILABLE: &str = "Minds cannot be sealed aboard here.";
 
@@ -188,6 +192,8 @@ enum Resolved {
         state: SealLicenceState,
         licence: Option<LicenceId>,
         holder: Option<Holder>,
+        /// A paid licence's concurrent seats (doc 23 cut S.4b-3).
+        seats: Option<u16>,
     },
     /// The licence's state falls the hull to the ROM.
     Rom {
@@ -285,6 +291,7 @@ fn resolve(
                 state: SealLicenceState::Draft,
                 licence: None,
                 holder: None,
+                seats: None,
             })
         }
         MindWord::Filed(licence) => {
@@ -296,7 +303,7 @@ fn resolve(
             // An owner licence's row of the owner projection (fix round 1, J2), else a paid
             // licence's view: the phase, the revoked bit (an owner row has none; a revoked owner
             // term is refused by the admission read below), the selling bit and the mind's name.
-            let (phase, revoked, selling, name) = owner_then_paid(
+            let (phase, revoked, selling, name, seats) = owner_then_paid(
                 (&mut *ctx, &mut *txn),
                 |(ctx, txn)| {
                     reads.owner(ctx, txn, licence, org).map(|row| {
@@ -305,6 +312,7 @@ fn resolve(
                             false,
                             row.selling(),
                             row.name().to_owned(),
+                            None,
                         )
                     })
                 },
@@ -315,6 +323,7 @@ fn resolve(
                             view.revoked(),
                             view.selling(),
                             view.name().to_owned(),
+                            view.seats(),
                         )
                     })
                 },
@@ -343,6 +352,7 @@ fn resolve(
                         state,
                         licence: Some(licence),
                         holder: Some(holder),
+                        seats,
                     })
                 }
                 SealLicenceState::Doctrine
@@ -436,6 +446,9 @@ pub(crate) enum Dispatched {
         licence: u64,
         /// The licence's state at `go` (`active` or `grace`), printed on the open line.
         state: SealLicenceState,
+        /// The licence's concurrent seats (a paid licence's); `None` for an owner licence,
+        /// which dispatches without a seat cap (D-23-16).
+        seats: Option<u16>,
     },
 }
 
@@ -493,6 +506,7 @@ pub(crate) fn dispatch(
     if let Resolved::Held {
         licence: Some(licence),
         state,
+        seats,
         ..
     } = &resolved
         && !impounded
@@ -501,6 +515,7 @@ pub(crate) fn dispatch(
         return Ok(Some(Dispatched::Claim {
             licence: licence.get(),
             state: *state,
+            seats: *seats,
         }));
     }
     let store = world
@@ -527,6 +542,7 @@ pub(crate) fn dispatch(
             state,
             licence,
             holder,
+            ..
         } => (
             seal_held(tv, &unit, sortie, &held, actor, store),
             state,

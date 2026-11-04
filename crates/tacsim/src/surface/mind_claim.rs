@@ -197,9 +197,12 @@ fn submit(
     }
 }
 
-/// **The claim refused for good** (doc 23 cut S.4b-2, D-23-21): the tick's tries spent with no
-/// Open in the book, the queued launch's start is submitted with `claim: refused`, whose prepare
-/// writes `Refused` and cancels the queue; the operator is told once, here.
+/// **The claim refused for good, or its launch cancelled** (doc 23 cuts S.4b-2 and S.4b-3,
+/// D-23-21, D-23-23 step 5): the tick's tries spent, the queued launch's start is submitted with
+/// `claim: refused`. With no Open in the book its prepare writes `Refused`; with the claim open
+/// but the launch never started (refused at every try: the charge, the caps), it writes
+/// `Closing { PoweredDownInBase }` and the arm closes the claim. Either way the queue is
+/// cancelled and the operator is told once, here.
 pub(crate) fn refuse(
     ctx: &mut Ctx<'_>,
     fire: &mut Fire,
@@ -236,10 +239,16 @@ pub(crate) fn refuse(
         );
     }) {
         Ok(()) => {
+            // An open claim whose launch never ran is cancelled (it closes `PoweredDownInBase`);
+            // a claim never opened is refused.
+            let line = match claim_of(ctx.w, tv) {
+                ClaimRead::Active { .. } => crate::surface::excursion::CLAIM_CANCELLED,
+                ClaimRead::None => crate::surface::excursion::CLAIM_REFUSED,
+            };
             crate::port_tick::notify_budget(
                 ctx,
                 operator,
-                crate::surface::excursion::CLAIM_REFUSED,
+                line,
                 crate::port_tick::NoticeLevel::Trip,
             );
             Step::Submitted
