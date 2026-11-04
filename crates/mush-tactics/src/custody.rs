@@ -157,7 +157,10 @@ pub fn check_out(
             .w
             .module_state::<crate::module::UnitStore>()
             .ok_or(CustodyError::Unavailable)?;
-        if store.is_ic_custodied(unit) {
+        // Doc 23 cut S.4b-2 (D-23-15): an IC field's mark coexists with an IC claim — the claim
+        // says whose mind the hull flies and who holds its seat, the field's mark who moves it
+        // now. A match never checks out an IC-held hull.
+        if store.is_ic_custodied(unit) && mark.field.is_none() {
             return Err(CustodyError::Refused(
                 "unit is held by dedicated IC custody".into(),
             ));

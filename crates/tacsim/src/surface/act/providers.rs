@@ -447,6 +447,16 @@ impl ActionProvider for SurfaceActProvider {
                     maximum: i64::MAX,
                 },
             )?,
+            // Doc 23 cut S.4b-2 (D-23-21): the surface tick's word on a queued launch whose claim
+            // the owners would not open within its tries — the launch is cancelled, the cursor
+            // `Refused`, nothing having left the bay.
+            parameter(
+                "claim",
+                false,
+                ProjectedParameterKind::Choice {
+                    choices: ["refused".to_owned()].into_iter().collect(),
+                },
+            )?,
         ];
         offer_draft(
             action,
@@ -1109,6 +1119,71 @@ impl SurfaceActProvider {
         // recover from the bay closes one.
         let launches =
             kind == ActKind::Launch || plan.params.as_ref().is_some_and(ActParams::launches);
+        // Doc 23 cut S.4b-2 (D-23-21, D-23-23 step 1): the launch a claim held back, started by
+        // its operator's own start (the surface tick's, with no `mind=` word) once the book holds
+        // the claim's Open: `(open, licence, launch, seal)`.
+        // A queued launch whose claim was refused for good (the tick's `claim: refused`): the
+        // cursor is `Refused`, the queue cleared, no act starts.
+        if kind == ActKind::Launch
+            && parameters.get("claim").and_then(Value::as_str) == Some("refused")
+        {
+            let at_ic = now;
+            match (record.queued.as_ref(), record.claim.as_deref()) {
+                (
+                    Some(crate::surface::excursion::Queued {
+                        launch: Some(_),
+                        operator,
+                        ..
+                    }),
+                    Some(crate::surface::excursion::ClaimCursor::Opening { .. }),
+                ) if *operator == actor
+                    && !matches!(
+                        context
+                            .as_deref()
+                            .and_then(|context| context.world().ok())
+                            .map(|world| crate::minds::ic_sortie::claim_of(world, tv)),
+                        Some(crate::minds::ic_sortie::ClaimRead::Active { .. })
+                    ) =>
+                {
+                    record.claim =
+                        Some(Box::new(crate::surface::excursion::ClaimCursor::Refused {
+                            reason: crate::surface::excursion::CLAIM_REFUSED.into(),
+                            at_ic,
+                        }));
+                    record.queued = None;
+                    write_record(txn, &self.excursions, record, existed)?;
+                    let outcome = RulesValue::new(
+                        self.outcome.clone(),
+                        json!({
+                            "act": wire_word(kind, quiet),
+                            "actor": actor.0,
+                            "due_ic": now,
+                            "ordinal": ordinal,
+                            "tv": tv.0,
+                        }),
+                    )
+                    .map_err(|_| {
+                        port_error(
+                            ActionErrorCode::BoundsExceeded,
+                            "the surface act's outcome exceeds canonical bounds",
+                        )
+                    })?;
+                    return Ok(AuthoritativeActionOutput::new(outcome)
+                        .with_eligible_witnesses(vec![invocation.principal().clone()]));
+                }
+                _ => {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "that rig's mind claim is not waiting to open",
+                    ));
+                }
+            }
+        }
+        let claimed = if kind == ActKind::Launch && mind.is_none() {
+            queued_claim(&record, actor, tv, context.as_deref())?
+        } else {
+            None
+        };
         if launches {
             if record.excursion.is_some() {
                 return Err(port_error(
@@ -1136,10 +1211,12 @@ impl SurfaceActProvider {
             }
             // Doc 23 cut S.4b-1 (§17.3): the claim's relaunch guard, as `sortie` is the epoch's
             // — a rig whose mind claim is owed or held does not launch again.
-            if record
-                .claim
-                .as_deref()
-                .is_some_and(crate::surface::excursion::ClaimCursor::is_live)
+            if claimed.is_none()
+                && record
+                    .claim
+                    .as_deref()
+                    .is_some_and(crate::surface::excursion::ClaimCursor::is_live)
+                && !closed_in_book(&record, context.as_deref())
             {
                 return Err(port_error(
                     ActionErrorCode::ProviderRejected,
@@ -1298,18 +1375,107 @@ impl SurfaceActProvider {
         // 9. Doc 17h cut M8e E4 (doc 23 S.4a; D-UM-45): the mind sealed aboard at the dispatch,
         // on the composed path alone (a typed-only start has no holding reads, and refuses a
         // named mind rather than sealing the ROM in its place).
-        let seal = match (mind, context) {
-            (None, _) => None,
-            (Some(_), None) => {
-                return Err(port_error(
-                    ActionErrorCode::ProviderRejected,
-                    crate::surface::dispatch::MIND_UNAVAILABLE,
-                ));
+        // Doc 23 cut S.4b-2 (D-23-14): a claimed launch prints the claim's own seal, naming its
+        // open token; where the claim path is composed a filed mind's `go` opens the claim first.
+        let dispatched = if let Some((open, licence, launch, mind_seal)) = &claimed {
+            let holder = match launch.org {
+                Some(org) => mush_economy::Holder::Organization {
+                    org: mush_org::OrgId(org),
+                    acting: actor,
+                },
+                None => mush_economy::Holder::Character(actor),
+            };
+            let licence = mush_roll::commerce::LicenceId::new(*licence)
+                .map_err(|_| invalid("a claim names its licence"))?;
+            let mut sealed = crate::surface::dispatch::assemble(
+                mind_seal,
+                launch.licence_state,
+                Some(licence),
+                Some(holder),
+            );
+            sealed.open = Some(*open);
+            Some(crate::surface::dispatch::Dispatched::Sealed(Box::new(
+                sealed,
+            )))
+        } else {
+            match (mind, context) {
+                (None, _) => None,
+                (Some(_), None) => {
+                    return Err(port_error(
+                        ActionErrorCode::ProviderRejected,
+                        crate::surface::dispatch::MIND_UNAVAILABLE,
+                    ));
+                }
+                (Some(word), Some(context)) => {
+                    crate::surface::dispatch::dispatch(context, txn, (actor, tv, now), Some(word))?
+                }
             }
-            (Some(word), Some(context)) => {
-                crate::surface::dispatch::dispatch(context, txn, (actor, tv, now), Some(word))?
-                    .map(Box::new)
+        };
+        let seal = match dispatched {
+            None => None,
+            Some(crate::surface::dispatch::Dispatched::Sealed(seal)) => Some(seal),
+            Some(crate::surface::dispatch::Dispatched::Claim { licence, state }) => {
+                // D-23-21: the claim is the reservation. `go` files the Open's cursor and queues
+                // the launch behind it, with the rig in its bay; no act starts, nothing leaves.
+                let org = mind.and_then(|(_, org)| org).map(|org| org.0);
+                record.claim = Some(Box::new(crate::surface::excursion::ClaimCursor::Opening {
+                    operator: actor,
+                    licence,
+                    org,
+                    launch_ic: now,
+                    tries: 0,
+                }));
+                record.queued = Some(crate::surface::excursion::Queued {
+                    kind: ActKind::Launch,
+                    operator: actor,
+                    hull: rig.hull,
+                    slot: rig.slot,
+                    site: site.clone(),
+                    after: record.ordinal,
+                    at_ic: now,
+                    excursion: None,
+                    launch: Some(Box::new(crate::surface::excursion::QueuedLaunch {
+                        launch_ic: now,
+                        mind: format!("filed:{licence}").into(),
+                        org,
+                        licence_state: state,
+                    })),
+                });
+                write_record(txn, &self.excursions, record, existed)?;
+                let outcome = RulesValue::new(
+                    self.outcome.clone(),
+                    json!({
+                        "act": wire_word(kind, quiet),
+                        "actor": actor.0,
+                        "due_ic": now,
+                        "ordinal": ordinal,
+                        "tv": tv.0,
+                    }),
+                )
+                .map_err(|_| {
+                    port_error(
+                        ActionErrorCode::BoundsExceeded,
+                        "the surface act's outcome exceeds canonical bounds",
+                    )
+                })?;
+                return Ok(AuthoritativeActionOutput::new(outcome)
+                    .with_eligible_witnesses(vec![invocation.principal().clone()]));
             }
+        };
+        // Doc 23 cut S.4b-2: the claimed launch moves its cursor to `Open` in its own bundle.
+        let launch_ic = match &claimed {
+            Some((open, ..)) => {
+                record.claim = Some(Box::new(crate::surface::excursion::ClaimCursor::Open {
+                    open: *open,
+                    operator: actor,
+                }));
+                record
+                    .queued
+                    .as_ref()
+                    .and_then(|queued| queued.launch.as_ref())
+                    .map_or(now, |launch| launch.launch_ic)
+            }
+            None => now,
         };
         record.ordinal = ordinal;
         record.act = Some(Act {
@@ -1330,7 +1496,7 @@ impl SurfaceActProvider {
         record.queued = None;
         if launches {
             record.excursion = Some(Excursion {
-                id: ExcursionId { tv, launch_ic: now },
+                id: ExcursionId { tv, launch_ic },
                 operator: actor,
                 hull: rig.hull,
                 slot: rig.slot,
@@ -1364,6 +1530,79 @@ impl SurfaceActProvider {
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_eligible_witnesses(vec![invocation.principal().clone()]))
     }
+}
+
+/// **The launch a claim held back, when this start is it** (doc 23 cut S.4b-2, D-23-21): the
+/// record queues a launch behind an `Opening` cursor, both the actor's; then the book must hold
+/// the claim's active Open by the actor — `(open, licence, launch, seal)` — else the start is
+/// refused, the claim not yet open (the tick retries; a reboot re-owes it from the record).
+#[allow(clippy::type_complexity)] // one tuple of the claim's four facts
+fn queued_claim(
+    record: &RigRecord,
+    actor: ObjId,
+    tv: ObjId,
+    context: Option<&mush_core::PrepareCtx<'_>>,
+) -> Result<
+    Option<(
+        mush_core::CommitToken,
+        u64,
+        crate::surface::excursion::QueuedLaunch,
+        crate::arena::MindSeal,
+    )>,
+    ActionError,
+> {
+    let (
+        Some(queued),
+        Some(crate::surface::excursion::ClaimCursor::Opening {
+            operator, licence, ..
+        }),
+    ) = (record.queued.as_ref(), record.claim.as_deref())
+    else {
+        return Ok(None);
+    };
+    let Some(launch) = queued.launch.as_deref() else {
+        return Ok(None);
+    };
+    if queued.operator != actor || *operator != actor {
+        return Ok(None);
+    }
+    let world = context
+        .and_then(|context| context.world().ok())
+        .ok_or_else(|| {
+            port_error(
+                ActionErrorCode::ProviderRejected,
+                crate::surface::dispatch::MIND_UNAVAILABLE,
+            )
+        })?;
+    match crate::minds::ic_sortie::claim_of(world, tv) {
+        crate::minds::ic_sortie::ClaimRead::Active { open, dispatcher } if dispatcher == actor => {
+            let seal = crate::minds::ic_sortie::claim_seal(world, open).ok_or_else(|| {
+                port_error(
+                    ActionErrorCode::Integrity,
+                    "the mind claim's seal is unreadable",
+                )
+            })?;
+            Ok(Some((open, *licence, launch.clone(), seal)))
+        }
+        _ => Err(port_error(
+            ActionErrorCode::ProviderRejected,
+            crate::surface::excursion::CLAIM_NOT_OPEN,
+        )),
+    }
+}
+
+/// **A `Closing` cursor whose Close the book already holds** (doc 23 cut S.4b-2, §17.3: the
+/// cursor is moved by the fire that observes the committed row): the claim is over, so the
+/// next `go` replaces it, as it replaces `Closed`.
+fn closed_in_book(record: &RigRecord, context: Option<&mush_core::PrepareCtx<'_>>) -> bool {
+    let Some(crate::surface::excursion::ClaimCursor::Closing { open, .. }) =
+        record.claim.as_deref()
+    else {
+        return false;
+    };
+    context
+        .and_then(|context| context.world().ok())
+        .is_some_and(|world| crate::minds::ic_sortie::claim_closed(world, *open).is_some())
 }
 
 /// A pocket cursor read in the transaction, its key re-checked (the families rule).
@@ -2678,11 +2917,11 @@ pub(super) fn epoch_move(
         && result == ActResult::Done
         && let Some(open) = record.sortie.take()
     {
+        let kind = mush_roll::commerce::ic_claims::IcCloseKind::ReturnedToBase { base: act.hull };
+        // Doc 23 cut S.4b-2: the claim's Close is owed with the epoch's.
+        record.owe_claim_close(kind);
         return Ok(Some(BlackBoxLine::sortie_closed(
-            tv,
-            &open,
-            act.due_ic,
-            mush_roll::commerce::ic_claims::IcCloseKind::ReturnedToBase { base: act.hull },
+            tv, &open, act.due_ic, kind,
         )));
     }
     Ok(None)

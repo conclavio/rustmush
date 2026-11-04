@@ -18,11 +18,18 @@ use mush_tactics::{TacticalUnit, UnitMutationPlan};
 use smol_str::SmolStr;
 use std::sync::{Arc, OnceLock};
 
-/// Deliberately private, non-Serde and non-Clone. There is presently no producer
-/// for a genuine IC region transition, so this module exports no constructor.
-/// A later host must supply its actual transition before any permit is minted.
+/// Deliberately private, non-Serde and non-Clone. Its one production producer is the
+/// surface host (doc 23 cut S.4b-2, `super::surface`), which mints a permit from a rig's
+/// durable claim cursor; this module exports no constructor.
 pub(super) struct HostTransition {
     _private: (),
+}
+impl HostTransition {
+    /// **The surface host's transition** (doc 23 cut S.4b-2, D-23-13): minted only by
+    /// `super::surface`, for the claim arm's permits, from the rig's durable record.
+    pub(super) fn surface() -> Self {
+        Self { _private: () }
+    }
 }
 pub struct StartPermit {
     pub(super) unit: TacticalUnit,
@@ -32,7 +39,7 @@ pub struct StartPermit {
     /// book's packed ordinal, the claim path's own fixture shape. S.4b-2's surface producer
     /// always names the epoch.
     pub(super) sortie: Option<crate::arena::mind::SortieId>,
-    _transition: HostTransition,
+    pub(super) _transition: HostTransition,
 }
 pub struct CloseEvent {
     pub(super) actor: ObjId,
@@ -47,6 +54,30 @@ pub struct CloseEvent {
     _transition: HostTransition,
 }
 impl CloseEvent {
+    /// **The surface host's Close** (doc 23 cut S.4b-2): sequence 1, no hull cover.
+    #[allow(clippy::too_many_arguments)] // the host event's own fields
+    pub(super) fn surface(
+        actor: ObjId,
+        open: CommitToken,
+        unit: TacticalUnit,
+        seal: DefinitionDigest,
+        kind: EventKind,
+        at_ic: ClockStamp,
+        conditions: UnitMutationPlan,
+    ) -> Self {
+        Self {
+            actor,
+            open,
+            unit,
+            seal,
+            sequence: 1,
+            kind,
+            at_ic,
+            conditions,
+            coverage: None,
+            _transition: HostTransition::surface(),
+        }
+    }
     pub(super) fn retained_bytes(&self) -> Result<usize, ParticipantError> {
         mush_core::canonical_json_bytes_with_limit(
             &serde_json::json!({
@@ -82,6 +113,9 @@ pub(super) struct Config {
     pub(super) arena: crate::config::ArenaConfig,
     pub(super) minds: crate::config::MindsConfig,
     pub(super) definitions: Arc<OnceLock<DefinitionRegistry>>,
+    /// **The composition's unit catalogue** (doc 23 cut S.4b-2), set at registration from the
+    /// layer's `definition_catalog`: the Open's capture reads a rig root's armament from it.
+    pub(super) catalog: Arc<OnceLock<crate::definitions::Catalog>>,
 }
 impl Config {
     fn check(&self, ctx: &OwnerPrepareContext<'_>, close: bool) -> Result<(), ParticipantError> {
@@ -278,6 +312,7 @@ impl IcSortieParticipant {
                     &profiles,
                     &self.config.arena,
                     &self.config.minds,
+                    self.config.catalog.get(),
                 )?;
                 let row = Record {
                     format: super::records::FORMAT,
@@ -309,8 +344,12 @@ impl IcSortieParticipant {
                     .rows
                     .get(&event.open)
                     .ok_or_else(|| bad("open missing"))?;
+                // Doc 23 cut S.4b-2 (D-23-15): the Close's hull is the live one (its object and
+                // definition the Open's), which the epoch's hosts may have written since.
                 if before.closed.is_some()
-                    || before.open.unit != event.unit
+                    || before.open.unit.object() != event.unit.object()
+                    || before.open.unit.schema() != event.unit.schema()
+                    || event.unit.revision() < before.open.unit.revision()
                     || before.open.execution.digest() != event.seal
                     || event.sequence == 0
                 {
@@ -332,8 +371,8 @@ impl IcSortieParticipant {
                     .iter()
                     .find(|v| v.open() == event.open)
                     .ok_or_else(|| bad("physical opening"))?
-                    .project_close_unit_digest(
-                        &before.open.unit,
+                    .project_live_close_unit_digest(
+                        &event.unit,
                         &event.conditions,
                         ctx.world().now(),
                     )?;

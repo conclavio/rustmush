@@ -1514,7 +1514,21 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
   seams: the composition and the harness, the production `HostTransition`, `go` writing
   `Opening` and queueing the launch, the surface claim arm, the re-scoped freeze, `custody_unit`
   from `IcHost::resume`, the seats, the drop, the carried memory and the stories. *As built:
-  [23-cut-notes.md](23-cut-notes.md) S.4b-1, with the seams doc 40's FR.3 lands on.*
+  [23-cut-notes.md](23-cut-notes.md) S.4b-1, with the seams doc 40's FR.3 lands on.* **S.4b-2
+  found three gaps of its own, so the cut became three slices** (2026-11-04):
+  - the tick cannot use `IcHost::submit`, whose observed submission needs a player's own
+    dispatch: the surface host submits with `IcHost::submit_as_host` instead;
+  - the store's catalog holds no rig roots: the Open's capture reads the composition's catalog;
+  - the field half reaches into mush-tactics' custody: the field mark's check-out of a held hull
+    and the live-hull Close.
+
+  **S.4b-2** builds the claim arm and the claim's whole lifecycle through the surface (the Open in
+  the bay, the queued launch under the claim's seal, the owed Close at every epoch close, an Open
+  refused for good), the re-scoped freeze, the custody coexistence and live-hull Close, and the
+  field's admission under the claim's seal with its retained source. **S.4b-3** builds the field
+  stories at 256 and 512 (a world that both holds a filed licence and runs a field), the join's
+  install, the seats at `go`, the drop and the wall, the carried memory and M8g's stories. *As
+  built: [23-cut-notes.md](23-cut-notes.md) S.4b-2.*
 
 **S.4b-T — the testimony producer (small; independent; may start now).** D-23-19:
 `EarnedContacts::admit` fed from the field log's own-sensor `Classified` lines as each chunk

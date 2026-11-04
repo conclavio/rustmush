@@ -261,6 +261,7 @@ struct Fixture {
     domain: crate::DomainId,
     carrier: ObjId,
     bay: ObjId,
+    far: crate::DomainId,
 }
 fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -> Result<Fixture> {
     setup_in(extra, enabled, missing_placement, Admission::Base)
@@ -284,6 +285,8 @@ fn setup_in(
     let field = world.create(ObjKind::Room, "IC field", GOD, None)?;
     let base = world.create(ObjKind::Room, "IC base", GOD, None)?;
     let carrier = world.create(ObjKind::Thing, "IC carrier", GOD, Some(field))?;
+    // Doc 23 cut S.4b-2: an unrelated active domain, for the ramp's negative case.
+    let far = world.create(ObjKind::Room, "IC far field", GOD, None)?;
     let bay = world.create(ObjKind::Room, "IC carrier bay", GOD, None)?;
     let at = if admission == Admission::Base {
         base
@@ -293,6 +296,7 @@ fn setup_in(
     let unit = world.create(ObjKind::Thing, "IC hull", GOD, Some(at))?;
     for (object, behavior) in [
         (field, "sim.domain"),
+        (far, "sim.domain"),
         (base, "sim.interior"),
         (bay, "sim.interior"),
         (carrier, "sim.participant"),
@@ -451,10 +455,25 @@ fn setup_in(
         revision: 1,
         window: None,
     };
+    let far_domain = crate::DomainId(2);
+    let far_ground = crate::DomainRecord {
+        id: far_domain,
+        host: far,
+        driver: crate::passive_definition_ref(),
+        status: crate::DomainStatus::Active,
+        clock: crate::data::DomainClock::Passive,
+        presentation_location: far,
+        revision: 1,
+        window: None,
+    };
     let mut documents = vec![
         (
             format!("domain:{}", domain.0).into(),
             serde_json::to_value(ground)?,
+        ),
+        (
+            format!("domain:{}", far_domain.0).into(),
+            serde_json::to_value(far_ground)?,
         ),
         (
             format!("space:{}", base.0).into(),
@@ -503,6 +522,7 @@ fn setup_in(
         domain,
         carrier,
         bay,
+        far: far_domain,
     })
 }
 fn invocation(f: &Fixture) -> Result<ActionInvocation> {
@@ -913,8 +933,8 @@ fn assert_ic_plan_refused_without_effect(f: &mut Fixture, plan: crate::transitio
 /// **Doc 23 cut S.4b-1 (D-23-11, D-23-15): a carrier's bay is a hangar.** Under the composition
 /// that admits hangars, a hull `Interior` to a bay anchored `MovingObject { host: carrier }` is
 /// admitted, its record names the bay and the carrier (no base image), the hull alone is
-/// excluded (never the carrier or the bay), the freeze still refuses a placement write of the
-/// hull and a rewrite of the bay, and a reboot reconstructs the hold; the base-only composition
+/// excluded (never the carrier or the bay), the freeze (S.4b-2's re-scope) admits the ramp onto
+/// the carrier's domain and refuses a fixed room, and a reboot reconstructs the hold; the base-only composition
 /// refuses the same Open. A base-held record is unchanged in shape (no `hangar` key).
 #[test]
 fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
@@ -941,6 +961,9 @@ fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
         identity_of(f.world.world(), f.unit).map(|i| i.open),
         Some(token())
     );
+    // Doc 23 cut S.4b-2: the hold names its hangar's carrier, so a field admits the hull under
+    // its claim (D-23-15); a base-held hull names none.
+    check_eq!(held_in_hangar(f.world.world(), f.unit), Some(f.carrier));
     for shown in [f.carrier, f.bay] {
         check!(!crate::deployed::excluded(
             f.world.world(),
@@ -961,7 +984,65 @@ fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
             }
         )
         .is_err(),
-        "the hull is frozen in its hangar until S.4b-2 re-scopes the freeze"
+        "a fixed room is no hangar: refused"
+    );
+    // Doc 23 cut S.4b-2 (D-23-15): the freeze is re-anchoring only — the ramp onto the domain the
+    // carrier stands on is the epoch's host's move, and is admitted.
+    check!(
+        crate::transition::plan(
+            state,
+            f.world.world(),
+            &crate::transition::Transition::Place {
+                obj: f.unit,
+                parent: crate::SpatialParent::Direct {
+                    domain: f.domain,
+                    pose: crate::data::Pose::passive(crate::data::passive_rules_value(json!({}))?),
+                }
+            }
+        )
+        .is_ok(),
+        "the ramp onto the carrier's domain"
+    );
+    // The exclusion-rule change's two negative cases (S.4b-2): the ramp is tied to where the
+    // carrier is landed. Onto an unrelated active domain, refused (a teleport)...
+    let ramp_onto = |f: &Fixture, domain: crate::DomainId| -> Result<bool> {
+        let state = crate::state(f.world.world()).ok_or("spatial")?;
+        Ok(crate::transition::plan(
+            state,
+            f.world.world(),
+            &crate::transition::Transition::Place {
+                obj: f.unit,
+                parent: crate::SpatialParent::Direct {
+                    domain,
+                    pose: crate::data::Pose::passive(crate::data::passive_rules_value(json!({}))?),
+                },
+            },
+        )
+        .is_ok())
+    };
+    check!(
+        !ramp_onto(&f, f.far)?,
+        "an unrelated active domain is a teleport"
+    );
+    // ...and with the carrier not landed (unplaced), refused even onto its old domain.
+    {
+        let state = f
+            .world
+            .world_mut()
+            .module_state_mut::<crate::SpatialState>()
+            .ok_or("spatial")?;
+        let placement = state.placements.get_mut(&f.carrier).ok_or("carrier")?;
+        placement.unplaced = Some(crate::data::UnplacedInfo {
+            reason: "probe: the carrier lifted".into(),
+            by: None,
+            at: 0,
+            previous: Some(placement.parent.clone()),
+            quarantined: false,
+        });
+    }
+    check!(
+        !ramp_onto(&f, f.domain)?,
+        "a carrier not landed takes nobody down a ramp"
     );
     let cold = setup_in(persisted.clone(), true, false, Admission::Hangar)?;
     check_eq!(

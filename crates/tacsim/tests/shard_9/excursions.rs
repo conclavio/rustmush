@@ -486,6 +486,31 @@ pub(crate) fn reboot_with_inspection(
     Rig,
     mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
 ) {
+    reboot_with_inspection_in(rig, operator, reconnect, false)
+}
+
+/// **[`reboot_with_inspection`] with the IC mind claims composed in the rigs' bays** (doc 23 cut
+/// S.4b-2): the Active commerce `with_ic_minds_in_bays`, so the claim path runs.
+pub(crate) fn reboot_with_claims(
+    rig: Rig,
+    operator: ObjId,
+    reconnect: &[ObjId],
+) -> (
+    Rig,
+    mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
+) {
+    reboot_with_inspection_in(rig, operator, reconnect, true)
+}
+
+fn reboot_with_inspection_in(
+    rig: Rig,
+    operator: ObjId,
+    reconnect: &[ObjId],
+    claims: bool,
+) -> (
+    Rig,
+    mush_roll::commerce::registry_inspection::RegistryInspectionPolicy,
+) {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
     };
@@ -574,6 +599,13 @@ pub(crate) fn reboot_with_inspection(
             )
             .expect("the commerce prepares");
             if mode == CommerceMode::Active {
+                let commerce = if claims {
+                    commerce
+                        .with_ic_minds_in_bays(Vec::new())
+                        .expect("the IC claims compose in the bays")
+                } else {
+                    commerce
+                };
                 commerce
                     .with_registry_inspection(policy.clone())
                     .expect("the inspection composes")

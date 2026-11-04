@@ -56,6 +56,10 @@ pub(crate) struct Entrant {
     pub pilot: Option<(ObjId, SmolStr)>,
     /// Its open hull epoch.
     pub epoch: Option<SortieId>,
+    /// **Its open IC mind claim** (doc 23 cut S.4b-2, D-23-23 step 3): the rig record's
+    /// `ClaimCursor::Open` token, whose retained seal the field admits it under; `None` seals
+    /// the ROM as every entrant before S.4b.
+    pub claim: Option<mush_core::CommitToken>,
     /// Everyone physically aboard it at admission, when it is a carrier (Q-CF-38).
     pub aboard: Vec<ObjId>,
     /// **The carrier it came from and goes home to** (doc 32 cut CF.6b): its DT flight's, its
@@ -361,6 +365,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     owner: *organizer,
                     pilot,
                     epoch: *epoch,
+                    claim: None,
                     aboard: Vec::new(),
                     carrier: Some(*carrier),
                     affiliations: party_affiliations(ctx.w, *leader, *organizer),
@@ -376,6 +381,7 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                     owner: Some(leader),
                     pilot,
                     epoch: None,
+                    claim: None,
                     aboard: Vec::new(),
                     carrier: super::raiders::carrier_of(ctx.w, *unit),
                     affiliations: affiliations(ctx.w, leader),
@@ -397,6 +403,14 @@ pub(crate) fn entrants(ctx: &Ctx<'_>, entry: &CanonicalId, units: &[ObjId]) -> V
                 epoch: record
                     .as_ref()
                     .and_then(|record| record.sortie.as_ref().map(|open| open.id)),
+                claim: record
+                    .as_ref()
+                    .and_then(|record| match record.claim.as_deref() {
+                        Some(crate::surface::excursion::ClaimCursor::Open { open, .. }) => {
+                            Some(*open)
+                        }
+                        _ => None,
+                    }),
                 aboard: Vec::new(),
                 carrier: record
                     .as_ref()
@@ -435,6 +449,7 @@ fn carrier_entrant(ctx: &Ctx<'_>, carrier: ObjId, flights: &[(ObjId, FlightFacts
         owner,
         pilot: None,
         epoch: super::carrier::open_epoch(ctx, carrier),
+        claim: None,
         aboard: super::carrier::souls_aboard(ctx.w, carrier),
         carrier: None,
         affiliations: party_affiliations(ctx.w, leader, owner),
@@ -747,6 +762,7 @@ mod tests {
             owner: leader.map(ObjId),
             pilot: None,
             epoch: None,
+            claim: None,
             aboard: Vec::new(),
             carrier: None,
             affiliations: BTreeSet::new(),

@@ -19,7 +19,8 @@ use mush_tactics::ic_custody::{IcCustodyParticipant, IcCustodyRequest};
 use smol_str::SmolStr;
 use std::sync::{Arc, OnceLock};
 
-fn bad(_: impl std::fmt::Display) -> PublicationError {
+fn bad(reason: impl std::fmt::Display) -> PublicationError {
+    tracing::debug!(target: "ic_claim", %reason, "roll: IC claim writer refused");
     PublicationError::Mismatch
 }
 fn error(e: impl std::fmt::Display) -> ModError {

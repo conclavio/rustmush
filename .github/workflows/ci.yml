@@ -154,6 +154,10 @@ jobs:
             test: m8_world::m8g_story_tier2_held_minds_seal_aboard
           - name: zero-PC procurement
             test: m8_world::m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap
+          # Doc 23 cut S.4b-2: a licensed rig's IC mind claim, opened in its bay and closed
+          # at home, over the world with the claims composed in the bays (one rating).
+          - name: S.4b-2 a licensed rig's claim in the bay
+            test: m8_world::s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain

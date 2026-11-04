@@ -28,7 +28,8 @@ pub const MAX_IC_EXCLUSION_HISTORY: usize = 8192;
 pub const MAX_IC_EXCLUSION_BYTES: usize = 8192;
 pub const MAX_IC_BASES: usize = 32;
 const MAX_BASE_BYTES: usize = 4096;
-fn error(_: impl std::fmt::Display) -> ParticipantError {
+fn error(reason: impl std::fmt::Display) -> ParticipantError {
+    tracing::debug!(target: "ic_claim", %reason, "sim: IC exclusion refused");
     ParticipantError::refused("IC exclusion is unavailable or changed")
 }
 fn bad(e: impl std::fmt::Display) -> ModError {
@@ -388,6 +389,15 @@ impl IcExclusionView<'_> {
 #[must_use]
 pub fn identity_of(world: &World, unit: ObjId) -> Option<&IcIdentity> {
     world.module_state::<IcExclusions>()?.identity(unit)
+}
+/// **The carrier whose bay a held hull's claim opened in** (doc 23 cut S.4b-2, D-23-15): `Some`
+/// for an active hold anchored in a hangar — the surface host's claim, which coexists with a
+/// field's mark — `None` for a hold in a fixed base or no hold at all.
+#[must_use]
+pub fn held_in_hangar(world: &World, unit: ObjId) -> Option<ObjId> {
+    let state = world.module_state::<IcExclusions>()?;
+    let record = state.records.get(state.active.get(&unit)?)?;
+    record.open.hangar.as_ref().map(|hangar| hangar.carrier)
 }
 /// Host-authored immutable base selection, not a player-supplied admission
 /// parameter. Its exact descriptor must be registered by Tacsim, and its live
@@ -1119,11 +1129,31 @@ pub(crate) fn check_boot_spatial(
         let interior = open
             .space()
             .ok_or_else(|| bad("IC admission anchor missing"))?;
-        if spatial.placements.get(&open.identity.unit) != Some(&open.placement)
+        // Doc 23 cut S.4b-2 (D-23-15): a hold in a hangar is moved by the epoch's hosts, so its
+        // hull stands on a domain or in a bay, never at the Open's image; a base's stands there.
+        let placed = spatial.placements.get(&open.identity.unit);
+        let stands = match (&open.hangar, placed) {
+            (Some(_), Some(placement)) => {
+                placement.unplaced.is_none()
+                    && match &placement.parent {
+                        crate::SpatialParent::Direct { .. } => true,
+                        crate::SpatialParent::Interior { space, .. } => {
+                            spatial.spaces.get(space).is_some_and(|s| {
+                                matches!(s.anchor, crate::SpaceAnchor::MovingObject { .. })
+                            })
+                        }
+                        _ => false,
+                    }
+            }
+            (Some(_), None) => false,
+            (None, placed) => placed == Some(&open.placement),
+        };
+        let placement = placed.unwrap_or(&open.placement);
+        if !stands
             || spatial.held_placements.contains_key(&open.identity.unit)
             || !spatial.unbound_placement_docs.is_empty()
             || spatial.spaces.get(&interior.object) != Some(interior)
-            || crate::boot::validate_live(ctx, spatial, &open.placement).is_some()
+            || crate::boot::validate_live(ctx, spatial, placement).is_some()
             || crate::graph::project(spatial, ctx.w, open.identity.unit)
                 != ctx.w.get(open.identity.unit).and_then(|row| row.location)
             || crate::boot::invalid_members(spatial, ctx.w)
@@ -1177,8 +1207,9 @@ pub(crate) fn check_boot_journeys(
         state.active.values().any(|open| {
             state.records.get(open).is_none_or(|r| {
                 j.root() == r.open.identity.unit
-                    || r.open.space().is_none_or(|s| j.root() == s.object)
-                    || r.open.host().is_none_or(|h| j.root() == h)
+                    || (r.open.hangar.is_none()
+                        && (r.open.space().is_none_or(|s| j.root() == s.object)
+                            || r.open.host().is_none_or(|h| j.root() == h)))
             })
         })
     }) {
@@ -1186,9 +1217,62 @@ pub(crate) fn check_boot_journeys(
     }
     Ok(())
 }
+/// **A held hull's move its hangar admits** (doc 23 cut S.4b-2, D-23-15: "moved only by the
+/// epoch's hosts"): a pose on the domain it stands on; from its hangar, the ramp onto the domain
+/// its carrier is landed on (placed `Direct` there, under no journey); a re-parent `Interior` into its own hangar or into a carrier's bay (a
+/// recoverer's, S.3; a salvage load's, Q-23-11). Every other change of parent — a staff teleport
+/// to another domain, a mount, an unplacing, a fixed room — is refused.
+fn hangar_move_admitted(
+    state: &crate::SpatialState,
+    world: &World,
+    unit: ObjId,
+    hangar: &HangarImage,
+    next: &crate::data::PlacementRecord,
+) -> bool {
+    // The planner's own spatial state: inside a plan the world's slot is not readable.
+    if next.unplaced.is_some() {
+        return false;
+    }
+    let current = state.placements.get(&unit).map(|p| &p.parent);
+    match &next.parent {
+        crate::SpatialParent::Direct { domain, .. } => match current {
+            Some(crate::SpatialParent::Direct { domain: now, .. }) => now == domain,
+            // The launch: the ramp from the hangar down onto the very domain the carrier stands
+            // on, the carrier landed there — placed `Direct` on it and under no journey — and
+            // the domain active. Any other domain is a teleport, refused.
+            Some(crate::SpatialParent::Interior { space, .. }) if *space == hangar.space.object => {
+                let landed = matches!(
+                    state.placements.get(&hangar.carrier),
+                    Some(p) if p.unplaced.is_none()
+                        && matches!(&p.parent, crate::SpatialParent::Direct { domain: carrier, .. } if carrier == domain)
+                );
+                let under_way = world
+                    .module_state::<crate::JourneyBook>()
+                    .is_none_or(|journeys| journeys.under_way(hangar.carrier));
+                landed
+                    && !under_way
+                    && state
+                        .domains
+                        .get(domain)
+                        .is_some_and(|d| d.status == crate::DomainStatus::Active)
+            }
+            _ => false,
+        },
+        crate::SpatialParent::Interior { space, .. } => {
+            *space == hangar.space.object
+                || state
+                    .spaces
+                    .get(space)
+                    .is_some_and(|s| matches!(s.anchor, crate::SpaceAnchor::MovingObject { .. }))
+        }
+        _ => false,
+    }
+}
+
 /// Common physical transition guard. Base presentation stays visible, but a
 /// transition cannot move/re-anchor a retained hull through an ancestor edit.
 pub(crate) fn check_plan(
+    spatial: &crate::SpatialState,
     world: &World,
     plan: &crate::transition::Plan,
 ) -> Result<(), crate::transition::SpatialError> {
@@ -1203,8 +1287,37 @@ pub(crate) fn check_plan(
         if row.open.identity.unit != unit || row.closed.is_some() {
             return Err(crate::transition::SpatialError::IcCustody(unit));
         }
-        // Doc 23 cut S.4b-1: the freeze is unchanged for a hangar (no placement write of the
-        // hull, no rewrite of its interior); S.4b-2 re-scopes it to re-anchoring (D-23-15).
+        // Doc 23 cut S.4b-2 (D-23-15): a hold in a hangar freezes re-anchoring only.
+        if let Some(hangar) = &row.open.hangar {
+            let placed = plan
+                .set_placements
+                .iter()
+                .filter(|p| p.object == unit)
+                .collect::<Vec<_>>();
+            let admitted = placed
+                .iter()
+                .all(|p| hangar_move_admitted(spatial, world, unit, hangar, p));
+            let projected_alone =
+                placed.is_empty() && plan.projections.iter().any(|(object, _)| *object == unit);
+            let bay_rewritten = plan
+                .set_spaces
+                .iter()
+                .any(|s| s.object == hangar.space.object);
+            if !admitted || projected_alone || bay_rewritten {
+                tracing::debug!(
+                    target: "ic_claim",
+                    unit = unit.0,
+                    admitted,
+                    projected_alone,
+                    bay_rewritten,
+                    placements = ?placed.iter().map(|p| &p.parent).collect::<Vec<_>>(),
+                    current = ?spatial.placements.get(&unit).map(|p| &p.parent),
+                    "sim: a hangar hold's freeze refused a plan"
+                );
+                return Err(crate::transition::SpatialError::IcCustody(unit));
+            }
+            continue;
+        }
         if row
             .open
             .base

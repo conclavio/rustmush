@@ -1780,7 +1780,11 @@ fn sealed_sources<'a>(
 ) -> BTreeMap<[u8; 32], String> {
     // 17b cut M4.3: Standard Doctrine's own text with no store at all.
     let store = w.module_state::<crate::store::TacsimStore>();
-    sources_by_seal(seals, |sha256| crate::minds::source_lookup(store, sha256))
+    // Doc 23 cut S.4b-2: a licensed mind's source is the claim's retained one.
+    sources_by_seal(seals, |sha256| {
+        crate::minds::source_lookup(store, sha256)
+            .or_else(|| crate::minds::ic_sortie::retained_source(w, sha256))
+    })
 }
 
 /// **[`sealed_sources`]' rule over any source lookup** (17b cut M3.5): each
