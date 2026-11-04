@@ -272,19 +272,17 @@ id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_ahun
 tier = "by-hand"
 by_hand = "5e03f6d2"
 
-# Doc 39 IN.5's production story, the bot over SSH, about 32 minutes a site on conclav.dev
-# (39 cut notes, IN.5). Ahuna passed end to end at 3046c1c8 (1,895 s); Urvara's run there
-# stopped at the last sale on a busy-order refusal the bot now retries, and its rerun is owed.
+# Doc 39 IN.5's production story, the bot over SSH: both passed side by side on conclav.dev
+# at cdd30329 (Ahuna 1,895 s, Urvara 1,897 s; 39 cut notes, IN.5).
 [[test]]
 id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_ahuna"
 tier = "by-hand"
-by_hand = "3046c1c8"
+by_hand = "cdd30329"
 
 [[test]]
 id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_urvara"
 tier = "by-hand"
-by_hand = "never"
-note = "every step but the last sale passed at 3046c1c8; the retried sale's rerun is owed"
+by_hand = "cdd30329"
 
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.

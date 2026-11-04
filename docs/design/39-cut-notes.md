@@ -514,7 +514,9 @@ bulk mint, so a port boots in exactly main's fires.
   pilot's `@account/list`, `@econ/mint`), staff lines outside the bot's vocabulary.
   The closing check reads `@tacsim/port status`: no line pending, missing or flagged but the two the story's rate
   brings, the rate line itself and Occator's house rig stopped under a claim after the IC month the lift runs.
-  by-hand: _the revision and walls of the conclav.dev run_.
+  by-hand: `cdd30329` (main `a193de9c` with the busy-sale retry), both side by side on conclav.dev: Ahuna 1,895 s,
+  Urvara 1,897 s, each about 570 s of mining, 1,325 s of production and passage, and the sale. Tier: by hand
+  (`test-tiers.toml`).
 
 **Departures from the row.**
 
