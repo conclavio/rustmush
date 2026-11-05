@@ -778,7 +778,7 @@ went red on main once IN.5 (#414) merged after this cut.
     index. For Q-41-29's laden count, `tow::carried_kg` now weighs a fixture carrier's hulls aboard
     (`raiders::aboard_kg`, dry mass, wrecks included), since the carrier has no programme bay for
     `voyage::basis` to read. Salvage of the carrier's bay contents is doc 41's and is not touched here.
-  - **Tests** (`shard_10 field_boarding::`, doc 43 #3, the shard with room):
+  - **Tests** (`domain_field field_boarding::`; before D-43-5, `shard_10`):
     `boarding_a_raider_whose_carrier_is_lost_stays_in_the_field` (the carrier wrecked by staff hand before the
     field) was red before the fix, with both hulls out of the field and off the ground, and is green after (18
     s). `boarding_a_raider_aboard_a_carrier_wrecked_later_is_a_wreck_in_the_bay` (a grounded carrier, one hull
@@ -841,7 +841,7 @@ went red on main once IN.5 (#414) merged after this cut.
       stage it. So nothing is built for it. A resume that lifted the WITHDRAW again for every raider whose
       carrier the snapshot holds lost would close it.
   - **Tests**, each red before the fix and green after:
-    - `shard_10 field_fr5::fr5_ahuna_a_carrier_lost_before_the_load_keeps_the_pair_in_the_field`, the TowLoad
+    - `domain_field field_fr5::fr5_ahuna_a_carrier_lost_before_the_load_keeps_the_pair_in_the_field`, the TowLoad
       path. The pair is let go, its exits are held off the record (`field_crash`'s injected fault), and the
       stranger's fire takes the fragile carrier's hull. The pair is back in the field coupled, the captain still
       flies the tug, and nothing is loaded.
