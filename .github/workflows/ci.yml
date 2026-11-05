@@ -1468,7 +1468,7 @@ jobs:
   nightly-report:
     name: Nightly report
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, tacsim-harness, web]
+    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, tacsim-harness, web]
     runs-on: ubuntu-latest
     steps:
       - name: Name what failed

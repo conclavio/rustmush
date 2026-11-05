@@ -988,3 +988,38 @@ are green by hand and through gate.yml.
 
 **Cell minutes (rule #14): +0.** The tests stay `#[ignore]`d, and no PR cell runs them.
 
+
+### FR.7c — the ledger floor (PR #461; the owner's approval of a test-only floor)
+
+- **The seam.** `tacsim::store::lower_ledger_floor_for_test(w, max_bytes, summary_ms)` sets `[tacsim.arena.ledger]`
+  on the layer's frozen block after the boot has validated it. Every arena started afterwards reads that block
+  (`match_::lobby::configs`).
+- **How it is gated:**
+  - It compiles only under `cfg(test)` or tacsim's new `test-ledger-floor` feature. The feature is off by default,
+    and `mush-bot`'s `[dev-dependencies]` edge alone turns it on (`feature_matrix_inventory`: census 16, allowlist
+    row). No shipped binary carries it.
+  - No config key reaches it. Only Rust code holding the booted world calls it.
+  - `ArenaConfig::validate`'s floors (1 MiB, 1,000 ms), its refusal of a production config below them, and the
+    roll threshold (three quarters of `max_bytes`) are all unchanged.
+  - It is a free function rather than a `TacsimStore` method, so the test file writes no other module's state
+    slot (`state_slot_owners`, `fiat_budget`).
+- **The story.** FR.7's rig calls the seam in its `prepare` closure with FR.4's 48 KiB and a summary every 100 ms.
+  The idle bound falls from 3,300 s to 180 s, and the story's timeout from 100 to 30 minutes.
+- **Runs** (conclav.dev, by hand, renamed binaries, head `a93f3d2d`; the seam's move to a free function after it
+  changes no behaviour):
+
+  | | Ahuna Flank (256) | Urvara Reach (512) |
+  |---|---|---|
+  | Lane at its launch | +340 s | +351 s |
+  | Sight jammed | after 7 shots, +405 s | after 1 shot, +401 s |
+  | Live record's segment by then | 4 | 3 |
+  | Result | green, 585 s | green, 580 s |
+
+  That is about ten minutes a size, down from 3,719 s, and about 340 s of it is the captain lane's clock-bound
+  kit-up and hop.
+- **The tier.** Both rows move from by-hand to **nightly**, on a new ci.yml job, `fr7-round-story`. The job runs
+  `cargo nextest run -P ci-bot -p mush-bot --test mining_cohort --run-ignored only --test-threads 2` with
+  `-E` naming both tests, on the schedule and on dispatch, `timeout-minutes: 90`. It is also in `nightly-report`'s
+  `needs`, and the ci-bot override from #454 still lets each test outlive twenty minutes.
+- **Cell minutes (rule #14).** +0 on every PR cell. The nightly gains one job: the mush-bot test build plus about
+  ten minutes with the two sizes side by side.
