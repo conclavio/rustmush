@@ -1005,15 +1005,32 @@ Service Counter, God's `@unit/damage` for the plant, the bay's quote, stow, bert
 lines: `+yard`, `+market/sell <n>=1`, `customs`/`service`, `+bay <mark|#n>`, `+bay/quote|berth #n`, `+bay/stow #n=<hull>`,
 `+bay/fit #n=<slot> <part>`; readers `yard_booked`, `commissioned`, `bay_ref`. About 29 minutes a site locally.
 
-**Owed / flagged.**
-- **A competing reservation at the deadline**: as built, every order's materials are its own escrow's, so two
-  reservations never compete for one pool, and an overdue reservation is the sweep's; the row's story needs the owner's
-  reading of what competes.
-- **Repairs and remains scrap in the census**: a repair consumes bale kilograms into the hull and nothing durable sums
-  them, and remains scrap's sub-tonne is undeclared, so a window with either does not balance — the case for **the
-  durable matter ledger (option (b))**, named as a future cut.
-- The market's inventory cell on the live server reads no part as indivisible; the gate covers the sale, and why the
-  cell differs (a second registration of the `OnceLock` at boot, likely) is a follow-up.
+**The owner's rulings on the four flagged items (2026-11-05).**
+- **A competing reservation at the deadline: as built is right.** Each order's materials sit in its own escrow, so two
+  reservations never compete for one pool, and an overdue reservation is the sweep's. The row (§9) now says so; nothing
+  is owed.
+- **Repairs and remains scrap in the census: the smaller fix, built.** The durable matter ledger (option (b)) stays
+  parked. `@industry/census` gains two terms:
+  - `repaired` (a sink): the bale kilograms repairs consumed into hulls. Each landed bay order adds its draw to the
+    hull's `BayHull.repaired_kg` (the bale before, the whole tonnes debited into it, less the bale after:
+    `Bale::consumed`). A tender's tend adds its draw to the site's `SiteRecord.matter.repaired_kg`, by what the
+    stores gave, in the tow act's own bundle.
+  - `scrapped` (a source): the alloys a remains scrap mints into a hold, `SiteRecord.matter.scrapped_kg`, in the
+    scrap act's bundle. The hull's mass was never in the census, so the minted tonnes are new matter to it. The
+    sub-tonne under them stays §4.6's declared loss, which the census never counted.
+  - Both fields are omitted at zero, so records that never repaired or scrapped are byte-identical.
+  - The windows: `in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne` holds the balance across
+    the heavy's ten-point patch (`repaired` up by the patch's 90 kg) and across `+bay/return`. The two remains
+    stories hold it across `+tv/1 scrap` (`scrapped` up by 1 t at Ahuna, 40 t at Urvara). `rs1_*` pins the
+    tender's 57 kg on its site's record. A workshop scrap was already a source (its mints are stock receipts) and
+    still is.
+- **The market's indivisible cell on the live server: found and fixed.** It was not a second `OnceLock`. The
+  production composition root (`mush-composition`) built its inventory module without
+  `with_indivisible_goods(PartGoods)` and `with_pool_capacity(PortCapacity)`. Only tacsim's own root, the one the
+  test rigs boot, wired them. So on the server the inventory named no good indivisible, and `@inv/dissolve` into a
+  hold asked no capacity. The production root now wires both when tacsim is on.
+  `split_boundary::boot_parity::in11_the_production_root_reads_a_part_as_indivisible` boots the production root
+  and holds a part indivisible and a bulk good divisible. `VenueGate::indivisible` stays as the market's own guard.
 
 ## IN.9b — the class templates (Q-39-14, Q-39-20, Q-39-35)
 
