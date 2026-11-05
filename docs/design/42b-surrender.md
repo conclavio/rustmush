@@ -28,7 +28,7 @@ no shipped rig can tow a raider's 30 t line tank. The owner has ruled on it twic
    ownerless wreck, salvage of the unowned, rather than claimed. No content and no bay rule
    changed.
 
-SU.7 is #(this PR). Its story runs at 256 and 512: a yielded line tank under a 6 t tug's escort,
+SU.7 is #502. Its story runs at 256 and 512: a yielded line tank under a 6 t tug's escort,
 its crew captured aboard a Dray-P, the hull left titled on the site, and the captor's retrieval
 taken by Tycho Mutual. [42b-cut-notes.md](42b-cut-notes.md) has the details.
 
