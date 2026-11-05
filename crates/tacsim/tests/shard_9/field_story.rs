@@ -858,11 +858,17 @@ async fn field_story(at: &Ground) {
     .await;
     assert!(home, "the tank goes home up the ramp and aboard: {trail:?}");
     if wide {
+        // Doc 40 (the ramp exit's boarding window): the tank boards in the batch that checks it
+        // in, so its check-in pose beside the ramp is never on the ground to read. The kernel let
+        // it go only within one cell of its ramp (`arena::withdraw`), so the ramp's cell is where
+        // the drive ended.
         let line = at.side / 2;
+        let ramp = tacsim::field::raiders::hull_ramp(rig.tw.world(), tank)
+            .map(|(x_cm, y_cm)| tacsim::surface::excursion::site_cell(x_cm, y_cm))
+            .expect("the tank's ramp");
         assert!(
-            trail.first().is_some_and(|cell| cell.0 < line)
-                && trail.iter().any(|cell| cell.0 > line),
-            "the tank's withdrawal crosses the {line} line: {trail:?}"
+            trail.first().is_some_and(|cell| cell.0 < line) && ramp.0 - 1 > line,
+            "the tank's withdrawal crosses the {line} line: from {trail:?} to its ramp at {ramp:?}"
         );
     }
     assert!(
