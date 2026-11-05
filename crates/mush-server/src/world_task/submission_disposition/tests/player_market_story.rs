@@ -708,12 +708,12 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
             "  {code}  {:<24}  {:<11}  class ",
             "sentinel", "sealed"
         )) && row.contains("400cr")
-            && row.ends_with("90+3 days"),
+            && row.ends_with("90+28 days"),
         "{row}"
     );
     let detail = vec![
         format!("Listing {code}: sentinel, sealed, class {class} and above."),
-        "One seat for 90 IC days plus 3 days of Grace; the licence can be resold.".to_owned(),
+        "One seat for 90 IC days plus 28 days of Grace; the licence can be resold.".to_owned(),
         "Price 400cr: Registry 5%, charter owner the rest.".to_owned(),
     ];
     let with = |last: String| -> Vec<String> {
@@ -1281,7 +1281,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     let price = offer
         .first()
         .and_then(|l| l.strip_prefix(&format!("Licence {sealed} renews for ")))
-        .and_then(|rest| rest.split_once(" (90+3 IC days); the offer is open "))
+        .and_then(|rest| rest.split_once(" (90+28 IC days); the offer is open "))
         .and_then(|(price, rest)| rest.ends_with(" more IC hours.").then_some(price))
         .ok_or_else(|| format!("RENEW_OFFER: {offer:?}"))?
         .to_owned();

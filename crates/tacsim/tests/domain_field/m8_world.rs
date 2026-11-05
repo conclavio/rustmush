@@ -1279,7 +1279,8 @@ async fn m8g_story_tier2_held_minds_seal_aboard() {
     // 4. A second paid Pin (Meridiani's), its term and grace past: the ROM, told only here.
     let meridiani = listed[1].clone();
     let lapsing = buy(&mut world, meridiani.2);
-    let past = world.rig.tw.world().now() + 94 * 86_400;
+    // Past the 90-day term and its 28-day Grace (owner rule, 2026-11-04; 3 days before).
+    let past = world.rig.tw.world().now() + (90 + 28 + 1) * 86_400;
     world.rig.tw.world_mut().set_now(past);
     let heard = launch(
         &mut world,
