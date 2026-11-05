@@ -7,7 +7,7 @@
 //! design the yard does not partition (its parts and core leave no remainder, or its class is not
 //! built here) has no bill. The figures are provisional (the owner's economy rule of 2026-10-24).
 //!
-//! The hull recipe pack (`content/industry/hulls-v1.json`) carries each buildable design's bulk
+//! The hull recipe pack (`content/industry/hulls-v2.json`) carries each buildable design's bulk
 //! lines and work units; its test pins every row to `design_bill`, so the pack can never drift
 //! from the design. The parts are the order's own lines, delivered as lots.
 

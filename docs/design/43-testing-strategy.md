@@ -109,9 +109,16 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
    eighteen hours on repeated Windows sweeps).
 2. **The four guards before any push**: `feature_matrix_inventory`, `panic_budget`, `restriction_lints`,
    `state_slot_owners` (2026-10-28, after a feature-gated PoC broke main).
-3. **A new test is a `mod` line** in the group binary that fits (for tacsim, the shard with the most room);
-   `ci_tacsim_shards` refuses a top-level target in no shard. A module moves with its `#[path]` siblings, its
-   subdirectory and its state-slot rows; `crate::<mod>` importers pin a module to its binary.
+3. **A new test is a `mod` line in its domain root** (since D-43-5, 2026-11-04). For tacsim, the module lives
+   at `crates/tacsim/tests/<domain>/<module>.rs` and is declared in `tests/<domain>.rs`, one of
+   `domain_arena`, `domain_economy`, `domain_field` and `domain_world`. It goes in the domain it belongs to,
+   never in the binary with the most room: the CI cells run `--partition hash:N/10` over all four, so
+   nothing is ever resharded. In the other crates it is a `mod` line in the group binary that fits.
+   `ci_tacsim_shards` refuses three things: a top-level target in no cell, a file under a domain directory
+   that its root does not declare, and any directory under `tests/` that is not a domain's (a `shard_N/` from
+   a branch cut before the adoption). A module keeps its `#[path]` siblings and its subdirectory beside it,
+   and `crate::<mod>` importers pin a module to its binary. State-slot rows are keyed by module, so they
+   never move.
 4. **Through the production command paths.** Every cut's story runs the verbs a player runs; a seed is allowed
    when named in the as-built section and the thing claimed is still reached by command (doc 36 §7; the
    allowed-seed table doc 36a §8). The space train's eight direct `SpaceBubbleBook` writes were the breach that
@@ -140,9 +147,11 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
 13. **A cut that touches a hash-pinned file dispatches the harness kind before it is marked ready** (5.4;
     TS.0 writes it into docs/ops.md). Doc 40 §4a's inventory names the files; its FR.5 and doc 23's S.4b are
     the first cuts it binds.
-14. **Every cut's note records its cell's summed-minutes delta** from its PR run's JUnit, and a cut that
-    would set a cell's wall moves its story to the shard with the most room (#3) or lands at the rig's default
-    tempo, never a copied window (5.8; §10.5). The deltas are the step audit's (TS.3b) data.
+14. **Every cut's note records its domain binary's summed-minutes delta** from its PR run's JUnit: the
+    `<testsuite>` of `tacsim::domain_<x>`, summed over the ten cells' reports, not one cell's figure, since
+    the hash spreads a binary over every cell. A cut whose story would be the slowest test of the suite lands
+    at the rig's default tempo, never a copied window (5.8; §10.5); there is no shard to move it to. The
+    deltas are the step audit's (TS.3b) data.
 
 ### 2.4 The numbers, dated
 
@@ -511,9 +520,12 @@ decisions and §8.1 what they change elsewhere.
 - **Q-43-4 Optimised dependencies.** Default: run TS.3's measurement; adopt `opt-level = 1` for all
   dependencies only if a cell's summed minutes fall by a fifth or more; every warm target dir pays one
   dependency rebuild. Alternative: leave the profile as measured on 2026-10-18.
+  **Ruled 2026-11-04 (owner):** `opt-level = 1` kept, and per-crate opt-level 2 not taken. TS.3 measured −27%; see D-43-4.
 - **Q-43-5 Resharding.** Default: keep resharding by hand until TS.12's measurement says the partition's link
   cost is lower; the reshard recipe is scripted and documented. Alternative: adopt domain binaries and hash
   partitioning now, accepting a few minutes of link per cell.
+  **Ruled 2026-11-04 (owner): "Adopt it."** Tacsim's tests are four domain binaries under
+  `--partition hash:N/10` (D-43-5).
 - **Q-43-6 The timing gate's host.** Default: dormant until the first routine redeploy, then re-blessed on
   conclav.io at eight CPUs with a `harness_timing_update` record. Alternative: re-bless on conclav.dev (32
   cores, unrepresentative), or retire the timing gate and keep the deterministic delta alone.
@@ -564,7 +576,8 @@ decisions and §8.1 what they change elsewhere.
   of its own if it sets the wall.
 - **D-43-14 fixes the concurrency expression.** `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`;
   pushes to main, the schedule and dispatches keep every run.
-- **D-43-4 and D-43-5 wait on measurements** (TS.3, TS.12); nothing changes until the figures are in.
+- **D-43-4 is ruled** (2026-11-04: `opt-level = 1` kept, TS.3 merged). **D-43-5 is ruled** (2026-11-04: adopted) on TS.12's figures
+  (the partition refreshed on 2026-11-05: about +31 s a cell, wall and balance no worse than main).
 - **D-43-12 keeps the house rule**: TS.3b's audit may name a step that boots a world to test one refusal, and
   the answer is the clock seam or the field tempo, not a unit test in its place.
 
@@ -579,7 +592,26 @@ Ruled by the owner on 2026-11-03.
   change, no secret.
 - **D-43-4** Optimised dependencies are measured first (TS.3); `opt-level = 1` for all dependencies is adopted
   only if a cell's summed minutes fall by a fifth or more.
-- **D-43-5** Resharding stays by hand until TS.12's measurement shows the partition's link cost is lower.
+  **Ruled 2026-11-04 (owner): keep `opt-level = 1` for all dependencies; per-crate opt-level 2 is not taken.**
+  "yes lets keep opt-level 1, i agree with the findings that per-crate opt-level 2 isnt worth it." TS.3's figures
+  (PR #419, merged; the cut note has the tables):
+  - **Hosted CI:** summed test minutes fell 27% (two runs against main's last three; 11 of 18 cells by a fifth
+    or more).
+  - **conclav.dev, tacsim's whole sweep:** −26%, every binary −20% to −36%, with main against itself at ±0%.
+  - **Cold build of tacsim's tests:** 190 s → 198 s.
+  - **opt-level 2 for the seven hottest crates:** −21% on the same host, worse than level 1.
+- **D-43-5 (ruled 2026-11-04, owner: "Adopt it")** tacsim's integration tests are four domain binaries,
+  `domain_arena`, `domain_economy`, `domain_field` and `domain_world`. Their modules live under
+  `crates/tacsim/tests/<domain>/`, and every `tacsim-integration-N` cell builds all four and runs
+  `cargo nextest run --partition hash:N/10` over them (`scripts/ci-tacsim-shard.sh`).
+  - **The cells.** harness runs first in cell 1 and cost_lane first in cell 2, both whole
+    (`.github/tacsim-integration-shards.txt`).
+  - **The figures** (TS.12, five runs, the cut notes):
+    - about +26 to +31 s of compile and link a cell;
+    - the wall and the balance no worse than the ten hand-balanced shards;
+    - the gc4 race the first reading found gone once the field rigs' seed was pinned.
+  - **Nothing is resharded.** A new module is a `mod` line in its domain root (rule 2.3 #3). A cut reports its
+    domain binary's delta (rule 2.3 #14). docs/ops.md's reshard recipe is gone.
 - **D-43-6 (amended)** The timing baseline is re-blessed on conclav.dev, now, by TS.21, with a record; not on
   conclav.io and not after the redeploy. The cost lane's timing gate follows (§8.1).
 - **D-43-7** T.3c (TS.11) is in this train.

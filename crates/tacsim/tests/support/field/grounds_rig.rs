@@ -1,8 +1,8 @@
 //! **The two grounds every field story stands on** (doc 40 cut FR.0, §4.7, Q-40-23): Ahuna
 //! Flank at 256 a side and Urvara Reach at 512, hoisted here on 2026-11-03 from `field_story`
-//! (crates/tacsim/tests/shard_9/field_story.rs) so that each later cut's story is one script over
-//! both from any shard binary (Q-38-29: every new cut's story at 256 and 512). Every item is
-//! `pub(crate)`; each shard root declares this module by path beside `field_raiders_rig`.
+//! (crates/tacsim/tests/domain_field/field_story.rs) so that each later cut's story is one script over
+//! both from any domain binary (Q-38-29: every new cut's story at 256 and 512). Every item is
+//! `pub(crate)`; each domain root declares this module by path beside `field_raiders_rig`.
 #![allow(dead_code)]
 
 use crate::driving_rig::AHUNA;

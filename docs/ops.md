@@ -2257,10 +2257,23 @@ reason is disk and link time, not test time: every integration binary links the
 whole engine (300–730 MB each), and the 373 targets were 110 GB of the VPS
 runner's target dir against 11 GB of compiled dependencies, and some thirty
 CPU-minutes of relinking after a change to a core crate. The crates merged so
-far: tacsim (T.3a; its files are `shard_1`..`shard_10`, ten since 2026-11-03,
-one per line of `.github/tacsim-integration-shards.txt`, while `harness` and `cost_lane` stay
-targets of their own — a crate-root-only `#![recursion_limit]`; an exclusive
-timing lock and a script-parity test); and since T.3b the three servers:
+far: tacsim, and since T.3b the three servers.
+
+- **tacsim** (T.3a). Since doc 43 cut TS.12's adoption (D-43-5, 2026-11-04) its
+  tests are four **domain binaries**: `domain_arena`, `domain_economy`,
+  `domain_field` and `domain_world`, with their modules under `tests/<domain>/`.
+  They were ten hand-balanced `shard_N` binaries from 2026-11-03 to 04, and fewer
+  before.
+  - **How CI runs them.** Every `tacsim-integration-N` cell builds all four
+    domain binaries and runs `cargo nextest run --partition hash:N/10` over them
+    (`scripts/ci-tacsim-shard.sh`, `.github/tacsim-integration-shards.txt`).
+    The balance is the hash's, so **nothing is ever resharded**: a cut never
+    moves a module to even the cells out.
+  - **The standalone targets.** `harness` and `cost_lane` stay targets of their
+    own: harness has a crate-root-only `#![recursion_limit]`, and cost_lane an
+    exclusive timing lock and a script-parity test. Each runs whole, first, in
+    cell 1 and cell 2.
+- **The three servers:
 mushd (44 files: `durable_process`, `sim_lenses`, `world_journeys`),
 mush-server (31: `commerce_composition`, `split_boundary`, `world_task`) and
 mush-gateway (13: `split_halves`, the one group with an allowed exception to
@@ -2278,23 +2291,30 @@ name is `<module>::<fn>`, and every run line translates as `--test <name>` →
 `--test <group> <name>::`:
 
 ```sh
-cargo nextest run -p tacsim --test shard_7 -E 'test(/^cockpit::/)'   # one module
-cargo test -p tacsim --test shard_7 cockpit::                         # the same, cargo's substring filter
-cargo test -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_blessed -- --exact
+cargo nextest run -p tacsim --test domain_arena -E 'test(/^cockpit::/)'   # one module
+cargo test -p tacsim --test domain_arena cockpit::                          # the same, cargo's substring filter
+cargo test -p tacsim --test domain_field driving::sm4b_the_site_map_fixtures_are_blessed -- --exact
 ```
 
 Two things to know. `cargo test`'s positional filter is a substring match on
 the full name, so `lane::` would also select `cost_lane::…` if both were modules
 of one group: the merge refused a group where a module's name is a suffix of
-another's, and a new module keeps that rule (for tacsim's shards
-`crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs` refuses it since doc 43
-cut TS.0, and refuses a file under `tests/shard_N/` that no root declares, which
-would otherwise compile nowhere). And under plain multi-threaded
+another's, and a new module keeps that rule. For tacsim's domain binaries,
+`crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs` refuses three
+things: such a pair of names; a file under `tests/<domain>/` that its root does not
+declare, which would otherwise compile nowhere; and any directory under `tests/`
+that is not a domain's. And under plain multi-threaded
 `cargo test` a group's modules share one process and its statics (locks, global
 tracing subscribers); sweeps run under nextest, one process per test, as CI and
 the VPS gate do, and `cargo test` is for one test (`--exact`) or one module
-with `--test-threads=1`. A new test file is a `mod` line in the group that fits
-(for tacsim, the shard with the most room). The gated-test inventory
+with `--test-threads=1`. A new test file is a `mod` line in the group that fits.
+For tacsim that is **its domain root** (doc 43 rule 2.3 #3): the file goes at
+`crates/tacsim/tests/<domain>/<name>.rs`, plus a `#[path = "<domain>/<name>.rs"]
+mod <name>;` line in `tests/<domain>.rs`. A branch cut before 2026-11-04 that added
+a module under a `shard_N/` directory moves it there when it merges main; the
+guard names the stray directory until it does. A cut's summed-minutes delta (rule
+2.3 #14) is its domain binary's, summed over the ten cells' JUnit reports
+(`tacsim::domain_<x>`), not one cell's figure. The gated-test inventory
 (`crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs`) reads a group's
 modules and ci.yml's `--test <group> <module>::` lines the way it read whole
 targets. Run lines in design notes written before T.3 name the old targets;

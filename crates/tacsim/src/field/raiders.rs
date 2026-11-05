@@ -571,6 +571,11 @@ pub(crate) fn land_and_launch(
         // Doc 36 cut GC.3 (Q-36-18): an irrecoverable hull is off the ground as remains, not
         // aboard.
         .filter(|hull| !super::close::is_irrecoverable(ctx.w, *hull))
+        // Doc 40 (the ramp exit's boarding window): a hull lost with its carrier is a wreck in
+        // the bay, and a wreck does not drive down a ramp.
+        .filter(|hull| {
+            !mush_tactics::module::unit_of(ctx.w, *hull).is_some_and(crate::arena::damage::is_wreck)
+        })
         .take(cap)
         .collect();
     if aboard.is_empty() {
@@ -687,9 +692,35 @@ pub(crate) fn order_withdraw(ctx: &mut Ctx<'_>, hulls: &[ObjId]) -> Result<(), S
 /// it again is a duplicate the kernel refuses harmlessly. `false` when the field would not take
 /// it now.
 pub(crate) fn order_home(ctx: &mut Ctx<'_>, hull: ObjId) -> bool {
-    use crate::arena::detachment::{
-        DetachmentAuthority, DetachmentCommand, DetachmentControl, DetachmentObjective,
+    use crate::arena::detachment::DetachmentObjective;
+    // A raider leaving runs for its ramp: its WITHDRAW holds fire, so a hull that is fired on
+    // on the way does not stop to stand.
+    let directive = DetachmentObjective {
+        objective: crate::deliberation::order::Objective::Withdraw,
+        constraints: crate::deliberation::order::Constraints {
+            hold_fire: true,
+            ..crate::deliberation::order::Constraints::default()
+        },
     };
+    offer_order(ctx, hull, WITHDRAW_SEQUENCE, Some(directive))
+}
+
+/// The sequence the leader's WITHDRAW stands under ([`order_home`]).
+const WITHDRAW_SEQUENCE: u64 = 1;
+/// **The sequence that lifts it** ([`strand`]): the one order after the WITHDRAW a raider's hull
+/// is ever given, so offering it again is a duplicate too.
+const STRAND_SEQUENCE: u64 = 2;
+
+/// **One leader's order to `hull` in its field** ([`order_home`], [`strand`]): `directive`
+/// under the raider's fence at `sequence`; `None` cancels what stands, so the doctrine fights
+/// on its own. `false` when the field would not take it now.
+fn offer_order(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    sequence: u64,
+    directive: Option<crate::arena::detachment::DetachmentObjective>,
+) -> bool {
+    use crate::arena::detachment::{DetachmentAuthority, DetachmentCommand, DetachmentControl};
     let Some(leader) = leader_of(ctx.w, hull) else {
         return false;
     };
@@ -717,39 +748,120 @@ pub(crate) fn order_home(ctx: &mut Ctx<'_>, hull: ObjId) -> bool {
     let command = DetachmentCommand {
         authority,
         authority_epoch: 1,
-        sequence: 1,
+        sequence,
         issuer: leader,
         issuer_unit: hull,
         squad: crate::deliberation::SquadId {
             team: party,
             index: 1,
         },
-        // A raider leaving runs for its ramp: its WITHDRAW holds fire, so a hull that is fired on
-        // on the way does not stop to stand.
-        directive: Some(DetachmentObjective {
-            objective: crate::deliberation::order::Objective::Withdraw,
-            constraints: crate::deliberation::order::Constraints {
-                hold_fire: true,
-                ..crate::deliberation::order::Constraints::default()
-            },
-        }),
+        directive,
         expires_at_ms: None,
     };
     crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
 }
 
-/// **A raider's hull is out of its field at the ramp** (`super::exit`'s continuation): aboard
-/// its carrier again, its WITHDRAW spent; then its carrier lifts if that was the last one out
-/// ([`lift_check`]).
+/// **A raider's hull is out of its field at the ramp**: aboard its carrier again, its WITHDRAW
+/// spent. Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04, "back in the
+/// field"): run by `super::exit::on_withdrawn` in the batch that checks the hull in, so no
+/// carrier can be wrecked between the release and the boarding; the kernel kept the hull had
+/// its carrier been lost (`crate::arena::withdraw::WithdrawRefusal::CarrierLost`). Its carrier's
+/// lift check follows once the record names the exit (`super::exit`'s continuation).
 ///
 /// # Errors
 ///
 /// The hull could not be taken off the ground.
-pub(crate) fn board(ctx: &mut Ctx<'_>, hull: ObjId, site: &CanonicalId) -> Result<(), String> {
+pub(crate) fn board(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     set_mark(ctx, hull, "withdraw", None)?;
     mush_sim::unplace(ctx, hull, "tacsim: aboard its raider carrier")?;
-    lift_check(ctx, site);
     Ok(())
+}
+
+/// **A raider's hull whose carrier is lost is stranded in the field** (doc 40, the ramp exit's
+/// boarding window; the owner's ruling, 2026-11-04): the kernel kept it at the ramp
+/// (`crate::arena::withdraw::WithdrawRefusal::CarrierLost`), so it never left and stays the
+/// field's unit, on its row. The shape is the least the host can do: nothing to undo or admit
+/// again, since the kernel refused the release on its own live facts at the pulse that would
+/// have let it go. The leader's WITHDRAW is lifted in the kernel ([`STRAND_SEQUENCE`], no
+/// directive), so its doctrine fights as it would, to the death (the owner's ruling on a raid
+/// stranded by its carrier's wreck, 2026-11-04); once the field took that, the hull's mark is
+/// spent, so the host stops asking it out. A busy field leaves the mark, and the next refusal
+/// strands it again.
+pub(crate) fn strand(ctx: &mut Ctx<'_>, hull: ObjId) {
+    if !withdrawing(ctx.w, hull) {
+        return;
+    }
+    if !offer_order(ctx, hull, STRAND_SEQUENCE, None) {
+        return;
+    }
+    if let Err(error) = set_mark(ctx, hull, "withdraw", None) {
+        tracing::warn!(hull = hull.0, %error, "tacsim: a stranded raider's WITHDRAW mark could not be spent");
+        return;
+    }
+    tracing::info!(
+        hull = hull.0,
+        "tacsim: a raider's carrier is lost; its hull is stranded in the field"
+    );
+}
+
+/// **Every raider's hull aboard `carrier` is lost with it** (doc 40, the ramp exit's boarding
+/// window; the owner's ruling, 2026-11-04): when the fixture carrier checks in from a field a
+/// wreck, each hull of its raider aboard it (off the ground, launched from it, in no field
+/// among `units`, not remains) becomes a wreck on its own record — the arena's wreck mark,
+/// [`crate::carrier_damage::wreck_plan`], as a programme carrier's bay rigs are
+/// (`super::close`'s `wreck_bay_rigs`). It stays aboard: the bay is in the wreck, and nothing
+/// deletes it. A wreck aboard never launches again ([`land_and_launch`]).
+pub(crate) fn wreck_aboard(ctx: &mut Ctx<'_>, carrier: ObjId, units: &[ObjId]) {
+    let Some(raider) = raider_of(ctx.w, carrier) else {
+        return;
+    };
+    if ramp_cell(ctx.w, carrier).is_none()
+        || !mush_tactics::module::unit_of(ctx.w, carrier)
+            .is_some_and(crate::arena::damage::is_wreck)
+    {
+        return;
+    }
+    let aboard: Vec<ObjId> = hulls_of(ctx.w, &raider)
+        .into_iter()
+        .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))
+        .filter(|hull| !units.contains(hull))
+        .filter(|hull| mush_sim::pose_of(ctx.w, *hull).is_none())
+        .filter(|hull| !super::close::is_irrecoverable(ctx.w, *hull))
+        .collect();
+    for hull in aboard {
+        let Some(plan) = mush_tactics::module::unit_of(ctx.w, hull).and_then(|cells| {
+            crate::carrier_damage::wreck_plan(crate::carrier_damage::spec_of(ctx.w, cells), cells)
+        }) else {
+            continue;
+        };
+        match mush_tactics::module::apply_plan(ctx, hull, &plan) {
+            Ok(_) => tracing::info!(
+                carrier = carrier.0,
+                hull = hull.0,
+                "tacsim: a raider's hull aboard its wrecked carrier is a wreck"
+            ),
+            Err(error) => {
+                tracing::warn!(carrier = carrier.0, hull = hull.0, %error, "tacsim: a raider's hull aboard its wrecked carrier could not be wrecked");
+            }
+        }
+    }
+}
+
+/// **The dry mass of the raider's hulls aboard `carrier`, kilograms** (doc 40, the ramp exit's
+/// boarding window; Q-41-29's laden count, `crate::surface::tow::carried_kg`): a fixture carrier
+/// has no programme bay, so what it carries is its raider's hulls off the ground that launched
+/// from it, wrecks included. Nothing for a unit that is no fixture carrier.
+pub(crate) fn aboard_kg(w: &World, carrier: ObjId) -> u64 {
+    let Some(raider) = raider_of(w, carrier).filter(|_| ramp_cell(w, carrier).is_some()) else {
+        return 0;
+    };
+    hulls_of(w, &raider)
+        .into_iter()
+        .filter(|hull| carrier_of(w, *hull) == Some(carrier))
+        .filter(|hull| mush_sim::pose_of(w, *hull).is_none())
+        .filter(|hull| !super::close::is_irrecoverable(w, *hull))
+        .filter_map(|hull| crate::carrier_damage::mass_kg(w, hull))
+        .fold(0_u64, u64::saturating_add)
 }
 
 /// **How often the snapshots' lift check runs**, in arena milliseconds (doc 36 cut GC.0; a

@@ -370,7 +370,8 @@ pub fn validate_ic_close_for_unit(
 /// Compute the deterministic dry mass in kilograms for a `tacsim` [`UnitSpec`] (`FO-13`, `Q-S6`).
 #[must_use]
 pub fn dry_mass_kg_for_spec(spec: &UnitSpec) -> u64 {
-    if let Some(logistics) = &spec.logistics {
+    // Doc 39 cut IN.9b: a templated block keeps the structural-point measure below.
+    if let Some(logistics) = spec.logistics.as_ref().filter(|l| !l.derived_mass) {
         return u64::from(logistics.dry_mass_t).saturating_mul(1_000).max(1);
     }
     let mut points: u64 = 0;

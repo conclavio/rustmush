@@ -1,10 +1,10 @@
-//! The helpers of `site_record` (crates/tacsim/tests/shard_N/site_record.rs), hoisted
+//! The helpers of `site_record` (crates/tacsim/tests/domain_field/site_record.rs), hoisted
 //! here on 2026-11-03 so that the modules which import them can live in any
 //! shard binary: a test module can only import from a module of its own
 //! binary, and with the helpers inside the test file every importer was
 //! pinned to the file's shard (the field cluster was 62 summed test-minutes
 //! in one shard). Every item and import is `pub(crate)`; the test half keeps
-//! its name and takes them back with `use crate::site_record_rig::*`. Each shard
+//! its name and takes them back with `use crate::site_record_rig::*`. Each domain
 //! root declares this module by path, like support/vertex.rs.
 #![allow(dead_code, unused_imports)]
 

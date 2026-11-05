@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "note": "Doc 39 cut IN.9b (§4.13, §4.7; Q-39-14, Q-39-20, Q-39-35): the class templates a buildable simulator design takes at the catalogue build, so the yard can lay it up and a carrier can carry it. A templated design keeps its field-ops dry mass (the structural-point measure); dry_mass_t is that mass rounded up to whole tonnes for the readouts that print tonnes. The drone, the carrier, the target, the relay station and the capital hulls take none (Q-39-20, Q-39-35).",
+  "templates": {
+    "armour_cab": {
+      "applies": [
+        "tacsim.unit.line_tank",
+        "tacsim.unit.line_tank_ecm",
+        "tacsim.unit.line_tank_eccm",
+        "tacsim.unit.line_tank_laser",
+        "tacsim.unit.line_tank_thermal",
+        "tacsim.unit.heavy_mk1",
+        "tacsim.unit.scout_mk1"
+      ],
+      "logistics": {
+        "stowage": {
+          "locker": { "accepts": ["stow.provisions"], "limits": { "si.mass_kg": 120, "si.volume_l": 300 } }
+        },
+        "berths": 1,
+        "occupant_allowance_kg": 100,
+        "payload_ceiling_kg": 220
+      },
+      "interior": {
+        "space": "cab",
+        "store": "locker",
+        "berths_slot": { "id": "berths", "maximum_items": 1 },
+        "rooms": [
+          {
+            "id": "cab",
+            "name": "Cab",
+            "kind": "walkable",
+            "short_desc": "A tank's fighting cab: the drive yokes, the sight and the grips at one seat.",
+            "desc": "The fighting cab of a yard-built tank: one seat under the turret ring, the drive yokes at the knees, a hooded sight at the brow and the trigger grips on the seat's arms. A Stickney Yards build plate is riveted beside the sight with the hull's mark stamped into it. The air smells of fresh paint and cold metal.",
+            "details": {
+              "plate": "STICKNEY YARDS, PHOBOS. A build plate with the hull's registry mark, the yard's order number and the date she left the slipway."
+            }
+          },
+          {
+            "id": "locker",
+            "name": "Locker",
+            "kind": "store",
+            "desc": "A bolted kit locker behind the seat: rations, a first-aid pack and a spare headset. Not a place anyone walks."
+          }
+        ],
+        "exits": [],
+        "gauges": { "locker": ["cab"] }
+      }
+    },
+    "walker_cab": {
+      "applies": [
+        "tacsim.unit.biped_mk1",
+        "tacsim.unit.biped_mk2"
+      ],
+      "logistics": {
+        "stowage": {
+          "locker": { "accepts": ["stow.provisions"], "limits": { "si.mass_kg": 120, "si.volume_l": 300 } }
+        },
+        "berths": 1,
+        "occupant_allowance_kg": 100,
+        "payload_ceiling_kg": 220
+      },
+      "interior": {
+        "space": "cab",
+        "store": "locker",
+        "berths_slot": { "id": "berths", "maximum_items": 1 },
+        "rooms": [
+          {
+            "id": "cab",
+            "name": "Cab",
+            "kind": "walkable",
+            "short_desc": "A walker's pilot cab, slung high in the hips, the gait pedals at the feet.",
+            "desc": "The pilot's cab of a yard-built walker, slung high between the hips: one harnessed seat, the gait pedals at the feet, the balance stick at the right hand and the sight and the grips at the brow. Every stride rocks it a hand's breadth. A Stickney Yards build plate is riveted to the frame with the hull's mark stamped into it.",
+            "details": {
+              "plate": "STICKNEY YARDS, PHOBOS. A build plate with the hull's registry mark, the yard's order number and the date she walked off the slipway."
+            }
+          },
+          {
+            "id": "locker",
+            "name": "Locker",
+            "kind": "store",
+            "desc": "A bolted kit locker under the seat: rations, a first-aid pack and a spare headset. Not a place anyone walks."
+          }
+        ],
+        "exits": [],
+        "gauges": { "locker": ["cab"] }
+      }
+    }
+  }
+}

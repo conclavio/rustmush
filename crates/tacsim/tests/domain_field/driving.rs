@@ -1,0 +1,2518 @@
+//! **Doc 20 cut SM.4b acceptance — driving and the map** (doc 20 §1 beats 4, 7 and 9, §4.1,
+//! §4.3, §5, §8, §10, §11; D-20-6, D-20-11, D-20-13; the SM.4b brief's acceptance V1–V5 and its
+//! tests D1–D15 in 3.15).
+//!
+//! A First Captain whose Dray-P is settled on a site's pad drives a rig: `+tv/1 drive C117`
+//! previews the route — its length, its IC time, the charge it costs and what is left after the
+//! trip home — and `go` commits ONE `tacsim_surface_act` (`act: drive`) whose prepare writes the
+//! frozen leg the command planned with ONE A*; the `tacsim.surface` tick projects the leg for
+//! interpolation, places the rig at its end at the due instant and finishes it through
+//! `tacsim_surface_done`, and the operator hears `ARRIVED`. A recover from anywhere on the ground
+//! drives home and climbs aboard as one act. `+tv/map` and `+tv/map site` print the `site.map`
+//! frame, every ore glyph the viewer's own reading.
+//!
+//! The first test is **the freeze census** (the brief's 3.1a, a hard gate run before anything
+//! after the planner was built): from the Dray-P's ramp cell to all 64 field middles of every lane
+//! mining site, over each site's keyless terrain (`tacsim::surface::ground::site_terrain`), the
+//! drive planner's one A* and its freeze; no site may refuse more than 3 of its 64. Its accepted
+//! set — every middle of every site, all at a 1-cell tolerance when the census was first run —
+//! is where the world tests' targets come from.
+//!
+//! Composed on the composition root (`knowing.rs`'s rig, copied: the per-file precedent),
+//! **booted keyed** with the geology key handed in through `tacsim::surface::install_geology`
+//! on every boot (save where a test boots dark on purpose). Every act goes through the real verb,
+//! the real land path and the real tick; rigs are put in place by the tick-batch placement seam a
+//! test may call directly (`mush_sim::place`, `staff_place`), never a fake drive verb.
+
+use crate::driving_rig::*;
+
+/// **The freeze census** (the brief's 3.1a and reviewer resolution R1; a hard gate): for every
+/// lane mining site — at least the lane's six — from the ramp cell `(128, 124)` (pose `(128_000,
+/// 124_500)`) to all 64 field middles `(32fx + 16, 32fy + 16)` over the site's keyless terrain,
+/// one `drive_leg` each. Prints per site the accepted and refused counts, the tolerance each
+/// accepted leg used, the waypoint counts and the exact paths' cell counts (`--nocapture`).
+/// **No site refuses more than 3 of its 64.** The regression guard for the lane's terrain.
+#[test]
+fn sm4b_the_freeze_census() {
+    let tw = booted();
+    let sites = lane_sites();
+    let names: Vec<&str> = sites.iter().map(|(_, name)| name.as_str()).collect();
+    for want in [
+        "Freeport Commons",
+        "Kerwan Floor",
+        "Ahuna Flank",
+        "Juling Shadow",
+        "Occator Rim",
+        "Rheasilvia Commons",
+    ] {
+        assert!(names.contains(&want), "{want} is a lane site: {names:?}");
+    }
+    let rates = rates(&tw);
+    let mut worst = 0_usize;
+    for (entry, name) in &sites {
+        let terrain = tacsim::surface::ground::site_terrain(tw.world(), entry)
+            .unwrap_or_else(|error| panic!("{name}'s terrain: {error}"));
+        let surface = terrain
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        let mut refused = Vec::new();
+        let mut tolerances = [0_usize; 4];
+        let mut waypoints = Vec::new();
+        let mut cells = Vec::new();
+        for fy in 0..8_i64 {
+            for fx in 0..8_i64 {
+                let to = (fx * 32 + 16, fy * 32 + 16);
+                match drive_leg(surface, table(), (RAMP.0, RAMP.1), to, &rates) {
+                    Ok(leg) => {
+                        if let Some(slot) = LEG_TOLERANCE_CELLS
+                            .iter()
+                            .position(|t| *t == leg.tolerance_cells)
+                            .and_then(|i| tolerances.get_mut(i))
+                        {
+                            *slot += 1;
+                        }
+                        waypoints.push(leg.waypoints.len());
+                        cells.push(leg.cells.len());
+                    }
+                    Err(why) => refused.push((to, why)),
+                }
+            }
+        }
+        let (wmin, wmed, wmax) = spread(waypoints);
+        let (cmin, cmed, cmax) = spread(cells);
+        println!(
+            "{name}: accepted {}, refused {} {:?}; tolerance 1/2/4/8 cells: {}/{}/{}/{}; \
+             waypoints min/median/max {wmin}/{wmed}/{wmax}; path cells {cmin}/{cmed}/{cmax}",
+            64 - refused.len(),
+            refused.len(),
+            refused,
+            tolerances[0],
+            tolerances[1],
+            tolerances[2],
+            tolerances[3],
+        );
+        assert!(
+            refused
+                .iter()
+                .all(|(_, why)| matches!(why, LegRefused::Winding { .. } | LegRefused::NoPath)),
+            "{name}: {refused:?}"
+        );
+        worst = worst.max(refused.len());
+        assert!(
+            refused.len() <= 3,
+            "{name} refuses {} of its 64 field middles: {refused:?}",
+            refused.len()
+        );
+    }
+    println!("the worst site refuses {worst} of 64");
+}
+
+/// **The least cost from `from` to every cell of `surface`** (cut AP's independent oracle): a
+/// plain single-source Dijkstra with no heuristic, over `mush_atlas::physics::move_cost` (tracked,
+/// no tags) in the atlas's own neighbour order — the string-keyed step rule, never the dense row
+/// cut AP's search reads. Row-major from the south-west; `None` unreachable.
+fn least_from_cell(
+    surface: &mush_atlas::window::SurfaceComposite,
+    from: (u16, u16),
+) -> Vec<Option<u64>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let w = usize::from(surface.grid.width);
+    let h = usize::from(surface.grid.height);
+    let cell_cm = u32::from(surface.grid.resolution_cm);
+    let mut best: Vec<Option<u64>> = vec![None; w * h];
+    let mut done = vec![false; w * h];
+    let mut open = BinaryHeap::new();
+    best[usize::from(from.1) * w + usize::from(from.0)] = Some(0);
+    open.push(Reverse((0_u64, from.1, from.0)));
+    while let Some(Reverse((g, y, x))) = open.pop() {
+        let i = usize::from(y) * w + usize::from(x);
+        if done[i] {
+            continue;
+        }
+        done[i] = true;
+        let here = surface.cells.get(x, y).expect("on the grid");
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let (nx, ny) = (i32::from(x) + dx, i32::from(y) + dy);
+            let (Ok(nx), Ok(ny)) = (u16::try_from(nx), u16::try_from(ny)) else {
+                continue;
+            };
+            let Some(next) = surface.cells.get(nx, ny) else {
+                continue;
+            };
+            let kind = if dx != 0 && dy != 0 {
+                mush_atlas::StepKind::Diagonal
+            } else {
+                mush_atlas::StepKind::Orthogonal
+            };
+            let Ok(step) =
+                mush_atlas::move_cost(table(), here, next, kind, cell_cm, DRIVE_LOCOMOTION, &[])
+            else {
+                continue;
+            };
+            let ni = usize::from(ny) * w + usize::from(nx);
+            let ng = g + u64::from(step);
+            if !done[ni] && best[ni].is_none_or(|b| ng < b) {
+                best[ni] = Some(ng);
+                open.push(Reverse((ng, ny, nx)));
+            }
+        }
+    }
+    best
+}
+
+/// **Every lane site's 64 ramp legs' Σ cost, recorded at `a0030f71` + SM.7 before cut AP changed
+/// `mush_atlas::physics::path`** (the brief's Step 0), keyed by port entry in entry order, over
+/// each site's keyless terrain (`tacsim::surface::ground::site_terrain`, the census's composite)
+/// from [`RAMP`]. Re-bless only with the lane's terrain (a lane version or a terrain generation
+/// change), never for AP, which proves every cost equal.
+const AP_SITE_LEG_COST_TOTALS: [(&str, u64); 6] = [
+    ("ahuna_port", 1_094_385),
+    ("commons_port", 1_039_283),
+    ("juling_port", 1_072_064),
+    ("kerwan_port", 1_086_989),
+    ("occator_port", 1_063_028),
+    ("rheasilvia_port", 1_056_596),
+];
+
+/// **B1 — every lane leg costs the least, and what it did** (cut AP; the lead's acceptance: "every
+/// path cost equal before and after", and the freeze census's 64 of 64 on every lane site). For
+/// every lane site, over its keyless terrain from the ramp: a plain forward Dijkstra over
+/// `move_cost` ([`least_from_cell`], independent of the atlas's dense `LocomotionCosts`), then
+/// all 64 field middles' `drive_leg` — **every one accepted**, each leg's cost the flood's least
+/// cost at its target, and the site's Σ cost the total recorded before AP changed `path`
+/// ([`AP_SITE_LEG_COST_TOTALS`]). Prints per site the Σ, the tolerance histogram and the waypoint
+/// and path-cell spreads, as the census does (`--nocapture`); those are printed, not asserted —
+/// a tie may break the other way on an equal cost (the brief's Step 4 freeze rule governs them).
+#[test]
+fn ap_every_lane_leg_costs_the_least_and_what_it_did() {
+    let tw = booted();
+    let sites = lane_sites();
+    assert_eq!(sites.len(), AP_SITE_LEG_COST_TOTALS.len(), "{sites:?}");
+    let rates = rates(&tw);
+    let ramp = (
+        u16::try_from(RAMP_CELL.0).expect("x"),
+        u16::try_from(RAMP_CELL.1).expect("y"),
+    );
+    for (n, (entry, name)) in sites.iter().enumerate() {
+        let terrain = tacsim::surface::ground::site_terrain(tw.world(), entry)
+            .unwrap_or_else(|error| panic!("{name}'s terrain: {error}"));
+        let surface = terrain
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        let least = least_from_cell(surface, ramp);
+        let width = usize::from(surface.grid.width);
+        let mut total = 0_u64;
+        let mut tolerances = [0_usize; 4];
+        let mut waypoints = Vec::new();
+        let mut cells = Vec::new();
+        for fy in 0..8_i64 {
+            for fx in 0..8_i64 {
+                let to = (fx * 32 + 16, fy * 32 + 16);
+                let leg = drive_leg(surface, table(), (RAMP.0, RAMP.1), to, &rates)
+                    .unwrap_or_else(|why| panic!("{name}: the leg to {to:?} is refused: {why:?}"));
+                let at =
+                    usize::try_from(to.1).expect("y") * width + usize::try_from(to.0).expect("x");
+                assert_eq!(Some(leg.cost), least[at], "{name}: {to:?} costs the least");
+                total += leg.cost;
+                if let Some(slot) = LEG_TOLERANCE_CELLS
+                    .iter()
+                    .position(|t| *t == leg.tolerance_cells)
+                    .and_then(|i| tolerances.get_mut(i))
+                {
+                    *slot += 1;
+                }
+                waypoints.push(leg.waypoints.len());
+                cells.push(leg.cells.len());
+            }
+        }
+        let (wmin, wmed, wmax) = spread(waypoints);
+        let (cmin, cmed, cmax) = spread(cells);
+        println!(
+            "{name} ({entry}): accepted 64; total cost {total}; tolerance 1/2/4/8 cells: \
+             {}/{}/{}/{}; waypoints min/median/max {wmin}/{wmed}/{wmax}; path cells \
+             {cmin}/{cmed}/{cmax}",
+            tolerances[0], tolerances[1], tolerances[2], tolerances[3],
+        );
+        let (want_entry, want_total) = AP_SITE_LEG_COST_TOTALS[n];
+        assert_eq!(
+            entry.as_str(),
+            want_entry,
+            "the lane's sites in entry order"
+        );
+        assert_eq!(
+            total, want_total,
+            "{name}: the 64 legs' total cost moved from what the old search found"
+        );
+    }
+}
+
+/// **D15 — the lane sites hold only footings and passable craters** (the brief's decisions P5
+/// and P9, D17): every lane site's composite is regolith, rock or ice in every cell, and every
+/// feature it carries blocks no movement — the drive's A* reads cells alone (the atlas's "a path
+/// is geometry"), so the day a site authors a movement-blocking feature this fails.
+#[test]
+fn sm4b_the_lane_sites_hold_only_footings_and_passable_craters() {
+    let tw = booted();
+    for (entry, name) in lane_sites() {
+        let terrain = tacsim::surface::ground::site_terrain(tw.world(), &entry)
+            .unwrap_or_else(|error| panic!("{name}'s terrain: {error}"));
+        let surface = terrain
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        for (x, y, cell) in surface.cells.iter() {
+            assert!(
+                matches!(
+                    cell.class,
+                    mush_atlas::TerrainClass::Regolith
+                        | mush_atlas::TerrainClass::Rock
+                        | mush_atlas::TerrainClass::Ice
+                ),
+                "{name} ({x}, {y}) is {:?}",
+                cell.class
+            );
+        }
+        for feature in &surface.features {
+            assert!(
+                !feature.blocks.movement,
+                "{name}'s {:?} blocks movement",
+                feature.key
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3.2. The home field's cache and its warm
+// ---------------------------------------------------------------------------
+
+/// Whether Ahuna Flank's home field for the ramp cell is built (and keyless).
+fn home_built(tw: &TestWorld) -> Option<bool> {
+    tw.world().module_state::<GeologyState>().and_then(|state| {
+        state
+            .homes()
+            .into_iter()
+            .find(|(entry, ramp, _)| entry.as_str() == AHUNA && *ramp == RAMP_CELL)
+            .map(|(_, _, keyless)| keyless)
+    })
+}
+
+/// **A home is warmed after its site and read by pointer** (the brief's 3.2; decision P1): after
+/// a restart nothing is cached and the home is wanted; the first fire builds the site's ground,
+/// the next the home over it. A drive from the ground answers `GROUND_COLD` until both are warm.
+/// Then the body's table is re-installed — the site cache drops the site — and the home built
+/// over the old ground reads cold: the drive refuses `GROUND_COLD` again, one fire rebuilds the
+/// site, one more the home, and the drive previews.
+#[test]
+fn sm4b_a_home_is_warmed_after_its_site_and_read_by_pointer() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let mut rig = reboot(rig, &[pilot]);
+    assert!(!cached(&rig.tw));
+    assert_eq!(home_built(&rig.tw), None);
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<GeologyState>()
+            .is_some_and(|state| state.homes_wanted().contains(&(cid(AHUNA), RAMP_CELL))),
+        "the boot pass wants the docked hull's home"
+    );
+    let cold = GROUND_COLD.replace("{site}", "Ahuna Flank");
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert_eq!(out.trim(), cold);
+    assert!(queued.is_empty());
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    assert!(cached(&rig.tw), "the site first");
+    assert_eq!(home_built(&rig.tw), None, "the home the fire after");
+    let (out, _) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert_eq!(
+        out.trim(),
+        cold,
+        "a warm site with a cold home is still cold"
+    );
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    assert_eq!(
+        home_built(&rig.tw),
+        Some(false),
+        "built over the warm ground"
+    );
+    let (out, _) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert!(out.contains(" would drive "), "{out}");
+    // A rebuilt ground: the old field reads cold until it is built again over the new one.
+    let ceres = tacsim::surface::body_geology(rig.tw.world(), &cid("ceres")).expect("ceres");
+    let table: BodyGeology = (*ceres).clone();
+    tacsim::surface::install_body_geology(rig.tw.world_mut(), table).expect("re-installed");
+    assert!(!cached(&rig.tw), "the re-install dropped the site");
+    let (out, _) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert_eq!(out.trim(), cold);
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    assert!(cached(&rig.tw));
+    let (out, _) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert_eq!(
+        out.trim(),
+        cold,
+        "the home built over the old ground reads cold"
+    );
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    let (out, _) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert!(out.contains(" would drive "), "{out}");
+    // The review's correctness/F3: a drive's arrival wants its site's home again, and that costs
+    // no build while the field over the same ground stands — the same field, by pointer.
+    let field = home_field(&rig.tw);
+    let _ = act_go(&mut rig, pilot, "+tv/1 drive 140,96 go");
+    let _ = finish(&mut rig, tv, pilot);
+    for _ in 0..2 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    assert!(
+        Arc::ptr_eq(&field, &home_field(&rig.tw)),
+        "the arrival's want did not rebuild the home"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<GeologyState>()
+            .is_some_and(|state| state.homes_wanted().is_empty()),
+        "nothing left wanted"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// **A dark site still warms its way home** (the brief's 3.2; R3): the keyed world's home field
+/// is read; then the world restarts without the key — the geology layer dark — and the boot pass
+/// still wants the docked hull's home; one fire builds it from the keyless terrain, and on 64
+/// sampled cells its cost home equals the keyed world's, cell for cell.
+#[test]
+fn sm4b_a_dark_site_still_warms_its_way_home() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    launched(&mut rig, pilot, tvs[0]);
+    let keyed = home_field(&rig.tw);
+    let mut rig = reboot_with(rig, &[pilot], false);
+    assert!(!cached(&rig.tw));
+    assert_eq!(home_built(&rig.tw), None);
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    assert!(!cached(&rig.tw), "a dark layer builds no site ground");
+    assert_eq!(home_built(&rig.tw), Some(true), "the home, keyless");
+    let dark = home_field(&rig.tw);
+    for n in 0..64_i64 {
+        let cell = ((n * 37 + 11) % 256, (n * 91 + 5) % 256);
+        assert_eq!(dark.cost_at(cell), keyed.cost_at(cell), "{cell:?}");
+    }
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D1–D3. The drive
+// ---------------------------------------------------------------------------
+
+/// A pocket two fields north of the ramp's (`(36, 44)`), its address and its address cell.
+fn north_pocket() -> (String, (i64, i64), (i64, i64)) {
+    let pocket = (36, 44);
+    let addr = pocket_address(pocket.0, pocket.1).expect("an address");
+    (addr, pocket, (pocket.0 * 4 + 2, pocket.1 * 4 + 2))
+}
+
+/// **D1 — a drive is one start, a projected leg and an arrival** (§8; lead rulings 1–3): from
+/// the ramp to a pocket two fields north, the preview names the metres, the IC seconds and the
+/// charge words — after the drive and after the trip home — and commits nothing; `go` queues
+/// exactly one start with `act: drive`; landed, the act carries the leg (the planner's, from the
+/// ramp pose, ≤ 32 waypoints) and is due `leg.secs` on; the next fire writes the projection's
+/// leg; at the due instant the rig stands at the end cell's centre, the finish lands `Done` with
+/// `arrived`, the charge fell by exactly the leg's cu and the operator hears exactly `ARRIVED`.
+/// After a sounding of that pocket, a drive back to it names the reading in brackets.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm4b_a_drive_is_one_start_a_projected_leg_and_an_arrival() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let (addr, pocket, to) = north_pocket();
+    let leg = expect_leg(&mut rig, (RAMP.0, RAMP.1), to);
+    let rates = rates(&rig.tw);
+    let home = home_cu_to(&home_field(&rig.tw), to, &rates).expect("a way home");
+    let before = value_of(&mut rig.tw, tv);
+    // The preview.
+    let (out, queued) = command(&mut rig, pilot, &format!("+tv/1 drive {addr}"));
+    assert!(queued.is_empty(), "a preview queues nothing");
+    let head = format!(
+        "Rig 1 (OWP-TV-01) would drive {} m to {addr}: {} IC s",
+        leg.metres, leg.secs
+    );
+    let tail = format!(
+        "; charge {} → {} %, {} % after the trip home. +tv/1 drive {addr} go sends it.",
+        pct(before),
+        pct(before - leg.cu),
+        pct(before - leg.cu - home)
+    );
+    assert!(
+        out.trim().starts_with(&head) && out.trim().ends_with(&tail),
+        "{out}\n{head}\n{tail}"
+    );
+    assert!(leg.waypoints.len() <= 32);
+    // The go.
+    let out = act_go(&mut rig, pilot, &format!("+tv/1 drive {addr} go"));
+    assert!(
+        out.contains(&format!("Rig 1 drives for {addr}: there ")),
+        "{out}"
+    );
+    let act = act_of(&mut rig.tw, tv);
+    assert_eq!(act.kind, ActKind::Drive);
+    assert_eq!(act.due_ic - act.started_ic, i64::from(leg.secs));
+    assert_eq!(act.reserved_cu, leg.cu);
+    match &act.params {
+        ActParams::Drive {
+            from_bay,
+            target,
+            to: end,
+            waypoints,
+            secs,
+            cost,
+            ..
+        } => {
+            assert!(!from_bay);
+            assert_eq!(target, &addr);
+            assert_eq!(*end, [to.0, to.1]);
+            assert_eq!(waypoints, &leg.waypoints);
+            assert_eq!(*secs, leg.secs);
+            assert_eq!(*cost, leg.cost);
+        }
+        other => panic!("{other:?}"),
+    }
+    // The next fire projects the leg for interpolation.
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    let projected = projection(&rig.tw, tv)
+        .and_then(|rec| rec.leg)
+        .expect("the projected leg");
+    assert_eq!(projected.started_ic, act.started_ic);
+    assert_eq!(projected.waypoints, leg.waypoints);
+    let first = projected.waypoints.first().expect("a first waypoint");
+    assert_eq!((first.x_cm, first.y_cm, first.at_s), (RAMP.0, RAMP.1, 0));
+    let last = projected.waypoints.last().expect("a last waypoint");
+    assert_eq!(
+        (last.x_cm, last.y_cm, last.at_s),
+        (to.0 * 1_000 + 500, to.1 * 1_000 + 500, leg.secs)
+    );
+    // Mid-leg (the review's tests/T5; decision P8, lead ruling 6): the map draws the rig at its
+    // leg's integer interpolation at the frame's instant — never at its start — and the frame
+    // carries the act and the leg; the print's rig line names the drive.
+    let (_, queued) = advance_to(&mut rig, act.started_ic + i64::from(leg.secs) / 2);
+    land_quietly(&mut rig, &queued);
+    let now = ic_now(&rig.tw);
+    assert!(now < act.due_ic, "still under way");
+    let (x, y) = tacsim::port::site_map::leg_position(&leg.waypoints, now - act.started_ic)
+        .expect("a position along the leg");
+    let moving = (x.div_euclid(1_000), y.div_euclid(1_000));
+    assert_ne!(moving, RAMP_CELL, "the rig has left its start");
+    let frame = map_frame(&mut rig, pilot, json!({ "view": "drive", "rig": 1 }));
+    let x0 = frame["origin_cell"][0].as_i64().expect("x0");
+    let y0 = frame["origin_cell"][1].as_i64().expect("y0");
+    assert_eq!(frame["you"], json!([moving.0 - x0, moving.1 - y0]));
+    let rows = frame_rows(&frame);
+    assert_eq!(
+        glyph_at(
+            &rows,
+            (
+                usize::try_from(moving.0 - x0).expect("x"),
+                usize::try_from(moving.1 - y0).expect("y")
+            )
+        ),
+        Some('@')
+    );
+    let shown = &frame["site"]["rigs"][0];
+    assert_eq!(
+        shown["act"],
+        json!({ "kind": "drive", "due_ic": act.due_ic })
+    );
+    assert_eq!(shown["leg"]["started_ic"], json!(act.started_ic));
+    assert_eq!(
+        shown["leg"]["waypoints"],
+        serde_json::to_value(&leg.waypoints).expect("encodes")
+    );
+    let out = run(&mut rig.tw, pilot, "+tv/1/map");
+    assert!(
+        out.contains(&format!("Rig 1: ({}, {}), charge ", moving.0, moving.1))
+            && out.contains(&format!("; driving to {addr}, there ")),
+        "{out}"
+    );
+    // The arrival.
+    let heard = finish(&mut rig, tv, pilot);
+    assert!(on_ground_at(
+        &rig.tw,
+        tv,
+        (to.0 * 1_000 + 500, to.1 * 1_000 + 500, leg.heading_mdeg)
+    ));
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    let last = record.last.expect("the outcome");
+    assert_eq!((last.kind, last.result), (ActKind::Drive, ActResult::Done));
+    assert_eq!(last.arrived, Some([to.0, to.1]));
+    assert_eq!(record.charge.value_cu, before - leg.cu);
+    assert!(!record.charge.in_bay);
+    assert!(projection(&rig.tw, tv).is_some_and(|rec| rec.leg.is_none()));
+    let arrived = ARRIVED
+        .replace("{n}", "1")
+        .replace("{addr}", &addr)
+        .replace("{reading}", "");
+    assert_eq!(count(&heard, &arrived), 1, "{heard}");
+    // A sounding of that pocket; away one pocket and back: the reading in brackets.
+    let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+    let _ = finish(&mut rig, tv, pilot);
+    let _ = act_go(
+        &mut rig,
+        pilot,
+        &format!("+tv/1 drive {},{} go", to.0 + 4, to.1),
+    );
+    let _ = finish(&mut rig, tv, pilot);
+    let _ = act_go(&mut rig, pilot, &format!("+tv/1 drive {addr} go"));
+    let heard = finish(&mut rig, tv, pilot);
+    let ground = ahuna(&mut rig.tw);
+    let text = pocket_row_text(&addr, &ground.pocket(pocket));
+    let words = text
+        .strip_prefix(&format!("{addr} "))
+        .expect("the pocket's words");
+    let arrived = ARRIVED
+        .replace("{n}", "1")
+        .replace("{addr}", &addr)
+        .replace("{reading}", &format!(" ({words})"));
+    assert_eq!(count(&heard, &arrived), 1, "{heard}");
+    no_refused_writes(&rig.tw);
+}
+
+/// **D2 — every target kind lands where it says** (§10): from the ramp, `C117`, `c-nw`, `C`
+/// and `140,96` each preview exactly the planner's leg to the pocket's address cell, the field's
+/// middle, the block's middle and the cell; from a staff-placed stand `ne 300` the leg 21 cells
+/// up each axis. A malformed target answers `DRIVE_USAGE`, a cell off the site
+/// `DRIVE_OFF_SITE`, the rig's own cell `DRIVE_HERE`; none queues anything.
+#[test]
+fn sm4b_every_target_kind_lands_where_it_says() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let c117 = pocket_of_block_index('C', 116).expect("C117");
+    for (typed, words, to) in [
+        ("C117", "C117", (c117.0 * 4 + 2, c117.1 * 4 + 2)),
+        ("c-nw", "field C-NW", (144, 240)),
+        ("C", "block C", (160, 224)),
+        ("140,96", "cell 140,96", (140, 96)),
+    ] {
+        let leg = expect_leg(&mut rig, (RAMP.0, RAMP.1), to);
+        let (out, queued) = command(&mut rig, pilot, &format!("+tv/1 drive {typed}"));
+        assert!(queued.is_empty());
+        assert!(
+            out.contains(&format!(
+                " would drive {} m to {words}: {} IC s",
+                leg.metres, leg.secs
+            )) && out.contains(&format!("+tv/1 drive {typed} go sends it.")),
+            "{typed}: {out}"
+        );
+    }
+    to_cell(&mut rig, tv, (100, 100));
+    let leg = expect_leg(&mut rig, centre((100, 100)), (121, 121));
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 drive ne 300");
+    assert!(queued.is_empty());
+    assert!(
+        out.contains(&format!(
+            " would drive {} m to 300 m NE: {} IC s",
+            leg.metres, leg.secs
+        )),
+        "{out}"
+    );
+    for (typed, line) in [
+        ("xyz", DRIVE_USAGE.replace("{n}", "1")),
+        ("", DRIVE_USAGE.replace("{n}", "1")),
+        ("300,10", DRIVE_OFF_SITE.replace("{site}", "Ahuna Flank")),
+        ("s 3000", DRIVE_OFF_SITE.replace("{site}", "Ahuna Flank")),
+        ("100,100", DRIVE_HERE.replace("{n}", "1")),
+    ] {
+        for go in ["", " go"] {
+            let (out, queued) = command(&mut rig, pilot, &format!("+tv/1 drive {typed}{go}"));
+            assert_eq!(out.trim(), line, "{typed}{go}");
+            assert!(queued.is_empty(), "{typed}{go}");
+        }
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// **D3 — a drive costs its cells in the world** (V2's world half; lead ruling 3): the drive's
+/// `due − started` is `secs_of_cost` of the least path cost the test recomputes with the atlas's
+/// own `path` over the cached composite, and the settled charge falls by exactly `cu_of_cost` of
+/// it.
+#[test]
+fn sm4b_a_kilometre_of_regolith_costs_its_cells_in_the_world() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let rates = rates(&rig.tw);
+    let cost = {
+        let ground = ahuna(&mut rig.tw);
+        match mush_atlas::physics::path(
+            ground.surface(),
+            table(),
+            (128, 124),
+            (140, 96),
+            DRIVE_LOCOMOTION,
+            &[],
+            DRIVE_PATH_BUDGET_CELLS,
+        ) {
+            mush_atlas::physics::PathOutcome::Found(path) => u64::from(path.cost),
+            other => panic!("{other:?}"),
+        }
+    };
+    let before = value_of(&mut rig.tw, tv);
+    let _ = act_go(&mut rig, pilot, "+tv/1 drive 140,96 go");
+    let act = act_of(&mut rig.tw, tv);
+    assert_eq!(
+        Some(u32::try_from(act.due_ic - act.started_ic).expect("seconds")),
+        secs_of_cost(cost, &rates)
+    );
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(
+        Some(value_of(&mut rig.tw, tv)),
+        cu_of_cost(cost, &rates).map(|cu| before - cu)
+    );
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D4. The reserve with the real trip home (V3)
+// ---------------------------------------------------------------------------
+
+/// **D4 — an act that would strand the rig is refused** (V3; lead ruling 4): a drive from the
+/// ramp to the far corner field's middle whose own cost fits but whose cost and trip home leave
+/// one cu under the floor refuses `RESERVE_LOW` — figures pinned — and queues nothing, preview or
+/// `go`; one more cu and it starts. From that far stand a scan at the same margin (its 1,000 cu
+/// and the trip home from where it stands) refuses likewise, and at exactly the floor it runs.
+/// (`NO_WAY_HOME` has no world case on today's lane — every slope is under the tracked limit — so
+/// it is pinned by `drive.rs`'s `sm4b_no_way_home_is_none_and_the_bound_never_understates` and
+/// the refusal line's unit test.)
+#[test]
+fn sm4b_an_act_that_would_strand_the_rig_is_refused() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let to = (16, 16);
+    let leg = expect_leg(&mut rig, (RAMP.0, RAMP.1), to);
+    let rates = rates(&rig.tw);
+    let home = home_cu_to(&home_field(&rig.tw), to, &rates).expect("a way home");
+    assert!(home > 0);
+    let short = floor() - 1 + leg.cu + home;
+    put_charge(&mut rig, tv, short, false);
+    let refusal = RESERVE_LOW
+        .replace("{n}", "1")
+        .replace("{now}", &pct(short).to_string())
+        .replace("{after}", &pct(floor() - 1).to_string())
+        .replace("{floor}", "5");
+    for go in ["", " go"] {
+        let (out, queued) = command(&mut rig, pilot, &format!("+tv/1 drive 16,16{go}"));
+        assert_eq!(out.trim(), refusal, "{go}");
+        assert!(queued.is_empty(), "{go}");
+    }
+    put_charge(&mut rig, tv, short + 1, false);
+    let _ = act_go(&mut rig, pilot, "+tv/1 drive 16,16 go");
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(value_of(&mut rig.tw, tv), floor() + home);
+    // The scan from the far stand carries the real trip home too.
+    let scan_cu = tools_table()
+        .expect("the tools table")
+        .values()
+        .find_map(ToolDef::scanner)
+        .map(|scanner| scanner.scan_cu)
+        .expect("a scanner row");
+    put_charge(&mut rig, tv, floor() - 1 + scan_cu + home, false);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 scan");
+    assert!(
+        out.trim().ends_with("under the 5 % reserve."),
+        "the scan is held to the trip home: {out}"
+    );
+    assert!(queued.is_empty());
+    put_charge(&mut rig, tv, floor() + scan_cu + home, false);
+    let _ = act_go(&mut rig, pilot, "+tv/1 scan go");
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(value_of(&mut rig.tw, tv), floor() + home);
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D5. The recover drives home
+// ---------------------------------------------------------------------------
+
+/// The recover's preview head for a leg home.
+fn recover_head(leg: &Leg) -> String {
+    format!(
+        "Rig 1 (OWP-TV-01) would drive {} m to the stern ramp and climb into the Salt Moth's \
+         bay: {} IC s, then 300 IC s",
+        leg.metres, leg.secs
+    )
+}
+
+/// **D5 — a recover from afar drives home and climbs aboard** (lead ruling 5; decision P6; R3):
+/// from a far stand the preview is `RECOVER_DRIVE_PREVIEW`; `go` queues one start whose act is
+/// a `Recover` carrying the leg home, due `leg.secs + 300` on; at the due instant the rig is in
+/// the bay, `Done`, `RECOVERED` told, the excursion closed and the charge the value less the
+/// leg's cu, in the bay. Short of the leg's charge it refuses `RECOVER_SHORT`; between the leg
+/// and the leg plus the floor it recovers (the floor is waived for the way home). With the layer
+/// dark after a keyless restart a drive and a scan answer `INSTRUMENTS_DARK`, but the recover —
+/// cold until one fire builds the keyless home — previews, starts and lands with `RECOVERED`, its
+/// leg costing what the keyed world's would. With the battery rows taken out it still previews
+/// (`…_UNREAD`), starts and lands.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm4b_recover_from_afar_drives_home_and_climbs_aboard() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let rates = rates(&rig.tw);
+    let far = (60, 200);
+    // (a) The recover with its leg home.
+    launched(&mut rig, pilot, tv);
+    to_cell(&mut rig, tv, far);
+    let leg = recover_leg(&home_field(&rig.tw), centre(far), &rates).expect("a way home");
+    let before = value_of(&mut rig.tw, tv);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
+    assert!(queued.is_empty());
+    assert!(
+        out.trim().starts_with(&recover_head(&leg))
+            && out.trim().ends_with(&format!(
+                "; charge {} → {} %; hopper empty. +tv/1 recover go brings it in.",
+                pct(before),
+                pct(before - leg.cu)
+            )),
+        "{out}"
+    );
+    let out = act_go(&mut rig, pilot, "+tv/1 recover go");
+    assert!(
+        out.contains("Rig 1 drives to the stern ramp: in the bay "),
+        "{out}"
+    );
+    let act = act_of(&mut rig.tw, tv);
+    assert_eq!(act.kind, ActKind::Recover);
+    assert_eq!(act.due_ic - act.started_ic, i64::from(leg.secs) + 300);
+    assert!(matches!(
+        &act.params,
+        ActParams::Drive { from_bay: false, target, .. } if target == "the stern ramp"
+    ));
+    let heard = finish(&mut rig, tv, pilot);
+    assert!(matches!(
+        parent(&rig.tw, tv),
+        SpatialParent::Interior { .. }
+    ));
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    assert_eq!(
+        record.last.as_ref().map(|l| (l.kind, l.result)),
+        Some((ActKind::Recover, ActResult::Done))
+    );
+    assert!(record.excursion.is_none());
+    assert_eq!(
+        record.charge,
+        Charge {
+            value_cu: before - leg.cu,
+            at_ic: act.due_ic,
+            in_bay: true
+        }
+    );
+    let recovered = RECOVERED.replace("{n}", "1").replace("{name}", "Salt Moth");
+    assert_eq!(count(&heard, &recovered), 1, "{heard}");
+    // (b) Short of the leg: refused, whole percent rounded up for the need.
+    launched(&mut rig, pilot, tv);
+    to_cell(&mut rig, tv, far);
+    put_charge(&mut rig, tv, leg.cu - 1, false);
+    let need = (u64::from(leg.cu) * 100).div_ceil(u64::from(battery().capacity_cu));
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
+    assert_eq!(
+        out.trim(),
+        RECOVER_SHORT
+            .replace("{n}", "1")
+            .replace("{now}", &pct(leg.cu - 1).to_string())
+            .replace("{need}", &need.to_string())
+            .replace("{ramp}", "stern ramp")
+    );
+    assert!(queued.is_empty());
+    // (c) Between the leg and the leg plus the floor: it comes home.
+    put_charge(&mut rig, tv, leg.cu + floor() - 1, false);
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(value_of(&mut rig.tw, tv), floor() - 1);
+    // (e) Dark: the keyless way home.
+    put_charge(&mut rig, tv, 100_000, true);
+    launched(&mut rig, pilot, tv);
+    let keyed_cu = leg.cu;
+    let mut rig = reboot_with(rig, &[pilot], false);
+    // Staff place the rig far out after restart through the durable placement seam.
+    to_cell(&mut rig, tv, far);
+    let dark = INSTRUMENTS_DARK.to_owned();
+    for line in ["+tv/1 drive 140,96", "+tv/1 scan"] {
+        let (out, queued) = command(&mut rig, pilot, line);
+        assert_eq!(out.trim(), dark, "{line}");
+        assert!(queued.is_empty());
+    }
+    let (out, _) = command(&mut rig, pilot, "+tv/1 recover");
+    assert_eq!(out.trim(), GROUND_COLD.replace("{site}", "Ahuna Flank"));
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    let (out, _) = command(&mut rig, pilot, "+tv/1 recover");
+    assert!(out.trim().starts_with(&recover_head(&leg)), "{out}");
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    assert_eq!(act_of(&mut rig.tw, tv).reserved_cu, keyed_cu);
+    let heard = finish(&mut rig, tv, pilot);
+    assert_eq!(count(&heard, &recovered), 1, "{heard}");
+    assert!(matches!(
+        parent(&rig.tw, tv),
+        SpatialParent::Interior { .. }
+    ));
+    // (d) The battery rows gone: unread, and still home.
+    launched(&mut rig, pilot, tv);
+    to_cell(&mut rig, tv, far);
+    let before = value_of(&mut rig.tw, tv);
+    unbattery(&mut rig);
+    let (out, _) = command(&mut rig, pilot, "+tv/1 recover");
+    assert!(
+        out.trim().starts_with(&recover_head(&leg)) && out.contains("its charge cannot be read"),
+        "{out}"
+    );
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let heard = finish(&mut rig, tv, pilot);
+    assert_eq!(count(&heard, &recovered), 1, "{heard}");
+    assert_eq!(
+        value_of(&mut rig.tw, tv),
+        before,
+        "no battery row, no figure to spend"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D6, D7. The implied launch and the restart
+// ---------------------------------------------------------------------------
+
+/// The charge a from-bay drive leaves, or a launch and then the same drive from the ramp.
+fn implied_or_twin(implied: bool) -> (u32, Charge) {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let c0 = put_charge(&mut rig, tv, 20_000, true);
+    let (addr, _, to) = north_pocket();
+    let leg = expect_leg(&mut rig, (RAMP.0, RAMP.1), to);
+    if implied {
+        let (out, queued) = command(&mut rig, pilot, &format!("+tv/1 drive {addr}"));
+        assert!(queued.is_empty());
+        let launch = IMPLIED_LAUNCH
+            .replace("{ramp}", "stern ramp")
+            .replace("{site}", "Ahuna Flank");
+        let legs = TWO_LEGS
+            .replace("{down}", "300")
+            .replace("{secs}", &leg.secs.to_string());
+        assert!(
+            out.contains(&format!(
+                " would {launch}drive {} m to {addr}: {legs}",
+                leg.metres
+            )),
+            "{out}"
+        );
+        let out = act_go(&mut rig, pilot, &format!("+tv/1 drive {addr} go"));
+        assert!(
+            out.contains(&format!(
+                "Rig 1 starts down the stern ramp and drives for {addr}: there "
+            )),
+            "{out}"
+        );
+        let record = record_of(&mut rig.tw, tv).expect("the record");
+        let act = record.act.clone().expect("the act");
+        assert_eq!(
+            record.excursion.map(|e| e.id.launch_ic),
+            Some(act.started_ic),
+            "the excursion opens at the start"
+        );
+        assert_eq!(act.due_ic, act.started_ic + 300 + i64::from(leg.secs));
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        assert_eq!(
+            projection(&rig.tw, tv)
+                .and_then(|r| r.leg)
+                .map(|l| l.started_ic),
+            Some(act.started_ic + 300),
+            "the leg starts when the launch half ends"
+        );
+        let _ = finish(&mut rig, tv, pilot);
+        let charge = record_of(&mut rig.tw, tv).expect("the record").charge;
+        assert_eq!(
+            charge.value_cu,
+            charge_at(&c0, act.started_ic + 300, &battery()) - leg.cu
+        );
+        assert!(!charge.in_bay);
+        assert!(on_ground_at(
+            &rig.tw,
+            tv,
+            (to.0 * 1_000 + 500, to.1 * 1_000 + 500, leg.heading_mdeg)
+        ));
+        (leg.cu, charge)
+    } else {
+        launched(&mut rig, pilot, tv);
+        let _ = act_go(&mut rig, pilot, &format!("+tv/1 drive {addr} go"));
+        let _ = finish(&mut rig, tv, pilot);
+        (
+            leg.cu,
+            record_of(&mut rig.tw, tv).expect("the record").charge,
+        )
+    }
+}
+
+/// **D6 — a drive from the bay implies the launch** (lead ruling 1; D22's rule): one start, the
+/// excursion opened at the start, due `300 + leg.secs` on, the leg from the ramp pose and
+/// projected from the end of the launch half; the charge `charge_at(c0, start + 300) − cu` out
+/// of the bay (the bay credits the launch half and no further) — equal to a twin world's
+/// `+tv/launch` then the same drive from the ramp.
+#[test]
+fn sm4b_a_drive_from_the_bay_implies_the_launch() {
+    let (cu, implied) = implied_or_twin(true);
+    let (twin_cu, twin) = implied_or_twin(false);
+    assert_eq!(cu, twin_cu);
+    assert_eq!(
+        implied.value_cu, twin.value_cu,
+        "the bay credits the launch half alike"
+    );
+    assert_eq!(implied.in_bay, twin.in_bay);
+}
+
+/// One world through a drive and a far recover, restarted with each in flight or not: the rig
+/// record, the projection and the placement at the end.
+fn drive_and_recover(restart: bool) -> (RigRecord, TvRec, SpatialParent) {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let (addr, _, _) = north_pocket();
+    for line in [
+        format!("+tv/1 drive {addr} go"),
+        "+tv/1 recover go".to_owned(),
+    ] {
+        let _ = act_go(&mut rig, pilot, &line);
+        let due = due_of(&mut rig.tw, tv);
+        if restart {
+            rig = reboot(rig, &[pilot]);
+            assert_eq!(due_of(&mut rig.tw, tv), due, "the act survives the restart");
+        }
+        let (_, queued) = advance_to(&mut rig, due + 40);
+        assert_eq!(finishes(&queued).len(), 1);
+        land_all(&mut rig, &queued);
+        for _ in 0..2 {
+            let (_, queued) = fire(&mut rig);
+            land_all(&mut rig, &queued);
+        }
+    }
+    (
+        record_of(&mut rig.tw, tv).expect("the record"),
+        projection(&rig.tw, tv).expect("the projection"),
+        parent(&rig.tw, tv),
+    )
+}
+
+/// **D7 — a restart mid-drive equals an uninterrupted run** (§8's restart acceptance; lead ruling
+/// 11): two worlds drive to a pocket and recover from it; one restarts with each act in flight.
+/// The drive lands at its own due instant and the far recover with its leg likewise: the record,
+/// the projection and the placement are equal.
+#[test]
+fn sm4b_a_restart_mid_drive_equals_an_uninterrupted_run() {
+    let straight = drive_and_recover(false);
+    let restarted = drive_and_recover(true);
+    assert_eq!(restarted.0, straight.0, "the record");
+    assert_eq!(restarted.1, straight.1, "the projection");
+    assert_eq!(restarted.2, straight.2, "the placement");
+    assert!(matches!(straight.2, SpatialParent::Interior { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// D8. Rights: no licence, a held block (V1)
+// ---------------------------------------------------------------------------
+
+/// **D8 — a rig without a licence drives and recovers on a held block** (V1; lead ruling 9): on
+/// Occator Rim, whose inner blocks F, G, J and K are held by Occator Water & Propellant, a pilot
+/// whose licence has lapsed (`licence_gate` errs, asserted) launches, drives to a pocket in block
+/// F and recovers from there; both are `Done`. No licence and no tenure is read by a movement act.
+#[test]
+fn sm4b_no_licence_drives_and_recovers_on_a_held_block() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad_at(&mut rig, "Pilot", 1, "Salt Moth", "occator", "occator_port");
+    let tv = tvs[0];
+    let key = {
+        let account = rig
+            .oracle
+            .0
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&pilot).copied())
+            .expect("an account");
+        tacsim::port::licence::licence_key(account)
+    };
+    let mut rig = reboot_editing(rig, key.as_str(), &[pilot], |doc| {
+        let first = doc["first_bought_ic"].as_i64().expect("a first instant");
+        doc["expires_ic"] = json!(first + 1);
+        doc["grace_secs"] = json!(0);
+    });
+    warm(&mut rig);
+    let now = ic_now(&rig.tw);
+    assert!(tacsim::port::licence::licence_gate(rig.tw.world(), pilot, now).is_err());
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, pilot);
+    let f120 = pocket_of_block_index('F', 119).expect("F120");
+    let addr = pocket_address(f120.0, f120.1).expect("an address");
+    assert!(addr.starts_with('F'), "{addr}: a held block");
+    let _ = act_go(&mut rig, pilot, &format!("+tv/1 drive {addr} go"));
+    let _ = finish(&mut rig, tv, pilot);
+    let last = record_of(&mut rig.tw, tv).and_then(|r| r.last);
+    assert_eq!(
+        last.map(|l| (l.kind, l.result)),
+        Some((ActKind::Drive, ActResult::Done))
+    );
+    let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, pilot);
+    let last = record_of(&mut rig.tw, tv).and_then(|r| r.last);
+    assert_eq!(
+        last.map(|l| (l.kind, l.result)),
+        Some((ActKind::Recover, ActResult::Done))
+    );
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D9, D10. A forged or stale start; cold ground
+// ---------------------------------------------------------------------------
+
+/// **D9 — a forged or stale drive start is refused** (the brief's decision P2): a raw start with
+/// `act: drive` and no order refuses "that act was not planned; preview it again" (doc 20 cut
+/// SM.7's rewording of the shared word); an order
+/// planned for one ordinal, overtaken by another act, cannot start at the next ("that rig's
+/// orders moved on"); a rig staff-moved after its drive's `go` and before the start lands refuses
+/// "that rig has moved since the drive was planned". None writes the record.
+#[test]
+fn sm4b_a_forged_or_stale_drive_start_is_refused() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let n = record_of(&mut rig.tw, tv).expect("the record").ordinal;
+    let forged = start(&rig, pilot, tv, "drive", n + 1);
+    let refused = land(&mut rig, &forged).expect_err("no order");
+    assert!(
+        refused.contains("that act was not planned; preview it again"),
+        "{refused}"
+    );
+    // An order for ordinal n + 1, overtaken by a scan at n + 1.
+    let (_, queued) = command(&mut rig, pilot, "+tv/1 drive 140,96 go");
+    assert_eq!(queued.len(), 1);
+    let scan = start(&rig, pilot, tv, "scan", n + 1);
+    land(&mut rig, &scan).expect("the scan lands");
+    let _ = finish(&mut rig, tv, pilot);
+    let before = record_of(&mut rig.tw, tv);
+    let refused = land(&mut rig, &queued[0]).expect_err("overtaken");
+    assert!(refused.contains("that rig's orders moved on"), "{refused}");
+    let stale = start(&rig, pilot, tv, "drive", n + 2);
+    let refused = land(&mut rig, &stale).expect_err("the order's ordinal");
+    assert!(refused.contains("that rig's orders moved on"), "{refused}");
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    // A rig moved after the go.
+    let (_, queued) = command(&mut rig, pilot, "+tv/1 drive 140,96 go");
+    assert_eq!(queued.len(), 1);
+    to_cell(&mut rig, tv, (130, 130));
+    let refused = land(&mut rig, &queued[0]).expect_err("moved");
+    assert!(
+        refused.contains("that rig has moved since the drive was planned"),
+        "{refused}"
+    );
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    // The review's correctness/F5: two `go`s before either lands. The second order replaces the
+    // first, so the first's start — which names the first's end cell — refuses and changes
+    // nothing; the second's runs the second's leg. The world never runs a drive it did not tell.
+    let (_, first) = command(&mut rig, pilot, "+tv/1 drive 144,112 go");
+    let (_, second) = command(&mut rig, pilot, "+tv/1 drive 112,112 go");
+    assert_eq!((first.len(), second.len()), (1, 1));
+    assert_eq!(first[0].parameters["to"], json!(112 * 256 + 144));
+    assert_eq!(second[0].parameters["to"], json!(112 * 256 + 112));
+    let refused = land(&mut rig, &first[0]).expect_err("replaced");
+    assert!(refused.contains("that rig's orders moved on"), "{refused}");
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    land(&mut rig, &second[0]).expect("the second order starts");
+    assert!(matches!(
+        act_of(&mut rig.tw, tv).params,
+        ActParams::Drive { to: [112, 112], .. }
+    ));
+    no_refused_writes(&rig.tw);
+}
+
+/// **D10 — a drive refuses cold ground and warms it** (lead ruling 6's rule; R4): after a
+/// restart the site is cold — the drive answers `GROUND_COLD` and queues nothing; one fire warms
+/// the site, and the home field is still cold — `GROUND_COLD` again; the next fire warms the
+/// home, and the drive previews.
+#[test]
+fn sm4b_a_drive_refuses_cold_ground_and_warms_it() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    launched(&mut rig, pilot, tvs[0]);
+    let mut rig = reboot(rig, &[pilot]);
+    let cold = GROUND_COLD.replace("{site}", "Ahuna Flank");
+    for fires in 0..2 {
+        let (out, queued) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+        assert_eq!(out.trim(), cold, "after {fires} fires");
+        assert!(queued.is_empty());
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 drive 140,96");
+    assert!(out.contains(" would drive "), "{out}");
+    assert!(queued.is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+/// Staff place `tv` back `Interior` in `row`'s bay compartment (`excursions.rs`'s).
+fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
+    let bay = ObjId(row.rooms[&cid("bay")]);
+    let slot = mush_sim::SlotId::new("rigs").expect("a slot");
+    let placed = support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::place_interior(ctx, tv, bay, Some(slot))
+    });
+    placed.expect("staff place the rig in the bay");
+}
+
+/// **The cheap gates answer before the search** (R4; the review's tests/T4): on a cold site —
+/// right after a restart, nothing warmed, where a search would first answer `GROUND_COLD` — a rig
+/// back in the bay with its excursion still open answers `LAUNCH_OPEN`, the battery rows gone
+/// answer `TV_DARK`, and a rig mid-drive answers `RIG_BUSY` — never `GROUND_COLD`, so none of
+/// them reached the peeks or paid the search; none queues anything.
+#[test]
+fn sm4b_the_cheap_gates_answer_before_the_search() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let mut rig = reboot(rig, &[pilot]);
+    assert!(!cached(&rig.tw), "the site is cold");
+    // Back in the bay with the excursion open: the implied launch's half refuses.
+    staff_bay(&mut rig, tv, &row);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 drive 144,112");
+    assert_eq!(out.trim(), LAUNCH_OPEN.replace("{n}", "1"));
+    assert!(queued.is_empty());
+    // The battery rows gone: dark, before the record and the search.
+    unbattery(&mut rig);
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 drive 144,112");
+    assert_eq!(out.trim(), TV_DARK.replace("{name}", "Salt Moth"));
+    assert!(queued.is_empty());
+    // Busy: a drive in flight, then a restart that leaves the site cold.
+    let mut rig = reboot(rig, &[pilot]);
+    staff_place(&mut rig, tv, RAMP.0, RAMP.1);
+    warm(&mut rig);
+    let _ = act_go(&mut rig, pilot, "+tv/1 drive 144,112 go");
+    let mut rig = reboot(rig, &[pilot]);
+    assert!(!cached(&rig.tw), "the site is cold again");
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 drive 112,112");
+    assert!(
+        out.trim()
+            .starts_with("Rig 1 is driving to cell 144,112: done "),
+        "{out}"
+    );
+    assert!(queued.is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+/// **The map shows only its own site's rigs** (the review's correctness/F1): B docked on Ahuna
+/// Flank, C on Occator Rim. C's rig driving on Occator — its leg in Occator's cells — is never
+/// drawn on B's Ahuna map: B's frames mid-drive are byte-identical to before it. Then C's rig,
+/// fresh from a loud sounding on Occator, is staff-placed onto Ahuna's ground: B, with no rig on
+/// the ground, sees it as a presence band (doc 32 cut CF.4: never an `o` beyond sight) with no
+/// sounding mark (the sounding was another site's), and C — none of whose rigs is on
+/// Occator's ground or in the bay now — is refused with `MAP_NO_RIGS`, naming no slot.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm4b_the_map_shows_only_its_own_sites_rigs() {
+    let mut rig = stocked();
+    let (c, _, c_tvs) = on_pad_at(&mut rig, "Pilot", 1, "Salt Moth", "occator", "occator_port");
+    let c_tv = c_tvs[0];
+    let (b, _, b_tvs) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 1);
+    // B's one rig in the bay at full charge, so B's own `rigs` block cannot drift (D12's rule).
+    put_charge(&mut rig, b_tvs[0], 100_000, true);
+    // Both sites warm, their homes built (`warm` stops at the first site it finds).
+    for entry in ["occator_port", AHUNA] {
+        for _ in 0..8 {
+            if rig
+                .tw
+                .world()
+                .module_state::<GeologyState>()
+                .is_some_and(|state| {
+                    state
+                        .homes()
+                        .iter()
+                        .any(|(site, _, keyless)| site.as_str() == entry && !keyless)
+                })
+            {
+                break;
+            }
+            let (_, queued) = fire(&mut rig);
+            land_quietly(&mut rig, &queued);
+        }
+    }
+    let _ = act_go(&mut rig, c, "+tv/1 launch go");
+    let _ = finish(&mut rig, c_tv, c);
+    let views = [json!({ "view": "drive" }), json!({ "view": "site" })];
+    let frames = |rig: &mut Rig| -> Vec<Value> {
+        views
+            .iter()
+            .map(|args| map_frame(rig, b, args.clone()))
+            .collect()
+    };
+    let before = frames(&mut rig);
+    for frame in &before {
+        assert!(
+            frame["units"]
+                .as_array()
+                .is_some_and(|units| units.iter().all(|u| u["glyph"] != "o"))
+        );
+        assert_eq!(frame["site"]["others"], json!([]));
+    }
+    // C drives on Occator; mid-leg, B's Ahuna map is unchanged.
+    let _ = act_go(&mut rig, c, "+tv/1 drive 144,112 go");
+    let act = act_of(&mut rig.tw, c_tv);
+    assert_eq!(act.site.as_str(), "occator_port");
+    let (_, queued) = advance_to(&mut rig, act.started_ic + (act.due_ic - act.started_ic) / 2);
+    land_quietly(&mut rig, &queued);
+    assert!(ic_now(&rig.tw) < act.due_ic, "still under way");
+    assert_eq!(
+        frames(&mut rig),
+        before,
+        "another site's drive is not drawn"
+    );
+    let _ = finish(&mut rig, c_tv, c);
+    // A loud sounding on Occator, then staff put C's rig on Ahuna's ground inside the hour.
+    let _ = act_go(&mut rig, c, "+tv/1 sound go");
+    let _ = finish(&mut rig, c_tv, c);
+    let last = record_of(&mut rig.tw, c_tv)
+        .and_then(|record| record.last)
+        .expect("the sounding's outcome");
+    assert_eq!(
+        (last.kind, last.result, last.site.as_str()),
+        (ActKind::Sound, ActResult::Done, "occator_port")
+    );
+    to_cell(&mut rig, c_tv, (150, 150));
+    let site = map_frame(&mut rig, b, json!({ "view": "site" }));
+    assert_eq!(
+        site["site"]["others"],
+        json!([]),
+        "beyond the sight of B's rigs (none out): a band, never a cell"
+    );
+    let presence = site["site"]["presence"].as_array().expect("presence");
+    assert_eq!(presence.len(), 1, "{presence:?}");
+    assert_eq!(
+        presence[0].get("sounding"),
+        None,
+        "a sounding on another site is no mark here"
+    );
+    let out = run(&mut rig.tw, b, "+tv/map site");
+    assert!(!out.contains(" (a sounding)"), "{out}");
+    // C, with no rig on Occator's ground or in the bay: no slot named.
+    let (out, queued) = command(&mut rig, c, "+tv/map");
+    assert_eq!(out.trim(), MAP_NO_RIGS.replace("{site}", "Occator Rim"));
+    assert!(queued.is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D11–D13. The map
+// ---------------------------------------------------------------------------
+
+/// The keyed truth's glyph at a pocket for a family (the frame's digit rule).
+fn truth_glyph(ground: &Ground, pocket: (i64, i64), family: usize) -> char {
+    let classes = ground.pocket(pocket);
+    match classes[family] {
+        tacsim::surface::Word::Rich => '3',
+        tacsim::surface::Word::Fair => '2',
+        tacsim::surface::Word::Lean => '1',
+        tacsim::surface::Word::Barren
+            if classes.iter().any(|c| *c != tacsim::surface::Word::Barren) =>
+        {
+            '+'
+        }
+        tacsim::surface::Word::Barren => '.',
+    }
+}
+
+/// The Dray-P's ore compartments' mass limit, kilograms, from content.
+fn ore_mass_limit(tw: &TestWorld) -> u64 {
+    let spec = store(tw)
+        .definitions()
+        .specs
+        .get(&cid(DRAY_P))
+        .cloned()
+        .expect("the Dray-P");
+    let logistics = spec.logistics.expect("its logistics");
+    logistics
+        .stowage
+        .values()
+        .filter(|compartment| compartment.accepts.contains(&cid("stow.ore")))
+        .map(|compartment| {
+            compartment
+                .limits
+                .get(&cid("si.mass_kg"))
+                .copied()
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+/// **D11 — the map shows your readings and nothing else** (lead rulings 6 and 7): two rigs on
+/// the ground, the first having scanned and sounded a field's middle. `+tv/1 map` prints the
+/// title, doc 20's legend verbatim (over two lines within 118 columns), 28 grid rows of 56
+/// columns, the footer and the vector lines; every sounded pocket's address cell in the window
+/// holds the keyed truth's digit in the family shown — the family with most readings — and `@`
+/// stands on each rig with its slot east of it. `+tv/map site` prints 32 rows of 64 columns with
+/// every block's letter at its north-west corner and `H` on the pad; `+tv/map volatiles` switches
+/// the family; `+tv/map quartz` answers `MAP_FAMILY_UNKNOWN`. The frame's `units` reproduce its
+/// `rows` through `mush_ansi::expand_rows` (R5), and with one rig's hopper holding 3 t of metal
+/// ore and the hold 10 t, the hold's unreserved room is `⌊(limit − 13,000) / 1000⌋` t (R6).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm4b_the_map_shows_your_readings_and_nothing_else() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 2);
+    launched(&mut rig, pilot, tvs[0]);
+    let _ = act_go(&mut rig, pilot, "+tv/2 launch go");
+    let _ = finish(&mut rig, tvs[1], pilot);
+    let stand = (144, 176);
+    to_cell(&mut rig, tvs[0], stand);
+    to_cell(&mut rig, tvs[1], (148, 170));
+    let _ = act_go(&mut rig, pilot, "+tv/1 scan go");
+    let _ = finish(&mut rig, tvs[0], pilot);
+    let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+    let _ = finish(&mut rig, tvs[0], pilot);
+    let chart = chart_of(&mut rig.tw, pilot).expect("the row");
+    let ground = ahuna(&mut rig.tw);
+    // The family with most readings among the sounded pockets in the drive view.
+    let frame = map_frame(&mut rig, pilot, json!({ "view": "drive", "rig": 1 }));
+    let x0 = frame["origin_cell"][0].as_i64().expect("x0");
+    let y0 = frame["origin_cell"][1].as_i64().expect("y0");
+    let family_label = frame["site"]["family"]
+        .as_str()
+        .expect("a family")
+        .to_owned();
+    let families = [
+        "metals",
+        "volatiles",
+        "carbon feedstock",
+        "strategic elements",
+    ];
+    let family = families
+        .iter()
+        .position(|f| *f == family_label)
+        .expect("a family");
+    let in_view = |p: (i64, i64)| {
+        let (cx, cy) = (p.0 * 4 + 2, p.1 * 4 + 2);
+        (x0..x0 + 28).contains(&cx) && (y0..y0 + 28).contains(&cy)
+    };
+    let sounded: Vec<(i64, i64)> = (0..64_i64)
+        .flat_map(|py| (0..64_i64).map(move |px| (px, py)))
+        .filter(|p| chart.pocket_sounded(*p))
+        .collect();
+    assert!(!sounded.is_empty());
+    // The default family: the most non-barren readings in view — sounded pockets at their
+    // address cells and scanned fields at their middles, ties in family order.
+    let field_in_view = |f: (i64, i64)| {
+        let (cx, cy) = (f.0 * 32 + 16, f.1 * 32 + 16);
+        (x0..x0 + 28).contains(&cx) && (y0..y0 + 28).contains(&cy)
+    };
+    let counts: Vec<usize> = (0..4)
+        .map(|f| {
+            let pockets = sounded
+                .iter()
+                .filter(|p| in_view(**p))
+                .filter(|p| ground.pocket(**p)[f] != tacsim::surface::Word::Barren)
+                .count();
+            let fields = chart
+                .fields
+                .iter()
+                .filter_map(|(index, row)| {
+                    let field = (i64::from(*index) % 8, i64::from(*index) / 8);
+                    (field_in_view(field) && row.footing != tacsim::surface::Footing::Ice).then(
+                        || {
+                            tacsim::surface::reading::read_r1(
+                                &geology_keyed::mac(KEY_1),
+                                &ground.body,
+                                &ground.field(field),
+                                row.footing,
+                            )[f]
+                        },
+                    )
+                })
+                .filter(|reading| {
+                    *reading != tacsim::surface::FieldReading::Exact(tacsim::surface::Word::Barren)
+                })
+                .count();
+            pockets + fields
+        })
+        .collect();
+    let best = counts.iter().copied().max().unwrap_or(0);
+    let first_best = counts.iter().position(|c| *c == best).unwrap_or(0);
+    assert_eq!(family, first_best, "{counts:?} vs {family_label}");
+    let rows = frame_rows(&frame);
+    assert_eq!(rows.len(), 28);
+    let at = |cell: (i64, i64)| {
+        (
+            usize::try_from(cell.0 - x0).expect("x"),
+            usize::try_from(cell.1 - y0).expect("y"),
+        )
+    };
+    // The rigs and their slots stand over whatever is beneath them; everywhere else a sounded
+    // pocket's address cell holds the keyed truth's glyph in the family shown.
+    let rigs_cells = [stand, (stand.0 + 1, stand.1), (148, 170), (149, 170)];
+    let mut checked = 0;
+    for p in sounded.iter().filter(|p| in_view(**p)) {
+        let cell = (p.0 * 4 + 2, p.1 * 4 + 2);
+        if rigs_cells.contains(&cell) {
+            continue;
+        }
+        let glyph = glyph_at(&rows, at(cell)).expect("a glyph");
+        assert_eq!(glyph, truth_glyph(&ground, *p, family), "{p:?}");
+        checked += 1;
+    }
+    assert!(checked > 0);
+    assert_eq!(glyph_at(&rows, at(stand)), Some('@'));
+    assert_eq!(glyph_at(&rows, at((stand.0 + 1, stand.1))), Some('1'));
+    assert_eq!(glyph_at(&rows, at((148, 170))), Some('@'));
+    assert_eq!(glyph_at(&rows, at((149, 170))), Some('2'));
+    // The units overlay reproduces the rows (R5).
+    let expanded: Vec<String> = mush_ansi::panel::expand_rows(&frame)
+        .into_iter()
+        .map(|r| r.into_iter().collect())
+        .collect();
+    assert_eq!(expanded, rows);
+    // The review's correctness/F6: every reading the map lists is one the render door
+    // (`chart::pocket_reading`, `chart::field_reading`) gives the same viewer — the map is never
+    // a second way to read a reading.
+    let listed = frame["site"]["readings"].as_array().expect("readings");
+    assert!(!listed.is_empty());
+    for reading in listed {
+        let text = reading["text"].as_str().expect("a text");
+        let cell = (
+            reading["cell"][0].as_i64().expect("x"),
+            reading["cell"][1].as_i64().expect("y"),
+        );
+        let (name, words) = text.split_once(' ').expect("a name and its words");
+        let (door, separator) = if name.contains('-') {
+            (
+                tacsim::surface::chart::field_reading(
+                    rig.tw.world(),
+                    &cid(AHUNA),
+                    Some(&chart),
+                    (cell.0 / 32, cell.1 / 32),
+                ),
+                "; ",
+            )
+        } else {
+            (
+                tacsim::surface::chart::pocket_reading(
+                    rig.tw.world(),
+                    &cid(AHUNA),
+                    Some(&chart),
+                    (cell.0 / 4, cell.1 / 4),
+                ),
+                ", ",
+            )
+        };
+        let parts = door
+            .strip_prefix(&format!("{name} "))
+            .unwrap_or_else(|| panic!("the door names {name}: {door}"));
+        assert!(
+            parts.split(separator).any(|part| part == words),
+            "{text} is not the door's {door}"
+        );
+    }
+    // The line print.
+    let out = run(&mut rig.tw, pilot, "+tv/1/map");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some(format!("Rig 1 on Ahuna Flank: {family_label} shown").as_str())
+    );
+    assert_eq!(
+        format!("{}{}", lines[1], lines[2]),
+        tacsim::port::site_map::SITE_LEGEND
+    );
+    for (i, row) in rows.iter().rev().enumerate() {
+        let doubled: String = row.chars().flat_map(|c| [c, c]).collect();
+        assert_eq!(lines[3 + i], doubled, "row {i}");
+        assert_eq!(lines[3 + i].chars().count(), 56);
+    }
+    assert!(
+        lines[31].starts_with(&format!(
+            "x {x0}..{}  y {y0}..{}  of 256x256  rig 1 at (144, 176)",
+            x0 + 27,
+            y0 + 27
+        )),
+        "{}",
+        lines[31]
+    );
+    assert!(lines.iter().all(|l| l.chars().count() <= 118), "{out}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with(&format!("Readings, {family_label}: "))),
+        "{out}"
+    );
+    // The site view.
+    let site = map_frame(&mut rig, pilot, json!({ "view": "site" }));
+    let site_rows = frame_rows(&site);
+    assert_eq!(site_rows.len(), 32);
+    // Each block's letter on its north-west corner cell, under the layers above it (a reading,
+    // a pit, a rig or the hull may stand there).
+    let mut letters = 0;
+    for by in 0..4_usize {
+        for bx in 0..4_usize {
+            let letter = char::from(b"ABCDEFGHIJKLMNOP"[(3 - by) * 4 + bx]);
+            let glyph = glyph_at(&site_rows, (bx * 8, by * 8 + 7)).expect("a corner");
+            if glyph == letter {
+                letters += 1;
+            } else {
+                assert!(
+                    "123+.vV#@oH".contains(glyph),
+                    "block {letter}'s corner holds {glyph:?}"
+                );
+            }
+        }
+    }
+    assert!(letters >= 12, "{letters} letters show");
+    assert_eq!(glyph_at(&site_rows, (16, 16)), Some('H'));
+    let expanded: Vec<String> = mush_ansi::panel::expand_rows(&site)
+        .into_iter()
+        .map(|r| r.into_iter().collect())
+        .collect();
+    assert_eq!(expanded, site_rows);
+    let out = run(&mut rig.tw, pilot, "+tv/map site");
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines.len() > 3 + 32, "{out}");
+    for (i, row) in site_rows.iter().rev().enumerate() {
+        assert_eq!(lines[3 + i].chars().count(), 64, "{}", lines[3 + i]);
+        let doubled: String = row.chars().flat_map(|c| [c, c]).collect();
+        assert_eq!(lines[3 + i], doubled);
+    }
+    assert_eq!(lines[35], "the whole site, 80 m a cell, north up");
+    // The family switch and an unknown one.
+    let out = run(&mut rig.tw, pilot, "+tv/1/map volatiles");
+    assert!(
+        out.starts_with("Rig 1 on Ahuna Flank: volatiles shown"),
+        "{out}"
+    );
+    let out = run(&mut rig.tw, pilot, "+tv/map quartz");
+    assert_eq!(out.trim(), MAP_FAMILY_UNKNOWN.replace("{word}", "quartz"));
+    // The hold's unreserved room (R6): 3 t in rig 1's hopper, 10 t in the hold.
+    let hopper = tacsim::port::vehicle::hopper_of(rig.tw.world(), tvs[0]).expect("a hopper");
+    seed_pool(&mut rig, hopper, "metal_ore", 3, LotId(9_901));
+    let stowage = ObjId(row.rooms[&cid("stowage")]);
+    let hold = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("economy")
+        .snapshot()
+        .vault_by_backing(&mush_economy::CustodyRef::SpatialInterior(stowage))
+        .expect("the hold vault")
+        .id;
+    seed_pool(&mut rig, hold, "metal_ore", 10, LotId(9_903));
+    let frame = map_frame(&mut rig, pilot, json!({ "view": "site" }));
+    let limit = ore_mass_limit(&rig.tw);
+    assert_eq!(
+        frame["site"]["hold"]["room_t"].as_u64(),
+        Some((limit - 13_000) / 1_000),
+        "the limit less the hold's 10 t less the hopper's 3 t"
+    );
+    let out = run(&mut rig.tw, pilot, "+tv/map site");
+    assert!(
+        out.contains(&format!(
+            "Hold: {} t of room unreserved.",
+            (limit - 13_000) / 1_000
+        )),
+        "{out}"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// The ore glyphs no second principal's grid may hold.
+const ORE_GLYPHS: [char; 5] = ['1', '2', '3', '+', '.'];
+
+/// A frame with its `others` rows' `sounding` set to false and the mark's words struck from its
+/// text (`site.lines`, `site.print`, `site.other_rigs`): what the frame would be without the
+/// transient mark.
+fn without_mark(mut frame: Value) -> Value {
+    if let Some(others) = frame["site"]["others"].as_array_mut() {
+        for other in others {
+            other["sounding"] = json!(false);
+        }
+    }
+    // Doc 32 cut CF.4: beyond sight the mark rides the presence row and its line.
+    if let Some(rows) = frame["site"]["presence"].as_array_mut() {
+        for row in rows {
+            if let Some(object) = row.as_object_mut() {
+                object.remove("sounding");
+            }
+        }
+    }
+    if let Some(text) = frame["site"]["presence_line"].as_str() {
+        frame["site"]["presence_line"] = json!(text.replace(" (a sounding)", ""));
+    }
+    for key in ["lines", "print"] {
+        if let Some(lines) = frame["site"][key].as_array_mut() {
+            for line in lines {
+                let text = line
+                    .as_str()
+                    .unwrap_or_default()
+                    .replace(" (a sounding)", "");
+                *line = json!(text);
+            }
+        }
+    }
+    // Doc 20 cut SM.9's pre-commit round: the other-rigs sentence rides whole as
+    // `site.other_rigs` too, the mark in it.
+    if let Some(text) = frame["site"]["other_rigs"].as_str() {
+        frame["site"]["other_rigs"] = json!(text.replace(" (a sounding)", ""));
+    }
+    frame
+}
+
+/// Two parties on Ahuna Flank's pad: A's rig launched and placed at `stand`; B's rig in the bay
+/// at full charge (so B's `rigs` block cannot drift between frames, F12; and no slot digit can
+/// stand in B's grid, F9).
+fn two_parties(rig: &mut Rig, stand: (i64, i64)) -> (ObjId, ObjId, ObjId, ObjId) {
+    let (a, _, a_tvs) = on_pad(rig, 1);
+    let (b, _, b_tvs) = on_pad_as(rig, "Other", 2, "Tally Moth", 1);
+    launched(rig, a, a_tvs[0]);
+    to_cell(rig, a_tvs[0], stand);
+    put_charge(rig, b_tvs[0], 100_000, true);
+    (a, a_tvs[0], b, b_tvs[0])
+}
+
+/// **D12 — a second principal sees no ore glyph** (V5's world half; §5's observer rule): B on
+/// the same pad, B's one rig in the bay at full charge. B's `site.map` frames (both views) and
+/// B's `+tv/map site` print before and after A's scan and quiet sounding are byte-identical — A's
+/// rig unmoved — none of B's grid rows holds `1`, `2`, `3`, `+` or `.`, B's readings are empty,
+/// and A's rig, beyond the sight of B's rigs (none out), is a presence band and never an `o` (doc
+/// 32 cut CF.4). A's loud sounding then changes exactly one thing for B — the presence row's
+/// `sounding` and the print's ` (a sounding)` — inside the IC hour, and nothing after it. No
+/// field, tier or address of A's reaches B.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm4b_a_second_principal_sees_no_ore_glyph() {
+    let mut rig = stocked();
+    let stand = (144, 176);
+    let (a, a_tv, b, _) = two_parties(&mut rig, stand);
+    let views = [json!({ "view": "drive" }), json!({ "view": "site" })];
+    let frames = |rig: &mut Rig| -> Vec<Value> {
+        views
+            .iter()
+            .map(|args| map_frame(rig, b, args.clone()))
+            .collect()
+    };
+    let before = frames(&mut rig);
+    let print_before = run(&mut rig.tw, b, "+tv/map site");
+    let _ = act_go(&mut rig, a, "+tv/1 scan go");
+    let _ = finish(&mut rig, a_tv, a);
+    let _ = act_go(&mut rig, a, "+tv/1 sound quiet go");
+    let _ = finish(&mut rig, a_tv, a);
+    assert!(on_ground_at(
+        &rig.tw,
+        a_tv,
+        (stand.0 * 1_000 + 500, stand.1 * 1_000 + 500, 180_000)
+    ));
+    let after = frames(&mut rig);
+    assert_eq!(
+        serde_json::to_string(&after).expect("encodes"),
+        serde_json::to_string(&before).expect("encodes"),
+        "byte-identical after A's scan and quiet sounding"
+    );
+    let print_after = run(&mut rig.tw, b, "+tv/map site");
+    assert_eq!(print_after, print_before);
+    let a_chart = chart_of(&mut rig.tw, a).expect("A's row");
+    let a_addresses: Vec<String> = (0..64_i64)
+        .flat_map(|py| (0..64_i64).map(move |px| (px, py)))
+        .filter(|p| a_chart.pocket_sounded(*p))
+        .filter_map(|(px, py)| pocket_address(px, py))
+        .collect();
+    assert!(!a_addresses.is_empty());
+    for frame in &after {
+        for row in frame_rows(frame) {
+            assert!(
+                !row.chars().any(|c| ORE_GLYPHS.contains(&c)),
+                "an ore glyph in B's grid: {row}"
+            );
+        }
+        assert_eq!(frame["site"]["readings"], json!([]));
+        let units = frame["units"].as_array().expect("units");
+        assert!(units.iter().all(|u| u["glyph"] != "o"), "{units:?}");
+    }
+    assert_eq!(
+        after[1]["site"]["presence"]
+            .as_array()
+            .map(std::vec::Vec::len),
+        Some(1),
+        "A's rig on B's presence picture"
+    );
+    // Past the title, the legend and the grid (the footer on): no class word, no address of A's.
+    let vector: Vec<&str> = print_after.lines().skip(3 + 32).collect();
+    assert!(!vector.is_empty());
+    for line in &vector {
+        for word in ["lean", "fair", "rich", "barren"] {
+            assert!(!line.contains(word), "{word} in B's print: {line}");
+        }
+        for addr in &a_addresses {
+            assert!(
+                !line.contains(&format!("{addr} ")),
+                "{addr} reached B: {line}"
+            );
+        }
+    }
+    // A's loud sounding marks B's row of A and nothing else, inside the hour.
+    let _ = act_go(&mut rig, a, "+tv/1 sound go");
+    let sounded_at = due_of(&mut rig.tw, a_tv);
+    let _ = finish(&mut rig, a_tv, a);
+    let loud = frames(&mut rig);
+    assert_eq!(loud[1]["site"]["presence"][0]["sounding"], json!(true));
+    let unmarked: Vec<Value> = loud.iter().cloned().map(without_mark).collect();
+    assert_eq!(unmarked, before, "only the mark changed");
+    let print_loud = run(&mut rig.tw, b, "+tv/map site");
+    assert!(print_loud.contains(" (a sounding)"), "{print_loud}");
+    assert_eq!(print_loud.replace(" (a sounding)", ""), print_before);
+    // After the IC hour, nothing.
+    let _ = to_ic(&mut rig, sounded_at + 3_601);
+    assert_eq!(frames(&mut rig), before);
+    // The public pits (the review's tests/T3; the lead's note 0b, doc 20 §3.4): two cursor rows
+    // of block P's metals deposit — one pocket worked (1 t drawn of more), one exhausted (its
+    // keyed tonnes drawn) — show `v` and `V` on both principals' site views, at the 80 m cell
+    // holding each pocket; nobody has a reading there, so no class digit stands beside them, and
+    // B's grid still holds no ore glyph.
+    let ground = ahuna(&mut rig.tw);
+    let ore: Vec<(usize, (i64, i64), u32)> = (0..256_usize)
+        .filter_map(|index| {
+            let pocket = pocket_of_block_index('P', index)?;
+            let tonnes = u32::from(ground.ground.geology.pocket(pocket.0, pocket.1)?.tonnes[0]);
+            // Clear of block P's letter (its north-west 80 m cell) and of each other's cell.
+            (pocket.1 < 14 && tonnes >= 1).then_some((index, pocket, tonnes))
+        })
+        .collect();
+    let worked = *ore
+        .iter()
+        .find(|(_, _, tonnes)| *tonnes >= 2)
+        .expect("a pocket of block P with 2 t of metals or more");
+    let exhausted = *ore
+        .iter()
+        .find(|(_, pocket, _)| (pocket.0 / 2, pocket.1 / 2) != (worked.1.0 / 2, worked.1.1 / 2))
+        .expect("another metal pocket of block P");
+    let deposit = mush_industry::derive_system_deposit_id(&tacsim::surface::opening::receipt(
+        &cid(AHUNA),
+        'P',
+        tacsim::surface::geology::OreFamily::Metals,
+    ))
+    .expect("a deposit id");
+    let mut rows = vec![
+        CursorRow {
+            pocket: u16::try_from(worked.0 + 1).expect("a pocket number"),
+            drawn_t: 1,
+            lock: None,
+        },
+        CursorRow {
+            pocket: u16::try_from(exhausted.0 + 1).expect("a pocket number"),
+            drawn_t: exhausted.2,
+            lock: None,
+        },
+    ];
+    rows.sort_by_key(|row| row.pocket);
+    put_cursor(
+        &mut rig,
+        PocketCursor {
+            schema: POCKET_CURSOR_SCHEMA,
+            deposit,
+            rows,
+        },
+    );
+    let a_site = map_frame(&mut rig, a, json!({ "view": "site" }));
+    let b_site = map_frame(&mut rig, b, json!({ "view": "site" }));
+    for frame in [&a_site, &b_site] {
+        let rows = frame_rows(frame);
+        let at = |pocket: (i64, i64)| {
+            (
+                usize::try_from(pocket.0 / 2).expect("x"),
+                usize::try_from(pocket.1 / 2).expect("y"),
+            )
+        };
+        assert_eq!(glyph_at(&rows, at(worked.1)), Some('v'), "{worked:?}");
+        assert_eq!(glyph_at(&rows, at(exhausted.1)), Some('V'), "{exhausted:?}");
+    }
+    for row in frame_rows(&b_site) {
+        assert!(
+            !row.chars().any(|c| ORE_GLYPHS.contains(&c)),
+            "an ore glyph in B's grid: {row}"
+        );
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// Where a blessed site-map fixture lives (`tests/chart.rs`'s precedent).
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web/src/lib/fixtures/site")
+        .join(name)
+}
+
+/// `TACSIM_BLESS=1` writes `text` to the fixture; every other run compares byte for byte.
+fn bless(name: &str, text: &str) {
+    let path = fixture_path(name);
+    if std::env::var_os("TACSIM_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the fixture dir");
+        std::fs::write(&path, text).expect("the fixture is written");
+    } else {
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            on_disk, text,
+            "web/src/lib/fixtures/site/{name} is out of date; re-bless with TACSIM_BLESS=1 \
+             cargo test -p tacsim --test domain_field driving::sm4b_the_site_map_fixtures_are_blessed"
+        );
+    }
+}
+
+/// **D13 — the site-map fixtures are blessed** (lead ruling 7; the brief's decision P10): after
+/// D12's setup A drives to a pocket (`ARRIVED`), scans and sounds there; at that fixed instant A's
+/// site-view frame is `web/src/lib/fixtures/site/site_map.json`, B's is `site_map_other.json`,
+/// and the events — A's real `ARRIVED` event and B's real `+tv/map site` events — are
+/// `site_events.json`. Each frame's `site.print` is `site_map_lines` of the frame (through the
+/// TUI's decoder, glyphs doubled).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm4b_the_site_map_fixtures_are_blessed() {
+    let mut rig = stocked();
+    let (a, a_tv, b, _) = two_parties(&mut rig, (128, 124));
+    let (addr, _, _) = north_pocket();
+    let _ = act_go(&mut rig, a, &format!("+tv/1 drive {addr} go"));
+    let due = due_of(&mut rig.tw, a_tv);
+    let (events, queued) = advance_to(&mut rig, due);
+    land_all(&mut rig, &queued);
+    let (more, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    // A's own arrival (the review's tests/T6): the event A sees, and exactly `ARRIVED` for the
+    // north pocket with no reading (A has sounded nothing there).
+    let arrived = ARRIVED
+        .replace("{n}", "1")
+        .replace("{addr}", &addr)
+        .replace("{reading}", "");
+    let arrival = events
+        .iter()
+        .chain(more.iter())
+        .find(|(audience, event)| {
+            said(&rig.tw, &[(audience.clone(), event.clone())], a).trim() == arrived
+        })
+        .map(|(_, event)| event.clone())
+        .expect("A's arrival event, exactly ARRIVED");
+    let _ = act_go(&mut rig, a, "+tv/1 scan go");
+    let _ = finish(&mut rig, a_tv, a);
+    let _ = act_go(&mut rig, a, "+tv/1 sound quiet go");
+    let _ = finish(&mut rig, a_tv, a);
+    let mine = map_frame(&mut rig, a, json!({ "view": "site" }));
+    let other = map_frame(&mut rig, b, json!({ "view": "site" }));
+    for frame in [&mine, &other] {
+        let print: Vec<String> = frame["site"]["print"]
+            .as_array()
+            .expect("a print")
+            .iter()
+            .map(|l| l.as_str().expect("a line").to_owned())
+            .collect();
+        let rows = frame_rows(frame);
+        for (i, row) in rows.iter().rev().enumerate() {
+            let doubled: String = row.chars().flat_map(|c| [c, c]).collect();
+            assert_eq!(print[3 + i], doubled);
+        }
+    }
+    assert!(
+        frame_rows(&mine)
+            .iter()
+            .any(|row| row.chars().any(|c| ORE_GLYPHS.contains(&c)))
+    );
+    assert!(
+        frame_rows(&other)
+            .iter()
+            .all(|row| !row.chars().any(|c| ORE_GLYPHS.contains(&c)))
+    );
+    // The command's print is the feed frame's print, line for line, for both principals (the
+    // review's tests/T6: the `Ctx` reads and the `HookReadContext` reads agree — the SSH fixture
+    // below and the TUI/web fixtures above are one print).
+    for (who, frame) in [(a, &mine), (b, &other)] {
+        let ran = rig.tw.run(who, "+tv/map site");
+        let printed: Vec<String> = rig
+            .tw
+            .seen_by(&ran, who)
+            .iter()
+            .flat_map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
+            .collect();
+        let print: Vec<String> = frame["site"]["print"]
+            .as_array()
+            .expect("a print")
+            .iter()
+            .map(|l| l.as_str().expect("a line").to_owned())
+            .collect();
+        assert_eq!(printed, print);
+    }
+    let other_map: Vec<OutputEvent> = rig
+        .tw
+        .run(b, "+tv/map site")
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect();
+    assert!(!other_map.is_empty());
+    let pretty = |value: &Value| serde_json::to_string_pretty(value).expect("encodes") + "\n";
+    bless("site_map.json", &pretty(&mine));
+    bless("site_map_other.json", &pretty(&other));
+    bless(
+        "site_events.json",
+        &pretty(&json!({ "arrival": arrival, "other_map": other_map })),
+    );
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// D14. The planner, measured (lead ruling 13)
+// ---------------------------------------------------------------------------
+
+/// The median of five timings, milliseconds (fractional).
+fn median_ms(samples: &[f64]) -> f64 {
+    let mut samples = samples.to_vec();
+    samples.sort_by(f64::total_cmp);
+    samples.get(samples.len() / 2).copied().unwrap_or(0.0)
+}
+
+/// The least of five timings, milliseconds (fractional): cut AP's gate statistic — a slow
+/// runner's load is not the code's cost.
+fn min_ms(samples: &[f64]) -> f64 {
+    samples.iter().copied().fold(f64::INFINITY, f64::min)
+}
+
+/// **Ahuna Flank's corner-to-corner leg's cost**, `drive_leg` from pose `(500, 500)` to cell
+/// `(255, 255)` over the keyed cached composite (`site_ground_cached`'s warm ground surface) —
+/// recorded at `a0030f71` + SM.7 before cut AP changed `mush_atlas::physics::path` (294 cells,
+/// 18 waypoints, the old search visiting 58,159 cells). Re-bless only with the lane's terrain (a
+/// lane version or a terrain generation change), never for AP, which proves every cost equal.
+const AP_AHUNA_CORNER_COST: u64 = 60_720;
+
+/// **D14 — the drive planner is measured, and gated** (lead ruling 13; R4, F8; cut AP turned it
+/// into a release gate): on Ahuna Flank's cached composite, (a) the worst case corner to corner,
+/// `(0, 0)` → `(255, 255)`, from the peek onward (the site's non-building peek, the target, the
+/// A*, the freeze, the charge home); (b) the budget exhausted — an unreachable target on an open
+/// 256 × 256 synthetic composite, walled by an impassable ring; (c) the home field's build over
+/// the cached composite, and the keyless terrain capture and build. Five samples each; the min
+/// and the median printed (`--nocapture`). **The gate is the minimum of five**, because a slow
+/// runner's load is not the code's cost: in a release build, always, planning ≤ 10 ms, the
+/// cached build ≤ 20 ms and the exhausted flood (the same flood) ≤ 20 ms — the gate runner runs
+/// this test with `--release`; in a debug build under `TACSIM_ASSERT=1`, the lead's debug
+/// figures, 100 ms / 250 ms / 250 ms. CI runs only debug, where the tight figures assert only
+/// under `TACSIM_ASSERT=1`, because a shared runner's speed is not a threshold (D-H-8, D-16-19):
+/// without it a debug build keeps SM.4b's generous ceilings on the median — ten times the old
+/// STOP, 250 ms planning and 2,000 ms a build — so a slow runner never flakes. The keyless
+/// capture and build keep that old ceiling in every build (AP does not own the capture). Outside
+/// the timed loop, the corner leg's cost is the one recorded before AP
+/// ([`AP_AHUNA_CORNER_COST`]), in every build.
+#[test]
+fn sm4b_the_drive_planner_is_measured() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    launched(&mut rig, pilot, tvs[0]);
+    let rates = rates(&rig.tw);
+    let (spec, _, location) = spec_of(&rig.tw, AHUNA);
+    let frame = site_frame(&location);
+    let field = home_field(&rig.tw);
+    // (a) Planning, from the peek onward.
+    let planning: Vec<f64> = (0..5)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let ground = tacsim::surface::site_ground_cached(rig.tw.world(), &frame, &spec)
+                .expect("peeks")
+                .expect("warm");
+            let surface = ground
+                .composite
+                .surface(&mush_atlas::SurfaceRef::Ground)
+                .expect("a surface");
+            let to = tacsim::surface::drive::target_cell(
+                &tacsim::surface::drive::Target::Cell { x: 255, y: 255 },
+                (0, 0),
+                surface.cells.width(),
+            )
+            .expect("on the site");
+            let leg = drive_leg(surface, table(), (500, 500), to, &rates).expect("a leg");
+            let _ = home_cu_to(&field, to, &rates);
+            assert!(leg.waypoints.len() <= 32);
+            started.elapsed().as_secs_f64() * 1_000.0
+        })
+        .collect();
+    // (b) The budget exhausted.
+    let open = {
+        let ground = ahuna(&mut rig.tw);
+        let mut surface = ground.surface().clone();
+        for y in 0..256_u16 {
+            for x in 0..256_u16 {
+                surface.cells.set(
+                    x,
+                    y,
+                    mush_atlas::Cell {
+                        class: mush_atlas::TerrainClass::Regolith,
+                        elev_cm: 0,
+                        cover: 0,
+                        room: 0,
+                    },
+                );
+            }
+        }
+        for (x, y) in [
+            (199, 199),
+            (200, 199),
+            (201, 199),
+            (199, 200),
+            (201, 200),
+            (199, 201),
+            (200, 201),
+            (201, 201),
+        ] {
+            surface.cells.set(
+                x,
+                y,
+                mush_atlas::Cell {
+                    class: mush_atlas::TerrainClass::Wall,
+                    elev_cm: 0,
+                    cover: 0,
+                    room: 0,
+                },
+            );
+        }
+        surface
+    };
+    let exhausted: Vec<f64> = (0..5)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let refused = drive_leg(&open, table(), (500, 500), (200, 200), &rates);
+            assert_eq!(refused, Err(LegRefused::NoPath));
+            started.elapsed().as_secs_f64() * 1_000.0
+        })
+        .collect();
+    // (c) The home field's builds.
+    let keyed_build: Vec<f64> = (0..5)
+        .map(|_| {
+            let ground = ahuna(&mut rig.tw);
+            let started = std::time::Instant::now();
+            let built = HomeField::build(ground.surface(), table(), RAMP_CELL).expect("a field");
+            assert_eq!(built.ramp(), RAMP_CELL);
+            started.elapsed().as_secs_f64() * 1_000.0
+        })
+        .collect();
+    let keyless_build: Vec<f64> = (0..5)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let terrain = tacsim::surface::ground::site_terrain(rig.tw.world(), &cid(AHUNA))
+                .expect("the terrain");
+            let surface = terrain
+                .surface(&mush_atlas::SurfaceRef::Ground)
+                .expect("a surface");
+            let _ = HomeField::build(surface, table(), RAMP_CELL).expect("a field");
+            started.elapsed().as_secs_f64() * 1_000.0
+        })
+        .collect();
+    // The corner leg's cost, outside the timed loop (cut AP): the old search's, on the same
+    // keyed cached composite from the same pose.
+    {
+        let ground = tacsim::surface::site_ground_cached(rig.tw.world(), &frame, &spec)
+            .expect("peeks")
+            .expect("warm");
+        let surface = ground
+            .composite
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a surface");
+        let leg = drive_leg(surface, table(), (500, 500), (255, 255), &rates).expect("a leg");
+        let visited = match mush_atlas::path(
+            surface,
+            table(),
+            (0, 0),
+            (255, 255),
+            DRIVE_LOCOMOTION,
+            &[],
+            DRIVE_PATH_BUDGET_CELLS,
+        ) {
+            mush_atlas::PathOutcome::Found(found) => found.visited,
+            other => panic!("{other:?}"),
+        };
+        println!(
+            "the corner-to-corner leg: cost {}, {} cells, {} waypoints; the search visited \
+             {visited} cells",
+            leg.cost,
+            leg.cells.len(),
+            leg.waypoints.len()
+        );
+        assert_eq!(
+            leg.cost, AP_AHUNA_CORNER_COST,
+            "the corner-to-corner leg's cost moved from what the old search found"
+        );
+    }
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let (planning_min, exhausted_min, keyed_min, keyless_min) = (
+        min_ms(&planning),
+        min_ms(&exhausted),
+        min_ms(&keyed_build),
+        min_ms(&keyless_build),
+    );
+    let (planning, exhausted, keyed_build, keyless_build) = (
+        median_ms(&planning),
+        median_ms(&exhausted),
+        median_ms(&keyed_build),
+        median_ms(&keyless_build),
+    );
+    println!(
+        "{profile}: planning corner to corner min {planning_min:.2} / median {planning:.2} ms; \
+         the budget exhausted min {exhausted_min:.2} / median {exhausted:.2} ms; the home field \
+         over the cached composite min {keyed_min:.2} / median {keyed_build:.2} ms; the keyless \
+         terrain and its home field min {keyless_min:.2} / median {keyless_build:.2} ms"
+    );
+    let asserted = std::env::var("TACSIM_ASSERT").is_ok_and(|v| v.trim() == "1");
+    // SM.4b's STOP, whose ten-times ceiling the debug default and the keyless build keep.
+    let (plan_stop, home_stop) = if cfg!(debug_assertions) {
+        (250.0, 2_000.0)
+    } else {
+        (20.0, 50.0)
+    };
+    if !cfg!(debug_assertions) {
+        // Cut AP's release gate (the lead's 10 ms / 20 ms), on the minimum of five.
+        assert!(
+            planning_min <= 10.0,
+            "release planning {planning_min} ms > 10 ms"
+        );
+        assert!(
+            keyed_min <= 20.0,
+            "release home build {keyed_min} ms > 20 ms"
+        );
+        assert!(
+            exhausted_min <= 20.0,
+            "release exhausted {exhausted_min} ms > 20 ms"
+        );
+    } else if asserted {
+        // The lead's debug figures, under `TACSIM_ASSERT=1` only (the brief's R8).
+        assert!(
+            planning_min <= 100.0,
+            "debug planning {planning_min} ms > 100 ms"
+        );
+        assert!(
+            keyed_min <= 250.0,
+            "debug home build {keyed_min} ms > 250 ms"
+        );
+        assert!(
+            exhausted_min <= 250.0,
+            "debug exhausted {exhausted_min} ms > 250 ms"
+        );
+    } else {
+        assert!(planning < plan_stop * 10.0, "{planning} ms");
+        assert!(exhausted < plan_stop * 10.0, "{exhausted} ms");
+        assert!(keyed_build < home_stop * 10.0, "{keyed_build} ms");
+    }
+    assert!(keyless_build < home_stop * 10.0, "{keyless_build} ms");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 32 cut S.2: the 512 site's ground, measured beside 256's (Q-CF-51, §20)
+// ---------------------------------------------------------------------------
+
+/// **A site's keyed ground at its own side** (doc 32 cut S.2): the frame and the geology spec
+/// both `side` a side, built (or hit) through the production entry point.
+fn ground_at(tw: &mut TestWorld, entry: &str, side: u16) -> Arc<SiteGround> {
+    let pack = lane();
+    let def = match pack.entry(&cid(entry)) {
+        Some(PackEntry::Port(def)) => def.clone(),
+        other => panic!("{entry} is a port entry: {other:?}"),
+    };
+    let location = match pack.entry(&def.location) {
+        Some(PackEntry::Location(location)) => location.clone(),
+        other => panic!("{} is a location: {other:?}", def.location),
+    };
+    let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
+        .expect("the body's table is installed");
+    let spec = tacsim::port::site::geology_spec_at(
+        def.site.as_ref().expect("a site"),
+        &location,
+        &body,
+        side,
+    )
+    .expect("a spec");
+    let mut frame = site_frame(def.location.as_str());
+    let edge = i64::from(side) * 1_000;
+    frame.bbox.max = mush_atlas::PointCm { x: edge, y: edge };
+    site_ground_sync(tw.world_mut(), &frame, &spec).expect("the site builds")
+}
+
+/// **The per-side timing ceilings, milliseconds**: the corner-to-corner plan's and the home
+/// field build's (doc 32 §20; the owner's ruling of 2026-11-01, accepting S.2's release figures
+/// of about 14.5 ms and 30 ms at 512). Cut AP's ceilings at 256 — 10 ms and 20 ms in release,
+/// the lead's 100 ms and 250 ms in debug — scaled by the site's area, so 40 ms and 80 ms at 512
+/// in release, 400 ms and 1,000 ms in debug.
+fn s2_ceilings_ms(side: u16) -> (f64, f64) {
+    let area = f64::from(side) * f64::from(side) / 65_536.0;
+    let (plan, build) = if cfg!(debug_assertions) {
+        (100.0, 250.0)
+    } else {
+        (10.0, 20.0)
+    };
+    (plan * area, build * area)
+}
+
+/// Write `row` into the chart family through a typed transaction (staff's hand; the scan and
+/// the sounding are the real writers).
+fn put_chart(rig: &mut Rig, row: ChartRecord) {
+    let family = handles(&rig.tw).families.charts;
+    let engine = rig.tw.engine_mut();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&family)
+            .expect("a chart transaction");
+        let key = ChartKey {
+            principal: row.principal,
+            site: row.site.clone(),
+        };
+        if txn.get(&family, &key).expect("reads").is_some() {
+            txn.replace(&family, &key, row).expect("replaced");
+        } else {
+            txn.insert(&family, &key, row).expect("inserted");
+        }
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    engine.install_prepared_action(install).expect("installs");
+    keep(rig, ops);
+}
+
+/// **Doc 32 cut S.2: the 512 site is measured beside the 256 one** (Q-CF-51; the figures are
+/// doc 32 §20's table, printed under `--nocapture`). For Ahuna Flank at 256 and Urvara Reach at
+/// 512, over each site's keyed ground built at its own side:
+/// - **the A\* drive search** from corner to corner, `(0, 0)` to `(side - 1, side - 1)`, and from
+///   the Dray-P's ramp to the far quadrant at seven eighths of the side, each under the site's
+///   whole budget (`drive_path_budget_cells`, w x h): the cells visited, the path's cells, the
+///   least of five timings, and what `drive_leg` makes of the same trip;
+/// - **the home field's build** from the ramp over the whole site (least of five);
+/// - **the ground cache entry's memory**: the composite's cells and the geology's pockets and
+///   fields, against `SITE_CACHE_CAPACITY`, and beside it the home field's two grids;
+/// - **the chart row and the site map of a fully worked site**: one principal's row with every
+///   field scanned and every pocket sounded, written to the chart family, its canonical bytes
+///   and the `site.map` frame its owner gets (the drive view and the whole-site view);
+/// - **the presence bands' reach**: the share of the site each band covers seen from the pad.
+///
+/// Gates: every search finds its path within the site's budget; the chart row is under
+/// `MAX_CHART_RECORD_BYTES`; every frame is under `MAP_MAX_BYTES`. **The timings are held to the
+/// per-side ceilings** ([`s2_ceilings_ms`]; the owner's ruling of 2026-11-01), on the least of
+/// five: always in a release build, in a debug build under `TACSIM_ASSERT=1` only, and otherwise
+/// a generous debug ceiling on a median, as `sm4b_the_drive_planner_is_measured` keeps (a shared
+/// runner's speed is not a threshold).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn s2_the_512_site_is_measured() {
+    use tacsim::surface::chart::{Via, write_scan, write_sound};
+    let asserted =
+        !cfg!(debug_assertions) || std::env::var("TACSIM_ASSERT").is_ok_and(|v| v.trim() == "1");
+    use tacsim::surface::reading::Footing;
+    let mut rig = stocked();
+    let rates = rates(&rig.tw);
+    let map_max = tacsim::match_::cockpit::MAP_MAX_BYTES;
+    for (entry, venue, side, who, hull) in [
+        (AHUNA, "ahuna", 256_u16, "Pilot", "Salt Moth"),
+        ("urvara_port", "urvara", 512, "Reacher", "Reach Moth"),
+    ] {
+        let (pilot, _, tvs) =
+            on_pad_as_at(&mut rig, (who, i64::from(side), hull), (venue, entry), 1);
+        launched_at(&mut rig, entry, pilot, tvs[0]);
+        let ground = ground_at(&mut rig.tw, entry, side);
+        let surface = ground
+            .composite
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        assert_eq!(
+            (surface.cells.width(), surface.cells.height()),
+            (side, side)
+        );
+        let edge = side - 1;
+        let ramp = {
+            let (x, y, _) = ramp_at(&rig.tw, entry);
+            tacsim::surface::excursion::site_cell(x, y)
+        };
+        let ramp_u16 = (
+            u16::try_from(ramp.0).expect("on the site"),
+            u16::try_from(ramp.1).expect("on the site"),
+        );
+        let far = side / 8 * 7;
+        let budget = tacsim::surface::drive::drive_path_budget_cells(side, side);
+        for (what, from, to) in [
+            ("corner to corner", (0, 0), (edge, edge)),
+            ("ramp to the far quadrant", ramp_u16, (far, far)),
+        ] {
+            let mut samples = Vec::new();
+            let mut found = None;
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                let outcome =
+                    mush_atlas::path(surface, table(), from, to, DRIVE_LOCOMOTION, &[], budget);
+                samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                found = Some(outcome);
+            }
+            let Some(mush_atlas::PathOutcome::Found(path)) = found else {
+                panic!("{entry} {what}: {found:?}");
+            };
+            let from_cm = (
+                i64::from(from.0) * 1_000 + 500,
+                i64::from(from.1) * 1_000 + 500,
+            );
+            let leg = drive_leg(
+                surface,
+                table(),
+                from_cm,
+                (i64::from(to.0), i64::from(to.1)),
+                &rates,
+            )
+            .map(|leg| (leg.cost, leg.cells.len(), leg.waypoints.len()));
+            println!(
+                "S2 {side} {what}: visited {} of a {budget} budget ({:.1} %), {} cells, A* min \
+                 {:.2} / median {:.2} ms; drive_leg (cost, cells, waypoints) {leg:?}",
+                path.visited,
+                f64::from(path.visited) * 100.0 / f64::from(budget),
+                path.cells.len(),
+                min_ms(&samples),
+                median_ms(&samples)
+            );
+            assert!(path.visited <= budget, "{what} within the site's budget");
+            assert!(median_ms(&samples) < 2_000.0, "{what}: {samples:?}");
+            let (plan_ceiling, _) = s2_ceilings_ms(side);
+            if asserted && what == "corner to corner" {
+                assert!(
+                    min_ms(&samples) <= plan_ceiling,
+                    "{side} corner-to-corner plan {} ms > {plan_ceiling} ms",
+                    min_ms(&samples)
+                );
+            }
+        }
+        // The home field over the whole site.
+        let mut builds = Vec::new();
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            let home = HomeField::build(surface, table(), ramp).expect("a home field");
+            builds.push(started.elapsed().as_secs_f64() * 1_000.0);
+            assert_eq!(home.side(), side);
+        }
+        // The cache entry's memory: the composite's cells, the geology's pockets (four u16
+        // slots) and fields (four words, four counts); beside it the home field's two grids (a
+        // u32 cost and a u8 step a cell).
+        let scheme = ground.geology.scheme();
+        let cells = usize::from(side) * usize::from(side);
+        let cell_bytes = std::mem::size_of::<mush_atlas::Cell>();
+        let composite_bytes = cells * cell_bytes;
+        let pockets = usize::try_from(scheme.pockets() * scheme.pockets()).expect("a count");
+        let fields = usize::try_from(scheme.fields() * scheme.fields()).expect("a count");
+        let geology_bytes = pockets * 8 + fields * 8;
+        let home_bytes = cells * (4 + 1);
+        let entry_bytes = composite_bytes + geology_bytes;
+        let capacity = tacsim::surface::ground::SITE_CACHE_CAPACITY;
+        println!(
+            "S2 {side} ground: home field build min {:.2} / median {:.2} ms; cache entry ~{} KiB \
+             (composite {} KiB at {cell_bytes} B a cell, geology {} KiB: {pockets} pockets, \
+             {fields} fields), {} KiB at SITE_CACHE_CAPACITY {capacity}; the home field {} KiB",
+            min_ms(&builds),
+            median_ms(&builds),
+            entry_bytes / 1_024,
+            composite_bytes / 1_024,
+            geology_bytes / 1_024,
+            entry_bytes * capacity / 1_024,
+            home_bytes / 1_024,
+        );
+        assert!(median_ms(&builds) < 2_000.0, "{builds:?}");
+        let (_, build_ceiling) = s2_ceilings_ms(side);
+        if asserted {
+            assert!(
+                min_ms(&builds) <= build_ceiling,
+                "{side} home field build {} ms > {build_ceiling} ms",
+                min_ms(&builds)
+            );
+        }
+        // A fully worked site: every field scanned, every pocket sounded, by the pilot.
+        let now = rig.tw.world().world_ic_now().at;
+        let body = chart_of(&mut rig.tw, pilot).map_or_else(|| cid("ceres"), |row| row.body);
+        let mut row = ChartRecord::with_side(pilot, cid(entry), body, side);
+        let every_field: Vec<u8> = (0..scheme.field_count())
+            .filter_map(|i| u8::try_from(i).ok())
+            .collect();
+        let every_pocket: Vec<(i64, i64)> = (0..scheme.pockets())
+            .flat_map(|py| (0..scheme.pockets()).map(move |px| (px, py)))
+            .collect();
+        write_scan(
+            &mut row,
+            [ramp.0, ramp.1],
+            &every_field,
+            Footing::Rock,
+            now,
+            Via::Hand,
+        );
+        write_sound(
+            &mut row,
+            [ramp.0, ramp.1],
+            &every_pocket,
+            false,
+            now,
+            Via::Hand,
+        );
+        assert_eq!(row.check(), Ok(()));
+        let row_bytes = serde_json::to_vec(&row).expect("encodes").len();
+        put_chart(&mut rig, row);
+        let drive_view = serde_json::to_vec(&map_frame(&mut rig, pilot, json!({})))
+            .expect("encodes")
+            .len();
+        let site_view = serde_json::to_vec(&map_frame(&mut rig, pilot, json!({ "view": "site" })))
+            .expect("encodes")
+            .len();
+        println!(
+            "S2 {side} fully worked: chart row {row_bytes} B; site.map drive view {drive_view} B, \
+             whole-site view {site_view} B (MAP_MAX_BYTES {map_max})"
+        );
+        assert!(row_bytes < tacsim::surface::chart::MAX_CHART_RECORD_BYTES);
+        assert!(drive_view < map_max && site_view < map_max);
+        // The presence bands from the pad: the share of the site's cells within each band's
+        // Chebyshev reach.
+        let pad = tacsim::surface::excursion::site_pad_cell(rig.tw.world(), &cid(entry));
+        let side_i = i64::from(side);
+        let within = |reach: u64| -> f64 {
+            let r = i64::try_from(reach).expect("a reach");
+            let span = |c: i64| (c - r).max(0)..=(c + r).min(side_i - 1);
+            let n = span(pad.0).count() * span(pad.1).count();
+            f64::from(u32::try_from(n).expect("a count")) * 100.0
+                / f64::from(u32::try_from(side_i * side_i).expect("a count"))
+        };
+        println!(
+            "S2 {side} presence from the pad {pad:?}: sight {:.1} %, near {:.1} %, far {:.1} %, \
+             distant {:.1} % of the site",
+            within(tacsim::surface::presence::SIGHT_CELLS),
+            within(tacsim::surface::presence::NEAR_CELLS),
+            within(tacsim::surface::presence::FAR_CELLS),
+            100.0 - within(tacsim::surface::presence::FAR_CELLS),
+        );
+    }
+}

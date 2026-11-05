@@ -26,6 +26,60 @@ use crate::store::put_port_map;
 
 /// The dispatcher's name.
 pub const DISPATCHER_NAME: &str = "Tycho Mutual dispatcher";
+/// The capability the dispatcher holds over the house's root scope (doc 41 cut RS.6b): what
+/// `mush_economy::acts_for` reads.
+pub const POST_CAPABILITY: &str = "economy.account.post";
+/// The capability the dispatcher holds over the house's root scope beside [`POST_CAPABILITY`]:
+/// the house's hold vaults are the organization's on that scope, and a sailing plan's buy
+/// delivers into the lifter's hold, which `mush_inventory::may_take` asks of this grant.
+pub const HOLD_CAPABILITY: &str = "vault.withdraw";
+/// The capability the dispatcher holds over the house's root scope to pass a swept hull's title to
+/// the house (doc 41 cut RS.6c-1).
+pub const TITLE_CAPABILITY: &str = "asset.title.transfer";
+
+/// **Whether `person` is the dispatcher of the house that owns `hull`** (doc 41 cut RS.6b): the
+/// yard dispatcher's precedent (`crate::port::yard::is_dispatcher_of`) — the dispatcher is aboard
+/// its house's own hulls wherever they stand, and holds their helm.
+#[must_use]
+pub fn is_dispatcher_of(w: &mush_core::World, hull: ObjId, person: ObjId) -> bool {
+    house_of(w, hull).is_some_and(|dispatcher| dispatcher == person)
+}
+
+/// **Every recovery house's live dispatcher** (doc 41 cut RS.6b): the port tick's `Arm::House`
+/// agents, once a house is granted and stowed (laid up whole).
+#[must_use]
+pub fn dispatchers(w: &mush_core::World) -> Vec<ObjId> {
+    let Some(store) = w.module_state::<crate::store::TacsimStore>() else {
+        return Vec::new();
+    };
+    store
+        .port_maps()
+        .filter_map(|map| {
+            let row = map.house.as_ref()?;
+            (row.stowed && row.grant.is_some() && row.account.is_some())
+                .then_some(ObjId(row.dispatcher?))
+                .filter(|d| !crate::port_tick::gone(w, *d))
+        })
+        .collect()
+}
+
+/// **The dispatcher of the house that owns `hull`**, when `hull` is one of a house's two.
+#[must_use]
+pub fn house_of(w: &mush_core::World, hull: ObjId) -> Option<ObjId> {
+    let store = w.module_state::<crate::store::TacsimStore>()?;
+    store.port_maps().find_map(|map| {
+        let row = map.house.as_ref()?;
+        let ours = [row.lifter, row.crawler]
+            .into_iter()
+            .flatten()
+            .any(|order| {
+                crate::port::commission::commission(w, order)
+                    .and_then(YardCommission::object)
+                    .is_some_and(|obj| obj == hull)
+            });
+        (ours && row.grant.is_some()).then_some(ObjId(row.dispatcher?))
+    })
+}
 
 /// **The house arm** (the port tick, before the commission arm): every port whose recovery row
 /// authors a house is carried one step nearer laid up. A failure is logged and retried next fire.
@@ -35,8 +89,11 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         .filter_map(|(entry, def, map)| {
             let map = map?;
             def.recovery.as_ref()?.house.as_ref()?;
-            (!map.house.as_ref().is_some_and(|row| row.stowed))
-                .then(|| (entry, def.clone(), map.clone()))
+            (!map
+                .house
+                .as_ref()
+                .is_some_and(|row| row.stowed && row.grant.is_some() && row.account.is_some()))
+            .then(|| (entry, def.clone(), map.clone()))
         })
         .collect();
     for (entry, def, map) in houses {
@@ -76,6 +133,89 @@ fn step(
             ObjId(thing)
         }
     };
+    // 1b. Doc 41 cut RS.6b: the dispatcher acts for the house (`mush_economy::acts_for`), by an
+    // `economy.account.post` grant on the operator's root scope (the lessor agent's precedent,
+    // `crate::port::equipment`), so the house's helm, title views and retrievals answer it.
+    if map.house.as_ref().is_some_and(|row| row.grant.is_none()) {
+        let org = map
+            .orgs
+            .get(&recovery.operator)
+            .cloned()
+            .ok_or("the operator has no map row yet")?;
+        let grant = crate::port::apply::alloc_grant_id(ctx)?;
+        let hold = crate::port::apply::alloc_grant_id(ctx)?;
+        let title = crate::port::apply::alloc_grant_id(ctx)?;
+        let put = |id: mush_org::GrantId, capability: &str| -> Result<_, String> {
+            Ok(mush_org::OrgMutationOp::PutGrant {
+                grant: mush_org::CapabilityGrant {
+                    id,
+                    org: OrgId(org.org),
+                    grantee: dispatcher,
+                    capability: mush_org::CapabilityId::new(capability)
+                        .ok_or_else(|| format!("{capability} is not a capability id"))?,
+                    scope: mush_org::ScopeSelector::Exact(mush_org::OrgScopeId(org.root_scope)),
+                    limit: None,
+                    delegable: false,
+                    valid_from: None,
+                    valid_until: None,
+                    revision: 1,
+                },
+            })
+        };
+        // The hold grant too: a plan's buy is delivered into the lifter's hold, the org's vault
+        // on this scope (`mush_economy::may_take_from_vault` asks `vault.withdraw` of it).
+        let plan = mush_org::OrgMutationPlan::of(vec![
+            put(grant, POST_CAPABILITY)?,
+            put(hold, HOLD_CAPABILITY)?,
+            // Doc 41 cut RS.6c-1: and the title grant, so a swept hull the dispatcher was awarded
+            // passes to the house (`authorize_title_receipt` asks it of the receiving scope).
+            put(title, TITLE_CAPABILITY)?,
+        ]);
+        mush_org::submit(
+            ctx,
+            &plan,
+            mush_org::OrgAction {
+                action: "tacsim.house.dispatcher".into(),
+                org: Some(OrgId(org.org)),
+                detail: serde_json::json!({ "port": entry.as_str(), "dispatcher": dispatcher.0 }),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        row(&mut map).grant = Some(grant.0);
+        put_port_map(ctx, &map);
+    }
+    // 1c. Doc 41 cut RS.6b: the dispatcher's own credit account, the float its sailing plans buy
+    // reaction mass and provisions from (the plan's buy pays from its author's own account).
+    if map.house.as_ref().is_some_and(|row| row.account.is_none()) {
+        let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT)
+            .ok_or("the credit instrument id")?;
+        let account = ctx
+            .w
+            .module_state_mut::<mush_economy::EconomyStore>()
+            .ok_or("the economy is not composed")?
+            .alloc_account()
+            .ok_or("the account allocator is spent")?;
+        mush_economy::open_account(
+            ctx,
+            mush_economy::Account {
+                id: account,
+                owner: PrincipalId::Object(dispatcher),
+                instrument,
+                scope: None,
+                name: smol_str::SmolStr::new(format!("{DISPATCHER_NAME} float")),
+                status: mush_economy::AccountStatus::Active,
+                posted_balance: mush_economy::Amount::ZERO,
+                held_amount: mush_economy::Amount::ZERO,
+                last_hold_seq: 0,
+                credit: mush_economy::CreditPolicy::forbid(),
+                last_journal_seq: 0,
+                revision: 1,
+                approval: None,
+            },
+        );
+        row(&mut map).account = Some(account.0);
+        put_port_map(ctx, &map);
+    }
     // 2–3. The commissions.
     let designs = [
         (

@@ -778,6 +778,12 @@ pub(crate) fn carried_kg(ctx: &Ctx<'_>, unit: ObjId) -> u64 {
             }
         };
     }
+    // Doc 40 (the ramp exit's boarding window): a raider's fixture carrier carries its hulls
+    // aboard, wrecks included.
+    let aboard = crate::field::raiders::aboard_kg(ctx.w, unit);
+    if aboard > 0 {
+        return aboard;
+    }
     if crate::port::vehicle::hopper_of(ctx.w, unit).is_none() {
         return 0;
     }
@@ -1006,6 +1012,17 @@ fn friendly(ctx: &Ctx<'_>, site: &CanonicalId, casualty: ObjId, carrier: ObjId) 
         .module_state::<TacsimStore>()
         .and_then(|store| store.tv_lease_on(casualty))
         .is_some_and(|lease| lease.hull == carrier)
+    {
+        return true;
+    }
+    // Doc 41 cut RS.6c-1: a hull titled to the one who commands the carrier is hers (a recovery
+    // house's swept wreck, titled to its dispatcher, into the house's own lifter).
+    if let Some(helm) = crate::port::coop::helm_holder(ctx.w, carrier)
+        && ctx
+            .w
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| e.snapshot().asset(casualty).map(|a| a.title_owner.clone()))
+            == Some(mush_org::PrincipalId::Object(helm))
     {
         return true;
     }

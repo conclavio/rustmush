@@ -1,8 +1,8 @@
 //! **The crew-custody rig** (doc 42 cut CR.1; Q-42-25): story (a′) to the load — GC.5's
 //! non-friend load rewritten — and its review twin, one script over both grounds of
-//! `grounds_rig`, hoisted here from `field_gc5` so the 256 runs stay in shard_1 with GC.5 and the
-//! 512 runs and `crew_custody` stand in a shard with room (doc 43 rule 2.3 #3, #14). Every item is
-//! `pub(crate)`; each shard root declares this module by path beside `grounds_rig`.
+//! `grounds_rig`, hoisted here from `field_gc5` so the 256 runs stay with GC.5 and the 512 runs
+//! with `crew_custody` (doc 43 rule 2.3 #3). Every item is
+//! `pub(crate)`; each domain root declares this module by path beside `grounds_rig`.
 #![allow(dead_code)]
 
 use mush_core::ObjId;

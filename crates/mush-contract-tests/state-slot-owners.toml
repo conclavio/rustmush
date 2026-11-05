@@ -26,8 +26,8 @@
 # A row names its site by `path` (a production file, workspace-relative) or,
 # for a test-rig file under a crate's `tests/`, by `module =
 # "<crate>/tests::<module>"` — the file's module path less the test target's
-# group directory, so `crates/tacsim/tests/shard_3/drones.rs` is
-# `tacsim/tests::drones` and a reshard rewrites no row (doc 43 cut TS.8).
+# group directory, so `crates/tacsim/tests/domain_economy/drones.rs` is
+# `tacsim/tests::drones` and a move between domains rewrites no row (doc 43 cut TS.8).
 #
 # WHAT THE CENSUS FOUND. Every cross-owner MUTATION in the tree goes through
 # `World::module_state_mut` — the unchecked accessor that carries no module
@@ -209,6 +209,17 @@ reason = """
 Doc 18 cut IC3: the treasury and each org account take their id from
 `economy`'s account allocator before `mush_economy::open_account` opens them
 through the economy module's own path.
+"""
+
+[[site]]
+path = "crates/tacsim/src/port/house.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 41 cut RS.6b: a recovery house's dispatcher float takes its id from
+`economy`'s account allocator before `mush_economy::open_account` opens it
+through the economy module's own path (the applier's shape, `port/apply.rs`).
 """
 
 [[site]]

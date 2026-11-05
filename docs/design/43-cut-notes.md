@@ -486,6 +486,42 @@ upload.
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
 
+**Refreshed on main `f9912792` (2026-11-05).** Two things on main changed under the first reading:
+- TS.3's opt-level 1 for dependencies;
+- the field rigs' pinned seed (`field.seed`, `0x5EED_0002`, `903fd04c`/`abbe8379`), which fixed `gc0` and `cf6c`.
+
+The setup:
+- **The roots.** The four domain roots were regenerated over current main. Nine new modules went to their domains:
+  `field_fr5`, `field_rs5` and `vacated_return_rs4` to field; `in5_production`, `in7_part_recipes`, `in10_pools`,
+  `yard_in9`, `port_security_rs7` and `tycho_house_rs6a` to economy.
+- **The runs.** Two attempts of run 41953124538, against main's runs at `f9912792` (the base; its one red was
+  `rest-server`, not a tacsim cell), `a6bea79f` and `a40aa5de`.
+- **The cells** were set up as in the first experiment.
+
+| Run | Compile + link, mean a cell (s) | Slowest cell's job (min) | Slowest other than cell 2 | Fastest (min) | Spread | Tacsim summed test min |
+|---|---|---|---|---|---|---|
+| main 41952369921 (`f9912792`) | 194 | 19.4 | 19.4 | 8.9 | 2.18 | 352 |
+| main 41944128660 (`a6bea79f`) | 198 | 18.6 | 18.6 | 9.9 | 1.88 | 361 |
+| main 41944094187 (`a40aa5de`) | 201 | 16.9 | 16.9 | 10.3 | 1.64 | 361 |
+| TS.12 41953124538 a1 | 219 | 16.4 | 16.4 | 10.6 | 1.55 | 343 |
+| TS.12 41953124538 a2 | 239 | 18.4 | 18.4 | 11.8 | 1.56 | 375 |
+
+- **The race is gone.** `field_gc4::gc4_the_wingman_drags…` passed in both partitioned attempts (203 s and 214 s),
+  and every tacsim cell was green. The only reds were the two guards that pin the shard layout (`tacsim-minds`,
+  `rest-libs`). The blocker the first reading named no longer stands.
+- **The link cost is about the same.** A cell compiles and links in 229 s on average against main's 198 s: about
+  +31 s a cell, or about 5 runner-minutes a run. The four domain binaries after the lib took 30–45 s together.
+- **The wall and the balance now favour the partition slightly.**
+  - The slowest cell was 16.4 and 18.4 min, against main's 16.9–19.4.
+  - The spread was 1.55–1.56, against 1.64–2.18.
+  - With opt-level 1, cost_lane no longer makes cell 2 the wall.
+  - Two attempts against three runs is still inside the hosted machines' 2× noise, so read this as "no worse",
+    not "better".
+- **What adoption needs is unchanged:** the guards and the `--test shard_N` lines (minds, M8) rewritten for
+  domain roots. A new module becomes one `mod` line in its domain root, and no reshard ever follows.
+
+The experiment PR #422 is closed. The decision on Q-43-5 is the owner's.
+
 ## TS.6 (2026-11-04) — the fiat budget
 
 D-43-9 as written. `crates/mush-contract-tests/tests/ci_policy/fiat_budget.rs` (module `fiat_budget::` of
@@ -631,3 +667,53 @@ object, and wait for TS.5b's sequences. No minimised failure exists yet to keep 
 found.
 
 **Summed minutes.** About +0.05: 0.7 s in `e2a` and 2.3 s in `e2b`.
+
+## TS.12, adopted (2026-11-05) — four domain binaries, hash-partitioned
+
+D-43-5 (Q-43-5 ruled 2026-11-04, owner: "Adopt it"), on main `bf0b5f24`.
+
+**The layout.**
+- **The move.** The ten `shard_N.rs` roots are gone. Their 115 modules moved with `git mv` into four domain
+  directories, each module with its `#[path]` siblings and its subdirectory (`knowing`'s eight quest files,
+  `match_lifecycle/`). Each root, `crates/tacsim/tests/<domain>.rs`, declares its directory's modules and the ten
+  shared `support` modules.
+  - `domain_field`: 37 modules, the field, crew, bay, escort, sortie and salvage journeys.
+  - `domain_economy`: 37 modules, the surface, ports, market, claims, plans, mining, drones and industry.
+  - `domain_arena`: 30 modules, the arena, cockpit, match lifecycle, minds (`twin` among them) and definitions.
+  - `domain_world`: 11 modules, knowing, vehicles, voyages, the chart, the sky, geology and `moon_ports`.
+- **The suffix rule moved one module.** `moon_ports` went to world rather than economy, because in economy its
+  name ends with `ports`. Nothing imports across domains.
+- **What did not change.** No test was edited; only comments and run lines that named a shard were updated. The
+  state-slot rows are keyed by module (TS.8) and did not change. The fiat budget's 28 tacsim rows are keyed by
+  path and were re-keyed.
+
+**The cells.**
+- `.github/tacsim-integration-shards.txt` has a new shape. A `partition:` line names the four domain binaries,
+  and numbered lines name the whole targets a cell runs first: harness on 1, cost_lane on 2. cost_lane gets its
+  clean home first in cell 2, where TS.12's refresh showed it no longer sets the wall.
+- `scripts/ci-tacsim-shard.sh N` runs that cell's whole targets, then `cargo nextest run --partition
+  hash:N/10` over the four domain binaries.
+- The whole targets' JUnit is kept as `junit-first.xml`, and the cell uploads both reports.
+- The M8 jobs name `domain_field`, and the three tacsim-minds steps name `domain_arena`.
+
+**The guards.**
+- `ci_tacsim_shards` now reads the domain layout. It checks:
+  - every target is listed exactly once (the partition or one cell);
+  - the matrix runs exactly the numbered cells, and the script partitions;
+  - every file under `tests/<domain>/` is declared by that domain's root, and a root declares nothing outside its
+    directory and `support/`;
+  - no module name in a domain ends with another's.
+- It also refuses any directory under `tests/` that is not a domain's, `support/` or `harness_baseline/`. A
+  branch cut before the adoption therefore fails until it moves its new modules.
+- `state_slot_owners`' key-normalisation test and the gated-test inventory's substring example name domain paths.
+
+**Doc 43.**
+- Rule 2.3 #3: a new test is a `mod` line in its domain root.
+- Rule 2.3 #14: a cut reports its domain binary's summed-minutes delta, summed over the ten cells.
+- Q-43-5 and D-43-5 carry the ruling and the figures.
+- docs/ops.md's test-targets section drops the "shard with the most room" guidance; the reshard recipe it implied
+  is gone.
+
+**The gate.** The contract tests, all four domain binaries' build, clippy and strict rustdoc on `tacsim` and
+`mush-contract-tests`, shellcheck, and cells 1 and 3 run through the script on conclav.dev; then the PR's own
+run.

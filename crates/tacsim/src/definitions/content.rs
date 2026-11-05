@@ -1083,7 +1083,7 @@ pub fn game_seed_sources() -> Vec<PackSource> {
                 ("industry/recipes-v2.json", INDUSTRY_RECIPES_JSON),
                 // Doc 39 cut IN.9: the yard's hull recipes (each row pinned to its design's
                 // bill, `crate::port::bill`).
-                ("industry/hulls-v1.json", INDUSTRY_HULLS_JSON),
+                ("industry/hulls-v2.json", INDUSTRY_HULLS_JSON),
             ]
             .iter(),
         )
@@ -1094,9 +1094,9 @@ pub fn game_seed_sources() -> Vec<PackSource> {
         .collect()
 }
 
-/// **The yard's hull recipes** (doc 39 cut IN.9, §4.7): `tacsim.industry.hulls` v1, one recipe
-/// a buildable design, each a kit lot from its bill's bulk lines over its days.
-pub const INDUSTRY_HULLS_JSON: &str = include_str!("../../content/industry/hulls-v1.json");
+/// **The yard's hull recipes** (doc 39 cut IN.9, §4.7): `tacsim.industry.hulls` v2 (doc 39 cut IN.9b: the nine
+/// templated designs beside v1's five), one recipe a buildable design, each a kit lot from its bill's bulk lines over its days.
+pub const INDUSTRY_HULLS_JSON: &str = include_str!("../../content/industry/hulls-v2.json");
 
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
@@ -1261,7 +1261,7 @@ pub fn boot_packs() -> Result<Vec<mush_content::Pack>, String> {
 /// # Errors
 ///
 /// A message naming the file when a shipped pack does not verify — a build
-/// error, since `crates/tacsim/tests/shard_2/content.rs` pins both digests.
+/// error, since `crates/tacsim/tests/domain_arena/content.rs` pins both digests.
 pub fn winter_valley_packs() -> Result<Vec<mush_content::Pack>, String> {
     [
         (
@@ -1285,7 +1285,7 @@ pub fn winter_valley_packs() -> Result<Vec<mush_content::Pack>, String> {
 /// # Errors
 ///
 /// A message naming the file when a shipped pack does not verify — a build
-/// error, since `crates/tacsim/tests/shard_2/content.rs` pins both digests.
+/// error, since `crates/tacsim/tests/domain_arena/content.rs` pins both digests.
 pub fn mars_canyon_packs() -> Result<Vec<mush_content::Pack>, String> {
     [
         (

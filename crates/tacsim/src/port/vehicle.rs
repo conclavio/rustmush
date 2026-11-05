@@ -1257,7 +1257,16 @@ pub(crate) fn combat_hull(w: &World, tv: ObjId) -> bool {
     };
     crate::port::hull::live_unit_id(w, tv)
         .and_then(|unit| store.definitions().specs.get(&unit))
-        .is_some_and(|spec| spec.logistics.is_none())
+        .is_some_and(|spec| combat_spec(w, tv, spec))
+}
+
+/// **Whether `spec` makes `tv` a combat hull rather than a rig**: no logistics, or (doc 39 cut
+/// IN.9b) only a class template's (`LogisticsDef::derived_mass`) on a unit the yard did not
+/// commission — a fielded tank or biped, not a register rig with its own locker.
+fn combat_spec(w: &World, tv: ObjId, spec: &crate::definitions::UnitSpec) -> bool {
+    spec.logistics.as_ref().is_none_or(|logistics| {
+        logistics.derived_mass && crate::port::owned::rig_row(w, tv).is_none()
+    })
 }
 
 /// **One rig as the payload counts it** ([`carried_rigs`]' per-rig read): its dry mass and the
@@ -1288,17 +1297,25 @@ pub(crate) fn carried_rig(
         .specs
         .get(&unit)
         .ok_or_else(|| format!("rig #{}'s unit {unit} has no spec", tv.0))?;
-    let Some(logistics) = spec.logistics.as_ref() else {
-        return Ok(CarriedRig {
-            tv: tv.0,
-            dry_kg: crate::field_ops::dry_mass_kg_for_spec(spec),
-            hopper: None,
-            goods: Vec::new(),
-        });
+    let logistics = match spec.logistics.as_ref() {
+        Some(logistics) if !combat_spec(w, tv, spec) => logistics,
+        _ => {
+            return Ok(CarriedRig {
+                tv: tv.0,
+                dry_kg: crate::field_ops::dry_mass_kg_for_spec(spec),
+                hopper: None,
+                goods: Vec::new(),
+            });
+        }
     };
-    let dry_kg = u64::from(logistics.dry_mass_t)
-        .checked_mul(1_000)
-        .ok_or_else(|| format!("rig #{}'s dry mass overflows", tv.0))?;
+    // Doc 39 cut IN.9b: a templated rig weighs its field-ops mass, as it always did.
+    let dry_kg = if logistics.derived_mass {
+        crate::field_ops::dry_mass_kg_for_spec(spec)
+    } else {
+        u64::from(logistics.dry_mass_t)
+            .checked_mul(1_000)
+            .ok_or_else(|| format!("rig #{}'s dry mass overflows", tv.0))?
+    };
     let accepted: Vec<CanonicalId> = goods
         .goods
         .iter()
