@@ -470,6 +470,12 @@ for a fee, or held."
   passes it except for leaving the port ("You are being processed at {port}; about {h} IC h."),
   `+ship/captives` lists only `Captured`, `extractable` is `None`, treatment (GC.13) runs, and
   `status_line` shows the processing time left.
+  **Doc 42b cut SU.4** (Q-42b-18, Q-42b-19) adds the NPC branch for a raider's crew, meaning an NPC
+  whose record carries a resolve. `levy_release` charges it nothing. At `release_due_ic` it leaves
+  play instead of reaching `Port`: the record is removed, and the object is destroyed (`GOING`). The
+  captor hears that "the {authority} take {who} into custody". `+ship/release` refuses it anywhere
+  but a port, and at a port it leaves play at the next crew tick. Stranded in its captor's wreck,
+  it leaves play once that site's field has demoted.
 - **Draft 0.3 (review round 2, 42-7, kept in step with doc 41's 41-9): the fee's mechanism.**
   "Written as an obligation … anyone may settle" does not work on `main`. `create_obligation`
   (`mush-economy/src/api.rs:2045`) requires the caller to hold debit authority on the debtor's

@@ -223,13 +223,14 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
 }
 
 /// **(s1) The stranded raid yields, and its crew is taken in** (doc 42b cut SU.4; Q-42b-17 to
-/// Q-42b-19) on `at`'s ground. The stranger's tug is out on the ground behind the Red Hound; the
-/// raider's first hull stands beside the stranger's ramp, stripped and powerless, its crew at
-/// resolve 0, and its barge is gone. The field opens and the crew yields; the field demotes with
-/// the hull a casualty. The stranger's tug tows it into the Red Moth: the crew is `Captured`,
-/// listed by `+ship/captives`, and refused `+ship/release` on the site (no life support). The Red
-/// Moth docks at Ceres: the authority takes the crew into processing with no fee charged, and at
-/// release the crew leaves play, the record gone and the object `GOING`.
+/// Q-42b-19) on `at`'s ground. The raider's first hull stands beside the stranger's ramp,
+/// powerless, its crew at resolve 0; its barge and its second hull are gone (SU.3's stories keep a
+/// crew at 1,000). A staff hand rebuilds it as a drone, since no shipped rig can tow a 30 t line
+/// tank (the cut notes' gap). The field opens and the crew yields; the field settles with the hull
+/// a casualty. The stranger's tug, launched after the demotion, tows it into the Red Moth: the crew
+/// is `Captured`, listed by `+ship/captives`, and refused `+ship/release` on the site (no life
+/// support). The Red Moth docks at Ceres: the authority takes the crew into processing with no fee
+/// charged, and at release the crew leaves play, the record gone and the object `GOING`.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn taken_in(at: &Ground) {
     use crate::custody_rig::{attach_on, load_on, powerless, ramp_cell_on, seconds_until};
@@ -238,8 +239,6 @@ pub(crate) async fn taken_in(at: &Ground) {
     let b_carrier = ObjId(b_row.hull);
     let tug = b_tvs[0];
     let ramp = ramp_cell_on(&rig, at.entry);
-    crate::driving_rig::launched_at(&mut rig, at.entry, b, tug);
-    crate::driving_rig::to_cell_on(&mut rig, at.entry, tug, (ramp.0 - 12, ramp.1));
     let seeded = run(&mut rig.tw, GOD, &format!("@field/raiders {}", at.raider));
     assert!(seeded.contains("seeded"), "{seeded}");
     let launched = run(
@@ -251,8 +250,20 @@ pub(crate) async fn taken_in(at: &Ground) {
     let hulls = raider_hulls(&rig);
     let barge = tacsim::field::raiders::carrier_of(rig.tw.world(), hulls[0]).expect("a carrier");
     let hull = hulls[0];
+    // No shipped rig can tow a 30 t line tank (a 6 t tug takes 12 t, an 8 t escort 16 t): a staff
+    // hand rebuilds the yielding hull as a drone, a combat hull the stranger's tug can take (and
+    // the departure carries as cargo, doc 36a lane 3). Doc 42b's cut notes record the gap.
+    let removed = run(&mut rig.tw, GOD, &format!("@unit/remove #{}", hull.0));
+    let created = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.drone_mk1", hull.0),
+    );
+    assert!(
+        mush_tactics::module::unit_of(rig.tw.world(), hull).is_some(),
+        "the hull is rebuilt as a drone: {removed} / {created}"
+    );
     crate::driving_rig::to_cell_on(&mut rig, at.entry, hull, (ramp.0 + 1, ramp.1));
-    stripped(&mut rig, hull);
     powerless(&mut rig, hull);
     let crews: Vec<ObjId> = hulls
         .iter()
@@ -270,6 +281,9 @@ pub(crate) async fn taken_in(at: &Ground) {
             ));
         }
         mush_sim::unplace(ctx, barge, "test: the raider's barge is gone").expect("unplaced");
+        // The second hull goes with its barge: the yielding hull stands alone, so nothing of the
+        // raider's fires on the Red Moth on its pad (SU.3's stories keep the crew at 1,000).
+        mush_sim::unplace(ctx, hulls[1], "test: the second hull is gone").expect("unplaced");
     });
     let hound = armed_on(
         &mut rig,
@@ -309,7 +323,13 @@ pub(crate) async fn taken_in(at: &Ground) {
         "the yielded hull lies a casualty"
     );
 
-    // The stranger's tug takes the yielded hull in: the crew is captured by CR.1's branch.
+    // The stranger's tug, launched once the field is over, takes the yielded hull in: the crew is
+    // captured by CR.1's branch.
+    // A few seconds first, so the close the host still owes lands before the launch's own acts.
+    for _ in 0..5 {
+        let _ = crate::field_host_rig::second(&mut rig);
+    }
+    crate::driving_rig::launched_at(&mut rig, at.entry, b, tug);
     crate::driving_rig::to_cell_on(&mut rig, at.entry, tug, (ramp.0 + 1, ramp.1 + 1));
     let _ = crate::field_host_rig::second(&mut rig);
     attach_on(&mut rig, at.entry, (b, 1), tug, hull);
