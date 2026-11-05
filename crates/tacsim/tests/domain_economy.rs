@@ -61,6 +61,8 @@ mod house_arm_rs6b;
 mod house_sweep_rs6c;
 #[path = "domain_economy/in10_pools.rs"]
 mod in10_pools;
+#[path = "domain_economy/in11_matter.rs"]
+mod in11_matter;
 #[path = "domain_economy/in1_accounting.rs"]
 mod in1_accounting;
 #[path = "domain_economy/in2_lifecycle.rs"]

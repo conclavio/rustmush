@@ -182,6 +182,19 @@ pub trait VenueGate: Send + Sync + std::fmt::Debug {
     ) -> Option<String> {
         None
     }
+    /// **Whether `commodity` is indivisible here** (doc 39 cut IN.11): held and sold as its lots,
+    /// one a sale, never as a pool — the composition's parts. Default: none.
+    fn indivisible(&self, _commodity: &mush_core::CanonicalId) -> bool {
+        false
+    }
+}
+
+/// **Whether `commodity` sells as its lots** (doc 39 cut IN.11): the inventory's indivisible
+/// goods, or the presence gate's.
+#[must_use]
+pub fn sells_as_lots(w: &mush_core::World, commodity: &mush_core::CanonicalId) -> bool {
+    lot_supply(w).is_some_and(|f| f.is_indivisible(commodity))
+        || venue_gate(w).is_some_and(|gate| gate.indivisible(commodity))
 }
 
 /// What a governed endpoint's limits are, resolved where a World exists and carried,

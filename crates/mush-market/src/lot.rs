@@ -911,7 +911,18 @@ impl ActionProvider for MarketLotProvider {
                 data.insert("lot".to_owned(), json!(lot.0));
                 format!("Released listing #{listing}'s hold on {lot}.")
             }
-            (LotOp::Draw | LotOp::Deliver, Some(_)) => {
+            // ---- doc 39 cut IN.11: one exact lot sold into a standing bid ----
+            (LotOp::Deliver, Some(lot)) => self.prepare_deliver_lot(
+                invocation,
+                txn,
+                &parameters,
+                &now,
+                (listing, lot),
+                &commodity,
+                quantity,
+                &mut data,
+            )?,
+            (LotOp::Draw, Some(_)) => {
                 return Err(error(ActionErrorCode::InvalidRequest, LOT_REFUSED));
             }
             (LotOp::Reserve, None) => {
@@ -1240,6 +1251,88 @@ impl MarketLotProvider {
         Ok(format!(
             "Delivered {quantity} {commodity} for contract #{contract}."
         ))
+    }
+
+    /// **The Deliver prepare for one exact lot** (doc 39 cut IN.11): a sale of an indivisible
+    /// good into a standing bid hands the very lot over — [`Self::prepare_deliver`]'s checks,
+    /// the paid entry's frozen lot matched, and the lot relocated under the same marker
+    /// (`InventoryFamilies::relocate_marked`), never a pool transfer.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_deliver_lot(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        (listing, lot): (ListingId, mush_inventory::LotId),
+        commodity: &CanonicalId,
+        quantity: u64,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let wall = prepare_wall(parameters)?;
+        let endpoint = endpoint_field(parameters, "endpoint")?;
+        let source = endpoint_field(parameters, "source")?;
+        let destination = endpoint_field(parameters, "destination")?;
+        if source != endpoint {
+            return Err(rejected());
+        }
+        let (contract, entry) = paid_entry_of(parameters, LotOp::Deliver)?;
+        if !matches_paid(
+            entry,
+            listing,
+            destination,
+            endpoint,
+            commodity,
+            quantity,
+            None,
+        ) || !paid_lot_is(entry, Some(lot))
+        {
+            return Err(rejected());
+        }
+        let quote = entry
+            .get("quote")
+            .and_then(Value::as_u64)
+            .map(QuoteId)
+            .ok_or_else(rejected)?;
+        let marker = entry
+            .get("marker")
+            .and_then(Value::as_str)
+            .filter(|marker| mush_inventory::is_marker_id(marker))
+            .map(smol_str::SmolStr::new)
+            .ok_or_else(rejected)?;
+        // The lot must be free: a lot a listing or an order holds is never sold out from under it.
+        if txn
+            .get(&self.families.lot_holds, &lot)
+            .map_err(|_| rejected())?
+            .is_some()
+        {
+            return Err(rejected());
+        }
+        let moved = self
+            .families
+            .relocate_marked(
+                txn,
+                lot,
+                endpoint,
+                destination,
+                &marker,
+                invocation.actor(),
+                now,
+                wall,
+            )
+            .map_err(|source| refuse(&source))?;
+        if moved.commodity() != commodity || moved.quantity() != quantity {
+            return Err(rejected());
+        }
+        data.insert("contract".to_owned(), json!(contract.0));
+        data.insert("quote".to_owned(), json!(quote.0));
+        data.insert("source".to_owned(), json!(source.vault().0));
+        data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
+        data.insert("destination".to_owned(), json!(destination.vault().0));
+        data.insert("quantity".to_owned(), json!(quantity));
+        data.insert("lot".to_owned(), json!(lot.0));
+        data.insert("marker".to_owned(), json!(marker.as_str()));
+        Ok(format!("Delivered {lot} for contract #{contract}."))
     }
 }
 

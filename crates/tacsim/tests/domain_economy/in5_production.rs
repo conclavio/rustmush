@@ -41,7 +41,7 @@ const FITTINGS: &str = "industrial_parts";
 const METALS: &str = "metals";
 
 /// Kasei's refine ledger, as the engine holds it.
-fn refine_ledger(rig: &Rig) -> Option<tacsim::port::mill::MillLedger> {
+pub(crate) fn refine_ledger(rig: &Rig) -> Option<tacsim::port::mill::MillLedger> {
     let handle = rig
         .tw
         .world()
@@ -107,7 +107,7 @@ fn capture_dispatch(capture: Capture) -> tracing::Dispatch {
     )
 }
 
-fn market(rig: &Rig) -> &MarketStore {
+pub(crate) fn market(rig: &Rig) -> &MarketStore {
     rig.tw
         .world()
         .module_state::<MarketStore>()
@@ -115,7 +115,7 @@ fn market(rig: &Rig) -> &MarketStore {
 }
 
 /// Mint the captain ten million minor units from Ceres' treasury.
-fn mint(rig: &mut Rig, pilot: ObjId) -> AccountId {
+pub(crate) fn mint(rig: &mut Rig, pilot: ObjId) -> AccountId {
     let treasury = port_map(&rig.tw, CERES).treasury.expect("a treasury");
     let account = tacsim::port::credit::own_account(rig.tw.world(), pilot)
         .map(|a| a.id)
@@ -139,12 +139,12 @@ fn posted(rig: &Rig, account: AccountId) -> i64 {
         .minor()
 }
 
-fn storefront(rig: &Rig, entry: &str, org: &str) -> VaultId {
+pub(crate) fn storefront(rig: &Rig, entry: &str, org: &str) -> VaultId {
     VaultId(port_map(&rig.tw, entry).vendors[&cid(org)].vault)
 }
 
 /// The quantity `vendor`'s pooled ask of `good` lists, if one stands.
-fn listed(rig: &Rig, entry: &str, vendor: &str, good: &str) -> Option<u64> {
+pub(crate) fn listed(rig: &Rig, entry: &str, vendor: &str, good: &str) -> Option<u64> {
     let endpoint = EndpointRef(storefront(rig, entry, vendor));
     let m = market(rig);
     m.lot_listing_of(endpoint, &cid(good))
@@ -153,14 +153,14 @@ fn listed(rig: &Rig, entry: &str, vendor: &str, good: &str) -> Option<u64> {
 }
 
 /// One port fire, everything it queued landed.
-fn fire_landing(rig: &mut Rig) {
+pub(crate) fn fire_landing(rig: &mut Rig) {
     let (_, queued) = fire(rig);
     land_quietly(rig, &queued);
 }
 
 /// **Buy `qty` of `good` from `vendor` at `entry`** through the market's own quote, accept and
 /// draw, into the buyer's docked hold.
-fn buy(rig: &mut Rig, pilot: ObjId, entry: &str, vendor: &str, good: &str, qty: u64) {
+pub(crate) fn buy(rig: &mut Rig, pilot: ObjId, entry: &str, vendor: &str, good: &str, qty: u64) {
     let endpoint = EndpointRef(storefront(rig, entry, vendor));
     let listing = market(rig)
         .lot_listing_of(endpoint, &cid(good))
@@ -194,7 +194,7 @@ fn buy(rig: &mut Rig, pilot: ObjId, entry: &str, vendor: &str, good: &str, qty: 
 
 /// **Sell into `org`'s standing bid of `good` at `entry`** (`+market/sell <bid>=all`), the
 /// deliver leg landed and the sale settled; what the pilot heard.
-fn sell(rig: &mut Rig, pilot: ObjId, entry: &str, org: &str, good: &str) -> String {
+pub(crate) fn sell(rig: &mut Rig, pilot: ObjId, entry: &str, org: &str, good: &str) -> String {
     let bid = port_map(&rig.tw, entry).vendors[&cid(org)].bids[&cid(good)].listing;
     let out = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=all"));
     assert!(out.contains("Sold "), "{out}");
@@ -229,7 +229,7 @@ fn settle(rig: &mut Rig, contract: ContractId) {
 
 /// **Every due production occurrence**, landed as the server's schedule driver lands it (the
 /// test world drives no schedule source of its own; IN.3's `produce`).
-fn produce(rig: &mut Rig) {
+pub(crate) fn produce(rig: &mut Rig) {
     for _ in 0..4_096 {
         let page = rig
             .tw
@@ -274,7 +274,7 @@ fn produce(rig: &mut Rig) {
 
 /// Every submission staged, the industry's included (the rig's `drain` keeps tacsim's,
 /// inventory's and the market's only), landed in order; the refusals.
-fn pump(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn pump(rig: &mut Rig) -> Vec<String> {
     let mut queued = Vec::new();
     while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
         queued.push(*submit);
@@ -290,7 +290,7 @@ fn pump(rig: &mut Rig) -> Vec<String> {
 }
 
 /// One port fire (6 s on), production landed, everything staged landed.
-fn works_fire(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn works_fire(rig: &mut Rig) -> Vec<String> {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -299,7 +299,7 @@ fn works_fire(rig: &mut Rig) -> Vec<String> {
 }
 
 /// The IC clock to `target`, everything staged on the way landed (production included).
-fn ic_to(rig: &mut Rig, target: i64) {
+pub(crate) fn ic_to(rig: &mut Rig, target: i64) {
     let rate = i64::from(crate::driving_rig::world_rate(&rig.tw).max(1));
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = ((ahead + rate - 1) / rate).max(1);
@@ -311,7 +311,7 @@ fn ic_to(rig: &mut Rig, target: i64) {
 }
 
 /// A `+works` command, its submissions landed and `fires` works fires after it.
-fn works(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
+pub(crate) fn works(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
     let out = run(&mut rig.tw, who, line);
     let refused = pump(rig);
     assert!(refused.is_empty(), "{line}: {refused:?}\n{out}");
@@ -337,7 +337,7 @@ fn order_of(rig: &mut Rig, id: u64) -> Option<mush_industry::WorkOrder> {
     )
 }
 
-fn contract(rig: &Rig, id: u64) -> WorksContract {
+pub(crate) fn contract(rig: &Rig, id: u64) -> WorksContract {
     match store(&rig.tw).works_contract(id) {
         Some(WorksState::Present(c)) => (**c).clone(),
         other => panic!("contract {id}: {other:?}"),
@@ -345,7 +345,7 @@ fn contract(rig: &Rig, id: u64) -> WorksContract {
 }
 
 /// Sail `row` from where it lies to `entry` (its propellant and provisions loaded), docked.
-fn sail(rig: &mut Rig, pilot: ObjId, row: &HullRow, line: &str, entry: &str, seed: u64) {
+pub(crate) fn sail(rig: &mut Rig, pilot: ObjId, row: &HullRow, line: &str, entry: &str, seed: u64) {
     load(rig, row, 60, 40, seed);
     let t = file_and_launch(rig, pilot, ObjId(row.hull), line);
     let arrive = t.plan.depart_ic + t.plan.total_s;
@@ -361,7 +361,7 @@ fn sail(rig: &mut Rig, pilot: ObjId, row: &HullRow, line: &str, entry: &str, see
 }
 
 /// Off the ship (`+ship/leave`).
-fn ashore(rig: &mut Rig, who: ObjId) {
+pub(crate) fn ashore(rig: &mut Rig, who: ObjId) {
     let out = run(&mut rig.tw, who, "+ship/leave");
     assert!(!out.contains("Usage"), "{out}");
 }

@@ -153,6 +153,25 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(corridor_cmd),
     )?;
+    // Doc 39 cut IN.11: `@industry/census`, a staff read of the matter census.
+    reg.command(
+        CommandSpec {
+            name: "@industry".into(),
+            shape: ArgShape::Raw,
+            switches: ["census"].iter().copied().map(SmolStr::new).collect(),
+            help: "@industry/census                    (staff) the matter census, kilograms: \
+                   the chain's sources (opened deposits, the stock clerk's mints), its holdings \
+                   (pools, lots, bales) and its sinks (work orders' losses, mills', the parts \
+                   built into hulls and fitted by the bay) on one tacsim.matter_census line, \
+                   then one tacsim.matter_build line a commission. Its balance holds still \
+                   across any window in which nothing else makes or destroys matter.\n\
+                   @industry/census <good>             (staff) and one tacsim.matter_lot line a \
+                   lot of that good: its vault, the vault's name and owner."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::census::census_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC3 (§4.1): `+credit`, a ReadOnly group of its own ----
     //
