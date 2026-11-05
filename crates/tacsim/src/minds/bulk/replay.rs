@@ -25,7 +25,7 @@ pub(crate) enum ReplayCommand {
     /// over the end of a reference that stopped short of its plan's limit (a fractional final
     /// second) runs to the end and drains its final barriers instead of being refused, which
     /// left the bench waiting on work that never ran.
-    StepTo(i64),
+    Step(i64),
     BackTo(i64),
 }
 #[derive(Clone, Debug, Serialize)]
@@ -323,7 +323,7 @@ impl ReplayMachine {
         let end = self.lease.tape.duration_ms();
         let goal = match command {
             ReplayCommand::RunTo(t) if t >= at && t <= end => t,
-            ReplayCommand::StepTo(t) if t >= at => t.min(end),
+            ReplayCommand::Step(t) if t >= at => t.min(end),
             ReplayCommand::BackTo(t)
                 if t >= self.branch.as_ref().map_or(0, |b| b.opening_ms()) && t <= at =>
             {
@@ -951,7 +951,7 @@ mod settle_boundary_tests {
         let mut machine = ReplayMachine::new(tape(), ObjId(99), ObjId(4)).unwrap();
         let end = machine.lease.tape.duration_ms();
         assert!(machine.begin(ReplayCommand::RunTo(end + 5_000)).is_err());
-        machine.begin(ReplayCommand::StepTo(end + 5_000)).unwrap();
+        machine.begin(ReplayCommand::Step(end + 5_000)).unwrap();
         assert_eq!(machine.goal, Some(end));
         let mut complete = false;
         for _ in 0..600 {

@@ -785,7 +785,7 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                             // Clamped to the retained endpoint by the replay, never to the
                             // plan's limit: a reference that ended short of it is stepped to
                             // its own end.
-                            ReplayCommand::StepTo(p.at_ms.saturating_add(delta))
+                            ReplayCommand::Step(p.at_ms.saturating_add(delta))
                         }
                     };
                     let ready = take_idle(&mut row)?;
