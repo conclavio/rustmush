@@ -84,12 +84,6 @@ fn pending(w: &World, carrier: ObjId) -> bool {
 /// 20,000 cr, provisional — a Ceres site's round trip in reaction mass and provisions, with room.
 pub const FLOAT_MINOR: i64 = 2_000_000;
 
-/// **The reaction mass a sailing buys for the leg home**, tonnes (doc 41 cut RS.6b, provisional): a
-/// plan's `fill` sizes the tank for the outbound passage only, while a site departure wants the
-/// leg home aboard too (`SITE_TANK_SHORT`), so the house buys this much beside the fill. A Ceres
-/// site's round trip burns two tonnes.
-pub const HOME_LEG_T: u64 = 3;
-
 /// **The house's sail** ([`HouseAct::Sail`]): the dispatcher's float topped up from the house's
 /// own account (the dispatcher acts for the house), then a sailing plan filed as the dispatcher —
 /// fill the tank and the locker, then depart for `word` — which the order arm carries out as the
@@ -102,7 +96,9 @@ fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
         .and_then(|view| view.airlock())
         .ok_or("the lifter has no airlock")?;
     if ctx.w.get(dispatcher).and_then(|o| o.location) != Some(airlock) {
-        ctx.w.move_to(dispatcher, airlock).map_err(|e| e.to_string())?;
+        ctx.w
+            .move_to(dispatcher, airlock)
+            .map_err(|e| e.to_string())?;
     }
     let (house_account, float) = crate::port::market::ports(ctx.w)
         .into_iter()
@@ -154,7 +150,6 @@ fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
     }
     for line in [
         "buy propellant fill".to_owned(),
-        format!("buy propellant {HOME_LEG_T}"),
         "buy provisions fill".to_owned(),
         format!("depart {word}"),
     ] {

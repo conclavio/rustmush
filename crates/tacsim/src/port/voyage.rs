@@ -3496,8 +3496,9 @@ pub(crate) fn prepare_departure(
     }
     // Doc 41 cut RS.6b: a recovery house's hull flown by its dispatcher carries it as her one
     // occupant (the dispatcher is a Thing, which `souls_aboard` does not count).
-    let souls = occupants(w, airlock)
-        .max(u32::from(crate::port::house::is_dispatcher_of(w, hull, pilot)));
+    let souls = occupants(w, airlock).max(u32::from(crate::port::house::is_dispatcher_of(
+        w, hull, pilot,
+    )));
     let basis = basis(ctx, &view, souls).map_err(|error| {
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");
         dark()

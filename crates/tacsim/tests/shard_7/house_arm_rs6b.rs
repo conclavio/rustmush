@@ -79,11 +79,6 @@ fn skip_and_fire(rig: &mut Rig, target: i64) {
 /// **The job flown on `(venue, entry)`.**
 #[allow(clippy::too_many_lines)]
 fn story(venue: &str, entry: &str) {
-    // PROBE (temporary): the departure's warnings.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("tacsim=info")
-        .with_test_writer()
-        .try_init();
     let mut rig = stocked_tuned(quick);
     // A pilot's carrier on the pad, so the site's ground is warm and its ramp is known.
     let (_, _, tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), (venue, entry), 1);
