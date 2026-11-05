@@ -593,6 +593,24 @@ pub(crate) fn put(ctx: &mut Ctx<'_>, record: CrewRecord) {
     }
 }
 
+/// **Set `who`'s crew resolve** (doc 42b cut SU.3) — a test seam for the morale stories, which
+/// pin a crew at 0 or 1,000 where the content authors 400 or 750. Never called by the game: the
+/// raider seed is the one writer of a resolve.
+#[doc(hidden)]
+pub fn set_resolve_for_tests(ctx: &mut Ctx<'_>, who: ObjId, resolve: Option<u16>) -> bool {
+    let Some(record) = crew_of(ctx.w, who).cloned() else {
+        return false;
+    };
+    put(
+        ctx,
+        CrewRecord {
+            resolve_permille: resolve,
+            ..record
+        },
+    );
+    true
+}
+
 /// **Whether `who` is physically inside `obj`**: the location chain, or the spatial graph.
 #[must_use]
 pub(crate) fn inside(w: &World, who: ObjId, obj: ObjId) -> bool {

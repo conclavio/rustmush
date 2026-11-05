@@ -95,7 +95,7 @@ pub(crate) fn carrier_of(ctx: &Ctx<'_>, unit: ObjId, then: &Then) -> Option<ObjI
         Then::Rig { .. } | Then::TowLoad { .. } => rig_hull(ctx, unit),
         Then::Towed { tug } => rig_hull(ctx, *tug),
         Then::Sortie { .. } => crate::detachment::sortie::field_carrier(ctx, unit),
-        Then::Lift { .. } | Then::RaiderLift => None,
+        Then::Lift { .. } | Then::RaiderLift | Then::Yield => None,
     }
 }
 

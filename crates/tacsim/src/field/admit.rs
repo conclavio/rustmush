@@ -347,7 +347,12 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     let carried = crate::surface::tow::carried(record);
     let (held, units): (Vec<ObjId>, Vec<ObjId>) = parties::on_ground(ctx.w, domain)
         .into_iter()
-        .partition(|unit| held_out(ctx.w, *unit));
+        .partition(|unit| {
+            held_out(ctx.w, *unit)
+                // Doc 42b cut SU.3 (Q-42b-13): a yielded hull is ground clutter, an inert wall,
+                // until somebody takes it in (a tow admits it coupled, as any casualty).
+                || (super::raiders::yielded(ctx.w, *unit) && !carried.contains_key(unit))
+        });
     // Doc 36a §11 #1: the walls go on the live record too, so every rebuild of the ground
     // lays them as admission did (`ground_with_held`).
     let held_walls: Vec<HeldWall> = held

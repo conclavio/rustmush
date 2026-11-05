@@ -135,6 +135,7 @@ pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Th
         Then::Rig { .. }
         | Then::Lift { .. }
         | Then::RaiderLift
+        | Then::Yield
         | Then::Towed { .. }
         | Then::TowLoad { .. } => None,
     };
