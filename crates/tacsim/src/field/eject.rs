@@ -127,14 +127,7 @@ pub(crate) fn eject_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// **The eject after a field** (this module's head): the pilot seated in the unit they stand in,
 /// on a site's ground with no field running; the world's cells decide, and nobody holds the cell.
 fn after_field(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<(), CmdError> {
-    let unit = ctx
-        .w
-        .get(actor)
-        .and_then(|object| object.location)
-        .filter(|unit| {
-            super::parties::seated(ctx.w, *unit).is_some_and(|(seated, _)| seated == actor)
-        })
-        .ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
+    let unit = seated_unit(ctx.w, actor).ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
     let site = match crate::surface::act::where_is(ctx.w, unit) {
         crate::surface::act::Where::Ground { domain, .. } => {
             crate::surface::act::site_of_domain(ctx.w, domain)
@@ -152,6 +145,21 @@ fn after_field(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<(), CmdError> {
     let condition = super::crew::cells_condition(cells);
     ejected(ctx, actor, &site, unit, condition, None);
     Ok(())
+}
+
+/// **The unit `actor` is seated in and stands inside** (doc 38a review, Astra #12): the first
+/// holder up `actor`'s location chain, as [`super::crew::inside`] walks it, whose seat is theirs.
+/// A pilot seated in a cab stands in the cab's room, never in the hull itself.
+fn seated_unit(w: &World, actor: ObjId) -> Option<ObjId> {
+    let mut here = w.get(actor).and_then(|object| object.location);
+    for _ in 0..16 {
+        let at = here?;
+        if super::parties::seated(w, at).is_some_and(|(seated, _)| seated == actor) {
+            return Some(at);
+        }
+        here = w.get(at).and_then(|object| object.location);
+    }
+    None
 }
 
 /// **The arena's answer to an eject** (the bridge's branch; this module's head).
@@ -400,6 +408,50 @@ fn ejected(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 38a review, Astra #12**: a pilot seated in a hull from a cab room inside it is found
+    /// in that hull, as a pilot standing in the hull is; a stranger's seat is nobody's.
+    #[test]
+    fn review_72h_a_cab_seated_pilot_is_flying_the_hull() {
+        let mut w = World::new_minimal();
+        let hull = w
+            .create(
+                ObjKind::Thing,
+                "Rig",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("hull");
+        let cab = w
+            .create(ObjKind::Thing, "Cab", mush_core::GOD, Some(hull))
+            .expect("cab");
+        let pilot = w
+            .create(ObjKind::Player, "Pilot", mush_core::GOD, Some(cab))
+            .expect("pilot");
+        let stranger = w
+            .create(ObjKind::Player, "Stranger", mush_core::GOD, Some(cab))
+            .expect("stranger");
+        let mut spatial = mush_sim::SpatialState::default();
+        spatial.assignments.insert(
+            hull,
+            mush_sim::data::HostAssignments {
+                host: hull,
+                seats: [(
+                    mush_sim::StationId::new("cockpit").expect("station"),
+                    mush_sim::data::StationAssignment {
+                        actor: pilot,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        w.module_state_insert(spatial);
+        assert_eq!(seated_unit(&w, pilot), Some(hull));
+        assert_eq!(seated_unit(&w, stranger), None);
+    }
 
     /// **Doc 42b cut SU.3** (Q-42b-8): the morale draw is the eject's FNV-1a keyed by the step,
     /// never the millisecond: the same inputs draw the same, and the step and the hull each

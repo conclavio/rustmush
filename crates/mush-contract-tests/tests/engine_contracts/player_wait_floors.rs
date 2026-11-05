@@ -174,6 +174,18 @@ fn salvage_waits_are_at_least_28_ic_days() {
     );
 }
 
+/// 10. **Doc 38a review F-14**: a captive's release fee (doc 42 Q-42-7) falls due no sooner than
+///     the debt floor, so an absent ex-captive is never refused at a desk the next sweep.
+#[test]
+fn a_release_fee_falls_due_after_28_ic_days() {
+    let w = mush_core::World::new_minimal();
+    let now = w.world_ic_now().at;
+    at_least(
+        "tacsim::field::crew::release_fee_due(w) - now",
+        tacsim::field::crew::release_fee_due(&w) - now,
+    );
+}
+
 /// The first value under `key`, depth first.
 fn find<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     match value {

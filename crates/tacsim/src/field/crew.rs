@@ -1102,24 +1102,34 @@ pub(crate) fn capture(record: &CrewRecord, carrier: ObjId, captor: ObjId, now: i
     next
 }
 
-/// **Vacate `who`'s seat in `unit`**, when they hold it (a load runs only outside a field, so no
-/// arena is told).
+/// **Vacate every seat `who` holds in `unit`** (a load runs only outside a field, so no arena is
+/// told).
 fn vacate_seat(ctx: &mut Ctx<'_>, who: ObjId, unit: ObjId) {
-    let Some((seated, station)) = super::parties::seated(ctx.w, unit) else {
-        return;
-    };
-    if seated != who {
-        return;
-    }
-    if let Some(station) = mush_sim::StationId::new(station.as_str())
-        && let Err(error) = mush_sim::vacate_station(ctx, unit, &station, who)
-    {
-        tracing::warn!(
-            who = who.0,
-            unit = unit.0,
-            ?error,
-            "tacsim: a loaded casualty's seat did not vacate"
-        );
+    // Doc 38a review (Astra #7): every station `who` holds in the hull, not only its first seat by
+    // station id, so a second captive on a multi-crew hull loses its seat and lease too.
+    let held: Vec<SmolStr> = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|state| state.assignments.get(&unit))
+        .map(|host| {
+            host.seats
+                .iter()
+                .filter(|(_, seat)| seat.actor == who)
+                .map(|(station, _)| SmolStr::new(station.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for station in held {
+        if let Some(station) = mush_sim::StationId::new(station.as_str())
+            && let Err(error) = mush_sim::vacate_station(ctx, unit, &station, who)
+        {
+            tracing::warn!(
+                who = who.0,
+                unit = unit.0,
+                ?error,
+                "tacsim: a loaded casualty's seat did not vacate"
+            );
+        }
     }
 }
 
@@ -2672,6 +2682,14 @@ fn levy_release(ctx: &mut Ctx<'_>, who: ObjId) {
     put(ctx, next);
 }
 
+/// **When a release fee falls due** (doc 38a review F-14): the debt floor every other charge on an
+/// absent player keeps (`crate::surface::retrieval::debt_due`, 28 IC days), never at once — a fee
+/// due now refused an insolvent ex-captive at the lease and Co-op desks on the next sweep.
+#[must_use]
+pub fn release_fee_due(w: &World) -> i64 {
+    crate::surface::retrieval::debt_due(w)
+}
+
 /// The economy's half of [`levy_release`]: the sanction's facts read off the port's entry and map.
 fn create_release_obligation(
     ctx: &mut Ctx<'_>,
@@ -2695,7 +2713,7 @@ fn create_release_obligation(
         debit_account: debit,
         credit_account: credit,
         amount: mush_economy::Amount::from_minor(minor),
-        due_ic: ctx.w.world_ic_now().at,
+        due_ic: release_fee_due(ctx.w),
         grace: mush_economy::GracePolicy::new(1),
         inspection: SmolStr::new(key),
         capability,
@@ -2814,6 +2832,108 @@ fn release_processed(ctx: &mut Ctx<'_>, record: CrewRecord, now: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 38a review, Astra #7** (Q-42-1): a load vacates every station each captive holds in
+    /// the casualty, a second crew member's seat included (the review's probe).
+    #[test]
+    fn review_72h_capture_vacates_every_captive_station() {
+        let mut w = World::new_minimal();
+        let casualty = w
+            .create(
+                ObjKind::Thing,
+                "Casualty",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("hull");
+        let carrier = w
+            .create(
+                ObjKind::Thing,
+                "Salvor",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("carrier");
+        let room = w
+            .create(ObjKind::Room, "Bay", mush_core::GOD, None)
+            .expect("bay");
+        let junior = w
+            .create(ObjKind::Player, "Gunner", mush_core::GOD, Some(casualty))
+            .expect("gunner");
+        let senior = w
+            .create(ObjKind::Player, "Helm", mush_core::GOD, Some(casualty))
+            .expect("helm");
+        let site = CanonicalId::new("space_domain_1").expect("site");
+        let mut spatial = mush_sim::SpatialState::default();
+        let seats = [("a_helm", senior), ("z_gunner", junior)]
+            .into_iter()
+            .map(|(id, actor)| {
+                (
+                    mush_sim::StationId::new(id).expect("station"),
+                    mush_sim::data::StationAssignment {
+                        actor,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )
+            })
+            .collect();
+        spatial.assignments.insert(
+            casualty,
+            mush_sim::data::HostAssignments {
+                host: casualty,
+                seats,
+            },
+        );
+        w.module_state_insert(spatial);
+        let mut book = CrewBook::default();
+        for who in [junior, senior] {
+            book.0.insert(
+                who,
+                record_at(
+                    who,
+                    CrewLocation::Stranded {
+                        site: site.clone(),
+                        unit: casualty,
+                    },
+                ),
+            );
+        }
+        w.module_state_insert(book);
+        let reg = mush_core::Registry::new();
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut w,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &reg,
+            module: Some(SmolStr::new(crate::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let taken = captured_loaded(
+            &mut ctx,
+            &LoadCapture {
+                site: &site,
+                ordinal: 1,
+                casualty,
+                carrier,
+                room,
+                captor: mush_core::GOD,
+            },
+        );
+        assert_eq!(taken, vec![junior, senior]);
+        assert!(
+            ctx.w
+                .module_state::<mush_sim::SpatialState>()
+                .expect("spatial")
+                .assignments
+                .get(&casualty)
+                .is_none_or(|host| host.seats.is_empty()),
+            "Q-42-1: every captive must lose every station in the casualty"
+        );
+    }
 
     #[test]
     fn the_control_sections_decide_the_condition() {
@@ -3263,6 +3383,65 @@ mod tests {
     /// **Doc 42 cut CR.0** (Q-42-2, Draft 0.3 42-2, 42-5 (B), 42-6): the gate's refusals. A
     /// captive is refused every gate with the held line; an ejectee movement and operation; a
     /// character in processing only movement; a passenger nothing.
+    /// **Doc 38a review F-22b** (Q-42-2): a captive's `+mine` operates nothing (`/ping`,
+    /// `/stake`, `/laser` and the rest refuse with the held line), and its status is a read.
+    #[test]
+    fn review_72h_a_captive_mines_nothing() {
+        let mut w = World::new_minimal();
+        let who = w
+            .create(
+                ObjKind::Player,
+                "Pilot",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a pilot");
+        let carrier = w
+            .create(
+                ObjKind::Thing,
+                "Kestrel",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a carrier");
+        let mut book = CrewBook::default();
+        book.0.insert(
+            who,
+            record_at(
+                who,
+                CrewLocation::Captured {
+                    carrier,
+                    captor: mush_core::GOD,
+                    since_ic: 0,
+                },
+            ),
+        );
+        w.module_state_insert(book);
+        let held = refusal(&w, who, Gate::Operate).expect("a captive is held");
+        let reg = mush_core::Registry::new();
+        let mut out = mush_core::Outbox::new();
+        for (switch, refused) in [("ping", true), ("laser", true), ("status", false)] {
+            let mut ctx = Ctx {
+                w: &mut w,
+                actor: who,
+                switches: mush_core::SwitchSet::from_names([switch]),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &reg,
+                module: Some(SmolStr::new(crate::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let said = crate::space::commands::mine_cmd(&mut ctx)
+                .err()
+                .map(|error| error.to_string());
+            assert_eq!(
+                said.as_deref() == Some(held.as_str()),
+                refused,
+                "+mine/{switch}: {said:?}"
+            );
+        }
+    }
+
     #[test]
     fn cr0_the_held_gate_refuses_by_hold() {
         let mut w = World::new_minimal();

@@ -90,6 +90,20 @@ reason = "DT.2b1 production-coordinator fixture supplies the host account mappin
 [[site]]
 path = "crates/tacsim/src/field/crew.rs"
 accessor = "World::module_state_insert"
+slot = "spatial"
+owner = ""
+reason = "Doc 38a review (Astra #7) in-source test: seeds two Sim station assignments on one casualty on a bare World so the load's vacate is proven to clear every seat a captive holds. No console, lease or channel grant is built; the production seats are written only through Sim's assign_station."
+
+[[site]]
+path = "crates/tacsim/src/field/eject.rs"
+accessor = "World::module_state_insert"
+slot = "spatial"
+owner = ""
+reason = "Doc 38a review (Astra #12) in-source test: seeds one Sim station assignment on a hull whose pilot stands in a cab inside it, on a bare World, to pin the post-field eject's walk up the location chain. No console or lease is built."
+
+[[site]]
+path = "crates/tacsim/src/field/crew.rs"
+accessor = "World::module_state_insert"
 slot = "book"
 owner = ""
 reason = "Doc 42 cut CR.0 in-source gate test: seeds and varies the tacsim CrewBook on a bare World to pin the held gate's refusal for each hold (captured, awaiting pickup, in processing, a passenger). The production book is the tacsim module's own slot, written only through crew::put."
