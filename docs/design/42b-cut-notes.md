@@ -276,6 +276,10 @@ or ruling question (a heavier tug, a lighter raider hull, or a tow cap that coun
 differently) and is flagged to the owner. §7's (s1) also sketches the players wrecking a director raid's
 carrier. The story stands the raider's barge off the ground instead, the same "carrier lost" term.
 
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of #492's run 42081753056.
+The two (s1) stories add 1.69 summed minutes to `domain_field`: the 512 run (56.5 s) in shard_3 and
+the 256 run (45.0 s) in shard_4. The lib's one in-source test is well under a second.
+
 ## SU.5 — the captor's window
 
 Q-42b-20. A yielded hull nobody loads waits the owner's 28-IC-day floor. Then its crew leaves play, and
