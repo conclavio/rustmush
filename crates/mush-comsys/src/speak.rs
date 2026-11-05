@@ -157,6 +157,11 @@ pub(crate) fn channel_speak(
             ts: now_ms,
             origin: origin.map(SmolStr::new),
         };
+        // Doc 38a review F-22a: the composition's gag (a captive on a roster channel) first.
+        if let Some(line) = crate::transit::refusal(w, actor, chan) {
+            out.error(actor, line);
+            return;
+        }
         if let Err(error) = crate::transit::submit(w, out, chan, msg) {
             out.error(actor, error);
         }
@@ -514,6 +519,9 @@ impl RelaySpeak {
                 ts: ctx.w.now().saturating_mul(1000),
                 origin: Some("discord".into()),
             };
+            if crate::transit::refusal(ctx.w, actor, chan).is_some() {
+                return Err(RelayRefusal::Gagged);
+            }
             crate::transit::submit(ctx.w, ctx.out, chan, msg)
                 .map_err(|_| RelayRefusal::Transport)?;
             crate::transit::accept_relay(ctx.w, ctx.out, id, fingerprint);

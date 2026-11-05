@@ -88,6 +88,13 @@ owner = "sim"
 reason = "DT.2b1 production-coordinator fixture supplies the host account mapping after boot, as the actual server does. The fixture then acquires focus and the real typed helm lease through Sim commands and scheduled coordinator commits; it does not seed control authority."
 
 [[site]]
+path = "crates/tacsim/src/detachment/chat.rs"
+accessor = "World::module_state_insert"
+slot = "CrewBook"
+owner = "tacsim"
+reason = "Doc 38a review F-22a in-source test: seeds an empty tacsim CrewBook on a bare World so the detachment radio's speak gate is proven to gag a captive on a dt: channel and pass them once released. The production book is the tacsim module's own slot, written only through crew::put."
+
+[[site]]
 path = "crates/tacsim/src/field/crew.rs"
 accessor = "World::module_state_insert"
 slot = "book"

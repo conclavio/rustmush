@@ -611,6 +611,16 @@ pub fn set_resolve_for_tests(ctx: &mut Ctx<'_>, who: ObjId, resolve: Option<u16>
     true
 }
 
+/// **Hold `record` in the RAM crew book** — a test seam for the composed rigs (doc 38a review
+/// F-22a's radio story), which cannot reach the tacsim module's own writer. Never called by the
+/// game: every production record is written through `put`.
+#[doc(hidden)]
+pub fn hold_for_tests(w: &mut World, record: CrewRecord) {
+    if let Some(book) = w.module_state_mut::<CrewBook>() {
+        book.0.insert(record.character, record);
+    }
+}
+
 /// **Whether `who` is physically inside `obj`**: the location chain, or the spatial graph.
 #[must_use]
 pub(crate) fn inside(w: &World, who: ObjId, obj: ObjId) -> bool {

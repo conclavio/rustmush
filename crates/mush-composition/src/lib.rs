@@ -307,7 +307,9 @@ fn compose_server_modules<E>(
                         .into_iter()
                         .filter(|_| tacsim_delegate)
                         .collect(),
-                ),
+                )
+                // Doc 38a review F-22a: a captive is gagged on the detachment's radio.
+                .with_speak_gate(Arc::new(tacsim::detachment::DetachmentChatGate)),
         ),
         Box::new(mush_canon::CanonModule::new()),
         Box::new(mush_privileges::PrivilegesModule::new()),
