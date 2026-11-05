@@ -631,6 +631,9 @@ data or the kernel's hashes.
   party.
 - **Why:** an incapacitated character has no way back to fit today. Capture reopens Q-CF-38's
   ruling-out.
+- **Amended by doc 42** (Q-42-17, built CR.5): a medical room's beds limit the faster rate. A
+  treatment begins at the medical rate only while a bed is free; otherwise it runs at the port's full
+  time, "waiting for a bed", until a bed frees and the time left is rescaled.
 
 ### I. The seam with space (doc 35)
 
@@ -724,6 +727,10 @@ tuned later, the expensive-to-reverse ones flagged), and the owner may amend any
 - **The friendly half (a default):** a completed load into a carrier of the crew's own party or
   of a Friend sets their location "aboard the carrier" (Q-CF-38) and cancels any pending
   extraction.
+- **Superseded in its non-friend half by doc 42** (Q-42-16, built CR.1): every completed non-friend
+  load **captures** the crew aboard. They are `Captured` by the carrier's operator, then handed over
+  at a port (CR.2) or freed by the captor or the bound (CR.3). The abandonment and its
+  `abandoned_loaded` are removed. The friendly half stands.
 - **Alternative:** attach refused while anyone is aboard and not yet extracted.
 - **Why:** refusing the attach would let a stranded pilot hold a hull on the ground for as long
   as they liked, which is the bay lock of Q-CF-17 in another form. Abandonment and extraction
@@ -2892,7 +2899,8 @@ open, for the owner to object to:
   lease rig written off since is nobody's custody (Q-36-29).
 - *Custody is not title:* the casualty's lease, title and seats are untouched.
 
-**The abandoned crew** (Q-36-52, the owner's ruling; `field/crew.rs`).
+**The abandoned crew** (Q-36-52, the owner's ruling; `field/crew.rs`). *Superseded by doc 42 cut
+CR.1: the crew of a non-friend's load are captured, and `abandoned_loaded` is gone.*
 - *At the load's physical step,* every character whose crew record holds them in the casualty
   (inside it, or stranded in it) is stranded on the site in that hull. Their extraction starts at
   once to the safe port they know, as if they had asked (`crew::abandoned_loaded`). One already on
@@ -3252,7 +3260,7 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   - GC.8a: no part market or price. GC.8b: goods drawn then refused within one fire are lost.
   - GC.10: the fire tally and void offers are RAM; an NPC leader cannot void.
   - GC.12: the gate.yml `field_scale` sweep has never been run; a cap above 100 needs its own measurement.
-  - GC.13: beds are authored but not a limit.
+  - ~~GC.13: beds are authored but not a limit.~~ Closed by doc 42 CR.5.
   - GC.3/4: the close's black-box line is covered only by review.
 
 ### 36a lane 1 as built (2026-11-02)
@@ -3376,7 +3384,7 @@ are staff's where no command reaches the state yet, and each test names its own.
 | Item | What changed | Test |
 |---|---|---|
 | §11 row 2, party letters (`810007ba`) | `joining` letters a new party the lowest `PartyId` not on the live record (`FieldLive::next_party`), never `nth(len)`; `write_live` and `carrier::set_live` refuse a record that fails `FieldLive::check`, which the boot would refuse and void | `field_carrier::gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival` (three Dray-Ps by voyage; the kernel's refusal is the one stand-in, because production's kernel refuses a join only on a scripted seal or a think-in-flight race; the refused hull is taken back out of the kernel, so world and kernel agree; the third takes the freed letter as the host takes it in, whatever the kernel then answers, since the kernel may still refuse it for real on a think in flight and a refused hull is not asked again while the field runs; a restart in production's boot order resumes the field with the letters unchanged) |
-| §11 row 4, crew check-in (`0115962f`) | `check_in` keeps the worse of the record's condition and the hull's (`CrewCondition` is ordered by severity; only `treat` sets Fit), and leaves alone a soul whose extraction is `abandoned` (GC.5, Q-36-52), so a captor's carrier closing a later field neither re-crews nor un-abandons them | `crew_treatment::gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury`; `field_gc5::gc5_review_the_captors_field_close_keeps_the_abandoned_extraction` |
+| §11 row 4, crew check-in (`0115962f`) | `check_in` keeps the worse of the record's condition and the hull's (`CrewCondition` is ordered by severity; only `treat` sets Fit), and leaves alone a soul whose extraction is `abandoned` (GC.5, Q-36-52), so a captor's carrier closing a later field neither re-crews nor un-abandons them (superseded by doc 42 CR.1: the soul is `Captured`, and `leaves_alone` keeps a record in custody or with a forced extraction) | `crew_treatment::gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury`; `field_gc5::gc5_review_the_captors_field_close_keeps_the_abandoned_extraction` |
 | §11 row 5, the field cap at launch (`16457cc7`) | one count, `parties::site_population` (on the ground, less the carried and the held out, then `counted`), read by the admission, the ramp's launch half and a DT launch's prepare; both launches refuse with CF.2's line (Q-CF-21) when the site's population plus what goes down passes `[tacsim.field].max_units` | `field_carrier::gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold` (cap 2, a carrier and a hull stand, `+tv/1 launch go` refused, the site still promotes); `dt_preparation_plans::dt_launch_refuses_what_the_field_cap_could_not_hold` (the reviewer's probe, a refusal instead of a third unit down) |
 | §11 row 6, mark authority (`40647a6c`) | `parties::led_now` resolves an operation party's leader from its command roster at command time (`roster_leader`, shared with `flight_of`); `+field/mark`, `+field/status` and `+field/fire`'s in-field test read it, never `FieldParty.leader` from admission | `dt_preparation_plans::ic_field_marks_follow_the_roster_succession` (two players fly one operation; the leader's mark opens the field, the leader drops, `+sortie/refresh` hands the lead on, the successor's letter mark is taken and the deposed leader's refused after they return) |
 | §11 row 7, the subordinate's fire door (`3fbe5f2d`) | the fire door finds its site from the actor's seated unit (`flown`) and its party from that unit; the mark door keeps `led`; inside a field a seated subordinate is told to fire from the cockpit, as a leader is | `dt_preparation_plans::ic_field_a_subordinate_pilot_opens_a_field_by_fire` (the non-leader's `+field/fire E` promotes, naming them and their unit) |

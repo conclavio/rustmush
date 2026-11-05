@@ -309,6 +309,9 @@ producer. Both rank it first or second. It consumes nothing from A.
 
 ### F. Crew: capture, prisoners, ejection, treatment
 
+*Surveyed and ruled in [doc 42](42-crew-custody-and-capture.md) (Q-42-1..26), built as CR.0–CR.5;
+CR.6, the space seam, is the space window's.*
+
 **What exists.** `CrewLocation` is Unit, Carrier, Stranded or Port (`crew.rs:101`); a non-friend's
 completed load runs `abandoned_loaded` (`tow.rs:2314–2321`) and `abandon` sets
 `Stranded { site, unit }` with `Extraction { abandoned: true }` while the hull sits in the captor's
@@ -729,6 +732,7 @@ proposed text kept under it for the record.
 - **Alternative:** the full prisoner economy the reviewers sketch.
 - **Why:** Q-CF-38's ruling-out needs a new ruling, both reviewers say so, and the smallest custody
   state is the one later rulings can widen.
+- **See doc 42**, which rules it (Q-42-1, Q-42-16) and builds it (CR.1–CR.5).
 
 **Q-38-23 — Stances (H).**
 - **Proposed default:** an organization-to-organization table in mush-faction (`data.rs:23–26`
@@ -784,6 +788,8 @@ proposed text kept under it for the record.
 - **Proposed default:** every new cut's story runs at 256 and 512, and the bot types the player's
   half over SSH; the bot's four-digit addresses and its `pickup`, `scrap`, `+salvage`, `+bay`,
   `+field/void`, `+sortie/condition` vocabulary are the first cut of whichever document starts first.
+  Doc 42 adds the crew verbs: `+sortie/eject`, `+sortie/extract` (from captivity), `+ship/captives`
+  and `+ship/release`.
 - **Alternative:** one size a story, as GC did.
 - **Why:** doc 36 §7's "stories grow" rule went unmet in every GC story; the rule is cheap when it is
   the first cut and dear when it is the last.

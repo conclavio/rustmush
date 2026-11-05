@@ -506,7 +506,6 @@ rule that reads only the records and the port.
 (shard_8): the one CR.5 story is 13.4 s, so +0.22 summed minutes to `crew_custody::` (9.73 in all
 on that run, with CR.4's four stories). shard_8's wall was 14.7 min. The run's slowest cell was
 shard_1 at 22.7 min, which this cut does not touch.
-
 ## CR.6 — the space seam
 
 Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme session. It is stacked on doc 41's RS.8 (#439). The as-built is doc 35c §12.2. `field/crew.rs` is not edited: CR.6 calls its `check_in`, `put`, `crew_of`, `held_in`, `captured_loaded`, `aboard_loaded` and `hand_over`, all from `space/`.
@@ -530,3 +529,17 @@ Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme
 - **Not exercised:** `+sortie/extract` from a space `Stranded` record, and the friend's `aboard_loaded` branch. Both are the ground's code paths, unchanged.
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## CR.7 — docs
+
+§5's amendments are now written into the documents they amend:
+- **Doc 32:** Q-CF-38 and Q-CF-39 carry "amended by doc 42" notes, and §10's "Not built in CF.5:
+  ejection, capture and treatment" is struck through.
+- **Doc 36:** Q-36-52's non-friend half is marked superseded by CR.1 and its friendly half stands.
+  Q-36-45 gains CR.5's beds. GC.5's "The abandoned crew" and lane 5's row 4 are noted as superseded.
+  "GC.13: beds are authored but not a limit" is closed.
+- **Doc 27:** Q-H12's rescue and capture route is marked built, and Q-F4's cap is `captive_bound_s`.
+- **Doc 38:** §4 F and Q-38-22 point at doc 42, and Q-38-29's vocabulary gains the crew verbs.
+
+Doc 42 is now Draft 0.5. It adds §7b, an as-built table with what stays owed, and records CR.6 as the
+space window's (owner ruling, 2026-11-04), built there as #453. The help and code text items of §5 rode CR.1–CR.5.
