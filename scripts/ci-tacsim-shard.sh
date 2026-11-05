@@ -22,4 +22,16 @@ for target in ${line#*:}; do
   args+=(--test "$target")
 done
 echo "tacsim integration shard ${shard}: $(( ${#args[@]} / 2 )) targets"
-cargo nextest run -P ci -p tacsim "${args[@]}"
+# Doc 43 TS.12 EXPERIMENT (measurement branch, never merged): every cell
+# builds the four domain binaries and runs its hash share of their tests.
+# The extra targets its line names (harness on 1, cost_lane on 2) run first,
+# so the domain run's JUnit is the one the cell uploads (the experiment's data;
+# the extras' report is kept beside it, not uploaded).
+rc=0
+if [ "${#args[@]}" -gt 0 ]; then
+  cargo nextest run -P ci -p tacsim "${args[@]}" || rc=$?
+  cp target/nextest/ci/junit.xml target/nextest/ci/junit-extra.xml 2>/dev/null || true
+fi
+domains=(--test domain_field --test domain_economy --test domain_arena --test domain_world)
+cargo nextest run -P ci -p tacsim "${domains[@]}" --partition "hash:${shard}/10" || rc=$?
+exit "$rc"
