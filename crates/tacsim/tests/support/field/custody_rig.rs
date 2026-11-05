@@ -525,7 +525,17 @@ pub(crate) async fn handover_at_ceres(at: &Ground, paid: bool) {
     let captives = run(&mut rig.tw, b, "+ship/captives");
     assert!(captives.contains("You hold nobody aboard."), "{captives}");
 
-    // The fee: one obligation to the Registry, settled when the account covers it.
+    // The fee: one obligation to the Registry, settled when the account covers it. It falls due
+    // at the debt floor (doc 38a review F-14: never at once), so a solvent captive pays then.
+    // Its due instant is read as a ceiling (the handover was a moment earlier), and the balance is
+    // read just before it, so 28 IC days of other charges do not count as the fee.
+    let mut before = before;
+    if paid {
+        let due = tacsim::field::crew::release_fee_due(rig.tw.world());
+        let _ = crate::driving_rig::to_ic(&mut rig, due - 120);
+        before = balance_minor(&rig, a);
+        let _ = crate::driving_rig::to_ic(&mut rig, due + 60);
+    }
     let settled = seconds_until(&mut rig, 30, |rig| {
         rig.tw
             .world()

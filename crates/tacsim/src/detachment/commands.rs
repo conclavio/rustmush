@@ -305,9 +305,9 @@ fn sortie_gate(switch: &str) -> Option<crate::field::crew::Gate> {
     use crate::field::crew::Gate;
     match switch {
         "seat" | "eject" => Some(Gate::Move),
-        "activate" | "hire" | "board" | "contract" | "launch" | "recover" | "cancel-launch" => {
-            Some(Gate::Operate)
-        }
+        // Doc 38a review F-22b: `/unseat` moves an NPC off a station as `/board` seats one.
+        "activate" | "hire" | "board" | "unseat" | "contract" | "launch" | "recover"
+        | "cancel-launch" => Some(Gate::Operate),
         "extract" => Some(Gate::Extract),
         "chat" => Some(Gate::Chat),
         _ => None,
@@ -340,6 +340,16 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 38a review F-22b**: `/unseat` is an operation a captive is refused, as `/board` is.
+    #[test]
+    fn review_72h_unseat_is_held_like_board() {
+        assert_eq!(
+            sortie_gate("unseat"),
+            Some(crate::field::crew::Gate::Operate)
+        );
+        assert_eq!(sortie_gate("unseat"), sortie_gate("board"));
+    }
 
     #[test]
     fn fences_are_complete_unsigned_and_bounded() {

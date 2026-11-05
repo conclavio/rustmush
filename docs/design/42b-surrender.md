@@ -492,6 +492,9 @@ proposed default is its decision.
   captor gains nothing, so no bound is needed yet.
 
 - **Decision (accepted default, 2026-11-05):** the proposed default, as written.
+- **Build note (SU.4, doc 38a review):** release under way was unspecified. As built,
+  `+ship/release` refuses an NPC anywhere but a port, a carrier under way included, with the site
+  line; at a port the NPC is set down and leaves play at the next crew tick.
 ### G. Timers
 
 **Q-42b-20 — The captor's window, and every other timer.**
