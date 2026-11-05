@@ -524,6 +524,7 @@ mod tests {
             owed_exits: Vec::new(),
             held: Vec::new(),
             tally: Vec::new(),
+            carried: Vec::new(),
         };
         (roster, live)
     }

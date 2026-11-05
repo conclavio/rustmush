@@ -1367,6 +1367,8 @@ and its `think_seq` is monotone across the epoch; a field's own cadence stands a
 snapshot mechanism is built. The record is bounded by one rig's memory cap, which the M7 stack-size
 lint will see (the rig record rides many a tick's frame, `excursion.rs:730–733`: boxed, as the
 dispatch seal is). Q-23-15 asks whether memory is carried or forgotten at demotion.
+*Built 2026-11-04 (the owner accepted it at its defaults: one epoch only, nothing carried across
+epochs): [23-cut-notes.md](23-cut-notes.md) D-23-18.*
 
 ### 17.8 The testimony producer — D-23-19
 
@@ -1538,6 +1540,9 @@ Through the cut loop (§9), one PR off `main`, the owner merging.
 
   It leaves the join's host half (on FR.5's #410) and the carried memory. *As built:
   [23-cut-notes.md](23-cut-notes.md) S.4b-3.*
+  **D-23-18, the carried memory** (2026-11-04), was built as its own cut once FR.5 freed
+  `arena/*`: the check-in writes the mind onto `OpenSortie.mind` and the next field's install on
+  the epoch seeds the row from it. *As built: [23-cut-notes.md](23-cut-notes.md) D-23-18.*
 
 **S.4b-T — the testimony producer (small; independent; may start now).** D-23-19:
 `EarnedContacts::admit` fed from the field log's own-sensor `Classified` lines as each chunk
@@ -1562,7 +1567,7 @@ with S.4b, which mints the claim they read).*
 | D-23-15 | IC custody means moved only by the epoch's hosts: the exclusion records the hangar and epoch, admits an Open on the ground, freezes re-anchoring only; the field mark and the claim coexist; the Close's physical image is the live hull | **accepted by the owner, 2026-11-03** (Q-23-10, Q-23-11) |
 | D-23-16 | The compute seat is counted at `go`, with the Open, over the book's active claims at the site plus the inbox's pending Opens, held for the claim, spent only in a field, refused at `go` with the arithmetic under a provisional stock allotment; never refused or evicted in a field | **accepted by the owner, 2026-11-03** (Q-23-12); **restated in Draft 0.10** (round 2's 23-1: the claim is the reservation) |
 | D-23-17 | The `abi` drop is `Execution::install`'s own, run per hull when its retained execution is installed into a field (admission, join, resume) under the claim's seal, to the ROM with one `MindDropped { cause: abi }` an epoch; a source that no longer compiles drops the same way, per row, never failing the book; it never voids a field; Q-36-44's wall is the fallback for a book that did not load or a crossed claim, left when the field ends or the hull leaves the ground | **accepted by the owner, 2026-11-03** (Q-23-13, Q-23-14); **restated in Draft 0.10** (round 2's 23-8: the check exists, the seam around it is S.4b's) |
-| D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | **accepted by the owner, 2026-11-03** (Q-23-15) |
+| D-23-18 | The long-leg snapshot is the mind's memory carried on the epoch record at every check-in and seeded at every install; the field's cadence stands | **accepted by the owner, 2026-11-03** (Q-23-15); **built 2026-11-04** ([cut notes](23-cut-notes.md) D-23-18) |
 | D-23-19 | The testimony producer feeds `EarnedContacts` from the field log's own-sensor `Classified` lines as each chunk lands, authored by the admission pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17); **restated in Draft 0.10** (round 2's 23-9: the field's log, not the hull's box; own-sensor provenance; the admission pilot) |
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 | D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | **accepted by the owner, 2026-11-03** (Q-23-21 at its default; proposed in Draft 0.10 from round 2's 23-1, 23-2, 23-5) |

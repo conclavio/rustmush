@@ -203,6 +203,26 @@ pub struct FieldLive {
     /// counting it again, so the resumed field's tally is exactly the rounds it has seen.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tally: Vec<FireRow>,
+    /// **The minds checked in at the ramp and not yet on their epoch records** (doc 23 cut
+    /// D-23-18): each licensed hull's [`CarriedRow`], written in the batch that checks it in and
+    /// owed to its rig record by the field's next write on this site (the `exit`, else the
+    /// `close`), which lays it on `OpenSortie.mind`. The host forgets a row once the rig record
+    /// holds it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<CarriedRow>,
+}
+
+/// **A mind a field checked in, owed to its epoch's record** (doc 23 cut D-23-18, §17.7): the
+/// hull, the epoch it flew on, and its mind as the check-in took it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarriedRow {
+    /// The hull.
+    pub unit: ObjId,
+    /// The epoch it flew the field on: the rig record's `sortie` must still be this one.
+    pub epoch: crate::arena::mind::SortieId,
+    /// Its mind.
+    pub mind: crate::arena::mind::CarriedMind,
 }
 
 /// **One pair's rounds** ([`FieldLive::tally`]'s row).
@@ -437,6 +457,7 @@ mod tests {
                 victim: PartyId::nth(1).expect("B"),
                 rounds: 3,
             }],
+            carried: Vec::new(),
             fire: Some(PendingFire {
                 pilot: ObjId(3),
                 shooter: ObjId(7),

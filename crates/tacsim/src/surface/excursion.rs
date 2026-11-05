@@ -1459,6 +1459,15 @@ pub struct OpenSortie {
     /// the epoch opened anyway and its line says `seal: absent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal: Option<crate::surface::black_box::SealFacts>,
+    /// **The mind carried between fields** (doc 23 cut D-23-18, §17.7): written at every field
+    /// check-in of a licensed hull on this epoch (an exit, a demotion, a void's return from the
+    /// last snapshot) in the check-in's own field action, and laid back down by the next field's
+    /// install, so the mind resumes its own memory with `think_seq` monotone. It lives as long as
+    /// the epoch: the close takes the record's `sortie`, and the memory with it. Skipped when
+    /// `None` (schema 1 stands). Boxed: the rig record rides many a tick's frame (the M7
+    /// stack-size lint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mind: Option<Box<crate::arena::mind::CarriedMind>>,
 }
 
 /// serde's `skip_serializing_if` for [`RigRecord::plans`].

@@ -2614,16 +2614,86 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
 /// `TestWorld`, store and typed rows under a `driving_rig::Rig`, whose field helpers (the arena's
 /// egress pumped by hand, the composed tick, the raiders) run the field. The world is not
 /// rebooted after the hand-over: a `driving_rig` reboot composes no launch.
-pub(crate) fn into_field_rig(world: M8World) -> crate::driving_rig::Rig {
-    crate::driving_rig::Rig {
-        tw: world.rig.tw,
-        cfg: launch_layer().config().clone(),
-        oracle: Arc::new(crate::driving_rig::MapOracle(std::sync::Mutex::new(
-            std::collections::BTreeMap::new(),
-        ))),
-        store: world.rig.store,
-        typed: world.rig.typed,
-        commerce: None,
+///
+/// Doc 23 cut D-23-18: the M8 world's own parts are kept beside it ([`Kept`]), so the field
+/// harness's world can be handed back and rebooted as the M8 world.
+pub(crate) fn into_field_rig_kept(world: M8World) -> (crate::driving_rig::Rig, Kept) {
+    let M8World {
+        rig,
+        deployment,
+        pilot,
+        row,
+        tvs,
+        serial,
+    } = world;
+    let Rig {
+        tw,
+        oracle,
+        store,
+        typed,
+        commerce,
+        fitted,
+        launch,
+    } = rig;
+    (
+        crate::driving_rig::Rig {
+            tw,
+            cfg: launch_layer().config().clone(),
+            oracle: Arc::new(crate::driving_rig::MapOracle(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            ))),
+            store,
+            typed,
+            commerce: None,
+        },
+        Kept {
+            oracle,
+            commerce,
+            fitted,
+            launch,
+            deployment,
+            pilot,
+            row,
+            tvs,
+            serial,
+        },
+    )
+}
+
+/// **What [`into_field_rig_kept`] sets aside** (doc 23 cut D-23-18): the M8 world's own parts,
+/// so the field harness's world can be handed back ([`Kept::back`]) and rebooted as the M8 world
+/// (its launch, claims and commerce composed), then handed to the field harness again.
+pub(crate) struct Kept {
+    oracle: Arc<crate::excursions::MapOracle>,
+    commerce: Option<crate::excursions::CommerceFactory>,
+    fitted: bool,
+    launch: Option<crate::excursions::LaunchFactory>,
+    deployment: LaunchDeployment,
+    pilot: ObjId,
+    row: tacsim::port::HullRow,
+    tvs: Vec<ObjId>,
+    serial: u64,
+}
+
+impl Kept {
+    /// **The field harness's world, handed back as the M8 world** (doc 23 cut D-23-18).
+    pub(crate) fn back(self, field: crate::driving_rig::Rig) -> M8World {
+        M8World {
+            rig: Rig {
+                tw: field.tw,
+                oracle: self.oracle,
+                store: field.store,
+                typed: field.typed,
+                commerce: self.commerce,
+                fitted: self.fitted,
+                launch: self.launch,
+            },
+            deployment: self.deployment,
+            pilot: self.pilot,
+            row: self.row,
+            tvs: self.tvs,
+            serial: self.serial,
+        }
     }
 }
 
@@ -2651,7 +2721,21 @@ struct FieldSite {
 ///    lifts and the field demotes, checking rig 1 in (the check-in writes the hull);
 /// 5. `+tv/1 recover go` brings rig 1 home and the claim's Close lands **over the live hull**
 ///    the field wrote (D-23-15), the seat released: rig 2's `go` now files its own claim.
-async fn licensed_field_story(at: &FieldSite) {
+///
+/// **With `carry`, doc 23 cut D-23-18's carried memory** (§17.7) between steps 4 and 5:
+/// 4a. the demotion's check-in writes rig 1's mind — its `think_seq`, its memory and no drop,
+///     under the claim's seal — onto its open epoch's record, `think_seq` positive and within
+///     what the field's span allows;
+/// 4b. the server restarts from its store with the epoch open, and the record still carries it;
+/// 4c. the raiders land again, mark rig 1, and a second field opens on the same ground and the
+///     same epoch: rig 1 is admitted under its claim's seal again and flies it with no drop and
+///     no fault;
+/// 4d. the raiders withdraw and the second field demotes; its check-in carries a `think_seq`
+///     past the carried one by no more than the second field's span allows, and past anything a
+///     row starting from nought could reach in that span — so the second field's row started from
+///     the carried mind, `think_seq` monotone across the epoch;
+/// 5'. the recover closes the epoch, and the carried memory goes with it.
+async fn licensed_field_story(at: &FieldSite, carry: bool) {
     use tacsim::arena::ledger::{EventKind, LedgerEvent};
     use tacsim::surface::excursion::ClaimCursor;
     let _ = tracing_subscriber::fmt()
@@ -2713,19 +2797,19 @@ async fn licensed_field_story(at: &FieldSite) {
             .is_none_or(|record| record.claim.is_none())
     );
     // 3. The field, over the field harness.
-    let mut rig = into_field_rig(world);
+    let (mut rig, kept) = into_field_rig_kept(world);
     crate::driving_rig::to_cell_on(&mut rig, at.entry, tv, at.cell);
     let raider = if at.wide {
         "tacsim.raider.urvara_s4b3"
     } else {
         crate::field_raiders_rig::SKULKS
     };
+    let mut def = tacsim::field::raiders::raiders()
+        .expect("the fixture raiders")
+        .into_iter()
+        .find(|def| def.id.as_str() == crate::field_raiders_rig::SKULKS)
+        .expect("the content's raider");
     let raiders = if at.wide {
-        let mut def = tacsim::field::raiders::raiders()
-            .expect("the fixture raiders")
-            .into_iter()
-            .find(|def| def.id.as_str() == crate::field_raiders_rig::SKULKS)
-            .expect("the content's raider");
         def.id = crate::driving_rig::cid(raider);
         def.site = crate::driving_rig::cid(at.entry);
         let seeded =
@@ -2848,7 +2932,28 @@ async fn licensed_field_story(at: &FieldSite) {
         .await,
         "the field demotes"
     );
-    // 5. Home: the Close over the live hull, the seat released.
+    if carry {
+        rig = carried_memory(
+            rig,
+            kept,
+            (&mut rx, &mut lines),
+            (at, &def),
+            (tv, seal.digest()),
+        )
+        .await;
+    } else {
+        drop(kept);
+    }
+    // 5. Home: the Close over the live hull, the seat released. The field's close lands on the
+    // site record first (a surface act on a site still promoted waits for it to settle).
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+            crate::field_host_rig::site_record_at(rig, at.entry)
+                .is_some_and(|record| record.promoted.is_none())
+        })
+        .await,
+        "the field's close lands on the site record"
+    );
     // The pilot's own start (a tick's submission may sit beside it in the queue), landed on
     // the composed path; the recover's finish and the claim's Close are the composed ticks'.
     let (out, queued) = crate::driving_rig::command(&mut rig, pilot, "+tv/1 recover go");
@@ -2866,6 +2971,13 @@ async fn licensed_field_story(at: &FieldSite) {
         closed,
         "the claim's Close lands over the field-written hull"
     );
+    if carry {
+        // D-23-18 5': the epoch closed, and its carried memory with it.
+        assert!(
+            crate::excursions::record_of(&mut rig.tw, tv).is_some_and(|r| r.sortie.is_none()),
+            "the closed epoch carries no memory"
+        );
+    }
     let (out, queued) = crate::driving_rig::command(
         &mut rig,
         pilot,
@@ -2875,16 +2987,196 @@ async fn licensed_field_story(at: &FieldSite) {
     crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the seat is free");
 }
 
+/// **Rig 1's carried mind on its open epoch's record** (doc 23 cut D-23-18), once the composed
+/// ticks land the field's close: a mind other than `before`, the one an earlier field carried.
+async fn carried_on_record(
+    rig: &mut crate::driving_rig::Rig,
+    (rx, lines): (
+        &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
+        &mut Vec<tacsim::arena::ledger::LedgerEvent>,
+    ),
+    tv: ObjId,
+    before: Option<&tacsim::arena::mind::CarriedMind>,
+) -> tacsim::arena::mind::CarriedMind {
+    let mut carried = None;
+    let landed = crate::field_host_rig::until_composed(rig, rx, lines, 180, |rig, _| {
+        carried = crate::excursions::record_of(&mut rig.tw, tv)
+            .and_then(|record| record.sortie)
+            .and_then(|open| open.mind);
+        carried.as_deref().is_some_and(|mind| Some(mind) != before)
+    })
+    .await;
+    assert!(
+        landed,
+        "the check-in carries rig 1's mind on its epoch's record: {:?}",
+        carried
+            .as_deref()
+            .map(|mind| (mind.think_seq, mind.memory.len(), mind.dropped))
+    );
+    *carried.expect("the carried mind")
+}
+
+/// **D-23-18's carried memory, steps 4a–4d of [`licensed_field_story`]**: the record after the
+/// first field, a restart from the store, a second field on the same epoch, its demotion.
+async fn carried_memory(
+    mut rig: crate::driving_rig::Rig,
+    kept: Kept,
+    (rx, lines): (
+        &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
+        &mut Vec<tacsim::arena::ledger::LedgerEvent>,
+    ),
+    (at, def): (&FieldSite, &tacsim::field::raiders::RaiderDef),
+    (tv, sealed): (ObjId, [u8; 32]),
+) -> crate::driving_rig::Rig {
+    use tacsim::arena::ledger::EventKind;
+    // Rig 1's mind thinks on the governed Class II root's period; a row thinks at most once a
+    // period, from its first think.
+    let period = tacsim::arena::core::ClassTable::STOCK
+        .row(tacsim::arena::core::CoreClass::II)
+        .think_ms;
+    let most = |span: i64| u64::try_from(span / period).unwrap_or(0) + 2;
+    // A field's span, in arena milliseconds: its `match_ended` line's instant.
+    let ended = |lines: &[tacsim::arena::ledger::LedgerEvent]| {
+        lines
+            .iter()
+            .rev()
+            .find_map(|line| matches!(line.kind, EventKind::MatchEnded { .. }).then_some(line.t_ms))
+            .expect("the field's match_ended line")
+    };
+    // 4a. The demotion's check-in, on the epoch's record.
+    let carried = carried_on_record(&mut rig, (rx, lines), tv, None).await;
+    let span = ended(lines);
+    eprintln!(
+        "D23_18 {}: carried think_seq {} memory {} B after a {} ms field",
+        at.entry,
+        carried.think_seq,
+        carried.memory.len(),
+        span
+    );
+    assert!(
+        carried.think_seq > 0 && carried.think_seq <= most(span),
+        "the first field's mind thought, within its span"
+    );
+    assert_eq!(carried.seal_digest, sealed, "under the claim's seal");
+    assert_eq!(
+        carried.dropped, None,
+        "a mind that never dropped carries no drop"
+    );
+    // 4b. A restart from the store, the epoch open.
+    let open = crate::excursions::record_of(&mut rig.tw, tv)
+        .and_then(|record| record.sortie)
+        .map(|open| open.id)
+        .expect("the epoch is open");
+    let world = kept.back(rig).reboot();
+    let (mut rig, _kept) = into_field_rig_kept(world);
+    let reread = crate::excursions::record_of(&mut rig.tw, tv)
+        .and_then(|record| record.sortie)
+        .expect("the epoch survives the restart");
+    assert_eq!(reread.id, open);
+    assert_eq!(
+        reread.mind.as_deref(),
+        Some(&carried),
+        "the carried mind survives the restart"
+    );
+    *rx = crate::field_host_rig::egress(&mut rig);
+    lines.clear();
+    // 4c. The raiders land again and mark rig 1: a second field on the same epoch.
+    // A raider that boarded before the first field demoted lands again; one that had not yet
+    // reached its ramp still stands on the ground, and marks from there.
+    let landed =
+        crate::driving_rig::staff_hand(&mut rig, |ctx| tacsim::field::raiders::launch(ctx, def));
+    assert!(
+        landed.is_ok()
+            || landed
+                .as_ref()
+                .is_err_and(|why| why.contains("nobody aboard")),
+        "{landed:?}"
+    );
+    let raiders = crate::field_raiders_rig::raider_hulls(&rig);
+    let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
+    for _ in 0..3 {
+        let _ = crate::field_host_rig::second_composed(&mut rig);
+    }
+    let (out, queued) = crate::driving_rig::command(&mut rig, leader, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "the second promotion: {out}");
+    crate::driving_rig::land_composed(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, rx, lines, 120, |rig, _| {
+            crate::field_host_rig::task(rig).is_some()
+        })
+        .await,
+        "the second field opens on {}",
+        at.entry
+    );
+    let resealed = |lines: &[tacsim::arena::ledger::LedgerEvent]| {
+        lines
+            .iter()
+            .any(|line| matches!(&line.kind, EventKind::MindSealed { unit, .. } if *unit == tv))
+    };
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, rx, lines, 300, |_, lines| {
+            resealed(lines)
+        })
+        .await,
+        "rig 1 is admitted to the second field under its seal"
+    );
+    let troubled = lines.iter().any(|line| {
+        matches!(&line.kind, EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. } if *unit == tv)
+    });
+    assert!(!troubled, "the resumed mind neither dropped nor faulted");
+    // 4d. The raiders withdraw again; the second field's check-in carries the later mind.
+    if crate::field_host_rig::task(&rig).is_some() {
+        let ordered = crate::driving_rig::run(
+            &mut rig.tw,
+            GOD,
+            &format!("@field/raiders/withdraw {}", def.id),
+        );
+        assert!(ordered.contains("make for the"), "{ordered}");
+    }
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, rx, lines, 600, |rig, _| {
+            crate::field_host_rig::task(rig).is_none()
+        })
+        .await,
+        "the second field demotes"
+    );
+    let later = carried_on_record(&mut rig, (rx, lines), tv, Some(&carried)).await;
+    let second = ended(lines);
+    eprintln!(
+        "D23_18 {}: the second check-in carries think_seq {} memory {} B after a {} ms field",
+        at.entry,
+        later.think_seq,
+        later.memory.len(),
+        second
+    );
+    assert!(
+        later.think_seq > carried.think_seq && later.think_seq <= carried.think_seq + most(second),
+        "the second field ran on from the carried think_seq: {} after {}",
+        later.think_seq,
+        carried.think_seq
+    );
+    assert!(
+        later.think_seq > most(second),
+        "more thinks than a row starting from nought could take in {second} ms: {}",
+        later.think_seq
+    );
+    assert_eq!(later.seal_digest, sealed);
+    rig
+}
+
 /// **S.4b-3 at 256** (Ahuna Flank).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
 async fn s4b3_a_licensed_mind_flies_a_field_at_256() {
-    licensed_field_story(&FieldSite {
-        venue: "ahuna",
-        entry: "ahuna_port",
-        cell: (190, 126),
-        wide: false,
-    })
+    licensed_field_story(
+        &FieldSite {
+            venue: "ahuna",
+            entry: "ahuna_port",
+            cell: (190, 126),
+            wide: false,
+        },
+        false,
+    )
     .await;
 }
 
@@ -2892,11 +3184,47 @@ async fn s4b3_a_licensed_mind_flies_a_field_at_256() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
 async fn s4b3_a_licensed_mind_flies_a_field_at_512() {
-    licensed_field_story(&FieldSite {
-        venue: "urvara",
-        entry: "urvara_port",
-        cell: (300, 257),
-        wide: true,
-    })
+    licensed_field_story(
+        &FieldSite {
+            venue: "urvara",
+            entry: "urvara_port",
+            cell: (300, 257),
+            wide: true,
+        },
+        false,
+    )
+    .await;
+}
+
+/// **D-23-18 at 256** (Ahuna Flank): the S.4b-3 story with the carried memory between two
+/// fields on one epoch, and a restart from the store between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
+async fn d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256() {
+    licensed_field_story(
+        &FieldSite {
+            venue: "ahuna",
+            entry: "ahuna_port",
+            cell: (190, 126),
+            wide: false,
+        },
+        true,
+    )
+    .await;
+}
+
+/// **D-23-18 at 512** (Urvara Reach).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
+async fn d23_18_a_licensed_mind_carries_its_memory_between_fields_at_512() {
+    licensed_field_story(
+        &FieldSite {
+            venue: "urvara",
+            entry: "urvara_port",
+            cell: (300, 257),
+            wide: true,
+        },
+        true,
+    )
     .await;
 }
