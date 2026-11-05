@@ -5640,7 +5640,7 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
 /// 6. Settling a disabled carrier hull into `SpaceBubbleBook::derelicts` fails its `CarrierJourney`
 ///    (`JourneyState::Failed`), and `+helm/decouple`, `+helm/burn`, `+helm/autopilot`, and
 ///    `+helm/dock` are all refused for a disabled derelict hull (`35b` §3 #4).
-/// 7. Contract lint: `tests/shard_10/voyage.rs` (this file) contains zero mutable `SpaceBubbleBook` borrows
+/// 7. Contract lint: `tests/domain_world/voyage.rs` (this file) contains zero mutable `SpaceBubbleBook` borrows
 ///    or test-fiat bubble clear calls.
 #[test]
 #[allow(clippy::too_many_lines)]
