@@ -1378,12 +1378,8 @@ fn hard_dock_friendly(ctx: &Ctx<'_>, site: &CanonicalId, tug: ObjId, derelict: O
 pub fn capture_at_hard_dock(ctx: &mut Ctx<'_>, tug: ObjId, derelict: ObjId) -> Vec<ObjId> {
     check_in_space_crew(ctx, derelict, true);
     // The record is the truth, as a ground load reads it: everyone it holds in the derelict.
-    // (A clamp is rare; the characters are scanned through the public reader.)
-    let crewed = ctx.w.iter().any(|object| {
-        object.kind == mush_core::ObjKind::Player
-            && crate::field::crew::crew_of(ctx.w, object.id)
-                .is_some_and(|record| crate::field::crew::held_in(record, derelict))
-    });
+    let crewed = crate::field::crew::records(ctx.w)
+        .any(|record| crate::field::crew::held_in(record, derelict));
     if !crewed {
         return Vec::new();
     }
