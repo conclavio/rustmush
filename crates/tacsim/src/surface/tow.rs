@@ -119,6 +119,20 @@ pub const TOW_FILED: &str =
     "Rig {n} inspects the {name} and makes fast; the tow is attached in about {min} IC minutes.";
 /// The tow attached: `{n}`, `{name}`, `{speed}`.
 pub const TOW_ATTACHED: &str = "Rig {n} has the {name} in tow, at {speed} m/s. Drive it to a carrier's ramp and +tv/{n} load go, or +tv/{n} release go.";
+/// **Doc 42b cut SU.7** (the owner's ruling on Q-42b-14, 2026-11-05): a yielded hull is escorted,
+/// never towed: it drives itself under the rig's escort. The preview: `{n}`, `{name}`, `{speed}`,
+/// `{min}`.
+pub const ESCORT_PREVIEW: &str = "Rig {n} can take the {name} under escort: its crew yielded, and it drives itself at your rig's side at {speed} m/s, your rig's tow rating no matter. Closing up and signalling take about {min} IC minutes. +tv/{n} tow go";
+/// The escort filed: `{n}`, `{name}`, `{min}`.
+pub const ESCORT_FILED: &str = "Rig {n} closes on the {name} and signals it to follow; the escort is set in about {min} IC minutes.";
+/// The escort set: `{n}`, `{name}`, `{speed}`.
+pub const ESCORT_SET: &str = "Rig {n} has the {name} under escort, at {speed} m/s; it drives itself at your side. Lead it to a carrier's ramp and +tv/{n} load go, or +tv/{n} release go.";
+/// The escorted hull's load previewed: `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const ESCORT_LOAD_PREVIEW: &str = "Rig {n} can bring the {name} aboard: it drives up the {carrier}'s ramp under your rig's escort into the bay, in about {min} IC minutes. Aboard, it is in the {carrier}'s custody with a salvage claim owed, never its title, and its crew are held in your custody aboard the {carrier}. +tv/{n} load go";
+/// The escorted hull's load filed: `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const ESCORT_LOAD_FILED: &str = "The {name} drives up the {carrier}'s ramp under rig {n}'s escort; it is aboard in about {min} IC minutes.";
+/// The escorted hull aboard: `{name}`, `{carrier}`.
+pub const ESCORT_LOADED: &str = "The {name} has driven up the {carrier}'s ramp under escort and stands in its bay, held in custody pending a salvage claim.";
 /// The tow refused at its landing: `{n}`, `{name}`, `{why}`.
 pub const TOW_REFUSED: &str = "Rig {n} could not take the {name} in tow: {why}.";
 /// An attach or a load interrupted: `{n}`, `{name}`.
@@ -834,8 +848,18 @@ fn attach_facts(ctx: &Ctx<'_>, tug: ObjId, casualty: ObjId) -> Option<AttachFact
     if there != site {
         return None;
     }
-    let (_, assessment, dry, _, _) = unit_facts(w, casualty)?;
+    let (_, mut assessment, dry, _, _) = unit_facts(w, casualty)?;
     let mass = laden(dry, carried_kg(ctx, casualty));
+    let mut tug_facts = tug_facts;
+    // Doc 42b cut SU.7 (the owner's ruling on Q-42b-14): a yielded hull that can move drives
+    // itself aboard under the rig's escort. Its crew powered it down to the rig's orders, so the
+    // library reads it as disabled (towable), and the rig's tow rating never binds: the coupling
+    // is weighed as a rig at least the hull's own mass. Only a yielded hull: a sound hull whose
+    // crew never yielded still refuses as not towable.
+    if escorted(w, casualty, &assessment) {
+        assessment.state = OperationalState::Disabled;
+        tug_facts.mass_kg = tug_facts.mass_kg.max(mass.total_mass_kg());
+    }
     let cfg = recovery_config(w);
     Some(AttachFacts {
         secs: cfg.inspect_s.saturating_add(cfg.attach_s),
@@ -848,6 +872,23 @@ fn attach_facts(ctx: &Ctx<'_>, tug: ObjId, casualty: ObjId) -> Option<AttachFact
         carrier_refusal: crate::field::carrier::refuse_tow(w, casualty, tug),
         pin: None,
     })
+}
+
+/// **Whether `casualty` goes under escort rather than in tow** (doc 42b cut SU.7): a raider hull
+/// whose crew yielded and that can still move under its own power.
+pub(crate) fn escorted(w: &World, casualty: ObjId, assessment: &FieldUnitAssessment) -> bool {
+    assessment.can_move
+        && crate::field::raiders::yielded(w, casualty)
+        && !matches!(
+            assessment.state,
+            OperationalState::Wreck | OperationalState::Irrecoverable
+        )
+}
+
+/// **Whether `casualty`, as it stands, would go under escort** (the lines' choice).
+fn escorted_now(w: &World, casualty: ObjId) -> bool {
+    unit_facts(w, casualty)
+        .is_some_and(|(_, assessment, _, _, _)| escorted(w, casualty, &assessment))
 }
 
 /// The library's attach request for `facts` at `now`.
@@ -2513,8 +2554,10 @@ pub(crate) fn tow_cmd(
     };
     let cfg = recovery_config(ctx.w);
     let min = minutes(cfg.inspect_s.saturating_add(cfg.attach_s)).to_string();
+    let escort = escorted_now(ctx.w, casualty);
     if !go {
-        let line = TOW_PREVIEW
+        let template = if escort { ESCORT_PREVIEW } else { TOW_PREVIEW };
+        let line = template
             .replace("{n}", &n)
             .replace("{name}", &label)
             .replace("{t}", &(facts.mass.total_mass_kg() / 1_000).to_string())
@@ -2536,10 +2579,11 @@ pub(crate) fn tow_cmd(
     ) {
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
+    let filed = if escort { ESCORT_FILED } else { TOW_FILED };
     ctx.out.sys_to_actor(
         actor,
         "tacsim.tow",
-        TOW_FILED
+        filed
             .replace("{n}", &n)
             .replace("{name}", &label)
             .replace("{min}", &min),
@@ -2659,8 +2703,11 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
             .replace("{carrier}", &carrier_name)
             .replace("{min}", &min)
     };
+    let escort = escorted_now(ctx.w, casualty) && !facts.friendly;
     if !go {
-        let preview = if facts.retrieval {
+        let preview = if escort {
+            ESCORT_LOAD_PREVIEW
+        } else if facts.retrieval {
             LOAD_PREVIEW_RETRIEVAL
         } else if facts.written_off {
             LOAD_PREVIEW_HAND_BACK
@@ -2684,7 +2731,12 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
     ) {
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
-    ctx.out.sys_to_actor(actor, "tacsim.tow", fill(LOAD_FILED));
+    let filed = if escort {
+        ESCORT_LOAD_FILED
+    } else {
+        LOAD_FILED
+    };
+    ctx.out.sys_to_actor(actor, "tacsim.tow", fill(filed));
     Ok(())
 }
 
@@ -3249,6 +3301,8 @@ fn place_in_bay(
     }
     let template = if written_off {
         HANDED_BACK
+    } else if !friend && crate::field::raiders::yielded(ctx.w, casualty) {
+        ESCORT_LOADED
     } else if retrieval {
         LOADED_RETRIEVAL
     } else if friend {
@@ -3329,10 +3383,16 @@ fn tell_landed(
             TowStage::Attach { casualty } => {
                 let label = name(ctx.w, casualty);
                 match index.get(&tug) {
-                    Some((_, op)) if op.casualty() == casualty => TOW_ATTACHED
+                    Some((_, op)) if op.casualty() == casualty => {
+                        if escorted_now(ctx.w, casualty) {
+                            ESCORT_SET
+                        } else {
+                            TOW_ATTACHED
+                        }
                         .replace("{n}", &slot)
                         .replace("{name}", &label)
-                        .replace("{speed}", &metres_s(op.coupled_speed_cms())),
+                        .replace("{speed}", &metres_s(op.coupled_speed_cms()))
+                    }
                     _ => TOW_INTERRUPTED
                         .replace("{n}", &slot)
                         .replace("{name}", &label),
