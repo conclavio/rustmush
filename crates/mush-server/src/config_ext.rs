@@ -807,12 +807,11 @@ fn recovery_config(
     }
     // Doc 41 cut RS.3: the window is read whatever `enabled` says (it times every salvage
     // claim, not the loaner provider), so it is checked whatever `enabled` says.
-    if !(1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS).contains(&cfg.claim_window_s) {
+    if !(1..=365).contains(&cfg.claim_window_ic_days) {
         return Err(format!(
-            "[tacsim.recovery]: `claim_window_s` is between 1 and {} real seconds (a week); \
-             `{}` is a window no claim can run",
-            mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS,
-            cfg.claim_window_s
+            "[tacsim.recovery]: `claim_window_ic_days` is between 1 and 365 IC days; `{}` is a \
+             window no claim can run",
+            cfg.claim_window_ic_days
         ));
     }
     if !(1..=tacsim::surface::retrieval::MAX_RETRIEVAL_WINDOW_IC_DAYS)
@@ -839,7 +838,7 @@ fn recovery_config(
         attach_s: cfg.attach_s,
         load_s: cfg.load_s,
         // Doc 41 cut RS.3: the contest window from the config file (48 real hours by default).
-        claim_window_s: cfg.claim_window_s,
+        claim_window_ic_s: cfg.claim_window_ic_days.saturating_mul(86_400),
         // Doc 41 cut RS.5 (Q-41-11): both retrieval windows, IC days (28 by default).
         retrieval_window_ic_days: cfg.retrieval_window_ic_days,
     })

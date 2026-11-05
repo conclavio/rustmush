@@ -325,7 +325,7 @@ pub fn operation(tw: &mut TestWorld, fx: &Fx) -> OperationId {
         .map(|d| d.id())
         .find(|id| !before.contains(&id.0))
         .expect("one new operation");
-    ok(tw, fx.commander, &format!("@op/terms {}/notice=24", id.0));
+    ok(tw, fx.commander, &format!("@op/terms {}/notice=672", id.0));
     ok(
         tw,
         fx.commander,

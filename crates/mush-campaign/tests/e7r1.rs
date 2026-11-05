@@ -1380,6 +1380,31 @@ fn vf_d7a_an_unaccepted_grant_expires_and_the_hull_returns_to_the_motor_pool() {
     );
 }
 
+/// **An absent applicant keeps a grant for 28 IC days** (owner rule, 2026-11-04: a timer
+/// waiting on a player's response allows at least 28 IC days). An applicant offline when
+/// the grant lands still finds it live a day short of the TTL, and can accept it.
+#[test]
+fn vf_d7c_an_unaccepted_grant_waits_28_ic_days_for_an_absent_applicant() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    let then = tw.world().now() + mush_campaign::RECOVERY_ACCEPT_TTL_SECS - 24 * 60 * 60;
+    tw.set_now(then);
+    fire(&mut tw);
+    assert!(
+        camp(&tw)
+            .recovery_grant(fx.pat)
+            .is_some_and(|g| g.contract() == grant.contract() && g.is_live()),
+        "the grant is still waiting for them"
+    );
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", grant.contract()),
+    );
+}
+
 /// **An ACCEPTED lease outlives the acceptance TTL** (D7's other arm: the TTL is
 /// about an offer nobody took, never about a loaner somebody is flying).
 #[test]

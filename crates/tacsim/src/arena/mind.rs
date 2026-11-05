@@ -740,6 +740,128 @@ impl MindState {
     }
 }
 
+/// **A mind carried between fields on its epoch's record** (doc 23 cut D-23-18, §17.7): what a
+/// check-in takes off the hull's [`MindState`] — the seal it thought under, its next
+/// `think_seq`, its memory and its drop cause — and the next field's install on the same epoch
+/// lays back down ([`Arena::seed_carried_mind`]). It lasts one epoch: it rides
+/// `OpenSortie.mind`, so the epoch's close drops it. The memory is bounded as a snapshot's is
+/// (the class cap doc 17 §23 names): decoded under [`mush_mind::MAX_MEMORY_ANY_CLASS`], written
+/// and seeded under the hull's own class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarriedMind {
+    /// The digest of the seal the mind thought under ([`MindState::seal_digest`]); a field whose
+    /// row was laid under another seal is never seeded.
+    pub seal_digest: [u8; 32],
+    /// **The next think's sequence number** ([`MindState::think_seq`]): the seeded row's, so
+    /// `think_seq` is monotone across the epoch.
+    pub think_seq: u64,
+    /// The mind's memory ([`MindState::memory`]), as it last landed: written as its canonical
+    /// text.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "crate::arena::memory_bound::text"
+    )]
+    pub memory: Vec<u8>,
+    /// Why the hull was dropped to the ROM, if it was ([`MindState::dropped`]): a drop is once
+    /// an epoch, so the next field flies the ROM from its first think.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<DropCause>,
+}
+
+/// **Why a carried mind was not laid down** ([`Arena::seed_carried_mind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SeedRefusal {
+    /// The arena holds no mind row for the hull.
+    #[error("no mind row for the hull")]
+    NoRow,
+    /// The row was laid under another seal.
+    #[error("the row was laid under another seal")]
+    OtherSeal,
+    /// The row has already thought.
+    #[error("the row has already thought")]
+    Thought,
+    /// The memory is over the hull's class cap or not canonical.
+    #[error("the memory is over the hull's class cap")]
+    OverCap,
+    /// The ROM could not take the carried drop.
+    #[error("the ROM could not take the carried drop")]
+    Rom,
+}
+
+impl Arena {
+    /// **`unit`'s mind as a check-in carries it** (doc 23 cut D-23-18), when it has a row whose
+    /// memory fits its class cap; a row over the cap carries nothing.
+    #[must_use]
+    pub fn carried_mind(&self, unit: ObjId) -> Option<CarriedMind> {
+        let row = self.minds.get(&unit)?;
+        crate::arena::memory_bound::fits(self, unit, &row.memory).then(|| CarriedMind {
+            seal_digest: row.seal_digest,
+            think_seq: row.think_seq,
+            memory: row.memory.clone(),
+            dropped: row.dropped,
+        })
+    }
+
+    /// **Lay a carried mind down on a fresh row** (doc 23 cut D-23-18): the field's install on
+    /// the carried epoch, before the first think. The row takes the memory, the doctrine state
+    /// read off it and the `think_seq`, and the queued first think is re-keyed to that sequence
+    /// at its own millisecond. A carried drop drops the hull to the ROM again with no second
+    /// `mind_dropped` line (a drop is journalled once an epoch, in the field that took it).
+    ///
+    /// # Errors
+    ///
+    /// [`SeedRefusal`]: no row, another seal, a row that has thought, memory over the cap, or a
+    /// ROM that cannot take the drop. Nothing is changed but on the last.
+    pub fn seed_carried_mind(
+        &mut self,
+        unit: ObjId,
+        carried: &CarriedMind,
+    ) -> Result<(), SeedRefusal> {
+        let row = self.minds.get(&unit).ok_or(SeedRefusal::NoRow)?;
+        if row.seal_digest != carried.seal_digest {
+            return Err(SeedRefusal::OtherSeal);
+        }
+        if row.think_seq != 0 || row.pending.is_some() {
+            return Err(SeedRefusal::Thought);
+        }
+        if !crate::arena::memory_bound::fits(self, unit, &carried.memory) {
+            return Err(SeedRefusal::OverCap);
+        }
+        let first_drop = row.dropped.is_none() && carried.dropped.is_some();
+        let Some(row) = self.minds.get_mut(&unit) else {
+            return Err(SeedRefusal::NoRow);
+        };
+        row.memory.clone_from(&carried.memory);
+        row.doctrine_state = doctrine_state_of(&row.memory);
+        row.think_seq = carried.think_seq;
+        if first_drop {
+            row.dropped = carried.dropped;
+        }
+        let queued = self.due.iter().find_map(|event| match event.kind {
+            DueKind::MindThink { unit: on, .. } if on == unit => Some(event.t_ms),
+            _ => None,
+        });
+        if let Some(at) = queued {
+            self.due
+                .retain(|kind| !matches!(kind, DueKind::MindThink { unit: on, .. } if *on == unit));
+            self.due.schedule(
+                at,
+                DueKind::MindThink {
+                    unit,
+                    think_seq: carried.think_seq,
+                },
+            );
+        }
+        if first_drop {
+            self.drop_runtime_to_rom(unit)
+                .map_err(|_| SeedRefusal::Rom)?;
+        }
+        Ok(())
+    }
+}
+
 /// **What runs a think** (doc 17 §7, D-UM-1): the seam the sim task plugs a
 /// runner into. Called synchronously inside the think's due event; it must be
 /// a pure function of the job for the cross-tempo property to hold.
@@ -6250,5 +6372,129 @@ mod tests {
             unit.limits.wreck = true;
         }
         assert_eq!(other.machine_state(RED), Some(MachineState::Disabled));
+    }
+
+    /// **Doc 23 cut D-23-18: the carried mind** (§17.7). A row's memory, `think_seq` and drop
+    /// cause round-trip through [`CarriedMind`]'s JSON (the memory as its canonical text), and
+    /// lay down on a fresh row of the same seal: the memory and its doctrine state, the
+    /// `think_seq`, and the queued first think re-keyed to it at the same millisecond. A row of
+    /// another seal, a row that has thought, and memory over the class cap are refused, nothing
+    /// changed; a carried drop drops the fresh hull to the ROM with no second line.
+    #[test]
+    fn d23_18_a_carried_mind_lays_down_on_a_fresh_row_of_its_seal() {
+        let memory = withdraw_seed();
+        let mut source = minded();
+        let digest = source.minds[&RED].seal_digest;
+        if let Some(row) = source.minds.get_mut(&RED) {
+            row.memory.clone_from(&memory);
+            row.think_seq = 41;
+        }
+        let carried = source.carried_mind(RED).expect("a mind row carries");
+        assert_eq!(
+            carried,
+            CarriedMind {
+                seal_digest: digest,
+                think_seq: 41,
+                memory: memory.clone(),
+                dropped: None,
+            }
+        );
+        let back = source
+            .returned_units()
+            .into_iter()
+            .find(|unit| unit.unit == RED)
+            .and_then(|unit| unit.mind)
+            .expect("the return carries the mind");
+        assert_eq!(*back, carried, "UnitReturn carries the row");
+        let json = serde_json::to_value(&carried).expect("encodes");
+        assert!(
+            json["memory"].is_string(),
+            "the memory rides as its text: {json}"
+        );
+        let read: CarriedMind = serde_json::from_value(json.clone()).expect("decodes");
+        assert_eq!(read, carried);
+        let mut bad = json;
+        bad["memory"] = serde_json::Value::String("{ \"a\":1}".to_owned());
+        assert!(
+            serde_json::from_value::<CarriedMind>(bad).is_err(),
+            "noncanonical memory is refused"
+        );
+
+        let mut fresh = minded();
+        let queued = |arena: &Arena| {
+            arena
+                .due
+                .iter()
+                .filter_map(|event| match event.kind {
+                    DueKind::MindThink { unit, think_seq } if unit == RED => {
+                        Some((event.t_ms, think_seq))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = queued(&fresh);
+        assert_eq!(before.len(), 1, "one first think queued");
+        let other = CarriedMind {
+            seal_digest: [7; 32],
+            ..carried.clone()
+        };
+        assert_eq!(
+            fresh.seed_carried_mind(RED, &other),
+            Err(SeedRefusal::OtherSeal)
+        );
+        let over = CarriedMind {
+            memory: b"{ \"a\":1}".to_vec(),
+            ..carried.clone()
+        };
+        assert_eq!(
+            fresh.seed_carried_mind(RED, &over),
+            Err(SeedRefusal::OverCap)
+        );
+        assert_eq!(
+            fresh.seed_carried_mind(BLUE, &carried),
+            Err(SeedRefusal::NoRow),
+            "a pilot's hull keeps no row"
+        );
+        assert_eq!(fresh.minds[&RED].think_seq, 0, "a refusal changes nothing");
+        fresh.seed_carried_mind(RED, &carried).expect("lays down");
+        let row = &fresh.minds[&RED];
+        assert_eq!(row.memory, memory);
+        assert_eq!(row.think_seq, 41);
+        assert_eq!(row.doctrine_state, doctrine_state_of(&memory));
+        assert_eq!(
+            queued(&fresh),
+            vec![(before[0].0, 41)],
+            "re-keyed, same millisecond"
+        );
+        assert_eq!(
+            fresh.seed_carried_mind(RED, &carried),
+            Err(SeedRefusal::Thought),
+            "only a fresh row is seeded"
+        );
+        // The seeded row thinks on from its carried sequence.
+        for wall in (0..10_000).step_by(100) {
+            fresh.step_settled(wall, &[], &[]);
+        }
+        assert!(
+            fresh.minds[&RED].think_seq > 41,
+            "the seeded mind thinks on: {}",
+            fresh.minds[&RED].think_seq
+        );
+
+        let mut dropped = minded();
+        let lines = dropped.ledger.seq();
+        dropped
+            .seed_carried_mind(
+                RED,
+                &CarriedMind {
+                    dropped: Some(DropCause::Strikes),
+                    ..carried
+                },
+            )
+            .expect("lays down dropped");
+        assert_eq!(dropped.minds[&RED].dropped, Some(DropCause::Strikes));
+        assert!(dropped.profiles[&RED].dropped, "the runtime flies the ROM");
+        assert_eq!(dropped.ledger.seq(), lines, "no second mind_dropped line");
     }
 }

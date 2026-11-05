@@ -3129,6 +3129,7 @@ fn damaged_return(
             hits: 2,
             wreck: false,
             disabled: false,
+            mind: None,
         },
         addr,
         hurt,
@@ -3649,6 +3650,7 @@ async fn d3_a_refused_check_in_releases_the_seat_and_restores_the_snapshot() {
                 hits: 1,
                 wreck: false,
                 disabled: false,
+                mind: None,
             }],
         ));
     }

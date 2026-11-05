@@ -26,6 +26,11 @@
 //! host owes: the offer fixes the host's owed closes — each site's ordinal and the units it
 //! leaves, from the host's RAM — into the invocation, so no player can demote a field, or write
 //! a unit index, by submitting it. `exit` writes only the host's owed exits, fixed the same way.
+//!
+//! **Doc 23 cut D-23-18** (§17.7): the minds the host checked in on open epochs are fixed the same
+//! way (`carried`, by site), and every `exit` or `close` on the site lays each on its rig record's
+//! `OpenSortie.mind` in the write's own bundle, while that record's epoch is still the one the
+//! mind flew on.
 
 use std::collections::BTreeSet;
 
@@ -52,6 +57,9 @@ pub const FIELD_OUTCOME: &str = "tacsim_field_result";
 pub const FIELD_KEY_PREFIX: &str = "tacsim.field/";
 /// The most bytes an `open`'s rig list may carry (the offer's text bound).
 pub const MAX_LIST_BYTES: usize = mush_core::MAX_PROJECTED_ACTION_TEXT_BYTES;
+/// **The most bytes the offer's carried minds may take** (doc 23 cut D-23-18): half the rules
+/// value's bound, so the rest of the offer always fits. A mind past it is not carried, and logged.
+pub const MAX_CARRIED_BYTES: usize = mush_core::mechanics::MAX_RULES_VALUE_BYTES / 2;
 
 /// **`tacsim_field`**'s provider.
 pub(crate) struct FieldProvider {
@@ -321,6 +329,92 @@ impl FieldProvider {
     }
 }
 
+impl FieldProvider {
+    /// **Lay the site's carried minds on their epoch records** (doc 23 cut D-23-18): each row
+    /// the offer fixed for `site` whose rig record still has that epoch open becomes its
+    /// `OpenSortie.mind`, staged in this write's bundle. A record whose epoch closed or moved on
+    /// is left alone: the mind lasted its epoch.
+    fn lay_minds(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &Map<String, Value>,
+        site: &SiteKey,
+    ) -> Result<(), ActionError> {
+        let rows: Vec<super::record::CarriedRow> = parameters
+            .get("carried")
+            .and_then(|carried| carried.get(site.0.as_str()))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| invalid("a field write lists the minds it carries"))?
+            .unwrap_or_default();
+        for row in rows {
+            let key = RigKey(row.unit);
+            let found = txn
+                .get(&self.excursions, &key)
+                .map_err(|_| integrity("the rig records are unavailable"))?
+                .cloned();
+            let Some(mut rig) = found else {
+                continue;
+            };
+            let Some(open) = rig.sortie.as_mut().filter(|open| open.id == row.epoch) else {
+                continue;
+            };
+            if open.mind.as_deref() == Some(&row.mind) {
+                continue;
+            }
+            open.mind = Some(Box::new(row.mind));
+            rig.check()
+                .map_err(|_| integrity("a carried mind's rig record is out of bounds"))?;
+            txn.replace(&self.excursions, &key, rig)
+                .map_err(|_| integrity("a carried mind's rig record did not stage"))?;
+        }
+        Ok(())
+    }
+}
+
+/// **The minds the host owes their epoch records, by site** (doc 23 cut D-23-18): each live
+/// field's ramp check-ins and each owed close's, under [`MAX_CARRIED_BYTES`].
+fn carried_offer(w: &World) -> Map<String, Value> {
+    let mut rows: Vec<(String, &super::record::CarriedRow)> = Vec::new();
+    if let Some(book) = w.module_state::<super::FieldBook>() {
+        for (site, hosted) in book.running() {
+            rows.extend(
+                hosted
+                    .live
+                    .carried
+                    .iter()
+                    .map(|row| (site.to_string(), row)),
+            );
+        }
+    }
+    if let Some(owed) = w.module_state::<super::admit::OwedCloses>() {
+        for (site, close) in &owed.0 {
+            rows.extend(close.minds.iter().map(|row| (site.to_string(), row)));
+        }
+    }
+    let mut carried = Map::new();
+    let mut bytes = 0_usize;
+    for (site, row) in rows {
+        let Ok(value) = serde_json::to_value(row) else {
+            continue;
+        };
+        let size = serde_json::to_vec(&value).map_or(usize::MAX, |text| text.len());
+        if bytes.saturating_add(size) > MAX_CARRIED_BYTES {
+            tracing::warn!(site = %site, unit = row.unit.0, size, "tacsim: a carried mind does not fit the field's offer; it is not carried");
+            continue;
+        }
+        bytes = bytes.saturating_add(size);
+        if let Value::Array(list) = carried
+            .entry(site)
+            .or_insert_with(|| Value::Array(Vec::new()))
+        {
+            list.push(value);
+        }
+    }
+    carried
+}
+
 impl ActionProvider for FieldProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         let parameters = parameters(invocation)?;
@@ -390,6 +484,7 @@ impl ActionProvider for FieldProvider {
                     .collect()
             })
             .unwrap_or_default();
+        let carried = carried_offer(w);
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
         let text = ProjectedParameterKind::Text {
@@ -420,8 +515,12 @@ impl ActionProvider for FieldProvider {
             crate::surface::act::parameter("rigs", false, text)?,
             crate::surface::act::parameter("unit", false, integer(1, i64::from(u32::MAX)))?,
         ];
-        let mut fixed =
-            json!({ "now": w.world_ic_now().at, "closing": closing, "exiting": exiting });
+        let mut fixed = json!({
+            "now": w.world_ic_now().at,
+            "closing": closing,
+            "exiting": exiting,
+            "carried": carried,
+        });
         crate::surface::site_record::fix_sides(w, &mut fixed);
         crate::surface::act::offer_draft(
             action,
@@ -483,6 +582,7 @@ impl ActionProvider for FieldProvider {
                     return Err(rejected("only the field host writes a unit out of a field"));
                 }
                 record.exit(unit).map_err(|why| rejected(why.sentence()))?;
+                self.lay_minds(txn, parameters, &key)?;
                 format!("#{} left field {} at the ramp", unit.0, record.ordinal)
             }
             _ => {
@@ -525,6 +625,7 @@ impl ActionProvider for FieldProvider {
                     .transpose()
                     .map_err(|_| invalid("a field's close lists the remains it leaves"))?
                     .unwrap_or_default();
+                self.lay_minds(txn, parameters, &key)?;
                 for left in &remains {
                     self.close_destroyed(txn, context, &mut record, (left, now))?;
                 }

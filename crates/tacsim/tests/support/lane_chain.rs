@@ -45,9 +45,26 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **The player-response floor (lane v31; owner rule, 2026-11-04): the licence's grace put
+/// back** — the Freeport Registry licence's `grace_ic_days` 28 → 3, so a strip chain rebuilds
+/// a lane before v31 (idempotent). The chain's head.
+pub fn strip_licence_grace(doc: &mut Value) {
+    if let Some(licence) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("licence"))
+        .and_then(Value::as_object_mut)
+    {
+        licence.insert("grace_ic_days".into(), Value::from(3));
+    }
+}
+
 /// **Doc 39 cut IN.10 (lane v29): the Trust's raise taken out** — `coop_trust`'s `raises` at
-/// Ceres removed, so a strip chain rebuilds a lane before v29 (idempotent). The chain's head.
+/// Ceres removed, so a strip chain rebuilds a lane before v29 (idempotent), after the
+/// licence's grace.
 pub fn strip_trust_raise(doc: &mut Value) {
+    strip_licence_grace(doc);
     let Some(orgs) = doc
         .get_mut("entries")
         .and_then(|entries| entries.get_mut("ceres_port"))

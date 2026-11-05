@@ -83,10 +83,10 @@ pub use module::{
     InventoryHandleCell, InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG,
 };
 pub use pool::{
-    InventoryError, InventoryFamilies, LotSale, MARKER_CAUSAL_MAX_BYTES, Moved, SettledSale,
-    derive_lot_id, derive_tranche_id, derived_marker_id, is_marker_id, pool_key, pool_resource,
-    reservation_deadline, reservation_deadline_after, reservation_id_from_text,
-    reservation_id_text, tranche_key,
+    InventoryError, InventoryFamilies, LotSale, MARKER_CAUSAL_MAX_BYTES, Moved,
+    REFIT_RESERVATION_LEAD_SECS, SettledSale, derive_lot_id, derive_tranche_id, derived_marker_id,
+    is_marker_id, pool_key, pool_resource, refit_reservation_deadline, reservation_deadline,
+    reservation_deadline_after, reservation_id_from_text, reservation_id_text, tranche_key,
 };
 pub use provider::{
     InventoryVerb, MAX_ENDPOINT_CHOICES, PoolCapacity, PoolReadFailed, action_ref, endpoint_status,

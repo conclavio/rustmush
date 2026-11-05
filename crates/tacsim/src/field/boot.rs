@@ -193,6 +193,14 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     for unit in gone {
         arena.remove_unit(unit);
     }
+    // Doc 40 (the ramp exit's boarding window): the wrecks the snapshot holds, for the boarding
+    // checks (`super::boarding::seed`).
+    let wrecks: BTreeSet<ObjId> = arena
+        .units
+        .iter()
+        .filter(|state| state.limits.wreck)
+        .map(|state| state.id)
+        .collect();
     // Doc 36 cut GC.1b (Q-36-4): a carrier the host took in after this snapshot was taken is on
     // the live record and checked out, and the snapshot never held it; the arena joins it again
     // at its pad, as the kernel did at the pulse it joined. One that can no longer join is checked
@@ -269,6 +277,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         return Err(format!("its task did not reopen ({error})"));
     }
     super::record::write_live(ctx, &live);
+    super::boarding::seed(ctx.w, task, wrecks);
     // The seats: a pilot still sitting in the unit is its pilot again. Focus never survives a
     // boot (mush-sim's D-E7-34), so the pilot is told how to take the cockpit back.
     for row in &live.units {
@@ -317,7 +326,11 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
     let returns =
         super::close::snapshot_returns(ctx, site, held.docs.snapshot.as_ref(), homes, &walls)
             .unwrap_or_default();
-    let demoted = super::close::demote_units(ctx, site, &units, &returns);
+    let mut demoted = super::close::demote_units(ctx, site, &units, &returns);
+    // Doc 23 cut D-23-18: the ramp's check-ins the live record still owed their epoch records.
+    if let Some(live) = &held.docs.live {
+        super::close::carry_unwritten(&mut demoted.minds, live.carried.clone());
+    }
     // Doc 32 cut CF.5 (Q-CF-38): the crew of every unit the live record seated.
     if let Some(live) = &held.docs.live {
         for row in &live.units {

@@ -14,7 +14,7 @@
 //! - **Filing** (Q-36-24, Q-36-25). `+salvage/claim <hull> go` by the custodian files an
 //!   economy contract at the site's port registry (the Freeport Registry for every frontier
 //!   site): `mush_economy::file_salvage_claim`, a `RealUtc` contest window of
-//!   `[tacsim.recovery].claim_window_s` (48 real hours), which the world clock's outages pause
+//!   `[tacsim.recovery].claim_window_ic_days` (48 IC days, filed in real seconds at the world's rate), which the world clock's outages pause
 //!   through the economy's own `contract_live`. A written-off lease rig is Occator's alone and is
 //!   refused at filing (Q-36-29). The custody record's seam goes from `Owed` to
 //!   `Filed { contract }`, and the library's [`SalvageClaim`] is kept beside it. **Notice** goes
@@ -1490,13 +1490,26 @@ fn contract_state(w: &World, id: u64) -> Option<ContractState> {
         .map(|c| c.state)
 }
 
-/// The claim window configured, real seconds.
+/// The claim window configured, real seconds ([`claim_window_real_secs`]).
 fn window_secs(w: &World) -> i64 {
-    w.module_state::<crate::store::TacsimStore>()
-        .map_or(mush_economy::SALVAGE_CLAIM_WINDOW_SECS, |store| {
-            store.config().recovery.claim_window_s
-        })
-        .clamp(1, mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS)
+    claim_window_real_secs(w)
+}
+
+/// **A salvage claim's contest window, real seconds** (the owner's 2026-11-04 rule: any wait on a
+/// player's response is at least 28 IC days): the configured window, IC seconds
+/// (`[tacsim.recovery].claim_window_ic_days`, 48), divided by the world's rate now, rounded up —
+/// 48 real hours at rate 24, 48 real days at rate 1. The claim contract's deadline is real time
+/// (its shape), so the window is converted once, at filing. Clamped to
+/// `1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS`.
+#[must_use]
+pub fn claim_window_real_secs(w: &World) -> i64 {
+    let ic = w
+        .module_state::<crate::store::TacsimStore>()
+        .map_or(crate::config::CLAIM_WINDOW_IC_DAYS * 86_400, |store| {
+            store.config().recovery.claim_window_ic_s
+        });
+    let rate = i64::from(w.world_timeline().current().rate.max(1));
+    (ic.saturating_add(rate - 1) / rate).clamp(1, mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS)
 }
 
 // ---- the command --------------------------------------------------------------------------

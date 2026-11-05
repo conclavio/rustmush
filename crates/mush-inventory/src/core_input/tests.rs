@@ -761,7 +761,7 @@ fn native_paths_protect_expired_hold_and_release_keeps_a_permanent_reusable_chai
     r.mint(other, 2)?;
     r.act(0, 2, 0, lot)?;
     r.w.world_mut()
-        .set_now(1000 + crate::RESERVATION_TTL_SECS + 1);
+        .set_now(1000 + mush_core::player_wait::REFIT_RESERVATION_SECONDS + 1);
     let f = r.f.clone();
     let a = r.endpoints[0];
     let b = r.endpoints[1];
@@ -929,10 +929,12 @@ fn expiry_and_timeline_fences_stop_stage_and_take_but_owned_work_is_not_revalida
         let before = r.boot.clone();
         if at_take {
             r.stage(p, inv, 1, 3)?;
-            r.w.world_mut().set_now(1000 + crate::RESERVATION_TTL_SECS);
+            r.w.world_mut()
+                .set_now(1000 + mush_core::player_wait::REFIT_RESERVATION_SECONDS);
             check!(r.w.engine_mut().take_staged_action().is_err());
         } else {
-            r.w.world_mut().set_now(1000 + crate::RESERVATION_TTL_SECS);
+            r.w.world_mut()
+                .set_now(1000 + mush_core::player_wait::REFIT_RESERVATION_SECONDS);
             check!(r.stage(p, inv, 1, 3).is_err());
         }
         check!(
@@ -956,7 +958,8 @@ fn expiry_and_timeline_fences_stop_stage_and_take_but_owned_work_is_not_revalida
     let (p, inv) = r.prep(1, 3, 1, lot)?;
     r.stage(p, inv, 1, 3)?;
     let held = r.w.engine_mut().take_staged_action()?.ok_or("custody")?;
-    r.w.world_mut().set_now(1000 + crate::RESERVATION_TTL_SECS);
+    r.w.world_mut()
+        .set_now(1000 + mush_core::player_wait::REFIT_RESERVATION_SECONDS);
     let (bundle, install) = held.into_parts();
     r.w.engine_mut().install_composed_action(install)?;
     fold_writes(&mut r.boot, bundle.writes().to_vec());

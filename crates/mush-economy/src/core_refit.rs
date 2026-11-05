@@ -30,7 +30,10 @@ pub const CANCEL_ACTION: &str = "cancel_core_refit";
 pub(crate) const NAMESPACE: &str = "industry.core_refit.v1";
 pub(crate) const HOLD_PURPOSE: &str = "industry.core_refit";
 pub const FITTING_MINOR: i64 = 10_000;
-pub const RESERVATION_SECONDS: i64 = 7 * 86_400;
+/// The reservation, accepted to expiry: 28 IC days (7 until the owner's rule of 2026-11-04 that a
+/// timer waiting on an absent player's response allows at least 28 IC days), the kernel audit's
+/// [`mush_core::player_wait::REFIT_RESERVATION_SECONDS`].
+pub const RESERVATION_SECONDS: i64 = mush_core::player_wait::REFIT_RESERVATION_SECONDS;
 pub(crate) const MAX_ORDERS: usize = 8192;
 pub(crate) const SUBJECT_BYTES: usize = 8192;
 pub(crate) const HISTORY_BYTES: usize = 16_384;

@@ -325,7 +325,9 @@ pub fn answers_at(venue: &CanonicalId) -> bool {
     SECURITY_VENUES.contains(&venue.as_str())
 }
 
-/// The minor units owed on the fines standing against `actor`.
+/// **The minor units of the fines against `actor` that hold her carrier**: those past their
+/// 28-IC-day grace unpaid (`Delinquent`; the owner's 2026-11-04 rule — a fine still within its
+/// grace is owed and listed on `+debts`, but the carrier may undock).
 fn owed_minor(w: &World, actor: ObjId) -> i64 {
     let Some(record) = record_of(w, actor) else {
         return 0;
@@ -333,7 +335,10 @@ fn owed_minor(w: &World, actor: ObjId) -> i64 {
     let ids: Vec<u64> = record
         .rows
         .iter()
-        .filter(|row| owed(w, row))
+        .filter(|row| {
+            row.debt
+                .is_some_and(|id| matches!(debt_status(w, id), Some(ObligationStatus::Delinquent)))
+        })
         .filter_map(|row| row.debt)
         .collect();
     if ids.is_empty() {
@@ -348,15 +353,27 @@ fn owed_minor(w: &World, actor: ObjId) -> i64 {
 /// **The quarantine's line for `carrier`** (`DepartRefusalKind::Quarantined`): `Some` while a
 /// fine stands owed against her master or her operator.
 #[must_use]
+/// The minor units of the delinquent fines that hold `carrier`: her master's and operator's.
+fn held_minor(w: &World, carrier: ObjId) -> i64 {
+    answerers(w, carrier)
+        .into_iter()
+        .fold(0_i64, |sum, who| sum.saturating_add(owed_minor(w, who)))
+}
+
+/// **Whether port security holds `carrier`** (`DepartRefusalKind::Quarantined`): a fine against
+/// her master or operator past its 28-IC-day grace unpaid.
+#[must_use]
+pub fn holds(w: &World, carrier: ObjId) -> bool {
+    held_minor(w, carrier) > 0
+}
+
 pub(crate) fn quarantine_line(
     ctx: &Ctx<'_>,
     carrier: ObjId,
     name: &str,
     port: &str,
 ) -> Option<String> {
-    let total = answerers(ctx.w, carrier)
-        .into_iter()
-        .fold(0_i64, |sum, who| sum.saturating_add(owed_minor(ctx.w, who)));
+    let total = held_minor(ctx.w, carrier);
     (total > 0).then(|| {
         QUARANTINED
             .replace("{name}", name)
@@ -423,12 +440,13 @@ fn fine_actor(ctx: &mut Ctx<'_>, actor: ObjId, (name, port): (&str, &str)) {
             );
             continue;
         };
-        let id = match mush_economy::create_debt(
+        let due = crate::surface::retrieval::debt_due(ctx.w);
+        let id = match mush_economy::create_debt_due(
             ctx,
-            account,
-            registry_account,
+            (account, registry_account),
             Amount::from_minor(minor),
             DEBT_NAMESPACE,
+            due,
         ) {
             Ok(id) => id,
             Err(error) => {

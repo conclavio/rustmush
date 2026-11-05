@@ -52,6 +52,19 @@ pub const PROVIDER: &str = "tacsim.retrieval";
 pub const FACT_DELIVERED: &str = "tacsim.retrieval.delivered";
 /// The namespace of every one-term debt this layer opens (Q-41-13), which `+debts` reads.
 pub const DEBT_NAMESPACE: &str = "tacsim.debt";
+/// **A one-term debt's grace, IC days** (the owner's 2026-11-04 rule: any wait on a player's
+/// response is at least 28 IC days): a debt this layer opens falls due this long after it is
+/// opened, payable at any time before (`+debts/pay`); only then can it go delinquent, so the
+/// desk's refusal and port security's quarantine wait for it.
+pub const DEBT_GRACE_IC_DAYS: i64 = 28;
+
+/// **When a debt opened now falls due**: [`DEBT_GRACE_IC_DAYS`] from World IC now.
+#[must_use]
+pub fn debt_due(w: &World) -> i64 {
+    w.world_ic_now()
+        .at
+        .saturating_add(DEBT_GRACE_IC_DAYS.saturating_mul(86_400))
+}
 /// The record's schema.
 pub const RETRIEVAL_SCHEMA: u32 = 1;
 

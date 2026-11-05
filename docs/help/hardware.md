@@ -45,7 +45,7 @@ The order identifier is the one returned for your accepted work. Completion
 captures the hold and pays the published split. Collection moves the completed,
 personally titled core into your custody. Before completion, the offered
 cancel-core-work action releases the price hold and the reserved input. The work
-reservation lasts seven IC days; missed deadlines require cleanup, not backdated
+reservation lasts 28 IC days; missed deadlines require cleanup, not backdated
 production. Restarting the server does not erase accepted work or earn extra hours.
 
 A supplier can instead offer integration of a buyer-supplied certified die by

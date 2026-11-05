@@ -26,7 +26,7 @@ use crate::space::weapons::{
 pub const MAX_SUBSTEP_MS: u32 = 250;
 
 /// The 48-hour life support of an open-epoch derelict, in seconds (`D-35-12`). Its salvage
-/// contest runs on the claim's one window, `[tacsim.recovery].claim_window_s` (doc 41 RS.8).
+/// contest runs on the claim's one window, `[tacsim.recovery].claim_window_ic_days` (doc 41 RS.8).
 pub const DERELICT_LIFE_SUPPORT_S: u32 = 48 * 3_600;
 
 /// Identifier of a [`LocalSpaceBubble`].

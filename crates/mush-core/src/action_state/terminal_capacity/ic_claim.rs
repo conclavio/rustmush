@@ -230,7 +230,7 @@ impl Claim {
             .is_some_and(|n| (1..=90 * 24 * 60 * 60).contains(&n))
             || !grace
                 .checked_sub(end)
-                .is_some_and(|n| (0..=3 * 24 * 60 * 60).contains(&n))
+                .is_some_and(|n| (0..=crate::player_wait::MAX_LICENCE_GRACE_SECONDS).contains(&n))
         {
             return Err(refused("IC captured term bounds"));
         }

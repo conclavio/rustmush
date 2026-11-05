@@ -311,3 +311,85 @@ async fn boarding_a_raider_aboard_a_carrier_wrecked_later_is_a_wreck_in_the_bay(
         "a wreck aboard never launches: {again}"
     );
 }
+
+/// **#468's untested edge: a restart right after the strand** (doc 40, the ramp exit's boarding
+/// window). The raider's carrier is a wreck in the field and its leader's WITHDRAW is refused at
+/// the ramp: each hull is stranded, its WITHDRAW (hold fire) lifted in the kernel and its mark
+/// spent. The server goes down at once, before any later snapshot is kept. After the resume
+/// every stranded hull fights on (it fires on the escort): nothing brings the hold-fire WITHDRAW
+/// back. Green with no fix: the field resumes from a snapshot older than the order, and a kept
+/// snapshot between the order and its lift (about one pulse) is a window this rig cannot stage
+/// (the cut note).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn boarding_a_stranded_raider_fights_on_after_a_restart() {
+    let mut rig = stocked_tuned(tune);
+    let (a, _, _) = on_pad(&mut rig, 0);
+    let escort = armed(&mut rig, "Ward Dog", (183, 126), 270_000);
+    let npc = staff_hand(&mut rig, |ctx| {
+        ctx.w
+            .create(ObjKind::Npc, "Hired escort", GOD, None)
+            .expect("the NPC")
+    });
+    seat_npc(&mut rig, escort, npc);
+    warm(&mut rig);
+    let (raiders, carrier) = seed_and_launch(&mut rig);
+    let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
+    wreck(&mut rig, carrier);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    for _ in 0..3 {
+        second(&mut rig);
+    }
+    open_field(
+        &mut rig,
+        &mut rx,
+        &mut lines,
+        (leader, "E"),
+        &[a, npc, leader],
+    )
+    .await;
+    let ordered = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@field/raiders/withdraw {SKULKS}"),
+    );
+    assert!(ordered.contains("make for the"), "{ordered}");
+    let stranded = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+        raiders
+            .iter()
+            .all(|hull| !tacsim::field::raiders::withdrawing(rig.tw.world(), *hull))
+    })
+    .await;
+    assert!(stranded, "every hull is stranded");
+
+    // Down at once: the snapshot the field resumes from was taken before the lift.
+    let mut rig = crate::driving_rig::crash(rig, &mut rx, &[]).await;
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let fought = until(&mut rig, &mut rx, &mut lines, 90, |_, lines| {
+        raiders.iter().all(|hull| {
+            lines
+                .iter()
+                .any(|line| matches!(line.kind, EventKind::Fired { unit, .. } if unit == *hull))
+        })
+    })
+    .await;
+    let fired: Vec<ObjId> = raiders
+        .iter()
+        .copied()
+        .filter(|hull| {
+            lines
+                .iter()
+                .any(|line| matches!(line.kind, EventKind::Fired { unit, .. } if unit == *hull))
+        })
+        .collect();
+    assert!(
+        fought,
+        "every stranded hull fights on after the restart: fired {fired:?} of {raiders:?}; the field runs {}",
+        task(&rig).is_some()
+    );
+    for hull in &raiders {
+        assert!(in_field(&rig, *hull), "#{} is still the field's", hull.0);
+    }
+}

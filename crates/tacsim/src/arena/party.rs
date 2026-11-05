@@ -415,7 +415,8 @@ pub struct FieldHost {
     /// **The coupled tows, `(casualty, tug)`** (doc 40 cut FR.5, §4.1 item 5, Q-40-7): each
     /// casualty admitted as a unit of its tug's party, coupled by `Arena::new` through
     /// `Arena::couple` once the units are in hand. Empty for every practice match and for an IC
-    /// field with no tow; a join never carries one in this cut.
+    /// field with no tow. A join carries one only to take back a pair whose carrier was lost at
+    /// the ramp (doc 40, the ramp exit's boarding window), coupled once both halves are in.
     pub tows: Vec<(mush_core::ObjId, mush_core::ObjId)>,
 }
 
