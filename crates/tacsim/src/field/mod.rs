@@ -250,6 +250,19 @@ pub fn live_on(w: &World, site: &CanonicalId) -> Option<FieldLive> {
         .map(|hosted| hosted.live.clone())
 }
 
+/// **`unit`'s mind row in the last snapshot of the field on `site`** (doc 23 cut D-23-18: what
+/// the carried-memory story reads its `think_seq` and memory off), when the world holds one.
+#[must_use]
+pub fn snapshot_mind(
+    w: &World,
+    site: &CanonicalId,
+    unit: ObjId,
+) -> Option<crate::arena::mind::MindState> {
+    let document = w.module_state::<FieldBook>()?.snapshot(site)?;
+    let row = document.get("state")?.get("minds")?.get(unit.0.to_string())?;
+    serde_json::from_value(row.clone()).ok()
+}
+
 /// The `[tacsim.field]` the server runs under.
 #[must_use]
 pub(crate) fn config(w: &World) -> crate::config::FieldConfig {

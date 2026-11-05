@@ -1007,6 +1007,7 @@ pub(crate) fn open_epoch(
         abandoned_ic: None,
         unrecorded: false,
         seal,
+        mind: None,
     };
     let line = BlackBoxLine::mind_sealed(
         &opened,
@@ -1257,6 +1258,7 @@ mod tests {
             abandoned_ic: None,
             unrecorded: false,
             seal,
+            mind: None,
         }
     }
 

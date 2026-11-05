@@ -1779,8 +1779,14 @@ impl From<crate::arena_task::SpawnError> for OpenMatchError {
 /// `IcHost::resume(open)?.install` — the ABI drop and the compile drop to the ROM, journalled once
 /// — at the field's admission and its resume alike. A hull it cannot install is left to the strict
 /// rule. The host is the claim arm's (`surface::mind_claim`), composed only where claims are.
+///
+/// **Doc 23 cut D-23-18** (§17.7): at the admission, a hull installed here whose epoch record
+/// carries a mind (`carried`, read off the rig records by [`carried_minds`]) has it laid down on
+/// its fresh row before the first think, so it resumes its own memory with `think_seq`
+/// monotone. A resume passes none: its rows are the snapshot's, already carrying both.
 fn ic_retained(
     world: &mush_core::World,
+    carried: BTreeMap<ObjId, crate::arena::mind::CarriedMind>,
 ) -> impl FnMut(&mut crate::arena::Arena) -> BTreeSet<ObjId> + '_ {
     let host = crate::surface::mind_claim::host_of(world);
     move |arena| {
@@ -1809,6 +1815,15 @@ fn ic_retained(
             match retained.install(world, arena) {
                 Ok(()) => {
                     done.insert(unit);
+                    if let Some(mind) = carried.get(&unit)
+                        && let Err(refusal) = arena.seed_carried_mind(unit, mind)
+                    {
+                        tracing::warn!(
+                            unit = unit.0,
+                            %refusal,
+                            "tacsim: a claimed hull's carried mind was not laid down; it starts afresh"
+                        );
+                    }
                 }
                 Err(error) => tracing::warn!(
                     unit = unit.0,
@@ -1819,6 +1834,22 @@ fn ic_retained(
         }
         done
     }
+}
+
+/// **The minds the custody's hulls carry on their epoch records** (doc 23 cut D-23-18): each
+/// rig record's open `OpenSortie.mind`, by hull.
+fn carried_minds(
+    ctx: &Ctx<'_>,
+    custody: &crate::arena::state::CustodyOut,
+) -> BTreeMap<ObjId, crate::arena::mind::CarriedMind> {
+    custody
+        .units
+        .iter()
+        .filter_map(|unit| {
+            let mind = crate::field::parties::rig_record(ctx, unit.id)?.sortie?.mind?;
+            Some((unit.id, *mind))
+        })
+        .collect()
 }
 
 fn sealed_sources<'a>(
@@ -1999,6 +2030,11 @@ fn open_task(
     // one think pool, sized once from `[tacsim.minds].workers` by whichever
     // match opens first.
     let pool = crate::minds::MindPool::shared(minds_cfg.workers);
+    let carried = if terms.is_some() {
+        carried_minds(ctx, &custody)
+    } else {
+        BTreeMap::new()
+    };
     let (handle, join, callsigns) = match terms {
         None => crate::arena_task::spawn_arena(
             &runtime,
@@ -2017,7 +2053,7 @@ fn open_task(
             match_id,
             custody,
             (arena_cfg, match_cfg, sensors_cfg, &minds_cfg),
-            (&sources, &mut ic_retained(ctx.w)),
+            (&sources, &mut ic_retained(ctx.w, carried)),
             pool,
             egress,
             terms,
@@ -2271,7 +2307,7 @@ pub fn resume_field_task(
         task,
         arena,
         &arena_cfg,
-        (&BTreeMap::new(), &mut ic_retained(ctx.w)),
+        (&BTreeMap::new(), &mut ic_retained(ctx.w, BTreeMap::new())),
         pool,
         egress,
         terms,

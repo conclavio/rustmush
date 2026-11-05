@@ -317,7 +317,11 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
     let returns =
         super::close::snapshot_returns(ctx, site, held.docs.snapshot.as_ref(), homes, &walls)
             .unwrap_or_default();
-    let demoted = super::close::demote_units(ctx, site, &units, &returns);
+    let mut demoted = super::close::demote_units(ctx, site, &units, &returns);
+    // Doc 23 cut D-23-18: the ramp's check-ins the live record still owed their epoch records.
+    if let Some(live) = &held.docs.live {
+        super::close::carry_unwritten(&mut demoted.minds, live.carried.clone());
+    }
     // Doc 32 cut CF.5 (Q-CF-38): the crew of every unit the live record seated.
     if let Some(live) = &held.docs.live {
         for row in &live.units {

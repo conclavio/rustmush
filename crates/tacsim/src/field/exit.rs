@@ -410,7 +410,7 @@ pub(crate) fn on_withdrawn(
     // The check-in, at the field pose beside the ramp (Q-CF-36): a mobile unit leaves nothing on
     // the record's unit index. A departing carrier (F-6) checks its souls in aboard it, as its
     // demotion would.
-    let _ = super::close::demote_units(ctx, &site, &[unit], std::slice::from_ref(&back));
+    let checked = super::close::demote_units(ctx, &site, &[unit], std::slice::from_ref(&back));
     super::crew::check_in(ctx, &site, unit, pilot);
     super::crew::check_in_aboard(ctx, &site, unit, &aboard);
     if let Some(pilot) = pilot {
@@ -438,6 +438,12 @@ pub(crate) fn on_withdrawn(
     let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
         let hosted = book.live.get_mut(&site)?;
         hosted.live.units.retain(|row| row.unit != unit);
+        // Doc 23 cut D-23-18: the mind it checked in with, owed to its epoch's record in this
+        // batch beside the check-in.
+        for row in checked.minds {
+            hosted.live.carried.retain(|owed| owed.unit != row.unit);
+            hosted.live.carried.push(row);
+        }
         if let Some(actor) = actor {
             hosted.live.owed_exits.retain(|owed| owed.unit != unit);
             hosted
@@ -496,6 +502,14 @@ pub(crate) fn on_withdrawn(
     }
     submit_owed(ctx);
     tracing::info!(site = %site, unit = unit.0, ordinal, "tacsim: a unit left an IC field at its carrier's ramp");
+}
+
+/// **Whether `row`'s rig record no longer owes it** (doc 23 cut D-23-18): the record's open epoch
+/// holds this very mind, or it is no longer the epoch the row was carried for.
+fn carried_laid(ctx: &Ctx<'_>, row: &super::record::CarriedRow) -> bool {
+    super::parties::rig_record(ctx, row.unit)
+        .and_then(|rig| rig.sortie)
+        .is_none_or(|open| open.id != row.epoch || open.mind.as_deref() == Some(&row.mind))
 }
 
 /// **Submit every owed `exit`** whose actor has nothing in flight, at most one an actor (the
@@ -583,12 +597,30 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 owed.0.remove(&site);
             }
         }
+        // Doc 23 cut D-23-18: the carried minds their rig records now hold (or whose epoch
+        // closed), read before the live record is borrowed.
+        let laid: BTreeSet<ObjId> = ctx
+            .w
+            .module_state::<FieldBook>()
+            .and_then(|book| book.hosted(&site))
+            .map(|hosted| {
+                hosted
+                    .live
+                    .carried
+                    .iter()
+                    .filter(|row| carried_laid(ctx, row))
+                    .map(|row| row.unit)
+                    .collect()
+            })
+            .unwrap_or_default();
         // The live record forgets each landed exit too.
         let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
             let hosted = book.live.get_mut(&site)?;
-            let before = hosted.live.owed_exits.len();
+            let before = (hosted.live.owed_exits.len(), hosted.live.carried.len());
             hosted.live.owed_exits.retain(|owed| !landed(owed.unit));
-            (hosted.live.owed_exits.len() != before).then(|| hosted.live.clone())
+            hosted.live.carried.retain(|row| !laid.contains(&row.unit));
+            ((hosted.live.owed_exits.len(), hosted.live.carried.len()) != before)
+                .then(|| hosted.live.clone())
         });
         if let Some(live) = live {
             super::record::write_live(ctx, &live);

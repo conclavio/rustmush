@@ -223,6 +223,7 @@ fn m8e_an_org_held_licence_seals_with_the_org_holder() -> TestResult {
         abandoned_ic: None,
         unrecorded: false,
         seal: Some(sealed.facts.clone()),
+        mind: None,
     };
     let line = crate::surface::black_box::BlackBoxLine::mind_sealed(
         &opened,
