@@ -1,17 +1,68 @@
 # 42b. Surrender — survey
 
-**Draft 0.3, 2026-11-05: as built.** SU.0–SU.5 are built, one PR each: SU.0 #481, SU.1 #486,
-SU.2 #482, SU.3 #491, SU.4 #492, and SU.5 (this draft's PR). SU.6's amendments rode each of them.
-[42b-cut-notes.md](42b-cut-notes.md) records what was built, the gates, the departures from §7's
-rows and the cell deltas. Two findings for the owner:
+**Draft 0.4, 2026-11-05: as built, closed (SU.6).** Every cut of §7 has landed on `main`, one
+PR each:
+
+| Cut | What | PR |
+|---|---|---|
+| SU.0 | `CrewRecord.resolve_permille`, `None` never yields | #481 |
+| SU.1 | `raiders.json` schema 5; one seated NPC crew member per armed hull, with a record | #486 |
+| SU.2 | `Arena::armed_hostiles_in_reach`, a read; harness dispatched, every §4a pin unmoved | #482 |
+| SU.3 | the morale check in `lift_check`, `exit::Then::Yield`, the yielded casualty | #491 |
+| SU.4 | the NPC branch: no fee, custody by the authority, out of play at release | #492 |
+| SU.5 | `[tacsim.field].yield_hold_s` at the 28-IC-day floor, and the lapse | #493 |
+| SU.6 | §5's amendments (riding each PR, closed here), the cut notes, this draft | this PR |
+
+[42b-cut-notes.md](42b-cut-notes.md) records what each cut built, its gate, its departures from
+§7's row and its measured cell delta.
+
+**Beside the chain.** The 38a/38b review's verified crew findings landed on the same files:
+
+- #497:
+  - F-14: the release fee falls due at the debt floor, never at once.
+  - Astra #7: a load vacates every station of each captive.
+  - Astra #12: the post-field eject walks the location chain.
+  - F-22b: `+mine` and `+sortie/unseat` are held.
+- #498, F-22a: a captive is gagged on the detachment radio. The fix adds a game-free speak gate
+  that comsys asks before every IC line, and tacsim registers `DetachmentChatGate` for `dt:`
+  channels. Membership is never touched.
+
+**Findings for the owner, still open:**
 
 - **No shipped rig can tow a raider's hull.** A line tank is 30 t laden, and the tugs cap at 12, 14
   and 16 t. So Q-42b-14's "anyone may take it in" is unreachable with the shipped raiders, and a
-  yielded line tank always sits out Q-42b-20's window (cut notes, SU.4).
-- **Q-42b-12's casualty row.** It comes from the close (`keep_yielded`), not from `left_condition`:
-  an exit never writes the site record (cut notes, SU.3).
+  yielded line tank always sits out Q-42b-20's window. The (s1) story rebuilds the yielding hull as
+  a drone (cut notes, SU.4). Closing the gap needs a ruling or content: a heavier tug, a lighter
+  raider hull, or a tow cap that counts a yielded hull differently.
+- **Q-42b-12's casualty row.** It comes from the close (`keep_yielded`), not from
+  `left_condition`, because an exit never writes the site record (cut notes, SU.3). This is a
+  departure, not an open question.
+
+**§5's amendments, where each landed:**
+
+- **Doc 42:**
+  - §8 points here (SU.0);
+  - §7a's record names `resolve_permille` (SU.0);
+  - §4's processing paragraph gains the NPC branch (SU.4);
+  - §7's closing line points at this design as built (SU.6).
+- **Doc 40:**
+  - the boarding-window note on `strand` reads "unless its crew yields" (`40-cut-notes.md`, SU.3);
+  - §4a records SU.2's re-run with every pin unmoved (SU.6).
+- **Doc 32 and doc 36:**
+  - the Q-CF-44 raiders gain crew (doc 32's raider bullet, doc 36 GC.11, SU.1);
+  - Q-36-55's triggers count a yielded hull lost (doc 36 GC.11, SU.3).
+- **Content:** `raiders.json` is at schema 5 (SU.1). The pack is in neither the lane nor the relay
+  digest, so nothing was re-signed.
+- **Config:** `[tacsim.field].yield_hold_s` is in `mush-config`'s table (SU.5).
+- **The contract guards:**
+  - no verb or switch was added, so `legacy-handlers.toml` is unchanged;
+  - `player_wait_floors` pins the yield window (item 9) and the release fee (item 10, #497);
+  - `state-slot-owners.toml` declares the new tests' seeds (#497, #498);
+  - no census row needed a change.
 
 The rulings below stand as written.
+
+**Draft 0.3, 2026-11-05: as built (SU.0–SU.5).** Superseded by Draft 0.4 above.
 
 **Draft 0.2, 2026-11-05: ruled.** The owner accepted every default as written ("Q-42b all accepted
 at default, section 5 consequences of the defaults acknowledged"). Each of Q-42b-1 to Q-42b-20 now
