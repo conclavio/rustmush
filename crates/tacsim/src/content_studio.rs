@@ -2478,8 +2478,8 @@ mod tests {
                 .and_then(Value::as_array)
                 // Doc 36 cut GC.7: sixteen with the four munitions goods; doc 39 cut IN.1:
                 // twenty-nine with the thirteen parts; doc 39 cut IN.9: thirty-four with the
-                // five hull kits.
-                .is_some_and(|a| a.len() == 34)
+                // five hull kits; doc 41 cut RS.6a: thirty-six with Tycho's two.
+                .is_some_and(|a| a.len() == 36)
         );
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)

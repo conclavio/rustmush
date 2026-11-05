@@ -542,3 +542,84 @@ Rule #1's 256/512 is not applicable: a space bubble has no site scheme. The bot 
 - **A derelict nobody held** is towed into custody with no claim, as the ground's `NO_TITLE` does.
 
 **Cell cost (rule #14).** @@CELL@@
+## RS.4 — the vacated hull's return (2026-11-04)
+
+Row: §6 RS.4; Q-41-18, Q-41-19, Q-38-19, round-2 item 41-15. No lane rows. Consumes IN.9's
+`+bay/stow <hull>=<carrier>` as merged; built on its branch (#416). Moves no crew (doc 42's).
+
+**Built.**
+
+- **`held_for`** on the bay record (`BayHull.held_for: Option<PrincipalId>`, serde default, omitted while
+  `None`): the claims' tick writes the hull's title holder at a `Vacate` settlement
+  (`bay_work::hold_for`), right after the site record's settle lands.
+- **Bay to bay** (`bay_work::stow`'s new source, `stow_held`): `+bay/stow <hull>=<carrier>` on a hull
+  that is not berthed and is held moves her out of whatever bay holds her into a free slot of the named
+  carrier, for the holder (the character, or one acting for the organization) or a `maintain_refit`
+  grantee, who has the run of that carrier, stands aboard her, and has her docked where the holding
+  carrier is (one port, or one site's pad). The custodian cannot refuse it and has no right to move her.
+  The slot check is IN.9's `free_bay_slot`.
+- **The port holds her** (`bay_work::berth_held`, from `TacsimCarrierHooks::arrived`): a carrier docking at a
+  port with a workshop has every held hull in her bay berthed into the workshop room with no carrier
+  (`BerthRow.carrier: None`, as IN.9's yard berth), her slot freed; a lease rig is handed back to the
+  shed instead. **Outside the stand count**: `berth`'s count of the workshop's berths skips held hulls.
+  Her owner's carrier stows her from the floor through IN.9's existing named-carrier path, which clears
+  the hold.
+- `+bay <hull>` says "… is held for <name>: a carrier of theirs takes her".
+- `surface::act::where_is` is `pub` (the story reads it).
+- The fix thread's defect note (§2.2, the vacated hull's missing return verb) is closed by this cut.
+
+**Story.** `tacsim` `tests/shard_7/vacated_return_rs4.rs`, story (b) extended at 512 (Urvara) and 256
+(Ahuna): both of O's unlawful recoveries vacated on T's `recovery` contests and held for T; O cannot move
+them; T aboard T's own carrier on the same pad takes one bay to bay; O docks at Ceres with the other, which
+the port berths in the workshop held for T; T's carrier docks and T stows her from the floor.
+
+**Divergences.**
+
+- **A held hull never counts against the workshop's berths**, whatever her owner does: she waits there
+  until a carrier of theirs takes her (no fee, no expiry). A storage charge or a lapse to Tycho's sweep is
+  not ruled; it is RS.6's to consider.
+- **The return carries no crew**, and a hull vacated while crewed keeps whoever is aboard where they are
+  (doc 42 owns it).
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.6a — Tycho Mutual's designs and house (2026-11-04)
+
+Row: §6 RS.6, its first slice (RS.6a/b/c, sliced with the lead's OK); Q-41-15, Q-41-17, Q-41-29. **Lane
+v28 / relay v19** (`0b68e811…`, `876dcae5…`) over IN.9's v27; `lane_chain::strip_tycho_house` heads the
+chain. RS.6b (the house arm flying a retrieval, story d) and RS.6c (the sweep, story e) follow.
+
+**Built.**
+
+- **The designs** (`content/units/tycho_crawler.json`, `tycho_lifter.json`, `EXTENSIONS_TYCHO`, fielded
+  last, LOOKLESS): the crawler 130 t dry, tracked, unarmed, a crew of two, `recovery_profile: heavy`
+  (2× laden), a 3 t tool locker; the lifter the Dray-P's hull grown to 600 t, a 10 t hold, a 200 t tank,
+  one recovery bay of two places at 430 t / 1,600 m3, the rail 641,000 kg.
+- **The bills** (doc 39's `design_bill`, pinned in `port/bill.rs`): the crawler 100 t of alloys, 34 t of
+  fittings, 7 yard days; the lifter 441 t, 147 t, 30 days; hull kits in `goods.json` and recipe rows in
+  `industry/hulls-v1.json`, so the Stickney yard builds either for anyone at its bill (Q-41-15).
+- **The house** (`port/house.rs`, the port tick before the commission arm; `PortMap.house`): lane v28's
+  `recovery.house { lifter_mark, crawler_mark }` (`TMA-LF-01`, `TMA-CR-01`) is laid up as Tycho's
+  `DARK` dispatcher in the port's host room and two **yard commissions** titled to Tycho Mutual, seeded
+  at `Laying` (no kit lot, no work order), which IN.9's commission arm carries to the register: the
+  lifter docked at Ceres with a hold, the crawler on the workshop floor; once both are done the crawler
+  is stowed into the lifter's bay (`bay_work::stow_house`). `house::hulls` and `house::dispatcher` read it.
+- **The capital** (Q-41-17): Tycho's `capital_major` stays 50,000 and the row gains
+  `"raises": [ 450000 ]` — 500,000 in all.
+
+**Story.** `tacsim` `tests/shard_7/tycho_house_rs6a.rs`: the composed lane lays the house up on the port
+tick — both hulls Tycho's, the lifter docked at Ceres, the crawler in her bay, the dispatcher in the host
+room — and a minute more of fires seeds nothing again.
+
+**Divergences.**
+
+- **One bay of two places**, not two slots: the engine reads one bay a hull (`InteriorDef::bay`), so the
+  crawler's 130 t / 400 m3 and the load's 300 t / 1,200 m3 share one 430 t / 1,600 m3 bay.
+- **The capital as a raise**: a port update never re-capitalizes an org on a kept world (the applier
+  refuses a changed `capital_major`), so Q-41-17's 500,000 is the 50,000 base and one 450,000 raise.
+- **No storefront party** yet: Tycho already acts as a contract party through `PortPartyCaps` (RS.5); a
+  storefront needs goods to sell, which the hull-sale offer of RS.6c brings.
+- **No looks**: the kit has none for either (doc 41 §7); `+ship` prints the lifter's class as a refit
+  hull's, since the class word reads only the Dray family. RS.6b gives it a word when the arm flies it.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.

@@ -21,7 +21,7 @@
 //!
 //! **Seeds** (doc 43 rule 2.3 #4): one hauler plant in the Yards' stores (IN.7 retired the
 //! seeded part stock; the house buys it there at its catalogue price), the captains' money for
-//! the buyouts, and the Trust's 250,000 raise (lane v28) held back in the treasury by staff from
+//! the buyouts, and the Trust's 250,000 raise (lane v29) held back in the treasury by staff from
 //! boot until the ninth enrolment, so the story reads the world before the raise, as the row
 //! does. Every other claim is reached by the players' commands and the port tick.
 
@@ -235,8 +235,8 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
     );
     // The Yards' part stores seed after the asks (IN.6): let the clerk finish.
     settle(&mut rig, 40);
-    // The Trust before its raise: lane v28 posts it 250,000 more at boot, which staff hold back
-    // in the treasury until the story's last step (the world the row reads, before v28).
+    // The Trust before its raise: lane v29 posts it 250,000 more at boot, which staff hold back
+    // in the treasury until the story's last step (the world the row reads, before v29).
     assert_eq!(
         available(&rig, trust_account(&rig)),
         500_000 * 100,

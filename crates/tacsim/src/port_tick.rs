@@ -2073,6 +2073,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::bay_work::tick(ctx);
     // Doc 39 cut IN.3: the works arm (submit, deliver, return, collect, storage).
     // Doc 39 cut IN.9: the commissions past their consumption, every remaining step — before
+    // Doc 41 cut RS.6a: a recovery operator's house seeds its two commissions first.
+    crate::port::house::tick(ctx);
     // the works arm, so a consumption it settles this fire is laid up on the next.
     crate::port::commission::tick(ctx);
     crate::port::works::tick(ctx);

@@ -114,6 +114,29 @@ pub struct PortMap {
     /// (the IC4 L9 precedent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicles: Option<VehiclesRow>,
+    /// **Doc 41 cut RS.6a (Q-41-15)**: a recovery operator's house — its dispatcher and the two
+    /// commissions that lay up its hulls (`crate::port::house`). Skipped when absent, so
+    /// [`PORT_MAP_SCHEMA`] stays 1 (the IC4 L9 precedent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub house: Option<HouseRow>,
+}
+
+/// **A recovery operator's house row** (doc 41 cut RS.6a): what the port tick made, in order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HouseRow {
+    /// The `DARK` dispatcher Thing that acts for the house, `ObjId.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatcher: Option<u32>,
+    /// The lifter's yard commission, its order number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifter: Option<u64>,
+    /// The crawler's yard commission, its order number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crawler: Option<u64>,
+    /// Whether the crawler stands in the lifter's bay (the last step).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stowed: bool,
 }
 
 /// **A rig lessor's row** (doc 20 cut SM.3a; part h): the shed room the applier
@@ -355,6 +378,7 @@ impl PortMap {
             emergencies: BTreeMap::new(),
             site: None,
             vehicles: None,
+            house: None,
         }
     }
 

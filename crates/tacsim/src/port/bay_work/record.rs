@@ -180,6 +180,13 @@ pub struct BayHull {
     /// holder's; it rides the hull from workshop to carrier bay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bale: Option<Bale>,
+    /// **Whom a vacated hull is held for** (doc 41 cut RS.4, Q-41-18, Q-41-19): her title holder,
+    /// written when a contest vacates the claim on her, cleared when a carrier of theirs takes
+    /// her. While it stands she goes bay to bay into that carrier (`+bay/stow <hull>=<carrier>`),
+    /// or the custodian's next docking at a workshop port berths her there outside the stand
+    /// count. Omitted while `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_for: Option<mush_org::PrincipalId>,
 }
 
 /// **A hull's bale** (doc 39 §4.10, Q-39-26): the sub-tonne remainder of the whole tonnes a
@@ -313,6 +320,7 @@ impl BayHull {
             scrapped_ic: None,
             claim_lots: Vec::new(),
             bale: None,
+            held_for: None,
         }
     }
 

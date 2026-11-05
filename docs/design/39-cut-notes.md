@@ -907,10 +907,10 @@ from durable state.
   fund one." (`NO_HULL_UNFUNDED`) or "The Trust has a Dray on order at Stickney Yards, due at Ceres in n IC days."
   (`NO_HULL_ON_ORDER`, from `pools::next_due`: the build's days and a four-day passage allowance until she sails,
   then her filed arrival).
-- **The raise**: lane v28 / relay v19 — `coop_trust` gains `raises: [250000]` (Q-39-34), so the Trust boots at
-  500,000. `lane_chain::strip_trust_raise` heads the strip chain (`strip_yard` calls it first), and
-  `in10_strip_trust_raise_rebuilds_the_published_v27` holds it to IN.9's v27 digest. The pins: `LANE_DIGEST`
-  `27a5d41a…`, the relay `876dcae5…`, the treasury's 16,251,000.00cr, and the version asserts.
+- **The raise**: lane v29 / relay v20 (on RS.6a's v28) — `coop_trust` gains `raises: [250000]` (Q-39-34), so the Trust boots at
+  500,000. `lane_chain::strip_trust_raise` heads the strip chain (`strip_tycho_house` calls it first), and
+  `in10_strip_trust_raise_rebuilds_the_published_v28` holds it to RS.6a's v28 digest. The pins: `LANE_DIGEST`
+  `7c1b822f…`, the relay `2afc58ea…`, the treasury's 16,701,000.00cr, and the version asserts.
 - **`works::port_of` reads the yard room** (IN.9's row is a room that is the facility itself), so an order at the
   yard finds its port; the house collection needed it.
 
@@ -925,7 +925,7 @@ enrols the ninth captain. Over those weeks the dormancy recall (seven real days 
 programme Dray back first, and the desk lends the lowest free id, so the story asserts the ninth captain is
 chartered and the Trust's Dray is theirs or still free. The seeds: one hauler plant in the Yards' stores, the
 captains' buyout money, and the Trust's raise held back in the treasury by staff from boot to the ninth enrolment
-(the world the row reads is the one before v28; with the raise in from boot the Trust would order at the seventh
+(the world the row reads is the one before v29; with the raise in from boot the Trust would order at the seventh
 charter, which is what the raise is for). 22 s locally.
 
 **Cell delta (rule #14).** `tacsim-integration-2`: **+1.79 min**, 17.25 → 19.04 summed minutes against main's run at

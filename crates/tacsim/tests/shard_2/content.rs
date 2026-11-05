@@ -553,11 +553,11 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     // (was 12).
     assert_eq!(
         catalog.specs.len(),
-        // Doc 41 cut RS.1: nineteen with the tender.
-        19,
+        // Doc 41 cut RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's two.
+        21,
         "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
          the range's target, 16b cut AE.1's three chassis, 16b cut AE.3's drone, \
-         doc 18 cut IC2's Dray, doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, doc 32 cut CF.6c's escort line tank, doc 35 cut SF.R12's Republic Corvette and doc 41 cut RS.1's tender"
+         doc 18 cut IC2's Dray, doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, doc 32 cut CF.6c's escort line tank, doc 35 cut SF.R12's Republic Corvette, doc 41 cut RS.1's tender \n         and cut RS.6a's crawler and lifter"
     );
     let fieldable: Vec<(&mush_core::CanonicalId, &tacsim::definitions::UnitSpec)> = catalog
         .specs
@@ -1128,14 +1128,15 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     assert_eq!(
         fielded.len(),
         // Doc 35 cut SF.R12: and the Republic Corvette (was `+ 27`); doc 41 cut RS.1: and the
-        // tender, last.
-        stock.len() + 29,
-        "nine shipped packs and twenty-nine extension files: doc 16 section 9's ten, \
+        // tender; cut RS.6a: and Tycho's crawler and lifter, last.
+        stock.len() + 31,
+        "nine shipped packs and thirty-one extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis, 16b cut AE.3's drone, doc 18 cut IC2's Dray and \
          doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, \
          doc 30 cut WG.5's winter_valley arena, doc 30 Q-30-7's mars_canyon arena, doc 32 cut \
-         CF.6c's escort line tank, doc 35 cut SF.R12's Republic Corvette and doc 41 cut RS.1's tender"
+         CF.6c's escort line tank, doc 35 cut SF.R12's Republic Corvette, doc 41 cut RS.1's tender \
+         and cut RS.6a's crawler and lifter"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -2530,7 +2531,7 @@ fn m3_every_shipped_chassis_binds_its_core() {
     // Doc 18 cut IC2: twelve with the Dray, which fits no core (Class 0, the
     // drive ROM) — was eleven. Doc 20 cut SM.3a: fourteen with the terrain vehicle
     // and the Dray-P, neither fitting a core (Class 0, as the Dray).
-    let expected: [(&str, Fitted<'_>); 19] = [
+    let expected: [(&str, Fitted<'_>); 21] = [
         (content::LINE_TANK, line),
         (content::LINE_TANK_LASER, line),
         (content::LINE_TANK_THERMAL, line),
@@ -2570,6 +2571,9 @@ fn m3_every_shipped_chassis_binds_its_core() {
         (content::CORVETTE, None),
         // Doc 41 cut RS.1: the tender, no core (Class 0, as the prospector).
         (content::TV_TENDER, None),
+        // Doc 41 cut RS.6a: Tycho's crawler and lifter, no core (Class 0).
+        (content::TYCHO_CRAWLER, None),
+        (content::TYCHO_LIFTER, None),
     ];
     assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
     for (entry, fitted) in expected {
@@ -2788,7 +2792,7 @@ const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4).
-const GOODS_DIGEST: &str = "dfffd34f928149cc81a630203d90030d9ab1926e144c68e133c9ef9a001e7a1d";
+const GOODS_DIGEST: &str = "c8775b613c6d8f92545134dd7420c1d2ea5fc2f14751f55c5cb399646c181b5b";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3150,8 +3154,8 @@ fn ic2_the_dray_is_a_hauler_and_binds_class_zero() {
     // Dray (was `+ 1`, the Dray only).
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 8,
-        "the Dray, terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, Republic Corvette and tender"
+        before.specs.len() + 10,
+        "the Dray, terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, Republic Corvette, tender, crawler and lifter"
     );
     for (id, reference) in &before.references {
         assert_eq!(
@@ -3766,6 +3770,30 @@ fn ic2_the_goods_table_is_pinned() {
                 1
             ),
             (
+                "tacsim.hull_kit.tycho_crawler",
+                "Tycho crawler hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.tycho_lifter",
+                "Tycho lifter hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
                 "tacsim.hull_kit.dray",
                 "Dray hull kit",
                 None,
@@ -4298,8 +4326,8 @@ fn sm3a_nothing_fielded_before_the_vehicles_moved() {
     let before = Catalog::build_game(&operator, tacsim::NS).expect("the earlier content binds");
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 7,
-        "the terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, corvette and tender"
+        before.specs.len() + 9,
+        "the terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, corvette, tender, crawler and lifter"
     );
     for (id, reference) in &before.references {
         assert_eq!(

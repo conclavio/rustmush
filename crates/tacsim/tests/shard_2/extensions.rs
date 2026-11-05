@@ -8630,8 +8630,8 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     assert_eq!(
         fielded.specs.len(),
         // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
-        // RS.1: nineteen with the tender.
-        19,
+        // RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's crawler and lifter.
+        21,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
          and Dray-P, plus R7's relay station and R9b's Halcyon"
@@ -10157,8 +10157,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     assert_eq!(
         fielded.specs.len(),
         // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
-        // RS.1: nineteen with the tender.
-        19,
+        // RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's crawler and lifter.
+        21,
         "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
          IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -10984,8 +10984,8 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     assert_eq!(
         fielded.specs.len(),
         // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
-        // RS.1: nineteen with the tender.
-        19,
+        // RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's crawler and lifter.
+        21,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -11055,8 +11055,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     haulers.sort();
     assert_eq!(
         haulers,
-        vec!["dray", "dray_p"],
-        "the Dray and the Dray-P are the haulers"
+        // Doc 41 cut RS.6a: and Tycho's lifter.
+        vec!["dray", "dray_p", "tycho_lifter"],
+        "the Dray, the Dray-P and the lifter are the haulers"
     );
     assert_eq!(
         classes
@@ -11065,8 +11066,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
             .unwrap_or_default(),
         // Doc 32 cut CF.6c: and the escort line tank, leased as a rig; doc 41 cut RS.1: and
         // the tender.
-        vec!["tv_escort", "tv_prospector", "tv_tender"],
-        "the terrain vehicle, the escort line tank and the tender are the vehicles"
+        // Doc 41 cut RS.6a: and Tycho's crawler.
+        vec!["tv_escort", "tv_prospector", "tv_tender", "tycho_crawler"],
+        "the terrain vehicle, the escort line tank, the tender and the crawler are the vehicles"
     );
     let dray_key = CanonicalId::new(content::DRAY).expect("a canonical id");
     let dray_p_key = CanonicalId::new(content::DRAY_P).expect("a canonical id");
@@ -11101,9 +11103,11 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
                 || *id == capital_key
                 || *id == escort_key
                 || *id == corvette_key
-                || id.as_str() == content::TV_TENDER,
+                || id.as_str() == content::TV_TENDER
+                || id.as_str() == content::TYCHO_CRAWLER
+                || id.as_str() == content::TYCHO_LIFTER,
             "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle, the relay station, Halcyon, \
-             the escort line tank, the corvette and the tender write a class word"
+             the escort line tank, the corvette, the tender, the crawler and the lifter write a class word"
         );
     }
 
