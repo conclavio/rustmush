@@ -1,0 +1,33 @@
+{
+  "window_start_utc": "2026-11-02T15:18:26Z",
+  "window_end_utc": "2026-11-05T15:18:26Z",
+  "timezone": "America/Los_Angeles",
+  "reviewed_head": "57f4c7e66",
+  "base": "0f08e3d2dfbe8eed7e03f86977c319c6304783c9",
+  "timestamp_selected_commits": 761,
+  "mainline_merges": 160,
+  "changed_files": 870,
+  "insertions": 144343,
+  "deletions": 16735,
+  "design_docs": [
+    38,
+    23,
+    39,
+    40,
+    41,
+    42
+  ],
+  "findings": {
+    "total": 12,
+    "P1": 5,
+    "P2": 7,
+    "regression_probe_reproductions": 8,
+    "source_trace_only": 4,
+    "previously_documented": 1
+  },
+  "validation": {
+    "existing_crew_tests_passed": 11,
+    "full_workspace_suite_run": false,
+    "production_fixes_applied": false
+  }
+}

@@ -1,0 +1,26 @@
+   Compiling tacsim v0.1.0 (C:\Users\faeni\codexprojs\rustmush\.worktrees\review-72h-20261105\crates\tacsim)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\C:\Users\faeni\codexprojs\rustmush\target\review-72h\debug\incremental\domain_economy-0vsva4uyv6mwb\s-hnvr6vpw0v-0g2saqe-working`
+
+warning: `tacsim` (test "domain_economy") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.75s
+     Running tests\domain_economy.rs (C:\Users\faeni\codexprojs\rustmush\target\review-72h\debug\deps\domain_economy-06cc7895c25a6e93.exe)
+
+running 1 test
+test port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact ... FAILED
+
+failures:
+
+---- port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact stdout ----
+
+thread 'port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact' (65860) panicked at crates\tacsim\tests\domain_economy\port_security_rs7.rs:308:5:
+the next player's command erased the unpaid contract's only delivery fact: Contract #5 is active: every party has accepted.
+Retrieval job #548 posted for OWP-TV-01: 5173.00cr escrowed, paid on delivery. +salvage/jobs lists it.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 566 filtered out; finished in 5.59s
+
+error: test failed, to rerun pass `-p tacsim --test domain_economy`
