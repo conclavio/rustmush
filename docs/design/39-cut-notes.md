@@ -940,6 +940,80 @@ rest runner speed on unchanged tests.
   (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
   the owner.
 
+## IN.11 — the matter story and the adversarial set (Q-39-8, Q-38-29)
+
+**The census's shape** (the owner's ruling, relayed 2026-11-04: option (a)). A world's seeded stock carries no lineage once
+its lots are pooled, so §4.10's rule is held **across a window**: `@industry/census` (staff, read-only;
+`tacsim::port::census`) prints one `tacsim.matter_census` line of absolute kilograms and a story holds the difference of
+two. RS.9 reads the same line.
+
+- **Sources**: the opened deposits' reserves (`opened`; mining is a transfer out of a deposit's vault, so `mined` =
+  `opened` − `in_ground`) and the stock clerk's mints (`stock`, the `tacsim.port_stock` receipts).
+- **Holdings**: pools and lots of the chain's goods outside the ground (the ores, the refined goods and the parts;
+  volatiles, propellant, provisions and munitions are outside the chain), the hulls' bales and the shop bales.
+- **Sinks**: completed work orders' inputs less outputs (`worked`; at a yard the hull's bulk, a kit being massless),
+  the mills' ore less product (`milled`), and the parts commissions consumed (`built`).
+- `balance` = sources − holdings − sinks. One `tacsim.matter_build order= inputs= hull= waste=` line a commission
+  holds §4.9's "inputs = the hull + the waste" (inputs: the bill's bulk, its parts and its core).
+
+**Measured.** On a settled shipped world the balance is **0** — every stock mint is a receipt and every pool is
+counted. Across the IN.10 Trust order (purchases, the 12-day build, the commission) it holds at −30,000 kg on both
+sides: the staff-seeded hauler plant, a mint the census cannot see, which is the point of a window. Occator's
+yard drones mine through the window (mined 525 t → 878 t) and the census conserves it.
+
+**The census's terms, as built** add `fitted` (the bay's fitted parts: a fit consumes the lot and keeps its provenance;
+a plant's good by Q-39-35's spelling, the slot index not holding plant rows) and count only the chain's mills (Occator's
+ice mill is outside it). `@industry/census <good>` adds one `tacsim.matter_lot` line a lot of that good (its vault, the
+vault's name and owner): a staff diagnostic.
+
+**The lane** (the owner's choices of 2026-11-05: a strategic-ore ask and part bids). **Lane v32 / relay v23** (claimed as v30; the player-response floor took v31 first, so re-signed on it):
+- Freeport Works stocks 200 t of strategic ore and asks 800.00cr at Ceres (above the 600 and 700 bids), so a sight is made
+  from bought matter. The programme's strategic-ore reference moves from its fixed 300.00cr to that ask.
+- Stickney Yards bids for 4 light plants at 4,000.00cr.
+- `strip_strategic_ask` heads the strip chain (`strip_licence_grace` calls it first) and rebuilds the published v31. Pins:
+  `LANE_DIGEST` `aa5d90fb…`, the relay `727c74f4…`, eighteen stock receipts, 66 readiness lines, the Exchange board.
+
+**A part lot sold into a bid** (the engine had none):
+- mush-inventory: `relocate_marked`, one lot moved under an applied `inventory.transferred` marker.
+- mush-market: an indivisible good is held as its free lots (`sale_lots`), a sale into a bid freezes one lot on the
+  quote (`ONE_LOT_A_SALE` refuses more than one), and the Deliver prepare hands that lot over (`prepare_deliver_lot`),
+  refusing a held lot in its own transaction. Which goods sell as lots is the inventory's indivisible table **or the
+  presence gate's** (`VenueGate::indivisible`, tacsim's answers `is_part`): on the live server the market's copy of
+  the inventory families read no part as indivisible (the bot story's finding), and the gate is the seam that is known
+  to be composed there. An unreadable hold or lot family is never read as no lot.
+- The burn's prepare counts a part's lots as the planner does (`burn::pool_of`), so a hold with a part aboard burns: it
+  refused "the hold changed since the passage was planned".
+- `+bay/fit <hull>=<slot> <part>` takes a part's good in place of a lot id (its first free lot in the carrier's hold):
+  a player sees the part, not its lot id.
+
+**Built** (`domain_economy/in11_matter.rs`, in-process):
+- `in11_probe_the_census_holds_still_on_a_settled_world`.
+- `in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter` — §4.9's port half, once: concentrate, carbon and
+  strategic ore at Ceres; Kasei refines at Stickney; the works make fittings, five light plants and ten sights; the yard
+  builds a prospector from them; a plant sells into the Yards' bid; the prospector's plant destroyed (staff), she is
+  stowed in the Dray-P, berthed from it and a plant fitted from the hold. The census holds at −32,890 kg either side
+  (the seeded boards and the boot builds of Tycho's house), every build reads inputs = hull + waste.
+- `in11_a_light_plant_lot_sells_into_the_yards_bid` — one plant sails aboard, a second is seeded at Stickney, one sold,
+  the lot in the Yards' stores, `=2` refused, the census unchanged.
+- `in11_a_restart_between_consumption_and_title_finishes_the_hull_once`; `in11_two_orders_for_one_bale_draw_it_once`.
+
+**The bot's story** (`mush-bot/tests/mining_cohort/in11_matter.rs`; `in11_the_bot_mines_and_builds_a_prospector_from_`
+`ahuna` and `_urvara`, `#[ignore]`d, by-hand tier): the mining loop to the hold sold at the Exchange, then the whole chain
+above typed over SSH — boards bought at Aitken on the Luna–Deimos way out (IN.5's route round Kirkwood), the walk to the
+Service Counter, God's `@unit/damage` for the plant, the bay's quote, stow, berth and fit by the bot. God types
+`@industry/census` when the houses' boot builds have settled and at the end; the balance does not move. The bot's
+lines: `+yard`, `+market/sell <n>=1`, `customs`/`service`, `+bay <mark|#n>`, `+bay/quote|berth #n`, `+bay/stow #n=<hull>`,
+`+bay/fit #n=<slot> <part>`; readers `yard_booked`, `commissioned`, `bay_ref`. About 29 minutes a site locally.
+
+**Owed / flagged.**
+- **A competing reservation at the deadline**: as built, every order's materials are its own escrow's, so two
+  reservations never compete for one pool, and an overdue reservation is the sweep's; the row's story needs the owner's
+  reading of what competes.
+- **Repairs and remains scrap in the census**: a repair consumes bale kilograms into the hull and nothing durable sums
+  them, and remains scrap's sub-tonne is undeclared, so a window with either does not balance — the case for **the
+  durable matter ledger (option (b))**, named as a future cut.
+- The market's inventory cell on the live server reads no part as indivisible; the gate covers the sale, and why the
+  cell differs (a second registration of the `OnceLock` at boot, likely) is a follow-up.
 
 ## IN.9b — the class templates (Q-39-14, Q-39-20, Q-39-35)
 

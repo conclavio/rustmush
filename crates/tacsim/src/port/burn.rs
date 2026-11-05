@@ -316,12 +316,31 @@ fn pool_of(
     vault: VaultId,
     good: &CanonicalId,
 ) -> Result<(u64, u64), PlanError> {
-    inventory
+    let unreadable = |error: String| PlanError::Unreadable {
+        what: format!("the hold's {good} ({error})"),
+    };
+    let (quantity, available) = inventory
         .pool(txn, EndpointRef(vault), good)
         .map(|pool| pool.map_or((0, 0), |pool| (pool.quantity, pool.available)))
-        .map_err(|error| PlanError::Unreadable {
-            what: format!("the hold's {good} ({error})"),
-        })
+        .map_err(|error| unreadable(error.to_string()))?;
+    // Doc 39 cut IN.11: an indivisible good (a part) is held as lots, which the planner's
+    // reading counts by the endpoint's lot tally (IN.1); the prepare counts them the same way, or
+    // a hold with a part aboard could never burn ("the hold changed since the passage was
+    // planned").
+    if !inventory.is_indivisible(good) {
+        return Ok((quantity, available));
+    }
+    let key = mush_inventory::pool_key(EndpointRef(vault), good)
+        .map_err(|error| unreadable(error.to_string()))?;
+    let lots = txn
+        .get(&inventory.lot_tally, &key)
+        .map_err(|error| unreadable(error.to_string()))?
+        .copied()
+        .unwrap_or(0);
+    Ok((
+        quantity.saturating_add(lots),
+        available.saturating_add(lots),
+    ))
 }
 
 fn rejected(message: &'static str) -> mush_core::ActionError {

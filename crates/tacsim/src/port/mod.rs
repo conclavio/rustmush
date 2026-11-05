@@ -140,6 +140,8 @@ pub mod buyout;
 pub mod capacity;
 /// Doc 19 cut A.3: `+chart` — the sky from where you stand, the passages now and
 /// the window over the next IC year (doc 19 §5).
+/// Doc 39 cut IN.11: `@industry/census`, the matter census.
+pub mod census;
 pub mod chart;
 /// Doc 19 cut A.3b: the `sky.chart` panel — one frame, three renders (doc 19 §5).
 pub mod chart_panel;

@@ -28,6 +28,8 @@ mod mine;
 mod fr7_round;
 #[path = "../../tacsim/tests/support/field/grounds_rig.rs"]
 mod grounds_rig;
+#[path = "mining_cohort/in11_matter.rs"]
+mod in11_matter;
 /// The one name `grounds_rig` reads from tacsim's `driving_rig`: Ahuna Flank's port entry.
 mod driving_rig {
     pub(crate) const AHUNA: &str = "ahuna_port";
@@ -578,6 +580,43 @@ async fn in5_the_bot_mines_refines_and_sells_fittings_from_urvara() {
     )
     .await
     .expect("the Urvara production story finishes inside an hour");
+}
+
+/// **Doc 39 cut IN.11: the matter story, the bot over SSH at 256** (Ahuna Flank): the mining
+/// loop, then ore to parts to a prospector, a part sold into a bid and another fitted, the census
+/// unchanged across the whole story ([`in11_matter`]). `#[ignore]`d, run by name (`in11_`), the
+/// dispatch / by-hand tier (doc 43 TS.2).
+///
+/// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored in11_ --nocapture --test-threads 1`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 39 cut IN.11's matter story at 256: a mining loop, three passages, the works, the yard and the bay; run by name"]
+async fn in11_the_bot_mines_and_builds_a_prospector_from_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        in11_matter::matter_story(Miner {
+            account: "in11ahuna",
+            character: "Assay",
+            site: Site::Ahuna,
+        }),
+    )
+    .await
+    .expect("the Ahuna matter story finishes inside ninety minutes");
+}
+
+/// The same story with the ground half at Urvara Reach (512). `#[ignore]`d, run by name (`in11_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 39 cut IN.11's matter story at 512: a mining loop, three passages, the works, the yard and the bay; run by name"]
+async fn in11_the_bot_mines_and_builds_a_prospector_from_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        in11_matter::matter_story(Miner {
+            account: "in11urvara",
+            character: "Crucible",
+            site: Site::Urvara,
+        }),
+    )
+    .await
+    .expect("the Urvara matter story finishes inside ninety minutes");
 }
 
 /// The production half's world rate: an IC hour a real second.

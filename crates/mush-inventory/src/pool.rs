@@ -792,6 +792,51 @@ impl InventoryFamilies {
         Ok(moved)
     }
 
+    /// **One lot relocated under an applied marker** (doc 39 cut IN.11): [`Self::relocate`] of
+    /// `lot` from `from` to `to`, and one `inventory.transferred` marker of its commodity and
+    /// quantity under `marker`, retained in the source's ring — [`Self::transfer_marked`]'s
+    /// shape for an indivisible good, which moves as its lot and never as a pool (a part lot
+    /// sold into a standing bid).
+    ///
+    /// # Errors
+    /// [`Self::transfer_marked`]'s marker refusals and [`Self::relocate`]'s; **nothing is
+    /// written on an error**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn relocate_marked(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        lot: LotId,
+        from: EndpointRef,
+        to: EndpointRef,
+        marker: &smol_str::SmolStr,
+        actor: mush_core::ObjId,
+        now: &ClockStamp,
+        wall: i64,
+    ) -> Result<Lot, InventoryError> {
+        if from == to {
+            return Err(InventoryError::SameEndpoint);
+        }
+        if !is_marker_id(marker) {
+            return Err(InventoryError::Identity);
+        }
+        if txn.get(&self.applied, marker)?.is_some() {
+            return Err(InventoryError::AlreadyExists);
+        }
+        let moved = self.relocate(txn, lot, from, to)?;
+        let record = crate::record::AppliedMarker::new(
+            crate::record::FACT_TRANSFERRED,
+            Some(from),
+            Some(to),
+            moved.commodity().clone(),
+            moved.quantity(),
+            actor,
+            now.at,
+        )?;
+        txn.insert(&self.applied, marker, record)?;
+        self.retain_marker(txn, from, marker, wall)?;
+        Ok(moved)
+    }
+
     /// ---- Doc 20 §7.1, cut SM.8 — several marked moves in one bundle ----
     ///
     /// [`Self::transfer_many`] plus one `inventory.transferred` applied marker a
