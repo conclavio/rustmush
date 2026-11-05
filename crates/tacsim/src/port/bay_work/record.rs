@@ -187,6 +187,17 @@ pub struct BayHull {
     /// count. Omitted while `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_for: Option<mush_org::PrincipalId>,
+    /// **The bale kilograms repairs have consumed into this hull, ever** (the owner's IN.11
+    /// census ruling, 2026-11-05): each landed order's draw (the bale before, the tonnes debited
+    /// into it, less the bale after), so `@industry/census` sums repairs as a sink. Omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero_kg")]
+    pub repaired_kg: u64,
+}
+
+/// Serde's skip for a zero kilogram count.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip signature
+const fn is_zero_kg(kg: &u64) -> bool {
+    *kg == 0
 }
 
 /// **A hull's bale** (doc 39 §4.10, Q-39-26): the sub-tonne remainder of the whole tonnes a
@@ -218,6 +229,22 @@ pub struct BaleDraw {
 }
 
 impl Bale {
+    /// **The kilograms a draw consumed** (the census's `repaired` term): the bale `before` (none
+    /// for an unopened one), the whole tonnes debited into it, less the bale `after`.
+    #[must_use]
+    pub fn consumed(before: Option<Bale>, (alloys_t, fittings_t): (u64, u64), after: Bale) -> u64 {
+        let before = before.unwrap_or_default();
+        let line = |had: u64, t: u64, left: u64| {
+            had.saturating_add(t.saturating_mul(KG_PER_T))
+                .saturating_sub(left)
+        };
+        line(before.alloys_kg, alloys_t, after.alloys_kg).saturating_add(line(
+            before.fittings_kg,
+            fittings_t,
+            after.fittings_kg,
+        ))
+    }
+
     /// **The draw `need` makes on `bale`** (doc 39 §4.10): `None` when the work needs no
     /// kilograms. An unopened bale opens with one tonne of each good; then each line takes
     /// whole tonnes until it covers its kilograms, which the work consumes. Up for the hold,
@@ -321,6 +348,7 @@ impl BayHull {
             claim_lots: Vec::new(),
             bale: None,
             held_for: None,
+            repaired_kg: 0,
         }
     }
 

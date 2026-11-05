@@ -8,18 +8,22 @@
 //! acts, `balance` does not move.
 //!
 //! - **Sources**: the opened deposits' reserves (`opened`; mining is a transfer out of a deposit's
-//!   vault, so `mined` = `opened` − `in_ground`) and the stock clerk's mints (`stock`, the
-//!   `tacsim.port_stock` receipts).
+//!   vault, so `mined` = `opened` − `in_ground`), the stock clerk's mints (`stock`, the
+//!   `tacsim.port_stock` receipts), and the alloys remains scrap mints on a site (`scrapped`:
+//!   the hull's mass was never in the census; the sub-tonne under its whole tonnes is §4.6's
+//!   declared loss).
 //! - **Holdings**: every pool and lot of a chain good outside the deposits (`pools`, `lots`), the
 //!   hulls' opened bales and the workshops' shop bales (`bales`).
 //! - **Sinks and declared losses**: every completed work order's inputs less its outputs
 //!   (`worked`: the recipes' losses, and at a yard the hull's bulk, a kit having no mass), the
 //!   mills' ore less their product (`milled`), and the parts a commission consumed into a hull
-//!   (`built`), and the parts the bay fitted into hulls (`fitted`: a fit consumes the lot and
-//!   keeps its provenance).
+//!   (`built`), the parts the bay fitted into hulls (`fitted`: a fit consumes the lot and
+//!   keeps its provenance), and the bale kilograms repairs consumed into hulls (`repaired`: a
+//!   workshop's or carrier bay's on the hull's bay record, a tender's on its site's record).
 //!
-//! `balance` = `stock` + `opened` − `in_ground` − `pools` − `lots` − `bales` − `worked` −
-//! `milled` − `built`. Each commission also prints one `tacsim.matter_build` line: the inputs
+//! `balance` = `stock` + `opened` + `scrapped` − `in_ground` − `pools` − `lots` − `bales` −
+//! `worked` − `milled` − `built` − `fitted` − `repaired` (the owner's IN.11 rulings of
+//! 2026-11-05 added the last and `scrapped`; the durable matter ledger stays parked). Each commission also prints one `tacsim.matter_build` line: the inputs
 //! (the bill's bulk, its parts and its core) against the hull's dry mass and the bill's declared
 //! waste, which holds `inputs = hull + waste` at every build. The chain's goods are the ores,
 //! the refined goods and the parts; volatiles, propellant, provisions and munitions are not
@@ -75,6 +79,10 @@ pub struct MatterCensus {
     pub built: u64,
     /// The parts the bay fitted into hulls.
     pub fitted: u64,
+    /// The bale kilograms repairs consumed into hulls.
+    pub repaired: u64,
+    /// The alloys remains scrap minted on sites.
+    pub scrapped: u64,
     /// One line a commission: `(order, inputs, hull, waste)`.
     pub builds: Vec<(u64, u64, u64, u64)>,
 }
@@ -89,7 +97,7 @@ impl MatterCensus {
     /// Sources less holdings and sinks; constant over a window with no other source or sink.
     #[must_use]
     pub fn balance(&self) -> i128 {
-        i128::from(self.stock) + i128::from(self.opened)
+        i128::from(self.stock) + i128::from(self.opened) + i128::from(self.scrapped)
             - i128::from(self.in_ground)
             - i128::from(self.pools)
             - i128::from(self.lots)
@@ -98,15 +106,16 @@ impl MatterCensus {
             - i128::from(self.milled)
             - i128::from(self.built)
             - i128::from(self.fitted)
+            - i128::from(self.repaired)
     }
 
     /// **The census line**: `tacsim.matter_census mined= opened= in_ground= stock= pools= lots=
-    /// bales= worked= milled= built= fitted= balance=`, kilograms.
+    /// bales= worked= milled= built= fitted= repaired= scrapped= balance=`, kilograms.
     #[must_use]
     pub fn line(&self) -> String {
         format!(
             "{CENSUS_LINE} mined={} opened={} in_ground={} stock={} pools={} lots={} bales={} \
-             worked={} milled={} built={} fitted={} balance={}",
+             worked={} milled={} built={} fitted={} repaired={} scrapped={} balance={}",
             self.mined(),
             self.opened,
             self.in_ground,
@@ -118,6 +127,8 @@ impl MatterCensus {
             self.milled,
             self.built,
             self.fitted,
+            self.repaired,
+            self.scrapped,
             self.balance()
         )
     }
@@ -242,15 +253,21 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
         }
     });
     for state in store.bay_hulls.values() {
-        if let crate::port::bay_work::BayHullState::Present(row) = state
-            && let Some(bale) = row.bale.as_ref()
-        {
-            out.bales = out
-                .bales
-                .saturating_add(bale.alloys_kg)
-                .saturating_add(bale.fittings_kg);
+        if let crate::port::bay_work::BayHullState::Present(row) = state {
+            out.repaired = out.repaired.saturating_add(row.repaired_kg);
+            if let Some(bale) = row.bale.as_ref() {
+                out.bales = out
+                    .bales
+                    .saturating_add(bale.alloys_kg)
+                    .saturating_add(bale.fittings_kg);
+            }
         }
     }
+    // The sites' matter: the tenders' repairs (a sink) and remains scrap's mints (a source).
+    scan(ctx, &handles.families.sites, |site| {
+        out.repaired = out.repaired.saturating_add(site.matter.repaired_kg);
+        out.scrapped = out.scrapped.saturating_add(site.matter.scrapped_kg);
+    });
     for bale in store.shop_bales.values().flatten() {
         out.bales = out
             .bales

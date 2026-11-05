@@ -160,9 +160,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             switches: ["census"].iter().copied().map(SmolStr::new).collect(),
             help: "@industry/census                    (staff) the matter census, kilograms: \
-                   the chain's sources (opened deposits, the stock clerk's mints), its holdings \
-                   (pools, lots, bales) and its sinks (work orders' losses, mills', the parts \
-                   built into hulls and fitted by the bay) on one tacsim.matter_census line, \
+                   the chain's sources (opened deposits, the stock clerk's mints, remains \
+                   scrap's alloys), its holdings (pools, lots, bales) and its sinks (work \
+                   orders' losses, mills', the parts built into hulls and fitted by the bay, the \
+                   bale kilograms repairs consumed) on one tacsim.matter_census line, \
                    then one tacsim.matter_build line a commission. Its balance holds still \
                    across any window in which nothing else makes or destroys matter.\n\
                    @industry/census <good>             (staff) and one tacsim.matter_lot line a \

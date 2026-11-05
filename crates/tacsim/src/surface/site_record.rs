@@ -507,6 +507,33 @@ pub struct SiteRecord {
     /// nothing launched onto is byte-identical to RS.3's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<PendingLaunch>,
+    /// **The matter this ground's acts moved in and out of the census** (the owner's IN.11
+    /// census ruling, 2026-11-05): the bale kilograms the tenders' repairs consumed into hulls
+    /// and the alloys remains scrap minted, kept so `@industry/census` balances a window that
+    /// holds either. Omitted while nothing did, so a record is byte-identical to FR.3's.
+    #[serde(default, skip_serializing_if = "SiteMatter::is_fresh")]
+    pub matter: SiteMatter,
+}
+
+/// **A site's matter terms** ([`SiteRecord::matter`]), kilograms, ever.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteMatter {
+    /// Bale kilograms a tender's repairs consumed into hulls here (a sink).
+    #[serde(default)]
+    pub repaired_kg: u64,
+    /// Alloys a remains scrap minted into a hold here (a source: the hull's mass was never
+    /// in the census; the sub-tonne under the whole tonnes is the declared loss, §4.6).
+    #[serde(default)]
+    pub scrapped_kg: u64,
+}
+
+impl SiteMatter {
+    /// Whether nothing moved (serde's skip).
+    #[must_use]
+    pub const fn is_fresh(&self) -> bool {
+        self.repaired_kg == 0 && self.scrapped_kg == 0
+    }
 }
 
 /// **One launch accepted onto a site and not yet down** (doc 40 cut FR.3; Q-40-24): the hull,
@@ -606,6 +633,7 @@ impl SiteRecord {
             land_grants: Vec::new(),
             consent_asks: Vec::new(),
             pending: Vec::new(),
+            matter: SiteMatter::default(),
         }
     }
 
