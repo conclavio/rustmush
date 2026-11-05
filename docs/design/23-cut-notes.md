@@ -554,15 +554,22 @@ Built on `claude/d23-18-carried-memory-83dafb` off `main` `bf0b5f24` (S.4b-3 = #
   - the seed: memory, doctrine state, `think_seq`, and the first think re-keyed at its millisecond;
   - the refusals, which change nothing: another seal, memory over the cap, a pilot's hull with no row, and a row that has thought;
   - a carried drop: the ROM, and no new ledger line.
-- **`tacsim --test shard_9`, the stories** (ignored; the M8 gate stories run them). They are `d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256` (Ahuna Flank) and `…_at_512` (Urvara Reach): the S.4b-3 field story with `carry`, and these steps between its demotion and the recover:
-  - 4a. the demotion's check-in lays rig 1's mind on its open epoch's record: under the claim's seal, no drop, and `think_seq` positive and at least the field's last snapshot's;
+- **`tacsim --test domain_field`, the stories** (ignored; the M8 gate stories run them, two new rows in `m8-gate-stories`). They are `d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256` (Ahuna Flank) and `…_at_512` (Urvara Reach): the S.4b-3 field story with `carry`, and these steps between its demotion and the recover:
+  - 4a. the demotion's check-in lays rig 1's mind on its open epoch's record: under the claim's seal, no drop, and `think_seq` positive;
   - 4b. the world is handed back to the M8 world (`m8_world::Kept`) and rebooted from its store, and the record still carries the same mind;
-  - 4c. the raiders land again (`raiders::launch`) and mark rig 1, and a second field opens on the same ground and epoch. Rig 1 is admitted under its seal. The second field's first snapshot of its row has `think_seq` at least the carried one, never restarting from nought, with no drop and no fault;
-  - 4d. the raiders withdraw, the second field demotes, and its check-in carries the later mind;
+  - 4c. the raiders land again (`raiders::launch`; a raider that had not yet boarded marks from the ground) and mark rig 1, and a second field opens on the same ground and epoch. Rig 1 is admitted under its seal and flies with no drop and no fault;
+  - 4d. the raiders withdraw and the second field demotes. Its check-in carries a `think_seq` past the carried one, by at most what the second field's span allows at the Class II period (500 ms, the span read off its `match_ended` line). It is also past anything a row starting from nought could reach in that span, so the second field's row started from the carried mind;
   - 5'. the recover closes the epoch, and the record holds no `sortie`, so no memory.
 
-  RESULTS-PENDING
-- **The S.4b-3 stories** run the same script with `carry` off, and are unchanged.
+  **Both passed on conclav.dev** (by hand at `bf0b5f24` plus this branch, 24 build jobs, the two stories in parallel; 1,122 s wall): 256 in 1,072 s, 512 in 1,006 s.
+
+  | Size | Field 1 carried `think_seq` | Field 2 span | A fresh row could reach | Second check-in |
+  |---|---|---|---|---|
+  | 256 | 240 | 151.5 s | 305 | 543 |
+  | 512 | 240 | 120 s | 242 | 480 |
+
+  Each second check-in is the carried value plus the second field's own thinks. The filed mind (the governed Class II root) keeps an empty memory, `{}` (2 B), so the stories prove the record, the restart and the monotone `think_seq`; the byte-exact memory round trip is the lib test's.
+- **The S.4b-3 stories** run the same script with `carry` off. One change: before the recover, they now wait for the field's close to land on the site record. The close now also stages the rig record's carried mind, and on one run at 256 the recover was submitted before the close landed and refused ("Field 1 is being fought"). Both passed on conclav.dev with the wait: 256 in 907 s, 512 in 888 s.
 
 ### Hash pins (rule #13)
 
@@ -571,8 +578,16 @@ Built on `claude/d23-18-carried-memory-83dafb` off `main` `bf0b5f24` (S.4b-3 = #
 - `seed_carried_mind` runs only on an IC field's spawn;
 - no OOC arena calls it.
 
-HARNESS-PENDING
+The harness kind is dispatched on the PR's branch before it is marked ready.
 
 ### Cost (rule #14)
 
-COST-PENDING
+- **PR cells:** two `tacsim` lib tests (under 0.5 s together); nothing else runs in a PR cell.
+- **The stories are dispatch-only** (`m8-gate-stories`), so they add nothing to a PR cell. Each adds one M8 job of about 17–18 minutes on conclav.dev. The S.4b-3 stories' added wait costs the time the close takes to land, a few composed seconds.
+
+### Found, not fixed (for the fix thread)
+
+**A field's snapshot is refused every period with `invalid detachment authority state`.** `Arena::validate_detachment_commands` finds a `detachment_commands` row with epoch 0, or with no authority and a non-zero sequence.
+- **Where it happened:** in the D-23-18 story's second field at 256, after the reboot, 18 to 24 periods running. The 512 story's first field also held no snapshot for 300 s.
+- **What it costs:** that field cannot resume from a snapshot, and the void rule has none to demote from.
+- **Why it is not this cut's:** the seed touches no detachment state, so the fix belongs to the detachment-control thread. The stories now read the check-in, not the snapshot.
