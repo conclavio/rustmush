@@ -511,6 +511,7 @@ decisions and §8.1 what they change elsewhere.
 - **Q-43-4 Optimised dependencies.** Default: run TS.3's measurement; adopt `opt-level = 1` for all
   dependencies only if a cell's summed minutes fall by a fifth or more; every warm target dir pays one
   dependency rebuild. Alternative: leave the profile as measured on 2026-10-18.
+  **Ruled 2026-11-04 (owner):** `opt-level = 1` kept, and per-crate opt-level 2 not taken. TS.3 measured −27%; see D-43-4.
 - **Q-43-5 Resharding.** Default: keep resharding by hand until TS.12's measurement says the partition's link
   cost is lower; the reshard recipe is scripted and documented. Alternative: adopt domain binaries and hash
   partitioning now, accepting a few minutes of link per cell.
@@ -564,7 +565,8 @@ decisions and §8.1 what they change elsewhere.
   of its own if it sets the wall.
 - **D-43-14 fixes the concurrency expression.** `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`;
   pushes to main, the schedule and dispatches keep every run.
-- **D-43-4 and D-43-5 wait on measurements** (TS.3, TS.12); nothing changes until the figures are in.
+- **D-43-4 is ruled** (2026-11-04: `opt-level = 1` kept, TS.3 merged). **D-43-5 waits on the owner** with TS.12's figures in
+  (the partition refreshed on 2026-11-05: about +31 s a cell, wall and balance no worse than main).
 - **D-43-12 keeps the house rule**: TS.3b's audit may name a step that boots a world to test one refusal, and
   the answer is the clock seam or the field tempo, not a unit test in its place.
 
@@ -579,6 +581,14 @@ Ruled by the owner on 2026-11-03.
   change, no secret.
 - **D-43-4** Optimised dependencies are measured first (TS.3); `opt-level = 1` for all dependencies is adopted
   only if a cell's summed minutes fall by a fifth or more.
+  **Ruled 2026-11-04 (owner): keep `opt-level = 1` for all dependencies; per-crate opt-level 2 is not taken.**
+  "yes lets keep opt-level 1, i agree with the findings that per-crate opt-level 2 isnt worth it." TS.3's figures
+  (PR #419, merged; the cut note has the tables):
+  - **Hosted CI:** summed test minutes fell 27% (two runs against main's last three; 11 of 18 cells by a fifth
+    or more).
+  - **conclav.dev, tacsim's whole sweep:** −26%, every binary −20% to −36%, with main against itself at ±0%.
+  - **Cold build of tacsim's tests:** 190 s → 198 s.
+  - **opt-level 2 for the seven hottest crates:** −21% on the same host, worse than level 1.
 - **D-43-5** Resharding stays by hand until TS.12's measurement shows the partition's link cost is lower.
 - **D-43-6 (amended)** The timing baseline is re-blessed on conclav.dev, now, by TS.21, with a record; not on
   conclav.io and not after the redeploy. The cost lane's timing gate follows (§8.1).
