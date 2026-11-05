@@ -1,12 +1,13 @@
 {
-  "schema": 4,
-  "brief": "Doc 32 Q-CF-44, Q-CF-47: fixture-seeded opposing forces, authored as content. A raider is a party of armed hulls one NPC leader stands behind, and the fixture carrier they launch from, seeded on a named frontier site by staff (@field/raiders <id>): the carrier on the ground at its cell, the hulls aboard. Schema 3 (doc 32 cut S.1): the carrier's cell and its ramp's are offsets in 10 m cells from the site's pad, east and north. @field/raiders/launch <id> puts the hulls on the ground beside the carrier's ramp; @field/raiders/withdraw <id> orders them home up it. The hulls fly the kernel's doctrine (each hull's ROM seal, Standard Doctrine) and the leader holds a standing Hostile mark on every other party in any field it is admitted to. Schema 4 (doc 36 cut GC.11): each raider names the organization it flies for, registered in the faction registry with its leader as principal at the seed, and may carry the raid director's schedule (director: presence_flights, the fewest flights out on the site's ground, carriers on their pads not counted; ore_kg, the fewest kilograms of ore aboard the rigs there; cooldown_ic_s, IC seconds from one landing to the next; threat, the most hulls one raid puts down). The director runs only under [tacsim.field].raid_director; every number is provisional. No patrol, no respawn: a seeded raider stays until it is destroyed, seeding it again is refused while any of its hulls stands, and a raider whose carrier is a wreck is never sent again.",
+  "schema": 5,
+  "brief": "Doc 32 Q-CF-44, Q-CF-47: fixture-seeded opposing forces, authored as content. A raider is a party of armed hulls one NPC leader stands behind, and the fixture carrier they launch from, seeded on a named frontier site by staff (@field/raiders <id>): the carrier on the ground at its cell, the hulls aboard. Schema 3 (doc 32 cut S.1): the carrier's cell and its ramp's are offsets in 10 m cells from the site's pad, east and north. @field/raiders/launch <id> puts the hulls on the ground beside the carrier's ramp; @field/raiders/withdraw <id> orders them home up it. The hulls fly the kernel's doctrine (each hull's ROM seal, Standard Doctrine) and the leader holds a standing Hostile mark on every other party in any field it is admitted to. Schema 4 (doc 36 cut GC.11): each raider names the organization it flies for, registered in the faction registry with its leader as principal at the seed, and may carry the raid director's schedule (director: presence_flights, the fewest flights out on the site's ground, carriers on their pads not counted; ore_kg, the fewest kilograms of ore aboard the rigs there; cooldown_ic_s, IC seconds from one landing to the next; threat, the most hulls one raid puts down). The director runs only under [tacsim.field].raid_director; every number is provisional. No patrol, no respawn: a seeded raider stays until it is destroyed, seeding it again is refused while any of its hulls stands, and a raider whose carrier is a wreck is never sent again. Schema 5 (doc 42b cut SU.1): the seed seats one NPC crew member in each armed hull (never the carrier), named by the unit's optional crew, else \"<hull> crew\", and writes their crew record with a resolve per mille (0 to 1,000; 1,000 never yields): the unit's optional resolve_permille, else the raider's, else 500. Every value is provisional.",
   "raiders": [
     {
       "id": "tacsim.raider.ahuna_skulks",
       "label": "Skulk raiders",
       "leader": "Varga Teodor",
       "organization": "Skulk Syndicate",
+      "resolve_permille": 400,
       "site": "ahuna_port",
       "carrier": { "unit": "tacsim.unit.dray", "name": "Skulk Barge", "cell": [28, -2], "heading_mdeg": 90000, "ramp": [31, -2] },
       "units": [
@@ -20,6 +21,7 @@
       "label": "Reach raiders",
       "leader": "Oda Marrin",
       "organization": "Reach Reavers",
+      "resolve_permille": 750,
       "site": "urvara_port",
       "carrier": { "unit": "tacsim.unit.dray", "name": "Reach Barge", "cell": [40, 20], "heading_mdeg": 270000, "ramp": [43, 20] },
       "units": [

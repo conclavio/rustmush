@@ -283,7 +283,8 @@ pub enum Shown {
 /// the only view of arena state is the cockpit frame the arena builds per pilot,
 /// and a staffer who wants to see a running match uses `@arena/status`.
 ///
-/// * [`Shown::Unit`] — the unit is under an arena's custody. This is
+/// * [`Shown::Unit`] — the unit is under an arena's custody, or an IC hold in a fixed base (a
+///   hangar claim hides nothing: doc 38a F-04). This is
 ///   [`is_deployed`] read as a *visibility* question rather than as an admission
 ///   one; the two are the same test and deliberately not the same function name,
 ///   because the sentences they produce are different ([`UnitDeployed`] names the
@@ -299,7 +300,14 @@ pub enum Shown {
 #[must_use]
 pub fn excluded(w: &World, shown: Shown) -> bool {
     match shown {
-        Shown::Unit(unit) => is_custodied(w, unit),
+        // Doc 38a F-04: an IC hold anchored in a hangar (a licensed rig's claim, D-23-15) is no
+        // arena's custody: the hull flies on the world's surface for its whole excursion and
+        // stays listed. A hold in a fixed base hides it as a deployed unit is hidden.
+        Shown::Unit(unit) => {
+            is_deployed(w, unit)
+                || (crate::ic_exclusion::identity_of(w, unit).is_some()
+                    && crate::ic_exclusion::held_in_hangar(w, unit).is_none())
+        }
         Shown::Domain(domain) => w.module_state::<DeployedUnits>().is_some_and(|index| {
             index
                 .by_unit

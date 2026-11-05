@@ -141,7 +141,11 @@ pub(crate) const IDLE_CYCLE: u8 = u8::MAX - 2;
 /// Whether `cycle` is a start's attempts key (a queued unload, a plan's step, the idle return),
 /// never a finish's retry.
 const fn start_cycle(cycle: u8) -> bool {
-    cycle == QUEUED_CYCLE || cycle == PLAN_CYCLE || cycle == IDLE_CYCLE || cycle == CLAIM_CYCLE
+    cycle == QUEUED_CYCLE
+        || cycle == PLAN_CYCLE
+        || cycle == IDLE_CYCLE
+        || cycle == CLAIM_CYCLE
+        || cycle == CLAIM_CLOSE_CYCLE
 }
 
 /// **The tick's RAM slot** (the brief's 3.5): retry bookkeeping and once-a-boot pages only;
@@ -653,10 +657,22 @@ pub(crate) fn told_pair(last: &Outcome) -> (u32, u8) {
 /// other starts' cycles; never a finish's retries.
 pub(crate) const CLAIM_CYCLE: u8 = u8::MAX - 3;
 
+/// **The attempts key's cycle for a mind claim's Close** (doc 38a F-23.2): its own, so a Close
+/// never inherits the tries its Open spent at the same ordinal.
+pub(crate) const CLAIM_CLOSE_CYCLE: u8 = u8::MAX - 4;
+
 /// **A mind claim's attempts key** (doc 23 cut S.4b-2): `(tv, the ordinal the queued launch will
-/// take, CLAIM_CYCLE)`.
+/// take, CLAIM_CYCLE)` for the Open; **doc 38a F-23.2**: [`CLAIM_CLOSE_CYCLE`] for the Close.
+/// The cursor's move to `Closing` moves the key, so the Open's spent tries are cleared from it
+/// (an Open refused on every try paged; a Close sharing its key would page at once, and the page
+/// refuses only an Open: the Close would never be submitted). The old key falls out of the due
+/// set and the prune drops it.
 fn claim_attempt(record: &RigRecord) -> ActKey {
-    (record.tv.0, record.ordinal.saturating_add(1), CLAIM_CYCLE)
+    let cycle = match record.claim.as_deref() {
+        Some(crate::surface::excursion::ClaimCursor::Closing { .. }) => CLAIM_CLOSE_CYCLE,
+        _ => CLAIM_CYCLE,
+    };
+    (record.tv.0, record.ordinal.saturating_add(1), cycle)
 }
 
 /// **Whether `record`'s mind claim is owed a transition by the cursor alone** (the candidate's
@@ -3284,6 +3300,35 @@ fn completion_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 38a F-23.2: a claim's Close has its own attempts.** At one ordinal an opening claim
+    /// and its Close key apart, so the Open's spent tries never page the Close; both are a
+    /// start's cycles, past every run cycle.
+    #[test]
+    fn f23_2_a_claims_close_does_not_share_its_opens_attempts() {
+        use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
+        let mut record = RigRecord::fresh_unread(ObjId(7));
+        record.claim = Some(Box::new(ClaimCursor::Opening {
+            operator: ObjId(42),
+            licence: 7,
+            org: None,
+            launch_ic: 1_000,
+            tries: 0,
+        }));
+        let opening = claim_attempt(&record);
+        record.claim = Some(Box::new(ClaimCursor::Closing {
+            open: mush_core::CommitToken::from_bytes([7; 16]),
+            kind: ClaimCloseKind::PoweredDownInBase { base: ObjId(500) },
+            operator: ObjId(42),
+        }));
+        let closing = claim_attempt(&record);
+        assert_ne!(opening, closing);
+        assert_eq!((opening.0, opening.1), (closing.0, closing.1));
+        assert!(start_cycle(opening.2) && start_cycle(closing.2));
+        assert!(
+            usize::from(CLAIM_CLOSE_CYCLE) > usize::from(crate::surface::excursion::MAX_RUN_CYCLES)
+        );
+    }
 
     /// **A heard line waits for the projection** (doc 20 cut SM.4a, D24 — the review's
     /// conformance/F3 moved its witness here, since cut SM.4b's fitted projection leaves no

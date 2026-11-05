@@ -1085,7 +1085,10 @@ open, for the owner to object to:
   (`PartyKey::Fixture { leader }`) whose leader holds a standing Hostile mark on every other
   party, so the raider fights whoever it finds with no player connected. Its hulls fly their ROM
   doctrine. Doctrine never opens a field: the leader marks through the ordinary door. The shipped
-  raider is two line tanks at Ahuna Flank (provisional; Q-CF-45 budgets six).
+  raider is two line tanks at Ahuna Flank (provisional; Q-CF-45 budgets six). **Doc 42b cut SU.1**
+  (Q-42b-1, schema 5): the seed also seats one NPC crew member in each armed hull, never the
+  carrier, with a crew record carrying the authored resolve. The seat is host bookkeeping; the hull
+  still flies its ROM seal.
 - **The combat-duty offer** is a third Slack Line person, Rook Adeyemi, under a combat contract
   alone (`tacsim.crew.ceres` version 2). The surface host admits a combat roster beside a mining
   one, and the contract must name the roster's own duty; a combat roster never mines.

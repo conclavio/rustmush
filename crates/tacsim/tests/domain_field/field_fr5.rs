@@ -36,6 +36,9 @@
 //! 6. **The carrier lost before the release**
 //!    (`fr5_ahuna_a_rig_whose_carrier_is_lost_is_kept_in_the_field`): the kernel keeps the rig at
 //!    the ramp, its pilot's.
+//! 7. **The carrier lost once the exit is on the record** (the 38b review's F-15;
+//!    `fr5_ahuna_a_carrier_lost_after_the_exit_lands_strikes_the_exit`): back in the field, the
+//!    record's exit is struck and the live record owes none.
 //!
 //! **What is a fixture.** The escort's power, destroyed by staff hand, and its row on the site's
 //! index (GC.5's fixture, which the field that disabled it would have written; `field_rs5`'s
@@ -1022,4 +1025,72 @@ async fn lost_before_the_release_on(ground: &Ground) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fr5_ahuna_a_rig_whose_carrier_is_lost_is_kept_in_the_field() {
     lost_before_the_release_on(&AHUNA_FLANK).await;
+}
+
+/// **Story 7 (the 38b review's F-15)**: the rig let go at the ramp, its exit on the record and its
+/// recover under way, then its carrier lost. Back in the field, the record no longer names its
+/// exit and the live record owes none, so nothing reads it as out of the field.
+async fn lost_after_the_exit_lands_on(ground: &Ground) {
+    let (mut rig, set) = rig_at_the_ramp(ground);
+    let (a, tv, carrier) = (set.a, set.tug, set.carrier);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let mut ears = Ears::new(&[a]);
+    open(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    let asked = run(&mut rig.tw, a, "+tv/1 recover go");
+    assert!(asked.contains("makes for the ramp"), "{asked}");
+    assert!(
+        until(
+            &mut rig,
+            (&mut rx, &mut lines, &mut ears),
+            30,
+            |rig, _, _| !held(rig, tv)
+                && site_record_at(rig, ground.entry).is_some_and(|record| record.exited(tv))
+        )
+        .await,
+        "the rig is let go at the ramp and its exit is on the record: {}",
+        ears.of(a)
+    );
+    take_the_carrier(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    let back = until(
+        &mut rig,
+        (&mut rx, &mut lines, &mut ears),
+        40,
+        |rig, _, _| {
+            held(rig, tv)
+                && flies(rig, a)
+                && site_record_at(rig, ground.entry).is_some_and(|record| !record.exited(tv))
+        },
+    )
+    .await;
+    let live = tacsim::field::live_on(rig.tw.world(), &cid(ground.entry));
+    assert!(
+        back,
+        "the rig is back in the field and off the record's exits: held {}, flies {}, exited {:?}, owed {:?}",
+        held(&rig, tv),
+        flies(&rig, a),
+        site_record_at(&mut rig, ground.entry).map(|record| record.exited(tv)),
+        live.as_ref().map(|live| live.owed_exits.clone()),
+    );
+    assert!(
+        live.is_some_and(|live| live.owed_exits.iter().all(|owed| owed.unit != tv)),
+        "the live record owes it no exit"
+    );
+    // The recover that was under way never boards it.
+    let _ = until(&mut rig, (&mut rx, &mut lines, &mut ears), 5, |_, _, _| {
+        false
+    })
+    .await;
+    assert!(
+        held(&rig, tv) && !tacsim::surface::tow::in_bay_of(rig.tw.world(), tv, carrier),
+        "it stays in the field"
+    );
+}
+
+/// **Story 7 at 256**: Ahuna Flank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr5_ahuna_a_carrier_lost_after_the_exit_lands_strikes_the_exit() {
+    lost_after_the_exit_lands_on(&AHUNA_FLANK).await;
 }

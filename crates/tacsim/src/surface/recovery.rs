@@ -1089,6 +1089,7 @@ impl ActionProvider for RecoveryProvider {
                 }
                 RecoveryOperation::Unload => {}
             }
+            close_unopened_claim(&mut record, fixed.hull);
             record.ordinal = ordinal;
             record.charge = fixed.charge;
             if operation == RecoveryOperation::Home {
@@ -1619,4 +1620,63 @@ fn project(ctx: &mut Ctx<'_>, record: &RigRecord, receipt: &RecoveryReceipt) -> 
         }
     }
     true
+}
+
+/// **An open claim whose launch never opened an epoch is owed its Close** (doc 38a F-23.4): a
+/// staff `close` or `home` of a rig in its bay, or on the ramp before the launch's finish, clears
+/// the act and the queue, and no epoch's close will ever owe the claim, so it closes
+/// `PoweredDownInBase` into the hangar's hull `base`. An opening claim is the claim arm's (its
+/// Open may be in flight): with the queue gone, the arm cancels or refuses it. A rig with an
+/// epoch open is untouched (that epoch's close owes it).
+pub(crate) fn close_unopened_claim(record: &mut RigRecord, base: ObjId) {
+    if record.sortie.is_none()
+        && matches!(
+            record.claim.as_deref(),
+            Some(crate::surface::excursion::ClaimCursor::Open { .. })
+        )
+    {
+        record.owe_claim_close(IcCloseKind::PoweredDownInBase { base });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
+
+    /// **Doc 38a F-23.4: a staff close or home owes an unopened epoch's claim its Close.** An
+    /// `Open` claim with no epoch open becomes `Closing { PoweredDownInBase }` into the hangar's
+    /// hull; an opening claim (the arm's), and a claim whose epoch is open, are untouched.
+    #[test]
+    fn f23_4_a_staff_close_owes_an_unopened_claims_close() {
+        let open = mush_core::CommitToken::from_bytes([7; 16]);
+        let with = |claim: ClaimCursor| {
+            let mut record = RigRecord::fresh_unread(ObjId(7));
+            record.claim = Some(Box::new(claim));
+            record
+        };
+        let mut record = with(ClaimCursor::Open {
+            open,
+            operator: ObjId(42),
+        });
+        close_unopened_claim(&mut record, ObjId(500));
+        assert_eq!(
+            record.claim.map(|c| *c),
+            Some(ClaimCursor::Closing {
+                open,
+                kind: ClaimCloseKind::PoweredDownInBase { base: ObjId(500) },
+                operator: ObjId(42),
+            })
+        );
+        let opening = ClaimCursor::Opening {
+            operator: ObjId(42),
+            licence: 7,
+            org: None,
+            launch_ic: 1_000,
+            tries: 0,
+        };
+        let mut record = with(opening.clone());
+        close_unopened_claim(&mut record, ObjId(500));
+        assert_eq!(record.claim.map(|c| *c), Some(opening), "the arm's");
+    }
 }

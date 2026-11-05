@@ -761,14 +761,19 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
     let Some(pilot) = pilot else {
         return;
     };
-    if ctx
-        .w
-        .get(pilot)
-        .is_none_or(|object| object.kind != ObjKind::Player)
-    {
+    // Doc 42b cut SU.1 (Q-42b-1, Q-42b-2): a player, or an NPC whose record the raider seed wrote
+    // (a raider's crew: the seed is the one writer of a resolve). A hired NPC pilot is left to its
+    // contract (Q-42-26), even once `on_frames` has written it incapacitated.
+    let prior = crew_of(ctx.w, pilot).cloned();
+    if ctx.w.get(pilot).is_none_or(|object| match object.kind {
+        ObjKind::Player => false,
+        ObjKind::Npc => prior
+            .as_ref()
+            .is_none_or(|record| record.resolve_permille.is_none()),
+        _ => true,
+    }) {
         return;
     }
-    let prior = crew_of(ctx.w, pilot).cloned();
     // Doc 42 cut CR.3 (Q-42-15): a captor's carrier whose hull fell strands everyone aboard,
     // captives included; custody ends with the hull.
     if let Some(stranded) = prior

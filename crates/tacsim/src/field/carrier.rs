@@ -417,7 +417,13 @@ pub(crate) fn joining_as(
         .filter(|unit| *unit != hull)
         .chain([hull])
         .collect();
-    let entrants = super::parties::entrants(ctx, site, &units);
+    let mut entrants = super::parties::entrants(ctx, site, &units);
+    // The 38b review's F-08: everyone the field admitted already keeps the key of the party the
+    // live record holds it in. A carrier admitted before any flight of its own was on the ground
+    // is its commander's party of one; its first launch into the running field must not re-key it
+    // as the launch's operation, or the launch loses its Friend tie to its own carrier and the
+    // stance table loses the carrier's sides.
+    super::parties::keep_admitted_keys(&mut entrants, &live);
     let entrant = entrants
         .iter()
         .find(|entrant| entrant.unit == hull)
@@ -588,13 +594,16 @@ fn join_with(
         .map_err(|error| format!("#{} could not be taken into the field ({error})", hull.0))?;
     let controller = joining.unit.controller;
     let armed = !joining.unit.weapons.is_empty();
+    // Doc 38a F-01 (S.4b-3's host half of FR.5's join): a claimed rig's scripted seal joins with
+    // its claim's retained source, and with the mind its epoch's record carries.
+    let (source, carried) = claimed_join(ctx, hull, &joining.unit.seal);
     let message = crate::arena_task::ArenaMsg::Join {
         unit: Box::new(joining.unit),
         pilot: joining.pilot,
         host: Box::new(joining.host),
         spread,
-        // Doc 40 cut FR.5: S.4b-3's host half hands the retained source.
-        source: None,
+        source,
+        carried,
     };
     if tasks.offer(task, message).is_err() {
         let _ = mush_tactics::custody::check_in(ctx, hull, None);
@@ -609,6 +618,26 @@ fn join_with(
     }
     tracing::info!(site = %site, hull = hull.0, task = task.0, "tacsim: a hull is joining the field");
     Ok(())
+}
+
+/// **What a claimed rig joins with** (doc 38a F-01): its claim's retained source for a scripted
+/// seal (the text the field's spawn installs, `crate::minds::ic_sortie::retained_source`, held
+/// only while the claim is active), and the mind its open epoch's record carries (D-23-18).
+/// `(None, None)` for every other hull.
+fn claimed_join(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    seal: &crate::arena::MindSeal,
+) -> (Option<String>, Option<Box<crate::arena::mind::CarriedMind>>) {
+    let source = (seal.engine == crate::arena::mind::SealEngine::Scripted)
+        .then(|| crate::minds::ic_sortie::retained_source(ctx.w, &seal.source_sha256))
+        .flatten()
+        .map(str::to_owned);
+    let carried = super::parties::rig_record(ctx, hull)
+        .and_then(|rig| rig.sortie)
+        .and_then(|open| open.mind)
+        .filter(|mind| mind.seal_digest == seal.digest());
+    (source, carried)
 }
 
 /// **A hull out at a ramp back into its site's field, its carrier lost** (doc 40, the ramp exit's
@@ -892,7 +921,9 @@ fn set_live(ctx: &mut Ctx<'_>, site: &CanonicalId, live: super::FieldLive) {
 /// **The kernel's answer to a join** (the bridge's branch; doc 36 cut GC.1b): taken in, the site
 /// is told; refused, the hull is checked back in as it went out, its row leaves the live record,
 /// and it is asked again at the next tick (doc 40 cut FR.3, Q-40-20). A launch's answer
-/// ([`join_launches`]) is told as a launch, and a refused launch goes back aboard first.
+/// ([`join_launches`]) is told as a launch, and a refused launch goes back aboard first. A hull
+/// taken back in at its ramp ([`rejoin`]) keeps its boarding row until this answer: taken, the
+/// row goes; refused, the boarding pass asks again (the 38b review's F-15).
 pub(crate) fn on_joined(
     ctx: &mut Ctx<'_>,
     task: crate::arena_task::MatchId,
@@ -921,6 +952,10 @@ pub(crate) fn on_joined(
         Ok(name) if rejoin => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a hull out at the ramp is back in the field");
             seat_joined_pilot(ctx, task, unit, &live);
+            // Doc 40 (the 38b review's F-15): back in, so no longer boarding.
+            if let Some(boarding) = ctx.w.module_state_mut::<super::boarding::Boarding>() {
+                boarding.0.remove(&unit);
+            }
         }
         Ok(name) if launch => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a launch joined the field at its ramp");
@@ -1004,4 +1039,120 @@ pub fn refuse_tow(w: &World, target: ObjId, tug: ObjId) -> Option<String> {
             .replace("{tug}", &crate::port::coop::name_of(w, tug))
             .replace("{tug_t}", &tonnes(tug_kg)),
     )
+}
+
+#[cfg(test)]
+mod review_72h_tests {
+    use super::*;
+
+    /// **Astra's probe** (docs/design/38a, the F-15 finding; its patch under
+    /// docs/design/evidence/38a-astra-code-review-2026-11-05/), adapted to the fix: the boarding
+    /// row now stays while the join is with the kernel. A boarding pass in that window keeps the
+    /// row, and the kernel's refusal leaves it for the next pass to ask again.
+    #[test]
+    fn review_72h_a_refused_boarding_rejoin_remains_retryable() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+        )]);
+        let unit = ObjId(7);
+        let party = crate::arena::PartyId::RED;
+        let site = CanonicalId::new("tacsim.port.ahuna_flank").expect("site");
+        let task = crate::arena_task::MatchId(u64::MAX);
+        let live = super::super::FieldLive {
+            format: super::super::record::FIELD_LIVE_FORMAT,
+            field: crate::surface::site_record::FieldId {
+                site: site.clone(),
+                ordinal: 1,
+            },
+            opened_ic: 0,
+            segment: 1,
+            at_ms: 0,
+            parties: vec![super::super::FieldParty {
+                party,
+                key: super::super::PartyKey::Unit { unit },
+                leader: Some(mush_core::GOD),
+                stance_hostile: vec![],
+                director: false,
+            }],
+            units: vec![super::super::FieldUnit {
+                unit,
+                party,
+                pilot: None,
+                epoch: None,
+                aboard: vec![],
+                arrived: true,
+            }],
+            homes: vec![],
+            fire: None,
+            owed_exits: vec![],
+            held: vec![],
+            tally: vec![],
+            carried: vec![],
+        };
+        // The state once boarding::go_back queued the join: the hull on the live record, its
+        // join with the kernel, its boarding row kept.
+        let world = tw.world_mut();
+        let book = world.module_state_mut::<FieldBook>().expect("field book");
+        book.live
+            .insert(site.clone(), super::super::Hosted { task, live });
+        book.rejoining.entry(site.clone()).or_default().insert(unit);
+        world
+            .module_state_mut::<super::super::boarding::Boarding>()
+            .expect("boarding")
+            .0
+            .insert(
+                unit,
+                super::super::boarding::Board {
+                    site: site.clone(),
+                    carrier: ObjId(9),
+                    requester: mush_core::GOD,
+                    then: super::super::exit::Then::Rig {
+                        slot: 1,
+                        quiet: false,
+                    },
+                },
+            );
+        let mut out = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(crate::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let boarding = |ctx: &Ctx<'_>| {
+            ctx.w
+                .module_state::<super::super::boarding::Boarding>()
+                .is_some_and(|book| book.0.contains_key(&unit))
+        };
+        super::super::boarding::tick(&mut ctx);
+        assert!(
+            boarding(&ctx),
+            "a boarding pass while the join is with the kernel keeps the row"
+        );
+        on_joined(
+            &mut ctx,
+            task,
+            unit,
+            Err("a scripted seal with no retained source".to_owned()),
+        );
+        assert!(
+            boarding(&ctx),
+            "A hull whose carrier was lost must stay queued for re-admission after a join refusal"
+        );
+        assert!(
+            ctx.w
+                .module_state::<FieldBook>()
+                .and_then(|book| book.rejoining.get(&site))
+                .is_none_or(|hulls| !hulls.contains(&unit)),
+            "the refused join is no longer with the kernel, so the next pass asks again"
+        );
+    }
 }
