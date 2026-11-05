@@ -62,15 +62,109 @@ fn docked_at(w: &World, carrier: ObjId) -> Option<CanonicalId> {
     }
 }
 
-/// Whether `carrier` has a passage filed and not yet launched.
+/// Whether `carrier` has a passage filed and not yet launched, or a sailing plan still running
+/// (the house's sail, [`HouseAct::Sail`], is a plan the order arm carries out).
 fn pending(w: &World, carrier: ObjId) -> bool {
-    w.module_state::<crate::store::TacsimStore>()
+    let filed = w
+        .module_state::<crate::store::TacsimStore>()
         .is_some_and(|store| {
             matches!(
                 store.voyage_state(carrier),
                 crate::port::voyage::VoyageState::Present(voyage) if voyage.pending.is_some()
             )
+        });
+    filed
+        || matches!(
+            crate::port::orders::orders_state(w, carrier),
+            crate::port::orders::OrdersState::Present(orders) if orders.cursor.is_some()
+        )
+}
+
+/// **The float a sailing tops the dispatcher's account up to** (doc 41 cut RS.6b), minor units:
+/// 20,000 cr, provisional — a Ceres site's round trip in reaction mass and provisions, with room.
+pub const FLOAT_MINOR: i64 = 2_000_000;
+
+/// **The reaction mass a sailing buys for the leg home**, tonnes (doc 41 cut RS.6b, provisional): a
+/// plan's `fill` sizes the tank for the outbound passage only, while a site departure wants the
+/// leg home aboard too (`SITE_TANK_SHORT`), so the house buys this much beside the fill. A Ceres
+/// site's round trip burns two tonnes.
+pub const HOME_LEG_T: u64 = 3;
+
+/// **The house's sail** ([`HouseAct::Sail`]): the dispatcher's float topped up from the house's
+/// own account (the dispatcher acts for the house), then a sailing plan filed as the dispatcher —
+/// fill the tank and the locker, then depart for `word` — which the order arm carries out as the
+/// plan's author, buying at this port's counters like any captain's plan.
+fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
+    let dispatcher = ctx.actor;
+    // The dispatcher boards: a plan's buys need its author aboard the docked hull (the market's
+    // presence, `Presence::Ship`), and it sails with her.
+    let airlock = crate::port::ship::hull_view(ctx.w, lifter)
+        .and_then(|view| view.airlock())
+        .ok_or("the lifter has no airlock")?;
+    if ctx.w.get(dispatcher).and_then(|o| o.location) != Some(airlock) {
+        ctx.w.move_to(dispatcher, airlock).map_err(|e| e.to_string())?;
+    }
+    let (house_account, float) = crate::port::market::ports(ctx.w)
+        .into_iter()
+        .find_map(|(_, def, map)| {
+            let map = map?;
+            let row = map.house.as_ref()?;
+            (row.dispatcher == Some(dispatcher.0)).then(|| {
+                let operator = def.recovery.as_ref().map(|r| r.operator.clone());
+                let house = operator
+                    .and_then(|op| map.orgs.get(&op))
+                    .and_then(|org| org.account);
+                (house, row.account)
+            })
         })
+        .ok_or("the dispatcher has no house")?;
+    let (Some(house_account), Some(float)) = (house_account, float) else {
+        return Err("the house's accounts are not open yet".to_owned());
+    };
+    let available = crate::port::credit::own_account(ctx.w, dispatcher)
+        .and_then(|a| a.available())
+        .map_or(0, |a| a.minor());
+    if available < FLOAT_MINOR {
+        let short = FLOAT_MINOR - available;
+        let mut plan = mush_economy::EconomyPlan::new(
+            mush_economy::IdempotencyKey::new(
+                "tacsim.house.float",
+                format!("{float}/{}", ctx.w.world_ic_now().at),
+            ),
+            mush_org::PrincipalId::Object(dispatcher),
+            mush_economy::EconomicCause::Internal {
+                kind: smol_str::SmolStr::new_static("tacsim.house.float"),
+                id: float,
+            },
+            vec![
+                mush_economy::RequestedLine {
+                    account: mush_economy::AccountId(house_account),
+                    delta: mush_economy::Amount::from_minor(-short),
+                    memo: "float".into(),
+                },
+                mush_economy::RequestedLine {
+                    account: mush_economy::AccountId(float),
+                    delta: mush_economy::Amount::from_minor(short),
+                    memo: "float".into(),
+                },
+            ],
+        );
+        plan.description = "the house's sailing float".to_owned();
+        mush_economy::post(ctx, &plan).map_err(|e| format!("the float did not post: {e}"))?;
+    }
+    for line in [
+        "buy propellant fill".to_owned(),
+        format!("buy propellant {HOME_LEG_T}"),
+        "buy provisions fill".to_owned(),
+        format!("depart {word}"),
+    ] {
+        let parsed = mush_core::ParsedArgs::parse(mush_core::ArgShape::Raw, &line);
+        let old = std::mem::replace(&mut ctx.args, parsed);
+        let filed = crate::port::orders::order_cmd(ctx);
+        ctx.args = old;
+        filed.map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// **The next act for the house's job on `hull`**, the house's hulls `(lifter, crawler)`, home
@@ -168,7 +262,7 @@ pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) 
     }
     let hull = order.hull;
     let result = fire.as_principal(ctx, dispatcher, dispatcher, |ctx| {
-        perform(ctx, &act, (crawler, hull), &home)
+        perform(ctx, &act, (lifter, crawler, hull), &home)
     });
     match result {
         Ok(Ok(())) => Step::Submitted,
@@ -184,7 +278,7 @@ pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) 
 fn perform(
     ctx: &mut Ctx<'_>,
     act: &HouseAct,
-    (crawler, hull): (ObjId, ObjId),
+    (lifter, crawler, hull): (ObjId, ObjId, ObjId),
     home: &CanonicalId,
 ) -> Result<(), String> {
     let dispatcher = ctx.actor;
@@ -196,7 +290,7 @@ fn perform(
     };
     let said = |e: mush_core::CmdError| e.to_string();
     match act {
-        HouseAct::Sail(word) => crate::port::voyage::undock_as(ctx, word, false).map_err(said),
+        HouseAct::Sail(word) => sail(ctx, lifter, word),
         HouseAct::Home(word) => crate::port::voyage::undock_as(ctx, word, true).map_err(said),
         HouseAct::Launch | HouseAct::Recover => {
             let kind = if *act == HouseAct::Launch {

@@ -79,6 +79,11 @@ fn skip_and_fire(rig: &mut Rig, target: i64) {
 /// **The job flown on `(venue, entry)`.**
 #[allow(clippy::too_many_lines)]
 fn story(venue: &str, entry: &str) {
+    // PROBE (temporary): the departure's warnings.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("tacsim=info")
+        .with_test_writer()
+        .try_init();
     let mut rig = stocked_tuned(quick);
     // A pilot's carrier on the pad, so the site's ground is warm and its ramp is known.
     let (_, _, tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), (venue, entry), 1);
@@ -127,7 +132,7 @@ fn story(venue: &str, entry: &str) {
             break;
         }
     }
-    let (lifter, _crawler) =
+    let (lifter, crawler) =
         tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     // Occator posts the job; nobody accepts it; at the window's end it is Tycho's.
     let poster = occator(&rig);
@@ -162,7 +167,21 @@ fn story(venue: &str, entry: &str) {
         let _ = second(&mut rig);
     }
     let done = order_of(rig.tw.world(), casualty).expect("the job");
-    assert!(seen_at_site, "the lifter landed at {entry}");
+    let dispatcher = tacsim::port::house::dispatcher(rig.tw.world(), &ceres).expect("dispatcher");
+    let plan = match tacsim::port::orders::orders_state(rig.tw.world(), lifter) {
+        tacsim::port::orders::OrdersState::Present(orders) => format!("{orders:?}"),
+        other => format!("{other:?}"),
+    };
+    let float = tacsim::port::credit::own_account(rig.tw.world(), dispatcher)
+        .and_then(|a| a.available())
+        .map(|a| a.minor());
+    let act = staff_hand(&mut rig, |ctx| {
+        tacsim::port::house_arm::next_act(ctx, (lifter, crawler), casualty, &ceres)
+    });
+    assert!(
+        seen_at_site,
+        "the lifter landed at {entry}: next {act:?}; float {float:?}; plan {plan}"
+    );
     let delivered = done.delivered.clone().unwrap_or_else(|| {
         panic!(
             "delivered by Tycho: {done:?}; the casualty {:?}; the lifter {:?}",

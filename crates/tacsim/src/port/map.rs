@@ -132,6 +132,10 @@ pub struct HouseRow {
     /// scope, `GrantId.0`, so it acts for the house (`mush_economy::acts_for`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<u64>,
+    /// Doc 41 cut RS.6b: the dispatcher's own `tacsim.credit` account, `AccountId.0` — the
+    /// float its sailing plans buy reaction mass and provisions from, topped up from the house's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<u64>,
     /// The lifter's yard commission, its order number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifter: Option<u64>,
