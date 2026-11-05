@@ -1812,18 +1812,21 @@ fn ic_retained(
             if retained.seal().seal_ref() != seal {
                 continue;
             }
+            // Doc 38a (Astra #11): the carried mind is laid down BEFORE the install, so a drop
+            // the epoch already took (an ABI drop journalled in an earlier field) finds the row
+            // dropped and the ROM committed, and is not journalled again.
+            if let Some(mind) = carried.get(&unit)
+                && let Err(refusal) = arena.seed_carried_mind(unit, mind)
+            {
+                tracing::warn!(
+                    unit = unit.0,
+                    %refusal,
+                    "tacsim: a claimed hull's carried mind was not laid down; it starts afresh"
+                );
+            }
             match retained.install(world, arena) {
                 Ok(()) => {
                     done.insert(unit);
-                    if let Some(mind) = carried.get(&unit)
-                        && let Err(refusal) = arena.seed_carried_mind(unit, mind)
-                    {
-                        tracing::warn!(
-                            unit = unit.0,
-                            %refusal,
-                            "tacsim: a claimed hull's carried mind was not laid down; it starts afresh"
-                        );
-                    }
                 }
                 Err(error) => tracing::warn!(
                     unit = unit.0,
