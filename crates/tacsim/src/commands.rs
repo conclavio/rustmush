@@ -159,7 +159,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "@industry".into(),
             shape: ArgShape::Raw,
             switches: ["census"].iter().copied().map(SmolStr::new).collect(),
-            help: "@industry/census                    (staff) the matter census, kilograms:                    the chain's sources (opened deposits, the stock clerk's mints), its                    holdings (pools, lots, bales) and its sinks (work orders' losses, mills',                    the parts built into hulls) on one tacsim.matter_census line, then one                    tacsim.matter_build line a commission. Its balance holds still across any                    window in which nothing else makes or destroys matter."
+            help: "@industry/census                    (staff) the matter census, kilograms: \
+                   the chain's sources (opened deposits, the stock clerk's mints), its holdings \
+                   (pools, lots, bales) and its sinks (work orders' losses, mills', the parts \
+                   built into hulls and fitted by the bay) on one tacsim.matter_census line, \
+                   then one tacsim.matter_build line a commission. Its balance holds still \
+                   across any window in which nothing else makes or destroys matter.\n\
+                   @industry/census <good>             (staff) and one tacsim.matter_lot line a \
+                   lot of that good: its vault, the vault's name and owner."
                 .into(),
             ..CommandSpec::default()
         },
