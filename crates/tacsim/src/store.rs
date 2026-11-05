@@ -681,13 +681,6 @@ impl TacsimStore {
         self.bay_hulls.get(&hull)
     }
 
-    /// **Every hull with a bay record** (doc 39 cut IN.11: the matter census reads every
-    /// opened bale), in hull order.
-    #[must_use]
-    pub fn bay_hull_ids(&self) -> Vec<ObjId> {
-        self.bay_hulls.keys().copied().collect()
-    }
-
     /// **Every hull whose bay record lists a lot under a vacated claim** (doc 41 cut RS.3,
     /// §4.6), in hull order.
     #[must_use]

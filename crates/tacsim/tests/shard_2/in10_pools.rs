@@ -279,6 +279,8 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
         "{out}"
     );
 
+    // Doc 39 cut IN.11: the matter census before the order (the window's start).
+    let before = crate::in11_matter::census(&mut rig);
     // ---- (2) Two buyouts later the Trust orders ----
     let floor = tacsim::port::pools::FLOORS[0];
     let price = crate::driving_rig::staff_hand(&mut rig, |ctx| {
@@ -382,6 +384,21 @@ commission {:?}",
         );
     }
     let hull = trust_pool(&rig).unwrap().orders[0].hull.expect("the hull");
+    // Doc 39 cut IN.11: across the order, the purchases, the build and the commission the census
+    // holds still, and the build's inputs are the hull and the waste.
+    let after = crate::in11_matter::census(&mut rig);
+    eprintln!(
+        "in11 census before {before:?}
+in11 census after {after:?}"
+    );
+    assert_eq!(
+        before["balance"], after["balance"],
+        "matter is neither made nor lost"
+    );
+    let build = crate::in11_matter::builds(&mut rig);
+    assert_eq!(build.len(), 1, "{build:?}");
+    let (inputs, dry, waste) = build[0];
+    assert_eq!(inputs, dry + waste, "inputs = the hull + the waste");
     let owned = tacsim::port::owned::owned(rig.tw.world(), hull)
         .cloned()
         .expect("a register row");

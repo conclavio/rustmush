@@ -55,6 +55,8 @@ mod field_raiders_rig;
 mod grounds_rig;
 #[path = "shard_2/in10_pools.rs"]
 mod in10_pools;
+#[path = "shard_2/in11_matter.rs"]
+mod in11_matter;
 #[path = "shard_2/in1_accounting.rs"]
 mod in1_accounting;
 #[path = "shard_2/in2_lifecycle.rs"]
