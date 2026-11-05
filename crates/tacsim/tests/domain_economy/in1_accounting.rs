@@ -67,7 +67,7 @@ fn damage(rig: &mut Rig, hull: ObjId, ops: Vec<UnitMutationOp>) {
 }
 
 /// One point off the first armoured facet that has it: a one-point armour patch's worth.
-fn dent_one(rig: &mut Rig, hull: ObjId) {
+pub(crate) fn dent_one(rig: &mut Rig, hull: ObjId) {
     let u = unit(rig, hull);
     let (addr, cell) = u
         .cells()
@@ -85,7 +85,7 @@ fn dent_one(rig: &mut Rig, hull: ObjId) {
 }
 
 /// Staff put `who` in `room`: into a hull's interior space, or into a plain port room.
-fn put(rig: &mut Rig, who: ObjId, room: ObjId, interior: bool) {
+pub(crate) fn put(rig: &mut Rig, who: ObjId, room: ObjId, interior: bool) {
     staff_hand(rig, |ctx| {
         if interior {
             mush_sim::place_interior(ctx, who, room, None).expect("into the space");
@@ -110,7 +110,7 @@ fn mint(rig: &mut Rig, pilot: ObjId) {
     );
 }
 
-fn record(rig: &Rig, hull: ObjId) -> tacsim::port::bay_work::BayHull {
+pub(crate) fn record(rig: &Rig, hull: ObjId) -> tacsim::port::bay_work::BayHull {
     match store(&rig.tw).bay_hull(hull) {
         Some(BayHullState::Present(row)) => row.clone(),
         other => panic!("the bay record: {other:?}"),
@@ -134,7 +134,7 @@ fn settled(rig: &mut Rig, who: ObjId, line: &str, hull: ObjId) -> String {
 }
 
 /// The order on `hull`, run to its due time and done.
-fn done(rig: &mut Rig, hull: ObjId) -> tacsim::port::bay_work::BayOrder {
+pub(crate) fn done(rig: &mut Rig, hull: ObjId) -> tacsim::port::bay_work::BayOrder {
     let order = record(rig, hull).order.expect("an order");
     let _ = to_ic(rig, order.due_ic + 60);
     let _ = to_ic(rig, order.due_ic + 600);
@@ -171,7 +171,7 @@ fn provenance(
 
 /// **The captain's Dray-P at Ceres with a titled spare escort in its bay, and a titled heavy**
 /// (which has no `logistics`, so no carrier sails with it: staff put it in the bay at Stickney).
-fn two_titled_hulls(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
+pub(crate) fn two_titled_hulls(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
     let (pilot, row) = prospector(rig, "Pilot", 1, "Salt Moth");
     mint(rig, pilot);
     at_counter(rig, pilot);

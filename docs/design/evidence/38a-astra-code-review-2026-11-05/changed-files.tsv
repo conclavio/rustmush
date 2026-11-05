@@ -1,0 +1,870 @@
+10	3	.config/nextest.toml
+2	2	.github/clippy-m7/clippy.toml
+33	49	.github/tacsim-integration-shards.txt
+336	180	.github/workflows/ci.yml
+49	9	.github/workflows/gate.yml
+3	0	.gitignore
+6	0	Cargo.lock
+14	1	Cargo.toml
+93	187	README.md
+1	1	bots/arena/commander.toml
+1	1	bots/arena/pilot.toml
+2	2	clippy.toml
+191	0	crates/README.md
+1	1	crates/mush-ansi/src/lib.rs
+1	1	crates/mush-atlas/src/lib.rs
+22	5	crates/mush-atlas/tests/interior.rs
+1	1	crates/mush-bot/AGENTS.md
+1	1	crates/mush-bot/Cargo.toml
+8	3	crates/mush-bot/src/arena/lines.rs
+1	1	crates/mush-bot/src/main.rs
+140	0	crates/mush-bot/src/mine/crew.rs
+17	1	crates/mush-bot/src/mine/escort.rs
+81	1	crates/mush-bot/src/mine/field.rs
+49	0	crates/mush-bot/src/mine/lane.rs
+266	8	crates/mush-bot/src/mine/lines.rs
+8	3	crates/mush-bot/src/mine/mod.rs
+549	0	crates/mush-bot/src/mine/salvage.rs
+274	0	crates/mush-bot/src/mine/works.rs
+1	1	crates/mush-bot/tests/arena_configs.rs
+4	1	crates/mush-bot/tests/arena_contract.rs
+1	1	crates/mush-bot/tests/arena_lane.rs
+705	0	crates/mush-bot/tests/mining_cohort.rs
+1220	0	crates/mush-bot/tests/mining_cohort/fr7_round.rs
+22	7	crates/mush-campaign/src/commands.rs
+1	1	crates/mush-campaign/src/lib.rs
+12	5	crates/mush-campaign/src/record.rs
+4	2	crates/mush-campaign/src/recovery.rs
+1	1	crates/mush-campaign/tests/common/mod.rs
+1	1	crates/mush-campaign/tests/e7c10.rs
+9	8	crates/mush-campaign/tests/e7c9.rs
+25	0	crates/mush-campaign/tests/e7r1.rs
+1	1	crates/mush-canon/src/data.rs
+2	2	crates/mush-canon/src/lib.rs
+2	0	crates/mush-composition/src/lib.rs
+1	1	crates/mush-comsys/src/lib.rs
+45	0	crates/mush-config/src/config.rs
+1	1	crates/mush-config/src/lib.rs
+1	1	crates/mush-content/src/lib.rs
+9	5	crates/mush-contract-tests/Cargo.toml
+64	0	crates/mush-contract-tests/client-verbs-allowlist.toml
+1	1	crates/mush-contract-tests/help-commands-allowlist.toml
+54	14	crates/mush-contract-tests/legacy-handlers.toml
+1	1	crates/mush-contract-tests/matcher-call-sites.toml
+2	2	crates/mush-contract-tests/module-ns-owners.toml
+1	1	crates/mush-contract-tests/src/b1_seam.rs
+2	1	crates/mush-contract-tests/src/lib.rs
+370	0	crates/mush-contract-tests/src/scan.rs
+124	80	crates/mush-contract-tests/state-slot-owners.toml
+686	0	crates/mush-contract-tests/test-tiers.toml
+57	0	crates/mush-contract-tests/tests/ci_policy.rs
+812	59	crates/mush-contract-tests/tests/{ => ci_policy}/ci_gated_test_inventory.rs
+375	0	crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs
+5	12	crates/mush-contract-tests/tests/{ => ci_policy}/clippy_test_allowances.rs
+18	14	crates/mush-contract-tests/tests/{ => ci_policy}/feature_matrix_inventory.rs
+378	0	crates/mush-contract-tests/tests/ci_policy/fiat_budget.rs
+247	0	crates/mush-contract-tests/tests/{ => ci_policy}/gate5_fault_matrix.rs
+0	0	crates/mush-contract-tests/tests/{ => ci_policy}/legacy_handler_allowlist.rs
+10	239	crates/mush-contract-tests/tests/{ => ci_policy}/matcher_call_sites.rs
+20	280	crates/mush-contract-tests/tests/{ => ci_policy}/panic_budget.rs
+14	38	crates/mush-contract-tests/tests/{ => ci_policy}/process_fault_gate.rs
+3	26	crates/mush-contract-tests/tests/{ => ci_policy}/provider_rng_policy.rs
+7	32	crates/mush-contract-tests/tests/{ => ci_policy}/restriction_lints.rs
+8	8	crates/mush-contract-tests/tests/{ => ci_policy}/scale_harness.rs
+0	0	crates/mush-contract-tests/tests/{ => ci_policy}/schedule_source.rs
+4	11	crates/mush-contract-tests/tests/{ => ci_policy}/toolchain_pin.rs
+0	0	crates/mush-contract-tests/tests/{ => ci_policy}/truth_serialization_policy.rs
+0	134	crates/mush-contract-tests/tests/ci_tacsim_shards.rs
+64	0	crates/mush-contract-tests/tests/engine_contracts.rs
+5	26	crates/mush-contract-tests/tests/{ => engine_contracts}/action_state_republish.rs
+50	38	crates/mush-contract-tests/tests/{ => engine_contracts}/arena_library.rs
+434	0	crates/mush-contract-tests/tests/engine_contracts/client_verbs.rs
+1	3	crates/mush-contract-tests/tests/{ => engine_contracts}/exit_command_words.rs
+1	3	crates/mush-contract-tests/tests/{ => engine_contracts}/help_commands.rs
+9	34	crates/mush-contract-tests/tests/{ => engine_contracts}/hex_vocabulary.rs
+2	10	crates/mush-contract-tests/tests/{ => engine_contracts}/ipc_golden_frames.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/j4_narrow_fetch.rs
+2	4	crates/mush-contract-tests/tests/{ => engine_contracts}/macro_names.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/module_ns_owners.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/npc_ability_residual.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/pixel_hull_down.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/pixel_relief.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/pixel_sight_heights.rs
+155	0	crates/mush-contract-tests/tests/engine_contracts/player_wait_floors.rs
+7	25	crates/mush-contract-tests/tests/{ => engine_contracts}/sheet_write_republish.rs
+146	48	crates/mush-contract-tests/tests/{ => engine_contracts}/state_slot_owners.rs
+11	55	crates/mush-contract-tests/tests/{ => engine_contracts}/typed_state_lens.rs
+16	0	crates/mush-contract-tests/tests/{ => engine_contracts}/unit_looks.rs
+0	0	crates/mush-contract-tests/tests/{ => engine_contracts}/vitals_projection_clean.rs
+1	1	crates/mush-contract-tests/typed-state-lens.toml
+13	0	crates/mush-core/src/action_state.rs
+1	1	crates/mush-core/src/action_state/terminal_capacity/bay_refit.rs
+2	2	crates/mush-core/src/action_state/terminal_capacity/bay_refit/tests.rs
+5	3	crates/mush-core/src/action_state/terminal_capacity/charter_pending/wire.rs
+1	1	crates/mush-core/src/action_state/terminal_capacity/core_integration/protocol.rs
+1	1	crates/mush-core/src/action_state/terminal_capacity/core_refit/protocol.rs
+4	1	crates/mush-core/src/action_state/terminal_capacity/core_refit/wire.rs
+2	1	crates/mush-core/src/action_state/terminal_capacity/house.rs
+1	1	crates/mush-core/src/action_state/terminal_capacity/house/tests.rs
+1	1	crates/mush-core/src/action_state/terminal_capacity/ic_claim.rs
+1	1	crates/mush-core/src/action_state/terminal_capacity/paid_resale/wire.rs
+77	0	crates/mush-core/src/cmd.rs
+2	1	crates/mush-core/src/lib.rs
+23	3	crates/mush-core/src/world.rs
+1	1	crates/mush-dice/src/lib.rs
+2	0	crates/mush-economy/Cargo.toml
+347	5	crates/mush-economy/src/api.rs
+4	1	crates/mush-economy/src/bay_refit.rs
+961	0	crates/mush-economy/src/contract_live.rs
+4	1	crates/mush-economy/src/core_integration/subject.rs
+4	1	crates/mush-economy/src/core_refit.rs
+27	12	crates/mush-economy/src/lib.rs
+6	3	crates/mush-economy/src/managed_house_renewal.rs
+1	1	crates/mush-economy/src/managed_paid_resale/subject.rs
+6	3	crates/mush-economy/src/managed_renewal.rs
+7	53	crates/mush-economy/tests/e2a.rs
+7	0	crates/mush-economy/tests/e2a/lifecycle.proptest-regressions
+522	0	crates/mush-economy/tests/e2a/lifecycle.rs
+61	4	crates/mush-economy/tests/e2b.rs
+7	0	crates/mush-economy/tests/e2b/lifecycle_replay.proptest-regressions
+339	0	crates/mush-economy/tests/e2b/lifecycle_replay.rs
+2	0	crates/mush-economy/tests/e4c.rs
+414	0	crates/mush-economy/tests/e4c/retrieval.rs
+6	3	crates/mush-economy/tests/e7c11.rs
+57	14	crates/mush-faction/src/commands.rs
+49	2	crates/mush-faction/src/data.rs
+122	8	crates/mush-faction/src/lib.rs
+288	1	crates/mush-faction/src/reputation.rs
+1	1	crates/mush-faction/src/sim.rs
+169	0	crates/mush-faction/src/stance.rs
+282	0	crates/mush-faction/src/stance_commands.rs
+133	0	crates/mush-faction/tests/faction.rs
+99	1	crates/mush-faction/tests/reputation.rs
+1	1	crates/mush-gateway/src/lib.rs
+1	1	crates/mush-gateway/src/main.rs
+1	1	crates/mush-housing/src/lib.rs
+2	2	crates/mush-industry/src/bay_refit/progress.rs
+4	2	crates/mush-industry/src/bay_refit/provider.rs
+1	1	crates/mush-industry/src/bay_refit/records.rs
+0	1	crates/mush-industry/src/bay_refit/rig_tests.rs
+254	92	crates/mush-industry/src/commands.rs
+2	2	crates/mush-industry/src/core_production/integration/progress.rs
+11	3	crates/mush-industry/src/core_production/integration/progress/tests.rs
+4	2	crates/mush-industry/src/core_production/integration/provider.rs
+1	1	crates/mush-industry/src/core_production/integration/records.rs
+1	1	crates/mush-industry/src/core_production/integration_tests.rs
+2	2	crates/mush-industry/src/core_production/refit/progress.rs
+4	2	crates/mush-industry/src/core_production/refit/provider.rs
+1	1	crates/mush-industry/src/core_production/refit/records.rs
+1	1	crates/mush-industry/src/core_production/refit_integration_tests.rs
+260	0	crates/mush-industry/src/cost.rs
+216	1	crates/mush-industry/src/facility.rs
+20	1	crates/mush-industry/src/families.rs
+7	5	crates/mush-industry/src/lib.rs
+313	10	crates/mush-industry/src/money.rs
+91	10	crates/mush-industry/src/provider.rs
+6	0	crates/mush-industry/src/record.rs
+44	5	crates/mush-industry/src/store.rs
+43	0	crates/mush-industry/src/workorder.rs
+3	1	crates/mush-industry/tests/e7c11.rs
+84	0	crates/mush-industry/tests/e7r2.rs
+7	0	crates/mush-inventory/src/bay_part.rs
+21	3	crates/mush-inventory/src/commands.rs
+3	1	crates/mush-inventory/src/core_input.rs
+1	1	crates/mush-inventory/src/core_input/records.rs
+7	4	crates/mush-inventory/src/core_input/tests.rs
+1	1	crates/mush-inventory/src/core_input/writer.rs
+9	6	crates/mush-inventory/src/lib.rs
+422	0	crates/mush-inventory/src/lot_hold.rs
+85	1	crates/mush-inventory/src/module.rs
+382	12	crates/mush-inventory/src/pool.rs
+99	9	crates/mush-inventory/src/provider.rs
+7	2	crates/mush-inventory/tests/e7r2.rs
+4	0	crates/mush-ipc/Cargo.toml
+1	1	crates/mush-ipc/src/lib.rs
+1	1	crates/mush-ipc/tests/golden.rs
+1	1	crates/mush-ipc/tests/golden/README.md
+4	0	crates/mush-ipc/tests/roundtrip.rs
+208	0	crates/mush-ipc/tests/roundtrip/hostile_frames.rs
+1	1	crates/mush-jobs/src/lib.rs
+1	1	crates/mush-llm/src/lib.rs
+2	1	crates/mush-mail/src/lib.rs
+75	0	crates/mush-mail/src/transit.rs
+72	0	crates/mush-mail/tests/mail.rs
+84	5	crates/mush-market/src/api.rs
+45	3	crates/mush-market/src/boot.rs
+43	2	crates/mush-market/src/commands.rs
+3	3	crates/mush-market/src/lib.rs
+146	7	crates/mush-market/src/lot.rs
+2	2	crates/mush-market/src/mind_renewal/provider_tests.rs
+31	0	crates/mush-market/src/record.rs
+23	0	crates/mush-market/src/store.rs
+10	1	crates/mush-market/src/trade.rs
+7	2	crates/mush-market/tests/e7r2.rs
+84	0	crates/mush-market/tests/ic7.rs
+1	1	crates/mush-mind/src/lib.rs
+4	0	crates/mush-mind/tests/sandbox.rs
+238	0	crates/mush-mind/tests/sandbox/nesting.rs
+1	1	crates/mush-net-discord/src/lib.rs
+1	1	crates/mush-net-ssh/src/lib.rs
+68	5	crates/mush-net-ssh/src/tui/app.rs
+385	23	crates/mush-net-ssh/src/tui/pixel.rs
+8	0	crates/mush-net-ssh/src/tui/screen.rs
+1	1	crates/mush-net-ssh/tests/chart_screen.rs
+4	0	crates/mush-net-ssh/tests/editor_proptest.rs
+150	0	crates/mush-net-ssh/tests/editor_proptest/key_parser.rs
+1	1	crates/mush-net-ssh/tests/loopback.rs
+2	2	crates/mush-net-ssh/tests/quarry_screen.rs
+1	1	crates/mush-net-ssh/tests/site_map.rs
+1	1	crates/mush-net-web/src/lib.rs
+1	1	crates/mush-npc/src/lib.rs
+7	1	crates/mush-org/src/lib.rs
+1	1	crates/mush-party/src/lib.rs
+109	1	crates/mush-pixel-wasm/src/lib.rs
+646	1	crates/mush-pixel/src/docking.rs
+1	1	crates/mush-pixel/src/lib.rs
+8	2	crates/mush-pixel/src/ship_shader.rs
+1	1	crates/mush-privileges/src/lib.rs
+1	1	crates/mush-propagation/src/lib.rs
+1	1	crates/mush-proto/src/lib.rs
+158	1	crates/mush-proto/tests/decode_proptest.rs
+11	0	crates/mush-roll/src/commerce/command_reader.rs
+16	5	crates/mush-roll/src/commerce/ic_claims/reader.rs
+2	1	crates/mush-roll/src/commerce/ic_claims/writer.rs
+5	2	crates/mush-roll/src/commerce/mod.rs
+17	0	crates/mush-roll/src/commerce/tests.rs
+2	2	crates/mush-ruleset/src/lib.rs
+1	1	crates/mush-scenes/src/data.rs
+2	2	crates/mush-scenes/src/lib.rs
+1	1	crates/mush-script/src/lib.rs
+4	0	crates/mush-script/tests/script.rs
+227	0	crates/mush-script/tests/script/nesting.rs
+2	0	crates/mush-server/Cargo.toml
+14	0	crates/mush-server/src/boot.rs
+31	0	crates/mush-server/src/config_ext.rs
+1	1	crates/mush-server/src/lib.rs
+1	1	crates/mush-server/src/main.rs
+3	0	crates/mush-server/src/modules.rs
+64	9	crates/mush-server/src/world_task.rs
+47	2	crates/mush-server/src/world_task/mode.rs
+1	1	crates/mush-server/src/world_task/submission_disposition/tests/paid_purchase.rs
+7	1	crates/mush-server/src/world_task/submission_disposition/tests/player_market_commands.rs
+92	15	crates/mush-server/src/world_task/submission_disposition/tests/player_market_story.rs
+74	4	crates/mush-server/src/world_task/tests.rs
+8	1	crates/mush-server/tests/commerce_composition/ic_buyout_dormancy.rs
+103	17	crates/mush-server/tests/commerce_composition/ic_slice_loop.rs
+4	0	crates/mush-server/tests/split_boundary.rs
+13	7	crates/mush-server/tests/split_boundary/boot_parity.rs
+5	2	crates/mush-server/tests/split_boundary/content_studio.rs
+954	6	crates/mush-server/tests/split_boundary/dt_preparation_plans.rs
+102	48	crates/mush-server/tests/split_boundary/relay_registry.rs
+6	3	crates/mush-server/tests/world_task.rs
+283	0	crates/mush-server/tests/world_task/hostile_lines.rs
+1	1	crates/mush-session/src/lib.rs
+5	0	crates/mush-sim/src/commands.rs
+313	25	crates/mush-sim/src/ic_exclusion.rs
+229	12	crates/mush-sim/src/ic_exclusion/tests.rs
+139	4	crates/mush-sim/src/journey.rs
+3	2	crates/mush-sim/src/lib.rs
+6	0	crates/mush-sim/src/station.rs
+145	0	crates/mush-sim/src/tick.rs
+2	2	crates/mush-sim/src/transition.rs
+4	1	crates/mush-tactics/src/custody.rs
+49	24	crates/mush-tactics/src/field_ops/mod.rs
+126	116	crates/mush-tactics/src/field_ops/recovery.rs
+177	123	crates/mush-tactics/src/field_ops/salvage.rs
+40	80	crates/mush-tactics/src/field_ops/workshop.rs
+56	9	crates/mush-tactics/src/ic_custody.rs
+75	0	crates/mush-tactics/src/ic_custody/tests.rs
+1	1	crates/mush-tactics/src/lib.rs
+37	1	crates/mush-testkit/src/lib.rs
+1	1	crates/mush-testkit/src/toy_ruleset/authoritative.rs
+17	0	crates/mush-testkit/tests/acceptance.rs
+1	1	crates/mush-weather/src/lib.rs
+1	1	crates/mush-worldgen/src/lib.rs
+1	1	crates/mushd/src/lib.rs
+1	1	crates/mushd/src/main.rs
+12	3	crates/tacsim/Cargo.toml
+89	0	crates/tacsim/content/industry/cab_templates.json
+443	0	crates/tacsim/content/industry/hulls-v2.json
+417	0	crates/tacsim/content/industry/recipes-v2.json
+215	22	crates/tacsim/content/lane/ceres_phobos.json
+378	1	crates/tacsim/content/market/goods.json
+1	2	crates/tacsim/content/market/workshop_tariff.json
+8	0	crates/tacsim/content/minds/belt_raider.json
+35	0	crates/tacsim/content/minds/belt_raider.rhai
+8	0	crates/tacsim/content/minds/drone_mining.json
+21	0	crates/tacsim/content/minds/drone_mining.rhai
+8	0	crates/tacsim/content/minds/interdictor_patrol.json
+36	0	crates/tacsim/content/minds/interdictor_patrol.rhai
+8	0	crates/tacsim/content/minds/kirkwood_picket.json
+77	0	crates/tacsim/content/minds/kirkwood_picket.rhai
+89	0	crates/tacsim/content/plants/plants.json
+3	3	crates/tacsim/content/relays/luna_ceres.json
+1	1	crates/tacsim/content/sky/outer_bodies.json
+32	0	crates/tacsim/content/space/picket_cast.json
+6	1	crates/tacsim/content/units/biped_mk1.json
+6	1	crates/tacsim/content/units/biped_mk2.json
+6	1	crates/tacsim/content/units/conduct_carrier.json
+181	0	crates/tacsim/content/units/corvette.json
+10	2	crates/tacsim/content/units/dray.json
+12	4	crates/tacsim/content/units/dray_p.json
+6	1	crates/tacsim/content/units/drone_mk1.json
+13	3	crates/tacsim/content/units/halcyon.json
+6	1	crates/tacsim/content/units/heavy_mk1.json
+6	1	crates/tacsim/content/units/line_tank.json
+6	1	crates/tacsim/content/units/line_tank_eccm.json
+6	1	crates/tacsim/content/units/line_tank_ecm.json
+6	1	crates/tacsim/content/units/line_tank_laser.json
+6	1	crates/tacsim/content/units/line_tank_thermal.json
+8	2	crates/tacsim/content/units/relay_station.json
+6	1	crates/tacsim/content/units/scout_mk1.json
+8	2	crates/tacsim/content/units/target_mk1.json
+7	1	crates/tacsim/content/units/tv_escort.json
+7	1	crates/tacsim/content/units/tv_prospector.json
+287	0	crates/tacsim/content/units/tv_tender.json
+282	0	crates/tacsim/content/units/tycho_crawler.json
+437	0	crates/tacsim/content/units/tycho_lifter.json
+39	4	crates/tacsim/src/arena/core.rs
+174	10	crates/tacsim/src/arena/damage.rs
+217	0	crates/tacsim/src/arena/eject.rs
+107	1	crates/tacsim/src/arena/hash.rs
+47	4	crates/tacsim/src/arena/heat.rs
+24	1	crates/tacsim/src/arena/intents.rs
+79	9	crates/tacsim/src/arena/join.rs
+118	0	crates/tacsim/src/arena/ledger.rs
+47	8	crates/tacsim/src/arena/memory_bound.rs
+259	2	crates/tacsim/src/arena/mind.rs
+6	3	crates/tacsim/src/arena/mod.rs
+1	1	crates/tacsim/src/arena/observer.rs
+501	0	crates/tacsim/src/arena/part_effects.rs
+47	2	crates/tacsim/src/arena/party.rs
+153	0	crates/tacsim/src/arena/resolution.rs
+1	1	crates/tacsim/src/arena/rng.rs
+1	1	crates/tacsim/src/arena/runtime.rs
+12	1	crates/tacsim/src/arena/snapshot.rs
+98	19	crates/tacsim/src/arena/state.rs
+22	0	crates/tacsim/src/arena/step.rs
+76	23	crates/tacsim/src/arena/stock_mind.rs
+518	0	crates/tacsim/src/arena/tow.rs
+1	1	crates/tacsim/src/arena/view.rs
+5	0	crates/tacsim/src/arena/weapons.rs
+100	14	crates/tacsim/src/arena/withdraw.rs
+12	0	crates/tacsim/src/arena/wreck_cover.rs
+123	3	crates/tacsim/src/arena_bridge.rs
+533	47	crates/tacsim/src/arena_task.rs
+338	0	crates/tacsim/src/carrier_damage.rs
+140	1	crates/tacsim/src/commands.rs
+4	3	crates/tacsim/src/composition/industry_recipes.rs
+8	0	crates/tacsim/src/composition/industry_seams.rs
+25	5	crates/tacsim/src/composition/mind_commerce.rs
+25	1	crates/tacsim/src/composition/mod.rs
+65	9	crates/tacsim/src/composition/sim_routes.rs
+101	0	crates/tacsim/src/config.rs
+3	2	crates/tacsim/src/content.rs
+138	8	crates/tacsim/src/content_studio.rs
+120	11	crates/tacsim/src/definitions/content.rs
+82	6	crates/tacsim/src/definitions/goods.rs
+101	0	crates/tacsim/src/definitions/logistics.rs
+409	0	crates/tacsim/src/definitions/mass.rs
+143	6	crates/tacsim/src/definitions/mod.rs
+70	0	crates/tacsim/src/definitions/plant.rs
+11	0	crates/tacsim/src/definitions/resolution.rs
+192	0	crates/tacsim/src/definitions/templates.rs
+65	0	crates/tacsim/src/definitions/unit.rs
+1	1	crates/tacsim/src/deliberation/order.rs
+8	0	crates/tacsim/src/detachment.rs
+1	1	crates/tacsim/src/detachment/activation/mod.rs
+10	4	crates/tacsim/src/detachment/activation/runtime.rs
+24	1	crates/tacsim/src/detachment/commands.rs
+5	1	crates/tacsim/src/detachment/crew/mod.rs
+220	0	crates/tacsim/src/detachment/crew/runtime.rs
+16	0	crates/tacsim/src/detachment/sortie/commands.rs
+1	1	crates/tacsim/src/detachment/sortie/mod.rs
+285	125	crates/tacsim/src/detachment/sortie/prepare.rs
+9	8	crates/tacsim/src/detachment/sortie/surface.rs
+9	0	crates/tacsim/src/detachment/sortie/tick.rs
+197	58	crates/tacsim/src/field/admit.rs
+278	0	crates/tacsim/src/field/boarding.rs
+38	9	crates/tacsim/src/field/boot.rs
+499	66	crates/tacsim/src/field/carrier.rs
+226	15	crates/tacsim/src/field/close.rs
+188	48	crates/tacsim/src/field/commands.rs
+2748	416	crates/tacsim/src/field/crew.rs
+354	0	crates/tacsim/src/field/eject.rs
+324	15	crates/tacsim/src/field/exit.rs
+5	1	crates/tacsim/src/field/home.rs
+19	12	crates/tacsim/src/field/known.rs
+47	5	crates/tacsim/src/field/mod.rs
+90	0	crates/tacsim/src/field/orders.rs
+463	34	crates/tacsim/src/field/parties.rs
+184	6	crates/tacsim/src/field/provider.rs
+225	41	crates/tacsim/src/field/raiders.rs
+127	6	crates/tacsim/src/field/record.rs
+96	0	crates/tacsim/src/field/segment.rs
+423	0	crates/tacsim/src/field/standing.rs
+322	0	crates/tacsim/src/field/testimony.rs
+68	62	crates/tacsim/src/field_ops.rs
+64	24	crates/tacsim/src/hardware/bay.rs
+4	2	crates/tacsim/src/hardware/composition.rs
+2	2	crates/tacsim/src/hardware/flow/bay.rs
+2	2	crates/tacsim/src/hardware/flow/launch.rs
+15	1	crates/tacsim/src/launch.rs
+5	2	crates/tacsim/src/launch/content.rs
+4	3	crates/tacsim/src/launch/deployment.rs
+3	3	crates/tacsim/src/launch/market.rs
+15	5	crates/tacsim/src/lib.rs
+28	0	crates/tacsim/src/match_/arena_def.rs
+2	0	crates/tacsim/src/match_/cockpit.rs
+3	0	crates/tacsim/src/match_/cockpit/notices.rs
+3	2	crates/tacsim/src/match_/mod.rs
+1	1	crates/tacsim/src/match_/observer.rs
+1	1	crates/tacsim/src/match_/replay.rs
+2	1	crates/tacsim/src/match_/report.rs
+1	0	crates/tacsim/src/minds/acceptance.rs
+1	0	crates/tacsim/src/minds/bulk/experiment.rs
+68	2	crates/tacsim/src/minds/bulk/ic_integration_tests.rs
+1	0	crates/tacsim/src/minds/check.rs
+120	4	crates/tacsim/src/minds/content.rs
+4	0	crates/tacsim/src/minds/context.rs
+1	0	crates/tacsim/src/minds/coprates_drill.rs
+122	16	crates/tacsim/src/minds/earned_contacts.rs
+15	1	crates/tacsim/src/minds/ic_sortie.rs
+11	2	crates/tacsim/src/minds/ic_sortie/audit.rs
+43	12	crates/tacsim/src/minds/ic_sortie/execution.rs
+57	0	crates/tacsim/src/minds/ic_sortie/execution/tests.rs
+38	0	crates/tacsim/src/minds/ic_sortie/host.rs
+77	18	crates/tacsim/src/minds/ic_sortie/participant.rs
+19	8	crates/tacsim/src/minds/ic_sortie/records.rs
+33	5	crates/tacsim/src/minds/ic_sortie/registration.rs
+4	10	crates/tacsim/src/minds/ic_sortie/state.rs
+190	0	crates/tacsim/src/minds/ic_sortie/surface.rs
+14	4	crates/tacsim/src/minds/kernels.rs
+1	0	crates/tacsim/src/minds/meridiani_field.rs
+4	1	crates/tacsim/src/minds/mod.rs
+1	0	crates/tacsim/src/minds/registry/tests.rs
+2	1	crates/tacsim/src/minds/registry_inspection/claims.rs
+2	2	crates/tacsim/src/minds/registry_inspection/mod.rs
+3	0	crates/tacsim/src/minds/runner.rs
+1	0	crates/tacsim/src/minds/safe_conduct.rs
+72	20	crates/tacsim/src/minds/sealed.rs
+239	5	crates/tacsim/src/pack.rs
+8	1	crates/tacsim/src/port/apply.rs
+517	54	crates/tacsim/src/port/bay_work/act.rs
+243	67	crates/tacsim/src/port/bay_work/command.rs
+93	10	crates/tacsim/src/port/bay_work/jobs.rs
+1545	231	crates/tacsim/src/port/bay_work/mod.rs
+175	8	crates/tacsim/src/port/bay_work/record.rs
+342	0	crates/tacsim/src/port/bay_work/scrap.rs
+539	76	crates/tacsim/src/port/bay_work/strip.rs
+202	0	crates/tacsim/src/port/bill.rs
+55	3	crates/tacsim/src/port/boarding.rs
+186	25	crates/tacsim/src/port/burn.rs
+687	0	crates/tacsim/src/port/commission.rs
+64	10	crates/tacsim/src/port/coop.rs
+628	6	crates/tacsim/src/port/def.rs
+88	13	crates/tacsim/src/port/executor.rs
+27	2	crates/tacsim/src/port/gauges.rs
+311	0	crates/tacsim/src/port/house.rs
+469	0	crates/tacsim/src/port/house_arm.rs
+274	0	crates/tacsim/src/port/house_sweep.rs
+78	36	crates/tacsim/src/port/hull.rs
+1	1	crates/tacsim/src/port/licence.rs
+38	0	crates/tacsim/src/port/map.rs
+33	0	crates/tacsim/src/port/market.rs
+21	0	crates/tacsim/src/port/medical.rs
+1	0	crates/tacsim/src/port/mill.rs
+22	4	crates/tacsim/src/port/mod.rs
+15	9	crates/tacsim/src/port/orders.rs
+583	0	crates/tacsim/src/port/owned.rs
+490	0	crates/tacsim/src/port/passage.rs
+194	0	crates/tacsim/src/port/plant.rs
+1065	0	crates/tacsim/src/port/pools.rs
+1	1	crates/tacsim/src/port/proceeds.rs
+29	5	crates/tacsim/src/port/readiness.rs
+43	7	crates/tacsim/src/port/ship.rs
+55	19	crates/tacsim/src/port/site.rs
+2	2	crates/tacsim/src/port/site_map.rs
+13	2	crates/tacsim/src/port/site_map/picture.rs
+648	104	crates/tacsim/src/port/stock.rs
+336	0	crates/tacsim/src/port/supply.rs
+26	9	crates/tacsim/src/port/survey.rs
+1	1	crates/tacsim/src/port/survey/standing/tests.rs
+796	32	crates/tacsim/src/port/tv.rs
+155	45	crates/tacsim/src/port/vehicle.rs
+85	6	crates/tacsim/src/port/vendor.rs
+252	21	crates/tacsim/src/port/voyage.rs
+2620	0	crates/tacsim/src/port/works.rs
+13	3	crates/tacsim/src/port/workshop.rs
+26	14	crates/tacsim/src/port/yard.rs
+214	29	crates/tacsim/src/port_tick.rs
+1	1	crates/tacsim/src/quest/model.rs
+1	1	crates/tacsim/src/relay_foundry.rs
+1	1	crates/tacsim/src/sheet/agent.rs
+54	79	crates/tacsim/src/sky.rs
+1338	177	crates/tacsim/src/space/bubble.rs
+6538	0	crates/tacsim/src/space/commands.rs
+898	98	crates/tacsim/src/space/custody.rs
+1092	0	crates/tacsim/src/space/docking.rs
+1998	0	crates/tacsim/src/space/mining.rs
+351	42	crates/tacsim/src/space/mod.rs
+2431	0	crates/tacsim/src/space/picket.rs
+4210	297	crates/tacsim/src/space/tick.rs
+1	1	crates/tacsim/src/space/weapons.rs
+363	0	crates/tacsim/src/store.rs
+6	1	crates/tacsim/src/surface/act.rs
+33	7	crates/tacsim/src/surface/act/commands.rs
+20	2	crates/tacsim/src/surface/act/plans.rs
+385	17	crates/tacsim/src/surface/act/providers.rs
+2	0	crates/tacsim/src/surface/black_box.rs
+3548	0	crates/tacsim/src/surface/claim.rs
+136	9	crates/tacsim/src/surface/dispatch.rs
+102	1	crates/tacsim/src/surface/dispatch/tests.rs
+337	5	crates/tacsim/src/surface/excursion.rs
+300	0	crates/tacsim/src/surface/mind_claim.rs
+2	0	crates/tacsim/src/surface/mine.rs
+7	0	crates/tacsim/src/surface/mod.rs
+2	0	crates/tacsim/src/surface/plan.rs
+77	1	crates/tacsim/src/surface/raid.rs
+14	8	crates/tacsim/src/surface/recovery.rs
+1254	0	crates/tacsim/src/surface/retrieval.rs
+668	0	crates/tacsim/src/surface/salvage.rs
+599	0	crates/tacsim/src/surface/security.rs
+411	7	crates/tacsim/src/surface/site_record.rs
+1574	0	crates/tacsim/src/surface/tender.rs
+204	3	crates/tacsim/src/surface/tick.rs
+3477	0	crates/tacsim/src/surface/tow.rs
+55	4	crates/tacsim/tests/cost_lane.rs
+97	0	crates/tacsim/tests/domain_arena.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_arena}/arena.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_arena}/arena_task.rs
+4	2	crates/tacsim/tests/{shard_3 => domain_arena}/capacity.rs
+2	2	crates/tacsim/tests/{shard_6 => domain_arena}/cockpit.rs
+5	1	crates/tacsim/tests/{shard_3 => domain_arena}/composition_edges.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_arena}/conditions.rs
+425	34	crates/tacsim/tests/{shard_2 => domain_arena}/content.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_arena}/core_replacement.rs
+14	3	crates/tacsim/tests/{shard_3 => domain_arena}/definitions.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_arena}/deliberation.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_arena}/designs.rs
+48	28	crates/tacsim/tests/{shard_2 => domain_arena}/extensions.rs
+2	1	crates/tacsim/tests/{shard_1 => domain_arena}/field_scale.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_arena}/hulls.rs
+2	0	crates/tacsim/tests/{shard_1 => domain_arena}/match_lifecycle.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_arena}/match_lifecycle/resume_watch.rs
+1	0	crates/tacsim/tests/{shard_2 => domain_arena}/minds.rs
+1	1	crates/tacsim/tests/{shard_2 => domain_arena}/minds_pool.rs
+32	10	crates/tacsim/tests/{shard_2 => domain_arena}/minds_rhai.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_arena}/motor.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_arena}/parties.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_arena}/perception.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_arena}/reflex.rs
+38	2	crates/tacsim/tests/{shard_1 => domain_arena}/replay.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_arena}/report.rs
+1	1	crates/tacsim/tests/{shard_4 => domain_arena}/resolution.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_arena}/sheet.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_arena}/shipped_scale.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_arena}/sight.rs
+52	29	crates/tacsim/tests/{shard_2 => domain_arena}/twin.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_arena}/weapons.rs
+113	0	crates/tacsim/tests/domain_economy.rs
+0	0	crates/tacsim/tests/{shard_5 => domain_economy}/claims.rs
+71	22	crates/tacsim/tests/{shard_4 => domain_economy}/commerce.rs
+7	4	crates/tacsim/tests/{shard_1 => domain_economy}/coop.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_economy}/deposits.rs
+6	2	crates/tacsim/tests/{shard_3 => domain_economy}/drones.rs
+2	0	crates/tacsim/tests/{shard_3 => domain_economy}/e7c1.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_economy}/e7r1.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_economy}/e7r2.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_economy}/economy.rs
+207	0	crates/tacsim/tests/domain_economy/house_arm_rs6b.rs
+299	0	crates/tacsim/tests/domain_economy/house_sweep_rs6c.rs
+441	0	crates/tacsim/tests/domain_economy/in10_pools.rs
+417	0	crates/tacsim/tests/domain_economy/in1_accounting.rs
+447	0	crates/tacsim/tests/domain_economy/in2_lifecycle.rs
+575	0	crates/tacsim/tests/domain_economy/in3_order_contract.rs
+583	0	crates/tacsim/tests/domain_economy/in5_production.rs
+270	0	crates/tacsim/tests/domain_economy/in6_part_lot.rs
+710	0	crates/tacsim/tests/domain_economy/in7_part_recipes.rs
+548	0	crates/tacsim/tests/domain_economy/in8_mass_scrap.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_economy}/landing.rs
+176	13	crates/tacsim/tests/{shard_4 => domain_economy}/lane.rs
+152	17	crates/tacsim/tests/{shard_3 => domain_economy}/mill.rs
+1	1	crates/tacsim/tests/{shard_5 => domain_economy}/mining.rs
+86	39	crates/tacsim/tests/{shard_3 => domain_economy}/orders.rs
+0	0	crates/tacsim/tests/{shard_6 => domain_economy}/plans.rs
+51	24	crates/tacsim/tests/{shard_2 => domain_economy}/plumbing.rs
+506	0	crates/tacsim/tests/domain_economy/port_security_rs7.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_economy}/port_tick.rs
+19	13	crates/tacsim/tests/{shard_3 => domain_economy}/ports.rs
+7	1	crates/tacsim/tests/{shard_1 => domain_economy}/price.rs
+1	1	crates/tacsim/tests/{shard_2 => domain_economy}/quarry.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_economy}/reset.rs
+8	5	crates/tacsim/tests/{shard_1 => domain_economy}/sale.rs
+12	9	crates/tacsim/tests/{shard_5 => domain_economy}/sites.rs
+8	4	crates/tacsim/tests/{shard_1 => domain_economy}/stations.rs
+127	0	crates/tacsim/tests/domain_economy/tycho_house_rs6a.rs
+2	0	crates/tacsim/tests/{shard_6 => domain_economy}/unloading.rs
+902	0	crates/tacsim/tests/domain_economy/yard_in9.rs
+111	0	crates/tacsim/tests/domain_field.rs
+857	0	crates/tacsim/tests/domain_field/bay_36a.rs
+126	50	crates/tacsim/tests/{shard_1 => domain_field}/bay_gc8.rs
+336	0	crates/tacsim/tests/domain_field/crew_custody.rs
+25	15	crates/tacsim/tests/{shard_1 => domain_field}/crew_exit.rs
+176	4	crates/tacsim/tests/{shard_1 => domain_field}/crew_treatment.rs
+2	1524	crates/tacsim/tests/{shard_1 => domain_field}/driving.rs
+228	54	crates/tacsim/tests/{shard_1 => domain_field}/escort_lease.rs
+56	14	crates/tacsim/tests/{shard_4 => domain_field}/excursions.rs
+395	0	crates/tacsim/tests/domain_field/field_boarding.rs
+905	0	crates/tacsim/tests/domain_field/field_carrier.rs
+15	19	crates/tacsim/tests/{shard_1 => domain_field}/field_crash.rs
+639	0	crates/tacsim/tests/domain_field/field_director.rs
+513	0	crates/tacsim/tests/domain_field/field_fr1.rs
+488	0	crates/tacsim/tests/domain_field/field_fr2.rs
+267	0	crates/tacsim/tests/domain_field/field_fr4.rs
+1025	0	crates/tacsim/tests/domain_field/field_fr5.rs
+352	0	crates/tacsim/tests/domain_field/field_gc10.rs
+8	6	crates/tacsim/tests/{shard_1 => domain_field}/field_gc2.rs
+403	0	crates/tacsim/tests/domain_field/field_gc3.rs
+742	0	crates/tacsim/tests/domain_field/field_gc4.rs
+345	0	crates/tacsim/tests/domain_field/field_gc5.rs
+528	0	crates/tacsim/tests/domain_field/field_gc6.rs
+1	279	crates/tacsim/tests/{shard_1 => domain_field}/field_host.rs
+54	278	crates/tacsim/tests/{shard_1 => domain_field}/field_raiders.rs
+424	0	crates/tacsim/tests/domain_field/field_rs1.rs
+339	0	crates/tacsim/tests/domain_field/field_rs2.rs
+570	0	crates/tacsim/tests/domain_field/field_rs5.rs
+93	123	crates/tacsim/tests/{shard_1 => domain_field}/field_story.rs
+141	0	crates/tacsim/tests/{shard_4 => domain_field}/ic_sortie_surface.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_field}/m8_leaks.rs
+832	8	crates/tacsim/tests/{shard_4 => domain_field}/m8_world.rs
+73	5	crates/tacsim/tests/{shard_1 => domain_field}/one_picture.rs
+921	0	crates/tacsim/tests/domain_field/review_36a.rs
+562	0	crates/tacsim/tests/domain_field/salvage_close.rs
+1	35	crates/tacsim/tests/{shard_1 => domain_field}/site_record.rs
+300	0	crates/tacsim/tests/domain_field/testimony.rs
+332	0	crates/tacsim/tests/domain_field/vacated_return_rs4.rs
+59	0	crates/tacsim/tests/domain_world.rs
+1	1	crates/tacsim/tests/{shard_4 => domain_world}/chart.rs
+0	0	crates/tacsim/tests/{shard_3 => domain_world}/ephemeris.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/geology.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_world}/ic_sortie_voyages.rs
+1	1	crates/tacsim/tests/{shard_4 => domain_world}/knowing.rs
+0	0	crates/tacsim/tests/{shard_2 => domain_world}/moon_ports.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/onboarding_quests.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/onboarding_trade.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_world}/passage.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/passengers.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/quest_commissions.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/quest_contacts.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/quest_followups.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/quest_passages.rs
+0	0	crates/tacsim/tests/{shard_4 => domain_world}/quests.rs
+0	0	crates/tacsim/tests/{shard_1 => domain_world}/s9_corridor.rs
+1	1	crates/tacsim/tests/{shard_4 => domain_world}/sky.rs
+54	33	crates/tacsim/tests/{shard_4 => domain_world}/vehicles.rs
+11222	0	crates/tacsim/tests/domain_world/voyage.rs
+135	53	crates/tacsim/tests/harness.rs
+454	92	crates/tacsim/tests/harness_baseline/arena.linux.json
+0	83	crates/tacsim/tests/shard_1.rs
+0	481	crates/tacsim/tests/shard_1/field_carrier.rs
+0	371	crates/tacsim/tests/shard_1/field_director.rs
+0	60	crates/tacsim/tests/shard_2.rs
+0	3791	crates/tacsim/tests/shard_2/voyage.rs
+0	58	crates/tacsim/tests/shard_3.rs
+0	62	crates/tacsim/tests/shard_4.rs
+0	30	crates/tacsim/tests/shard_5.rs
+0	30	crates/tacsim/tests/shard_6.rs
+2	2	crates/tacsim/tests/support/drones.rs
+170	0	crates/tacsim/tests/support/field/claim_rig.rs
+907	0	crates/tacsim/tests/support/field/custody_rig.rs
+1888	0	crates/tacsim/tests/support/field/driving_rig.rs
+371	0	crates/tacsim/tests/support/field/field_host_rig.rs
+286	0	crates/tacsim/tests/support/field/field_raiders_rig.rs
+97	0	crates/tacsim/tests/support/field/grounds_rig.rs
+45	0	crates/tacsim/tests/support/field/site_record_rig.rs
+417	0	crates/tacsim/tests/support/lane_chain.rs
+3	0	crates/tacsim/tests/support/mod.rs
+1	0	crates/tacsim/tests/support/outer_bodies_golden.json
+2	64	crates/tacsim/tests/support/sites.rs
+3	2	deploy/README.md
+1	1	deploy/drain/swap.sh
+1	1	deploy/instance/launch.json.example
+9	7	deploy/instance/render.sh
+11	5	deploy/sshdoorway/check-logging.sh
+2	0	deploy/vps-runner/provision.sh
+3	2	docs/PLAN.md
+43	0	docs/README.md
+13	0	docs/archive/README.md
+9	4	docs/{next_ideas.md => archive/next-ideas.md}
+62	2608	docs/bot.md
+4	0	docs/bot/README.md
+2	2	docs/{bot-analysis.md => bot/analysis.md}
+2	2	docs/{bot-budgets.md => bot/budgets.md}
+2	2	docs/{bot-campaigns.md => bot/campaigns.md}
+0	0	docs/{bot-cast-debug.md => bot/cast-debug.md}
+4	4	docs/{bot-conversation.md => bot/conversation.md}
+0	0	docs/{bot-decisions.md => bot/decisions.md}
+2625	0	docs/bot/guide.md
+1	1	docs/{bot-life.md => bot/life.md}
+10	10	docs/{bot-milestones.md => bot/milestones.md}
+0	0	docs/{bot-playtesting.md => bot/playtesting.md}
+1	1	docs/{bot-probes.md => bot/probes.md}
+6	6	docs/{bot-prompting-research.md => bot/prompting-research.md}
+2	2	docs/{bot-recall.md => bot/recall.md}
+4	4	docs/{bot-regression.md => bot/regression.md}
+11	11	docs/{bot-social-campaign-plan.md => bot/social-campaign-plan.md}
+2	2	docs/{bot-social.md => bot/social.md}
+2	2	docs/{bot-studio.md => bot/studio.md}
+2	2	docs/{bot-traces.md => bot/traces.md}
+1	1	docs/{bot-wave1-plan.md => bot/wave1-plan.md}
+0	0	docs/{bot-wave2-plan.md => bot/wave2-plan.md}
+0	0	docs/{bot-wave3-plan.md => bot/wave3-plan.md}
+1	1	docs/{bot-wave4-plan.md => bot/wave4-plan.md}
+0	0	docs/{bot-wave5-plan.md => bot/wave5-plan.md}
+100	0	docs/design.md
+1	1	docs/design/08e-e6-owner-questions.md
+24	0	docs/design/10b-e7-implementation-plan.md
+1	1	docs/design/11-h-implementation-plan.md
+3	3	docs/design/11-tacsim-setting.md
+1	1	docs/design/11a-neighborhood-geography-review.md
+1	1	docs/design/15-comms-relay-backbone.md
+10	10	docs/design/16b-combat-implementation-plan.md
+4	4	docs/design/16c-simulator-backlog.md
+4	0	docs/design/17-unit-minds.md
+1	1	docs/design/17b-unit-minds-implementation-plan.md
+2	2	docs/design/17c-m5-design-note.md
+23	0	docs/design/17g-m7-completion-plan.md
+10	0	docs/design/17h-m8-contraband-procurement-plan.md
+23	1	docs/design/20-cut-notes.md
+3	3	docs/design/20-surface-mining.md
+9	3	docs/design/21-graphics-engine.md
+593	0	docs/design/23-cut-notes.md
+885	13	docs/design/23-ic-sorties.md
+10	1	docs/design/27-ic-field-operations-design-and-survey.md
+19	0	docs/design/31-cut-notes.md
+96	12	docs/design/32-ic-combat-field.md
+1	1	docs/design/34-content-studio.md
+579	0	docs/design/35-cut-notes.md
+51	33	docs/design/35-ship-free-flight-combat-and-mining.md
+178	0	docs/design/35b-seam-first-train-review.md
+347	0	docs/design/35c-remediation-train-review.md
+1024	7	docs/design/36-ground-combat-after-the-field.md
+406	0	docs/design/36a-ground-combat-review-triage-2026-11-02.md
+323	0	docs/design/37-ic-phase-closeout-2026-11-02.md
+968	0	docs/design/38-after-the-ic-phase-next-systems.md
+986	0	docs/design/39-cut-notes.md
+1585	0	docs/design/39-industry-production-chain.md
+1134	0	docs/design/40-cut-notes.md
+945	0	docs/design/40-field-second-round.md
+751	0	docs/design/41-cut-notes.md
+1462	0	docs/design/41-restoration-and-the-salvage-loop.md
+976	0	docs/design/42-crew-custody-and-capture.md
+545	0	docs/design/42-cut-notes.md
+604	0	docs/design/42b-surrender.md
+719	0	docs/design/43-cut-notes.md
+858	0	docs/design/43-testing-strategy.md
+141	0	docs/design/43a-gemini-4-argon-review.md
+56	0	docs/design/43b-chatgpt-astra-6-review.md
+242	0	docs/design/43c-the-clock-seam.md
+268	89	docs/design/README.md
+16	10	docs/{scenes_factions_knowledge.md => design/scenes-factions-knowledge.md}
+159	0	docs/development.md
+1	1	docs/help/coop.md
+171	23	docs/help/field.md
+1	1	docs/help/hardware.md
+1	1	docs/help/mining.md
+2	2	docs/help/orders.md
+1	1	docs/help/quests.md
+124	0	docs/help/space.md
+1	1	docs/interface/01-assessment.md
+2	2	docs/interface/02-implementation-plan.md
+2	2	docs/interface/03-discord-owner-questions.md
+187	30	docs/ops.md
+10	0	fiat_budget/mush-atlas-tests.txt
+8	0	fiat_budget/mush-bot-tests.txt
+9	0	fiat_budget/mush-campaign-tests.txt
+8	0	fiat_budget/mush-canon-tests.txt
+7	0	fiat_budget/mush-comsys-tests.txt
+7	0	fiat_budget/mush-contract-tests-tests.txt
+8	0	fiat_budget/mush-economy-tests.txt
+8	0	fiat_budget/mush-faction-tests.txt
+9	0	fiat_budget/mush-industry-tests.txt
+7	0	fiat_budget/mush-mail-tests.txt
+9	0	fiat_budget/mush-npc-tests.txt
+7	0	fiat_budget/mush-org-tests.txt
+9	0	fiat_budget/mush-propagation-tests.txt
+9	0	fiat_budget/mush-scenes-tests.txt
+11	0	fiat_budget/mush-server-tests.txt
+15	0	fiat_budget/mush-sim-tests.txt
+8	0	fiat_budget/mush-tactics-tests.txt
+7	0	fiat_budget/mush-testkit-tests.txt
+8	0	fiat_budget/mush-weather-tests.txt
+20	0	fiat_budget/mushd-tests.txt
+38	0	fiat_budget/tacsim-tests.txt
+2	2	mush-bot.toml.example
+1	1	panic_budget/mush-ansi.txt
+1	1	panic_budget/mush-canon.txt
+1	1	panic_budget/mush-comsys.txt
+1	1	panic_budget/mush-config.txt
+1	1	panic_budget/mush-core.txt
+1	1	panic_budget/mush-economy.txt
+1	1	panic_budget/mush-faction.txt
+1	1	panic_budget/mush-gateway.txt
+1	1	panic_budget/mush-housing.txt
+1	1	panic_budget/mush-industry.txt
+1	1	panic_budget/mush-inventory.txt
+1	1	panic_budget/mush-ipc.txt
+1	1	panic_budget/mush-jobs.txt
+1	1	panic_budget/mush-llm.txt
+1	1	panic_budget/mush-mail.txt
+1	1	panic_budget/mush-market.txt
+1	1	panic_budget/mush-net-discord.txt
+1	1	panic_budget/mush-net-ssh.txt
+1	1	panic_budget/mush-net-web.txt
+1	1	panic_budget/mush-npc.txt
+1	1	panic_budget/mush-org.txt
+1	1	panic_budget/mush-privileges.txt
+1	1	panic_budget/mush-propagation.txt
+1	1	panic_budget/mush-proto.txt
+1	1	panic_budget/mush-ruleset.txt
+1	1	panic_budget/mush-scenes.txt
+1	1	panic_budget/mush-script.txt
+1	1	panic_budget/mush-server.txt
+1	1	panic_budget/mush-session.txt
+1	1	panic_budget/mush-sim.txt
+1	1	panic_budget/mush-store.txt
+1	1	panic_budget/mush-tactics.txt
+1	1	panic_budget/mush-weather.txt
+1	1	panic_budget/mushd.txt
+1	1	panic_budget/tacsim.txt
+38	17	scripts/ci-tacsim-shard.sh
+8	4	scripts/harness-weekly.sh
+183	0	scripts/release-smoke.sh
+4	2	scripts/tests/reset-instance.sh
+19	10	scripts/vps-gate.sh
+11	5	web/README.md
+170	0	web/e2e/boot-mushd.mjs
+259	0	web/e2e/smoke.spec.ts
+53	7	web/package-lock.json
+4	2	web/package.json
+30	0	web/playwright.config.ts
+24	1	web/src/components/CockpitScreen.test.ts
+156	0	web/src/components/Game.test.ts
+30	1	web/src/components/PictureView.svelte
+12	1	web/src/components/PictureView.test.ts
+12	6	web/src/components/ReplayScreen.test.ts
+68	0	web/src/components/RoomBand.test.ts
+149	0	web/src/components/UnitScreen.test.ts
+31	0	web/src/components/reach.ts
+1	0	web/src/lib/fixtures/chart/sky_chart.json
+1	1	web/src/lib/fixtures/cockpit/README.md
+4	4	web/src/lib/fixtures/site/site_map.json
+0	94	web/src/lib/game.test.ts
+1	1	web/src/lib/map-editor.test.ts
+148	2	web/src/lib/picture.test.ts
+120	3	web/src/lib/picture.ts
+22	0	web/src/lib/pixel/local.ts
+35	0	web/src/lib/pixel/wasm.ts
+1	7	web/src/lib/roomband.test.ts
+5	72	web/src/lib/stores/unit.test.ts

@@ -1,0 +1,42 @@
+
+running 5 tests
+
+thread 'port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact' (65432) panicked at crates\tacsim\tests\domain_economy\port_security_rs7.rs:308:5:
+the next player's command erased the unpaid contract's only delivery fact: Contract #5 is active: every party has accepted.
+Retrieval job #548 posted for OWP-TV-01: 5173.00cr escrowed, paid on delivery. +salvage/jobs lists it.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact ... FAILED
+
+thread 'port_security_rs7::review_72h_unpaid_debt_must_still_refuse_a_second_desk_attempt' (10536) panicked at crates\tacsim\tests\domain_economy\port_security_rs7.rs:274:5:
+a second command before the next sweep must still refuse: debt status Some(Active), no payment
+test port_security_rs7::review_72h_unpaid_debt_must_still_refuse_a_second_desk_attempt ... FAILED
+
+thread 'yard_in9::review_72h_yard_cancel_returns_identified_parts' (52512) panicked at crates\tacsim\tests\domain_economy\yard_in9.rs:120:5:
+assertion `left == right` failed: cancel must return the exact lot; refusals: ["tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }", "tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }", "tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }", "tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }", "tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }", "tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }", "tacsim_works: Provider { action: DefinitionRef { key: DefinitionKey { owner: OwnerId(\"tacsim\"), kind: DefinitionKind(\"action\"), id: DefinitionId(\"tacsim_works\") }, version: 1, digest: DefinitionDigest(\"f5cc1bc0444eb8858ff5230ce04833cb88acf3752a954f6594b8a00e455ef8e4\") }, source: ActionError { code: ProviderRejected, retryable: false, message: \"the goods are no longer there to move\" } }"]; contract: WorksContract { id: 160, front: Yard, facility: #153, escrow_crate: #829, requester: #808, payer: Object(#808), beneficiary: Object(#808), account: 29, house: false, pack: CanonicalId("tacsim.industry.hulls"), version: 2, recipe: CanonicalId("tv_escort"), quantity: 1, bill: [Goods { good: CanonicalId("structural_alloys"), units: 3 }, Goods { good: CanonicalId("industrial_parts"), units: 1 }, Goods { good: CanonicalId("tacsim.part.plant.vehicle_mk1"), units: 1 }, Goods { good: CanonicalId("tacsim.part.sensor.visual_mk1"), units: 1 }, Goods { good: CanonicalId("tacsim.part.weapon.cannon_105"), units: 1 }, Goods { good: CanonicalId("tacsim.part.weapon.mg_coax"), units: 1 }], work_units: 48, booked_ic: 1040730, booking_minor: 163100, order: Some(15931978443344344405), unbound: 0, delivered_ic: None, storage_days: 0, acts: 1, owed: Some(WorksAct { act: 2, by: #808, from: 160, to: 159, goods: [Goods { good: CanonicalId("tacsim.part.sensor.visual_mk1"), units: 1 }], lots: [LotId(98100)], then: Returned, tries: 4 }), closed: None }
+  left: EndpointRef(VaultId(160))
+ right: EndpointRef(VaultId(159))
+test yard_in9::review_72h_yard_cancel_returns_identified_parts ... FAILED
+
+thread 'yard_in9::review_72h_yard_keeps_a_used_parts_condition' (61952) panicked at crates\tacsim\tests\domain_economy\yard_in9.rs:178:5:
+assertion `left == right` failed: building a hull must not repair an input part for free; input=Some(LotId(99003))
+  left: Intact
+ right: Damaged
+test yard_in9::review_72h_yard_keeps_a_used_parts_condition ... FAILED
+
+thread 'yard_in9::review_72h_yard_quantity_creates_each_paid_hull' (63628) panicked at crates\tacsim\tests\domain_economy\yard_in9.rs:89:5:
+assertion `left == right` failed: two paid kits must produce two hulls: Order 158: the yard commissions her as SYB-01; she is handed over when the work is done.
+Queued.; YardCommission { order: 158, work_order: 13282889579307113686, facility: #153, home: CanonicalId("stickney_port"), design: CanonicalId("tacsim.unit.tv_escort"), requester: #808, beneficiary: Object(#808), mark: "SYB-01", n: 0, ship: false, kit: LotId(16844842985972370960), parts: [LotId(97002), LotId(97003), LotId(97004), LotId(97005), LotId(97006), LotId(97007), LotId(97008), LotId(97009)], step: Done, row: Some(Rig(RigRow { n: 0, mark: "SYB-01", tv: 810, rooms: {CanonicalId("cab"): 811, CanonicalId("locker"): 812}, vault: Some(159) })), hold: None, at_ic: 349512 }
+  left: 1
+ right: 2
+test yard_in9::review_72h_yard_quantity_creates_each_paid_hull ... FAILED
+
+failures:
+
+failures:
+    port_security_rs7::review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact
+    port_security_rs7::review_72h_unpaid_debt_must_still_refuse_a_second_desk_attempt
+    yard_in9::review_72h_yard_cancel_returns_identified_parts
+    yard_in9::review_72h_yard_keeps_a_used_parts_condition
+    yard_in9::review_72h_yard_quantity_creates_each_paid_hull
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 562 filtered out; finished in 40.42s

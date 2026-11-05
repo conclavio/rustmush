@@ -883,20 +883,71 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Browser smoke (TS.9) - the SPA and Chromium
+      # 2026-11-05: every TS.9 step is bounded. Run 42051987761 (PR #478) sat
+      # for hours in `npx playwright install --with-deps chromium`: apt-get had
+      # stalled on a mirror, and the step had only the job's 360 minutes.
+      # - Chromium's download is cached, keyed on the lock file's Playwright
+      #   version (one browser build per version).
+      # - The install is retried once, each try bounded.
+      # - The system packages (`install-deps`, the apt step that stalled) are
+      #   installed only when Chromium cannot launch without them; the runner
+      #   image usually carries them.
+      # - If the browser still cannot be installed, that is the mirror, not
+      #   this change: the smoke is skipped with a warning and the cell stays
+      #   green. The smoke itself is never soft: when it runs, a failure fails
+      #   the cell, bounded at 5 min.
+      - name: Browser smoke (TS.9) - the SPA
         if: matrix.shard == 'rest-mushd'
+        timeout-minutes: 10
         working-directory: web
         run: |
           npm ci
           npm run build
-          npx playwright install --with-deps chromium
-      - name: Browser smoke (TS.9) - the mushd binary
+      - name: Browser smoke (TS.9) - the Playwright version
+        id: playwright-version
         if: matrix.shard == 'rest-mushd'
+        working-directory: web
+        run: |
+          echo "version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")" >> "$GITHUB_OUTPUT"
+      - name: Browser smoke (TS.9) - the cached browser
+        if: matrix.shard == 'rest-mushd'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      - name: Browser smoke (TS.9) - Chromium
+        id: chromium
+        if: matrix.shard == 'rest-mushd'
+        timeout-minutes: 10
+        continue-on-error: true
+        working-directory: web
+        run: |
+          set -euo pipefail
+          bounded() { timeout 240 "$@"; }
+          launches() { timeout 60 node -e "require('@playwright/test').chromium.launch().then((b) => b.close())"; }
+          bounded npx playwright install chromium || {
+            echo "::warning title=Chromium install retried::the first try failed or timed out"
+            bounded npx playwright install chromium
+          }
+          if ! launches; then
+            echo "Chromium does not launch with the image's packages; installing its system dependencies"
+            bounded npx playwright install-deps chromium || {
+              echo "::warning title=Chromium deps retried::the first try failed or timed out"
+              bounded npx playwright install-deps chromium
+            }
+            launches
+          fi
+      - name: Browser smoke (TS.9) - skipped, no browser
+        if: matrix.shard == 'rest-mushd' && steps.chromium.outcome != 'success'
+        run: echo "::warning title=Browser smoke skipped::Chromium could not be installed (a package mirror, twice in 10 minutes); the TS.9 smoke did not run in this cell"
+      - name: Browser smoke (TS.9) - the mushd binary
+        if: matrix.shard == 'rest-mushd' && steps.chromium.outcome == 'success'
         run: |
           # Built by the sweep above; built here only if it is not.
           test -x target/debug/mushd || cargo build -p mushd
       - name: Browser smoke (TS.9)
-        if: matrix.shard == 'rest-mushd'
+        if: matrix.shard == 'rest-mushd' && steps.chromium.outcome == 'success'
+        timeout-minutes: 5
         working-directory: web
         env:
           MUSHD_BIN: ${{ github.workspace }}/target/debug/mushd

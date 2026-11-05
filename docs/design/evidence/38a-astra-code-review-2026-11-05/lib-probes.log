@@ -1,0 +1,24 @@
+
+running 3 tests
+
+thread 'field::carrier::review_72h_tests::review_72h_a_refused_boarding_rejoin_remains_retryable' (59416) panicked at crates\tacsim\src\field\carrier.rs:1044:9:
+A hull whose carrier was lost must stay queued for re-admission after a join refusal
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test field::carrier::review_72h_tests::review_72h_a_refused_boarding_rejoin_remains_retryable ... FAILED
+
+thread 'field::crew::tests::review_72h_capture_vacates_every_captive_station' (30252) panicked at crates\tacsim\src\field\crew.rs:2808:9:
+Q-42-1: every captive must lose every station in the casualty
+test field::crew::tests::review_72h_capture_vacates_every_captive_station ... FAILED
+Error: assertion `left == right` failed: D-23-17: a drop is journalled only once per epoch
+  left: 1
+ right: 0
+test minds::ic_sortie::execution::tests::review_72h_carried_abi_drop_is_not_journalled_again_in_the_next_field ... FAILED
+
+failures:
+
+failures:
+    field::carrier::review_72h_tests::review_72h_a_refused_boarding_rejoin_remains_retryable
+    field::crew::tests::review_72h_capture_vacates_every_captive_station
+    minds::ic_sortie::execution::tests::review_72h_carried_abi_drop_is_not_journalled_again_in_the_next_field
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 2190 filtered out; finished in 0.40s

@@ -350,9 +350,6 @@ fn owed_minor(w: &World, actor: ObjId) -> i64 {
         .fold(0_i64, |sum, o| sum.saturating_add(o.amount.minor()))
 }
 
-/// **The quarantine's line for `carrier`** (`DepartRefusalKind::Quarantined`): `Some` while a
-/// fine stands owed against her master or her operator.
-#[must_use]
 /// The minor units of the delinquent fines that hold `carrier`: her master's and operator's.
 fn held_minor(w: &World, carrier: ObjId) -> i64 {
     answerers(w, carrier)
@@ -367,6 +364,9 @@ pub fn holds(w: &World, carrier: ObjId) -> bool {
     held_minor(w, carrier) > 0
 }
 
+/// **The quarantine's line for `carrier`** (`DepartRefusalKind::Quarantined`): `Some` while a
+/// fine past its grace stands owed against her master or her operator.
+#[must_use]
 pub(crate) fn quarantine_line(
     ctx: &Ctx<'_>,
     carrier: ObjId,

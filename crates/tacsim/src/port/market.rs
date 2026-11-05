@@ -287,6 +287,11 @@ impl VenueGate for PortVenueGate {
             .is_some_and(|map| vendor_orgs(map).contains(org))
     }
 
+    /// Doc 39 cut IN.11: a part sells as its lots (the inventory's `PartGoods`, read here too).
+    fn indivisible(&self, commodity: &CanonicalId) -> bool {
+        crate::port_tick::is_part(commodity)
+    }
+
     /// Doc 18 cut IC14 row 52 (§4.3; Q-18-47): the signatory NPC the port map
     /// records for the vendor whose org is `seller`, by name.
     fn signatory(&self, w: &World, market: &MarketId, seller: &PrincipalId) -> Option<String> {
