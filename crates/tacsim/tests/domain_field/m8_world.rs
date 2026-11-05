@@ -1115,7 +1115,7 @@ pub(crate) fn recover(world: &mut M8World) {
 /// 3. the paid licence resold to another player: the seller's launch is refused as a licence
 ///    not held, the rig left in the bay (a pending transfer, D-UM-40's sentence naming the
 ///    mind, needs an open paid claim on the licence, S.4b's);
-/// 4. the paid licence past its grace (the IC clock past the term and its three days): the ROM
+/// 4. the paid licence past its grace (the IC clock past the term and its 28 days' Grace): the ROM
 ///    is sealed, the line names the licence `lapsed`, the operator alone hears the clause in the
 ///    launch's end, and the ring takes no mark for the fall.
 #[tokio::test(flavor = "current_thread")]
@@ -1279,7 +1279,9 @@ async fn m8g_story_tier2_held_minds_seal_aboard() {
     // 4. A second paid Pin (Meridiani's), its term and grace past: the ROM, told only here.
     let meridiani = listed[1].clone();
     let lapsing = buy(&mut world, meridiani.2);
-    let past = world.rig.tw.world().now() + 94 * 86_400;
+    // The paid term (90 IC days) and its Grace (28 IC days since the owner's player-response
+    // rule of 2026-11-04, `launch::content::GRACE_SECONDS`; 3 before it), and one day more.
+    let past = world.rig.tw.world().now() + (90 + 28 + 1) * 86_400;
     world.rig.tw.world_mut().set_now(past);
     let heard = launch(
         &mut world,
