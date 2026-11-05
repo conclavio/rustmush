@@ -316,3 +316,34 @@ running holds the lapse back.
 The two (s4) stories add 3.06 summed minutes to `domain_field`: the 512 run (112.9 s) in shard_2 and
 the 256 run (70.6 s) in shard_6. Each jumps the IC clock 28 days with `to_ic` and pumps no field
 through the jump.
+
+## SU.6 — docs, and the close-out
+
+§5's amendments rode each cut's PR. The close-out PR adds the last three, and the programme closes
+with doc 42b at Draft 0.4, as built.
+
+- **Doc 40 §4a** records SU.2's re-run: the harness kind dispatched on conclav-dev (run
+  42059596120), every pin unmoved, nothing re-blessed.
+- **Doc 42 §7's** closing line points at doc 42b as built.
+- **Doc 42b's** header lists every cut's PR, the review fixes beside the chain, where each of §5's
+  amendments landed, and the open findings. The README row is updated with it.
+
+**Beside the chain** (the 38a/38b review, the same files):
+
+- **#497.**
+  - F-14: `crew::release_fee_due` puts the fee due at `retrieval::debt_due`. It is pinned in
+    `player_wait_floors` item 10, and CR.2's paid story pays at the due instant.
+  - Astra #7: `vacate_seat` vacates every station a captive holds. Tested by the review's probe.
+  - Astra #12: the post-field eject finds the hull up the location chain (`eject::seated_unit`).
+  - F-22b: `+mine` refuses a captive anything but `/status`, and `+sortie/unseat` is held like
+    `/board`.
+- **#498, F-22a.** `mush-comsys` gains a game-free speak gate, `transit::SpeakGate`.
+  - The composition registers it on `TransportComsysModule::with_speak_gate`, and both IC speaking
+    paths ask it before `transit::submit`.
+  - Tacsim's `DetachmentChatGate` answers `crew::refusal(Gate::Chat)` for `dt:` keys only.
+  - A captive is gagged, not removed, so release restores the radio with no write.
+  - It is proved end to end in `split_boundary`'s `f22a_a_captive_is_gagged_on_the_roster_channel_until_released`.
+
+**Open after the close-out.** No shipped rig can tow a raider's 30 t line tank (SU.4's departure).
+That needs an owner ruling or content before Q-42b-14's "anyone may take it in" can happen with the
+shipped raiders.
