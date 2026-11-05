@@ -186,7 +186,8 @@ fn step(
             continue;
         }
         let order = crate::port::apply::alloc_vault_id(ctx)?.0;
-        let (n, _) = crate::port::commission::next_mark(ctx.w);
+        // The house's own pool indices, past every yard order's (its marks are its own).
+        let n = crate::port::commission::HOUSE_POOL_BASE + u32::from(!ship);
         let record = YardCommission {
             order,
             work_order: 0,
