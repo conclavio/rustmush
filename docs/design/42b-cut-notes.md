@@ -76,3 +76,7 @@ contract (Q-42b-2, Q-42-26), even after `on_frames` has written it incapacitated
   included. Since SU.0 it carries the prior record's resolve.
 - The `check_in` widening keys on the resolve rather than on any NPC with a record, so a hired
   pilot's `on_frames` record stays inert. That is Q-42b-2's rule.
+
+**Cell delta (rule #14).** No story is added. `field_raiders::cf6_…` gains two read-only assertion loops
+over the seeded crew (no extra pulses), and the tacsim lib binary gains one in-source test of well under a
+second. No domain binary's summed minutes move beyond run-to-run variance.
