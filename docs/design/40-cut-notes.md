@@ -857,6 +857,41 @@ went red on main once IN.5 (#414) merged after this cut.
       27), the lib's `field::`, `withdraw`, `sortie`, `tow` and `join` tests, and mush-server's
       `dt_preparation_plans::` (55 of 55).
 
+- **The 38a/38b review's F-15 and F-08, fixed** (2026-11-05, off `fc0e6333`):
+  - **F-15, the rejoin.**
+    - A hull taken back in at its ramp keeps its `Boarding` row until the kernel answers the join. The boarding
+      pass skips a row whose join is still with the kernel (`FieldBook::rejoining`). `carrier::on_joined` drops
+      the row once the join is taken. On a refusal the row stays, and the next pass asks again. Before, the row
+      went as soon as the join was queued, so a refusal stranded the hull outside the field.
+    - `go_back` now drops every exit the hull still has on its way (`exit::forget`): its `ExitBook` row, the
+      `OwedExits` entry and the live record's `owed_exits`. An exit the record already names is struck by a new
+      host write, `tacsim_field op=rejoin` (`SiteRecord::rejoin`). It is owed in `exit::OwedRejoins` and offered
+      fixed, as `exit` is. `OwedRejoins` is RAM only; a restart before the write lands leaves the exit named.
+    - `exit::tick` runs the boarding pass first, so no continuation starts a recover in the same pass for a hull
+      going back in.
+    - `join_with`'s message build was left alone: the D-23-18 work owns it (`source` for a claimed rig).
+  - **F-08, a carrier's first launch.**
+    - `carrier::joining_as` now gives every entrant the field already admitted the key of its live party
+      (`parties::keep_admitted_keys`), before the friendships and the stance table read the entrants. A carrier
+      admitted as its commander's party of one keeps that key when its first flight launches into the running
+      field. The launch is then its carrier's Friend, and the carrier's organizations stay on its side.
+    - `+field/mark` marks in every party the leader leads (`parties::led_all`), not only `led_now`'s first. A
+      mark on any of them is refused as the leader's own party.
+  - **Tests**, each red before the fix:
+    - lib `field::carrier::review_72h_tests::review_72h_a_refused_boarding_rejoin_remains_retryable`, Astra's
+      probe, adapted so the row is kept.
+    - `domain_field field_fr5::fr5_ahuna_a_carrier_lost_after_the_exit_lands_strikes_the_exit`: the recover's
+      exit is on the record, then the carrier falls. The hull is back in, the record's exit is struck, and the
+      live record owes none.
+    - mush-server `dt_preparation_plans::ic_field_a_carriers_first_launch_into_a_running_field_is_its_friend`:
+      slot 2's cockpit reads its own carrier as Friend. Before the fix it read Neutral.
+  - **Not covered by a failing-first test:**
+    - The tick-ordering race needs the carrier's loss and the exit's landing to fall in one pass. The rigs cannot
+      stage that, so the reorder is guarded only by the stories.
+    - The mark over every led party has no failing story: the two-pilot rig never has one commander leading the
+      carrier and its operation at once.
+  - F-16 and F-23.3 were refuted and are left alone.
+
 ## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
 
 PR #433, off `main` after #410 and RS.5 (#415). #410 merged with story (a)'s stale expectation

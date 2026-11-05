@@ -193,6 +193,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let mut forget: Vec<ObjId> = Vec::new();
     let mut back: Vec<(ObjId, Board)> = Vec::new();
     for (unit, board) in rows {
+        // Doc 40 (the 38b review's F-15): a join with the kernel keeps its row until the
+        // kernel's answer (`super::carrier::on_joined`): taken, the row goes there; refused, it
+        // is asked again from here.
+        let pending = ctx
+            .w
+            .module_state::<FieldBook>()
+            .and_then(|book| book.rejoining.get(&board.site))
+            .is_some_and(|hulls| hulls.contains(&unit));
+        if pending {
+            continue;
+        }
         let running = ctx
             .w
             .module_state::<FieldBook>()
@@ -248,12 +259,9 @@ fn go_back(ctx: &mut Ctx<'_>, unit: ObjId, board: &Board) {
     }
     match super::carrier::rejoin(ctx, &board.site, unit, party, tow) {
         Ok(()) => {
-            if let Some(book) = ctx.w.module_state_mut::<super::exit::ExitBook>() {
-                book.0.remove(&unit);
-            }
-            if let Some(boarding) = ctx.w.module_state_mut::<Boarding>() {
-                boarding.0.remove(&unit);
-            }
+            // Doc 40 (the 38b review's F-15): its exit on its way dropped and the record's struck;
+            // its row stays until the kernel takes the join (`super::carrier::on_joined`).
+            super::exit::forget(ctx, &board.site, unit, board.requester);
             let ordinal = ctx
                 .w
                 .module_state::<FieldBook>()

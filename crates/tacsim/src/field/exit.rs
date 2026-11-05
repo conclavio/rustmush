@@ -133,6 +133,13 @@ pub(crate) struct ExitBook(pub BTreeMap<ObjId, Exiting>);
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OwedExits(pub BTreeMap<CanonicalId, BTreeMap<ObjId, ObjId>>);
 
+/// **The `rejoin` writes the host owes the record** (doc 40, the ramp exit's boarding window; the
+/// 38b review's F-15): by site, each hull back in the field whose exit the record still names, and
+/// who submits it. RAM: a restart before it lands leaves the exit named, as an `exit` owed only in
+/// RAM once was.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OwedRejoins(pub BTreeMap<CanonicalId, BTreeMap<ObjId, ObjId>>);
+
 /// **Whether `unit` is on its way out of `site`'s field** (doc 36 cut GC.1b's arrivals read it):
 /// asked out and not yet answered, out and awaiting its recover, or checked in and owed its
 /// `exit` on the record. Such a carrier on the pad is no arrival ([`super::carrier::arrivals`]).
@@ -578,12 +585,31 @@ fn submit_owed(ctx: &mut Ctx<'_>) -> BTreeSet<ObjId> {
                 .collect()
         })
         .unwrap_or_default();
+    // Doc 40 (the ramp exit's boarding window; the 38b review's F-15): and every owed `rejoin`.
+    let rejoins: Vec<(CanonicalId, ObjId, ObjId)> = ctx
+        .w
+        .module_state::<OwedRejoins>()
+        .map(|owed| {
+            owed.0
+                .iter()
+                .flat_map(|(site, units)| {
+                    units
+                        .iter()
+                        .map(move |(unit, actor)| (site.clone(), *unit, *actor))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let now = ctx.w.world_ic_now().at;
-    for (site, unit, actor) in owed {
+    let writes = owed
+        .into_iter()
+        .map(|row| (row, "exit"))
+        .chain(rejoins.into_iter().map(|row| (row, "rejoin")));
+    for ((site, unit, actor), op) in writes {
         if busy.contains(&actor) || ctx.authoritative_pending(actor) {
             continue;
         }
-        let Some(key) = super::provider::field_key(actor, &site, "exit", unit.0, now) else {
+        let Some(key) = super::provider::field_key(actor, &site, op, unit.0, now) else {
             continue;
         };
         let saved = ctx.actor;
@@ -592,7 +618,7 @@ fn submit_owed(ctx: &mut Ctx<'_>) -> BTreeSet<ObjId> {
             action.clone(),
             PerceivedRef::SelfActor,
             Vec::new(),
-            json!({ "site": site.to_string(), "op": "exit", "unit": unit.0 }),
+            json!({ "site": site.to_string(), "op": op, "unit": unit.0 }),
             key,
         );
         ctx.actor = saved;
@@ -601,9 +627,61 @@ fn submit_owed(ctx: &mut Ctx<'_>) -> BTreeSet<ObjId> {
     busy
 }
 
+/// **Drop every exit `unit` still has on its way** (doc 40, the ramp exit's boarding window; the
+/// 38b review's F-15): a hull back in the field, its carrier lost, owes no `exit` and runs no
+/// continuation; the record's exit already landed is owed its `rejoin`, submitted as `actor`.
+pub(crate) fn forget(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, actor: ObjId) {
+    if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
+        book.0.remove(&unit);
+    }
+    if let Some(owed) = ctx.w.module_state_mut::<OwedExits>()
+        && let Some(units) = owed.0.get_mut(site)
+    {
+        units.remove(&unit);
+        if units.is_empty() {
+            owed.0.remove(site);
+        }
+    }
+    let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
+        let hosted = book.live.get_mut(site)?;
+        let before = hosted.live.owed_exits.len();
+        hosted.live.owed_exits.retain(|owed| owed.unit != unit);
+        (hosted.live.owed_exits.len() != before).then(|| hosted.live.clone())
+    });
+    if let Some(live) = live {
+        super::record::write_live(ctx, &live);
+    }
+    if super::close::site_record(ctx, site).is_some_and(|record| record.exited(unit))
+        && let Some(owed) = ctx.w.module_state_mut::<OwedRejoins>()
+    {
+        owed.0.entry(site.clone()).or_default().insert(unit, actor);
+    }
+}
+
 /// **The host's tick, for exits** (this module's head, step 3): the owed writes, then each exit
 /// the record now names runs its recover as its player.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
+    // Doc 40 (the ramp exit's boarding window, player hulls; the 38b review's F-15): a hull out
+    // at a ramp whose carrier is lost goes back into the field first, its exit dropped, so no
+    // continuation below starts its recover in the same pass.
+    super::boarding::tick(ctx);
+    // The `rejoin` writes the record has taken, forgotten.
+    let rejoining: Vec<CanonicalId> = ctx
+        .w
+        .module_state::<OwedRejoins>()
+        .map(|owed| owed.0.keys().cloned().collect())
+        .unwrap_or_default();
+    for site in rejoining {
+        let record = super::close::site_record(ctx, &site);
+        if let Some(owed) = ctx.w.module_state_mut::<OwedRejoins>()
+            && let Some(units) = owed.0.get_mut(&site)
+        {
+            units.retain(|unit, _| record.as_ref().is_some_and(|record| record.exited(*unit)));
+            if units.is_empty() {
+                owed.0.remove(&site);
+            }
+        }
+    }
     let sites: BTreeSet<CanonicalId> = ctx
         .w
         .module_state::<OwedExits>()
@@ -722,9 +800,6 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             );
         }
     }
-    // Doc 40 (the ramp exit's boarding window, player hulls): a hull out at a ramp whose carrier
-    // is lost goes back into the field.
-    super::boarding::tick(ctx);
 }
 
 /// The recover the player asked for, as the player (`ctx.actor`).

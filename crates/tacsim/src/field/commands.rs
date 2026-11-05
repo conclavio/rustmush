@@ -337,12 +337,14 @@ fn mark_in_field(
         in_field(ctx, actor).ok_or_else(|| CmdError::msg("You lead no party in a field."))?;
     // Doc 40 cut FR.1 (§4.2, round 2's 40-3): a standing Hostile mark (a declared stance, a
     // raider's) outlives the clear, in each marking book by its own row.
-    let (task, books) = ctx
+    let (task, books, own) = ctx
         .w
         .module_state::<super::FieldBook>()
         .and_then(|book| book.hosted(&site))
         .filter(|hosted| hosted.live.parties.iter().any(|party| party.party == of))
         .map(|hosted| {
+            let led = parties::led_all(ctx, &hosted.live, actor);
+            let own = led.contains(&of);
             let standing = |book: PartyId| {
                 hosted
                     .live
@@ -351,17 +353,19 @@ fn mark_in_field(
                     .find(|party| party.party == book)
                     .is_some_and(|party| party.stance_hostile.contains(&of))
             };
+            // The 38b review's F-08: every party the leader leads, not only the first.
             let books: Vec<(PartyId, bool)> = std::iter::once(by)
+                .chain(led)
                 .chain(seated_parties(ctx, &hosted.live, actor))
                 .filter(|book| *book != of)
                 .collect::<BTreeSet<PartyId>>()
                 .into_iter()
                 .map(|book| (book, standing(book)))
                 .collect();
-            (hosted.task, books)
+            (hosted.task, books, own)
         })
         .ok_or_else(|| CmdError::msg("No party in your field has that letter."))?;
-    if of == by {
+    if of == by || own {
         return Err(CmdError::msg("That is your own party."));
     }
     let tasks = ctx

@@ -5619,3 +5619,104 @@ async fn ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field
     );
     Ok(())
 }
+
+/// **The 38b review's F-08: a carrier's first launch into a running field** (doc 40 cut FR.3 ×
+/// FR.1). Two players fly one operation; neither flight is down when the field opens (the first
+/// pilot's rig stands on the ground by staff hand, an armed design, and its fire on a bystander
+/// opens the field), so the carrier on the pad is admitted as its commander's party of one. The
+/// organizer's `+sortie/launch` of slot 2 then joins the running field. The launch is its own
+/// carrier's Friend: its pilot's cockpit reads the carrier so. Before the fix the join re-keyed
+/// the carrier as the launch's operation, so the friendship never reached the kernel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn ic_field_a_carriers_first_launch_into_a_running_field_is_its_friend() -> TestResult {
+    use tacsim::arena::party::Relation;
+    use tacsim::field::PartyKey;
+    let store = InMemoryStore::new();
+    let (mut rig, units, pilots, _) = two_pilot_fixture_launching(&store, 0).await?;
+    let (first, second) = (units[0], units[1]);
+    let (at, aimed) = fr3_cells(story().site);
+    ordinary(&mut rig.world, GOD, &format!("@unit/remove #{}", first.0))?;
+    ordinary(
+        &mut rig.world,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.line_tank", first.0),
+    )?;
+    staff_place_on_ahuna(&mut rig.world, first, at)?;
+    let bystander = bystander_at(&mut rig.world, "tacsim.unit.line_tank", aimed)?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+    commit(&mut rig.world, &store, pilots[0], "+field/fire E").await?;
+    let live = until_hosted(&mut rig.world, &store, &mut rx).await?;
+    assert!(live.party_of(bystander).is_some());
+    let carrier_party = live
+        .party_of(rig.carrier)
+        .ok_or("the carrier is in the field")?;
+    assert!(
+        live.parties.iter().any(|party| party.party == carrier_party
+            && party.key == PartyKey::Unit { unit: rig.carrier }),
+        "the carrier is admitted as its commander's party of one: {:?}",
+        live.parties
+    );
+
+    // The first launch of the carrier's own operation into the running field.
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+sortie/launch 1:1=2",
+    )
+    .await?;
+    let site = mush_core::CanonicalId::new(story().site)?;
+    let mut read = None;
+    let mut carrier_cell = None;
+    for _ in 0..160 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        // Where the field stands the carrier (its pad pose on the field's ground).
+        carrier_cell = tacsim::surface::tow::field_stand(rig.world.world(), &site, rig.carrier)
+            .map(|(cell, _)| cell);
+        if let Some(carrier_cell) = carrier_cell
+            && let Some(frame) = arena_frame(&rig.world, pilots[1])
+            && frame.unit == second
+            && let Some(contact) = frame.contacts.iter().find(|contact| {
+                contact.cell.is_some_and(|(x, y)| {
+                    (i64::from(x) - carrier_cell.0).abs() <= 2
+                        && (i64::from(y) - carrier_cell.1).abs() <= 2
+                }) && contact.relation != Relation::Unknown
+            })
+        {
+            read = Some(contact.relation);
+            if contact.relation == Relation::Friend {
+                break;
+            }
+        }
+    }
+    let live = tacsim::field::live_on(rig.world.world(), &site).ok_or("the field runs")?;
+    assert_eq!(
+        live.party_of(rig.carrier),
+        Some(carrier_party),
+        "the carrier keeps its party"
+    );
+    assert_ne!(live.party_of(second), Some(carrier_party));
+    assert_eq!(
+        read,
+        Some(Relation::Friend),
+        "the launch reads its own carrier as a Friend; parties {:?}; carrier at {carrier_cell:?}; frame {:?}",
+        live.parties,
+        arena_frame(&rig.world, pilots[1]).map(|frame| (
+            frame.unit,
+            frame
+                .contacts
+                .iter()
+                .map(|c| (c.cell, c.relation))
+                .collect::<Vec<_>>()
+        ))
+    );
+    Ok(())
+}
