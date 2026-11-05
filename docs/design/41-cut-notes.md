@@ -665,3 +665,63 @@ berthed in Ceres's workshop, the delivery posted.
   account itself never buys (the plan's buy pays from its author's own account by design).
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.6c-1 — Tycho Mutual's sweep, the scrap half (2026-11-05)
+
+Row: §6 RS.6, its third slice (RS.6c sliced -1/-2 with the owner's "accept all" of 2026-11-04); §4.4 "On its
+own account", Q-41-16, round-2 item 41-7. No lane rows (IN.11 holds v30; this cut takes none). Stacked on RS.6b.
+
+**Rulings (the owner, 2026-11-04, "Accept all").**
+
+1. **An ownerless wreck** — one with no title on the economy, which every raid's hulls are (`field/raiders.rs`
+   creates them with none), so the one claim path refuses them (`NO_TITLE`) — is titled by the sweep to the
+   house's dispatcher under the registry issuer, as salvage of the unowned, and no claim is filed. A titled wreck
+   goes through the claim and the award as §4.4 rules.
+2. **Owned ground**: Tycho sweeps open ground and Registry seeds only (`claim::tenure_at` reads `Unclaimed`), and
+   leaves a wreck on a player's claimed block alone. **Future cut: the landholder ask** — §4.4's "asks for the
+   landholder's authorization by the registry's notice and takes it as given after 7 IC days of silence" — is not
+   built; a later cut builds it and the sweep then reaches claimed blocks.
+3. RS.6c-1 here (the sweep, the claim and award or the ownerless title, the assessment, the scrap, story (e)'s
+   scrap half and the census); RS.6c-2 next (the repair, the hull-sale offer contract, `+salvage/forsale`, story
+   (e)'s resale half).
+
+**Built.**
+
+- **The sweep** (`port/house_sweep.rs`; the house arm's job when it holds no retrieval): the first wreck on a lane
+  site's index past `SWEEP_IC_DAYS` (56) of `left_ic`, on open ground, with no custody row and no live retrieval,
+  on a site no field holds (`target`). Ownerless: `HouseAct::Title` titles her to the dispatcher first. Then the
+  arm's own path: sail, launch, drive, tow, load — into the house's custody (the dispatcher is the custodian) — and
+  `HouseAct::Claim` files the house's salvage claim (`claim::tow_files_salvage`), then home and the berth.
+- **The award**: the claims' tick awards to the dispatcher at the window's end (an Object claimant).
+- **The assessment** (`assess`): the full restoration quote — the workshop's fee (`BayQuote::fee_minor`: labour at
+  the operator's multiplier and every replaced part) plus the bale's alloys and fittings at their references
+  (`good_reference_minor`) — against the design's reference price (`reference_price_minor`) less
+  `RESALE_MARGIN_PERMILLE` (200, provisional). Under the line: **kept**, her title to the house
+  (`HouseAct::Keep`, a `TransferTitle` under the dispatcher's new `asset.title.transfer` grant; RS.6c-2 repairs
+  and offers her). Over it, past repair, or a design the yard does not bill: **scrapped** (`HouseAct::Scrap`,
+  IN.8's `strip::scrap` as her title holder in the workshop room), and the credit, paid into the dispatcher's
+  float, goes back to Tycho's account (`return_surplus`).
+
+**Story.** `tacsim` `tests/shard_7/house_sweep_rs6c.rs` at 256 and 512: Occator's spare rig wrecked on open ground,
+unclaimed for 57 IC days; Tycho sweeps it, files and wins the claim, berths it at Ceres, assesses it past its line
+and scraps it; Tycho's account takes the credit; the site's index is clear of her.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.10 — the landholder consent step (ruled 2026-11-04; not built)
+
+Added to the plan after RS.6c-2, one PR. It is RS.6c-1's named future cut: Tycho's sweep reaches a player's claimed
+block once it lands. **The owner's rulings:**
+
+1. **The notice** is a registry notice delivered as an obligation; the landholder answers with `+salvage/authorize`
+   (RS.3's, the delegation row on the block) or a new `+salvage/refuse`.
+2. **Silence** counts as consent after **28 IC days** (§4.4 said 7). **The owner's standing rule: any wait on a
+   player's response is at least 28 IC days** — 7 IC days is about 7 real hours, and no workflow here assumes a
+   player is on constantly.
+3. **A refusal** blocks the sweep (and the claim) on that block for 28 IC days.
+4. **Who it covers**: the same notice serves a player salvor filing a claim on someone else's claimed block, not
+   only Tycho.
+
+The timers in the built cuts under that standing rule (the claim's contest window in real hours, the one-term debt's
+zero grace, RS.7's fine at docking, the Co-op's seven-real-day dormancy) are listed for the owner's ruling and
+unchanged here.

@@ -498,9 +498,9 @@ fn a_module_of_a_group_binary_is_covered_by_the_binary_the_module_or_the_test() 
     // A substring is a substring: `lane::` selects `cost_lane::…` too, as
     // cargo would (which is why a group refuses such a pair of modules).
     assert!(invokes_module(
-        "cargo test -p tacsim --test shard_4 lane::",
+        "cargo test -p tacsim --test domain_economy lane::",
         "tacsim",
-        "shard_4",
+        "domain_economy",
         "cost_lane::x"
     ));
     // `--exact` wants the full id; the module spelling alone then runs nothing.

@@ -1227,7 +1227,7 @@ const M4_5_POOLED_RECORD: [&str; 21] = [
 /// **Not ignored and not gated**: fifteen matches of three to four arena
 /// minutes each, inside the thirty seconds an ordinary run may spend on a
 /// lane in a debug build. The record's run is `cargo test --release -p
-/// tacsim --test shard_2 twin:: -- --nocapture`.
+/// tacsim --test domain_arena twin:: -- --nocapture`.
 #[test]
 fn m4_5_the_stock_pool_over_fifteen_seeds_is_its_record() {
     let world = support::booted_world();
@@ -2661,7 +2661,7 @@ fn m2_the_fliers_name_their_runners() {
 /// ordinary run may spend on a lane; so it is run by the named step
 /// `Whole-match mind hashes (17b cut M2.7; Gate A)` of `ci.yml`'s `test`
 /// job on both hosts (the gated-test inventory covers it by that verbatim
-/// name) and by hand with `cargo test -p tacsim --test shard_2
+/// name) and by hand with `cargo test -p tacsim --test domain_arena
 /// twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool --
 /// --ignored --exact --nocapture`. Its wall time is printed (`wall_ms`).
 #[test]
@@ -2997,7 +2997,7 @@ fn lane_figures(lane: &str, thoughts: &[support::TwinThought]) {
 /// figures are not the ones of record — flies one pooled seed and one lance
 /// seed, so the ordinary sweep spends seconds here, and prints
 /// `build=debug`. **The figures of record are taken alone**, on a quiet
-/// host: `cargo test --release -p tacsim --test shard_2 twin::twin_rhai_timing --
+/// host: `cargo test --release -p tacsim --test domain_arena twin::twin_rhai_timing --
 /// --exact --nocapture --test-threads=1` (beside the target's other lanes
 /// the wall clock is shared and every `_us` figure reads high). The
 /// script's own rate (`twin_rhai_script_rate`) is the think's p50 less the

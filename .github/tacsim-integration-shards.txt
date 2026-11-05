@@ -1,74 +1,35 @@
-# tacsim's integration test targets (one per crates/tacsim/tests/*.rs), split
-# across the `test` job's `tacsim-integration-N` shards in .github/workflows/ci.yml.
-# `scripts/ci-tacsim-shard.sh N` runs line N as `cargo nextest run -P ci -p tacsim
-# --test ...` (nextest since cut T.1, 2026-10-26: the shard's binaries in one pool).
+# tacsim's integration test targets and the CI cells that run them
+# (.github/workflows/ci.yml's `tacsim-integration-N`; scripts/ci-tacsim-shard.sh N).
 #
-# Since test-strategy cut T.3 (2026-10-26) the targets are the six group
-# binaries shard_1..shard_6 — tests/shard_N.rs, one `mod` line per former
-# tests/<name>.rs, which now lives at tests/shard_N/<name>.rs — plus harness
-# and cost_lane, which stay targets of their own (a crate-root-only
-# `#![recursion_limit]`; an exclusive timing lock and a script-parity test).
-# Each group IS its shard. Six since 2026-10-27, balanced on the per-module
-# test times of main's run 40428411078 (the JUnit testcases' `<module>::`
-# prefix): 46.4, 47.4, 46.7, 47.7, 48.7 and 45.0 summed minutes per shard,
-# harness (0.9) and cost_lane (6.4) counted with theirs, against 65-74 as four;
-# then, the same day, cost_lane weighted FOURFOLD, because it runs alone
-# (.config/nextest.toml: threads-required = the whole pool, so its minutes
-# are serial, and shard_2 ran at parallelism 2.4 against 3.5-4 elsewhere, the
-# wall of both PR runs): unloading (9.5) to shard_6 and deposits (7.2) to
-# shard_3, for 46.4, 30.7 (49.9 with cost_lane's three idle threads), 53.9,
-# 47.7, 48.7 and 54.5. A run-alone binary's minutes count once per thread.
-# 2026-10-31: knowing (shard_1 -> shard_4) and match_lifecycle (shard_4 ->
-# shard_1) SWAPPED. Over main's runs 41207463088, 41221342735 and
-# 41221363161 the mean summed minutes were shard_1 66.5 (knowing 32.4 of
-# it, driving 10.5), shard_2 34 + cost_lane 7 alone, shard_3 52.5, shard_4
-# 47.0 (match_lifecycle 19.4), shard_5 53.5, shard_6 63.4; the swap makes
-# shard_1 53.5 and shard_4 60.0. A single shard's figure swings ~2x with the
-# hosted runner's machine (shard_1 was 40 / 78 / 77), so a balance is judged
-# on several runs; shard_1 was the highest in each. The cheaper-looking
-# move, driving alone, is not one: crew_exit, the four field_* modules,
-# one_picture and site_record import its Rig, so driving goes nowhere
-# without them (19.5 together, which would only swap the imbalance). A
-# module's companions move with it: knowing declares passengers, quests,
-# onboarding_*, quest_* with `#[path]` beside it, match_lifecycle has
-# match_lifecycle/resume_watch.rs. shard_6 is three large modules (plans 26,
-# cockpit 24, unloading 13) and has no cheap move.
-# The three named #[ignore]d mind-hash tests (minds_pool, minds_rhai, twin) sit
-# together in shard_2 and run in the `tacsim-minds` matrix cell, not here.
+# Since doc 43 cut TS.12's adoption (D-43-5, 2026-11-04) tacsim's tests are
+# four DOMAIN binaries, `crates/tacsim/tests/<domain>.rs` with their modules
+# under `tests/<domain>/`, and every cell builds all four and runs its hash
+# share of their tests: `cargo nextest run --partition hash:N/10`. Balance is
+# the hash's, so nothing is ever resharded; a new test is a `mod` line in its
+# domain root, never a line here. Measured (doc 43 cut notes, TS.12): about
+# +26 to +31 s of compile and link a cell against the ten hand-balanced
+# shard binaries, the wall and balance no worse.
 #
-# Every target must appear on exactly one line:
-# crates/mush-contract-tests/tests/ci_policy/ci_tacsim_shards.rs fails on a missing,
-# doubled or unknown target, so a new top-level test file cannot silently go
-# unrun. A new test MODULE is a `mod` line in one of the shard roots and
-# runs with that shard. Rebalance by moving a `mod` line between two shard
-# roots when a shard drifts far from the others (per-module times: the JUnit
-# report's testcases, whose names carry the `<module>::` prefix).
-# 2026-11-03: TEN SHARDS (shard_7..shard_10 new), after the field helpers were
-# hoisted to tests/support/field/*_rig.rs (cut 1 of the reshard): with them
-# inside driving.rs, field_host.rs, field_raiders.rs and site_record.rs every
-# importer was pinned to shard_1, which carried 92 of the suite's ~380 mean
-# summed test-minutes over main's six green runs of 2026-11-02/03 (shard_6
-# 70, shard_4 69, shard_3 57, shard_5 56, shard_2 37 + cost_lane alone).
-# Target ~41 a shard with cost_lane fourfold: shard_1 keeps the field
-# cluster's remaining atoms (the gc3-gc4-gc5/gc6/review_36a chain, crash +
-# crew_treatment, bay_gc8 + bay_36a) at ~42; shard_2 the minds cluster +
-# cost_lane (the tacsim-minds steps name shard_2); shard_3 drones, deposits,
-# orders (42); shard_4 knowing and its eight #[path] siblings (43); shard_5
-# claims (37); shard_6 plans + vehicles (39); shard_7 cockpit + mining (43);
-# shard_8 match_lifecycle + unloading + escort_lease + hulls (41); shard_9 the
-# M8 cluster (the M8 jobs now name shard_9) + field_story + field_director +
-# quarry + mill + sale (41); shard_10 voyage, plumbing, ports, coop, commerce
-# and the small ones (35, the room for growth). A module moves WITH its
-# #[path] siblings and its <module>/ subdirectory, and its rows in
-# crates/mush-contract-tests/state-slot-owners.toml follow (they are keyed by
-# file path).
-1: shard_1 harness
-2: shard_2 cost_lane
-3: shard_3
-4: shard_4
-5: shard_5
-6: shard_6
-7: shard_7
-8: shard_8
-9: shard_9
-10: shard_10
+# The `partition:` line names the partitioned binaries. A numbered line
+# `N: target ...` names the targets cell N runs FIRST, by name and whole,
+# before its share of the partition (an empty line runs none):
+# - harness stays a target of its own (its `#![recursion_limit]` is
+#   crate-root-only) and is cell 1's.
+# - cost_lane runs alone (.config/nextest.toml: threads-required = the whole
+#   pool) and is cell 2's, so its serial minutes sit on one cell, first,
+#   rather than stalling all ten (TS.12: with opt-level 1 it no longer makes
+#   cell 2 the wall).
+# Every top-level `tests/*.rs` target appears exactly once in this file
+# (`ci_tacsim_shards` is the guard), and the workflow's matrix runs exactly
+# the numbered cells.
+partition: domain_arena domain_economy domain_field domain_world
+1: harness
+2: cost_lane
+3:
+4:
+5:
+6:
+7:
+8:
+9:
+10:

@@ -8,7 +8,7 @@ description = "tacsim (E7 cut 1): TacSim's rules-definition and campaign-seed pa
 
 # `tacsim` owns the game's simulation and pilot-sheet layers (`TacsimRuleset`,
 # `PilotRuleset`, and `tacsim::arena`). Full server module composition lives in
-# `mush-composition`; `tests/shard_3/composition_edges.rs` pins the recorded
+# `mush-composition`; `tests/domain_arena/composition_edges.rs` pins the recorded
 # `mush-*` dependency set of this crate.
 [dependencies]
 mush-core.workspace = true

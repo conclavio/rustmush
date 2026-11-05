@@ -24,7 +24,7 @@
 //! gate covers buying them). Every claim — the strip, the lot, the load line, the fit, the bale's
 //! draw — is reached by the player's command.
 //!
-//! The matter pins (`.mint_origins(` and the closed receipt kinds) are `shard_9`'s
+//! The matter pins (`.mint_origins(` and the closed receipt kinds) are `domain_economy`'s
 //! (`mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`,
 //! `mill::in1_the_receipt_kinds_a_mint_may_carry_are_closed`).
 

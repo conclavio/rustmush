@@ -152,7 +152,7 @@ jobs:
   m8-gate-stories:
     name: M8 ${{ matrix.name }}
     # Doc 17h cut M8g G5 (doc 23 S.5 folded in): the M8 gate's stories over the combined M8
-    # world (`crates/tacsim/tests/shard_9/m8_world.rs`: the production launch composition over
+    # world (`crates/tacsim/tests/domain_field/m8_world.rs`: the production launch composition over
     # the test world's game content, the three named Houses' sources genuinely rated). Each
     # takes the three Registry ratings, so it is dispatch- or schedule-only, as the M7 stories
     # are; the owner's rule: never run locally.
@@ -192,7 +192,7 @@ jobs:
         with:
           key: m8-gate-stories
       - name: Execute the exact M8 story
-        run: cargo test --locked -p tacsim --test shard_9 ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
+        run: cargo test --locked -p tacsim --test domain_field ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1 --nocapture
 
   # Weekly and by dispatch, not nightly: M6's acceptance evidence (the author
   # story plus a fresh thirty-match external comparison), re-run when the mind
@@ -271,7 +271,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Every witness asks every question; only the built channels answer
         run: |
-          cargo test -p tacsim --test shard_9 m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
+          cargo test -p tacsim --test domain_field m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
   # Doc 17h M8 (the zero-PC story's precondition), weekly and by dispatch: the launch's House
   # combat doctrines (Meridiani, Coprates) win some, not all, of the Registry's trials
   # against Standard. The first runs every Trial case of the three House minds (about
@@ -424,6 +424,19 @@ jobs:
     # name shard_9 now (the M8 cluster moved with excursions and
     # ic_sortie_surface). Expected: ~15 min a cell, the PR wall in the high
     # teens. Measured on the cut's own PR run.
+    #
+    # 2026-11-04: FOUR DOMAIN BINARIES, HASH-PARTITIONED (doc 43 cut TS.12,
+    # adopted by D-43-5). The ten shard roots became four domain roots
+    # (crates/tacsim/tests/domain_{arena,economy,field,world}.rs, their
+    # modules under tests/<domain>/), and each tacsim-integration cell builds
+    # all four and runs `cargo nextest run --partition hash:N/10` over them
+    # (scripts/ci-tacsim-shard.sh), after the whole targets its line names
+    # (harness on 1, cost_lane on 2). Measured on the experiment branch over
+    # five runs: +26 to +31 s of compile and link a cell, the wall and the
+    # balance no worse than the hand-balanced shards; what it ends is the
+    # reshard (five layout changes in the eight days before). A new test is a
+    # `mod` line in its domain root. The M8 jobs and the tacsim-minds steps
+    # name their domain binary (domain_field, domain_arena).
     strategy:
       fail-fast: false
       matrix:
@@ -432,13 +445,11 @@ jobs:
           # the pool's four threads (two until 2026-10-31), then tacsim's
           # doc-tests, which rest-libs' `--exclude tacsim` drops with the lib.
           - tacsim-lib
-          # (b) tacsim's integration test binaries, a tenth each by measured
-          # time (lines 1 to 10 of .github/tacsim-integration-shards.txt; four
-          # since 2026-10-26, cut T.0, when the third of three swung between
-          # 18 and 30 min of execution run to run; six since 2026-10-27, on
-          # the JUnit per-module times, when the four were the run's wall at
-          # 23-26 min each with 65-74 summed test-minutes apiece; ten since
-          # 2026-11-03, when the six were 37-92 and shard_1 the wall).
+          # (b) tacsim's integration tests: cell N runs the whole targets
+          # line N of .github/tacsim-integration-shards.txt names, then its
+          # hash share (`--partition hash:N/10`) of the four domain binaries
+          # (since 2026-11-04, D-43-5; ten hand-balanced shard binaries
+          # 2026-11-03 to 04, six from 2026-10-27, four from 2026-10-26).
           - tacsim-integration-1
           - tacsim-integration-2
           - tacsim-integration-3
@@ -604,7 +615,7 @@ jobs:
       # remedies on 2026-10-31 (see the disk note above). Until 2026-10-27 each ran in the tacsim-integration shard
       # that built its target anyway, and the 5-min pooled-seam step on top of
       # the longest shard set the run's wall; since then all three run in the
-      # tacsim-minds cell (one binary, shard_2, holds their three modules), in
+      # tacsim-minds cell (one binary, domain_arena, holds their three modules), in
       # parallel with the shards. Their `name:` and `run:` lines are the same
       # in every cell's reading of this file, because the gated-test inventory
       # (crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs) covers
@@ -619,7 +630,7 @@ jobs:
       # naming it here is what covers it in the gated-test inventory.
       - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
         if: matrix.shard == 'tacsim-minds'
-        run: cargo test -p tacsim --test shard_2 minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host -- --ignored --exact --nocapture
+        run: cargo test -p tacsim --test domain_arena minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host -- --ignored --exact --nocapture
       # 17b cut M2.7 (doc 17 §22's M2 gate, "Gate A on whole-match hashes"):
       # the pooled lane's matches flown by T1 and by the Rhai Standard
       # Doctrine alone, every substep hash equal (fifteen T1-v-T1 matches since
@@ -628,7 +639,7 @@ jobs:
       # run (17b §1 (iii)), so the test is #[ignore]d and run here by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
         if: matrix.shard == 'tacsim-minds'
-        run: cargo test -p tacsim --test shard_2 twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
+        run: cargo test -p tacsim --test domain_arena twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -- --ignored --exact --nocapture
       # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
       # gate): the pooled lane's matches through the real arena task on a
       # private think pool of one, two and four workers, each held to the
@@ -639,7 +650,7 @@ jobs:
       # run, so the test is #[ignore]d and run here, by name.
       - name: Pooled think seam over the twin's thirty (17b cut M4.1)
         if: matrix.shard == 'tacsim-minds'
-        run: cargo test -p tacsim --test shard_2 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture
+        run: cargo test -p tacsim --test domain_arena minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture
       # The bot crate is tested in its own shards (`bot` and `bot-stories`) for
       # shard wall-clock balance; it no longer enables serde_json
       # `arbitrary_precision`, so workspace builds unify cleanly. See
@@ -817,8 +828,8 @@ jobs:
         run: cargo nextest run -P ci -p mush-bot --test mining_cohort --test arena_mind_isolation
       # 2026-10-26 (cut T.1): the sweep's JUnit report, one <testcase> a test
       # with its time (.config/nextest.toml's `ci` profile writes it). The
-      # per-test and per-binary times a rebalance of the tacsim shards needs
-      # are read from these, not from the log. lint runs no sweep; a shard
+      # per-test and per-binary times (rule 2.3 #14's per-domain-binary
+      # deltas) are read from these, not from the log. lint runs no sweep; a shard
       # whose sweep never started has no file, and that is not a failure.
       #
       # 2026-11-04: an upload is evidence, not a test, so a failed upload does
@@ -834,7 +845,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nextest-junit-${{ matrix.shard }}
-          path: target/nextest/ci/junit.xml
+          # junit-first.xml: a tacsim-integration cell's whole targets
+          # (harness, cost_lane), run before its partition share
+          # (scripts/ci-tacsim-shard.sh), whose report is junit.xml.
+          path: target/nextest/ci/junit*.xml
           if-no-files-found: ignore
       - name: Warn when the JUnit upload failed
         if: always() && steps.junit.outcome == 'failure'
@@ -1321,12 +1335,12 @@ jobs:
   # cargo test --release -p tacsim --test cost_lane sm12c_cost_lane_cohort_over_an_ic_month -- --ignored --exact --test-threads=1 --nocapture
 
   # Doc 36 GC.12 (Q-36-9): the IC field's pulse measured at 9..100 units over six parties,
-  # gc12_the_field_pulse_is_measured_at_scale (crates/tacsim/tests/shard_1/field_scale.rs;
+  # gc12_the_field_pulse_is_measured_at_scale (crates/tacsim/tests/domain_arena/field_scale.rs;
   # #[ignore]d, release, run on conclav.dev). Its figures
   # set FIELD_MAX_UNITS and live in doc 36's "As built (GC.12)". No job runs it: it is run by
   # hand, or through gate.yml's sweep dispatch (doc 36 has the inputs). Its tier is by-hand in
   # crates/mush-contract-tests/test-tiers.toml, with its last run's revision. By hand:
-  # cargo test --release -p tacsim --test shard_1 gc12_the_field_pulse_is_measured_at_scale -- --ignored --exact --test-threads=1 --nocapture
+  # cargo test --release -p tacsim --test domain_arena gc12_the_field_pulse_is_measured_at_scale -- --ignored --exact --test-threads=1 --nocapture
 
   # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
   # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
