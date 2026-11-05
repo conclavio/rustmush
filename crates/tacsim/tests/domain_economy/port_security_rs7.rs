@@ -667,7 +667,7 @@ fn review_38b_f11_house_stock_takes_no_workshop_stand() {
         tacsim::port::ship::hull_view(rig.tw.world(), ObjId(carrier.hull)).expect("the carrier");
     let (bay_def, bay) = view.bay().expect("the carrier's bay");
     let slot = mush_sim::SlotId::new(bay_def.slot.id.as_str()).expect("the bay's slot");
-    let mut berth = |rig: &mut Rig, hull: ObjId| {
+    let berth = |rig: &mut Rig, hull: ObjId| {
         let moved = run(
             &mut rig.tw,
             GOD,
