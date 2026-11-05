@@ -515,6 +515,25 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             .collect(),
         credit_minor: terms.credit_minor(),
     };
+    // Doc 41 cut RS.9a: what the scrap mints is a source in the matter census.
+    let goods = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.goods());
+    let part_kg = lots
+        .iter()
+        .filter(|l| l.part.is_some())
+        .map(|l| {
+            goods
+                .and_then(|goods| goods.good(&l.commodity))
+                .and_then(|def| def.mass_kg_per_unit())
+                .map_or(0, |per| per.saturating_mul(l.quantity))
+        })
+        .fold(0_u64, u64::saturating_add);
+    record.scrapped_kg = record
+        .scrapped_kg
+        .saturating_add(yield_kg)
+        .saturating_add(part_kg);
     if lots.is_empty() {
         // Nothing to lay in the stores: the hull is broken up now.
         if let Some(plan) = plan {

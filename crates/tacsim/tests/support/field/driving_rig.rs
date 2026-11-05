@@ -1104,17 +1104,29 @@ pub(crate) fn on_pad_with(
 /// and the site's port entry.
 pub(crate) fn on_pad_with_at(
     rig: &mut Rig,
+    who: (&str, i64, &str),
+    site: (&str, &str),
+    lease: impl FnOnce(&mut Rig, ObjId),
+) -> (ObjId, HullRow, Vec<ObjId>) {
+    on_pad_loaded_at(rig, who, site, lease, (20, 20))
+}
+
+/// **[`on_pad_with_at`] with `tank` t of propellant and `locker` crew-days loaded** for the voyage
+/// out (doc 41 cut RS.9a: story (d)'s carrier lands near dry, as its 256 t laden figure reads her).
+pub(crate) fn on_pad_loaded_at(
+    rig: &mut Rig,
     (who, seed, name): (&str, i64, &str),
     (venue, entry): (&str, &str),
     lease: impl FnOnce(&mut Rig, ObjId),
+    (tank, locker): (u64, u64),
 ) -> (ObjId, HullRow, Vec<ObjId>) {
     let (pilot, row) = prospector(rig, who, seed, name);
     lease(rig, pilot);
     load(
         rig,
         &row,
-        20,
-        20,
+        tank,
+        locker,
         9_100 + u64::try_from(seed).unwrap_or(0) * 10,
     );
     board(rig, pilot);
