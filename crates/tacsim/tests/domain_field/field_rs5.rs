@@ -13,7 +13,7 @@
 //!    B's own bay as retrieval custody (no salvage row, no claim, no hand-back on the site), sails
 //!    to Ceres, where the shed's hand-back runs at the docking and posts the delivery; the
 //!    contract settles and B is paid the fee.
-//! 4. A at Occator's counter: the debt is delinquent, the desk refuses a lease naming the amount
+//! 4. A at Occator's counter: the debt owed, 28 IC days' grace; past it, delinquent, the desk refuses a lease naming the amount
 //!    and reinstates it; `+debts` lists it, `+debts/pay` refuses short and pays once funded.
 //!
 //! The clerk's windows (Q-41-11) are a second, single-ground test: a job nobody accepts is
@@ -405,7 +405,18 @@ fn charter_on(ground: &Ground) {
         "B is paid the fee"
     );
 
-    // (4) The desk refuses the delinquent lessee, and the debt is paid.
+    // (4) The grace (the owner's 2026-11-04 rule: any wait on a player's response is at least 28
+    //     IC days): the debt is owed but not delinquent until it is 28 IC days unpaid; past them,
+    //     the desk refuses the delinquent lessee, and the debt is paid.
+    let within = debts(&rig, a)
+        .into_iter()
+        .find(|o| o.id == debt.id)
+        .expect("still owed");
+    assert!(
+        !matches!(within.status, mush_economy::ObligationStatus::Delinquent),
+        "within the grace the debt is not delinquent: {within:?}"
+    );
+    skip_and_fire(&mut rig, within.schedule.next_due + 3_600);
     let debt_now = debts(&rig, a)
         .into_iter()
         .find(|o| o.id == debt.id)

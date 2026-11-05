@@ -5530,7 +5530,7 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Doc 41 cut RS.8 (Q-36-46): one salvage path. The tow puts the derelict in the tug's
     // custody (a `SalvageCustody` row in the domain's `tacsim:space:custody` document) and files
     // through `+salvage/claim`'s own code: the same `file_salvage_claim`, the same audience, the
-    // same `claim_window_s`, and the claim tick's `award_salvage_title`. A re-tow keeps the row.
+    // same `claim_window_ic_days`, and the claim tick's `award_salvage_title`. A re-tow keeps the row.
     // A tug whose operator holds the derelict's retrieval (RS.5, Q-41-8) tows her for the job:
     // retrieval custody, no salvage row and no claim; the dock delivers her.
     let retrieval =

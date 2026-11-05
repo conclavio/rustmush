@@ -50,6 +50,10 @@ use crate::pack::RulesPack;
 /// The default active-domain limit (10b §7's `MAX_ACTIVE_DOMAINS`). Inert in cut 1.
 pub const DEFAULT_ACTIVE_DOMAIN_LIMIT: u32 = 8;
 
+/// **A salvage claim's contest window, IC days** (doc 41 cut RS.3; the owner's 2026-11-04 rule:
+/// any wait on a player's response is at least 28 IC days): 48, which is 48 real hours at rate 24.
+pub const CLAIM_WINDOW_IC_DAYS: i64 = 48;
+
 /// The default ground pulse period (10b §7's `GROUND_PULSE_MS`). Inert in cut 1.
 pub const DEFAULT_GROUND_PULSE_MS: u32 = 2_000;
 
@@ -147,11 +151,12 @@ pub struct TacsimRecoveryConfig {
     /// **Doc 36 cut GC.4 (Q-36-13)**: a casualty's load into a bay, IC seconds (provisional,
     /// 900).
     pub load_s: u32,
-    /// **Doc 36 cut GC.6 (Q-36-24)**: a salvage claim's contest window, **real** seconds
-    /// (172,800: 48 real hours, doc 27 Q-S15). A test knob compresses it; it is clamped to
-    /// `1..=mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS`; the server's config file sets it as
-    /// `[tacsim.recovery].claim_window_s` (doc 41 cut RS.3).
-    pub claim_window_s: i64,
+    /// **Doc 36 cut GC.6 (Q-36-24)**: a salvage claim's contest window, **IC seconds** (48 IC days;
+    /// the owner's 2026-11-04 rule: any wait on a player's response is at least 28 IC days). The
+    /// claim is filed with it in real seconds at the world's rate
+    /// (`crate::surface::claim::claim_window_real_secs`). A test knob compresses it; the server's
+    /// config file sets it as `[tacsim.recovery].claim_window_ic_days` (doc 41 cut RS.3).
+    pub claim_window_ic_s: i64,
     /// **Doc 41 cut RS.5 (Q-41-11)**: `RETRIEVAL_WINDOW_IC_DAYS`, the one knob both of a
     /// retrieval's windows read — the acceptance window from posting and a PC acceptor's
     /// performance window from acceptance, IC days (provisional 28); the contract runs to twice
@@ -175,7 +180,7 @@ impl Default for TacsimRecoveryConfig {
             inspect_s: 300,
             attach_s: 600,
             load_s: 900,
-            claim_window_s: mush_economy::SALVAGE_CLAIM_WINDOW_SECS,
+            claim_window_ic_s: CLAIM_WINDOW_IC_DAYS * 86_400,
             retrieval_window_ic_days: crate::surface::retrieval::RETRIEVAL_WINDOW_IC_DAYS,
         }
     }

@@ -43,7 +43,7 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
     cfg.recovery.inspect_s = 30;
     cfg.recovery.attach_s = 30;
     cfg.recovery.load_s = 60;
-    cfg.recovery.claim_window_s = WINDOW;
+    cfg.recovery.claim_window_ic_s = WINDOW;
 }
 
 fn record(rig: &mut Rig, entry: &str) -> SiteRecord {
@@ -219,6 +219,19 @@ fn debts(rig: &Rig, who: ObjId) -> Vec<mush_economy::Obligation> {
 }
 
 /// The obligation `id`'s status.
+/// Move IC on to `target` without firing, then fire a few times (the obligation sweep runs).
+fn skip_ic(rig: &mut Rig, target: i64) {
+    let w = rig.tw.world();
+    let rate = i64::from(w.world_timeline().current().rate.max(1));
+    let ahead = target.saturating_sub(w.world_ic_now().at).max(0);
+    let t = w.now().saturating_add((ahead + rate - 1) / rate);
+    rig.tw.set_now(t);
+    for _ in 0..3 {
+        let (_, queued) = crate::driving_rig::fire(rig);
+        crate::driving_rig::land_quietly(rig, &queued);
+    }
+}
+
 fn status(rig: &Rig, id: u64) -> Option<mush_economy::ObligationStatus> {
     rig.tw.world().module_state::<EconomyStore>().and_then(|e| {
         e.snapshot()
@@ -377,7 +390,29 @@ fn story(venue: &str, entry: &str, side: u16) {
     let fined = tacsim::surface::security::record_of(rig.tw.world(), o).expect("O's record");
     assert_eq!(fined.rows[0].debt, Some(fine.id.0), "the receipt");
 
-    // 5. The quarantine: O's carrier does not lift while the fine stands.
+    // 5. The grace (the owner's 2026-11-04 rule: any wait on a player's response is at least 28
+    //    IC days): the fine is owed and listed, but O's carrier is not held until it is past its
+    //    28 IC days unpaid.
+    assert!(
+        !tacsim::surface::security::holds(rig.tw.world(), o_hull),
+        "within the grace the carrier may undock"
+    );
+    assert!(
+        !matches!(
+            status(&rig, fine.id.0),
+            Some(mush_economy::ObligationStatus::Delinquent)
+        ),
+        "within the grace the fine is not delinquent"
+    );
+    let due_at =
+        rig.tw.world().world_ic_now().at + tacsim::surface::retrieval::DEBT_GRACE_IC_DAYS * 86_400;
+    skip_ic(&mut rig, due_at + 3_600);
+    assert_eq!(
+        status(&rig, fine.id.0),
+        Some(mush_economy::ObligationStatus::Delinquent),
+        "past the grace, unpaid, it is delinquent"
+    );
+    // The quarantine: O's carrier does not lift while the delinquent fine stands.
     let (refused, queued) = command(&mut rig, o, "+ship/undock urvara");
     assert!(
         refused.contains("is held at") && refused.contains("lifts when it is paid"),

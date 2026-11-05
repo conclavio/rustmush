@@ -23,7 +23,7 @@
 //!    [`SalvageCustody`] row lives in [`SpaceCustodyBook`], one durable
 //!    `tacsim:space:custody:{domain}` document a recovery domain (a space site has no
 //!    `SiteRecord`); `+salvage` files, contests and settles it through the ground's own
-//!    `crate::surface::claim` paths, on the one `claim_window_s` window.
+//!    `crate::surface::claim` paths, on the one `claim_window_ic_days` window.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -1418,15 +1418,12 @@ pub fn real_now_secs(w: &mush_core::World) -> i64 {
     w.now().max(1)
 }
 
-/// Configured salvage contest window in real seconds (`[tacsim.recovery].claim_window_s`),
-/// clamped to `1..=MAX_SALVAGE_CLAIM_WINDOW_SECS` (`SF.R19`, `35b` §6.8 #15).
+/// Configured salvage contest window in real seconds (`[tacsim.recovery].claim_window_ic_days`
+/// at the world's rate, `crate::surface::claim::claim_window_real_secs`), clamped to
+/// `1..=MAX_SALVAGE_CLAIM_WINDOW_SECS` (`SF.R19`, `35b` §6.8 #15).
 #[must_use]
 pub fn salvage_claim_window_secs(w: &mush_core::World) -> i64 {
-    w.module_state::<crate::store::TacsimStore>()
-        .map_or(mush_economy::SALVAGE_CLAIM_WINDOW_SECS, |store| {
-            store.config().recovery.claim_window_s
-        })
-        .clamp(1, mush_economy::MAX_SALVAGE_CLAIM_WINDOW_SECS)
+    crate::surface::claim::claim_window_real_secs(w)
 }
 
 /// Ensure `hull` carries an active asset title in [`mush_economy::EconomyStore`] owned by

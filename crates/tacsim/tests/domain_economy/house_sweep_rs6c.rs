@@ -32,7 +32,7 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
     cfg.recovery.inspect_s = 30;
     cfg.recovery.attach_s = 30;
     cfg.recovery.load_s = 60;
-    cfg.recovery.claim_window_s = WINDOW;
+    cfg.recovery.claim_window_ic_s = WINDOW;
 }
 
 /// Move IC on to `target`, then fire a few times.

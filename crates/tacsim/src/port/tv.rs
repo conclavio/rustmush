@@ -4850,12 +4850,13 @@ fn open_debt(
     if amount <= 0 {
         return None;
     }
-    match mush_economy::create_debt(
+    let due = crate::surface::retrieval::debt_due(ctx.w);
+    match mush_economy::create_debt_due(
         ctx,
-        pilot_account,
-        lessor_account,
+        (pilot_account, lessor_account),
         Amount::from_minor(amount),
         crate::surface::retrieval::DEBT_NAMESPACE,
+        due,
     ) {
         Ok(id) => Some(id),
         Err(error) => {
