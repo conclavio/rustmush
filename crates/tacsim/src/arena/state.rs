@@ -5754,15 +5754,50 @@ impl Arena {
             .any(|viewer| {
                 let reach = viewer.fight_inner_cm(cell_cm);
                 reach != 0
-                    && self.contacts.of(viewer.id).any(|(_, held)| {
-                        self.relations.hostile(viewer.team, held.class)
-                            && self.unit(held.target).is_some_and(|target| {
-                                target.armed_at_checkout() || target.shots_fired > 0
-                            })
-                            && !self.contact_reads_dead(held)
-                            && held.seen_at.within_cm(&viewer.pose, reach)
-                    })
+                    && self
+                        .contacts
+                        .of(viewer.id)
+                        .any(|(_, held)| self.armed_hostile_held_in_reach(viewer, held, reach))
             })
+    }
+
+    /// **How many armed units a hull holds Hostile inside its own reach** (doc 42b cut SU.2;
+    /// Q-42b-4's odds term, Q-42b-11's read): [`Arena::party_holds_armed_hostile_in_reach`]'s
+    /// reading for the one hull `id`, counted rather than asked. Each contact the hull holds is
+    /// one target (the store keeps one id per target, [`ShadowContacts::id_of`]), so the count
+    /// is of units. A wrecked hull, a hull with no reach and an id the arena does not hold all
+    /// read `0`. A read, never a step: no state moves and nothing is hashed.
+    #[must_use]
+    pub fn armed_hostiles_in_reach(&self, id: ObjId) -> u32 {
+        let Some(viewer) = self.unit(id).filter(|viewer| !viewer.limits.wreck) else {
+            return 0;
+        };
+        let reach = viewer.fight_inner_cm(self.definition.terrain.cell_cm());
+        if reach == 0 {
+            return 0;
+        }
+        let held = self
+            .contacts
+            .of(viewer.id)
+            .filter(|(_, held)| self.armed_hostile_held_in_reach(viewer, held, reach))
+            .count();
+        u32::try_from(held).unwrap_or(u32::MAX)
+    }
+
+    /// The one test both reach reads make of a contact `viewer` holds: Hostile to the viewer's
+    /// party, a target that came armed or has fired, not read dead, and seen inside `reach`.
+    fn armed_hostile_held_in_reach(
+        &self,
+        viewer: &UnitState,
+        held: &ShadowContact,
+        reach: u64,
+    ) -> bool {
+        self.relations.hostile(viewer.team, held.class)
+            && self
+                .unit(held.target)
+                .is_some_and(|target| target.armed_at_checkout() || target.shots_fired > 0)
+            && !self.contact_reads_dead(held)
+            && held.seen_at.within_cm(&viewer.pose, reach)
     }
 
     /// **Armour plus internals, per mille of what the unit was authored with**
@@ -6631,6 +6666,87 @@ mod tests {
         contacts.clear_viewer(viewer);
         assert!(contacts.is_empty());
         assert_eq!(contacts.viewers(), 0);
+    }
+
+    /// **Doc 42b cut SU.2** (Q-42b-4's odds term, Q-42b-11's read): the count is of the armed
+    /// units the one hull holds Hostile inside its own reach. A never-armed hull counts once it
+    /// has fired, a contact read dead and a plot past the reach count for nothing, a teammate is
+    /// never counted, and a wreck, a hull with no reach and a stranger read `0`. At every step the
+    /// party's boolean agrees with "some hull of the party counts more than none".
+    #[test]
+    fn su2_the_reach_count_counts_armed_hostiles_in_the_hulls_own_reach() {
+        use crate::arena::test_support::line_tank;
+        const RED: ObjId = ObjId(4);
+        const MATE: ObjId = ObjId(5);
+        const NEAR: ObjId = ObjId(9);
+        const FLANK: ObjId = ObjId(10);
+        const BARGE: ObjId = ObjId(11);
+        const FAR: ObjId = ObjId(12);
+        let mut arena = arena_of(vec![
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            line_tank(MATE, PartyId::RED, pose(500, 500)),
+            line_tank(NEAR, PartyId::BLUE, pose(2_500, 1_500)),
+            line_tank(FLANK, PartyId::BLUE, pose(1_500, 2_500)),
+            tank(BARGE, PartyId::BLUE, pose(2_500, 2_500)),
+            line_tank(FAR, PartyId::BLUE, pose(500, 2_500)),
+        ]);
+        let reach = arena.unit(RED).map_or(0, |red| {
+            red.fight_inner_cm(arena.definition.terrain.cell_cm())
+        });
+        assert!(reach > 0, "the line tank has a reach");
+        let past = i64::try_from(reach).unwrap_or(i64::MAX / 4) + 1_500 + 100;
+        let held =
+            |arena: &Arena, target: ObjId| arena.unit(target).map(SeenPose::of).unwrap_or_default();
+        let sightings = [
+            (MATE, PartyId::RED, held(&arena, MATE)),
+            (NEAR, PartyId::BLUE, held(&arena, NEAR)),
+            (FLANK, PartyId::BLUE, held(&arena, FLANK)),
+            (BARGE, PartyId::BLUE, held(&arena, BARGE)),
+            (FAR, PartyId::BLUE, plot(past, 1_500)),
+        ];
+        for (target, party, seen) in sightings {
+            let id = crate::arena::rng::draw_contact_id(arena.seed, RED, target);
+            arena.contacts.insert(
+                RED,
+                id,
+                ShadowContact::sighted(target, Classification::Classified { party }, 0, seen),
+            );
+        }
+        let agrees = |arena: &Arena| {
+            let any = [RED, MATE]
+                .into_iter()
+                .any(|hull| arena.armed_hostiles_in_reach(hull) > 0);
+            arena.party_holds_armed_hostile_in_reach(PartyId::RED) == any
+        };
+        // NEAR and FLANK: the teammate is not Hostile, the barge never came armed, FAR's plot
+        // is past the reach.
+        assert_eq!(arena.armed_hostiles_in_reach(RED), 2);
+        assert!(agrees(&arena));
+        // Nobody else holds anything, and a hull with no gun has no reach.
+        assert_eq!(arena.armed_hostiles_in_reach(MATE), 0);
+        assert_eq!(arena.armed_hostiles_in_reach(NEAR), 0);
+        assert_eq!(arena.armed_hostiles_in_reach(BARGE), 0);
+        assert_eq!(arena.armed_hostiles_in_reach(ObjId(20)), 0);
+        // The barge fires: it counts.
+        if let Some(state) = arena.unit_mut(BARGE) {
+            state.shots_fired = 1;
+        }
+        assert_eq!(arena.armed_hostiles_in_reach(RED), 3);
+        assert!(agrees(&arena));
+        // RED learns NEAR is dead: it counts for nothing.
+        let near = arena.contacts.id_of(RED, NEAR);
+        if let Some(contact) = near.and_then(|id| arena.contacts.get_mut(RED, id)) {
+            contact.known_dead = true;
+        }
+        assert_eq!(arena.armed_hostiles_in_reach(RED), 2);
+        assert!(agrees(&arena));
+        // A wrecked hull counts nothing, and its party holds nothing.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.limits.wreck = true;
+        }
+        assert_eq!(arena.armed_hostiles_in_reach(RED), 0);
+        assert!(!arena.party_holds_armed_hostile_in_reach(PartyId::RED));
+        assert!(agrees(&arena));
     }
 
     #[test]
