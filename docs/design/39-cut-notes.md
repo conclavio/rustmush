@@ -1120,4 +1120,7 @@ stays at main's version.
 no template names) where they took the line tank; `shard_2/content.rs`'s goods table (v7, the nine rows, the digest), `shard_3/capacity.rs` and
 `content_studio`'s goods counts (36 → 45, tacsim and mush-server).
 
-**Cell delta (rule #14).** tacsim-integration-6: _filled from the PR's JUnit_.
+**Cell delta (rule #14).** `tacsim-integration-6`: **+0.36 min** for the new story (21.8 s on PR run
+41961161128's JUnit, head `ffd3bc16`). The cell's sum reads 27.63 → 38.04 min against main's nearest green run
+(41959575764, `8303d4cf`; the merge base `73b43d59` has no run of its own), 83 → 84 tests: runner speed outweighs the
+story, and no other test in the cell is this cut's.
