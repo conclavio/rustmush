@@ -725,6 +725,7 @@ block once it lands. **The owner's rulings:**
 The timers in the built cuts under that standing rule (the claim's contest window in real hours, the one-term debt's
 zero grace, RS.7's fine at docking, the Co-op's seven-real-day dormancy) are listed for the owner's ruling and
 unchanged here.
+
 ## The 28-IC-day rule (2026-11-04)
 
 **The owner's standing rule: any wait on a player's response is at least 28 IC days.** Seven IC days is about seven
