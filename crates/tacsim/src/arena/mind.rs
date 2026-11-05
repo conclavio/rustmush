@@ -6472,6 +6472,15 @@ mod tests {
             Err(SeedRefusal::Thought),
             "only a fresh row is seeded"
         );
+        // The seeded row thinks on from its carried sequence.
+        for wall in (0..10_000).step_by(100) {
+            fresh.step_settled(wall, &[], &[]);
+        }
+        assert!(
+            fresh.minds[&RED].think_seq > 41,
+            "the seeded mind thinks on: {}",
+            fresh.minds[&RED].think_seq
+        );
 
         let mut dropped = minded();
         let lines = dropped.ledger.seq();

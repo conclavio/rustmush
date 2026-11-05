@@ -2988,7 +2988,7 @@ async fn licensed_field_story(at: &FieldSite, carry: bool) {
 }
 
 /// **Rig 1's carried mind on its open epoch's record** (doc 23 cut D-23-18), once the composed
-/// ticks land the field's close.
+/// ticks land the field's close: a mind other than `before`, the one an earlier field carried.
 async fn carried_on_record(
     rig: &mut crate::driving_rig::Rig,
     (rx, lines): (
@@ -2996,18 +2996,22 @@ async fn carried_on_record(
         &mut Vec<tacsim::arena::ledger::LedgerEvent>,
     ),
     tv: ObjId,
+    before: Option<&tacsim::arena::mind::CarriedMind>,
 ) -> tacsim::arena::mind::CarriedMind {
     let mut carried = None;
-    let landed = crate::field_host_rig::until_composed(rig, rx, lines, 120, |rig, _| {
+    let landed = crate::field_host_rig::until_composed(rig, rx, lines, 180, |rig, _| {
         carried = crate::excursions::record_of(&mut rig.tw, tv)
             .and_then(|record| record.sortie)
             .and_then(|open| open.mind);
-        carried.is_some()
+        carried.as_deref().is_some_and(|mind| Some(mind) != before)
     })
     .await;
     assert!(
         landed,
-        "the check-in carries rig 1's mind on its epoch's record"
+        "the check-in carries rig 1's mind on its epoch's record: {:?}",
+        carried
+            .as_deref()
+            .map(|mind| (mind.think_seq, mind.memory.len(), mind.dropped))
     );
     *carried.expect("the carried mind")
 }
@@ -3040,7 +3044,7 @@ async fn carried_memory(
             .expect("the field's match_ended line")
     };
     // 4a. The demotion's check-in, on the epoch's record.
-    let carried = carried_on_record(&mut rig, (rx, lines), tv).await;
+    let carried = carried_on_record(&mut rig, (rx, lines), tv, None).await;
     let span = ended(lines);
     eprintln!(
         "D23_18 {}: carried think_seq {} memory {} B after a {} ms field",
@@ -3077,9 +3081,17 @@ async fn carried_memory(
     *rx = crate::field_host_rig::egress(&mut rig);
     lines.clear();
     // 4c. The raiders land again and mark rig 1: a second field on the same epoch.
+    // A raider that boarded before the first field demoted lands again; one that had not yet
+    // reached its ramp still stands on the ground, and marks from there.
     let landed =
         crate::driving_rig::staff_hand(&mut rig, |ctx| tacsim::field::raiders::launch(ctx, def));
-    assert!(landed.is_ok(), "{landed:?}");
+    assert!(
+        landed.is_ok()
+            || landed
+                .as_ref()
+                .is_err_and(|why| why.contains("nobody aboard")),
+        "{landed:?}"
+    );
     let raiders = crate::field_raiders_rig::raider_hulls(&rig);
     let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
     for _ in 0..3 {
@@ -3128,7 +3140,7 @@ async fn carried_memory(
         .await,
         "the second field demotes"
     );
-    let later = carried_on_record(&mut rig, (rx, lines), tv).await;
+    let later = carried_on_record(&mut rig, (rx, lines), tv, Some(&carried)).await;
     let second = ended(lines);
     eprintln!(
         "D23_18 {}: the second check-in carries think_seq {} memory {} B after a {} ms field",
