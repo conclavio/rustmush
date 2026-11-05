@@ -1927,6 +1927,21 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
     // Doc 39 cut IN.1: the bale the work drew through, its draw landed with the order's.
     if let Some(after) = order.bale_after {
+        // The owner's IN.11 census ruling: the kilograms the work consumed into the hull.
+        let debited = |good: &str| {
+            order
+                .goods
+                .iter()
+                .filter(|row| row.good.as_str() == good)
+                .map(|row| row.units)
+                .sum::<u64>()
+        };
+        let consumed = Bale::consumed(
+            record.bale,
+            (debited(ALLOYS_GOOD), debited(PARTS_GOOD)),
+            after,
+        );
+        record.repaired_kg = record.repaired_kg.saturating_add(consumed);
         record.bale = Some(after);
     }
     put_bay_hull(ctx, &record);

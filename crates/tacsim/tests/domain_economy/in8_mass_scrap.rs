@@ -406,6 +406,8 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
         .cloned()
         .expect("the heavy's budget");
     dent(&mut rig, heavy, 10);
+    // The owner's IN.11 census ruling (2026-11-05): a window holding a repair still balances.
+    let window = crate::in11_matter::census(&mut rig);
     let taken = run(
         &mut rig.tw,
         pilot,
@@ -416,6 +418,16 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
     let _ = to_ic(&mut rig, order.due_ic + 60);
     let _ = to_ic(&mut rig, order.due_ic + 600);
     let bale = record(&rig, heavy).bale.expect("the opened bale");
+    let repaired = crate::in11_matter::census(&mut rig);
+    assert_eq!(
+        repaired["repaired"] - window["repaired"],
+        i128::from(heavy_budget.structure_kg_for(10) + heavy_budget.fittings_kg_for(10)),
+        "the patch's kilograms are summed: {repaired:?}"
+    );
+    assert_eq!(
+        repaired["balance"], window["balance"],
+        "the repair window balances: {window:?} → {repaired:?}"
+    );
     assert_eq!(
         (bale.alloys_kg, bale.fittings_kg),
         (
@@ -427,6 +439,11 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
     let paid_before = credit(&rig, pilot);
     let out = settled(&mut rig, pilot, &format!("+bay/return #{}", heavy.0), heavy);
     assert!(out.contains("bale goes back to the workshop"), "{out}");
+    let returned = crate::in11_matter::census(&mut rig);
+    assert_eq!(
+        returned["balance"], window["balance"],
+        "the return balances too: {returned:?}"
+    );
     assert!(
         record(&rig, heavy).bale.is_none(),
         "the bale is the Yards' now"
@@ -513,7 +530,19 @@ fn remains_on(ground: &Ground, schema: &str, yield_t: u64) {
         preview.contains(&format!("{yield_t} t of structural_alloys")),
         "{preview}"
     );
+    // The owner's IN.11 census ruling (2026-11-05): a window holding a remains scrap balances.
+    let window = crate::in11_matter::census(&mut rig);
     let out = go(&mut rig, pilot, &format!("+tv/1 scrap {first} go"));
+    let scrapped = crate::in11_matter::census(&mut rig);
+    assert_eq!(
+        scrapped["scrapped"] - window["scrapped"],
+        i128::from(yield_t) * 1_000,
+        "the minted alloys are summed: {scrapped:?}"
+    );
+    assert_eq!(
+        scrapped["balance"], window["balance"],
+        "the scrap window balances: {window:?} → {scrapped:?}"
+    );
     assert!(out.contains("breaks up"), "{out}");
     let lot = tacsim::surface::claim::remains_lot(&cid(ground.entry), *first).expect("the lot");
     let found = lot_record(&mut rig, lot).expect("the alloys");

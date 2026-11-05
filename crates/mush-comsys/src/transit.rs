@@ -40,6 +40,30 @@ pub trait Transport: Send + Sync + std::fmt::Debug {
 }
 #[derive(Clone, Debug)]
 pub struct Services(pub Arc<dyn Transport>);
+
+/// **A gag a composition lays on IC speech** (doc 38a review F-22a): asked before every IC line is
+/// queued, with the channel's managed key when a roster owns it. `Some(line)` refuses the line and
+/// tells the speaker why; membership is untouched, so nothing is restored when the gag lifts and
+/// nothing durable is written. Comsys knows no game: the composition supplies the rule.
+pub trait SpeakGate: Send + Sync + std::fmt::Debug {
+    /// Why `actor` may not speak on the channel keyed `managed`, or `None`.
+    fn refusal(&self, world: &World, actor: ObjId, managed: Option<&str>) -> Option<String>;
+}
+/// The registered [`SpeakGate`] (module state), when the composition gave one.
+#[derive(Clone, Debug)]
+pub struct SpeakGates(pub Arc<dyn SpeakGate>);
+
+/// **The registered gate's answer for `actor` on `channel`** (doc 38a review F-22a): every IC
+/// speaking path asks it before [`submit`].
+pub(crate) fn refusal(w: &World, actor: ObjId, channel: ChannelId) -> Option<String> {
+    let gate = w.module_state::<SpeakGates>()?;
+    let managed = w
+        .module_state::<ComsysState>()
+        .and_then(|st| st.channels.get(&channel))
+        .and_then(|c| c.managed.as_ref())
+        .map(|binding| binding.key.as_str());
+    gate.0.refusal(w, actor, managed)
+}
 #[derive(Clone, Debug)]
 pub struct Intent {
     pub representation: Option<mush_core::RelayRepresentation>,

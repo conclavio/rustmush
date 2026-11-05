@@ -373,6 +373,15 @@ async fn tender_on(ground: &Ground) {
         .expect("the bale");
     assert_eq!(bale.fittings_kg, 1_000 - 10 - 12, "the bale's fittings");
     assert_eq!(bale.alloys_kg, 1_000 - 35, "the bale's alloys");
+    // The owner's IN.11 census ruling (2026-11-05): the site sums what the tend consumed.
+    assert_eq!(
+        site_record_at(&mut rig, ground.entry)
+            .expect("the site's record")
+            .matter
+            .repaired_kg,
+        10 + 12 + 35,
+        "the census's repaired kilograms"
+    );
     let shown = run(&mut rig.tw, a, "+tv/2 stores");
     let left = 20 - u64::try_from(short.min(20)).expect("rounds");
     assert!(

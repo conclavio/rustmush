@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 32,
+    "version": 33,
     "kind": "campaign_seed",
-    "digest": "aa5d90fbac2bf2247008dc2a020d6002ddd1bdf018d81ab14ae41840457d8c00",
+    "digest": "f645d3788f3a71622b2c8eb2180aad62c82097a87890fb1d3139bce62d70dedc",
     "requires": []
   },
   "entries": {
@@ -2892,14 +2892,16 @@
                        { "good": "ammo_ap_30", "qty": 4800, "grade": 50, "issue": 1 },
                        { "good": "ammo_ball_762", "qty": 400, "grade": 50, "issue": 1 },
                        { "good": "ammo_he_105", "qty": 800, "grade": 50, "issue": 1 },
-                       { "good": "ammo_missile", "qty": 120, "grade": 50, "issue": 1 } ],
+                       { "good": "ammo_missile", "qty": 120, "grade": 50, "issue": 1 },
+                       { "good": "carbon_ore", "qty": 20, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "industrial_parts", "price_major": 520, "boards": ["exchange", "yard"] },
                        { "good": "ammo_ap_30", "price_major": 12, "boards": ["yard"] },
                        { "good": "ammo_ball_762", "price_major": 25, "boards": ["yard"] },
                        { "good": "ammo_he_105", "price_major": 150, "boards": ["yard"] },
                        { "good": "ammo_missile", "price_major": 1500, "boards": ["yard"] } ],
             "bids":  [ { "good": "strategic_ore", "price_major": 700, "intake": 12, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 12 } },
-                       { "good": "tacsim.part.plant.light_mk1", "price_major": 4000, "intake": 4, "boards": ["yard"] } ] },
+                       { "good": "tacsim.part.plant.light_mk1", "price_major": 4000, "intake": 4, "boards": ["yard"] },
+                       { "good": "carbon_ore", "price_major": 60, "intake": 20, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 20 } } ] },
           { "org": "yard_commissary", "storefront": "neighborhood.stickney_yards.item.commissary_locker",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.okonkwo",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],

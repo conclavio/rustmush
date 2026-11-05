@@ -307,7 +307,9 @@ fn compose_server_modules<E>(
                         .into_iter()
                         .filter(|_| tacsim_delegate)
                         .collect(),
-                ),
+                )
+                // Doc 38a review F-22a: a captive is gagged on the detachment's radio.
+                .with_speak_gate(Arc::new(tacsim::detachment::DetachmentChatGate)),
         ),
         Box::new(mush_canon::CanonModule::new()),
         Box::new(mush_privileges::PrivilegesModule::new()),
@@ -391,6 +393,17 @@ fn compose_server_modules<E>(
                 .with_quantity_delegates(delegates)
                 .with_salvage_source(Arc::new(self::salvage_source::SimSalvageSource))
                 .with_handle_cell(Arc::clone(&inventory_handles));
+            // Doc 36a P2-4 and doc 39 cut IN.2, as tacsim's own root wires them: a dissolve into a
+            // hull's hold asks its capacity, and a part is indivisible. The owner's IN.11 ruling
+            // (2026-11-05) found this root without them, so on the server the market's copy of
+            // the inventory read no part as indivisible.
+            let module = if tacsim_delegate {
+                module
+                    .with_pool_capacity(Arc::new(tacsim::port::market::PortCapacity))
+                    .with_indivisible_goods(Arc::new(tacsim::port_tick::PartGoods))
+            } else {
+                module
+            };
             match launch {
                 Some(launch) => launch.configure_inventory(module),
                 None => module,

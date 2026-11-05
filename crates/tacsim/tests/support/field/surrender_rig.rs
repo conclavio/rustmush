@@ -34,6 +34,10 @@ pub(crate) enum Case {
     /// (s5) A restart: the field crashes as soon as the yield is marked; the hull is out of the
     /// field after the restart, and its step and its yield are what they were.
     Restart,
+    /// (s4) The window (doc 42b cut SU.5, Q-42b-20): nobody loads the yielded hull. A minute short
+    /// of `yield_hold_s` past the demotion the crew is still aboard; at it, the crew leaves play
+    /// and the hull stays a casualty.
+    Lapse,
 }
 
 /// The hull's raider attribute.
@@ -90,7 +94,7 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
         .collect();
     let resolves = match case {
         Case::Holds => [1_000, 1_000],
-        Case::Yields | Case::NoHolder | Case::Restart => [0, 1_000],
+        Case::Yields | Case::NoHolder | Case::Restart | Case::Lapse => [0, 1_000],
     };
     staff_hand(&mut rig, |ctx| {
         for (crew, resolve) in crews.iter().zip(resolves) {
@@ -129,7 +133,7 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
         |rig: &crate::driving_rig::Rig| tacsim::field::raiders::yielded(rig.tw.world(), hulls[0]);
 
     match case {
-        Case::Yields | Case::Restart => {
+        Case::Yields | Case::Restart | Case::Lapse => {
             assert!(
                 until(&mut rig, &mut rx, &mut lines, 60, |rig, _| yielded(rig)).await,
                 "the first crew yields: {}",
@@ -197,6 +201,47 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
                 listed.contains(&format!("Unit #{}: casualty, yielded at", hulls[0].0)),
                 "the site's listing marks it yielded (Q-42b-13): {listed}"
             );
+            if case == Case::Lapse {
+                let left_ic = site_record_at(&mut rig, entry)
+                    .and_then(|record| record.units.into_iter().find(|row| row.unit == hulls[0]))
+                    .map(|row| row.left_ic)
+                    .expect("the casualty's row");
+                let hold = i64::from(tacsim::TacsimConfig::default().field.yield_hold_s);
+                assert_eq!(hold, 28 * 86_400, "the window is the 28-IC-day floor");
+                let _ = crate::driving_rig::to_ic(&mut rig, left_ic + hold - 60);
+                let _ = crate::field_host_rig::second(&mut rig);
+                assert!(
+                    crew_of(rig.tw.world(), crews[0]).is_some(),
+                    "a minute short of the window the crew still waits"
+                );
+                let _ = crate::driving_rig::to_ic(&mut rig, left_ic + hold);
+                assert!(
+                    crate::custody_rig::seconds_until(&mut rig, 30, |rig| crew_of(
+                        rig.tw.world(),
+                        crews[0]
+                    )
+                    .is_none()),
+                    "at the window the crew leaves play: {:?}",
+                    crew_of(rig.tw.world(), crews[0])
+                );
+                assert!(
+                    rig.tw
+                        .world()
+                        .get(crews[0])
+                        .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING)),
+                    "the crew member is out of the world"
+                );
+                assert_eq!(
+                    site_record_at(&mut rig, entry)
+                        .and_then(|record| record
+                            .units
+                            .into_iter()
+                            .find(|row| row.unit == hulls[0]))
+                        .map(|row| row.condition),
+                    Some(LeftCondition::Casualty),
+                    "the hull stays a casualty for the salvage loop"
+                );
+            }
         }
         Case::Holds | Case::NoHolder => {
             let _ = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
@@ -220,4 +265,187 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
             }
         }
     }
+}
+
+/// **(s1) The stranded raid yields, and its crew is taken in** (doc 42b cut SU.4; Q-42b-17 to
+/// Q-42b-19) on `at`'s ground. The raider's first hull stands beside the stranger's ramp,
+/// powerless, its crew at resolve 0; its barge and its second hull are gone (SU.3's stories keep a
+/// crew at 1,000). A staff hand rebuilds it as a drone, since no shipped rig can tow a 30 t line
+/// tank (the cut notes' gap). The field opens and the crew yields; the field settles with the hull
+/// a casualty. The stranger's tug, launched after the demotion, tows it into the Red Moth: the crew
+/// is `Captured`, listed by `+ship/captives`, and refused `+ship/release` on the site (no life
+/// support). The Red Moth docks at Ceres: the authority takes the crew into processing with no fee
+/// charged, and at release the crew leaves play, the record gone and the object `GOING`.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn taken_in(at: &Ground) {
+    use crate::custody_rig::{attach_on, load_on, powerless, ramp_cell_on, seconds_until};
+    let mut rig = stocked_tuned(quick);
+    let (b, b_row, b_tvs) = on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), at.site(), 1);
+    let b_carrier = ObjId(b_row.hull);
+    let tug = b_tvs[0];
+    let ramp = ramp_cell_on(&rig, at.entry);
+    let seeded = run(&mut rig.tw, GOD, &format!("@field/raiders {}", at.raider));
+    assert!(seeded.contains("seeded"), "{seeded}");
+    let launched = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@field/raiders/launch {}", at.raider),
+    );
+    assert!(launched.contains("launch from"), "{launched}");
+    let hulls = raider_hulls(&rig);
+    let barge = tacsim::field::raiders::carrier_of(rig.tw.world(), hulls[0]).expect("a carrier");
+    let hull = hulls[0];
+    // No shipped rig can tow a 30 t line tank (a 6 t tug takes 12 t, an 8 t escort 16 t): a staff
+    // hand rebuilds the yielding hull as a drone, a combat hull the stranger's tug can take (and
+    // the departure carries as cargo, doc 36a lane 3). Doc 42b's cut notes record the gap.
+    let removed = run(&mut rig.tw, GOD, &format!("@unit/remove #{}", hull.0));
+    let created = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@unit/create #{}=tacsim.unit.drone_mk1", hull.0),
+    );
+    assert!(
+        mush_tactics::module::unit_of(rig.tw.world(), hull).is_some(),
+        "the hull is rebuilt as a drone: {removed} / {created}"
+    );
+    crate::driving_rig::to_cell_on(&mut rig, at.entry, hull, (ramp.0 + 1, ramp.1));
+    powerless(&mut rig, hull);
+    let crews: Vec<ObjId> = hulls
+        .iter()
+        .map(|hull| {
+            tacsim::field::crew::seated_in(rig.tw.world(), *hull).expect("each hull has its crew")
+        })
+        .collect();
+    let crew = crews[0];
+    staff_hand(&mut rig, |ctx| {
+        for (who, resolve) in crews.iter().zip([0, 1_000]) {
+            assert!(tacsim::field::crew::set_resolve_for_tests(
+                ctx,
+                *who,
+                Some(resolve)
+            ));
+        }
+        mush_sim::unplace(ctx, barge, "test: the raider's barge is gone").expect("unplaced");
+        // The second hull goes with its barge: the yielding hull stands alone, so nothing of the
+        // raider's fires on the Red Moth on its pad (SU.3's stories keep the crew at 1,000).
+        mush_sim::unplace(ctx, hulls[1], "test: the second hull is gone").expect("unplaced");
+    });
+    let hound = armed_on(
+        &mut rig,
+        at.entry,
+        "Red Hound",
+        (ramp.0 - 8, ramp.1),
+        90_000,
+    );
+    seat(&mut rig, hound, b);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
+    let entry = at.entry;
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+            tacsim::field::raiders::yielded(rig.tw.world(), hull)
+        })
+        .await,
+        "the crew yields: {}",
+        mark(&rig, hull)
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 180, |rig, _| settled(
+            rig, entry
+        ))
+        .await,
+        "the field settles"
+    );
+    assert_eq!(
+        site_record_at(&mut rig, entry)
+            .and_then(|record| record.units.into_iter().find(|row| row.unit == hull))
+            .map(|row| row.condition),
+        Some(LeftCondition::Casualty),
+        "the yielded hull lies a casualty"
+    );
+
+    // The stranger's tug, launched once the field is over, takes the yielded hull in: the crew is
+    // captured by CR.1's branch.
+    // A few seconds first, so the close the host still owes lands before the launch's own acts.
+    for _ in 0..5 {
+        let _ = crate::field_host_rig::second(&mut rig);
+    }
+    crate::driving_rig::launched_at(&mut rig, at.entry, b, tug);
+    crate::driving_rig::to_cell_on(&mut rig, at.entry, tug, (ramp.0 + 1, ramp.1 + 1));
+    let _ = crate::field_host_rig::second(&mut rig);
+    attach_on(&mut rig, at.entry, (b, 1), tug, hull);
+    load_on(&mut rig, at.entry, (b, 1), tug, hull);
+    let record = crew_of(rig.tw.world(), crew)
+        .cloned()
+        .expect("the crew's record");
+    assert!(
+        matches!(record.location, CrewLocation::Captured { carrier, captor, .. }
+            if carrier == b_carrier && captor == b),
+        "the crew is held aboard the Red Moth: {record:?}"
+    );
+    assert_eq!(
+        record.resolve_permille,
+        Some(0),
+        "the capture carries the trait"
+    );
+    let name = rig
+        .tw
+        .world()
+        .get(crew)
+        .map(|o| o.name.clone())
+        .expect("a name");
+    let held = run(&mut rig.tw, b, "+ship/captives");
+    assert!(held.contains(&name), "{held}");
+    // Q-42b-19: no life support on open ground.
+    let refused = run(&mut rig.tw, b, &format!("+ship/release #{}", crew.0));
+    assert!(
+        refused.contains("has no way off this ground; hand them over at a port"),
+        "{refused}"
+    );
+    assert!(matches!(
+        crew_of(rig.tw.world(), crew).map(|c| &c.location),
+        Some(CrewLocation::Captured { .. })
+    ));
+
+    // Q-42b-18: the Red Moth docks at Ceres; the authority takes the crew, and no fee is charged.
+    let ticket =
+        crate::driving_rig::file_and_launch(&mut rig, b, b_carrier, "+ship/lift ceres leave=1");
+    let _ = crate::driving_rig::to_ic(&mut rig, ticket.plan.depart_ic + ticket.plan.total_s + 60);
+    assert!(
+        seconds_until(&mut rig, 120, |rig| matches!(
+            crew_of(rig.tw.world(), crew).map(|c| &c.location),
+            Some(CrewLocation::Processing { .. })
+        )),
+        "the crew is handed over at Ceres: {:?}",
+        crew_of(rig.tw.world(), crew)
+    );
+    let Some(CrewLocation::Processing {
+        port,
+        release_due_ic,
+        charge,
+    }) = crew_of(rig.tw.world(), crew).map(|c| c.location.clone())
+    else {
+        unreachable!("matched above");
+    };
+    assert_eq!(port.as_str(), "ceres");
+    assert_eq!(charge, None, "an NPC owes no release fee");
+    let _ = crate::driving_rig::to_ic(&mut rig, release_due_ic + 1);
+    assert!(
+        seconds_until(&mut rig, 30, |rig| crew_of(rig.tw.world(), crew).is_none()),
+        "the crew leaves play at release: {:?}",
+        crew_of(rig.tw.world(), crew)
+    );
+    assert!(
+        rig.tw
+            .world()
+            .get(crew)
+            .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING)),
+        "the crew member is out of the world"
+    );
+    let held = run(&mut rig.tw, b, "+ship/captives");
+    assert!(held.contains("You hold nobody aboard."), "{held}");
 }

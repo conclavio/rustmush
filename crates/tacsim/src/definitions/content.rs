@@ -1030,7 +1030,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 32;
+pub const LANE_VERSION: u32 = 33;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

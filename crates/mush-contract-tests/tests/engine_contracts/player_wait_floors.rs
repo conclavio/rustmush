@@ -174,6 +174,24 @@ fn salvage_waits_are_at_least_28_ic_days() {
     );
 }
 
+/// 9. **Doc 42b cut SU.5** (Q-42b-20): a yielded raider hull's wait for anyone to load it, the
+///    default and the shortest a deployment may set.
+#[test]
+fn the_captors_yield_window_is_at_least_28_ic_days() {
+    at_least(
+        "tacsim::config::FieldConfig::default().yield_hold_s",
+        i64::from(tacsim::config::FieldConfig::default().yield_hold_s),
+    );
+    at_least(
+        "tacsim::config::FIELD_YIELD_HOLD_S.start()",
+        i64::from(*tacsim::config::FIELD_YIELD_HOLD_S.start()),
+    );
+    at_least(
+        "mush_config::TacsimFieldCfg::default().yield_hold_s",
+        i64::from(mush_config::config::TacsimFieldCfg::default().yield_hold_s),
+    );
+}
+
 /// 10. **Doc 38a review F-14**: a captive's release fee (doc 42 Q-42-7) falls due no sooner than
 ///     the debt floor, so an absent ex-captive is never refused at a desk the next sweep.
 #[test]
