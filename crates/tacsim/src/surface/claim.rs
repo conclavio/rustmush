@@ -95,7 +95,7 @@ use crate::surface::site_record::{GroundKind, KnownWhat, SiteKey, SiteRecord};
 /// The verb.
 pub const SALVAGE_VERB: &str = "+salvage";
 /// Its help.
-pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. +salvage/ask <site>/<block> [go] asks a block's landholder for consent to recover off it, by the registry's notice; 28 IC days of silence is consent. +salvage/refuse <site>/<block>=<who> [go] refuses one for 28 IC days. Bare, each previews and commits nothing; go commits exactly the preview.";
+pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. +salvage/ask <site>/<block> [go] asks a block's landholder for consent to recover off it, by the registry's notice; 28 IC days of silence is consent. +salvage/refuse <site>/<block>=<who> [go] refuses one for 28 IC days. +salvage/forsale lists the hulls the recovery houses have restored for sale, at their reference price; +salvage/buy <hull> [go] buys one, her title passing at the next settlement. Bare, each previews and commits nothing; go commits exactly the preview.";
 /// The most witnesses a pin keeps.
 pub const MAX_WITNESSES: usize = 16;
 /// The most delivered or read evidence records one custody keeps.
@@ -107,7 +107,7 @@ pub const MAX_UNLAWFUL: usize = 64;
 pub const AWARD_ISSUER: &str = crate::port::hull::REGISTRY_ISSUER;
 
 /// `+salvage` usage.
-pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/report <site>[=<who>|#<hull>] registry, +salvage/inspect <hull>, +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go], +salvage/ask <site>/<block> [go] or +salvage/refuse <site>/<block>=<who> [go].";
+pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/report <site>[=<who>|#<hull>] registry, +salvage/inspect <hull>, +salvage/forsale, +salvage/buy <hull> [go], +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go], +salvage/ask <site>/<block> [go] or +salvage/refuse <site>/<block>=<who> [go].";
 /// Nothing to list.
 pub const NO_CLAIMS: &str = "You stand in no salvage claim.";
 /// No custody record names the hull: `{hull}`.
@@ -2025,6 +2025,13 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("accept") {
         return crate::surface::retrieval::accept_cmd(ctx, &raw);
+    }
+    // Doc 41 cut RS.6c-2: the recovery houses' resale.
+    if ctx.switches.has("forsale") {
+        return crate::port::house_sale::forsale_cmd(ctx);
+    }
+    if ctx.switches.has("buy") {
+        return crate::port::house_sale::buy_cmd(ctx, &raw);
     }
     if !raw.trim().is_empty() {
         return Err(CmdError::msg(SALVAGE_USAGE));

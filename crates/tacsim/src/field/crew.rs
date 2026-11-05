@@ -271,6 +271,12 @@ pub struct CrewRecord {
     /// A treatment under way at a port (doc 36 cut GC.13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub treatment: Option<Treatment>,
+    /// **Doc 42b cut SU.0** (Q-42b-5): the crew member's resolve, 0 to 1,000 per mille. `None`
+    /// never yields: every player record and every record written before SU. Written once, at the
+    /// raider seed (cut SU.1); a check-in, a capture and the handover carry it unchanged. Omitted
+    /// when `None`, so [`CREW_FORMAT`] is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve_permille: Option<u16>,
 }
 
 impl CrewRecord {
@@ -809,9 +815,13 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         return;
     };
     let stranded = matches!(location, CrewLocation::Stranded { .. });
-    let (condition, extraction) = match prior {
-        Some(record) => (record.condition.max(condition), record.extraction),
-        None => (condition, None),
+    let (condition, extraction, resolve_permille) = match prior {
+        Some(record) => (
+            record.condition.max(condition),
+            record.extraction,
+            record.resolve_permille,
+        ),
+        None => (condition, None, None),
     };
     put(
         ctx,
@@ -824,6 +834,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
             organizer,
             extraction: if stranded { extraction } else { None },
             treatment: None,
+            resolve_permille,
         },
     );
     if stranded {
@@ -1515,6 +1526,7 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
                 organizer,
                 extraction: None,
                 treatment: None,
+                resolve_permille: crew_of(ctx.w, *pilot).and_then(|record| record.resolve_permille),
             },
         );
         ctx.out.sys_to_actor(
@@ -2820,6 +2832,7 @@ mod tests {
             organizer: None,
             extraction: None,
             treatment: None,
+            resolve_permille: None,
         };
         assert_eq!(record.extractable(), None);
         record.condition = CrewCondition::Incapacitated;
@@ -2863,6 +2876,7 @@ mod tests {
                 capture: None,
             }),
             treatment: None,
+            resolve_permille: None,
         };
         let aboard = loaded_aboard(&stranded, ObjId(40), ObjId(90), 500).expect("aboard");
         assert_eq!(aboard.location, CrewLocation::Carrier { hull: ObjId(90) });
@@ -2915,6 +2929,7 @@ mod tests {
                 capture: None,
             }),
             treatment: None,
+            resolve_permille: None,
         };
         assert!(held_in(&inside, ObjId(40)), "the load carries them");
         let held = capture(&inside, ObjId(90), ObjId(12), 500);
@@ -3042,6 +3057,7 @@ mod tests {
             organizer: Some(ObjId(3)),
             extraction: None,
             treatment: None,
+            resolve_permille: None,
         }
     }
 
@@ -3133,6 +3149,37 @@ mod tests {
         });
         let decoded: CrewRecord = serde_json::from_value(old.clone()).expect("an old record");
         assert_eq!(serde_json::to_value(&decoded).expect("encodes"), old);
+    }
+
+    /// **Doc 42b cut SU.0** (Q-42b-5): the resolve decodes under `CREW_FORMAT` 1. A record written
+    /// before SU reads `None` (never yields) and re-encodes without the field; a set value
+    /// round-trips; a capture carries it unchanged; the status line does not show it.
+    #[test]
+    fn su0_resolve_on_the_record_decodes_under_the_same_format() {
+        let old = serde_json::json!({
+            "format": 1, "character": 7,
+            "location": {"at": "unit", "unit": 40},
+            "condition": "fit", "at_ic": 100, "organizer": 12
+        });
+        let decoded: CrewRecord = serde_json::from_value(old.clone()).expect("an old record");
+        assert_eq!(decoded.resolve_permille, None, "an old record never yields");
+        assert_eq!(serde_json::to_value(&decoded).expect("encodes"), old);
+        let mut raider = old.clone();
+        raider["resolve_permille"] = serde_json::json!(400);
+        let raider: CrewRecord = serde_json::from_value(raider).expect("a raider's record");
+        assert_eq!(raider.resolve_permille, Some(400));
+        assert_eq!(raider.format, CREW_FORMAT);
+        let back: CrewRecord =
+            serde_json::from_value(serde_json::to_value(&raider).expect("encodes"))
+                .expect("decodes");
+        assert_eq!(back, raider);
+        let held = capture(&raider, ObjId(90), ObjId(12), 500);
+        assert_eq!(held.resolve_permille, Some(400), "a capture carries it");
+        assert!(held.in_custody());
+        // The field stays closed to unknown neighbours (`deny_unknown_fields`).
+        let mut stray = old;
+        stray["morale"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<CrewRecord>(stray).is_err());
     }
 
     /// **Doc 42 cut CR.0** (Q-42-3, Draft 0.3 42-5 (B)): a check-in leaves custody, an abandoned

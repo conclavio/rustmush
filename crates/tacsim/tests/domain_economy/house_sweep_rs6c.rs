@@ -205,7 +205,8 @@ fn story(venue: &str, entry: &str) {
 /// **The ownerless wreck** (the owner's ruling 1 of 2026-11-04): a raid's hull, made with no
 /// title (`field_raiders_rig::armed`'s line tank, as `field/raiders.rs` makes them), wrecked on
 /// Ahuna Flank's open ground. The sweep titles her to the dispatcher before the tow, as salvage of
-/// the unowned, files no claim, and she is kept (her title to Tycho) or scrapped at Ceres.
+/// the unowned, files no claim, and at Ceres she is assessed for keeping (her restoration and sale
+/// are RS.6c-2's story) or scrapped.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
@@ -241,6 +242,7 @@ fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
             break;
         }
     }
+    let (lifter, _) = tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     let dispatcher = tacsim::port::house::dispatcher(rig.tw.world(), &ceres).expect("dispatcher");
     let tycho = {
         let map = port_map(&rig.tw, "ceres_port");
@@ -257,7 +259,22 @@ fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
     );
     let mut titled = false;
     let mut claimed = false;
-    for _ in 0..40_000 {
+    let mut kept = false;
+    let in_custody = |rig: &mut Rig| {
+        crate::field_host_rig::site_record_at(rig, entry)
+            .is_some_and(|record| record.custody.iter().any(|row| row.hull == wreck))
+    };
+    // Bounded: a stalled sweep fails in minutes, saying where the lifter and the wreck are.
+    let stalled = |rig: &Rig, what: &str| -> ! {
+        panic!(
+            "{what}: the wreck is {:?} titled {:?}, the lifter {:?}",
+            tacsim::surface::act::where_is(rig.tw.world(), wreck),
+            tacsim::port::house_sweep::title_of(rig.tw.world(), wreck),
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter)
+        )
+    };
+    let mut steps = 0u32;
+    loop {
         let title = tacsim::port::house_sweep::title_of(rig.tw.world(), wreck);
         if title == Some(PrincipalId::Object(dispatcher)) {
             titled = true;
@@ -265,15 +282,46 @@ fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
         if scrapped(&rig, wreck) || (titled && title == Some(tycho.clone())) {
             break;
         }
-        if crate::field_host_rig::site_record_at(&mut rig, entry)
-            .is_some_and(|record| record.custody.iter().any(|row| row.hull == wreck))
+        // Berthed at Ceres and assessed for keeping, she is the house's: her restoration and
+        // sale are RS.6c-2's story (`house_resale_rs6c2.rs`), so this one ends here.
+        if titled
+            && tacsim::port::bay_work::held(rig.tw.world(), wreck)
+            && matches!(
+                tacsim::port::house_sweep::assess(rig.tw.world(), wreck),
+                tacsim::port::house_sweep::Disposition::Keep { .. }
+            )
         {
+            kept = true;
+            break;
+        }
+        // The title is the sweep's first act: within its first few hundred seconds.
+        if !titled && steps == 600 {
+            stalled(&rig, "not titled to the dispatcher in 600 steps");
+        }
+        if steps == 6_000 {
+            stalled(&rig, "neither kept nor scrapped in 6,000 steps");
+        }
+        // The custody read is a store read: every 60 steps (and once at the end).
+        if steps.is_multiple_of(60) && in_custody(&mut rig) {
             claimed = true;
         }
-        let t = rig.tw.world().now().saturating_add(1);
+        steps += 1;
+        // Faster while the lifter is under way or a restoration (RS.6c-2) is in the workshop.
+        let step = if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter),
+            tacsim::port::ship::Berth::UnderWay
+        ) {
+            300
+        } else if tacsim::port::bay_work::under_work(rig.tw.world(), wreck) {
+            60
+        } else {
+            1
+        };
+        let t = rig.tw.world().now().saturating_add(step);
         rig.tw.set_now(t);
         let _ = second(&mut rig);
     }
+    claimed |= in_custody(&mut rig);
     assert!(titled, "the sweep titled her to the dispatcher");
     assert!(
         !claimed,
@@ -281,7 +329,7 @@ fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
     );
     let title = tacsim::port::house_sweep::title_of(rig.tw.world(), wreck);
     assert!(
-        scrapped(&rig, wreck) || title == Some(tycho),
+        kept || scrapped(&rig, wreck) || title == Some(tycho),
         "she was kept for the house or scrapped: {title:?}"
     );
 }
