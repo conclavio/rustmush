@@ -379,7 +379,13 @@ fn carried_offer(w: &World) -> Map<String, Value> {
     let mut rows: Vec<(String, &super::record::CarriedRow)> = Vec::new();
     if let Some(book) = w.module_state::<super::FieldBook>() {
         for (site, hosted) in book.running() {
-            rows.extend(hosted.live.carried.iter().map(|row| (site.to_string(), row)));
+            rows.extend(
+                hosted
+                    .live
+                    .carried
+                    .iter()
+                    .map(|row| (site.to_string(), row)),
+            );
         }
     }
     if let Some(owed) = w.module_state::<super::admit::OwedCloses>() {

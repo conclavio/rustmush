@@ -326,7 +326,10 @@ pub(crate) fn led_now(ctx: &Ctx<'_>, live: &super::FieldLive, actor: ObjId) -> O
 }
 
 /// **The rig's own record on the excursion family**, when it has one.
-pub(crate) fn rig_record(ctx: &Ctx<'_>, unit: ObjId) -> Option<crate::surface::excursion::RigRecord> {
+pub(crate) fn rig_record(
+    ctx: &Ctx<'_>,
+    unit: ObjId,
+) -> Option<crate::surface::excursion::RigRecord> {
     let handles = ctx.w.module_state::<crate::port::families::PortHandles>()?;
     ctx.action_state(
         &handles.families.excursions,

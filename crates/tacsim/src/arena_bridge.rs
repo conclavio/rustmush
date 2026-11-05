@@ -1846,7 +1846,9 @@ fn carried_minds(
         .units
         .iter()
         .filter_map(|unit| {
-            let mind = crate::field::parties::rig_record(ctx, unit.id)?.sortie?.mind?;
+            let mind = crate::field::parties::rig_record(ctx, unit.id)?
+                .sortie?
+                .mind?;
             Some((unit.id, *mind))
         })
         .collect()

@@ -6407,7 +6407,10 @@ mod tests {
             .expect("the return carries the mind");
         assert_eq!(*back, carried, "UnitReturn carries the row");
         let json = serde_json::to_value(&carried).expect("encodes");
-        assert!(json["memory"].is_string(), "the memory rides as its text: {json}");
+        assert!(
+            json["memory"].is_string(),
+            "the memory rides as its text: {json}"
+        );
         let read: CarriedMind = serde_json::from_value(json.clone()).expect("decodes");
         assert_eq!(read, carried);
         let mut bad = json;
@@ -6444,7 +6447,10 @@ mod tests {
             memory: b"{ \"a\":1}".to_vec(),
             ..carried.clone()
         };
-        assert_eq!(fresh.seed_carried_mind(RED, &over), Err(SeedRefusal::OverCap));
+        assert_eq!(
+            fresh.seed_carried_mind(RED, &over),
+            Err(SeedRefusal::OverCap)
+        );
         assert_eq!(
             fresh.seed_carried_mind(BLUE, &carried),
             Err(SeedRefusal::NoRow),
@@ -6456,7 +6462,11 @@ mod tests {
         assert_eq!(row.memory, memory);
         assert_eq!(row.think_seq, 41);
         assert_eq!(row.doctrine_state, doctrine_state_of(&memory));
-        assert_eq!(queued(&fresh), vec![(before[0].0, 41)], "re-keyed, same millisecond");
+        assert_eq!(
+            queued(&fresh),
+            vec![(before[0].0, 41)],
+            "re-keyed, same millisecond"
+        );
         assert_eq!(
             fresh.seed_carried_mind(RED, &carried),
             Err(SeedRefusal::Thought),

@@ -259,7 +259,10 @@ pub fn snapshot_mind(
     unit: ObjId,
 ) -> Option<crate::arena::mind::MindState> {
     let document = w.module_state::<FieldBook>()?.snapshot(site)?;
-    let row = document.get("state")?.get("minds")?.get(unit.0.to_string())?;
+    let row = document
+        .get("state")?
+        .get("minds")?
+        .get(unit.0.to_string())?;
     serde_json::from_value(row.clone()).ok()
 }
 
