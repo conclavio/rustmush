@@ -187,3 +187,73 @@ async fn in11_a_restart_between_consumption_and_title_finishes_the_hull_once() {
         "inputs = the hull + the waste: {build:?}"
     );
 }
+
+/// **Two orders for one bale** (§4.9's adversarial set): with a patch taken on the heavy and its
+/// bale opened by it, a second `+bay/order` on the same hull is refused while the first stands, so
+/// no two orders ever draw one bale; once the first is done the second draws the bale alone, and
+/// the hold gives up its tonne once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in11_two_orders_for_one_bale_draw_it_once() {
+    use crate::driving_rig::{
+        board, file_and_launch, hold_pool, hold_vault_of, load, seed_hold, to_ic,
+    };
+    use crate::in1_accounting::{dent_one, done, record, two_titled_hulls};
+    let mut rig = stocked();
+    let (pilot, row, _escort, heavy) = two_titled_hulls(&mut rig);
+    let hull = mush_core::ObjId(row.hull);
+    let vault = hold_vault_of(&rig.tw, &row);
+    seed_hold(&mut rig, &row, "structural_alloys", 2, 9_700);
+    seed_hold(&mut rig, &row, "industrial_parts", 2, 9_701);
+    load(&mut rig, &row, 60, 40, 9_500);
+    board(&mut rig, pilot);
+    let t = file_and_launch(&mut rig, pilot, hull, "+ship/undock stickney");
+    let _ = to_ic(&mut rig, t.plan.depart_ic + t.plan.total_s);
+    let _ = to_ic(&mut rig, t.plan.depart_ic + t.plan.total_s + 3_600);
+    // The heavy berthed at the Service Counter.
+    crate::in1_accounting::put(
+        &mut rig,
+        heavy,
+        mush_core::ObjId(row.rooms[&crate::driving_rig::cid("bay")]),
+        true,
+    );
+    let workshop = crate::driving_rig::station_room(&rig.tw, "stickney_port", "room.p11_service");
+    crate::in1_accounting::put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", heavy.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    dent_one(&mut rig, heavy);
+    let first = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/order #{}=armor", heavy.0),
+    );
+    assert!(first.contains("taken in the workshop"), "{first}");
+    // The second order on the same hull, while the first stands: refused, nothing drawn.
+    let second = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/order #{}=armor", heavy.0),
+    );
+    eprintln!("in11 second order: {second}");
+    assert!(second.contains("held for work in progress"), "{second}");
+    let one = done(&mut rig, heavy);
+    assert_eq!(one.goods.len(), 2, "the first opens the bale: {one:?}");
+    let opened = record(&rig, heavy).bale.expect("the bale");
+    assert_eq!(hold_pool(&mut rig.tw, vault, "structural_alloys"), 1);
+    // Now the second, alone: it draws the bale, never the hold.
+    dent_one(&mut rig, heavy);
+    let again = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+bay/order #{}=armor", heavy.0),
+    );
+    assert!(again.contains("taken in the workshop"), "{again}");
+    let two = done(&mut rig, heavy);
+    assert!(two.goods.is_empty(), "the bale covers the second: {two:?}");
+    assert_eq!(hold_pool(&mut rig.tw, vault, "structural_alloys"), 1);
+    assert_eq!(hold_pool(&mut rig.tw, vault, "industrial_parts"), 1);
+    let after = record(&rig, heavy).bale.expect("the bale");
+    assert!(
+        after.alloys_kg < opened.alloys_kg && after.fittings_kg < opened.fittings_kg,
+        "the second draws the bale down: {opened:?} → {after:?}"
+    );
+}
