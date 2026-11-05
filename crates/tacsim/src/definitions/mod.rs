@@ -54,6 +54,8 @@ pub mod plant;
 pub mod resolution;
 pub mod resources;
 pub mod sensor;
+/// Doc 39 cut IN.9b: the `armour_cab` and `walker_cab` class templates.
+pub mod templates;
 pub mod tools;
 pub mod unit;
 pub mod weapon;
@@ -569,6 +571,8 @@ impl Catalog {
         let minted = out.references.clone();
         let vocabulary = MobilityVocabulary::base().freeze();
         let mut catalog = UnitCatalogBuilder::new();
+        // Doc 39 cut IN.9b: the class templates, applied to the stored specs below.
+        let cab_templates = templates::templates()?;
         for (id, sourced) in &units {
             let binding = unit::bind(
                 &mut minter,
@@ -603,7 +607,11 @@ impl Catalog {
             )? {
                 out.budgets.insert(id.clone(), budget);
             }
-            out.specs.insert(id.clone(), sourced.def.clone());
+            // Doc 39 cut IN.9b: the stored spec takes its class template, after the binding and
+            // the budget, so neither moves.
+            let mut spec = sourced.def.clone();
+            templates::apply(&cab_templates, id, &mut spec)?;
+            out.specs.insert(id.clone(), spec);
         }
         out.units = catalog.freeze();
         for (id, sourced) in &arenas {

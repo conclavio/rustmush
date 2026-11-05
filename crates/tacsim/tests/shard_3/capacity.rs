@@ -187,7 +187,7 @@ fn ic2_the_catalog_rows_derive_from_the_goods_table() {
     // cut RS.6a: and Tycho's two.
     assert_eq!(
         entries.len(),
-        36,
+        45,
         "six rows, doc 19 cut A.8's two, doc 20 cut SM.3a's four, doc 36 cut GC.7's four and          doc 39 cut IN.1's thirteen"
     );
     for (entry, good) in entries.iter().zip(&table.goods) {

@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -476,6 +476,123 @@
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The Dray-P, the Dray with a two-rig vehicle bay: the Dray's bill."
+    },
+    {
+      "id": "tacsim.hull_kit.line_tank",
+      "label": "line tank hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the line tank's kit, buildable once its class template gives it a cab and a locker (§4.13); 20 t of alloys and 7 t of fittings over 2 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.line_tank_ecm",
+      "label": "line tank (ECM) hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the line tank (ECM)'s kit, buildable once its class template gives it a cab and a locker (§4.13); 20 t of alloys and 7 t of fittings over 2 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.line_tank_eccm",
+      "label": "line tank (ECCM) hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the line tank (ECCM)'s kit, buildable once its class template gives it a cab and a locker (§4.13); 20 t of alloys and 7 t of fittings over 2 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.line_tank_laser",
+      "label": "line tank (laser) hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the line tank (laser)'s kit, buildable once its class template gives it a cab and a locker (§4.13); 21 t of alloys and 7 t of fittings over 2 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.line_tank_thermal",
+      "label": "line tank (thermal) hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the line tank (thermal)'s kit, buildable once its class template gives it a cab and a locker (§4.13); 20 t of alloys and 7 t of fittings over 2 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.heavy_mk1",
+      "label": "Mk1 heavy tank hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the Mk1 heavy tank's kit, buildable once its class template gives it a cab and a locker (§4.13); 34 t of alloys and 12 t of fittings over 3 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.scout_mk1",
+      "label": "Mk1 scout car hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the Mk1 scout car's kit, buildable once its class template gives it a cab and a locker (§4.13); 12 t of alloys and 4 t of fittings over 2 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.biped_mk1",
+      "label": "Mk1 biped hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the Mk1 biped's kit, buildable once its class template gives it a cab and a locker (§4.13); 34 t of alloys and 15 t of fittings over 3 yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.biped_mk2",
+      "label": "Mk2 biped hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9b: the Mk2 biped's kit, buildable once its class template gives it a cab and a locker (§4.13); 39 t of alloys and 17 t of fittings over 3 yard days."
     }
   ]
 }

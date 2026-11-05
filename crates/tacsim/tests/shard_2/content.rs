@@ -2792,7 +2792,7 @@ const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4).
-const GOODS_DIGEST: &str = "c8775b613c6d8f92545134dd7420c1d2ea5fc2f14751f55c5cb399646c181b5b";
+const GOODS_DIGEST: &str = "ea6a5b9a2f22ca56325eeef9ca52a89603110b835df9152431b363e2e0ab5746";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3335,8 +3335,9 @@ fn ic2_the_goods_table_is_pinned() {
     let table = goods_table().expect("the shipped goods table loads");
     // Doc 19 cut A.8: v2 (the two moon goods); doc 20 cut SM.3a: v3 (the four
     // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods); doc
-    // 39 cut IN.1: v5 (the thirteen parts); doc 39 cut IN.9: v6 (the five hull kits).
-    assert_eq!(table.version, 6);
+    // 39 cut IN.1: v5 (the thirteen parts); doc 39 cut IN.9: v6 (the five hull kits); doc 39 cut
+    // IN.9b: v7 (the nine templated designs' kits).
+    assert_eq!(table.version, 7);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3808,6 +3809,114 @@ fn ic2_the_goods_table_is_pinned() {
             (
                 "tacsim.hull_kit.dray_p",
                 "Dray-P hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.line_tank",
+                "line tank hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.line_tank_ecm",
+                "line tank (ECM) hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.line_tank_eccm",
+                "line tank (ECCM) hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.line_tank_laser",
+                "line tank (laser) hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.line_tank_thermal",
+                "line tank (thermal) hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.heavy_mk1",
+                "Mk1 heavy tank hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.scout_mk1",
+                "Mk1 scout car hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.biped_mk1",
+                "Mk1 biped hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            (
+                "tacsim.hull_kit.biped_mk2",
+                "Mk2 biped hull kit",
                 None,
                 GoodClass::Kit,
                 "each",

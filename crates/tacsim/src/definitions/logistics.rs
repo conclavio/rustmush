@@ -108,6 +108,12 @@ pub struct LogisticsDef {
     /// **The tow coupling it carries** (doc 41 cut RS.1, Q-41-27): `standard` unless authored.
     #[serde(default, skip_serializing_if = "RecoveryProfile::is_standard")]
     pub recovery_profile: RecoveryProfile,
+    /// **Doc 39 cut IN.9b**: a block a class template gave the design
+    /// (`crate::definitions::templates`), never authored: its `dry_mass_t` is the design's
+    /// field-ops mass rounded up for the readouts that print tonnes, and every mass the engine
+    /// reads stays that measure (`crate::field_ops::dry_mass_kg_for_spec`). Not on the wire.
+    #[serde(skip)]
+    pub derived_mass: bool,
 }
 
 /// The longest service reach a tender may author, cm (a site cell's diagonal and then some).
