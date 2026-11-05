@@ -2426,6 +2426,13 @@ pub(crate) fn release_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let landing =
         port.and_then(|port| crate::ic_return::arrival_room(ctx.w, port).map(|room| (port, room)));
+    // Doc 42b cut SU.4 (Q-42b-19): an NPC set down anywhere but a port has no life support; set
+    // down at one, it leaves play at the next crew tick ([`custody_pass`]).
+    if landing.is_none() && npc_captive(ctx.w, who) {
+        return Err(CmdError::msg(
+            NPC_NO_WAY_OFF.replace("{who}", &crate::port::coop::name_of(ctx.w, who)),
+        ));
+    }
     let captor = crate::port::coop::name_of(ctx.w, actor);
     let line = if let Some((port, room)) = landing {
         set_down(ctx, who, room);
@@ -2494,6 +2501,11 @@ pub const HANDED_OVER: &str = "The {carrier} docks at {port} and hands you over 
 /// **The handover**, told to the captor: `{who}`, `{authority}`, `{port}`.
 pub const HANDED_OVER_CAPTOR: &str =
     "At {port} you hand {who} over to the {authority}. You are paid nothing for it.";
+/// **An NPC's handover**, told to the captor (doc 42b Q-42b-18): `{who}`, `{authority}`, `{port}`.
+pub const HANDED_OVER_NPC_CAPTOR: &str =
+    "At {port} the {authority} take {who} into custody. You are paid nothing for it.";
+/// **`+ship/release` of an NPC captive off a port** (doc 42b Q-42b-19): `{who}`.
+pub const NPC_NO_WAY_OFF: &str = "{who} has no way off this ground; hand them over at a port.";
 /// **The release after processing**, told to the released: `{authority}`, `{port}`.
 pub const PROCESSED: &str = "The {authority} releases you at {port}: you are free.";
 
@@ -2601,21 +2613,30 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, hull: ObjId) {
                 ..record
             },
         );
-        ctx.out.sys_to_actor(
-            who,
-            "tacsim.field",
-            HANDED_OVER
-                .replace("{carrier}", &carrier)
-                .replace("{port}", port.name)
-                .replace("{authority}", &authority)
-                .replace("{h}", &hours(due - now).to_string())
-                .replace("{fee}", &fee.to_string()),
-        );
+        // Doc 42b cut SU.4 (Q-42b-18): an NPC owes no fee and is not released, so it hears
+        // nothing and the captor hears the authority take it.
+        let npc = npc_captive(ctx.w, who);
+        if !npc {
+            ctx.out.sys_to_actor(
+                who,
+                "tacsim.field",
+                HANDED_OVER
+                    .replace("{carrier}", &carrier)
+                    .replace("{port}", port.name)
+                    .replace("{authority}", &authority)
+                    .replace("{h}", &hours(due - now).to_string())
+                    .replace("{fee}", &fee.to_string()),
+            );
+        }
+        let told = if npc {
+            HANDED_OVER_NPC_CAPTOR
+        } else {
+            HANDED_OVER_CAPTOR
+        };
         ctx.out.sys_to_actor(
             captor,
             "tacsim.field",
-            HANDED_OVER_CAPTOR
-                .replace("{who}", &crate::port::coop::name_of(ctx.w, who))
+            told.replace("{who}", &crate::port::coop::name_of(ctx.w, who))
                 .replace("{authority}", &authority)
                 .replace("{port}", port.name),
         );
@@ -2637,6 +2658,10 @@ pub fn release_key(who: ObjId, release_due_ic: i64) -> String {
 /// write and the record's) is adopted rather than levied twice. A refusal leaves `charge` empty
 /// for the crew tick to try again; the release never waits on it (FO-12).
 fn levy_release(ctx: &mut Ctx<'_>, who: ObjId) {
+    // Doc 42b cut SU.4 (Q-42b-18): the fee is a player's debt; an NPC has no account to owe it.
+    if npc_captive(ctx.w, who) {
+        return;
+    }
     let Some(record) = crew_of(ctx.w, who).cloned() else {
         return;
     };
@@ -2728,6 +2753,12 @@ fn custody_pass(ctx: &mut Ctx<'_>, now: i64) {
         let mut uncharged = Vec::new();
         let mut due = Vec::new();
         for record in book.0.values() {
+            // Doc 42b cut SU.4 (Q-42b-18, Q-42b-19): a raider's crew set down at a port, or
+            // stranded in its captor's wreck once that site's field has demoted, leaves play.
+            if npc_captive(ctx.w, record.character) && npc_done(ctx.w, record) {
+                due.push(record.clone());
+                continue;
+            }
             match &record.location {
                 CrewLocation::Captured { carrier, .. } => {
                     carriers.insert(*carrier);
@@ -2757,8 +2788,50 @@ fn custody_pass(ctx: &mut Ctx<'_>, now: i64) {
         levy_release(ctx, who);
     }
     for record in due {
-        release_processed(ctx, record, now);
+        if npc_captive(ctx.w, record.character) {
+            leave_play(ctx, record.character);
+        } else {
+            release_processed(ctx, record, now);
+        }
     }
+}
+
+/// **Whether `who` is a raider's crew** (doc 42b cut SU.4): an NPC whose record carries a resolve,
+/// which the raider seed alone writes. A hired NPC pilot is never one (Q-42b-2): it goes back to
+/// its pool (Q-42-26) and is never handed over, set down or taken out of play by these rules.
+fn npc_captive(w: &World, who: ObjId) -> bool {
+    w.get(who).is_some_and(|object| object.kind == ObjKind::Npc)
+        && crew_of(w, who).is_some_and(|record| record.resolve_permille.is_some())
+}
+
+/// **Whether an NPC's record is done with play** (doc 42b Q-42b-18, Q-42b-19): set down at a port
+/// (by `+ship/release`), or stranded in a hull that is no raider's (its captor's wreck, CR.3's
+/// `wrecked_captive`) on a site with no field running. A raider's own wreck or yielded hull is
+/// still the raid's to lose and somebody's to load.
+fn npc_done(w: &World, record: &CrewRecord) -> bool {
+    match &record.location {
+        CrewLocation::Port { .. } => true,
+        CrewLocation::Stranded { site, unit } => {
+            super::raiders::raider_of(w, *unit).is_none()
+                && w.module_state::<super::FieldBook>()
+                    .and_then(|book| book.hosted(site))
+                    .is_none()
+        }
+        _ => false,
+    }
+}
+
+/// **An NPC captive leaves play** (doc 42b Q-42b-18): its crew record removed, and the object
+/// marked `GOING` and taken out of the world, as staff removing it would.
+fn leave_play(ctx: &mut Ctx<'_>, who: ObjId) {
+    push_op(ctx.out, mush_core::ModuleWrite::Del { key: crew_key(who) });
+    if let Some(book) = ctx.w.module_state_mut::<CrewBook>() {
+        book.0.remove(&who);
+    }
+    if ctx.w.destroy(who).is_ok() {
+        ctx.emit_world_event(&mush_core::WorldEvent::ObjDestroyed { obj: who });
+    }
+    tracing::info!(who = who.0, "tacsim: a raider's crew leaves play");
 }
 
 /// **The release after processing** (doc 42 Q-42-7): the character at the port — set down in its
@@ -3037,6 +3110,53 @@ mod tests {
     /// **Doc 42 cut CR.3** (Q-42-15): a captive of a carrier whose own check-in strands its souls
     /// is stranded in the wreck, custody gone; a sound carrier's check-in, or another unit's,
     /// leaves the captive alone.
+    /// **Doc 42b cut SU.4** (Q-42b-18, Q-42b-19): a raider's crew is done with play once set down
+    /// at a port, or stranded in a hull that is no raider's on a site with no field running; never
+    /// while held, in processing, in a unit, or stranded in a raider's own hull.
+    #[test]
+    fn su4_an_npcs_record_is_done_at_a_port_or_its_captors_wreck() {
+        let mut w = World::new_minimal();
+        let captor_wreck = w
+            .create(ObjKind::Thing, "Red Moth", mush_core::GOD, None)
+            .expect("a hull");
+        let raider_hull = w
+            .create(ObjKind::Thing, "Skulk One", mush_core::GOD, None)
+            .expect("a hull");
+        w.set_attr(
+            raider_hull,
+            super::super::raiders::RAIDER_ATTR,
+            mush_core::Attr::json(
+                serde_json::json!({"raider": "tacsim.raider.ahuna_skulks", "leader": 3}),
+                mush_core::GOD,
+            ),
+        )
+        .expect("marked");
+        let site = CanonicalId::new("ahuna_port").expect("a site");
+        let done = |location: CrewLocation| npc_done(&w, &record_at(ObjId(7), location));
+        assert!(done(CrewLocation::Port {
+            port: SmolStr::new("ceres")
+        }));
+        assert!(done(CrewLocation::Stranded {
+            site: site.clone(),
+            unit: captor_wreck
+        }));
+        assert!(!done(CrewLocation::Stranded {
+            site: site.clone(),
+            unit: raider_hull
+        }));
+        assert!(!done(CrewLocation::Unit { unit: raider_hull }));
+        assert!(!done(CrewLocation::Captured {
+            carrier: captor_wreck,
+            captor: ObjId(12),
+            since_ic: 100
+        }));
+        assert!(!done(CrewLocation::Processing {
+            port: SmolStr::new("ceres"),
+            release_due_ic: 4_100,
+            charge: None
+        }));
+    }
+
     #[test]
     fn cr3_a_captors_wreck_strands_its_captives() {
         let site = CanonicalId::new("ahuna").expect("a site");
