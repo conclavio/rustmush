@@ -464,8 +464,8 @@ impl ActionProvider for FieldProvider {
         parameters
             .get("op")
             .and_then(Value::as_str)
-            .filter(|op| matches!(*op, "open" | "close" | "exit"))
-            .ok_or_else(|| invalid("a field write opens, closes or exits"))?;
+            .filter(|op| matches!(*op, "open" | "close" | "exit" | "rejoin"))
+            .ok_or_else(|| invalid("a field write opens, closes, exits or rejoins"))?;
         Ok(())
     }
 
@@ -522,6 +522,20 @@ impl ActionProvider for FieldProvider {
                     .collect()
             })
             .unwrap_or_default();
+        // Doc 40 (the ramp exit's boarding window; the 38b review's F-15): the exits the host
+        // owes the record struck, a hull back in the field once its carrier was lost.
+        let rejoining: Map<String, Value> = w
+            .module_state::<super::exit::OwedRejoins>()
+            .map(|owed| {
+                owed.0
+                    .iter()
+                    .map(|(site, units)| {
+                        let units: Vec<u32> = units.keys().map(|unit| unit.0).collect();
+                        (site.to_string(), json!(units))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let carried = carried_offer(w);
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
@@ -538,7 +552,12 @@ impl ActionProvider for FieldProvider {
                 "op",
                 true,
                 ProjectedParameterKind::Choice {
-                    choices: vec!["open".to_owned(), "close".to_owned(), "exit".to_owned()],
+                    choices: vec![
+                        "open".to_owned(),
+                        "close".to_owned(),
+                        "exit".to_owned(),
+                        "rejoin".to_owned(),
+                    ],
                 },
             )?,
             crate::surface::act::parameter(
@@ -557,6 +576,7 @@ impl ActionProvider for FieldProvider {
             "now": w.world_ic_now().at,
             "closing": closing,
             "exiting": exiting,
+            "rejoining": rejoining,
             "carried": carried,
         });
         crate::surface::site_record::fix_sides(w, &mut fixed);
@@ -622,6 +642,24 @@ impl ActionProvider for FieldProvider {
                 record.exit(unit).map_err(|why| rejected(why.sentence()))?;
                 self.lay_minds(txn, parameters, &key)?;
                 format!("#{} left field {} at the ramp", unit.0, record.ordinal)
+            }
+            // Doc 40 (the ramp exit's boarding window; the 38b review's F-15).
+            "rejoin" => {
+                let unit = obj(parameters, "unit")?;
+                let owed = parameters
+                    .get("rejoining")
+                    .and_then(|rejoining| rejoining.get(key.0.as_str()))
+                    .and_then(Value::as_array)
+                    .is_some_and(|units| {
+                        units.iter().any(|n| n.as_u64() == Some(u64::from(unit.0)))
+                    });
+                if !owed {
+                    return Err(rejected(
+                        "only the field host writes a unit back into a field",
+                    ));
+                }
+                record.rejoin(unit);
+                format!("#{} is back in field {}", unit.0, record.ordinal)
             }
             _ => {
                 let owed = parameters

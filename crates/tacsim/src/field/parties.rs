@@ -325,6 +325,37 @@ pub(crate) fn led_now(ctx: &Ctx<'_>, live: &super::FieldLive, actor: ObjId) -> O
         .map(|party| party.party)
 }
 
+/// **Every party `actor` leads in `live` now** ([`current_leader`] over the record's parties, in
+/// letter order; the 38b review's F-08): a commander may lead a carrier's party of one and the
+/// operation it launched into the field at once.
+#[must_use]
+pub(crate) fn led_all(ctx: &Ctx<'_>, live: &super::FieldLive, actor: ObjId) -> Vec<PartyId> {
+    live.parties
+        .iter()
+        .filter(|party| current_leader(ctx, party) == Some(actor))
+        .map(|party| party.party)
+        .collect()
+}
+
+/// **Each entrant the field already admitted keeps its live party's key** (the 38b review's F-08;
+/// `super::carrier::joining_as`): the entrants of a join are built afresh, and a carrier admitted
+/// as its commander's party of one reads as the operation its first launch belongs to; the
+/// friendships and the stance table key by party, so they read the record's key, not the fresh
+/// one.
+pub(crate) fn keep_admitted_keys(entrants: &mut [Entrant], live: &super::FieldLive) {
+    for entrant in entrants.iter_mut() {
+        if let Some(key) = live
+            .units
+            .iter()
+            .find(|row| row.unit == entrant.unit)
+            .and_then(|row| live.parties.iter().find(|party| party.party == row.party))
+            .map(|party| party.key)
+        {
+            entrant.key = key;
+        }
+    }
+}
+
 /// **The rig's own record on the excursion family**, when it has one.
 pub(crate) fn rig_record(
     ctx: &Ctx<'_>,
