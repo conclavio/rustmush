@@ -600,6 +600,23 @@ fn escrow_lots(ctx: &Ctx<'_>, escrow: EndpointRef) -> Vec<(LotId, CanonicalId, u
     out
 }
 
+/// **Whether a part lot may go into a build** (doc 38a/b F-07): its provenance reads, it was
+/// never fitted, it is not hot, it is intact, and nothing holds it (a listing, a dispute's
+/// evidence). The yard builds new hulls of clean, whole parts; a hot, held or damaged lot
+/// stays in the hold, so a build never launders it into a clean hull.
+fn clean_part(ctx: &Ctx<'_>, lot: LotId) -> bool {
+    let whole = matches!(
+        crate::port::bay_work::act::provenance(ctx, lot),
+        Ok(Some(part)) if part.fitted_into.is_none()
+            && !part.is_hot()
+            && part.condition == mush_tactics::field_ops::ComponentCondition::Intact
+    );
+    whole
+        && handles(ctx.w).is_some_and(|(_, inventory)| {
+            matches!(ctx.action_state(&inventory.lot_holds, &lot), Ok(None))
+        })
+}
+
 fn recipes() -> Arc<dyn RecipeAuthority> {
     Arc::new(crate::composition::industry_recipes::TacsimRecipeAuthority)
 }
@@ -847,6 +864,20 @@ fn phase_word(ctx: &Ctx<'_>, c: &WorksContract, order: &WorkOrder) -> String {
     }
 }
 
+/// **A yard builds one hull an order** (doc 38a/b, Astra #3): a commission hands over one hull
+/// from one kit, so `+yard/quote` and `+yard/order` refuse a quantity other than one rather
+/// than bill for hulls the yard never builds.
+pub const YARD_ONE_HULL: &str = "The yard builds one hull an order; order each on its own.";
+
+/// The quantity word, refused at a yard past one (Astra #3).
+fn parse_qty_at(front: Front, word: Option<&str>) -> Result<u32, String> {
+    let quantity = parse_qty(word)?;
+    if front == Front::Yard && quantity != 1 {
+        return Err(YARD_ONE_HULL.to_owned());
+    }
+    Ok(quantity)
+}
+
 fn parse_qty(word: Option<&str>) -> Result<u32, String> {
     match word {
         None => Ok(1),
@@ -862,7 +893,7 @@ fn quote(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let (_, facility) = here(ctx, front)?;
     let mut words = raw.split_whitespace();
     let word = words.next().ok_or(WORKS_USAGE)?;
-    let quantity = parse_qty(words.next())?;
+    let quantity = parse_qty_at(front, words.next())?;
     let (_, pinned) = find_recipe(ctx.w, &facility, word)
         .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
     if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
@@ -873,7 +904,8 @@ fn quote(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let booking = facility.booking_fee_minor();
     let line = format!(
         "{word} x{quantity}: bill {}; {} IC days ({units} work units){FEE_CLAUSE}{}; booking fee {}.",
-        bill_text(&bill_of(&pinned, quantity)),
+        // Doc 38a/b F-18(a): the whole bill, a hull's parts included, as the order takes it.
+        bill_text(&bill_with_parts(ctx.w, &pinned, quantity)),
         days_of(units),
         fee.map_or_else(|| "none".to_owned(), |f| cr(ctx, f)),
         booking.map_or_else(|| "none".to_owned(), |f| cr(ctx, f)),
@@ -890,7 +922,7 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     };
     let mut words = terms.split_whitespace();
     let word = words.next().ok_or(WORKS_USAGE)?;
-    let quantity = parse_qty(words.next())?;
+    let quantity = parse_qty_at(front, words.next())?;
     if !mush_industry::may_order(ctx.w, ctx.actor, &facility) {
         return Err(format!(
             "The {} here takes no orders from you.",
@@ -991,6 +1023,9 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
         beneficiary,
         account,
     } = terms;
+    if front == Front::Yard && quantity != 1 {
+        return Err(YARD_ONE_HULL.to_owned());
+    }
     let house = &beneficiary == facility.owner();
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let booking = if house {
@@ -1164,12 +1199,12 @@ fn deliver(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let moved = if crate::port_tick::is_part(&good) {
         let lots: Vec<_> = escrow_lots(ctx, from)
             .into_iter()
-            .filter(|(_, held, _)| *held == good)
+            .filter(|(lot, held, _)| *held == good && clean_part(ctx, *lot))
             .take(usize::try_from(units).unwrap_or(usize::MAX))
             .collect();
         if u64::try_from(lots.len()).unwrap_or(0) < units {
             return Err(format!(
-                "That hold carries no {units} loose {} lots.",
+                "That hold carries no {units} loose {} lots fit to build with.",
                 good.as_str()
             ));
         }
@@ -1432,8 +1467,14 @@ fn escrow_contents(
     c: &WorksContract,
 ) -> (Vec<Goods>, Vec<(LotId, CanonicalId, u64)>) {
     // The bill's goods, and (doc 39 cut IN.5) the order's pooled bulk outputs; a part output
-    // stays a lot.
-    let mut named: Vec<CanonicalId> = c.bill.iter().map(|g| g.good.clone()).collect();
+    // stays a lot. Doc 38a/b (Astra #4): so does a part on the bill — it moves only as its lots,
+    // and a bulk line for it would make the whole return refuse.
+    let mut named: Vec<CanonicalId> = c
+        .bill
+        .iter()
+        .map(|g| g.good.clone())
+        .filter(|good| !crate::port_tick::is_part(good))
+        .collect();
     if let Some(order) = c.order.and_then(|o| work_order(ctx, o)) {
         for line in order.pinned().outputs() {
             if !crate::port_tick::is_part(line.commodity()) && !named.contains(line.commodity()) {
@@ -2485,10 +2526,11 @@ impl ActionProvider for WorksProvider {
         }
         // A part moves as its lot; a bulk lot is pooled first (`Then::Pooled`: a bundle
         // mutates a pool's tally once, so it cannot be moved and dissolved in one act).
-        if lots
-            .iter()
-            .any(|lot| !crate::port_tick::is_part(lot.commodity()))
-        {
+        // Doc 38a/b F-17: a hull kit is never pooled either; the seizure takes it as its lot.
+        if lots.iter().any(|lot| {
+            !crate::port_tick::is_part(lot.commodity())
+                && !(owed.then == Then::Seized && crate::port::commission::is_kit(lot.commodity()))
+        }) {
             return Err(refused("a bulk lot is pooled before it moves"));
         }
         // Doc 39 cut IN.7: the lots move together (one census and tally write an endpoint).

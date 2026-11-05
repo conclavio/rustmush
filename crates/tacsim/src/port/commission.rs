@@ -243,21 +243,44 @@ pub fn commissions(w: &World) -> Vec<YardCommission> {
 /// yard order's, so a house hull never takes a built ship's mooring row on the port's domain.
 pub const HOUSE_POOL_BASE: u32 = 64;
 
-/// **The next pool index for a fresh mark**: one past every yard order's commission (a recovery
-/// house's seeds, [`HOUSE_POOL_BASE`] and up with marks of their own, are not counted), so a mark
-/// is never re-issued (L12).
+/// **The next pool index for a fresh mark**: one past every yard order's commission, so a mark
+/// is never re-issued (L12). A recovery house's seeds ([`HOUSE_POOL_BASE`] and up, marks of their
+/// own) are known by their identity — no work order (`work_order == 0`) — not by their index,
+/// and are not counted; the yard's indices step past theirs (doc 38a/b, Astra #10: an index
+/// test stopped counting at the 65th commission and re-issued its mark ever after).
 #[must_use]
 pub fn next_mark(w: &World) -> (u32, String) {
-    let n = w.module_state::<TacsimStore>().map_or(0, |store| {
-        let ours = store
-            .yard
-            .commissions
-            .values()
-            .filter(|held| !matches!(held, Held::Present(record) if record.n >= HOUSE_POOL_BASE))
-            .count();
-        u32::try_from(ours).unwrap_or(u32::MAX)
-    });
+    let n = w
+        .module_state::<TacsimStore>()
+        .map_or(0, |store| yard_index(store.yard.commissions.values()));
     (n, registry_mark(BUILT_PREFIX, n))
+}
+
+/// [`next_mark`]'s index over the commission records: the count of the yard's own (every record
+/// but a house seed's, an unreadable one included), skipping the indices house seeds hold.
+fn yard_index<'a>(records: impl IntoIterator<Item = &'a Held<YardCommission>>) -> u32 {
+    let mut house = std::collections::BTreeSet::new();
+    let mut ours = 0_u32;
+    for held in records {
+        match held {
+            Held::Present(record) if record.work_order == 0 => {
+                house.insert(record.n);
+            }
+            _ => ours = ours.saturating_add(1),
+        }
+    }
+    // The `ours`-th index no house seed holds.
+    let mut n = 0_u32;
+    let mut left = ours;
+    loop {
+        if !house.contains(&n) {
+            if left == 0 {
+                break n;
+            }
+            left -= 1;
+        }
+        n = n.saturating_add(1);
+    }
 }
 
 // ---- the sinks ------------------------------------------------------------------------------
@@ -683,5 +706,49 @@ pub(crate) fn consumed(ctx: &mut Ctx<'_>, order: u64) {
     {
         record.step = Step::Laying;
         put(ctx, &record);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(work_order: u64, n: u32) -> Held<YardCommission> {
+        Held::Present(Box::new(YardCommission {
+            order: u64::from(n) + 1,
+            work_order,
+            facility: ObjId(1),
+            home: CanonicalId::new("ceres_port").expect("an id"),
+            design: CanonicalId::new("dray_p").expect("an id"),
+            requester: ObjId(2),
+            beneficiary: PrincipalId::Object(ObjId(2)),
+            mark: registry_mark(BUILT_PREFIX, n),
+            n,
+            ship: true,
+            kit: LotId(0),
+            parts: Vec::new(),
+            step: Step::Done,
+            row: None,
+            hold: None,
+            at_ic: 0,
+        }))
+    }
+
+    /// Doc 38a/b (Astra #10): the 65th commission and every one after takes a fresh index, past
+    /// a recovery house's seeds at [`HOUSE_POOL_BASE`], never one already issued.
+    #[test]
+    fn yard_indices_step_past_the_house_seeds_and_never_repeat() {
+        let mut records = vec![record(0, HOUSE_POOL_BASE), record(0, HOUSE_POOL_BASE + 1)];
+        let mut issued = std::collections::BTreeSet::new();
+        for _ in 0..80 {
+            let n = yard_index(&records);
+            assert!(
+                !(HOUSE_POOL_BASE..=HOUSE_POOL_BASE + 1).contains(&n),
+                "a house seed's index: {n}"
+            );
+            assert!(issued.insert(n), "index {n} issued twice");
+            records.push(record(7, n));
+        }
+        assert_eq!(yard_index(&records), 82);
     }
 }

@@ -867,6 +867,31 @@ money; the officer's grant; the captain's move to Stickney; the escort's disable
   <hull>` (doc 18 P2's seat) is not built. The story's captain hands the charter back so the yard-built Dray-P is
   their one helm.
 
+**Fixed after the reviews (docs 38a/38b, 2026-11-05).**
+
+- `+yard/deliver` takes only clean, whole part lots: the provenance reads, never fitted, not hot, intact,
+  unheld (38b F-07). A hot, held or damaged lot stays in the hold.
+- `+yard/order` and `+yard/quote` refuse a quantity other than one (`YARD_ONE_HULL`, 38a #3). `book` refuses it too.
+  Before this, the order billed N hulls and the commission built one from one kit.
+- `escrow_contents` lists a part only as its lots, never as a bulk line (38a #4). Cancel, collect and fail-back
+  return a delivered part lot.
+- The storage seizure moves the kit lot (38b F-17). Before this it refused and retried every fire.
+- `next_mark` knows a house seed by `work_order == 0` and steps past its indices (38a #10). Before this, marks
+  repeated from the 65th commission on.
+- `+yard/quote` quotes the part lines (38b F-18(a)).
+- The programme's hull readers (`live_charter`, `helm_holder`, `check_hull_name`, `row_of`) read the
+  owned-hull register too, through `coop::programme_rows` (38b F-06, F-22c).
+
+**Owed / flagged.**
+
+- **The core is never billed (38b F-18(b)).** `DesignBill.core` names the design's core class, but there is no core
+  good yet, so no bill line takes it and a built hull's core is free. The cost model's core good and its bill line
+  are owed.
+- **A used part's condition** (38a #6's larger half). Deliver now refuses a damaged lot. But a lot that reaches the
+  escrow by another path (a staff seed, a later part-ask flow) is still built in, and the hull's slot comes up
+  intact. Carrying the lot's `condition` onto the commissioned slot is owed (Astra's
+  `review_72h_yard_keeps_a_used_parts_condition` probe).
+
 **Cell delta (rule #14).** `tacsim-integration-6`: **+2.76 min** for the three new tests (the port half 48.0 s,
 Ahuna 64.5 s, Urvara 53.3 s on PR run 41850018642's JUnit, head `e6b0f82c`). The cell's sum reads 46.35 → 50.16 min
 against main's run at the merge base (41827163605, `4390f04c`), 80 → 83 tests; the other +1.05 min is spread over
