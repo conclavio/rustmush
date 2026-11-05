@@ -807,3 +807,96 @@ async fn in9_ahuna_the_yard_built_escort_boards_launches_and_is_recovered() {
 async fn in9_urvara_the_yard_built_escort_boards_launches_and_is_recovered() {
     ground_leg(&crate::grounds_rig::URVARA_REACH).await;
 }
+
+/// **Doc 39 cut IN.9b — the class templates at the yard**: a line tank and a scout car, simulator
+/// designs that author no cab, are built at Stickney by their templates (`armour_cab`) and stand
+/// on the floor with a cab and a kit locker. Each keeps its field-ops mass: the line tank's
+/// 29,900 kg is too much for a Dray-P's 20 t rig slot, and `+bay/stow` says so; the scout's
+/// 15,900 kg fits, and she rides the bay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates() {
+    let mut rig = stocked();
+    let captain = free_captain(&mut rig, "Builder", 1);
+    let floor = open_yard(&mut rig);
+    let dray = build(
+        &mut rig,
+        captain,
+        "dray_p",
+        (163, 55),
+        &["tacsim.part.plant.hauler_mk1"],
+        9_900,
+    )
+    .object()
+    .expect("the Dray-P");
+    let tank = build(
+        &mut rig,
+        captain,
+        "line_tank",
+        (20, 7),
+        &[
+            "tacsim.part.weapon.cannon_105",
+            "tacsim.part.weapon.mg_coax",
+            "tacsim.part.sensor.visual_mk1",
+            "tacsim.part.plant.vehicle_mk1",
+        ],
+        9_910,
+    );
+    let scout = build(
+        &mut rig,
+        captain,
+        "scout_mk1",
+        (12, 4),
+        &[
+            "tacsim.part.weapon.autocannon_30",
+            "tacsim.part.weapon.mg_coax",
+            "tacsim.part.sensor.visual_mk1",
+            "tacsim.part.plant.light_mk1",
+        ],
+        9_920,
+    );
+    for (built, design) in [(&tank, "line_tank"), (&scout, "scout_mk1")] {
+        let obj = built.object().expect("a hull");
+        let row = tacsim::port::owned::rig_row(rig.tw.world(), obj)
+            .unwrap_or_else(|| panic!("{design} is a register rig"));
+        assert!(
+            row.rooms.contains_key(&cid("cab")) && row.rooms.contains_key(&cid("locker")),
+            "{design} has the template's cab and locker: {row:?}"
+        );
+        assert_eq!(
+            rig.tw.world().get(obj).and_then(|o| o.location),
+            Some(floor),
+            "{design} stands on the workshop floor"
+        );
+        assert_eq!(titled(&rig, obj), PrincipalId::Object(captain));
+    }
+    // The templated designs keep their field-ops mass.
+    let mass = |design: &str| {
+        let store = store(&rig.tw);
+        let spec = &store.definitions().specs[&cid(&format!("tacsim.unit.{design}"))];
+        assert!(spec.logistics.as_ref().is_some_and(|l| l.derived_mass));
+        tacsim::field_ops::dry_mass_kg_for_spec(spec)
+    };
+    assert_eq!((mass("line_tank"), mass("scout_mk1")), (29_900, 15_900));
+
+    // The Dray-P's 20 t slot refuses the line tank and takes the scout.
+    let tank_obj = tank.object().expect("the tank");
+    let refused = run(
+        &mut rig.tw,
+        captain,
+        &format!("+bay/stow #{}=#{}", tank_obj.0, dray.0),
+    );
+    assert!(
+        refused.contains("she masses 30 t and the slot takes 20 t"),
+        "the line tank is too heavy for the rig slot: {refused}"
+    );
+    let scout_obj = scout.object().expect("the scout");
+    let out = typed_in(
+        &mut rig,
+        captain,
+        &format!("+bay/stow #{}=#{}", scout_obj.0, dray.0),
+        1,
+    );
+    assert!(out.contains("is stowed in the"), "{out}");
+    let facility = tacsim::port::bay_work::facility_of(rig.tw.world(), scout_obj).expect("her bay");
+    assert_eq!(facility.carrier, Some(dray));
+}

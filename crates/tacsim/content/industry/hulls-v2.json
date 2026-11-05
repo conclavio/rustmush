@@ -1,0 +1,443 @@
+{
+  "manifest": {
+    "digest": "2a00d6530cc8fb070cc8688154005aebfb8e83a7376540f32a8c6ddbe9654048",
+    "id": "tacsim.industry.hulls",
+    "kind": "rules_definition",
+    "requires": [],
+    "version": 2
+  },
+  "entries": {
+    "biped_mk1": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 34
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 15
+          }
+        ],
+        "label": "Mk1 biped hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.biped_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 72
+      },
+      "kind": "recipe"
+    },
+    "biped_mk2": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 39
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 17
+          }
+        ],
+        "label": "Mk2 biped hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.biped_mk2",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 72
+      },
+      "kind": "recipe"
+    },
+    "dray": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 163
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 55
+          }
+        ],
+        "label": "Dray hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.dray",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 288
+      },
+      "kind": "recipe"
+    },
+    "dray_p": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 163
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 55
+          }
+        ],
+        "label": "Dray-P hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.dray_p",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 288
+      },
+      "kind": "recipe"
+    },
+    "heavy_mk1": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 34
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 12
+          }
+        ],
+        "label": "Mk1 heavy tank hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.heavy_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 72
+      },
+      "kind": "recipe"
+    },
+    "line_tank": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 20
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 7
+          }
+        ],
+        "label": "Line tank hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.line_tank",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "line_tank_eccm": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 20
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 7
+          }
+        ],
+        "label": "Line tank (ECCM) hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.line_tank_eccm",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "line_tank_ecm": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 20
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 7
+          }
+        ],
+        "label": "Line tank (ECM) hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.line_tank_ecm",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "line_tank_laser": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 21
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 7
+          }
+        ],
+        "label": "Line tank (laser) hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.line_tank_laser",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "line_tank_thermal": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 20
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 7
+          }
+        ],
+        "label": "Line tank (thermal) hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.line_tank_thermal",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "scout_mk1": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 12
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 4
+          }
+        ],
+        "label": "Mk1 scout car hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.scout_mk1",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tv_escort": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 3
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 1
+          }
+        ],
+        "label": "Escort hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_escort",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tv_prospector": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 5
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          }
+        ],
+        "label": "Prospector hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_prospector",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tv_tender": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 6
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 2
+          }
+        ],
+        "label": "Tender hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_tender",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tycho_crawler": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 100
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 34
+          }
+        ],
+        "label": "Tycho crawler hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tycho_crawler",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 168
+      },
+      "kind": "recipe"
+    },
+    "tycho_lifter": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 441
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 147
+          }
+        ],
+        "label": "Tycho lifter hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tycho_lifter",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 720
+      },
+      "kind": "recipe"
+    }
+  }
+}

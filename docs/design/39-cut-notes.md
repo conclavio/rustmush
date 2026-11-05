@@ -855,7 +855,7 @@ money; the officer's grant; the captain's move to Stickney; the escort's disable
   ruling: it funds the Yards' strategic bid, so IN.8's whole-escort scrap can buy back its bale; the tranche count
   in `plumbing.rs` goes 5 → 6 and the treasury in `ports.rs` to 16,001,000.00 cr). `lane_chain::strip_yard` heads
   the strip chain and takes out both (`in9_strip_yard_rebuilds_the_published_v26`).
-- **`armour_cab` and `walker_cab` are not in this cut.** Giving the line-tank family, the heavy, the scout and the
+- **`armour_cab` and `walker_cab` were not in this cut** (built since in IN.9b, below). Giving the line-tank family, the heavy, the scout and the
   bipeds an authored `logistics` changes every fielded tank's dry mass from the field-ops measure to whole tonnes,
   which moves the tow masses and IN.8's per-point figures for those designs; it is a follow-up with its own review.
   The five designs that already carry both blocks are the buildable ones, and only they have kits and recipes.
@@ -940,3 +940,47 @@ rest runner speed on unchanged tests.
   (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
   the owner.
 
+
+## IN.9b — the class templates (Q-39-14, Q-39-20, Q-39-35)
+
+**Built.** IN.9's deferred row item: `armour_cab` and `walker_cab` (§4.13).
+
+- **The templates** — `content/industry/cab_templates.json` (a table, version 1), loaded and checked by
+  `definitions::templates`. Each is a cab room with the console and a kit locker as the stowage (120 kg, 300 L of
+  provisions), one berth and no drive, and names the designs it applies to: `armour_cab` the line-tank family
+  (`line_tank`, `_ecm`, `_eccm`, `_laser`, `_thermal`), the heavy and the scout; `walker_cab` the two bipeds. The
+  drone, the carrier, the target, the relay station and the capital hulls take none (Q-39-20, Q-39-35). A design
+  that authors either block and is named by a template is refused, as is a template whose class is not its
+  design's, and a design named twice.
+- **Applied at the catalogue build, to the stored spec only** — after the unit's binding and IN.8's mass budget
+  are made, so neither moves: no unit pack changes, no binding or arena digest moves, and every budget, bill and
+  per-point figure is what it was.
+- **No mass moves.** A templated block carries `LogisticsDef::derived_mass` (never on the wire): its `dry_mass_t`
+  is the design's field-ops mass rounded up to whole tonnes for the readouts that print tonnes, and
+  `field_ops::dry_mass_kg_for_spec` keeps returning the structural-point measure for it. A line tank tows,
+  loads and partitions at 29,900 kg as before; only the readouts round it to 30 t.
+- **A templated tank is still a combat hull** unless the yard built it: `vehicle::combat_hull` and `carried_rig`
+  read a template's logistics as no logistics for a unit with no register row, so a fielded scout or tank in a
+  bay is inert cargo at its field-ops mass, as before (IN.7's story carries one to Luna); a yard-built one is a
+  rig with its locker.
+- **Buildable** — the hull recipe pack `tacsim.industry.hulls` v2 (`content/industry/hulls-v2.json`, which
+  replaces v1 in `game_seed_sources`) adds one recipe a templated design beside v1's, each pinned to
+  `port::bill::design_bill` by its test: the line tanks 20 t of alloys and 7 of fittings (the laser 21), two days;
+  the heavy 34/12, three; the scout 12/4, two; the bipeds 34/15 and 39/17, three. Goods v7 adds the nine
+  `tacsim.hull_kit.<design>` rows (45 goods). The commission lays a tank up as a rig on the workshop floor, by its
+  template's cab and locker.
+
+**The story.** `shard_6/yard_in9.rs::in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates`: a free
+captain has the Stickney yard build a Dray-P, a line tank and a scout car (their bills laid in the escrow, the days
+stepped, `+yard/collect`). Both tanks stand on the workshop floor titled to them with the template's cab and
+locker, and keep their field-ops mass (29,900 and 15,900 kg). `+bay/stow <line tank>=<Dray-P>` is refused, "she
+masses 30 t and the slot takes 20 t"; the scout stows into the Dray-P's bay and `facility_of` names the Dray-P.
+
+**No lane rows**: the templates, the recipes and the kits are content tables and packs of their own; the lane
+stays at main's version.
+
+**Pins moved.** `shard_6/vehicles.rs`'s dark-view and no-interior fixtures take the target (`target_mk1`, which
+no template names) where they took the line tank; `shard_2/content.rs`'s goods table (v7, the nine rows, the digest), `shard_3/capacity.rs` and
+`content_studio`'s goods counts (36 → 45, tacsim and mush-server).
+
+**Cell delta (rule #14).** tacsim-integration-6: _filled from the PR's JUnit_.
