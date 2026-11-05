@@ -559,6 +559,23 @@ jobs:
       - name: cargo-nextest 0.9.148
         if: matrix.shard != 'lint'
         run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+      # Doc 43 rule 2.3 #15: a pull request that touches a path a nightly-,
+      # weekly- or dispatch-tier job exercises dispatches those jobs before it
+      # is marked ready (the nightly of 2026-11-05 broke on #475's grace
+      # windows, which no PR run exercises). The map is
+      # .github/nightly-paths.txt (`ci_policy::nightly_paths` keeps it true to
+      # this file); this step prints the jobs a PR should dispatch, as a
+      # warning and in the step summary. Advice, never a failure. The
+      # checkout is one commit deep, so the PR's base is fetched to diff
+      # against.
+      - name: "Nightly jobs this PR should dispatch (rule 2.3 #15)"
+        if: matrix.shard == 'lint' && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          python3 -B scripts/nightly_advice.py "$BASE_SHA" HEAD
       # 2026-10-20: Format and Clippy run once each. Both are workspace-wide
       # (12 s and 3 min 18 s at 96cc7303), so once is the whole answer; since
       # 2026-10-25 they are shard (c), so a format or clippy failure fails
