@@ -365,6 +365,147 @@ CR.1.
   about 1.27× slower on that runner (`driving::` 14.0 → 18.7, `field_gc4::` 8.4 → 9.7), as doc 43 §5.8
   warns the hosted machines vary.
 
+## CR.4 — Ejection
+
+Q-42-10 to Q-42-14, with Draft 0.3's 42-1 and 42-5 (B). The seated pilot of a doomed unit leaves the
+seat for a pickup. Under a Hostile party's hold that pickup may be the holder's, by a seeded draw.
+
+**Config.** `[tacsim.field].eject_capture_permille`, 500, 0 to 1,000. It is documented in mush-config's
+table and mapped in `mush-server/src/config_ext.rs`.
+
+**The verb** (`field/eject.rs`, `+sortie/eject`, gated `Gate::Move`, so a captive or an ejectee
+waiting for the pickup is refused with CR.0's lines).
+- Who may use it: the seated pilot, from inside the unit. It is refused:
+  - at a remote console (`EJECT_REMOTE`);
+  - to a stranded pilot (`+sortie/extract` is theirs);
+  - with an extraction already on its way;
+  - while world time is frozen.
+- An NPC types nothing.
+- **In a running field** the host sends the arena `ArenaMsg::Eject { unit }` and keeps the asker in
+  the RAM `EjectBook`. A restart before the answer loses only the request.
+- **After a field** (the unit standing on the site's ground, no field running), the world's cells
+  decide and nobody holds the cell.
+
+**The arena's read** (`arena/eject.rs`, `Arena::eject_read`). It is taken at the next pulse's head,
+before the withdrawals, and answered as `ArenaOut::Ejected` behind the ledger. **A read, never a step:
+nothing moves, nothing is journalled or taped, nothing is hashed.**
+- **Doomed** (Q-42-11) is any one of:
+  - the kernel's own wreck, motion-disabled or disabled limits;
+  - `field::crew::doomed` on the live cells: the check-in's stranding test (no power, no control, no
+    motion, a wreck or irrecoverable). A unit with no mobility profile is never doomed for want of
+    motion: that is the withdraw's own-power rule;
+  - a control section already damaged.
+- **Holding the cell** (Q-42-12 with 42-1) needs all three of:
+  - (a) the holder's book holds the pilot's party Hostile;
+  - (b) a live unit of the holder that is armed at check-out or has fired has the doomed unit's pose
+    inside its `fight_inner_cm`;
+  - (c) no unit of the pilot's own party or a Friend's has the pose inside its reach. The ejecting
+    unit, wrecks and unarmed hulls are excluded.
+- The answer lists every holder, nearest unit first, together with the condition the live sections
+  give (Q-42-13) and the arena millisecond.
+
+**The draw** (`field::eject::draw`).
+- (d): the host takes the first holder that has a leader and a carrier in the field that has not
+  fallen. That carrier is either one of its own units or the carrier of a party its leader leads.
+- The draw is FNV-1a over GC.10's `cause_prefix(site, ordinal)`, the unit and the read's millisecond,
+  taken mod 1,000. It captures below the knob, so 1,000 always captures and 0 never does.
+
+**The eject** (`ejected`).
+- `crew::release_seat`, factored out of the extraction's landing: every channel `Released`, the pilot
+  unbound and the cockpit cleared, the station vacated.
+- Then `Stranded { site, unit }` with an `Extraction { forced: true, capture }` due after `extract_s`.
+  The condition is the worse of the record's and the cells' (Q-42-13).
+- The body stays in the cockpit room. CR.0's gate and load filters already treat a forced record.
+
+**The landings** (the crew tick).
+- **Captured:** a forced extraction with a capture, whose carrier still stands on the site
+  (`bay_work::site_of_carrier`) and has not fallen. The ejectee steps into its bay room and is
+  `Captured` by the captor (`EJECT_CAPTURED`; the captor hears `EJECT_CAPTOR_TOLD`).
+- **At a port:** otherwise, as any extraction.
+- `raiders::lift_check` skips a carrier that a pending capture names (`crew::capture_pending`), so a
+  raider's carrier waits for its captive.
+
+**The deferral** (Q-42-14). `rescue_on_site` no longer keys on `CrewDuty::Recovery`. It defers when
+either of these is of the character's own party or a Friend's (the character, their organizer, or a
+character sharing an organization either openly stands in):
+- any open DT flight in the field on the site;
+- a live rig lease whose rig stands on the site's ground, other than the hull the character is
+  stranded in.
+
+It applies to asked-for and to uncaptured forced extractions alike, never to an abandoned or a
+captured one.
+
+**Gate.**
+- `shard_8 crew_custody::cr4_an_ejection_under_a_hostile_hold_is_captured` (256) and `…_at_512`,
+  through `custody_rig::eject_under_the_hold` with the knob at 1,000.
+- `cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port` (256) and `…_at_512`, with the
+  knob at 0.
+- In-source:
+  - `arena::eject::tests::cr4_only_a_doomed_unit_ejects`;
+  - `cr4_holding_the_cell` (the ejecting unit never contests its cell, a wing in reach does, a wrecked
+    one does not, and a Neutral holds nothing);
+  - `field::eject::tests::cr4_the_draw_is_seeded_and_bounded`.
+
+**Divergences from §7's row.**
+- Story (d) flies a leased escort rig, whose unit has no control section. The doomed arm it reaches is
+  the powerless one, so the pilot lands Fit. The damaged-cockpit arm is pinned in-source, and the
+  Injured landing at Stickney is owed to a biped story.
+- The captor in the story is a player's carrier, not a director raider's. The raider lift's wait is
+  in source (`lift_check`) and is owed to the next raider story.
+- The "wing inside its own reach" variant is in-source (`cr4_holding_the_cell`). A field story would
+  need an armed second hull of the pilot's party, which no rig lease gives.
+- An eject capture writes no `capture:` standing and no `UnlawfulKind::Capture` row: the holder held
+  the pilot Hostile by (a), so Q-42-21's charge does not apply, and nothing was loaded.
+
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of PR #442's run
+41891582950 against main's 41891314242 (a170600b), both shard_8:
+- The four CR.4 stories add 3.45 summed minutes to `crew_custody::` (48.7 to 54.0 s each).
+- Every other shard_8 test ran about 1.25× slower on that runner, CR.1–CR.3's stories included
+  (`match_lifecycle::af3_…` 164 → 210 s, `unloading::sm8_…` 72 → 94 s). Doc 43 §5.8's runner
+  variance, not this cut: the shard's summed minutes go 49.9 → 67.4, and 3.45 of that is CR.4's.
+- shard_8's wall was 21.0 min on that run. The run's slowest cell was shard_1 at 23.9 min, which this
+  cut does not touch.
+## CR.5 — beds as a limit
+
+Q-42-17 and Q-42-18. A medical room's beds limit the faster rate, never treatment itself. Q-42-18's
+numbers stand: one IC day injured, three incapacitated, half at a medical room.
+
+**The beds** (`port/medical.rs`). `medical_beds(w, port)` sums the slots of every facility holding the
+`medical` capability in the port. Those slots are the authored beds: two at Ceres, four at Stickney.
+
+**The treatment** (`field/crew.rs`).
+- **Beginning** (GC.13's `treat`):
+  - while the port has a bed free, a treatment begins at the medical rate, as before;
+  - with every bed taken, it begins at the port's full time, told `TREATMENT_WAITING`.
+  - A bed is taken while a treatment is under way at that port at the medical rate (`beds_taken`).
+- **The beds pass** (`beds_pass`, on the crew tick after `treat`). At each port with beds free, the
+  earliest treatments waiting at the full time take them:
+  - in `started_ic` order, then by character (`bed_takers`);
+  - the time left is rescaled to the medical rate (`rescaled_due`);
+  - each is told `BED_FREED`.
+- A bed is never taken from anyone.
+- `+sortie/condition` adds "waiting for a bed" to a treatment at the full time at a port with a medical
+  room.
+
+**Gate.**
+- `shard_8 crew_custody::cr5_a_third_casualty_waits_for_a_bed_at_ceres`, through
+  `custody_rig::beds_at_ceres`:
+  - three injured characters stand in Ceres's arrivals hall, their crew records read back at a boot
+    (`driving_rig::reboot_seeding`);
+  - two take the beds and the third waits, which the status line names;
+  - once the first two are due, the third takes a freed bed, finishes sooner than the full time, and is
+    fit again.
+- GC.13's gates (`shard_1 crew_treatment`) are unchanged and pass.
+- In-source: `cr5_the_earliest_waiters_take_the_free_beds`.
+
+**Divergence from §7's row.** The third casualty's record is seeded as a stored document, not brought
+home by a field. Three extractions to Ceres would add three fields' worth of run time to a cell, for a
+rule that reads only the records and the port.
+
+**Cell delta (rule #14).** From the JUnit `<testcase time>` sums of PR #447's run 41897737833
+(shard_8): the one CR.5 story is 13.4 s, so +0.22 summed minutes to `crew_custody::` (9.73 in all
+on that run, with CR.4's four stories). shard_8's wall was 14.7 min. The run's slowest cell was
+shard_1 at 22.7 min, which this cut does not touch.
 ## CR.6 — the space seam
 
 Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme session. It is stacked on doc 41's RS.8 (#439). The as-built is doc 35c §12.2. `field/crew.rs` is not edited: CR.6 calls its `check_in`, `put`, `crew_of`, `held_in`, `captured_loaded`, `aboard_loaded` and `hand_over`, all from `space/`.
@@ -388,3 +529,17 @@ Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme
 - **Not exercised:** `+sortie/extract` from a space `Stranded` record, and the friend's `aboard_loaded` branch. Both are the ground's code paths, unchanged.
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## CR.7 — docs
+
+§5's amendments are now written into the documents they amend:
+- **Doc 32:** Q-CF-38 and Q-CF-39 carry "amended by doc 42" notes, and §10's "Not built in CF.5:
+  ejection, capture and treatment" is struck through.
+- **Doc 36:** Q-36-52's non-friend half is marked superseded by CR.1 and its friendly half stands.
+  Q-36-45 gains CR.5's beds. GC.5's "The abandoned crew" and lane 5's row 4 are noted as superseded.
+  "GC.13: beds are authored but not a limit" is closed.
+- **Doc 27:** Q-H12's rescue and capture route is marked built, and Q-F4's cap is `captive_bound_s`.
+- **Doc 38:** §4 F and Q-38-22 point at doc 42, and Q-38-29's vocabulary gains the crew verbs.
+
+Doc 42 is now Draft 0.5. It adds §7b, an as-built table with what stays owed, and records CR.6 as the
+space window's (owner ruling, 2026-11-04), built there as #453. The help and code text items of §5 rode CR.1–CR.5.

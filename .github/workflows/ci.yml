@@ -1330,6 +1330,32 @@ jobs:
   # By hand:
   # cargo test -p tacsim --test shard_8 escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back -- --ignored --exact --nocapture
 
+  # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
+  # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
+  # reinforcement, a tow struck and released under fire, a jammed sight, a segment rolled and
+  # friendly fire voided. With FR.7c's test-only ledger floor each size is about ten minutes,
+  # most of it the bot's own clock-bound kit-up, so the two run side by side nightly (doc 43
+  # TS.2) and on demand; the ci-bot profile's override lets each outlive its twenty minutes.
+  fr7-round-story:
+    name: FR.7's round story at 256 and 512 (bot over SSH)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bot
+      - name: cargo-nextest 0.9.148
+        run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+      - name: The round story, both sizes
+        run: cargo nextest run -P ci-bot -p mush-bot --test mining_cohort --run-ignored only --test-threads 2 -E 'test(=fr7_round::fr7_the_rounds_story_at_256) | test(=fr7_round::fr7_the_rounds_story_at_512)'
+
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack
@@ -1442,7 +1468,7 @@ jobs:
   nightly-report:
     name: Nightly report
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, tacsim-harness, web]
+    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, tacsim-harness, web]
     runs-on: ubuntu-latest
     steps:
       - name: Name what failed

@@ -666,3 +666,242 @@ pub(crate) async fn held_past_the_bound(at: &Ground) {
     let captives = run(&mut rig.tw, b, "+ship/captives");
     assert!(captives.contains("You hold nobody aboard."), "{captives}");
 }
+
+/// **Doc 42 cut CR.4's story (d), the ejection, on `at`'s ground** (Q-42-10 to Q-42-14) with
+/// `[tacsim.field].eject_capture_permille` at `permille`. The captain flies the escort from
+/// inside it, its power gone (Q-42-11: no power is doomed); a stranger's mark opens a field with
+/// the stranger's armed hull within reach and the stranger's carrier, the Red Moth, on the pad. In
+/// the field the captain types `+sortie/eject`:
+/// - the seat empties, the record is stranded with a forced extraction, and the status line names
+///   the pickup;
+/// - at 1,000 the stranger's party holds the cell and the draw captures: at the due instant the
+///   captain is carried aboard the Red Moth, `Captured` by the stranger, who lists them; past the
+///   bound (compressed to ten IC minutes) `+sortie/extract` lands them at a port;
+/// - at 0 the draw never captures: the captain's second rig standing on the ground defers the
+///   pickup past its due instant (Q-42-14), and the extraction lands at the port after the
+///   rescue bound, the condition kept (Fit: a powerless hull hurts nobody, Q-42-13).
+pub(crate) async fn eject_under_the_hold(at: &Ground, permille: u32) {
+    let mut rig = stocked_tuned(|cfg| {
+        quick(cfg);
+        cfg.field.eject_capture_permille = permille;
+        cfg.field.captive_bound_s = 600;
+    });
+    let (a, _, tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), at.site(), 2);
+    let (escort, wing) = (tvs[0], tvs[1]);
+    let ramp = ramp_cell_on(&rig, at.entry);
+    launched_at(&mut rig, at.entry, a, escort);
+    to_cell_on(&mut rig, at.entry, escort, (ramp.0 + 1, ramp.1));
+    // The wing stands on the ground, unarmed and far off: it contests nothing, and it is the
+    // rescue a pickup waits for.
+    // `launched_at` launches slot 1; the wing is slot 2.
+    let _ = crate::driving_rig::act_go(&mut rig, a, "+tv/2 launch go");
+    let _ = crate::driving_rig::finish(&mut rig, wing, a);
+    to_cell_on(&mut rig, at.entry, wing, (ramp.0 + 1, ramp.1 + 6));
+    powerless(&mut rig, escort);
+    seat(&mut rig, escort, a);
+    crate::driving_rig::staff_hand(&mut rig, |ctx| {
+        ctx.w.move_to(a, escort).expect("A climbs into the escort");
+    });
+    let (b, b_row, _) = on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), at.site(), 1);
+    let b_carrier = ObjId(b_row.hull);
+    let hull = armed_on(
+        &mut rig,
+        at.entry,
+        "Red Hound",
+        (ramp.0 - 4, ramp.1),
+        90_000,
+    );
+    seat(&mut rig, hull, b);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field opens"
+    );
+
+    // The eject: asked, then answered at the next pulse.
+    let asked = run(&mut rig.tw, a, "+sortie/eject");
+    assert!(asked.contains("You reach for the release"), "{asked}");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 40, |rig, _| crew_of(
+            rig.tw.world(),
+            a
+        )
+        .is_some_and(|crew| crew.awaiting_pickup()))
+        .await,
+        "the eject lands: {:?}",
+        crew_of(rig.tw.world(), a)
+    );
+    let record = crew_of(rig.tw.world(), a).cloned().expect("a record");
+    assert!(
+        matches!(&record.location, CrewLocation::Stranded { unit, .. } if *unit == escort),
+        "{record:?}"
+    );
+    let coming = record.extraction.clone().expect("the pickup");
+    assert!(
+        tacsim::field::crew::seated_in(rig.tw.world(), escort).is_none(),
+        "the seat is empty"
+    );
+    let status = run(&mut rig.tw, a, "+sortie/condition");
+    assert!(status.contains("pickup after your ejection"), "{status}");
+    let again = run(&mut rig.tw, a, "+sortie/eject");
+    assert!(
+        again.contains("You are waiting for your pickup."),
+        "{again}"
+    );
+
+    if permille == 1_000 {
+        let capture = coming.capture.clone().expect("the stranger holds the cell");
+        assert_eq!((capture.carrier, capture.captor), (b_carrier, b));
+        let _ = crate::driving_rig::to_ic(&mut rig, coming.due_ic);
+        assert!(
+            seconds_until(&mut rig, 30, |rig| matches!(
+                crew_of(rig.tw.world(), a).map(|c| &c.location),
+                Some(CrewLocation::Captured { carrier, captor, .. })
+                    if *carrier == b_carrier && *captor == b
+            )),
+            "A is held aboard the Red Moth: {:?}",
+            crew_of(rig.tw.world(), a)
+        );
+        let held = run(&mut rig.tw, b, "+ship/captives");
+        assert!(held.contains("held aboard the Red Moth"), "{held}");
+        let since = match crew_of(rig.tw.world(), a).map(|c| c.location.clone()) {
+            Some(CrewLocation::Captured { since_ic, .. }) => since_ic,
+            other => panic!("{other:?}"),
+        };
+        let _ = crate::driving_rig::to_ic(&mut rig, since + 600);
+        let (out, _) = command(&mut rig, a, "+sortie/extract");
+        assert!(out.contains("negotiates your passage"), "{out}");
+        let due = crew_of(rig.tw.world(), a)
+            .and_then(|c| c.extraction.as_ref().map(|e| e.due_ic))
+            .expect("the extraction is on its way");
+        let _ = crate::driving_rig::to_ic(&mut rig, due);
+    } else {
+        assert!(coming.capture.is_none(), "the draw at 0 never captures");
+        let _ = crate::driving_rig::to_ic(&mut rig, coming.due_ic);
+        let _ = second(&mut rig);
+        assert!(
+            crew_of(rig.tw.world(), a).is_some_and(|crew| crew.awaiting_pickup()),
+            "the wing on the ground defers the pickup: {:?}",
+            crew_of(rig.tw.world(), a)
+        );
+        let bound = i64::from(tacsim::TacsimConfig::default().field.rescue_bound_s);
+        let _ = crate::driving_rig::to_ic(&mut rig, coming.due_ic + bound);
+    }
+    assert!(
+        seconds_until(&mut rig, 30, |rig| matches!(
+            crew_of(rig.tw.world(), a).map(|c| &c.location),
+            Some(CrewLocation::Port { .. })
+        )),
+        "A lands at a port: {:?}",
+        crew_of(rig.tw.world(), a)
+    );
+    assert_eq!(
+        crew_of(rig.tw.world(), a).map(|c| c.condition),
+        Some(tacsim::field::CrewCondition::Fit),
+        "an eject never hurts (Q-42-13)"
+    );
+}
+
+/// **Doc 42 cut CR.5's gate, beds as a limit** (Q-42-17): three injured characters stand in
+/// Ceres's arrivals hall, its medical room of two beds, their records read back at a boot. The
+/// first two take the beds at the medical rate; the third is under treatment at the full time,
+/// "waiting for a bed". Once the first two are fit, the third takes a freed bed, the time left
+/// rescaled to the medical rate, and is fit again after it.
+pub(crate) fn beds_at_ceres() {
+    let rig = stocked_tuned(|cfg| {
+        quick(cfg);
+        cfg.field.treat_injured_s = 3_600;
+        cfg.field.treat_medical_permille = 500;
+    });
+    let hall = crate::driving_rig::station_room(&rig.tw, "ceres_port", "room.c03_arrivals");
+    let mut rig = rig;
+    let who: Vec<ObjId> = ["Ash", "Birch", "Cedar"]
+        .into_iter()
+        .map(|name| {
+            crate::driving_rig::staff_hand(&mut rig, |ctx| {
+                ctx.w
+                    .create(mush_core::ObjKind::Player, name, mush_core::GOD, Some(hall))
+                    .expect("a character")
+            })
+        })
+        .collect();
+    let now = rig.tw.world().world_ic_now().at;
+    let docs = who
+        .iter()
+        .map(|character| {
+            let record = tacsim::field::CrewRecord {
+                format: tacsim::field::crew::CREW_FORMAT,
+                character: *character,
+                location: CrewLocation::Port {
+                    port: smol_str::SmolStr::new_static("ceres"),
+                },
+                condition: tacsim::field::CrewCondition::Injured,
+                at_ic: now,
+                organizer: None,
+                extraction: None,
+                treatment: None,
+            };
+            (
+                tacsim::field::crew::crew_key(*character),
+                serde_json::to_value(&record).expect("encodes"),
+            )
+        })
+        .collect();
+    let mut rig = crate::driving_rig::reboot_seeding(rig, docs, &who);
+    let treatment = |rig: &crate::driving_rig::Rig, character: ObjId| {
+        crew_of(rig.tw.world(), character).and_then(|crew| crew.treatment.clone())
+    };
+    assert!(
+        seconds_until(&mut rig, 10, |rig| who
+            .iter()
+            .all(|character| treatment(rig, *character).is_some())),
+        "all three are under treatment"
+    );
+    let beds: Vec<bool> = who
+        .iter()
+        .map(|character| treatment(&rig, *character).is_some_and(|under| under.medical))
+        .collect();
+    assert_eq!(
+        beds.iter().filter(|medical| **medical).count(),
+        2,
+        "two beds: {beds:?}"
+    );
+    let waiter = who[beds.iter().position(|medical| !medical).expect("one waits")];
+    let status = run(&mut rig.tw, waiter, "+sortie/condition");
+    assert!(status.contains("waiting for a bed"), "{status}");
+    let full = treatment(&rig, waiter).expect("waiting").due_ic;
+    let first = who
+        .iter()
+        .filter(|character| **character != waiter)
+        .filter_map(|character| treatment(&rig, *character).map(|under| under.due_ic))
+        .max()
+        .expect("the beds' due instants");
+    // The beds free; the waiter takes one, the time left halved.
+    let _ = crate::driving_rig::to_ic(&mut rig, first);
+    assert!(
+        seconds_until(&mut rig, 10, |rig| treatment(rig, waiter)
+            .is_some_and(|under| under.medical)),
+        "the waiter takes a freed bed: {:?}",
+        treatment(&rig, waiter)
+    );
+    let rescaled = treatment(&rig, waiter).expect("in a bed").due_ic;
+    assert!(
+        rescaled < full,
+        "the time left is rescaled: {rescaled} < {full}"
+    );
+    let _ = crate::driving_rig::to_ic(&mut rig, rescaled);
+    assert!(
+        seconds_until(&mut rig, 10, |rig| crew_of(rig.tw.world(), waiter)
+            .is_some_and(
+                |crew| crew.condition == tacsim::field::CrewCondition::Fit
+            )),
+        "the waiter is fit again"
+    );
+}

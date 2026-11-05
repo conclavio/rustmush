@@ -696,6 +696,11 @@ with real, embarked human-NPC leadership.
 - **Alternative:** deliver the full injury, treatment, prisoner and ransom system with H1.
 - **Why:** defeats retain material and logistical consequences while the player has an assured
   way back to play. The NPC rescue is an explicit world outcome, not an OOC unit reset.
+- **Built by doc 42** (CR.1–CR.5):
+  - the physical rescue and capture route: a Friend's load rescues, a non-friend's load captures, and
+    a captive is handed over at a port, released or bounded;
+  - escape and ejection (`+sortie/eject`);
+  - the cap on capture delaying return to play is `[tacsim.field].captive_bound_s`.
 
 ### D. H2 — recovery, salvage rights and restoration boundary
 
@@ -975,6 +980,9 @@ H3 milestone. The implementation briefs still choose schemas, exact timing and c
 - **Why:** no-permadeath and fallback retrieval are settled, but destination, timing and capture
   otherwise risk leaving the promised route undefined or making it an instant travel shortcut.
   The exact delay is tuning after the service policy is chosen.
+  **Doc 42** (Q-42-8, CR.3): "capture may delay it only up to that bound" is
+  `[tacsim.field].captive_bound_s`, seven IC days by default, after which `+sortie/extract` works from
+  captivity.
   **Review pin (§10 P-5):** "after ordinary rescue cannot resolve the casualty" names no trigger.
   The recorded default: the stranded character (or their player, through the character) requests
   extraction, which is refused only while a friendly rescue is physically under way within a

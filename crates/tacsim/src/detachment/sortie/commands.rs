@@ -24,6 +24,7 @@ pub(crate) const SWITCHES: &[&str] = &[
     "command-grants",
     "extract",
     "condition",
+    "eject",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -132,6 +133,13 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("Use +sortie/extract with nothing after it."));
         }
         return crate::field::crew::extract_cmd(ctx);
+    }
+    // Doc 42 cut CR.4 (Q-42-10): the seated pilot of a doomed unit ejects; it takes no operation.
+    if ctx.switches.has("eject") {
+        if !raw.is_empty() {
+            return Err(CmdError::msg("Use +sortie/eject with nothing after it."));
+        }
+        return crate::field::eject::eject_cmd(ctx);
     }
     // Doc 36 cut GC.13: the crew status line, with a treatment's time left.
     if ctx.switches.has("condition") {

@@ -304,3 +304,33 @@ async fn cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it() {
 async fn cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it_at_512() {
     crate::custody_rig::held_past_the_bound(&URVARA_REACH).await;
 }
+
+/// **CR.4's ejection captured at 256** (`custody_rig::eject_under_the_hold`, the knob at 1,000).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr4_an_ejection_under_a_hostile_hold_is_captured() {
+    crate::custody_rig::eject_under_the_hold(&AHUNA_FLANK, 1_000).await;
+}
+
+/// **CR.4's ejection captured at 512**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr4_an_ejection_under_a_hostile_hold_is_captured_at_512() {
+    crate::custody_rig::eject_under_the_hold(&URVARA_REACH, 1_000).await;
+}
+
+/// **CR.4's uncaptured ejection at 256** (the knob at 0): the wing defers the pickup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port() {
+    crate::custody_rig::eject_under_the_hold(&AHUNA_FLANK, 0).await;
+}
+
+/// **CR.4's uncaptured ejection at 512**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port_at_512() {
+    crate::custody_rig::eject_under_the_hold(&URVARA_REACH, 0).await;
+}
+
+/// **CR.5's beds as a limit** (`custody_rig::beds_at_ceres`): a third casualty waits for a bed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cr5_a_third_casualty_waits_for_a_bed_at_ceres() {
+    crate::custody_rig::beds_at_ceres();
+}

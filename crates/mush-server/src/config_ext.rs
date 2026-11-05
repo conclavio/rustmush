@@ -517,6 +517,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             launch_cycle_s: cfg.field.launch_cycle_s,
             release_s: cfg.field.release_s,
             captive_bound_s: cfg.field.captive_bound_s,
+            eject_capture_permille: cfg.field.eject_capture_permille,
             seed: None,
         },
     };

@@ -307,6 +307,7 @@ pub mod core;
 pub mod damage;
 pub mod detachment;
 pub mod doctrine;
+pub mod eject;
 pub mod hash;
 pub mod heat;
 pub mod horizon;

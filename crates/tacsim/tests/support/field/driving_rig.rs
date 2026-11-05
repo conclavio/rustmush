@@ -447,6 +447,23 @@ pub(crate) fn reboot_editing(
     reboot(rig, reconnect)
 }
 
+/// **Fold every write and reboot with `docs` added to the stored `tacsim:` documents** (doc 42
+/// cut CR.5): a fixture's records the boot reads back as it reads every other.
+pub(crate) fn reboot_seeding(
+    mut rig: Rig,
+    docs: Vec<(SmolStr, serde_json::Value)>,
+    reconnect: &[ObjId],
+) -> Rig {
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let data = rig
+        .store
+        .values_mut()
+        .find(|data| data.kv.iter().any(|(k, _)| k.starts_with("tacsim:")))
+        .expect("the tacsim documents are in the store");
+    data.kv.extend(docs);
+    reboot(rig, reconnect)
+}
+
 /// Everything due `secs` on.
 pub(crate) fn sweep(tw: &mut TestWorld, secs: i64) {
     let t = tw.world().now().saturating_add(secs);
