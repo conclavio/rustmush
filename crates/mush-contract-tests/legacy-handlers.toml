@@ -654,6 +654,11 @@ family = "core.attrs"
 note = "Player mute list (@ignore): updates or clears the actor's ignore attribute on the core object snapshot lane."
 
 [[handler]]
+name = "@industry"
+category = "read-only"
+note = "Doc 39 cut IN.11 (section 4.10; Q-39-8; the owner's ruling of 2026-11-04, a window-delta census): @industry/census is a staff PURE READ of the matter census -- the chain goods' opened deposits and what the ground still holds, the tacsim.port_stock receipts, every pool (by its reservation book's commodity) and lot of a chain good, the hulls' and workshops' bales, the completed work orders, the chain's mill ledgers, the commissions and the bay's fitted part provenance -- printed as one tacsim.matter_census line and one tacsim.matter_build line a commission; @industry/census <good> adds one tacsim.matter_lot line a lot of that good (its vault, the vault's name and owner). No document, no economy post, no submission, no state family written. Staff only (require_staff), the layer on (require_enabled)."
+
+[[handler]]
 name = "@instrument"
 category = "economy-carve-out"
 note = "Economy instrument administration (@instrument): defines, configures, or inspects validated instrument records under the 09 §7 item 5 economy carve-out."

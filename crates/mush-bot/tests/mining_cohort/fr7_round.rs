@@ -333,7 +333,7 @@ fn worn_plan(engine: &mush_core::Engine, hull: ObjId) -> String {
 
 /// A hull's power destroyed, as a mutation plan's JSON (`field_fr5`'s `powerless`): a casualty a
 /// tug can take.
-fn powerless_plan() -> String {
+pub(crate) fn powerless_plan() -> String {
     let plan = mush_tactics::UnitMutationPlan::new(
         vec![mush_tactics::UnitMutationOp::SetComponentCondition {
             component: mush_tactics::unit::ComponentId::new("power").expect("an id"),

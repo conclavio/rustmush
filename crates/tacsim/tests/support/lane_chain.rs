@@ -45,10 +45,64 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 39 cut IN.11 (lane v32): Freeport Works' strategic ore and the Yards' part bid taken
+/// out** — the stock row and the ask at Ceres and the light-plant bid at Stickney, so a strip
+/// chain rebuilds a lane before v32 (idempotent). The chain's head. The programme's
+/// strategic-ore reference goes back from that ask to its fixed 300.00cr.
+pub fn strip_strategic_ask(doc: &mut Value) {
+    if let Some(def) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|entry| entry.get_mut("def"))
+    {
+        if let Some(programme) = def.get_mut("programme").and_then(Value::as_object_mut)
+            && programme
+                .get_mut("reference")
+                .and_then(Value::as_object_mut)
+                .and_then(|reference| reference.remove("strategic_ore"))
+                .is_some()
+            && let Some(fixed) = programme
+                .get_mut("reference_minor")
+                .and_then(Value::as_object_mut)
+        {
+            fixed.insert("strategic_ore".to_owned(), 30_000.into());
+        }
+        for vendor in def
+            .get_mut("vendors")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter(|vendor| vendor["org"] == "freeport_works")
+        {
+            for rows in ["stock", "asks"] {
+                if let Some(rows) = vendor.get_mut(rows).and_then(Value::as_array_mut) {
+                    rows.retain(|row| row["good"] != "strategic_ore");
+                }
+            }
+        }
+    }
+    // The Yards' light-plant bid at Stickney.
+    for vendor in doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("stickney_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter(|vendor| vendor["org"] == "stickney_yards")
+    {
+        if let Some(bids) = vendor.get_mut("bids").and_then(Value::as_array_mut) {
+            bids.retain(|row| row["good"] != "tacsim.part.plant.light_mk1");
+        }
+    }
+}
+
 /// **The player-response floor (lane v31; owner rule, 2026-11-04): the licence's grace put
 /// back** — the Freeport Registry licence's `grace_ic_days` 28 → 3, so a strip chain rebuilds
-/// a lane before v31 (idempotent). The chain's head.
+/// a lane before v31 (idempotent), after IN.11's rows.
 pub fn strip_licence_grace(doc: &mut Value) {
+    strip_strategic_ask(doc);
     if let Some(licence) = doc
         .get_mut("entries")
         .and_then(|entries| entries.get_mut("ceres_port"))

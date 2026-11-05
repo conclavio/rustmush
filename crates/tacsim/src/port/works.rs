@@ -131,6 +131,9 @@ pub const INTO_HOLD: &str = " move into your hold.";
 pub const FEE_CLAUSE: &str = "; fee ";
 /// A collection or delivery asked for while the order's last move settles.
 pub const SETTLING: &str = "That order is still settling.";
+/// **Doc 39 cut IN.11**: `+yard/collect`'s commission, "Order {n}: the yard commissions her as
+/// {mark}; …" (the bot's reader holds to it).
+pub const COMMISSIONS_AS: &str = ": the yard commissions her as ";
 
 // ---- the records --------------------------------------------------------------------------
 
@@ -1312,8 +1315,7 @@ fn commission(
     say(
         ctx,
         format!(
-            "Order {}: the yard commissions her as {mark}; she is handed over when the work is \
-             done.",
+            "Order {}{COMMISSIONS_AS}{mark}; she is handed over when the work is done.",
             c.id
         ),
     );

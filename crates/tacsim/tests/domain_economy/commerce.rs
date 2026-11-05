@@ -875,7 +875,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     // Doc 36 cut GC.7: each port's four munitions rows; doc 39 cut IN.6: the part rows, Occator's
     // five and Stickney Yards' thirteen, which are never pools; doc 39 cut IN.5: Freeport Works'
     // carbon row; doc 39 cut IN.7: the part rows retired.
-    assert_eq!(all.len(), 17, "Ceres 9 and Stickney 8");
+    // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row.
+    assert_eq!(all.len(), 18, "Ceres 10 and Stickney 8");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
@@ -927,7 +928,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
     // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
     // cut IN.7: seventeen, the part rows retired.
-    assert_eq!(all.len(), 17);
+    // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row.
+    assert_eq!(all.len(), 18);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -1427,9 +1429,10 @@ fn ic8_the_board_counts_down_to_sold_out() {
         "{report}"
     );
     // C07 lines: the three asks and (doc 39 cut IN.5) Freeport Works' carbon ask, then the
-    // alloy bid and (doc 20 cut SM.5) the four ore intakes.
+    // alloy bid and (doc 20 cut SM.5) the four ore intakes; doc 39 cut IN.11: Freeport Works'
+    // strategic-ore ask.
     let lines = board(&out);
-    assert_eq!(lines.len(), 9, "{out}");
+    assert_eq!(lines.len(), 10, "{out}");
     assert!(
         lines[1].starts_with("  water ice: 100.00cr/t, 9,600 t left (Occator"),
         "{out}"
@@ -1442,14 +1445,20 @@ fn ic8_the_board_counts_down_to_sold_out() {
         lines[3].starts_with("  carbon ore, run-of-mine: 60.00cr/t, 240 t left (Freeport Works"),
         "{out}"
     );
+    // Doc 39 cut IN.11: Freeport Works' strategic-ore ask.
     assert!(
-        lines[4].starts_with(
+        lines[4]
+            .starts_with("  strategic ore, run-of-mine: 800.00cr/t, 200 t left (Freeport Works"),
+        "{out}"
+    );
+    assert!(
+        lines[5].starts_with(
             "  wanted, structural alloy stock: 520.00cr/t, 7,000 t more (Freeport Works;"
         ),
         "{out}"
     );
     // Doc 20 cut SM.5: the Exchange's three ore intakes in authored order, then Occator's.
-    for (line, want) in lines[5..9].iter().zip([
+    for (line, want) in lines[6..10].iter().zip([
         "  wanted, metal ore, run-of-mine: 70.00cr/t, 240 t more (Freeport Exchange",
         "  wanted, carbon ore, run-of-mine: 50.00cr/t, 120 t more (Freeport Exchange",
         "  wanted, strategic ore, run-of-mine: 600.00cr/t, 12 t more (Freeport Exchange",
@@ -2162,6 +2171,8 @@ fn ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded() {
             "  reaction mass: not yet on the board (Occator Water & Propellant).".to_owned(),
             // Doc 39 cut IN.5: Freeport Works' carbon ask.
             "  carbon ore, run-of-mine: not yet on the board (Freeport Works).".to_owned(),
+            // Doc 39 cut IN.11: Freeport Works' strategic-ore ask.
+            "  strategic ore, run-of-mine: not yet on the board (Freeport Works).".to_owned(),
             "  wanted, structural alloy stock: not buying (Freeport Works).".to_owned(),
             // Doc 20 cut SM.5: the four ore intakes, in the same form.
             "  wanted, metal ore, run-of-mine: not buying (Freeport Exchange).".to_owned(),
@@ -2570,7 +2581,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     // Doc 36 cut GC.7: sixteen with the munitions rows; doc 39 cut IN.6: thirty-four with the
     // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
     // cut IN.7: seventeen, the part rows retired.
-    assert_eq!(receipts(&mut rig.tw).len(), 17);
+    // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row.
+    assert_eq!(receipts(&mut rig.tw).len(), 18);
     no_refused_writes(&rig.tw);
 }
 
