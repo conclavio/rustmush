@@ -17,6 +17,11 @@
 //!   under a key that names the escrow's count, the seller's standing ask lowered first (IN.5's
 //!   house purchase), then moved into the escrow under the order's own ledger. The works arm runs
 //!   it; the helm collects it into the commission (`crate::port::works::commission_as`).
+//! - **A part the stores lack** (the owner's ruling of 2026-11-05: "letting the house order take
+//!   longer is a more real test than adding a house restock") — the helm orders it at the yard
+//!   port's works for the house (`HouseOrder::part`), buys that order's bill the same way, and
+//!   once the works has made and traced it, moves it from that escrow into the hull's
+//!   (`crate::port::works::collect_into`). The hull waits the part's days.
 //! - **The ferry** — the commissioned hull's stores bought into her hold the same way (the
 //!   passage's burn with a quarter over, and its crew-days), under the works ledger keyed by the
 //!   hold; then the helm files `+ship/undock` to the house's port as itself, on `Fleet`'s
@@ -130,6 +135,11 @@ pub struct HouseOrder {
     pub funded_minor: u64,
     /// The yard order, once booked.
     pub contract: Option<u64>,
+    /// **The works order for a part the yard's stores did not hold** (the owner's IN.11 ruling,
+    /// 2026-11-05), once booked; cleared when it closes (its part is then in the hull order's
+    /// escrow). Omitted while `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<u64>,
     /// When the house ordered, IC seconds.
     pub ordered_ic: i64,
     /// When she is due home, IC seconds (an estimate until she sails, then her arrival).
@@ -438,9 +448,14 @@ fn step(
         design: CanonicalId::new(floor.design).map_err(|e| e.to_string())?,
         funded_minor: price,
         contract: None,
+        part: None,
         ordered_ic: now,
-        due_ic: now
-            .saturating_add(build_days(ctx.w, floor).saturating_add(PASSAGE_ALLOWANCE_DAYS) * DAY),
+        due_ic: now.saturating_add(
+            build_days(ctx.w, floor)
+                .saturating_add(part_days(ctx, floor))
+                .saturating_add(PASSAGE_ALLOWANCE_DAYS)
+                * DAY,
+        ),
         hull: None,
         owed: None,
         phase: Phase::Funded,
@@ -496,6 +511,7 @@ fn advance(
             order.due_ic = ctx.w.world_ic_now().at.saturating_add(
                 i64::try_from(contract.work_units.div_ceil(24))
                     .unwrap_or(i64::MAX)
+                    .saturating_add(part_days(ctx, floor))
                     .saturating_add(PASSAGE_ALLOWANCE_DAYS)
                     .saturating_mul(DAY),
             );
@@ -519,6 +535,10 @@ fn advance(
                 };
                 if held >= line.units {
                     continue;
+                }
+                // The owner's IN.11 ruling: a part the stores lack is made at the works.
+                if part && (order.part.is_some() || !stores_hold(ctx, &line.good)) {
+                    return supply_part(ctx, home, (helm, account), order, (id, &line.good));
                 }
                 let want = if part { 1 } else { line.units - held };
                 buy(
@@ -650,6 +670,133 @@ fn advance(
             }
         }
     }
+}
+
+/// **The works order for a part the stores lack** (the owner's IN.11 ruling, 2026-11-05): booked
+/// at the yard port's works as the helm for the house, its bill bought into its escrow, and once
+/// made and traced, moved into the hull order `into`'s escrow. One step a fire.
+fn supply_part(
+    ctx: &mut Ctx<'_>,
+    home: &Home,
+    (helm, account): (ObjId, AccountId),
+    order: &mut HouseOrder,
+    (into, good): (u64, &CanonicalId),
+) -> Result<Advance, String> {
+    let Some(id) = order.part else {
+        let facility = works(ctx.w)?;
+        let (recipe, pinned) = crate::port::works::recipe_making(ctx.w, &facility, good)
+            .ok_or_else(|| format!("the works makes no {good}"))?;
+        let saved = ctx.actor;
+        ctx.actor = helm;
+        let booked = crate::port::works::book(
+            ctx,
+            crate::port::works::Booking {
+                front: crate::port::works::Front::Works,
+                facility: &facility,
+                recipe: &recipe,
+                pinned: &pinned,
+                quantity: 1,
+                payer: PrincipalId::Object(helm),
+                beneficiary: home.house.clone(),
+                account,
+            },
+        );
+        ctx.actor = saved;
+        order.part = Some(booked?.id);
+        return Ok(Advance::Changed);
+    };
+    // Closed: collected into the hull's escrow (or failed, and the next fire books again).
+    let Some(c) = crate::port::works::open_contract(ctx.w, id) else {
+        order.part = None;
+        return Ok(Advance::Changed);
+    };
+    if c.owed.is_some() || c.order.is_none() {
+        return Ok(Advance::Same);
+    }
+    match crate::port::works::order_state(ctx, &c) {
+        Some(WorkOrderState::Draft) => {
+            for line in &c.bill {
+                let held = crate::port::works::escrow_units(ctx, &c, &line.good);
+                if held < line.units {
+                    buy(
+                        ctx,
+                        helm,
+                        account,
+                        Sink::Escrow(id),
+                        (&line.good, line.units - held, held),
+                    )?;
+                    return Ok(Advance::Same);
+                }
+            }
+            Ok(Advance::Same)
+        }
+        Some(WorkOrderState::Completed { .. }) => {
+            let to = EndpointRef(VaultId(into));
+            // While the part is still being traced (IN.7's commission) this waits for the next
+            // fire; once the move lands the order closes, and the next step clears it.
+            if let Err(error) = crate::port::works::collect_into(ctx, id, helm, to) {
+                tracing::debug!(order = id, %error, "tacsim: a house part order waits to move");
+            }
+            Ok(Advance::Same)
+        }
+        Some(WorkOrderState::Cancelled | WorkOrderState::Failed) => {
+            Err(format!("the house's part order {id} did not finish"))
+        }
+        _ => Ok(Advance::Same),
+    }
+}
+
+/// Whether the yard operator's stores hold a drawable `good` lot (a part), free of any listing.
+fn stores_hold(ctx: &Ctx<'_>, good: &CanonicalId) -> bool {
+    let Ok((map, def)) = yard_port(ctx.w) else {
+        return false;
+    };
+    let Some(row) = def
+        .yard
+        .as_ref()
+        .and_then(|yard| map.vendors.get(&yard.operator))
+    else {
+        return false;
+    };
+    let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+    crate::port::stock::store_lots(ctx, row, good, &claimed)
+        .into_iter()
+        .any(|lot| lot.listing.is_none())
+}
+
+/// The works at the yard's port.
+fn works(w: &World) -> Result<FacilityRecord, String> {
+    let (_, def) = yard_port(w)?;
+    let entry = CanonicalId::new(YARD_PORT).map_err(|e| e.to_string())?;
+    let room = crate::port::plant::block_room(w, &entry, &def, "works")?
+        .ok_or("the yard's port authors no works")?;
+    w.module_state::<mush_industry::IndustryStore>()
+        .and_then(|store| store.facility(room))
+        .cloned()
+        .ok_or_else(|| "the works is not open".to_owned())
+}
+
+/// **The days the floor's parts add** when the stores lack them: each missing part's recipe at
+/// the works, one after another (the owner's IN.11 ruling).
+fn part_days(ctx: &Ctx<'_>, floor: &Floor) -> i64 {
+    let (Ok(yard), Ok(works)) = (yard(ctx.w), works(ctx.w)) else {
+        return 0;
+    };
+    let Some((_, pinned)) = crate::port::works::find_recipe(ctx.w, &yard, floor.recipe) else {
+        return 0;
+    };
+    crate::port::works::bill_with_parts(ctx.w, &pinned, 1)
+        .iter()
+        .filter(|line| crate::port_tick::is_part(&line.good) && !stores_hold(ctx, &line.good))
+        .filter_map(|line| crate::port::works::recipe_making(ctx.w, &works, &line.good))
+        .map(|(_, made)| {
+            i64::try_from(
+                made.work_units()
+                    .div_ceil(crate::port::bill::WORK_UNITS_A_DAY),
+            )
+            .unwrap_or(i64::MAX)
+        })
+        .sum()
 }
 
 /// Where a purchase lands.
@@ -920,6 +1067,21 @@ pub fn price_minor(ctx: &Ctx<'_>, floor: &Floor) -> Result<u64, String> {
     let mut total: u64 = 0;
     for line in crate::port::works::bill_with_parts(w, &pinned, 1) {
         let part = crate::port_tick::is_part(&line.good);
+        // The owner's IN.11 ruling: a part the stores lack costs its works order — the bill at
+        // the asks, the works' fee and booking fee.
+        if part && !stores_hold(ctx, &line.good) {
+            let works = works(w)?;
+            let (_, made) = crate::port::works::recipe_making(w, &works, &line.good)
+                .ok_or_else(|| format!("the works makes no {}", line.good))?;
+            for input in crate::port::works::bill_with_parts(w, &made, 1) {
+                let (_, unit) = seller(w, &def, &input.good, false)?;
+                total = total.saturating_add(unit.saturating_mul(input.units));
+            }
+            total = total
+                .saturating_add(works.fee_minor(made.work_units()).unwrap_or(0))
+                .saturating_add(works.booking_fee_minor().unwrap_or(0));
+            continue;
+        }
         let (_, unit) = seller(w, &def, &line.good, part)?;
         total = total.saturating_add(unit.saturating_mul(line.units));
     }

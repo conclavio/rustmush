@@ -1390,6 +1390,58 @@ pub(crate) fn supply_from(
     )
 }
 
+/// **The recipe at `facility` that makes `good`** (the owner's IN.11 ruling on the house restock,
+/// 2026-11-05): the latest one whose outputs name it.
+pub(crate) fn recipe_making(
+    w: &World,
+    facility: &FacilityRecord,
+    good: &CanonicalId,
+) -> Option<(mush_industry::RecipeRef, mush_industry::PinnedRecipe)> {
+    menu(w, facility)
+        .into_iter()
+        .find(|(_, pinned)| pinned.outputs().iter().any(|line| line.commodity() == good))
+}
+
+/// **A house order's part collection** (the owner's IN.11 ruling on the house restock,
+/// 2026-11-05): a completed order's escrow moved into `to` — the house's hull order's escrow —
+/// owed as `requester` (the house's helm), the `+works/collect` body with the destination the
+/// arm names. A part output is commissioned first (IN.7), so this waits while it settles.
+///
+/// # Errors
+///
+/// Nothing to collect yet, or the order still settling.
+pub(crate) fn collect_into(
+    ctx: &mut Ctx<'_>,
+    id: u64,
+    requester: ObjId,
+    to: EndpointRef,
+) -> Result<(), String> {
+    let mut c = open_contract(ctx.w, id).ok_or(NO_ORDER)?;
+    if !matches!(order_state(ctx, &c), Some(WorkOrderState::Completed { .. })) {
+        return Err("That order has nothing to collect yet.".to_owned());
+    }
+    if c.owed.is_some() {
+        return Err(SETTLING.to_owned());
+    }
+    let (goods, lots) = escrow_contents(ctx, &c);
+    if !bulk_lots(&lots).is_empty() || untraced_part(ctx, &lots).is_some() {
+        return Err(SETTLING.to_owned());
+    }
+    if goods.is_empty() && lots.is_empty() {
+        close(ctx, &mut c, Close::Collected);
+        return Ok(());
+    }
+    let escrow = c.escrow();
+    owe(
+        ctx,
+        &mut c,
+        requester,
+        (escrow, to),
+        (goods, lots),
+        Then::Collected,
+    )
+}
+
 /// **A house order's collection** (doc 39 cut IN.10): a delivered hull order commissioned as
 /// `requester` (the house's helm), the `+yard/collect` body; the hull is titled to the order's
 /// beneficiary, the house.
