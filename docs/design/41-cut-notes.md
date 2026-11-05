@@ -582,3 +582,44 @@ the port berths in the workshop held for T; T's carrier docks and T stows her fr
   (doc 42 owns it).
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.6a — Tycho Mutual's designs and house (2026-11-04)
+
+Row: §6 RS.6, its first slice (RS.6a/b/c, sliced with the lead's OK); Q-41-15, Q-41-17, Q-41-29. **Lane
+v28 / relay v19** (`0b68e811…`, `876dcae5…`) over IN.9's v27; `lane_chain::strip_tycho_house` heads the
+chain. RS.6b (the house arm flying a retrieval, story d) and RS.6c (the sweep, story e) follow.
+
+**Built.**
+
+- **The designs** (`content/units/tycho_crawler.json`, `tycho_lifter.json`, `EXTENSIONS_TYCHO`, fielded
+  last, LOOKLESS): the crawler 130 t dry, tracked, unarmed, a crew of two, `recovery_profile: heavy`
+  (2× laden), a 3 t tool locker; the lifter the Dray-P's hull grown to 600 t, a 10 t hold, a 200 t tank,
+  one recovery bay of two places at 430 t / 1,600 m3, the rail 641,000 kg.
+- **The bills** (doc 39's `design_bill`, pinned in `port/bill.rs`): the crawler 100 t of alloys, 34 t of
+  fittings, 7 yard days; the lifter 441 t, 147 t, 30 days; hull kits in `goods.json` and recipe rows in
+  `industry/hulls-v1.json`, so the Stickney yard builds either for anyone at its bill (Q-41-15).
+- **The house** (`port/house.rs`, the port tick before the commission arm; `PortMap.house`): lane v28's
+  `recovery.house { lifter_mark, crawler_mark }` (`TMA-LF-01`, `TMA-CR-01`) is laid up as Tycho's
+  `DARK` dispatcher in the port's host room and two **yard commissions** titled to Tycho Mutual, seeded
+  at `Laying` (no kit lot, no work order), which IN.9's commission arm carries to the register: the
+  lifter docked at Ceres with a hold, the crawler on the workshop floor; once both are done the crawler
+  is stowed into the lifter's bay (`bay_work::stow_house`). `house::hulls` and `house::dispatcher` read it.
+- **The capital** (Q-41-17): Tycho's `capital_major` stays 50,000 and the row gains
+  `"raises": [ 450000 ]` — 500,000 in all.
+
+**Story.** `tacsim` `tests/shard_7/tycho_house_rs6a.rs`: the composed lane lays the house up on the port
+tick — both hulls Tycho's, the lifter docked at Ceres, the crawler in her bay, the dispatcher in the host
+room — and a minute more of fires seeds nothing again.
+
+**Divergences.**
+
+- **One bay of two places**, not two slots: the engine reads one bay a hull (`InteriorDef::bay`), so the
+  crawler's 130 t / 400 m3 and the load's 300 t / 1,200 m3 share one 430 t / 1,600 m3 bay.
+- **The capital as a raise**: a port update never re-capitalizes an org on a kept world (the applier
+  refuses a changed `capital_major`), so Q-41-17's 500,000 is the 50,000 base and one 450,000 raise.
+- **No storefront party** yet: Tycho already acts as a contract party through `PortPartyCaps` (RS.5); a
+  storefront needs goods to sell, which the hull-sale offer of RS.6c brings.
+- **No looks**: the kit has none for either (doc 41 §7); `+ship` prints the lifter's class as a refit
+  hull's, since the class word reads only the Dray family. RS.6b gives it a word when the arm flies it.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.

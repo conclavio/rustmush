@@ -52,7 +52,12 @@ fn row(map: &mut PortMap) -> &mut HouseRow {
 }
 
 /// One port's house, carried as far as it goes this fire.
-fn step(ctx: &mut Ctx<'_>, entry: &CanonicalId, def: &PortDef, mut map: PortMap) -> Result<(), String> {
+fn step(
+    ctx: &mut Ctx<'_>,
+    entry: &CanonicalId,
+    def: &PortDef,
+    mut map: PortMap,
+) -> Result<(), String> {
     let recovery = def.recovery.as_ref().ok_or("no recovery row")?;
     let house: &RecoveryHouseDef = recovery.house.as_deref().ok_or("no house")?;
     let operator = map
@@ -73,8 +78,16 @@ fn step(ctx: &mut Ctx<'_>, entry: &CanonicalId, def: &PortDef, mut map: PortMap)
     };
     // 2–3. The commissions.
     let designs = [
-        (true, crate::definitions::content::TYCHO_LIFTER, &house.lifter_mark),
-        (false, crate::definitions::content::TYCHO_CRAWLER, &house.crawler_mark),
+        (
+            true,
+            crate::definitions::content::TYCHO_LIFTER,
+            &house.lifter_mark,
+        ),
+        (
+            false,
+            crate::definitions::content::TYCHO_CRAWLER,
+            &house.crawler_mark,
+        ),
     ];
     for (ship, design, mark) in designs {
         let seeded = map

@@ -45,10 +45,38 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 41 cut RS.6a (lane v28): Tycho Mutual's house taken out** — Ceres's `recovery.house`
+/// block and Tycho's 450,000 raise (Q-41-17: 500,000 in all), so a strip chain
+/// rebuilds a lane before v28 (idempotent). The chain's head.
+pub fn strip_tycho_house(doc: &mut Value) {
+    if let Some(def) = doc["entries"]
+        .as_object_mut()
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        if let Some(recovery) = def.get_mut("recovery").and_then(Value::as_object_mut) {
+            recovery.remove("house");
+        }
+        for org in def
+            .get_mut("orgs")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter(|org| org["id"] == "tycho_mutual")
+        {
+            if let Some(org) = org.as_object_mut() {
+                org.remove("raises");
+            }
+        }
+    }
+}
+
 /// **Doc 39 cut IN.9 (lane v27): the yard taken out** — Stickney's `yard` block and the Yards'
 /// 50,000 raise (IN.7's, folded into v27 on the owner's ruling), so a strip chain rebuilds a
-/// lane before v27 (idempotent). The chain's head.
+/// lane before v27 (idempotent).
 pub fn strip_yard(doc: &mut Value) {
+    strip_tycho_house(doc);
     if let Some(def) = doc["entries"]
         .as_object_mut()
         .and_then(|entries| entries.get_mut("stickney_port"))
