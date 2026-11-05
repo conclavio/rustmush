@@ -490,7 +490,7 @@ fn name(w: &World, hull: ObjId) -> String {
 }
 
 /// A port entry's name.
-fn port_name(w: &World, entry: &CanonicalId) -> String {
+pub(crate) fn port_name(w: &World, entry: &CanonicalId) -> String {
     crate::port::market::ports(w)
         .into_iter()
         .find(|(id, _, _)| id == entry)
@@ -835,7 +835,7 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
 // ---- the verbs -------------------------------------------------------------------------------
 
 /// `[go]` off the tail.
-fn split_go(raw: &str) -> (String, bool) {
+pub(crate) fn split_go(raw: &str) -> (String, bool) {
     let raw = raw.trim();
     match raw.rsplit_once(char::is_whitespace) {
         Some((head, "go")) => (head.trim().to_owned(), true),
@@ -1114,7 +1114,7 @@ fn debt_cause(o: &mush_economy::Obligation) -> Option<mush_economy::DebtCause<'_
 }
 
 /// A principal's name for the debt lines.
-fn principal_name(w: &World, who: &PrincipalId) -> String {
+pub(crate) fn principal_name(w: &World, who: &PrincipalId) -> String {
     match who {
         PrincipalId::Object(o) => name(w, *o),
         PrincipalId::Organization(org) => crate::port::market::ports(w)

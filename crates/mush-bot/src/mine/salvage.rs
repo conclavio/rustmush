@@ -165,7 +165,8 @@ fn block(s: &str) -> bool {
 
 /// Everything after `+salvage/`.
 fn salvage_switch(rest: &str) -> bool {
-    if rest == "jobs" {
+    // RS.5 / RS.6c-2: the two bare reads.
+    if rest == "jobs" || rest == "forsale" {
         return true;
     }
     let Some((switch, args)) = rest.split_once(' ') else {
@@ -174,6 +175,8 @@ fn salvage_switch(rest: &str) -> bool {
     let (body, go) = split_go(args);
     match switch {
         "claim" => hull(body),
+        // RS.6c-2: `+salvage/buy <hull> [go]`.
+        "buy" => body.starts_with('#') && hull(body),
         "inspect" => !go && hull(args),
         "contest" => match body.split_once('=') {
             Some((h, kind)) => hull(h) && CONTEST_KINDS.contains(&kind),
@@ -443,6 +446,9 @@ mod tests {
             "+salvage/jobs",
             "+salvage/accept 3 go",
             "+salvage/accept #3",
+            "+salvage/forsale",
+            "+salvage/buy #812",
+            "+salvage/buy #812 go",
             "+bay #812",
             "+bay/quote Salt Moth",
             "+bay/order #812=all",
@@ -486,7 +492,9 @@ mod tests {
             "+salvage/refuse #812=Orin go",
             "+salvage/retrieve #812=Ceres Freeport",
             "+salvage/accept",
-            "+salvage/forsale",
+            "+salvage/forsale go",
+            "+salvage/buy",
+            "+salvage/buy Salt Moth go",
             "+salvage/claim #812\nsay hi",
             "+bay",
             "+bay/order #812",

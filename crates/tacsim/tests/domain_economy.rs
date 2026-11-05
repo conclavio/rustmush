@@ -57,6 +57,8 @@ mod e7r2;
 mod economy;
 #[path = "domain_economy/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
+#[path = "domain_economy/house_resale_rs6c2.rs"]
+mod house_resale_rs6c2;
 #[path = "domain_economy/house_sweep_rs6c.rs"]
 mod house_sweep_rs6c;
 #[path = "domain_economy/in10_pools.rs"]
