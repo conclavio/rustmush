@@ -74,7 +74,7 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 39 cut IN.7: v26, Stickney Yards' strategic-ore bid and the seeded part rows retired (was
 /// `0d07927c…` at v24, IN.9's v25 between).
 /// Doc 39 cut IN.9: v27, Stickney Yards' yard (was `cea6221c…` at v26).
-const LANE_DIGEST: &str = "7c1b822fa8379a4b26bcb552cc25718dc656896ffb623694e7e09418b3aba9ba";
+const LANE_DIGEST: &str = "fbc5c56f915ca8bc0cdfd8eee1b4e98687cfbaba286b1c449f32bbd930baee80";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -330,6 +330,25 @@ fn in10_strip_trust_raise_rebuilds_the_published_v28() {
     );
 }
 
+/// **Doc 39 cut IN.11: `strip_strategic_ask` rebuilds the published v29** — the shipped v30
+/// less Freeport Works' strategic ore, re-signed at 29, is IN.10's lane digest.
+#[test]
+fn in11_strip_strategic_ask_rebuilds_the_published_v29() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 29.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_strategic_ask(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_strategic_ask(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v29 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "7c1b822fa8379a4b26bcb552cc25718dc656896ffb623694e7e09418b3aba9ba"
+    );
+}
+
 #[test]
 fn ic2_the_lane_pack_is_pinned() {
     let relative = "lane/ceres_phobos.json";
@@ -357,8 +376,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        29,
-        "lane v29 since doc 39 cut IN.10 (v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        30,
+        "lane v30 since doc 39 cut IN.11 (v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

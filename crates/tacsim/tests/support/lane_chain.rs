@@ -45,9 +45,48 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 39 cut IN.11 (lane v30): Freeport Works' strategic ore taken out** — its stock row and
+/// its ask at Ceres, so a strip chain rebuilds a lane before v30 (idempotent). The chain's head.
+/// The programme's strategic-ore reference goes back from that ask to its fixed 300.00cr.
+pub fn strip_strategic_ask(doc: &mut Value) {
+    let Some(def) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|entry| entry.get_mut("def"))
+    else {
+        return;
+    };
+    if let Some(programme) = def.get_mut("programme").and_then(Value::as_object_mut)
+        && programme
+            .get_mut("reference")
+            .and_then(Value::as_object_mut)
+            .and_then(|reference| reference.remove("strategic_ore"))
+            .is_some()
+        && let Some(fixed) = programme
+            .get_mut("reference_minor")
+            .and_then(Value::as_object_mut)
+    {
+        fixed.insert("strategic_ore".to_owned(), 30_000.into());
+    }
+    let Some(vendors) = def.get_mut("vendors").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for vendor in vendors {
+        if vendor.get("org").and_then(Value::as_str) != Some("freeport_works") {
+            continue;
+        }
+        for rows in ["stock", "asks"] {
+            if let Some(rows) = vendor.get_mut(rows).and_then(Value::as_array_mut) {
+                rows.retain(|row| row["good"] != "strategic_ore");
+            }
+        }
+    }
+}
+
 /// **Doc 39 cut IN.10 (lane v29): the Trust's raise taken out** — `coop_trust`'s `raises` at
-/// Ceres removed, so a strip chain rebuilds a lane before v29 (idempotent). The chain's head.
+/// Ceres removed, so a strip chain rebuilds a lane before v29 (idempotent), after IN.11's strategic ore.
 pub fn strip_trust_raise(doc: &mut Value) {
+    strip_strategic_ask(doc);
     let Some(orgs) = doc
         .get_mut("entries")
         .and_then(|entries| entries.get_mut("ceres_port"))

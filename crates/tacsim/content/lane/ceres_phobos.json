@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 29,
+    "version": 30,
     "kind": "campaign_seed",
-    "digest": "7c1b822fa8379a4b26bcb552cc25718dc656896ffb623694e7e09418b3aba9ba",
+    "digest": "fbc5c56f915ca8bc0cdfd8eee1b4e98687cfbaba286b1c449f32bbd930baee80",
     "requires": []
   },
   "entries": {
@@ -2770,9 +2770,10 @@
             "industrial_parts": "stickney_port/stickney_yards",
             "instrument_boards": "luna_port/crisium_instruments",
             "carbon_feedstock": "titan_port/titan_concession",
-            "carbon_ore": "ceres_port/freeport_works"
+            "carbon_ore": "ceres_port/freeport_works",
+            "strategic_ore": "ceres_port/freeport_works"
           },
-          "reference_minor": { "ice_ore": 1750, "metal_ore": 3500, "strategic_ore": 30000 },
+          "reference_minor": { "ice_ore": 1750, "metal_ore": 3500 },
           "buyout_major": 90000,
           "dormancy_real_days": 7,
           "per_account": 1,
@@ -2811,8 +2812,10 @@
             "bids":  [ { "good": "industrial_parts", "price_major": 600, "intake": 5400, "boards": ["chandlery"] } ] },
           { "org": "freeport_works", "storefront": "neighborhood.ceres_freeport.room.c15_maintenance",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.sondergaard",
-            "stock": [ { "good": "carbon_ore", "qty": 240, "grade": 50, "issue": 1 } ],
-            "asks":  [ { "good": "carbon_ore", "price_major": 60, "boards": ["exchange"] } ] }
+            "stock": [ { "good": "carbon_ore", "qty": 240, "grade": 50, "issue": 1 },
+                       { "good": "strategic_ore", "qty": 200, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "carbon_ore", "price_major": 60, "boards": ["exchange"] },
+                       { "good": "strategic_ore", "price_major": 800, "boards": ["exchange"] } ] }
         ],
         "routes": { "ahuna": [ "ceres_ahuna" ], "commons": [ "ceres_commons" ], "juling": [ "ceres_juling" ],
                     "kerwan": [ "ceres_kerwan" ], "luna": [ "ceres_aitken" ], "occator": [ "ceres_occator" ],

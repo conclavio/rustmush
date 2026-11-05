@@ -2494,8 +2494,15 @@ fn sm5_only_ceres_bids_ore() {
         vec![
             ("ice_ore".to_owned(), 1_750),
             ("metal_ore".to_owned(), 3_500),
-            ("strategic_ore".to_owned(), 30_000),
         ]
+    );
+    // Doc 39 cut IN.11: strategic ore's reference is Freeport Works' ask now.
+    assert_eq!(
+        programme
+            .reference
+            .get(&cid("strategic_ore"))
+            .map(ToString::to_string),
+        Some("ceres_port/freeport_works".to_owned())
     );
 }
 
