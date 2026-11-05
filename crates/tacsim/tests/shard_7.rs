@@ -43,6 +43,8 @@ mod field_raiders_rig;
 mod grounds_rig;
 #[path = "shard_7/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
+#[path = "shard_7/house_sweep_rs6c.rs"]
+mod house_sweep_rs6c;
 #[path = "shard_7/mining.rs"]
 mod mining;
 #[path = "support/field/site_record_rig.rs"]
