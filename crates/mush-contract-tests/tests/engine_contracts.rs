@@ -50,6 +50,8 @@ mod pixel_hull_down;
 mod pixel_relief;
 #[path = "engine_contracts/pixel_sight_heights.rs"]
 mod pixel_sight_heights;
+#[path = "engine_contracts/player_wait_floors.rs"]
+mod player_wait_floors;
 #[path = "engine_contracts/sheet_write_republish.rs"]
 mod sheet_write_republish;
 #[path = "engine_contracts/state_slot_owners.rs"]

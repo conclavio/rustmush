@@ -75,7 +75,7 @@ fn cid(word: &str) -> CanonicalId {
 /// **A mind commerce prepared afresh for each boot** (doc 17h cut M8a): the Roll's writers are
 /// once-only cells installed at registration, as in the server, where a restart is a new
 /// process with a new composition, so the roster holds how to prepare one, not one.
-type CommerceFactory =
+pub(crate) type CommerceFactory =
     Arc<dyn Fn() -> tacsim::composition::mind_commerce::MindCommerce + Send + Sync>;
 
 /// **A launch composition prepared afresh for each boot** (doc 17h cut M8g G1, the combined M8
@@ -254,7 +254,7 @@ impl Roster {
 /// retained personal-account captures a commerce preparation observes, under its epoch, as the
 /// named launch's `Logins` does; off (every other world here) it refuses them, as before.
 #[derive(Default)]
-struct MapOracle(
+pub(crate) struct MapOracle(
     Mutex<BTreeMap<ObjId, AccountId>>,
     std::sync::atomic::AtomicBool,
     mush_core::account::AccountIdentityEpoch,
@@ -301,7 +301,7 @@ pub(crate) fn enable_account_captures(rig: &Rig) {
 /// A booted world, its oracle and the cumulative store.
 pub(crate) struct Rig {
     pub(crate) tw: TestWorld,
-    oracle: Arc<MapOracle>,
+    pub(crate) oracle: Arc<MapOracle>,
     pub(crate) store: HashMap<SmolStr, mush_core::ModuleBootData>,
     pub(crate) typed: BTreeMap<(SmolStr, SmolStr), serde_json::Value>,
     /// Doc 17h cut M8a: how the next reboot prepares its mind commerce, if any.

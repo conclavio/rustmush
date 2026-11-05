@@ -56,6 +56,7 @@
 //! demotion the surface takes the field's exact pose and any intent is dropped.
 
 pub(crate) mod admit;
+pub(crate) mod boarding;
 pub(crate) mod boot;
 pub mod carrier;
 pub(crate) mod close;
@@ -167,6 +168,9 @@ pub struct FieldBook {
     /// site: each put down at its ramp and offered again at the next tick, until taken or the
     /// field demotes, and counted by the one count meanwhile.
     pub(crate) relaunch: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
+    /// **Hulls out at a ramp going back into the field, their carrier lost** (doc 40, the ramp
+    /// exit's boarding window; [`boarding`]), by site: the join's answer seats the pilot again.
+    pub(crate) rejoining: BTreeMap<CanonicalId, BTreeSet<ObjId>>,
     /// **The snapshot each site's raider lift check last ran at** (doc 36 cut GC.0), in arena
     /// milliseconds: the check decodes the whole snapshot, so it is paced
     /// ([`raiders::LIFT_CHECK_MS`]).
@@ -304,6 +308,10 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(known::Sightings::default());
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());
+    // Doc 40 (the ramp exit's boarding window, player hulls): the hulls out at a ramp and the
+    // units each field's kernel named destroyed.
+    reg.state(boarding::Boarding::default());
+    reg.state(boarding::Destroyed::default());
     reg.state(crew::CrewBook::default());
     // Doc 42 cut CR.1 (Q-42-26): the hired NPCs' exits owed to their rosters.
     reg.state(crew::NpcExits::default());

@@ -18,7 +18,7 @@ fn record() -> SurveyRecord {
         block: 0,
         reward_minor: 50_000,
         accepted_ic: 1_000,
-        deadline_ic: 1_000 + 604_800,
+        deadline_ic: 1_000 + crate::port::survey::SURVEY_TERM_IC_S,
         coverage: [0; 32],
         completed: None,
         cancelled: None,

@@ -124,7 +124,7 @@ fn renewal_host_policy_bounds_fees_and_deadline_without_repricing_the_template()
         check_eq!(*r, row.expected_action(t)?);
     }
     let mut later = c.clone();
-    later.policy.offer_ic_seconds = 259200;
+    later.policy.offer_ic_seconds = 2_419_200;
     later.policy.registry = GrossRecipientCut {
         permille: 1000,
         recipient: Some(Recipient {
@@ -139,7 +139,7 @@ fn renewal_host_policy_bounds_fees_and_deadline_without_repricing_the_template()
         "fee policy must not reinterpret retained action identity"
     );
     check_ne!(later.policy_ref()?, c.policy_ref()?);
-    for seconds in [0, -1, 259201] {
+    for seconds in [0, -1, 2_419_201] {
         let mut p = c.policy.clone();
         p.offer_ic_seconds = seconds;
         check!(p.validate().is_err());

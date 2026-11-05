@@ -55,19 +55,58 @@ pub(crate) fn deserialize<'de, D: Deserializer<'de>>(decoder: D) -> Result<Vec<u
     decoder.deserialize_seq(MemoryVisitor)
 }
 
+/// **A carried memory as its canonical text** (doc 23 cut D-23-18): the memory bytes are
+/// canonical JSON, so the epoch record carries them as one string (about a third the size of
+/// the snapshot's byte array; the rig record's family caps a record at 256 KiB), bounded on the
+/// way in exactly as a snapshot's bytes are.
+pub(crate) mod text {
+    use serde::de::Error as _;
+    use serde::ser::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(std::str::from_utf8(bytes).map_err(S::Error::custom)?)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(decoder: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(decoder)?;
+        let limit =
+            super::super::snapshot_capacity::memory_bytes(mush_mind::MAX_MEMORY_ANY_CLASS.keys);
+        if text.len() as u64 > limit {
+            return Err(D::Error::custom("mind memory byte limit"));
+        }
+        let bytes = text.into_bytes();
+        super::check(&bytes, mush_mind::MAX_MEMORY_ANY_CLASS.keys).map_err(D::Error::custom)?;
+        Ok(bytes)
+    }
+}
+
+/// The memory keys `unit`'s sealed class reaches: the largest cap of any class at or below it.
+fn keys_of(arena: &Arena, unit: &super::state::UnitState) -> usize {
+    arena
+        .classes
+        .rows()
+        .iter()
+        .filter(|row| row.class <= unit.seal.class)
+        .map(|row| row.memory_keys)
+        .max()
+        .unwrap_or(0)
+}
+
+/// **Whether `bytes` fit `unit`'s memory cap** (doc 23 cut D-23-18): canonical, and within the
+/// keys its sealed class reaches. This is the bound a carried memory is written and seeded under.
+pub(crate) fn fits(arena: &Arena, unit: mush_core::ObjId, bytes: &[u8]) -> bool {
+    arena
+        .unit(unit)
+        .is_some_and(|state| check(bytes, keys_of(arena, state)).is_ok())
+}
+
 pub(crate) fn validate_arena(arena: &Arena) -> Result<(), SnapshotError> {
     for (id, mind) in &arena.minds {
         let unit = arena.unit(*id).ok_or_else(|| {
             SnapshotError::Malformed("mind memory refers to an absent unit".into())
         })?;
-        let keys = arena
-            .classes
-            .rows()
-            .iter()
-            .filter(|row| row.class <= unit.seal.class)
-            .map(|row| row.memory_keys)
-            .max()
-            .unwrap_or(0);
+        let keys = keys_of(arena, unit);
         check(&mind.memory, keys).map_err(|word| SnapshotError::Malformed(word.into()))?;
         if let Some(pending) = &mind.pending {
             check(&pending.memory, keys).map_err(|word| SnapshotError::Malformed(word.into()))?;

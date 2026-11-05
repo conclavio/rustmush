@@ -83,7 +83,7 @@
       "price_minor": 40000,
       "renewal_price_minor": 40000,
       "quote_seconds": 300,
-      "renewal_offer_ic_seconds": 259200,
+      "renewal_offer_ic_seconds": 2419200,
       "resale_offer_seconds": 86400,
       "charter_settle_ic_seconds": 259200
     }

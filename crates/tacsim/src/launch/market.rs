@@ -384,7 +384,7 @@ mod tests {
         // The personal renewal fee policy: the same levy, no venue.
         check_eq!(&p.renewal.registry, &levy);
         check!(p.renewal.venue.is_none());
-        check_eq!(p.renewal.offer_ic_seconds, 259_200);
+        check_eq!(p.renewal.offer_ic_seconds, 2_419_200);
         // The pending-charter config: the clerk, and the settle window. Its
         // fields are crate-private to mush-roll, so it is compared whole.
         check_eq!(
@@ -435,8 +435,8 @@ mod tests {
         Ok(())
     }
 
-    /// The provisional terms pair their values (both prices 40_000, both IC
-    /// windows 259_200), so `provisional_terms_build_every_policy` cannot see a
+    /// The provisional terms pair their values (both prices 40_000; both IC
+    /// windows were 259_200 until the renewal offer's 28 IC days), so `provisional_terms_build_every_policy` cannot see a
     /// swapped field. Six pairwise-distinct terms, each inside its bound, must
     /// each land in its own policy field: the pending window is the settle
     /// window, not the renewal offer window, and the purchase price is not the

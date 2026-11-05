@@ -156,7 +156,7 @@ pub(super) fn window(v: &Value) -> Result<(), ActionStateError> {
     let grace = i128::from(signed(v, "grace_end")?) - i128::from(signed(v, "term_end")?);
     if num(v, "format")? != 1
         || !(1..=7_776_000).contains(&duration)
-        || !(0..=259_200).contains(&grace)
+        || !(0..=i128::from(crate::player_wait::MAX_LICENCE_GRACE_SECONDS)).contains(&grace)
         || signed(v, "issued_at")? >= signed(v, "grace_end")?
     {
         return Err(refused("resale term window"));

@@ -420,3 +420,20 @@ fn term_codec_rechecks_invariants_and_rejects_unknown_missing_duplicate_fields()
     check!(serde_json::from_value::<TermWindow>(absent).is_err());
     Ok(())
 }
+
+/// Owner rule, 2026-11-04: a licence's Grace waits on an absent holder's renewal, so a term
+/// window carries up to 28 IC days of it, and a second more refuses.
+#[test]
+fn a_term_window_carries_28_ic_days_of_grace() -> TestResult {
+    const DAY: i64 = 86_400;
+    let end = 1_000 + 90 * DAY;
+    let window = TermWindow::new(at(1_000)?, at(1_000)?, at(end)?, at(end + 28 * DAY)?)?;
+    let over = TermWindow::new(at(1_000)?, at(1_000)?, at(end)?, at(end + 28 * DAY + 1)?);
+    if MAX_GRACE_SECONDS != 28 * DAY
+        || window.term_seconds() != 90 * DAY
+        || over != Err(ValueError::Term)
+    {
+        return Err(format!("grace bound {MAX_GRACE_SECONDS}; {over:?}").into());
+    }
+    Ok(())
+}

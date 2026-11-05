@@ -3680,7 +3680,7 @@ fn accept_commission(
     assert_eq!(accepted.pilot, pilot);
     assert_eq!(accepted.covered(), 0);
     assert_eq!(accepted.reward_minor, 50_000);
-    assert_eq!(accepted.deadline_ic - accepted.accepted_ic, 7 * 86_400);
+    assert_eq!(accepted.deadline_ic - accepted.accepted_ic, 28 * 86_400);
     assert_eq!(
         survey_contract(&rig.tw, accepted.contract),
         mush_economy::ContractState::Offered,

@@ -772,6 +772,14 @@ fn finish(
             crate::surface::black_box::BlackBoxLine::sortie_closed(key.unit, open, at.at, kind)
                 .with_detachment(link(&op, &flight)),
         ));
+    } else if flight.phase == Phase::Returning
+        && crate::field::boarding::carrier_lost(world, &flight.site, flight.carrier)
+    {
+        // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04): a return
+        // counts only once the unit is aboard. Its carrier lost before then, the flight is back
+        // on the site, and the field host takes the unit back in (`crate::field::boarding`).
+        next.phase = Phase::Field;
+        next.returner = None;
     } else {
         return Err("Physical departure or return is not confirmed.".into());
     }

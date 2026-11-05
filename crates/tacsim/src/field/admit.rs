@@ -45,6 +45,11 @@ pub(crate) struct OwedClose {
     /// closing its hull's epoch destroyed. Absent from a close written before the cut.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remains: Vec<crate::surface::site_record::LeftRemains>,
+    /// **The minds it carries to their epoch records** (doc 23 cut D-23-18): every licensed hull
+    /// the demotion checked in, and every one checked in at the ramp whose `exit` had not yet
+    /// laid it down. Absent from a close written before the cut.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub minds: Vec<super::record::CarriedRow>,
 }
 
 /// The owed closes, by site (module state beside [`FieldBook`]).
@@ -203,9 +208,9 @@ pub(crate) fn owe_close(
     let Some(actor) = promoter(&open.by) else {
         return;
     };
-    let (units, remains) = left.map_or_else(
-        || (record.units.clone(), Vec::new()),
-        |demoted| (demoted.left, demoted.remains),
+    let (units, remains, minds) = left.map_or_else(
+        || (record.units.clone(), Vec::new(), Vec::new()),
+        |demoted| (demoted.left, demoted.remains, demoted.minds),
     );
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.closing.insert(site.clone());
@@ -216,6 +221,7 @@ pub(crate) fn owe_close(
         units,
         known,
         remains,
+        minds,
     };
     // Doc 32 §15 (the review's CF-1): durable in this batch, beside the check-ins, before the
     // K3 write that cannot share its turn.
@@ -446,6 +452,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         owed_exits: Vec::new(),
         held: held_walls,
         tally: Vec::new(),
+        carried: Vec::new(),
     };
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(

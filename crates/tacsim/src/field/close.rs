@@ -42,6 +42,9 @@ pub(crate) struct Demoted {
     pub left: Vec<LeftUnit>,
     /// The remains the close drops, each closing its hull's epoch destroyed.
     pub remains: Vec<LeftRemains>,
+    /// **The minds checked in** (doc 23 cut D-23-18): one row per licensed hull checked in on an
+    /// open epoch, owed to its rig record by the field's next write on the site.
+    pub minds: Vec<super::record::CarriedRow>,
 }
 
 /// **The units the last snapshot holds**, as returns (the void rule), when it decodes on the
@@ -109,7 +112,7 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .and_then(|book| book.hosted(&site))
         .map(|hosted| hosted.live.units.iter().map(|row| row.unit).collect())
         .unwrap_or_default();
-    let demoted = demote_units(ctx, &site, &unit_ids, &returns);
+    let mut demoted = demote_units(ctx, &site, &unit_ids, &returns);
     // Doc 36 cut GC.10 (Q-36-11): the standing the field's fire moved, and the leaders' void of
     // friendly fire, read while the host still holds the parties.
     super::standing::at_demotion(ctx, &site, void);
@@ -176,7 +179,12 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
             book.forget_snapshot(&site);
             book.live.remove(&site)
         })
-        .map(|hosted| hosted.live.field.ordinal);
+        .map(|hosted| {
+            // Doc 23 cut D-23-18: a mind checked in at the ramp whose `exit` has not yet laid it
+            // on its epoch record rides the close instead.
+            carry_unwritten(&mut demoted.minds, hosted.live.carried);
+            hosted.live.field.ordinal
+        });
     super::record::delete(ctx, &site);
     if let Some(record) = site_record(ctx, &site) {
         super::admit::owe_close(ctx, &site, &record, Some(demoted), learned);
@@ -256,6 +264,7 @@ pub(crate) fn demote_units(
         .unwrap_or_default();
     let mut left = Vec::new();
     let mut remains = Vec::new();
+    let mut minds = Vec::new();
     for unit in units {
         let back = returns.iter().find(|ret| ret.unit == *unit);
         let before = mush_tactics::module::unit_of(ctx.w, *unit).cloned();
@@ -285,6 +294,10 @@ pub(crate) fn demote_units(
         if let Err(error) = applied {
             tracing::error!(unit = unit.0, %error, "tacsim: a field unit's check-in refused; its marker is cleared and its cells stand");
             mush_sim::deployed::clear(ctx.w, *unit);
+        }
+        // Doc 23 cut D-23-18: a licensed hull's mind, carried on its epoch's record.
+        if let Some(row) = back.and_then(|back| carried_row(ctx, back)) {
+            minds.push(row);
         }
         // CF.3: a carrier never moved; its surface placement stands, and the record keeps the
         // pad pose it was fought at.
@@ -372,7 +385,45 @@ pub(crate) fn demote_units(
     crate::surface::tow::set_down(ctx, site, units, &mut left, side);
     // Doc 36a lane 3 (P0-8): a hull the field never held keeps the row an earlier field gave it.
     keep_held_out(ctx, site, units, &mut left, &remains, side);
-    Demoted { left, remains }
+    Demoted {
+        left,
+        remains,
+        minds,
+    }
+}
+
+/// **The mind a check-in carries for `back`** (doc 23 cut D-23-18, §17.7): a hull whose claim
+/// the book holds active, on an open epoch, with a mind row that fits its class cap — the row
+/// as the arena returned it, keyed by the rig record's own epoch. Anything else carries nothing:
+/// a stock mind remembers nothing between fields.
+fn carried_row(ctx: &Ctx<'_>, back: &UnitReturn) -> Option<super::record::CarriedRow> {
+    let mind = back.mind.as_deref()?;
+    if !matches!(
+        crate::minds::ic_sortie::claim_of(ctx.w, back.unit),
+        crate::minds::ic_sortie::ClaimRead::Active { .. }
+    ) {
+        return None;
+    }
+    let epoch = super::parties::rig_record(ctx, back.unit)?.sortie?.id;
+    Some(super::record::CarriedRow {
+        unit: back.unit,
+        epoch,
+        mind: mind.clone(),
+    })
+}
+
+/// **Fold `unwritten` into `minds`** (doc 23 cut D-23-18): the ramp's check-ins still owed,
+/// each kept unless the demotion checked the same hull in again (it never does: a hull out at
+/// the ramp is no unit of the field).
+pub(crate) fn carry_unwritten(
+    minds: &mut Vec<super::record::CarriedRow>,
+    unwritten: Vec<super::record::CarriedRow>,
+) {
+    for row in unwritten {
+        if !minds.iter().any(|kept| kept.unit == row.unit) {
+            minds.push(row);
+        }
+    }
 }
 
 /// **The rows of hulls that were never in the field** (doc 36a lane 3, P0-8): a hull held out of

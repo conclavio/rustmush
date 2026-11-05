@@ -36,11 +36,18 @@ use crate::ids::{FormationId, OperationId};
 /// The largest participant roster one operation may carry (10b §7).
 pub const MAX_OPERATION_PARTICIPANTS: usize = 128;
 /// The minimum notice a declared operation must give its eligible defenders
-/// (10b §7, S5A): 24 hours of IC time.
-pub const OPERATION_NOTICE_MIN: i64 = 24 * 3_600;
-/// The maximum notice (10b §7, S5A): 72 hours. Past it the "declaration" stops
-/// being a window anyone can plan around.
-pub const OPERATION_NOTICE_MAX: i64 = 72 * 3_600;
+/// (10b §7, S5A): **28 IC days** (24 hours until the owner's rule of 2026-11-04 that
+/// a timer waiting on an absent player's response allows at least 28 IC days).
+///
+/// **A stopgap**: a defender who must be online to defend needs the notice to reach
+/// them. The real answer is async attack and defence — standing orders and stances a
+/// defender sets ahead, which the operation meets without them — a separate design
+/// owed; this window stands until it lands.
+pub const OPERATION_NOTICE_MIN: i64 = 28 * 24 * 3_600;
+/// The maximum notice (10b §7, S5A): **84 IC days**, three times the minimum as
+/// 72 hours was to 24. Past it the "declaration" stops being a window anyone can
+/// plan around. The same stopgap as [`OPERATION_NOTICE_MIN`].
+pub const OPERATION_NOTICE_MAX: i64 = 84 * 24 * 3_600;
 /// The largest legal-target class list one operation may declare.
 pub const MAX_LEGAL_TARGETS: usize = 16;
 /// The largest stakes list one operation may declare. Deliberately equal to

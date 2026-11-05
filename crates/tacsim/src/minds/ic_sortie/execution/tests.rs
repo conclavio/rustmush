@@ -242,6 +242,7 @@ fn box_open_line(
         abandoned_ic: None,
         unrecorded: false,
         seal: Some(facts),
+        mind: None,
     };
     Ok(crate::surface::black_box::BlackBoxLine::mind_sealed(
         &opened,

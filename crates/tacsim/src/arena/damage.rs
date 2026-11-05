@@ -332,6 +332,11 @@ pub struct UnitReturn {
     pub wreck: bool,
     /// It has no weapons and cannot move (doc 16 §3.8).
     pub disabled: bool,
+    /// **Its mind as the check-in carries it** (doc 23 cut D-23-18): the memory, the next
+    /// `think_seq` and the drop cause off its row ([`Arena::carried_mind`]), or `None` for a
+    /// hull with no mind row. An IC field writes it onto the hull's epoch record; an OOC
+    /// match's result reads none of it. Boxed: a return rides the egress whole.
+    pub mind: Option<Box<crate::arena::mind::CarriedMind>>,
 }
 
 /// What one impact did to one section, for the `hit` line and for the caller.
@@ -1910,6 +1915,7 @@ impl Arena {
                     hits: state.hits,
                     wreck: state.limits.wreck,
                     disabled: state.disabled,
+                    mind: self.carried_mind(state.id).map(Box::new),
                 }
             })
             .collect()
