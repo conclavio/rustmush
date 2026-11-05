@@ -465,6 +465,47 @@ captured one.
   variance, not this cut: the shard's summed minutes go 49.9 → 67.4, and 3.45 of that is CR.4's.
 - shard_8's wall was 21.0 min on that run. The run's slowest cell was shard_1 at 23.9 min, which this
   cut does not touch.
+## CR.5 — beds as a limit
+
+Q-42-17 and Q-42-18. A medical room's beds limit the faster rate, never treatment itself. Q-42-18's
+numbers stand: one IC day injured, three incapacitated, half at a medical room.
+
+**The beds** (`port/medical.rs`). `medical_beds(w, port)` sums the slots of every facility holding the
+`medical` capability in the port. Those slots are the authored beds: two at Ceres, four at Stickney.
+
+**The treatment** (`field/crew.rs`).
+- **Beginning** (GC.13's `treat`):
+  - while the port has a bed free, a treatment begins at the medical rate, as before;
+  - with every bed taken, it begins at the port's full time, told `TREATMENT_WAITING`.
+  - A bed is taken while a treatment is under way at that port at the medical rate (`beds_taken`).
+- **The beds pass** (`beds_pass`, on the crew tick after `treat`). At each port with beds free, the
+  earliest treatments waiting at the full time take them:
+  - in `started_ic` order, then by character (`bed_takers`);
+  - the time left is rescaled to the medical rate (`rescaled_due`);
+  - each is told `BED_FREED`.
+- A bed is never taken from anyone.
+- `+sortie/condition` adds "waiting for a bed" to a treatment at the full time at a port with a medical
+  room.
+
+**Gate.**
+- `shard_8 crew_custody::cr5_a_third_casualty_waits_for_a_bed_at_ceres`, through
+  `custody_rig::beds_at_ceres`:
+  - three injured characters stand in Ceres's arrivals hall, their crew records read back at a boot
+    (`driving_rig::reboot_seeding`);
+  - two take the beds and the third waits, which the status line names;
+  - once the first two are due, the third takes a freed bed, finishes sooner than the full time, and is
+    fit again.
+- GC.13's gates (`shard_1 crew_treatment`) are unchanged and pass.
+- In-source: `cr5_the_earliest_waiters_take_the_free_beds`.
+
+**Divergence from §7's row.** The third casualty's record is seeded as a stored document, not brought
+home by a field. Three extractions to Ceres would add three fields' worth of run time to a cell, for a
+rule that reads only the records and the port.
+
+**Cell delta (rule #14).** From the JUnit `<testcase time>` sums of PR #447's run 41897737833
+(shard_8): the one CR.5 story is 13.4 s, so +0.22 summed minutes to `crew_custody::` (9.73 in all
+on that run, with CR.4's four stories). shard_8's wall was 14.7 min. The run's slowest cell was
+shard_1 at 22.7 min, which this cut does not touch.
 
 ## CR.6 — the space seam
 

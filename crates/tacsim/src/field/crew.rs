@@ -97,6 +97,11 @@ pub const TREATMENT_LEFT: &str =
     "You have left the port before your treatment was done; it starts over at the next port.";
 /// [`TREATMENT_BEGUN`]'s `{room}` at a port with a medical room.
 pub const MEDICAL_ROOM: &str = "'s medical room";
+/// **Doc 42 cut CR.5** (Q-42-17): treatment begun with every medical bed taken: `{port}`, `{h}`.
+pub const TREATMENT_WAITING: &str = "You are under treatment at {port}: every bed in its medical room is taken, so it is the full time, fit again in about {h} IC h, unless a bed frees first.";
+/// **Doc 42 cut CR.5**: a bed freed for a waiting character: `{port}`, `{h}`.
+pub const BED_FREED: &str =
+    "A bed frees in {port}'s medical room: you are fit again in about {h} IC h.";
 /// An extraction already on its way: `{port}`, `{h}`.
 pub const ALREADY_COMING: &str =
     "Your extraction to {port} is already on its way, about {h} IC h out.";
@@ -681,6 +686,14 @@ fn home(c: &crate::field_ops::FieldUnitAssessment) -> bool {
             crate::field_ops::OperationalState::Wreck
                 | crate::field_ops::OperationalState::Irrecoverable
         )
+}
+
+/// **Every crew record the world holds**, in character order (doc 42 cut CR.6's space seam reads
+/// it to find a derelict's crew); empty when the book is not registered.
+pub(crate) fn records(w: &World) -> impl Iterator<Item = &CrewRecord> {
+    w.module_state::<CrewBook>()
+        .into_iter()
+        .flat_map(|book| book.0.values())
 }
 
 /// **Who is seated in `unit`**, if anyone (a reader for the gates).
@@ -1666,15 +1679,13 @@ fn flight_on_site(ctx: &Ctx<'_>, site: &CanonicalId, friend: &dyn Fn(ObjId) -> b
 /// Draft 0.3 42-5): a forced extraction whose draw named it. A raider's lift waits on it.
 #[must_use]
 pub(crate) fn capture_pending(w: &World, carrier: ObjId) -> bool {
-    w.module_state::<CrewBook>().is_some_and(|book| {
-        book.0.values().any(|record| {
-            record.extraction.as_ref().is_some_and(|coming| {
-                coming.forced
-                    && coming
-                        .capture
-                        .as_ref()
-                        .is_some_and(|capture| capture.carrier == carrier)
-            })
+    records(w).any(|record| {
+        record.extraction.as_ref().is_some_and(|coming| {
+            coming.forced
+                && coming
+                    .capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.carrier == carrier)
         })
     })
 }
@@ -1791,6 +1802,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     // Doc 42 cut CR.2: the handover's catch-up, the fee's retries and the releases due.
     custody_pass(ctx, now);
     treat(ctx, now);
+    beds_pass(ctx, now);
 }
 
 /// **IC seconds of treatment** for `condition` (doc 36 cut GC.13): the configured time, scaled
@@ -1871,12 +1883,18 @@ fn treat(ctx: &mut Ctx<'_>, now: i64) {
                 );
             }
             (Some(port), _) => {
-                let medical = crate::port::medical::has_medical_room(ctx.w, port);
+                // Doc 42 cut CR.5 (Q-42-17): the faster rate only while a bed is free.
+                let beds = crate::port::medical::medical_beds(ctx.w, port);
+                let waiting = beds > 0 && beds_taken(ctx.w, port.id) >= beds;
+                let medical = beds > 0 && !waiting;
                 let span = treatment_s(&cfg, record.condition, medical);
-                let line = TREATMENT_BEGUN
-                    .replace("{port}", port.name)
-                    .replace("{room}", if medical { MEDICAL_ROOM } else { "" })
-                    .replace("{h}", &hours(span).to_string());
+                let line = if waiting {
+                    TREATMENT_WAITING.to_owned()
+                } else {
+                    TREATMENT_BEGUN.replace("{room}", if medical { MEDICAL_ROOM } else { "" })
+                }
+                .replace("{port}", port.name)
+                .replace("{h}", &hours(span).to_string());
                 put(
                     ctx,
                     CrewRecord {
@@ -1891,6 +1909,134 @@ fn treat(ctx: &mut Ctx<'_>, now: i64) {
                 );
                 ctx.out.sys_to_actor(who, "tacsim.field", line);
             }
+        }
+    }
+}
+
+/// **The medical beds taken at the port `port`** (doc 42 cut CR.5): treatments there at the
+/// medical rate.
+fn beds_taken(w: &World, port: &str) -> u32 {
+    w.module_state::<CrewBook>().map_or(0, |book| {
+        let taken = book
+            .0
+            .values()
+            .filter(|record| {
+                record
+                    .treatment
+                    .as_ref()
+                    .is_some_and(|under| under.medical && under.port.as_str() == port)
+            })
+            .count();
+        u32::try_from(taken).unwrap_or(u32::MAX)
+    })
+}
+
+/// **The waiting treatments a freed bed takes** (doc 42 cut CR.5; Q-42-17): of `waiting`, each
+/// `(started_ic, character)` treated at the full time, the `free` earliest, by `started_ic` and
+/// then character.
+#[must_use]
+pub(crate) fn bed_takers(free: u32, mut waiting: Vec<(i64, ObjId)>) -> Vec<ObjId> {
+    waiting.sort_unstable();
+    waiting
+        .into_iter()
+        .take(usize::try_from(free).unwrap_or(usize::MAX))
+        .map(|(_, who)| who)
+        .collect()
+}
+
+/// **A treatment's due instant rescaled into a bed** (doc 42 cut CR.5): the time left at the full
+/// rate, `due - now`, scaled by `permille`.
+#[must_use]
+pub(crate) fn rescaled_due(now: i64, due: i64, permille: u32) -> i64 {
+    let left = due.saturating_sub(now).max(0);
+    now.saturating_add(left.saturating_mul(i64::from(permille)) / 1_000)
+}
+
+/// **The crew tick's beds pass** (doc 42 cut CR.5; Q-42-17): at every port with medical beds free,
+/// the earliest treatments waiting at the full time take them, their time left rescaled to the
+/// medical rate, each told. A bed is never taken from anyone.
+fn beds_pass(ctx: &mut Ctx<'_>, now: i64) {
+    let permille = super::config(ctx.w).treat_medical_permille;
+    let waiting: Vec<CrewRecord> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| {
+                    record.condition != CrewCondition::Fit
+                        && record
+                            .treatment
+                            .as_ref()
+                            .is_some_and(|under| !under.medical)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let ports: std::collections::BTreeSet<SmolStr> = waiting
+        .iter()
+        .filter_map(|record| record.treatment.as_ref().map(|under| under.port.clone()))
+        .collect();
+    for id in ports {
+        let Some(port) = crate::ic_return::PORTS
+            .iter()
+            .find(|known| known.id == id.as_str())
+        else {
+            continue;
+        };
+        let beds = crate::port::medical::medical_beds(ctx.w, port);
+        let free = beds.saturating_sub(beds_taken(ctx.w, port.id));
+        if free == 0 {
+            continue;
+        }
+        let here: Vec<&CrewRecord> = waiting
+            .iter()
+            .filter(|record| {
+                record
+                    .treatment
+                    .as_ref()
+                    .is_some_and(|under| under.port == id)
+            })
+            .collect();
+        let takers = bed_takers(
+            free,
+            here.iter()
+                .filter_map(|record| {
+                    record
+                        .treatment
+                        .as_ref()
+                        .map(|under| (under.started_ic, record.character))
+                })
+                .collect(),
+        );
+        for record in here {
+            if !takers.contains(&record.character) {
+                continue;
+            }
+            let Some(under) = record.treatment.clone() else {
+                continue;
+            };
+            let due_ic = rescaled_due(now, under.due_ic, permille);
+            let who = record.character;
+            put(
+                ctx,
+                CrewRecord {
+                    treatment: Some(Treatment {
+                        due_ic,
+                        medical: true,
+                        ..under
+                    }),
+                    ..record.clone()
+                },
+            );
+            ctx.out.sys_to_actor(
+                who,
+                "tacsim.field",
+                BED_FREED
+                    .replace("{port}", port.name)
+                    .replace("{h}", &hours(due_ic - now).to_string()),
+            );
         }
     }
 }
@@ -1961,10 +2107,17 @@ pub fn status_line(ctx: &Ctx<'_>, who: ObjId) -> String {
         ));
     }
     if let Some(under) = &record.treatment {
+        // Doc 42 cut CR.5: at the full time where a medical room's beds are all taken.
+        let waiting = !under.medical
+            && crate::ic_return::PORTS
+                .iter()
+                .find(|known| known.id == under.port.as_str())
+                .is_some_and(|port| crate::port::medical::medical_beds(ctx.w, port) > 0);
         line.push_str(&format!(
-            "; under treatment at {}{}, fit again in about {} IC h",
+            "; under treatment at {}{}{}, fit again in about {} IC h",
             port_name(under.port.as_str()),
             if under.medical { MEDICAL_ROOM } else { "" },
+            if waiting { ", waiting for a bed" } else { "" },
             hours(under.due_ic - now)
         ));
     } else if record.condition != CrewCondition::Fit {
@@ -2810,6 +2963,23 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&exit).expect("encodes")).expect("decodes");
         assert_eq!(back, exit);
         assert_eq!(npc_exit_key(ObjId(55)).as_str(), "tacsim:crew_exit:55");
+    }
+    /// **Doc 42 cut CR.5 (Q-42-17): beds go to the earliest waiters, and the time left rescales.**
+    #[test]
+    fn cr5_the_earliest_waiters_take_the_free_beds() {
+        let waiting = vec![
+            (50, ObjId(9)),
+            (10, ObjId(7)),
+            (10, ObjId(3)),
+            (70, ObjId(1)),
+        ];
+        assert_eq!(bed_takers(2, waiting.clone()), vec![ObjId(3), ObjId(7)]);
+        assert_eq!(bed_takers(0, waiting.clone()), Vec::<ObjId>::new());
+        assert_eq!(bed_takers(9, waiting).len(), 4);
+        // Six IC hours left at the full time are three in a bed at 500 per mille.
+        assert_eq!(rescaled_due(1_000, 1_000 + 21_600, 500), 1_000 + 10_800);
+        // A treatment already due stays due now.
+        assert_eq!(rescaled_due(1_000, 900, 500), 1_000);
     }
 
     /// **Doc 42 cut CR.2** (Q-42-7): the release fee's inspection key is one per handover, and

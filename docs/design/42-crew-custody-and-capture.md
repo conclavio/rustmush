@@ -881,7 +881,7 @@ After CR.1 (both touch `crew.rs`). **Built** — see [42-cut-notes.md](42-cut-no
 
 **CR.5 — Beds as a limit.** Q-42-17, Q-42-18. `treat` counts the medical room's occupants
 against `beds`. Files: `field/crew.rs`, `port/medical.rs`. Gate: GC.13's gates plus a third
-casualty waiting for a bed at Ceres. After CR.4.
+casualty waiting for a bed at Ceres. After CR.4. **Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.5.
 
 **CR.6 — The space seam.** Q-42-24. The space track's cut, in its tree, after SF.R9–R16: crew
 records from the space check-in, the derelict's crew, the hard-dock capture, the ship's handover
