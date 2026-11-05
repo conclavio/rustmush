@@ -262,3 +262,95 @@ async fn in11_two_orders_for_one_bale_draw_it_once() {
         "the second draws the bale down: {opened:?} → {after:?}"
     );
 }
+
+/// **A part lot sells into a standing bid** (doc 39 cut IN.11, lane v30's light-plant bid at
+/// Stickney Yards): `+market/sell <bid>=1` hands the very lot over to the Yards' stores, pays
+/// the bid's price, and the census holds across the sale; a second `=2` is refused (one part a
+/// sale).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in11_a_light_plant_lot_sells_into_the_yards_bid() {
+    use crate::driving_rig::{
+        board, cid, drain, file_and_launch, hold_vault_of, land_all, land_quietly, load, port_map,
+        sweep, to_ic,
+    };
+    use crate::in1_accounting::two_titled_hulls;
+    const PLANT: &str = "tacsim.part.plant.light_mk1";
+    let mut rig = stocked();
+    let (pilot, row, _escort, _heavy) = two_titled_hulls(&mut rig);
+    let hull = mush_core::ObjId(row.hull);
+    let vault = hold_vault_of(&rig.tw, &row);
+    // One plant sails aboard (a part in the hold weighs in the plan and the burn alike).
+    crate::driving_rig::seed_lot(&mut rig, vault, PLANT, 1, mush_inventory::LotId(9_900));
+    load(&mut rig, &row, 60, 40, 9_500);
+    crate::in10_pools::settle(&mut rig, 2);
+    board(&mut rig, pilot);
+    let t = file_and_launch(&mut rig, pilot, hull, "+ship/undock stickney");
+    let _ = to_ic(&mut rig, t.plan.depart_ic + t.plan.total_s);
+    let _ = to_ic(&mut rig, t.plan.depart_ic + t.plan.total_s + 3_600);
+    crate::in10_pools::settle(&mut rig, 4);
+    // A second at Stickney (the seeds; made at the works in the bot's story).
+    crate::driving_rig::seed_lot(&mut rig, vault, PLANT, 1, mush_inventory::LotId(9_901));
+    crate::in10_pools::settle(&mut rig, 2);
+    let ashore = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(!ashore.contains("Usage"), "{ashore}");
+    let before = census(&mut rig);
+    let yards = port_map(&rig.tw, "stickney_port").vendors[&cid("stickney_yards")].clone();
+    let bid = yards.bids[&cid(PLANT)].listing;
+    let two = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=2"));
+    assert!(two.contains(tacsim_market_one_lot()), "{two}");
+    let out = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=1"));
+    assert!(out.contains("Sold "), "{out}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    for _ in 0..12 {
+        sweep(&mut rig.tw, 31);
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued);
+    }
+    let lots_at = |rig: &mut crate::driving_rig::Rig, v: u64| {
+        lots_of(&rig.tw, mush_economy::VaultId(v), PLANT)
+    };
+    assert_eq!(lots_at(&mut rig, vault.0), 1, "one plant left aboard");
+    assert_eq!(
+        lots_at(&mut rig, yards.vault),
+        1,
+        "the lot is in the Yards' stores"
+    );
+    let after = census(&mut rig);
+    assert_eq!(
+        before["balance"], after["balance"],
+        "a sale makes and loses nothing"
+    );
+}
+
+/// mush-market's one-lot refusal.
+fn tacsim_market_one_lot() -> &'static str {
+    mush_market::ONE_LOT_A_SALE
+}
+
+/// The lots of `good` at `vault`.
+fn lots_of(tw: &mush_testkit::TestWorld, vault: mush_economy::VaultId, good: &str) -> usize {
+    let inventory = tw
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .and_then(|h| h.inventory.clone())
+        .expect("the inventory families");
+    let endpoint = mush_inventory::record::EndpointRef(vault);
+    let state = tw.engine().action_state();
+    let mut n = 0;
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = state
+            .scan_family(&inventory.lots, cursor.as_deref(), 256)
+            .expect("the lots read");
+        n += page
+            .entries()
+            .iter()
+            .filter(|e| e.value().endpoint() == endpoint && e.value().commodity().as_str() == good)
+            .count();
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => return n,
+        }
+    }
+}

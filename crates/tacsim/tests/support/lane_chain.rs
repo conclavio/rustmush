@@ -45,8 +45,8 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
-/// **Doc 39 cut IN.11 (lane v30): Freeport Works' strategic ore taken out** — its stock row and
-/// its ask at Ceres, so a strip chain rebuilds a lane before v30 (idempotent). The chain's head.
+/// **Doc 39 cut IN.11 (lane v30): Freeport Works' strategic ore and the Yards' part bid taken
+/// out** — the stock row and the ask at Ceres and the light-plant bid at Stickney, so a strip chain rebuilds a lane before v30 (idempotent). The chain's head.
 /// The programme's strategic-ore reference goes back from that ask to its fixed 300.00cr.
 pub fn strip_strategic_ask(doc: &mut Value) {
     let Some(def) = doc
@@ -78,6 +78,22 @@ pub fn strip_strategic_ask(doc: &mut Value) {
         for rows in ["stock", "asks"] {
             if let Some(rows) = vendor.get_mut(rows).and_then(Value::as_array_mut) {
                 rows.retain(|row| row["good"] != "strategic_ore");
+            }
+        }
+    }
+    // The Yards' light-plant bid at Stickney.
+    if let Some(vendors) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("stickney_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+    {
+        for vendor in vendors {
+            if vendor.get("org").and_then(Value::as_str) == Some("stickney_yards")
+                && let Some(bids) = vendor.get_mut("bids").and_then(Value::as_array_mut)
+            {
+                bids.retain(|row| row["good"] != "tacsim.part.plant.light_mk1");
             }
         }
     }

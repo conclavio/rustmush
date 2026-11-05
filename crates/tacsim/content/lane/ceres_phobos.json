@@ -3,7 +3,7 @@
     "id": "tacsim.lane.ceres_phobos",
     "version": 30,
     "kind": "campaign_seed",
-    "digest": "fbc5c56f915ca8bc0cdfd8eee1b4e98687cfbaba286b1c449f32bbd930baee80",
+    "digest": "7de1ec09b98406b7eb035d88e18f33d30f9e3dd5319f6afca4b2c5ef980955dc",
     "requires": []
   },
   "entries": {
@@ -2898,7 +2898,8 @@
                        { "good": "ammo_ball_762", "price_major": 25, "boards": ["yard"] },
                        { "good": "ammo_he_105", "price_major": 150, "boards": ["yard"] },
                        { "good": "ammo_missile", "price_major": 1500, "boards": ["yard"] } ],
-            "bids":  [ { "good": "strategic_ore", "price_major": 700, "intake": 12, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 12 } } ] },
+            "bids":  [ { "good": "strategic_ore", "price_major": 700, "intake": 12, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 12 } },
+                       { "good": "tacsim.part.plant.light_mk1", "price_major": 4000, "intake": 4, "boards": ["yard"] } ] },
           { "org": "yard_commissary", "storefront": "neighborhood.stickney_yards.item.commissary_locker",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.okonkwo",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],

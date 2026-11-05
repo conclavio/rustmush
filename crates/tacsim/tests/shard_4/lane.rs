@@ -74,7 +74,7 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 39 cut IN.7: v26, Stickney Yards' strategic-ore bid and the seeded part rows retired (was
 /// `0d07927c…` at v24, IN.9's v25 between).
 /// Doc 39 cut IN.9: v27, Stickney Yards' yard (was `cea6221c…` at v26).
-const LANE_DIGEST: &str = "fbc5c56f915ca8bc0cdfd8eee1b4e98687cfbaba286b1c449f32bbd930baee80";
+const LANE_DIGEST: &str = "7de1ec09b98406b7eb035d88e18f33d30f9e3dd5319f6afca4b2c5ef980955dc";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";

@@ -1804,6 +1804,10 @@ fn held_for_sale(
     source: mush_inventory::EndpointRef,
     commodity: &mush_core::CanonicalId,
 ) -> Result<u64, MarketError> {
+    // Doc 39 cut IN.11: an indivisible good is held as its free lots, never as a pool.
+    if crate::module::lot_supply(ctx.w).is_some_and(|f| f.is_indivisible(commodity)) {
+        return Ok(u64::try_from(sale_lots(ctx, actor, source, commodity).len()).unwrap_or(0));
+    }
     let Ok(pool) = crate::lot::pool_available(ctx, source, commodity) else {
         return Err(MarketError::bad(SOURCE_UNREADABLE));
     };
@@ -1826,6 +1830,63 @@ fn held_for_sale(
         .filter(|q| delivery_pending(ctx, q))
         .fold(0_u64, |sum, q| sum.saturating_add(q.quantity));
     Ok(pool.saturating_sub(in_flight))
+}
+
+/// **A sale of an indivisible good names one lot** (doc 39 cut IN.11).
+pub const ONE_LOT_A_SALE: &str = "A part sells one at a time: sell 1.";
+
+/// The page a lot scan reads at a time, and the pages it reads at most.
+const LOT_PAGE: usize = 256;
+const MAX_LOT_PAGES: usize = 64;
+
+/// **The lots of an indivisible `commodity` at `source` free to sell** (doc 39 cut IN.11): held
+/// by no lot hold (a listing, an order) and named by none of the seller's sales still in
+/// flight, in lot order.
+fn sale_lots(
+    ctx: &Ctx<'_>,
+    actor: ObjId,
+    source: mush_inventory::EndpointRef,
+    commodity: &mush_core::CanonicalId,
+) -> Vec<mush_inventory::LotId> {
+    let Some(families) = crate::module::lot_supply(ctx.w) else {
+        return Vec::new();
+    };
+    let seller = PrincipalId::Object(actor);
+    let flying: std::collections::BTreeSet<mush_inventory::LotId> = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| {
+            s.quotes_of_seller(&seller)
+                .filter(|q| delivery_pending(ctx, q))
+                .filter_map(|q| q.lot.as_ref().and_then(|l| l.lot))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_LOT_PAGES {
+        let Ok(page) = ctx.scan_action_state(&families.lots, cursor.as_deref(), LOT_PAGE) else {
+            break;
+        };
+        for entry in page.entries() {
+            let lot = entry.value();
+            if lot.endpoint() == source
+                && lot.commodity() == commodity
+                && !flying.contains(&lot.id())
+                && ctx
+                    .action_state(&families.lot_holds, &lot.id())
+                    .is_ok_and(|hold| hold.is_none())
+            {
+                out.push(lot.id());
+            }
+        }
+        match page.next_after() {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+    }
+    out.sort();
+    out
 }
 
 /// What a sale into a standing bid could take now (doc 20 cut SM.5, §7.2): read-only.
@@ -2099,6 +2160,21 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
                 .replace("{qty}", &quantity.to_string()),
         ));
     }
+    // Doc 39 cut IN.11: an indivisible good sells one lot a sale, the lot itself handed over.
+    let sold_lot = if crate::module::lot_supply(ctx.w).is_some_and(|f| f.is_indivisible(&commodity))
+    {
+        if quantity != 1 {
+            return Err(MarketError::bad(ONE_LOT_A_SALE));
+        }
+        Some(
+            sale_lots(ctx, actor, source, &commodity)
+                .first()
+                .copied()
+                .ok_or_else(|| MarketError::bad(SOURCE_UNREADABLE))?,
+        )
+    } else {
+        None
+    };
     // 12. The seller's account, in the house's instrument.
     let Some(instrument) = crate::api::account_instrument(ctx, vendor.account) else {
         return Err(MarketError::bad(UNSETTLEABLE));
@@ -2251,7 +2327,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         accepted_at,
         draw_by: Some(cutoff),
         marker: Some(marker),
-        lot: None,
+        lot: sold_lot,
     };
     let mut q = Quote {
         id: quote,
