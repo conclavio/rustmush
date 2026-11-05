@@ -239,12 +239,23 @@ pub fn commissions(w: &World) -> Vec<YardCommission> {
         .unwrap_or_default()
 }
 
-/// **The next pool index for a fresh mark**: one past every commission's, so a mark is never
-/// re-issued (L12).
+/// **The first pool index of a recovery house's seeded hulls** (doc 41 cut RS.6a): far past any
+/// yard order's, so a house hull never takes a built ship's mooring row on the port's domain.
+pub const HOUSE_POOL_BASE: u32 = 64;
+
+/// **The next pool index for a fresh mark**: one past every yard order's commission (a recovery
+/// house's seeds, [`HOUSE_POOL_BASE`] and up with marks of their own, are not counted), so a mark
+/// is never re-issued (L12).
 #[must_use]
 pub fn next_mark(w: &World) -> (u32, String) {
     let n = w.module_state::<TacsimStore>().map_or(0, |store| {
-        u32::try_from(store.yard.commissions.len()).unwrap_or(u32::MAX)
+        let ours = store
+            .yard
+            .commissions
+            .values()
+            .filter(|held| !matches!(held, Held::Present(record) if record.n >= HOUSE_POOL_BASE))
+            .count();
+        u32::try_from(ours).unwrap_or(u32::MAX)
     });
     (n, registry_mark(BUILT_PREFIX, n))
 }

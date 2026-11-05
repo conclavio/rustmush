@@ -206,8 +206,8 @@ async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
 }
 
 /// **A carrier is not towed yet** (FO-13; doc 36 cut GC.3, Q-36-8): every shipped carrier is
-/// past twice the tonnage of every shipped mobile design, and the named gate wants a tug of at
-/// least half the carrier's.
+/// past twice the tonnage of every shipped mobile design but Tycho's crawler (doc 41 cut RS.6a,
+/// built to take a Dray wreck), and the named gate wants a tug of at least half the carrier's.
 #[test]
 fn every_carrier_is_past_twice_any_tugs_tonnage() {
     let mut rig = stocked_tuned(|_| {});
@@ -235,6 +235,17 @@ fn every_carrier_is_past_twice_any_tugs_tonnage() {
                 continue;
             }
             let light = tacsim::field_ops::dry_mass_kg_for_spec(tug);
+            // Doc 41 cut RS.6a (Q-41-15, Q-41-29): Tycho's crawler is the one tug built to take a
+            // carrier wreck — half a Dray's tonnage and more — and it does.
+            if id.as_str() == tacsim::definitions::content::TYCHO_CRAWLER {
+                if carrier != "tacsim.unit.halcyon" {
+                    assert!(
+                        tacsim::field_ops::tow_mass_ratio_permille(light, heavy).is_ok(),
+                        "the crawler ({light} kg) tows {carrier} ({heavy} kg)"
+                    );
+                }
+                continue;
+            }
             assert!(
                 tacsim::field_ops::tow_mass_ratio_permille(light, heavy).is_err(),
                 "{id} ({light} kg) could tow {carrier} ({heavy} kg)"
