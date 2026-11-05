@@ -830,6 +830,49 @@ pub(crate) fn seed_lot(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot:
     seed_steps(rig, vault, good, qty, lot, 1);
 }
 
+/// **One part lot with its provenance** (the seed): [`seed_lot`]'s single part, and the bay's
+/// provenance row a real lot always carries (Q-39-13) — a seeded origin of `condition` and
+/// `legality`. `+yard/deliver` takes only a lot whose provenance reads (doc 38a/b F-07).
+pub(crate) fn seed_part(
+    rig: &mut Rig,
+    vault: VaultId,
+    good: &str,
+    lot: LotId,
+    condition: mush_tactics::field_ops::ComponentCondition,
+    legality: mush_tactics::field_ops::ProvenanceLegalityStatus,
+) {
+    seed_lot(rig, vault, good, 1, lot);
+    let definition = store(&rig.tw)
+        .definitions()
+        .parts
+        .values()
+        .find(|row| row.commodity.as_str() == good)
+        .map(|row| row.row.clone())
+        .unwrap_or_else(|| panic!("{good} is a part row"));
+    let parts = rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::bay_work::act::BayActHandles>()
+        .expect("the bay's handles")
+        .parts
+        .clone();
+    seed_typed(
+        rig,
+        &parts,
+        &lot,
+        tacsim::port::bay_work::act::PartProvenance {
+            lot,
+            definition,
+            condition,
+            legality,
+            fitted_into: None,
+            origin: tacsim::port::bay_work::act::PartOrigin::Seeded {
+                receipt: format!("test/{}", lot.0),
+            },
+        },
+    );
+}
+
 /// [`seed_pool`]'s two steps — the origin mint, then its dissolve — the first `steps` of them.
 pub(crate) fn seed_steps(
     rig: &mut Rig,

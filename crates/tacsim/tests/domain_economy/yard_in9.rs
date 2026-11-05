@@ -36,12 +36,13 @@ use mush_core::{GOD, ObjId};
 use mush_economy::VaultId;
 use mush_inventory::LotId;
 use mush_org::PrincipalId;
+use mush_tactics::field_ops::{ComponentCondition, ProvenanceLegalityStatus};
 use tacsim::port::commission::{Step, YardCommission};
 use tacsim::port::works::{Close, WorksContract, WorksState};
 
 use crate::driving_rig::{
-    Rig, cid, hold_pool, ic_now, pilot, port_map, run, seed_lot, seed_pool, station_room, stocked,
-    store, teleport,
+    Rig, cid, hold_pool, ic_now, pilot, port_map, run, seed_lot, seed_part, seed_pool,
+    station_room, stocked, store, teleport,
 };
 
 const STICKNEY: &str = "stickney_port";
@@ -307,6 +308,12 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
         Some(dray),
         "the register gives the captain her helm"
     );
+    // Doc 38a/b F-06: and her title holder commands her (a register hull is no programme row).
+    assert_eq!(
+        tacsim::port::coop::helm_holder(rig.tw.world(), dray),
+        Some(captain),
+        "the owner commands the yard-built hull"
+    );
     assert_eq!(contract(&rig, dray_order).closed, Some(Close::Collected));
     let hold = VaultId(built.hold.expect("the Dray-P's hold"));
 
@@ -328,7 +335,14 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
         "tacsim.part.plant.vehicle_mk1",
     ];
     for (i, part) in parts.iter().enumerate() {
-        seed_lot(&mut rig, hold, part, 1, LotId(9_720 + i as u64));
+        seed_part(
+            &mut rig,
+            hold,
+            part,
+            LotId(9_720 + i as u64),
+            ComponentCondition::Intact,
+            ProvenanceLegalityStatus::CleanTitle,
+        );
     }
     for (good, units) in [(ALLOYS, 3), (FITTINGS, 1)] {
         let out = typed_in(
@@ -899,4 +913,187 @@ async fn in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates() {
     assert!(out.contains("is stowed in the"), "{out}");
     let facility = tacsim::port::bay_work::facility_of(rig.tw.world(), scout_obj).expect("her bay");
     assert_eq!(facility.carrier, Some(dray));
+}
+
+// ---- the review fixes (docs 38a/38b, 2026-11-05) ----------------------------------------------
+
+/// The review's captain at the yard: enrolled, released, minted, on the Service Counter's floor.
+fn review_captain(rig: &mut Rig) -> ObjId {
+    free_captain(rig, "ReviewBuilder", 71)
+}
+
+/// **A yard order is one hull** (doc 38a #3) and **its quote names the parts** (doc 38b
+/// F-18(a)): `+yard/quote` and `+yard/order` refuse a quantity of two (one kit commissions one
+/// hull), and book nothing; the quote of one lists the design's four part lines.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_the_yard_takes_one_hull_an_order_and_quotes_her_parts() {
+    let mut rig = stocked();
+    let captain = review_captain(&mut rig);
+    let before = contracts(&rig).len();
+    let quote = run(&mut rig.tw, captain, "+yard/quote tv_escort 2");
+    assert!(
+        quote.contains(tacsim::port::works::YARD_ONE_HULL),
+        "{quote}"
+    );
+    let order = run(&mut rig.tw, captain, "+yard/order tv_escort 2");
+    assert!(
+        order.contains(tacsim::port::works::YARD_ONE_HULL),
+        "{order}"
+    );
+    settle(&mut rig, 2);
+    assert_eq!(contracts(&rig).len(), before, "nothing is booked");
+    let quote = run(&mut rig.tw, captain, "+yard/quote tv_escort");
+    for part in [
+        "1 tacsim.part.weapon.cannon_105",
+        "1 tacsim.part.weapon.mg_coax",
+        "1 tacsim.part.sensor.visual_mk1",
+        "1 tacsim.part.plant.vehicle_mk1",
+    ] {
+        assert!(quote.contains(part), "the quote lists {part}: {quote}");
+    }
+}
+
+/// **Deliver takes only clean, whole lots** (doc 38b F-07) and **a cancel returns them** (doc
+/// 38a #4): from the Dray-P's hold, a sight with no provenance and a damaged one are refused and
+/// stay (a hot lot is refused by the same filter; only a stripped part can be hot); the clean
+/// sight goes into the escrow; `+yard/cancel` hands that very lot back to the hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_the_yard_refuses_untraced_or_damaged_parts_and_a_cancel_returns_the_lot() {
+    let mut rig = stocked();
+    let captain = review_captain(&mut rig);
+    let dray = build(
+        &mut rig,
+        captain,
+        "dray_p",
+        (163, 55),
+        &["tacsim.part.plant.hauler_mk1"],
+        98_000,
+    );
+    let hold = VaultId(dray.hold.expect("the Dray-P's hold"));
+    let order = booked(&mut rig, captain, "+yard/order tv_escort");
+    let good = "tacsim.part.sensor.visual_mk1";
+    let clean = ProvenanceLegalityStatus::CleanTitle;
+    let deliver = format!("+yard/deliver {order}={good} 1");
+    for (lot, damaged) in [(98_101, false), (98_102, true)] {
+        if damaged {
+            let condition = ComponentCondition::Damaged;
+            seed_part(&mut rig, hold, good, LotId(lot), condition, clean.clone());
+        } else {
+            // No provenance row: an untraced lot.
+            seed_lot(&mut rig, hold, good, 1, LotId(lot));
+        }
+        settle(&mut rig, 1);
+        let out = run(&mut rig.tw, captain, &deliver);
+        assert!(out.contains("fit to build with"), "{out}");
+        settle(&mut rig, 2);
+    }
+    let clean_lot = LotId(98_103);
+    seed_part(
+        &mut rig,
+        hold,
+        good,
+        clean_lot,
+        ComponentCondition::Intact,
+        clean,
+    );
+    settle(&mut rig, 1);
+    let out = typed_in(&mut rig, captain, &deliver, 2);
+    assert!(out.contains("moves into order"), "{out}");
+    let at = |rig: &mut Rig, lot: LotId| {
+        let inventory = rig
+            .tw
+            .world()
+            .module_state::<tacsim::port::bay_work::act::BayActHandles>()
+            .and_then(|h| h.inventory.clone())
+            .expect("inventory");
+        crate::driving_rig::typed(&mut rig.tw, &inventory.lots, &lot)
+            .expect("the lot")
+            .endpoint()
+    };
+    assert_eq!(
+        at(&mut rig, clean_lot),
+        mush_inventory::record::EndpointRef(VaultId(order))
+    );
+    for lot in [98_101, 98_102] {
+        assert_eq!(
+            at(&mut rig, LotId(lot)),
+            mush_inventory::record::EndpointRef(hold),
+            "a refused lot stays in the hold"
+        );
+    }
+    let _ = typed_in(&mut rig, captain, &format!("+yard/cancel {order}"), 4);
+    assert_eq!(contract(&rig, order).closed, Some(Close::Cancelled));
+    assert_eq!(
+        at(&mut rig, clean_lot),
+        mush_inventory::record::EndpointRef(hold),
+        "the cancel hands back the very lot: {:?}",
+        contract(&rig, order)
+    );
+}
+
+/// **An unpaid storage seizure takes the kit** (doc 38b F-17): an escort built and left
+/// uncollected, the captain's account emptied by a staff hand (the seed), and 28 IC days of grace
+/// past: the yard takes the goods, the kit lot among them, and the contract closes `Seized`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_an_unpaid_storage_seizure_takes_the_hull_kit() {
+    let mut rig = stocked();
+    let captain = review_captain(&mut rig);
+    let order = booked(&mut rig, captain, "+yard/order tv_escort");
+    let escrow = VaultId(order);
+    seed_pool(&mut rig, escrow, ALLOYS, 3, LotId(98_200));
+    seed_pool(&mut rig, escrow, FITTINGS, 1, LotId(98_201));
+    for (i, part) in [
+        "tacsim.part.weapon.cannon_105",
+        "tacsim.part.weapon.mg_coax",
+        "tacsim.part.sensor.visual_mk1",
+        "tacsim.part.plant.vehicle_mk1",
+    ]
+    .iter()
+    .enumerate()
+    {
+        seed_part(
+            &mut rig,
+            escrow,
+            part,
+            LotId(98_202 + i as u64),
+            ComponentCondition::Intact,
+            ProvenanceLegalityStatus::CleanTitle,
+        );
+    }
+    settle(&mut rig, 2);
+    days_on(&mut rig, 3);
+    assert!(
+        contract(&rig, order).delivered_ic.is_some(),
+        "the kit stands in the escrow: {:?}",
+        contract(&rig, order)
+    );
+    // The staff hand: the captain's whole balance to the treasury.
+    let account = tacsim::port::credit::own_account(rig.tw.world(), captain).expect("an account");
+    let spend = account.posted_balance.minor() - account.held_amount.minor();
+    let from = account.id.0;
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let paid = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay #{from}=#{treasury} {spend}"),
+    );
+    let account = tacsim::port::credit::own_account(rig.tw.world(), captain).expect("an account");
+    assert_eq!(
+        account.posted_balance.minor() - account.held_amount.minor(),
+        0,
+        "the account is empty: {paid}"
+    );
+    days_on(&mut rig, 30);
+    let mut refusals = Vec::new();
+    for _ in 0..6 {
+        refusals.extend(fire_all(&mut rig));
+    }
+    assert_eq!(
+        contract(&rig, order).closed,
+        Some(Close::Seized),
+        "the seizure lands: {refusals:?}; {:?}",
+        contract(&rig, order)
+    );
 }

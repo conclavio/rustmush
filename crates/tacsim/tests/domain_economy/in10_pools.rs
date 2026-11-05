@@ -449,20 +449,50 @@ in11 census after {after:?}"
     // ---- (5) The desk enrols the ninth captain ----
     // The Trust's raise comes in (the hold-back given back).
     hold(&mut rig, false);
+    // The desk lends the lowest free hull: over these weeks the dormancy recall (seven real days on
+    // the rig's clock) may hand programme Drays back first. Filler captains take those (their stakes
+    // minted to the Trust), so the
+    // Trust's built Dray is the one the ninth captain sails.
+    for seat in 0.. {
+        let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+        let free = tacsim::port::coop::free_hulls(rig.tw.world(), &port);
+        if free.iter().all(|row| row.hull == hull.0) {
+            break;
+        }
+        assert!(seat < 8, "the recall hands back at most the eight");
+        // Staff fund the filler's stake (the seed), so the Trust's capital stays above its floor.
+        let trust = trust_account(&rig);
+        mint(&mut rig, trust, 100_000);
+        let filler = pilot(&mut rig, &format!("Filler{seat}"), 20 + seat);
+        let out = run(&mut rig.tw, filler, &format!("+coop/enrol Filler {seat}"));
+        assert!(out.contains("now the Filler"), "{out}");
+        settle(&mut rig, 1);
+    }
     let out = run(&mut rig.tw, ninth, &format!("+coop/enrol {}", NAMES[8]));
     assert!(out.contains(&format!("now the {}", NAMES[8])), "{out}");
-    // The desk lends the lowest free hull: over these weeks the dormancy recall (seven real days on
-    // the rig's clock) may hand a programme Dray back first, so the ninth captain sails one of
-    // the two, and the Trust's built Dray is chartered or still free in the pool.
+    // Doc 38a/b F-06: the built Dray is no programme row, and every charter reader still finds
+    // her — the charter, the helm, and the desk's `+coop` line.
     let chartered = tacsim::port::live_charter(rig.tw.world(), ninth)
         .map(|c| c.hull)
-        .expect("the ninth captain is chartered");
+        .expect("the ninth captain's charter reads");
+    assert_eq!(
+        chartered, hull,
+        "the ninth captain sails the Trust's built Dray"
+    );
+    assert_eq!(
+        tacsim::port::coop::helm_holder(rig.tw.world(), hull),
+        Some(ninth),
+        "the ninth captain holds her helm"
+    );
     let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+    assert_eq!(
+        tacsim::port::coop::check_hull_name(rig.tw.world(), &port, NAMES[8]),
+        Err(tacsim::port::coop::NAME_TAKEN),
+        "her name is taken"
+    );
+    let out = run(&mut rig.tw, ninth, "+coop");
     assert!(
-        chartered == hull
-            || tacsim::port::coop::free_hulls(rig.tw.world(), &port)
-                .iter()
-                .any(|row| row.hull == hull.0),
-        "the Trust's ninth Dray is the ninth captain's or still free"
+        out.contains(&format!("Your charter: the {}", NAMES[8])),
+        "{out}"
     );
 }
