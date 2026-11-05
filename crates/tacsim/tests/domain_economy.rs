@@ -39,6 +39,8 @@ mod vertex;
 mod claims;
 #[path = "domain_economy/commerce.rs"]
 mod commerce;
+#[path = "domain_economy/consent_rs10.rs"]
+mod consent_rs10;
 #[path = "domain_economy/coop.rs"]
 mod coop;
 #[path = "domain_economy/deposits.rs"]
@@ -55,10 +57,14 @@ mod e7r2;
 mod economy;
 #[path = "domain_economy/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
+#[path = "domain_economy/house_resale_rs6c2.rs"]
+mod house_resale_rs6c2;
 #[path = "domain_economy/house_sweep_rs6c.rs"]
 mod house_sweep_rs6c;
 #[path = "domain_economy/in10_pools.rs"]
 mod in10_pools;
+#[path = "domain_economy/in11_matter.rs"]
+mod in11_matter;
 #[path = "domain_economy/in1_accounting.rs"]
 mod in1_accounting;
 #[path = "domain_economy/in2_lifecycle.rs"]

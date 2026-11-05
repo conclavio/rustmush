@@ -54,6 +54,10 @@ pub const DEFAULT_ACTIVE_DOMAIN_LIMIT: u32 = 8;
 /// any wait on a player's response is at least 28 IC days): 48, which is 48 real hours at rate 24.
 pub const CLAIM_WINDOW_IC_DAYS: i64 = 48;
 
+/// **The shortest contest window a deployment may set**, IC days (doc 41 cut RS.10): the owner's
+/// 28-IC-day floor on any wait for a player's response.
+pub const MIN_CLAIM_WINDOW_IC_DAYS: i64 = 28;
+
 /// The default ground pulse period (10b §7's `GROUND_PULSE_MS`). Inert in cut 1.
 pub const DEFAULT_GROUND_PULSE_MS: u32 = 2_000;
 

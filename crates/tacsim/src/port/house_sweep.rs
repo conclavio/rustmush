@@ -3,9 +3,10 @@
 //!
 //! When the house holds no retrieval, its arm ([`crate::port::house_arm`]) sweeps: a wreck that has
 //! lain on a lane site's index for [`SWEEP_IC_DAYS`] with no salvage claim filed and no retrieval
-//! posted, on open ground or a Registry seed (`open_ground`: a player's claimed block is left
-//! alone until a later cut builds the registry-notice ask), is recovered by the house on its own
-//! account:
+//! posted, on open ground, a Registry seed, or (doc 41 cut RS.10) a player's claimed block whose
+//! landholder consented — asked by the registry's notice, consent by silence after 28 IC days, a
+//! refusal passing the block over for 28 IC days ([`target`]) — is recovered by the house on its
+//! own account:
 //!
 //! - **An ownerless wreck** (no title on the economy: a raid's hulls are made with none) is titled
 //!   to the house's dispatcher under the registry issuer before the tow, as salvage of the unowned
@@ -18,7 +19,7 @@
 //! the full restoration quote — the workshop's fee (labour at the operator's multiplier and every
 //! replaced part) and the bale's alloys and fittings at their references — against the design's
 //! reference price less [`RESALE_MARGIN_PERMILLE`]. Under the line she is **kept**: her title passes
-//! to the house (cut RS.6c-2 repairs and offers her for sale). Over it, past repair, or a design the
+//! to the house (cut RS.6c-2 repairs her first and offers her for sale, `crate::port::house_sale`). Over it, past repair, or a design the
 //! yard does not bill, she is **scrapped** at the workshop under IN.8, and the scrap's credit, paid
 //! into the dispatcher's float, goes back to the house's account.
 
@@ -27,6 +28,7 @@ use mush_economy::AssetOp;
 use mush_org::{OrgId, OrgScopeId, PrincipalId};
 
 use crate::surface::act::{Where, where_is};
+use crate::surface::claim::Consent;
 use crate::surface::site_record::LeftCondition;
 
 /// **How long a wreck lies before the house sweeps it**, IC days (two write-off bars,
@@ -53,20 +55,17 @@ pub enum Disposition {
     },
 }
 
-/// **Whether `cell` of `site` is open to the sweep** (the owner's ruling 2): open ground or a
-/// Registry seed — anything but a block a player holds.
-fn open_ground(ctx: &Ctx<'_>, site: &CanonicalId, cell: (i64, i64)) -> bool {
-    matches!(
-        crate::surface::claim::tenure_at(ctx, site, cell),
-        mush_tactics::field_ops::GroundTenure::Unclaimed
-    )
-}
-
-/// **The wreck the house sweeps next**, `(hull, site)`: the first wreck on a lane site's index
-/// past [`SWEEP_IC_DAYS`], on open ground, with no custody row and no live retrieval, on a site
-/// no field holds.
+/// **The wreck the house's `dispatcher` sweeps next**, `(hull, site, cell, consent)`: the first
+/// wreck on a lane site's index past [`SWEEP_IC_DAYS`], with no custody row and no live retrieval,
+/// on a site no field holds, on ground the dispatcher may recover off or has yet to ask about
+/// (doc 41 cut RS.10: open ground, a Registry seed, or a block whose landholder consented —
+/// [`Consent::Given`] — or has not been asked, [`Consent::NotAsked`]; a block still waiting on its
+/// landholder, or refused, is passed over).
 #[must_use]
-pub fn target(ctx: &Ctx<'_>) -> Option<(ObjId, CanonicalId)> {
+pub fn target(
+    ctx: &Ctx<'_>,
+    dispatcher: ObjId,
+) -> Option<(ObjId, CanonicalId, (i64, i64), Consent)> {
     let now = ctx.w.world_ic_now().at;
     let bar = SWEEP_IC_DAYS.saturating_mul(86_400);
     for site in crate::surface::chart::lane_sites(ctx.w) {
@@ -85,11 +84,15 @@ pub fn target(ctx: &Ctx<'_>) -> Option<(ObjId, CanonicalId)> {
             );
             if crate::surface::salvage::custody_of(ctx, hull).is_some()
                 || crate::surface::retrieval::order_of(ctx.w, hull).is_some_and(|o| o.active())
-                || !open_ground(ctx, &site.entry, cell)
             {
                 continue;
             }
-            return Some((hull, site.entry.clone()));
+            let consent =
+                crate::surface::claim::consent_at(ctx, &record, &site.entry, cell, dispatcher);
+            if matches!(consent, Consent::Asked | Consent::Refused) {
+                continue;
+            }
+            return Some((hull, site.entry.clone(), cell, consent));
         }
     }
     None

@@ -1,0 +1,34 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8m 52s
+     Running unittests src\lib.rs (C:\Users\faeni\codexprojs\rustmush\target\review-72h\debug\deps\tacsim-095ef8c899c17134.exe)
+
+running 12 tests
+test field::crew::tests::a_medical_room_treats_faster ... ok
+test field::crew::tests::gc4_a_friendly_load_sets_the_crew_aboard_and_cancels_the_extraction ... ok
+test field::crew::tests::the_control_sections_decide_the_condition ... ok
+test field::crew::tests::cr0_check_in_and_the_loads_leave_custody_alone ... ok
+test field::crew::tests::cr3_a_captors_wreck_strands_its_captives ... ok
+test field::crew::tests::cr2_the_release_key_and_the_processing_band ... ok
+test field::crew::tests::cr5_the_earliest_waiters_take_the_free_beds ... ok
+test field::crew::tests::only_a_stranded_or_incapacitated_character_may_ask ... ok
+test field::crew::tests::cr1_a_non_friend_load_captures_the_crew ... ok
+test field::crew::tests::cr0_the_custody_record_decodes_under_the_same_format ... ok
+test field::crew::tests::cr0_the_held_gate_refuses_by_hold ... ok
+test field::crew::tests::review_72h_capture_vacates_every_captive_station ... FAILED
+
+failures:
+
+---- field::crew::tests::review_72h_capture_vacates_every_captive_station stdout ----
+
+thread 'field::crew::tests::review_72h_capture_vacates_every_captive_station' (58936) panicked at crates\tacsim\src\field\crew.rs:2808:9:
+Q-42-1: every captive must lose every station in the casualty
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    field::crew::tests::review_72h_capture_vacates_every_captive_station
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 2181 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p tacsim --lib`
+error: 1 target failed:
+    `-p tacsim --lib`
