@@ -4318,6 +4318,34 @@ fn ic14_a_short_buy_with_a_later_fill_does_not_hold() {
     never_short(&rig, hull);
 }
 
+/// **A `fill` before a departure for a site is sized for the leg home too** (doc 41 cut RS.6b's
+/// production fix; doc 20 cut SM.2, decision 7). A site departure holds back the passage home
+/// (`SITE_TANK_SHORT`, `SITE_STORES_SHORT`), so a plan that fills the tank and the locker and
+/// then departs for Ahuna Flank must buy for both legs; before the fix it bought for the
+/// passage out alone and the departure held, short of the leg home.
+#[test]
+fn rs6b_a_fill_before_a_site_departure_buys_the_leg_home() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    board(&mut rig, pilot, "Salt Moth");
+    let _ = empty_tank_burn(&mut rig, pilot, &row);
+    let _ = order(&mut rig, pilot, "buy propellant fill");
+    let _ = order(&mut rig, pilot, "buy provisions fill");
+    let _ = order(&mut rig, pilot, "depart ahuna");
+    disconnect(&mut rig.tw, pilot);
+    let _ = drive_until(&mut rig, 60, |rig| {
+        order_state(&rig.tw, hull, 3) == Some(OrderState::Done)
+    });
+    let plan = orders(&rig.tw, hull);
+    assert_eq!(
+        order_state(&rig.tw, hull, 3),
+        Some(OrderState::Done),
+        "the departure goes: {:?}",
+        plan.log
+    );
+}
+
 /// **Doc 18 cut IC14 row 26: a short buy with later units that cover does not hold.**
 /// One tonne, then the empty-tank burn plus ten more tonnes, then the depart: the later
 /// units cover the need, so the first buy goes through and she departs. (Ten, since doc
