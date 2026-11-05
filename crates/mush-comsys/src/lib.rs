@@ -109,6 +109,7 @@ impl ComsysModule {
         TransportComsysModule {
             transport,
             managed_actions: BTreeSet::new(),
+            speak_gate: None,
         }
     }
     /// A fresh module instance.
@@ -148,10 +149,17 @@ impl GameModule for ManagedComsysModule {
 pub struct TransportComsysModule {
     transport: Arc<dyn transit::Transport>,
     managed_actions: BTreeSet<mush_core::DefinitionRef>,
+    speak_gate: Option<Arc<dyn transit::SpeakGate>>,
 }
 impl TransportComsysModule {
     pub fn with_managed_channels(mut self, actions: BTreeSet<mush_core::DefinitionRef>) -> Self {
         self.managed_actions = actions;
+        self
+    }
+    /// **The composition's gag on IC speech** (doc 38a review F-22a; [`transit::SpeakGate`]).
+    #[must_use]
+    pub fn with_speak_gate(mut self, gate: Arc<dyn transit::SpeakGate>) -> Self {
+        self.speak_gate = Some(gate);
         self
     }
 }
@@ -163,6 +171,9 @@ impl GameModule for TransportComsysModule {
         ComsysModule.register(reg)?;
         managed::register(reg, self.managed_actions.clone())?;
         reg.state(transit::Services(Arc::clone(&self.transport)));
+        if let Some(gate) = &self.speak_gate {
+            reg.state(transit::SpeakGates(Arc::clone(gate)));
+        }
         Ok(())
     }
     fn on_world_loaded(
