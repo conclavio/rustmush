@@ -667,3 +667,53 @@ object, and wait for TS.5b's sequences. No minimised failure exists yet to keep 
 found.
 
 **Summed minutes.** About +0.05: 0.7 s in `e2a` and 2.3 s in `e2b`.
+
+## TS.12, adopted (2026-11-05) — four domain binaries, hash-partitioned
+
+D-43-5 (Q-43-5 ruled 2026-11-04, owner: "Adopt it"), on main `bf0b5f24`.
+
+**The layout.**
+- **The move.** The ten `shard_N.rs` roots are gone. Their 115 modules moved with `git mv` into four domain
+  directories, each module with its `#[path]` siblings and its subdirectory (`knowing`'s eight quest files,
+  `match_lifecycle/`). Each root, `crates/tacsim/tests/<domain>.rs`, declares its directory's modules and the ten
+  shared `support` modules.
+  - `domain_field`: 37 modules, the field, crew, bay, escort, sortie and salvage journeys.
+  - `domain_economy`: 37 modules, the surface, ports, market, claims, plans, mining, drones and industry.
+  - `domain_arena`: 30 modules, the arena, cockpit, match lifecycle, minds (`twin` among them) and definitions.
+  - `domain_world`: 11 modules, knowing, vehicles, voyages, the chart, the sky, geology and `moon_ports`.
+- **The suffix rule moved one module.** `moon_ports` went to world rather than economy, because in economy its
+  name ends with `ports`. Nothing imports across domains.
+- **What did not change.** No test was edited; only comments and run lines that named a shard were updated. The
+  state-slot rows are keyed by module (TS.8) and did not change. The fiat budget's 28 tacsim rows are keyed by
+  path and were re-keyed.
+
+**The cells.**
+- `.github/tacsim-integration-shards.txt` has a new shape. A `partition:` line names the four domain binaries,
+  and numbered lines name the whole targets a cell runs first: harness on 1, cost_lane on 2. cost_lane gets its
+  clean home first in cell 2, where TS.12's refresh showed it no longer sets the wall.
+- `scripts/ci-tacsim-shard.sh N` runs that cell's whole targets, then `cargo nextest run --partition
+  hash:N/10` over the four domain binaries.
+- The whole targets' JUnit is kept as `junit-first.xml`, and the cell uploads both reports.
+- The M8 jobs name `domain_field`, and the three tacsim-minds steps name `domain_arena`.
+
+**The guards.**
+- `ci_tacsim_shards` now reads the domain layout. It checks:
+  - every target is listed exactly once (the partition or one cell);
+  - the matrix runs exactly the numbered cells, and the script partitions;
+  - every file under `tests/<domain>/` is declared by that domain's root, and a root declares nothing outside its
+    directory and `support/`;
+  - no module name in a domain ends with another's.
+- It also refuses any directory under `tests/` that is not a domain's, `support/` or `harness_baseline/`. A
+  branch cut before the adoption therefore fails until it moves its new modules.
+- `state_slot_owners`' key-normalisation test and the gated-test inventory's substring example name domain paths.
+
+**Doc 43.**
+- Rule 2.3 #3: a new test is a `mod` line in its domain root.
+- Rule 2.3 #14: a cut reports its domain binary's summed-minutes delta, summed over the ten cells.
+- Q-43-5 and D-43-5 carry the ruling and the figures.
+- docs/ops.md's test-targets section drops the "shard with the most room" guidance; the reshard recipe it implied
+  is gone.
+
+**The gate.** The contract tests, all four domain binaries' build, clippy and strict rustdoc on `tacsim` and
+`mush-contract-tests`, shellcheck, and cells 1 and 3 run through the script on conclav.dev; then the PR's own
+run.

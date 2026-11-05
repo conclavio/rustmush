@@ -1,25 +1,46 @@
 #!/usr/bin/env bash
-# Run one shard of tacsim's integration test targets: line N of
-# .github/tacsim-integration-shards.txt, `N: target target ...`, as one
-# `cargo nextest run -P ci -p tacsim --test <target>...` (CI's
-# `tacsim-integration-N`; nextest since test-strategy cut T.1, 2026-10-26:
-# the shard's binaries' tests run in one pool of four, each in its own
-# process, under .config/nextest.toml's `ci` profile — no fail-fast, a hung
-# test terminated at 20 min, the JUnit report at target/nextest/ci/junit.xml).
-# No build-jobs cap since 2026-10-31 (`--build-jobs 2` was the link cap the
-# old `-j 2` was, from the loop-device era). tacsim's doc-tests are the
-# tacsim-lib shard's.
+# Run cell N of tacsim's integration tests (CI's `tacsim-integration-N`), as
+# .github/tacsim-integration-shards.txt describes them: first the targets
+# line `N:` names, whole (harness on 1, cost_lane on 2), then cell N's hash
+# share of the domain binaries the `partition:` line names,
+# `cargo nextest run --partition hash:N/<cells>` (doc 43 cut TS.12, adopted
+# by D-43-5 on 2026-11-04: every cell builds all four domain binaries and the
+# balance is the hash's, so nothing is resharded). Both runs use
+# .config/nextest.toml's `ci` profile (no fail-fast, a hung test terminated at
+# 20 min). The first run's JUnit report is kept beside the second's as
+# target/nextest/ci/junit-first.xml, and the cell uploads both. tacsim's
+# doc-tests are the tacsim-lib cell's.
 set -euo pipefail
-shard="${1:?usage: scripts/ci-tacsim-shard.sh <shard number>}"
+cell="${1:?usage: scripts/ci-tacsim-shard.sh <cell number>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-line="$(grep -E "^${shard}:" "$root/.github/tacsim-integration-shards.txt" || true)"
+manifest="$root/.github/tacsim-integration-shards.txt"
+line="$(grep -E "^${cell}:" "$manifest" || true)"
 if [ -z "$line" ]; then
-  echo "no tacsim integration shard ${shard} in .github/tacsim-integration-shards.txt" >&2
+  echo "no tacsim integration cell ${cell} in .github/tacsim-integration-shards.txt" >&2
   exit 1
 fi
-args=()
+cells="$(grep -cE '^[0-9]+:' "$manifest")"
+partition="$(grep -E '^partition:' "$manifest" | head -1)"
+if [ -z "$partition" ]; then
+  echo "no partition: line in .github/tacsim-integration-shards.txt" >&2
+  exit 1
+fi
+first=()
 for target in ${line#*:}; do
-  args+=(--test "$target")
+  first+=(--test "$target")
 done
-echo "tacsim integration shard ${shard}: $(( ${#args[@]} / 2 )) targets"
-cargo nextest run -P ci -p tacsim "${args[@]}"
+domains=()
+for target in ${partition#*:}; do
+  domains+=(--test "$target")
+done
+rc=0
+if [ "${#first[@]}" -gt 0 ]; then
+  echo "tacsim integration cell ${cell}: first $(( ${#first[@]} / 2 )) whole target(s)"
+  cargo nextest run -P ci -p tacsim "${first[@]}" || rc=$?
+  if [ -f "$root/target/nextest/ci/junit.xml" ]; then
+    mv "$root/target/nextest/ci/junit.xml" "$root/target/nextest/ci/junit-first.xml"
+  fi
+fi
+echo "tacsim integration cell ${cell}: hash:${cell}/${cells} of $(( ${#domains[@]} / 2 )) domain binaries"
+cargo nextest run -P ci -p tacsim "${domains[@]}" --partition "hash:${cell}/${cells}" || rc=$?
+exit "$rc"

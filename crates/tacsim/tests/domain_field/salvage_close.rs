@@ -18,7 +18,7 @@
 //! and T's `right` vacates (the authorization bound the claimant); on `b` Occator's agent is
 //! told, contests on bare title, and the claim is awarded: an organization's hull with no
 //! lease is awardable (Q-41-22). The at-risk line in the bay quote and the notice is the bay
-//! story's (`shard_1/bay_36a.rs`, `b36a_rs3_…`): the bay works only at a workshop port.
+//! story's (`domain_field/bay_36a.rs`, `b36a_rs3_…`): the bay works only at a workshop port.
 //!
 //! **What is a fixture.** As GC.6's story: the rigs' power is destroyed and they are put on the
 //! site's index by staff hand, their titles moved by `@asset/transfer`, the organization made by

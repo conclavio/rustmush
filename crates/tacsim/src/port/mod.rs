@@ -162,6 +162,7 @@ pub mod gauges;
 pub mod ground_chart;
 pub mod house;
 pub mod house_arm;
+pub mod house_sweep;
 pub mod hull;
 pub mod interface;
 pub mod licence;

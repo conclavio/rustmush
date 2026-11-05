@@ -1,7 +1,7 @@
 //! **Doc 17h cut M8e E4/E5: the dispatch's seal, by its pure functions** — the mind sealed
 //! over a cored unit ([`seal_held`]), the ROM a lapsed licence falls to ([`seal_rom`]) and the
 //! record the act carries ([`assemble`]); the Roll's reads are the excursion harness's
-//! (`tests/shard_4/ic_sortie_surface.rs`).
+//! (`tests/domain_field/ic_sortie_surface.rs`).
 use super::*;
 use crate::arena::PartyId;
 use crate::arena::core::CoreClass;

@@ -1652,7 +1652,7 @@ fn bless(name: &str, text: &str) {
         assert_eq!(
             on_disk, text,
             "web/src/lib/fixtures/site/{name} is out of date; re-bless with TACSIM_BLESS=1 \
-             cargo test -p tacsim --test shard_2 quarry::sm9_the_ground_fixture_is_blessed"
+             cargo test -p tacsim --test domain_economy quarry::sm9_the_ground_fixture_is_blessed"
         );
     }
 }

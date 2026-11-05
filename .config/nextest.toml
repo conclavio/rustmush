@@ -105,7 +105,7 @@ final-status-level = "flaky"
 # target/nextest/ci/junit.xml: one <testsuite> a binary, one <testcase> a
 # test with its time, <flakyFailure> for a pass on retry. Each shard uploads
 # it as `nextest-junit-<shard>`; the per-test times are what the next
-# rebalance of .github/tacsim-integration-shards.txt reads.
+# per-domain-binary deltas (doc 43 rule 2.3 #14) read.
 path = "junit.xml"
 report-name = "rustmush-ci"
 

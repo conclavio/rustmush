@@ -1,6 +1,6 @@
 //! **Doc 42 — crew custody and capture**, the stories grown cut by cut (§7a; Q-42-25), over the
-//! composed world (`driving`'s keyed rig) on both grounds of `grounds_rig`, in shard_8 for its
-//! room (doc 43 rule 2.3 #3, #14). Story (a′)'s load itself is GC.5's rewritten gate, hoisted to
+//! composed world (`driving`'s keyed rig) on both grounds of `grounds_rig`, in
+//! `domain_field` (doc 43 rule 2.3 #3). Story (a′)'s load itself is GC.5's rewritten gate, hoisted to
 //! `custody_rig`: `field_gc5` runs it at 256 beside GC.5, and this file at 512.
 //!
 //! - **Cut CR.1, story (a′) to the load at 512** (Q-42-4, Q-42-16; Q-42-3 for the twin): GC.5's
