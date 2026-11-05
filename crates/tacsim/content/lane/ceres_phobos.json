@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 28,
+    "version": 29,
     "kind": "campaign_seed",
-    "digest": "0b68e8119f909344d16fbe38dd3af3696a9efc5c4dd0aca39c60ea9b87e4bea4",
+    "digest": "7c1b822fa8379a4b26bcb552cc25718dc656896ffb623694e7e09418b3aba9ba",
     "requires": []
   },
   "entries": {
@@ -2743,7 +2743,7 @@
         "orgs": [
           { "id": "ceres_clearing", "name": "Ceres Clearing", "capital_major": 50000, "faction": "freeport" },
           { "id": "coop", "name": "Belt Carriers' Cooperative", "capital_major": 3100000, "faction": "freeport" },
-          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport" },
+          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
           { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord", "raises": [ 450000 ] },

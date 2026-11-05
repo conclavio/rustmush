@@ -178,6 +178,8 @@ pub mod passage;
 pub mod passenger;
 /// Doc 39 cut IN.5: a port's refinery and works rooms, opened as their operators' facilities.
 pub mod plant;
+/// Doc 39 cut IN.10: the pools — the houses' floors, their funded yard orders and the ferry.
+pub mod pools;
 /// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).
 pub mod price;
 pub mod proceeds;

@@ -224,6 +224,18 @@ precedent. The site refuses when the slot is absent.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/pools.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 39 cut IN.10, for the `port/coop.rs` row's reason: a house helm's purse takes
+its id from `economy`'s account allocator before `mush_economy::open_account`
+writes it through the economy module's own path. The site refuses when the slot
+is absent.
+"""
+
+[[site]]
 path = "crates/tacsim/src/port/passenger/economy.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"

@@ -777,7 +777,10 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
     let mut rig = boot(Roster::bare());
     let trust_acct = trust_account(&rig.tw);
     let trust_before = balance(&rig.tw, trust_acct);
-    assert_eq!(trust_before, 25_000_000, "the Trust holds its 250,000.00cr");
+    assert_eq!(
+        trust_before, 50_000_000,
+        "the Trust holds its 250,000.00cr and its 250,000.00cr raise (doc 39 cut IN.10)"
+    );
     let who = pilot(&mut rig, "Pilot", 1);
     assert_eq!(own_account(&rig.tw, who), None);
     let out = enrol(&mut rig, who, "Salt Moth");
@@ -1187,15 +1190,15 @@ fn ic6_the_ninth_pilot_finds_no_dray_free() {
     let trust_acct = trust_account(&rig.tw);
     assert_eq!(
         balance(&rig.tw, trust_acct),
-        5_000_000,
-        "the Trust is at its floor"
+        30_000_000,
+        "the Trust is its floor and its raise over (doc 39 cut IN.10)"
     );
     let before = counts(&rig.tw);
     let ninth = pilot(&mut rig, "Ninth", 99);
     let out = enrol(&mut rig, ninth, "Last Chance");
     assert!(out.contains(NO_HULL), "{out}");
     assert_eq!(counts(&rig.tw), before);
-    assert_eq!(balance(&rig.tw, trust_acct), 5_000_000);
+    assert_eq!(balance(&rig.tw, trust_acct), 30_000_000);
     let terms = run(&mut rig.tw, ninth, "+coop");
     assert!(terms.contains("Drays free: 0 of 8."), "{terms}");
 }

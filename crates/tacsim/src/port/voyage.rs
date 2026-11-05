@@ -1287,6 +1287,31 @@ pub(crate) fn match_destination<'d>(
         })
 }
 
+/// **What a passage from the berth to `word` takes** (doc 39 cut IN.10, the house ferry's dry
+/// run): the burn in tonnes and the crew-days for `souls`, planned on the hull as she stands —
+/// `+ship/plan`'s planner, nothing written.
+///
+/// # Errors
+///
+/// The hull is not docked, the port does not clear for `word`, or the planner refuses.
+pub(crate) fn passage_needs(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    word: &str,
+    souls: u32,
+) -> Result<(u64, u32), String> {
+    let w: &World = ctx.w;
+    let view = hull_view(w, hull).ok_or("the hull has no view")?;
+    let Berth::Docked { def, .. } = berth_of(w, hull) else {
+        return Err("the hull is not docked".to_owned());
+    };
+    let dests = destinations(w, def);
+    let dest = match_destination(&dests, word).ok_or("the port does not clear for there")?;
+    let basis = basis(ctx, &view, souls)?;
+    let plan = plan_on(w, &basis, &dest.routes).map_err(|e| e.to_string())?;
+    Ok((plan.burn_t, plan.crew_days))
+}
+
 /// **The destination a queued depart names, exactly** (doc 18 cut IC14 row 25): the
 /// routes key equal to the stored canonical venue word, case-sensitively — never the
 /// live verb's prefix fallback, so a stored word that is only a prefix of a port's name
@@ -1355,6 +1380,11 @@ pub(crate) fn souls_aboard(w: &World, airlock: ObjId) -> Vec<ObjId> {
 /// retain their existing special case; callers still establish the actual helm.
 pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
     if crate::port::yard::is_dispatcher_of(w, hull, person) {
+        return true;
+    }
+    // Doc 39 cut IN.10 (Q-39-34): a house's DARK helm is aboard the hull its ferry sails,
+    // wherever it stands (the dispatcher's precedent).
+    if crate::port::pools::ferry_hull(w, person) == Some(hull) {
         return true;
     }
     if hull_view(w, hull).and_then(|view| view.airlock()).is_none() {
@@ -3490,7 +3520,11 @@ pub(crate) fn prepare_departure(
             None => {}
         }
     }
-    let souls = occupants(w, airlock);
+    // Doc 39 cut IN.10 (Q-39-34): a house ferry sails with the house's hands, one soul, under its
+    // DARK helm (a Thing, never counted aboard).
+    let souls = occupants(w, airlock).max(u32::from(
+        crate::port::pools::ferry_hull(w, pilot) == Some(hull),
+    ));
     let basis = basis(ctx, &view, souls).map_err(|error| {
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");
         dark()
