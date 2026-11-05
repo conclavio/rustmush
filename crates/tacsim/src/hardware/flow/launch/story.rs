@@ -538,7 +538,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     // days with the usual 3 of Grace, until House owner attestation exists.
     check_eq!(
         lengths(owner_term(&r, owner_licence)?.window()),
-        (365 * 86_400, 3 * 86_400),
+        (365 * 86_400, 28 * 86_400),
         "the House owner's term"
     );
     let buyer = r.buyer;
@@ -586,7 +586,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     // The paid House Pin keeps the paid 90 days beside the 365-day owner term.
     check_eq!(
         lengths(accepted_term.window()),
-        (90 * 86_400, 3 * 86_400),
+        (90 * 86_400, 28 * 86_400),
         "the paid House Pin's term"
     );
     check_eq!(before.0 - r.money(r.payer)?.0, 40000);
@@ -840,7 +840,7 @@ fn curator_attests_through_the_verb(r: &mut Rig, d: &LaunchDeployment) -> Result
         .ok_or("generation 2")?;
     check_eq!(
         lengths(second),
-        (365 * 86_400, 3 * 86_400),
+        (365 * 86_400, 28 * 86_400),
         "generation 2, the House's 365-day term"
     );
     check!(second.term_end() > first.term_end());
