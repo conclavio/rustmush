@@ -1020,6 +1020,33 @@ async fn sm2_the_production_root_lays_up_every_site() {
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
 }
 
+/// **The production root's inventory reads a part as indivisible** (doc 39 cut IN.2; the
+/// owner's IN.11 ruling of 2026-11-05): the server's market sold parts by the presence gate
+/// alone, because this root composed the inventory without tacsim's `PartGoods` (and its
+/// hold capacity) that tacsim's own root wires. A bulk good still divides.
+#[tokio::test]
+async fn in11_the_production_root_reads_a_part_as_indivisible() {
+    let mut cfg = stock_config("in11_indivisible");
+    enable_tacsim(&mut cfg);
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&cfg);
+    let booted = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("the production root boots");
+    let families = &booted
+        .engine
+        .world
+        .module_state::<mush_inventory::InventoryHandles>()
+        .expect("the inventory composed")
+        .0;
+    let part = CanonicalId::new("tacsim.part.plant.hauler_mk1").expect("an id");
+    let bulk = CanonicalId::new("structural_alloys").expect("an id");
+    assert!(families.is_indivisible(&part), "a part is one lot");
+    assert!(!families.is_indivisible(&bulk), "a bulk good divides");
+    drop(booted);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
+
 // ---- 2: the layer really composes -----------------------------------------
 
 /// A booted split engine holds the TacSim layer, enabled, with the operator's
