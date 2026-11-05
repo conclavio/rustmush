@@ -1009,6 +1009,17 @@ fn friendly(ctx: &Ctx<'_>, site: &CanonicalId, casualty: ObjId, carrier: ObjId) 
     {
         return true;
     }
+    // Doc 41 cut RS.6c-1: a hull titled to the one who commands the carrier is hers (a recovery
+    // house's swept wreck, titled to its dispatcher, into the house's own lifter).
+    if let Some(helm) = crate::port::coop::helm_holder(ctx.w, carrier)
+        && ctx
+            .w
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| e.snapshot().asset(casualty).map(|a| a.title_owner.clone()))
+            == Some(mush_org::PrincipalId::Object(helm))
+    {
+        return true;
+    }
     // Doc 36 cut GC.10 (Q-36-10): the field's own Friend rule — one owner behind both, or an
     // organization their leaders or owners openly share.
     let entrants = crate::field::parties::entrants(ctx, site, &[casualty, carrier]);

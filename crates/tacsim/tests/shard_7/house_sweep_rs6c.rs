@@ -202,6 +202,90 @@ fn story(venue: &str, entry: &str) {
     );
 }
 
+/// **The ownerless wreck** (the owner's ruling 1 of 2026-11-04): a raid's hull, made with no
+/// title (`field_raiders_rig::armed`'s line tank, as `field/raiders.rs` makes them), wrecked on
+/// Ahuna Flank's open ground. The sweep titles her to the dispatcher before the tow, as salvage of
+/// the unowned, files no claim, and she is kept (her title to Tycho) or scrapped at Ceres.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
+    let mut rig = stocked_tuned(quick);
+    let entry = "ahuna_port";
+    let _ = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("ahuna", entry), 1);
+    let (rx, ry) = {
+        let (x, y, _) = ramp_at(&rig.tw, entry);
+        (x.div_euclid(1_000), y.div_euclid(1_000))
+    };
+    let at = (rx + 4, ry + 3);
+    let wreck = crate::field_raiders_rig::armed(&mut rig, "Raider", at, 0);
+    set_section(&mut rig, wreck, "hull", Some("destroyed"), Some(0));
+    assert_eq!(
+        tacsim::port::house_sweep::title_of(rig.tw.world(), wreck),
+        None,
+        "a raid's hull has no title"
+    );
+    let s = staff_member(&mut rig);
+    staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {entry} leave #{} wreck {},{}",
+            wreck.0, at.0, at.1
+        ),
+    );
+    let ceres = cid("ceres_port");
+    for _ in 0..60 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        if tacsim::port::house::dispatchers(rig.tw.world()).len() == 1 {
+            break;
+        }
+    }
+    let dispatcher = tacsim::port::house::dispatcher(rig.tw.world(), &ceres).expect("dispatcher");
+    let tycho = {
+        let map = port_map(&rig.tw, "ceres_port");
+        map.orgs
+            .iter()
+            .find(|(id, _)| id.as_str() == "tycho_mutual")
+            .map(|(_, row)| PrincipalId::Organization(mush_org::OrgId(row.org)))
+            .expect("Tycho")
+    };
+    let now = rig.tw.world().world_ic_now().at;
+    skip_and_fire(
+        &mut rig,
+        now + (tacsim::port::house_sweep::SWEEP_IC_DAYS + 1) * 86_400,
+    );
+    let mut titled = false;
+    let mut claimed = false;
+    for _ in 0..40_000 {
+        let title = tacsim::port::house_sweep::title_of(rig.tw.world(), wreck);
+        if title == Some(PrincipalId::Object(dispatcher)) {
+            titled = true;
+        }
+        if scrapped(&rig, wreck) || (titled && title == Some(tycho.clone())) {
+            break;
+        }
+        if crate::field_host_rig::site_record_at(&mut rig, entry)
+            .is_some_and(|record| record.custody.iter().any(|row| row.hull == wreck))
+        {
+            claimed = true;
+        }
+        let t = rig.tw.world().now().saturating_add(1);
+        rig.tw.set_now(t);
+        let _ = second(&mut rig);
+    }
+    assert!(titled, "the sweep titled her to the dispatcher");
+    assert!(
+        !claimed,
+        "an ownerless wreck is the house's own: no custody, no claim"
+    );
+    let title = tacsim::port::house_sweep::title_of(rig.tw.world(), wreck);
+    assert!(
+        scrapped(&rig, wreck) || title == Some(tycho),
+        "she was kept for the house or scrapped: {title:?}"
+    );
+}
+
 /// **RS.6c-1's gate on Ahuna Flank (256).**
 #[test]
 fn rs6c_tycho_sweeps_and_scraps_a_wreck_on_ahuna_flank() {
