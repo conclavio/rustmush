@@ -541,7 +541,11 @@ Rule #1's 256/512 is not applicable: a space bubble has no site scheme. The bot 
   their own carrier.
 - **A derelict nobody held** is towed into custody with no claim, as the ground's `NO_TITLE` does.
 
-**Cell cost (rule #14).** @@CELL@@
+**Cell cost (rule #14).** The stories run in `tacsim-integration-10` (shard_10's `voyage::`). Measured from the JUnit `<testcase time>` sums of #439's run 41898886949 against `main`'s pre-RS.8 run 41888309144.
+- The new `rs8_…` story takes 7.6 s: **+0.13 summed min**.
+- The rewritten `sfr19_…` reads 9.1 s against 13.5 s, on a baseline whose whole cell ran 1.64× slower (71.9 against 43.9 summed min; TS.3's optimised dependencies landed in between). Scaled, that is about +0.9 s.
+- sfr2, sfr7, sfr8, sfr12 and sfr15 hold their scaled times.
+- The cut's delta is about **+0.14 summed min**. The whole cell's sum is not comparable across that change.
 ## RS.4 — the vacated hull's return (2026-11-04)
 
 Row: §6 RS.4; Q-41-18, Q-41-19, Q-38-19, round-2 item 41-15. No lane rows. Consumes IN.9's

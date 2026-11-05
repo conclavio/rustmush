@@ -382,6 +382,9 @@ pub struct TacsimStore {
     /// ([`crate::surface::security::SecurityRecord`]) and their fines. Persisted through
     /// [`put_security`]; an unreadable one proves and fines nothing against its actor.
     pub(crate) security: BTreeMap<ObjId, crate::surface::security::SecuritySlot>,
+    /// **Doc 39 cut IN.10** — `tacsim:house_pool:{org}`: each house's pool record
+    /// ([`crate::port::pools::HousePool`]), loaded by [`crate::port::pools::load`].
+    pub(crate) pools: crate::port::pools::PoolBook,
     /// **Doc 20 cut SM.3b** (§8; lead ruling 1) — `tacsim:tv:{tv}`: each rig's
     /// normal-lane projection ([`crate::surface::excursion::TvRec`]), keyed by the
     /// terrain vehicle's id. Written only by the `tacsim.surface` tick through
@@ -2716,6 +2719,8 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // staff repair the document.
             store.licence_keys.insert(SmolStr::new(key));
             load_licence(&mut store, key, value);
+        } else if crate::port::pools::load(&mut store, key, value) {
+            // Doc 39 cut IN.10: a house's pool (an unreadable one orders nothing).
         } else if crate::port::owned::load(&mut store, key, value) {
             // Doc 39 cut IN.9: the register, the provenance and the commissions (an unreadable
             // one is held until staff repair the document).

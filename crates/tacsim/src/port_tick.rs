@@ -2083,6 +2083,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::works::tick(ctx);
     // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
     crate::surface::retrieval::tick(ctx);
+    // Doc 39 cut IN.10: the pools — a house's next order step, or a new order under its floor.
+    crate::port::pools::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

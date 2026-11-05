@@ -524,11 +524,11 @@ Row: §7 CR.6; Q-42-24. The owner moved it from the space track to the programme
 **Divergences.**
 - **The fixture disables the carrier.** Staff `@unit/damage` puts SalvorB's drive at its floor during the cruise. The bubble's own check-out then meets her as a derelict; no test writes the space book (SF.R9's no-fiat lint). Combat's disablement of a player carrier is sfr18's story.
 - **The friend test is the ground's, not the bubble's.** SF.R18 makes every co-participating carrier `Friend` for fire control. Under that relation, two strangers interdicted together could never take each other.
-- **Records, not bodies.** A settled derelict's rooms may be empty by the clamp, so the capture reads the crew's records, as `captured_loaded` does. The scan for crewed records walks the world's characters through `crew_of`, because `CrewBook` has no public iterator and `crew.rs` is not this cut's file.
+- **Records, not bodies.** A settled derelict's rooms may be empty by the clamp, so the capture reads the crew's records, as `captured_loaded` does. It reads them through CR.5's `crew::records`. The cut first scanned the world's characters through `crew_of`, before that iterator existed; the follow-up after #447 switched it.
 - **The space site** is `space_domain_<n>`, not a waypoint entry, on the test lane. Its waypoints carry no port map.
 - **Not exercised:** `+sortie/extract` from a space `Stranded` record, and the friend's `aboard_loaded` branch. Both are the ground's code paths, unchanged.
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
+**Cell cost (rule #14).** The story runs in `tacsim-integration-10` (shard_10's `voyage::`). Measured from the JUnit `<testcase time>` sums of #453's run 41899719974. The one new test, `cr6_…`, takes 8.0 s: **+0.13 summed min**. No other test moved: the RS.8 stories in the same run read the same as on #439's run 41898886949, within 0.3 s. The cell's summed total cannot be compared with `main`'s pre-RS.8 run 41888309144 (71.9 against 43.9 min), because TS.3's optimised dependencies landed in between. The delta is per test.
 
 ## CR.7 — docs
 

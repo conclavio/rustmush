@@ -128,8 +128,15 @@ pub const BAD_NAME: &str = "A ship's name is 1 to 32 letters, digits, spaces, hy
      apostrophes or full stops, starting with a letter.";
 /// A ship name already on the register.
 pub const NAME_TAKEN: &str = "The Registry already lists a Dray by that name.";
-/// No hull is free.
+/// No hull is free: the first sentence of either of [`no_hull`]'s two texts.
 pub const NO_HULL: &str = "The Co-op has no Dray free to charter.";
+/// **Doc 39 cut IN.10 (Q-39-34)**: no free hull and no Dray on order, because the Trust's
+/// account does not yet cover a yard order.
+pub const NO_HULL_UNFUNDED: &str = "The Trust has no Dray free and cannot yet fund one.";
+/// **Doc 39 cut IN.10 (Q-39-34)**: no free hull, a Dray on order: `{port}` the yard's port,
+/// `{days}` the IC days until she is due at the programme port.
+pub const NO_HULL_ON_ORDER: &str =
+    "The Trust has a Dray on order at {port}, due at Ceres in {days} IC days.";
 /// The programme's capital is at its floor.
 pub const NO_CAPITAL: &str = "The Co-op's programme has no capital left to stake a new captain.";
 /// An enrolment step that should not fail did (lead ruling L16: the text
@@ -601,6 +608,14 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
             standing: Standing::Fleet,
         });
     }
+    // Doc 39 cut IN.10 (Q-39-34): a house's DARK helm reaches the one hull its ferry sails, on
+    // `Fleet`'s precedent of a helm without a charter (so no mining service or refit).
+    if let Some(hull) = crate::port::pools::ferry_hull(w, pilot) {
+        return Some(Helm {
+            hull,
+            standing: Standing::Fleet,
+        });
+    }
     if let Some(charter) = live_charter(w, pilot) {
         return Some(Helm {
             hull: charter.hull,
@@ -768,16 +783,41 @@ pub fn hull_is_free(w: &World, port: &ProgrammePort<'_>, row: &HullRow) -> bool 
 }
 
 /// **Every free hull**, ascending hull id; the next loaner is the first.
+///
+/// Doc 39 cut IN.10 (§4.7, Q-39-34): the programme rows, then the Trust's built hulls of the
+/// programme's unit — register rows (`crate::port::owned`) the house ferry brought home — under
+/// the same [`hull_is_free`] rule. A built hull is never a programme row, so the pool of eight
+/// stays the seed and the applier's preflight never sees a ninth.
 #[must_use]
-pub fn free_hulls<'a>(w: &World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
+pub fn free_hulls<'a>(w: &'a World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
+    let unit = port.programme.unit.as_str();
     let mut rows: Vec<&'a HullRow> = port
         .map
         .hulls
         .iter()
+        .chain(
+            crate::port::owned::rows(w)
+                .filter(|owned| owned.design.as_str() == unit)
+                .filter_map(crate::port::owned::OwnedHull::ship),
+        )
         .filter(|row| hull_is_free(w, port, row))
         .collect();
     rows.sort_by_key(|row| row.hull);
     rows
+}
+
+/// **`+coop/enrol`'s refusal with no hull free** (doc 39 cut IN.10, Q-39-34): [`NO_HULL`], then
+/// which it is — a Dray on order and the IC days until she is due at Ceres
+/// ([`NO_HULL_ON_ORDER`]), else [`NO_HULL_UNFUNDED`].
+#[must_use]
+pub fn no_hull(w: &World, port: &ProgrammePort<'_>) -> String {
+    let second = match crate::port::pools::next_due(w, &port.programme.org) {
+        Some(due) => NO_HULL_ON_ORDER
+            .replace("{port}", &due.port)
+            .replace("{days}", &due.days.to_string()),
+        None => NO_HULL_UNFUNDED.to_owned(),
+    };
+    format!("{NO_HULL} {second}")
 }
 
 /// **Whether a readiness line's binding gates `+coop/enrol`** (doc 18 cut IC12;
@@ -1328,7 +1368,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     let name = check_hull_name(w, &port, raw).map_err(str::to_owned)?;
     // 7. The hull.
     let Some(row) = free_hulls(w, &port).first().copied() else {
-        return Err(NO_HULL.to_owned());
+        return Err(no_hull(w, &port));
     };
     // 8. The capital (`pool_can_fund`'s shape).
     let scale = credit_scale(w);

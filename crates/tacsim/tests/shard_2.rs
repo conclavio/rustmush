@@ -53,6 +53,8 @@ mod field_host_rig;
 mod field_raiders_rig;
 #[path = "support/field/grounds_rig.rs"]
 mod grounds_rig;
+#[path = "shard_2/in10_pools.rs"]
+mod in10_pools;
 #[path = "shard_2/in1_accounting.rs"]
 mod in1_accounting;
 #[path = "shard_2/in2_lifecycle.rs"]

@@ -871,3 +871,72 @@ money; the officer's grant; the captain's move to Stickney; the escort's disable
 Ahuna 64.5 s, Urvara 53.3 s on PR run 41850018642's JUnit, head `e6b0f82c`). The cell's sum reads 46.35 → 50.16 min
 against main's run at the merge base (41827163605, `4390f04c`), 80 → 83 tests; the other +1.05 min is spread over
 the unchanged tests (runner speed), none of which this cut touches.
+
+## IN.10 — the pools (Q-39-7, Q-39-21, Q-39-34)
+
+**Built.** `port::pools`, one record a house (`tacsim:house_pool:{org}`, `HousePool`, written whole, an unreadable one
+orders nothing) and one arm on the port tick after the works arm, one step a house a fire, every step re-derived
+from durable state.
+
+- **The floor** (`pools::FLOORS`): the Trust's two free Drays at Ceres. `coop::free_hulls` now counts the Trust's
+  built Drays too — register rows of the programme's unit under the same `hull_is_free` rule — so the floor and the
+  desk read one list. A house whose free hulls and orders standing are under its floor orders **when its account
+  covers the order** (`pools::price_minor`: the bill at Stickney's asks and the parts' catalogue price, the yard's fee
+  and booking fee, and the ferry's stores at an allowance of 120 t of propellant and five crew-days). On the shipped
+  lane a Dray is 165,290 cr.
+- **The helm**: a `DARK` Thing `"coop_trust ferry helm"` (the Occator Yard dispatcher's shape, `site::dark_thing`)
+  with **its own credit account**. The industry's budget rule makes a work order's account its requester's own
+  (`check_wo_accounts`), so the house funds the helm with the order's price in one post
+  (`tacsim.house_order/{org}/{n}/fund`) and the helm books and pays as itself. The order's beneficiary is the house,
+  so the hull is the Trust's from the commission on. Once the last order is home the helm's unspent purse goes back.
+- **The order**: `works::book` (factored out of `+works/order`/`+yard/order`) at the Stickney yard, as the helm, for
+  the Trust; the bill bought line by line, paid under `tacsim.house_order/{escrow}/{good}/{held}` (the count the
+  escrow holds names the purchase, so a restart finds the payment and never pays twice), the seller's standing ask
+  lowered first (IN.5's `shrink_ask` rule), then moved through `works::supply_from` under the order's own ledger.
+  A part is one lot from the yard operator's stores (the Yards'), at its catalogue price: IN.7 retired the seeded
+  part stock, so the stores hold what was made, scrapped or sold into them, and the order waits while they hold
+  none. The works arm runs the order; the helm collects it into IN.9's
+  commission (`works::commission_as`, the route IN.9's note asked for).
+- **The ferry**: the passage's burn with a quarter over and its crew-days are dry-run (`voyage::passage_needs`) and
+  bought into her hold the same way, under the works ledger keyed by the hold (`pools::owed_moves` in the works
+  offer). Then the helm files `+ship/undock ceres` as itself (`voyage::undock_as`). `coop::helm_of` reads
+  `pools::ferry_hull` on `Fleet`'s precedent of a helm without a charter, `voyage::aboard` holds the helm aboard
+  wherever it stands (the dispatcher's precedent), and `prepare_departure` counts the house's hands as one soul.
+  She docks at Ceres a free hull of the pool, a register row and never a programme row.
+- **`NO_HULL`'s two texts**: "The Co-op has no Dray free to charter." then "The Trust has no Dray free and cannot yet
+  fund one." (`NO_HULL_UNFUNDED`) or "The Trust has a Dray on order at Stickney Yards, due at Ceres in n IC days."
+  (`NO_HULL_ON_ORDER`, from `pools::next_due`: the build's days and a four-day passage allowance until she sails,
+  then her filed arrival).
+- **The raise**: lane v29 / relay v20 (on RS.6a's v28) — `coop_trust` gains `raises: [250000]` (Q-39-34), so the Trust boots at
+  500,000. `lane_chain::strip_trust_raise` heads the strip chain (`strip_tycho_house` calls it first), and
+  `in10_strip_trust_raise_rebuilds_the_published_v28` holds it to RS.6a's v28 digest. The pins: `LANE_DIGEST`
+  `7c1b822f…`, the relay `2afc58ea…`, the treasury's 16,701,000.00cr, and the version asserts.
+- **`works::port_of` reads the yard room** (IN.9's row is a room that is the facility itself), so an order at the
+  yard finds its port; the house collection needed it.
+
+**The story.** `shard_2/in10_pools.rs` (port-side; no site, so no 256/512 pair):
+`in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home`. Eight captains enrol; the Trust is at 50,000
+and orders nothing; the ninth hears `NO_HULL` and the unfunded text. Two buyouts bring 180,000 home, and the Trust
+orders on the next fire: the DARK helm books the Dray at Stickney for the Trust and buys the bill into the escrow;
+the ninth hears "on order at Stickney Yards, due at Ceres in 16 IC days". The yard hands her over 13 IC days after
+the order as `SYB-01`, titled to the Trust; her stores are bought, the helm files the passage, and she docks at
+Ceres a free register hull while the programme map still holds eight; the helm's purse is empty. The desk then
+enrols the ninth captain. Over those weeks the dormancy recall (seven real days on the rig's clock) may hand a
+programme Dray back first, and the desk lends the lowest free id, so the story asserts the ninth captain is
+chartered and the Trust's Dray is theirs or still free. The seeds: one hauler plant in the Yards' stores, the
+captains' buyout money, and the Trust's raise held back in the treasury by staff from boot to the ninth enrolment
+(the world the row reads is the one before v29; with the raise in from boot the Trust would order at the seventh
+charter, which is what the raise is for). 22 s locally.
+
+**Cell delta (rule #14).** `tacsim-integration-2`: **+1.79 min**, 17.25 → 19.04 summed minutes against main's run at
+`458304cb` (41936816433), 419 → 420 tests; the new story is 0.40 min (23.9 s on PR run 41937075526's JUnit), the
+rest runner speed on unchanged tests.
+
+**Owed / flagged.**
+- Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the yard, so
+  `FLOORS` carries the Trust's row alone.
+- **A house restock of the stores** (IN.7's flag): nothing refills the Yards' part stores, so with the seeds
+  retired a house Dray waits on a hauler plant someone made or scrapped there. Ordering the plant at the works
+  (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
+  the owner.
+
