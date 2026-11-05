@@ -959,6 +959,10 @@ rest runner speed on unchanged tests.
   is the design's field-ops mass rounded up to whole tonnes for the readouts that print tonnes, and
   `field_ops::dry_mass_kg_for_spec` keeps returning the structural-point measure for it. A line tank tows,
   loads and partitions at 29,900 kg as before; only the readouts round it to 30 t.
+- **A templated tank is still a combat hull** unless the yard built it: `vehicle::combat_hull` and `carried_rig`
+  read a template's logistics as no logistics for a unit with no register row, so a fielded scout or tank in a
+  bay is inert cargo at its field-ops mass, as before (IN.7's story carries one to Luna); a yard-built one is a
+  rig with its locker.
 - **Buildable** — the hull recipe pack `tacsim.industry.hulls` v2 (`content/industry/hulls-v2.json`, which
   replaces v1 in `game_seed_sources`) adds one recipe a templated design beside v1's, each pinned to
   `port::bill::design_bill` by its test: the line tanks 20 t of alloys and 7 of fittings (the laser 21), two days;
@@ -975,7 +979,8 @@ masses 30 t and the slot takes 20 t"; the scout stows into the Dray-P's bay and 
 **No lane rows**: the templates, the recipes and the kits are content tables and packs of their own; the lane
 stays at main's version.
 
-**Pins moved.** `shard_2/content.rs`'s goods table (v7, the nine rows, the digest), `shard_3/capacity.rs` and
+**Pins moved.** `shard_6/vehicles.rs`'s dark-view and no-interior fixtures take the target (`target_mk1`, which
+no template names) where they took the line tank; `shard_2/content.rs`'s goods table (v7, the nine rows, the digest), `shard_3/capacity.rs` and
 `content_studio`'s goods counts (36 → 45, tacsim and mush-server).
 
 **Cell delta (rule #14).** tacsim-integration-6: _filled from the PR's JUnit_.
