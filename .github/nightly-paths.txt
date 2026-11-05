@@ -1,7 +1,8 @@
 # Doc 43 rule 2.3 #15: the source paths each nightly-, weekly- or dispatch-tier job of
 # .github/workflows/ci.yml exercises, so a pull request that touches one knows which
-# jobs to dispatch (`gh workflow run CI --ref <branch>`) and get green before it is
-# marked ready. Pull-request CI never runs these jobs; the nightly of 2026-11-05 broke
+# jobs to run at the FAST pace (`gh workflow run CI --ref <branch>`, `mind_pulse_ms`
+# empty) and get green before it is marked ready. The real-pace run is not a gate
+# (owner, 2026-11-05): the next nightly's, or fired and not waited on. Pull-request CI never runs these jobs; the nightly of 2026-11-05 broke
 # on #475, whose grace windows moved the M7 and M8 stories' pins.
 #
 # One line a path: `<job id> <tier> <path>`. The job id is the key under `jobs:` in

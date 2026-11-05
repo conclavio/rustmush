@@ -156,8 +156,15 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
     the twin of #13 for the harness). This covers a PR touching a path any nightly-, weekly- or
     dispatch-tier job of `ci.yml` exercises: M7, M8, M6, FR.7, the harness, the scale harness, the release
     build and the bot's rates.
-    - **What it must do.** Dispatch those jobs (`gh workflow run CI --ref <branch>`, or the VPS gate for
-      what runs there) and get them green before the PR is marked ready.
+    - **What it must do.** Dispatch those jobs **at the fast pace** and get them green before the PR is
+      marked ready. The fast pace is `gh workflow run CI --ref <branch>` with `mind_pulse_ms` left empty,
+      the M7 stories' 50-ms pulse (or the VPS gate, for what runs there).
+    - **What it need not wait for** (owner refinement, 2026-11-05). The real-pace run is not a gate: M7's
+      production 1,000-ms pulse adds three hours or more. It is the next nightly's, or it may be fired with
+      `-f mind_pulse_ms=1000` and not waited on. Either way its result surfaces through the nightly's
+      failure channel (the `nightly-report` job, D-43-3), not the PR's.
+    - **The tooling.** `scripts/nightly_advice.py --dispatch` fires the fast run itself;
+      `--dispatch --real-pace-too` also fires the real-pace run, to report later.
     - **The map.** `.github/nightly-paths.txt` maps paths to jobs. The `lint` cell prints "this PR should
       dispatch: …" on every pull request (`scripts/nightly_advice.py`), and the same script runs locally
       against `origin/main`. `ci_policy::nightly_paths` keeps the map true to `ci.yml`: every non-PR job

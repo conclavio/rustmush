@@ -759,3 +759,16 @@ A third test pins the tier reading on the three schedule spellings.
 **No dispatch selector was added.** `gh workflow run CI` runs every non-PR job at once, in parallel, at the fast
 pulse unless `-f mind_pulse_ms=1000` is given. A per-job `only` input would have meant an `if:` edit in thirteen
 jobs, for a saving the hosted runners do not need.
+
+**Refined the same day: the gate is the fast run** (owner, relayed 2026-11-05). In the owner's words: "we can
+leave the slow-run for the next nightly, or maybe have it fire off the nightly but not wait for it (otherwise we
+add 3+ hours to landing any PR touching a nightly)."
+- **Rule #15 now gates on the fast pace.** That is the CI dispatch with `mind_pulse_ms` empty, the M7 stories'
+  50-ms pulse; every other non-PR job has no pace input and runs as it does nightly.
+- **The real pace is not a gate.** Production's 1,000-ms pulse, the schedule's always, belongs to the next
+  nightly. It may also be fired with `-f mind_pulse_ms=1000` and left: `nightly-report` runs on dispatches too,
+  so its failure reaches the owner through D-43-3's channel, not the PR.
+- **The script follows.** `scripts/nightly_advice.py` prints the fast command as the gate and the real-pace one
+  as optional. `--dispatch` fires the fast run for the current branch, and `--dispatch --real-pace-too` also
+  fires the real-pace run, unwaited.
+- **The map's header and the lint step's comment** say "fast pace".

@@ -560,8 +560,10 @@ jobs:
         if: matrix.shard != 'lint'
         run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       # Doc 43 rule 2.3 #15: a pull request that touches a path a nightly-,
-      # weekly- or dispatch-tier job exercises dispatches those jobs before it
-      # is marked ready (the nightly of 2026-11-05 broke on #475's grace
+      # weekly- or dispatch-tier job runs those jobs at the fast pace (this
+      # workflow's dispatch, `mind_pulse_ms` empty) and gets them green before
+      # it is marked ready; the real-pace run is the nightly's, never a gate
+      # (the nightly of 2026-11-05 broke on #475's grace
       # windows, which no PR run exercises). The map is
       # .github/nightly-paths.txt (`ci_policy::nightly_paths` keeps it true to
       # this file); this step prints the jobs a PR should dispatch, as a
