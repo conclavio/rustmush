@@ -1014,6 +1014,7 @@ are green by hand and through gate.yml.
   | Sight jammed | after 7 shots, +405 s | after 1 shot, +401 s |
   | Live record's segment by then | 4 | 3 |
   | Result | green, 585 s | green, 580 s |
+  | Re-run at the PR head `28e0a372` (the free-function seam) | green, 599 s | green, 626 s |
 
   That is about ten minutes a size, down from 3,719 s, and about 340 s of it is the captain lane's clock-bound
   kit-up and hop.
