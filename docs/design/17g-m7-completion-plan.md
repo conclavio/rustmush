@@ -2674,3 +2674,10 @@ online all the time. Two of the launch's mind-licence timers were under it:
 
 The workspace guard is `mush-contract-tests`' `engine_contracts::player_wait_floors`, which
 holds both values and every cap at or above the floor.
+
+**One more mirror (found by the nightly M7 market story, 2026-11-05):** `mush-economy`'s
+`managed_charter_transfer::CharterTermBasisV1` bounded the owner licence's Grace span by
+`MAX_CHARTER_SETTLEMENT_IC_SECONDS` (3 IC days, the settlement delay it happened to equal), so
+every charter offer on a licence with 28 days of Grace refused (`Mismatch`). It now reads
+`mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS`; the settlement delay keeps its own 3-day
+bound. Pinned by `managed_charter_transfer::tests::the_owner_term_carries_a_28_ic_day_grace`.

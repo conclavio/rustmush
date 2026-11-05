@@ -98,6 +98,18 @@ fn explicit_pending_consent_rejects_old_or_crossed_actions_and_identity() -> Res
     }
     Ok(())
 }
+/// Owner rule, 2026-11-04: the owner licence's Grace is 28 IC days, longer than the 3-day
+/// settlement delay, and a pending charter still captures it; a second more refuses.
+#[test]
+fn the_owner_term_carries_a_28_ic_day_grace() -> Result {
+    let mut row = sample()?;
+    row.terms.owner_term.grace_end =
+        row.terms.owner_term.term_end + mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS;
+    row.validate()?;
+    row.terms.owner_term.grace_end += 1;
+    check!(row.validate().is_err());
+    Ok(())
+}
 #[test]
 fn deadline_is_positive_and_term_cap_may_already_be_due() -> Result {
     let mut row = sample()?;
