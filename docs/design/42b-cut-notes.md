@@ -122,3 +122,97 @@ and the pin tests run in ci.yml's tacsim shards on this PR:
 **Departures.** None from §7's row.
 
 **Cell delta.** One in-source test of about 0.2 s in the tacsim lib binary.
+
+## SU.3 — the check and the yield
+
+Q-42b-4, Q-42b-8 to Q-42b-12, Q-42b-15, Q-42b-16. A stranded raider's crew can now yield to whoever holds
+its cell, and its hull leaves the field as a casualty. No kernel step changes, and nothing is hashed.
+
+**The check** (`field/raiders.rs`, `morale`). It runs inside `lift_check`, after the decode and before any
+carrier's withdrawal reading, at the 10 s `LIFT_CHECK_MS` pace.
+- **Candidates.** Each raider hull in the field (never the carrier) whose seated crew record carries a
+  resolve under 1,000. With none, nothing is decoded.
+- **Pressure** (`Pressure`, the five provisional terms of Q-42b-4):
+  - carrier lost (a wreck, or not in the field): 400;
+  - `Arena::armed_hostiles_in_reach` (SU.2) less the raider's own standing hulls: 150 for each one of
+    excess, at most 450;
+  - the raid's lost share × 300, yields counted lost;
+  - `(1000 − health_permille) × 3/10`;
+  - leader gone: 100.
+- The sum is clamped to 1,000. The gate is carrier-lost or excess.
+- **Holder.** `eject::holding_parties` reads the eject's (a) and (b) on any hull of the decoded arena:
+  each party Hostile to the hull's party, with a live armed unit that has the hull inside its own reach,
+  nearest first. `eject::holder_of` (the eject's `holder`, made shareable) then wants a carrier of its own
+  in the field. With no holder, nothing is drawn and no step is spent (Q-42b-9).
+- **Steps.** The pass draws once for each new 100-per-mille step (`steps_due`). The draw is
+  `eject::yield_draw`, the eject's FNV-1a over `(site, ordinal, hull, step)`. It yields when the draw is
+  under `pressure × (1000 − resolve) / 1000` (`yield_chance`). The highest step drawn is kept on the mark
+  as `morale_step`.
+- **Withdrawal first.** A hull under the leader's WITHDRAW is checked only once it is not under its own
+  power: the arena's withdraw rule, mirrored on the decoded snapshot (Q-42b-16). A stranded hull has had
+  its WITHDRAW spent and is checked like any other.
+
+**The yield** (`stand_down`, `ask_yield`, `exit::Then::Yield`).
+- Before the ask, the mark gains `yielded: { carrier, ordinal, to }` and loses `carrier` and `withdraw`.
+  Every `carrier_of` reader drops the hull from then on (aboard, launch, recall, rejoin, `wreck_aboard`,
+  `lift_check`'s `launched`/`exited`), so the latent exit of §3a never reads it as boarded (Q-42b-14).
+- The no-ramp exit is asked as the leader, else the crew, with no carrier named. A busy field, or an
+  ask a restart lost, is asked again at the next pass.
+- `on_withdrawn` checks the hull in through the IC condition plan. `check_in` writes the crew `Unit` or
+  `Stranded` in it. The hull never boards, even after a restart.
+- `raiders::on_yielded` tells the site "The {hull} stands down: its crew yield to party {X}. It is out of
+  the fight, and anyone may take it in." Once no hull of the raider stands un-yielded in the field,
+  `lift_marks` drops the leader's party's `stance_hostile` rows from the live record and clears each of
+  its marks in the kernel (`ArenaMsg::Mark { mark: None }`), so the field can end by disengagement
+  (Q-42b-10).
+- `lift_check` counts the raider's yielded hulls (`yielded_of`) as launched and lost for the director's
+  `RaidReading` (Q-42b-16). A carrier whose other hulls are aboard or down lifts and leaves the yielded
+  hull behind.
+
+**The casualty** (Q-42b-12, Q-42b-13).
+- `close::demote_units` ends with `raiders::keep_yielded`. Every yielded hull standing on the site's
+  ground that no row holds yet is written as a `Casualty` at its pose, so every tow rule for a casualty
+  applies once the field demotes.
+- A yielded hull is clutter afterwards:
+  - a later field's admission lays it as a held wall unless it is in tow;
+  - `site_population` never counts it;
+  - a running field never joins it.
+- `@tacsim/site` lists it "casualty, yielded".
+
+**Gate.**
+- In-source tests:
+  - `su3_pressure_opens_on_odds_or_the_carrier_and_sums_its_terms`;
+  - `su3_resolve_weights_the_chance_and_steps_are_drawn_once`;
+  - `eject::su3_the_yield_draw_is_keyed_by_the_step`.
+- Stories in `domain_field/surrender.rs` (`support/field/surrender_rig.rs`), each at 256 (Ahuna Flank)
+  and 512 (Urvara Reach). The content's raider is seeded and launched through `@field/raiders`, its barge
+  is gone, and a stranger marks it Hostile with the Red Hound west of the ramp and the Red Moth on the
+  pad:
+  - **the yield:** the crew at 0 (hull stripped) yields to the stranger's party. The mark keeps its
+    carrier and step, the hull leaves the field, the crew record stays in the hull, the crew at 1,000
+    never draws, and after the demotion the hull is a casualty listed "yielded";
+  - **(s2)** both crews at 1,000: nothing yields;
+  - **(s3)** the Red Moth gone too: no holder, no yield, no step;
+  - **(s5)** a crash right after the yield is marked: the mark is unchanged across the restart, and the
+    resumed field lets the hull out with the step unchanged.
+- Green with morale live at the shipped resolves:
+  - the existing raider stories in `domain_field` (`field_raiders::`, `field_director::` both gc11
+    stories, `field_fr2::`, `field_gc10::`, `field_boarding::`, `testimony::`, `field_story::`,
+    `crew_custody::`): 36 passed.
+
+**Departures from §7's row.**
+- `left_condition` is unchanged. The yielded hull's casualty row comes from `keep_yielded` at the close.
+  Its exit's own check-in writes nothing to the record (an exit never does), so the row has to be laid
+  where the close lays its units.
+- The holder read is host-side over the decoded arena's public state, not a new arena read. `eject_read`
+  refuses a hull that is not doomed, so it cannot be reused. Writing the read in `field/eject.rs` keeps
+  SU.3 off the hash-pinned arena files.
+- The site line goes to the site's seated pilots and rig operators (`tell_site`). The cockpit draws
+  nothing new (Q-42b-13).
+- Also touched: `field/admit.rs`, `field/carrier.rs` and `field/parties.rs` (the clutter rule);
+  `field/boarding.rs` and `field/home.rs` (the new `Then` arm); `surface/site_record.rs` (the listing).
+  `crew::set_resolve_for_tests` is a `#[doc(hidden)]` seam for the stories, never called by the game.
+
+**Cell delta (rule #14).** `domain_field` gains eight stories (`surrender::`), 108.6 s wall in parallel on
+the Windows host. The per-shard summed minutes come off this PR's CI JUnit and are recorded here before
+the PR goes ready. The lib gains three in-source tests of well under a second.

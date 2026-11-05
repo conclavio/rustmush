@@ -399,6 +399,8 @@ pub(crate) fn demote_units(
     crate::surface::tow::set_down(ctx, site, units, &mut left, side);
     // Doc 36a lane 3 (P0-8): a hull the field never held keeps the row an earlier field gave it.
     keep_held_out(ctx, site, units, &mut left, &remains, side);
+    // Doc 42b cut SU.3 (Q-42b-12): a yielded raider hull stands on the ground as a casualty.
+    super::raiders::keep_yielded(ctx, site, &mut left, side);
     Demoted {
         left,
         remains,

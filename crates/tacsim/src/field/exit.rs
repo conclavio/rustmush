@@ -88,6 +88,10 @@ pub(crate) enum Then {
     /// F-6's departure, run by the host for the NPC carrier): off the site's ground
     /// (`super::raiders::lift`).
     RaiderLift,
+    /// **A raider's hull whose crew yielded** (doc 42b cut SU.3, Q-42b-11): out by the no-ramp
+    /// exit, never aboard, standing at its field pose as a casualty (Q-42b-12); then its old
+    /// carrier's lift check, since a yield is lost to the raid, never exited (Q-42b-16).
+    Yield,
     /// **Doc 40 cut FR.5 (Q-40-25)**: a casualty in tow, out at the ramp with its tug
     /// ([`request_coupled`]); nothing runs for it — its tug's [`Then::TowLoad`] loads it.
     Towed {
@@ -220,6 +224,7 @@ pub(crate) fn request(
         Then::Rig { .. }
         | Then::Sortie { .. }
         | Then::Raider
+        | Then::Yield
         | Then::Towed { .. }
         | Then::TowLoad { .. } => EXIT_ASKED
             .replace("{unit}", &unit.0.to_string())
@@ -482,9 +487,14 @@ pub(crate) fn on_withdrawn(
                 && super::raiders::carrier_of(ctx.w, unit).is_some()
         },
         |asked| asked.then == Then::Raider,
-    );
+    ) && !super::raiders::yielded(ctx.w, unit);
     if raider && let Err(error) = super::raiders::board(ctx, unit) {
         tracing::error!(site = %site, unit = unit.0, %error, "tacsim: a raider's hull out at its ramp could not go aboard");
+    }
+    // Doc 42b cut SU.3 (Q-42b-13): a yield is told to the site, and the last one lifts the
+    // leader's marks. Known by its mark, so a yield whose ask a restart lost still tells.
+    if super::raiders::yielded(ctx.w, unit) {
+        super::raiders::on_yielded(ctx, &site, unit);
     }
     // Doc 40 (the ramp exit's boarding window, player hulls): a player's hull boards as a later
     // step, so the host remembers it until it is aboard (`super::boarding`).
@@ -779,7 +789,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if let Err(error) = ran {
             let what = match asked.then {
                 Then::Lift { .. } => "departure did not file",
-                Then::RaiderLift => "lift did not finish",
+                Then::RaiderLift | Then::Yield => "lift did not finish",
                 Then::TowLoad { .. } | Then::Towed { .. } => "load did not file",
                 Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => "recover did not start",
             };
@@ -827,7 +837,7 @@ fn continue_recover(
         }
         // Doc 40 (the ramp exit's boarding window): the hull went aboard when it was let go
         // ([`on_withdrawn`]); with its exit on the record, its carrier may lift.
-        Then::Raider => {
+        Then::Raider | Then::Yield => {
             super::raiders::lift_check(ctx, site);
             Ok(())
         }

@@ -207,7 +207,12 @@ pub(crate) fn site_population(
     let carried = record.map(crate::surface::tow::carried).unwrap_or_default();
     let units: Vec<ObjId> = on_ground(w, domain)
         .into_iter()
-        .filter(|unit| !carried.contains_key(unit) && !super::admit::held_out(w, *unit))
+        .filter(|unit| {
+            !carried.contains_key(unit)
+                && !super::admit::held_out(w, *unit)
+                // Doc 42b cut SU.3: a yielded hull is clutter, never admitted, never counted.
+                && !super::raiders::yielded(w, *unit)
+        })
         .collect();
     let ground = record.map_or(units.len(), |record| counted(&units, record));
     // Doc 40 cut FR.3 (Q-40-24): the launches in flight — each live pending row whose hull is

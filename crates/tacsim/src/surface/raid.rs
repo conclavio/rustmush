@@ -458,7 +458,8 @@ pub(crate) struct RaidReading {
     pub at_ms: i64,
     /// Hulls launched into this field (in it now, or out at the ramp).
     pub launched: usize,
-    /// Of them, the casualties and wrecks.
+    /// Of them, the casualties and wrecks, and (doc 42b cut SU.3, Q-42b-16) every hull whose
+    /// crew yielded: a yield is lost, never exited.
     pub lost: usize,
     /// Whether one of its hulls holds an armed hostile party in reach.
     pub in_reach: bool,

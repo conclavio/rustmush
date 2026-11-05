@@ -825,6 +825,7 @@ pub(crate) fn launches(
                 && !live.owed_exits.iter().any(|owed| owed.unit == *unit)
                 && !mush_sim::deployed::is_deployed(ctx.w, *unit)
                 && !super::admit::held_out(ctx.w, *unit)
+                && !super::raiders::yielded(ctx.w, *unit)
                 && !carried.contains_key(unit)
                 && !record.as_ref().is_some_and(|record| record.exited(*unit))
                 && !super::exit::leaving(ctx.w, site, *unit)

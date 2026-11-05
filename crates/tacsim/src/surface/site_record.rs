@@ -1824,8 +1824,14 @@ fn cell_word(word: Option<&str>, side: u16) -> Option<(i64, i64)> {
 }
 
 /// **The whole record, staff truth** (`@tacsim/site <site>`): never a player's view (Q-CF-28).
+/// A casualty `yielded` names is marked *yielded* (doc 42b cut SU.3, Q-42b-13).
 #[must_use]
-pub fn record_lines(name: &str, site: &CanonicalId, record: Option<&SiteRecord>) -> Vec<String> {
+pub fn record_lines(
+    name: &str,
+    site: &CanonicalId,
+    record: Option<&SiteRecord>,
+    yielded: &dyn Fn(ObjId) -> bool,
+) -> Vec<String> {
     let Some(record) = record else {
         return vec![format!(
             "Site record of {name} ({site}): no field yet, nothing on the ground."
@@ -1851,9 +1857,10 @@ pub fn record_lines(name: &str, site: &CanonicalId, record: Option<&SiteRecord>)
     for unit in &record.units {
         let (x, y) = unit.pose.cell();
         lines.push(format!(
-            "Unit #{}: {} at ({x}, {y}), left at IC {}{}.",
+            "Unit #{}: {}{} at ({x}, {y}), left at IC {}{}.",
             unit.unit.0,
             unit.condition.word(),
+            if yielded(unit.unit) { ", yielded" } else { "" },
             unit.left_ic,
             unit.epoch
                 .map_or_else(String::new, |epoch| format!(", epoch {epoch} open"))
@@ -1938,7 +1945,8 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
         .filter(|record| record.key() == key);
     let name = crate::surface::act::site_name(ctx.w, &site);
     let Some(op) = words.next() else {
-        for line in record_lines(&name, &site, record.as_ref()) {
+        let yielded = |unit: ObjId| crate::field::raiders::yielded(ctx.w, unit);
+        for line in record_lines(&name, &site, record.as_ref(), &yielded) {
             ctx.out.sys_to_actor(ctx.actor, "tacsim", line);
         }
         return Ok(());
