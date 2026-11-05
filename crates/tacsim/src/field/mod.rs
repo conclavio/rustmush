@@ -305,6 +305,7 @@ pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(FieldBook::default());
     reg.state(admit::OwedCloses::default());
+    reg.state(close::OwedUnplaces::default());
     reg.state(known::Sightings::default());
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());

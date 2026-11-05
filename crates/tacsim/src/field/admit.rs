@@ -78,6 +78,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
     }
     super::boot::run_held(ctx);
     submit_owed(ctx);
+    // Doc 38a F-03: the irrecoverable claimed hulls whose claims have let them go.
+    super::close::land_owed_unplaces(ctx);
     // Doc 32 cut CF.5: the exits at the ramp and the extractions due.
     super::exit::tick(ctx);
     super::crew::tick(ctx);

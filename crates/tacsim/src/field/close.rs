@@ -25,6 +25,8 @@
 //! snapshot the world holds**: its units' cells and poses are the return. With no snapshot every
 //! unit checks in as it went out, which is what the snapshot would have said.
 
+use std::collections::BTreeSet;
+
 use mush_core::{CanonicalId, Ctx, ObjId};
 
 use super::FieldBook;
@@ -315,7 +317,14 @@ pub(crate) fn demote_units(
             let at = back
                 .map(|back| back.pose.clone())
                 .or_else(|| mush_sim::pose_of(ctx.w, *unit).map(|(_, at)| at));
-            if mush_sim::pose_of(ctx.w, *unit).is_some()
+            // Doc 38a F-03: a hull its claim still holds in its hangar cannot be unplaced (the
+            // exclusion refuses it until the claim's `Destroyed` Close lands), so it is owed the
+            // unplace, which the host's tick lands once the claim lets it go.
+            if owes_unplace(&crate::minds::ic_sortie::claim_of(ctx.w, *unit)) {
+                if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+                    owed.units.insert(*unit);
+                }
+            } else if mush_sim::pose_of(ctx.w, *unit).is_some()
                 && let Err(error) =
                     mush_sim::unplace(ctx, *unit, "tacsim: an irrecoverable hull leaves remains")
             {
@@ -513,5 +522,87 @@ fn wreck_bay_rigs(ctx: &mut Ctx<'_>, carrier: ObjId) {
                 tracing::warn!(carrier = carrier.0, rig = rig.0, %error, "tacsim: a wrecked carrier's bay rig could not be wrecked");
             }
         }
+    }
+}
+
+/// **The irrecoverable hulls owed their unplacing** (doc 38a F-03): each claimed hull a field
+/// checked in irrecoverable while its claim still held it, its remains already on the record.
+/// RAM, rebuilt at the first tick after a boot from every lane site's remains that still name a
+/// hull standing on the surface ([`land_owed_unplaces`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OwedUnplaces {
+    units: BTreeSet<ObjId>,
+    scanned: bool,
+}
+
+/// Whether a hull whose claim reads `claim` must wait to be unplaced: its claim still holds it
+/// in its hangar (doc 38a F-03).
+pub(crate) const fn owes_unplace(claim: &crate::minds::ic_sortie::ClaimRead) -> bool {
+    matches!(claim, crate::minds::ic_sortie::ClaimRead::Active { .. })
+}
+
+/// **Unplace every owed hull its claim has let go** (doc 38a F-03; the host's tick): a hull still
+/// held waits; one no longer on the surface is forgotten.
+pub(crate) fn land_owed_unplaces(ctx: &mut Ctx<'_>) {
+    let scan = ctx
+        .w
+        .module_state::<OwedUnplaces>()
+        .is_some_and(|owed| !owed.scanned);
+    if scan {
+        let mut found = BTreeSet::new();
+        for site in crate::surface::chart::lane_sites(ctx.w) {
+            let Some(record) = site_record(ctx, &site.entry) else {
+                continue;
+            };
+            for object in &record.objects {
+                if let crate::surface::site_record::GroundKind::Remains { of: Some(unit), .. } =
+                    object.kind
+                    && mush_sim::pose_of(ctx.w, unit).is_some()
+                {
+                    found.insert(unit);
+                }
+            }
+        }
+        if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+            owed.units.extend(found);
+            owed.scanned = true;
+        }
+    }
+    let units: Vec<ObjId> = ctx
+        .w
+        .module_state::<OwedUnplaces>()
+        .map(|owed| owed.units.iter().copied().collect())
+        .unwrap_or_default();
+    for unit in units {
+        if owes_unplace(&crate::minds::ic_sortie::claim_of(ctx.w, unit)) {
+            continue;
+        }
+        if mush_sim::pose_of(ctx.w, unit).is_some()
+            && let Err(error) =
+                mush_sim::unplace(ctx, unit, "tacsim: an irrecoverable hull leaves remains")
+        {
+            tracing::warn!(unit = unit.0, %error, "tacsim: an owed irrecoverable hull could not be taken off the surface");
+            continue;
+        }
+        if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+            owed.units.remove(&unit);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Doc 38a F-03: an irrecoverable hull its claim still holds waits for its unplacing.** The
+    /// exclusion refuses any unplacing of a held hull until the claim's `Destroyed` Close lands,
+    /// so the check-in owes it; an unclaimed hull is unplaced at once.
+    #[test]
+    fn f03_a_held_irrecoverable_hull_is_owed_its_unplacing() {
+        assert!(owes_unplace(&crate::minds::ic_sortie::ClaimRead::Active {
+            open: mush_core::CommitToken::from_bytes([7; 16]),
+            dispatcher: ObjId(42),
+        }));
+        assert!(!owes_unplace(&crate::minds::ic_sortie::ClaimRead::None));
     }
 }
