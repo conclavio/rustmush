@@ -807,10 +807,12 @@ fn recovery_config(
     }
     // Doc 41 cut RS.3: the window is read whatever `enabled` says (it times every salvage
     // claim, not the loaner provider), so it is checked whatever `enabled` says.
-    if !(1..=365).contains(&cfg.claim_window_ic_days) {
+    // Doc 41 cut RS.10: at least the owner's 28-IC-day floor on a wait for a player's answer.
+    if !(tacsim::config::MIN_CLAIM_WINDOW_IC_DAYS..=365).contains(&cfg.claim_window_ic_days) {
         return Err(format!(
-            "[tacsim.recovery]: `claim_window_ic_days` is between 1 and 365 IC days; `{}` is a \
-             window no claim can run",
+            "[tacsim.recovery]: `claim_window_ic_days` is between {} and 365 IC days; `{}` is a \
+             window no claim may run",
+            tacsim::config::MIN_CLAIM_WINDOW_IC_DAYS,
             cfg.claim_window_ic_days
         ));
     }

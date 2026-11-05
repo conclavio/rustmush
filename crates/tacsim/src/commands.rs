@@ -378,6 +378,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "report",
                 "inspect",
                 "authorize",
+                "ask",
+                "refuse",
                 "retrieve",
                 "jobs",
                 "accept",

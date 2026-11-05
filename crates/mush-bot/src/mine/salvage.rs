@@ -154,6 +154,15 @@ fn tender_tail(tail: &str, go: bool) -> bool {
         && points.is_none_or(|p| p == "all" || number(p, 4))
 }
 
+/// A block, `<site>/<letter>`.
+fn block(s: &str) -> bool {
+    s.split_once('/').is_some_and(|(site, letter)| {
+        word(site)
+            && letter.len() == 1
+            && ('A'..='P').contains(&letter.chars().next().unwrap_or('?'))
+    })
+}
+
 /// Everything after `+salvage/`.
 fn salvage_switch(rest: &str) -> bool {
     if rest == "jobs" {
@@ -193,15 +202,13 @@ fn salvage_switch(rest: &str) -> bool {
                 }
                 None => grantee,
             };
-            let block = |s: &str| {
-                s.split_once('/').is_some_and(|(site, letter)| {
-                    word(site)
-                        && letter.len() == 1
-                        && ('A'..='P').contains(&letter.chars().next().unwrap_or('?'))
-                })
-            };
             who(grantee) && (block(what) || hull(what))
         }
+        // RS.10: `<site>/<block> [go]`, and the landholder's `<site>/<block>=<who> [go]`.
+        "ask" => block(body),
+        "refuse" => body
+            .split_once('=')
+            .is_some_and(|(what, grantee)| block(what) && who(grantee)),
         "retrieve" => {
             // RS.5 (Q-41-9): `<hull>[=<port>] [fee=<cr>] [go]`.
             let (head, fee) = match body.rsplit_once(" fee=") {
@@ -428,6 +435,9 @@ mod tests {
             "+salvage/authorize #812=Orin go",
             "+salvage/authorize #812=Orin until=1790000000 go",
             "+salvage/authorize urvara/G=Orin go",
+            "+salvage/ask urvara/G",
+            "+salvage/ask urvara/G go",
+            "+salvage/refuse urvara/G=Orin go",
             "+salvage/retrieve #812",
             "+salvage/retrieve #812=ceres fee=4000 go",
             "+salvage/jobs",
@@ -470,6 +480,10 @@ mod tests {
             "+salvage/authorize #812",
             "+salvage/authorize #812=Orin until=soon",
             "+salvage/authorize urvara/Q=Orin",
+            "+salvage/ask urvara",
+            "+salvage/ask urvara/Q go",
+            "+salvage/refuse urvara/G",
+            "+salvage/refuse #812=Orin go",
             "+salvage/retrieve #812=Ceres Freeport",
             "+salvage/accept",
             "+salvage/forsale",

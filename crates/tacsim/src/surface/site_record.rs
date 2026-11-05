@@ -494,6 +494,12 @@ pub struct SiteRecord {
     /// landholder delegated on is byte-identical to GC.6's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub land_grants: Vec<crate::surface::claim::LandGrant>,
+    /// **The salvors' asks for a landholder's consent** (doc 41 cut RS.10): one row a block, landholder
+    /// and asker, answered by a delegation or a refusal, consent after 28 IC days of silence; at most
+    /// [`crate::surface::claim::MAX_LAND_GRANTS`]. Omitted while empty, so a record nobody asked on
+    /// is byte-identical to RS.3's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consent_asks: Vec<crate::surface::claim::ConsentAsk>,
     /// **The launches accepted onto this ground and not yet down** (doc 40 cut FR.3; Q-40-24), in
     /// hull order, at most [`FIELD_MAX_UNITS`]: written by the launch's own transaction, so the
     /// one count (`field::parties::site_population`) sees a launch in flight, and the
@@ -598,6 +604,7 @@ impl SiteRecord {
             custody: Vec::new(),
             unlawful: Vec::new(),
             land_grants: Vec::new(),
+            consent_asks: Vec::new(),
             pending: Vec::new(),
         }
     }
@@ -709,6 +716,7 @@ impl SiteRecord {
             && self.custody.is_empty()
             && self.unlawful.is_empty()
             && self.land_grants.is_empty()
+            && self.consent_asks.is_empty()
     }
 
     /// **What `principal` remembers here** (doc 32 cut CF.4), most recently learned first.
@@ -1198,6 +1206,12 @@ impl SiteRecord {
         if self.land_grants.len() > crate::surface::claim::MAX_LAND_GRANTS {
             return Err(format!(
                 "a site record keeps at most {} recovery delegations",
+                crate::surface::claim::MAX_LAND_GRANTS
+            ));
+        }
+        if self.consent_asks.len() > crate::surface::claim::MAX_LAND_GRANTS {
+            return Err(format!(
+                "a site record keeps at most {} consent asks",
                 crate::surface::claim::MAX_LAND_GRANTS
             ));
         }
