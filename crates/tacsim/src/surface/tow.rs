@@ -2088,6 +2088,11 @@ impl TowProvider {
                 tracing::warn!(tv = tv.0, object = facts.object, %error, "tacsim: remains' alloys would not mint; the scrap refuses");
                 refused("scrap_unminted")
             })?;
+            // The owner's IN.11 census ruling: the minted alloys, a source the census counts.
+            record.matter.scrapped_kg = record
+                .matter
+                .scrapped_kg
+                .saturating_add(alloys_t.saturating_mul(crate::port::bay_work::KG_PER_T));
         }
         if facts.lawful {
             return Ok("scrapped:lawful".to_owned());
@@ -2220,6 +2225,7 @@ impl TowProvider {
         // The work already landed on the unit (the load's precedent), so a short store never
         // undoes it: the finish takes what is there and says so.
         let mut short = false;
+        let mut taken: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         if let Some(inventory) = self.inventory.as_ref() {
             let stores = mush_inventory::EndpointRef(mush_economy::VaultId(draw.stores));
             for (good, qty) in &draw.debit {
@@ -2228,6 +2234,7 @@ impl TowProvider {
                     .map_err(|_| integrity("the stores cannot be read"))?;
                 let take = have.min(*qty);
                 short |= take < *qty;
+                taken.insert(good.clone(), take);
                 if take > 0 {
                     inventory
                         .debit(txn, stores, good, take)
@@ -2242,6 +2249,23 @@ impl TowProvider {
             let existed = found.is_some();
             let mut rig =
                 found.unwrap_or_else(|| crate::surface::excursion::RigRecord::fresh_unread(tv));
+            // The owner's IN.11 census ruling: the kilograms consumed into the hull, by what the
+            // stores gave.
+            let took = |good: &str| {
+                taken
+                    .iter()
+                    .find(|(g, _)| g.as_str() == good)
+                    .map_or(0, |(_, t)| *t)
+            };
+            let consumed = crate::port::bay_work::Bale::consumed(
+                rig.bale,
+                (
+                    took(crate::surface::tender::ALLOYS),
+                    took(crate::surface::tender::FITTINGS),
+                ),
+                after,
+            );
+            record.matter.repaired_kg = record.matter.repaired_kg.saturating_add(consumed);
             rig.bale = Some(after);
             act::write_record(txn, &self.excursions, rig, existed)?;
         }
