@@ -2418,7 +2418,8 @@ fn sm5_strip_ore_rebuilds_the_published_v10() {
 /// **Only Ceres bids ore** (§7.3): the four ore bids are the Exchange's three and Occator's
 /// one, each with its refresh; no other vendor bids, asks or stocks an ore good but Freeport
 /// Works, which stocks and asks carbon ore for the works (doc 39 cut IN.5), and Stickney Yards,
-/// which bids strategic ore for the sights (doc 39 cut IN.7).
+/// which bids strategic ore for the sights (doc 39 cut IN.7) and stocks and bids carbon ore for
+/// the Stickney works (lane v33, the owner's IN.11 house-restock ruling).
 #[test]
 fn sm5_only_ceres_bids_ore() {
     let pack = lane();
@@ -2444,15 +2445,17 @@ fn sm5_only_ceres_bids_ore() {
                     ));
                 }
             }
+            // Lane v33: the Yards' carbon stock is the one ore row a vendor but Freeport Works keeps.
+            let yards_carbon =
+                |good: &str| vendor.org.as_str() == "stickney_yards" && good == "carbon_ore";
             assert!(
                 !vendor
                     .asks
                     .iter()
                     .any(|a| ORE_GOODS.contains(&a.good.as_str()))
-                    && !vendor
-                        .stock
-                        .iter()
-                        .any(|s| ORE_GOODS.contains(&s.good.as_str())),
+                    && !vendor.stock.iter().any(|s| {
+                        ORE_GOODS.contains(&s.good.as_str()) && !yards_carbon(s.good.as_str())
+                    }),
                 "{id} {}: nobody asks or stocks ore",
                 vendor.org
             );
@@ -2483,6 +2486,15 @@ fn sm5_only_ceres_bids_ore() {
                 700,
                 12,
                 Some((2, 12)),
+            ),
+            // Lane v33 (the owner's IN.11 ruling): the Yards bid for the works' carbon.
+            (
+                "stickney_port".to_owned(),
+                "stickney_yards".to_owned(),
+                "carbon_ore".to_owned(),
+                60,
+                20,
+                Some((2, 20)),
             ),
         ]
     );

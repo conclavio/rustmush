@@ -1006,6 +1006,18 @@ fn seller(
                 .find(|ask| &ask.good == good)
                 .map(|ask| (v.clone(), ask.price_major))
         })
+        // The owner's IN.11 ruling (lane v33): a vendor that stocks a good and bids for it, with
+        // no ask (a vendor never both asks and bids one good), sells the house its stock at its
+        // bid — Stickney Yards' carbon, which the works' plants take.
+        .or_else(|| {
+            def.vendors.iter().find_map(|v| {
+                let stocked = v.stock.iter().any(|row| &row.good == good);
+                v.bids
+                    .iter()
+                    .find(|bid| stocked && &bid.good == good)
+                    .map(|bid| (v.clone(), bid.price_major))
+            })
+        })
         .and_then(|(v, major)| {
             minor_of(major, scale)
                 .and_then(|minor| u64::try_from(minor).ok())

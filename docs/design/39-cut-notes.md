@@ -960,10 +960,8 @@ rest runner speed on unchanged tests.
 **Owed / flagged.**
 - Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the yard, so
   `FLOORS` carries the Trust's row alone.
-- **A house restock of the stores** (IN.7's flag): nothing refills the Yards' part stores, so with the seeds
-  retired a house Dray waits on a hauler plant someone made or scrapped there. Ordering the plant at the works
-  (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
-  the owner.
+- **A house restock of the stores** (IN.7's flag): ruled by the owner on 2026-11-05 and built. See IN.11's rulings
+  below.
 
 ## IN.11 — the matter story and the adversarial set (Q-39-8, Q-38-29)
 
@@ -1031,6 +1029,29 @@ lines: `+yard`, `+market/sell <n>=1`, `customs`/`service`, `+bay <mark|#n>`, `+b
 `+bay/fit #n=<slot> <part>`; readers `yard_booked`, `commissioned`, `bay_ref`. About 29 minutes a site locally.
 
 **The owner's rulings on the four flagged items (2026-11-05).**
+- **The house restock: "letting the house order take longer is a more real test than adding a house restock".**
+  Built. The house order makes a part its stores lack.
+  - When the Yards' stores hold no hauler plant, the helm books `plant_hauler` at the Stickney works for the Trust
+    (`HouseOrder::part`). It buys that order's bill into its escrow the same way it buys the Dray's: 25 t of
+    Kasei's alloys, 8 t of the Yards' fittings, 2 t of carbon.
+  - The works makes the plant over 480 work units, 20 IC days, and IN.7's commission traces it. The helm then
+    moves it from that escrow into the Dray's (`works::collect_into`, a `Then::Collected` move that closes the plant
+    order).
+  - `pools::price_minor` prices a missing part at its works order: the bill at the port's sellers, the works' fee and
+    its booking fee. The due estimate and `NO_HULL_ON_ORDER` add the part's days. On the shipped lane the Dray is
+    172,832 cr this way, against 165,290 with a plant in the stores.
+  - **The carbon (the owner's choice of option (a)): lane v33 / relay v24.** Stickney Yards gains a 20 t carbon stock
+    row and a bid at 60 (intake 20, refresh 2 a day to 20, exchange and yard boards). "Carbon from Ceres" stays in the
+    lore: the stock stands for what traders hauled in.
+  - The lane refuses a vendor that both asks and bids one good. So the Yards carry no carbon ask, and the house
+    arm's `seller` buys a good a vendor stocks and bids for, with no ask anywhere at the port, at that bid.
+  - `lane_chain::strip_stickney_carbon` heads the strip chain (`strip_strategic_ask` calls it first).
+    `in11_strip_stickney_carbon_rebuilds_the_published_v32` holds it to IN.11's v32 digest (`aa5d90fb…`). The pins:
+    `LANE_DIGEST` `f645d378…`, the relay `5debfb2c…`, and the version asserts.
+  - The story: `in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home` seeds no plant now. It asserts
+    the plant's works order (at the works, `plant_hauler`, booked by the helm), that order collected into the Dray's,
+    and the hand-over 32–40 IC days after the order (38 locally). The IN.11 census holds across the whole window, the
+    works order's loss included in `worked`. IN.10's row (§9) now reads thirty-two days, not fourteen.
 - **A competing reservation at the deadline: as built is right.** Each order's materials sit in its own escrow, so two
   reservations never compete for one pool, and an overdue reservation is the sweep's. The row (§9) now says so; nothing
   is owed.

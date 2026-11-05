@@ -1013,8 +1013,8 @@ fn sm2_the_lane_carries_six_sites() {
     // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
     // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 32,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 42 cut CR.2, v24 since doc 39 cut IN.5, v26 since doc 39 cut IN.7, v27 since doc 39 cut IN.9, v28 since doc 41 cut RS.6a, v29 since doc 39 cut IN.10, v31 since the player-response floor, v32 since doc 39 cut IN.11"
+        LANE_VERSION, 33,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 42 cut CR.2, v24 since doc 39 cut IN.5, v26 since doc 39 cut IN.7, v27 since doc 39 cut IN.9, v28 since doc 41 cut RS.6a, v29 since doc 39 cut IN.10, v31 since the player-response floor, v32 since doc 39 cut IN.11, v33 since the owner's IN.11 house-restock ruling"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
