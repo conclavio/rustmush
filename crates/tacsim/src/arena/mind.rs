@@ -6498,11 +6498,13 @@ mod tests {
         if let Some(row) = arena.minds.get_mut(&RED) {
             row.think_seq = 9;
             row.memory = withdraw_seed();
+            // A contact's range memory: an integer-keyed map, as a thinking row holds.
+            row.ranges.insert(crate::arena::state::ContactId(3), 450);
         }
         let snapshot = crate::arena::Snapshot::encode(&arena).expect("encodes");
         let row = crate::field::mind_in_document(&snapshot.document, RED).expect("the row");
         assert_eq!(row.think_seq, 9);
         assert_eq!(row.memory, withdraw_seed());
-        assert!(crate::field::mind_in_document(&snapshot.document, BLUE).is_none());
+        assert!(crate::field::mind_in_document(&snapshot.document, BLUE).is_err());
     }
 }

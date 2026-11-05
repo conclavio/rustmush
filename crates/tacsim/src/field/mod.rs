@@ -251,26 +251,44 @@ pub fn live_on(w: &World, site: &CanonicalId) -> Option<FieldLive> {
 }
 
 /// **`unit`'s mind row in the last snapshot of the field on `site`** (doc 23 cut D-23-18: what
-/// the carried-memory story reads its `think_seq` and memory off), when the world holds one.
-#[must_use]
+/// the carried-memory story reads its `think_seq` and memory off), or why there is none.
+///
+/// # Errors
+///
+/// No snapshot held for the site, or [`mind_in_document`]'s.
 pub fn snapshot_mind(
     w: &World,
     site: &CanonicalId,
     unit: ObjId,
-) -> Option<crate::arena::mind::MindState> {
-    mind_in_document(w.module_state::<FieldBook>()?.snapshot(site)?, unit)
+) -> Result<crate::arena::mind::MindState, String> {
+    let document = w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.snapshot(site))
+        .ok_or_else(|| "no snapshot held".to_owned())?;
+    mind_in_document(document, unit)
 }
 
 /// **`unit`'s mind row in an arena snapshot document** (doc 23 cut D-23-18): the document's
-/// `state` is its escaped text, whose `minds` are keyed by the unit's id.
-#[must_use]
+/// `state` is its escaped text, whose `minds` are keyed by the unit's id; the row is decoded
+/// from its own text, as the snapshot's decode reads it.
+///
+/// # Errors
+///
+/// A document with no state text, no row for the unit, or a row that does not decode.
 pub fn mind_in_document(
     document: &serde_json::Value,
     unit: ObjId,
-) -> Option<crate::arena::mind::MindState> {
-    let state: serde_json::Value = serde_json::from_str(document.get("state")?.as_str()?).ok()?;
-    let row = state.get("minds")?.get(unit.0.to_string())?;
-    serde_json::from_value(row.clone()).ok()
+) -> Result<crate::arena::mind::MindState, String> {
+    let text = document
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "no state text".to_owned())?;
+    let state: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let row = state
+        .get("minds")
+        .and_then(|minds| minds.get(unit.0.to_string()))
+        .ok_or_else(|| format!("no mind row for #{}", unit.0))?;
+    serde_json::from_str(&row.to_string()).map_err(|e| format!("the row does not decode: {e}"))
 }
 
 /// The `[tacsim.field]` the server runs under.

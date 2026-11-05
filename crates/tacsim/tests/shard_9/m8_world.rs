@@ -2917,14 +2917,18 @@ async fn licensed_field_story(at: &FieldSite, carry: bool) {
     // D-23-18: rig 1's row as the field's own cadence last saved it.
     let mut first = None;
     if carry {
+        let mut why = String::new();
         assert!(
-            crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
-                first = tacsim::field::snapshot_mind(rig.tw.world(), &site, tv)
-                    .filter(|row| row.think_seq > 0);
+            crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+                match tacsim::field::snapshot_mind(rig.tw.world(), &site, tv) {
+                    Ok(row) if row.think_seq > 0 => first = Some(row),
+                    Ok(row) => why = format!("think_seq {}", row.think_seq),
+                    Err(error) => why = error,
+                }
                 first.is_some()
             })
             .await,
-            "the field snapshots rig 1's thinking row"
+            "the field snapshots rig 1's thinking row: {why}"
         );
     }
     // 4. The raiders withdraw (the field story's own ending), their barge lifts and the field
@@ -2956,7 +2960,16 @@ async fn licensed_field_story(at: &FieldSite, carry: bool) {
     } else {
         drop(kept);
     }
-    // 5. Home: the Close over the live hull, the seat released.
+    // 5. Home: the Close over the live hull, the seat released. The field's close lands on the
+    // site record first (a surface act on a site still promoted waits for it to settle).
+    assert!(
+        crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+            crate::field_host_rig::site_record_at(rig, at.entry)
+                .is_some_and(|record| record.promoted.is_none())
+        })
+        .await,
+        "the field's close lands on the site record"
+    );
     // The pilot's own start (a tick's submission may sit beside it in the queue), landed on
     // the composed path; the recover's finish and the claim's Close are the composed ticks'.
     let (out, queued) = crate::driving_rig::command(&mut rig, pilot, "+tv/1 recover go");
@@ -3104,13 +3117,17 @@ async fn carried_memory(
         "rig 1 is admitted to the second field under its seal"
     );
     let mut second = None;
+    let mut why = String::new();
     assert!(
-        crate::field_host_rig::until_composed(&mut rig, rx, lines, 120, |rig, _| {
-            second = tacsim::field::snapshot_mind(rig.tw.world(), site, tv);
+        crate::field_host_rig::until_composed(&mut rig, rx, lines, 300, |rig, _| {
+            match tacsim::field::snapshot_mind(rig.tw.world(), site, tv) {
+                Ok(row) => second = Some(row),
+                Err(error) => why = error,
+            }
             second.is_some()
         })
         .await,
-        "the second field snapshots rig 1's row"
+        "the second field snapshots rig 1's row: {why}"
     );
     let second = second.expect("the second field's row");
     eprintln!(
