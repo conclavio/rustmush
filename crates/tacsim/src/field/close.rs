@@ -25,6 +25,8 @@
 //! snapshot the world holds**: its units' cells and poses are the return. With no snapshot every
 //! unit checks in as it went out, which is what the snapshot would have said.
 
+use std::collections::BTreeSet;
+
 use mush_core::{CanonicalId, Ctx, ObjId};
 
 use super::FieldBook;
@@ -45,6 +47,10 @@ pub(crate) struct Demoted {
     /// **The minds checked in** (doc 23 cut D-23-18): one row per licensed hull checked in on an
     /// open epoch, owed to its rig record by the field's next write on the site.
     pub minds: Vec<super::record::CarriedRow>,
+    /// **The bay rigs a wrecked carrier took down while their claims held them** (doc 38a
+    /// F-23.1): each owed its claim's `Destroyed` Close by the field's `close`, and its wreck
+    /// once the claim lets it go.
+    pub wrecked: Vec<ObjId>,
 }
 
 /// **The units the last snapshot holds**, as returns (the void rule), when it decodes on the
@@ -265,6 +271,7 @@ pub(crate) fn demote_units(
     let mut left = Vec::new();
     let mut remains = Vec::new();
     let mut minds = Vec::new();
+    let mut wrecked = Vec::new();
     for unit in units {
         let back = returns.iter().find(|ret| ret.unit == *unit);
         let before = mush_tactics::module::unit_of(ctx.w, *unit).cloned();
@@ -304,7 +311,7 @@ pub(crate) fn demote_units(
         let carrier = super::carrier::is_carrier(ctx.w, *unit);
         // Doc 36 cut GC.3 (Q-36-8): a carrier whose hull fell wrecks the rigs in its bay.
         if carrier {
-            wreck_bay_rigs(ctx, *unit);
+            wrecked.extend(wreck_bay_rigs(ctx, *unit));
         }
         // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04): a raider's
         // fixture carrier checked in a wreck takes the hulls aboard it with it.
@@ -315,7 +322,14 @@ pub(crate) fn demote_units(
             let at = back
                 .map(|back| back.pose.clone())
                 .or_else(|| mush_sim::pose_of(ctx.w, *unit).map(|(_, at)| at));
-            if mush_sim::pose_of(ctx.w, *unit).is_some()
+            // Doc 38a F-03: a hull its claim still holds in its hangar cannot be unplaced (the
+            // exclusion refuses it until the claim's `Destroyed` Close lands), so it is owed the
+            // unplace, which the host's tick lands once the claim lets it go.
+            if owes_unplace(&crate::minds::ic_sortie::claim_of(ctx.w, *unit)) {
+                if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+                    owed.units.insert(*unit);
+                }
+            } else if mush_sim::pose_of(ctx.w, *unit).is_some()
                 && let Err(error) =
                     mush_sim::unplace(ctx, *unit, "tacsim: an irrecoverable hull leaves remains")
             {
@@ -389,6 +403,7 @@ pub(crate) fn demote_units(
         left,
         remains,
         minds,
+        wrecked,
     }
 }
 
@@ -483,11 +498,16 @@ pub(crate) fn is_irrecoverable(w: &mush_core::World, unit: ObjId) -> bool {
 /// says its hull fell, every rig in its bay becomes a wreck where the carrier stands — the
 /// arena's wreck mark written onto its own record ([`crate::carrier_damage::wreck_plan`]). The
 /// rigs stay in the bay: the bay is in the wreck.
-fn wreck_bay_rigs(ctx: &mut Ctx<'_>, carrier: ObjId) {
+///
+/// Doc 38a F-23.1: a rig whose claim still holds it in this bay cannot be mutated (the
+/// exclusion's fence), so it is answered instead: owed its claim's `Destroyed` Close and, once
+/// the claim lets it go, its wreck ([`land_owed_unplaces`]).
+fn wreck_bay_rigs(ctx: &mut Ctx<'_>, carrier: ObjId) -> Vec<ObjId> {
+    let mut held = Vec::new();
     if !crate::carrier_damage::damage_of(ctx.w, carrier)
         .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::BayRigsWrecked))
     {
-        return;
+        return held;
     }
     let rigs: Vec<ObjId> = crate::port::ship::hull_view(ctx.w, carrier)
         .map(|view| {
@@ -498,20 +518,137 @@ fn wreck_bay_rigs(ctx: &mut Ctx<'_>, carrier: ObjId) {
         })
         .unwrap_or_default();
     for rig in rigs {
-        let Some(plan) = mush_tactics::module::unit_of(ctx.w, rig).and_then(|cells| {
-            crate::carrier_damage::wreck_plan(crate::carrier_damage::spec_of(ctx.w, cells), cells)
-        }) else {
+        if owes_unplace(&crate::minds::ic_sortie::claim_of(ctx.w, rig)) {
+            held.push(rig);
+            if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+                owed.wrecks.insert(rig, carrier);
+            }
             continue;
-        };
-        match mush_tactics::module::apply_plan(ctx, rig, &plan) {
-            Ok(_) => tracing::info!(
+        }
+        wreck_rig(ctx, carrier, rig);
+    }
+    held
+}
+
+/// Apply the wreck plan to the bay rig `rig` of the wrecked `carrier`.
+fn wreck_rig(ctx: &mut Ctx<'_>, carrier: ObjId, rig: ObjId) -> bool {
+    let Some(plan) = mush_tactics::module::unit_of(ctx.w, rig).and_then(|cells| {
+        crate::carrier_damage::wreck_plan(crate::carrier_damage::spec_of(ctx.w, cells), cells)
+    }) else {
+        return true;
+    };
+    match mush_tactics::module::apply_plan(ctx, rig, &plan) {
+        Ok(_) => {
+            tracing::info!(
                 carrier = carrier.0,
                 rig = rig.0,
                 "tacsim: a wrecked carrier's bay rig is a wreck"
-            ),
-            Err(error) => {
-                tracing::warn!(carrier = carrier.0, rig = rig.0, %error, "tacsim: a wrecked carrier's bay rig could not be wrecked");
+            );
+            true
+        }
+        Err(error) => {
+            tracing::warn!(carrier = carrier.0, rig = rig.0, %error, "tacsim: a wrecked carrier's bay rig could not be wrecked");
+            false
+        }
+    }
+}
+
+/// **The irrecoverable hulls owed their unplacing** (doc 38a F-03): each claimed hull a field
+/// checked in irrecoverable while its claim still held it, its remains already on the record.
+/// RAM, rebuilt at the first tick after a boot from every lane site's remains that still name a
+/// hull standing on the surface ([`land_owed_unplaces`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OwedUnplaces {
+    units: BTreeSet<ObjId>,
+    /// Doc 38a F-23.1: the bay rigs owed their wreck once their claims let them go. RAM only: a
+    /// restart before the claim's Close lands loses the wreck (the claim still closes).
+    wrecks: std::collections::BTreeMap<ObjId, ObjId>,
+    scanned: bool,
+}
+
+/// Whether a hull whose claim reads `claim` must wait to be unplaced: its claim still holds it
+/// in its hangar (doc 38a F-03).
+pub(crate) const fn owes_unplace(claim: &crate::minds::ic_sortie::ClaimRead) -> bool {
+    matches!(claim, crate::minds::ic_sortie::ClaimRead::Active { .. })
+}
+
+/// **Unplace every owed hull its claim has let go** (doc 38a F-03; the host's tick): a hull still
+/// held waits; one no longer on the surface is forgotten.
+pub(crate) fn land_owed_unplaces(ctx: &mut Ctx<'_>) {
+    let scan = ctx
+        .w
+        .module_state::<OwedUnplaces>()
+        .is_some_and(|owed| !owed.scanned);
+    if scan {
+        let mut found = BTreeSet::new();
+        for site in crate::surface::chart::lane_sites(ctx.w) {
+            let Some(record) = site_record(ctx, &site.entry) else {
+                continue;
+            };
+            for object in &record.objects {
+                if let crate::surface::site_record::GroundKind::Remains { of: Some(unit), .. } =
+                    object.kind
+                    && mush_sim::pose_of(ctx.w, unit).is_some()
+                {
+                    found.insert(unit);
+                }
             }
         }
+        if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+            owed.units.extend(found);
+            owed.scanned = true;
+        }
+    }
+    let units: Vec<ObjId> = ctx
+        .w
+        .module_state::<OwedUnplaces>()
+        .map(|owed| owed.units.iter().copied().collect())
+        .unwrap_or_default();
+    for unit in units {
+        if owes_unplace(&crate::minds::ic_sortie::claim_of(ctx.w, unit)) {
+            continue;
+        }
+        if mush_sim::pose_of(ctx.w, unit).is_some()
+            && let Err(error) =
+                mush_sim::unplace(ctx, unit, "tacsim: an irrecoverable hull leaves remains")
+        {
+            tracing::warn!(unit = unit.0, %error, "tacsim: an owed irrecoverable hull could not be taken off the surface");
+            continue;
+        }
+        if let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>() {
+            owed.units.remove(&unit);
+        }
+    }
+    let wrecks: Vec<(ObjId, ObjId)> = ctx
+        .w
+        .module_state::<OwedUnplaces>()
+        .map(|owed| owed.wrecks.iter().map(|(rig, by)| (*rig, *by)).collect())
+        .unwrap_or_default();
+    for (rig, carrier) in wrecks {
+        if owes_unplace(&crate::minds::ic_sortie::claim_of(ctx.w, rig)) {
+            continue;
+        }
+        if wreck_rig(ctx, carrier, rig)
+            && let Some(owed) = ctx.w.module_state_mut::<OwedUnplaces>()
+        {
+            owed.wrecks.remove(&rig);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Doc 38a F-03: an irrecoverable hull its claim still holds waits for its unplacing.** The
+    /// exclusion refuses any unplacing of a held hull until the claim's `Destroyed` Close lands,
+    /// so the check-in owes it; an unclaimed hull is unplaced at once.
+    #[test]
+    fn f03_a_held_irrecoverable_hull_is_owed_its_unplacing() {
+        assert!(owes_unplace(&crate::minds::ic_sortie::ClaimRead::Active {
+            open: mush_core::CommitToken::from_bytes([7; 16]),
+            dispatcher: ObjId(42),
+        }));
+        assert!(!owes_unplace(&crate::minds::ic_sortie::ClaimRead::None));
     }
 }

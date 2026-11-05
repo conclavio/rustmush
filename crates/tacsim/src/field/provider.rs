@@ -330,6 +330,29 @@ impl FieldProvider {
 }
 
 impl FieldProvider {
+    /// **A bay rig its wrecked carrier took down owes its claim's Close** (doc 38a F-23.1):
+    /// `Destroyed`, its queued launch cancelled; the claim arm lands the Close, and the host's
+    /// tick then wrecks the rig. A rig with no open claim is left alone.
+    fn close_wrecked_claim(&self, txn: &mut ActionTxn<'_>, rig: ObjId) -> Result<(), ActionError> {
+        let key = RigKey(rig);
+        let Some(mut record) = txn
+            .get(&self.excursions, &key)
+            .map_err(|_| integrity("the rig records are unavailable"))?
+            .cloned()
+        else {
+            return Ok(());
+        };
+        if !wreck_claim(&mut record) {
+            return Ok(());
+        }
+        record
+            .check()
+            .map_err(|_| integrity("a wrecked bay rig's record is out of bounds"))?;
+        txn.replace(&self.excursions, &key, record)
+            .map_err(|_| integrity("a wrecked bay rig's record did not stage"))?;
+        Ok(())
+    }
+
     /// **Lay the site's carried minds on their epoch records** (doc 23 cut D-23-18): each row
     /// the offer fixed for `site` whose rig record still has that epoch open becomes its
     /// `OpenSortie.mind`, staged in this write's bundle. A record whose epoch closed or moved on
@@ -371,6 +394,21 @@ impl FieldProvider {
         }
         Ok(())
     }
+}
+
+/// **A wrecked bay rig's record, its claim owed `Destroyed`** (doc 38a F-23.1): an open claim
+/// becomes `Closing { Destroyed }` and its queued launch is cancelled; anything else is left
+/// alone (`false`).
+fn wreck_claim(record: &mut RigRecord) -> bool {
+    if !matches!(
+        record.claim.as_deref(),
+        Some(crate::surface::excursion::ClaimCursor::Open { .. })
+    ) {
+        return false;
+    }
+    record.owe_claim_close(mush_roll::commerce::ic_claims::IcCloseKind::Destroyed);
+    record.queued = None;
+    true
 }
 
 /// **The minds the host owes their epoch records, by site** (doc 23 cut D-23-18): each live
@@ -464,7 +502,7 @@ impl ActionProvider for FieldProvider {
                     .map(|(site, close)| {
                         (
                             site.to_string(),
-                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known, "remains": close.remains }),
+                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known, "remains": close.remains, "wrecked": close.wrecked }),
                         )
                     })
                     .collect()
@@ -626,6 +664,17 @@ impl ActionProvider for FieldProvider {
                     .map_err(|_| invalid("a field's close lists the remains it leaves"))?
                     .unwrap_or_default();
                 self.lay_minds(txn, parameters, &key)?;
+                // Doc 38a F-23.1: a bay rig a wrecked carrier took down under its claim.
+                let wrecked: Vec<ObjId> = owed
+                    .get("wrecked")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| invalid("a field's close lists the bay rigs it wrecked"))?
+                    .unwrap_or_default();
+                for rig in wrecked {
+                    self.close_wrecked_claim(txn, rig)?;
+                }
                 for left in &remains {
                     self.close_destroyed(txn, context, &mut record, (left, now))?;
                 }
@@ -671,6 +720,32 @@ mod tests {
 
     /// A rig out on the ground, 100 s into a 200 s drive east from (10, 10) to (30, 10) that
     /// reserved 2,000 cu.
+    /// **Doc 38a F-23.1: a bay rig its wrecked carrier took down owes its claim `Destroyed`.**
+    /// An open claim closes `Destroyed`, its queued launch cancelled; an opening claim, or none,
+    /// is left alone.
+    #[test]
+    fn f23_1_a_wrecked_bay_rig_owes_its_claim_destroyed() {
+        use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
+        let open = mush_core::CommitToken::from_bytes([7; 16]);
+        let mut record = RigRecord::fresh_unread(ObjId(7));
+        record.claim = Some(Box::new(ClaimCursor::Open {
+            open,
+            operator: ObjId(42),
+        }));
+        assert!(wreck_claim(&mut record));
+        assert_eq!(
+            record.claim.map(|claim| *claim),
+            Some(ClaimCursor::Closing {
+                open,
+                kind: ClaimCloseKind::Destroyed,
+                operator: ObjId(42),
+            })
+        );
+        let mut bare = RigRecord::fresh_unread(ObjId(8));
+        assert!(!wreck_claim(&mut bare));
+        assert!(bare.claim.is_none());
+    }
+
     fn driving() -> RigRecord {
         let mut record = RigRecord::fresh_unread(ObjId(7));
         record.charge = Charge {
