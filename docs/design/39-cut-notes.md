@@ -966,12 +966,12 @@ a plant's good by Q-39-35's spelling, the slot index not holding plant rows) and
 ice mill is outside it). `@industry/census <good>` adds one `tacsim.matter_lot` line a lot of that good (its vault, the
 vault's name and owner): a staff diagnostic.
 
-**The lane** (the owner's choices of 2026-11-05: a strategic-ore ask and part bids). **Lane v30 / relay v21**:
+**The lane** (the owner's choices of 2026-11-05: a strategic-ore ask and part bids). **Lane v32 / relay v23** (claimed as v30; the player-response floor took v31 first, so re-signed on it):
 - Freeport Works stocks 200 t of strategic ore and asks 800.00cr at Ceres (above the 600 and 700 bids), so a sight is made
   from bought matter. The programme's strategic-ore reference moves from its fixed 300.00cr to that ask.
 - Stickney Yards bids for 4 light plants at 4,000.00cr.
-- `strip_strategic_ask` heads the strip chain (`strip_trust_raise` calls it first) and rebuilds the published v29. Pins:
-  `LANE_DIGEST` `7de1ec09…`, the relay `315747e5…`, eighteen stock receipts, 66 readiness lines, the Exchange board.
+- `strip_strategic_ask` heads the strip chain (`strip_licence_grace` calls it first) and rebuilds the published v31. Pins:
+  `LANE_DIGEST` `aa5d90fb…`, the relay `727c74f4…`, eighteen stock receipts, 66 readiness lines, the Exchange board.
 
 **A part lot sold into a bid** (the engine had none):
 - mush-inventory: `relocate_marked`, one lot moved under an applied `inventory.transferred` marker.
