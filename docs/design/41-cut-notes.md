@@ -707,3 +707,21 @@ unclaimed for 57 IC days; Tycho sweeps it, files and wins the claim, berths it a
 and scraps it; Tycho's account takes the credit; the site's index is clear of her.
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.10 — the landholder consent step (ruled 2026-11-04; not built)
+
+Added to the plan after RS.6c-2, one PR. It is RS.6c-1's named future cut: Tycho's sweep reaches a player's claimed
+block once it lands. **The owner's rulings:**
+
+1. **The notice** is a registry notice delivered as an obligation; the landholder answers with `+salvage/authorize`
+   (RS.3's, the delegation row on the block) or a new `+salvage/refuse`.
+2. **Silence** counts as consent after **28 IC days** (§4.4 said 7). **The owner's standing rule: any wait on a
+   player's response is at least 28 IC days** — 7 IC days is about 7 real hours, and no workflow here assumes a
+   player is on constantly.
+3. **A refusal** blocks the sweep (and the claim) on that block for 28 IC days.
+4. **Who it covers**: the same notice serves a player salvor filing a claim on someone else's claimed block, not
+   only Tycho.
+
+The timers in the built cuts under that standing rule (the claim's contest window in real hours, the one-term debt's
+zero grace, RS.7's fine at docking, the Co-op's seven-real-day dormancy) are listed for the owner's ruling and
+unchanged here.
