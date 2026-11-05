@@ -440,29 +440,38 @@ pub struct TacsimStore {
 /// Maximum bytes one staffer's `@ground/stage` chunk buffer may hold in RAM (2 MiB).
 pub const MAX_GROUND_STAGE_BYTES: usize = 2 * 1024 * 1024;
 
+/// **The black box below the boot's floors, for a test root** (doc 40 cut FR.7c): sets the
+/// layer's `[tacsim.arena.ledger].max_bytes` and `summary_ms` on its frozen block after the boot
+/// has validated it, so every arena started from then on (`match_::lobby::configs` reads this
+/// block at each start) runs under them. Whether the layer was there to lower.
+///
+/// FR.4's in-process stories lower `max_bytes` on the `TacsimConfig` they build, which no
+/// validation reads; a production root validates `[tacsim]` at boot (`ArenaConfig::validate`:
+/// at least 1 MiB and 1,000 ms), so the bot's round story on one lowers them here instead.
+///
+/// **Gated twice.** It is compiled only under `cfg(test)` or the `test-ledger-floor` feature,
+/// which is off by default and turned on by `mush-bot`'s `[dev-dependencies]` edge alone
+/// (`feature_matrix_inventory` pins that), so no shipped binary carries it; and no config key
+/// reaches it, since only Rust code holding the booted world can call it.
+#[cfg(any(test, feature = "test-ledger-floor"))]
+pub fn lower_ledger_floor_for_test(
+    w: &mut mush_core::World,
+    max_bytes: u64,
+    summary_ms: u32,
+) -> bool {
+    let Some(store) = w.module_state_mut::<TacsimStore>() else {
+        return false;
+    };
+    store.cfg.arena.ledger.max_bytes = max_bytes;
+    store.cfg.arena.ledger.summary_ms = summary_ms;
+    true
+}
+
 impl TacsimStore {
     /// The frozen `[tacsim]` block.
     #[must_use]
     pub fn config(&self) -> &TacsimConfig {
         &self.cfg
-    }
-
-    /// **The black box below the boot's floors, for a test root** (doc 40 cut FR.7c): sets
-    /// `[tacsim.arena.ledger].max_bytes` and `summary_ms` on the frozen block after the boot has
-    /// validated it, so every arena started from then on (`match_::lobby::configs` reads this
-    /// block at each start) runs under them. FR.4's in-process stories lower `max_bytes` on the
-    /// `TacsimConfig` they build, which no validation reads; a production root validates
-    /// `[tacsim]` at boot (`ArenaConfig::validate`: at least 1 MiB and 1,000 ms), so a story on
-    /// one lowers them here instead.
-    ///
-    /// **Gated twice.** It is compiled only under `cfg(test)` or the `test-ledger-floor`
-    /// feature, which is off by default and turned on by `mush-bot`'s `[dev-dependencies]` edge
-    /// alone (`feature_matrix_inventory` pins that), so no shipped binary carries it; and no
-    /// config key reaches it, since only Rust code holding the booted engine can call it.
-    #[cfg(any(test, feature = "test-ledger-floor"))]
-    pub fn lower_ledger_floor_for_test(&mut self, max_bytes: u64, summary_ms: u32) {
-        self.cfg.arena.ledger.max_bytes = max_bytes;
-        self.cfg.arena.ledger.summary_ms = summary_ms;
     }
 
     /// **A hull's black box, its open tail** (doc 23 cut S.1, §7; the read seam an inspection

@@ -218,7 +218,7 @@ const ALLOWED: &[Allowed] = &[
     Allowed {
         package: "tacsim",
         feature: "test-ledger-floor",
-        reason: "doc 40 cut FR.7c: `TacsimStore::lower_ledger_floor_for_test`, the black box \
+        reason: "doc 40 cut FR.7c: `tacsim::store::lower_ledger_floor_for_test`, the black box \
                  below the boot's validated floors for the bot's round story on a production \
                  root. Turned on by `mush-bot`'s `[dev-dependencies]` edge alone, so \
                  `cargo test --workspace` unifies it on and compiles it; no shipped binary \
@@ -312,8 +312,8 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (15, 11),
-        "15 toggleable features across 11 crates, including the opt-in testkit Store driver: {declared:?}"
+        (16, 11),
+        "16 toggleable features across 11 crates, including the opt-in testkit Store driver and tacsim's test ledger floor: {declared:?}"
     );
 }
 

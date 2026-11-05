@@ -39,7 +39,7 @@
 //!    idle bound, the raider is offered the void, and its next line, `+field/void`, takes it.
 //! 6. **A segment rolled** (FR.4): the field's black box bounded at [`MAX_BYTES`] (48 KiB, FR.4's
 //!    knob) with a position summary every [`SUMMARY_MS`], below the boot's production floors
-//!    (1 MiB, 1 s), through tacsim's test-only `TacsimStore::lower_ledger_floor_for_test` on the
+//!    (1 MiB, 1 s), through tacsim's test-only `tacsim::store::lower_ledger_floor_for_test` on the
 //!    booted engine (the `test-ledger-floor` feature, FR.7c). The live record reaches segment 2 in
 //!    the field's first minutes, before the field demotes on its idle bound ([`IDLE_DEMOTE_S`]).
 //!
@@ -900,11 +900,14 @@ async fn round_story(ground: &'static Ground) {
         |engine| {
             // Beat 6 (FR.7c): the black box below the boot's floors, through the test-only seam
             // on the booted engine; no shipped config reaches it.
-            engine
-                .world
-                .module_state_mut::<tacsim::TacsimStore>()
-                .expect("the layer")
-                .lower_ledger_floor_for_test(MAX_BYTES, SUMMARY_MS);
+            assert!(
+                tacsim::store::lower_ledger_floor_for_test(
+                    &mut engine.world,
+                    MAX_BYTES,
+                    SUMMARY_MS
+                ),
+                "the layer is booted"
+            );
             let (said, made) = fixture(engine, ground);
             hulls = Some(made);
             said

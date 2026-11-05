@@ -124,6 +124,18 @@ child_of = "split_halves_write_distinct_log_files"
 
 # ---- nightly ----
 
+# Doc 40 FR.7's round story at 256 and 512 over the bot's SSH sessions: about ten minutes each
+# since FR.7c's test-only ledger floor, the two side by side (40 cut notes, FR.7c).
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
+tier = "nightly"
+job = "fr7-round-story"
+
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
+tier = "nightly"
+job = "fr7-round-story"
+
 # M7: the six Registry-rating stories, at production's pulse on the schedule.
 [[test]]
 id = "tacsim/src/minds/bulk/original_purchase_integration_tests.rs::genuine_registry_original_purchase_grant_refund_and_paired_recovery"
@@ -272,20 +284,6 @@ by_hand = "5e03f6d2"
 id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_ahuna"
 tier = "by-hand"
 by_hand = "5e03f6d2"
-
-# Doc 40 FR.7's round story at 256 and 512, about an hour each: both passed by hand on
-# conclav.dev and through gate.yml's sweep (run 41904925552) at the revision named (40 cut notes,
-# FR.7b). No dispatch-only job or
-# gate.yml kind runs it yet (the sweep kind has no `via` script), so it is by-hand.
-[[test]]
-id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
-tier = "by-hand"
-by_hand = "c969ec3f"
-
-[[test]]
-id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
-tier = "by-hand"
-by_hand = "c969ec3f"
 
 # Doc 39 IN.5's production story, the bot over SSH: both passed side by side on conclav.dev
 # at cdd30329 (Ahuna 1,895 s, Urvara 1,897 s; 39 cut notes, IN.5).
