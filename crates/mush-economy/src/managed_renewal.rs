@@ -36,9 +36,12 @@ pub use receipt::{
     RenewalOutcome, RenewalTerminalReceiptV1,
 };
 
-/// Root-selected provisional launch default; no scheduler is activated here.
-pub const DEFAULT_RENEWAL_OFFER_IC_SECONDS: i64 = 259_200;
-pub const MAX_RENEWAL_OFFER_IC_SECONDS: i64 = 259_200;
+/// Root-selected provisional launch default; no scheduler is activated here. 28 IC days (3
+/// until the owner's rule of 2026-11-04 that a timer waiting on an absent player's response
+/// allows at least 28 IC days).
+pub const DEFAULT_RENEWAL_OFFER_IC_SECONDS: i64 = 28 * 86_400;
+/// The bound on an offer's lifetime, at the default (28 IC days).
+pub const MAX_RENEWAL_OFFER_IC_SECONDS: i64 = 28 * 86_400;
 /// Outer limit for plain renewal-offer bytes, before parsing any value.
 pub const MAX_RENEWAL_OFFER_BYTES: usize = 8_192;
 pub(crate) const DRAFT_ACTION: &str = "draft_mind_renewal";

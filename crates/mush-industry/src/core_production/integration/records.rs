@@ -130,7 +130,7 @@ impl AcceptedIntent {
             || self.recipe.definition() != &self.policy.recipe
             || self.recipe.class() != class
             || self.expires_at
-                != mush_inventory::reservation_deadline(&self.accepted_at).map_err(bad)?
+                != mush_inventory::refit_reservation_deadline(&self.accepted_at).map_err(bad)?
         {
             return Err(Error::Integrity);
         }

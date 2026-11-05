@@ -457,3 +457,22 @@ refit is.
 - **The bay view and the player commands** (projected offers, a `+bay` surface): UD.4c. The bay's
   actions publish no legal-action offer yet; the shipped test prepares them directly.
 - **Repair and rearm** without a part change: their own action (PR-B's note).
+
+## The player-response floor (2026-11-04) — the refit reservation at 28 IC days
+
+**The owner's rule (2026-11-04):** a timer that waits on a player's response, and costs a
+player who has not answered something, allows at least **28 IC days**. A refit's reservation
+holds a player's money and part from acceptance to expiry, and a player organization may be
+the operator, so it was under the rule at seven IC days. **`RESERVATION_SECONDS`** is now 28
+IC days in `mush-economy`'s `bay_refit`, `core_refit` and `core_integration::subject`, each
+read from the kernel's **`mush_core::player_wait::REFIT_RESERVATION_SECONDS`**, which the
+terminal-capacity audits (`bay_refit`, `core_refit`'s wire check and both protocol
+descriptors' `reservation_ic_seconds`) now read in place of their literal 604,800 — one value,
+so the owner and the audit cannot drift. Industry's three flows took their order expiry,
+their facility slot's hold and (core integration) the certified input's lot hold from
+Inventory's general hold TTL (`mush_inventory::reservation_deadline`, seven IC days), and the
+kernel requires all of them to match the order; they now take
+`mush_inventory::refit_reservation_deadline` (the slot by `reserve_slot_for` with
+`REFIT_RESERVATION_LEAD_SECS`), the same 28 IC days, while every other hold keeps Inventory's
+TTL. `help hardware` reads 28. The workspace guard is
+`mush-contract-tests`' `engine_contracts::player_wait_floors`.

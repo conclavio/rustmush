@@ -34,6 +34,19 @@ pub mod bay_refit_protocol {
     };
 }
 
+/// **The kernel's player-response bounds** (owner rule, 2026-11-04): a timer that waits on a
+/// player's response and costs an absent player something allows at least 28 IC days, about
+/// 28 real hours at IC rate 24. The terminal-capacity audits read these, and the owning
+/// crates' copies (`mush_roll::commerce::MAX_GRACE_SECONDS`, `mush_economy`'s refit
+/// `RESERVATION_SECONDS`) are these values, so the two sides cannot drift apart.
+pub mod player_wait {
+    /// The bound on a mind licence's Grace after its term (was 3 IC days).
+    pub const MAX_LICENCE_GRACE_SECONDS: i64 = 28 * 24 * 60 * 60;
+    /// A bay, core or core-integration refit's reservation, accepted to expiry (was 7 IC
+    /// days).
+    pub const REFIT_RESERVATION_SECONDS: i64 = 28 * 24 * 60 * 60;
+}
+
 use crate::action::{MAX_CASCADE_OPERATIONS, ProviderRegistrationOrdinal};
 use crate::authoritative::{AuthoritativeKey, ReplayWrite};
 use crate::mechanics::{

@@ -44,7 +44,10 @@ impl Row {
             || field(field(&raw, "funding")?, "commit")? != &json!(accepted)
             || field(field(&raw, "funding")?, "action")? != &json!(action)
             || start.clock != expiry.clock
-            || start.at.checked_add(604800) != Some(expiry.at)
+            || start
+                .at
+                .checked_add(crate::player_wait::REFIT_RESERVATION_SECONDS)
+                != Some(expiry.at)
         {
             return Err(refused("core refit immutable admission identity"));
         }

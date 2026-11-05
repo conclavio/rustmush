@@ -11,8 +11,11 @@ pub const TERM_SECONDS: i64 = 90 * 86_400;
 /// 17g C0 (owner, 2026-10-25): a House-filed mind's free owner licence, until
 /// House owner attestation exists. About 15.2 real days at IC rate 24, plus Grace.
 pub const HOUSE_OWNER_TERM_SECONDS: i64 = 365 * 86_400;
-pub const GRACE_SECONDS: i64 = 3 * 86_400;
-pub const OFFER_SECONDS: i64 = 3 * 86_400;
+/// A licence's Grace after its term, and a House or personal renewal offer's lifetime: 28 IC
+/// days each (3 until the owner's rule of 2026-11-04 that a timer waiting on an absent
+/// player's response allows at least 28 IC days; doc 17g's cut notes).
+pub const GRACE_SECONDS: i64 = 28 * 86_400;
+pub const OFFER_SECONDS: i64 = 28 * 86_400;
 pub const LEVY_PERMILLE: u16 = 50;
 pub const VENUE_PERMILLE: u16 = 50;
 

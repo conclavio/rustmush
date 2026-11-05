@@ -1115,9 +1115,11 @@ fn sm5_a_bare_buy_previews_and_commits_nothing() {
 }
 
 /// **A2: the licence lapses after its grace, read at the next act** (§9.1, lead ruling 5):
-/// bought at `t0`, a lease at `t0 + 170 d` (grace) goes through; at `t0 + 172 d` the lease
-/// refuses `LEASE_LICENCE`, `+licence` prints the lapse at `t0 + 171 d` and the gate errs; no
-/// tick wrote the record in between; a buy then runs from now.
+/// bought at `t0`, a lease at `t0 + 195 d` (grace) goes through; at `t0 + 197 d` the lease
+/// refuses `LEASE_LICENCE`, `+licence` prints the lapse at `t0 + 196 d` and the gate errs; no
+/// tick wrote the record in between; a buy then runs from now. The grace is 28 IC days (3
+/// until the owner's rule of 2026-11-04 that a timer waiting on an absent player's response
+/// allows at least 28 IC days).
 #[test]
 fn sm5_the_licence_lapses_after_its_grace_at_the_next_act() {
     let mut rig = stocked();
@@ -1127,11 +1129,11 @@ fn sm5_the_licence_lapses_after_its_grace_at_the_next_act() {
     let record = licence(&rig, pilot);
     assert_eq!(record.first_bought_ic, t0);
     assert_eq!(record.expires_ic, t0 + 168 * DAY);
-    assert_eq!(record.lapses_ic(), Some(t0 + 171 * DAY));
+    assert_eq!(record.lapses_ic(), Some(t0 + 196 * DAY));
     let _ = licence_writes(&mut rig.tw);
 
-    // Day 170: in grace, which authorizes.
-    skip_days(&mut rig, 170);
+    // Day 195: in grace, which authorizes.
+    skip_days(&mut rig, 195);
     assert_eq!(licence_gate(rig.tw.world(), pilot, ic_now(&rig.tw)), Ok(()));
     let out = at_occator(&mut rig, pilot, "+tv/lease go");
     assert!(
@@ -1139,13 +1141,13 @@ fn sm5_the_licence_lapses_after_its_grace_at_the_next_act() {
         "{out}"
     );
 
-    // Day 172: lapsed since day 171.
+    // Day 197: lapsed since day 196.
     skip_days(&mut rig, 2);
     let out = at_occator(&mut rig, pilot, "+tv/lease");
     assert_eq!(out, LEASE_LICENCE);
     let out = at_occator(&mut rig, pilot, "+tv/lease go");
     assert_eq!(out, LEASE_LICENCE);
-    // The ticks run past the expiry and the lapse (after the lease checks: across 172 IC
+    // The ticks run past the expiry and the lapse (after the lease checks: across 197 IC
     // days their charter arm ends the idle charter, which the lease would read first):
     // the lapse is still read at the next act, never written by a tick.
     assert!(tacsim::port::live_charter(rig.tw.world(), pilot).is_some());
@@ -1157,12 +1159,12 @@ fn sm5_the_licence_lapses_after_its_grace_at_the_next_act() {
     let out = run(&mut rig.tw, pilot, "+licence");
     assert_eq!(
         out,
-        LICENCE_LAPSED.replace("{lapses}", &ic_stamp(t0 + 171 * DAY))
+        LICENCE_LAPSED.replace("{lapses}", &ic_stamp(t0 + 196 * DAY))
     );
     assert_eq!(
         licence_gate(rig.tw.world(), pilot, ic_now(&rig.tw)),
         Err(LicenceStanding::Lapsed {
-            at_ic: t0 + 171 * DAY
+            at_ic: t0 + 196 * DAY
         })
     );
     // Nothing wrote the record in between: not the port tick, the surface tick or the
@@ -1360,7 +1362,7 @@ fn sm5_the_licence_show_lines() {
             .replace("{account}", &account)
             .replace("{until}", &ic_stamp(t0 + 168 * DAY))
             .replace("{days}", "158")
-            .replace("{grace}", "3")
+            .replace("{grace}", "28")
     );
     skip_days(&mut rig, 159);
     assert_eq!(
@@ -1369,12 +1371,12 @@ fn sm5_the_licence_show_lines() {
             .replace("{issuer}", REGISTRY)
             .replace("{account}", &account)
             .replace("{until}", &ic_stamp(t0 + 168 * DAY))
-            .replace("{lapses}", &ic_stamp(t0 + 171 * DAY))
+            .replace("{lapses}", &ic_stamp(t0 + 196 * DAY))
     );
-    skip_days(&mut rig, 2);
+    skip_days(&mut rig, 28);
     assert_eq!(
         run(&mut rig.tw, pilot, "+licence"),
-        LICENCE_LAPSED.replace("{lapses}", &ic_stamp(t0 + 171 * DAY))
+        LICENCE_LAPSED.replace("{lapses}", &ic_stamp(t0 + 196 * DAY))
     );
     // Suspended: staff freeze a second pilot's entitlement account.
     let (second, _) = chartered(&mut rig, "Second", 2, "Salt Wind");
@@ -1427,7 +1429,7 @@ fn rk1_a_lapsed_licence_still_settles_a_past_term_rig() {
         .next()
         .expect("the lease")
         .clone();
-    // A day past the term; the licence lapsed at day 171.
+    // A day past the term; the licence lapsed at day 196.
     skip_days(&mut rig, 169);
     assert!(ic_now(&rig.tw) > leased.term_ends_ic);
     let account = credit_of(&rig.tw, pilot);
@@ -2379,7 +2381,7 @@ fn sm5_the_readiness_report_names_the_licence_and_the_ore_intakes() {
     let mut rig = stocked();
     let report = status(&mut rig.tw);
     let licence = "  ceres_port licence tacsim.licence.freeport: the Freeport Registry issues it \
-                   at 2500.00cr for 168 IC days with 3 IC days' grace; extraction reads it. \
+                   at 2500.00cr for 168 IC days with 28 IC days' grace; extraction reads it. \
                    [ready]";
     assert!(report.lines().any(|l| l == licence), "{report}");
     for (org, good, price, cap, per) in [
@@ -2880,7 +2882,7 @@ fn sm5_the_licence_line_names_what_is_missing() {
     let mut rig = stocked();
     let head = "  ceres_port licence tacsim.licence.freeport: ";
     let ready = format!(
-        "{head}the Freeport Registry issues it at 2500.00cr for 168 IC days with 3 IC days' \
+        "{head}the Freeport Registry issues it at 2500.00cr for 168 IC days with 28 IC days' \
          grace; extraction reads it. [ready]"
     );
     assert_eq!(licence_status(&mut rig.tw), ready);

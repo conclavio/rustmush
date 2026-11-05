@@ -1164,7 +1164,7 @@ fn actual_zero_issuer_is_data_but_personal_and_open_shapes_are_refused() -> Test
         ("term_seconds", json!(-1)),
         ("term_seconds", json!(7_776_001)),
         ("grace_seconds", json!(-1)),
-        ("grace_seconds", json!(259_201)),
+        ("grace_seconds", json!(2_419_201)),
     ] {
         let mut q = original.clone();
         q["product"]["grant"]["renewal"][name] = value;

@@ -206,7 +206,7 @@ pub(super) fn action_reference(
             // `fee_minor` is `core_refit`'s fee; the ungoverning recipe's is the policy's
             // own `ungovern.fee_minor` (doc 17h cut M8b G3), inside `policy`.
             let payload = if index == 0 {
-                json!({"format":1,"protocol":"certified_core_refit_v1","policy":policy,"fee_minor":10000,"reservation_ic_seconds":604800,"incoming":"delivered_certified_core","supplier_consent":"acknowledged_exact_offer_v1"})
+                json!({"format":1,"protocol":"certified_core_refit_v1","policy":policy,"fee_minor":10000,"reservation_ic_seconds":crate::player_wait::REFIT_RESERVATION_SECONDS,"incoming":"delivered_certified_core","supplier_consent":"acknowledged_exact_offer_v1"})
             } else {
                 json!({"format":1,"protocol":"certified_core_refit_v1","policy":policy,"component":component,"kind":id,"cadence":3600,"maximum_work_units":167})
             };

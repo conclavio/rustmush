@@ -5722,3 +5722,25 @@ The owner asked, on reading doc 20b, to "knock out the RK-1 defect list": the si
 - `SITE_HOME_LADEN_GROUNDED`: "With a full hold ({cargo} t of ore) the {name} could not lift from {port} for home; come home lighter."
 - `help ships`: two sentences, one on the full-hold leg home and one on the settle at a lapsed lease act.
 - The lapsed lease act's reply shape: a settle line, then `LEASE_LICENCE` as an ordinary line rather than a refusal.
+
+## The player-response floor (2026-11-04)
+
+**The owner's rule (2026-11-04):** a timer that waits on a player's response, and costs a
+player who has not answered something, allows at least **28 IC days**, because players are not
+online all the time. Two of doc 20's timers were under it:
+
+- **The prospecting licence's grace** (`ceres_port.licence.grace_ic_days`, lane content): 3 →
+  **28** IC days, so a pilot whose licence runs out while away keeps working until day 196 of
+  a 168-day term. A lane content change, so it ships as **lane v31 / relay v22** (IN.11 holds v30 / v21,
+  open beside it); `lane_chain::strip_licence_grace` heads the strip chain and rebuilds the
+  published v29 (`floor_strip_licence_grace_rebuilds_the_published_v29`), and the lane and
+  relay digests and the version asserts move. `LICENCE_HELP`, `help coop` and the readiness
+  line read 28; `shard_10/plumbing.rs`' lapse, `+licence`-lines and readiness tests move
+  their dates (lapse at `t0 + 196 d`).
+- **The survey commission's term** (`port/survey.rs`, `SURVEY_TERM_IC_S`): seven → **28** IC
+  days from acceptance to the work deadline, the settlement day after it unchanged. The four
+  offers read the one constant; `+survey`'s lines print the term from it, and `help survey`,
+  `help mining` and `help quests` read 28. Pinned by
+  `payment_tests::every_survey_offer_runs_at_least_28_ic_days`.
+
+The workspace guard is `mush-contract-tests`' `engine_contracts::player_wait_floors`.

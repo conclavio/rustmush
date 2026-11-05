@@ -129,7 +129,7 @@ pub(super) fn held(
         resource.clone(),
         holder,
         1,
-        crate::reservation_deadline(at).map_err(bad)?,
+        crate::refit_reservation_deadline(at).map_err(bad)?,
     )
     .map_err(bad)?;
     let book = ReservationBook::new(resource, scalar).map_err(bad)?;

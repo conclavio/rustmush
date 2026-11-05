@@ -212,7 +212,7 @@ pub(super) fn action_descriptor(
             return Err(refused("core integration recipe identity"));
         }
         (
-            json!({"format":1,"protocol":if super::delivery::promised(policy)? { "certified_core_integration_delivery_v2" } else { "certified_core_integration_v1" },"policy":policy,"reservation_ic_seconds":604800,"supplier_consent":"acknowledged_exact_offer_v1","input":"certified_origin_qty1","title_recipient":"authenticated_personal_requester"}),
+            json!({"format":1,"protocol":if super::delivery::promised(policy)? { "certified_core_integration_delivery_v2" } else { "certified_core_integration_v1" },"policy":policy,"reservation_ic_seconds":crate::player_wait::REFIT_RESERVATION_SECONDS,"supplier_consent":"acknowledged_exact_offer_v1","input":"certified_origin_qty1","title_recipient":"authenticated_personal_requester"}),
             vec![recipe],
         )
     };

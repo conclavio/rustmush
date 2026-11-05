@@ -560,7 +560,7 @@ pub(super) mod tests {
             block: 0,
             reward_minor: 50_000,
             accepted_ic: 10,
-            deadline_ic: 604_810,
+            deadline_ic: 10 + crate::port::survey::SURVEY_TERM_IC_S,
             coverage: [u8::MAX; 32],
             completed: Some(crate::surface::survey::SurveyCompletion {
                 tv: ObjId(12),

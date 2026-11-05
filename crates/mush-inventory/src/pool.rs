@@ -234,6 +234,27 @@ pub fn reservation_deadline_after(
     })
 }
 
+/// **A refit's lead over the ordinary TTL**: a bay, core or core-integration refit's holds
+/// last [`mush_core::player_wait::REFIT_RESERVATION_SECONDS`] (28 IC days, the owner's rule of
+/// 2026-11-04 that a timer waiting on an absent player's response allows at least 28), that
+/// much past [`RESERVATION_TTL_SECS`].
+pub const REFIT_RESERVATION_LEAD_SECS: i64 =
+    if mush_core::player_wait::REFIT_RESERVATION_SECONDS > RESERVATION_TTL_SECS {
+        mush_core::player_wait::REFIT_RESERVATION_SECONDS - RESERVATION_TTL_SECS
+    } else {
+        0
+    };
+
+/// **A refit's hold deadline** — the order's expiry, its facility slot's and its core input's
+/// alike: [`mush_core::player_wait::REFIT_RESERVATION_SECONDS`] past *now*. The economy subject
+/// and the kernel's audit require exactly this span.
+///
+/// # Errors
+/// [`InventoryError::ClockArithmetic`] if the deadline overflows.
+pub fn refit_reservation_deadline(now: &ClockStamp) -> Result<ClockStamp, InventoryError> {
+    reservation_deadline_after(now, REFIT_RESERVATION_LEAD_SECS)
+}
+
 /// ---- E7r2: P1 — what one sale asks [`InventoryFamilies::settle_sale`] for ----
 ///
 /// A parameter object rather than eight positional arguments, because the two lot

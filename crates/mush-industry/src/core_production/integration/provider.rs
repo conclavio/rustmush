@@ -341,7 +341,7 @@ impl Provider {
                 uncertified,
                 lot,
                 accepted_at: at.clone(),
-                expires_at: mush_inventory::reservation_deadline(&at).map_err(bad)?,
+                expires_at: mush_inventory::refit_reservation_deadline(&at).map_err(bad)?,
             };
             intent.matches_offer(&offer)?;
             authority::accept(
@@ -353,12 +353,14 @@ impl Provider {
             )?;
             let capacity = r
                 .industry
-                .reserve_slot(
+                .reserve_slot_for(
                     txn,
                     intent.site_factory()?,
                     intent.facility.maximum_slots(),
                     &wo_holder(order).map_err(bad)?,
                     &at,
+                    // The slot lasts the refit reservation (28 IC days), with the order.
+                    mush_inventory::REFIT_RESERVATION_LEAD_SECS,
                 )
                 .map_err(bad)?;
             let payment = ctx

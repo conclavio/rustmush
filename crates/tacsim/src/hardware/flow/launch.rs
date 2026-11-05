@@ -501,7 +501,7 @@ fn readiness(operator: ObjId, state: &str) -> String {
     format!("Registry operators: #{} {state}.", operator.0)
 }
 /// 17g C1c: the market line with `MarketTerms::PROVISIONAL`, byte for byte.
-const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 3 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 3 IC days; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Read the listings here with +minds and your licences with +minds/holdings; help personal-minds lists every market command.";
+const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 28 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 28 IC days; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Read the listings here with +minds and your licences with +minds/holdings; help personal-minds lists every market command.";
 /// The deployment's one Registry operator.
 fn operator(d: &LaunchDeployment) -> Result<ObjId> {
     Ok(d.market
@@ -1593,7 +1593,7 @@ async fn named_launch_market_help_states_the_deployment_terms() -> Result {
         crate::launch::market_help(tuned.market.as_ref().ok_or("a format-2 market")?),
         PROVISIONAL_MARKET_LINE
             .replacen("sells for 400cr", "sells for 123.50cr", 1)
-            .replacen("open 3 IC days;", "open 2 IC hours;", 1)
+            .replacen("open 28 IC days;", "open 2 IC hours;", 1)
             .replacen("stays open 1 day ", "stays open 1 hour ", 1)
     );
     Ok(())
