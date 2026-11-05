@@ -213,9 +213,21 @@ carrier's withdrawal reading, at the 10 s `LIFT_CHECK_MS` pace.
   `field/boarding.rs` and `field/home.rs` (the new `Then` arm); `surface/site_record.rs` (the listing).
   `crew::set_resolve_for_tests` is a `#[doc(hidden)]` seam for the stories, never called by the game.
 
-**Cell delta (rule #14).** `domain_field` gains eight stories (`surrender::`), 108.6 s wall in parallel on
-the Windows host. The per-shard summed minutes come off this PR's CI JUnit and are recorded here before
-the PR goes ready. The lib gains three in-source tests of well under a second.
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of #491's run 42075225787. The
+eight `surrender::` stories add 11.5 summed minutes to `domain_field`, spread by nextest's partition over
+six shards:
+
+| Shard | Stories | Minutes |
+|---|---|---|
+| shard_1 | the yield at 256 (88.5 s) | 1.47 |
+| shard_2 | (s2) at 512 (76.1 s) | 1.27 |
+| shard_4 | (s5) at 256 (67.9 s) | 1.13 |
+| shard_6 | (s5) at 512 (105.2 s) | 1.75 |
+| shard_7 | (s3) at 512, (s2) at 256, the yield at 512 | 4.46 |
+| shard_8 | (s3) at 256 (86.5 s) | 1.44 |
+
+shard_7 is the run's longest at 49.8 summed minutes. The lib's three in-source tests are well under a
+second.
 
 ## SU.4 — capture and the NPC handover
 
