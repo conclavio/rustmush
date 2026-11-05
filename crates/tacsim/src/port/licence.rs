@@ -101,7 +101,7 @@ const LICENCE_NAME: &str = "Freeport prospecting licence";
 /// `+licence`'s help.
 pub const LICENCE_HELP: &str = "+licence  --  The Freeport Registry's prospecting licence: it \
      lets you work ore at the Registry's mining sites. +licence (or +licence/show) reads yours, \
-     anywhere.\n+licence/buy  previews a licence: 2500.00cr for 168 IC days, then 3 IC days' \
+     anywhere.\n+licence/buy  previews a licence: 2500.00cr for 168 IC days, then 28 IC days' \
      grace, bought from anywhere as a public contract with the Registry; bought while yours \
      stands, the new term runs on from the day it ends. +licence/buy go buys exactly what the \
      preview printed. One licence an account.";

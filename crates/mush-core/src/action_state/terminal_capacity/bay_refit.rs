@@ -46,7 +46,7 @@ const ORDER_BYTES: usize = 196_608;
 const ORDER_CEILING: usize = ORDER_BYTES + 1024;
 const CADENCE: i64 = 3600;
 const MAX_WORK_UNITS: u64 = 167;
-const RESERVATION_SECONDS: i64 = 604_800;
+const RESERVATION_SECONDS: i64 = crate::player_wait::REFIT_RESERVATION_SECONDS;
 /// Every family the protocol names with its owner: the nine it reserves room
 /// in, then the three Accept also writes. Industry's and Inventory's
 /// registrations must use [`family_descriptor`] for each.

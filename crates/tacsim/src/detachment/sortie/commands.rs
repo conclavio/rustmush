@@ -83,6 +83,14 @@ pub(crate) fn field_ramp(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
     (flight.key.unit == unit && flight.phase.open()).then_some((flight.ramp.x_cm, flight.ramp.y_cm))
 }
 
+/// **The carrier `unit`'s open flight returns to** (doc 40, the ramp exit's boarding window).
+pub(crate) fn field_carrier(ctx: &Ctx<'_>, unit: ObjId) -> Option<ObjId> {
+    let h = ctx.w.module_state::<runtime::SortieHandles>()?;
+    let head = ctx.action_state(&h.heads, &unit).ok()??;
+    let flight = ctx.action_state(&h.flights, &head.flight).ok()??;
+    (flight.key.unit == unit && flight.phase.open()).then_some(flight.carrier)
+}
+
 /// **The DT recover the field host submits once `unit` is out of its field** (doc 32 cut CF.5;
 /// Q-CF-18), as the player who asked (`ctx.actor`): the same command `+sortie/recover` submits.
 ///

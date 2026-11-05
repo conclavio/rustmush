@@ -339,7 +339,7 @@ each pays only once:
 
 `+survey/accept <id>` previews; add `go` to file. Occator reserves the reward
 after your acceptance is recorded. Wait for the funding notice, then start new
-soundings. You have **seven IC days** from acceptance to finish; another IC day
+soundings. You have **28 IC days** from acceptance to finish; another IC day
 allows settlement, not more surveying. Your account may hold one unfinished
 commission at a time, across all its characters.
 

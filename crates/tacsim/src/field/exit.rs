@@ -116,6 +116,9 @@ pub(crate) struct Exiting {
     pub then: Then,
     /// The kernel let it go and the host checked it in.
     pub out: bool,
+    /// **The carrier it boards** (doc 40, the ramp exit's boarding window;
+    /// `super::boarding::carrier_of`), when it boards one.
+    pub carrier: Option<ObjId>,
 }
 
 /// **The exits in flight**, by unit (module state).
@@ -186,19 +189,19 @@ pub(crate) fn request(
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .map(|registry| registry.tasks().clone())
         .ok_or_else(|| CmdError::msg("The field host is unavailable."))?;
-    // Doc 40 (the ramp exit's boarding window): a raider's hull names the carrier it boards, so
-    // the kernel keeps it while that carrier is lost.
-    let carrier = match then {
-        Then::Raider => super::raiders::carrier_of(ctx.w, unit),
-        _ => None,
-    };
+    // Doc 40 (the ramp exit's boarding window): the ask names the carrier the unit boards, so
+    // the kernel keeps it while that carrier is lost. A player's carrier is named to the kernel
+    // only when the field holds it as a unit (a carrier held out of the field is no unit the
+    // kernel could read); a raider's always.
+    let carrier = super::boarding::carrier_of(ctx, unit, &then);
+    let judged = carrier.filter(|carrier| then == Then::Raider || in_field(ctx.w, &site, *carrier));
     tasks
         .offer(
             task,
             crate::arena_task::ArenaMsg::Withdraw {
                 unit,
                 ramp,
-                carrier,
+                carrier: judged,
             },
         )
         .map_err(|_| CmdError::msg("The field is busy; try the recover again."))?;
@@ -223,6 +226,7 @@ pub(crate) fn request(
                 site,
                 then,
                 out: false,
+                carrier,
             },
         );
     }
@@ -273,6 +277,9 @@ pub(crate) fn request_coupled(
         .map(|registry| registry.tasks().clone())
         .ok_or_else(|| CmdError::msg("The field host is unavailable."))?;
     let requester = ctx.actor;
+    // Doc 40 (the ramp exit's boarding window): both asks name the tug's carrier.
+    let carrier = super::boarding::carrier_of(ctx, tug, &Then::TowLoad { slot, casualty });
+    let judged = carrier.filter(|carrier| in_field(ctx.w, &site, *carrier));
     let asks = [
         (casualty, held[0], Then::Towed { tug }),
         (tug, held[1], Then::TowLoad { slot, casualty }),
@@ -291,7 +298,7 @@ pub(crate) fn request_coupled(
                 crate::arena_task::ArenaMsg::Withdraw {
                     unit,
                     ramp: Some(ramp),
-                    carrier: None,
+                    carrier: judged,
                 },
             )
             .map_err(|_| CmdError::msg("The field is busy; try the load again."))?;
@@ -303,6 +310,7 @@ pub(crate) fn request_coupled(
                     site: site.clone(),
                     then,
                     out: false,
+                    carrier,
                 },
             );
         }
@@ -471,6 +479,22 @@ pub(crate) fn on_withdrawn(
     if raider && let Err(error) = super::raiders::board(ctx, unit) {
         tracing::error!(site = %site, unit = unit.0, %error, "tacsim: a raider's hull out at its ramp could not go aboard");
     }
+    // Doc 40 (the ramp exit's boarding window, player hulls): a player's hull boards as a later
+    // step, so the host remembers it until it is aboard (`super::boarding`).
+    if let Some(asked) = asked.as_ref()
+        && let Some(carrier) = asked.carrier
+    {
+        super::boarding::note_out(
+            ctx,
+            unit,
+            super::boarding::Board {
+                site: site.clone(),
+                carrier,
+                requester: asked.requester,
+                then: asked.then.clone(),
+            },
+        );
+    }
     if let Some(book) = ctx.w.module_state_mut::<ExitBook>()
         && let Some(asked) = book.0.get_mut(&unit)
     {
@@ -510,6 +534,13 @@ fn carried_laid(ctx: &Ctx<'_>, row: &super::record::CarriedRow) -> bool {
     super::parties::rig_record(ctx, row.unit)
         .and_then(|rig| rig.sortie)
         .is_none_or(|open| open.id != row.epoch || open.mind.as_deref() == Some(&row.mind))
+}
+
+/// Whether `site`'s running field holds `unit` as a unit.
+fn in_field(w: &mush_core::World, site: &CanonicalId, unit: ObjId) -> bool {
+    w.module_state::<FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .is_some_and(|hosted| hosted.live.units.iter().any(|row| row.unit == unit))
 }
 
 /// **Submit every owed `exit`** whose actor has nothing in flight, at most one an actor (the
@@ -681,6 +712,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             );
         }
     }
+    // Doc 40 (the ramp exit's boarding window, player hulls): a hull out at a ramp whose carrier
+    // is lost goes back into the field.
+    super::boarding::tick(ctx);
 }
 
 /// The recover the player asked for, as the player (`ctx.actor`).

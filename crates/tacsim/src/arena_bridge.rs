@@ -3849,6 +3849,8 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
     let arena_ms = last_event_ms(&events);
     // Doc 36 cut GC.10 (Q-36-11): an IC field counts the rounds each party saw arrive.
     crate::field::standing::note_chunk(ctx, match_id, &events);
+    // Doc 40 (the ramp exit's boarding window): the units the kernel named destroyed.
+    crate::field::boarding::note_chunk(ctx, match_id, &events);
     // Doc 23 cut S.4b-T (D-23-19): an IC field's own-sensor classifications are testimony.
     crate::field::testimony::note_chunk(ctx, match_id, &events);
     // **17b cut M1b.5**: `@mind/live`'s read-back is written from the tape — a

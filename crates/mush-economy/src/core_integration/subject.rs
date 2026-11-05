@@ -7,7 +7,10 @@ use mush_org::{OrgId, OrgScopeId, SystemPrincipalId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub(crate) const RESERVATION_SECONDS: i64 = 7 * 86_400;
+/// The reservation, accepted to expiry: 28 IC days (7 until the owner's rule of 2026-11-04 that a
+/// timer waiting on an absent player's response allows at least 28 IC days), the kernel audit's
+/// [`mush_core::player_wait::REFIT_RESERVATION_SECONDS`].
+pub(crate) const RESERVATION_SECONDS: i64 = mush_core::player_wait::REFIT_RESERVATION_SECONDS;
 pub(crate) const CORE3_ENTITLEMENT: &str = "tacsim.licence.core3_end_user";
 
 /// Physical governed core class. ROM is not a manufactured input or output.

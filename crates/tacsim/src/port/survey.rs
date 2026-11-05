@@ -31,7 +31,7 @@ pub const SURVEY_USAGE: &str =
     "Usage: +survey [<id>]  or  +survey/accept <id> [go]  or  +survey/cancel <id> [go]";
 /// Command help.
 pub const SURVEY_HELP: &str = "+survey  --  Occator's survey commissions. Each commission pays \
-    500.00cr for fresh detailed soundings of all 256 pockets in one block, within seven IC days. \
+    500.00cr for fresh detailed soundings of all 256 pockets in one block, within 28 IC days. \
     +survey <id> shows its terms and your progress. +survey/accept <id> previews; add go to file. \
     Occator reserves the reward after the filing lands. Sound and quiet sound both count, by hand \
     or plan; work must begin strictly after the acceptance time. One commission per account at a time, and \
@@ -69,6 +69,11 @@ pub struct SurveySecondaryEffect {
     pub delta: i16,
 }
 
+/// Every shipped survey's term, accepted to deadline: **28 IC days** (7 until the owner's
+/// rule of 2026-11-04 that a timer waiting on an absent player's response allows at least 28
+/// IC days; doc 39's cut notes).
+pub const SURVEY_TERM_IC_S: i64 = 28 * 86_400;
+
 const OFFERS: [SurveyOffer; 4] = [
     SurveyOffer {
         id: "ahuna-a",
@@ -76,7 +81,7 @@ const OFFERS: [SurveyOffer; 4] = [
         site_name: "Ahuna Flank",
         block: 0,
         reward_minor: 50_000,
-        term_ic_s: 604_800,
+        term_ic_s: SURVEY_TERM_IC_S,
         revision: 1,
         standing: 10,
         secondary_effects: &[],
@@ -87,7 +92,7 @@ const OFFERS: [SurveyOffer; 4] = [
         site_name: "Kerwan Floor",
         block: 5,
         reward_minor: 50_000,
-        term_ic_s: 604_800,
+        term_ic_s: SURVEY_TERM_IC_S,
         revision: 1,
         standing: 10,
         secondary_effects: &[],
@@ -98,7 +103,7 @@ const OFFERS: [SurveyOffer; 4] = [
         site_name: "Juling Shadow",
         block: 10,
         reward_minor: 50_000,
-        term_ic_s: 604_800,
+        term_ic_s: SURVEY_TERM_IC_S,
         revision: 1,
         standing: 10,
         secondary_effects: &[],
@@ -109,7 +114,7 @@ const OFFERS: [SurveyOffer; 4] = [
         site_name: "Occator Rim",
         block: 15,
         reward_minor: 50_000,
-        term_ic_s: 604_800,
+        term_ic_s: SURVEY_TERM_IC_S,
         revision: 1,
         standing: 10,
         secondary_effects: &[],
@@ -614,10 +619,11 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
         say(
             ctx,
             format!(
-                "{}: {}, block {} — {reward}, 7 IC days; {state}.",
+                "{}: {}, block {} — {reward}, {} IC days; {state}.",
                 offer.id,
                 offer.site_name,
-                char::from(b'A' + offer.block)
+                char::from(b'A' + offer.block),
+                offer.term_ic_s / 86_400
             ),
         );
         if id.is_some() {
@@ -654,9 +660,10 @@ fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
         say(
             ctx,
             format!(
-                "Occator offers {reward} for fresh detailed soundings of all {pockets} pockets in {} block {}, within 7 IC days. +survey/accept {id} go files it; funding follows once the filing lands.",
+                "Occator offers {reward} for fresh detailed soundings of all {pockets} pockets in {} block {}, within {} IC days. +survey/accept {id} go files it; funding follows once the filing lands.",
                 offer.site_name,
-                char::from(b'A' + offer.block)
+                char::from(b'A' + offer.block),
+                offer.term_ic_s / 86_400
             ),
         );
         if let Some(terms) = &row.standing {
@@ -867,6 +874,16 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
 mod payment_tests {
     use super::*;
     use mush_economy::{EconomySnapshot, IdempotencyRecord, TransactionId};
+
+    /// Owner rule, 2026-11-04: a survey's deadline waits on its pilot, so every shipped
+    /// offer allows at least 28 IC days.
+    #[test]
+    fn every_survey_offer_runs_at_least_28_ic_days() {
+        assert_eq!(SURVEY_TERM_IC_S, 2_419_200);
+        for offer in offers() {
+            assert!(offer.term_ic_s >= 28 * 86_400, "{}", offer.id);
+        }
+    }
 
     #[test]
     fn survey_payment_accepts_hot_or_cold_exact_receipts_and_rejects_invalid_money() {

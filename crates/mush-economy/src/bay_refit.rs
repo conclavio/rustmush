@@ -32,7 +32,10 @@ pub(crate) const NAMESPACE: &str = "industry.bay_refit.v1";
 pub(crate) const HOLD_PURPOSE: &str = "industry.bay_refit";
 /// The Org capability an offering operator needs on the bay's scope.
 pub const OPERATOR_CAPABILITY: &str = "industry.bay.refit";
-pub const RESERVATION_SECONDS: i64 = 7 * 86_400;
+/// The reservation, accepted to expiry: 28 IC days (7 until the owner's rule of 2026-11-04 that a
+/// timer waiting on an absent player's response allows at least 28 IC days), the kernel audit's
+/// [`mush_core::player_wait::REFIT_RESERVATION_SECONDS`].
+pub const RESERVATION_SECONDS: i64 = mush_core::player_wait::REFIT_RESERVATION_SECONDS;
 pub(crate) const MAX_ORDERS: usize = 8192;
 pub(crate) const SUBJECT_BYTES: usize = 8192;
 pub(crate) const HISTORY_BYTES: usize = 16_384;

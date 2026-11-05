@@ -134,7 +134,7 @@ impl RegisteredCoreInputs {
             let now = ctx.world().world_ic_now();
             let expires = match &witness.request {
                 CoreInputRequest::Consume { expires, .. } => expires.clone(),
-                _ => crate::reservation_deadline(&witness.at).map_err(bad)?,
+                _ => crate::refit_reservation_deadline(&witness.at).map_err(bad)?,
             };
             if now.clock != witness.at.clock
                 || now.at < witness.at.at

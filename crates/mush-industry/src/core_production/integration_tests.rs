@@ -796,7 +796,7 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
         );
         check_eq!(
             accepted.intent.expires_at.at - accepted.intent.accepted_at.at,
-            7 * 86400
+            mush_core::player_wait::REFIT_RESERVATION_SECONDS
         );
         check_eq!(f.balance(f.payer)?, (before.0, Amount::from_minor(300_000)));
         check!(

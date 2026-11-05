@@ -145,7 +145,7 @@ fn admission(d: &Defs, parts: (bool, bool)) -> TestResult<Value> {
         "part":if part {json!(5)} else {Value::Null},
         "returned":if returned {json!(6)} else {Value::Null},
         "recipe":{"work_units":2},"policy":d.policy});
-    let intent = json!({"order":1,"offer":offer,"payer":1,"accepted_at":stamp(0),"expires_at":stamp(604800)});
+    let intent = json!({"order":1,"offer":offer,"payer":1,"accepted_at":stamp(0),"expires_at":stamp(crate::player_wait::REFIT_RESERVATION_SECONDS)});
     let id = ScheduleId::derive(
         &owner_id("industry")?,
         &CanonicalId::new("bay.0000000000000001")?,
@@ -198,7 +198,7 @@ fn slot(r: &Row) -> TestResult<(BoundedScalar, ReservationBook)> {
         resource,
         r.holder()?,
         1,
-        stamp(604800),
+        stamp(crate::player_wait::REFIT_RESERVATION_SECONDS),
     )?;
     let book = book.checked_hold(book.revision(), scalar, held, &stamp(0))?;
     Ok((scalar, book))

@@ -542,7 +542,8 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
             .is_none_or(|price| price <= 0)
         || field(renewal, "policy")? != field(quote, "policy")?
         || !(1..=7_776_000).contains(&number(renewal, "term_seconds")?)
-        || number(renewal, "grace_seconds")? > 259_200
+        || number(renewal, "grace_seconds")?
+            > crate::player_wait::MAX_LICENCE_GRACE_SECONDS.unsigned_abs()
     {
         return Err(refused("house renewal consent differs"));
     }

@@ -76,7 +76,7 @@ impl PaidResaleWindowV1 {
         let grace = i128::from(self.grace_end) - i128::from(self.term_end);
         if self.format != 1
             || !(1..=7776000).contains(&term)
-            || !(0..=259200).contains(&grace)
+            || !(0..=i128::from(mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS)).contains(&grace)
             || self.issued_at >= self.grace_end
         {
             return Err(refused());

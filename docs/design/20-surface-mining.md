@@ -2446,7 +2446,7 @@ for a dispatcher) is the seam org-held claims build on.
 **As built (survey commissions):** `+survey [<id>]`, `+survey/accept <id> [go]` and
 `+survey/cancel <id> [go]` expose four globally finite Occator offers: `ahuna-a`, `kerwan-f`,
 `juling-k` and `occator-p`, for those sites' blocks A, F, K and P. Each pays 500 cr for fresh R2
-coverage of all 256 pockets within seven IC days of acceptance; the contract allows one further IC
+coverage of all 256 pockets within 28 IC days of acceptance (seven until the owner's rule of 2026-11-04, `20-cut-notes.md`'s player-response floor); the contract allows one further IC
 day for settlement, never for new work. One unfinished commission per gateway account; each offer
 pays once globally. Bare acceptance and cancellation preview, and `go` commits.
 

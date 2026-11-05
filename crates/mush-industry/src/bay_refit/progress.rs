@@ -96,7 +96,7 @@ impl BayProgress {
             return Err(Error::Invalid);
         }
         let id = schedule_id(order)?;
-        let expires = mush_inventory::reservation_deadline(&start).map_err(bad)?;
+        let expires = mush_inventory::refit_reservation_deadline(&start).map_err(bad)?;
         let duration = i64::try_from(work_units)
             .map_err(bad)?
             .checked_mul(CADENCE)
@@ -151,7 +151,7 @@ impl BayProgress {
 
     fn live_time(&self, at: &ClockStamp) -> Result<(), Error> {
         let start = self.production.started();
-        let expiry = mush_inventory::reservation_deadline(start).map_err(bad)?;
+        let expiry = mush_inventory::refit_reservation_deadline(start).map_err(bad)?;
         if at.clock != start.clock || at.at < start.at {
             return Err(Error::Invalid);
         }

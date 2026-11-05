@@ -51,7 +51,7 @@ pub(crate) fn quick(cfg: &mut tacsim::TacsimConfig) {
     cfg.recovery.inspect_s = 30;
     cfg.recovery.attach_s = 30;
     cfg.recovery.load_s = 60;
-    cfg.recovery.claim_window_s = WINDOW;
+    cfg.recovery.claim_window_ic_s = WINDOW;
 }
 
 /// **GC.6's stage**: T's carrier on Urvara's pad; O's carrier on the same pad with one rig at

@@ -36,8 +36,11 @@ pub const MAX_TERM_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// attestation's 365 days) and [`TermWindow`] itself use it; a paid
 /// record still holds its window to [`MAX_TERM_SECONDS`].
 pub const MAX_OWNER_TERM_SECONDS: i64 = 365 * 24 * 60 * 60;
-/// Compact Grace bound, in world-IC seconds (3 days).
-pub const MAX_GRACE_SECONDS: i64 = 3 * 24 * 60 * 60;
+/// Compact Grace bound, in world-IC seconds (28 days; 3 until the owner's rule of
+/// 2026-11-04 that a timer waiting on an absent player's response allows at least 28 IC
+/// days). The kernel's audits read the same value
+/// ([`mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS`]).
+pub const MAX_GRACE_SECONDS: i64 = mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS;
 
 /// Closed, source-free validation failures; no error identifies another holder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

@@ -20,7 +20,7 @@ fn due(p: &CoreProgress, at: i64, cause: ScheduleDriveCause) -> Result<ScheduleA
 }
 
 #[test]
-fn every_real_occurrence_replays_inside_the_original_seven_day_hold() -> TestResult {
+fn every_real_occurrence_replays_inside_the_28_day_hold() -> TestResult {
     let mut p = CoreProgress::new(WorkOrderId(0), stamp(0), MAX_WORK_UNITS)?;
     for n in 1..=MAX_WORK_UNITS {
         let observed = i64::try_from(n)?
@@ -37,7 +37,11 @@ fn every_real_occurrence_replays_inside_the_original_seven_day_hold() -> TestRes
     let bytes = serde_json::to_vec(&p)?;
     check!(bytes.len() < MAX_PROGRESS_BYTES);
     check_eq!(serde_json::from_slice::<CoreProgress>(&bytes)?, p);
-    let next = due(&p, 7 * 86_400, ScheduleDriveCause::Live)?;
+    let next = due(
+        &p,
+        mush_core::player_wait::REFIT_RESERVATION_SECONDS,
+        ScheduleDriveCause::Live,
+    )?;
     check_eq!(
         p.advance(CommitToken::from_bytes([220; 16]), &next),
         Err(Error::Expired)
@@ -64,7 +68,11 @@ fn real_restart_catchup_uses_occurrences_and_cannot_credit_expired_time() -> Tes
     complete.validate()?;
     check!(complete.production().is_complete());
     check_eq!(complete.advances.len(), 1);
-    let expired = due(&p, 9 + 7 * 86_400, ScheduleDriveCause::Restart)?;
+    let expired = due(
+        &p,
+        9 + mush_core::player_wait::REFIT_RESERVATION_SECONDS,
+        ScheduleDriveCause::Restart,
+    )?;
     check_eq!(
         p.advance(CommitToken::from_bytes([2; 16]), &expired),
         Err(Error::Expired)

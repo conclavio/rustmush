@@ -3112,3 +3112,27 @@ correctness).
 ### 15.6 What this close-out does not do
 
 It does not re-open E1–E7's decisions, does not re-litigate any deviation a cut's own verify fold confirmed sound, and does not promote a post-E7 item by wanting it. Where cut 11 disagreed with cut 10's classification it says so **[re-classified]** with the reason (items 16 and 29), and where cut 11 failed to build something it says so in §15.1 with the obstacle rather than moving it quietly to a later class.
+
+## 16. The player-response floor (2026-11-04)
+
+**The owner's rule (2026-11-04):** a timer that waits on a player's response, and costs a
+player who has not answered something, allows at least **28 IC days** (about 28 real hours at
+IC rate 24), because players are not online all the time. A timer that resolves in the
+absent player's favour, or an offer whose lapse takes nothing, may stay short. Two of this
+plan's §7 caps were under it and are raised:
+
+- **`RECOVERY_ACCEPT_TTL_SECS`** (`mush-campaign/src/recovery.rs`): one IC day → **28**. A
+  granted loaner held for an applicant who has not accepted is now theirs for 28 IC days
+  before the fourth arm unwinds it. Pinned by `e7r1`'s
+  `vf_d7c_an_unaccepted_grant_waits_28_ic_days_for_an_absent_applicant`: a day short of the
+  TTL the grant is still live and `@contract/accept` takes it.
+- **`OPERATION_NOTICE_MIN` / `MAX`** (`mush-campaign/src/record.rs`, §7 S5A): 24 h / 72 h →
+  **28 / 84 IC days**, keeping the ceiling at three times the floor. **A stopgap**: the real
+  answer is async attack and defence (standing orders and stances a defender sets ahead),
+  a separate design owed; the notice stands until it lands. `@op/declare`'s default window
+  stays a day after the notice (it shared `OPERATION_NOTICE_MIN` while both were 24 h).
+  Pinned by `e7c9_b8_a_notice_edit_outside_the_band_refuses_rather_than_storing` (671 h and
+  2,017 h refuse; 672, 720 and 2,016 accept) and `e7c9_z3`.
+
+The workspace guard is `mush-contract-tests`' `engine_contracts::player_wait_floors`, which
+holds every timer of the owner's audit (`bf0b5f24`) at or above the floor.

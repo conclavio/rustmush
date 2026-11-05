@@ -193,6 +193,14 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     for unit in gone {
         arena.remove_unit(unit);
     }
+    // Doc 40 (the ramp exit's boarding window): the wrecks the snapshot holds, for the boarding
+    // checks (`super::boarding::seed`).
+    let wrecks: BTreeSet<ObjId> = arena
+        .units
+        .iter()
+        .filter(|state| state.limits.wreck)
+        .map(|state| state.id)
+        .collect();
     // Doc 36 cut GC.1b (Q-36-4): a carrier the host took in after this snapshot was taken is on
     // the live record and checked out, and the snapshot never held it; the arena joins it again
     // at its pad, as the kernel did at the pulse it joined. One that can no longer join is checked
@@ -269,6 +277,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         return Err(format!("its task did not reopen ({error})"));
     }
     super::record::write_live(ctx, &live);
+    super::boarding::seed(ctx.w, task, wrecks);
     // The seats: a pilot still sitting in the unit is its pilot again. Focus never survives a
     // boot (mush-sim's D-E7-34), so the pilot is told how to take the cockpit back.
     for row in &live.units {
