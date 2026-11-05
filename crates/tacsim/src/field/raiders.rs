@@ -829,6 +829,11 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         let Some(raider) = raider_of(ctx.w, carrier) else {
             continue;
         };
+        // Doc 42 cut CR.4 (Q-42-12, Draft 0.3 42-5): a pending eject capture naming this carrier
+        // holds it on the ground until the captive is aboard (the extraction's due instant).
+        if super::crew::capture_pending(ctx.w, carrier) {
+            continue;
+        }
         let launched: Vec<ObjId> = hulls_of(ctx.w, &raider)
             .into_iter()
             .filter(|hull| carrier_of(ctx.w, *hull) == Some(carrier))

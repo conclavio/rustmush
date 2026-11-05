@@ -2052,6 +2052,9 @@ pub struct FieldConfig {
     /// **Doc 42 cut CR.3** (Q-42-8; doc 27 Q-F4's cap): IC seconds from a capture after which a
     /// captive may ask for extraction from captivity (604,800, provisional: seven IC days).
     pub captive_bound_s: u32,
+    /// **Doc 42 cut CR.4** (Q-42-12): the chance, per mille, that an ejection from a cell a
+    /// Hostile party holds is a capture (500, provisional: even); a gate sets 1,000 or 0.
+    pub eject_capture_permille: u32,
     /// **The field's dice seed, pinned** (doc 40 cut FR.5's follow-up; a test and replay knob):
     /// `None` (the default, and production's) seeds each field from `crate::match_::seed_for`,
     /// its ordinal, the world's clock at admission and the process's salt; `Some(seed)` seeds
@@ -2078,6 +2081,7 @@ impl Default for FieldConfig {
             launch_cycle_s: 60,
             release_s: 3_600,
             captive_bound_s: 604_800,
+            eject_capture_permille: 500,
             seed: None,
         }
     }
@@ -2128,6 +2132,12 @@ impl FieldConfig {
                 FIELD_CAPTIVE_BOUND_S.start(),
                 FIELD_CAPTIVE_BOUND_S.end(),
                 self.captive_bound_s
+            ));
+        }
+        if self.eject_capture_permille > 1_000 {
+            return Err(format!(
+                "[tacsim.field].eject_capture_permille must be 0 to 1000 (it is {})",
+                self.eject_capture_permille
             ));
         }
         if !FIELD_RELEASE_S.contains(&self.release_s) {
