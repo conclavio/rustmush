@@ -31,6 +31,8 @@ mod geology_keyed;
 mod grounds_rig;
 #[path = "support/field/site_record_rig.rs"]
 mod site_record_rig;
+#[path = "support/field/surrender_rig.rs"]
+mod surrender_rig;
 mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
@@ -105,6 +107,8 @@ mod review_36a;
 mod salvage_close;
 #[path = "domain_field/site_record.rs"]
 mod site_record;
+#[path = "domain_field/surrender.rs"]
+mod surrender;
 #[path = "domain_field/testimony.rs"]
 mod testimony;
 #[path = "domain_field/vacated_return_rs4.rs"]

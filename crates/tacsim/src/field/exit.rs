@@ -711,7 +711,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if let Err(error) = ran {
             let what = match asked.then {
                 Then::Lift { .. } => "departure did not file",
-                Then::RaiderLift => "lift did not finish",
+                Then::RaiderLift | Then::Yield => "lift did not finish",
                 Then::TowLoad { .. } | Then::Towed { .. } => "load did not file",
                 Then::Rig { .. } | Then::Sortie { .. } | Then::Raider => "recover did not start",
             };

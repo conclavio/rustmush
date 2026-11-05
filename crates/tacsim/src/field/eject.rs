@@ -401,6 +401,23 @@ fn ejected(
 mod tests {
     use super::*;
 
+    /// **Doc 42b cut SU.3** (Q-42b-8): the morale draw is the eject's FNV-1a keyed by the step,
+    /// never the millisecond: the same inputs draw the same, and the step and the hull each
+    /// change it.
+    #[test]
+    fn su3_the_yield_draw_is_keyed_by_the_step() {
+        let site = CanonicalId::new("ahuna_port").expect("a site");
+        let draw = |hull: u32, step: u16| yield_draw(&site, 3, ObjId(hull), step);
+        assert_eq!(draw(40, 2), draw(40, 2));
+        assert!(draw(40, 2) < 1_000);
+        let spread: std::collections::BTreeSet<u32> = (1..=10).map(|step| draw(40, step)).collect();
+        assert!(spread.len() > 5, "the steps draw apart: {spread:?}");
+        assert_ne!(
+            (1..=10).map(|step| draw(40, step)).collect::<Vec<_>>(),
+            (1..=10).map(|step| draw(41, step)).collect::<Vec<_>>()
+        );
+    }
+
     /// Doc 42 cut CR.4 (Q-42-12): the draw is a pure function of its seed, spread over 0..1000,
     /// so 1,000 always captures and 0 never does.
     #[test]

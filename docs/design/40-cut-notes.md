@@ -760,7 +760,8 @@ went red on main once IN.5 (#414) merged after this cut.
     stands. It decides on the arena's live facts at the pulse head that would have let the hull go, so no
     wreck can land between the check and the release. The host strands the hull (`raiders::strand`): it sends
     the leader's order at sequence 2 with no directive, which lifts the WITHDRAW in the kernel so the doctrine
-    fights on (to the death, the earlier ruling), then spends the hull's `withdraw` mark so the host stops
+    fights on (to the death unless its crew yields: the earlier ruling, and doc 42b cut SU.3's
+    morale check), then spends the hull's `withdraw` mark so the host stops
     asking. **Why this shape:** the arena never let the hull go, so nothing has to be undone or re-joined.
     The host alone could only read the carrier's condition off the last snapshot (a 300 ms decode, up to
     `snapshot_ms` stale), and a re-admit after a release would need a join, a home and a fresh row. A busy

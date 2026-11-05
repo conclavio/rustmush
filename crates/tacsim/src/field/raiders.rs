@@ -1488,7 +1488,10 @@ fn ask_yield(ctx: &mut Ctx<'_>, hull: ObjId) {
     let asked = super::exit::request(ctx, hull, None, super::exit::Then::Yield);
     ctx.actor = saved;
     if asked.is_ok() {
-        tracing::info!(hull = hull.0, "tacsim: a raider crew yields; its hull leaves the field");
+        tracing::info!(
+            hull = hull.0,
+            "tacsim: a raider crew yields; its hull leaves the field"
+        );
     }
 }
 
@@ -1906,6 +1909,73 @@ mod tests {
             &|f| f["raiders"][0]["units"][0]["crew"] = serde_json::json!(" ")
         ));
         assert!(refused(&|f| f["schema"] = serde_json::json!(4)));
+    }
+
+    /// **Doc 42b cut SU.3** (Q-42b-4): the pressure's gate and terms, summed and clamped.
+    #[test]
+    fn su3_pressure_opens_on_odds_or_the_carrier_and_sums_its_terms() {
+        let sound = Pressure {
+            health_permille: 1_000,
+            ..Pressure::default()
+        };
+        assert!(!sound.opens(), "a damaged, winning crew never checks");
+        assert_eq!(sound.total(), 0);
+        let hurt = Pressure {
+            health_permille: 0,
+            lost: 2,
+            launched: 2,
+            leader_absent: true,
+            ..Pressure::default()
+        };
+        assert!(
+            !hurt.opens(),
+            "losses, damage and the leader only weigh a check"
+        );
+        let lost = Pressure {
+            carrier_lost: true,
+            ..sound
+        };
+        assert!(lost.opens());
+        assert_eq!(lost.total(), PRESSURE_CARRIER_LOST);
+        let odds = |excess| Pressure { excess, ..sound }.total();
+        assert_eq!(odds(1), 150);
+        assert_eq!(odds(3), PRESSURE_ODDS_MAX);
+        assert_eq!(odds(9), PRESSURE_ODDS_MAX, "the odds term is capped");
+        let half = Pressure {
+            carrier_lost: true,
+            lost: 1,
+            launched: 2,
+            health_permille: 500,
+            ..Pressure::default()
+        };
+        assert_eq!(half.total(), 400 + 150 + 150);
+        let everything = Pressure {
+            carrier_lost: true,
+            excess: 5,
+            lost: 2,
+            launched: 2,
+            health_permille: 0,
+            leader_absent: true,
+        };
+        assert_eq!(everything.total(), 1_000, "clamped");
+    }
+
+    /// **Doc 42b cut SU.3** (Q-42b-4, Q-42b-8): the chance the trait weights, and one draw per
+    /// new 100-per-mille step.
+    #[test]
+    fn su3_resolve_weights_the_chance_and_steps_are_drawn_once() {
+        assert_eq!(yield_chance(400, 0), 400);
+        assert_eq!(yield_chance(400, 400), 240);
+        assert_eq!(yield_chance(1_000, 1_000), 0, "a fanatic never yields");
+        assert_eq!(yield_chance(0, 0), 0, "no pressure, no yield");
+        assert_eq!(steps_due(0, 450).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert!(
+            steps_due(4, 450).is_empty(),
+            "a step drawn is never drawn again"
+        );
+        assert_eq!(steps_due(4, 600).collect::<Vec<_>>(), [5, 6]);
+        assert!(steps_due(0, 99).is_empty());
+        assert_eq!(*steps_due(0, 1_000).end(), 10);
     }
 
     /// Doc 36 cut GC.0: the snapshots' lift check runs at the first, then once a pace, and again
