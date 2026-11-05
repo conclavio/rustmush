@@ -928,6 +928,10 @@ captains' buyout money, and the Trust's raise held back in the treasury by staff
 (the world the row reads is the one before v28; with the raise in from boot the Trust would order at the seventh
 charter, which is what the raise is for). 22 s locally.
 
+**Cell delta (rule #14).** `tacsim-integration-2`: **+1.79 min**, 17.25 → 19.04 summed minutes against main's run at
+`458304cb` (41936816433), 419 → 420 tests; the new story is 0.40 min (23.9 s on PR run 41937075526's JUnit), the
+rest runner speed on unchanged tests.
+
 **Owed / flagged.**
 - Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the yard, so
   `FLOORS` carries the Trust's row alone.
@@ -935,4 +939,4 @@ charter, which is what the raise is for). 22 s locally.
   retired a house Dray waits on a hauler plant someone made or scrapped there. Ordering the plant at the works
   (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
   the owner.
-- The rule #14 cell delta is owed from CI.
+
