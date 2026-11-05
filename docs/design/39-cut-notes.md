@@ -936,3 +936,46 @@ charter, which is what the raise is for). 22 s locally.
   (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
   the owner.
 - The rule #14 cell delta is owed from CI.
+
+## IN.11 — the matter story and the adversarial set (Q-39-8, Q-38-29) — IN PROGRESS
+
+**The census's shape** (the owner's ruling, relayed 2026-11-04: option (a)). A world's seeded stock carries no lineage once
+its lots are pooled, so §4.10's rule is held **across a window**: `@industry/census` (staff, read-only;
+`tacsim::port::census`) prints one `tacsim.matter_census` line of absolute kilograms and a story holds the difference of
+two. RS.9 reads the same line.
+
+- **Sources**: the opened deposits' reserves (`opened`; mining is a transfer out of a deposit's vault, so `mined` =
+  `opened` − `in_ground`) and the stock clerk's mints (`stock`, the `tacsim.port_stock` receipts).
+- **Holdings**: pools and lots of the chain's goods outside the ground (the ores, the refined goods and the parts;
+  volatiles, propellant, provisions and munitions are outside the chain), the hulls' bales and the shop bales.
+- **Sinks**: completed work orders' inputs less outputs (`worked`; at a yard the hull's bulk, a kit being massless),
+  the mills' ore less product (`milled`), and the parts commissions consumed (`built`).
+- `balance` = sources − holdings − sinks. One `tacsim.matter_build order= inputs= hull= waste=` line a commission
+  holds §4.9's "inputs = the hull + the waste" (inputs: the bill's bulk, its parts and its core).
+
+**Measured.** On a settled shipped world the balance is **0** — every stock mint is a receipt and every pool is
+counted. Across the IN.10 Trust order (purchases, the 12-day build, the commission) it holds at −30,000 kg on both
+sides: the staff-seeded hauler plant, a mint the census cannot see, which is the point of a window. Occator's
+yard drones mine through the window (mined 525 t → 878 t) and the census conserves it.
+
+**Built so far** (`shard_2/in11_matter.rs`):
+- `in11_probe_the_census_holds_still_on_a_settled_world`.
+- `in11_a_restart_between_consumption_and_title_finishes_the_hull_once`: the escort's commission consumes its kit and
+  parts, the world restarts before the lay-up, and the next fires finish it once (one hull, one register row); the
+  census holds and the build line reads inputs = hull + waste.
+- `in11_two_orders_for_one_bale_draw_it_once`: a second `+bay/order` while a patch stands is refused ("held for work
+  in progress"); the second patch then draws the opened bale alone and the hold gives up its tonne once.
+- The IN.10 story asserts the census across the house order.
+- The bot's `+yard` vocabulary and readers (`yard_booked`, `commissioned`, `works::COMMISSIONS_AS`).
+
+**Owed.**
+- **The bot story at 256 and 512** (the row's acceptance): IN.5's `production_story` extended with the part (a works
+  part recipe), its `+market/sell`, the `+bay/order replace` quote and fit, and a yard build, God typing
+  `@industry/census` at the window's ends. A dispatch-tier story (TS.2's `test-tiers.toml` row), run on conclav.dev.
+- **A competing reservation at the deadline**: as built, every order's materials are its own escrow's, so two
+  reservations never compete for one pool, and an overdue reservation is the sweep's (§8, "what neither review
+  saw"); the story the row names needs the owner's reading of what competes.
+- **Repairs in the census**: a repair consumes bale kilograms into the hull and nothing durable sums them (a hull keeps
+  its last order), so a window with repairs does not balance. With remains scrap's undeclared sub-tonne, this is the
+  case for **the durable matter ledger (option (b))**: a counter family at every source and sink — a future cut,
+  not built here.
