@@ -925,7 +925,9 @@ because every later cut edits `crew.rs` after it.
 | CR.7 | this PR | §5's amendments, this table | — |
 
 The future the owner named (2026-11-04) stands: stranded raiders fight to the death, and surrender by
-circumstance and personality is a later cut (§8).
+circumstance and personality is a later cut (§8). **Built since** as [doc 42b](42b-surrender.md)
+(SU.0–SU.6, #481–#493): a raider crew whose morale breaks yields to the party holding its cell, its
+hull a casualty, its crew captured through CR.1 and handed over through CR.2 with no fee.
 
 ### 7a. What the first cuts author
 

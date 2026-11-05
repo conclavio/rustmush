@@ -39,6 +39,8 @@ mod gate5_fault_matrix;
 mod legacy_handler_allowlist;
 #[path = "ci_policy/matcher_call_sites.rs"]
 mod matcher_call_sites;
+#[path = "ci_policy/nightly_paths.rs"]
+mod nightly_paths;
 #[path = "ci_policy/panic_budget.rs"]
 mod panic_budget;
 #[path = "ci_policy/process_fault_gate.rs"]

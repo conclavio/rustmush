@@ -529,6 +529,13 @@ cargo invocation on the owner's Windows box carries `-j 8`, one workspace build 
 | `field_scale` at 100 | `tests/shard_1/field_scale.rs`, `#[ignore]`, by hand in release, GC.12's command | the effect derivation and the trailing casualty in the pulse | re-measured once after the batch, as GC.12 re-measured after GC.2; the 40 ms budget stands |
 | The contract guards | `mush-contract-tests`: the panic budget, the matter census (`.mint_origin(`), the restriction lints, `legacy-handlers.toml` | new verbs and switches (`+faction/stance`, `+field/void`'s change, the launch line) | green before every push, per the house rule |
 
+**Re-run for doc 42b cut SU.2 (2026-11-05).** SU.2 adds one read to `arena/state.rs`,
+`Arena::armed_hostiles_in_reach`, beside `party_holds_armed_hostile_in_reach`. Both now share one
+private per-contact test. The harness kind was dispatched on conclav-dev (run 42059596120), and
+`tacsim_harness_delta_against_the_committed_baseline` passed against `arena.linux.json` with every
+deterministic leaf equal. Every row of this table came back **unmoved**, and nothing was
+re-blessed (Q-36-56: no rebless shares the batch).
+
 ## 5. Owner survey
 
 **Ruled 2026-11-03.** The owner accepted every default as written ("all Q-40s accepted as their

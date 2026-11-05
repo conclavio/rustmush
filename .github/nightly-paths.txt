@@ -1,0 +1,89 @@
+# Doc 43 rule 2.3 #15: the source paths each nightly-, weekly- or dispatch-tier job of
+# .github/workflows/ci.yml exercises, so a pull request that touches one knows which
+# jobs to run at the FAST pace (`gh workflow run CI --ref <branch>`, `mind_pulse_ms`
+# empty) and get green before it is marked ready. The real-pace run is not a gate
+# (owner, 2026-11-05): the next nightly's, or fired and not waited on. Pull-request CI never runs these jobs; the nightly of 2026-11-05 broke
+# on #475, whose grace windows moved the M7 and M8 stories' pins.
+#
+# One line a path: `<job id> <tier> <path>`. The job id is the key under `jobs:` in
+# ci.yml; the tier is `nightly` (the daily schedule), `weekly` (the Sunday 04:17
+# schedule) or `dispatch` (by hand only), and must match the job's `if:`; the path
+# is a workspace-relative file, or a directory prefix ending in `/`. A PR's changed
+# file matches a line when it equals the path or starts with the prefix.
+# scripts/nightly_advice.py prints the matches (the `lint` cell runs it on every pull
+# request, and it runs locally the same way); `ci_policy::nightly_paths` refuses a
+# job id ci.yml does not have, a non-PR job with no line, a wrong tier, and a path
+# that does not exist.
+#
+# The stories run most of the engine, so the map is deliberately the paths a story's
+# PINS move with: the timers, grace windows and terminal capacity (mush-core's
+# action_state), the economy and market a story buys through, the minds and the
+# registry, and each job's own test modules. Widen a line when a nightly breaks on a
+# path it did not name, in the PR that fixes the nightly.
+
+# M7: the genuine Registry ratings, the paid purchase and the player market stories.
+mind-commerce-acceptance nightly crates/tacsim/src/minds/
+mind-commerce-acceptance nightly crates/tacsim/src/hardware/flow/launch/
+mind-commerce-acceptance nightly crates/mush-server/src/world_task/submission_disposition/
+mind-commerce-acceptance nightly crates/mush-market/src/
+mind-commerce-acceptance nightly crates/mush-economy/src/
+mind-commerce-acceptance nightly crates/mush-core/src/action_state/
+
+# M8: the combined world, held minds aboard, zero-PC procurement, licensed minds in a field.
+m8-gate-stories nightly crates/tacsim/src/minds/
+m8-gate-stories nightly crates/tacsim/src/hardware/
+m8-gate-stories nightly crates/tacsim/src/port/
+m8-gate-stories nightly crates/tacsim/src/surface/
+m8-gate-stories nightly crates/tacsim/src/field/
+m8-gate-stories nightly crates/mush-economy/src/
+m8-gate-stories nightly crates/mush-core/src/action_state/
+m8-gate-stories nightly crates/tacsim/tests/domain_field/m8_world.rs
+m8-gate-stories nightly crates/tacsim/tests/domain_field/excursions.rs
+m8-gate-stories nightly crates/tacsim/tests/domain_field/ic_sortie_surface.rs
+
+# FR.7's round story, the bot over SSH at 256 and 512.
+fr7-round-story nightly crates/mush-bot/tests/mining_cohort/fr7_round.rs
+fr7-round-story nightly crates/mush-bot/src/
+fr7-round-story nightly crates/tacsim/src/field/
+
+# The 16b cut H harness (rule #13 already binds its hash-pinned files).
+tacsim-harness nightly crates/tacsim/tests/harness.rs
+tacsim-harness nightly crates/tacsim/tests/harness_baseline/
+tacsim-harness nightly crates/tacsim/src/arena/
+tacsim-harness nightly crates/tacsim/src/minds/
+
+# H3: the scale harness against a real Redis.
+scale nightly crates/mush-contract-tests/tests/ci_policy/scale_harness.rs
+scale nightly crates/mush-store/src/
+scale nightly crates/mush-economy/src/
+
+# The release-profile build and its smoke (TS.14 checks the build on every PR; this
+# is the LTO build, the embedded SPA and the release binaries' boot).
+release nightly Cargo.toml
+release nightly Cargo.lock
+release nightly scripts/release-smoke.sh
+release nightly crates/mushd/src/
+release nightly crates/mush-gateway/src/
+release nightly crates/mush-net-web/
+
+# Weekly: M6's author story and pilot comparison, the full Class III replay.
+mind-author-acceptance weekly scripts/mind_port_acceptance.py
+mind-author-acceptance weekly scripts/test_mind_port_acceptance.py
+mind-author-acceptance weekly crates/tacsim/src/minds/
+mind-full-replay weekly crates/tacsim/src/minds/
+mind-full-replay weekly crates/tacsim/src/arena/
+
+# Weekly: the M8 leak battery and the House doctrines' Registry trials.
+m8-leak-battery weekly crates/tacsim/tests/domain_field/m8_leaks.rs
+m8-leak-battery weekly crates/tacsim/tests/domain_field/m8_world.rs
+m8-leak-battery weekly crates/tacsim/src/minds/
+m8-house-doctrines weekly crates/tacsim/src/minds/registry/
+m8-house-doctrines weekly crates/tacsim/src/hardware/flow/launch/
+
+# Weekly, report-only: the bot's win rates.
+bot-win-rate weekly crates/mush-bot/tests/arena_win_rate.rs
+bot-win-rate weekly crates/mush-bot/src/
+bot-win-rate weekly crates/tacsim/src/arena/
+bot-muster-rate weekly crates/mush-bot/tests/arena_muster_rate.rs
+bot-muster-rate weekly crates/mush-bot/src/
+bot-muster-rate weekly crates/tacsim/src/arena/
