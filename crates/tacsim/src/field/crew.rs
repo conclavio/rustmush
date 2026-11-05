@@ -97,6 +97,11 @@ pub const TREATMENT_LEFT: &str =
     "You have left the port before your treatment was done; it starts over at the next port.";
 /// [`TREATMENT_BEGUN`]'s `{room}` at a port with a medical room.
 pub const MEDICAL_ROOM: &str = "'s medical room";
+/// **Doc 42 cut CR.5** (Q-42-17): treatment begun with every medical bed taken: `{port}`, `{h}`.
+pub const TREATMENT_WAITING: &str = "You are under treatment at {port}: every bed in its medical room is taken, so it is the full time, fit again in about {h} IC h, unless a bed frees first.";
+/// **Doc 42 cut CR.5**: a bed freed for a waiting character: `{port}`, `{h}`.
+pub const BED_FREED: &str =
+    "A bed frees in {port}'s medical room: you are fit again in about {h} IC h.";
 /// An extraction already on its way: `{port}`, `{h}`.
 pub const ALREADY_COMING: &str =
     "Your extraction to {port} is already on its way, about {h} IC h out.";
@@ -622,9 +627,14 @@ fn condition_of<'a>(
 /// **The crew's condition in `unit`** as its checked-in record stands ([`condition_of`] over its
 /// sections and their internals).
 fn unit_condition(w: &World, unit: ObjId) -> CrewCondition {
-    let Some(cells) = mush_tactics::module::unit_of(w, unit) else {
-        return CrewCondition::Fit;
-    };
+    mush_tactics::module::unit_of(w, unit).map_or(CrewCondition::Fit, cells_condition)
+}
+
+/// **The crew's condition in a unit whose cells are `cells`** ([`condition_of`] over its
+/// sections and their internals): the checked-in record's, or the arena's live row (doc 42 cut
+/// CR.4's eject, Q-42-13).
+#[must_use]
+pub(crate) fn cells_condition(cells: &mush_tactics::TacticalUnit) -> CrewCondition {
     let internals_cell = mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL).ok();
     condition_of(cells.sections().map(|(id, section)| {
         let internals = internals_cell
@@ -643,6 +653,53 @@ fn unit_condition(w: &World, unit: ObjId) -> CrewCondition {
             });
         (id.as_str(), section.condition.as_str(), internals)
     }))
+}
+
+/// **Whether a unit whose cells are `cells` is doomed** (doc 42 cut CR.4; Q-42-11): it could not
+/// bring its pilot home at a check-in — no power, no control, no motion, a wreck or irrecoverable
+/// (`home`'s negation) — or a control section is already damaged, so the next hit
+/// incapacitates. The arena reads it on its live row (`crate::arena::eject`), adding its own
+/// wreck, motion-disabled and disabled limits.
+#[must_use]
+pub(crate) fn doomed(cells: &mush_tactics::TacticalUnit) -> bool {
+    // A unit with no mobility profile is never doomed for want of motion (the withdraw's own
+    // power test, `crate::arena::withdraw`).
+    let unable = crate::field_ops::assess_tacsim_unit(cells, None)
+        .ok()
+        .is_none_or(|c| {
+            !home(&crate::field_ops::FieldUnitAssessment {
+                can_move: c.can_move || cells.mobility().is_none(),
+                ..c
+            })
+        });
+    unable || cells_condition(cells) != CrewCondition::Fit
+}
+
+/// Whether an assessed unit can bring its pilot home: power, control and motion, and neither a
+/// wreck nor irrecoverable (`check_in`'s rule).
+fn home(c: &crate::field_ops::FieldUnitAssessment) -> bool {
+    c.has_power
+        && c.has_control
+        && c.can_move
+        && !matches!(
+            c.state,
+            crate::field_ops::OperationalState::Wreck
+                | crate::field_ops::OperationalState::Irrecoverable
+        )
+}
+
+/// **Every crew record the world holds**, in character order (doc 42 cut CR.6's space seam reads
+/// it to find a derelict's crew); empty when the book is not registered.
+pub(crate) fn records(w: &World) -> impl Iterator<Item = &CrewRecord> {
+    w.module_state::<CrewBook>()
+        .into_iter()
+        .flat_map(|book| book.0.values())
+}
+
+/// **Who is seated in `unit`**, if anyone (a reader for the gates).
+#[must_use]
+pub fn seated_in(w: &World, unit: ObjId) -> Option<ObjId> {
+    super::parties::seated(w, unit).map(|(who, _)| who)
 }
 
 /// The hull whose rooms `who` stands in, if any.
@@ -667,7 +724,7 @@ fn aboard(w: &World, site: &CanonicalId, hull: ObjId) -> CrewLocation {
 }
 
 /// The organizer of the party `unit` was in, while its field runs.
-fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
+pub(crate) fn organizer_of(w: &World, site: &CanonicalId, unit: ObjId) -> Option<ObjId> {
     let hosted = w.module_state::<super::FieldBook>()?.hosted(site)?;
     let party = hosted.live.party_of(unit)?;
     hosted
@@ -737,17 +794,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         };
         let assessment = crate::field_ops::assess_tacsim_unit(cells, None).ok();
         let condition = unit_condition(ctx.w, unit);
-        let home = assessment.as_ref().is_some_and(|c| {
-            c.has_power
-                && c.has_control
-                && c.can_move
-                && !matches!(
-                    c.state,
-                    crate::field_ops::OperationalState::Wreck
-                        | crate::field_ops::OperationalState::Irrecoverable
-                )
-        });
-        let location = if home {
+        let location = if assessment.as_ref().is_some_and(home) {
             CrewLocation::Unit { unit }
         } else {
             CrewLocation::Stranded {
@@ -787,7 +834,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
     }
 }
 
-/// **[`check_in`]'s rule for a captive whose carrier checks in** (doc 42 cut CR.3, Q-42-15):
+/// **`check_in`'s rule for a captive whose carrier checks in** (doc 42 cut CR.3, Q-42-15):
 /// held aboard `unit` and the carrier's own check-in strands its souls (`at` is
 /// [`aboard`]'s reading) — stranded in the wreck on `site`, the condition kept, custody gone.
 /// Anyone else, and a captive of a sound carrier, is `None`.
@@ -826,7 +873,7 @@ pub(crate) fn leaves_alone(record: &CrewRecord) -> bool {
 }
 
 /// **Everyone a carrier's row listed aboard** (doc 32 cut CF.3's rows), as the carrier checks in:
-/// each soul still aboard is recorded aboard it ([`check_in`]'s carrier branch).
+/// each soul still aboard is recorded aboard it (`check_in`'s carrier branch).
 pub(crate) fn check_in_aboard(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
@@ -1479,7 +1526,7 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
 }
 
 /// The safe port `who` knows (this module's head): the IC-return stamp's, else the fallback.
-fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPort> {
+pub(crate) fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPort> {
     crate::ic_return::last_port(w, who).or_else(|| {
         crate::ic_return::PORTS
             .iter()
@@ -1488,7 +1535,7 @@ fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPor
 }
 
 /// IC hours, rounded up.
-fn hours(seconds: i64) -> i64 {
+pub(crate) fn hours(seconds: i64) -> i64 {
     seconds.max(0).saturating_add(3_599) / 3_600
 }
 
@@ -1555,11 +1602,53 @@ pub(crate) fn extract_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Whether a Friend's recovery flight stands on `site` for `organizer` (this module's head).
-fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, organizer: Option<ObjId>) -> bool {
-    let Some(organizer) = organizer else {
-        return false;
+/// **Whether a rescue stands on `site` for `who`** (doc 42 Q-42-14, cut CR.4; this module's
+/// head): an open DT flight in the field there, on any duty, or a live rig lease whose rig stands
+/// on the site's ground, of the character's own party or a Friend's (`friendly`).
+fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, record: &CrewRecord) -> bool {
+    let (who, organizer) = (record.character, record.organizer);
+    // The hull the character is stranded in rescues nobody.
+    let own = match record.location {
+        CrewLocation::Stranded { unit, .. } | CrewLocation::Unit { unit } => Some(unit),
+        _ => None,
     };
+    let friend = |other: ObjId| friendly(ctx.w, who, organizer, other);
+    let rig = ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .is_some_and(|store| {
+            store.tv_leases_live().any(|lease| {
+                Some(lease.tv) != own
+                    && friend(lease.pilot)
+                    && match crate::surface::act::where_is(ctx.w, lease.tv) {
+                        crate::surface::act::Where::Ground { domain, .. } => {
+                            crate::surface::act::site_of_domain(ctx.w, domain).as_ref()
+                                == Some(site)
+                        }
+                        crate::surface::act::Where::Bay { .. }
+                        | crate::surface::act::Where::Elsewhere => false,
+                    }
+            })
+        });
+    rig || flight_on_site(ctx, site, &friend)
+}
+
+/// **Whether `other` is of `who`'s own party or a Friend's** (Q-42-14): `who` themself or their
+/// organizer, or a character sharing an organization either openly stands in (doc 36 cut GC.10's
+/// friendship, `super::parties::affiliations`).
+fn friendly(w: &World, who: ObjId, organizer: Option<ObjId>, other: ObjId) -> bool {
+    if other == who || Some(other) == organizer {
+        return true;
+    }
+    let theirs = super::parties::affiliations(w, other);
+    [Some(who), organizer]
+        .into_iter()
+        .flatten()
+        .any(|mine| !super::parties::affiliations(w, mine).is_disjoint(&theirs))
+}
+
+/// Whether an open DT flight in the field on `site` has an organizer `friend` accepts.
+fn flight_on_site(ctx: &Ctx<'_>, site: &CanonicalId, friend: &dyn Fn(ObjId) -> bool) -> bool {
     let Some(h) = ctx
         .w
         .module_state::<crate::detachment::sortie::SortieHandles>()
@@ -1582,11 +1671,77 @@ fn rescue_on_site(ctx: &Ctx<'_>, site: &CanonicalId, organizer: Option<ObjId>) -
         ctx.action_state(&h.operations, &flight.operation)
             .ok()
             .flatten()
-            .is_some_and(|op| {
-                op.roster.organizer == organizer
-                    && op.roster.duty == crate::detachment::crew::CrewDuty::Recovery
-            })
+            .is_some_and(|op| friend(op.roster.organizer))
     })
+}
+
+/// **Whether an ejectee's capture is still on its way to `carrier`** (doc 42 cut CR.4; Q-42-12,
+/// Draft 0.3 42-5): a forced extraction whose draw named it. A raider's lift waits on it.
+#[must_use]
+pub(crate) fn capture_pending(w: &World, carrier: ObjId) -> bool {
+    records(w).any(|record| {
+        record.extraction.as_ref().is_some_and(|coming| {
+            coming.forced
+                && coming
+                    .capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.carrier == carrier)
+        })
+    })
+}
+
+/// **An eject's capture landing** (doc 42 cut CR.4; Q-42-12, Draft 0.3 42-5 (B)): when the
+/// carrier the draw named still stands on `site` and has not fallen, the ejectee steps aboard
+/// into its bay room and is held there by the captor, both told. `false` when it is gone, and
+/// the extraction then lands at a port.
+fn eject_captured(
+    ctx: &mut Ctx<'_>,
+    record: &CrewRecord,
+    capture: &EjectCapture,
+    site: &CanonicalId,
+) -> bool {
+    let carrier = capture.carrier;
+    let standing = crate::port::bay_work::site_of_carrier(ctx.w, carrier).as_ref() == Some(site)
+        && !super::eject::fallen(ctx.w, carrier);
+    let room = crate::port::ship::hull_view(ctx.w, carrier).and_then(|view| {
+        crate::port::vehicle::bay_rooms(ctx.w, &view)
+            .first()
+            .copied()
+    });
+    let (true, Some(room)) = (standing, room) else {
+        return false;
+    };
+    let who = record.character;
+    let now = ctx.w.world_ic_now().at;
+    if let CrewLocation::Stranded { unit, .. } = record.location {
+        release_seat(ctx, who, unit);
+    }
+    step_into(ctx, who, room);
+    put(ctx, self::capture(record, carrier, capture.captor, now));
+    let carrier_name = crate::port::coop::name_of(ctx.w, carrier);
+    ctx.out.sys_to_actor(
+        who,
+        "tacsim.field",
+        super::eject::EJECT_CAPTURED
+            .replace("{carrier}", &carrier_name)
+            .replace(
+                "{captor}",
+                &crate::port::coop::name_of(ctx.w, capture.captor),
+            ),
+    );
+    ctx.out.sys_to_actor(
+        capture.captor,
+        "tacsim.field",
+        super::eject::EJECT_CAPTOR_TOLD
+            .replace("{who}", &crate::port::coop::name_of(ctx.w, who))
+            .replace("{carrier}", &carrier_name),
+    );
+    tracing::info!(
+        who = who.0,
+        carrier = carrier.0,
+        "tacsim: an ejected pilot was captured"
+    );
+    true
 }
 
 /// **The host's tick, for crew** (this module's head): every extraction due lands, unless a
@@ -1625,10 +1780,20 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             | CrewLocation::Captured { .. }
             | CrewLocation::Processing { .. } => (None, None),
         };
+        // Doc 42 cut CR.4 (Q-42-12): an eject's drawn capture lands aboard the holder's carrier
+        // while it still stands on the site; gone or fallen, the pilot lands at a port.
+        if let (Some(capture), Some(site)) = (&coming.capture, &site)
+            && eject_captured(ctx, &record, capture, site)
+        {
+            continue;
+        }
+        // Q-42-14: a rescue of the character's own party or a Friend's on the site defers an
+        // asked-for or an uncaptured forced extraction, never an abandoned or a captured one.
         if let Some(site) = &site
             && !coming.abandoned
+            && coming.capture.is_none()
             && now < coming.due_ic.saturating_add(bound)
-            && rescue_on_site(ctx, site, record.organizer)
+            && rescue_on_site(ctx, site, &record)
         {
             continue;
         }
@@ -1637,6 +1802,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     // Doc 42 cut CR.2: the handover's catch-up, the fee's retries and the releases due.
     custody_pass(ctx, now);
     treat(ctx, now);
+    beds_pass(ctx, now);
 }
 
 /// **IC seconds of treatment** for `condition` (doc 36 cut GC.13): the configured time, scaled
@@ -1717,12 +1883,18 @@ fn treat(ctx: &mut Ctx<'_>, now: i64) {
                 );
             }
             (Some(port), _) => {
-                let medical = crate::port::medical::has_medical_room(ctx.w, port);
+                // Doc 42 cut CR.5 (Q-42-17): the faster rate only while a bed is free.
+                let beds = crate::port::medical::medical_beds(ctx.w, port);
+                let waiting = beds > 0 && beds_taken(ctx.w, port.id) >= beds;
+                let medical = beds > 0 && !waiting;
                 let span = treatment_s(&cfg, record.condition, medical);
-                let line = TREATMENT_BEGUN
-                    .replace("{port}", port.name)
-                    .replace("{room}", if medical { MEDICAL_ROOM } else { "" })
-                    .replace("{h}", &hours(span).to_string());
+                let line = if waiting {
+                    TREATMENT_WAITING.to_owned()
+                } else {
+                    TREATMENT_BEGUN.replace("{room}", if medical { MEDICAL_ROOM } else { "" })
+                }
+                .replace("{port}", port.name)
+                .replace("{h}", &hours(span).to_string());
                 put(
                     ctx,
                     CrewRecord {
@@ -1737,6 +1909,134 @@ fn treat(ctx: &mut Ctx<'_>, now: i64) {
                 );
                 ctx.out.sys_to_actor(who, "tacsim.field", line);
             }
+        }
+    }
+}
+
+/// **The medical beds taken at the port `port`** (doc 42 cut CR.5): treatments there at the
+/// medical rate.
+fn beds_taken(w: &World, port: &str) -> u32 {
+    w.module_state::<CrewBook>().map_or(0, |book| {
+        let taken = book
+            .0
+            .values()
+            .filter(|record| {
+                record
+                    .treatment
+                    .as_ref()
+                    .is_some_and(|under| under.medical && under.port.as_str() == port)
+            })
+            .count();
+        u32::try_from(taken).unwrap_or(u32::MAX)
+    })
+}
+
+/// **The waiting treatments a freed bed takes** (doc 42 cut CR.5; Q-42-17): of `waiting`, each
+/// `(started_ic, character)` treated at the full time, the `free` earliest, by `started_ic` and
+/// then character.
+#[must_use]
+pub(crate) fn bed_takers(free: u32, mut waiting: Vec<(i64, ObjId)>) -> Vec<ObjId> {
+    waiting.sort_unstable();
+    waiting
+        .into_iter()
+        .take(usize::try_from(free).unwrap_or(usize::MAX))
+        .map(|(_, who)| who)
+        .collect()
+}
+
+/// **A treatment's due instant rescaled into a bed** (doc 42 cut CR.5): the time left at the full
+/// rate, `due - now`, scaled by `permille`.
+#[must_use]
+pub(crate) fn rescaled_due(now: i64, due: i64, permille: u32) -> i64 {
+    let left = due.saturating_sub(now).max(0);
+    now.saturating_add(left.saturating_mul(i64::from(permille)) / 1_000)
+}
+
+/// **The crew tick's beds pass** (doc 42 cut CR.5; Q-42-17): at every port with medical beds free,
+/// the earliest treatments waiting at the full time take them, their time left rescaled to the
+/// medical rate, each told. A bed is never taken from anyone.
+fn beds_pass(ctx: &mut Ctx<'_>, now: i64) {
+    let permille = super::config(ctx.w).treat_medical_permille;
+    let waiting: Vec<CrewRecord> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| {
+                    record.condition != CrewCondition::Fit
+                        && record
+                            .treatment
+                            .as_ref()
+                            .is_some_and(|under| !under.medical)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let ports: std::collections::BTreeSet<SmolStr> = waiting
+        .iter()
+        .filter_map(|record| record.treatment.as_ref().map(|under| under.port.clone()))
+        .collect();
+    for id in ports {
+        let Some(port) = crate::ic_return::PORTS
+            .iter()
+            .find(|known| known.id == id.as_str())
+        else {
+            continue;
+        };
+        let beds = crate::port::medical::medical_beds(ctx.w, port);
+        let free = beds.saturating_sub(beds_taken(ctx.w, port.id));
+        if free == 0 {
+            continue;
+        }
+        let here: Vec<&CrewRecord> = waiting
+            .iter()
+            .filter(|record| {
+                record
+                    .treatment
+                    .as_ref()
+                    .is_some_and(|under| under.port == id)
+            })
+            .collect();
+        let takers = bed_takers(
+            free,
+            here.iter()
+                .filter_map(|record| {
+                    record
+                        .treatment
+                        .as_ref()
+                        .map(|under| (under.started_ic, record.character))
+                })
+                .collect(),
+        );
+        for record in here {
+            if !takers.contains(&record.character) {
+                continue;
+            }
+            let Some(under) = record.treatment.clone() else {
+                continue;
+            };
+            let due_ic = rescaled_due(now, under.due_ic, permille);
+            let who = record.character;
+            put(
+                ctx,
+                CrewRecord {
+                    treatment: Some(Treatment {
+                        due_ic,
+                        medical: true,
+                        ..under
+                    }),
+                    ..record.clone()
+                },
+            );
+            ctx.out.sys_to_actor(
+                who,
+                "tacsim.field",
+                BED_FREED
+                    .replace("{port}", port.name)
+                    .replace("{h}", &hours(due_ic - now).to_string()),
+            );
         }
     }
 }
@@ -1807,10 +2107,17 @@ pub fn status_line(ctx: &Ctx<'_>, who: ObjId) -> String {
         ));
     }
     if let Some(under) = &record.treatment {
+        // Doc 42 cut CR.5: at the full time where a medical room's beds are all taken.
+        let waiting = !under.medical
+            && crate::ic_return::PORTS
+                .iter()
+                .find(|known| known.id == under.port.as_str())
+                .is_some_and(|port| crate::port::medical::medical_beds(ctx.w, port) > 0);
         line.push_str(&format!(
-            "; under treatment at {}{}, fit again in about {} IC h",
+            "; under treatment at {}{}{}, fit again in about {} IC h",
             port_name(under.port.as_str()),
             if under.medical { MEDICAL_ROOM } else { "" },
+            if waiting { ", waiting for a bed" } else { "" },
             hours(under.due_ic - now)
         ));
     } else if record.condition != CrewCondition::Fit {
@@ -1845,8 +2152,16 @@ fn land(
         return;
     };
     // The seat: out of the hull, and out of any field still running around it.
-    if let Some(unit) = unit
-        && let Some((seated, station)) = super::parties::seated(ctx.w, unit)
+    if let Some(unit) = unit {
+        release_seat(ctx, who, unit);
+    }
+    land_at(ctx, record, port, dest, site);
+}
+
+/// **Release `who`'s seat in `unit`**, when they hold it: out of the hull, and out of any field
+/// still running around it (an extraction's landing, and doc 42 cut CR.4's eject).
+pub(crate) fn release_seat(ctx: &mut Ctx<'_>, who: ObjId, unit: ObjId) {
+    if let Some((seated, station)) = super::parties::seated(ctx.w, unit)
         && seated == who
     {
         // Doc 32 §15 (the review's CF-5a): the arena is told the seat is released, on every
@@ -1879,6 +2194,17 @@ fn land(
             );
         }
     }
+}
+
+/// **Land `record` at `port`'s arrival room `dest`** ([`land`]'s second half).
+fn land_at(
+    ctx: &mut Ctx<'_>,
+    record: CrewRecord,
+    port: &'static crate::ic_return::IcPort,
+    dest: ObjId,
+    site: Option<&CanonicalId>,
+) {
+    let who = record.character;
     let from = ctx.w.get(who).and_then(|object| object.location);
     if ctx.w.move_to(who, dest).is_err() {
         tracing::warn!(
@@ -2637,6 +2963,23 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&exit).expect("encodes")).expect("decodes");
         assert_eq!(back, exit);
         assert_eq!(npc_exit_key(ObjId(55)).as_str(), "tacsim:crew_exit:55");
+    }
+    /// **Doc 42 cut CR.5 (Q-42-17): beds go to the earliest waiters, and the time left rescales.**
+    #[test]
+    fn cr5_the_earliest_waiters_take_the_free_beds() {
+        let waiting = vec![
+            (50, ObjId(9)),
+            (10, ObjId(7)),
+            (10, ObjId(3)),
+            (70, ObjId(1)),
+        ];
+        assert_eq!(bed_takers(2, waiting.clone()), vec![ObjId(3), ObjId(7)]);
+        assert_eq!(bed_takers(0, waiting.clone()), Vec::<ObjId>::new());
+        assert_eq!(bed_takers(9, waiting).len(), 4);
+        // Six IC hours left at the full time are three in a bed at 500 per mille.
+        assert_eq!(rescaled_due(1_000, 1_000 + 21_600, 500), 1_000 + 10_800);
+        // A treatment already due stays due now.
+        assert_eq!(rescaled_due(1_000, 900, 500), 1_000);
     }
 
     /// **Doc 42 cut CR.2** (Q-42-7): the release fee's inspection key is one per handover, and

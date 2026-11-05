@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 28,
+    "version": 29,
     "kind": "campaign_seed",
-    "digest": "27a5d41a557f194404daebf404f8cede538988c27527fa400d39a294f50f5cf9",
+    "digest": "7c1b822fa8379a4b26bcb552cc25718dc656896ffb623694e7e09418b3aba9ba",
     "requires": []
   },
   "entries": {
@@ -2746,7 +2746,7 @@
           { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
           { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
-          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" },
+          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord", "raises": [ 450000 ] },
           { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" },
           { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" },
           { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport" }
@@ -2839,7 +2839,8 @@
                                 "staff": 6, "wage_major": 150, "margin_permille": 250 } },
         "recovery": { "operator": "tycho_mutual", "slots": 1,
                       "cost": { "capital_major": 4000000, "lifetime_years": 15, "upkeep_permille": 40,
-                                "staff": 6, "wage_major": 150, "margin_permille": 250 } },
+                                "staff": 6, "wage_major": 150, "margin_permille": 250 },
+                      "house": { "lifter_mark": "TMA-LF-01", "crawler_mark": "TMA-CR-01" } },
         "medical": { "room": "neighborhood.ceres_freeport.room.c03_arrivals", "operator": "coop",
                      "capabilities": ["medical"], "beds": 2 },
         "works": { "room": "neighborhood.ceres_freeport.room.c15_maintenance", "operator": "freeport_works",

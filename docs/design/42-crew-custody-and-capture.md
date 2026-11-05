@@ -1,5 +1,10 @@
 # 42. Crew: custody, capture, ejection, treatment — survey
 
+**Draft 0.5, 2026-11-04 (cut CR.7): as built.** CR.0–CR.5 are built, each recorded in
+[42-cut-notes.md](42-cut-notes.md). §5's amendments are now written into docs 27, 32, 36 and 38.
+CR.6, the space seam (Q-42-24), was built by the space window's session as #453, not this train (owner ruling
+of 2026-11-04). §7b below says what each cut built and what stays owed. No ruling changes.
+
 Draft 0.4, 2026-11-03, docs only. Surveyed against `origin/main` at `c83c2eff` (doc 38 Draft 0.2
 merged as PR #345; doc 36a's lane 5 merged as PR #346, so `check_in` already keeps a prior
 injury). Draft 0.1, the same day, was the survey. **Draft 0.2 records the owner's ruling of
@@ -877,15 +882,20 @@ test on live cells; the holding query to the arena task; the deterministic draw 
 `eject_capture_permille`; the forced extraction's two landings; the deferral keyed on Friends
 rather than the duty. Files: `detachment/sortie/commands.rs`, `field/crew.rs`, `arena_bridge.rs`,
 the arena task's message handler (a read; no hash). Draft 0.3 (42-5): also `field/raiders.rs` (`lift_check` waits on a pending capture naming its carrier). Draft 0.4 (Q-40-25 ruled): the coupled-casualty crew rule reads doc 40's coupled withdraw at the ramp, after which the ordinary `TowOrder::Load`/`Loaded` runs, so a casualty recovered from a running field reaches the same `place_in_bay`/`captured_loaded` branch as CR.1's. Story: (d), both sizes, knob at 1,000 and 0.
-After CR.1 (both touch `crew.rs`).
+After CR.1 (both touch `crew.rs`). **Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.4.
 
 **CR.5 — Beds as a limit.** Q-42-17, Q-42-18. `treat` counts the medical room's occupants
 against `beds`. Files: `field/crew.rs`, `port/medical.rs`. Gate: GC.13's gates plus a third
-casualty waiting for a bed at Ceres. After CR.4.
+casualty waiting for a bed at Ceres. After CR.4. **Built** — see [42-cut-notes.md](42-cut-notes.md) §CR.5.
 
 **CR.6 — The space seam.** Q-42-24. The space track's cut, in its tree, after SF.R9–R16: crew
 records from the space check-in, the derelict's crew, the hard-dock capture, the ship's handover
-through CR.2's hook. Not this train's.
+through CR.2's hook. Not this train's. **Owner ruling, 2026-11-04: built by the space window's
+session** (after its RS.8), coordinating with the CR window before any edit to `field/crew.rs`. **Built** as
+#453 (stacked on RS.8 #439) — see [42-cut-notes.md](42-cut-notes.md) §CR.6. `field/crew.rs` is untouched;
+CR.5 adds `crew::records` for its capture's follow-up.
+
+**CR.7 — Docs.** **Built** in Draft 0.5: the amendments of §5 in docs 27, 32, 36 and 38, and §7b.
 
 **CR.7 — Docs.** §5's amendments to docs 27, 32, 36 and 38; `42-cut-notes.md`; Draft 0.2 of this
 document with the rulings and the as-built sections.
@@ -894,6 +904,22 @@ document with the rulings and the as-built sections.
 CR.1; CR.5 last; CR.6 whenever the space track reaches it; CR.7 rides each PR. Nothing here
 consumes doc 39's lots or doc 41's facilities. **CR.0 may start now**; nothing else runs beside it,
 because every later cut edits `crew.rs` after it.
+
+### 7b. As built (Draft 0.5)
+
+| Cut | PR | What it built | Owed |
+|---|---|---|---|
+| CR.0 | merged | the record (`Captured`, `Processing`, `Extraction::{forced, capture}`), the held gate, the vocabulary | — |
+| CR.1 | #408, #412 | capture at a non-friend's load, the NPC seat's exit (`tacsim_crew_captured`), the `Capture` evidence row, the `capture:` standing, `+ship/captives`, `+ship/release`; story (a′) at both sizes | the bot-over-SSH half (dispatch tier) |
+| CR.2 | #417, #434 | the port handover, the processing hour, the release fee as a sanction obligation; lane v23 / relay v14; `+debts` lists and pays the fee | the space `PortBerth` handover (CR.6) |
+| CR.3 | #418 | `captive_bound_s`, extraction from captivity, the released passenger, the captor's wreck | the wreck as a fought story |
+| CR.4 | #442 | `+sortie/eject`, the arena's eject read (no hash), the seeded draw, both landings, the raider lift's wait, the deferral keyed on Friends | the damaged-cockpit arm and a director raider's capture as stories |
+| CR.5 | #447 | medical beds limit the faster rate; waiting, and a freed bed rescaled | — |
+| CR.6 | #453 (the space window) | space check-in crew records, the derelict hard-dock capture, the port clamp's `hand_over` | `+sortie/extract` from a space `Stranded` record; the friend's `aboard_loaded` branch; the switch to `crew::records` |
+| CR.7 | this PR | §5's amendments, this table | — |
+
+The future the owner named (2026-11-04) stands: stranded raiders fight to the death, and surrender by
+circumstance and personality is a later cut (§8).
 
 ### 7a. What the first cuts author
 

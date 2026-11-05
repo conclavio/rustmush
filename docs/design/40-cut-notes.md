@@ -730,6 +730,23 @@ went red on main once IN.5 (#414) merged after this cut.
   back and the story has no tender. cf6c withdraws as soon as the escort has fired and taken its first hit,
   the intruder ceasing fire too. Its point is the withdrawal, and a failure names the exchange and the seed.
 - **Long term**: doc 43c's clock seam (TS.10) is this knob's home, with a world clock a test can pin.
+- **cf6** (`shard_1 field_raiders::cf6_a_seeded_raider_fights_with_nobody_connected…`), also red on main
+  without the pin, is the same luck in another form. The guard and a raider hull lost each other, the carrier
+  fell, and the field demoted on the rig's 10 s disengage with that hull alive and healthy. A healthy hull
+  leaves no row on the site record. The story's point is a fight to the raider's destruction, so its rig alone
+  raises `disengage_s` to 60 (#458). cf6c's gate stays ignored, its tier by hand at `4390f04c`, until #458's
+  follow-up makes its fight survivable.
+- **Known gap: the ramp exit's boarding window** (not built; nothing exercises it yet). A raider's withdrawal
+  is let go by the arena at its carrier's ramp and checked in beside it, but `raiders::board` runs only once
+  the record names the `exit`. A carrier wrecked inside that window would leave the hull on the site's ground,
+  in no field and aboard nothing. The owner's ruling for when it is built (2026-11-04, "back in the field"):
+  a withdrawal counts only once the raider is aboard. If the carrier is wrecked before the boarding lands, the
+  raider stays on the site as a stranded unit in the field, and under the earlier ruling it fights to the
+  death; the pad is never an exit. The lead's choice of shape: board in `exit::on_withdrawn` for
+  `Then::Raider`, in the batch that lets the hull go. A raider hull aboard a carrier wrecked later is lost with
+  it, a Wreck on the site record that stays in the wreck's bay (doc 41's salvage and the laden-mass tow,
+  Q-41-29, carry it). Scope: raider boarding only. Whether the same window exists for a player's hull at the
+  ramp is to be checked when this is built.
 
 ## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
 
@@ -971,3 +988,39 @@ are green by hand and through gate.yml.
 
 **Cell minutes (rule #14): +0.** The tests stay `#[ignore]`d, and no PR cell runs them.
 
+
+### FR.7c — the ledger floor (PR #461; the owner's approval of a test-only floor)
+
+- **The seam.** `tacsim::store::lower_ledger_floor_for_test(w, max_bytes, summary_ms)` sets `[tacsim.arena.ledger]`
+  on the layer's frozen block after the boot has validated it. Every arena started afterwards reads that block
+  (`match_::lobby::configs`).
+- **How it is gated:**
+  - It compiles only under `cfg(test)` or tacsim's new `test-ledger-floor` feature. The feature is off by default,
+    and `mush-bot`'s `[dev-dependencies]` edge alone turns it on (`feature_matrix_inventory`: census 16, allowlist
+    row). No shipped binary carries it.
+  - No config key reaches it. Only Rust code holding the booted world calls it.
+  - `ArenaConfig::validate`'s floors (1 MiB, 1,000 ms), its refusal of a production config below them, and the
+    roll threshold (three quarters of `max_bytes`) are all unchanged.
+  - It is a free function rather than a `TacsimStore` method, so the test file writes no other module's state
+    slot (`state_slot_owners`, `fiat_budget`).
+- **The story.** FR.7's rig calls the seam in its `prepare` closure with FR.4's 48 KiB and a summary every 100 ms.
+  The idle bound falls from 3,300 s to 180 s, and the story's timeout from 100 to 30 minutes.
+- **Runs** (conclav.dev, by hand, renamed binaries, head `a93f3d2d`; the seam's move to a free function after it
+  changes no behaviour):
+
+  | | Ahuna Flank (256) | Urvara Reach (512) |
+  |---|---|---|
+  | Lane at its launch | +340 s | +351 s |
+  | Sight jammed | after 7 shots, +405 s | after 1 shot, +401 s |
+  | Live record's segment by then | 4 | 3 |
+  | Result | green, 585 s | green, 580 s |
+  | Re-run at the PR head `28e0a372` (the free-function seam) | green, 599 s | green, 626 s |
+
+  That is about ten minutes a size, down from 3,719 s, and about 340 s of it is the captain lane's clock-bound
+  kit-up and hop.
+- **The tier.** Both rows move from by-hand to **nightly**, on a new ci.yml job, `fr7-round-story`. The job runs
+  `cargo nextest run -P ci-bot -p mush-bot --test mining_cohort --run-ignored only --test-threads 2` with
+  `-E` naming both tests, on the schedule and on dispatch, `timeout-minutes: 90`. It is also in `nightly-report`'s
+  `needs`, and the ci-bot override from #454 still lets each test outlive twenty minutes.
+- **Cell minutes (rule #14).** +0 on every PR cell. The nightly gains one job: the mush-bot test build plus about
+  ten minutes with the two sizes side by side.

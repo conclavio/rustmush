@@ -47,6 +47,14 @@ const LOOKLESS: &[(&str, &str)] = &[
         "the tender (doc 41 cut RS.1), the prospector's chassis, never in the arena: it takes the prospector's look when that cut lands",
     ),
     (
+        "tacsim.unit.tycho_crawler",
+        "Tycho Mutual's recovery crawler (doc 41 cut RS.6a), never in the arena: the kit has no look for it yet (doc 41 §7)",
+    ),
+    (
+        "tacsim.unit.tycho_lifter",
+        "Tycho Mutual's heavy lifter (doc 41 cut RS.6a), a hauler, never in the arena: its look comes with its own cut",
+    ),
+    (
         "tacsim.unit.conduct_carrier",
         "the unarmed Safe Conduct proving carrier (doc 17f M7.6), loaded only for the Registry's Conduct trials: its look comes with its own cut",
     ),

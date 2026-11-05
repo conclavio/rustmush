@@ -162,6 +162,8 @@ impl CarrierHooks for TacsimCarrierHooks {
         crate::port::passenger::voyage_event(ctx, hull, &docks);
         let notice = notice.replace("{hhmm}", &crate::port::voyage::utc_hhmm(ctx.w.now()));
         crate::port::voyage::tell_absent_tenant(ctx, hull, &notice);
+        // Doc 41 cut RS.4 (Q-41-19): the port holds a vacated hull for her owner.
+        crate::port::bay_work::berth_held(ctx, hull);
         // Doc 20 cut SM.4a (lead ruling 6): a hull settled on a site's pad asks for the site's
         // ground, so the surface tick warms it before the first scan (RAM only; a no-op with the
         // geology layer dark). Doc 20 cut SM.4b (lead ruling 4, R3): and its way home from

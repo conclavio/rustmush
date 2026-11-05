@@ -272,6 +272,15 @@ pub enum ArenaMsg {
         /// off its pad (doc 32 F-6), which takes no ramp.
         ramp: Option<(i64, i64)>,
     },
+    /// **A pilot ejects from a doomed unit** (doc 42 cut CR.4; Q-42-10 to Q-42-12): read by
+    /// `Arena::eject_read` at the next pulse's head, before the step, and answered as an
+    /// [`ArenaOut::Ejected`] behind the ledger. A read: nothing in the arena moves, so the tape
+    /// records nothing. Latest-wins per unit; only the IC field host sends it; held to the
+    /// intent reserve at [`ArenaHandle::offer`].
+    Eject {
+        /// The unit.
+        unit: ObjId,
+    },
     /// **Take a unit into the running field** (doc 36 cut GC.1b; Q-36-4): a carrier that
     /// settled on the site's pad after admission, checked out by the host. Buffered in arrival
     /// order (one per unit) and admitted by `Arena::join` at the next pulse's head, before the
@@ -527,6 +536,16 @@ pub enum ArenaOut {
         /// Its check-in row, or the refusal.
         outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     },
+    /// **The answer to an [`ArenaMsg::Eject`]** (doc 42 cut CR.4): the arena's read of the
+    /// doomed unit and who holds its cell, or why it refused. Only an IC field's task sends it.
+    Ejected {
+        /// Which task.
+        match_id: MatchId,
+        /// The unit.
+        unit: ObjId,
+        /// The read, or the refusal.
+        outcome: Result<crate::arena::eject::EjectRead, crate::arena::eject::EjectRefusal>,
+    },
     /// **The answer to an [`ArenaMsg::Join`]** (doc 36 cut GC.1b): the name the unit joined
     /// under, or why the arena refused it (the arena is then unchanged). Only an IC field's task
     /// sends it.
@@ -566,6 +585,7 @@ impl ArenaOut {
             | ArenaOut::Snapshot { match_id, .. }
             | ArenaOut::Ended { match_id, .. }
             | ArenaOut::Withdrawn { match_id, .. }
+            | ArenaOut::Ejected { match_id, .. }
             | ArenaOut::Joined { match_id, .. }
             | ArenaOut::Released { match_id, .. } => Some(*match_id),
         }
@@ -644,6 +664,7 @@ impl ArenaHandle {
                 | ArenaMsg::MindCard { .. }
                 | ArenaMsg::Mark { .. }
                 | ArenaMsg::Withdraw { .. }
+                | ArenaMsg::Eject { .. }
                 | ArenaMsg::Join { .. }
                 | ArenaMsg::Release { .. }
                 | ArenaMsg::Home { .. }
@@ -1168,6 +1189,11 @@ enum Outbound {
         unit: ObjId,
         outcome: Result<Box<UnitReturn>, crate::arena::withdraw::WithdrawRefusal>,
     },
+    /// Sent as [`ArenaOut::Ejected`] (doc 42 cut CR.4).
+    Ejected {
+        unit: ObjId,
+        outcome: Result<crate::arena::eject::EjectRead, crate::arena::eject::EjectRefusal>,
+    },
     /// Sent as [`ArenaOut::Joined`] (doc 36 cut GC.1b).
     Joined {
         unit: ObjId,
@@ -1198,6 +1224,11 @@ impl Outbound {
                 snapshot: Arc::clone(snapshot),
             },
             Outbound::Withdrawn { unit, outcome } => ArenaOut::Withdrawn {
+                match_id,
+                unit: *unit,
+                outcome: outcome.clone(),
+            },
+            Outbound::Ejected { unit, outcome } => ArenaOut::Ejected {
                 match_id,
                 unit: *unit,
                 outcome: outcome.clone(),
@@ -1539,6 +1570,8 @@ struct PrePulse {
     /// **Doc 32 cut CF.5**: the units the host asked out at the ramp,
     /// latest-wins per unit, so bounded by the field.
     withdrawals: BTreeMap<ObjId, Option<(i64, i64)>>,
+    /// **Doc 42 cut CR.4**: the units whose pilots eject, bounded by the field.
+    ejects: std::collections::BTreeSet<ObjId>,
     /// **Doc 36 cut GC.1b**: the units the host takes in, one per unit (the first offer wins:
     /// a host checks a hull out once), so bounded by the field.
     joins: BTreeMap<ObjId, PendingJoin>,
@@ -1892,6 +1925,10 @@ async fn arena_loop(mut task: Task) {
                     Some(ArenaMsg::Withdraw { unit, ramp }) => {
                         waiting.withdrawals.insert(unit, ramp);
                     }
+                    // Doc 42 cut CR.4: and so does an eject's read.
+                    Some(ArenaMsg::Eject { unit }) => {
+                        waiting.ejects.insert(unit);
+                    }
                     // Doc 36 cut GC.1b: and so does a join.
                     Some(ArenaMsg::Join { unit, pilot, host, spread, source }) => {
                         waiting.joins.entry(unit.id).or_insert((unit, pilot, *host, spread, source));
@@ -1997,6 +2034,12 @@ impl Task {
         for tug in std::mem::take(&mut waiting.tow_releases) {
             let outcome = self.release(tug);
             self.queue_released(tug, outcome);
+        }
+        // Doc 42 cut CR.4: the ejects' reads, before the withdrawals (a unit that leaves has
+        // nobody left to eject), each answered behind the ledger.
+        for unit in std::mem::take(&mut waiting.ejects) {
+            let outcome = self.arena.eject_read(unit);
+            self.queue_ejected(unit, outcome);
         }
         let (towed, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut waiting.withdrawals)
             .into_iter()
@@ -2539,6 +2582,7 @@ impl Task {
                     Outbound::Snapshot(_)
                     | Outbound::Tape(_)
                     | Outbound::Withdrawn { .. }
+                    | Outbound::Ejected { .. }
                     | Outbound::Joined { .. }
                     | Outbound::Released { .. } => None,
                 });
@@ -2645,6 +2689,16 @@ impl Task {
         if !self.arena.add_home(zone) {
             tracing::debug!(match_id = %self.match_id, party = %zone.team.as_str(), "arena task: a home was not laid");
         }
+    }
+
+    /// **An eject's answer** (doc 42 cut CR.4), queued like a withdrawal's.
+    fn queue_ejected(
+        &mut self,
+        unit: ObjId,
+        outcome: Result<crate::arena::eject::EjectRead, crate::arena::eject::EjectRefusal>,
+    ) {
+        self.backlog.push_back(Outbound::Ejected { unit, outcome });
+        self.drain_backlog();
     }
 
     /// **A withdrawal's answer**, queued like a join's.
@@ -3995,6 +4049,7 @@ mod tests {
                 Outbound::Chunk(chunk) => format!("c{}", chunk.seq),
                 Outbound::Snapshot(snapshot) => format!("s{}", snapshot.at_ms),
                 Outbound::Withdrawn { unit, .. } => format!("w{}", unit.0),
+                Outbound::Ejected { unit, .. } => format!("e{}", unit.0),
                 Outbound::Joined { unit, .. } => format!("j{}", unit.0),
                 Outbound::Released { tug, .. } => format!("r{}", tug.0),
                 Outbound::Tape(_) => "tape".to_owned(),

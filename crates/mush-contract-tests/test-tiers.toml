@@ -124,6 +124,18 @@ child_of = "split_halves_write_distinct_log_files"
 
 # ---- nightly ----
 
+# Doc 40 FR.7's round story at 256 and 512 over the bot's SSH sessions: about ten minutes each
+# since FR.7c's test-only ledger floor, the two side by side (40 cut notes, FR.7c).
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
+tier = "nightly"
+job = "fr7-round-story"
+
+[[test]]
+id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
+tier = "nightly"
+job = "fr7-round-story"
+
 # M7: the six Registry-rating stories, at production's pulse on the schedule.
 [[test]]
 id = "tacsim/src/minds/bulk/original_purchase_integration_tests.rs::genuine_registry_original_purchase_grant_refund_and_paired_recovery"
@@ -273,20 +285,6 @@ id = "mush-bot/tests::mining_cohort::rs0_the_bot_types_the_salvage_words_on_ahun
 tier = "by-hand"
 by_hand = "5e03f6d2"
 
-# Doc 40 FR.7's round story at 256 and 512, about an hour each: both passed by hand on
-# conclav.dev and through gate.yml's sweep (run 41904925552) at the revision named (40 cut notes,
-# FR.7b). No dispatch-only job or
-# gate.yml kind runs it yet (the sweep kind has no `via` script), so it is by-hand.
-[[test]]
-id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_256"
-tier = "by-hand"
-by_hand = "c969ec3f"
-
-[[test]]
-id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
-tier = "by-hand"
-by_hand = "c969ec3f"
-
 # Doc 39 IN.5's production story, the bot over SSH: both passed side by side on conclav.dev
 # at cdd30329 (Ahuna 1,895 s, Urvara 1,897 s; 39 cut notes, IN.5).
 [[test]]
@@ -298,6 +296,14 @@ by_hand = "cdd30329"
 id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fittings_from_urvara"
 tier = "by-hand"
 by_hand = "cdd30329"
+
+# Doc 32 CF.6c's gate, ignored by #451: under the field rigs' pinned seed (`FIELD_SEED`) the
+# intruder's first volley destroys the escort before it withdraws (40 cut notes, FR.5 "After
+# merge"). Last green on CI at 4390f04c; its follow-up PR makes the fight survivable and lifts it.
+[[test]]
+id = "tacsim/tests::escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back"
+tier = "by-hand"
+by_hand = "4390f04c"
 
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.

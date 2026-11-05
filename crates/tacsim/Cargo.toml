@@ -95,6 +95,12 @@ libm.workspace = true
 # need it, and `crates/mush-contract-tests/tests/ci_policy/feature_matrix_inventory.rs`
 # pins that claim.
 fault-injection = []
+# Doc 40 cut FR.7c: `tacsim::store::lower_ledger_floor_for_test`, which lowers the arena's
+# `[tacsim.arena.ledger]` `max_bytes` and `summary_ms` below the boot's validated floors (1 MiB,
+# 1 s) on a booted engine, so the bot's round story on a production root rolls a segment in
+# minutes. Off by default; `mush-bot`'s `[dev-dependencies]` edge is the only thing in the tree
+# that turns it on, and `feature_matrix_inventory.rs` pins that claim. No config key reaches it.
+test-ledger-floor = []
 
 [dev-dependencies]
 mush-testkit.workspace = true
