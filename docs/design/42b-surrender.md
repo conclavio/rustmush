@@ -1,5 +1,18 @@
 # 42b. Surrender — survey
 
+**Draft 0.3, 2026-11-05: as built.** SU.0–SU.5 are built, one PR each: SU.0 #481, SU.1 #486,
+SU.2 #482, SU.3 #491, SU.4 #492, and SU.5 (this draft's PR). SU.6's amendments rode each of them.
+[42b-cut-notes.md](42b-cut-notes.md) records what was built, the gates, the departures from §7's
+rows and the cell deltas. Two findings for the owner:
+
+- **No shipped rig can tow a raider's hull.** A line tank is 30 t laden, and the tugs cap at 12, 14
+  and 16 t. So Q-42b-14's "anyone may take it in" is unreachable with the shipped raiders, and a
+  yielded line tank always sits out Q-42b-20's window (cut notes, SU.4).
+- **Q-42b-12's casualty row.** It comes from the close (`keep_yielded`), not from `left_condition`:
+  an exit never writes the site record (cut notes, SU.3).
+
+The rulings below stand as written.
+
 **Draft 0.2, 2026-11-05: ruled.** The owner accepted every default as written ("Q-42b all accepted
 at default, section 5 consequences of the defaults acknowledged"). Each of Q-42b-1 to Q-42b-20 now
 ends with a decision line, and its proposed text is the ruling. §5 is acknowledged. §7's cuts
@@ -479,6 +492,9 @@ proposed default is its decision.
   captor gains nothing, so no bound is needed yet.
 
 - **Decision (accepted default, 2026-11-05):** the proposed default, as written.
+- **Build note (SU.4, doc 38a review):** release under way was unspecified. As built,
+  `+ship/release` refuses an NPC anywhere but a port, a carrier under way included, with the site
+  line; at a port the NPC is set down and leaves play at the next crew tick.
 ### G. Timers
 
 **Q-42b-20 — The captor's window, and every other timer.**

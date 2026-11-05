@@ -45,6 +45,9 @@ use mush_core::{
     ArgShape, Attr, CanonicalId, CmdError, CommandSpec, Ctx, Flags, GOD, ObjId, ObjKind, World,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
+
+use crate::surface::site_record::LeftCondition;
 
 /// The raiders the content authors.
 pub const RAIDERS_JSON: &str = include_str!("../../content/field/raiders.json");
@@ -78,6 +81,23 @@ pub struct RaiderUnit {
     pub name: String,
     /// Its heading once launched, millidegrees.
     pub heading_mdeg: u32,
+    /// **Its crew member's name** (doc 42b cut SU.1, Q-42b-1): the NPC the seed seats in it;
+    /// `None` names them "`<hull>` crew".
+    #[serde(default)]
+    pub crew: Option<String>,
+    /// **Its crew's resolve**, per mille (Q-42b-6, Q-42b-7): `None` takes the raider's.
+    #[serde(default)]
+    pub resolve_permille: Option<u16>,
+}
+
+impl RaiderUnit {
+    /// **The name the seed gives this hull's crew member** (Q-42b-1).
+    #[must_use]
+    pub fn crew_name(&self) -> String {
+        self.crew
+            .clone()
+            .unwrap_or_else(|| format!("{} crew", self.name))
+    }
 }
 
 /// **The authored carrier** (doc 32 cut CF.6b).
@@ -134,7 +154,29 @@ pub struct RaiderDef {
     /// runs it; `None` keeps it staff-run only.
     #[serde(default)]
     pub director: Option<RaidSchedule>,
+    /// **Its crews' resolve**, per mille (doc 42b cut SU.1, Q-42b-6): each hull's crew takes it
+    /// unless the hull names its own; `None` reads [`DEFAULT_RESOLVE_PERMILLE`]. The director
+    /// never varies it.
+    #[serde(default)]
+    pub resolve_permille: Option<u16>,
 }
+
+impl RaiderDef {
+    /// **The resolve the seed writes on `unit`'s crew record** (Q-42b-6, Q-42b-7): the hull's
+    /// own, else the raider's, else [`DEFAULT_RESOLVE_PERMILLE`].
+    #[must_use]
+    pub fn resolve_of(&self, unit: &RaiderUnit) -> u16 {
+        unit.resolve_permille
+            .or(self.resolve_permille)
+            .unwrap_or(DEFAULT_RESOLVE_PERMILLE)
+    }
+}
+
+/// **The resolve a raider that authors none takes**, per mille (doc 42b Q-42b-6; provisional).
+pub const DEFAULT_RESOLVE_PERMILLE: u16 = 500;
+/// **The station the seed seats a raider's crew member in** (doc 42b cut SU.1, Q-42b-1): host
+/// bookkeeping only, as a DT NPC pilot's seat is; the hull still flies its ROM seal.
+pub const CREW_STATION: &str = "cockpit";
 
 /// **When the raid director sends a raider, and with how much** (doc 36 cut GC.11; Q-36-41):
 /// one per raider, so one per site. Every number is provisional.
@@ -163,8 +205,9 @@ struct RaidersFile {
     raiders: Vec<RaiderDef>,
 }
 
-/// **The authored raiders**, checked: schema 4 (doc 32 cut S.1: the carrier's cells are offsets
-/// from the pad; doc 36 cut GC.11: an organization each, and the director's schedule), unique ids
+/// **The authored raiders**, checked: schema 5 (doc 32 cut S.1: the carrier's cells are offsets
+/// from the pad; doc 36 cut GC.11: an organization each, and the director's schedule; doc 42b cut
+/// SU.1: a crew's resolve within 0 to 1,000 and a crew name that is not blank), unique ids
 /// and organizations, one to 22 hulls each beside the carrier (a party's two-letter
 /// designators), the carrier and its ramp within the widest site's side of the pad, and the ramp
 /// beside the carrier, never under it.
@@ -173,10 +216,15 @@ struct RaidersFile {
 ///
 /// The first broken rule, as a sentence.
 pub fn raiders() -> Result<Vec<RaiderDef>, String> {
+    parse(RAIDERS_JSON)
+}
+
+/// [`raiders`]' checks over any text.
+fn parse(json: &str) -> Result<Vec<RaiderDef>, String> {
     let file: RaidersFile =
-        serde_json::from_str(RAIDERS_JSON).map_err(|error| format!("raiders: {error}"))?;
-    if file.schema != 4 {
-        return Err("raiders: schema 4 only".to_owned());
+        serde_json::from_str(json).map_err(|error| format!("raiders: {error}"))?;
+    if file.schema != 5 {
+        return Err("raiders: schema 5 only".to_owned());
     }
     // Doc 32 cut S.1: an offset within the widest site's side of the pad here; `seed` holds each
     // cell to its own site's side.
@@ -234,6 +282,24 @@ pub fn raiders() -> Result<Vec<RaiderDef>, String> {
         }
         if def.units.iter().any(|unit| unit.heading_mdeg >= 360_000) {
             return Err(format!("raiders: {} has a heading off the turn", def.id));
+        }
+        // Doc 42b cut SU.1 (Q-42b-6): a resolve is per mille, and a named crew has a name.
+        if def
+            .units
+            .iter()
+            .filter_map(|unit| unit.resolve_permille)
+            .chain(def.resolve_permille)
+            .any(|resolve| resolve > 1_000)
+            || def.units.iter().any(|unit| {
+                unit.crew
+                    .as_ref()
+                    .is_some_and(|crew| crew.trim().is_empty())
+            })
+        {
+            return Err(format!(
+                "raiders: {}'s crews name themselves and hold a resolve of 0 to 1,000",
+                def.id
+            ));
         }
     }
     Ok(file.raiders)
@@ -303,6 +369,34 @@ pub fn withdrawing(w: &World, unit: ObjId) -> bool {
     mark_of(w, unit)
         .and_then(|mark| mark.get("withdraw").and_then(serde_json::Value::as_bool))
         .unwrap_or(false)
+}
+
+/// **Whether the raider's hull's crew yielded** (doc 42b cut SU.3, Q-42b-13): its mark's
+/// `yielded` row, written as the yield is asked. A yielded hull is no longer its carrier's (the
+/// row holds the carrier it came from), so every reader of [`carrier_of`] drops it: it is a hull
+/// the raider no longer has (Q-42b-16).
+#[must_use]
+pub fn yielded(w: &World, unit: ObjId) -> bool {
+    mark_of(w, unit).is_some_and(|mark| mark.get("yielded").is_some())
+}
+
+/// **The site a yielded hull yielded on** (doc 42b cut SU.5: the captor's window reads it).
+pub(crate) fn yielded_on(w: &World, unit: ObjId) -> Option<CanonicalId> {
+    mark_of(w, unit)?
+        .get("yielded")?
+        .get("site")?
+        .as_str()
+        .and_then(|site| CanonicalId::new(site).ok())
+}
+
+/// The carrier a yielded hull came from (its `yielded` row).
+fn yielded_from(w: &World, unit: ObjId) -> Option<ObjId> {
+    mark_of(w, unit)?
+        .get("yielded")?
+        .get("carrier")?
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .map(ObjId)
 }
 
 /// Every hull seeded for `raider`, the carrier included, in unit order.
@@ -476,7 +570,7 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
     mush_sim::place(ctx, carrier, domain, pose)
         .map_err(|error| format!("{} was not placed ({error}).", def.carrier.name))?;
     for (unit, spec) in def.units.iter().zip(specs) {
-        make(
+        let hull = make(
             ctx,
             &unit.name,
             &spec,
@@ -486,6 +580,7 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
                 "carrier": carrier.0,
             }),
         )?;
+        crew(ctx, hull, &unit.crew_name(), leader, def.resolve_of(unit))?;
     }
     Ok(format!(
         "{} seeded at {}: the {} on the ground with {} hulls aboard, led by {} (#{}).",
@@ -496,6 +591,52 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         def.leader,
         leader.0
     ))
+}
+
+/// **A hull's crew member** (doc 42b cut SU.1, Q-42b-1): a fresh NPC inside the hull, seated at
+/// [`CREW_STATION`] as a hired NPC is seated (`super::parties::seated` reads it), and given a crew
+/// record at once: in the unit, fit, the leader its organizer, the resolve authored
+/// (Q-42b-5). A re-seed makes fresh crew; the seat changes nothing about the hull's doctrine.
+fn crew(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    name: &str,
+    leader: ObjId,
+    resolve: u16,
+) -> Result<ObjId, String> {
+    let who = ctx
+        .w
+        .create(ObjKind::Npc, name, GOD, Some(hull))
+        .map_err(|error| format!("{name} was not made ({error})."))?;
+    let station =
+        mush_sim::StationId::new(CREW_STATION).ok_or_else(|| "No crew station.".to_owned())?;
+    mush_sim::declare_station(
+        ctx,
+        hull,
+        &station,
+        "pilot",
+        &crate::match_::cockpit::cockpit_channels(),
+        None,
+        0,
+    )
+    .map_err(|error| format!("{name}'s station was not declared ({error})."))?;
+    mush_sim::commands::assign_station(ctx, hull, &station, who)
+        .map_err(|error| format!("{name} was not seated ({error})."))?;
+    super::crew::put(
+        ctx,
+        super::crew::CrewRecord {
+            format: super::crew::CREW_FORMAT,
+            character: who,
+            location: super::crew::CrewLocation::Unit { unit: hull },
+            condition: super::crew::CrewCondition::Fit,
+            at_ic: ctx.w.world_ic_now().at,
+            organizer: Some(leader),
+            extraction: None,
+            treatment: None,
+            resolve_permille: Some(resolve),
+        },
+    );
+    Ok(who)
 }
 
 /// One hull made, its unit record built and its raider attribute written; never placed.
@@ -783,10 +924,14 @@ pub(crate) fn board(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
 /// field's unit, on its row. The shape is the least the host can do: nothing to undo or admit
 /// again, since the kernel refused the release on its own live facts at the pulse that would
 /// have let it go. The leader's WITHDRAW is lifted in the kernel ([`STRAND_SEQUENCE`], no
-/// directive), so its doctrine fights as it would, to the death (the owner's ruling on a raid
-/// stranded by its carrier's wreck, 2026-11-04); once the field took that, the hull's mark is
+/// directive), so its doctrine fights as it would, to the death unless its crew yields (the
+/// owner's ruling on a raid stranded by its carrier's wreck, 2026-11-04; doc 42b §3a); once the
+/// field took that, the hull's mark is
 /// spent, so the host stops asking it out. A busy field leaves the mark, and the next refusal
 /// strands it again.
+///
+/// Each later [`lift_check`] may break the stranded crew by [`morale`]'s steps (doc 42b cut SU.3,
+/// Q-42b-15).
 pub(crate) fn strand(ctx: &mut Ctx<'_>, hull: ObjId) {
     if !withdrawing(ctx.w, hull) {
         return;
@@ -918,6 +1063,13 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     else {
         return;
     };
+    let record = super::close::site_record(ctx, site);
+    // The last snapshot, decoded once for every carrier: its returns, and the arena itself for
+    // the director's idle trigger (doc 36 cut GC.11) and the crews' morale (doc 42b cut SU.3).
+    let mut decoded: Option<Decoded> = None;
+    // Doc 42b cut SU.3 (Q-42b-8): each crew's morale, after the decode and before any carrier's
+    // withdrawal reading.
+    morale(ctx, site, &live, record.as_ref(), &mut decoded);
     let carriers: Vec<ObjId> = live
         .units
         .iter()
@@ -932,11 +1084,6 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     if carriers.is_empty() {
         return;
     }
-    let record = super::close::site_record(ctx, site);
-    // The last snapshot, decoded once for every carrier: its returns, and the arena itself for
-    // the director's idle trigger (doc 36 cut GC.11).
-    let mut decoded: Option<Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)>> =
-        None;
     for carrier in carriers {
         let Some(raider) = raider_of(ctx.w, carrier) else {
             continue;
@@ -959,10 +1106,14 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
             .iter()
             .filter(|hull| record.as_ref().is_some_and(|record| record.exited(**hull)))
             .count();
+        // Doc 42b cut SU.3 (Q-42b-14, Q-42b-16): a yielded hull is no longer the carrier's, so
+        // `launched` and `exited` never hold it (its no-ramp exit is no boarding); it counts here
+        // as launched and lost.
+        let yielded_hulls = yielded_of(ctx.w, &raider, carrier);
         // Doc 36 cut GC.11: a director raid's carrier whose hulls were all refused at the join
         // (each back aboard) waits while the director lands them again, and lifts once its
         // triggers say so.
-        let refused = in_field.is_empty() && exited == 0;
+        let refused = in_field.is_empty() && exited == 0 && yielded_hulls == 0;
         if refused && !crate::surface::raid::director_raid(ctx.w, carrier) {
             continue;
         }
@@ -1008,8 +1159,11 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
             let reading = crate::surface::raid::RaidReading {
                 ordinal: live.field.ordinal,
                 at_ms: live.at_ms,
-                launched: in_field.len().saturating_add(exited),
-                lost: lost.len(),
+                launched: in_field
+                    .len()
+                    .saturating_add(exited)
+                    .saturating_add(yielded_hulls),
+                lost: lost.len().saturating_add(yielded_hulls),
                 in_reach,
             };
             if let Some(why) = crate::surface::raid::withdrawal_due(ctx, carrier, &reading) {
@@ -1051,6 +1205,440 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     }
 }
 
+/// The last snapshot decoded, once a pass: `None` when it did not decode.
+type Decoded = Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)>;
+
+/// **How many of `raider`'s hulls yielded from `carrier`** (doc 42b cut SU.3, Q-42b-16).
+fn yielded_of(w: &World, raider: &str, carrier: ObjId) -> usize {
+    hulls_of(w, raider)
+        .into_iter()
+        .filter(|hull| yielded_from(w, *hull) == Some(carrier))
+        .count()
+}
+
+/// **Pressure: the carrier lost** (doc 42b Q-42b-4; provisional), per mille.
+pub const PRESSURE_CARRIER_LOST: u32 = 400;
+/// **Pressure: each armed Hostile in reach past the raider's own standing hulls**, per mille.
+pub const PRESSURE_PER_EXCESS: u32 = 150;
+/// **Pressure: the most the odds term adds**, per mille.
+pub const PRESSURE_ODDS_MAX: u32 = 450;
+/// **Pressure: the raid's lost share, at all lost**, per mille.
+pub const PRESSURE_LOSSES: u32 = 300;
+/// **Pressure: the leader gone**, per mille.
+pub const PRESSURE_LEADER_ABSENT: u32 = 100;
+
+/// **One hull's pressure terms** (doc 42b cut SU.3, Q-42b-4), every one a reading the host
+/// already makes or the arena's reach count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pressure {
+    /// The hull's carrier is a wreck, or not in the field.
+    pub carrier_lost: bool,
+    /// Armed Hostiles in the hull's reach, less the raider's own standing hulls.
+    pub excess: u32,
+    /// The raid's hulls lost (casualties, wrecks and yields) …
+    pub lost: usize,
+    /// … of those it launched into this field.
+    pub launched: usize,
+    /// The hull's armour and internals, per mille of what was authored.
+    pub health_permille: u32,
+    /// The hull's leader is gone.
+    pub leader_absent: bool,
+}
+
+impl Pressure {
+    /// **Whether a check opens** (Q-42b-4's gate): outnumbered, or the carrier lost. Losses,
+    /// damage and the leader only weigh a check these two open.
+    #[must_use]
+    pub fn opens(&self) -> bool {
+        self.carrier_lost || self.excess > 0
+    }
+
+    /// **The pressure, 0 to 1,000**: the terms summed and clamped.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        let carrier = if self.carrier_lost {
+            PRESSURE_CARRIER_LOST
+        } else {
+            0
+        };
+        let odds = self
+            .excess
+            .saturating_mul(PRESSURE_PER_EXCESS)
+            .min(PRESSURE_ODDS_MAX);
+        let losses = match u64::try_from(self.launched) {
+            Ok(launched) if launched > 0 => {
+                let lost = u64::try_from(self.lost.min(self.launched)).unwrap_or(launched);
+                u32::try_from(lost * u64::from(PRESSURE_LOSSES) / launched).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        let damage = (1_000 - self.health_permille.min(1_000)) * 3 / 10;
+        let leader = if self.leader_absent {
+            PRESSURE_LEADER_ABSENT
+        } else {
+            0
+        };
+        carrier
+            .saturating_add(odds)
+            .saturating_add(losses)
+            .saturating_add(damage)
+            .saturating_add(leader)
+            .min(1_000)
+    }
+}
+
+/// **The yield chance, per mille** (Q-42b-4): `pressure × (1000 − resolve) / 1000`, so resolve
+/// 1,000 never yields and a hull under no pressure never yields.
+#[must_use]
+pub fn yield_chance(pressure: u32, resolve: u16) -> u32 {
+    pressure.min(1_000) * (1_000 - u32::from(resolve.min(1_000))) / 1_000
+}
+
+/// **The steps a hull draws now** (Q-42b-8): one for each 100-per-mille step `pressure` reaches
+/// past the highest already drawn (`last`, the mark's `morale_step`).
+#[must_use]
+pub fn steps_due(last: u16, pressure: u32) -> std::ops::RangeInclusive<u16> {
+    let reached = u16::try_from(pressure.min(1_000) / 100).unwrap_or(10);
+    last.saturating_add(1)..=reached
+}
+
+/// The highest step a hull has drawn (its mark's `morale_step`).
+fn morale_step(w: &World, unit: ObjId) -> u16 {
+    mark_of(w, unit)
+        .and_then(|mark| mark.get("morale_step").and_then(serde_json::Value::as_u64))
+        .and_then(|n| u16::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// **Whether `state` would come home under its own power**: the arena's withdraw rule
+/// (`crate::arena::withdraw`), read on the decoded snapshot. A WITHDRAW under way yields only once
+/// the hull cannot drive it home (Q-42b-16).
+fn under_own_power(state: &crate::arena::state::UnitState) -> bool {
+    !state.limits.wreck
+        && !state.limits.motion_disabled
+        && !state.disabled
+        && crate::field_ops::assess_tacsim_unit(&state.unit, None).is_ok_and(|c| {
+            c.has_power && c.has_control && (c.can_move || state.unit.mobility().is_none())
+        })
+}
+
+/// **The crews' morale** (doc 42b cut SU.3; Q-42b-4, Q-42b-8, Q-42b-9, Q-42b-15, Q-42b-16): for
+/// each raider hull in `site`'s field whose crew could yield (a seated crew record with a resolve
+/// under 1,000), its pressure from the decoded last snapshot. A check opens only when the hull is
+/// outnumbered or its carrier is lost, and only with a holder (the eject's rule: a Hostile with
+/// the hull in reach and a carrier on the site). It draws once for each new 100-per-mille step,
+/// the highest kept on the mark, and a draw under the chance yields ([`stand_down`]). A hull
+/// already yielded whose ask a busy field or a restart lost is asked out again.
+fn morale(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    live: &super::record::FieldLive,
+    record: Option<&crate::surface::site_record::SiteRecord>,
+    decoded: &mut Option<Decoded>,
+) {
+    let asked = |w: &World, unit: ObjId| {
+        w.module_state::<super::exit::ExitBook>()
+            .is_some_and(|book| book.0.contains_key(&unit))
+    };
+    let again: Vec<ObjId> = live
+        .units
+        .iter()
+        .map(|row| row.unit)
+        .filter(|hull| yielded(ctx.w, *hull) && !asked(ctx.w, *hull))
+        .collect();
+    for hull in again {
+        ask_yield(ctx, hull);
+    }
+    let candidates: Vec<(ObjId, u16)> = live
+        .units
+        .iter()
+        .map(|row| row.unit)
+        .filter(|hull| ramp_cell(ctx.w, *hull).is_none() && !yielded(ctx.w, *hull))
+        .filter(|hull| carrier_of(ctx.w, *hull).is_some() && !asked(ctx.w, *hull))
+        .filter_map(|hull| {
+            let (crew, _) = super::parties::seated(ctx.w, hull)?;
+            let resolve = super::crew::crew_of(ctx.w, crew)?.resolve_permille?;
+            (resolve < 1_000).then_some((hull, resolve))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let decoded = decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone(), &live.held));
+    let Some((arena, returns)) = decoded.as_ref() else {
+        return;
+    };
+    let conditions: BTreeMap<ObjId, Option<LeftCondition>> = live
+        .units
+        .iter()
+        .map(|row| {
+            let condition = returns
+                .iter()
+                .find(|back| back.unit == row.unit)
+                .and_then(|back| super::close::condition_now(ctx, back));
+            (row.unit, condition)
+        })
+        .collect();
+    let condition = |unit: ObjId| conditions.get(&unit).copied().flatten();
+    let in_field = |unit: ObjId| conditions.contains_key(&unit);
+    let ordinal = live.field.ordinal;
+    for (hull, resolve) in candidates {
+        let (Some(carrier), Some(raider)) = (carrier_of(ctx.w, hull), raider_of(ctx.w, hull))
+        else {
+            continue;
+        };
+        // A wreck never yields: its crew is CR.3's stranded case (Q-42b-12).
+        if condition(hull) == Some(LeftCondition::Wreck) {
+            continue;
+        }
+        // Q-42b-16: withdrawal first, while home is reachable.
+        if withdrawing(ctx.w, hull) && arena.unit(hull).is_none_or(under_own_power) {
+            continue;
+        }
+        let hulls: Vec<ObjId> = hulls_of(ctx.w, &raider)
+            .into_iter()
+            .filter(|unit| ramp_cell(ctx.w, *unit).is_none())
+            .collect();
+        let standing = hulls
+            .iter()
+            .filter(|unit| in_field(**unit) && condition(**unit).is_none())
+            .filter(|unit| !yielded(ctx.w, **unit))
+            .count();
+        let ours: Vec<ObjId> = hulls
+            .iter()
+            .copied()
+            .filter(|unit| carrier_of(ctx.w, *unit) == Some(carrier))
+            .collect();
+        let gone = yielded_of(ctx.w, &raider, carrier);
+        let launched = ours
+            .iter()
+            .filter(|unit| in_field(**unit) || record.is_some_and(|record| record.exited(**unit)))
+            .count()
+            .saturating_add(gone);
+        let lost = ours
+            .iter()
+            .filter(|unit| in_field(**unit) && condition(**unit).is_some())
+            .count()
+            .saturating_add(gone);
+        let pressure = Pressure {
+            carrier_lost: !in_field(carrier) || condition(carrier) == Some(LeftCondition::Wreck),
+            excess: arena
+                .armed_hostiles_in_reach(hull)
+                .saturating_sub(u32::try_from(standing).unwrap_or(u32::MAX)),
+            lost,
+            launched,
+            health_permille: arena.health_permille(hull),
+            leader_absent: leader_of(ctx.w, hull).is_none(),
+        };
+        if !pressure.opens() {
+            continue;
+        }
+        // Q-42b-9: nobody to take them, no yield, and no step spent.
+        let holders = super::eject::holding_parties(arena, hull);
+        let Some(holder) = super::eject::holder_of(ctx.w, site, &holders) else {
+            continue;
+        };
+        let total = pressure.total();
+        let steps = steps_due(morale_step(ctx.w, hull), total);
+        if steps.is_empty() {
+            continue;
+        }
+        let reached = *steps.end();
+        let chance = yield_chance(total, resolve);
+        let breaks = steps
+            .into_iter()
+            .any(|step| super::eject::yield_draw(site, ordinal, hull, step) < chance);
+        if let Err(error) = set_mark(ctx, hull, "morale_step", Some(reached.into())) {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a raider crew's morale step did not write");
+            continue;
+        }
+        tracing::info!(site = %site, hull = hull.0, pressure = total, chance, step = reached, breaks, "tacsim: a raider crew's morale was tested");
+        if breaks {
+            stand_down(ctx, site, hull, carrier, holder.party, ordinal);
+        }
+    }
+}
+
+/// **A crew yields** (doc 42b cut SU.3, Q-42b-11): the mark's `yielded` row (the carrier it came
+/// from, the site and the field, the party it yields to) replaces its `carrier` and any WITHDRAW, durable
+/// before the ask; then the no-ramp exit is asked.
+fn stand_down(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    hull: ObjId,
+    carrier: ObjId,
+    to: crate::arena::PartyId,
+    ordinal: u32,
+) {
+    let row = serde_json::json!({
+        "carrier": carrier.0,
+        "site": site.as_str(),
+        "ordinal": ordinal,
+        "to": to.letter().to_string(),
+    });
+    let marked = set_mark(ctx, hull, "yielded", Some(row))
+        .and_then(|()| set_mark(ctx, hull, "carrier", None))
+        .and_then(|()| set_mark(ctx, hull, "withdraw", None));
+    if let Err(error) = marked {
+        tracing::warn!(hull = hull.0, %error, "tacsim: a raider crew's yield did not mark its hull");
+        return;
+    }
+    ask_yield(ctx, hull);
+}
+
+/// **Ask the field to let a yielded hull go by the no-ramp exit** (Q-42b-11), as its leader, else
+/// its crew. A refusal (a busy field) is asked again at the next pass ([`morale`]).
+fn ask_yield(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let Some(asker) = leader_of(ctx.w, hull)
+        .or_else(|| super::parties::seated(ctx.w, hull).map(|(crew, _)| crew))
+    else {
+        return;
+    };
+    let saved = ctx.actor;
+    ctx.actor = asker;
+    let asked = super::exit::request(ctx, hull, None, super::exit::Then::Yield);
+    ctx.actor = saved;
+    if asked.is_ok() {
+        tracing::info!(
+            hull = hull.0,
+            "tacsim: a raider crew yields; its hull leaves the field"
+        );
+    }
+}
+
+/// The line a yield is told in (doc 42b Q-42b-13).
+pub const YIELDED: &str = "The {hull} stands down: its crew yield to party {party}. It is out of the fight, and anyone may take it in.";
+
+/// **A yielded hull is out** (doc 42b cut SU.3, `super::exit::on_withdrawn`'s branch): the site
+/// hears it (Q-42b-13), and once no hull of its raider is left standing in the field, the
+/// leader's marks on every party there are lifted (Q-42b-10), so the field can end by
+/// disengagement.
+pub(crate) fn on_yielded(ctx: &mut Ctx<'_>, site: &CanonicalId, hull: ObjId) {
+    let mark = mark_of(ctx.w, hull).unwrap_or_default();
+    let to = mark
+        .get("yielded")
+        .and_then(|row| row.get("to"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?")
+        .to_owned();
+    let line = YIELDED
+        .replace("{hull}", &crate::port::coop::name_of(ctx.w, hull))
+        .replace("{party}", &to);
+    super::tell_site(ctx, site, &line);
+    let (Some(raider), Some(leader)) = (
+        raider_of(ctx.w, hull),
+        mark.get("leader")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .map(ObjId),
+    ) else {
+        return;
+    };
+    let standing = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .is_none_or(|hosted| {
+            hosted.live.units.iter().any(|row| {
+                row.unit != hull
+                    && raider_of(ctx.w, row.unit).as_deref() == Some(raider.as_str())
+                    && ramp_cell(ctx.w, row.unit).is_none()
+                    && !yielded(ctx.w, row.unit)
+            })
+        });
+    if !standing {
+        lift_marks(ctx, site, leader);
+    }
+}
+
+/// **The leader's marks lifted** (Q-42b-10): its party's standing Hostile rows dropped from the
+/// live record (so a clear no longer falls back to them, doc 40 cut FR.1) and each mark cleared in
+/// the kernel, as a leader's `+field/mark <party>` clear reaches it.
+fn lift_marks(ctx: &mut Ctx<'_>, site: &CanonicalId, leader: ObjId) {
+    let Some((task, by, others, live)) = ctx
+        .w
+        .module_state_mut::<super::FieldBook>()
+        .and_then(|book| book.live.get_mut(site))
+        .and_then(|hosted| {
+            let task = hosted.task;
+            let row = hosted
+                .live
+                .parties
+                .iter_mut()
+                .find(|row| row.key == super::PartyKey::Fixture { leader })?;
+            row.stance_hostile.clear();
+            let by = row.party;
+            let others: Vec<crate::arena::PartyId> = hosted
+                .live
+                .parties
+                .iter()
+                .map(|row| row.party)
+                .filter(|party| *party != by)
+                .collect();
+            Some((task, by, others, hosted.live.clone()))
+        })
+    else {
+        return;
+    };
+    super::record::write_live(ctx, &live);
+    let Some(tasks) = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+    else {
+        return;
+    };
+    for of in others {
+        let offered = tasks.offer(
+            task,
+            crate::arena_task::ArenaMsg::Mark { by, of, mark: None },
+        );
+        if offered.is_err() {
+            tracing::warn!(site = %site, "tacsim: a yielded raider's mark could not be lifted; the field was busy");
+        }
+    }
+    tracing::info!(site = %site, leader = leader.0, "tacsim: the last of a raider's crews yielded; its leader's marks are lifted");
+}
+
+/// **Every yielded hull standing on `site`'s ground, as a casualty** (doc 42b cut SU.3,
+/// Q-42b-12): `super::close::demote_units`' rows gain each yielded raider hull on the site's
+/// domain that no row holds yet, at its pose, so the close writes it and every tow rule for a
+/// casualty applies. A yielded hull is never a wreck (a wreck never yields).
+pub(crate) fn keep_yielded(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+    left: &mut Vec<crate::surface::site_record::LeftUnit>,
+    side: u16,
+) {
+    let Some(domain) = super::parties::site_domain(ctx.w, site) else {
+        return;
+    };
+    let now = ctx.w.world_ic_now().at;
+    for unit in super::parties::on_ground(ctx.w, domain) {
+        if !yielded(ctx.w, unit) || left.iter().any(|row| row.unit == unit) {
+            continue;
+        }
+        let Some((_, at)) = mush_sim::pose_of(ctx.w, unit) else {
+            continue;
+        };
+        let pose = crate::surface::site_record::SitePose {
+            x_cm: at.x_cm,
+            y_cm: at.y_cm,
+            heading_mdeg: at.heading_mdeg,
+        };
+        if !pose.on_site(side) {
+            continue;
+        }
+        left.push(crate::surface::site_record::LeftUnit {
+            unit,
+            pose,
+            condition: LeftCondition::Casualty,
+            epoch: None,
+            left_ic: now,
+        });
+    }
+}
+
 /// **The last snapshot of `site`'s field, decoded** on its own ground (its `homes` and its `held`
 /// walls from the live record; doc 36a §11 #1), with its units' returns, when it decodes:
 /// `close::snapshot_returns`' read, keeping the arena.
@@ -1059,7 +1647,7 @@ fn decode(
     site: &CanonicalId,
     homes: Vec<crate::arena::state::EntryZone>,
     held: &[super::record::HeldWall],
-) -> Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)> {
+) -> Decoded {
     let document = ctx
         .w
         .module_state::<super::FieldBook>()
@@ -1211,8 +1799,9 @@ fn join_one(
         pilot: joining.pilot,
         host: Box::new(joining.host),
         spread: LAUNCH_SPREAD_CELLS,
-        // Doc 40 cut FR.5: S.4b-3's host half hands the retained source.
+        // A raider's hull flies no claimed mind.
         source: None,
+        carried: None,
     };
     if tasks.offer(task, message).is_err() {
         let _ = mush_tactics::custody::check_in(ctx, unit, None);
@@ -1287,6 +1876,118 @@ mod tests {
         let defs = raiders().expect("the shipped raiders check");
         assert!(!defs.is_empty());
         assert!(defs.iter().all(|def| !def.units.is_empty()));
+    }
+
+    /// **Doc 42b cut SU.1** (Q-42b-6, Q-42b-7): schema 5's shipped resolves, the fallbacks (the
+    /// hull's, else the raider's, else 500), the crew's default name, and the refusals.
+    #[test]
+    fn su1_schema_5_authors_each_crews_resolve() {
+        let defs = raiders().expect("the shipped raiders check");
+        let resolve = |id: &str| {
+            let def = defs.iter().find(|def| def.id.as_str() == id).expect(id);
+            def.units
+                .iter()
+                .map(|unit| def.resolve_of(unit))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(resolve("tacsim.raider.ahuna_skulks"), [400, 400]);
+        assert_eq!(resolve("tacsim.raider.urvara_reavers"), [750, 750]);
+        let skulk = &defs[0];
+        assert_eq!(skulk.units[0].crew_name(), "Skulk One crew");
+        let mut file: serde_json::Value = serde_json::from_str(RAIDERS_JSON).expect("json");
+        let def = &mut file["raiders"][0];
+        def["units"][0]["resolve_permille"] = serde_json::json!(0);
+        def["units"][0]["crew"] = serde_json::json!("Ivo Brandt");
+        def.as_object_mut()
+            .expect("a raider")
+            .remove("resolve_permille");
+        let parsed = parse(&file.to_string()).expect("a hull's own resolve and crew");
+        let def = &parsed[0];
+        assert_eq!(def.resolve_of(&def.units[0]), 0);
+        assert_eq!(def.resolve_of(&def.units[1]), DEFAULT_RESOLVE_PERMILLE);
+        assert_eq!(def.units[0].crew_name(), "Ivo Brandt");
+        let refused = |path: &dyn Fn(&mut serde_json::Value)| {
+            let mut bad: serde_json::Value = serde_json::from_str(RAIDERS_JSON).expect("json");
+            path(&mut bad);
+            parse(&bad.to_string()).is_err()
+        };
+        assert!(refused(
+            &|f| f["raiders"][0]["resolve_permille"] = serde_json::json!(1_001)
+        ));
+        assert!(refused(
+            &|f| f["raiders"][0]["units"][1]["resolve_permille"] = serde_json::json!(1_001)
+        ));
+        assert!(refused(
+            &|f| f["raiders"][0]["units"][0]["crew"] = serde_json::json!(" ")
+        ));
+        assert!(refused(&|f| f["schema"] = serde_json::json!(4)));
+    }
+
+    /// **Doc 42b cut SU.3** (Q-42b-4): the pressure's gate and terms, summed and clamped.
+    #[test]
+    fn su3_pressure_opens_on_odds_or_the_carrier_and_sums_its_terms() {
+        let sound = Pressure {
+            health_permille: 1_000,
+            ..Pressure::default()
+        };
+        assert!(!sound.opens(), "a damaged, winning crew never checks");
+        assert_eq!(sound.total(), 0);
+        let hurt = Pressure {
+            health_permille: 0,
+            lost: 2,
+            launched: 2,
+            leader_absent: true,
+            ..Pressure::default()
+        };
+        assert!(
+            !hurt.opens(),
+            "losses, damage and the leader only weigh a check"
+        );
+        let lost = Pressure {
+            carrier_lost: true,
+            ..sound
+        };
+        assert!(lost.opens());
+        assert_eq!(lost.total(), PRESSURE_CARRIER_LOST);
+        let odds = |excess| Pressure { excess, ..sound }.total();
+        assert_eq!(odds(1), 150);
+        assert_eq!(odds(3), PRESSURE_ODDS_MAX);
+        assert_eq!(odds(9), PRESSURE_ODDS_MAX, "the odds term is capped");
+        let half = Pressure {
+            carrier_lost: true,
+            lost: 1,
+            launched: 2,
+            health_permille: 500,
+            ..Pressure::default()
+        };
+        assert_eq!(half.total(), 400 + 150 + 150);
+        let everything = Pressure {
+            carrier_lost: true,
+            excess: 5,
+            lost: 2,
+            launched: 2,
+            health_permille: 0,
+            leader_absent: true,
+        };
+        assert_eq!(everything.total(), 1_000, "clamped");
+    }
+
+    /// **Doc 42b cut SU.3** (Q-42b-4, Q-42b-8): the chance the trait weights, and one draw per
+    /// new 100-per-mille step.
+    #[test]
+    fn su3_resolve_weights_the_chance_and_steps_are_drawn_once() {
+        assert_eq!(yield_chance(400, 0), 400);
+        assert_eq!(yield_chance(400, 400), 240);
+        assert_eq!(yield_chance(1_000, 1_000), 0, "a fanatic never yields");
+        assert_eq!(yield_chance(0, 0), 0, "no pressure, no yield");
+        assert_eq!(steps_due(0, 450).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert!(
+            steps_due(4, 450).is_empty(),
+            "a step drawn is never drawn again"
+        );
+        assert_eq!(steps_due(4, 600).collect::<Vec<_>>(), [5, 6]);
+        assert!(steps_due(0, 99).is_empty());
+        assert_eq!(*steps_due(0, 1_000).end(), 10);
     }
 
     /// Doc 36 cut GC.0: the snapshots' lift check runs at the first, then once a pace, and again

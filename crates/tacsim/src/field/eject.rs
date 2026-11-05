@@ -127,14 +127,7 @@ pub(crate) fn eject_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// **The eject after a field** (this module's head): the pilot seated in the unit they stand in,
 /// on a site's ground with no field running; the world's cells decide, and nobody holds the cell.
 fn after_field(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<(), CmdError> {
-    let unit = ctx
-        .w
-        .get(actor)
-        .and_then(|object| object.location)
-        .filter(|unit| {
-            super::parties::seated(ctx.w, *unit).is_some_and(|(seated, _)| seated == actor)
-        })
-        .ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
+    let unit = seated_unit(ctx.w, actor).ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
     let site = match crate::surface::act::where_is(ctx.w, unit) {
         crate::surface::act::Where::Ground { domain, .. } => {
             crate::surface::act::site_of_domain(ctx.w, domain)
@@ -152,6 +145,21 @@ fn after_field(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<(), CmdError> {
     let condition = super::crew::cells_condition(cells);
     ejected(ctx, actor, &site, unit, condition, None);
     Ok(())
+}
+
+/// **The unit `actor` is seated in and stands inside** (doc 38a review, Astra #12): the first
+/// holder up `actor`'s location chain, as [`super::crew::inside`] walks it, whose seat is theirs.
+/// A pilot seated in a cab stands in the cab's room, never in the hull itself.
+fn seated_unit(w: &World, actor: ObjId) -> Option<ObjId> {
+    let mut here = w.get(actor).and_then(|object| object.location);
+    for _ in 0..16 {
+        let at = here?;
+        if super::parties::seated(w, at).is_some_and(|(seated, _)| seated == actor) {
+            return Some(at);
+        }
+        here = w.get(at).and_then(|object| object.location);
+    }
+    None
 }
 
 /// **The arena's answer to an eject** (the bridge's branch; this module's head).
@@ -218,6 +226,16 @@ pub(crate) fn on_ejected(
 /// first, each with a carrier of its own in the field — one of its own units, or one of a party
 /// its leader leads — that has not fallen, and a leader to be the captor.
 fn holder(w: &World, site: &CanonicalId, read: &EjectRead) -> Option<EjectCapture> {
+    holder_of(w, site, &read.holders)
+}
+
+/// **[`holder`]'s rule over any holders, nearest first** (doc 42b cut SU.3, Q-42b-9: a raider's
+/// yield names its holder by the eject's rule).
+pub(crate) fn holder_of(
+    w: &World,
+    site: &CanonicalId,
+    holders: &[PartyId],
+) -> Option<EjectCapture> {
     let hosted = w.module_state::<super::FieldBook>()?.hosted(site)?;
     let live = &hosted.live;
     let leader_of = |party: PartyId| {
@@ -226,7 +244,7 @@ fn holder(w: &World, site: &CanonicalId, read: &EjectRead) -> Option<EjectCaptur
             .find(|row| row.party == party)
             .and_then(|row| row.leader)
     };
-    read.holders.iter().find_map(|party| {
+    holders.iter().find_map(|party| {
         let captor = leader_of(*party)?;
         let carrier = live
             .units
@@ -253,11 +271,67 @@ pub(crate) fn fallen(w: &World, carrier: ObjId) -> bool {
 /// configured per mille, so 1,000 always captures and 0 never does.
 #[must_use]
 pub fn draw(site: &CanonicalId, ordinal: u32, unit: ObjId, at_ms: i64) -> u32 {
-    let seed = format!(
+    permille(&format!(
         "{}eject:{}:{at_ms}",
         super::standing::cause_prefix(site, ordinal),
         unit.0
-    );
+    ))
+}
+
+/// **A raider crew's morale draw**, 0 to 999 (doc 42b cut SU.3, Q-42b-8): [`draw`]'s FNV-1a with
+/// the pressure step folded in where the eject folds the millisecond, so a resumed field draws
+/// each step exactly as before.
+#[must_use]
+pub fn yield_draw(site: &CanonicalId, ordinal: u32, hull: ObjId, step: u16) -> u32 {
+    permille(&format!(
+        "{}yield:{}:{step}",
+        super::standing::cause_prefix(site, ordinal),
+        hull.0
+    ))
+}
+
+/// **The parties holding `hull`'s cell in `arena`** (doc 42b cut SU.3, Q-42b-9), nearest unit
+/// first: each Hostile to the hull's party with a live armed unit that has the hull inside its own
+/// reach. The eject's (a) and (b) as a read on any hull; [`holder_of`] then wants a carrier.
+#[must_use]
+pub(crate) fn holding_parties(arena: &crate::arena::Arena, hull: ObjId) -> Vec<PartyId> {
+    let Some(target) = arena.unit(hull) else {
+        return Vec::new();
+    };
+    let cell_cm = arena.definition.terrain.cell_cm();
+    let at = &target.pose;
+    let mut near: Vec<(i128, PartyId)> = arena
+        .units
+        .iter()
+        .filter(|holder| holder.id != hull && holder.team != target.team)
+        .filter(|holder| {
+            let reach = holder.fight_inner_cm(cell_cm);
+            arena.relations.relation(holder.team, target.team)
+                == crate::arena::party::Relation::Hostile
+                && !holder.limits.wreck
+                && (holder.armed_at_checkout() || holder.shots_fired > 0)
+                && reach != 0
+                && crate::arena::index::within_cm(&holder.pose, at, reach)
+        })
+        .map(|holder| {
+            let dx = i128::from(holder.pose.x_cm) - i128::from(at.x_cm);
+            let dy = i128::from(holder.pose.y_cm) - i128::from(at.y_cm);
+            let dz = i128::from(holder.pose.z_cm) - i128::from(at.z_cm);
+            (dx * dx + dy * dy + dz * dz, holder.team)
+        })
+        .collect();
+    near.sort();
+    let mut parties: Vec<PartyId> = Vec::new();
+    for (_, party) in near {
+        if !parties.contains(&party) {
+            parties.push(party);
+        }
+    }
+    parties
+}
+
+/// FNV-1a over `seed`, per mille.
+fn permille(seed: &str) -> u32 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in seed.bytes() {
         hash ^= u64::from(byte);
@@ -314,6 +388,7 @@ fn ejected(
                 capture,
             }),
             treatment: None,
+            resolve_permille: prior.as_ref().and_then(|record| record.resolve_permille),
         },
     );
     ctx.out.sys_to_actor(
@@ -333,6 +408,67 @@ fn ejected(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 38a review, Astra #12**: a pilot seated in a hull from a cab room inside it is found
+    /// in that hull, as a pilot standing in the hull is; a stranger's seat is nobody's.
+    #[test]
+    fn review_72h_a_cab_seated_pilot_is_flying_the_hull() {
+        let mut w = World::new_minimal();
+        let hull = w
+            .create(
+                ObjKind::Thing,
+                "Rig",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("hull");
+        let cab = w
+            .create(ObjKind::Thing, "Cab", mush_core::GOD, Some(hull))
+            .expect("cab");
+        let pilot = w
+            .create(ObjKind::Player, "Pilot", mush_core::GOD, Some(cab))
+            .expect("pilot");
+        let stranger = w
+            .create(ObjKind::Player, "Stranger", mush_core::GOD, Some(cab))
+            .expect("stranger");
+        let mut spatial = mush_sim::SpatialState::default();
+        spatial.assignments.insert(
+            hull,
+            mush_sim::data::HostAssignments {
+                host: hull,
+                seats: [(
+                    mush_sim::StationId::new("cockpit").expect("station"),
+                    mush_sim::data::StationAssignment {
+                        actor: pilot,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        w.module_state_insert(spatial);
+        assert_eq!(seated_unit(&w, pilot), Some(hull));
+        assert_eq!(seated_unit(&w, stranger), None);
+    }
+
+    /// **Doc 42b cut SU.3** (Q-42b-8): the morale draw is the eject's FNV-1a keyed by the step,
+    /// never the millisecond: the same inputs draw the same, and the step and the hull each
+    /// change it.
+    #[test]
+    fn su3_the_yield_draw_is_keyed_by_the_step() {
+        let site = CanonicalId::new("ahuna_port").expect("a site");
+        let draw = |hull: u32, step: u16| yield_draw(&site, 3, ObjId(hull), step);
+        assert_eq!(draw(40, 2), draw(40, 2));
+        assert!(draw(40, 2) < 1_000);
+        let spread: std::collections::BTreeSet<u32> = (1..=10).map(|step| draw(40, step)).collect();
+        assert!(spread.len() > 5, "the steps draw apart: {spread:?}");
+        assert_ne!(
+            (1..=10).map(|step| draw(40, step)).collect::<Vec<_>>(),
+            (1..=10).map(|step| draw(41, step)).collect::<Vec<_>>()
+        );
+    }
 
     /// Doc 42 cut CR.4 (Q-42-12): the draw is a pure function of its seed, spread over 0..1000,
     /// so 1,000 always captures and 0 never does.

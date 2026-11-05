@@ -507,6 +507,33 @@ pub struct SiteRecord {
     /// nothing launched onto is byte-identical to RS.3's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<PendingLaunch>,
+    /// **The matter this ground's acts moved in and out of the census** (the owner's IN.11
+    /// census ruling, 2026-11-05): the bale kilograms the tenders' repairs consumed into hulls
+    /// and the alloys remains scrap minted, kept so `@industry/census` balances a window that
+    /// holds either. Omitted while nothing did, so a record is byte-identical to FR.3's.
+    #[serde(default, skip_serializing_if = "SiteMatter::is_fresh")]
+    pub matter: SiteMatter,
+}
+
+/// **A site's matter terms** ([`SiteRecord::matter`]), kilograms, ever.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteMatter {
+    /// Bale kilograms a tender's repairs consumed into hulls here (a sink).
+    #[serde(default)]
+    pub repaired_kg: u64,
+    /// Alloys a remains scrap minted into a hold here (a source: the hull's mass was never
+    /// in the census; the sub-tonne under the whole tonnes is the declared loss, §4.6).
+    #[serde(default)]
+    pub scrapped_kg: u64,
+}
+
+impl SiteMatter {
+    /// Whether nothing moved (serde's skip).
+    #[must_use]
+    pub const fn is_fresh(&self) -> bool {
+        self.repaired_kg == 0 && self.scrapped_kg == 0
+    }
 }
 
 /// **One launch accepted onto a site and not yet down** (doc 40 cut FR.3; Q-40-24): the hull,
@@ -606,6 +633,7 @@ impl SiteRecord {
             land_grants: Vec::new(),
             consent_asks: Vec::new(),
             pending: Vec::new(),
+            matter: SiteMatter::default(),
         }
     }
 
@@ -883,6 +911,17 @@ impl SiteRecord {
             open.exits.insert(at, unit);
         }
         Ok(())
+    }
+
+    /// **Strike `unit`'s exit from the open field** (doc 40, the ramp exit's boarding window; the
+    /// 38b review's F-15): a hull let go at its ramp whose carrier was lost is back in the field,
+    /// so the record no longer names it out. Nothing when it names no exit.
+    pub fn rejoin(&mut self, unit: ObjId) {
+        if let Some(open) = self.promoted.as_mut()
+            && let Ok(at) = open.exits.binary_search(&unit)
+        {
+            open.exits.remove(at);
+        }
     }
 
     /// Whether `unit` left the open field at its carrier's ramp ([`SiteRecord::exit`]).
@@ -1813,8 +1852,14 @@ fn cell_word(word: Option<&str>, side: u16) -> Option<(i64, i64)> {
 }
 
 /// **The whole record, staff truth** (`@tacsim/site <site>`): never a player's view (Q-CF-28).
+/// A casualty `yielded` names is marked *yielded* (doc 42b cut SU.3, Q-42b-13).
 #[must_use]
-pub fn record_lines(name: &str, site: &CanonicalId, record: Option<&SiteRecord>) -> Vec<String> {
+pub fn record_lines(
+    name: &str,
+    site: &CanonicalId,
+    record: Option<&SiteRecord>,
+    yielded: &dyn Fn(ObjId) -> bool,
+) -> Vec<String> {
     let Some(record) = record else {
         return vec![format!(
             "Site record of {name} ({site}): no field yet, nothing on the ground."
@@ -1840,9 +1885,10 @@ pub fn record_lines(name: &str, site: &CanonicalId, record: Option<&SiteRecord>)
     for unit in &record.units {
         let (x, y) = unit.pose.cell();
         lines.push(format!(
-            "Unit #{}: {} at ({x}, {y}), left at IC {}{}.",
+            "Unit #{}: {}{} at ({x}, {y}), left at IC {}{}.",
             unit.unit.0,
             unit.condition.word(),
+            if yielded(unit.unit) { ", yielded" } else { "" },
             unit.left_ic,
             unit.epoch
                 .map_or_else(String::new, |epoch| format!(", epoch {epoch} open"))
@@ -1927,7 +1973,8 @@ pub(crate) fn command(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::Cmd
         .filter(|record| record.key() == key);
     let name = crate::surface::act::site_name(ctx.w, &site);
     let Some(op) = words.next() else {
-        for line in record_lines(&name, &site, record.as_ref()) {
+        let yielded = |unit: ObjId| crate::field::raiders::yielded(ctx.w, unit);
+        for line in record_lines(&name, &site, record.as_ref(), &yielded) {
             ctx.out.sys_to_actor(ctx.actor, "tacsim", line);
         }
         return Ok(());

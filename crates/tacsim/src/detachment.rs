@@ -8,6 +8,8 @@
 
 pub mod activation;
 pub(crate) mod chat;
+/// Doc 38a review F-22a: the composition registers it with comsys.
+pub use chat::DetachmentChatGate;
 pub mod commands;
 pub mod crew;
 pub mod live;

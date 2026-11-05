@@ -41,6 +41,54 @@ async fn settle_chat(world: &mut TestWorld, store: &InMemoryStore) -> TestResult
     Ok(())
 }
 
+/// **Doc 38a review F-22a** (doc 42 Q-42-2): a captive's `dt <message>` is refused with the held
+/// line and queues nothing; released, the same member speaks again with no membership change.
+#[tokio::test]
+async fn f22a_a_captive_is_gagged_on_the_roster_channel_until_released() -> TestResult {
+    let store = InMemoryStore::new();
+    let (mut rig, _) = field_fixture(&store).await?;
+    let (organizer, player) = (rig.organizer, rig.invitee);
+    let channel = chat_channel(&rig.world, organizer, 1)?;
+    let crew = |location| tacsim::field::CrewRecord {
+        format: tacsim::field::crew::CREW_FORMAT,
+        character: player,
+        location,
+        condition: tacsim::field::CrewCondition::Fit,
+        at_ic: 0,
+        organizer: None,
+        extraction: None,
+        treatment: None,
+        resolve_permille: None,
+    };
+    tacsim::field::crew::hold_for_tests(
+        rig.world.world_mut(),
+        crew(tacsim::field::CrewLocation::Captured {
+            carrier: organizer,
+            captor: GOD,
+            since_ic: 0,
+        }),
+    );
+    let held = text(&mut rig.world, player, "dt held line");
+    assert!(
+        held.contains("You are held aboard") && !held.contains("queued for IC transit"),
+        "{held}"
+    );
+    tacsim::field::crew::hold_for_tests(
+        rig.world.world_mut(),
+        crew(tacsim::field::CrewLocation::Port {
+            port: smol_str::SmolStr::new("ceres"),
+        }),
+    );
+    let freed = text(&mut rig.world, player, "dt free line");
+    assert!(freed.contains("queued for IC transit"), "{freed}");
+    assert_eq!(
+        alias(&rig.world, player, channel)?,
+        "dt",
+        "membership never moved"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn dt5_chat_membership_is_the_accepted_roster_and_chat_is_not_an_order() -> TestResult {
     let store = InMemoryStore::new();

@@ -555,9 +555,7 @@ pub fn live_charter(w: &World, pilot: ObjId) -> Option<Charter> {
                 && c.consent.parties.contains(&tenant)
         })
         .filter_map(|c| {
-            port.map
-                .hulls
-                .iter()
+            programme_rows(w, &port)
                 .map(|row| ObjId(row.hull))
                 .find(|hull| pledges(c, &trust, *hull))
                 .map(|hull| Charter {
@@ -624,9 +622,7 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
     }
     let owner = PrincipalId::Object(pilot);
     let programme = programme_port(w).and_then(|port| {
-        port.map
-            .hulls
-            .iter()
+        programme_rows(w, &port)
             .map(|row| ObjId(row.hull))
             .filter(|hull| titled_to(w, *hull, &owner))
             .min()
@@ -694,7 +690,7 @@ pub(crate) fn mining_hold(
 }
 
 /// **Who commands a programme hull**: its live charter's tenant, else the `Object`
-/// title holder of a programme-map hull. `None` for a laid-up Trust hull.
+/// title holder of a programme-map or owned-register hull. `None` for a laid-up Trust hull.
 #[must_use]
 pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId> {
     if crate::relay_mobile::fleet_hull(w) == Some(hull) {
@@ -707,9 +703,13 @@ pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId> {
     if let Some(tenant) = charter_tenant(w, hull) {
         return Some(tenant);
     }
-    let port = programme_port(w)?;
-    if !port.map.hulls.iter().any(|row| row.hull == hull.0) {
-        return None;
+    // A programme row, or (doc 38a/b F-06) any hull of the owned-hull register — a
+    // yard-commissioned carrier included: its title holder commands it when no charter does.
+    if crate::port::owned::owned(w, hull).is_none() {
+        let port = programme_port(w)?;
+        if !programme_rows(w, &port).any(|row| row.hull == hull.0) {
+            return None;
+        }
     }
     let asset = w.module_state::<EconomyStore>()?.snapshot().asset(hull)?;
     match &asset.title_owner {
@@ -790,16 +790,7 @@ pub fn hull_is_free(w: &World, port: &ProgrammePort<'_>, row: &HullRow) -> bool 
 /// stays the seed and the applier's preflight never sees a ninth.
 #[must_use]
 pub fn free_hulls<'a>(w: &'a World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
-    let unit = port.programme.unit.as_str();
-    let mut rows: Vec<&'a HullRow> = port
-        .map
-        .hulls
-        .iter()
-        .chain(
-            crate::port::owned::rows(w)
-                .filter(|owned| owned.design.as_str() == unit)
-                .filter_map(crate::port::owned::OwnedHull::ship),
-        )
+    let mut rows: Vec<&'a HullRow> = programme_rows(w, port)
         .filter(|row| hull_is_free(w, port, row))
         .collect();
     rows.sort_by_key(|row| row.hull);
@@ -969,7 +960,7 @@ pub fn check_hull_name(
     if !name_shape_ok(&name) {
         return Err(BAD_NAME);
     }
-    let taken = port.map.hulls.iter().any(|row| {
+    let taken = programme_rows(w, port).any(|row| {
         row.mark.eq_ignore_ascii_case(&name)
             || name_of(w, ObjId(row.hull)).eq_ignore_ascii_case(&name)
     });
@@ -1063,9 +1054,25 @@ pub(crate) fn account_books<'a>(
     }
 }
 
-/// The row of `hull` in the port's map.
-fn row_of<'a>(port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
-    port.map.hulls.iter().find(|row| row.hull == hull.0)
+/// The row of `hull` among the programme's rows (the map's and the register's).
+fn row_of<'a>(w: &'a World, port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
+    programme_rows(w, port).find(|row| row.hull == hull.0)
+}
+
+/// **Every hull row of the programme** (doc 38a/b F-06, the one reader): the port map's rows,
+/// then the Trust's built hulls of the programme's unit — register rows
+/// (`crate::port::owned`) the house ferry brought home (doc 39 cut IN.10). A built hull is never
+/// a programme row, so every reader that names the programme's hulls reads this, not the map.
+pub(crate) fn programme_rows<'a>(
+    w: &'a World,
+    port: &ProgrammePort<'a>,
+) -> impl Iterator<Item = &'a HullRow> {
+    let unit = port.programme.unit.as_str();
+    port.map.hulls.iter().chain(
+        crate::port::owned::rows(w)
+            .filter(move |owned| owned.design.as_str() == unit)
+            .filter_map(crate::port::owned::OwnedHull::ship),
+    )
 }
 
 /// **`+coop`, `+coop/enrol`, `+coop/statement`** (doc 18 §4.1), and cut IC13's
@@ -1152,8 +1159,8 @@ pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
                 ),
                 None => {
                     warn_lease = Some(charter.contract.0);
-                    let mark =
-                        row_of(&port, charter.hull).map_or_else(String::new, |r| r.mark.clone());
+                    let mark = row_of(ctx.w, &port, charter.hull)
+                        .map_or_else(String::new, |r| r.mark.clone());
                     CHARTER_BOOKS_DARK
                         .replace("{name}", &name_of(ctx.w, charter.hull))
                         .replace("{mark}", &mark)

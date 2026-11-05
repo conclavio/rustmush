@@ -46,8 +46,17 @@ pub enum HouseAct {
     Claim,
     /// Doc 41 cut RS.6c-1: break a swept hull up at the home workshop (IN.8).
     Scrap,
-    /// Doc 41 cut RS.6c-1: keep a swept hull for resale: her title to the house.
+    /// Doc 41 cut RS.6c-1: keep a swept hull for resale: her title to the house (cut RS.6c-2:
+    /// once she is restored, which lists her, [`crate::port::house_sale`]).
     Keep,
+    /// Doc 41 cut RS.6c-2: sail the lifter from home to the supply port ([`SUPPLY_VENUE`]) for
+    /// the restoration's bale goods.
+    Supply,
+    /// Doc 41 cut RS.6c-2: at the supply port, buy the goods short in the lifter's hold, then
+    /// sail home (its venue word).
+    Stock(Vec<crate::port::bay_work::act::GoodUnits>, String),
+    /// Doc 41 cut RS.6c-2: take the next restoration order at the home workshop (its selector).
+    Repair(String),
     /// Under way, mid-act, or waiting on the world: nothing this fire.
     Wait,
 }
@@ -100,6 +109,30 @@ pub const FLOAT_MINOR: i64 = 2_000_000;
 /// fill the tank and the locker, then depart for `word` — which the order arm carries out as the
 /// plan's author, buying at this port's counters like any captain's plan.
 fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
+    plan(
+        ctx,
+        lifter,
+        0,
+        vec![
+            "buy propellant fill".to_owned(),
+            "buy provisions fill".to_owned(),
+            format!("depart {word}"),
+        ],
+    )
+}
+
+/// **The supply port** (doc 41 cut RS.6c-2, the owner's default of 2026-11-04): where the house's
+/// lifter buys a restoration's structural alloys and yard fittings (Stickney's yards sell both).
+pub const SUPPLY_VENUE: &str = "stickney";
+
+/// **A sailing plan as the dispatcher**: aboard the lifter, its float topped up to
+/// [`FLOAT_MINOR`] plus `extra_minor`, then each of `lines` filed as `+ship/order`.
+fn plan(
+    ctx: &mut Ctx<'_>,
+    lifter: ObjId,
+    extra_minor: i64,
+    lines: Vec<String>,
+) -> Result<(), String> {
     let dispatcher = ctx.actor;
     // The dispatcher boards: a plan's buys need its author aboard the docked hull (the market's
     // presence, `Presence::Ship`), and it sails with her.
@@ -111,6 +144,21 @@ fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
             .move_to(dispatcher, airlock)
             .map_err(|e| e.to_string())?;
     }
+    top_up(ctx, FLOAT_MINOR.saturating_add(extra_minor))?;
+    for line in lines {
+        let parsed = mush_core::ParsedArgs::parse(mush_core::ArgShape::Raw, &line);
+        let old = std::mem::replace(&mut ctx.args, parsed);
+        let filed = crate::port::orders::order_cmd(ctx);
+        ctx.args = old;
+        filed.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// **The dispatcher's float topped up** to `floor` minor units from the house's own account (the
+/// dispatcher acts for the house).
+fn top_up(ctx: &mut Ctx<'_>, floor: i64) -> Result<(), String> {
+    let dispatcher = ctx.actor;
     let (house_account, float) = crate::port::market::ports(ctx.w)
         .into_iter()
         .find_map(|(_, def, map)| {
@@ -131,8 +179,8 @@ fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
     let available = crate::port::credit::own_account(ctx.w, dispatcher)
         .and_then(|a| a.available())
         .map_or(0, |a| a.minor());
-    if available < FLOAT_MINOR {
-        let short = FLOAT_MINOR - available;
+    if available < floor {
+        let short = floor - available;
         let mut plan = mush_economy::EconomyPlan::new(
             mush_economy::IdempotencyKey::new(
                 "tacsim.house.float",
@@ -158,17 +206,6 @@ fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
         );
         plan.description = "the house's sailing float".to_owned();
         mush_economy::post(ctx, &plan).map_err(|e| format!("the float did not post: {e}"))?;
-    }
-    for line in [
-        "buy propellant fill".to_owned(),
-        "buy provisions fill".to_owned(),
-        format!("depart {word}"),
-    ] {
-        let parsed = mush_core::ParsedArgs::parse(mush_core::ArgShape::Raw, &line);
-        let old = std::mem::replace(&mut ctx.args, parsed);
-        let filed = crate::port::orders::order_cmd(ctx);
-        ctx.args = old;
-        filed.map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -246,6 +283,14 @@ fn job(w: &World, home: &CanonicalId) -> Option<RetrievalOrder> {
         })
 }
 
+/// The home port's workshop room.
+fn workshop_of(w: &World, home: &CanonicalId) -> Option<ObjId> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(id, ..)| id == home)
+        .and_then(|(entry, def, _)| crate::port::workshop::room(w, &entry, def).ok().flatten())
+}
+
 /// **The sweep's next act** (doc 41 cut RS.6c-1, [`crate::port::house_sweep`]): a swept hull the
 /// house holds (in the lifter's bay, or berthed in the home workshop) first, else the next wreck
 /// to sweep. `None` when there is nothing to sweep.
@@ -255,14 +300,7 @@ fn sweep_act(
     home: &CanonicalId,
 ) -> Option<(ObjId, HouseAct)> {
     use crate::port::house_sweep::{Disposition, assess, held, target, title_of};
-    let workshop = crate::port::market::ports(ctx.w)
-        .into_iter()
-        .find(|(id, ..)| id == home)
-        .and_then(|(entry, def, _)| {
-            crate::port::workshop::room(ctx.w, &entry, def)
-                .ok()
-                .flatten()
-        });
+    let workshop = workshop_of(ctx.w, home);
     let dispatcher = crate::port::coop::helm_holder(ctx.w, lifter)?;
     if let Some(hull) = held(ctx, (lifter, crawler), workshop) {
         let custody = crate::surface::salvage::custody_of(ctx, hull);
@@ -283,7 +321,7 @@ fn sweep_act(
         return Some((
             hull,
             match assess(ctx.w, hull) {
-                Disposition::Keep { .. } => HouseAct::Keep,
+                Disposition::Keep { .. } => restore_act(ctx, lifter, hull, home),
                 Disposition::Scrap { .. } => HouseAct::Scrap,
             },
         ));
@@ -297,6 +335,108 @@ fn sweep_act(
         return Some((hull, HouseAct::Title));
     }
     Some((hull, next_act(ctx, (lifter, crawler), hull, home)))
+}
+
+/// **The restoration's next act** (doc 41 cut RS.6c-2; the owner's default of 2026-11-04) for a
+/// kept hull berthed in the home workshop, still titled to the dispatcher (its right in the bay):
+/// the next order's bale goods short in the lifter's hold are bought on a supply leg to
+/// [`SUPPLY_VENUE`]; with them aboard and the lifter docked at home, the order is taken; while
+/// it is open the lifter stays (the goods are drawn from her hold at completion); with nothing
+/// left to order, her title passes to the house ([`HouseAct::Keep`]), which lists her.
+fn restore_act(ctx: &Ctx<'_>, lifter: ObjId, hull: ObjId, home: &CanonicalId) -> HouseAct {
+    use crate::port::bay_work::HouseRepair;
+    let w = &*ctx.w;
+    let (selector, goods) = match crate::port::bay_work::house_repair(ctx, hull) {
+        Ok(HouseRepair::Done) => return HouseAct::Keep,
+        Ok(HouseRepair::Order {
+            selector, goods, ..
+        }) => (selector, goods),
+        Ok(HouseRepair::Busy) | Err(_) => return HouseAct::Wait,
+    };
+    let short = shortfall(ctx, lifter, &goods);
+    let filed = pending(w, lifter);
+    match docked_at(w, lifter) {
+        Some(at) if &at == home => {
+            if short.is_empty() {
+                HouseAct::Repair(selector)
+            } else if filed {
+                HouseAct::Wait
+            } else {
+                HouseAct::Supply
+            }
+        }
+        Some(_) if !filed => match venue_of(w, home) {
+            Some(word) if short.is_empty() => HouseAct::Home(word),
+            Some(word) => HouseAct::Stock(short, word),
+            None => HouseAct::Wait,
+        },
+        _ => HouseAct::Wait,
+    }
+}
+
+/// **The goods of `goods` the lifter's hold is short of**, by good.
+fn shortfall(
+    ctx: &Ctx<'_>,
+    lifter: ObjId,
+    goods: &[crate::port::bay_work::act::GoodUnits],
+) -> Vec<crate::port::bay_work::act::GoodUnits> {
+    let vault = crate::port::ship::hull_view(ctx.w, lifter)
+        .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view));
+    goods
+        .iter()
+        .filter_map(|row| {
+            let have = vault
+                .and_then(|v| {
+                    crate::port_tick::read_pool(
+                        ctx,
+                        mush_inventory::record::EndpointRef(v),
+                        &row.good,
+                    )
+                    .ok()
+                })
+                .unwrap_or(0);
+            (have < row.units).then(|| crate::port::bay_work::act::GoodUnits {
+                good: row.good.clone(),
+                units: row.units - have,
+            })
+        })
+        .collect()
+}
+
+/// **Take the restoration's order** (doc 41 cut RS.6c-2): the float topped up to cover the fee
+/// (escrowed from it), the dispatcher steps into the home workshop, takes the order as her title
+/// holder, and steps back aboard the lifter.
+fn repair_at_home(
+    ctx: &mut Ctx<'_>,
+    (lifter, hull): (ObjId, ObjId),
+    selector: &str,
+    home: &CanonicalId,
+) -> Result<(), String> {
+    let dispatcher = ctx.actor;
+    let fee = match crate::port::bay_work::house_repair(ctx, hull)? {
+        crate::port::bay_work::HouseRepair::Order { fee_minor, .. } => fee_minor,
+        _ => return Err("nothing to order".to_owned()),
+    };
+    top_up(
+        ctx,
+        FLOAT_MINOR.saturating_add(i64::try_from(fee).unwrap_or(i64::MAX)),
+    )?;
+    let room = {
+        let (entry, def, _) = crate::port::market::ports(ctx.w)
+            .into_iter()
+            .find(|(id, ..)| id == home)
+            .ok_or("the home port is not on the lane")?;
+        crate::port::workshop::room(ctx.w, &entry, def)?.ok_or("the home port has no workshop")?
+    };
+    let back = crate::port::ship::hull_view(ctx.w, lifter)
+        .and_then(|view| view.airlock())
+        .or_else(|| ctx.w.get(dispatcher).and_then(|o| o.location));
+    ctx.w.move_to(dispatcher, room).map_err(|e| e.to_string())?;
+    let taken = crate::port::bay_work::take_order(ctx, hull, selector);
+    if let Some(back) = back {
+        let _ = ctx.w.move_to(dispatcher, back);
+    }
+    taken.map(|_| ())
 }
 
 /// **The house's accounts and root scope** for `dispatcher`: `(float, house account, org,
@@ -346,15 +486,7 @@ fn sweep_under_way(
     job: ObjId,
     home: &CanonicalId,
 ) -> bool {
-    let workshop = crate::port::market::ports(ctx.w)
-        .into_iter()
-        .find(|(id, ..)| id == home)
-        .and_then(|(entry, def, _)| {
-            crate::port::workshop::room(ctx.w, &entry, def)
-                .ok()
-                .flatten()
-        });
-    if crate::port::house_sweep::held(ctx, (lifter, crawler), workshop)
+    if crate::port::house_sweep::held(ctx, (lifter, crawler), workshop_of(ctx.w, home))
         .is_some_and(|hull| where_is(ctx.w, hull) == (Where::Bay { hull: lifter }))
     {
         return true;
@@ -406,10 +538,16 @@ pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) 
             Err(_) => Step::Deferred,
         };
     }
+    // Doc 41 cut RS.6c-2: while a restoration's order is open the lifter stays docked (the
+    // order draws from her hold at completion), so a retrieval waits for it.
+    let restoring =
+        crate::port::house_sweep::held(ctx, (lifter, crawler), workshop_of(ctx.w, &home))
+            .is_some_and(|hull| crate::port::bay_work::under_work(ctx.w, hull));
     // The house's job: a retrieval it holds, else (doc 41 cut RS.6c-1) the sweep — but a sweep
     // under way finishes first (review 38b F-09), so the crawler is never left at another site
     // or coupled to the swept wreck while the lifter flies the retrieval.
     let Some((hull, act)) = job(ctx.w, &home)
+        .filter(|_| !restoring)
         .filter(|order| !sweep_under_way(ctx, (lifter, crawler), order.hull, &home))
         .map(|order| {
             (
@@ -489,6 +627,23 @@ fn perform(
             crate::port::house_sweep::to_house(ctx, hull, (org, scope))
         }
         HouseAct::Scrap => scrap_at_home(ctx, hull, home),
+        HouseAct::Supply => sail(ctx, lifter, SUPPLY_VENUE),
+        HouseAct::Stock(short, word) => {
+            let mut cost = 0u64;
+            let mut lines = Vec::new();
+            for row in short {
+                let per_t =
+                    crate::definitions::mass::good_reference_minor(ctx.w, row.good.as_str());
+                // Twice the reference covers the counter's ask over it.
+                cost = cost.saturating_add(per_t.saturating_mul(row.units).saturating_mul(2));
+                lines.push(format!("buy {} {}", row.good, row.units));
+            }
+            lines.push("buy propellant fill".to_owned());
+            lines.push("buy provisions fill".to_owned());
+            lines.push(format!("depart {word}"));
+            plan(ctx, lifter, i64::try_from(cost).unwrap_or(i64::MAX), lines)
+        }
+        HouseAct::Repair(selector) => repair_at_home(ctx, (lifter, hull), selector, home),
         HouseAct::Wait => Ok(()),
     }
 }

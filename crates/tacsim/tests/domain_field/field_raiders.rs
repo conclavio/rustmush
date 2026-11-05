@@ -15,6 +15,7 @@
 //! hull home up the carrier's ramp and out of the field.
 
 use crate::field_raiders_rig::*;
+use tacsim::field::CrewLocation;
 
 /// **CF.6's raider gate** (doc 32 §6; Q-CF-23, Q-CF-41, Q-CF-42, Q-CF-44).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -59,6 +60,21 @@ async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed(
         "two hulls stand behind the raider's leader"
     );
     let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
+    // Doc 42b cut SU.1 (Q-42b-1, Q-42b-3): one NPC crew member seated in each armed hull, with a
+    // record in the unit and the Skulks' authored resolve; the carrier has none.
+    let crews = crews_of(&rig, &raiders);
+    for (hull, who) in raiders.iter().zip(&crews) {
+        let record = tacsim::field::crew_of(rig.tw.world(), *who).expect("a crew record");
+        assert_eq!(record.location, CrewLocation::Unit { unit: *hull });
+        assert_eq!(
+            (record.organizer, record.resolve_permille),
+            (Some(leader), Some(400))
+        );
+    }
+    assert!(
+        seated_in(&rig, carrier).is_none(),
+        "the carrier has no crew"
+    );
     // The raider's carrier is unarmed and Hostile to whoever the raider fights: it falls too,
     // so the field goes quiet once the raider is destroyed.
     for hull in raiders.iter().chain([&carrier]) {
@@ -199,6 +215,21 @@ async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed(
             });
         assert_eq!(left.condition, LeftCondition::Wreck, "#{} fell", hull.0);
     }
+    // Doc 42b cut SU.1: the crew went where the hull went, checked in from its wreck with the
+    // resolve carried.
+    for (hull, who) in raiders.iter().zip(&crews) {
+        let record = tacsim::field::crew_of(rig.tw.world(), *who).expect("a crew record");
+        assert!(
+            matches!(
+                record.location,
+                CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } if unit == *hull
+            ),
+            "#{}'s crew checked in from it: {:?}",
+            hull.0,
+            record.location
+        );
+        assert_eq!(record.resolve_permille, Some(400));
+    }
     assert!(
         lines.iter().any(|line| matches!(
             line.kind,
@@ -208,6 +239,37 @@ async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed(
         )),
         "the black box ends on the disengagement"
     );
+}
+
+/// Who sits in `unit`, by the spatial seat book.
+fn seated_in(rig: &Rig, unit: ObjId) -> Option<ObjId> {
+    rig.tw
+        .world()
+        .module_state::<mush_sim::SpatialState>()?
+        .assignments
+        .get(&unit)?
+        .seats
+        .values()
+        .next()
+        .map(|seat| seat.actor)
+}
+
+/// **Each hull's seated crew member** (doc 42b cut SU.1): an NPC inside the hull.
+fn crews_of(rig: &Rig, hulls: &[ObjId]) -> Vec<ObjId> {
+    hulls
+        .iter()
+        .map(|hull| {
+            let who = seated_in(rig, *hull).unwrap_or_else(|| panic!("#{} has crew", hull.0));
+            let object = rig.tw.world().get(who).expect("the crew member");
+            assert_eq!(object.kind, ObjKind::Npc);
+            assert_eq!(
+                object.location,
+                Some(*hull),
+                "the crew stand inside the hull"
+            );
+            who
+        })
+        .collect()
 }
 
 /// **CF.6b's gate** (doc 32's "CF.6b as built"; Q-CF-18, Q-CF-44, Q-CF-47): the raider launches

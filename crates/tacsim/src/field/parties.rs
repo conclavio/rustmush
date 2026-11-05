@@ -207,7 +207,12 @@ pub(crate) fn site_population(
     let carried = record.map(crate::surface::tow::carried).unwrap_or_default();
     let units: Vec<ObjId> = on_ground(w, domain)
         .into_iter()
-        .filter(|unit| !carried.contains_key(unit) && !super::admit::held_out(w, *unit))
+        .filter(|unit| {
+            !carried.contains_key(unit)
+                && !super::admit::held_out(w, *unit)
+                // Doc 42b cut SU.3: a yielded hull is clutter, never admitted, never counted.
+                && !super::raiders::yielded(w, *unit)
+        })
         .collect();
     let ground = record.map_or(units.len(), |record| counted(&units, record));
     // Doc 40 cut FR.3 (Q-40-24): the launches in flight — each live pending row whose hull is
@@ -323,6 +328,37 @@ pub(crate) fn led_now(ctx: &Ctx<'_>, live: &super::FieldLive, actor: ObjId) -> O
         .iter()
         .find(|party| current_leader(ctx, party) == Some(actor))
         .map(|party| party.party)
+}
+
+/// **Every party `actor` leads in `live` now** ([`current_leader`] over the record's parties, in
+/// letter order; the 38b review's F-08): a commander may lead a carrier's party of one and the
+/// operation it launched into the field at once.
+#[must_use]
+pub(crate) fn led_all(ctx: &Ctx<'_>, live: &super::FieldLive, actor: ObjId) -> Vec<PartyId> {
+    live.parties
+        .iter()
+        .filter(|party| current_leader(ctx, party) == Some(actor))
+        .map(|party| party.party)
+        .collect()
+}
+
+/// **Each entrant the field already admitted keeps its live party's key** (the 38b review's F-08;
+/// `super::carrier::joining_as`): the entrants of a join are built afresh, and a carrier admitted
+/// as its commander's party of one reads as the operation its first launch belongs to; the
+/// friendships and the stance table key by party, so they read the record's key, not the fresh
+/// one.
+pub(crate) fn keep_admitted_keys(entrants: &mut [Entrant], live: &super::FieldLive) {
+    for entrant in entrants.iter_mut() {
+        if let Some(key) = live
+            .units
+            .iter()
+            .find(|row| row.unit == entrant.unit)
+            .and_then(|row| live.parties.iter().find(|party| party.party == row.party))
+            .map(|party| party.key)
+        {
+            entrant.key = key;
+        }
+    }
 }
 
 /// **The rig's own record on the excursion family**, when it has one.

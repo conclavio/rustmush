@@ -271,6 +271,12 @@ pub struct CrewRecord {
     /// A treatment under way at a port (doc 36 cut GC.13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub treatment: Option<Treatment>,
+    /// **Doc 42b cut SU.0** (Q-42b-5): the crew member's resolve, 0 to 1,000 per mille. `None`
+    /// never yields: every player record and every record written before SU. Written once, at the
+    /// raider seed (cut SU.1); a check-in, a capture and the handover carry it unchanged. Omitted
+    /// when `None`, so [`CREW_FORMAT`] is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve_permille: Option<u16>,
 }
 
 impl CrewRecord {
@@ -587,6 +593,34 @@ pub(crate) fn put(ctx: &mut Ctx<'_>, record: CrewRecord) {
     }
 }
 
+/// **Set `who`'s crew resolve** (doc 42b cut SU.3) — a test seam for the morale stories, which
+/// pin a crew at 0 or 1,000 where the content authors 400 or 750. Never called by the game: the
+/// raider seed is the one writer of a resolve.
+#[doc(hidden)]
+pub fn set_resolve_for_tests(ctx: &mut Ctx<'_>, who: ObjId, resolve: Option<u16>) -> bool {
+    let Some(record) = crew_of(ctx.w, who).cloned() else {
+        return false;
+    };
+    put(
+        ctx,
+        CrewRecord {
+            resolve_permille: resolve,
+            ..record
+        },
+    );
+    true
+}
+
+/// **Hold `record` in the RAM crew book** — a test seam for the composed rigs (doc 38a review
+/// F-22a's radio story), which cannot reach the tacsim module's own writer. Never called by the
+/// game: every production record is written through `put`.
+#[doc(hidden)]
+pub fn hold_for_tests(w: &mut World, record: CrewRecord) {
+    if let Some(book) = w.module_state_mut::<CrewBook>() {
+        book.0.insert(record.character, record);
+    }
+}
+
 /// **Whether `who` is physically inside `obj`**: the location chain, or the spatial graph.
 #[must_use]
 pub(crate) fn inside(w: &World, who: ObjId, obj: ObjId) -> bool {
@@ -755,14 +789,19 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
     let Some(pilot) = pilot else {
         return;
     };
-    if ctx
-        .w
-        .get(pilot)
-        .is_none_or(|object| object.kind != ObjKind::Player)
-    {
+    // Doc 42b cut SU.1 (Q-42b-1, Q-42b-2): a player, or an NPC whose record the raider seed wrote
+    // (a raider's crew: the seed is the one writer of a resolve). A hired NPC pilot is left to its
+    // contract (Q-42-26), even once `on_frames` has written it incapacitated.
+    let prior = crew_of(ctx.w, pilot).cloned();
+    if ctx.w.get(pilot).is_none_or(|object| match object.kind {
+        ObjKind::Player => false,
+        ObjKind::Npc => prior
+            .as_ref()
+            .is_none_or(|record| record.resolve_permille.is_none()),
+        _ => true,
+    }) {
         return;
     }
-    let prior = crew_of(ctx.w, pilot).cloned();
     // Doc 42 cut CR.3 (Q-42-15): a captor's carrier whose hull fell strands everyone aboard,
     // captives included; custody ends with the hull.
     if let Some(stranded) = prior
@@ -809,9 +848,13 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
         return;
     };
     let stranded = matches!(location, CrewLocation::Stranded { .. });
-    let (condition, extraction) = match prior {
-        Some(record) => (record.condition.max(condition), record.extraction),
-        None => (condition, None),
+    let (condition, extraction, resolve_permille) = match prior {
+        Some(record) => (
+            record.condition.max(condition),
+            record.extraction,
+            record.resolve_permille,
+        ),
+        None => (condition, None, None),
     };
     put(
         ctx,
@@ -824,6 +867,7 @@ pub(crate) fn check_in(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, pilot
             organizer,
             extraction: if stranded { extraction } else { None },
             treatment: None,
+            resolve_permille,
         },
     );
     if stranded {
@@ -1068,24 +1112,34 @@ pub(crate) fn capture(record: &CrewRecord, carrier: ObjId, captor: ObjId, now: i
     next
 }
 
-/// **Vacate `who`'s seat in `unit`**, when they hold it (a load runs only outside a field, so no
-/// arena is told).
+/// **Vacate every seat `who` holds in `unit`** (a load runs only outside a field, so no arena is
+/// told).
 fn vacate_seat(ctx: &mut Ctx<'_>, who: ObjId, unit: ObjId) {
-    let Some((seated, station)) = super::parties::seated(ctx.w, unit) else {
-        return;
-    };
-    if seated != who {
-        return;
-    }
-    if let Some(station) = mush_sim::StationId::new(station.as_str())
-        && let Err(error) = mush_sim::vacate_station(ctx, unit, &station, who)
-    {
-        tracing::warn!(
-            who = who.0,
-            unit = unit.0,
-            ?error,
-            "tacsim: a loaded casualty's seat did not vacate"
-        );
+    // Doc 38a review (Astra #7): every station `who` holds in the hull, not only its first seat by
+    // station id, so a second captive on a multi-crew hull loses its seat and lease too.
+    let held: Vec<SmolStr> = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|state| state.assignments.get(&unit))
+        .map(|host| {
+            host.seats
+                .iter()
+                .filter(|(_, seat)| seat.actor == who)
+                .map(|(station, _)| SmolStr::new(station.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for station in held {
+        if let Some(station) = mush_sim::StationId::new(station.as_str())
+            && let Err(error) = mush_sim::vacate_station(ctx, unit, &station, who)
+        {
+            tracing::warn!(
+                who = who.0,
+                unit = unit.0,
+                ?error,
+                "tacsim: a loaded casualty's seat did not vacate"
+            );
+        }
     }
 }
 
@@ -1515,6 +1569,7 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
                 organizer,
                 extraction: None,
                 treatment: None,
+                resolve_permille: crew_of(ctx.w, *pilot).and_then(|record| record.resolve_permille),
             },
         );
         ctx.out.sys_to_actor(
@@ -2391,6 +2446,13 @@ pub(crate) fn release_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let landing =
         port.and_then(|port| crate::ic_return::arrival_room(ctx.w, port).map(|room| (port, room)));
+    // Doc 42b cut SU.4 (Q-42b-19): an NPC set down anywhere but a port has no life support; set
+    // down at one, it leaves play at the next crew tick ([`custody_pass`]).
+    if landing.is_none() && npc_captive(ctx.w, who) {
+        return Err(CmdError::msg(
+            NPC_NO_WAY_OFF.replace("{who}", &crate::port::coop::name_of(ctx.w, who)),
+        ));
+    }
     let captor = crate::port::coop::name_of(ctx.w, actor);
     let line = if let Some((port, room)) = landing {
         set_down(ctx, who, room);
@@ -2459,6 +2521,11 @@ pub const HANDED_OVER: &str = "The {carrier} docks at {port} and hands you over 
 /// **The handover**, told to the captor: `{who}`, `{authority}`, `{port}`.
 pub const HANDED_OVER_CAPTOR: &str =
     "At {port} you hand {who} over to the {authority}. You are paid nothing for it.";
+/// **An NPC's handover**, told to the captor (doc 42b Q-42b-18): `{who}`, `{authority}`, `{port}`.
+pub const HANDED_OVER_NPC_CAPTOR: &str =
+    "At {port} the {authority} take {who} into custody. You are paid nothing for it.";
+/// **`+ship/release` of an NPC captive off a port** (doc 42b Q-42b-19): `{who}`.
+pub const NPC_NO_WAY_OFF: &str = "{who} has no way off this ground; hand them over at a port.";
 /// **The release after processing**, told to the released: `{authority}`, `{port}`.
 pub const PROCESSED: &str = "The {authority} releases you at {port}: you are free.";
 
@@ -2566,21 +2633,30 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, hull: ObjId) {
                 ..record
             },
         );
-        ctx.out.sys_to_actor(
-            who,
-            "tacsim.field",
-            HANDED_OVER
-                .replace("{carrier}", &carrier)
-                .replace("{port}", port.name)
-                .replace("{authority}", &authority)
-                .replace("{h}", &hours(due - now).to_string())
-                .replace("{fee}", &fee.to_string()),
-        );
+        // Doc 42b cut SU.4 (Q-42b-18): an NPC owes no fee and is not released, so it hears
+        // nothing and the captor hears the authority take it.
+        let npc = npc_captive(ctx.w, who);
+        if !npc {
+            ctx.out.sys_to_actor(
+                who,
+                "tacsim.field",
+                HANDED_OVER
+                    .replace("{carrier}", &carrier)
+                    .replace("{port}", port.name)
+                    .replace("{authority}", &authority)
+                    .replace("{h}", &hours(due - now).to_string())
+                    .replace("{fee}", &fee.to_string()),
+            );
+        }
+        let told = if npc {
+            HANDED_OVER_NPC_CAPTOR
+        } else {
+            HANDED_OVER_CAPTOR
+        };
         ctx.out.sys_to_actor(
             captor,
             "tacsim.field",
-            HANDED_OVER_CAPTOR
-                .replace("{who}", &crate::port::coop::name_of(ctx.w, who))
+            told.replace("{who}", &crate::port::coop::name_of(ctx.w, who))
                 .replace("{authority}", &authority)
                 .replace("{port}", port.name),
         );
@@ -2602,6 +2678,10 @@ pub fn release_key(who: ObjId, release_due_ic: i64) -> String {
 /// write and the record's) is adopted rather than levied twice. A refusal leaves `charge` empty
 /// for the crew tick to try again; the release never waits on it (FO-12).
 fn levy_release(ctx: &mut Ctx<'_>, who: ObjId) {
+    // Doc 42b cut SU.4 (Q-42b-18): the fee is a player's debt; an NPC has no account to owe it.
+    if npc_captive(ctx.w, who) {
+        return;
+    }
     let Some(record) = crew_of(ctx.w, who).cloned() else {
         return;
     };
@@ -2637,6 +2717,14 @@ fn levy_release(ctx: &mut Ctx<'_>, who: ObjId) {
     put(ctx, next);
 }
 
+/// **When a release fee falls due** (doc 38a review F-14): the debt floor every other charge on an
+/// absent player keeps (`crate::surface::retrieval::debt_due`, 28 IC days), never at once — a fee
+/// due now refused an insolvent ex-captive at the lease and Co-op desks on the next sweep.
+#[must_use]
+pub fn release_fee_due(w: &World) -> i64 {
+    crate::surface::retrieval::debt_due(w)
+}
+
 /// The economy's half of [`levy_release`]: the sanction's facts read off the port's entry and map.
 fn create_release_obligation(
     ctx: &mut Ctx<'_>,
@@ -2660,7 +2748,7 @@ fn create_release_obligation(
         debit_account: debit,
         credit_account: credit,
         amount: mush_economy::Amount::from_minor(minor),
-        due_ic: ctx.w.world_ic_now().at,
+        due_ic: release_fee_due(ctx.w),
         grace: mush_economy::GracePolicy::new(1),
         inspection: SmolStr::new(key),
         capability,
@@ -2693,6 +2781,12 @@ fn custody_pass(ctx: &mut Ctx<'_>, now: i64) {
         let mut uncharged = Vec::new();
         let mut due = Vec::new();
         for record in book.0.values() {
+            // Doc 42b cut SU.4 (Q-42b-18, Q-42b-19): a raider's crew set down at a port, or
+            // stranded in its captor's wreck once that site's field has demoted, leaves play.
+            if npc_captive(ctx.w, record.character) && npc_done(ctx.w, record) {
+                due.push(record.clone());
+                continue;
+            }
             match &record.location {
                 CrewLocation::Captured { carrier, .. } => {
                     carriers.insert(*carrier);
@@ -2722,8 +2816,98 @@ fn custody_pass(ctx: &mut Ctx<'_>, now: i64) {
         levy_release(ctx, who);
     }
     for record in due {
-        release_processed(ctx, record, now);
+        if npc_captive(ctx.w, record.character) {
+            leave_play(ctx, record.character);
+        } else {
+            release_processed(ctx, record, now);
+        }
     }
+    lapse_pass(ctx, now);
+}
+
+/// **The captor's window** (doc 42b cut SU.5, Q-42b-20): a raider's crew still in its yielded
+/// hull, on a site with no field running, whose casualty row has stood `yield_hold_s` since the
+/// demotion left it, leaves play. Nobody loaded it; the hull stays on the site record as a casualty
+/// for doc 41's salvage loop. A loaded hull's crew is `Captured` and never read here.
+fn lapse_pass(ctx: &mut Ctx<'_>, now: i64) {
+    let hold = i64::from(super::config(ctx.w).yield_hold_s);
+    let held: Vec<(ObjId, ObjId)> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| npc_captive(ctx.w, record.character))
+                .filter_map(|record| match &record.location {
+                    CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => {
+                        super::raiders::yielded(ctx.w, *unit).then_some((record.character, *unit))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (who, hull) in held {
+        let Some(site) = super::raiders::yielded_on(ctx.w, hull) else {
+            continue;
+        };
+        if ctx
+            .w
+            .module_state::<super::FieldBook>()
+            .and_then(|book| book.hosted(&site))
+            .is_some()
+        {
+            continue;
+        }
+        let since = super::close::site_record(ctx, &site).and_then(|record| {
+            record
+                .units
+                .iter()
+                .find(|row| row.unit == hull)
+                .map(|row| row.left_ic)
+        });
+        if since.is_some_and(|since| now >= since.saturating_add(hold)) {
+            leave_play(ctx, who);
+        }
+    }
+}
+
+/// **Whether `who` is a raider's crew** (doc 42b cut SU.4): an NPC whose record carries a resolve,
+/// which the raider seed alone writes. A hired NPC pilot is never one (Q-42b-2): it goes back to
+/// its pool (Q-42-26) and is never handed over, set down or taken out of play by these rules.
+fn npc_captive(w: &World, who: ObjId) -> bool {
+    w.get(who).is_some_and(|object| object.kind == ObjKind::Npc)
+        && crew_of(w, who).is_some_and(|record| record.resolve_permille.is_some())
+}
+
+/// **Whether an NPC's record is done with play** (doc 42b Q-42b-18, Q-42b-19): set down at a port
+/// (by `+ship/release`), or stranded in a hull that is no raider's (its captor's wreck, CR.3's
+/// `wrecked_captive`) on a site with no field running. A raider's own wreck or yielded hull is
+/// still the raid's to lose and somebody's to load.
+fn npc_done(w: &World, record: &CrewRecord) -> bool {
+    match &record.location {
+        CrewLocation::Port { .. } => true,
+        CrewLocation::Stranded { site, unit } => {
+            super::raiders::raider_of(w, *unit).is_none()
+                && w.module_state::<super::FieldBook>()
+                    .and_then(|book| book.hosted(site))
+                    .is_none()
+        }
+        _ => false,
+    }
+}
+
+/// **An NPC captive leaves play** (doc 42b Q-42b-18): its crew record removed, and the object
+/// marked `GOING` and taken out of the world, as staff removing it would.
+fn leave_play(ctx: &mut Ctx<'_>, who: ObjId) {
+    push_op(ctx.out, mush_core::ModuleWrite::Del { key: crew_key(who) });
+    if let Some(book) = ctx.w.module_state_mut::<CrewBook>() {
+        book.0.remove(&who);
+    }
+    if ctx.w.destroy(who).is_ok() {
+        ctx.emit_world_event(&mush_core::WorldEvent::ObjDestroyed { obj: who });
+    }
+    tracing::info!(who = who.0, "tacsim: a raider's crew leaves play");
 }
 
 /// **The release after processing** (doc 42 Q-42-7): the character at the port — set down in its
@@ -2780,6 +2964,108 @@ fn release_processed(ctx: &mut Ctx<'_>, record: CrewRecord, now: i64) {
 mod tests {
     use super::*;
 
+    /// **Doc 38a review, Astra #7** (Q-42-1): a load vacates every station each captive holds in
+    /// the casualty, a second crew member's seat included (the review's probe).
+    #[test]
+    fn review_72h_capture_vacates_every_captive_station() {
+        let mut w = World::new_minimal();
+        let casualty = w
+            .create(
+                ObjKind::Thing,
+                "Casualty",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("hull");
+        let carrier = w
+            .create(
+                ObjKind::Thing,
+                "Salvor",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("carrier");
+        let room = w
+            .create(ObjKind::Room, "Bay", mush_core::GOD, None)
+            .expect("bay");
+        let junior = w
+            .create(ObjKind::Player, "Gunner", mush_core::GOD, Some(casualty))
+            .expect("gunner");
+        let senior = w
+            .create(ObjKind::Player, "Helm", mush_core::GOD, Some(casualty))
+            .expect("helm");
+        let site = CanonicalId::new("space_domain_1").expect("site");
+        let mut spatial = mush_sim::SpatialState::default();
+        let seats = [("a_helm", senior), ("z_gunner", junior)]
+            .into_iter()
+            .map(|(id, actor)| {
+                (
+                    mush_sim::StationId::new(id).expect("station"),
+                    mush_sim::data::StationAssignment {
+                        actor,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )
+            })
+            .collect();
+        spatial.assignments.insert(
+            casualty,
+            mush_sim::data::HostAssignments {
+                host: casualty,
+                seats,
+            },
+        );
+        w.module_state_insert(spatial);
+        let mut book = CrewBook::default();
+        for who in [junior, senior] {
+            book.0.insert(
+                who,
+                record_at(
+                    who,
+                    CrewLocation::Stranded {
+                        site: site.clone(),
+                        unit: casualty,
+                    },
+                ),
+            );
+        }
+        w.module_state_insert(book);
+        let reg = mush_core::Registry::new();
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut w,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &reg,
+            module: Some(SmolStr::new(crate::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let taken = captured_loaded(
+            &mut ctx,
+            &LoadCapture {
+                site: &site,
+                ordinal: 1,
+                casualty,
+                carrier,
+                room,
+                captor: mush_core::GOD,
+            },
+        );
+        assert_eq!(taken, vec![junior, senior]);
+        assert!(
+            ctx.w
+                .module_state::<mush_sim::SpatialState>()
+                .expect("spatial")
+                .assignments
+                .get(&casualty)
+                .is_none_or(|host| host.seats.is_empty()),
+            "Q-42-1: every captive must lose every station in the casualty"
+        );
+    }
+
     #[test]
     fn the_control_sections_decide_the_condition() {
         let fit = [
@@ -2820,6 +3106,7 @@ mod tests {
             organizer: None,
             extraction: None,
             treatment: None,
+            resolve_permille: None,
         };
         assert_eq!(record.extractable(), None);
         record.condition = CrewCondition::Incapacitated;
@@ -2863,6 +3150,7 @@ mod tests {
                 capture: None,
             }),
             treatment: None,
+            resolve_permille: None,
         };
         let aboard = loaded_aboard(&stranded, ObjId(40), ObjId(90), 500).expect("aboard");
         assert_eq!(aboard.location, CrewLocation::Carrier { hull: ObjId(90) });
@@ -2915,6 +3203,7 @@ mod tests {
                 capture: None,
             }),
             treatment: None,
+            resolve_permille: None,
         };
         assert!(held_in(&inside, ObjId(40)), "the load carries them");
         let held = capture(&inside, ObjId(90), ObjId(12), 500);
@@ -2999,6 +3288,53 @@ mod tests {
     /// **Doc 42 cut CR.3** (Q-42-15): a captive of a carrier whose own check-in strands its souls
     /// is stranded in the wreck, custody gone; a sound carrier's check-in, or another unit's,
     /// leaves the captive alone.
+    /// **Doc 42b cut SU.4** (Q-42b-18, Q-42b-19): a raider's crew is done with play once set down
+    /// at a port, or stranded in a hull that is no raider's on a site with no field running; never
+    /// while held, in processing, in a unit, or stranded in a raider's own hull.
+    #[test]
+    fn su4_an_npcs_record_is_done_at_a_port_or_its_captors_wreck() {
+        let mut w = World::new_minimal();
+        let captor_wreck = w
+            .create(ObjKind::Thing, "Red Moth", mush_core::GOD, None)
+            .expect("a hull");
+        let raider_hull = w
+            .create(ObjKind::Thing, "Skulk One", mush_core::GOD, None)
+            .expect("a hull");
+        w.set_attr(
+            raider_hull,
+            super::super::raiders::RAIDER_ATTR,
+            mush_core::Attr::json(
+                serde_json::json!({"raider": "tacsim.raider.ahuna_skulks", "leader": 3}),
+                mush_core::GOD,
+            ),
+        )
+        .expect("marked");
+        let site = CanonicalId::new("ahuna_port").expect("a site");
+        let done = |location: CrewLocation| npc_done(&w, &record_at(ObjId(7), location));
+        assert!(done(CrewLocation::Port {
+            port: SmolStr::new("ceres")
+        }));
+        assert!(done(CrewLocation::Stranded {
+            site: site.clone(),
+            unit: captor_wreck
+        }));
+        assert!(!done(CrewLocation::Stranded {
+            site: site.clone(),
+            unit: raider_hull
+        }));
+        assert!(!done(CrewLocation::Unit { unit: raider_hull }));
+        assert!(!done(CrewLocation::Captured {
+            carrier: captor_wreck,
+            captor: ObjId(12),
+            since_ic: 100
+        }));
+        assert!(!done(CrewLocation::Processing {
+            port: SmolStr::new("ceres"),
+            release_due_ic: 4_100,
+            charge: None
+        }));
+    }
+
     #[test]
     fn cr3_a_captors_wreck_strands_its_captives() {
         let site = CanonicalId::new("ahuna").expect("a site");
@@ -3042,6 +3378,7 @@ mod tests {
             organizer: Some(ObjId(3)),
             extraction: None,
             treatment: None,
+            resolve_permille: None,
         }
     }
 
@@ -3135,6 +3472,37 @@ mod tests {
         assert_eq!(serde_json::to_value(&decoded).expect("encodes"), old);
     }
 
+    /// **Doc 42b cut SU.0** (Q-42b-5): the resolve decodes under `CREW_FORMAT` 1. A record written
+    /// before SU reads `None` (never yields) and re-encodes without the field; a set value
+    /// round-trips; a capture carries it unchanged; the status line does not show it.
+    #[test]
+    fn su0_resolve_on_the_record_decodes_under_the_same_format() {
+        let old = serde_json::json!({
+            "format": 1, "character": 7,
+            "location": {"at": "unit", "unit": 40},
+            "condition": "fit", "at_ic": 100, "organizer": 12
+        });
+        let decoded: CrewRecord = serde_json::from_value(old.clone()).expect("an old record");
+        assert_eq!(decoded.resolve_permille, None, "an old record never yields");
+        assert_eq!(serde_json::to_value(&decoded).expect("encodes"), old);
+        let mut raider = old.clone();
+        raider["resolve_permille"] = serde_json::json!(400);
+        let raider: CrewRecord = serde_json::from_value(raider).expect("a raider's record");
+        assert_eq!(raider.resolve_permille, Some(400));
+        assert_eq!(raider.format, CREW_FORMAT);
+        let back: CrewRecord =
+            serde_json::from_value(serde_json::to_value(&raider).expect("encodes"))
+                .expect("decodes");
+        assert_eq!(back, raider);
+        let held = capture(&raider, ObjId(90), ObjId(12), 500);
+        assert_eq!(held.resolve_permille, Some(400), "a capture carries it");
+        assert!(held.in_custody());
+        // The field stays closed to unknown neighbours (`deny_unknown_fields`).
+        let mut stray = old;
+        stray["morale"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<CrewRecord>(stray).is_err());
+    }
+
     /// **Doc 42 cut CR.0** (Q-42-3, Draft 0.3 42-5 (B)): a check-in leaves custody, an abandoned
     /// extraction and an ejectee's forced one alone; no load carries a captive, a soul in
     /// processing or an ejectee; a Friend's load still carries the stranded.
@@ -3193,6 +3561,65 @@ mod tests {
     /// **Doc 42 cut CR.0** (Q-42-2, Draft 0.3 42-2, 42-5 (B), 42-6): the gate's refusals. A
     /// captive is refused every gate with the held line; an ejectee movement and operation; a
     /// character in processing only movement; a passenger nothing.
+    /// **Doc 38a review F-22b** (Q-42-2): a captive's `+mine` operates nothing (`/ping`,
+    /// `/stake`, `/laser` and the rest refuse with the held line), and its status is a read.
+    #[test]
+    fn review_72h_a_captive_mines_nothing() {
+        let mut w = World::new_minimal();
+        let who = w
+            .create(
+                ObjKind::Player,
+                "Pilot",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a pilot");
+        let carrier = w
+            .create(
+                ObjKind::Thing,
+                "Kestrel",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a carrier");
+        let mut book = CrewBook::default();
+        book.0.insert(
+            who,
+            record_at(
+                who,
+                CrewLocation::Captured {
+                    carrier,
+                    captor: mush_core::GOD,
+                    since_ic: 0,
+                },
+            ),
+        );
+        w.module_state_insert(book);
+        let held = refusal(&w, who, Gate::Operate).expect("a captive is held");
+        let reg = mush_core::Registry::new();
+        let mut out = mush_core::Outbox::new();
+        for (switch, refused) in [("ping", true), ("laser", true), ("status", false)] {
+            let mut ctx = Ctx {
+                w: &mut w,
+                actor: who,
+                switches: mush_core::SwitchSet::from_names([switch]),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &reg,
+                module: Some(SmolStr::new(crate::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let said = crate::space::commands::mine_cmd(&mut ctx)
+                .err()
+                .map(|error| error.to_string());
+            assert_eq!(
+                said.as_deref() == Some(held.as_str()),
+                refused,
+                "+mine/{switch}: {said:?}"
+            );
+        }
+    }
+
     #[test]
     fn cr0_the_held_gate_refuses_by_hold() {
         let mut w = World::new_minimal();

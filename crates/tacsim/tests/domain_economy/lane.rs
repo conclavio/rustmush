@@ -74,7 +74,7 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 39 cut IN.7: v26, Stickney Yards' strategic-ore bid and the seeded part rows retired (was
 /// `0d07927c…` at v24, IN.9's v25 between).
 /// Doc 39 cut IN.9: v27, Stickney Yards' yard (was `cea6221c…` at v26).
-const LANE_DIGEST: &str = "aa5d90fbac2bf2247008dc2a020d6002ddd1bdf018d81ab14ae41840457d8c00";
+const LANE_DIGEST: &str = "f645d3788f3a71622b2c8eb2180aad62c82097a87890fb1d3139bce62d70dedc";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -354,9 +354,29 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     );
 }
 
-/// **Doc 39 cut IN.11: `strip_strategic_ask` rebuilds the published v31** — the shipped v32
-/// less Freeport Works' strategic ore and the Yards' part bid, re-signed at 31, is the
-/// player-response floor's lane digest.
+/// **The owner's IN.11 house-restock ruling: `strip_stickney_carbon` rebuilds the published
+/// v32** — the shipped v33 less Stickney Yards' carbon stock, ask and bid, re-signed at 32, is
+/// IN.11's lane digest.
+#[test]
+fn in11_strip_stickney_carbon_rebuilds_the_published_v32() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 32.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_stickney_carbon(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_stickney_carbon(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v32 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "aa5d90fbac2bf2247008dc2a020d6002ddd1bdf018d81ab14ae41840457d8c00"
+    );
+}
+
+/// **Doc 39 cut IN.11: `strip_strategic_ask` rebuilds the published v31** — the shipped lane
+/// less Stickney's carbon (v33), Freeport Works' strategic ore and the Yards' part bid,
+/// re-signed at 31, is the player-response floor's lane digest.
 #[test]
 fn in11_strip_strategic_ask_rebuilds_the_published_v31() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
@@ -401,8 +421,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        32,
-        "lane v32 since doc 39 cut IN.11 (v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        33,
+        "lane v33 since the owner's IN.11 house-restock ruling (v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

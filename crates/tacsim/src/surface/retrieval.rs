@@ -498,7 +498,7 @@ fn name(w: &World, hull: ObjId) -> String {
 }
 
 /// A port entry's name.
-fn port_name(w: &World, entry: &CanonicalId) -> String {
+pub(crate) fn port_name(w: &World, entry: &CanonicalId) -> String {
     crate::port::market::ports(w)
         .into_iter()
         .find(|(id, _, _)| id == entry)
@@ -854,7 +854,7 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
 // ---- the verbs -------------------------------------------------------------------------------
 
 /// `[go]` off the tail.
-fn split_go(raw: &str) -> (String, bool) {
+pub(crate) fn split_go(raw: &str) -> (String, bool) {
     let raw = raw.trim();
     match raw.rsplit_once(char::is_whitespace) {
         Some((head, "go")) => (head.trim().to_owned(), true),
@@ -922,15 +922,19 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
         None => (head, None),
     };
     let hull = hull_word(ctx, hull_text).ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
-    let titled = ctx
+    // Review 38b F-21b: the title holder, or one who acts for its organization, which then posts
+    // the job in its own name and from its own account.
+    let owner = ctx
         .w
         .module_state::<EconomyStore>()
-        .and_then(|store| store.snapshot().asset(hull).cloned())
-        // Review 38b F-21b: the title holder, or one who acts for its organization.
-        .is_some_and(|asset| acts_for(ctx.w, ctx.actor, &asset.title_owner));
-    if !titled {
-        return Err(CmdError::msg(NOT_YOUR_HULL));
-    }
+        .and_then(|store| {
+            store
+                .snapshot()
+                .asset(hull)
+                .map(|asset| asset.title_owner.clone())
+        })
+        .filter(|owner| acts_for(ctx.w, ctx.actor, owner))
+        .ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
     if matches!(
         crate::surface::act::where_is(ctx.w, hull),
         crate::surface::act::Where::Bay { .. }
@@ -965,17 +969,22 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
         ctx.out.sys_to_actor(ctx.actor, "tacsim.retrieval", line);
         return Ok(());
     }
-    let account = crate::port::credit::own_account(ctx.w, ctx.actor)
-        .map(|a| a.id)
-        .ok_or_else(|| CmdError::msg("You have no account to escrow the fee from."))?;
-    let order = post(
-        ctx,
-        hull,
-        (PrincipalId::Object(ctx.actor), account),
-        destination,
-        Some(fee_minor),
-    )
-    .map_err(CmdError::msg)?;
+    let account = match &owner {
+        PrincipalId::Object(_) => crate::port::credit::own_account(ctx.w, ctx.actor).map(|a| a.id),
+        org => ctx.w.module_state::<EconomyStore>().and_then(|store| {
+            store
+                .snapshot()
+                .accounts_of(org)
+                .find(|a| {
+                    a.instrument.as_str() == crate::economy::CREDIT
+                        && a.status == mush_economy::AccountStatus::Active
+                })
+                .map(|a| a.id)
+        }),
+    }
+    .ok_or_else(|| CmdError::msg("There is no account to escrow the fee from."))?;
+    let order =
+        post(ctx, hull, (owner, account), destination, Some(fee_minor)).map_err(CmdError::msg)?;
     let line = POSTED
         .replace("{name}", &name(ctx.w, hull))
         .replace("{job}", &order.job())
@@ -1134,7 +1143,7 @@ fn debt_cause(o: &mush_economy::Obligation) -> Option<mush_economy::DebtCause<'_
 }
 
 /// A principal's name for the debt lines.
-fn principal_name(w: &World, who: &PrincipalId) -> String {
+pub(crate) fn principal_name(w: &World, who: &PrincipalId) -> String {
     match who {
         PrincipalId::Object(o) => name(w, *o),
         PrincipalId::Organization(org) => crate::port::market::ports(w)

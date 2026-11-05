@@ -470,6 +470,12 @@ for a fee, or held."
   passes it except for leaving the port ("You are being processed at {port}; about {h} IC h."),
   `+ship/captives` lists only `Captured`, `extractable` is `None`, treatment (GC.13) runs, and
   `status_line` shows the processing time left.
+  **Doc 42b cut SU.4** (Q-42b-18, Q-42b-19) adds the NPC branch for a raider's crew, meaning an NPC
+  whose record carries a resolve. `levy_release` charges it nothing. At `release_due_ic` it leaves
+  play instead of reaching `Port`: the record is removed, and the object is destroyed (`GOING`). The
+  captor hears that "the {authority} take {who} into custody". `+ship/release` refuses it anywhere
+  but a port, and at a port it leaves play at the next crew tick. Stranded in its captor's wreck,
+  it leaves play once that site's field has demoted.
 - **Draft 0.3 (review round 2, 42-7, kept in step with doc 41's 41-9): the fee's mechanism.**
   "Written as an obligation … anyone may settle" does not work on `main`. `create_obligation`
   (`mush-economy/src/api.rs:2045`) requires the caller to hold debit authority on the debtor's
@@ -938,7 +944,8 @@ Every number is provisional under the 2026-10-24 rule.
 - **The record:** `CrewLocation::Captured { carrier, captor, since_ic }` under the `at` tag, and `Processing { port, release_due_ic, charge }` (Draft 0.3, 42-2),
   `Extraction::forced` omitted when false, `CREW_FORMAT` unchanged (Q-42-1); Draft 0.3 adds
   `Extraction::capture: Option<EjectCapture { party, carrier, captor }>` (42-5) and the
-  `Processing` location (42-2), both CR.0's to decode and display.
+  `Processing` location (42-2), both CR.0's to decode and display. Doc 42b cut SU.0 adds
+  `resolve_permille: Option<u16>` (Q-42b-5), omitted when `None`, never shown; `None` never yields.
 - **The NPC exit's action** (Q-42-26, Draft 0.4): `tacsim_crew_captured` (name provisional), owned by
   the `tacsim` module, declaring `tacsim.crew_contracts` and `tacsim.detachment_reservations`;
   idempotency key `tacsim.crew/<npc>/captured/<recovered_ic>`; principal the organizer
@@ -966,7 +973,8 @@ The rulings are in (§4). What a builder must know before each cut starts:
 - **Future (owner, 2026-11-04):** surrender by circumstance and personality. A raider whose carrier
   is wrecked fights to the death for now (no life support to scatter or wait for a pickup, and no
   surrender yet); a later cut may let crews surrender into custody instead (doc 41 RS.1's note on
-  `gc11`).
+  `gc11`). **Now designed in [doc 42b](42b-surrender.md)** (ruled 2026-11-05, cuts SU.0–SU.6; built
+  as recorded in [42b-cut-notes.md](42b-cut-notes.md)).
 
 **Defaults the survey held with least confidence**, ruled as written and worth a second look
 after the first play: Q-42-7 (who pays and what a fee is for when it cannot gate release; the

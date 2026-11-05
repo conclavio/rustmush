@@ -8,10 +8,12 @@
 //! 2. Two captains `+coop/buyout`: 90,000 each comes back to the Trust, which now covers a Dray's
 //!    order, and **the Trust orders** on the next port fire — its DARK helm funded from its account,
 //!    the yard order booked at Stickney as the helm for the Trust, the bill bought at Stickney's
-//!    asks (Kasei's alloys, the Yards' fittings, a hauler plant from the Yards' stores) into the
-//!    escrow. The ninth captain now hears "the Trust has a Dray on order at Stickney, due at Ceres
+//!    asks (Kasei's alloys, the Yards' fittings) into the escrow. The Yards' stores hold no hauler
+//!    plant, so the helm orders one at the Stickney works for the Trust and buys its bill (the
+//!    owner's ruling of 2026-11-05; its carbon from the Yards' lane-v33 stock). The ninth captain now hears "the Trust has a Dray on order at Stickney, due at Ceres
 //!    in n IC days".
-//! 3. Twelve IC days later the yard has built her; the helm collects her into the commission, and
+//! 3. The plant's twenty IC days later it moves, traced, into the Dray's escrow; twelve more and
+//!    the yard has built her; the helm collects her into the commission, and
 //!    she stands at Stickney titled to the Trust under a fresh `SYB-` mark, a register row; her
 //!    stores are bought into her hold; the helm files the passage home as itself.
 //! 4. She docks at Ceres under the Trust's title: a free hull of the pool, a register row and
@@ -19,8 +21,7 @@
 //!    Trust.
 //! 5. The desk enrols the ninth captain into her.
 //!
-//! **Seeds** (doc 43 rule 2.3 #4): one hauler plant in the Yards' stores (IN.7 retired the
-//! seeded part stock; the house buys it there at its catalogue price), the captains' money for
+//! **Seeds** (doc 43 rule 2.3 #4): the captains' money for
 //! the buyouts, and the Trust's 250,000 raise (lane v29) held back in the treasury by staff from
 //! boot until the ninth enrolment, so the story reads the world before the raise, as the row
 //! does. Every other claim is reached by the players' commands and the port tick.
@@ -223,17 +224,9 @@ fn available(rig: &Rig, account: u64) -> i64 {
 #[allow(clippy::too_many_lines)]
 async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
     let mut rig = stocked();
-    // IN.7 retired the seeded part stock: staff stock the Yards' stores with the hauler plant a
-    // Dray's bill takes (`seed_store_parts`, the seed).
-    let _ = crate::driving_rig::seed_store_parts(
-        &mut rig,
-        "stickney_port",
-        "stickney_yards",
-        "tacsim.part.plant.hauler_mk1",
-        1,
-        9_100,
-    );
-    // The Yards' part stores seed after the asks (IN.6): let the clerk finish.
+    // The owner's IN.11 ruling (2026-11-05): no plant is seeded. The Yards' stores hold none, so
+    // the house orders its hauler plant at the Stickney works (its carbon from the Yards' lane-v33
+    // stock) and the Dray waits the plant's twenty days. Let the clerk finish the asks.
     settle(&mut rig, 40);
     // The Trust before its raise: lane v29 posts it 250,000 more at boot, which staff hold back
     // in the treasury until the story's last step (the world the row reads, before v29).
@@ -332,10 +325,45 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
             && out.contains("due at Ceres in"),
         "{out}"
     );
+    // The owner's IN.11 ruling: the stores hold no hauler plant, so the helm books one at the
+    // works for the Trust, buys its bill, and the works makes it over twenty IC days; the plant,
+    // traced, moves into the Dray's escrow.
+    assert!(
+        fires_until(&mut rig, 200, |rig| trust_pool(rig)
+            .is_some_and(|p| p.orders.first().is_some_and(|o| o.part.is_some()))),
+        "the plant is ordered at the works: {:?}",
+        trust_pool(&rig)
+    );
+    let plant_order = trust_pool(&rig).unwrap().orders[0]
+        .part
+        .expect("the plant's order");
+    let plant = match store(&rig.tw).works_contract(plant_order) {
+        Some(tacsim::port::works::WorksState::Present(c)) => (**c).clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        plant.front,
+        tacsim::port::works::Front::Works,
+        "at the works"
+    );
+    assert_eq!(plant.recipe.as_str(), "plant_hauler");
+    assert_eq!(plant.requester, helm, "the helm booked it");
+    for _ in 0..30 {
+        if phase(&rig) != Some(Phase::Supplying) {
+            break;
+        }
+        days_on(&mut rig, 1);
+    }
     assert!(
         fires_until(&mut rig, 200, |rig| phase(rig) == Some(Phase::Building)),
-        "the bill is bought into the escrow: {:?}",
+        "the bill is bought into the escrow, the plant among it: {:?}",
         trust_pool(&rig)
+    );
+    assert!(
+        matches!(store(&rig.tw).works_contract(plant_order),
+            Some(tacsim::port::works::WorksState::Present(c))
+                if c.closed == Some(tacsim::port::works::Close::Collected)),
+        "the plant's order is collected into the Dray's"
     );
     let contract = trust_pool(&rig).unwrap().orders[0]
         .contract
@@ -353,9 +381,10 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
         "for the Trust"
     );
 
-    // ---- (3) Twelve IC days later: the commission, the stores, the passage ----
+    // ---- (3) The plant's twenty IC days and the Dray's twelve later: the commission, the
+    // stores, the passage ----
     let ordered = trust_pool(&rig).unwrap().orders[0].ordered_ic;
-    for _ in 0..20 {
+    for _ in 0..30 {
         if phase(&rig) != Some(Phase::Building) {
             break;
         }
@@ -363,7 +392,10 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
     }
     let built_in = (ic_now(&rig.tw) - ordered) / DAY;
     eprintln!("in10: the yard handed her over {built_in} IC days after the order");
-    assert!(built_in <= 14, "fourteen IC days at most: {built_in}");
+    assert!(
+        (32..=40).contains(&built_in),
+        "the plant's twenty days and the Dray's twelve, give or take the purchases: {built_in}"
+    );
     let sailing = fires_until(&mut rig, 120, |rig| phase(rig) == Some(Phase::Sailing));
     if !sailing {
         let c = store(&rig.tw).works_contract(contract).cloned();
@@ -449,20 +481,50 @@ in11 census after {after:?}"
     // ---- (5) The desk enrols the ninth captain ----
     // The Trust's raise comes in (the hold-back given back).
     hold(&mut rig, false);
+    // The desk lends the lowest free hull: over these weeks the dormancy recall (seven real days on
+    // the rig's clock) may hand programme Drays back first. Filler captains take those (their stakes
+    // minted to the Trust), so the
+    // Trust's built Dray is the one the ninth captain sails.
+    for seat in 0.. {
+        let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+        let free = tacsim::port::coop::free_hulls(rig.tw.world(), &port);
+        if free.iter().all(|row| row.hull == hull.0) {
+            break;
+        }
+        assert!(seat < 8, "the recall hands back at most the eight");
+        // Staff fund the filler's stake (the seed), so the Trust's capital stays above its floor.
+        let trust = trust_account(&rig);
+        mint(&mut rig, trust, 100_000);
+        let filler = pilot(&mut rig, &format!("Filler{seat}"), 20 + seat);
+        let out = run(&mut rig.tw, filler, &format!("+coop/enrol Filler {seat}"));
+        assert!(out.contains("now the Filler"), "{out}");
+        settle(&mut rig, 1);
+    }
     let out = run(&mut rig.tw, ninth, &format!("+coop/enrol {}", NAMES[8]));
     assert!(out.contains(&format!("now the {}", NAMES[8])), "{out}");
-    // The desk lends the lowest free hull: over these weeks the dormancy recall (seven real days on
-    // the rig's clock) may hand a programme Dray back first, so the ninth captain sails one of
-    // the two, and the Trust's built Dray is chartered or still free in the pool.
+    // Doc 38a/b F-06: the built Dray is no programme row, and every charter reader still finds
+    // her — the charter, the helm, and the desk's `+coop` line.
     let chartered = tacsim::port::live_charter(rig.tw.world(), ninth)
         .map(|c| c.hull)
-        .expect("the ninth captain is chartered");
+        .expect("the ninth captain's charter reads");
+    assert_eq!(
+        chartered, hull,
+        "the ninth captain sails the Trust's built Dray"
+    );
+    assert_eq!(
+        tacsim::port::coop::helm_holder(rig.tw.world(), hull),
+        Some(ninth),
+        "the ninth captain holds her helm"
+    );
     let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+    assert_eq!(
+        tacsim::port::coop::check_hull_name(rig.tw.world(), &port, NAMES[8]),
+        Err(tacsim::port::coop::NAME_TAKEN),
+        "her name is taken"
+    );
+    let out = run(&mut rig.tw, ninth, "+coop");
     assert!(
-        chartered == hull
-            || tacsim::port::coop::free_hulls(rig.tw.world(), &port)
-                .iter()
-                .any(|row| row.hull == hull.0),
-        "the Trust's ninth Dray is the ninth captain's or still free"
+        out.contains(&format!("Your charter: the {}", NAMES[8])),
+        "{out}"
     );
 }

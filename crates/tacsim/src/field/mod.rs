@@ -305,9 +305,12 @@ pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(FieldBook::default());
     reg.state(admit::OwedCloses::default());
+    reg.state(close::OwedUnplaces::default());
     reg.state(known::Sightings::default());
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());
+    // Doc 40 (the 38b review's F-15): the exits the host owes the record struck.
+    reg.state(exit::OwedRejoins::default());
     // Doc 40 (the ramp exit's boarding window, player hulls): the hulls out at a ramp and the
     // units each field's kernel named destroyed.
     reg.state(boarding::Boarding::default());

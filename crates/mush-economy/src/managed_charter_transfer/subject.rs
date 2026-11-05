@@ -58,7 +58,11 @@ impl CharterTermBasisV1 {
             || self
                 .grace_end
                 .checked_sub(self.term_end)
-                .is_none_or(|n| !(0..=MAX_CHARTER_SETTLEMENT_IC_SECONDS).contains(&n))
+                // The owner licence's Grace, bounded by the Grace bound (28 IC days, the owner's
+                // rule of 2026-11-04), not the settlement delay it once equalled.
+                .is_none_or(|n| {
+                    !(0..=mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS).contains(&n)
+                })
         {
             return Err(refused());
         }

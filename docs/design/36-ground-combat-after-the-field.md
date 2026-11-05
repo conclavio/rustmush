@@ -1067,9 +1067,12 @@ Q-36-39, Q-36-40, Q-36-53 (the acts).
   not respawn.
 - **Withdrawal** (Q-36-55): the group orders its hulls up the ramp after losing half of what it
   launched, after 20 wall-clock minutes in a promoted field, or after the idle interval with no
-  armed non-friend in reach; all three numbers provisional.
+  armed non-friend in reach; all three numbers provisional. Doc 42b cut SU.3 (Q-42b-16): a hull
+  whose crew yielded counts as lost, never as exited.
 - **Raider organizations** (Q-36-55): each entry in `raiders.json` names one, registered in
-  `mush-faction`, so GC.10's standing writes have a principal on the raider side.
+  `mush-faction`, so GC.10's standing writes have a principal on the raider side. Doc 42b cut SU.1
+  seats a crew member in each director raid's hull too, since the director seeds through the same
+  `raiders::seed`.
 - Files: `field/raiders.rs`, a new `surface/raid.rs` (name provisional),
   `content/field/raiders.json`, and the raider organizations in `mush-faction`'s registry
   content.

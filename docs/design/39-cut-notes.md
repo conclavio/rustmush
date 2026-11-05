@@ -867,6 +867,31 @@ money; the officer's grant; the captain's move to Stickney; the escort's disable
   <hull>` (doc 18 P2's seat) is not built. The story's captain hands the charter back so the yard-built Dray-P is
   their one helm.
 
+**Fixed after the reviews (docs 38a/38b, 2026-11-05).**
+
+- `+yard/deliver` takes only clean, whole part lots: the provenance reads, never fitted, not hot, intact,
+  unheld (38b F-07). A hot, held or damaged lot stays in the hold.
+- `+yard/order` and `+yard/quote` refuse a quantity other than one (`YARD_ONE_HULL`, 38a #3). `book` refuses it too.
+  Before this, the order billed N hulls and the commission built one from one kit.
+- `escrow_contents` lists a part only as its lots, never as a bulk line (38a #4). Cancel, collect and fail-back
+  return a delivered part lot.
+- The storage seizure moves the kit lot (38b F-17). Before this it refused and retried every fire.
+- `next_mark` knows a house seed by `work_order == 0` and steps past its indices (38a #10). Before this, marks
+  repeated from the 65th commission on.
+- `+yard/quote` quotes the part lines (38b F-18(a)).
+- The programme's hull readers (`live_charter`, `helm_holder`, `check_hull_name`, `row_of`) read the
+  owned-hull register too, through `coop::programme_rows` (38b F-06, F-22c).
+
+**Owed / flagged.**
+
+- **The core is never billed (38b F-18(b)).** `DesignBill.core` names the design's core class, but there is no core
+  good yet, so no bill line takes it and a built hull's core is free. The cost model's core good and its bill line
+  are owed.
+- **A used part's condition** (38a #6's larger half). Deliver now refuses a damaged lot. But a lot that reaches the
+  escrow by another path (a staff seed, a later part-ask flow) is still built in, and the hull's slot comes up
+  intact. Carrying the lot's `condition` onto the commissioned slot is owed (Astra's
+  `review_72h_yard_keeps_a_used_parts_condition` probe).
+
 **Cell delta (rule #14).** `tacsim-integration-6`: **+2.76 min** for the three new tests (the port half 48.0 s,
 Ahuna 64.5 s, Urvara 53.3 s on PR run 41850018642's JUnit, head `e6b0f82c`). The cell's sum reads 46.35 → 50.16 min
 against main's run at the merge base (41827163605, `4390f04c`), 80 → 83 tests; the other +1.05 min is spread over
@@ -935,10 +960,8 @@ rest runner speed on unchanged tests.
 **Owed / flagged.**
 - Occator's floors (two free rigs and one escort) ride a ferry Dray-P's bay, and no house keeps one at the yard, so
   `FLOORS` carries the Trust's row alone.
-- **A house restock of the stores** (IN.7's flag): nothing refills the Yards' part stores, so with the seeds
-  retired a house Dray waits on a hauler plant someone made or scrapped there. Ordering the plant at the works
-  (`plant_hauler`, 20 days, carbon from Ceres) inside the house order would break the row's fourteen days; left for
-  the owner.
+- **A house restock of the stores** (IN.7's flag): ruled by the owner on 2026-11-05 and built. See IN.11's rulings
+  below.
 
 ## IN.11 — the matter story and the adversarial set (Q-39-8, Q-38-29)
 
@@ -1005,15 +1028,55 @@ Service Counter, God's `@unit/damage` for the plant, the bay's quote, stow, bert
 lines: `+yard`, `+market/sell <n>=1`, `customs`/`service`, `+bay <mark|#n>`, `+bay/quote|berth #n`, `+bay/stow #n=<hull>`,
 `+bay/fit #n=<slot> <part>`; readers `yard_booked`, `commissioned`, `bay_ref`. About 29 minutes a site locally.
 
-**Owed / flagged.**
-- **A competing reservation at the deadline**: as built, every order's materials are its own escrow's, so two
-  reservations never compete for one pool, and an overdue reservation is the sweep's; the row's story needs the owner's
-  reading of what competes.
-- **Repairs and remains scrap in the census**: a repair consumes bale kilograms into the hull and nothing durable sums
-  them, and remains scrap's sub-tonne is undeclared, so a window with either does not balance — the case for **the
-  durable matter ledger (option (b))**, named as a future cut.
-- The market's inventory cell on the live server reads no part as indivisible; the gate covers the sale, and why the
-  cell differs (a second registration of the `OnceLock` at boot, likely) is a follow-up.
+**The owner's rulings on the four flagged items (2026-11-05).**
+- **The house restock: "letting the house order take longer is a more real test than adding a house restock".**
+  Built. The house order makes a part its stores lack.
+  - When the Yards' stores hold no hauler plant, the helm books `plant_hauler` at the Stickney works for the Trust
+    (`HouseOrder::part`). It buys that order's bill into its escrow the same way it buys the Dray's: 25 t of
+    Kasei's alloys, 8 t of the Yards' fittings, 2 t of carbon.
+  - The works makes the plant over 480 work units, 20 IC days, and IN.7's commission traces it. The helm then
+    moves it from that escrow into the Dray's (`works::collect_into`, a `Then::Collected` move that closes the plant
+    order).
+  - `pools::price_minor` prices a missing part at its works order: the bill at the port's sellers, the works' fee and
+    its booking fee. The due estimate and `NO_HULL_ON_ORDER` add the part's days. On the shipped lane the Dray is
+    172,832 cr this way, against 165,290 with a plant in the stores.
+  - **The carbon (the owner's choice of option (a)): lane v33 / relay v24.** Stickney Yards gains a 20 t carbon stock
+    row and a bid at 60 (intake 20, refresh 2 a day to 20, exchange and yard boards). "Carbon from Ceres" stays in the
+    lore: the stock stands for what traders hauled in.
+  - The lane refuses a vendor that both asks and bids one good. So the Yards carry no carbon ask, and the house
+    arm's `seller` buys a good a vendor stocks and bids for, with no ask anywhere at the port, at that bid.
+  - `lane_chain::strip_stickney_carbon` heads the strip chain (`strip_strategic_ask` calls it first).
+    `in11_strip_stickney_carbon_rebuilds_the_published_v32` holds it to IN.11's v32 digest (`aa5d90fb…`). The pins:
+    `LANE_DIGEST` `f645d378…`, the relay `5debfb2c…`, and the version asserts.
+  - The story: `in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home` seeds no plant now. It asserts
+    the plant's works order (at the works, `plant_hauler`, booked by the helm), that order collected into the Dray's,
+    and the hand-over 32–40 IC days after the order (38 locally). The IN.11 census holds across the whole window, the
+    works order's loss included in `worked`. IN.10's row (§9) now reads thirty-two days, not fourteen.
+- **A competing reservation at the deadline: as built is right.** Each order's materials sit in its own escrow, so two
+  reservations never compete for one pool, and an overdue reservation is the sweep's. The row (§9) now says so; nothing
+  is owed.
+- **Repairs and remains scrap in the census: the smaller fix, built.** The durable matter ledger (option (b)) stays
+  parked. `@industry/census` gains two terms:
+  - `repaired` (a sink): the bale kilograms repairs consumed into hulls. Each landed bay order adds its draw to the
+    hull's `BayHull.repaired_kg` (the bale before, the whole tonnes debited into it, less the bale after:
+    `Bale::consumed`). A tender's tend adds its draw to the site's `SiteRecord.matter.repaired_kg`, by what the
+    stores gave, in the tow act's own bundle.
+  - `scrapped` (a source): the alloys a remains scrap mints into a hold, `SiteRecord.matter.scrapped_kg`, in the
+    scrap act's bundle. The hull's mass was never in the census, so the minted tonnes are new matter to it. The
+    sub-tonne under them stays §4.6's declared loss, which the census never counted.
+  - Both fields are omitted at zero, so records that never repaired or scrapped are byte-identical.
+  - The windows: `in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne` holds the balance across
+    the heavy's ten-point patch (`repaired` up by the patch's 90 kg) and across `+bay/return`. The two remains
+    stories hold it across `+tv/1 scrap` (`scrapped` up by 1 t at Ahuna, 40 t at Urvara). `rs1_*` pins the
+    tender's 57 kg on its site's record. A workshop scrap was already a source (its mints are stock receipts) and
+    still is.
+- **The market's indivisible cell on the live server: found and fixed.** It was not a second `OnceLock`. The
+  production composition root (`mush-composition`) built its inventory module without
+  `with_indivisible_goods(PartGoods)` and `with_pool_capacity(PortCapacity)`. Only tacsim's own root, the one the
+  test rigs boot, wired them. So on the server the inventory named no good indivisible, and `@inv/dissolve` into a
+  hold asked no capacity. The production root now wires both when tacsim is on.
+  `split_boundary::boot_parity::in11_the_production_root_reads_a_part_as_indivisible` boots the production root
+  and holds a part indivisible and a bulk good divisible. `VenueGate::indivisible` stays as the market's own guard.
 
 ## IN.9b — the class templates (Q-39-14, Q-39-20, Q-39-35)
 

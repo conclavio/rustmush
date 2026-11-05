@@ -160,9 +160,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             switches: ["census"].iter().copied().map(SmolStr::new).collect(),
             help: "@industry/census                    (staff) the matter census, kilograms: \
-                   the chain's sources (opened deposits, the stock clerk's mints), its holdings \
-                   (pools, lots, bales) and its sinks (work orders' losses, mills', the parts \
-                   built into hulls and fitted by the bay) on one tacsim.matter_census line, \
+                   the chain's sources (opened deposits, the stock clerk's mints, remains \
+                   scrap's alloys), its holdings (pools, lots, bales) and its sinks (work \
+                   orders' losses, mills', the parts built into hulls and fitted by the bay, the \
+                   bale kilograms repairs consumed) on one tacsim.matter_census line, \
                    then one tacsim.matter_build line a commission. Its balance holds still \
                    across any window in which nothing else makes or destroys matter.\n\
                    @industry/census <good>             (staff) and one tacsim.matter_lot line a \
@@ -386,7 +387,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `@unitgrant/issue` would make), on a block ONE `claim` op of the tow action. Doc 41 cut
     // RS.5: `/jobs` reads; `/retrieve` and `/accept` preview, and `go` is the economy's own API
     // (one retrieval contract posted and escrowed by the poster, or joined by the acceptor) and
-    // one `tacsim:retrieval:` document.
+    // one `tacsim:retrieval:` document. RS.6c-2: `/forsale` reads; `/buy` previews, and `go` files
+    // one sale contract (the buyout's shape) the house accepts.
     reg.command(
         CommandSpec {
             name: crate::surface::claim::SALVAGE_VERB.into(),
@@ -402,6 +404,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "retrieve",
                 "jobs",
                 "accept",
+                "forsale",
+                "buy",
             ]
             .iter()
             .copied()

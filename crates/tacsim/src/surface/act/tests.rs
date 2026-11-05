@@ -785,3 +785,111 @@ fn sm8_a_load_line_names_its_goods_as_a_list() {
         "1 t of a, 2 t of b and 3 t of c"
     );
 }
+
+/// **Doc 38a F-02: a launch that never left owes its open claim's Close.** A claim opens in
+/// the bay before the ramp (D-23-21); a finish that opens no epoch (`NeverLeft` cleared the
+/// excursion, or the rig is still in its bay) writes `Closing { PoweredDownInBase }` into the
+/// hangar's hull, so the claim and the licence's seat are released. A rig with an epoch open
+/// is untouched (its own close owes it).
+#[test]
+fn f02_a_launch_that_never_left_owes_its_claim_close() {
+    use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
+    let open = mush_core::CommitToken::from_bytes([7; 16]);
+    let act = Act {
+        ordinal: 1,
+        kind: ActKind::Launch,
+        operator: ObjId(42),
+        hull: ObjId(500),
+        slot: 1,
+        site: CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("an id")),
+        started_ic: 1_000,
+        due_ic: 1_300,
+        reserved_cu: 0,
+        params: ActParams::None {},
+        by: None,
+        seal: None,
+    };
+    let rig = |facts| super::fixed::DoneRig {
+        crew: None,
+        battery_id: None,
+        facts,
+        spoil: None,
+        failed: Vec::new(),
+        rights: None,
+        hopper: None,
+        hold: None,
+        epoch: None,
+    };
+    let claimed = || {
+        let mut record = RigRecord::fresh_unread(ObjId(7));
+        record.claim = Some(Box::new(ClaimCursor::Open {
+            open,
+            operator: ObjId(42),
+        }));
+        record
+    };
+    let owed = Some(ClaimCursor::Closing {
+        open,
+        kind: ClaimCloseKind::PoweredDownInBase { base: ObjId(500) },
+        operator: ObjId(42),
+    });
+    for facts in [
+        super::fixed::Facts::Bay { hull: ObjId(500) },
+        super::fixed::Facts::Elsewhere,
+    ] {
+        let mut record = claimed();
+        let refused = ActResult::Refused {
+            code: RefusedCode::NeverLeft,
+        };
+        let line =
+            super::providers::epoch_move(&mut record, &act, (ObjId(7), refused), &rig(facts))
+                .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(line.is_none(), "no epoch opens");
+        assert_eq!(record.claim.map(|c| *c), owed, "the claim's Close is owed");
+    }
+}
+
+/// **Doc 38a F-23.4: an opening claim whose queue a staff act cleared can be cancelled.** The
+/// `claim: refused` start closes it into the hull the staff receipt named; with an act in
+/// flight, or another operator, it is not waiting to open.
+#[test]
+fn f23_4_a_cleared_opening_claim_takes_its_base_off_the_staff_receipt() {
+    use crate::surface::excursion::ClaimCursor;
+    let mut record = RigRecord::fresh_unread(ObjId(7));
+    record.claim = Some(Box::new(ClaimCursor::Opening {
+        operator: ObjId(42),
+        licence: 7,
+        org: None,
+        launch_ic: 1_000,
+        tries: 0,
+    }));
+    assert_eq!(
+        super::providers::refused_base(&record, ObjId(42)),
+        None,
+        "no receipt"
+    );
+    record.recovery = Some(Box::new(crate::surface::recovery::RecoveryReceipt {
+        ordinal: 1,
+        staff: ObjId(1),
+        operator: ObjId(42),
+        hull: ObjId(500),
+        slot: 1,
+        operation: crate::surface::recovery::RecoveryOperation::Close,
+        at_ic: 1_100,
+        pending: false,
+        bay_room: None,
+        bay_slot: None,
+        moved: BTreeMap::new(),
+        into: None,
+        abandoned: false,
+    }));
+    assert_eq!(
+        super::providers::refused_base(&record, ObjId(42)),
+        Some(ObjId(500))
+    );
+    assert_eq!(
+        super::providers::refused_base(&record, ObjId(43)),
+        None,
+        "another's"
+    );
+}

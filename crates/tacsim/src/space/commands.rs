@@ -5666,6 +5666,10 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// the caller lacks a bridge station or Freeport Registry prospecting licence, or the hull
 /// is not velocity-matched to the target asteroid pocket.
 pub fn mine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // Doc 38a review F-22b (doc 42 Q-42-2): a captive reads the status and operates nothing.
+    if !matches!(ctx.switches.iter().next(), None | Some("status")) {
+        crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
+    }
     crate::commands::require_enabled(ctx)?;
     require_space_state_healthy(ctx.w)?;
     if ctx.switches.iter().count() > 1 {

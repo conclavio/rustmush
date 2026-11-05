@@ -1132,16 +1132,10 @@ impl SurfaceActProvider {
                 .as_deref()
                 .and_then(|context| context.world().ok())
                 .map(|world| crate::minds::ic_sortie::claim_of(world, tv));
-            match (record.queued.as_ref(), record.claim.as_deref()) {
-                (
-                    Some(crate::surface::excursion::Queued {
-                        launch: Some(_),
-                        operator,
-                        hull,
-                        ..
-                    }),
-                    Some(crate::surface::excursion::ClaimCursor::Opening { .. }),
-                ) if *operator == actor => {
+            let base = refused_base(&record, actor);
+            match base {
+                Some(hull) => {
+                    let hull = &hull;
                     record.claim = Some(Box::new(match book {
                         // Doc 23 cut S.4b-3 (D-23-23 step 5): the claim opened but its launch
                         // never ran — the rig never left its bay, so the claim closes
@@ -1190,7 +1184,7 @@ impl SurfaceActProvider {
                     return Ok(AuthoritativeActionOutput::new(outcome)
                         .with_eligible_witnesses(vec![invocation.principal().clone()]));
                 }
-                _ => {
+                None => {
                     return Err(port_error(
                         ActionErrorCode::Conflict,
                         "that rig's mind claim is not waiting to open",
@@ -2927,6 +2921,32 @@ fn seal_mark(
     }
 }
 
+/// **The hangar a `claim: refused` start closes an opening claim into** (doc 23 cut S.4b-3,
+/// D-23-23 step 5): the queued launch's hull, when `actor` queued it; or — doc 38a F-23.4 — the
+/// hull a staff `close` or `home` named on its receipt when it cleared the queue under the
+/// opening claim, with no act in flight. `None` refuses the start: the claim is not waiting to
+/// open.
+pub(super) fn refused_base(record: &RigRecord, actor: ObjId) -> Option<ObjId> {
+    use crate::surface::excursion::{ClaimCursor, Queued};
+    match (record.queued.as_ref(), record.claim.as_deref()) {
+        (
+            Some(Queued {
+                launch: Some(_),
+                operator,
+                hull,
+                ..
+            }),
+            Some(ClaimCursor::Opening { .. }),
+        ) if *operator == actor => Some(*hull),
+        (None, Some(ClaimCursor::Opening { operator, .. }))
+            if *operator == actor && record.act.is_none() =>
+        {
+            record.recovery.as_ref().map(|receipt| receipt.hull)
+        }
+        _ => None,
+    }
+}
+
 /// **The seal epoch's move at an act's finish** (doc 23 cut S.1; §6 "What the host does at each
 /// end", D-23-1, D-23-2, D-23-5, D-23-8; the lead's L3–L6), on the record the finish is about to
 /// write, and the black box line it owes:
@@ -2938,7 +2958,9 @@ fn seal_mark(
 ///   the idle return does not move it) and the site's admission count (D-23-8) — and owes
 ///   `mind_sealed`. A rig whose last epoch is still open is a conflict the finish refuses, paged
 ///   (the start refuses it first; this is the backstop). `NeverLeft` closed the excursion, so
-///   it opens nothing;
+///   it opens nothing — and **a claim the launch opened in the bay is owed its Close**,
+///   `PoweredDownInBase` into the hangar's hull (doc 38a F-02; D-23-23 step 5's shape): the
+///   rig never left, so no epoch's close will ever owe it, and the licence's seat would leak;
 /// - **a recover's `Done`** closes the open epoch `ReturnedToBase` into the hull it climbed into
 ///   and owes `sortie_closed`, `abandoned` as the epoch carried it.
 pub(super) fn epoch_move(
@@ -2949,10 +2971,21 @@ pub(super) fn epoch_move(
 ) -> Result<Option<crate::surface::black_box::BlackBoxLine>, ActionError> {
     use crate::surface::black_box::BlackBoxLine;
     if act.kind == ActKind::Launch || act.params.launches() {
+        let never_left = |record: &mut RigRecord| {
+            if record.sortie.is_none() {
+                record.owe_claim_close(
+                    mush_roll::commerce::ic_claims::IcCloseKind::PoweredDownInBase {
+                        base: act.hull,
+                    },
+                );
+            }
+        };
         let Some(excursion) = record.excursion.clone() else {
+            never_left(record);
             return Ok(None);
         };
         if matches!(rig.facts, Facts::Bay { .. }) {
+            never_left(record);
             return Ok(None);
         }
         if let Some(open) = &record.sortie {
