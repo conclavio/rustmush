@@ -6,8 +6,8 @@
 //! that resolves in the absent player's favour, or an offer whose lapse takes nothing, may stay
 //! short. This guard pins the seven the audit at `bf0b5f24` found and the owner raised, and
 //! each code cap that would otherwise hold a value under the floor, so none drifts back.
-//! Doc 41's salvage claim window, debt grace and RS.7 hold are raised and pinned by the RS
-//! window's own cut.
+//! Doc 41's salvage claim window, debt grace and RS.7 hold, raised by the RS window, are pinned
+//! here with RS.10's consent wait (8).
 
 use serde_json::Value;
 
@@ -140,6 +140,37 @@ fn survey_terms_are_at_least_28_ic_days() {
     at_least(
         "tacsim::port::survey::SURVEY_TERM_IC_S",
         tacsim::port::survey::SURVEY_TERM_IC_S,
+    );
+}
+
+/// 8. Doc 41's waits (the RS window, cut RS.10): a salvage claim's contest window and the
+///    shortest a deployment may set, a debt's grace (RS.5's charge and RS.7's fine, which holds a
+///    carrier only past it), and a landholder's answer to a consent ask (silence or refusal).
+#[test]
+fn salvage_waits_are_at_least_28_ic_days() {
+    for (name, days) in [
+        (
+            "tacsim::config::CLAIM_WINDOW_IC_DAYS",
+            tacsim::config::CLAIM_WINDOW_IC_DAYS,
+        ),
+        (
+            "tacsim::config::MIN_CLAIM_WINDOW_IC_DAYS",
+            tacsim::config::MIN_CLAIM_WINDOW_IC_DAYS,
+        ),
+        (
+            "tacsim::surface::retrieval::DEBT_GRACE_IC_DAYS",
+            tacsim::surface::retrieval::DEBT_GRACE_IC_DAYS,
+        ),
+        (
+            "tacsim::surface::claim::CONSENT_IC_DAYS",
+            tacsim::surface::claim::CONSENT_IC_DAYS,
+        ),
+    ] {
+        at_least(name, days * 86_400);
+    }
+    at_least(
+        "tacsim::surface::claim::CONSENT_IC_SECS",
+        tacsim::surface::claim::CONSENT_IC_SECS,
     );
 }
 
