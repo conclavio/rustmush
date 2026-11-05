@@ -1,5 +1,37 @@
 # 42b. Surrender — survey
 
+**Draft 0.5, 2026-11-05: the tow-cap finding ruled, SU.7 built.** Draft 0.4 named a finding:
+no shipped rig can tow a raider's 30 t line tank. The owner has ruled on it twice.
+
+1. **On Q-42b-14: a yielded hull drives itself aboard.** It yielded sound and mobile, so the captor
+   leads it to their carrier's ramp and it boards under escort. No tow is needed, and the tug and
+   raider content stay as they are. As built, this is the **escort**:
+   - `+tv/<n> tow` of a yielded raider hull that can still move sets an escort, not a tow.
+     `surface::tow::escorted` reads the hull as towable, and the rig's tow rating never binds.
+   - A sound hull whose crew never yielded still refuses as not towable.
+   - The escort rig keeps the hull at its side for the whole drive, and every player line reads it
+     driving itself: "… drives up the ramp under your rig's escort".
+   - `+tv/<n> load` then runs the ordinary load into the bay: custody with a salvage claim owed,
+     and the crew captured by CR.1's branch.
+2. **On the bay: "crew aboard, claim hull… there should be lots the Dray can't do, it's the
+   starter ship".** A Dray-P's bay takes 20 t, so a 30 t yielded tank never fits it. As built
+   (`surface::tow::crew_aboard_hull_titled`), an escorted yielded hull the bay cannot take works
+   like this:
+   - its crew come aboard as captives by CR.1's branch;
+   - the hull stays on the site, titled to the captor under the registry issuer;
+   - the escort lets it go;
+   - the captor retrieves it later, with a bigger carrier or by posting `+salvage/retrieve`, which
+     a player or Tycho Mutual flies (RS.5, RS.6b).
+
+   A raid's seed makes its hulls with no title, so the claim path (`+salvage/claim`) has nobody to
+   claim from and refuses. The hull is therefore titled as doc 41's RS.6c-1 rule titles an
+   ownerless wreck, salvage of the unowned, rather than claimed. No content and no bay rule
+   changed.
+
+SU.7 is #(this PR). Its story runs at 256 and 512: a yielded line tank under a 6 t tug's escort,
+its crew captured aboard a Dray-P, the hull left titled on the site, and the captor's retrieval
+taken by Tycho Mutual. [42b-cut-notes.md](42b-cut-notes.md) has the details.
+
 **Draft 0.4, 2026-11-05: as built, closed (SU.6).** Every cut of §7 has landed on `main`, one
 PR each:
 
@@ -30,10 +62,8 @@ PR each:
 **Findings for the owner, still open:**
 
 - **No shipped rig can tow a raider's hull.** A line tank is 30 t laden, and the tugs cap at 12, 14
-  and 16 t. So Q-42b-14's "anyone may take it in" is unreachable with the shipped raiders, and a
-  yielded line tank always sits out Q-42b-20's window. The (s1) story rebuilds the yielding hull as
-  a drone (cut notes, SU.4). Closing the gap needs a ruling or content: a heavier tug, a lighter
-  raider hull, or a tow cap that counts a yielded hull differently.
+  and 16 t (cut notes, SU.4). **Ruled and built in Draft 0.5 (SU.7):** an escort, not a tow, and a
+  hull too big for the bay is titled to the captor on the site.
 - **Q-42b-12's casualty row.** It comes from the close (`keep_yielded`), not from
   `left_condition`, because an exit never writes the site record (cut notes, SU.3). This is a
   departure, not an open question.

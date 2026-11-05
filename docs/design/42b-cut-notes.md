@@ -347,3 +347,54 @@ with doc 42b at Draft 0.4, as built.
 **Open after the close-out.** No shipped rig can tow a raider's 30 t line tank (SU.4's departure).
 That needs an owner ruling or content before Q-42b-14's "anyone may take it in" can happen with the
 shipped raiders.
+
+## SU.7 — the yielded hull drives itself aboard
+
+The owner's rulings of 2026-11-05 on the tow-cap finding (doc 42b Draft 0.5): Q-42b-14's yielded
+hull boards under escort, and a hull the bay cannot take leaves its crew aboard and itself claimed
+on the site. Built in `surface/tow.rs` alone. No content, bay, tug or raider changes.
+
+**The escort.** `escorted(w, casualty, assessment)`: a raider hull whose crew yielded
+(`raiders::yielded`), that can move, and is no wreck.
+- `attach_facts` reads such a hull as `Disabled` for the library (towable), and weighs the coupling
+  as a rig at least the hull's mass, so no tow rating binds.
+- A sound hull that never yielded still meets `TargetNotTowable`.
+- The tow book carries the escort exactly as a tow, so the rig keeps the hull within reach for the
+  whole drive.
+- Every line a player reads for it says it drives itself:
+  - `ESCORT_PREVIEW`, `ESCORT_FILED` and `ESCORT_SET` (the attach landed);
+  - `ESCORT_LOAD_PREVIEW` and `ESCORT_LOAD_FILED`;
+  - `ESCORT_LOADED` (the site line once it stands in the bay).
+- A yielded hull that fits the bay then loads by the ordinary path: custody with a claim owed, and
+  CR.1's capture.
+
+**Crew aboard, hull titled** (`crew_aboard_hull_titled`). `+tv/<n> load` of an escorted yielded
+hull whose laden mass or volume the bay cannot take gets a different preview: "will not fit the
+{carrier}'s bay … titled to you as salvage of the unowned". With `go`, three things happen:
+1. the hull is titled to the captor (the carrier's custodian, else the loader) by
+   `mush_economy::issue_title` under the registry issuer;
+2. its crew are captured into the carrier's bay room by `load_crew` (CR.1/SU.4's branch);
+3. the site hears `ESCORT_LEFT_TITLED`, and the escort is released (`release_cmd`).
+
+The hull stays on the site's index as a casualty. A hull that already carries a title gets the bay's
+ordinary refusal.
+
+**Departure from the ruling's wording.** The ruling said "claim hull … through RS.3's claim path".
+A raid's seed makes its hulls with no title, so `+salvage/claim` refuses them ("carries no title the
+registry can name"), and `+salvage/retrieve` needs a title holder. The hull is titled instead, as
+RS.6c-1's owner ruling titles an ownerless wreck to its recoverer, salvage of the unowned. That
+gives the captor what the ruling wants (the hull is theirs to retrieve later) without minting raider
+titles at the seed. Minting them would change the house sweep's ownerless rule.
+
+**Gate.** `surrender::su7_a_yielded_line_tank_drives_aboard_under_escort` at 256 and `…_at_512`
+(`surrender_rig::escorted_aboard`):
+1. The content's line tank, stripped but mobile and never rebuilt, yields to the stranger, and the
+   field settles.
+2. The stranger's 6 t tug previews "under escort … drives itself" and sets the escort.
+3. At the Red Moth's ramp the load previews "will not fit … salvage of the unowned". With `go`, the
+   crew are `Captured` aboard the Red Moth with their resolve and listed by `+ship/captives`. The
+   hull stands on the site titled to the stranger, and the escort is released.
+4. `+salvage/retrieve` posts its job, and at the acceptance window's end Tycho Mutual takes it
+   (`RetrievalStage::House`).
+
+The existing tow, salvage, house, custody and surrender stories are green with the change.

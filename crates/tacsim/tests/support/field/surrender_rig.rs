@@ -559,26 +559,25 @@ pub(crate) async fn escorted_aboard(at: &Ground) {
         "the escort is set"
     );
 
-    // Up the Red Moth's ramp and into the bay: CR.1's capture at the load.
+    // At the Red Moth's ramp: the Dray-P's 20 t bay cannot take a 30 t tank, so (the owner's
+    // ruling, 2026-11-05) its crew come aboard as captives and the hull stays, titled to the captor.
     crate::driving_rig::to_cell_on(&mut rig, at.entry, tug, (ramp.0 + 1, ramp.1 + 1));
     let _ = crate::field_host_rig::second(&mut rig);
     let preview = run(&mut rig.tw, b, "+tv/1 load");
     assert!(
-        preview.contains("drives up the Red Moth's ramp under your rig's escort"),
+        preview.contains("will not fit the Red Moth's bay")
+            && preview.contains("salvage of the unowned"),
         "{preview}"
     );
-    crate::custody_rig::load_on(&mut rig, at.entry, (b, 1), tug, hull);
-    assert!(
-        tacsim::surface::tow::in_bay_of(rig.tw.world(), hull, b_carrier),
-        "the line tank stands in the Red Moth's bay"
-    );
+    let done = run(&mut rig.tw, b, "+tv/1 load go");
+    let _ = crate::field_host_rig::second(&mut rig);
     let record = crew_of(rig.tw.world(), crew)
         .cloned()
         .expect("the crew's record");
     assert!(
         matches!(record.location, CrewLocation::Captured { carrier, captor, .. }
             if carrier == b_carrier && captor == b),
-        "the crew is held aboard the Red Moth: {record:?}"
+        "the crew is held aboard the Red Moth: {record:?} ({done})"
     );
     assert_eq!(record.resolve_permille, Some(0));
     let held = run(&mut rig.tw, b, "+ship/captives");
@@ -589,4 +588,42 @@ pub(crate) async fn escorted_aboard(at: &Ground) {
         .map(|o| o.name.clone())
         .expect("a name");
     assert!(held.contains(&name), "{held}");
+    assert!(
+        !tacsim::surface::tow::in_bay_of(rig.tw.world(), hull, b_carrier)
+            && mush_sim::pose_of(rig.tw.world(), hull).is_some(),
+        "the hull stays on the site"
+    );
+    let title = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|store| store.snapshot().asset(hull).map(|a| a.title_owner.clone()));
+    assert_eq!(
+        title,
+        Some(mush_org::PrincipalId::Object(b)),
+        "titled to the captor as salvage of the unowned"
+    );
+    assert!(
+        seconds_until(&mut rig, 60, |rig| site_record_at(rig, entry).is_some_and(
+            |record| record.tows.towing(tug).is_none() && record.tows.act_of(tug).is_none()
+        )),
+        "the escort lets it go"
+    );
+
+    // The captor posts its retrieval; nobody accepts, so Tycho Mutual takes it (RS.5, RS.6b).
+    let posted = run(&mut rig.tw, b, &format!("+salvage/retrieve #{} go", hull.0));
+    let job = tacsim::surface::retrieval::order_of(rig.tw.world(), hull)
+        .unwrap_or_else(|| panic!("the job is posted: {posted}"));
+    let _ = crate::driving_rig::to_ic(&mut rig, job.accept_by_ic + 60);
+    assert!(
+        seconds_until(&mut rig, 60, |rig| tacsim::surface::retrieval::order_of(
+            rig.tw.world(),
+            hull
+        )
+        .is_some_and(
+            |o| o.stage == tacsim::surface::retrieval::RetrievalStage::House
+        )),
+        "Tycho Mutual takes the retrieval: {:?}",
+        tacsim::surface::retrieval::order_of(rig.tw.world(), hull)
+    );
 }

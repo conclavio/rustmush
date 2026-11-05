@@ -131,6 +131,12 @@ pub const ESCORT_SET: &str = "Rig {n} has the {name} under escort, at {speed} m/
 pub const ESCORT_LOAD_PREVIEW: &str = "Rig {n} can bring the {name} aboard: it drives up the {carrier}'s ramp under your rig's escort into the bay, in about {min} IC minutes. Aboard, it is in the {carrier}'s custody with a salvage claim owed, never its title, and its crew are held in your custody aboard the {carrier}. +tv/{n} load go";
 /// The escorted hull's load filed: `{n}`, `{name}`, `{carrier}`, `{min}`.
 pub const ESCORT_LOAD_FILED: &str = "The {name} drives up the {carrier}'s ramp under rig {n}'s escort; it is aboard in about {min} IC minutes.";
+/// **Crew aboard, hull titled** (the owner's ruling of 2026-11-05 on SU.7's bay: "crew aboard,
+/// claim hull"; the unowned rule of doc 41 RS.6c-1): a yielded hull too big for the bay, previewed.
+/// `{n}`, `{name}`, `{carrier}`, `{why}`.
+pub const ESCORT_TOO_BIG_PREVIEW: &str = "The {name} will not fit the {carrier}'s bay: {why}. Its crew can come aboard as your captives, and the hull stays here on the site, titled to you as salvage of the unowned (a raider's hull carries no title): bring a bigger carrier, or post its retrieval with +salvage/retrieve. Rig {n} lets it go once the crew are aboard. +tv/{n} load go";
+/// The same, done: `{name}`, `{carrier}`, `{who}` (the captor).
+pub const ESCORT_LEFT_TITLED: &str = "The {name}'s crew walk up the {carrier}'s ramp into custody; the hull stays on the site, titled to {who} as salvage of the unowned.";
 /// The escorted hull aboard: `{name}`, `{carrier}`.
 pub const ESCORT_LOADED: &str = "The {name} has driven up the {carrier}'s ramp under escort and stands in its bay, held in custody pending a salvage claim.";
 /// The tow refused at its landing: `{n}`, `{name}`, `{why}`.
@@ -2688,6 +2694,11 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
         .room
         .check_can_load(op.casualty_mass().total_mass_kg(), facts.volume_l)
     {
+        // The owner's ruling (2026-11-05): a yielded hull the bay cannot take leaves its crew
+        // aboard as captives and itself on the site, the captor's.
+        if escorted_now(ctx.w, casualty) && !facts.friendly {
+            return crew_aboard_hull_titled(ctx, rig, (&site, casualty, carrier), &why(&error), go);
+        }
         return Err(CmdError::msg(
             BAY_NO_ROOM
                 .replace("{carrier}", &carrier_name)
@@ -2738,6 +2749,81 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
     };
     ctx.out.sys_to_actor(actor, "tacsim.tow", fill(filed));
     Ok(())
+}
+
+/// **Crew aboard, hull titled** (doc 42b cut SU.7; the owner's ruling of 2026-11-05: "crew aboard,
+/// claim hull … it's the starter ship"): a yielded hull escorted to a carrier whose bay cannot take
+/// it. Its crew are captured into the bay room by CR.1's branch ([`load_crew`]); the hull, which a
+/// raid's seed makes with no title, is titled to the captor under the registry issuer as salvage of
+/// the unowned — doc 41's RS.6c-1 rule for an ownerless wreck — so the captor may retrieve it later
+/// with a bigger carrier or post `+salvage/retrieve`; and the escort lets it go. A hull already
+/// titled is the bay's ordinary refusal.
+fn crew_aboard_hull_titled(
+    ctx: &mut Ctx<'_>,
+    rig: &act::RigAt,
+    (site, casualty, carrier): (&CanonicalId, ObjId, ObjId),
+    why_not: &str,
+    go: bool,
+) -> Result<(), CmdError> {
+    let n = rig.slot.to_string();
+    let label = name(ctx.w, casualty);
+    let carrier_name = name(ctx.w, carrier);
+    let titled = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|store| store.snapshot().asset(casualty).is_some());
+    if titled {
+        return Err(CmdError::msg(
+            BAY_NO_ROOM
+                .replace("{carrier}", &carrier_name)
+                .replace("{name}", &label)
+                .replace("{why}", why_not),
+        ));
+    }
+    if !go {
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.tow",
+            ESCORT_TOO_BIG_PREVIEW
+                .replace("{n}", &n)
+                .replace("{name}", &label)
+                .replace("{carrier}", &carrier_name)
+                .replace("{why}", why_not),
+        );
+        return Ok(());
+    }
+    let Some((_, _, _, room, _)) = crate::surface::tick::hull_view_berth(ctx.w, carrier) else {
+        return Err(CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)));
+    };
+    let actor = ctx.actor;
+    let captor = custodian_of(ctx, site, carrier).unwrap_or(actor);
+    let issuer = mush_org::SystemPrincipalId::new(crate::port::hull::REGISTRY_ISSUER)
+        .ok_or_else(|| CmdError::msg("The registry cannot title the hull."))?;
+    let saved = ctx.actor;
+    ctx.actor = captor;
+    let issued = mush_economy::issue_title(
+        ctx,
+        casualty,
+        mush_org::PrincipalId::Object(captor),
+        None,
+        issuer,
+        None,
+    );
+    ctx.actor = saved;
+    issued.map_err(|error| {
+        CmdError::msg(format!(
+            "The registry could not title the {label}: {error}."
+        ))
+    })?;
+    let captives = load_crew(ctx, site, (casualty, carrier, room), false, actor);
+    tracing::info!(site = %site, hull = casualty.0, captor = captor.0, captives = captives.len(), "tacsim: a yielded hull too big for the bay is titled to its captor and its crew taken aboard");
+    let line = ESCORT_LEFT_TITLED
+        .replace("{name}", &label)
+        .replace("{carrier}", &carrier_name)
+        .replace("{who}", &name(ctx.w, captor));
+    crate::field::tell_site(ctx, site, &line);
+    ctx.out.sys_to_actor(actor, "tacsim.tow", line);
+    release_cmd(ctx, rig, true)
 }
 
 // ---- the tow inside a running field (doc 40 cut FR.5) ----------------------------------------
