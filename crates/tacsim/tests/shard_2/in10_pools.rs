@@ -57,7 +57,7 @@ fn mint(rig: &mut Rig, account: u64, major: u64) {
 }
 
 /// Every submission staged, the industry's included, landed in order.
-fn pump(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn pump(rig: &mut Rig) -> Vec<String> {
     let mut queued = Vec::new();
     while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
         queued.push(*submit);
@@ -73,7 +73,7 @@ fn pump(rig: &mut Rig) -> Vec<String> {
 }
 
 /// Every due production occurrence, landed as the server's schedule driver lands it.
-fn produce(rig: &mut Rig) {
+pub(crate) fn produce(rig: &mut Rig) {
     for _ in 0..4_096 {
         let page = rig
             .tw
@@ -116,7 +116,7 @@ fn produce(rig: &mut Rig) {
     }
 }
 
-fn fire_all(rig: &mut Rig) {
+pub(crate) fn fire_all(rig: &mut Rig) {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -124,13 +124,13 @@ fn fire_all(rig: &mut Rig) {
     let _ = pump(rig);
 }
 
-fn settle(rig: &mut Rig, fires: usize) {
+pub(crate) fn settle(rig: &mut Rig, fires: usize) {
     for _ in 0..fires {
         fire_all(rig);
     }
 }
 
-fn ic_to(rig: &mut Rig, target: i64) {
+pub(crate) fn ic_to(rig: &mut Rig, target: i64) {
     let rate = i64::from(crate::driving_rig::world_rate(&rig.tw).max(1));
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = ((ahead + rate - 1) / rate).max(1);
@@ -142,7 +142,7 @@ fn ic_to(rig: &mut Rig, target: i64) {
 }
 
 /// The IC clock `days` on, in jumps the production catch-up can take, firing between.
-fn days_on(rig: &mut Rig, days: i64) {
+pub(crate) fn days_on(rig: &mut Rig, days: i64) {
     let target = ic_now(&rig.tw) + days * DAY + 3_600;
     while ic_now(&rig.tw) < target {
         let next = (ic_now(&rig.tw) + 4 * DAY).min(target);
