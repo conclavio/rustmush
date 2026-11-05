@@ -19,7 +19,13 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReplayCommand {
+    /// `BENCH RUN TO`: exactly this instant, refused past the retained timeline.
     RunTo(i64),
+    /// **`BENCH STEP`**: forward to this instant, clamped to the retained endpoint, so a step
+    /// over the end of a reference that stopped short of its plan's limit (a fractional final
+    /// second) runs to the end and drains its final barriers instead of being refused, which
+    /// left the bench waiting on work that never ran.
+    StepTo(i64),
     BackTo(i64),
 }
 #[derive(Clone, Debug, Serialize)]
@@ -317,6 +323,7 @@ impl ReplayMachine {
         let end = self.lease.tape.duration_ms();
         let goal = match command {
             ReplayCommand::RunTo(t) if t >= at && t <= end => t,
+            ReplayCommand::StepTo(t) if t >= at => t.min(end),
             ReplayCommand::BackTo(t)
                 if t >= self.branch.as_ref().map_or(0, |b| b.opening_ms()) && t <= at =>
             {
@@ -331,9 +338,15 @@ impl ReplayMachine {
     fn reference_reached(&self, goal: i64) -> bool {
         // The terminal timestamp can precede final same-time Settle/ack
         // barriers. Only the full verified cursor completes an end target.
-        self.session.arena().is_some_and(|a| a.awaiting.is_empty())
-            && (self.picture.complete
-                || (goal < self.lease.tape.duration_ms() && self.picture.at_ms >= goal))
+        // The full verified cursor is the end: a think collected at the match's
+        // final instant has no landing on the tape, so it is never answered,
+        // and an end target never waits for it (it spun forever once FR.5's
+        // pulse left the proving match ending with a think in flight). An
+        // intermediate target still stops only with nothing awaiting.
+        self.picture.complete
+            || (self.session.arena().is_some_and(|a| a.awaiting.is_empty())
+                && goal < self.lease.tape.duration_ms()
+                && self.picture.at_ms >= goal)
     }
 }
 impl Machine for ReplayMachine {
@@ -902,6 +915,56 @@ mod settle_boundary_tests {
         assert!(wire.get("access_origin").is_none());
         assert_eq!(machine.picture.access_origin.as_ref(), Some(&origin));
     }
+    /// **A verified end completes with a think in flight** (the M6 author story's hang): once
+    /// every event replayed and the final hash verified, a think collected at the match's final
+    /// instant has no landing on the tape; the end target completes instead of spinning.
+    #[test]
+    fn a_verified_end_completes_with_a_think_in_flight() {
+        let mut machine = ReplayMachine::new(tape(), ObjId(99), ObjId(4)).unwrap();
+        let end = machine.lease.tape.duration_ms();
+        machine.begin(ReplayCommand::RunTo(end)).unwrap();
+        for _ in 0..600 {
+            if machine.step(250).unwrap().terminal == Some(Status::Complete) {
+                break;
+            }
+        }
+        assert!(machine.picture.complete);
+        machine
+            .session
+            .arena_mut()
+            .unwrap()
+            .awaiting
+            .insert(ObjId(4));
+        machine.begin(ReplayCommand::RunTo(end)).unwrap();
+        assert_eq!(
+            machine.step(250).unwrap().terminal,
+            Some(Status::Complete),
+            "a think with no landing on the tape never holds the end"
+        );
+    }
+
+    /// **A STEP over the retained end runs to the end** (the M6 author story's last step): a
+    /// reference that stopped short of its plan's limit is stepped to its own end and completes
+    /// there, where a `RUN TO` past it is still refused.
+    #[test]
+    fn a_step_past_the_retained_end_runs_to_the_end() {
+        let mut machine = ReplayMachine::new(tape(), ObjId(99), ObjId(4)).unwrap();
+        let end = machine.lease.tape.duration_ms();
+        assert!(machine.begin(ReplayCommand::RunTo(end + 5_000)).is_err());
+        machine.begin(ReplayCommand::StepTo(end + 5_000)).unwrap();
+        assert_eq!(machine.goal, Some(end));
+        let mut complete = false;
+        for _ in 0..600 {
+            if machine.step(250).unwrap().terminal == Some(Status::Complete) {
+                complete = true;
+                break;
+            }
+        }
+        assert!(complete, "the step completes at the end");
+        assert_eq!(machine.picture.at_ms, end);
+        assert!(machine.picture.complete);
+    }
+
     #[test]
     fn terminal_target_drains_same_time_settle_and_ledger_ack_to_the_exact_cursor() {
         let mut machine = ReplayMachine::new(tape(), ObjId(99), ObjId(4)).unwrap();
