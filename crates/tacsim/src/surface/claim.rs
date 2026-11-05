@@ -1804,11 +1804,17 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
             {
                 return Some(false);
             }
+            // Review 38b F-21b: whoever answers for the title, an organization's officer too, as
+            // the surface's prepare reads it.
             if matches!(ground, ContestGround::BarePriorTitle)
                 && custody
                     .file
                     .as_ref()
                     .is_none_or(|file| file.prior_owner != actor)
+                && !custody
+                    .pin
+                    .as_ref()
+                    .is_some_and(|pin| pin.answers_for(actor))
             {
                 return Some(false);
             }

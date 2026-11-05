@@ -68,8 +68,8 @@ pub const FINED_PAID: &str =
     "The Freeport Registry fines you {amount} at {port} for {what}; it is paid from your account.";
 /// The fine owed: `{name}`, `{port}`, `{amount}`, `{what}`.
 pub const FINED_OWED: &str = "The Freeport Registry fines you {amount} at {port} for {what}; your \
-     account cannot cover it, so it stands as a debt (+debts) and the {name} is held until it is \
-     paid.";
+     account cannot cover it, so it stands as a debt (+debts); unpaid when its 28 IC days of grace \
+     run out, it holds the {name} at port until it is paid.";
 /// **The quarantine** (`DepartRefusalKind::Quarantined`): `{name}`, `{port}`, `{amount}`.
 pub const QUARANTINED: &str = "The {name} is held at {port}: a fine of {amount} stands against \
      her master; it lifts when it is paid.";
@@ -326,7 +326,7 @@ pub fn answers_at(venue: &CanonicalId) -> bool {
 }
 
 /// **The minor units of the fines against `actor` that hold her carrier**: those past their
-/// 28-IC-day grace unpaid (`Delinquent`; the owner's 2026-11-04 rule — a fine still within its
+/// 28-IC-day grace unpaid (`retrieval::past_due`: `Delinquent`, or reinstated and not yet collected; the owner's 2026-11-04 rule — a fine still within its
 /// grace is owed and listed on `+debts`, but the carrier may undock).
 fn owed_minor(w: &World, actor: ObjId) -> i64 {
     let Some(record) = record_of(w, actor) else {
@@ -336,8 +336,11 @@ fn owed_minor(w: &World, actor: ObjId) -> i64 {
         .rows
         .iter()
         .filter(|row| {
-            row.debt
-                .is_some_and(|id| matches!(debt_status(w, id), Some(ObligationStatus::Delinquent)))
+            row.debt.is_some_and(|id| {
+                w.module_state::<mush_economy::EconomyStore>()
+                    .and_then(|e| e.snapshot().obligation(ObligationId(id)).cloned())
+                    .is_some_and(|o| crate::surface::retrieval::past_due(&o))
+            })
         })
         .filter_map(|row| row.debt)
         .collect();

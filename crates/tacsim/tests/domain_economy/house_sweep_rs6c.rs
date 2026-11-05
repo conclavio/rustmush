@@ -297,3 +297,186 @@ fn rs6c_tycho_sweeps_and_scraps_a_wreck_on_ahuna_flank() {
 fn rs6c_tycho_sweeps_and_scraps_a_wreck_on_urvara_reach() {
     story("urvara", "urvara_port");
 }
+
+/// **A retrieval handed to Tycho mid-sweep waits for the sweep** (review 38b F-09), on Ahuna Flank:
+/// with the crawler coupled to the swept wreck, Occator's unaccepted retrieval of a second spare
+/// rig lapses to the house. The arm finishes the sweep first — the wreck to Ceres — and then
+/// flies the retrieval, which is delivered; without the guard the retrieval preempts the sweep
+/// and the crawler, coupled to the wreck, never takes the job.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn review_38b_f09_a_retrieval_waits_for_the_sweep_under_way() {
+    use tacsim::surface::retrieval::{RetrievalStage, order_of};
+    let mut rig = stocked_tuned(quick);
+    let entry = "ahuna_port";
+    let (_, _, tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("ahuna", entry), 1);
+    let schema = mush_tactics::module::unit_of(rig.tw.world(), tvs[0])
+        .expect("a rig")
+        .schema()
+        .clone();
+    let spares: Vec<ObjId> = rig
+        .tw
+        .world()
+        .module_state::<mush_tactics::UnitStore>()
+        .expect("the units")
+        .units
+        .iter()
+        .filter(|(id, unit)| **id != tvs[0] && unit.schema() == &schema)
+        .map(|(id, _)| *id)
+        .filter(|id| {
+            crate::driving_rig::store(&rig.tw)
+                .tv_lease_on(*id)
+                .is_none()
+        })
+        .collect();
+    assert!(spares.len() >= 2, "two spare rigs: {spares:?}");
+    let (wreck, casualty) = (spares[0], spares[1]);
+    let (rx, ry) = {
+        let (x, y, _) = ramp_at(&rig.tw, entry);
+        (x.div_euclid(1_000), y.div_euclid(1_000))
+    };
+    let (w_at, c_at) = ((rx + 4, ry + 3), (rx + 6, ry - 3));
+    to_cell_on(&mut rig, entry, wreck, w_at);
+    to_cell_on(&mut rig, entry, casualty, c_at);
+    set_section(&mut rig, wreck, "chassis", Some("destroyed"), Some(0));
+    set_section(&mut rig, wreck, "boom", Some("destroyed"), Some(0));
+    // The casualty is disabled, not wrecked: her power plant out (`house_arm_rs6b`'s fixture).
+    crate::driving_rig::staff_hand(&mut rig, |ctx| {
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetComponentCondition {
+                component: mush_tactics::unit::ComponentId::new("power").expect("an id"),
+                condition: mush_tactics::ConditionId::new("destroyed").expect("a condition"),
+            }],
+            None,
+            Some(smol_str::SmolStr::new_static("test:f09-powerless")),
+        )
+        .expect("a plan");
+        mush_tactics::module::apply_plan(ctx, casualty, &plan).expect("applied");
+    });
+    let s = staff_member(&mut rig);
+    staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {entry} leave #{} wreck {},{}",
+            wreck.0, w_at.0, w_at.1
+        ),
+    );
+    let ceres = cid("ceres_port");
+    for _ in 0..60 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        if tacsim::port::house::dispatchers(rig.tw.world()).len() == 1 {
+            break;
+        }
+    }
+    let (lifter, crawler) =
+        tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
+    let now = rig.tw.world().world_ic_now().at;
+    skip_and_fire(
+        &mut rig,
+        now + (tacsim::port::house_sweep::SWEEP_IC_DAYS + 1) * 86_400,
+    );
+    // The sweep, until the crawler is coupled to the wreck.
+    let towing = |rig: &mut Rig| {
+        crate::field_host_rig::site_record_at(rig, entry)
+            .and_then(|record| record.tows.towing(crawler).map(|op| op.casualty()))
+            == Some(wreck)
+    };
+    let mut steps = 0u32;
+    while !towing(&mut rig) {
+        assert!(
+            steps < 4_000,
+            "the crawler never coupled to the wreck: the lifter {:?}, the crawler {:?}",
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter),
+            tacsim::surface::act::where_is(rig.tw.world(), crawler)
+        );
+        let step = if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter),
+            tacsim::port::ship::Berth::UnderWay
+        ) {
+            300
+        } else {
+            1
+        };
+        let t = rig.tw.world().now().saturating_add(step);
+        rig.tw.set_now(t);
+        let _ = second(&mut rig);
+        steps += 1;
+    }
+    // Occator's retrieval of the second rig, unaccepted: at its window's end it is Tycho's.
+    let poster = {
+        let map = port_map(&rig.tw, "ceres_port");
+        let row = map
+            .orgs
+            .iter()
+            .find(|(id, _)| id.as_str() == "occator")
+            .map(|(_, row)| row.clone())
+            .expect("Occator's row");
+        (
+            PrincipalId::Organization(mush_org::OrgId(row.org)),
+            mush_economy::AccountId(row.account.expect("an account")),
+        )
+    };
+    staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {entry} leave #{} casualty {},{}",
+            casualty.0, c_at.0, c_at.1
+        ),
+    );
+    let posted = crate::driving_rig::staff_hand(&mut rig, |ctx| {
+        tacsim::surface::retrieval::post(ctx, casualty, poster.clone(), ceres.clone(), None)
+    });
+    assert!(posted.is_ok(), "{posted:?}");
+    let job = order_of(rig.tw.world(), casualty).expect("the job");
+    skip_and_fire(&mut rig, job.accept_by_ic + 60);
+    assert_eq!(
+        order_of(rig.tw.world(), casualty).map(|o| o.stage),
+        Some(RetrievalStage::House)
+    );
+    // The house: the sweep home first, then the job.
+    let mut wreck_home = false;
+    let mut steps = 0u32;
+    loop {
+        if scrapped(&rig, wreck) || tacsim::port::bay_work::held(rig.tw.world(), wreck) {
+            wreck_home = true;
+        }
+        if order_of(rig.tw.world(), casualty).is_some_and(|o| o.delivered.is_some()) {
+            break;
+        }
+        if steps == 8_000 {
+            let act = crate::driving_rig::staff_hand(&mut rig, |ctx| {
+                tacsim::port::house_arm::next_act(ctx, (lifter, crawler), casualty, &ceres)
+            });
+            let float = tacsim::port::house::dispatcher(rig.tw.world(), &ceres)
+                .and_then(|d| tacsim::port::credit::own_account(rig.tw.world(), d))
+                .and_then(|a| a.available())
+                .map(|a| a.minor());
+            panic!(
+                "the retrieval was not delivered in 8,000 steps: the wreck {:?} (home \
+                 {wreck_home}), the casualty {:?}, the crawler {:?}, next {act:?}, float {float:?}",
+                tacsim::surface::act::where_is(rig.tw.world(), wreck),
+                tacsim::surface::act::where_is(rig.tw.world(), casualty),
+                tacsim::surface::act::where_is(rig.tw.world(), crawler),
+            );
+        }
+        let step = if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter),
+            tacsim::port::ship::Berth::UnderWay
+        ) {
+            300
+        } else {
+            1
+        };
+        let t = rig.tw.world().now().saturating_add(step);
+        rig.tw.set_now(t);
+        let _ = second(&mut rig);
+        steps += 1;
+    }
+    assert!(
+        wreck_home,
+        "the swept wreck reached Ceres before the retrieval was delivered"
+    );
+}

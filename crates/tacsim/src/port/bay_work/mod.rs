@@ -2183,6 +2183,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     }
     let port = map.entry.clone();
     let berths = def.workshop.as_ref().map_or(0, |w| w.berths);
+    // Review 38b F-11: a recovery house's own stock (a kept hull titled to it, for sale) takes no
+    // stand either, so its unsold hulls never close the workshop to players.
+    let house = crate::surface::retrieval::house(ctx.w).map(|h| h.org);
     let used = ctx
         .w
         .module_state::<TacsimStore>()
@@ -2191,6 +2194,9 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
             s.bay_berthed_in(room)
                 .into_iter()
                 .filter(|h| held_for(ctx.w, *h).is_none())
+                .filter(|h| {
+                    house.is_none() || crate::port::house_sweep::title_of(ctx.w, *h) != house
+                })
                 .count()
         });
     if u32::try_from(used).unwrap_or(u32::MAX) >= berths {

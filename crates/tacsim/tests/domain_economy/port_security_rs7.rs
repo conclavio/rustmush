@@ -240,6 +240,139 @@ fn status(rig: &Rig, id: u64) -> Option<mush_economy::ObligationStatus> {
     })
 }
 
+#[test]
+fn review_72h_unpaid_debt_must_still_refuse_a_second_desk_attempt() {
+    let mut rig = stocked_tuned(quick);
+    let (debtor, _) = crate::driving_rig::prospector(&mut rig, "Debtor", 71, "Debt Moth");
+    let debit = account(&rig, debtor);
+    let credit = registry_account(&rig);
+    let amount = available(&rig, debtor).saturating_add(1_000_000_000);
+    let debt = staff_hand(&mut rig, |ctx| {
+        mush_economy::create_debt(
+            ctx,
+            debit,
+            credit,
+            mush_economy::Amount::from_minor(amount),
+            tacsim::surface::retrieval::DEBT_NAMESPACE,
+        )
+        .expect("the debt opens")
+    });
+    let due = rig.tw.world().world_ic_now().at + 3_600;
+    skip_ic(&mut rig, due);
+    assert_eq!(
+        status(&rig, debt.0),
+        Some(mush_economy::ObligationStatus::Delinquent)
+    );
+    let before = available(&rig, debtor);
+    let first = staff_hand(&mut rig, |ctx| {
+        ctx.actor = debtor;
+        tacsim::surface::retrieval::desk_refusal(ctx)
+    });
+    assert!(
+        first.is_some(),
+        "the first attempt refuses the unpaid debtor"
+    );
+    assert_eq!(available(&rig, debtor), before, "no money was paid");
+    let second = staff_hand(&mut rig, |ctx| {
+        ctx.actor = debtor;
+        tacsim::surface::retrieval::desk_refusal(ctx)
+    });
+    assert!(
+        second.is_some(),
+        "a second command before the next sweep must still refuse: debt status {:?}, no payment",
+        status(&rig, debt.0)
+    );
+}
+
+#[test]
+fn review_72h_reposting_must_preserve_unpaid_retrieval_delivery_fact() {
+    use mush_economy::FactProvider;
+    use tacsim::surface::retrieval::{self, RetrievalFactProvider};
+    let mut rig = stocked_tuned(quick);
+    let (acceptor, carrier) = crate::driving_rig::prospector(&mut rig, "Retriever", 72, "Tow Moth");
+    let (poster, _) = crate::driving_rig::prospector(&mut rig, "Poster", 73, "Owner Moth");
+    let map = port_map(&rig.tw, "ceres_port");
+    let hull = ObjId(map.vehicles.as_ref().expect("the rigs").rigs[0].tv);
+    let moved = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, poster.0),
+    );
+    assert!(!moved.contains("Permission denied"), "{moved}");
+    let posted = run(
+        &mut rig.tw,
+        poster,
+        &format!("+salvage/retrieve #{} go", hull.0),
+    );
+    assert!(posted.contains("posted"), "{posted}");
+    let first = retrieval::order_of(rig.tw.world(), hull).expect("the first job");
+    let accepted = run(
+        &mut rig.tw,
+        acceptor,
+        &format!("+salvage/accept #{} go", hull.0),
+    );
+    assert!(accepted.contains("You accept job"), "{accepted}");
+    // The completed tow is the fixture; the actual player's berth command delivers it.
+    let view = tacsim::port::ship::hull_view(rig.tw.world(), ObjId(carrier.hull))
+        .expect("the retriever's carrier");
+    let (bay_def, bay) = view.bay().expect("the retriever's bay");
+    let slot = mush_sim::SlotId::new(bay_def.slot.id.as_str()).expect("the bay's slot");
+    let workshop = crate::driving_rig::station_room(&rig.tw, "ceres_port", "room.c14_dockmaster");
+    staff_hand(&mut rig, |ctx| {
+        mush_sim::place_interior(ctx, hull, bay, Some(slot)).expect("the retrieved hull aboard");
+        ctx.w
+            .move_to(acceptor, workshop)
+            .expect("retriever in workshop");
+    });
+    let delivered = run(&mut rig.tw, acceptor, &format!("+bay/berth #{}", hull.0));
+    assert_eq!(
+        retrieval::order_of(rig.tw.world(), hull)
+            .expect("the delivered job")
+            .stage,
+        retrieval::RetrievalStage::Delivered,
+        "{delivered}"
+    );
+    let key = hull.0.to_string();
+    assert!(
+        RetrievalFactProvider
+            .resolve(
+                rig.tw.world(),
+                retrieval::FACT_DELIVERED,
+                &key,
+                Some(first.serial)
+            )
+            .is_some()
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .contract(mush_economy::ContractId(first.contract))
+            .unwrap()
+            .state,
+        mush_economy::ContractState::Active,
+        "the handover command does not settle payment synchronously"
+    );
+    let repost = run(
+        &mut rig.tw,
+        poster,
+        &format!("+salvage/retrieve #{} go", hull.0),
+    );
+    assert!(
+        RetrievalFactProvider
+            .resolve(
+                rig.tw.world(),
+                retrieval::FACT_DELIVERED,
+                &key,
+                Some(first.serial)
+            )
+            .is_some(),
+        "the next player's command erased the unpaid contract's only delivery fact: {repost}"
+    );
+}
+
 /// **The story at one site**: `(venue, entry, side)`.
 #[allow(clippy::too_many_lines)]
 fn story(venue: &str, entry: &str, side: u16) {

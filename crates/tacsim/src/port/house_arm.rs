@@ -323,6 +323,59 @@ fn house_accounts(
         })
 }
 
+/// **The dispatcher's float over [`FLOAT_MINOR`]**, minor units, when no sailing plan is filed on
+/// the lifter (a plan's buys draw on the float until they run) — review 38b F-12.
+fn float_surplus(w: &World, dispatcher: ObjId, lifter: ObjId) -> Option<u64> {
+    if pending(w, lifter) {
+        return None;
+    }
+    let available = crate::port::credit::own_account(w, dispatcher)
+        .and_then(|a| a.available())
+        .map_or(0, |a| a.minor());
+    u64::try_from(available.saturating_sub(FLOAT_MINOR))
+        .ok()
+        .filter(|surplus| *surplus > 0)
+}
+
+/// **Whether a sweep is under way** (review 38b F-09) while the retrieval on `job` waits: a swept
+/// hull aboard the lifter, or the crawler out of the lifter's bay on anything but `job`'s hull —
+/// towing another casualty, or on a site where `job`'s hull does not lie.
+fn sweep_under_way(
+    ctx: &Ctx<'_>,
+    (lifter, crawler): (ObjId, ObjId),
+    job: ObjId,
+    home: &CanonicalId,
+) -> bool {
+    let workshop = crate::port::market::ports(ctx.w)
+        .into_iter()
+        .find(|(id, ..)| id == home)
+        .and_then(|(entry, def, _)| {
+            crate::port::workshop::room(ctx.w, &entry, def)
+                .ok()
+                .flatten()
+        });
+    if crate::port::house_sweep::held(ctx, (lifter, crawler), workshop)
+        .is_some_and(|hull| where_is(ctx.w, hull) == (Where::Bay { hull: lifter }))
+    {
+        return true;
+    }
+    // The crawler home, or out for the job itself (its hull already loaded, the crawler to
+    // recover): no sweep holds the lifter.
+    if where_is(ctx.w, crawler) == (Where::Bay { hull: lifter })
+        || where_is(ctx.w, job) == (Where::Bay { hull: lifter })
+    {
+        return false;
+    }
+    let Some((site, _)) = crate::surface::tow::ground_pose(ctx.w, crawler) else {
+        return false;
+    };
+    let record = crate::surface::tow::record_or_new(ctx, &site);
+    match record.tows.towing(crawler).map(|op| op.casualty()) {
+        Some(casualty) => casualty != job,
+        None => crate::surface::tow::ground_pose(ctx.w, job).is_none_or(|(at, _)| at != site),
+    }
+}
+
 /// **The house arm's step** (`Arm::House`): one act of the house's one job this fire.
 pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) -> Step {
     let home = crate::port::market::ports(ctx.w)
@@ -336,8 +389,28 @@ pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) 
     let Some((lifter, crawler)) = crate::port::house::hulls(ctx.w, &home) else {
         return Step::Idle;
     };
-    // The house's job: a retrieval it holds, else (doc 41 cut RS.6c-1) the sweep.
+    // Review 38b F-12: the float's surplus over `FLOAT_MINOR` (a scrap's credit once it has
+    // landed) goes back to the house's account while no sailing plan is waiting on it.
+    if let Some(surplus) = float_surplus(ctx.w, dispatcher, lifter) {
+        let result = fire.as_principal(ctx, dispatcher, dispatcher, |ctx| {
+            let (float, house, _, _) =
+                house_accounts(ctx.w, dispatcher).ok_or("the house's accounts are not open")?;
+            crate::port::house_sweep::return_surplus(ctx, (float, house), surplus)
+        });
+        return match result {
+            Ok(Ok(())) => Step::Submitted,
+            Ok(Err(why)) => {
+                tracing::debug!(%why, "tacsim: the house's float surplus waits a fire");
+                Step::Refused
+            }
+            Err(_) => Step::Deferred,
+        };
+    }
+    // The house's job: a retrieval it holds, else (doc 41 cut RS.6c-1) the sweep — but a sweep
+    // under way finishes first (review 38b F-09), so the crawler is never left at another site
+    // or coupled to the swept wreck while the lifter flies the retrieval.
     let Some((hull, act)) = job(ctx.w, &home)
+        .filter(|order| !sweep_under_way(ctx, (lifter, crawler), order.hull, &home))
         .map(|order| {
             (
                 order.hull,
@@ -440,10 +513,9 @@ fn scrap_at_home(ctx: &mut Ctx<'_>, hull: ObjId, home: &CanonicalId) -> Result<(
     if let Some(back) = back {
         let _ = ctx.w.move_to(dispatcher, back);
     }
-    let credit = scrapped?.credit_minor;
-    let (float, house, _, _) =
-        house_accounts(ctx.w, dispatcher).ok_or("the house's accounts are not open")?;
-    crate::port::house_sweep::return_surplus(ctx, (float, house), credit)
+    // Review 38b F-12: the scrap's credit is minted into the float later (`settle_or_owe`), so it
+    // is forwarded once it has landed, by the arm's float sweep (`float_surplus`).
+    scrapped.map(|_| ())
 }
 
 /// **The handover at home**: the dispatcher steps into the workshop room and berths her there out
