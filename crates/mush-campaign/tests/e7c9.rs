@@ -339,7 +339,7 @@ fn contract_attesting(tw: &mut TestWorld, issuer: ObjId, operation: OperationId)
     id
 }
 
-/// Declare a bonded operation for `who`, with a 24 h notice and a 1 h window, and
+/// Declare a bonded operation for `who`, with a 28 IC day (672 h) notice and a 24 h window, and
 /// return its id. Everything goes through the real commands.
 fn declare(tw: &mut TestWorld, who: ObjId, bond: i64) -> OperationId {
     let before: BTreeSet<u64> = camp(tw).operations().map(|d| d.id().0).collect();
@@ -353,7 +353,7 @@ fn declare(tw: &mut TestWorld, who: ObjId, bond: i64) -> OperationId {
         let acct = account_of(tw, who);
         ok(tw, who, &format!("@op/terms {}/bond={acct}:{bond}", id.0));
     }
-    ok(tw, who, &format!("@op/terms {}/notice=24", id.0));
+    ok(tw, who, &format!("@op/terms {}/notice=672", id.0));
     id
 }
 
@@ -1303,7 +1303,8 @@ fn e7c9_z3_the_notice_window_sits_inside_the_declared_band() {
     let attacker = tw.spawn_player("Attacker");
     money(&mut tw, &[(attacker, 1_000)]);
     let id = declare(&mut tw, attacker, 0);
-    for hours in ["1", "23", "73", "1000"] {
+    // Owner rule, 2026-11-04: the notice is 28 to 84 IC days (672 h to 2,016 h).
+    for hours in ["1", "24", "671", "2017", "5000"] {
         let refusal = err(
             &mut tw,
             attacker,
@@ -1311,7 +1312,7 @@ fn e7c9_z3_the_notice_window_sits_inside_the_declared_band() {
         );
         assert!(refusal.contains("outside"), "{hours}: {refusal}");
     }
-    for hours in ["24", "48", "72"] {
+    for hours in ["672", "1000", "2016"] {
         ok(
             &mut tw,
             attacker,
@@ -1320,7 +1321,7 @@ fn e7c9_z3_the_notice_window_sits_inside_the_declared_band() {
     }
     let terms = &camp(&tw).operation(id).expect("op").terms;
     let lead = terms.window.0.at - terms.notice.at;
-    assert_eq!(lead, 72 * HOUR);
+    assert_eq!(lead, 2016 * HOUR);
 }
 
 // ===========================================================================
@@ -1528,7 +1529,7 @@ fn e7c9_o1_a_canon_objective_is_discharged_by_a_pull_not_an_observer() {
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
     // Move IC time past the window's open so the operation is Running…
-    jump_to(&mut tw, 25 * HOUR);
+    jump_to(&mut tw, 673 * HOUR);
     assert_eq!(state_of(&tw, id), OperationState::Running);
     // …and it stays Running while the canon record does not exist.
     fire(&mut tw);
@@ -3162,8 +3163,8 @@ fn vf_d1c_a_canon_objective_the_seam_cannot_answer_resolves_as_a_failure_at_wind
         ),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    // The declared window runs 24 h to 48 h, so this is well past its close.
-    jump_to(&mut tw, 49 * HOUR);
+    // The declared window runs 672 h to 696 h, so this is past its close.
+    jump_to(&mut tw, 697 * HOUR);
     fire_n(&mut tw, 10);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     assert_eq!(

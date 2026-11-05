@@ -315,7 +315,7 @@ pub struct MarketTerms {
     /// 1..=`MAX_QUOTE_SECONDS` (600).
     pub quote_seconds: i64,
     /// How long a personal renewal offer stands, in IC seconds.
-    /// 1..=`MAX_RENEWAL_OFFER_IC_SECONDS` (3 IC days).
+    /// 1..=`MAX_RENEWAL_OFFER_IC_SECONDS` (28 IC days).
     pub renewal_offer_ic_seconds: i64,
     /// How long a paid-resale offer stands, in real seconds.
     /// 1..=`MAX_OFFER_SECONDS` (one real day).
@@ -334,8 +334,9 @@ impl MarketTerms {
         renewal_price_minor: 40_000,
         // The House quote's window.
         quote_seconds: 300,
-        // 3 IC days (17f §2.3).
-        renewal_offer_ic_seconds: 259_200,
+        // 28 IC days (17f §2.3's 3, raised by the owner's rule of 2026-11-04: a timer
+        // waiting on an absent player's response allows at least 28 IC days).
+        renewal_offer_ic_seconds: 2_419_200,
         // One real day, `MAX_OFFER_SECONDS`.
         resale_offer_seconds: 86_400,
         // 3 IC days (D-UM-40, Q-UM-18's default).

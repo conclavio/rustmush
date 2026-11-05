@@ -99,7 +99,7 @@ until when, or in its grace, or lapsed.
 
 `+licence/buy` says what a licence would cost and how long it would run, and
 buys nothing; `+licence/buy go` buys exactly that, from anywhere: 2500.00cr for
-168 IC days, then 3 IC days' grace, paid to the Registry as a public contract. The
+168 IC days, then 28 IC days' grace, paid to the Registry as a public contract. The
 licence holds through its grace; bought while it still stands, in force or in
 grace, the new term runs on from the day the old one ends, and bought after it
 has lapsed, it runs from today. One licence an account: no other character on

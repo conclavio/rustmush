@@ -150,7 +150,7 @@ impl BayIntent {
         if self.accepted_at.clock != self.offer.observed_ic.clock
             || self.accepted_at.at < self.offer.observed_ic.at
             || self.expires_at
-                != mush_inventory::reservation_deadline(&self.accepted_at).map_err(bad)?
+                != mush_inventory::refit_reservation_deadline(&self.accepted_at).map_err(bad)?
         {
             return Err(Error::Integrity);
         }

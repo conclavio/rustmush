@@ -358,11 +358,14 @@ fn op_declare(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "This server is carrying as many operations as it can hold.",
         ));
     };
+    const DEFAULT_WINDOW_SECS: i64 = 24 * 3_600;
     let now = ctx.w.world_timeline().stamp_at(ctx.w.now());
     let mut open = now.clone();
     open.at = now.at.saturating_add(OPERATION_NOTICE_MIN);
     let mut close = now.clone();
-    close.at = open.at.saturating_add(OPERATION_NOTICE_MIN);
+    // The window runs a day from its open: it shared the notice's constant while both were
+    // 24 h, and stays a day now the notice is 28 IC days (owner rule, 2026-11-04).
+    close.at = open.at.saturating_add(DEFAULT_WINDOW_SECS);
     let mut terms = OperationTerms {
         operation: id,
         attacker: mine,
@@ -1537,7 +1540,7 @@ mod tests {
             ("stake.front", "7:covert"),
             ("stake.outcome", "3:partial"),
             ("visibility", "public"),
-            ("notice", "48"),
+            ("notice", "720"),
         ] {
             let mut next = terms.clone();
             apply_field(&mut next, field, value).unwrap_or_else(|e| panic!("{field}: {e}"));
@@ -1553,16 +1556,28 @@ mod tests {
     fn e7c9_b8_a_notice_edit_outside_the_band_refuses_rather_than_storing() {
         let mut terms = terms_fixture(OperationId(1));
         apply_field(&mut terms, "notice", "1").expect("parses");
-        assert!(terms.check().is_err(), "1 hour is under the 24 hour floor");
-        let mut terms = terms_fixture(OperationId(1));
-        apply_field(&mut terms, "notice", "96").expect("parses");
         assert!(
             terms.check().is_err(),
-            "96 hours is over the 72 hour ceiling"
+            "1 hour is under the 28 IC day floor"
         );
         let mut terms = terms_fixture(OperationId(1));
-        apply_field(&mut terms, "notice", "48").expect("parses");
-        assert!(terms.check().is_ok());
+        apply_field(&mut terms, "notice", "671").expect("parses");
+        assert!(
+            terms.check().is_err(),
+            "671 hours is an hour under the 28 IC day floor"
+        );
+        let mut terms = terms_fixture(OperationId(1));
+        apply_field(&mut terms, "notice", "2017").expect("parses");
+        assert!(
+            terms.check().is_err(),
+            "2,017 hours is over the 84 IC day ceiling"
+        );
+        // Owner rule, 2026-11-04: exactly 28 IC days is the floor and is accepted.
+        for hours in ["672", "720", "2016"] {
+            let mut terms = terms_fixture(OperationId(1));
+            apply_field(&mut terms, "notice", hours).expect("parses");
+            assert!(terms.check().is_ok(), "{hours}");
+        }
     }
 
     #[test]

@@ -341,7 +341,7 @@
     }
   },
   "manifest": {
-    "digest": "2afc58ea0b69ac5a5fb6cd1c503c137b9547bd65779651ed831215aec9f960a1",
+    "digest": "98be89c1b26c341405fc5248bb1302a8a860a82f48e221d9f991acd2927d1919",
     "id": "tacsim.relay.luna_ceres",
     "kind": "campaign_seed",
     "requires": [
@@ -379,9 +379,9 @@
       },
       {
         "id": "tacsim.lane.ceres_phobos",
-        "version": 29
+        "version": 31
       }
     ],
-    "version": 20
+    "version": 22
   }
 }

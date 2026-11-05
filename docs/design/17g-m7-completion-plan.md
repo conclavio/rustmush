@@ -2651,3 +2651,26 @@ the IC second 96 s past the save's (four boot seconds at rate 24) and ran part 3
 failure, byte for byte, in 2,837 s. A load saves the 35.5 minutes before part 3; part 3 itself is
 about 47 minutes (its fast IC run is 36 real minutes), which a later checkpoint inside it could
 cut further once part 3 is green.
+
+### The player-response floor (2026-11-04) — Grace and renewal offers at 28 IC days
+
+**The owner's rule (2026-11-04):** a timer that waits on a player's response, and costs a
+player who has not answered something, allows at least **28 IC days**, because players are not
+online all the time. Two of the launch's mind-licence timers were under it:
+
+- **Grace after a term** (`tacsim::launch::GRACE_SECONDS`, the House and personal terms and
+  their renewals): 3 → **28** IC days. The bound is raised with it:
+  `mush_roll::commerce::MAX_GRACE_SECONDS` is now `mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS`
+  (28 IC days), and the kernel's terminal-capacity audits that carried their own 259,200 —
+  `house`'s renewal consent, `charter_pending`'s and `paid_resale`'s term windows,
+  `ic_claim`'s captured window — read that constant, as does `mush-economy`'s
+  `managed_paid_resale` window. Pinned by `commerce::tests::a_term_window_carries_28_ic_days_of_grace`.
+- **House and personal renewal offers** (`tacsim::launch::OFFER_SECONDS`,
+  `MarketTerms::PROVISIONAL.renewal_offer_ic_seconds`, `deploy/instance/launch.json.example`):
+  3 → **28** IC days, with both caps (`managed_renewal` and `managed_house_renewal`'s
+  `MAX_RENEWAL_OFFER_IC_SECONDS`, and their defaults) raised to 28. The launch help, the
+  market line and its `PROVISIONAL_MARKET_LINE` pin read "plus 28 days Grace" and "open 28 IC
+  days".
+
+The workspace guard is `mush-contract-tests`' `engine_contracts::player_wait_floors`, which
+holds both values and every cap at or above the floor.

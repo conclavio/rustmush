@@ -9,6 +9,9 @@ mod market;
 pub(crate) mod registration;
 mod venue;
 pub use content::LaunchRecipe;
+/// The launch licence's Grace and its renewal offers' lifetime, 28 IC days each (owner rule,
+/// 2026-11-04), read by the workspace's player-response floor.
+pub use content::{GRACE_SECONDS, OFFER_SECONDS};
 pub use deployment::{
     HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
     MAX_DEPLOYMENT_BYTES, MarketTerms, NamedHouses, PlayerMarket, ProcurementPolicy,
@@ -17,7 +20,7 @@ pub use deployment::{
 pub(crate) use registration::Registration;
 
 /// Source-free instructions. Every publication still uses its actual service.
-pub const HELP: &str = "Named launch: Meridiani Field Series, Coprates Drill and Safe Conduct.\nConfigured publishers: @mind/launch <meridiani|coprates|safe_conduct>=<configured name> imports an owned draft; @mind/check <name>; @mind/save <name>=<notes>. Wait for the real save result, inspect @mind/info, then @registry/rate <mind number>/<saved revision>.\nAfter actual Registry certification, reserve a filing shell and use the offered house filing action with the exact certificate and scoped House treasury. Publish at the configured counter through house-list-one-seat; buyers use house-quote-one-seat, house-fund-one-seat and house-grant-one-seat. +act <verb> with <JSON object> resolves the current signed offer.\nFiling costs 100cr; a one-seat sealed Pin costs 400cr for 90 IC days plus 3 days Grace. A fresh renewal costs 400cr on its separately accepted offer. Coprates requires current Republic membership for a new purchase or renewal. Existing accepted terms retain their own dates; refund/cleanup does not require membership.\n@mind/doctrine shows the free Stickney teaching pages. Safe Conduct: after actual filing and current certification, the configured service operator uses @conduct/run <filed> <profile> <escort|transit>; status/retry/cancel use the actual Conduct job. Only completed verified trials qualify. Hull coverage remains a separately configured product and genuine host service; importing source supplies neither qualification nor coverage.";
+pub const HELP: &str = "Named launch: Meridiani Field Series, Coprates Drill and Safe Conduct.\nConfigured publishers: @mind/launch <meridiani|coprates|safe_conduct>=<configured name> imports an owned draft; @mind/check <name>; @mind/save <name>=<notes>. Wait for the real save result, inspect @mind/info, then @registry/rate <mind number>/<saved revision>.\nAfter actual Registry certification, reserve a filing shell and use the offered house filing action with the exact certificate and scoped House treasury. Publish at the configured counter through house-list-one-seat; buyers use house-quote-one-seat, house-fund-one-seat and house-grant-one-seat. +act <verb> with <JSON object> resolves the current signed offer.\nFiling costs 100cr; a one-seat sealed Pin costs 400cr for 90 IC days plus 28 days Grace. A fresh renewal costs 400cr on its separately accepted offer. Coprates requires current Republic membership for a new purchase or renewal. Existing accepted terms retain their own dates; refund/cleanup does not require membership.\n@mind/doctrine shows the free Stickney teaching pages. Safe Conduct: after actual filing and current certification, the configured service operator uses @conduct/run <filed> <profile> <escort|transit>; status/retry/cancel use the actual Conduct job. Only completed verified trials qualify. Hull coverage remains a separately configured product and genuine host service; importing source supplies neither qualification nor coverage.";
 
 use content::bad;
 use mush_core::ModError;

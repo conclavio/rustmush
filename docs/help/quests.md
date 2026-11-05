@@ -88,7 +88,7 @@ completing paid survey work. At the Exchange, ask:
 Choose any available job on `+survey`. Read its terms with `+survey <id>`;
 `+survey/accept <id>` previews and `+survey/accept <id> go` files it. Wait for
 funding, then complete fresh soundings of all 256 pockets in its block within
-seven IC days. `help mining` explains equipment, coverage and quiet soundings.
+28 IC days. `help mining` explains equipment, coverage and quiet soundings.
 An unfinished commission may already exist when you accept the quest. The
 commission must finish after quest acceptance; old completed work cannot count
 even if its payment arrives later.

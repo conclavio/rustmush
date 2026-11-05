@@ -103,8 +103,10 @@ pub const MAX_RETAINED_RECOVERY_RECORDS: usize = 64;
 /// fourth arm walked only the **queue**, which the applicant has already left, so an
 /// applicant who applied, was granted and never accepted held a hull out of the pool
 /// **for ever** and was `LiveLease`-refused themselves. `SEAT_OFFER_TTL`'s shape, on
-/// the same cadence.
-pub const RECOVERY_ACCEPT_TTL_SECS: i64 = 24 * 60 * 60;
+/// the same cadence. **28 IC days** (one until the owner's rule of 2026-11-04 that a timer
+/// waiting on an absent player's response allows at least 28 IC days): an applicant who is
+/// offline when the grant lands keeps it for 28.
+pub const RECOVERY_ACCEPT_TTL_SECS: i64 = 28 * 24 * 60 * 60;
 
 /// The per-player cooldown after a lease ends — 10b §7's `RECOVERY_COOLDOWN` of
 /// **14 days**, cited rather than redefined. `[tacsim.recovery].cooldown_days`

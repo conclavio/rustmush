@@ -397,7 +397,7 @@ fn actual_refit_cancel_releases_exact_fee_and_slot_after_recipe_change_and_expir
     let before = s.order(id)?;
     check_eq!(
         before.intent.expires_at.at - before.intent.accepted_at.at,
-        7 * 86400
+        mush_core::player_wait::REFIT_RESERVATION_SECONDS
     );
     s.f.r.w.world_mut().set_now(before.intent.expires_at.at);
     let inv = invocation(s.f.buyer, 44, FactoryRig::order_parameters(id));

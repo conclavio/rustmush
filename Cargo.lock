@@ -2306,6 +2306,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "mush-atlas",
+ "mush-campaign",
  "mush-config",
  "mush-core",
  "mush-economy",
@@ -2316,6 +2317,7 @@ dependencies = [
  "mush-org",
  "mush-pixel",
  "mush-proto",
+ "mush-roll",
  "mush-ruleset",
  "mush-server",
  "mush-sim",

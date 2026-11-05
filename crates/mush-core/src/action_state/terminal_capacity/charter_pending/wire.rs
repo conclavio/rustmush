@@ -128,7 +128,8 @@ fn native_term(v: &Value) -> Result<Value, ActionStateError> {
     let grace_duration = i128::from(grace) - i128::from(end);
     if num(w, "format")? != 1
         || !(1..=7_776_000).contains(&term)
-        || !(0..=259_200).contains(&grace_duration)
+        || !(0..=i128::from(crate::player_wait::MAX_LICENCE_GRACE_SECONDS))
+            .contains(&grace_duration)
         || issued >= grace
     {
         return Err(refused("pending term window"));
@@ -916,7 +917,8 @@ mod window_tests {
             assert_eq!(native["term_end"], json!(500));
             assert_eq!(native["grace_end"], json!(600));
         }
-        native_term(&term(0, 0, 7_776_000, 8_035_200))?;
+        // Owner rule, 2026-11-04: the Grace bound is 28 IC days.
+        native_term(&term(0, 0, 7_776_000, 7_776_000 + 2_419_200))?;
         Ok(())
     }
     #[test]
@@ -926,7 +928,7 @@ mod window_tests {
             term(0, 0, 0, 100),
             term(0, 0, 500, 499),
             term(0, 0, 7_776_001, 7_776_001),
-            term(0, 0, 500, 259_701),
+            term(0, 0, 500, 500 + 2_419_201),
             term(i64::MIN, 0, i64::MAX, i64::MAX),
             term(i64::MIN, i64::MIN, i64::MIN + 1, i64::MAX),
         ] {
