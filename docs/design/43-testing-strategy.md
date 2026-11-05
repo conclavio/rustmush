@@ -152,6 +152,27 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
     the hash spreads a binary over every cell. A cut whose story would be the slowest test of the suite lands
     at the rig's default tempo, never a copied window (5.8; §10.5); there is no shard to move it to. The
     deltas are the step audit's (TS.3b) data.
+15. **A PR that touches a nightly job's paths dispatches it before it is marked ready** (owner, 2026-11-05;
+    the twin of #13 for the harness). This covers a PR touching a path any nightly-, weekly- or
+    dispatch-tier job of `ci.yml` exercises: M7, M8, M6, FR.7, the harness, the scale harness, the release
+    build and the bot's rates.
+    - **What it must do.** Dispatch those jobs **at the fast pace** and get them green before the PR is
+      marked ready. The fast pace is `gh workflow run CI --ref <branch>` with `mind_pulse_ms` left empty,
+      the M7 stories' 50-ms pulse (or the VPS gate, for what runs there).
+    - **What it need not wait for** (owner refinement, 2026-11-05). The real-pace run is not a gate: M7's
+      production 1,000-ms pulse adds three hours or more. It is the next nightly's, or it may be fired with
+      `-f mind_pulse_ms=1000` and not waited on. Either way its result surfaces through the nightly's
+      failure channel (the `nightly-report` job, D-43-3), not the PR's.
+    - **The tooling.** `scripts/nightly_advice.py --dispatch` fires the fast run itself;
+      `--dispatch --real-pace-too` also fires the real-pace run, to report later.
+    - **The map.** `.github/nightly-paths.txt` maps paths to jobs. The `lint` cell prints "this PR should
+      dispatch: …" on every pull request (`scripts/nightly_advice.py`), and the same script runs locally
+      against `origin/main`. `ci_policy::nightly_paths` keeps the map true to `ci.yml`: every non-PR job
+      named, at its tier, every path existing.
+    - **Why.** The nightly of 2026-11-05 broke on #475, whose grace windows moved the M7 and M8 stories'
+      pins; no pull-request run ever exercised them.
+    - **The map is the paths the stories' pins move with, not everything they run.** A nightly that breaks
+      on a path the map did not name widens its line in the PR that fixes the nightly.
 
 ### 2.4 The numbers, dated
 

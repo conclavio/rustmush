@@ -717,3 +717,58 @@ D-43-5 (Q-43-5 ruled 2026-11-04, owner: "Adopt it"), on main `bf0b5f24`.
 **The gate.** The contract tests, all four domain binaries' build, clippy and strict rustdoc on `tacsim` and
 `mush-contract-tests`, shellcheck, and cells 1 and 3 run through the script on conclav.dev; then the PR's own
 run.
+
+## Rule 2.3 #15 (2026-11-05) — dispatch the nightly jobs a PR touches
+
+Owner, after the nightly of 2026-11-05 broke on #475. Its grace windows moved the M7 and M8 stories' pins, and
+no pull-request run exercises those stories. The rule is in §2.3 as #15, the twin of #13 for the harness.
+
+**The map**, `.github/nightly-paths.txt`, has one line per path: `<job id> <tier> <path or directory/>`. It
+covers all 12 of `ci.yml`'s non-PR test jobs:
+- **nightly:** M7, M8, FR.7, the harness, the scale harness and the release build;
+- **weekly:** M6's two, the M8 leak battery, the House doctrines and the bot's two win rates.
+
+The map is deliberately the paths a story's pins move with, not everything it runs:
+- mush-core's `action_state`: the timers, grace windows and terminal capacity;
+- the economy and the market a story buys through;
+- the minds and the registry;
+- each job's own test modules.
+
+A nightly that breaks on a path the map did not name widens its line in the PR that fixes the nightly.
+
+**The advice.** `scripts/nightly_advice.py [<base> [<head>]]` prints the jobs a change should dispatch, with
+the `gh workflow run CI --ref <branch>` line to do it.
+- **Locally** it defaults to this branch against `origin/main`.
+- **In CI**, the `lint` cell runs it on every pull request against the PR's base (fetched, since the checkout is
+  one commit deep). It writes a warning annotation and the step summary.
+- **It is advice, never a failure** (`continue-on-error`, exit 0). The rule is the PR author's to keep.
+- **Run against #475** (`13c72c21`^1..`13c72c21`), it names `mind-commerce-acceptance` and `m8-gate-stories` (17 and 20
+  files under `mush-core/src/action_state/` and `mush-economy/src/`), plus `scale` and `release` (for
+  `Cargo.lock`).
+
+**The guard**, `ci_policy::nightly_paths`, reads `ci.yml`'s jobs and their job-level `if:`. A Sunday-schedule
+`if:` makes a job weekly; any other schedule, nightly; `workflow_dispatch` alone, dispatch. It refuses:
+- a mapped job ci.yml does not have;
+- a non-PR job with no line (`nightly-report` is exempt: it tests nothing);
+- a tier that disagrees with the `if:`;
+- a path that does not exist;
+- a workflow that no longer runs the advice.
+
+A third test pins the tier reading on the three schedule spellings.
+
+**No dispatch selector was added.** `gh workflow run CI` runs every non-PR job at once, in parallel, at the fast
+pulse unless `-f mind_pulse_ms=1000` is given. A per-job `only` input would have meant an `if:` edit in thirteen
+jobs, for a saving the hosted runners do not need.
+
+**Refined the same day: the gate is the fast run** (owner, relayed 2026-11-05). In the owner's words: "we can
+leave the slow-run for the next nightly, or maybe have it fire off the nightly but not wait for it (otherwise we
+add 3+ hours to landing any PR touching a nightly)."
+- **Rule #15 now gates on the fast pace.** That is the CI dispatch with `mind_pulse_ms` empty, the M7 stories'
+  50-ms pulse; every other non-PR job has no pace input and runs as it does nightly.
+- **The real pace is not a gate.** Production's 1,000-ms pulse, the schedule's always, belongs to the next
+  nightly. It may also be fired with `-f mind_pulse_ms=1000` and left: `nightly-report` runs on dispatches too,
+  so its failure reaches the owner through D-43-3's channel, not the PR.
+- **The script follows.** `scripts/nightly_advice.py` prints the fast command as the gate and the real-pace one
+  as optional. `--dispatch` fires the fast run for the current branch, and `--dispatch --real-pace-too` also
+  fires the real-pace run, unwaited.
+- **The map's header and the lint step's comment** say "fast pace".
