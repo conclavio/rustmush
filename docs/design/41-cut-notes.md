@@ -627,3 +627,41 @@ room — and a minute more of fires seeds nothing again.
   hull's, since the class word reads only the Dray family. RS.6b gives it a word when the arm flies it.
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## RS.6b — Tycho Mutual's house arm flies a retrieval (2026-11-04)
+
+Row: §6 RS.6, its second slice; §4.4 "How it reaches a site", Q-41-11, Q-41-15. No lane rows. Stacked on
+RS.6a (#455); carries the production fix #464 (a plan's fill before a site departure buys the leg home).
+
+**Built.**
+
+- **The dispatcher acts for the house** (house step 1b): grants on Tycho's root scope of
+  `economy.account.post` (so `acts_for`, `helm_hulls`, the title views and `retrieval::held_by` answer it) and
+  `vault.withdraw` (the org-owned hold takes a plan's buys: `may_take_from_vault` reads that capability for an
+  organization's vault). **Its float** (step 1c): its own `tacsim.credit` account, which a sailing tops up to
+  20,000 cr from Tycho's (`house_arm::FLOAT_MINOR`, provisional), since a plan's buy pays from its author's own.
+- **Aboard and at the helm**: `voyage::aboard` and `coop::helm_holder` gain a house-dispatcher branch beside the
+  Occator Yard's (`house::is_dispatcher_of`, `house::house_of`); a house hull flown by its dispatcher carries it as
+  her one occupant (`prepare_departure`'s count; the dispatcher is a Thing `souls_aboard` does not count).
+- **The arm** (`port/house_arm.rs`, the port tick's `Arm::House`, agent and principal the dispatcher): one act a
+  fire through each production path, inside `Fire::as_principal` — the sail (the dispatcher boards; a sailing
+  plan: `buy propellant fill`, `buy provisions fill`, `depart <site>`, run by the order arm as its author), the
+  crawler's launch, the drive beside her, the tow, the drive to the ramp, the load, the recover, the voyage home
+  (`+ship/lift`), and the berth into the home workshop (`bay_work::berth`, which posts the delivery; a lease rig
+  goes to its shed and the delivery is posted). `next_act` re-derives the next act every fire from where the
+  casualty, the crawler and the lifter stand: nothing about a job's progress is stored.
+
+**Story.** `tacsim` `tests/shard_7/house_arm_rs6b.rs` at 256 (Ahuna) and 512 (Urvara): Occator's dead rig on the
+ground, its retrieval to Ceres unaccepted for the window and handed to Tycho, flown by the arm end to end and
+berthed in Ceres's workshop, the delivery posted.
+
+**Divergences.**
+
+- **Story (d) is owed in this PR**: the carrier wreck at 256 t laden with her two wrecked rigs, taken by the
+  crawler and lifted. The no-acceptor story proves the arm's whole path on a rig.
+- **The dispatcher moves into the workshop room** for the berth and back out: `berth` reads the berther's
+  location, and the dispatcher has no walk.
+- **The float**: a house's sailing buys through its dispatcher's own account, topped from the house's; the house
+  account itself never buys (the plan's buy pays from its author's own account by design).
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
