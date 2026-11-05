@@ -1088,6 +1088,76 @@ fn fee_spec(
     }
 }
 
+/// **Where a house's restoration of a hull stands** (doc 41 cut RS.6c-2): `house_repair`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HouseRepair {
+    /// An order is open on her, or its settlement is owed: nothing to order now.
+    Busy,
+    /// No repair the workshop can take is left in her quote.
+    Done,
+    /// The next order: its selector, and the goods it draws from the carrier's hold.
+    Order {
+        /// The `+bay/order` selector.
+        selector: String,
+        /// The goods drawn.
+        goods: Vec<GoodUnits>,
+        /// The workshop's fee, minor units (escrowed from the requester's account).
+        fee_minor: u64,
+    },
+}
+
+/// **The house's next restoration order on `hull`** (doc 41 cut RS.6c-2): every repair job in her
+/// quote where she stands, by target, with no rearm (she is sold with her magazines as found) and
+/// at most one part from the stores (an order takes one, [`ONE_STORE_PART`]); a part the stores
+/// do not stock now is left out, and she is sold without it once nothing else is left.
+///
+/// # Errors
+///
+/// The quote's refusal, or an unreadable record.
+pub(crate) fn house_repair(ctx: &Ctx<'_>, hull: ObjId) -> Result<HouseRepair, String> {
+    let record = record_of(ctx.w, hull).map_err(str::to_owned)?;
+    if record.open().is_some() || record.owed.is_some() {
+        return Ok(HouseRepair::Busy);
+    }
+    let (facility, quote) = quote_here(ctx.w, hull)?;
+    let fits = |picked: &[QuotedJob]| {
+        picked.len() <= MAX_ORDER_JOBS
+            && picked.iter().all(|j| j.job.is_repair())
+            && picked
+                .iter()
+                .filter(|j| matches!(j.job, BayJob::Replace { lot: None, .. }))
+                .count()
+                <= 1
+    };
+    let mut words: Vec<&str> = Vec::new();
+    for job in quote.jobs.iter().filter(|j| j.job.is_repair()) {
+        let word = job.job.target();
+        if words.contains(&word) {
+            continue;
+        }
+        if let BayJob::Replace { component, .. } = &job.job
+            && store_part(ctx, hull, &facility, component).is_err()
+        {
+            continue;
+        }
+        words.push(word);
+        if !quote.select(&words.join(",")).is_some_and(|p| fits(&p)) {
+            words.pop();
+        }
+    }
+    if words.is_empty() {
+        return Ok(HouseRepair::Done);
+    }
+    let selector = words.join(",");
+    let picked = quote.select(&selector).unwrap_or_default();
+    let (goods, _) = order_goods(ctx.w, hull, &picked, record.bale);
+    Ok(HouseRepair::Order {
+        selector,
+        goods,
+        fee_minor: BayQuote::fee_minor(&picked),
+    })
+}
+
 /// What a taken order reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Taken {

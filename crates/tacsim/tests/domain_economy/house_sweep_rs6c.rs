@@ -241,6 +241,7 @@ fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
             break;
         }
     }
+    let (lifter, _) = tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     let dispatcher = tacsim::port::house::dispatcher(rig.tw.world(), &ceres).expect("dispatcher");
     let tycho = {
         let map = port_map(&rig.tw, "ceres_port");
@@ -270,7 +271,18 @@ fn rs6c_tycho_titles_and_sweeps_an_ownerless_wreck() {
         {
             claimed = true;
         }
-        let t = rig.tw.world().now().saturating_add(1);
+        // Faster while the lifter is under way or a restoration (RS.6c-2) is in the workshop.
+        let step = if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter),
+            tacsim::port::ship::Berth::UnderWay
+        ) {
+            300
+        } else if tacsim::port::bay_work::under_work(rig.tw.world(), wreck) {
+            60
+        } else {
+            1
+        };
+        let t = rig.tw.world().now().saturating_add(step);
         rig.tw.set_now(t);
         let _ = second(&mut rig);
     }

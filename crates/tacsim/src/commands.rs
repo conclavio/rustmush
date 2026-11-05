@@ -367,7 +367,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `@unitgrant/issue` would make), on a block ONE `claim` op of the tow action. Doc 41 cut
     // RS.5: `/jobs` reads; `/retrieve` and `/accept` preview, and `go` is the economy's own API
     // (one retrieval contract posted and escrowed by the poster, or joined by the acceptor) and
-    // one `tacsim:retrieval:` document.
+    // one `tacsim:retrieval:` document. RS.6c-2: `/forsale` reads; `/buy` previews, and `go` files
+    // one sale contract (the buyout's shape) the house accepts.
     reg.command(
         CommandSpec {
             name: crate::surface::claim::SALVAGE_VERB.into(),
@@ -381,6 +382,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "retrieve",
                 "jobs",
                 "accept",
+                "forsale",
+                "buy",
             ]
             .iter()
             .copied()

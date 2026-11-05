@@ -708,6 +708,48 @@ and scraps it; Tycho's account takes the credit; the site's index is clear of he
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
 
+## RS.6c-2 — Tycho Mutual's sweep, the resale half (2026-11-05)
+
+Row: §6 RS.6, its last slice; §4.4 "On its own account", Q-41-16. No lane rows (IN.11 holds v30, the 28-IC-day
+timers v31; this cut takes none). Stacked on main after RS.6c-1 (#469).
+
+**Defaults (the owner kept both, 2026-11-04).**
+
+1. **The supply leg**: the restoration's bale goods (whole tonnes of `structural_alloys` and `industrial_parts`,
+   drawn from the carrier's hold at completion, GC.8b) are bought by the house's lifter on a sailing plan to
+   Stickney (`house_arm::SUPPLY_VENUE`), then the repair.
+2. **The sale is the buyout's contract shape** (D-18-21, `port/buyout.rs::buyout_spec`): `+salvage/forsale` lists
+   the houses' kept hulls at the design's reference price, and a buy verb files the contract.
+
+**Built.**
+
+- **The restoration** (`house_arm::restore_act`, the berthed-and-kept branch of the sweep, while her title is still
+  the dispatcher's — its right in the bay): `bay_work::house_repair` reads the next order from her quote where she
+  stands — every repair job by target, no rearm (she is sold with her magazines as found), at most one part from
+  the stores (`ONE_STORE_PART`), a part the stores do not stock now left out — with its goods and fee. Goods short
+  in the lifter's hold: `HouseAct::Supply` sails her to Stickney (fill, depart), `HouseAct::Stock` buys the
+  shortfall there (`buy <good> <n>`, then fill, depart home); the float is topped up to `FLOAT_MINOR` plus twice
+  the goods' references (`top_up`, shared with RS.6b's sail). With the goods aboard and the lifter docked at Ceres,
+  `HouseAct::Repair` tops the float up by the fee, steps the dispatcher into the workshop room and takes the order
+  (`bay_work::take_order`). While it is open the arm waits and **a retrieval waits too** (the lifter must stay
+  docked: the goods are drawn from her hold at completion). With nothing left to order, `HouseAct::Keep` passes her
+  title to Tycho as RS.6c-1 built.
+- **The sale** (`port/house_sale.rs`, stateless): `for_sale` reads every house port's workshop room for hulls
+  titled to its operator, not scrapped and not under work, at `reference_price_minor`. `+salvage/forsale` lists
+  them (less any with a live sale contract); `+salvage/buy <hull> [go]` previews, and `go` offers `sale_spec` — the
+  buyer's escrow, an `Exact` payout to the house's account, `TitleHeld{hull, house}` and an hour's `Before`, one
+  `TitleTransfer` house → buyer — then the house accepts through `PortPartyCaps` (`accept_contract_as`). The title
+  passes at the next settlement; a second buy while one is live is refused (`pending`, by the contract's name).
+  She stays berthed until the buyer stows her into a carrier of theirs.
+- **Bot vocabulary**: `+salvage/forsale` and `+salvage/buy #<n> [go]` are in (`mush-bot` `mine/salvage.rs`).
+
+**Story.** `tacsim` `tests/domain_economy/house_resale_rs6c2.rs` at 256 and 512: Occator's spare rig, her chassis
+destroyed, unclaimed for 57 IC days; Tycho sweeps, claims and berths her, assesses her under her line, runs the
+supply leg to Stickney, restores her and takes her title; the pilot finds her in `+salvage/forsale`, buys her, and
+her title and the price change hands.
+
+**Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
 ## RS.10 — the landholder consent step (ruled 2026-11-04; not built)
 
 Added to the plan after RS.6c-2, one PR. It is RS.6c-1's named future cut: Tycho's sweep reaches a player's claimed

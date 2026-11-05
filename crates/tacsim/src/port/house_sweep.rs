@@ -18,7 +18,7 @@
 //! the full restoration quote — the workshop's fee (labour at the operator's multiplier and every
 //! replaced part) and the bale's alloys and fittings at their references — against the design's
 //! reference price less [`RESALE_MARGIN_PERMILLE`]. Under the line she is **kept**: her title passes
-//! to the house (cut RS.6c-2 repairs and offers her for sale). Over it, past repair, or a design the
+//! to the house (cut RS.6c-2 repairs her first and offers her for sale, `crate::port::house_sale`). Over it, past repair, or a design the
 //! yard does not bill, she is **scrapped** at the workshop under IN.8, and the scrap's credit, paid
 //! into the dispatcher's float, goes back to the house's account.
 
