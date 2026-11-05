@@ -743,7 +743,7 @@ mod tests {
         for _ in 0..80 {
             let n = yard_index(&records);
             assert!(
-                n < HOUSE_POOL_BASE || n > HOUSE_POOL_BASE + 1,
+                !(HOUSE_POOL_BASE..=HOUSE_POOL_BASE + 1).contains(&n),
                 "a house seed's index: {n}"
             );
             assert!(issued.insert(n), "index {n} issued twice");
