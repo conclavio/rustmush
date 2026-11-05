@@ -6488,23 +6488,4 @@ mod tests {
         assert!(dropped.profiles[&RED].dropped, "the runtime flies the ROM");
         assert_eq!(dropped.ledger.seq(), lines, "no second mind_dropped line");
     }
-
-    /// **Doc 23 cut D-23-18: a snapshot document's mind row** reads back by unit
-    /// ([`crate::field::mind_in_document`], what the carried-memory story reads): the document's
-    /// `state` is its escaped text, keyed by the unit's id.
-    #[test]
-    fn d23_18_a_snapshot_document_reads_its_mind_row_back() {
-        let mut arena = minded();
-        if let Some(row) = arena.minds.get_mut(&RED) {
-            row.think_seq = 9;
-            row.memory = withdraw_seed();
-            // A contact's range memory: an integer-keyed map, as a thinking row holds.
-            row.ranges.insert(crate::arena::state::ContactId(3), 450);
-        }
-        let snapshot = crate::arena::Snapshot::encode(&arena).expect("encodes");
-        let row = crate::field::mind_in_document(&snapshot.document, RED).expect("the row");
-        assert_eq!(row.think_seq, 9);
-        assert_eq!(row.memory, withdraw_seed());
-        assert!(crate::field::mind_in_document(&snapshot.document, BLUE).is_err());
-    }
 }

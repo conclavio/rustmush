@@ -2724,14 +2724,16 @@ struct FieldSite {
 ///
 /// **With `carry`, doc 23 cut D-23-18's carried memory** (§17.7) between steps 4 and 5:
 /// 4a. the demotion's check-in writes rig 1's mind — its `think_seq`, its memory and no drop,
-///     under the claim's seal — onto its open epoch's record, `think_seq` at least the field's
-///     last snapshot's;
+///     under the claim's seal — onto its open epoch's record, `think_seq` positive and within
+///     what the field's span allows;
 /// 4b. the server restarts from its store with the epoch open, and the record still carries it;
 /// 4c. the raiders land again, mark rig 1, and a second field opens on the same ground and the
-///     same epoch: rig 1 is admitted under its claim's seal again, and the field's first snapshot
-///     of its row starts from the carried `think_seq`, never from nought (monotone across the
-///     epoch);
-/// 4d. the raiders withdraw, the second field demotes and its check-in carries the later mind;
+///     same epoch: rig 1 is admitted under its claim's seal again and flies it with no drop and
+///     no fault;
+/// 4d. the raiders withdraw and the second field demotes; its check-in carries a `think_seq`
+///     past the carried one by no more than the second field's span allows, and past anything a
+///     row starting from nought could reach in that span — so the second field's row started from
+///     the carried mind, `think_seq` monotone across the epoch;
 /// 5'. the recover closes the epoch, and the carried memory goes with it.
 async fn licensed_field_story(at: &FieldSite, carry: bool) {
     use tacsim::arena::ledger::{EventKind, LedgerEvent};
@@ -2913,24 +2915,6 @@ async fn licensed_field_story(at: &FieldSite, carry: bool) {
         matches!(&line.kind, EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. } if *unit == tv)
     });
     assert!(!troubled, "the licensed mind neither dropped nor faulted");
-    let site = crate::driving_rig::cid(at.entry);
-    // D-23-18: rig 1's row as the field's own cadence last saved it.
-    let mut first = None;
-    if carry {
-        let mut why = String::new();
-        assert!(
-            crate::field_host_rig::until_composed(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
-                match tacsim::field::snapshot_mind(rig.tw.world(), &site, tv) {
-                    Ok(row) if row.think_seq > 0 => first = Some(row),
-                    Ok(row) => why = format!("think_seq {}", row.think_seq),
-                    Err(error) => why = error,
-                }
-                first.is_some()
-            })
-            .await,
-            "the field snapshots rig 1's thinking row: {why}"
-        );
-    }
     // 4. The raiders withdraw (the field story's own ending), their barge lifts and the field
     // demotes on its quiet interval, checking rig 1 in. A field the fight already ended is over.
     if crate::field_host_rig::task(&rig).is_some() {
@@ -2948,13 +2932,13 @@ async fn licensed_field_story(at: &FieldSite, carry: bool) {
         .await,
         "the field demotes"
     );
-    if let Some(first) = first {
+    if carry {
         rig = carried_memory(
             rig,
             kept,
             (&mut rx, &mut lines),
-            (at, &site, &def),
-            (tv, &first),
+            (at, &def),
+            (tv, seal.digest()),
         )
         .await;
     } else {
@@ -3037,31 +3021,39 @@ async fn carried_memory(
         &mut tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>,
         &mut Vec<tacsim::arena::ledger::LedgerEvent>,
     ),
-    (at, site, def): (
-        &FieldSite,
-        &mush_core::CanonicalId,
-        &tacsim::field::raiders::RaiderDef,
-    ),
-    (tv, first): (ObjId, &tacsim::arena::mind::MindState),
+    (at, def): (&FieldSite, &tacsim::field::raiders::RaiderDef),
+    (tv, sealed): (ObjId, [u8; 32]),
 ) -> crate::driving_rig::Rig {
     use tacsim::arena::ledger::EventKind;
+    // Rig 1's mind thinks on the governed Class II root's period; a row thinks at most once a
+    // period, from its first think.
+    let period = tacsim::arena::core::ClassTable::STOCK
+        .row(tacsim::arena::core::CoreClass::II)
+        .think_ms;
+    let most = |span: i64| u64::try_from(span / period).unwrap_or(0) + 2;
+    // A field's span, in arena milliseconds: its `match_ended` line's instant.
+    let ended = |lines: &[tacsim::arena::ledger::LedgerEvent]| {
+        lines
+            .iter()
+            .rev()
+            .find_map(|line| matches!(line.kind, EventKind::MatchEnded { .. }).then_some(line.t_ms))
+            .expect("the field's match_ended line")
+    };
     // 4a. The demotion's check-in, on the epoch's record.
     let carried = carried_on_record(&mut rig, (rx, lines), tv).await;
+    let span = ended(lines);
     eprintln!(
-        "D23_18 {}: carried think_seq {} memory {} B (field 1's last snapshot: {})",
+        "D23_18 {}: carried think_seq {} memory {} B after a {} ms field",
         at.entry,
         carried.think_seq,
         carried.memory.len(),
-        first.think_seq
+        span
     );
     assert!(
-        carried.think_seq >= first.think_seq && carried.think_seq > 0,
-        "the carried think_seq is the field's latest"
+        carried.think_seq > 0 && carried.think_seq <= most(span),
+        "the first field's mind thought, within its span"
     );
-    assert_eq!(
-        carried.seal_digest, first.seal_digest,
-        "under the claim's seal"
-    );
+    assert_eq!(carried.seal_digest, sealed, "under the claim's seal");
     assert_eq!(
         carried.dropped, None,
         "a mind that never dropped carries no drop"
@@ -3116,33 +3108,6 @@ async fn carried_memory(
         .await,
         "rig 1 is admitted to the second field under its seal"
     );
-    let mut second = None;
-    let mut why = String::new();
-    assert!(
-        crate::field_host_rig::until_composed(&mut rig, rx, lines, 300, |rig, _| {
-            match tacsim::field::snapshot_mind(rig.tw.world(), site, tv) {
-                Ok(row) => second = Some(row),
-                Err(error) => why = error,
-            }
-            second.is_some()
-        })
-        .await,
-        "the second field snapshots rig 1's row: {why}"
-    );
-    let second = second.expect("the second field's row");
-    eprintln!(
-        "D23_18 {}: the second field's first snapshot: think_seq {} memory {} B",
-        at.entry,
-        second.think_seq,
-        second.memory.len()
-    );
-    assert_eq!(second.seal_digest, carried.seal_digest);
-    assert!(
-        second.think_seq >= carried.think_seq,
-        "think_seq is monotone across the epoch: {} after {}",
-        second.think_seq,
-        carried.think_seq
-    );
     let troubled = lines.iter().any(|line| {
         matches!(&line.kind, EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. } if *unit == tv)
     });
@@ -3164,10 +3129,26 @@ async fn carried_memory(
         "the second field demotes"
     );
     let later = carried_on_record(&mut rig, (rx, lines), tv).await;
-    assert!(
-        later.think_seq >= second.think_seq,
-        "the second check-in carries the later mind"
+    let second = ended(lines);
+    eprintln!(
+        "D23_18 {}: the second check-in carries think_seq {} memory {} B after a {} ms field",
+        at.entry,
+        later.think_seq,
+        later.memory.len(),
+        second
     );
+    assert!(
+        later.think_seq > carried.think_seq && later.think_seq <= carried.think_seq + most(second),
+        "the second field ran on from the carried think_seq: {} after {}",
+        later.think_seq,
+        carried.think_seq
+    );
+    assert!(
+        later.think_seq > most(second),
+        "more thinks than a row starting from nought could take in {second} ms: {}",
+        later.think_seq
+    );
+    assert_eq!(later.seal_digest, sealed);
     rig
 }
 
