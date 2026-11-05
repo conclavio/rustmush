@@ -31,9 +31,9 @@ mod geology_keyed;
 mod grounds_rig;
 #[path = "support/field/site_record_rig.rs"]
 mod site_record_rig;
+mod support;
 #[path = "support/field/surrender_rig.rs"]
 mod surrender_rig;
-mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
