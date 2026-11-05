@@ -338,6 +338,39 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
     Ok(out)
 }
 
+/// One `tacsim.matter_lot` line a lot of `good`: the lot, its quantity, its vault, the vault's
+/// name and owner.
+fn lot_lines(ctx: &Ctx<'_>, good: &CanonicalId) -> Vec<String> {
+    let Some(inventory) = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|h| h.inventory.clone())
+    else {
+        return Vec::new();
+    };
+    let economy = ctx.w.module_state::<mush_economy::EconomyStore>();
+    let mut out = Vec::new();
+    scan(ctx, &inventory.lots, |lot| {
+        if lot.commodity() != good || out.len() >= 64 {
+            return;
+        }
+        let vault = lot.endpoint().vault();
+        let (name, owner) = economy
+            .and_then(|e| e.snapshot().vault(vault).cloned())
+            .map_or_else(
+                || ("?".to_owned(), "?".to_owned()),
+                |v| (v.name.to_string(), format!("{:?}", v.owner)),
+            );
+        out.push(format!(
+            "tacsim.matter_lot {} x{} vault#{} \"{name}\" owner={owner}",
+            lot.id(),
+            lot.quantity(),
+            vault.0
+        ));
+    });
+    out
+}
+
 /// **`@industry/census`** (staff): the census line, then one build line a commission.
 ///
 /// # Errors
@@ -348,6 +381,14 @@ pub(crate) fn census_cmd(ctx: &mut Ctx<'_>) -> Result<(), mush_core::CmdError> {
     crate::commands::require_enabled(ctx)?;
     let census = take(ctx).map_err(mush_core::CmdError::msg)?;
     let actor = ctx.actor;
+    // `@industry/census <good>`: where every lot of that good stands (a staff diagnostic).
+    let raw = ctx.args.raw().trim().to_owned();
+    if !raw.is_empty() {
+        let good = CanonicalId::new(&raw).map_err(|_| mush_core::CmdError::msg("No such good."))?;
+        for line in lot_lines(ctx, &good) {
+            ctx.out.sys_to_actor(actor, "tacsim", line);
+        }
+    }
     ctx.out.sys_to_actor(actor, "tacsim", census.line());
     for line in census.build_lines() {
         ctx.out.sys_to_actor(actor, "tacsim", line);

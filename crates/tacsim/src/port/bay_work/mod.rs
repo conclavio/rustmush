@@ -1138,7 +1138,9 @@ pub fn fit_order(ctx: &mut Ctx<'_>, hull: ObjId, slot: &str, lot: LotId) -> Resu
     if part.fitted_into.is_some() {
         return Err("That part has already been fitted.".to_owned());
     }
-    if act::lot_hold(ctx, lot)?.is_some() {
+    // Doc 39 cut IN.11: a hold this context cannot read (the inventory's family) is not read as
+    // one; the bay act's prepare holds and consumes the lot inside its own transaction.
+    if matches!(act::lot_hold(ctx, lot), Ok(Some(_))) {
         return Err("That part is held for a sale or another order.".to_owned());
     }
     take(ctx, hull, slot, Some((lot, part)))

@@ -69,7 +69,7 @@ fn part_lot_named(ctx: &Ctx<'_>, hull: ObjId, good: &str) -> Result<mush_invento
         crate::port::works::lots_in(ctx, mush_inventory::record::EndpointRef(vault))
             .into_iter()
             .filter(|(lot, held, _)| {
-                *held == good && super::act::lot_hold(ctx, *lot).is_ok_and(|hold| hold.is_none())
+                *held == good && !matches!(super::act::lot_hold(ctx, *lot), Ok(Some(_)))
             })
             .map(|(lot, ..)| lot)
             .collect();

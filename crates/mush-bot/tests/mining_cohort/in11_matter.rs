@@ -139,8 +139,23 @@ pub(super) async fn matter_story(miner: Miner) {
     let site = miner.site.word();
     let stamp = |what: &str| println!("in11 {site}: +{} s {what}", started.elapsed().as_secs());
 
-    // ---- The window opens ----
-    let (before, _) = census(&mut god).await;
+    // ---- The window opens, once the houses' boot builds have settled (Tycho's house, doc 41
+    // RS.6a, commissions on its first fires): the census's balance holds still three reads ----
+    let mut before = census(&mut god).await.0;
+    let mut steady = 0;
+    for _ in 0..60 {
+        god.idle(Duration::from_secs(5)).await;
+        let now = census(&mut god).await.0;
+        if now == before {
+            steady += 1;
+            if steady >= 3 {
+                break;
+            }
+        } else {
+            steady = 0;
+            before = now;
+        }
+    }
     stamp(&format!("census: balance {before}"));
 
     // ---- The mining loop: the lane's own, to the hold sold at the Exchange ----
@@ -299,7 +314,6 @@ pub(super) async fn matter_story(miner: Miner) {
     .await;
     let mark = works::commissioned(&text, order).expect("the commission's mark");
     stamp(&format!("the yard commissions the prospector as {mark}"));
-    typed(&mut client, "+ship/leave", &[lines::ROOM_GALLERY], &[]).await;
     walk(
         &mut client,
         &[
@@ -322,6 +336,20 @@ pub(super) async fn matter_story(miner: Miner) {
     // ---- A light plant sold into the Yards' bid ----
     let rows = super::board_rows(&mut client).await;
     let bid = works::bid_row(&rows, "light power plant").expect("the Yards' light-plant bid");
+    // The bid's take as the market reads it (the preview), and the census's lots (diagnostics).
+    let (_, preview) = typed(
+        &mut client,
+        &format!("+market/sell {}", bid.number),
+        &["sell", "Sell", "buying"],
+        &[],
+    )
+    .await;
+    stamp(&format!("the sale's preview: {}", lines::normalise(&preview)));
+    let (_, lines_now) = god
+        .answer(&format!("@industry/census {PLANT}"), &["tacsim.matter_census"])
+        .await;
+    god.idle(Duration::from_secs(2)).await;
+    stamp(&format!("census before the sale: {}", lines::normalise(&lines_now)));
     let (_, sold) = typed(
         &mut client,
         &format!("+market/sell {}=1", bid.number),

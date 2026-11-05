@@ -1300,6 +1300,14 @@ impl MarketLotProvider {
             .filter(|marker| mush_inventory::is_marker_id(marker))
             .map(smol_str::SmolStr::new)
             .ok_or_else(rejected)?;
+        // The lot must be free: a lot a listing or an order holds is never sold out from under it.
+        if txn
+            .get(&self.families.lot_holds, &lot)
+            .map_err(|_| rejected())?
+            .is_some()
+        {
+            return Err(rejected());
+        }
         let moved = self
             .families
             .relocate_marked(

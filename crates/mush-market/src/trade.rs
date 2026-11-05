@@ -1806,7 +1806,7 @@ fn held_for_sale(
 ) -> Result<u64, MarketError> {
     // Doc 39 cut IN.11: an indivisible good is held as its free lots, never as a pool.
     if crate::module::lot_supply(ctx.w).is_some_and(|f| f.is_indivisible(commodity)) {
-        return Ok(u64::try_from(sale_lots(ctx, actor, source, commodity).len()).unwrap_or(0));
+        return Ok(u64::try_from(sale_lots(ctx, actor, source, commodity)?.len()).unwrap_or(0));
     }
     let Ok(pool) = crate::lot::pool_available(ctx, source, commodity) else {
         return Err(MarketError::bad(SOURCE_UNREADABLE));
@@ -1847,9 +1847,9 @@ fn sale_lots(
     actor: ObjId,
     source: mush_inventory::EndpointRef,
     commodity: &mush_core::CanonicalId,
-) -> Vec<mush_inventory::LotId> {
+) -> Result<Vec<mush_inventory::LotId>, MarketError> {
     let Some(families) = crate::module::lot_supply(ctx.w) else {
-        return Vec::new();
+        return Err(MarketError::bad(SOURCE_UNREADABLE));
     };
     let seller = PrincipalId::Object(actor);
     let flying: std::collections::BTreeSet<mush_inventory::LotId> = ctx
@@ -1865,17 +1865,22 @@ fn sale_lots(
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_LOT_PAGES {
-        let Ok(page) = ctx.scan_action_state(&families.lots, cursor.as_deref(), LOT_PAGE) else {
-            break;
-        };
+        // A lot family the market cannot read is refused, never read as no lots.
+        let page = ctx
+            .scan_action_state(&families.lots, cursor.as_deref(), LOT_PAGE)
+            .map_err(|error| MarketError::bad(format!("{SOURCE_UNREADABLE} ({error})")))?;
         for entry in page.entries() {
             let lot = entry.value();
             if lot.endpoint() == source
                 && lot.commodity() == commodity
                 && !flying.contains(&lot.id())
+                // A hold the market's context cannot read is not read as one (the stock
+                // clerk's rule); the Deliver prepare refuses a held lot inside its transaction.
                 && ctx
                     .action_state(&families.lot_holds, &lot.id())
-                    .is_ok_and(|hold| hold.is_none())
+                    .ok()
+                    .flatten()
+                    .is_none()
             {
                 out.push(lot.id());
             }
@@ -1886,7 +1891,7 @@ fn sale_lots(
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// What a sale into a standing bid could take now (doc 20 cut SM.5, §7.2): read-only.
@@ -2167,7 +2172,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             return Err(MarketError::bad(ONE_LOT_A_SALE));
         }
         Some(
-            sale_lots(ctx, actor, source, &commodity)
+            sale_lots(ctx, actor, source, &commodity)?
                 .first()
                 .copied()
                 .ok_or_else(|| MarketError::bad(SOURCE_UNREADABLE))?,
