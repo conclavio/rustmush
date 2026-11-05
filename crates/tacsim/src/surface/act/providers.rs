@@ -1132,16 +1132,10 @@ impl SurfaceActProvider {
                 .as_deref()
                 .and_then(|context| context.world().ok())
                 .map(|world| crate::minds::ic_sortie::claim_of(world, tv));
-            match (record.queued.as_ref(), record.claim.as_deref()) {
-                (
-                    Some(crate::surface::excursion::Queued {
-                        launch: Some(_),
-                        operator,
-                        hull,
-                        ..
-                    }),
-                    Some(crate::surface::excursion::ClaimCursor::Opening { .. }),
-                ) if *operator == actor => {
+            let base = refused_base(&record, actor);
+            match base {
+                Some(hull) => {
+                    let hull = &hull;
                     record.claim = Some(Box::new(match book {
                         // Doc 23 cut S.4b-3 (D-23-23 step 5): the claim opened but its launch
                         // never ran — the rig never left its bay, so the claim closes
@@ -1190,7 +1184,7 @@ impl SurfaceActProvider {
                     return Ok(AuthoritativeActionOutput::new(outcome)
                         .with_eligible_witnesses(vec![invocation.principal().clone()]));
                 }
-                _ => {
+                None => {
                     return Err(port_error(
                         ActionErrorCode::Conflict,
                         "that rig's mind claim is not waiting to open",
@@ -2924,6 +2918,32 @@ fn seal_mark(
             "tacsim: rig #{}'s seal mark was refused; the launch completes without it",
             tv.0
         );
+    }
+}
+
+/// **The hangar a `claim: refused` start closes an opening claim into** (doc 23 cut S.4b-3,
+/// D-23-23 step 5): the queued launch's hull, when `actor` queued it; or — doc 38a F-23.4 — the
+/// hull a staff `close` or `home` named on its receipt when it cleared the queue under the
+/// opening claim, with no act in flight. `None` refuses the start: the claim is not waiting to
+/// open.
+pub(super) fn refused_base(record: &RigRecord, actor: ObjId) -> Option<ObjId> {
+    use crate::surface::excursion::{ClaimCursor, Queued};
+    match (record.queued.as_ref(), record.claim.as_deref()) {
+        (
+            Some(Queued {
+                launch: Some(_),
+                operator,
+                hull,
+                ..
+            }),
+            Some(ClaimCursor::Opening { .. }),
+        ) if *operator == actor => Some(*hull),
+        (None, Some(ClaimCursor::Opening { operator, .. }))
+            if *operator == actor && record.act.is_none() =>
+        {
+            record.recovery.as_ref().map(|receipt| receipt.hull)
+        }
+        _ => None,
     }
 }
 

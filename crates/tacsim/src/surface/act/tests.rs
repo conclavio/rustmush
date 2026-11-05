@@ -848,3 +848,48 @@ fn f02_a_launch_that_never_left_owes_its_claim_close() {
         assert_eq!(record.claim.map(|c| *c), owed, "the claim's Close is owed");
     }
 }
+
+/// **Doc 38a F-23.4: an opening claim whose queue a staff act cleared can be cancelled.** The
+/// `claim: refused` start closes it into the hull the staff receipt named; with an act in
+/// flight, or another operator, it is not waiting to open.
+#[test]
+fn f23_4_a_cleared_opening_claim_takes_its_base_off_the_staff_receipt() {
+    use crate::surface::excursion::ClaimCursor;
+    let mut record = RigRecord::fresh_unread(ObjId(7));
+    record.claim = Some(Box::new(ClaimCursor::Opening {
+        operator: ObjId(42),
+        licence: 7,
+        org: None,
+        launch_ic: 1_000,
+        tries: 0,
+    }));
+    assert_eq!(
+        super::providers::refused_base(&record, ObjId(42)),
+        None,
+        "no receipt"
+    );
+    record.recovery = Some(Box::new(crate::surface::recovery::RecoveryReceipt {
+        ordinal: 1,
+        staff: ObjId(1),
+        operator: ObjId(42),
+        hull: ObjId(500),
+        slot: 1,
+        operation: crate::surface::recovery::RecoveryOperation::Close,
+        at_ic: 1_100,
+        pending: false,
+        bay_room: None,
+        bay_slot: None,
+        moved: BTreeMap::new(),
+        into: None,
+        abandoned: false,
+    }));
+    assert_eq!(
+        super::providers::refused_base(&record, ObjId(42)),
+        Some(ObjId(500))
+    );
+    assert_eq!(
+        super::providers::refused_base(&record, ObjId(43)),
+        None,
+        "another's"
+    );
+}

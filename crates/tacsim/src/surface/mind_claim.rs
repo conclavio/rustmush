@@ -89,11 +89,23 @@ pub(crate) fn step(
                 if let Some(ticket) = arm.opens.remove(&tv) {
                     let _ = host.acknowledge(ctx.w, &ticket);
                 }
-                start.map_or(Step::Refused, |start| {
-                    submit_launch(ctx, fire, start, record, *operator)
-                })
+                // Doc 38a F-23.4: a staff `close` or `home` cleared the queued launch under the
+                // opening claim; the claim opened anyway, so it is cancelled
+                // (`PoweredDownInBase`), never left for a launch that will not come.
+                if queued_launch(record) {
+                    start.map_or(Step::Refused, |start| {
+                        submit_launch(ctx, fire, start, record, *operator)
+                    })
+                } else {
+                    refuse(ctx, fire, start, record)
+                }
             }
             ClaimRead::Active { .. } => Step::Refused,
+            // Doc 38a F-23.4: no launch is queued and no Open is in flight: the claim is refused,
+            // never opened only to close.
+            ClaimRead::None if !queued_launch(record) && !arm.opens.contains_key(&tv) => {
+                refuse(ctx, fire, start, record)
+            }
             ClaimRead::None => {
                 let ticket = match arm.opens.get(&tv) {
                     Some(ticket) => Arc::clone(ticket),
@@ -162,6 +174,14 @@ pub(crate) fn step(
         _ => Step::Idle,
     };
     put(ctx, arm, step)
+}
+
+/// Whether `record` still queues the launch its opening claim was minted for.
+fn queued_launch(record: &RigRecord) -> bool {
+    record
+        .queued
+        .as_ref()
+        .is_some_and(|queued| queued.launch.is_some())
 }
 
 fn put(ctx: &mut Ctx<'_>, arm: ClaimArm, step: Step) -> Step {
