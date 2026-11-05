@@ -426,6 +426,32 @@
       "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. The tender, the prospector's frame with a recovery bed."
     },
     {
+      "id": "tacsim.hull_kit.tycho_crawler",
+      "label": "Tycho crawler hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. Doc 41 cut RS.6a (Q-41-15): Tycho Mutual's design, a 130 t tracked recovery crawler with the heavy coupling: 100 t of alloys, 34 t of fittings, a vehicle plant and a sight over seven yard days."
+    },
+    {
+      "id": "tacsim.hull_kit.tycho_lifter",
+      "label": "Tycho lifter hull kit",
+      "family": null,
+      "class": "kit",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": {},
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 1,
+      "note": "Doc 39 cut IN.9 (§4.13, Q-39-33): a yard order's output, the stable order-to-hull identity; no mass of its own (the mass is the bill's), consumed by the commission in the escrow. Doc 41 cut RS.6a (Q-41-15): Tycho Mutual's design, a 600 t heavy lifter with a recovery bay for a crawler and its load: 441 t of alloys, 147 t of fittings and a hauler plant over thirty yard days."
+    },
+    {
       "id": "tacsim.hull_kit.dray",
       "label": "Dray hull kit",
       "family": null,
