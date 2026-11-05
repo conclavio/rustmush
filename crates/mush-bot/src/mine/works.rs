@@ -70,7 +70,70 @@ pub fn in_vocabulary(line: &str) -> bool {
             return PORTS.contains(&port);
         }
     }
+    matter_line(line)
+}
+
+/// **Doc 39 cut IN.11's lines**: a part lot sold into a bid (`+market/sell <n>=1`), Stickney's
+/// walk to the Service Counter (`customs`, `service`), and the bay's look (by dbref or yard mark), replace quote, stow, berth and fit of a hull named by its dbref (`#<n>`), the
+/// stow's carrier by its name, the fit's part by its good.
+fn matter_line(line: &str) -> bool {
+    let dbref = |s: &str| s.strip_prefix('#').is_some_and(|n| number(n, 9));
+    if let Some(rest) = line.strip_prefix("+market/sell ") {
+        return rest.strip_suffix("=1").is_some_and(|n| number(n, 20));
+    }
+    // Stickney's walk from the berth gallery to the Service Counter (lobby, customs,
+    // concourse, service) and back.
+    if matches!(line, "customs" | "service") {
+        return true;
+    }
+    // A yard mark (`SYB-01`): three capitals, a hyphen, two digits.
+    let mark = |s: &str| {
+        s.len() == 6
+            && s[..3].bytes().all(|b| b.is_ascii_uppercase())
+            && s.as_bytes()[3] == b'-'
+            && s[4..].bytes().all(|b| b.is_ascii_digit())
+    };
+    if let Some(rest) = line.strip_prefix("+bay ") {
+        return dbref(rest) || mark(rest);
+    }
+    if let Some(rest) = line.strip_prefix("+bay/berth ") {
+        return dbref(rest);
+    }
+    if let Some(rest) = line.strip_prefix("+bay/quote ") {
+        return rest.strip_suffix("=replace").is_some_and(dbref);
+    }
+    if let Some((hull, carrier)) = line
+        .strip_prefix("+bay/stow ")
+        .and_then(|r| r.split_once('='))
+    {
+        return dbref(hull)
+            && (1..=32).contains(&carrier.len())
+            && carrier.starts_with(|c: char| c.is_ascii_alphabetic())
+            && carrier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '\'' | '.'));
+    }
+    if let Some((hull, fit)) = line
+        .strip_prefix("+bay/fit ")
+        .and_then(|r| r.split_once('='))
+    {
+        return dbref(hull)
+            && fit
+                .split_once(' ')
+                .is_some_and(|(slot, good)| word(slot) && word(good));
+    }
     false
+}
+
+/// **A hull's dbref as `+bay` prints it** ("{name} (#{n}) stands in …"): the number after
+/// `name`'s first " (#".
+#[must_use]
+pub fn bay_ref(window: &str, name: &str) -> Option<u32> {
+    let window = lines::normalise(window);
+    let lead = format!("{name} (#");
+    let at = window.find(&lead)?;
+    let rest = &window[at + lead.len()..];
+    rest.split(')').next()?.parse().ok()
 }
 
 /// A decimal number of up to `len` digits with no leading zero.
@@ -224,6 +287,15 @@ mod tests {
             "+yard/order tv_escort",
             "+yard/deliver 161=tacsim.part.plant.hauler_mk1 1",
             "+yard/collect 161",
+            "+market/sell 31=1",
+            "+bay #813",
+            "+bay SYB-01",
+            "customs",
+            "service",
+            "+bay/quote #813=replace",
+            "+bay/stow #813=Long Ox",
+            "+bay/berth #813",
+            "+bay/fit #813=power tacsim.part.plant.light_mk1",
             "+ship/plan stickney",
             "+ship/undock stickney",
             "+ship/undock ceres",
@@ -275,6 +347,10 @@ mod tests {
                 161
             ),
             Some("SYB-01".to_owned())
+        );
+        assert_eq!(
+            bay_ref("SYB-01 (#813) stands in a workshop.", "SYB-01"),
+            Some(813)
         );
         let book = "Order 154 booked at the works: fittings x1, 1 IC days. Deliver the bill: 5 \
                     structural_alloys, 1 carbon_ore. Booking fee 847.00cr held (forfeit on a \
