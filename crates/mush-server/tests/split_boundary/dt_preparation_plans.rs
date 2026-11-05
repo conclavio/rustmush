@@ -5503,3 +5503,119 @@ async fn fr3_the_pending_row_counts_a_launch_still_aboard() -> TestResult {
         )
         .await
 }
+
+/// **Doc 40, the ramp exit's boarding window, the DT path** (the owner's ruling, 2026-11-04,
+/// "back in the field": a recovery counts only once the hull is aboard). Two players fly one
+/// operation on Ahuna Flank; the leader's mark at a bystander opens a field, and the organizer's
+/// `+sortie/recover` takes the leader's unit out at the carrier's ramp. Before it is aboard, its
+/// carrier is gone from the site (a staff hand takes it off the ground, standing in for a carrier
+/// lost; this rig has no hostile that could wreck it). The unit goes back into the field where it
+/// stands, its pilot still flying it, its flight back on the site and nothing in the bay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field() -> TestResult {
+    use tacsim::detachment::sortie::Phase;
+    let store = InMemoryStore::new();
+    let (mut rig, units, pilots, leader) = two_pilot_fixture(&store).await?;
+    let at = |who: ObjId| pilots.iter().position(|p| *p == who).ok_or("a pilot");
+    let (led_unit, other) = (units[at(leader)?], units[1 - at(leader)?]);
+    let slot = at(leader)? + 1;
+    // The leader's unit stays at the ramp it launched to; the other stands clear, and the
+    // bystander east of the ramp.
+    let ramp = flight(&rig.world, led_unit, 1)?.ramp;
+    let ramp = (ramp.x_cm.div_euclid(1_000), ramp.y_cm.div_euclid(1_000));
+    staff_place_on_ahuna(&mut rig.world, other, (100, 126))?;
+    let bystander = bystander_at(
+        &mut rig.world,
+        "tacsim.unit.tv_prospector",
+        (ramp.0 + 6, ramp.1),
+    )?;
+    persist_legacy(&mut rig.world, &store).await?;
+    let mut rx = rig
+        .world
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+        .and_then(|tasks| tasks.take_egress())
+        .ok_or("the registry's egress")?;
+    commit(&mut rig.world, &store, leader, "+field/mark E=hostile").await?;
+    let live = until_hosted(&mut rig.world, &store, &mut rx).await?;
+    assert!(live.party_of(led_unit).is_some() && live.party_of(bystander).is_some());
+
+    // The recover at the ramp: the kernel lets the unit go.
+    let asked = text(
+        &mut rig.world,
+        rig.organizer,
+        &format!("+sortie/recover 1:1={slot}"),
+    );
+    assert!(asked.contains("makes for the ramp"), "{asked}");
+    let mut out = false;
+    for _ in 0..60 {
+        if tacsim::field::field_of_unit(rig.world.world(), led_unit).is_none() {
+            out = true;
+            break;
+        }
+        field_second(&mut rig.world, &store, &mut rx).await?;
+    }
+    assert!(out, "the unit is let go at the ramp");
+
+    // Before it is aboard, its carrier is gone from the site.
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = rig.world.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_sim::unplace(&mut ctx, rig.carrier, "test: the carrier is gone")?;
+    }
+    let flies = |world: &TestWorld| {
+        world
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| {
+                registry
+                    .tasks()
+                    .live_ids()
+                    .into_iter()
+                    .any(|task| registry.pilots_of(task).contains(&leader))
+            })
+    };
+    let mut back = false;
+    for _ in 0..60 {
+        field_second(&mut rig.world, &store, &mut rx).await?;
+        if tacsim::field::field_of_unit(rig.world.world(), led_unit).is_some() && flies(&rig.world)
+        {
+            back = true;
+            break;
+        }
+    }
+    assert!(
+        back,
+        "the unit is back in the field, its pilot's: held {}, flies {}, phase {:?}",
+        tacsim::field::field_of_unit(rig.world.world(), led_unit).is_some(),
+        flies(&rig.world),
+        flight(&rig.world, led_unit, 1)?.phase
+    );
+    // Past the recover's due instant, the flight is on the site and nothing boarded.
+    for _ in 0..8 {
+        pulse(&mut rig.world, &store, 60).await?;
+        field_second(&mut rig.world, &store, &mut rx).await?;
+    }
+    assert_eq!(
+        flight(&rig.world, led_unit, 1)?.phase,
+        Phase::Field,
+        "the flight is back on the site"
+    );
+    assert!(
+        !tacsim::surface::tow::in_bay_of(rig.world.world(), led_unit, rig.carrier),
+        "nothing boarded"
+    );
+    Ok(())
+}

@@ -787,17 +787,74 @@ went red on main once IN.5 (#414) merged after this cut.
     `field_raiders::cf6b…` and `field_story::gc0…` wait for the record's exit as well as the boarding, because
     the boarding now comes first. `field_raiders::`, `field_carrier::`, `field_fr5::`, `field_gc4::` and the
     lib's `field::` and `withdraw` tests pass.
-  - **The player's hull at the ramp has the same window. Not fixed here.** `+tv/<n> recover`
-    (`Then::Rig`), `+sortie/recover` (`Then::Sortie`) and FR.5b's coupled load (`Then::TowLoad`, via
-    `surface/tow.rs` `field_load_cmd`) are all let go with no carrier check. Their recover or load runs as a
-    later step, once the record's exit lands. A player's carrier wrecked before the release, or inside that
-    window, leaves the rig beside the ramp, out of the field. The recover act does not refuse a wrecked
-    carrier, so the rig then goes into a wreck's bay, and GC.3 wrecks it only if the carrier checks in later.
-    The player keeps agency, since the record names the exit and their own recover passes. The fix is not the
-    same small change: the recover and the load are full surface acts with their own refusals and durations,
-    so they cannot run inside `on_withdrawn`'s batch. Naming the carrier on the ask would close only the
-    before-release half, and it would change a player-facing refusal with no ruling. The question is the
-    owner's.
+  - **The player's hull at the ramp had the same window.** `+tv/<n> recover` (`Then::Rig`), `+sortie/recover`
+    (`Then::Sortie`) and FR.5b's coupled load (`Then::TowLoad`) were all let go with no carrier check. Their
+    recover or load ran as a later step, once the record's exit landed. The owner ruled on it (2026-11-04), and the
+    next bullet is the build.
+- **The ramp exit's boarding window, player hulls** (built, 2026-11-04, the PR after #468). The owner's ruling
+  ("back in the field", extended): a recovery or a load counts only once the hull is aboard. If the carrier is
+  wrecked or gone before then, the hull stays on the site in the field, not loose on the pad, and keeps its
+  pilot's control. A hull aboard a carrier wrecked later is a wreck in the bay. As built (`field/boarding.rs`):
+  - **The kernel's check at the release.** Every ask names the carrier the hull boards
+    (`boarding::carrier_of`): the rig's own hull from its open excursion, the DT flight's carrier
+    (`sortie::field_carrier`), and the tug's carrier for both halves of a coupled pair. The kernel refuses
+    `CarrierLost` (#468's `withdraw_to`), so the hull never leaves and its pilot keeps the seat and the frames.
+    A player's carrier is named to the kernel only when the field holds it as a unit. A carrier held out of the
+    field is no unit the kernel could read, so for it the later checks decide.
+  - **Each boarding re-checks the carrier when it lands** (`boarding::carrier_lost`). The rig's recover act
+    places nothing in the bay (`surface/tick.rs`'s world step), and its finish records the refusal. The DT
+    recover's due step places nothing, and its finish puts the flight back to `Phase::Field`
+    (`sortie/tick.rs`, `sortie/prepare.rs`). The tow's load leaves the casualty where it stands
+    (`tow::place_in_bay`).
+  - **A hull out at the ramp whose carrier is lost goes back into the field** (`boarding::tick`, run at the end
+    of `exit::tick`).
+    - The host remembers every hull let go for one of the three paths (`Boarding`, RAM) until it is aboard.
+    - While such a hull stands on the site's ground with its carrier lost, it is taken back in with the kernel's
+      join where it stands (`carrier::rejoin`, the FR.3 join under a new `rejoining` book).
+    - Its exit still on its way is dropped, so nothing boards it later. The join's answer seats its pilot again
+      (`seat_joined_pilot`). The pilot hears `BACK_IN_FIELD`.
+    - A pair goes back tug first. The casualty joins the tug's party (`carrier::joining_as`), and the kernel
+      couples the two again once both are in: `Arena::join` now honours `FieldHost::tows`, which a join never
+      carried before.
+    - A join the field refuses is asked again at the next pass.
+  - **What "lost" reads.** A field runs on the site, and either the carrier no longer stands settled there (lifted,
+    gone), or the kernel named it destroyed. The carrier's own record is checked out and stale while the field
+    runs, so the host keeps the ledger's `UnitDestroyed` lines by task (`boarding::note_chunk`, beside
+    `standing::note_chunk`). A resume seeds them from the snapshot's wrecks (`boarding::seed`). With no field
+    running, nothing here applies.
+  - **Why this shape.** A raider boards in the batch that lets it go (#468). A player's hull cannot, because the
+    rig's recover, the DT recover and the load are surface acts. Each has its own duration (`RECOVER_S`,
+    `load_s`), records and refusals, and each runs after the exit lands. Moving them into `on_withdrawn` would
+    rewrite three acts. The re-check plus the join leaves each act as it was, and covers both halves of the
+    window: before the release (the kernel) and after it (the landing and the join).
+  - **A hull aboard a carrier wrecked later** needed nothing new. GC.3's `wreck_bay_rigs` already wrecks every
+    hull placed in a wrecked carrier's bay rooms (`vehicle::rigs_in_bay`: a rig, a DT unit, a loaded casualty).
+  - **Not durable across a restart.** `Boarding` is RAM. A hull out at the ramp when the server goes down is not
+    remembered. It stands beside the ramp out of the field until its own recover runs, as before. The landing
+    re-check still refuses to board a lost carrier.
+  - **#468's untested edge: a restart right after a raider is stranded.**
+    `field_boarding::boarding_a_stranded_raider_fights_on_after_a_restart` crashes the server the moment every
+    hull is stranded. After the resume, every hull fires on the escort, green with no fix.
+    - A probe with the strand's lift switched off showed why. Without a restart the hulls never fire, so the lift
+      matters. With a restart they fire anyway: the field resumes from a snapshot older than the WITHDRAW itself.
+    - A kept snapshot that holds the WITHDRAW but predates the lift is about one pulse wide, and this rig cannot
+      stage it. So nothing is built for it. A resume that lifted the WITHDRAW again for every raider whose
+      carrier the snapshot holds lost would close it.
+  - **Tests**, each red before the fix and green after:
+    - `shard_10 field_fr5::fr5_ahuna_a_carrier_lost_before_the_load_keeps_the_pair_in_the_field`, the TowLoad
+      path. The pair is let go, its exits are held off the record (`field_crash`'s injected fault), and the
+      stranger's fire takes the fragile carrier's hull. The pair is back in the field coupled, the captain still
+      flies the tug, and nothing is loaded.
+    - `…_a_carrier_lost_before_the_recover_keeps_the_rig_in_the_field`, the Rig path, the same way.
+    - `…_a_rig_whose_carrier_is_lost_is_kept_in_the_field`: the carrier falls before the ask, and the kernel
+      keeps the rig.
+    - mush-server `split_boundary` `dt_preparation_plans::ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field`,
+      the Sortie path, on the two-pilot DT fixture. Its carrier is **gone** rather than wrecked: a staff hand takes
+      it off the ground once the unit is out, because that rig has no hostile that could wreck it. The unit is back
+      in the field with its pilot, the flight is back at `Field` past the due instant, and the bay is empty.
+    - Also run: `field_raiders::`, `field_boarding::`, `field_fr5::`, `field_gc4::`, `field_carrier::` (27 of
+      27), the lib's `field::`, `withdraw`, `sortie`, `tow` and `join` tests, and mush-server's
+      `dt_preparation_plans::` (55 of 55).
 
 ## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
 

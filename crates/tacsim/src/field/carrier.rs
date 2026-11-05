@@ -391,6 +391,23 @@ pub(crate) fn joining(
     hull: ObjId,
     pose: mush_sim::data::Pose,
 ) -> Result<Joining, String> {
+    joining_as(ctx, site, live, hull, pose, None)
+}
+
+/// [`joining`], into `party` when one is named (doc 40, the ramp exit's boarding window: a
+/// casualty taken back in joins its tug's party, as an admission keys it).
+///
+/// # Errors
+///
+/// [`joining`]'s.
+pub(crate) fn joining_as(
+    ctx: &Ctx<'_>,
+    site: &CanonicalId,
+    live: &super::FieldLive,
+    hull: ObjId,
+    pose: mush_sim::data::Pose,
+    party: Option<crate::arena::PartyId>,
+) -> Result<Joining, String> {
     use super::record::{FieldParty, FieldUnit};
     let mut live = live.clone();
     let units: Vec<ObjId> = live
@@ -406,11 +423,13 @@ pub(crate) fn joining(
         .find(|entrant| entrant.unit == hull)
         .cloned()
         .ok_or_else(|| format!("#{} is not on the ground", hull.0))?;
-    let known = live
-        .units
-        .iter()
-        .find(|row| row.unit == hull)
-        .map(|row| row.party)
+    let known = party
+        .or_else(|| {
+            live.units
+                .iter()
+                .find(|row| row.unit == hull)
+                .map(|row| row.party)
+        })
         .or_else(|| {
             live.parties
                 .iter()
@@ -534,6 +553,19 @@ fn join(
     pose: mush_sim::data::Pose,
     spread: u16,
 ) -> Result<(), String> {
+    join_with(ctx, site, hull, (pose, spread), None, Vec::new())
+}
+
+/// [`join`], into `party` when one is named and carrying `tows` for the kernel to couple once
+/// both halves are in (doc 40, the ramp exit's boarding window).
+fn join_with(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    hull: ObjId,
+    (pose, spread): (mush_sim::data::Pose, u16),
+    party: Option<crate::arena::PartyId>,
+    tows: Vec<(ObjId, ObjId)>,
+) -> Result<(), String> {
     let (task, live) = ctx
         .w
         .module_state::<FieldBook>()
@@ -545,7 +577,8 @@ fn join(
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .map(|registry| registry.tasks().clone())
         .ok_or_else(|| "the field's task is gone".to_owned())?;
-    let joining = joining(ctx, site, &live, hull, pose)?;
+    let mut joining = joining_as(ctx, site, &live, hull, pose, party)?;
+    joining.host.tows = tows;
     // Doc 36a lane 3 (P0-8): the site's record must have a row for everyone on the ground.
     if let Some(domain) = super::parties::site_domain(ctx.w, site) {
         super::admit::index_room(ctx.w, domain)?;
@@ -575,6 +608,38 @@ fn join(
         registry.bind_joining(hull, task, controller, armed);
     }
     tracing::info!(site = %site, hull = hull.0, task = task.0, "tacsim: a hull is joining the field");
+    Ok(())
+}
+
+/// **A hull out at a ramp back into its site's field, its carrier lost** (doc 40, the ramp exit's
+/// boarding window; `super::boarding`): the kernel's join where it stands, within one ring of
+/// free ground, under `party` when named (a casualty, its tug's) and with its tow, `(casualty,
+/// tug)`, coupled again once both are in. The join's answer seats its pilot again
+/// ([`on_joined`]).
+///
+/// # Errors
+///
+/// It is not on the ground, or the field would not take it now (asked again at the next pass).
+pub(crate) fn rejoin(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    hull: ObjId,
+    party: Option<crate::arena::PartyId>,
+    tow: Option<(ObjId, ObjId)>,
+) -> Result<(), String> {
+    let (_, pose) = mush_sim::pose_of(ctx.w, hull)
+        .ok_or_else(|| format!("#{} is not on the ground", hull.0))?;
+    join_with(
+        ctx,
+        site,
+        hull,
+        (pose, super::raiders::LAUNCH_SPREAD_CELLS),
+        party,
+        tow.into_iter().collect(),
+    )?;
+    if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
+        book.rejoining.entry(site.clone()).or_default().insert(hull);
+    }
     Ok(())
 }
 
@@ -846,7 +911,17 @@ pub(crate) fn on_joined(
         .module_state_mut::<FieldBook>()
         .and_then(|book| book.launching.get_mut(&site))
         .is_some_and(|hulls| hulls.remove(&unit));
+    // Doc 40 (the ramp exit's boarding window): a hull taken back in, its carrier lost.
+    let rejoin = ctx
+        .w
+        .module_state_mut::<FieldBook>()
+        .and_then(|book| book.rejoining.get_mut(&site))
+        .is_some_and(|hulls| hulls.remove(&unit));
     match outcome {
+        Ok(name) if rejoin => {
+            tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a hull out at the ramp is back in the field");
+            seat_joined_pilot(ctx, task, unit, &live);
+        }
         Ok(name) if launch => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a launch joined the field at its ramp");
             seat_joined_pilot(ctx, task, unit, &live);

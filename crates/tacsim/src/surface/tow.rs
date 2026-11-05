@@ -3160,6 +3160,12 @@ fn place_in_bay(
     else {
         return Vec::new();
     };
+    // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04): a load counts
+    // only once the casualty is aboard, and never into a carrier lost to the field on its site;
+    // the field host takes the pair back in (`crate::field::boarding`).
+    if crate::field::boarding::carrier_lost(ctx.w, site, carrier) {
+        return Vec::new();
+    }
     let Some((there, _, pose)) = on_ground(ctx.w, tug) else {
         return Vec::new();
     };
