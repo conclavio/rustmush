@@ -78,6 +78,23 @@ pub struct RaiderUnit {
     pub name: String,
     /// Its heading once launched, millidegrees.
     pub heading_mdeg: u32,
+    /// **Its crew member's name** (doc 42b cut SU.1, Q-42b-1): the NPC the seed seats in it;
+    /// `None` names them "`<hull>` crew".
+    #[serde(default)]
+    pub crew: Option<String>,
+    /// **Its crew's resolve**, per mille (Q-42b-6, Q-42b-7): `None` takes the raider's.
+    #[serde(default)]
+    pub resolve_permille: Option<u16>,
+}
+
+impl RaiderUnit {
+    /// **The name the seed gives this hull's crew member** (Q-42b-1).
+    #[must_use]
+    pub fn crew_name(&self) -> String {
+        self.crew
+            .clone()
+            .unwrap_or_else(|| format!("{} crew", self.name))
+    }
 }
 
 /// **The authored carrier** (doc 32 cut CF.6b).
@@ -134,7 +151,29 @@ pub struct RaiderDef {
     /// runs it; `None` keeps it staff-run only.
     #[serde(default)]
     pub director: Option<RaidSchedule>,
+    /// **Its crews' resolve**, per mille (doc 42b cut SU.1, Q-42b-6): each hull's crew takes it
+    /// unless the hull names its own; `None` reads [`DEFAULT_RESOLVE_PERMILLE`]. The director
+    /// never varies it.
+    #[serde(default)]
+    pub resolve_permille: Option<u16>,
 }
+
+impl RaiderDef {
+    /// **The resolve the seed writes on `unit`'s crew record** (Q-42b-6, Q-42b-7): the hull's
+    /// own, else the raider's, else [`DEFAULT_RESOLVE_PERMILLE`].
+    #[must_use]
+    pub fn resolve_of(&self, unit: &RaiderUnit) -> u16 {
+        unit.resolve_permille
+            .or(self.resolve_permille)
+            .unwrap_or(DEFAULT_RESOLVE_PERMILLE)
+    }
+}
+
+/// **The resolve a raider that authors none takes**, per mille (doc 42b Q-42b-6; provisional).
+pub const DEFAULT_RESOLVE_PERMILLE: u16 = 500;
+/// **The station the seed seats a raider's crew member in** (doc 42b cut SU.1, Q-42b-1): host
+/// bookkeeping only, as a DT NPC pilot's seat is; the hull still flies its ROM seal.
+pub const CREW_STATION: &str = "cockpit";
 
 /// **When the raid director sends a raider, and with how much** (doc 36 cut GC.11; Q-36-41):
 /// one per raider, so one per site. Every number is provisional.
@@ -163,8 +202,9 @@ struct RaidersFile {
     raiders: Vec<RaiderDef>,
 }
 
-/// **The authored raiders**, checked: schema 4 (doc 32 cut S.1: the carrier's cells are offsets
-/// from the pad; doc 36 cut GC.11: an organization each, and the director's schedule), unique ids
+/// **The authored raiders**, checked: schema 5 (doc 32 cut S.1: the carrier's cells are offsets
+/// from the pad; doc 36 cut GC.11: an organization each, and the director's schedule; doc 42b cut
+/// SU.1: a crew's resolve within 0 to 1,000 and a crew name that is not blank), unique ids
 /// and organizations, one to 22 hulls each beside the carrier (a party's two-letter
 /// designators), the carrier and its ramp within the widest site's side of the pad, and the ramp
 /// beside the carrier, never under it.
@@ -173,10 +213,15 @@ struct RaidersFile {
 ///
 /// The first broken rule, as a sentence.
 pub fn raiders() -> Result<Vec<RaiderDef>, String> {
+    parse(RAIDERS_JSON)
+}
+
+/// [`raiders`]' checks over any text.
+fn parse(json: &str) -> Result<Vec<RaiderDef>, String> {
     let file: RaidersFile =
-        serde_json::from_str(RAIDERS_JSON).map_err(|error| format!("raiders: {error}"))?;
-    if file.schema != 4 {
-        return Err("raiders: schema 4 only".to_owned());
+        serde_json::from_str(json).map_err(|error| format!("raiders: {error}"))?;
+    if file.schema != 5 {
+        return Err("raiders: schema 5 only".to_owned());
     }
     // Doc 32 cut S.1: an offset within the widest site's side of the pad here; `seed` holds each
     // cell to its own site's side.
@@ -234,6 +279,24 @@ pub fn raiders() -> Result<Vec<RaiderDef>, String> {
         }
         if def.units.iter().any(|unit| unit.heading_mdeg >= 360_000) {
             return Err(format!("raiders: {} has a heading off the turn", def.id));
+        }
+        // Doc 42b cut SU.1 (Q-42b-6): a resolve is per mille, and a named crew has a name.
+        if def
+            .units
+            .iter()
+            .filter_map(|unit| unit.resolve_permille)
+            .chain(def.resolve_permille)
+            .any(|resolve| resolve > 1_000)
+            || def.units.iter().any(|unit| {
+                unit.crew
+                    .as_ref()
+                    .is_some_and(|crew| crew.trim().is_empty())
+            })
+        {
+            return Err(format!(
+                "raiders: {}'s crews name themselves and hold a resolve of 0 to 1,000",
+                def.id
+            ));
         }
     }
     Ok(file.raiders)
@@ -476,7 +539,7 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
     mush_sim::place(ctx, carrier, domain, pose)
         .map_err(|error| format!("{} was not placed ({error}).", def.carrier.name))?;
     for (unit, spec) in def.units.iter().zip(specs) {
-        make(
+        let hull = make(
             ctx,
             &unit.name,
             &spec,
@@ -486,6 +549,7 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
                 "carrier": carrier.0,
             }),
         )?;
+        crew(ctx, hull, &unit.crew_name(), leader, def.resolve_of(unit))?;
     }
     Ok(format!(
         "{} seeded at {}: the {} on the ground with {} hulls aboard, led by {} (#{}).",
@@ -496,6 +560,52 @@ pub fn seed(ctx: &mut Ctx<'_>, def: &RaiderDef) -> Result<String, String> {
         def.leader,
         leader.0
     ))
+}
+
+/// **A hull's crew member** (doc 42b cut SU.1, Q-42b-1): a fresh NPC inside the hull, seated at
+/// [`CREW_STATION`] as a hired NPC is seated (`super::parties::seated` reads it), and given a crew
+/// record at once: in the unit, fit, the leader its organizer, the resolve authored
+/// (Q-42b-5). A re-seed makes fresh crew; the seat changes nothing about the hull's doctrine.
+fn crew(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    name: &str,
+    leader: ObjId,
+    resolve: u16,
+) -> Result<ObjId, String> {
+    let who = ctx
+        .w
+        .create(ObjKind::Npc, name, GOD, Some(hull))
+        .map_err(|error| format!("{name} was not made ({error})."))?;
+    let station =
+        mush_sim::StationId::new(CREW_STATION).ok_or_else(|| "No crew station.".to_owned())?;
+    mush_sim::declare_station(
+        ctx,
+        hull,
+        &station,
+        "pilot",
+        &crate::match_::cockpit::cockpit_channels(),
+        None,
+        0,
+    )
+    .map_err(|error| format!("{name}'s station was not declared ({error})."))?;
+    mush_sim::commands::assign_station(ctx, hull, &station, who)
+        .map_err(|error| format!("{name} was not seated ({error})."))?;
+    super::crew::put(
+        ctx,
+        super::crew::CrewRecord {
+            format: super::crew::CREW_FORMAT,
+            character: who,
+            location: super::crew::CrewLocation::Unit { unit: hull },
+            condition: super::crew::CrewCondition::Fit,
+            at_ic: ctx.w.world_ic_now().at,
+            organizer: Some(leader),
+            extraction: None,
+            treatment: None,
+            resolve_permille: Some(resolve),
+        },
+    );
+    Ok(who)
 }
 
 /// One hull made, its unit record built and its raider attribute written; never placed.
@@ -1287,6 +1397,51 @@ mod tests {
         let defs = raiders().expect("the shipped raiders check");
         assert!(!defs.is_empty());
         assert!(defs.iter().all(|def| !def.units.is_empty()));
+    }
+
+    /// **Doc 42b cut SU.1** (Q-42b-6, Q-42b-7): schema 5's shipped resolves, the fallbacks (the
+    /// hull's, else the raider's, else 500), the crew's default name, and the refusals.
+    #[test]
+    fn su1_schema_5_authors_each_crews_resolve() {
+        let defs = raiders().expect("the shipped raiders check");
+        let resolve = |id: &str| {
+            let def = defs.iter().find(|def| def.id.as_str() == id).expect(id);
+            def.units
+                .iter()
+                .map(|unit| def.resolve_of(unit))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(resolve("tacsim.raider.ahuna_skulks"), [400, 400]);
+        assert_eq!(resolve("tacsim.raider.urvara_reavers"), [750, 750]);
+        let skulk = &defs[0];
+        assert_eq!(skulk.units[0].crew_name(), "Skulk One crew");
+        let mut file: serde_json::Value = serde_json::from_str(RAIDERS_JSON).expect("json");
+        let def = &mut file["raiders"][0];
+        def["units"][0]["resolve_permille"] = serde_json::json!(0);
+        def["units"][0]["crew"] = serde_json::json!("Ivo Brandt");
+        def.as_object_mut()
+            .expect("a raider")
+            .remove("resolve_permille");
+        let parsed = parse(&file.to_string()).expect("a hull's own resolve and crew");
+        let def = &parsed[0];
+        assert_eq!(def.resolve_of(&def.units[0]), 0);
+        assert_eq!(def.resolve_of(&def.units[1]), DEFAULT_RESOLVE_PERMILLE);
+        assert_eq!(def.units[0].crew_name(), "Ivo Brandt");
+        let refused = |path: &dyn Fn(&mut serde_json::Value)| {
+            let mut bad: serde_json::Value = serde_json::from_str(RAIDERS_JSON).expect("json");
+            path(&mut bad);
+            parse(&bad.to_string()).is_err()
+        };
+        assert!(refused(
+            &|f| f["raiders"][0]["resolve_permille"] = serde_json::json!(1_001)
+        ));
+        assert!(refused(
+            &|f| f["raiders"][0]["units"][1]["resolve_permille"] = serde_json::json!(1_001)
+        ));
+        assert!(refused(
+            &|f| f["raiders"][0]["units"][0]["crew"] = serde_json::json!(" ")
+        ));
+        assert!(refused(&|f| f["schema"] = serde_json::json!(4)));
     }
 
     /// Doc 36 cut GC.0: the snapshots' lift check runs at the first, then once a pace, and again
