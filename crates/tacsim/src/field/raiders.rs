@@ -380,6 +380,15 @@ pub fn yielded(w: &World, unit: ObjId) -> bool {
     mark_of(w, unit).is_some_and(|mark| mark.get("yielded").is_some())
 }
 
+/// **The site a yielded hull yielded on** (doc 42b cut SU.5: the captor's window reads it).
+pub(crate) fn yielded_on(w: &World, unit: ObjId) -> Option<CanonicalId> {
+    mark_of(w, unit)?
+        .get("yielded")?
+        .get("site")?
+        .as_str()
+        .and_then(|site| CanonicalId::new(site).ok())
+}
+
 /// The carrier a yielded hull came from (its `yielded` row).
 fn yielded_from(w: &World, unit: ObjId) -> Option<ObjId> {
     mark_of(w, unit)?
@@ -1445,16 +1454,17 @@ fn morale(
         }
         tracing::info!(site = %site, hull = hull.0, pressure = total, chance, step = reached, breaks, "tacsim: a raider crew's morale was tested");
         if breaks {
-            stand_down(ctx, hull, carrier, holder.party, ordinal);
+            stand_down(ctx, site, hull, carrier, holder.party, ordinal);
         }
     }
 }
 
 /// **A crew yields** (doc 42b cut SU.3, Q-42b-11): the mark's `yielded` row (the carrier it came
-/// from, the field, the party it yields to) replaces its `carrier` and any WITHDRAW, durable
+/// from, the site and the field, the party it yields to) replaces its `carrier` and any WITHDRAW, durable
 /// before the ask; then the no-ramp exit is asked.
 fn stand_down(
     ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
     hull: ObjId,
     carrier: ObjId,
     to: crate::arena::PartyId,
@@ -1462,6 +1472,7 @@ fn stand_down(
 ) {
     let row = serde_json::json!({
         "carrier": carrier.0,
+        "site": site.as_str(),
         "ordinal": ordinal,
         "to": to.letter().to_string(),
     });

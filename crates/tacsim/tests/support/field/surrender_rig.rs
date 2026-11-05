@@ -34,6 +34,10 @@ pub(crate) enum Case {
     /// (s5) A restart: the field crashes as soon as the yield is marked; the hull is out of the
     /// field after the restart, and its step and its yield are what they were.
     Restart,
+    /// (s4) The window (doc 42b cut SU.5, Q-42b-20): nobody loads the yielded hull. A minute short
+    /// of `yield_hold_s` past the demotion the crew is still aboard; at it, the crew leaves play
+    /// and the hull stays a casualty.
+    Lapse,
 }
 
 /// The hull's raider attribute.
@@ -90,7 +94,7 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
         .collect();
     let resolves = match case {
         Case::Holds => [1_000, 1_000],
-        Case::Yields | Case::NoHolder | Case::Restart => [0, 1_000],
+        Case::Yields | Case::NoHolder | Case::Restart | Case::Lapse => [0, 1_000],
     };
     staff_hand(&mut rig, |ctx| {
         for (crew, resolve) in crews.iter().zip(resolves) {
@@ -129,7 +133,7 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
         |rig: &crate::driving_rig::Rig| tacsim::field::raiders::yielded(rig.tw.world(), hulls[0]);
 
     match case {
-        Case::Yields | Case::Restart => {
+        Case::Yields | Case::Restart | Case::Lapse => {
             assert!(
                 until(&mut rig, &mut rx, &mut lines, 60, |rig, _| yielded(rig)).await,
                 "the first crew yields: {}",
@@ -197,6 +201,47 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
                 listed.contains(&format!("Unit #{}: casualty, yielded at", hulls[0].0)),
                 "the site's listing marks it yielded (Q-42b-13): {listed}"
             );
+            if case == Case::Lapse {
+                let left_ic = site_record_at(&mut rig, entry)
+                    .and_then(|record| record.units.into_iter().find(|row| row.unit == hulls[0]))
+                    .map(|row| row.left_ic)
+                    .expect("the casualty's row");
+                let hold = i64::from(tacsim::TacsimConfig::default().field.yield_hold_s);
+                assert_eq!(hold, 28 * 86_400, "the window is the 28-IC-day floor");
+                let _ = crate::driving_rig::to_ic(&mut rig, left_ic + hold - 60);
+                let _ = crate::field_host_rig::second(&mut rig);
+                assert!(
+                    crew_of(rig.tw.world(), crews[0]).is_some(),
+                    "a minute short of the window the crew still waits"
+                );
+                let _ = crate::driving_rig::to_ic(&mut rig, left_ic + hold);
+                assert!(
+                    crate::custody_rig::seconds_until(&mut rig, 30, |rig| crew_of(
+                        rig.tw.world(),
+                        crews[0]
+                    )
+                    .is_none()),
+                    "at the window the crew leaves play: {:?}",
+                    crew_of(rig.tw.world(), crews[0])
+                );
+                assert!(
+                    rig.tw
+                        .world()
+                        .get(crews[0])
+                        .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING)),
+                    "the crew member is out of the world"
+                );
+                assert_eq!(
+                    site_record_at(&mut rig, entry)
+                        .and_then(|record| record
+                            .units
+                            .into_iter()
+                            .find(|row| row.unit == hulls[0]))
+                        .map(|row| row.condition),
+                    Some(LeftCondition::Casualty),
+                    "the hull stays a casualty for the salvage loop"
+                );
+            }
         }
         Case::Holds | Case::NoHolder => {
             let _ = until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
