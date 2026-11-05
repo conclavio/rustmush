@@ -309,6 +309,11 @@ pub enum ArenaMsg {
         /// `crate::minds::install_sealed_runners` reads), or `None` for a seal that names none.
         /// A scripted seal with no source is refused by name, never a void of the field.
         source: Option<String>,
+        /// **The mind its epoch's record carries** (doc 23 cut D-23-18; doc 38a F-01): laid on
+        /// the joined hull's fresh row before its first think, as a field's spawn lays it
+        /// (`Arena::seed_carried_mind`), so a claimed rig back in a field on its epoch resumes
+        /// its own memory with `think_seq` monotone. `None` for every other join.
+        carried: Option<Box<crate::arena::mind::CarriedMind>>,
     },
     /// **A tug lets its casualty go inside a running field** (doc 40 cut FR.5, §4.1 item 5,
     /// Q-40-7): buffered once per tug and applied by `Arena::release` at the next pulse's head,
@@ -1546,6 +1551,7 @@ type PendingJoin = (
     crate::arena::FieldHost,
     u16,
     Option<String>,
+    Option<Box<crate::arena::mind::CarriedMind>>,
 );
 
 /// **One withdrawal asked** (doc 32 cut CF.5): the ramp's site position (`None` a carrier's
@@ -1938,8 +1944,11 @@ async fn arena_loop(mut task: Task) {
                         waiting.ejects.insert(unit);
                     }
                     // Doc 36 cut GC.1b: and so does a join.
-                    Some(ArenaMsg::Join { unit, pilot, host, spread, source }) => {
-                        waiting.joins.entry(unit.id).or_insert((unit, pilot, *host, spread, source));
+                    Some(ArenaMsg::Join { unit, pilot, host, spread, source, carried }) => {
+                        waiting
+                            .joins
+                            .entry(unit.id)
+                            .or_insert((unit, pilot, *host, spread, source, carried));
                     }
                     // Doc 40 cut FR.5: and so does a tug's release.
                     Some(ArenaMsg::Release { tug }) => {
@@ -2063,8 +2072,21 @@ impl Task {
         for zone in std::mem::take(&mut waiting.homes).into_values() {
             self.home(zone);
         }
-        for (unit, (custody, pilot, host, spread, source)) in std::mem::take(&mut waiting.joins) {
+        for (unit, (custody, pilot, host, spread, source, carried)) in
+            std::mem::take(&mut waiting.joins)
+        {
             let outcome = self.join(*custody, pilot, &host, spread, source);
+            // Doc 38a F-01: a claimed rig back in its epoch's field resumes its carried mind.
+            if outcome.is_ok()
+                && let Some(carried) = carried
+                && let Err(refusal) = self.arena.seed_carried_mind(unit, &carried)
+            {
+                tracing::warn!(
+                    unit = unit.0,
+                    %refusal,
+                    "tacsim: a joined hull's carried mind was not laid down; it starts afresh"
+                );
+            }
             self.queue_joined(unit, outcome);
         }
     }
@@ -4355,6 +4377,59 @@ mod tests {
         );
     }
 
+    /// **Doc 38a F-01: a claimed rig's join resumes its carried mind.** A scripted seal joined
+    /// with its retained source and its epoch's carried mind (doc 23 cut D-23-18) takes the
+    /// memory and the `think_seq` on its fresh row before its first think; a carried mind of
+    /// another seal is not laid down.
+    #[test]
+    fn f01_a_join_lays_down_the_carried_mind() {
+        use crate::arena::mind::CarriedMind;
+        let arrival = ObjId(77);
+        let scripted = || {
+            let mut unit = tank(arrival, PartyId::RED, pose(4_500, 4_500));
+            unit.seal.engine = crate::arena::mind::SealEngine::Scripted;
+            unit.controller = crate::arena::state::Controller::Mind;
+            unit
+        };
+        let memory = crate::arena::mind::withdraw_seed();
+        let joined = |carried: CarriedMind| {
+            let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+            arena.end = crate::arena::party::EndCondition::Host;
+            let (mut task, _world) = af2_task(arena, 2, 5_000);
+            task.terms = Some(fr5_terms());
+            let mut waiting = PrePulse::default();
+            waiting.joins.insert(
+                arrival,
+                (
+                    Box::new(scripted()),
+                    None,
+                    fr5_host(),
+                    8,
+                    Some(crate::minds::STANDARD_RHAI.to_owned()),
+                    Some(Box::new(carried)),
+                ),
+            );
+            task.apply_field_acts(&mut waiting);
+            assert!(task.arena.unit(arrival).is_some(), "taken in");
+            task.arena.minds.get(&arrival).cloned().expect("a mind row")
+        };
+        let digest = scripted().seal.digest();
+        let row = joined(CarriedMind {
+            seal_digest: digest,
+            think_seq: 41,
+            memory: memory.clone(),
+            dropped: None,
+        });
+        assert_eq!((row.think_seq, row.memory), (41, memory.clone()));
+        let other = joined(CarriedMind {
+            seal_digest: [7; 32],
+            think_seq: 41,
+            memory,
+            dropped: None,
+        });
+        assert_eq!(other.think_seq, 0, "another seal's mind is not laid down");
+    }
+
     /// **16b cut AF.2**: the chunk overflow still drops the oldest **chunk**,
     /// wherever the waiting snapshot stands — at the front of the queue too —
     /// and never the snapshot.
@@ -4839,6 +4914,7 @@ mod tests {
                 None,
                 host,
                 8,
+                None,
                 None,
             ),
         );

@@ -1211,8 +1211,9 @@ fn join_one(
         pilot: joining.pilot,
         host: Box::new(joining.host),
         spread: LAUNCH_SPREAD_CELLS,
-        // Doc 40 cut FR.5: S.4b-3's host half hands the retained source.
+        // A raider's hull flies no claimed mind.
         source: None,
+        carried: None,
     };
     if tasks.offer(task, message).is_err() {
         let _ = mush_tactics::custody::check_in(ctx, unit, None);

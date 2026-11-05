@@ -588,13 +588,16 @@ fn join_with(
         .map_err(|error| format!("#{} could not be taken into the field ({error})", hull.0))?;
     let controller = joining.unit.controller;
     let armed = !joining.unit.weapons.is_empty();
+    // Doc 38a F-01 (S.4b-3's host half of FR.5's join): a claimed rig's scripted seal joins with
+    // its claim's retained source, and with the mind its epoch's record carries.
+    let (source, carried) = claimed_join(ctx, hull, &joining.unit.seal);
     let message = crate::arena_task::ArenaMsg::Join {
         unit: Box::new(joining.unit),
         pilot: joining.pilot,
         host: Box::new(joining.host),
         spread,
-        // Doc 40 cut FR.5: S.4b-3's host half hands the retained source.
-        source: None,
+        source,
+        carried,
     };
     if tasks.offer(task, message).is_err() {
         let _ = mush_tactics::custody::check_in(ctx, hull, None);
@@ -609,6 +612,26 @@ fn join_with(
     }
     tracing::info!(site = %site, hull = hull.0, task = task.0, "tacsim: a hull is joining the field");
     Ok(())
+}
+
+/// **What a claimed rig joins with** (doc 38a F-01): its claim's retained source for a scripted
+/// seal (the text the field's spawn installs, `crate::minds::ic_sortie::retained_source`, held
+/// only while the claim is active), and the mind its open epoch's record carries (D-23-18).
+/// `(None, None)` for every other hull.
+fn claimed_join(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    seal: &crate::arena::MindSeal,
+) -> (Option<String>, Option<Box<crate::arena::mind::CarriedMind>>) {
+    let source = (seal.engine == crate::arena::mind::SealEngine::Scripted)
+        .then(|| crate::minds::ic_sortie::retained_source(ctx.w, &seal.source_sha256))
+        .flatten()
+        .map(str::to_owned);
+    let carried = super::parties::rig_record(ctx, hull)
+        .and_then(|rig| rig.sortie)
+        .and_then(|open| open.mind)
+        .filter(|mind| mind.seal_digest == seal.digest());
+    (source, carried)
 }
 
 /// **A hull out at a ramp back into its site's field, its carrier lost** (doc 40, the ramp exit's
