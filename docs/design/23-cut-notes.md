@@ -578,7 +578,7 @@ Built on `claude/d23-18-carried-memory-83dafb` off `main` `bf0b5f24` (S.4b-3 = #
 - `seed_carried_mind` runs only on an IC field's spawn;
 - no OOC arena calls it.
 
-The harness kind is dispatched on the PR's branch before it is marked ready.
+Rule #13's harness kind is green on conclav-dev at the PR's branch (gate run `41981515265`).
 
 ### Cost (rule #14)
 
