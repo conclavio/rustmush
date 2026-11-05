@@ -311,3 +311,8 @@ running holds the lapse back.
 
 **Departure from §6's sketch.** "(s4) with the rate knob": the story moves the IC clock with the rig's
 `to_ic`, the same jump CR.3's bound story makes, rather than a rate setting.
+
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of #493's run 42084940080.
+The two (s4) stories add 3.06 summed minutes to `domain_field`: the 512 run (112.9 s) in shard_2 and
+the 256 run (70.6 s) in shard_6. Each jumps the IC clock 28 days with `to_ic` and pumps no field
+through the jump.
