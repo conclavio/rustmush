@@ -1,0 +1,761 @@
+57f4c7e66c43f9f67060d276f8f567575432cbd2	2026-11-05T06:58:37-08:00	Merge pull request #477 from conclavio/claude/doc42b-draft02
+b54e0629370d91be9ed1379d51fed637ec97ade9	2026-11-05T06:55:27-08:00	Doc 42b Draft 0.2: Q-42b-1..20 ruled at the defaults, section 5 acknowledged, SU cuts binding
+76e6b9fc75f1a4be097cdf935adaea570eb5416c	2026-11-05T06:29:05-08:00	Merge pull request #474 from conclavio/claude/d23-18-carried-memory-83dafb
+0c3a6d68cd0a587ee32971a05b346bb5dfa3830b	2026-11-05T00:22:41-08:00	Merge origin/main into D-23-18 (field/exit.rs: keep carried_laid and in_field)
+13c72c21eaa9ed77bbbf05fd2969f925aa55b91c	2026-11-05T00:15:17-08:00	Merge pull request #475 from conclavio/claude/timers-28-ic-c2811a
+cac1a34598b10f5bf9ce1986359f8b100aea2653	2026-11-05T00:14:44-08:00	Merge pull request #473 from conclavio/claude/fr-ramp-boarding-players
+ae9ce1a1c6074505e9f17e19c6d72e7e27ff0fe3	2026-11-05T00:14:29-08:00	Merge pull request #472 from conclavio/claude/player-wait-28
+6b4b1956b89fd6b8df806f699969720f18ace763	2026-11-04T22:44:27-08:00	D-23-18 cut notes: the harness kind is green (gate run 41981515265)
+bcc9dfb2d54e7bbda79920402f403eea5ba303ce	2026-11-04T22:35:16-08:00	D-23-18: cut notes as built, the stories' results, the detachment finding
+ada99e4affd01a46cb98e66961567417fd7b8a73	2026-11-04T22:30:50-08:00	Doc 40 cut note: the boarding tests' binary is domain_field (D-43-5)
+ec86b4635313c10632f0832691b29d1a5a7087d4	2026-11-04T22:29:25-08:00	Merge remote-tracking branch 'origin/main' into claude/timers-28-ic-c2811a
+cf162b217dac32a6fc853f300ff5ada8ba6402a7	2026-11-04T22:29:24-08:00	Player-response floor: seven timers raised to 28 IC days (owner rule 2026-11-04)
+6deb7e46f898ac9ed6e4c9fd683b4f44a1b66768	2026-11-04T22:24:00-08:00	Merge remote-tracking branch 'origin/claude/player-wait-28' into claude/player-wait-28
+a91605d549dc04071614aadd4cd665a16f8f8045	2026-11-04T22:15:59-08:00	Merge remote-tracking branch 'origin/main' into claude/d23-18-carried-memory-83dafb
+3bf9fb167fcaee16a2fbd143b31bdbb0fcbdd17b	2026-11-04T22:15:27-08:00	D-23-18 stories: wait for the second field's own mind; raiders still on the ground mark (WIP)
+996fe97cd1a124b7c076a72e8c2dc365b58cfe4f	2026-11-04T22:14:39-08:00	test(tacsim): RS.6c-1's sweep story on the IC claim window
+6446482c4c630f36189bc1da9ac8f18b04bc67c6	2026-11-04T22:14:09-08:00	Merge remote-tracking branch 'origin/main' into claude/player-wait-28
+8dc3af0f4132c26ce61f4613f15e5afc84e42374	2026-11-04T22:14:07-08:00	Merge remote-tracking branch 'origin/main' into claude/fr-ramp-boarding-players
+138e6b6e02c0a131afb2c51bd656dc11b0c7a9ab	2026-11-04T22:12:35-08:00	Merge pull request #471 from conclavio/claude/ts12-adopt-partition
+2606cb737ab8fde6b0f6dbd0b9b5e41c6aae56d5	2026-11-04T21:55:16-08:00	D-23-18 stories: the check-in's think_seq against the field's span, no snapshot read (WIP)
+20a1c60714638ddaa125039c6cd1e99ee5a1bbd5	2026-11-04T21:29:53-08:00	D-23-18 stories: the snapshot read says why; the recover waits for the close (WIP)
+dec411e697e293485858bf868ed6a4063d905e4c	2026-11-04T21:07:33-08:00	D-23-18: read a snapshot's escaped state; cut notes, CI matrix (WIP)
+b34208d82a1f722323e63374cdc92ef29f653af9	2026-11-04T21:05:04-08:00	Doc 40: the ramp exit's boarding window for player hulls
+1a3b10c675d1932739d9b7d4455bb018bf234199	2026-11-04T20:49:33-08:00	Merge branch 'main' into claude/player-wait-28
+a4e46c94f4214dd8bd4c74df680c8606e3c3fc75	2026-11-04T20:47:59-08:00	Merge main (RS.6c-1) into the adoption: house_sweep_rs6c into domain_economy
+c558db35bd9c1d8f2f35307239fbdf999b769f35	2026-11-04T20:46:28-08:00	fix(tacsim,economy): doc 41's player waits are at least 28 IC days
+d355b8c665fe8dfa967655912130b5ac2dc8d1f9	2026-11-04T20:38:44-08:00	Merge pull request #469 from conclavio/claude/rs6c-tycho-sweep
+ebd18b1cb06f4d7a59d42721b09631d33d7b695d	2026-11-04T20:30:37-08:00	D-23-18: the carried-memory stories at 256 and 512 (WIP)
+3145352868cc3e1fe193119fee42c3f79ce0f399	2026-11-04T20:25:11-08:00	Merge pull request #470 from conclavio/claude/doc42b-surrender
+7bdd91878846ccd29bd4b6104eeb2dde36a9f11b	2026-11-04T20:24:25-08:00	TS.12 adopted (D-43-5): tacsim's tests as four domain binaries, hash-partitioned cells
+3ec9a70056d8e9cfd3de10bf6f9180b60cffedd6	2026-11-04T20:23:35-08:00	D-23-18: the carried memory, return and seed halves (WIP)
+291d584941b049e007e287c27492c0a4e7253f93	2026-11-04T20:13:44-08:00	test(tacsim): RS.6c-1 the ownerless wreck is titled, swept and disposed
+a83ad4234ca6bd05a965ab585a5486e07d7d5653	2026-11-04T20:10:45-08:00	Doc 42b: the surrender survey (Draft 0.1, Q-42b-1..20, cuts SU.0-SU.6)
+53386d4d954d30186cd61bfcfe8224defc6aa1fa	2026-11-04T20:03:04-08:00	docs(41): RS.10's rulings and the 28-IC-day rule recorded
+2dc5ca4d5144d29c313449611024f9ac97b446bf	2026-11-04T19:57:56-08:00	feat(tacsim): RS.6c-1 Tycho Mutual sweeps and scraps the unclaimed wreck
+bf0b5f24a57b485bfc44556b24b1e1ada02f2238	2026-11-04T19:45:29-08:00	Merge pull request #468 from conclavio/claude/fr-ramp-boarding
+288f7d48acc9a24421a869ebe3eead9e60e9bc56	2026-11-04T19:42:08-08:00	Merge pull request #467 from conclavio/claude/in9b-cab-templates
+3421fb7a19d01dbacc741e84313cc19dd52c5712	2026-11-04T19:26:12-08:00	Doc 40: s2's crossing check reads the ramp, not the check-in pose
+ffd3bc165f205801228804ec39611a8253579ab3	2026-11-04T19:21:44-08:00	fix(39): IN.9b a templated design is a combat hull unless the yard built it (IN.7's carried scout); main merged
+7f58aa206687deb496e015ad8a09c89acbd831cd	2026-11-04T19:14:59-08:00	Merge remote-tracking branch 'origin/main' into claude/in9b-cab-templates
+8b6069bab19d83c17f3f7311e901f010ab36ebe6	2026-11-04T19:14:59-08:00	test(39): IN.9b the dark-view fixtures take the target, which no template names
+6f3fec7c633693a37afd414314d4db8f4d13db23	2026-11-04T19:08:45-08:00	Merge remote-tracking branch 'origin/main' into claude/fr-ramp-boarding
+73b43d5942ddbf94b978dd86e1cadb06ad63a2ad	2026-11-04T19:07:39-08:00	Merge pull request #466 from conclavio/claude/ts12-refresh
+1c22679d2b22ad24239662cb6407fd0fd2f46cea	2026-11-04T19:07:25-08:00	Merge pull request #465 from conclavio/claude/cf6c-escort
+8303d4cfed8ba7d3ebadc9ec2557a7a85b0c3d0e	2026-11-04T19:07:15-08:00	Merge pull request #462 from conclavio/claude/rs6b-house-arm
+70ef07d31eb478b946ea791d91777585ffef9bde	2026-11-04T19:03:56-08:00	Doc 40: the ramp exit's boarding window (raider boarding)
+45facc251419c266e928216bc3bc00d3451a4af1	2026-11-04T18:49:12-08:00	doc 43: the owner's ruling on Q-43-4 (opt-level 1 kept), with TS.3's figures
+2bd8f9a05943fde7ef7622797392c9a300192d21	2026-11-04T18:49:08-08:00	feat(39): IN.9b the armour_cab and walker_cab class templates; nine designs buildable at the yard
+3e099d52bd968c29ee0ac58a90aef0f619e00db0	2026-11-04T18:48:11-08:00	TS.12: the refresh on main f9912792 (the race gone, +31 s a cell)
+27483239bd5a0ba098e25ecb01f4f952209bf93c	2026-11-04T18:40:32-08:00	style(tacsim): RS.6b shard_7's mod lines in rustfmt's order
+e9a20e7e4b99fa0f28f7a29e8c5ca352ef1190ce	2026-11-04T18:34:54-08:00	test(32): cf6c ends its exchange on the escort's own frame, not the black box's late hit lines; back on the PR tier
+e498bfa9bba2c6b8c5a045db17796b7d8f1971aa	2026-11-04T18:26:52-08:00	Merge remote-tracking branch 'origin/main' into claude/rs6b-house-arm
+1eea84493dbb7af80d0ff93d3a1ef06968822bad	2026-11-04T18:24:15-08:00	Merge pull request #464 from conclavio/claude/fill-leg-home
+152ec3b27085eb146572394fbafbc4ab789f5b01	2026-11-04T18:20:09-08:00	feat(tacsim): RS.6b Tycho Mutual's house arm flies a retrieval
+f6b8858a1a7ab0b9c3baa279ffa783366e196f6f	2026-11-04T18:06:11-08:00	Merge branch 'claude/fill-leg-home' into claude/rs6b-house-arm
+19b9eba9513f07240202e5174597ce47a18207af	2026-11-04T18:05:45-08:00	fix(tacsim): a plan's fill before a site departure buys the leg home
+f991279221eb0c48e6eb02ae2e9f62fe06f62e52	2026-11-04T18:01:03-08:00	Merge pull request #463 from conclavio/claude/rs8-cr6-followup
+7734a61d4323e4fa6bbe5316008ae37e7dc989d5	2026-11-04T18:00:26-08:00	Merge pull request #438 from conclavio/claude/in10-pools-da7866
+19d521d886dfa2998fb29c3739a4f4b0db38b2dc	2026-11-04T18:00:13-08:00	Merge pull request #455 from conclavio/claude/rs6a-tycho-designs
+e9095ae97a862fb14ed00f7364cfb2f3c78e873f	2026-11-04T17:56:55-08:00	wip(tacsim): RS.6b the vault.withdraw grant, boarding, the occupant, the reserve buy
+9b7ba376b2b9ad0fce155bef8b7e4cc98df97257	2026-11-04T17:01:41-08:00	Merge RS.6a (#455's branch, lane v28) into IN.10; IN.10 re-signed as lane v29 / relay v20
+4b7c2a4d0b178624d251612e9390f01bcbf55aaf	2026-11-04T17:01:15-08:00	RS.8/CR.6 follow-up: CR.6 reads crew::records; both cell costs
+dc781bfaff2c829ff9e1ab5d661bfc438b5b9862	2026-11-04T16:49:18-08:00	Merge pull request #448 from conclavio/claude/cr7-docs
+a6bea79fffefa1388625149c1364aa23d8f8f242	2026-11-04T16:49:05-08:00	Merge pull request #447 from conclavio/claude/cr5-beds
+a40aa5de069a6cd16df845d9b7e70f20deb56ad7	2026-11-04T16:48:49-08:00	Merge pull request #442 from conclavio/claude/cr4-eject
+003fd2e9f1d04eceac49ce12bc5509a73f965919	2026-11-04T16:48:36-08:00	Merge pull request #461 from conclavio/claude/fr7-ledger-floor
+61e1b941d66a9534c2f42e1e4cd529b83be8a32f	2026-11-04T16:42:30-08:00	Merge branch 'claude/rs6a-tycho-designs' into claude/rs6b-house-arm
+1b80f2adc4d07fa4c7312802f3cc3ad46a33feb4	2026-11-04T16:42:15-08:00	fix(tacsim): RS.6a the house's seeds keep their own pool indices; two pins
+a6e999e62d8f587398913cb102593a137d48690d	2026-11-04T16:37:58-08:00	wip(tacsim): RS.6b the no-acceptor story
+9d82910d8aff72fda329ccfea4744dd9e29c1f4d	2026-11-04T16:35:52-08:00	wip(tacsim): RS.6b the house arm (dispatcher grant, aboard and helm, Arm::House)
+9d0cc049d4a8f31cdf34dd86e091652792c1e51b	2026-11-04T16:25:10-08:00	docs(40): FR.7c's re-run at its head, green at both sizes
+57eee0654690804cd6947fea45012e8d7a1c3502	2026-11-04T16:24:35-08:00	Merge remote-tracking branch 'origin/main' into claude/rs6b-house-arm
+e555e0624d050e99fcce6c2a8d10d2abec9912dd	2026-11-04T16:19:34-08:00	feat(tacsim): RS.6a Tycho Mutual's house on lane v28
+28e0a372eeab2052a5f5f197d8458364b0afa30d	2026-11-04T16:13:11-08:00	FR.7c: nightly-report waits for fr7-round-story; cut note
+ad63d8b736a1d1618e6e3345808d0ceeb44ba823	2026-11-04T16:11:31-08:00	docs(39): IN.10's cell delta from #438's JUnit (+1.79 min, tacsim-integration-2)
+3d2705296b719193b8920aab50b6d6dc2739778c	2026-11-04T16:09:36-08:00	FR.7c: the seam a free function on the world (no cross-owner write in the test file); FR.7's rows nightly in a new fr7-round-story job
+e095c8af84dedee32a9fcf622757a8cc08d54d0d	2026-11-04T15:58:59-08:00	Merge claude/cr5-beds into claude/cr7-docs; doc 42 records CR.6 as built (#453)
+8f044516f819e897e4670489f2157a80b1e7e12d	2026-11-04T15:58:29-08:00	Merge claude/cr4-eject into claude/cr5-beds
+ea6465b442daaf4199682ace7cbd5ac6dffb2e32	2026-11-04T15:58:15-08:00	Merge origin/main (FR.5b, RS.8, CR.6, RS.4, IN.9, gc0/cf6 fixes) into claude/cr4-eject
+c1dfd658290f61e0ef206cd99bac4ab1fd7f8ea6	2026-11-04T15:50:44-08:00	feat(39): IN.10 lane v28 / relay v19: the Trust's 250,000 raise; the pins; the helm made only when needed
+458304cbfd996b4b1feee964e82c364428853d04	2026-11-04T15:50:11-08:00	Merge pull request #445 from conclavio/claude/rs4-vacated-return
+a93f3d2d035ce22a36b7b01dec5c03129bb3a798	2026-11-04T15:50:11-08:00	FR.7c: a test-only ledger floor (tacsim feature test-ledger-floor); FR.7's segment beat rolls in minutes
+5f94ce47cf2a3f80a072ec755abfe74c86ae0fdb	2026-11-04T15:25:43-08:00	Merge branch 'claude/rs4-vacated-return' into claude/rs6a-tycho-designs
+f267d4ad6cd905affe42b64121fe6004a0cb5379	2026-11-04T15:24:40-08:00	wip(39): IN.10 on main: the lane's yard, the Yards' stores for the part, port_of reads the yard room
+212e852a716f3cde8eadd18b96c1d7e3bcbfcfde	2026-11-04T15:23:59-08:00	Merge pull request #460 from conclavio/claude/main-after-458
+4ce4158e5b9ae3ca97c30f6aecf660195a3c0ee3	2026-11-04T15:15:10-08:00	test(39): the dormancy story's drain counts Stickney's clerk as a house actor (IN.5's daily acts)
+62a8a8382b9c7802ba00bd06a17b4f8b88b054d6	2026-11-04T15:15:10-08:00	test(32): cf6's fight runs to the raider's destruction (its rig's disengage at 60 s); doc 40 names the ramp exit's boarding window
+0d40d1a382c577e702bb56fb3fc00a0dfc1b3842	2026-11-04T15:15:09-08:00	Revert "wip(32): lift cf6c's ignore (red until its fight is survivable)"
+9a7c82d304162a29407c2328344cee616fcc37ba	2026-11-04T15:15:09-08:00	test(32): cf6 names where a raider hull missing from the site record went (diagnostic)
+cd15390ec06c46f8f9d07b7e47333b98ff1350b1	2026-11-04T15:13:05-08:00	Merge origin/main (IN.5, IN.7, IN.9) into IN.10
+b4063d84f91b468a7a2dde58d832e1ca26967ff9	2026-11-04T15:09:46-08:00	Merge remote-tracking branch 'origin/main' into claude/rs4-vacated-return
+014164b38589a7c89e8ac08a2aad5f8c6904fe2b	2026-11-04T15:09:45-08:00	wip(tacsim): RS.6a the house arm (lane rows to come)
+8f9e8c16b0044c32eb00ba16a1ba6c7d61da0f83	2026-11-04T15:03:26-08:00	Merge pull request #416 from conclavio/claude/in9-yard-handover-ba631c
+bdab8398597c52ef99a6c45c636c7ea087d5d4bd	2026-11-04T14:55:47-08:00	Merge branch 'claude/rs4-vacated-return' into claude/rs6a-tycho-designs
+4ccfc85f5ab8fc524b81700a2369c1348ee917b0	2026-11-04T14:55:46-08:00	Merge remote-tracking branch 'origin/claude/in9-yard-handover-ba631c' into claude/rs4-vacated-return
+0b8531b71d3590ed484050ddfa67494940dd172f	2026-11-04T14:54:36-08:00	IN.9's lane v27 carries Stickney Yards' 50,000 raise (IN.7's, on the owner's ruling); strip_yard takes it out; the tranche and treasury pins
+639a58e84cffb39892f3d8779cdb7a5fd9b7493c	2026-11-04T14:47:11-08:00	Merge remote-tracking branch 'origin/main' into claude/in9-yard-handover-ba631c
+937d3ac4dfe62babbb88b9e8c0df2998d22daa65	2026-11-04T14:24:41-08:00	Merge origin/main (IN.7's lane v26) into IN.9: the yard row as lane v27 / relay v18, strip_yard at the chain's head, the pins
+d08d3599436fcf5b8cc32a42fc7ea36192be1f36	2026-11-04T14:08:12-08:00	Merge pull request #459 from conclavio/claude/in7-main-fixes
+71a794a24d11d494d4e1664844e8f7b4f5998837	2026-11-04T14:05:55-08:00	fix(mush-inventory, web): IN.7's follow-ups on main — one checked_relocate caller, the sky chart re-blessed
+4fa1753645e2ede99b92a20c0a4e49defc9a00b6	2026-11-04T13:38:23-08:00	Merge pull request #450 from conclavio/claude/ts6-fiat-budget
+a976982692d630e941b11189c58d87341def303e	2026-11-04T13:38:15-08:00	Merge branch 'main' into claude/ts6-fiat-budget
+eecb603ba940ebac21643336010589405f998ec5	2026-11-04T13:37:48-08:00	Merge pull request #452 from conclavio/claude/ts5b-fault-sequences
+b1641c11d795ae4eb60c6b3f7657379a82216ee3	2026-11-04T13:37:38-08:00	Merge branch 'main' into claude/ts5b-fault-sequences
+8c0d1d52675b884ba75f021b239d9aa9be4a3319	2026-11-04T13:37:17-08:00	Merge pull request #457 from conclavio/claude/ts9-ci-step
+aada3ad4422e389f61e2a59a093c0a4e9dfa332e	2026-11-04T13:36:42-08:00	Merge pull request #419 from conclavio/claude/ts3-opt-deps
+99c2798c20880be88e98f44c378af583c592492d	2026-11-04T13:36:26-08:00	Merge pull request #428 from conclavio/claude/ts17-release-smoke
+8dd461aad917f3c6767a06c818a6ac81d8599527	2026-11-04T13:36:12-08:00	Merge pull request #443 from conclavio/claude/ts19-mounted-assertions
+9a5ad408046141edc507934182b1e32356b7d3c3	2026-11-04T13:35:57-08:00	Merge branch 'main' into claude/ts19-mounted-assertions
+c71cfc8ba7a38f0074fbdc81b46b442c9d77651d	2026-11-04T13:35:32-08:00	Merge pull request #446 from conclavio/claude/ts5a-generated-lifecycle
+1e679dd17784aca406c9a7876596e96a54261b15	2026-11-04T13:35:12-08:00	Merge pull request #449 from conclavio/claude/fr-leader-mark
+77de4a64ded81b67df822964f3eff9091c391fd5	2026-11-04T13:34:35-08:00	Merge pull request #453 from conclavio/claude/cr6-space-crew-seam
+f4ffa53210c733506ac73283770f71e6769014b9	2026-11-04T13:34:16-08:00	Merge pull request #439 from conclavio/claude/rs8-space-seams-3ab0b3
+9060c2650a353d641b6517de88c9244482d52d27	2026-11-04T13:33:37-08:00	Merge pull request #430 from conclavio/claude/in7-part-recipes-8c00cd
+ac87694dcd836d61aa89aea80d2dd8406f22bd3e	2026-11-04T13:33:12-08:00	Merge pull request #456 from conclavio/claude/nightly-hygiene
+f020d3924c11a2d5958499da6c9cdc35ca533c30	2026-11-04T13:33:00-08:00	Merge pull request #458 from conclavio/claude/cf6c-survivable
+80983b104249dcb8083ffb122d9e0ae4d0a4a2cf	2026-11-04T13:32:25-08:00	Merge pull request #454 from conclavio/claude/fr7b-tow-beat
+4a6c41b7a65999216455399236853a56acd61041	2026-11-04T13:31:38-08:00	Merge branch 'main' into claude/fr7b-tow-beat
+e7b351c14f772cad9307c01a609bc319df3efe3c	2026-11-04T13:31:33-08:00	Merge remote-tracking branch 'origin/main' into claude/in9-yard-handover-ba631c
+b09d1c60313adde942b8c286f0bee5cde3d1b83d	2026-11-04T13:30:57-08:00	Merge pull request #451 from conclavio/claude/in5-bot-followup
+a03e527625e16cb9fee7c1407aae5a572d3be756	2026-11-04T13:29:44-08:00	ci: name cf6c's by-hand gate in ci.yml's by-hand block
+05b86cfd2e209ffccbea763523e90597230fe85c	2026-11-04T13:28:52-08:00	FR.7b: green at 256 and 512 by hand and through gate.yml (41904925552); rows at c969ec3f; cut note
+5934569f2912507984480badbd74dfabf1b22047	2026-11-04T13:06:26-08:00	wip(32): lift cf6c's ignore (red until its fight is survivable)
+a0c94340c9312df1ae508d870648163d6e71a0b2	2026-11-04T13:06:04-08:00	test(32): cf6c's gate ignored with a by-hand tier row at 4390f04c; the escort dies to the first volley under the pinned seed
+abbe83790d2a37d2e92bd40ba45e5c15bfdd4c82	2026-11-04T12:59:58-08:00	test(40): pin the field rigs' seed at 0x5EED_0002; cf6c withdraws after the escort's first hit; FR.5's note records the cause
+f1a4832a856b965cecc3cd70138a0fb38879f1ee	2026-11-04T12:46:46-08:00	test(40): gc0 names a jammed escort plant when the coaxial never fires
+903fd04c3f52b09ca9a66a233072ac8eafbb9673	2026-11-04T12:45:30-08:00	feat(40): field.seed, a test and replay knob; the field rigs pin it
+30d6348598286b866fd8eaf9cb55b999294837c0	2026-11-04T12:36:28-08:00	Merge claude/cr5-beds into claude/cr7-docs
+aa7e2ac55fe1b9d17a892bdd7a10c00dbe204595	2026-11-04T12:36:28-08:00	feat(tacsim): crew::records, a pub(crate) iterator over the crew book (for CR.6's space seam)
+a3ab22e7b9f418c8aa32011aaa190e4b16f82d5c	2026-11-04T12:17:02-08:00	Merge remote-tracking branch 'origin/main' into claude/ts17-release-smoke
+339ec91a0718d3a950b28aaeca9aff65023e36de	2026-11-04T12:16:09-08:00	TS.9: the browser smoke's steps in the rest-mushd cell
+da17063f9efe00370ec0744142d33f5c1b4518fd	2026-11-04T12:14:36-08:00	CI: artifact uploads never fail a cell; the nightly names its cause
+c969ec3ffc3e1a26036a744d0f414ac67575faf9	2026-11-04T12:14:10-08:00	nextest: the ci-bot profile lets FR.7's hour-long round story run through the gate
+49a10e23f276ba924856a16aaba6cf548471a24f	2026-11-04T12:13:31-08:00	docs(40): FR.7's cut note (it missed #420) and FR.7b's
+0cb3108f3bcd74957a25de645fc482b3063150cb	2026-11-04T12:10:27-08:00	feat(tacsim): RS.6a Tycho's two designs and their bills
+defb64dee248bddbbd3e3360119f3143a9aa9e51	2026-11-04T12:05:02-08:00	TS.5b: the inventory pins gate5_fault_matrix at two cells (the matrix and its sequences)
+281b69b4f023d42bfb04aa409be17b9eafa3a611	2026-11-04T12:03:07-08:00	TS.17: assert the look, and the cut note
+4191b7891f6464ae94e13335074a28071d033ad9	2026-11-04T12:03:07-08:00	TS.17: the SSH leg takes a PTY and asserts the handshake and the server's reply
+dbcbafc29c13b62f1d1221f3aab78eaa6a29dfb5	2026-11-04T12:03:07-08:00	TS.17: release-smoke.sh is executable
+37ed5a35c5c47c24fa3ec256e2d49d3519436b17	2026-11-04T12:02:33-08:00	Merge claude/cr5-beds into claude/cr7-docs
+7d46b5c5a8a6f181166e17ab2b4676d407b84feb	2026-11-04T12:02:19-08:00	docs(42): CR.5's rule #14 cell delta from #447's CI JUnit
+37276a8122f5df5d0ca34a8e92c7f45f1ed8e6c7	2026-11-04T11:58:27-08:00	FR.7b: the raider's approach by ground (Ahuna's ramp row is out of sight from the east)
+8da0bbffb10ea8e899f93a58ff29b30d6dd89c26	2026-11-04T11:57:15-08:00	FR.7: the lane's own launch is held back (it could open and go in one tick); rig 2 asserted aboard at the opening; the casualty east of the ramp
+42ba89277d24843d542b9695cdb2ee3368efacc8	2026-11-04T11:57:15-08:00	FR.7: the release before the reinforcement (the helm names only its own rig); the casualty off the raider's row
+e3a6d1520179f707ecf0037dfebd9276bb299f5b	2026-11-04T11:57:15-08:00	FR.7: the tow beat through FR.5b's field tow (struck in tow, released under fire)
+89ea3a71ca3ea12e568b66590670bb8030a0b0a3	2026-11-04T11:56:40-08:00	test-tiers: the FR.7 rows by their module path
+8d99c9ef6864818b3e11ae112566b9dc4477c561	2026-11-04T11:53:43-08:00	docs(39): IN.5's bot stories passed at both sizes at cdd30329; their tier rows carry it
+c4b1b0fdb87d420da2d9672ee5c9a9539a4f25b1	2026-11-04T11:53:04-08:00	test-tiers: FR.7's two round stories, by-hand at their green revision (fixes main's ci_gated_test_inventory)
+c1a140143448a0ddf2173d43c9075b98eec6063d	2026-11-04T11:50:50-08:00	test(43): leave FR.7's tier rows to its own FR.7b PR
+74b0809efc975258b93fdd49bbd1d263e863a5b2	2026-11-04T11:47:34-08:00	fmt: the stow's merged RS.5 hunk
+f0b4d9dde1a54c5f2ec6ee6d6d775f98c3708fcb	2026-11-04T11:38:06-08:00	CR.6: the space crew seam (doc 42 Q-42-24)
+2d56bef4cae4081fd531abb24465fd55af281614	2026-11-04T11:36:25-08:00	Merge branch 'main' of https://github.com/conclavio/rustmush into claude/ts19-mounted-assertions
+16422871feba1f969c4616723026e9aa8b5facb7	2026-11-04T11:35:58-08:00	TS.5a: rustfmt e2b.rs (the module line's blank)
+d6eb4a1c7314f58987f815abcb3a069a4b0909a0	2026-11-04T11:33:07-08:00	TS.5b: the fault matrix as sequences (doc 43)
+81df761e9ba37ef66654b5e22f394201ea15cefd	2026-11-04T11:31:53-08:00	test(43): tier rows for IN.5's and FR.7's gated bot stories
+b2a8c72ac61094e56dd18456dbe4113d71e43254	2026-11-04T11:30:52-08:00	Merge claude/cr5-beds into claude/cr7-docs
+4b9a491c32835aae85e3fab977b6beec206d486d	2026-11-04T11:30:51-08:00	Merge claude/cr4-eject into claude/cr5-beds
+62ecd57ce8d4ef5f6ed40f47d6e77bcfeeee860a	2026-11-04T11:29:16-08:00	docs(42): CR.4's rule #14 cell delta from #442's CI JUnit
+af4391735d0d5c940e00d73a056cb6d0a6173f7a	2026-11-04T11:29:15-08:00	TS.6: the fiat budget (doc 43, D-43-9)
+814f9ea198e889b80b4c4c197e8f53e4f874b00c	2026-11-04T11:27:08-08:00	feat(field): a leader's mark writes the books of the hulls they seat (owner ruling 2026-11-04)
+7647e57306c9fbaea02309b11c249abc721d8cef	2026-11-04T11:24:17-08:00	Merge origin/main into claude/cr4-eject
+e652ee7665a78e231de5bc7a079936dfc982ca02	2026-11-04T11:24:17-08:00	style(tacsim): arena::eject in the mod list's order
+6a2944a04f0bf7785ca547edb9915f7577ee3ec9	2026-11-04T11:19:07-08:00	docs(27,32,36,38,42): doc 42 CR.7 — §5's amendments written in; doc 42 Draft 0.5 as built, CR.6 the space window's
+c36222045a3ec6d455f796c4cc0801cb05d93385	2026-11-04T11:18:18-08:00	Merge branch 'claude/rs8-space-seams-3ab0b3' into claude/cr6-space-crew-seam
+9276e299c15f8ee5ca0b9e85f38fc3e3f54538f8	2026-11-04T11:18:18-08:00	CR.6 WIP: the space crew seam (doc 42 Q-42-24)
+55e331125dea5842783bf877b249636cd12e3658	2026-11-04T11:18:16-08:00	Merge remote-tracking branch 'origin/main' into claude/rs8-space-seams-3ab0b3
+cdd303295896225102c8c3676b9109483f71c1ac	2026-11-04T11:17:24-08:00	test(39): IN.5's bot story retries a sale while its last deal is still being handled
+49e6b0e47c2b3ecbd0e53ebeefd7bd5beced269a	2026-11-04T11:17:10-08:00	feat(tacsim): doc 42 CR.5 — medical beds limit the faster rate; a waiter takes the first bed that frees
+ca75104ad1bc2c3f9218bcf17963be6efe67dbe8	2026-11-04T11:16:35-08:00	RS.8: name the tow's filing clear of the industry-seam tripwire
+cbe0fd156fe250aa94e5843f844e845a3236d914	2026-11-04T11:11:18-08:00	TS.5a: the generated lifecycle — model state machine and checkpoint vs replay (doc 43)
+a193de9c72b867887307a4c196a999d16b5a7d48	2026-11-04T11:09:52-08:00	Merge pull request #444 from conclavio/claude/ts12-note
+30b941ae9935f956289ce4851a2ba280d16b696b	2026-11-04T11:07:40-08:00	TS.12: the partition experiment, measured (doc 43 cut notes)
+d0c569a21d946c8d30ef10967b2cb7fbf6a8f521	2026-11-04T11:06:25-08:00	Merge branch 'main' into claude/ts3-opt-deps
+f8b25881ab5519e63ce1970a19253bc2afcccae1	2026-11-04T11:02:37-08:00	Merge remote-tracking branch 'origin/main' into claude/in9-yard-handover-ba631c
+eab39bdd87d7233792ee47c6cb8c8ba699f11dbf	2026-11-04T11:02:30-08:00	feat(tacsim): RS.4 the vacated hull's return
+b20e1a733a34e7f130a77be9f2cf1e9b7cd0284d	2026-11-04T10:55:50-08:00	Merge pull request #427 from conclavio/claude/ts14-release-check
+8430bc24dd42565dd7f8c8749aa8ed09fd4ef43e	2026-11-04T10:55:23-08:00	Merge branch 'main' into claude/ts14-release-check
+b71297995b9c0b76e5799b7f2fcff7629c85c21c	2026-11-04T10:54:44-08:00	TS.19: the web's source probes become mounted assertions (doc 43)
+9b4eef3187998b07ad77820b1722919cb54cc876	2026-11-04T10:54:43-08:00	Merge pull request #440 from conclavio/claude/ts3b-step-audit
+735ac4b05a86fd17fb66c5101cb5dec70e7644c8	2026-11-04T10:53:32-08:00	Merge branch 'main' into claude/ts3b-step-audit
+e9919752c5798245343f597dbd684bf49434490b	2026-11-04T10:53:02-08:00	feat(tacsim): doc 42 CR.4 — +sortie/eject: the arena's eject read, the seeded capture draw, the two landings, the deferral keyed on Friends
+65181619ac23f32e328546d6f2bcc6c13c2cb3c2	2026-11-04T10:52:46-08:00	Merge pull request #420 from conclavio/claude/fr7-round-story
+4134e6d9ecfd41cd31f0298bbce94880a9028cb2	2026-11-04T10:52:23-08:00	Merge pull request #426 from conclavio/claude/rs7-port-security
+6a98519dff8e44f11750961409b742eae92381f1	2026-11-04T10:52:07-08:00	Merge pull request #429 from conclavio/claude/ts9-web-browser
+a170600b978251cac897ea76e2b9b9ede1094e97	2026-11-04T10:51:53-08:00	Merge pull request #431 from conclavio/claude/ts4-hostile-input
+1dfc0653d4f2cd2cb7d2e00ceab6a9b23ddb595f	2026-11-04T10:51:39-08:00	Merge branch 'main' into claude/ts4-hostile-input
+315e1418af360dbd2f7413489034536c992d9f4a	2026-11-04T10:51:09-08:00	Merge pull request #436 from conclavio/claude/ts20-pinned-reconstructions
+8afd0eaab175b13c4e86d72fa584cf1aaded8bd7	2026-11-04T10:50:23-08:00	Merge pull request #434 from conclavio/claude/cr2-release-debts
+fedd5828a78b9f382e5ce6c88edead50b05c1c24	2026-11-04T10:49:59-08:00	Merge pull request #437 from conclavio/claude/ts7-client-verbs
+bbbfbb3330af7b198e48be759741673335c1a9a0	2026-11-04T10:48:35-08:00	Merge pull request #414 from conclavio/claude/in5-production-story-7c1562
+46eccf93dc953f9507ded4907505a8dee5a28c70	2026-11-04T10:47:57-08:00	test(39): IN.8's escort story funds the Yards, whose capital IN.5's house purchases now share
+223165ddc02535a521386671bf30d16f87875046	2026-11-04T10:43:32-08:00	TS.3: the gc4 red's cause is not established
+5382525a9299b0bc5da0226b4afb942657eae0cb	2026-11-04T10:41:01-08:00	TS.3b: the measured wall-vs-CPU table
+8a001c7343a62185ea0ac4f2e32fcde50242709e	2026-11-04T10:36:38-08:00	docs(39): IN.5's note names the two readiness flags the bot story allows
+3046c1c8ac7d6bc2237d01a4df3f2e4f2be59170	2026-11-04T10:36:27-08:00	test(39): IN.5's bot story allows only its rate's two readiness flags
+59a61b89c57f20d270abe3b1e3aa3ac1ab5ab7ff	2026-11-04T10:35:41-08:00	Merge remote-tracking branch 'origin/main' into claude/in9-yard-handover-ba631c
+4d7c291e7a3f114f178e771705e2757b5da769e6	2026-11-04T10:35:05-08:00	IN.9 on IN.5: Stickney's yard row (lane v25, relay v16), strip_yard at the chain's head, the pins; the story on the lane's yard
+8be2fcde8bb1cb8ef5e3f2ad59b3b610f4173691	2026-11-04T10:33:22-08:00	Merge pull request #433 from conclavio/claude/fr5b-tow-half
+142dc8b2408b9001cdf459d3e3f0e428f2eac49e	2026-11-04T10:32:55-08:00	Merge pull request #435 from conclavio/claude/ts11-t3c
+7ac1a09e79d32995b3efd21a251487b89cc8d151	2026-11-04T10:32:42-08:00	Merge pull request #424 from conclavio/claude/ts2-tiers
+0bc6b95b762253f878146dccbaf39ecb1eb3a5de	2026-11-04T10:32:11-08:00	TS.14: the cut note's measurement (2.9 min in the lint cell)
+762a97e6a25f6bcdfc2f5a2ea4d522ec4f80f7f4	2026-11-04T10:27:46-08:00	wip(39): IN.10 the helm purse's slot-owner row
+116ccc0a94e2e8683be93d7fd55b24955794d2f8	2026-11-04T10:25:44-08:00	TS.7: client verbs are registered
+d6c34745fc7cd3c5855ffafccbe9ca6018fb0e72	2026-11-04T10:22:57-08:00	Merge pull request #432 from conclavio/claude/ts18-variants
+6fef5fe5a962cc0df5f031ffcdf33bb07669e9e3	2026-11-04T10:22:50-08:00	TS.20: pin the four reconstructions of old content (doc 43)
+6733ca1defe69aef6c85df7d837d81fb42be8baf	2026-11-04T10:21:55-08:00	wip(39): IN.10 the pools: floors, funded house orders, the ferry, NO_HULL's two texts
+77882c9c781ce720087e6a00b61dfcc69b127194	2026-11-04T10:21:34-08:00	TS.3: the cut note (doc 43 cut notes)
+7821d925dbb57ebade3ce4bec59f5104f218c154	2026-11-04T10:21:27-08:00	RS.8: the space seams on the one salvage path (doc 41 §6)
+030e6c3b1a7bff9fc950ccf718856e624f11a738	2026-11-04T10:20:26-08:00	TS.3: record the measurement in the profile's comment
+870d27cb7cc3f74e882e3d10b5c82e9236ac6656	2026-11-04T10:09:43-08:00	feat(tow): FR.5b — the coupled tow's surface half; story (a) in the coupled shape
+bf0a69c1aa0fbdda2f769f9053c9fa4e77b2684a	2026-11-04T10:07:51-08:00	TS.11 (T.3c): the 33 contract binaries into ci_policy and engine_contracts
+2165024b40c8519de9d6ba2a5772fa45e12b3076	2026-11-04T10:03:28-08:00	test(tacsim): IN.7's counts — seventeen stock receipts, Stickney's strategic bid, 64 readiness lines
+7e26669a1e4cb43f308aa916ca28694c82ed524a	2026-11-04T10:00:42-08:00	test(39): IN.5's float panics read on one line
+31dd1e5de918c2aa65a94ba18fd450a74b4bfe46	2026-11-04T09:59:43-08:00	test(39): IN.5's float opens its source on tacsim.credit
+afac9df97048d2dde5d1b8c1064f6c49020af0e3	2026-11-04T09:57:45-08:00	Merge origin/main (FR.5, CR.2, CR.3) into claude/cr4-eject; the eject read joins FR.5's apply_field_acts
+9c18c190293a529a1c6cd910397ae6fbcb5b8901	2026-11-04T09:55:24-08:00	Merge IN.5 (#414) into IN.9: stack on lane v24
+c5b84c02285485df6d058364c22da5b2ffa6f42b	2026-11-04T09:55:02-08:00	Merge origin/main into IN.9 (RS.5's stow handover on the stowed carrier)
+0d016a7855551e805ae48f525dc8975ca12ff90f	2026-11-04T09:52:57-08:00	Merge IN.5 (#414, carrying main) into IN.7; lane v26 / relay v17 over IN.5's v24
+f0c46d14e8861e4c95d2e61a53e034d8fbdc5c7a	2026-11-04T09:52:31-08:00	docs(40): FR.5 cut note — the owner's ruling on the leader's mark (2026-11-04)
+3837c935cd33fd2fc26be97bfc7e8e277bc00dc3	2026-11-04T09:52:13-08:00	feat(economy,tacsim): +debts lists and pays a captive's release fee (doc 42 CR.2's owed widening)
+e63afac58f6905ab7d6962bde6e6bbf2bc5f5f35	2026-11-04T09:51:16-08:00	wip(tacsim): IN.7 review wording
+6ccaf77ee9e11e979f2ad6d3bd4acbc19ff0597a	2026-11-04T09:47:10-08:00	FR.7: the roll at the 1 MiB floor needs about forty field minutes; the idle bound covers it
+c84c9bdb86e005039f55dbcd247ea8872b986e51	2026-11-04T09:47:01-08:00	TS.18: variant identities in the tier manifest
+f55d04c9fb80fd568564e6e1008fbf36a5983f7e	2026-11-04T09:46:57-08:00	docs(39): IN.5's note records the float seed and the bunker shortfall it covers
+74db2329b92175d28381a522fa28fe94d3ba78a2	2026-11-04T09:44:18-08:00	test(39): IN.5's bot story seeds the pilot a float for the long way round
+f8dddd222fae4824bbcdf160939933cc9da6d4b6	2026-11-04T09:38:54-08:00	TS.4: hostile-input suites (doc 43 §5.1)
+06c4a2682f7ea49838793bd426be82c6e0bf272a	2026-11-04T09:35:54-08:00	wip(tacsim): IN.7 strip chain, provisional pins, staff-stocked stores for IN.6 and 36a
+ca529e17a5c0119823d98f89d6195b254c6f1346	2026-11-04T09:35:35-08:00	FR.7: the raider goes quiet after the jam; the roll waits out a longer idle bound
+5633d63ad183c51f688b30b97fe4fd7c482f9278	2026-11-04T09:29:00-08:00	TS.3b: the step audit (doc 43 cut notes)
+c8fd7fe3cd62bff88031ec347e8b7ed89e79ced7	2026-11-04T09:28:51-08:00	wip(tacsim): IN.7 story, the lane's strategic bid and retired seeds, batched lot moves
+dd17c83ad28efa400329d10334e3debb0d2990c5	2026-11-04T09:27:43-08:00	Merge remote-tracking branch 'origin/main' into claude/rs7-port-security
+975dee143ec818493be390554bb4b0fbcdd59eb1	2026-11-04T09:26:45-08:00	docs(tacsim): RS.7 module doc names a crate-private item without a link
+515b590acc5673c511ae35dc98965a2c82760913	2026-11-04T09:23:58-08:00	TS.17: the release-runtime smoke in the nightly release job
+21a42d4721ea7f5577566c88fef646daca06c4b1	2026-11-04T09:23:51-08:00	web: the one Playwright browser smoke (doc 43 TS.9)
+8de1fcb147afcdde7a7395d2d2735e2976983900	2026-11-04T09:21:35-08:00	TS.14: release-profile check of the three binaries on pull requests
+16460cfb4d2501082ebb848ff6b85637b8cc7ec5	2026-11-04T09:18:58-08:00	feat(tacsim): RS.7 port security
+ceec13239899fee5ab162c7f3e9fc5976ca87b80	2026-11-04T09:14:53-08:00	FR.7: the round's story script at 256 and 512 (bot over SSH), tow beat seamed for FR.5
+0e8d0381297a39dd3fcfb2bc3a75ae0a16804166	2026-11-04T09:11:13-08:00	wip(tacsim): CR.4 ejection — the arena's eject read, +sortie/eject, the draw, the two landings, the widened deferral
+c2f9def2928bb3b3961d27cb8c695bb29631837e	2026-11-04T09:10:52-08:00	Merge remote-tracking branch 'origin/main' into claude/in5-production-story-7c1562
+7107db6d9256d63a8081005f9d198e44242020ff	2026-11-04T09:07:59-08:00	Merge pull request #421 from conclavio/claude/ts10-clock-seam-note
+f98b6116b15bfb310bf71b3c14a34ed566949358	2026-11-04T09:07:45-08:00	Merge pull request #415 from conclavio/claude/rs5-retrieval-7d1b4a
+d13ab047d9ffc714269fc3620062bebb767cbc20	2026-11-04T09:07:21-08:00	docs(39): IN.5's note records the Luna and Deimos way out and the SF hand-off
+522a28053d4f0eab64cfa27d2580486cc28f2f4e	2026-11-04T09:06:41-08:00	test(39): IN.5's bot story matches its answers across the game's line wraps
+2c4b1c03df60fe67a58e4c37dd273b91daec6a5f	2026-11-04T09:06:22-08:00	TS.2: every gated test declares its tier and configuration
+9cf7eee3a752ce883543df8824c9531280e2046f	2026-11-04T09:01:05-08:00	wip(tacsim): IN.7 the part recipes, the arm's commission and the stores index
+4b1492b86c445c647f989805d50c8e104be69fd8	2026-11-04T08:58:18-08:00	43c: name the world task's real spawn functions
+1c2e4a80c7bb31f5cf3390bd74332296071aecad	2026-11-04T08:57:59-08:00	TS.10: the clock seam, design note (doc 43c Draft 0.1)
+4d257d6211e69506ee3dd0aea2df99b66e056348	2026-11-04T08:56:41-08:00	Merge pull request #410 from conclavio/claude/fr5-rebless-e00aac
+a08a612b4e7de02f51822a4d5309852b2174e530	2026-11-04T08:56:12-08:00	FR.7: the round's story (doc 40 §6) — draft opened on top of FR.5 (#410)
+079fc8d9564943f62396036ea5efdd70f6efed64	2026-11-04T08:54:32-08:00	docs(40): FR.5 cut note — D-23-18 named, not taken
+437b5192239e3f6dffd40b8af7db02bd9af070d5	2026-11-04T08:50:56-08:00	wip: local merge of IN.5 into IN.9 for IN.10 (not for push)
+6cdc73cc60cfa4cfac2605b6ce9e51409276326f	2026-11-04T08:47:55-08:00	Merge remote-tracking branch 'origin/main' into claude/fr5-rebless-e00aac
+0a6c1655a1a09f7216df15e81d63669247a067e6	2026-11-04T08:47:34-08:00	Merge remote-tracking branch 'origin/main' into claude/rs5-retrieval-7d1b4a
+04d6a095692d31cf4c468f68d42f8edfb0bb77b6	2026-11-04T08:46:46-08:00	TS.3: dependencies at opt-level 1 in dev/test (measurement, Q-43-4)
+7a535806b09a1def75b34806f19600a8b388064e	2026-11-04T08:43:13-08:00	Merge pull request #409 from conclavio/feat/sf-r24-one-docking-kinematics-and-ephemeris-canopy
+87534e27d698c89010c63e30229dc98f08e64768	2026-11-04T08:42:47-08:00	Merge pull request #418 from conclavio/claude/cr3-held-bound
+90b85aefd6d69bac68b24f48f729b625daea44ec	2026-11-04T08:42:27-08:00	Merge pull request #417 from conclavio/claude/cr2-port-handover
+dc933bf1337da0ab77b2b6eab7516cdb27ce278e	2026-11-04T08:41:46-08:00	Merge origin/main (IN.8 #413) into IN.9; the bill on IN.8's MassBudget
+0b28663f72fdc740b2b21dd90912f2314af05fe5	2026-11-04T08:41:27-08:00	Merge pull request #413 from conclavio/claude/in8-mass-scrap-de872c
+8553e92559ef225c323f9fd2b10a8f9ba9487417	2026-11-04T08:41:13-08:00	Merge pull request #412 from conclavio/claude/cr1-shard-move
+c2e86ccabda709c91202607f1e4e5e7255b19e81	2026-11-04T08:40:54-08:00	Merge pull request #411 from conclavio/claude/s4b3-field-minds
+cfb57e1072d4d8ec517cebd1f8b2c1cfd19b3148	2026-11-04T08:32:57-08:00	test(39): IN.5's bot story sails out by Luna and Deimos, past no picket
+e0be3eac3d63be4077a868a459387dc4588ce72e	2026-11-04T08:00:20-08:00	docs(39): IN.5's note records the cf6c flake seen on its CI
+64fa02e3aa24cbe685f3cb337d453a4d86d706cd	2026-11-04T07:45:41-08:00	docs(40): FR.5 cut note — the harness run's commit
+9d611527dec44e81880181b95f8c84282c97558c	2026-11-04T07:45:32-08:00	docs(40): FR.5's cut note — the five items, the join install, §4a's re-pins with reasons, the departures
+ef63b21fa35aa5c13e6f2153b0a02fac89a85f78	2026-11-04T07:40:33-08:00	test(harness): FR.5 — the arena baseline's deterministic leaves re-blessed by record
+92077d9efe802faf0c4f5f54c2a0ff8386705ad2	2026-11-04T07:33:13-08:00	docs(23): S.4b-3's cut note and §17.10
+99a4881316584dc22ced1004557f6c7d9697cc78	2026-11-04T07:24:36-08:00	docs(39): IN.5's rule #14 cell delta from #414's JUnit
+53d6bb7df488903c4b00457e2080c3b9cb19a382	2026-11-04T07:15:34-08:00	test(harness): FR.5 — the lance standings re-pinned by record
+b74c10896d69ac04e619676e9c7bce85579f62c9	2026-11-04T07:12:21-08:00	docs(42): CR.3's rule #14 cell delta from #418's CI JUnit
+4f45350337e95f6ddaad13b6f71d0249b9604a79	2026-11-04T07:06:48-08:00	test(tacsim): S.4b-3 the recover and the Close land on the composed path
+3ce4459c0caf9a3c340e719d4004bda0e17cffc2	2026-11-04T07:06:13-08:00	docs(39): IN.9's cell delta from #416's JUnit (+2.76 min, tacsim-integration-6)
+f43cfa0581620728e2b7ec5fdb7d2c0cbf78daa2	2026-11-04T06:58:35-08:00	docs(39): IN.5's cut note as built
+97059b99dfdc85a7bdf9c6ad62f51ab0cb876613	2026-11-04T06:56:51-08:00	fix(39): IN.5 CI pins (slot cap, RestockSpec census, cost-lane settle, IC10 suite on the pre-IN.5 lane, ic_slice_loop's refreshed bid)
+92231ed2d89c3641f2c33cabd48e25cc351c5f5f	2026-11-04T06:48:07-08:00	test(harness): FR.5 — W8 re-pinned by record (red-1 now the squad on a wreck); a jammed plant is Off by ruling, not a cold start
+4e531b3f5788ed595a420917d0078209904cddfd	2026-11-04T06:46:42-08:00	Merge branch 'claude/cr2-port-handover' into claude/cr3-held-bound
+15fae8fcd1b29c55a5d5674596f668345b838882	2026-11-04T06:46:27-08:00	docs(42): CR.2's rule #14 cell delta from #417's CI JUnit; the +debts listing owed after RS.5
+e6b0f82c7c4ee6c3936ec17f53f443400b77e114	2026-11-04T06:40:36-08:00	test(39): IN.9 the goods v6 pins (five hull kits)
+e060ce4e83da2d0e7bba29ec7b5cb9fb6a59931f	2026-11-04T06:39:56-08:00	test(tacsim): S.4b-3 the field ends by the raiders' withdrawal
+a90ed220e5da433af64583eb092a8ab784dc47c3	2026-11-04T06:33:30-08:00	test(tacsim): FR.5 — §4a's re-pins, once, with reasons
+3e5a557685d9bf6dd37550e35e410ef13ab6721c	2026-11-04T06:20:13-08:00	Merge branch 'claude/cr2-port-handover' into claude/cr3-held-bound
+3ca91228cdab4ae91b02febc5f273af1fb3b624b	2026-11-04T06:20:07-08:00	fix(tacsim): CR.2's lane v23 moves Deimos and Titan to the plan's updates; port.release_fee in mush-server's vocabulary census
+2969747ecf84bc91072b0001ce7b9b9a8afc93b7	2026-11-04T06:13:05-08:00	test(tacsim): S.4b-3 clear the mark by the field's own letter; a longer wait at 512
+624d4bd0ba7cd4e6c3ea8d157ea58981db4a6824	2026-11-04T06:12:56-08:00	fix(tacsim): RS.5 CI — the retrieval provider in the composition pin, Tycho's accept cap, a stranger's custody write-off goes home now, one-line log strings
+98241270a51d08f2fc4e8be3bde64a57d5eb1cd7	2026-11-04T06:06:53-08:00	feat(tacsim): doc 42 CR.3, the bound and the held case
+0fd21e68b3d6a7490b8326313857e2da37df3377	2026-11-04T06:06:42-08:00	docs(39): IN.9's cut note (the cell delta owed from CI)
+af2734d3bc385aa9b19eb534bc873913a2c81a43	2026-11-04T06:04:20-08:00	wip(39): IN.9 the ground leg at 256 and 512: board, launch, second carrier, buyout
+c5bf7aa5ae760dc4f1abfcf7a2092414285a222c	2026-11-04T05:58:27-08:00	feat(field): FR.5 item 5 host half — a towed casualty enters under its tug's party, coupled
+c528f0adf7fc0ddcb2f98b4b8886dae664e05666	2026-11-04T05:54:02-08:00	test(tacsim): S.4b-3 the field story names who the field admitted
+8ab11a2a9a602ad1d2a94b854d7e17e53e0c9d45	2026-11-04T05:50:02-08:00	feat(arena): FR.5 item 5 kernel half — the coupled tow; the join installs a scripted seal
+95ed613edfb3babf7d12e79c1a90b5d54d5209e5	2026-11-04T05:49:54-08:00	IN.8: the cut note's rule #14 cell delta
+201e8b55b72f41da57e68a6dcaa5cd534518fe7e	2026-11-04T05:47:33-08:00	feat(tacsim): doc 42 CR.2, the port handover and release
+0e2d5aa11ff9f97a5800831e6c1e94e9823cab7f	2026-11-04T05:44:24-08:00	wip(39): IN.9 kits stow nowhere, quote's yard berth line, docs links
+74358531537792cfef05d918226477a8d24e6c41	2026-11-04T05:43:29-08:00	feat(tacsim,economy): RS.5 the retrieval contract and the charge
+98b7cb10a028e034a396b79328b3dfb44dc2dac2	2026-11-04T05:34:20-08:00	test(tacsim): S.4b-3 the field stories do not warm the geology layer
+2006c2a31f76a29fbfa115cbd269e78c2bc6a899	2026-11-04T05:33:20-08:00	Merge remote-tracking branch 'origin/main' into claude/in5-production-story-7c1562
+c9a90907c697c1a7b9cfa3f7e977f7519716e03e	2026-11-04T05:32:41-08:00	wip(39): IN.5 fmt, doc links, test pins
+4f571660d0a417e1789db2f8289acf120249014f	2026-11-04T05:24:55-08:00	IN.8: the mass budget and scrap (doc 39 §4.6, §4.8, §4.10)
+db7af056fa50cd451a73c4725607fddbd248828c	2026-11-04T05:24:27-08:00	docs(arena): FR.5 — part_effects' rustdoc links
+0f5dfbf5bade0012fddd0ead8e181c020fbd72db	2026-11-04T05:17:06-08:00	test(tacsim): S.4b-3 the field stories at the stock tempo
+572c7996e04fb8396f70c49b1c9c462183c6da00	2026-11-04T05:16:22-08:00	wip(39): IN.9 the yard story's port half passes; batched consume, rig floor placement
+ee4612b97565bf86bc6275da7094c7cacdbd445c	2026-11-04T05:12:30-08:00	test(field_gc10): FR.5 — keep the idle bound; the victim hull's own book holds the tempo, not a friend of both
+5a9107b6613f0e75a017bb10a2b4e125d2ec438d	2026-11-04T05:09:28-08:00	feat(arena): FR.5 item 4 — the component effects (Q-40-2..6)
+6b272e093035653c3a31eec582bc6951549fd038	2026-11-04T04:57:35-08:00	test(tacsim): S.4b-3 rate at the stock tempo, then tune for the field
+63a57e77763efe4875a25b81707a1c3a13951e98	2026-11-04T04:56:06-08:00	wip(39): IN.9 the bill from the design, kit goods v6, the hull recipe pack, part lines
+9583ea309bcf61eb84dcf6650dd44fc9aed28480	2026-11-04T04:51:03-08:00	docs(42): CR.1's rule #14 cell delta from #412's CI JUnit
+a51aa14ac5f40a6164f5a5c05f2532370d3cd61b	2026-11-04T04:49:03-08:00	wip(39): IN.5 carbon ask at Freeport Works, Exchange bids kept; test pins
+b31469c536b3c528e648f674f0468e11bc6e46a7	2026-11-04T04:46:23-08:00	feat(tacsim): S.4b-3 the field installs a claim's retained mind; a source that no longer compiles drops to the ROM
+9a2c835626d7ebfd263c1cec59a8dcbb26af2ff3	2026-11-04T04:36:04-08:00	wip(39): IN.9 register, provenance, commission, stow=<carrier>, reader arms
+e38fcca4f30d72ee1351b5472655b7b49f6b357b	2026-11-04T04:35:36-08:00	fix(tests): FR.5 — hoist the wreck cells out of the two job closures; rustdoc link; gc10 demotes on disengage_s
+e1f05eb2f91702f938e48726db2beab75a1d307d	2026-11-04T04:33:00-08:00	test(tacsim): S.4b-3 the licensed field stories at 256 and 512
+d1cb99078911c5cfaf363d658aa8ea8e681867ff	2026-11-04T04:29:04-08:00	test(tacsim): CR.1's 512 runs and crew_custody move to shard_8 (rule #14)
+faaab507b4801ea32d8bb1aa184f72a2298417aa	2026-11-04T04:28:40-08:00	wip(39): IN.5 shrink the ask for the house purchase; bot works lines and story; sentence consts
+557534848c0e18cdb8cbb6ee2896416e3e27784d	2026-11-04T04:28:07-08:00	feat(tacsim): S.4b-3 the licence seat at go; a launch cancelled after its Open
+049fbeb3bc35cbd29eb88ead69a05029700679a2	2026-11-04T04:25:55-08:00	feat(arena): FR.5 items 1-3 — the join awaits the think batch, note_fire skips a friend of both, line_to over wrecks
+a78647120470ac03ea1780a5a65baecb2d1aafaa	2026-11-04T04:19:18-08:00	fix(web): satisfy svelte-check noUncheckedIndexedAccess in picture.test.ts
+4390f04c17ec9d9ed9f4474ee92e3ac7abed2520	2026-11-04T04:11:41-08:00	Merge pull request #407 from conclavio/claude/rs2-bay-away-ecb4ca
+240ad570012fd708dfad45b3b6e92e7da867b333	2026-11-04T03:56:46-08:00	wip(39): IN.5 pooled outputs, port_of, IN.3 on the lane works
+207d4c53a09c7e818fd8fde989b890607ed186fc	2026-11-04T03:52:50-08:00	Merge pull request #408 from conclavio/claude/cr1-capture-at-load-b2475b
+f0d2340aea7988b7eb4aa302dbfb8f3bef3ba399	2026-11-04T03:49:21-08:00	wip(39): IN.5 lane v23, refinery and works rows, recipes, house purchase, port story
+2d305222213e036eab5f24f3e527b44ef1a3283e	2026-11-04T03:35:02-08:00	docs(41): RS.2's cut note, the rule #14 cell delta from #407's CI JUnit
+d3a30948d6f535c194314c5e1521c74421afec4d	2026-11-04T03:27:09-08:00	Merge pull request #404 from conclavio/feat/sf-r23-mining-and-sensing-remainders
+1801b880fa010ac207841ded63f5e2a8ff3e808b	2026-11-04T03:26:57-08:00	Merge pull request #402 from conclavio/feat/sf-r22-authoring-ii
+a072531f7fc54ddb3a15a3bc25131f730e73ada9	2026-11-04T03:26:39-08:00	Merge pull request #406 from conclavio/claude/market-reserve-grace
+b6bcda2bc957c62dba8f5060d8b3ac9b870efad1	2026-11-04T03:26:24-08:00	Merge pull request #403 from conclavio/claude/s4b2-claim-arm
+b94b3fdf03a2aa911108b2e6cfb5996bfc65021e	2026-11-04T03:23:49-08:00	feat(space): Cut SF.R24 - one docking kinematics and ephemeris canopy
+8b509bd04d9fdd08959c3315194ef0ced3d90da0	2026-11-04T03:19:09-08:00	docs(42): CR.1's cell delta, local times; the PR run's figure owed
+79fc479907cda6fe46ef9ff5d590e65a71bb9f9f	2026-11-04T03:17:41-08:00	docs(tacsim): CR.1's crew module links name private items as code spans
+279d895a6871b5c3f7e445e7e4f5eceb5d67659a	2026-11-04T03:09:51-08:00	Merge remote-tracking branch 'origin/main' into claude/rs2-bay-away-ecb4ca
+8a10ad64686c57e2e9a79ae9b5d42c0ae0627705	2026-11-04T03:09:37-08:00	feat(tacsim): RS.2 the bay away from port
+03d313d8b53a7607900428aee0d0eafb854523f9	2026-11-04T03:05:40-08:00	Merge remote-tracking branch 'origin/main' into claude/cr1-capture-at-load-b2475b
+ff906fe812d0fdfe96706f10cc1ec2cac03a9855	2026-11-04T03:05:38-08:00	feat(tacsim): doc 42 CR.1, capture at the load
+4946d40b1d8e40d79f94afe3e73f790055ec4c4d	2026-11-04T03:01:13-08:00	Merge pull request #405 from conclavio/claude/in6-cell-delta
+6a3be7e2e1cca6d2b329ace5bcadb4699681a942	2026-11-04T02:57:25-08:00	docs(23): S.4b-2's rule #14 line from #403's JUnit
+ee6f41f9916b2161332ccb54299f36f3256d4d6c	2026-11-04T02:53:15-08:00	fix(market): a lot listing whose reserve has not landed survives a sweep
+a561ea8f71a05cebd5f597ed72d50cf6caf5692f	2026-11-04T02:44:50-08:00	Merge branch 'feat/sf-r22-authoring-ii' into feat/sf-r23-mining-and-sensing-remainders
+cf68fe1fe0c963297a503a48d5e83a39bbb7c9a3	2026-11-04T02:44:48-08:00	fix(tacsim): resolve intra-doc links in picket.rs and sync RigRecord with main (SF.R22)
+9946ea6d885a5e20b7141bbf2c6d767f05276a5b	2026-11-04T02:34:01-08:00	Merge remote-tracking branch 'origin/main' into feat/sf-r22-authoring-ii
+a31f9f490291475f16d1dc42fa29e5b61aa6151b	2026-11-04T02:33:53-08:00	ci: name S.4b-2's licensed-rig story in the M8 gate stories
+683e06c1050b49b0fcc9820872b31a47f19467b9	2026-11-04T02:31:59-08:00	docs(39): IN.6's cut note, the rule #14 cell delta from #399's CI JUnit
+3fb3e861d0dcc1d05ae70a0a67286f1c85df933b	2026-11-04T02:25:25-08:00	Merge pull request #401 from conclavio/feat/sf-r21-prepared-bubble-and-per-entity-store
+d6bcc4fabb296a73a1a5cb63ae395349de383bd3	2026-11-04T02:24:42-08:00	Merge pull request #399 from conclavio/claude/in6-part-lot-ae5ca6
+9ebf6dd6372b712c329bd6448291edaec1aff86f	2026-11-04T02:01:07-08:00	feat(tacsim): implement SF.R23 mining and sensing remainders
+deee09afa9e51589405ee474b68ba61995116740	2026-11-04T01:30:17-08:00	docs(23): S.4b-2's cut note and §17.10's three slices
+3f77c45199c131216270ca5b08fa1f595b86e0e9	2026-11-04T01:08:40-08:00	Merge remote-tracking branch 'origin/main' into claude/s4b2-claim-arm
+40b9d280b211bdb71038a6a2aa2ba71cc012a725	2026-11-04T01:08:40-08:00	fix(sim,tacsim): S.4b-2 the ramp tied to the carrier's landing; the composition's catalogue for the Open
+1fbd149e5a25ead4ea79776cedbed2177ffea2f1	2026-11-04T01:08:11-08:00	docs(39): IN.6's cut note, the stores minted in the bulk act
+90b0908ac3cee916aaabf9d25473eb61c52b1c8d	2026-11-04T00:46:25-08:00	fix(tacsim): IN.6 mints a vendor's part rows in its first bulk mint; lane v22 after RS.1
+4e7ecc9965c4e87c47f4375e155f730cc588a2ea	2026-11-04T00:46:12-08:00	feat(tacsim): implement SF.R22 authoring II clusters, sealed minds, and drone excursions
+59b82fca3bf14a31ba1adfd55f90e997b0d2f891	2026-11-04T00:13:28-08:00	Merge remote-tracking branch 'origin/main' into claude/in6-part-lot-ae5ca6
+8547a2ef2dce9005616d23e5e1a72a41b7608b9c	2026-11-04T00:07:48-08:00	docs(39): IN.6's cut note after the CI fix: no part asks, readiness, the reserve race split out
+ae5b246fd1e299b2be4b1de42426bb5b6cf808cd	2026-11-03T23:37:51-08:00	fix(tacsim): IN.6 seeds the stores within readiness, no part asks; the reserve grace split out
+2b1eca4cd33c3a7467ada00f7cd904294529b6f8	2026-11-03T23:22:00-08:00	Merge pull request #400 from conclavio/claude/fr3-reinforcement-d0af3a
+3628bf8fd964365ea897fcfa92e3032c3b6c0b3e	2026-11-03T23:20:41-08:00	fix(tacsim): FR.3 keep the flight records out of snapshot()'s frame
+012501ffdf6970ba5a9962b792813b05ab6f57ff	2026-11-03T23:09:48-08:00	Merge pull request #397 from conclavio/claude/rs1-tender-4ae4c7
+acc16407ea53f1b0a5f1e325916dc8b7f8ded051	2026-11-03T23:07:45-08:00	fix(tacsim): move transient bubble-input queue to BubbleInputHandles and gate on active bubble (SF.R21)
+1a70c8f78bc30c3882bd1849459de1b55c15bfb2	2026-11-03T22:55:28-08:00	test(gc11): the raid's two branches by the owner's ruling of 2026-11-04
+d71975f5943c6057da805bf39defe55c81d30030	2026-11-03T22:52:21-08:00	feat(tacsim): S.4b-2 an Open refused for good cancels the queued launch; claim stories
+9dedc1c08e708786c30f11db8237feb66843435d	2026-11-03T22:44:03-08:00	Merge pull request #395 from conclavio/feat/sf-r20-one-damage-table-and-drives
+0c1408c610fadc74b15b2f7aecccb20591ddf57e	2026-11-03T22:43:51-08:00	Merge pull request #386 from conclavio/feat/sf-r19-one-salvage-path
+01c15b95587cdea8451106b6140beff0f9266050	2026-11-03T22:22:39-08:00	ci(nextest): drop GC.1b's stopgap retry now FR.3 retries a refused arrival
+8b2589b85a3e0f65e12e9e0dd3b692430eefb51a	2026-11-03T22:17:26-08:00	Merge branch 'feat/sf-r20-one-damage-table-and-drives' into feat/sf-r21-prepared-bubble-and-per-entity-store
+9c9359327a987d91b454122a25b1a9014ffd95e3	2026-11-03T22:17:23-08:00	fix(tacsim): merge SF.R19 and resolve panic_budget + rustdoc links (SF.R20)
+44120cab0fedcea36ac380d0edcf0e7a1f428be9	2026-11-03T22:16:11-08:00	fix(tacsim): update TenurePin::owner_grant after main merge (SF.R19)
+2db88db608630cc682af2025af6900afc8eff8d7	2026-11-03T22:13:54-08:00	Merge remote-tracking branch 'origin/main' into feat/sf-r19-one-salvage-path
+1534a91e9594fb182bcce4fc4ebcf5ca574c577f	2026-11-03T22:13:39-08:00	feat(tacsim): Cut SF.R21 prepared bubble mechanic and per-entity store (D-35-9, 35b §3b)
+237bd38694696a4f213be5fe9b4fa28f1fc6d918	2026-11-03T21:56:16-08:00	Merge remote-tracking branch 'origin/main' into claude/fr3-reinforcement-d0af3a
+22994b6ad039892b5184f6daceff1cc3fab951cd	2026-11-03T21:55:46-08:00	tacsim: FR.3 reinforcement - launches into a running field
+344ff42d01aa4eca2c28097b75d204b0b0d82de4	2026-11-03T21:49:16-08:00	test(rs1): Occator's tender in the vehicles pins; gc11 pins the raid's meaning, not one roll
+c061a164840e9849047fb75ec435f262eb4a2324	2026-11-03T21:48:57-08:00	Merge remote-tracking branch 'origin/main' into claude/in6-part-lot-ae5ca6
+03de21ba18515b232d2b128b816d6d3d5c75575a	2026-11-03T21:48:18-08:00	feat(tacsim): doc 39 cut IN.6, the part lot at the workshop
+312cc5f5444ea0d69f1a8362bc11116bc70a2895	2026-11-03T21:47:37-08:00	Merge pull request #398 from conclavio/claude/gc1b-flake-stopgap
+911897b50a5c223103d993c56975e1794800404b	2026-11-03T21:38:28-08:00	feat(tacsim): S.4b-2 the claim arm, the queued launch, the re-scoped freeze, the field's claim seal
+ace97f2664d9c12f49aec14b1b45485d65bb2073	2026-11-03T21:22:20-08:00	Merge pull request #396 from conclavio/claude/in3-order-contract-e6646b
+04bb6805bf5cef22752028f095f13f308e41200e	2026-11-03T21:18:47-08:00	ci(nextest): retry GC.1b's refused-arrival story; doc 40 notes FR.5's await
+61d71dad7c940f951efc3e3e5ed9b70de6f02b8d	2026-11-03T21:09:14-08:00	Merge origin/main into claude/rs1-tender (S.4b-1: RigRecord.claim beside RigRecord.bale)
+ebeab02ebca8161423fb826de5ae4d09e46d2cbe	2026-11-03T21:03:57-08:00	fix(rs1): the tender's mount, by its own word
+115fd652bee604e900f5bc319155176cdc5c7cb9	2026-11-03T21:01:15-08:00	feat(tacsim): doc 41 cut RS.1, the tender
+2d398f190683be1d384b0efe8e2ec484000d6565	2026-11-03T20:58:31-08:00	feat(industry): IN.3 the order contract — +works/+yard over @wo, escrow, the arm
+c0801a8a998142e88ad60bef8ce442967f5d7322	2026-11-03T20:55:59-08:00	Merge pull request #390 from conclavio/claude/s4b-moving-anchors-c79caa
+dbeb8de64fad4be642a3894afbff6e909f0a8181	2026-11-03T20:30:40-08:00	Merge pull request #394 from conclavio/claude/lance-span-repin
+6dc72e09dd99a9047fe51b1f5767f04ba8c35316	2026-11-03T20:30:26-08:00	fix(tacsim): S.4b-1 keep the rig record out of two near-threshold frames
+3bd0338a0ad9755e0a3cd1f29a4083870cef3b1f	2026-11-03T20:14:15-08:00	Merge origin/main into claude/rs1-tender (TS.8, IN.2)
+b5ca7cbfb357b5cf8d9f31eb2035977731c488a5	2026-11-03T20:14:15-08:00	wip(rs1): rustfmt
+c86f0e2cac364213ddf2685b31ce73ecceadd2ae	2026-11-03T20:08:55-08:00	feat(tacsim): one damage table and canonical drives (doc 35c SF.R20)
+5af1a1588f5ab0b96024b0db2b1dbbc4acad0765	2026-11-03T20:08:28-08:00	feat(tacsim): unify space derelict salvage with GC.6 and economy (SF.R19)
+8969d0b16489394f8d8faa887275bbe7ca8a8262	2026-11-03T20:05:49-08:00	wip(rs1): the tender story at 256 and 512
+aecf2406fe0cdd37a1d51eb4e1127145ac68ac81	2026-11-03T20:05:28-08:00	tacsim(harness): the lance lane asserts whatever TACSIM_ASSERT says
+6a4d1299a0a73716ee154f1f2baa314dc4dd1c92	2026-11-03T20:05:28-08:00	tacsim(harness): re-pin the lance lane's span by record — 3 since 5993ba20
+def2de6edbe52332a6defc7508ce59651b9d354f	2026-11-03T20:03:24-08:00	Merge branch 'main' into claude/lance-span-repin
+b9d0d1a6ac0a62647ff71a4090fc34eec3e13e8e	2026-11-03T20:02:38-08:00	Merge pull request #393 from conclavio/claude/ts8-one-scanner-7ca0a1
+57ffd221d0bb9c2551e1f2aa5dd5a802275a7a44	2026-11-03T20:01:57-08:00	Merge pull request #389 from conclavio/claude/in2-component-lifecycle-d45cdc
+8975ffd893181a4b9fb7e8c03ff42262a3d74dad	2026-11-03T20:01:08-08:00	docs(43): TS.8's cut note, the rule #14 cell delta from #393's CI JUnit
+53651fcae117eff0369677aea0ba6712c1df8162	2026-11-03T19:38:02-08:00	Merge remote-tracking branch 'origin/main' into claude/s4b-moving-anchors-c79caa
+567101aa29416d0e0f4c55a10ed525b90ea3651d	2026-11-03T19:38:02-08:00	fix(tacsim): S.4b-1 box the queued launch (the M7 stack-size lint)
+f60824b7c8a18753dcfd917eade7e384a6a9da0b	2026-11-03T19:35:35-08:00	docs(43,ops): the lance span re-pin record (TS.21b) and the lane's always-on asserts
+e36bfe28388990a0f1cd4aa39c289e336dd40341	2026-11-03T19:35:35-08:00	tacsim(harness): the lance lane asserts whatever TACSIM_ASSERT says
+49987e077082155cc0534a6e1b45f447b7b9d2ca	2026-11-03T19:35:35-08:00	tacsim(harness): re-pin the lance lane's span by record — 3 since 5993ba20
+041ccbf423f546b345d579f63489f9b0e7fccc66	2026-11-03T19:31:35-08:00	Merge remote-tracking branch 'origin/main' into claude/ts8-one-scanner-7ca0a1
+23ddd928f32eec4fa5b403318822fa0bdf35c153	2026-11-03T19:31:35-08:00	test: TS.8 one strip chain — support/lane_chain.rs shared by tacsim and the relay registry; scan unit tests
+c252ec8d6625289bdc1125cb8ea218313f1b97f1	2026-11-03T19:29:26-08:00	Merge pull request #388 from conclavio/claude/ts21-timing-baseline-680fb1
+d472c00a601763261f52e0b50a6da85c336e3300	2026-11-03T19:25:27-08:00	Merge origin/main into claude/in2-component-lifecycle
+8b5b60c2419ccd1b5bda1465aa7d9df6b2a0a184	2026-11-03T19:25:27-08:00	docs(39): IN.2's rule #14 cell-minutes line from #389's CI JUnit
+7516a38ae4c333da79c0c69fd3c227f54378ac3b	2026-11-03T19:20:59-08:00	Merge pull request #391 from conclavio/claude/fr4-cell-minutes
+4483763be8b4bd3dd367c2f4a52ca989fbf89737	2026-11-03T19:20:46-08:00	wip(rs1): the tender, the profile's cap, the laden tow
+3cb041689eb25593cf9a154c48aaf87ef959fc4a	2026-11-03T19:20:18-08:00	Merge pull request #392 from conclavio/claude/hex-vocab-design-md
+4441258d8968fb1bcef5105a995da9b033eee87c	2026-11-03T19:18:11-08:00	docs: keep hex-grid wording out of docs/design.md (D-14-4)
+4e04de382c8263846e27bb00972d0dd7a88bdbb2	2026-11-03T19:16:30-08:00	test(contract): TS.8 one scanner — scan.rs walker, stripper, cfg(test) blanker, repo_root; test-rig rows keyed by module
+d07510c06dbd1c0a0ce62ea7feba3d7a74d87644	2026-11-03T19:15:34-08:00	docs(40): FR.4's §4a pins, harness and rule #14 cell-minutes lines from #387's runs
+b6567af6329bf39e1f5452295813c8f4a0a35852	2026-11-03T19:04:32-08:00	Merge remote-tracking branch 'origin/main' into claude/s4b-moving-anchors-c79caa
+0199d0bf6c2b0110ade56bd96c4d829276cafda4	2026-11-03T19:04:31-08:00	feat(tacsim): S.4b-1 the claim cursor, the queued launch, the bot's launch line
+0345f8542f3d5ef50db99cadefb5affd968cd7db	2026-11-03T19:02:58-08:00	Merge origin/main into ts21
+4517be546326181eba1200b7bb47e15d1bb936d9	2026-11-03T19:02:49-08:00	docs(43): TS.21's rule #14 cell-minutes line from #388's CI JUnit
+e65cb02647de0dcb91182788409a8b6d7a49f993	2026-11-03T18:55:21-08:00	Merge origin/main into claude/in2-component-lifecycle
+03446fa3b29f5154d4b099393fac7c7191eab1e8	2026-11-03T18:55:20-08:00	feat(39): IN.2 the component lifecycle
+ea602323084959d51d4eae41bfaf5eb838ac4d79	2026-11-03T18:52:08-08:00	Merge pull request #385 from conclavio/claude/rs0-vocabulary-a3b140
+9c46c34cec252971b937448353922f48c95287d7	2026-11-03T18:51:56-08:00	Merge pull request #387 from conclavio/claude/fr4-segments-40a538
+5e03f6d252ffeb2ee9e4fc926cb8f926ed584d61	2026-11-03T18:47:11-08:00	Merge remote-tracking branch 'origin/main' into claude/rs0-vocabulary-a3b140
+98d7ae570421976207cd71c707049040b54d99ee	2026-11-03T18:46:44-08:00	docs(41): RS.0's cut note, the rule #14 cell-minutes line from #385's CI JUnit
+bf78ca581e4a6dd38ea38945c3024ad93a640770	2026-11-03T18:46:41-08:00	Merge pull request #379 from conclavio/claude/ts16-field-tempo-706172
+90cd75832cceb0dd0e5de6e702623e754d028519	2026-11-03T18:46:13-08:00	Merge pull request #384 from conclavio/codex/docs-presentation
+370a921087439b7e385f9639b2b6eca2ccc82c8b	2026-11-03T18:45:58-08:00	Merge branch 'main' into codex/docs-presentation
+d0a4bb9404c2fcd48c2ac0d4aa21255d13f02dc6	2026-11-03T18:44:41-08:00	Merge pull request #383 from conclavio/claude/ts13-shellcheck
+18b60ca118d9cd49da3b46e535c9cff6dd3761fd	2026-11-03T18:44:31-08:00	Merge pull request #382 from conclavio/claude/ts15-cancel-superseded
+c026540b40872e945c700ea1f59b985da412e8d6	2026-11-03T18:44:14-08:00	Merge pull request #381 from conclavio/claude/ts1-ci-fold
+8425470e8b6359ee0be9f60c21b6532a7d1d1308	2026-11-03T18:44:02-08:00	Merge pull request #380 from conclavio/claude/ts0-hygiene
+faaa00bcfcd1b81c16c5d2389e5d2adef6641fae	2026-11-03T18:33:25-08:00	ts21: the harness timing block re-blessed on conclav.dev; harness and cost-lane default there
+dda5912666564938a927c419497bfbbbfab860ef	2026-11-03T18:28:36-08:00	feat(field): doc 40 FR.4, the black box in segments (Q-38-28, Q-40-21)
+b6cef2ec4d3897adf28b775d194755dea29e8b29	2026-11-03T18:22:56-08:00	wip(ts21): timing block from the conclav.dev bless; harness and cost-lane default to conclav-dev
+cf2ffcc63e8a1c14888ae1477a3c5420dc870a65	2026-11-03T18:20:38-08:00	docs(43): TS.16's rule #14 shard_1 delta from the PR run's JUnit
+3424a895be3db12dbc06677c30bf56a5ea50c6ea	2026-11-03T18:19:09-08:00	feat(bot): doc 41 RS.0, the salvage loop's vocabulary
+6d7bd57918c8ed2c681d6e7cbab29f01964b55bc	2026-11-03T18:17:17-08:00	docs: say where rendering happens; refresh doc 35 status and bot pointers
+61acc32ebe84fc6ac7b2e75cb45b5d5113f4c8b3	2026-11-03T18:10:49-08:00	feat(sim): S.4b-1 a carrier bay is an IC claim's hangar
+2df00dd604192e799a1b30f6e93a5f00e5ab142c	2026-11-03T18:06:29-08:00	docs: refresh project overview and organize documentation
+d95443cc86c3ac972e642be5627c5e789b229b89	2026-11-03T18:05:24-08:00	ci(ts0): leave kernel-contracts' comment to TS.1, which deletes the job
+bee87c24a5d128501a668b6951e948e61c8e545a	2026-11-03T18:05:17-08:00	feat(tacsim): S.4b-1 the claim book's Opening.transition and SortieId::Ic
+eec6d4f072605c3f88d4b78ed9aa48526aefd01d	2026-11-03T18:05:17-08:00	feat(tacsim): S.4b-1 dispatch seals over the armament, D-23-22 untitled refusal
+404b1ddaa8f2916b4d7bf3f49caf5ced8c643440	2026-11-03T18:04:53-08:00	ci(ts13): doc 43 cut TS.13, shellcheck every tracked script
+1c1b42c87850269bfdd231f6194f2eb71cdc0806	2026-11-03T18:02:50-08:00	ci(ts15): doc 43 cut TS.15, cancel superseded pull-request runs
+0a474d0068aab1569d1af6df258b9a6ceadb9b93	2026-11-03T18:02:08-08:00	ci(ts1): doc 43 cut TS.1, fold the four re-run jobs
+9adc9f8b6693f29eebf006c89e98bb19eb91b258	2026-11-03T17:59:27-08:00	docs(harness): the ignore reason quoted in the note
+d07a202b3d6a25267402a596f1472137f41cc8ac	2026-11-03T17:58:52-08:00	docs(harness): the daily schedule in the module note
+ce409b8160cd071f5c8f044b45f438f81c2cbda1	2026-11-03T17:58:32-08:00	ci(ts0): doc 43 cut TS.0, the hygiene cut
+51722d5eaf057d8b2a8b2b5f7e32c85da82551c0	2026-11-03T17:57:27-08:00	test(tacsim): TS.16 the field tempo, idle-in-field gc4/gc5 tests on the rig's disengage default
+a2ef407539ab67157faa6675861b3aa855cb4c78	2026-11-03T17:43:47-08:00	Merge pull request #378 from conclavio/claude/fr6-cell-minutes
+414dca7f8baa57d6c24a9465dd5bf6bde7781639	2026-11-03T17:43:38-08:00	Merge pull request #377 from conclavio/claude/fr0-cell-minutes
+74b21b1e5d2a819992fc4de053c23220576e08d3	2026-11-03T17:34:31-08:00	docs(design): doc 40 FR.6 cut note, the rule #14 cell-minutes delta from #363's JUnit
+0008489cd8234587c7aac0a3dc2cd3af4c646974	2026-11-03T17:33:49-08:00	docs(40): FR.0's rule #14 cell-minutes line from #364's CI JUnit
+c0d123a993a98fe005c1c81ab2784ae98c31995a	2026-11-03T17:27:49-08:00	Merge pull request #376 from conclavio/feat/sf-r18-multi-carrier-bubble
+7f64450a945e1bcd29183a672854c956d45d106f	2026-11-03T17:27:39-08:00	Merge pull request #374 from conclavio/feat/sf-r17-hole-closeout-ii
+5d1453179b2f663897df1c4090865f28d25782fa	2026-11-03T17:27:28-08:00	Merge pull request #369 from conclavio/claude/fr1-stances
+f1211d8d31fd543e09615f2039bf80cb271aacad	2026-11-03T17:26:56-08:00	Merge pull request #368 from conclavio/claude/in4-cost-model
+8cf8e53e4ddf3bf248267f8290addce5f0ecc8fc	2026-11-03T17:06:50-08:00	test(field): FR.1's story stands on FR.0's grounds_rig
+a8ce705e3c372db4af598549c6bb4b46af11e525	2026-11-03T16:56:07-08:00	feat(space): SF.R18 multi-carrier bubble per-carrier party, inspection, and settlement
+38ec4ab5dadc0985ba888f7b890e5926d65752d3	2026-11-03T16:55:26-08:00	fix(space): preserve ic9 pallas no-route refusal, clippy needless_borrow, and rustfmt
+3f2cfabcce33782bfd1c51b44b61d6b3cdcb58ab	2026-11-03T16:50:22-08:00	Merge branch 'main' into claude/fr1-stances
+f94b1e2637791823850a6c9a9c0542f213330d8f	2026-11-03T16:49:16-08:00	Merge pull request #364 from conclavio/claude/fr0-inventory-bot-words
+a7f156551c4e5c776f75bf3edcdbf885f9a1ac0a	2026-11-03T16:36:27-08:00	content(tacsim): lane v20 re-signed with IN.1's ladder and IN.4's cost rows
+c3cc632143edd5e20125579f70626107d2f4f2c7	2026-11-03T16:36:27-08:00	test(tacsim): IN.4 lane v20 in cost_lane's pin and sites' strip_workshops (recovery row)
+ae713cb65f1ff8973744513c01c88d980cdd60b8	2026-11-03T16:36:27-08:00	feat(industry): doc 39 cut IN.4, the facility cost model
+402e713ce9060c55820a42fe57b913d1d452cfbc	2026-11-03T16:27:37-08:00	Merge remote-tracking branch 'origin/main' into claude/fr1-stances
+857a61bfd54683841a690e7e7011efb8900efc06	2026-11-03T16:22:22-08:00	Merge remote-tracking branch 'origin/main' into claude/fr0-inventory-bot-words
+f299aaf05ba5edbe3b45047ba17b7c58f55badbb	2026-11-03T16:20:23-08:00	Merge pull request #375 from conclavio/claude/in1-stack-frame
+2e579fa624bb7a2618fe83114d8b7df2ae00e7e7	2026-11-03T16:19:07-08:00	fix(tacsim): keep boot_source_qualified under the large_stack_frames ceiling
+d61ca351bd48436f0823814cb42ed6aee8f6f4b2	2026-11-03T16:16:16-08:00	fix(field): FR.1 after the merge, a refused join's letter and the story's host carrier
+d93ac3f31fbb45da8f8eb59c4139c1b7bcab451c	2026-11-03T16:07:38-08:00	Merge pull request #370 from conclavio/claude/in1-accounting-identity
+2a9f82ace9361398da0aa7f591815b79a3176a86	2026-11-03T16:07:26-08:00	Merge pull request #365 from conclavio/claude/cr0-crew-custody-record
+7c56e26a384eaebd0305e31b45bd7937d6e79531	2026-11-03T15:43:35-08:00	Merge remote-tracking branch 'origin/main' into claude/fr1-stances
+2ebdb766036333a7484ccb704bd480b0c1f5012f	2026-11-03T15:43:29-08:00	Merge remote-tracking branch 'origin/main' into claude/in1-accounting-identity
+39496b458d6e0792cdb13881bff61e2c718be32b	2026-11-03T15:39:51-08:00	Merge remote-tracking branch 'origin/main' into claude/cr0-crew-custody-record
+e505c3365448dabc2e23478abe9a8c518805305a	2026-11-03T15:39:03-08:00	feat(space): SF.R17 hole close-out II
+65ea2a1fbcb0ad94836eda1cae135431aab8a004	2026-11-03T15:35:37-08:00	Merge pull request #371 from conclavio/claude/busy-hypatia-51ab77
+764067e4d5e49a8599f4dde21a69c41a09879dcb	2026-11-03T15:32:27-08:00	fix(tacsim): IN.1 CI — plant in the bound rules, the ladder's pins, parts off the order verbs
+be823b5965207febe3eca02dc33614d92c3dfca6	2026-11-03T15:18:03-08:00	Merge pull request #373 from conclavio/claude/fr2-main-fix
+c106aa73e082b2df16ca6ed36d86b312b5dd9e5a	2026-11-03T15:17:13-08:00	fix(tacsim): main after the FR.2 merge, the S.4b-T collisions
+52019387c210f78064d517cb79f573834236d659	2026-11-03T14:59:35-08:00	Merge remote-tracking branch 'origin/main' into claude/fr0-inventory-bot-words
+bc504f6328fc2a8f49f9cbee1b16c2992d505aea	2026-11-03T14:58:49-08:00	style(fr0): rustfmt the shard roots' mod order and field.rs
+a0dfa77f53ed3dda701aa713c7825f157145667f	2026-11-03T14:56:17-08:00	Merge pull request #366 from conclavio/claude/fr2-durable-standing
+b633428e35fa4a98b8c666959d9c9a4a15f2aacc	2026-11-03T14:55:40-08:00	Merge branch 'main' into claude/fr2-durable-standing
+65cc1572d0f04e3d5247a223325ebf5fdca2e9ca	2026-11-03T14:46:17-08:00	Merge pull request #367 from conclavio/claude/compassionate-neumann-add73f
+6e8ff6badd4ce3b70a0736f7deb586e9f09c0424	2026-11-03T14:46:14-08:00	docs(design): FR.1 cut note, the cell's summed-minutes delta
+3e29bb94e81e274aa8efcbb1b1e5db84ff614907	2026-11-03T14:45:42-08:00	fix(field): FR.1 rustfmt and a private intra-doc link
+e08bda22f0238c643990274819df57af45fe642b	2026-11-03T14:45:10-08:00	Merge remote-tracking branch 'origin/main' into claude/busy-hypatia-51ab77
+8fbff99112e4fba5dcb065d07cd088c2d476cc64	2026-11-03T14:44:53-08:00	Merge remote-tracking branch 'origin/main' into claude/cr0-crew-custody-record
+31dc60dbc4e98411b3db3e9706b2f0b353cb2f9e	2026-11-03T14:44:50-08:00	feat(tacsim): RS.3 the claim's close (doc 41)
+00b680af1e7ca36cf2a83db2019892c0c117901b	2026-11-03T14:43:04-08:00	Merge pull request #362 from conclavio/docs/35c-sec8-doc-corrections
+fe212f4a5961b6c1a769fd73e247d1eb4af9c016	2026-11-03T14:42:51-08:00	Merge pull request #363 from conclavio/claude/fr6-party-seam
+f46eba6bd8c0a677e68b0b2a60974ecb14a42b6d	2026-11-03T14:30:46-08:00	feat(tacsim): doc 39 cut IN.1, accounting and identity
+0fd2430ba4cb008df84bd5ac6eb2adb5749b42f3	2026-11-03T14:26:12-08:00	feat(field): doc 40 cut FR.1, declared stances between organizations
+b0279b26e887dc3d84a4af4712a523ded1f9c0bf	2026-11-03T14:23:31-08:00	feat(tacsim): doc 23 cut S.4b-T, the testimony producer
+d6cce9d8ba2010674bca62b2e033af8f418fd7b2	2026-11-03T14:20:31-08:00	feat(tacsim): doc 40 cut FR.2, durable standing
+0f431f3880fe28b27aad60505e4a180e282769a0	2026-11-03T14:16:12-08:00	feat(tacsim): doc 42 cut CR.0, the custody record, the held gate and the crew vocabulary
+eb9b7359328f0cbfb94c5c1d599dacae0758100e	2026-11-03T14:10:32-08:00	feat(tacsim): FR.6 the seam, SpacePartyId deleted for the arena's PartyId
+63c9d51619e820c4db631a84b09455ef5356bd99	2026-11-03T14:09:25-08:00	docs(space): align 35-cut-notes symbols and space.md help syntax with tree
+99b3a4b481a5a1635132cbd6c9285139f930ed9d	2026-11-03T14:09:22-08:00	feat(fr0): doc 40 cut FR.0 — §4a inventory, the bot's four-digit addresses and field words, the two grounds hoisted
+2e8f845557aa559dd78b33766cd8bb89542aadf3	2026-11-03T13:51:11-08:00	docs(space): 35c section 8 docs-first corrections and space help page
+ac525cc6075b113a32f4d197f1d9b90c96d070b3	2026-11-03T13:30:35-08:00	Merge pull request #361 from conclavio/claude/space-flight-compliance-sf9-sf16-654eaf
+80c0974054283b47b59f1ce35c3af0a663159517	2026-11-03T13:25:59-08:00	docs(design): doc 35c, the review of the SF.R9–SF.R16 remediation train at f1b2a1e4
+8d983ce2b01cc1685f7e4b0144539c2489d67b13	2026-11-03T13:15:34-08:00	Merge pull request #360 from conclavio/claude/doc43-draft04
+e10198e2845c990bf9c5e2e1521ac66e4dd49824	2026-11-03T13:09:00-08:00	docs(design): doc 43 Draft 0.4, the fit with the programme map; doc 38 §9.3 the doc 43 edges
+535efcb6a3228cbc6b79cbbeaab42f386e8043b5	2026-11-03T13:00:52-08:00	Merge pull request #359 from conclavio/claude/rustmush-testing-strategy-d073cc
+c55ec88edd5c6040a516b65490f2199cc9a1d7bb	2026-11-03T12:58:49-08:00	Merge origin/main (SF.R16, docs 23/38/40/41/42 drafts) into claude/rustmush-testing-strategy-d073cc; README rows all kept; doc 43 §3.1 2B notes the SpaceBubbleBook guard now on main
+aa34148a3d235a59bd45aad5340b331250fa4eff	2026-11-03T12:57:18-08:00	docs(design): doc 43 testing strategy Draft 0.3, two outside reviews triaged, Q-43-1..14 ruled
+5d393bf9d1febfc65286bdb340abe2d216f3df99	2026-11-03T12:56:41-08:00	Merge pull request #358 from conclavio/claude/doc41-draft-0-4
+e51d039f3e60f1edd2e8b4a721fc0027d8c2812e	2026-11-03T12:53:11-08:00	docs(41): point the doc 40 references at its Draft 0.4 (PR #356, a8194be9) now merged
+7a88a7e5a38940309092263b98aea4f59285f17c	2026-11-03T12:53:11-08:00	Merge origin/main (docs 23 Draft 0.11, 40 Draft 0.4, 42 Draft 0.4) into claude/doc41-draft-0-4; README rows all kept
+acd9fd1904e27ec7b703157e63dfb56e92ba9128	2026-11-03T12:51:54-08:00	Merge pull request #355 from conclavio/claude/doc42-draft04
+a8194be932c76ce51f57ce804185fdaf93edf35a	2026-11-03T12:51:45-08:00	Merge pull request #356 from conclavio/claude/doc40-draft04
+0d18786d15bc239719f592ea53d0efad0191d22b	2026-11-03T12:51:36-08:00	Merge pull request #357 from conclavio/claude/doc23-draft-0.11-rulings
+eb15438d197f772031a3b292096d746e0d2358c7	2026-11-03T12:49:49-08:00	docs(41): Draft 0.4, Q-41-28/29 accepted at their defaults; Q-40-25's answer noted
+00ef4a98b3a85be512a227417fb8b16a74b55f34	2026-11-03T12:47:59-08:00	docs(design): doc 23 Draft 0.11 (Q-23-21/22 ruled, §17 all decided); README row
+a9bfd66339513117737f46654052663529f3d231	2026-11-03T12:47:58-08:00	docs(design): doc 23 §17.3/§17.4/§17.5 read as decided; doc 40's six-step shape kept under Q-23-21's record only
+a1b1fbbcbf2e9eb44311a7054bfac59d492f59df	2026-11-03T12:47:03-08:00	docs(design): doc 40 Draft 0.4, Q-40-24 and Q-40-25 accepted at their defaults; the pending-launch protocol resolved to Q-23-21's ruled shape
+71255a7cfd79e1d69305c51188efe71550d97bee	2026-11-03T12:46:55-08:00	docs(design): doc 23 §17.12, Q-23-21 and Q-23-22 accepted at their defaults (2026-11-03) in doc 36's form; D-23-21..23 marked accepted
+821ab01826d411ae2cc0c2f699ef0a01bd7c3e24	2026-11-03T12:44:32-08:00	docs(42): Draft 0.4, Q-42-26 ruled at its default and Q-40-25's answer noted
+f1b2a1e45adccca23de9fc77f741b28772df5a2d	2026-11-03T12:42:40-08:00	Merge pull request #353 from conclavio/feat/sf-r16-client-docking-neptune-canopy
+7824fdf171ca3db1f27ddb55cc5c8bde8f96da70	2026-11-03T12:36:12-08:00	Merge pull request #354 from conclavio/claude/doc38-programme-map
+a80f9fd2e3642719bdd8670d7e565b781448d06c	2026-11-03T12:15:30-08:00	docs(design): doc 38 Draft 0.3, the programme map of the five plans
+020e567c001535465b08124b739d657e3ae0bb63	2026-11-03T12:15:04-08:00	feat(tacsim): SF.R16 client docking game, per-session pose, and Neptune canopy
+c624cff101fb4483218e87e890c60e4c9d9026cb	2026-11-03T12:08:33-08:00	Merge pull request #349 from conclavio/claude/busy-sutherland-eb10bf
+bc5265798495bc604ab5b42f58fa3c6e03c2300c	2026-11-03T12:08:17-08:00	Merge pull request #352 from conclavio/claude/amazing-tu-147176
+1078b2124de837c69ce832c87fad3786bf059027	2026-11-03T12:08:04-08:00	Merge pull request #351 from conclavio/claude/pensive-villani-2be36c
+8e7d01f10daa66ea5fabe8223694ee1e5a31131f	2026-11-03T11:31:40-08:00	Merge doc 41's branch (d5707177) into doc 42
+d5707177d81c760c259ebbad2476518c7dc28ec4	2026-11-03T11:29:11-08:00	docs(41): the three wrapped doc 39 references re-pointed to Draft 0.5 as merged
+5cf90887793c19dc9e049c698f7539643a74651e	2026-11-03T11:28:40-08:00	docs(41): re-point to doc 39 as merged (Draft 0.5) and doc 40 Draft 0.3 (Q-40-25) after the doc 40 branch merge
+8403c73088e62edc8999d910dfcad6deaeaaa71c	2026-11-03T11:28:39-08:00	Merge remote-tracking branch 'origin/claude/pensive-villani-2be36c' into claude/amazing-tu-147176
+caf5bca4b57944c74bc059e3c023421555b7290d	2026-11-03T11:25:47-08:00	docs(design): doc 40, cross-references re-pointed to doc 39 Draft 0.5 and doc 23 Draft 0.10 after merging main 9899e0eb
+f17aef463ebda121ee1ef254b4accc83eb94f855	2026-11-03T11:25:46-08:00	Merge remote-tracking branch 'origin/main' into claude/pensive-villani-2be36c
+9899e0eb5da14c1c5e7a4474a177ee330f51f9ab	2026-11-03T11:21:37-08:00	Merge pull request #350 from conclavio/claude/doc23-custody-moving-anchors
+74819bb66705f93abed54e7f232bf75b3f3873e0	2026-11-03T11:20:53-08:00	Merge pull request #347 from conclavio/claude/zen-galileo-f32255
+cd2ba51918f0472bc0b2cddf7ccca6d4e831e7cc	2026-11-03T11:09:34-08:00	docs(design): doc 40 §4.4, both protocol shapes keyed to doc 23 Q-23-21; the alternative's close kind and captured execution
+c4772ce053676b85f076d2eb7c5f68e4840e0c6e	2026-11-03T11:08:39-08:00	docs(design): doc 23 §17.4, D-23-23 carries doc 40 Draft 0.3's six steps as Q-23-21's alternative shape
+21e7cd95840f7927b49de4457ac7095347ba7f35	2026-11-03T11:06:15-08:00	docs(design): doc 40 §4.4, the pending-launch protocol aligned with doc 23 D-23-23 (five steps, Q-23-21 as a conditional)
+4db935973956d2544d88423149abcc85a5615b5e	2026-11-03T11:05:44-08:00	docs(design): doc 23 §17.11, D-23-16's row restated for round 2's 23-1 (counted at `go`, the claim is the reservation)
+feeafc2a6bd688ee5b3f558dea7965663363371e	2026-11-03T11:05:29-08:00	docs(design): doc 41 Draft 0.3, the round-2 review folded; §4b index, Q-41-28/29 open, README row
+da3461315e558eef529d78b2480c564e2cdf0e28	2026-11-03T11:04:53-08:00	docs(design): doc 23 Draft 0.10, the round-2 review folded; README row
+aba5ffd31bf54fd93ef7b78073c486c24898a24e	2026-11-03T11:03:10-08:00	docs(design): doc 23 §17.4, round 2's 23-11 (refuted): the salvage load's close passes the four owners as written
+19fa1f9c7c5fea2c57d2ff4572e82cf76ffbebed	2026-11-03T11:03:10-08:00	docs(design): doc 23 §17.3, round 2's 23-10: DT flights carry no claim until +sortie/launch gains mind=
+54dfd577d1a85638c0e3232231a5a81cc1778520	2026-11-03T11:03:09-08:00	docs(design): doc 23 §17.8, round 2's 23-9: the producer reads the field's log, own-sensor lines, the admission pilot
+c960da467151f4a9cb06aeb88132851622140fe0	2026-11-03T11:03:09-08:00	docs(design): doc 23 §17.4, round 2's 23-5 / X-1: the pending-launch protocol shared with doc 40 (D-23-23)
+c64b9b3d1ec63a022026062d94a6ea82049183b4	2026-11-03T11:03:08-08:00	docs(design): doc 23 §17.3, round 2's 23-3: a licensed mind flies only a titled hull in S.4b (D-23-22, Q-23-22)
+0df3b9bb6ae10338a275f45b8225c04129eaa226	2026-11-03T11:02:39-08:00	docs(41): round-2 advice 41-13, 41-3 and X-4 noted
+ba372410c92dd00a38b1a4e9be3dd8097272f2f2	2026-11-03T11:02:38-08:00	docs(41): PR #340 (doc 36a lane 3) merged as 1441fa29; RS.6 no longer waits on it
+e965fdb736dda47256640ee3709a7e3cb6919fb6	2026-11-03T11:02:37-08:00	docs(41): round-2 lane finding, repossess no longer moves a rig away from the lessor's port into the shed
+c7fb16fc994afb346914fd7b240d945cb9cc1932	2026-11-03T11:02:36-08:00	docs(41): round-2 41-16, carrier_of_bay reads the yards as world_hulls does, and the owned-hulls register after IN.9
+e62c3931fa222f963e29293b3274b95cdb0e22d0	2026-11-03T11:02:36-08:00	docs(41): round-2 41-15, held hulls take no workshop stand; doc 39 owns +bay/stow and RS.4 widens its source
+2d7e11a2d08f3b13526dd9dde68015ffae2cd5bd	2026-11-03T11:00:54-08:00	docs(design): doc 40 Draft 0.3, the round-2 review folded; README row bumped
+56cfb4609fda508398f4943b291122af1311df63	2026-11-03T11:00:54-08:00	docs(41): round-2 41-6, a proven unlawful row is copied out of the 64-row ring until settled
+683f7891d24367ca57534e919df7848ba38fe6f9	2026-11-03T11:00:54-08:00	docs(41): round-2 41-5, the tow's mass basis stated; the crawler is 130 t for the laden Dray-P, Q-41-29 asks the basis
+8b00d971bae81022b7d796d7ed132026f33fed73	2026-11-03T11:00:53-08:00	docs(design): doc 40, the coupled pair's admission and its exit, Q-40-25 (review 40-7)
+0e16891d6b5f861621449af8cf2858840fc390a9	2026-11-03T11:00:53-08:00	docs(41): round-2 41-12c, doc 39's cut references renumbered to Draft 0.4
+2903b19bd17ff3085b51fbf193dc7db99c7f5e72	2026-11-03T11:00:52-08:00	docs(design): doc 40, prev_input seeded empty after a reconnect (review 40-4)
+089d295684f9fcc71601ebb9c1edc80087b3e217	2026-11-03T11:00:52-08:00	docs(design): doc 40, the sensor baseline and a jammed sensor's contacts (review 40-5b)
+baf24e20dca827c6406a35c3d1269df06bd2c0f2	2026-11-03T11:00:51-08:00	docs(design): doc 40, the core's class derived read-side (review 40-5d)
+b771434091cec62d6f9f8c356b8dc029f29ce46f	2026-11-03T11:00:50-08:00	docs(design): doc 40, STARTUP under a jammed plant (review 40-6b)
+7d0d665d60c03d2e3ccc0111ffbd4f4462fbfc2c	2026-11-03T11:00:50-08:00	docs(design): doc 40, a clear returns to the stance (review 40-3)
+fcf93260bc5c5e70f0c6d2bcc90bcf29de2e44c0	2026-11-03T11:00:50-08:00	docs(design): doc 40, the pending-launch protocol shared with doc 23 (review 40-1, X-1)
+3f8e3a5e0b1dbb8a76f36359852b476b8e3d3d44	2026-11-03T11:00:49-08:00	docs(design): doc 40, the one population count and Q-40-24 (review 40-2)
+fd924d5ff6df4085394829b64fd379ba7edcf6c6	2026-11-03T11:00:49-08:00	docs(design): doc 40, the launch's join moves from the act's landing to the field tick (review 40-9)
+72315b2af544f2c5d19882c639451d5ab5134be3	2026-11-03T11:00:27-08:00	docs(design): doc 23 §17.1/§17.6, round 2's 23-8: the abi drop exists; the seam around it is S.4b's
+3c81497cf16832420be6c558393f4d404cbe43b0	2026-11-03T11:00:26-08:00	docs(design): doc 23 §17.3, round 2's 23-2: the Open's capture is the one seal; dispatch seals pass the hull's armament
+e9637c047f6f8d0481a2d76f8b0335c1a8d73c3a	2026-11-03T10:59:12-08:00	docs(41): round-2 41-12b, Tycho's repair-or-scrap test uses the full quote, not GC.9's lessor-only labour quote
+214a4f6415b4c09ca5c564e73846f74d86a03844	2026-11-03T10:59:11-08:00	docs(41): round-2 41-12a, vacate_claim is one lot with a context, so the bay record lists the lots and the tick flags them
+e97acafe58bc399164117f31d267dd48c995e6e2	2026-11-03T10:59:10-08:00	docs(41): round-2 41-4, the tender and the bay away from port draw through doc 39's bale
+84a1604da331c8c8d51e4878ba9118dfe5faeac6	2026-11-03T10:57:27-08:00	docs(design): doc 23 §17.3, round 2's 23-4: the claim cursor lives on RigRecord, with a tombstone
+71475a559ee94b811004d5219ffd0f966fdcc4b1	2026-11-03T10:57:26-08:00	docs(design): doc 23 §17, round 2's 23-1: the claim opens before the launch (D-23-21, Q-23-21)
+0c6f2396e8512cb0ab633a20c85524c5d79790d0	2026-11-03T10:56:18-08:00	docs(41): round-2 41-14, the report to the registry reads the site log, so Pickup and Scrap rows can be named
+da9edce1c2f961c04bb8265834cbc8db0be4c990	2026-11-03T10:56:17-08:00	docs(41): round-2 41-8, an NPC organization's title is answered by its house agent
+56318d65b7698dc842580606058a8bd1964a6730	2026-11-03T10:56:16-08:00	docs(41): round-2 41-7, Tycho's sweep claim is filed by its house dispatcher, the title passed to the org at the award
+0afcada16cdf0e9fb62368c45a2acb39258d7308	2026-11-03T10:54:55-08:00	docs(41): round-2 41-9, a one-shot obligation never retries; the cure is reinstate_obligation with callers
+a583347229a04bff9d4600148c6bfdd632aa2885	2026-11-03T10:54:54-08:00	docs(41): round-2 41-11, the two 28-day windows live on a RetrievalOrder; retrieval custody
+d0b35ee9ba03357e234a1966b88d347848fce3a8	2026-11-03T10:54:53-08:00	docs(41): round-2 41-2, delivery is one of four handover facts, not a placement test
+ed70999f975c2e9821d8fd7ef1792e45b432d84f	2026-11-03T10:54:00-08:00	docs(design): doc 23 §17.3, round 2's 23-7: Opening.transition carries the book's ordinal
+f05bbdd52294c026f735f051a3934894a93bbc4d	2026-11-03T10:54:00-08:00	docs(design): doc 23 §17.3, round 2's 23-6: the claim seam moves only by observing the committed row
+510f5a9ac45bb2f12e4d2440ea761f05de0f68ab	2026-11-03T10:52:23-08:00	docs(41): round-2 41-10, the right contest binds the claimant
+3ec6ea1f2648d7e26416e9a085f71a1cef74028d	2026-11-03T10:52:22-08:00	docs(41): round-2 41-1, the procedure contest checks the box against the custody row, not the claimant
+9e4312f07b1c55e1e0fb54deddf904c5cf50257c	2026-11-03T10:50:41-08:00	docs(design): doc 39 owns +bay/stow <hull>=<carrier>; doc 41 RS.4 widens the right
+dddb2b4dbdca4157bfc4f5e747f2f2e1cda2c8e5	2026-11-03T10:50:25-08:00	Merge origin/claude/zen-galileo-f32255 (doc 39 Draft 0.4) into claude/amazing-tu-147176
+ecc66f5c0a9af8011845e0e1d44c28399bf25644	2026-11-03T10:48:45-08:00	docs(design): doc 39 Draft 0.5, the round-2 review folded
+c59056f6516c809eb5704557335ac9e7abd49d28	2026-11-03T10:48:42-08:00	docs: doc 42 Draft 0.3 header, ruling note and README row
+83d52e00090b1204cdad4d132875c38a18cc42e9	2026-11-03T10:48:22-08:00	docs: doc 42 Draft 0.3 (42-9): a field-time ramp load uses the same crew branch
+a119bce9498b7eb752dcd29189b53c59fe54ab40	2026-11-03T10:48:22-08:00	docs: doc 42 Draft 0.3 (42-6): the held gate list against the real verbs
+5cae5fa80d130f5490af27c983f124aadfcf907c	2026-11-03T10:47:54-08:00	Merge remote-tracking branch 'origin/main' into claude/amazing-tu-147176
+533b41320cf7aa9de37c01959bb1b0449c5a109b	2026-11-03T10:47:52-08:00	docs: doc 42 Draft 0.3 (42-7): the release fee as a sanction, with a cure
+c8fd6fec1e9abf2f8fe603bda01927679e3266c1	2026-11-03T10:47:32-08:00	docs(design): doc 39 round-2 39-7 and X-2, the contract with doc 41
+b7994ceed4188dc91a11075a6ec2631c290818b2	2026-11-03T10:47:31-08:00	docs(design): doc 39 round-2 39-6, the four-digit parser as IN.5's dependency
+d8fd5a108bd9058812cbcbe387e2abcb707f6a8c	2026-11-03T10:47:30-08:00	docs(design): doc 39 round-2 39-4, a Running cancel returns the whole bill
+8cf23a0229abe47969c522dd08faf52f8a0517e2	2026-11-03T10:47:30-08:00	docs(design): doc 39 round-2 39-2, the shop bale for returned kilograms
+f61edf79e11fbcc7cfc51e51c87b799e9923d960	2026-11-03T10:47:18-08:00	docs: doc 42 Draft 0.3 (42-4): the NPC exit, and new open Q-42-26
+4575d92326ecae0e3d9fe07e26b9bcfbbe707be4	2026-11-03T10:46:49-08:00	docs: doc 42 Draft 0.3 (42-3): person custody never rides a hull move
+668eee518d9cc3ccee484abcd24f1e91256c06eb	2026-11-03T10:46:24-08:00	docs: doc 42 Draft 0.3 (42-2): a Processing state between handover and release
+8dc3d9d2df22af61021b18de72c1efbb1fb0d6f7	2026-11-03T10:46:15-08:00	docs(design): doc 39 round-2 39-5, the register's readers and the org helm
+bf1f9e3566c25fd0b1b716b36cdbe7a41e5fae7e	2026-11-03T10:46:14-08:00	docs(design): doc 39 round-2 39-3, part provenance by a durable commission
+79fd69d74621b5d2f583e3b0d8f5f07b16f20455	2026-11-03T10:45:29-08:00	docs: doc 42 Draft 0.3 (42-5, 42-8): vacate, release and move at capture
+72479f70b14051d9487b43cebdab58987fadc0b7	2026-11-03T10:44:49-08:00	docs: doc 42 Draft 0.3 (42-1): the ejecting hull never contests its own cell
+e2d1c3166b68b48ffd368daa0803a5267a20c78f	2026-11-03T10:43:37-08:00	docs(design): doc 39 round-2 39-1, the assembly loss on the input side
+a8d368c91acc6ec12ba6f9e482533ba455aacad1	2026-11-03T10:41:00-08:00	Merge remote-tracking branch 'origin/main' into claude/zen-galileo-f32255
+548aebec0170f57d7bc432abcde2be07b05b4f07	2026-11-03T10:12:56-08:00	docs(design): doc 41 Draft 0.2, the owner's rulings on Q-41-1..27
+2a8bcfb7be9ded2583fcd57acc985f6718b8c6a5	2026-11-03T09:59:19-08:00	docs(design): doc 39 Draft 0.4, the owner's rulings on Q-39-25..36
+450cfc3be356722ef68abd3581924848200fd149	2026-11-03T09:44:52-08:00	docs(design): doc 41 Draft 0.1, restoration and the salvage loop surveyed
+e4e0c37616156aa9a064a51057df8cb0b51c5b36	2026-11-03T09:44:47-08:00	docs: doc 42 Draft 0.2, Q-42-1..25 ruled at the defaults
+4198adcb0364b02e9a27beacf764b85d9a0fdac9	2026-11-03T09:41:43-08:00	docs(design): README row for doc 39 Draft 0.3
+42b82c91e136e7b7e3e49d79c758fa21b897afb3	2026-11-03T09:41:43-08:00	docs(design): doc 39 Draft 0.3, the reviews folded, the cuts reordered, Q-39-25..36
+1211cf72c9ce08f387d788b743320cb5d5904f9f	2026-11-03T09:37:14-08:00	docs(design): doc 40 Draft 0.2, the owner's rulings on Q-40-1..23
+46d7bade0948bb61c40227aedbda08270d273fe3	2026-11-03T09:30:32-08:00	docs(design): doc 23 Draft 0.9, Q-23-7 to Q-23-20 accepted at their defaults
+a08727a2c02c8323c7627ae739df3124173d8714	2026-11-03T09:28:58-08:00	docs(design): doc 39 section 8, the two outside reviews of Draft 0.1 triaged
+9964012180cbd228d2af20664868f62b65e446be	2026-11-03T09:27:25-08:00	docs(design): doc 40 Draft 0.1, the field's second round surveyed
+2ea6f67da7b522fdec0354a1c0ad054e9445f8c6	2026-11-03T09:23:17-08:00	docs(design): doc 23 Draft 0.8, §17 custody for moving anchors (the S.4b precondition)
+4fa8817b7e6c3694228b1f55bbe1a21f5fe45eb6	2026-11-03T09:22:46-08:00	docs: doc 42 crew custody and capture survey, Draft 0.1
+f146734e0b19b52be44f6b99077e5f62e15395c2	2026-11-03T09:20:05-08:00	Merge pull request #348 from conclavio/claude/cf1-true-resume
+1441fa292a284e63c153df8fa19227599dff4b3e	2026-11-03T09:19:26-08:00	Merge pull request #340 from conclavio/claude/relaxed-fermat-60b65b
+a8a7ea1b4be9781a6119b06a291ad0ac293d2c2a	2026-11-03T09:18:40-08:00	Merge remote-tracking branch 'origin/main' into claude/zen-galileo-f32255
+b0a37ebe8fdb4303759d57654e76972cedc46793	2026-11-03T09:18:16-08:00	Merge remote-tracking branch 'origin/claude/zen-galileo-f32255' into claude/amazing-tu-147176
+b776d7f8ec4bba4ab3bd6dcf9c67f9b51089e6ef	2026-11-03T09:15:00-08:00	Merge remote-tracking branch 'origin/main' into claude/pensive-villani-2be36c
+5525863bffcb4b40f671693f53866bd754f268c5	2026-11-03T09:14:09-08:00	test(tacsim): the driving rig reboots in production's boot order; CF-1's exit gate on a true resume
+e3a1897ee47eb9f18fa67132c2c2a48574f33252	2026-11-03T09:09:23-08:00	docs(36a): §11 rows 1 and 9 carry lane 3's commits
+6221817663c75aa4300965a5d1424238c30a722d	2026-11-03T09:03:11-08:00	docs(design): doc 39 Draft 0.2, the owner's rulings on Q-39-1..24
+c83c2effe9935d7afe46e5d95d95348da056ef7d	2026-11-03T08:50:49-08:00	Merge pull request #339 from conclavio/feat/sf-r15-hull-fidelity
+c3a2eb0e6ffb7970f260e37f222355951e9c16ea	2026-11-03T08:50:27-08:00	Merge pull request #338 from conclavio/feat/sf-r14-authoring
+33fbf2a60053b7300cef819110d9c4994742f659	2026-11-03T08:50:06-08:00	Merge pull request #345 from conclavio/claude/doc38-ground-combat-survey
+4e1be2269fd0a8fad9999e14c52b6e3f40ef0518	2026-11-03T08:48:53-08:00	docs(design): doc 39 Draft 0.1, the production chain and unit construction surveyed
+f38de9b03adc848b33f9e9f7d646abc2bd4013fe	2026-11-03T08:48:44-08:00	Merge branch 'main' into claude/doc38-ground-combat-survey
+76165d1ff9965673796593f3d0d1887982990d54	2026-11-03T08:37:49-08:00	Merge remote-tracking branch 'origin/main' into claude/relaxed-fermat-60b65b
+1e1e32c6fe5742ecdb085eef2a09c2413c16f135	2026-11-03T08:37:49-08:00	Merge remote-tracking branch 'origin/main' into claude/relaxed-fermat-60b65b
+72698adfdc7319b119d8eb152aaa4fdbf7ec6401	2026-11-03T08:36:01-08:00	Merge pull request #346 from conclavio/claude/doc36a-lane-5
+50f7aedc178470ab027ee97d69dfd815e707534d	2026-11-03T08:31:58-08:00	feat(tacsim): SF.R15 hull fidelity, facet split, heat cell, bay repair, and salvage bounty
+e6f573c457035afe3d23bf191f550fceee1b6af6	2026-11-03T08:30:04-08:00	feat(tacsim): SF.R14 authoring for doctrines, clusters, outer bodies, and mind seals
+98cbea1bd1005e01c1547767e111992de2de63eb	2026-11-03T08:26:13-08:00	Merge remote-tracking branch 'origin/claude/doc38-ground-combat-survey' into claude/zen-galileo-f32255
+0c7fd224fa2bc38406e21eaa511f7d6f0cdd3e84	2026-11-03T08:23:26-08:00	docs(design): doc 38 Draft 0.2, the owner's rulings on Q-38-1..29
+94dec4f6144cda0a14c59b1e86c25fe51246dac7	2026-11-03T08:12:43-08:00	Merge remote-tracking branch 'origin/main' into claude/youthful-kowalevski-168ddb
+c05807a0680eb2c597ea7315a32b320254f8a2db	2026-11-03T07:55:57-08:00	test(tacsim): doc 36a lane 5 item 1's test reads the letter as the host takes the arrival in
+6f9dff29330bf4785235f29efa3f0db7a6f7727f	2026-11-03T07:54:19-08:00	Merge pull request #344 from conclavio/claude/ci-reshard-ten
+627c1ae7f8432b534dcb223b610846626bb9b1f2	2026-11-03T07:45:49-08:00	docs(design): doc 38, the next systems surveyed after the IC phase
+44aac0fd1c3a4b5c7e76a1588f5767d9e01e93cf	2026-11-03T07:35:32-08:00	tacsim tests: hoist the field helpers, ten integration shards, rebalance
+ef0a4ed609a4aabaa34d0e0077081bb401ed7797	2026-11-03T07:31:37-08:00	docs(design): doc 36a §11, the second review's nine findings verified
+50cdbe039b3b60d337316f56d44d904ccef1e305	2026-11-03T07:29:39-08:00	docs(36, 36a): lane 5 as built, with the commit per item
+b0d18c9fe43576b0a183fea2fee39c0f8c7f4ce3	2026-11-03T07:28:55-08:00	docs(design): doc 36a §11, the second review's nine findings verified
+0145059810c6ed05f9d264f485439310ef751ab2	2026-11-03T07:28:36-08:00	Merge remote-tracking branch 'origin/main' into claude/youthful-kowalevski-168ddb
+3fbe5f2de74f1068bc74887703e9e0c509cde671	2026-11-03T07:18:28-08:00	fix(tacsim): doc 36a lane 5 item 5 (§11 row 7), a seated subordinate opens a field by fire
+40647a6c02055ef0fb20d4c16ed4ffc3ddc5f707	2026-11-03T07:18:27-08:00	fix(tacsim): doc 36a lane 5 item 4 (§11 row 6), field marks follow the roster succession
+16457cc7595fdbfa435f9b7370f7e5126caf7090	2026-11-03T07:18:27-08:00	fix(tacsim): doc 36a lane 5 item 3 (§11 row 5), launches respect the field cap
+0115962f28c033074e64b3a6864db2d0dea2fbdd	2026-11-03T07:18:25-08:00	fix(tacsim): doc 36a lane 5 item 2 (§11 row 4), a field check-in never heals or un-abandons
+810007ba7257efe65406347cad5c44bddddc2596	2026-11-03T07:18:24-08:00	fix(tacsim): doc 36a lane 5 item 1 (§11 row 2), a refused join never lends its party letter
+afa082a7888bcb0c21b08f678a5cdd84db4f22c5	2026-11-03T07:15:11-08:00	Merge pull request #341 from conclavio/claude/nightly-m7-recall-notice
+5ee8d33db51030d5e17129bbaadb9819b4fda35b	2026-11-03T07:04:38-08:00	Merge pull request #337 from conclavio/feat/sf-r13-presence-and-feeds
+ac21070ec82ae7e9827450720e233ef9375206b6	2026-11-03T07:04:25-08:00	Merge pull request #336 from conclavio/feat/sf-r12-domain-bubbles-real-hulls
+7386a91ab975ce3a02d512dbde94df4eb143df7e	2026-11-03T07:04:10-08:00	Merge pull request #335 from conclavio/feat/sf-r11-one-ledger-rated-drive
+29a688e3f2a0ba7c2617bf315852dead26c1df8a	2026-11-03T07:03:59-08:00	Merge pull request #333 from conclavio/feat/sf-r10-tempo-persistence
+5829a7e0c7b30b10c2eb466293dd81854886e11c	2026-11-03T07:03:48-08:00	Merge pull request #332 from conclavio/feat/sf-r9-authority-closeout
+e9ccb835a53afad3eba39f6fabc6eca57327f7ee	2026-11-03T06:59:47-08:00	Merge remote-tracking branch 'origin/main' into claude/relaxed-fermat-60b65b
+5fcd744021116ee3a14ec296e57bcc915b788c60	2026-11-03T06:58:02-08:00	Merge pull request #342 from conclavio/claude/doc36a-lane-4
+6bf5af4cc3e02443c04b1983afd244b97505e852	2026-11-03T06:54:59-08:00	Merge pull request #343 from conclavio/claude/doc36a-lane2-bay
+b1fc039166a5bcd3d8470ddecc776fc634491280	2026-11-03T06:45:11-08:00	feat(tacsim): SF.R13 presence and feeds (crew panel push, torpedo detection, linkdead grace, TUI/web canopy keys)
+6410a8ccf2363fd37ee46ab90dcdf0d4abc090c0	2026-11-03T06:45:08-08:00	feat(tacsim): SF.R12 domain bubbles, real NPC hulls, and contraband seizure
+3e5aae5a846370ff79bc1d2aea790a91a7e4050f	2026-11-03T06:33:30-08:00	Merge pull request #331 from conclavio/claude/nightly-harness-baseline
+3e4e2018146015903567c1b095fb54ead03cc417	2026-11-03T06:28:58-08:00	feat(tacsim): SF.R11 one propellant ledger, rated drive acceleration, and post-burn reserve
+21c67a91e77d36a776b4254a608108b5bb2d9da6	2026-11-03T06:28:55-08:00	feat(tacsim): SF.R10 tempo and persistence budget
+e028a4ad18e158f44500e1423d96d031a45685b1	2026-11-03T06:22:01-08:00	Merge origin/main (doc 36a lane 1) into doc 36a lane 2
+df7dbaf9d374477905f64313f0f708eb1db5865b	2026-11-03T06:20:19-08:00	Merge remote-tracking branch 'origin/main' into claude/doc36a-lane-4
+f28b875a141bb63b6a84a1fc2e56c51b4544e3d2	2026-11-03T06:19:57-08:00	docs(design): doc 36a lane 4 item 8, strike doc 36's overclaims, mark vacate_claim unwired, fill doc 36a section 8
+48607d47cbcb84b8487b20d7fbb3fc9ef985d375	2026-11-03T06:19:56-08:00	docs(help): doc 36a lane 4 item 7, field.md's four passages to the built GC.2/GC.3/GC.4/GC.10 mechanics
+1228ae4ca224b8cd3a516566ef7e969d248d0a74	2026-11-03T06:19:56-08:00	fix(tacsim): doc 36a lane 4 item 6 (P2-3), the cockpit hears a loud sounding as the site map does
+1f53982b862dbfaf3888d1ef1cd8985474820f36	2026-11-03T06:19:55-08:00	test(tacsim): doc 36a lane 4 item 5, field_story's bystander keeps its coaxial so the miners hold can fail
+08309190f19c573e20726446b67586b6108e6d22	2026-11-03T06:19:55-08:00	test(tacsim): doc 36a lane 4 item 4, field_gc6's outage is @tacsim/time freeze and resume
+95450f6d081ccb7eeea652fb6dff6d9606ba16f5	2026-11-03T06:19:55-08:00	test(tacsim): doc 36a lane 4 item 3, escort_lease lands the unit grant composed and boards by +tv/1 board
+4e75ab2a12888082163f5f187a3b7bbed2ac0d97	2026-11-03T06:19:54-08:00	test(tacsim): doc 36a lane 4 item 2, field_director's header lists its seeds and the worn hull is a seeded fixture
+54d6dfc4ae2eb752a21308f9a4312b6d2ccf1490	2026-11-03T06:19:54-08:00	test(tacsim): doc 36a lane 4 item 1, field_gc3/gc4 launch on the composed path and assert their box close lines
+56da837f954935f5593d21eba8abf5d9d956f942	2026-11-03T06:19:38-08:00	fix(mush-server): box the non-barrier half of behind_barrier for clippy's large-error lint (doc 36a P2-7)
+67ee3347e4e2a5780bfc183cfb464ea8dad1e359	2026-11-03T06:19:24-08:00	feat(tacsim): implement doc 35 cut SF.R9 authority close-out
+8245c88e70c92926bb283332b5f6e2aa0df899c0	2026-11-03T06:19:19-08:00	test(mush-server): the M7 player-market story keeps the buyer's recall notice from the operator's step
+16ecc5bb0a3e220bd37c0f7b94fda0716bab66ec	2026-11-03T06:18:52-08:00	Merge origin/main (PR #329's f6 flake fix) into the harness baseline branch
+b4577f8ff295d56b6c5f726b1a15b7a9e1b727a3	2026-11-03T06:12:06-08:00	docs(tacsim): strip.rs's module docs name its private helpers without linking them
+eda06bc6ee8ce42975d293e4ded9b595c037a806	2026-11-03T06:06:49-08:00	docs(36, 36a): lane 3 as built, with the commit per item
+82bcb0e489cd751a9ccf325fbac5bb3c1cd1f6a4	2026-11-03T06:05:19-08:00	Merge remote-tracking branch 'origin/main' into claude/relaxed-fermat-60b65b
+6db31698130ecbce407bf41ef8297b1d012281a4	2026-11-03T06:05:08-08:00	docs(design): doc 36a lane 2 as built, P0-1's owner question, the scrap-yield question (doc 36a lane 2, item 8)
+403bdeaeca8a15c51c15e819da81dd2d5d183d17	2026-11-03T06:04:33-08:00	Merge pull request #334 from conclavio/claude/wonderful-mclaren-0ec652
+23d0afab4d32c9009c70575c71321900fd92874f	2026-11-02T18:39:06-08:00	fix(tacsim): the tick alone submits the bay's owed acts, and the +bay stanza says so (doc 36a lane 2, item 7)
+93619a2fb7c7894cece49017960eec4fce3be460	2026-11-02T18:38:13-08:00	fix(tacsim): a bay order completes under its right's custody at the IC instant; berth and stow wait for a settling act (doc 36a lane 2, item 6)
+3803351ac7d47ed24150ee452d1921a0294e784f	2026-11-02T18:37:07-08:00	fix(tacsim,inventory): strip, scrap, the mint and @inv/dissolve consult the hold's room (doc 36a lane 2, item 5)
+fd69ba90f3dc3f7df9f719e6438faf012e035057	2026-11-02T18:35:01-08:00	fix(tacsim): a later field keeps the instant a unit was first left, so the write-off clock never restarts (doc 36a §11 #9)
+3562532916b30c326714c155a9ca5d00c6a67e48	2026-11-02T18:35:01-08:00	fix(tacsim): the held-out walls ride the live record and every ground rebuild lays them (doc 36a §11 #1)
+5e892680ebe31bd1435fd701f94d2e91965301f4	2026-11-02T18:34:59-08:00	fix(mush-server): the queue behind the slot waits a pending commit out instead of draining into it (doc 36a P0-10)
+a3c60c3bc28698741d145b6ad7898b90b98c89db	2026-11-02T18:34:58-08:00	fix(mush-server): a staff barrier behind the slot is settled at shutdown and told Unavailable at exit (doc 36a P2-7)
+02fe08d8f0bf90424d582c3424091e5a4abcee34	2026-11-02T18:34:57-08:00	fix(tacsim): a mind hull joining in place or a mind-started arena gets its profile's condition rows (doc 36a P1-9)
+50574037052c868cba8ee32a828477643a719d52	2026-11-02T18:34:56-08:00	fix(mush-server): a DecisionResult waits out the re-emit state as a command submit does (doc 36a P1-8)
+6777f3861bc46292d752ff37082ce62f3ff8c8d0	2026-11-02T18:34:55-08:00	fix(tacsim): the dry runs read the lift refusal and the bay line the filing reads (doc 36a P2-6)
+cffcde90ab133b4d2c1cd04079793bd92adfc8d0	2026-11-02T18:34:54-08:00	fix(tacsim): a crewmate holding OperateCrew boards and launches on the lessee's lease (doc 36a P1-6)
+452c753c4b8532c8048aa9531633bc790925052f	2026-11-02T18:34:53-08:00	fix(tacsim): a raider barge whose drive is down stays on the ground (doc 36a P1-11)
+45cbde42158cee15c83d9bfbe181bbb0aa3a9973	2026-11-02T18:34:52-08:00	fix(tacsim): demotion keeps a carried casualty whose tug is gone and the rows of hulls never in the field (doc 36a P0-8)
+40e066b85e49fb795eeb88eb5c391b94ca4f2b52	2026-11-02T18:34:51-08:00	fix(tacsim): a combat hull in the bay weighs its dry mass; a load goes only into the tug's own or a Friend's carrier (doc 36a P0-5)
+111e5d6fa1f78349760d687907218ca64f23e387	2026-11-02T18:34:15-08:00	fix(tacsim): a scrapped shell stays held in the bay (doc 36a lane 2, item 4)
+307b76ee27ce86d0c61992f735cce9954fbea9cd	2026-11-02T18:33:02-08:00	fix(tacsim): live salvage custody caps every other right at the bay, and a berth binds to its carrier (doc 36a lane 2, item 3)
+42206731e17fe5b3533c0527e6e55f90d31cf3ed	2026-11-02T18:31:54-08:00	fix(tacsim): the bay dry-runs an order at the counter and at its due, and no cancel while an act settles (doc 36a lane 2, item 2)
+cb4df20cbfe5ef2b32c7e00cf01b5b0a96776802	2026-11-02T18:30:45-08:00	fix(tacsim): a bay act takes the ledger's next ordinal, and a strip's plan lands with its mint (doc 36a lane 2, item 1)
+117c85465ada6a1afc1f5b7cf0f24b9c311ba0bb	2026-11-02T18:02:00-08:00	docs(36, 36a): lane 1 as built, with the commit per item
+ed7f0d2411137052d3a778ce3226c01f11b407d8	2026-11-02T18:00:26-08:00	fix(salvage): a pickup checks the hopper's room, says "queued", names the landholder (doc 36a P2-2)
+06859c3f113f6bd89a3ca01a7b3c4210e2486a83	2026-11-02T17:46:50-08:00	fix(tow): a release draining after a promotion waits for the field (doc 36a P1-10)
+062ac0320127ab5ee8d5df30ffea555578cacc71	2026-11-02T17:43:01-08:00	fix(tow): a second tug's attach waits while one is in flight on the casualty (doc 36a P1-4)
+f6930752a25d445286195ca5a901a37d4624bdcb	2026-11-02T17:39:28-08:00	fix(tow): one tow order per actor and rig, oldest evicted first (doc 36a P1-3)
+451488655acff1df4261d5254c6edebfd3a5c949	2026-11-02T17:35:29-08:00	fix(salvage): the window's last second is the award's; a lost Loaded still lands (doc 36a P0-7)
+30c2808b5e2cad8d56f92d8cb11fd61129ac3127	2026-11-02T17:31:27-08:00	fix(salvage): a written-off hull in custody goes home, never to the salvor (doc 36a P0-3)
+53603c4feb97b1cf87f752fa46ff9972e4e7bf72	2026-11-02T17:26:31-08:00	fix(salvage): a salvor cannot edit their own claim contract (doc 36a P0-2)
+4c5ae1be8d4dc9bb35693f91dc370c15cb691ef6	2026-11-02T17:09:37-08:00	Merge pull request #330 from conclavio/claude/doc36a-review-triage
+26f093d8e0cdf5012188dcd97844196906f427b4	2026-11-02T17:09:27-08:00	Merge pull request #329 from conclavio/claude/relaxed-wright-f9fb6f
+d048b293941f5e4663426ea0c81c33ba7b13291c	2026-11-02T17:09:12-08:00	Merge pull request #328 from conclavio/claude/nightly-m7-busy-retry
+ade71092afee917c391ef7f7aab1c47e2af2631f	2026-11-02T16:39:11-08:00	tacsim(tests/harness_baseline): CF.0, CF.6b and GC.2 moved the deterministic block; three records, 24 fields
+162fec986c09df609f94018cc74c91a1c544f474	2026-11-02T16:22:40-08:00	docs(design): doc 36a, triage of the external CF/GC code review at d0cc7e91
+21241a83719cda9cd3cf9b4f033fb03108885889	2026-11-02T15:57:30-08:00	Merge remote-tracking branch 'origin/main' into claude/relaxed-wright-f9fb6f
+9e468eaf09e33ffbb7684b117301447e11070a70	2026-11-02T15:53:25-08:00	fix(tacsim): a carrier leaving a field by F-6 is no arrival
+c56dfcde8103c5a81d021abb871474aa0a4dad44	2026-11-02T15:44:21-08:00	test(mush-server): the M7 player-market story types a line again while the engine refuses it as busy
+d0cc7e9125cd9403c79bf3d5d98273d4f3068a05	2026-11-02T15:39:47-08:00	Merge pull request #327 from conclavio/claude/jovial-mccarthy-9b710a
+c2599251c5ca594c9b6890dd1512b25747304f4a	2026-11-02T15:38:49-08:00	docs(design): README row 35 names the 35b review
+f7274ad999d98478eaa93fed8bfdb077984bec8d	2026-11-02T15:38:38-08:00	Merge origin/main into claude/jovial-mccarthy-9b710a (doc 35b landed)
+8ccb397982a8aee3771d89348a46a70664fc5d9e	2026-11-02T15:37:33-08:00	Merge pull request #326 from conclavio/claude/sf-commit-review-cleanup-faf780
+81574988b29ece5caee3306f63ffbb18bf030356	2026-11-02T15:34:51-08:00	docs(design): make docs 17, 23, 27, 32, 34-36 and the README match the tree (doc 37 §4)
+29df04bcdda63454a7087480787b3a7a9905294c	2026-11-02T15:26:35-08:00	docs(design): add doc 35b, the review of the SF.R0–SF.R8 seam-first train
+de6cc9875510399044aeedb38b66f2187f81a6b8	2026-11-02T14:31:25-08:00	Merge pull request #325 from conclavio/claude/doc37-ic-phase-closeout
+69a47ab06ed722c8ac77eaea65c7e8f366937110	2026-11-02T14:18:37-08:00	docs(design): doc 37, the IC phase close-out at f1ea7715
+64d2128ccae1e259f7c7c00a01a7e0e376b6e401	2026-11-02T14:14:28-08:00	Merge pull request #323 from conclavio/claude/bot-busy-retry
+43595a7971a9174510bcab08acee600ae48fcaae	2026-11-02T14:14:17-08:00	Merge pull request #324 from conclavio/fix/sf-r8-idle-tick-writes
+1edc47b3d9a0c6db5e5304af6eb730696bed5124	2026-11-02T13:39:51-08:00	fix(tacsim): skip redundant tacsim:space:state writes on idle ticks
+f1ea7715326e0c6bb9fd0aecb8359aef79053ef3	2026-11-02T13:18:47-08:00	Merge pull request #321 from conclavio/feat/sf-r8-store-backed-space-persistence
+b6f32a6870376d00ca8ffb8e191ffb027b473cc5	2026-11-02T13:18:13-08:00	Merge pull request #317 from conclavio/feat/sf-r6-rhai-picket-and-ledger-fine
+902616a57dbf269d88a056e6588a0fa701f23911	2026-11-02T13:17:57-08:00	Merge pull request #318 from conclavio/feat/sf-r7-client-docking-and-tape-verification
+4448a5975fc26f376a453bfb1f28d157b06a4f13	2026-11-02T13:17:50-08:00	Merge pull request #322 from conclavio/claude/gc11-join-raid-flake
+b2737084e54438e41b2ad7d71f2e3b173d143534	2026-11-02T13:11:29-08:00	GC.11: the director retries a raid's partially refused joins
+009efd2f5c82fcfb72c365a2d472146616aba8b3	2026-11-02T13:06:44-08:00	feat(tacsim): SF.R8 store-backed space persistence across restarts (D-35-12)
+7e29310ce66f2686dccd95662565bedc8fd97d5a	2026-11-02T13:06:31-08:00	Merge pull request #320 from conclavio/claude/gc6-claim
+ddc721e8b453011f8ea34fc5bf497fc5233cb575	2026-11-02T13:06:04-08:00	Merge pull request #319 from conclavio/claude/cf5-flake-mark-open
+f165f8204619723c2498e75cdf89f350e51b3f2b	2026-11-02T13:05:45-08:00	style(tacsim): cargo fmt on SF.R7 docking changes
+a22ab4a784438174a8eee5563c1631ba895908a4	2026-11-02T12:51:24-08:00	mush-bot: type a line again when the engine pushes it back
+4f43e200e850899f7ac012d559663d7901f1a07d	2026-11-02T12:46:54-08:00	GC.6: the salvage claim (story b) and remains scrapped where they lie
+f874e4cbe90fdd7523fd86416f9e6ec228e15f27	2026-11-02T12:32:01-08:00	test(tacsim): open cf5's field with a Hostile mark, not a fire order
+3f8db79f33480fe4ddaebef1e5e00608995bc2fe	2026-11-02T12:31:27-08:00	feat(tacsim): implement SF.R7 client 60fps 6-DOF docking and server tape verification
+859c5cd7392dcf403900a2905629a7e6e3492eb1	2026-11-02T11:51:48-08:00	feat(tacsim): SF.R6 Rhai customs picket doctrine, triad combat, and ledger fine (D-35-11)
+57f157eb0320a24d54d3f8e7c51a82c0a92293d7	2026-11-02T10:43:23-08:00	Merge pull request #316 from conclavio/feat/sf-r5-asteroid-field-mining
+b6ee2cb3f56df6acf7a62066a082bfdfc52fb7ca	2026-11-02T10:43:09-08:00	Merge pull request #313 from conclavio/feat/sf-r4-live-propellant-and-free-flight-planner
+da7f9e8be131c881d2f13a82bff656f782e32251	2026-11-02T10:42:52-08:00	Merge pull request #314 from conclavio/claude/gc5-salvage
+35c3db7e73d8336c2b2cb16f6d4fe13bb517a1db	2026-11-02T10:42:32-08:00	Merge pull request #312 from conclavio/claude/gc4-tow
+480b1a00f21101d7c3405e51f92f311ba5d04d53	2026-11-02T10:10:58-08:00	Merge remote-tracking branch 'origin/claude/gc4-tow' into claude/gc5-salvage
+4ba51614c5912493ca3724d08476984ff01e2f7c	2026-11-02T10:03:06-08:00	Merge origin/main (GC.10) into claude/gc4-tow; the tow's friendly load reads GC.10's Friend rule
+6b090b4bc324b520a6d8246437dd33d483d32cb4	2026-11-02T10:02:05-08:00	feat(tacsim): implement SF.R5 asteroid field mining on the Doc 20 engine
+c27cc5c803272a15448261b5373a0663b9cd14b3	2026-11-02T10:00:34-08:00	Merge pull request #315 from conclavio/claude/gc10-relations
+1a8c50259a9b9c48eb7171657adc0fe5ecb613b3	2026-11-02T09:48:27-08:00	Merge remote-tracking branch 'origin/claude/gc4-tow' into claude/gc5-salvage
+37f1975d25ca937d64dd1edaf6cdaf624061c92e	2026-11-02T09:47:24-08:00	GC.4: split the port registration's providers into their own frame (M7, with headroom)
+d6bb109f758353e38056c9c6bf244c2cffc69703	2026-11-02T09:40:44-08:00	Merge origin/claude/gc4-tow (the tow off the registration frame) into claude/gc5-salvage
+da7f2d44395c4e2aad7805c9dd1ed14b2cdec07e	2026-11-02T09:33:50-08:00	GC.5: salvage on a later visit (scan, foreign bay, pickup, lease write-off)
+5339b59cb3b7994464d3cb22514cd3c61df356db	2026-11-02T09:31:24-08:00	GC.4: keep the tow off the port registration's frame (M7 memory-size limits)
+415097e0adbc3cea560da63e54ea8f4105bed0d8	2026-11-02T09:26:12-08:00	Merge remote-tracking branch 'origin/main' into claude/gc10-relations
+d81c7d09efc11ff910bb2404aad09410fab4cdef	2026-11-02T09:25:53-08:00	GC.10: relations — Friends by organization, standing at demotion, the leader's void
+51f2f6bed4b7ca2014e0051aecf330e81bd74924	2026-11-02T09:25:16-08:00	Merge pull request #311 from conclavio/feat/sf-r3-authoritative-helm-tac-and-channels
+3b498c42787ddb30d85c4b69f813a5897168419b	2026-11-02T08:49:05-08:00	feat(tacsim): SF.R4 live propellant pool and passage.rs free-flight planner
+14da7cfdd30b94295ba23b2c9b06d692487cfaf1	2026-11-02T08:48:07-08:00	fix(tacsim): resolve PR #311 CI fmt, matcher audit, and C12 consumer census
+c54176e04d7b68756c5869eb2cc1fda7406bb33c	2026-11-02T08:46:43-08:00	fix(tacsim): resolve clippy too_many_arguments and private intra-doc links in SF.R3
+6bc1a9a1f44908e33c7df9ee95e08a20dedfb8e6	2026-11-02T08:46:43-08:00	feat(tacsim,ssh): SF.R3 authoritative +helm/+tac verbs, mush-sim channels, and TUI view toggle (D-35-9, D-35-10, D-35-16)
+6795b3512078207ae7b427782d39adea2a4e6d59	2026-11-02T08:35:40-08:00	Merge remote-tracking branch 'origin/main' into claude/gc4-tow
+c3c863c710a50e0695d27a226b300899ab4a7dc0	2026-11-02T08:35:34-08:00	GC.4: tow.rs's module doc links no private items (rustdoc -D warnings)
+030f1bf73fce4ee3cfac7eea1b4c5cc8234206e0	2026-11-02T08:34:22-08:00	Merge pull request #308 from conclavio/claude/gc3-remains
+3feab2f437731ac4123c91942b89e6c64807cac6	2026-11-02T08:21:06-08:00	Merge remote-tracking branch 'origin/claude/gc3-remains' into claude/gc4-tow
+43cff4e689b6e083e7b448cb12c0cb2600265fb2	2026-11-02T08:21:00-08:00	GC.4: the tow (story a)
+22acd219113ad4db13805b89588629909e109055	2026-11-02T07:57:10-08:00	GC.3: fix CI — the CF.7 walker leaves remains; raider relaunch skips them; mill pin
