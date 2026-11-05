@@ -408,6 +408,7 @@
         "  Kasei Metals bids volatiles: list 200, posts 200 (+4 permille; reach 488 h 22 min now against a median of 480 h 39 min).",
         "  Stickney Yards bids strategic_ore: list 700, posts 702 (+4 permille; reach 488 h 22 min now against a median of 480 h 39 min).",
         "  Stickney Yards bids tacsim.part.plant.light_mk1: list 4000, posts 4000 (no port supplies it).",
+        "  Stickney Yards bids carbon_ore: list 60, posts 60 (+4 permille; reach 488 h 22 min now against a median of 480 h 39 min).",
         "  emergency bids (at 1500 permille of the median): none due; reach is 1016 permille of the median.",
         "  fastest: 0000-09-06 (in 248 IC days): 341 h 4 min, burn 39 t (-147 h 18 min and -15 t against now).",
         "  worst: 0000-01-01 (in 0 IC days): 488 h 22 min, burn 54 t (+under a minute and +0 t against now).",

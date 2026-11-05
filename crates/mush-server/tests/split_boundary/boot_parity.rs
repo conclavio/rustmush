@@ -928,8 +928,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // v24.
     // Doc 39 cut IN.9: relay v18, lane v27; doc 41 cut RS.6a: relay v19, lane v28.
     // Doc 39 cut IN.10: relay v20, lane v29; the player-response floor: relay v22, lane v31.
-    // Doc 39 cut IN.11: relay v23, lane v32.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(23));
+    // Doc 39 cut IN.11: relay v23, lane v32; the IN.11 house-restock ruling: relay v24, lane v33.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(24));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
@@ -1016,6 +1016,33 @@ async fn sm2_the_production_root_lays_up_every_site() {
         assert_eq!(row.blocks.len(), 16, "{entry}");
         assert!(row.clerk.is_some(), "{entry}");
     }
+    drop(booted);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
+
+/// **The production root's inventory reads a part as indivisible** (doc 39 cut IN.2; the
+/// owner's IN.11 ruling of 2026-11-05): the server's market sold parts by the presence gate
+/// alone, because this root composed the inventory without tacsim's `PartGoods` (and its
+/// hold capacity) that tacsim's own root wires. A bulk good still divides.
+#[tokio::test]
+async fn in11_the_production_root_reads_a_part_as_indivisible() {
+    let mut cfg = stock_config("in11_indivisible");
+    enable_tacsim(&mut cfg);
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&cfg);
+    let booted = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("the production root boots");
+    let families = &booted
+        .engine
+        .world
+        .module_state::<mush_inventory::InventoryHandles>()
+        .expect("the inventory composed")
+        .0;
+    let part = CanonicalId::new("tacsim.part.plant.hauler_mk1").expect("an id");
+    let bulk = CanonicalId::new("structural_alloys").expect("an id");
+    assert!(families.is_indivisible(&part), "a part is one lot");
+    assert!(!families.is_indivisible(&bulk), "a bulk good divides");
     drop(booted);
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
 }
