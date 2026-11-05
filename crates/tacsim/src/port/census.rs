@@ -15,7 +15,8 @@
 //! - **Sinks and declared losses**: every completed work order's inputs less its outputs
 //!   (`worked`: the recipes' losses, and at a yard the hull's bulk, a kit having no mass), the
 //!   mills' ore less their product (`milled`), and the parts a commission consumed into a hull
-//!   (`built`).
+//!   (`built`), and the parts the bay fitted into hulls (`fitted`: a fit consumes the lot and
+//!   keeps its provenance).
 //!
 //! `balance` = `stock` + `opened` − `in_ground` − `pools` − `lots` − `bales` − `worked` −
 //! `milled` − `built`. Each commission also prints one `tacsim.matter_build` line: the inputs
@@ -72,6 +73,8 @@ pub struct MatterCensus {
     pub milled: u64,
     /// The parts commissions consumed into hulls.
     pub built: u64,
+    /// The parts the bay fitted into hulls.
+    pub fitted: u64,
     /// One line a commission: `(order, inputs, hull, waste)`.
     pub builds: Vec<(u64, u64, u64, u64)>,
 }
@@ -94,15 +97,16 @@ impl MatterCensus {
             - i128::from(self.worked)
             - i128::from(self.milled)
             - i128::from(self.built)
+            - i128::from(self.fitted)
     }
 
     /// **The census line**: `tacsim.matter_census mined= opened= in_ground= stock= pools= lots=
-    /// bales= worked= milled= built= balance=`, kilograms.
+    /// bales= worked= milled= built= fitted= balance=`, kilograms.
     #[must_use]
     pub fn line(&self) -> String {
         format!(
             "{CENSUS_LINE} mined={} opened={} in_ground={} stock={} pools={} lots={} bales={} \
-             worked={} milled={} built={} balance={}",
+             worked={} milled={} built={} fitted={} balance={}",
             self.mined(),
             self.opened,
             self.in_ground,
@@ -113,6 +117,7 @@ impl MatterCensus {
             self.worked,
             self.milled,
             self.built,
+            self.fitted,
             self.balance()
         )
     }
@@ -275,10 +280,37 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .saturating_add(mass(pinned.inputs()).saturating_sub(mass(pinned.outputs())));
     });
     scan(ctx, &handles.families.mills, |ledger| {
+        // A mill of the chain's goods only (Occator's ice mill is outside it).
+        if !counted(&ledger.ore) {
+            return;
+        }
         let ore = kg(&ledger.ore, ledger.ore_t);
         let product = kg(&ledger.into, ledger.product_t);
         out.milled = out.milled.saturating_add(ore.saturating_sub(product));
     });
+    // The parts the bay fitted into hulls: each lot consumed, its provenance kept.
+    if let Some(bay) = w.module_state::<crate::port::bay_work::act::BayActHandles>() {
+        scan(ctx, &bay.parts, |part| {
+            if part.fitted_into.is_none() {
+                return;
+            }
+            // The part's good: its row's, else Q-39-35's spelling, `tacsim.part.<kind>.<row>` for
+            // a hardware row `tacsim.<kind>.<row>` (a plant row is not in the slot index).
+            let good = crate::hardware::bay::part_of(w, &part.definition)
+                .map(|row| row.commodity)
+                .or_else(|| {
+                    part.definition
+                        .key()
+                        .id
+                        .as_str()
+                        .strip_prefix("tacsim.")
+                        .and_then(|rest| CanonicalId::new(format!("tacsim.part.{rest}")).ok())
+                });
+            if let Some(good) = good {
+                out.fitted = out.fitted.saturating_add(kg(&good, 1));
+            }
+        });
+    }
     for record in crate::port::commission::commissions(w) {
         if record.step == crate::port::commission::Step::Consuming {
             continue;

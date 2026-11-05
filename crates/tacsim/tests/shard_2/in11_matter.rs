@@ -354,3 +354,295 @@ fn lots_of(tw: &mush_testkit::TestWorld, vault: mush_economy::VaultId, good: &st
         }
     }
 }
+
+/// One order at the front `verb` (`+works` or `+yard`) run through: booked, its bill delivered
+/// from the captain's docked hold line by line, the clock stepped an IC hour at a time until the
+/// arm delivers it, and collected; the order's number.
+fn work(
+    rig: &mut crate::driving_rig::Rig,
+    captain: mush_core::ObjId,
+    verb: &str,
+    recipe: &str,
+    bill: &[(&str, u64)],
+) -> u64 {
+    use crate::in5_production::{contract, ic_to, works, works_fire};
+    let before: Vec<u64> = crate::driving_rig::store(&rig.tw)
+        .works_contracts()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    let booked = works(rig, captain, &format!("{verb}/order {recipe}"), 1);
+    assert!(booked.contains(" booked at the "), "{booked}");
+    let id = crate::driving_rig::store(&rig.tw)
+        .works_contracts()
+        .into_iter()
+        .map(|c| c.id)
+        .find(|id| !before.contains(id))
+        .expect("the order");
+    for (good, units) in bill {
+        let out = works(
+            rig,
+            captain,
+            &format!("{verb}/deliver {id}={good} {units}"),
+            1,
+        );
+        assert!(
+            out.contains(tacsim::port::works::INTO_ESCROW),
+            "{good}: {out}"
+        );
+    }
+    let start = crate::driving_rig::ic_now(&rig.tw);
+    for hour in 1..=24 * 6 {
+        if contract(rig, id).delivered_ic.is_some() {
+            break;
+        }
+        ic_to(rig, start + hour * 3_600);
+        let _ = works_fire(rig);
+    }
+    assert!(
+        contract(rig, id).delivered_ic.is_some(),
+        "{recipe} is delivered: {:?}",
+        contract(rig, id)
+    );
+    for _ in 0..4 {
+        let out = works(rig, captain, &format!("{verb}/collect {id}"), 2);
+        if !out.contains(tacsim::port::works::SETTLING) {
+            break;
+        }
+    }
+    id
+}
+
+/// **The port half of the matter story** (doc 39 cut IN.11, §4.9: the chain's stories are
+/// port-side, so the port half runs once and the mining half at both sizes, in the bot's
+/// `in11_` stories): ore → concentrate → alloys (Kasei's refine), the alloys and the carbon →
+/// fittings, fittings and carbon → light plants, strategic ore, boards and fittings → sights, and
+/// alloys, fittings, a plant and a sight → a prospector at the yard; a light plant sold into the
+/// Yards' bid and another fitted into the prospector's destroyed plant slot. The census holds
+/// across the whole window and every build reads inputs = the hull + the waste.
+///
+/// **Seeds**: the captain's money, the passage's propellant and provisions, and one tonne of
+/// instrument boards in the hold (Crisium's ask is at Luna, off this passage; the bot's story
+/// buys it there), all before the census's window opens; the plant destroyed by staff before
+/// the fit (a fight's stand-in).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter() {
+    use crate::driving_rig::{
+        board, cid, hold_pool, hold_vault_of, port_map, prospector, seed_pool, station_room,
+        teleport,
+    };
+    use crate::in5_production::{ashore, buy, fire_landing, listed, mint, sail, sell};
+    const CERES: &str = "ceres_port";
+    const STICKNEY: &str = "stickney_port";
+    const PLANT: &str = "tacsim.part.plant.light_mk1";
+    const SIGHT: &str = "tacsim.part.sensor.visual_mk1";
+    let mut rig = stocked();
+    let (captain, row) = prospector(&mut rig, "Ore", 3, "Assay");
+    let _ = mint(&mut rig, captain);
+    let hold = hold_vault_of(&rig.tw, &row);
+    seed_pool(
+        &mut rig,
+        hold,
+        "instrument_boards",
+        1,
+        mush_inventory::LotId(9_950),
+    );
+    crate::in10_pools::settle(&mut rig, 3);
+    // ---- The window opens ----
+    let before = census(&mut rig);
+
+    // ---- Ceres: concentrate, carbon and strategic ore at the asks ----
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, captain, exchange);
+    buy(&mut rig, captain, CERES, "freeport_exchange", "metals", 20);
+    buy(&mut rig, captain, CERES, "freeport_works", "carbon_ore", 2);
+    buy(
+        &mut rig,
+        captain,
+        CERES,
+        "freeport_works",
+        "strategic_ore",
+        2,
+    );
+
+    // ---- Stickney: the concentrate into Kasei's bid, refined, and the alloys bought ----
+    board(&mut rig, captain);
+    sail(
+        &mut rig,
+        captain,
+        &row,
+        "+ship/undock stickney",
+        STICKNEY,
+        9_500,
+    );
+    ashore(&mut rig, captain);
+    let kasei = station_room(&rig.tw, STICKNEY, "room.p08_exchange");
+    teleport(&mut rig.tw, captain, kasei);
+    for _ in 0..20 {
+        if listed(&rig, STICKNEY, "kasei", "structural_alloys").is_some() {
+            break;
+        }
+        fire_landing(&mut rig);
+    }
+    let alloys_before =
+        listed(&rig, STICKNEY, "kasei", "structural_alloys").expect("Kasei's alloy ask");
+    let _ = sell(&mut rig, captain, STICKNEY, "kasei", "metals");
+    for _ in 0..40 {
+        if listed(&rig, STICKNEY, "kasei", "structural_alloys") >= Some(alloys_before + 16) {
+            break;
+        }
+        fire_landing(&mut rig);
+    }
+    buy(
+        &mut rig,
+        captain,
+        STICKNEY,
+        "kasei",
+        "structural_alloys",
+        10,
+    );
+    buy(
+        &mut rig,
+        captain,
+        STICKNEY,
+        "stickney_yards",
+        "industrial_parts",
+        1,
+    );
+
+    // ---- The works: fittings, light plants, sights ----
+    let _ = work(
+        &mut rig,
+        captain,
+        "+works",
+        "fittings",
+        &[("structural_alloys", 5), ("carbon_ore", 1)],
+    );
+    let _ = work(
+        &mut rig,
+        captain,
+        "+works",
+        "plant_light",
+        &[("industrial_parts", 1), ("carbon_ore", 1)],
+    );
+    let _ = work(
+        &mut rig,
+        captain,
+        "+works",
+        "sight_visual",
+        &[
+            ("strategic_ore", 2),
+            ("instrument_boards", 1),
+            ("industrial_parts", 3),
+        ],
+    );
+    assert_eq!(lots_of(&rig.tw, hold, PLANT), 5, "five light plants aboard");
+    assert_eq!(lots_of(&rig.tw, hold, SIGHT), 10, "ten sights aboard");
+
+    // ---- The yard: a prospector from the captain's own matter ----
+    let counter = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    teleport(&mut rig.tw, captain, counter);
+    let order = work(
+        &mut rig,
+        captain,
+        "+yard",
+        "tv_prospector",
+        &[
+            ("structural_alloys", 5),
+            ("industrial_parts", 2),
+            (PLANT, 1),
+            (SIGHT, 1),
+        ],
+    );
+    crate::in10_pools::settle(&mut rig, 8);
+    let built = tacsim::port::commission::commission(rig.tw.world(), order)
+        .cloned()
+        .expect("the commission");
+    assert_eq!(
+        built.step,
+        tacsim::port::commission::Step::Done,
+        "{built:?}"
+    );
+    let rig_obj = built.object().expect("the prospector");
+    assert_eq!(hold_pool(&mut rig.tw, hold, "structural_alloys"), 0);
+    assert_eq!(hold_pool(&mut rig.tw, hold, "industrial_parts"), 0);
+
+    // ---- A light plant sold into the Yards' bid ----
+    let bid = port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")].bids[&cid(PLANT)].listing;
+    let out = run(&mut rig.tw, captain, &format!("+market/sell {bid}=1"));
+    assert!(out.contains("Sold "), "{out}");
+    let _ = crate::in10_pools::pump(&mut rig);
+    for _ in 0..12 {
+        crate::driving_rig::sweep(&mut rig.tw, 31);
+        let _ = crate::in10_pools::pump(&mut rig);
+    }
+    assert_eq!(
+        lots_of(&rig.tw, hold, PLANT),
+        3,
+        "one in the prospector, one sold"
+    );
+
+    // ---- The fit: the prospector's plant destroyed (staff), a plant fitted from the hold ----
+    crate::driving_rig::staff_hand(&mut rig, |ctx| {
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetComponentCondition {
+                component: mush_tactics::unit::ComponentId::new("power").expect("an id"),
+                condition: mush_tactics::ConditionId::new("destroyed").expect("a condition"),
+            }],
+            None,
+            Some(smol_str::SmolStr::new_static("test:in11-fit")),
+        )
+        .expect("a plan");
+        mush_tactics::module::apply_plan(ctx, rig_obj, &plan).expect("applied");
+    });
+    let mark = built.mark.clone();
+    // Into the captain's Dray-P's bay, whose hold the fit draws from (IN.9's stow).
+    let stowed = run(
+        &mut rig.tw,
+        captain,
+        &format!("+bay/stow {mark}=#{}", row.hull),
+    );
+    assert!(stowed.contains("is stowed in the"), "{stowed}");
+    crate::in10_pools::settle(&mut rig, 2);
+    // Berthed at the Service Counter from her carrier, whose hold the work draws from.
+    let counter = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    teleport(&mut rig.tw, captain, counter);
+    let berthed = run(&mut rig.tw, captain, &format!("+bay/berth #{}", rig_obj.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    crate::in10_pools::settle(&mut rig, 2);
+    let quote = run(&mut rig.tw, captain, &format!("+bay #{}", rig_obj.0));
+    eprintln!("in11 +bay {mark}:\n{quote}");
+    let out = run(
+        &mut rig.tw,
+        captain,
+        &format!("+bay/fit #{}=power {PLANT}", rig_obj.0),
+    );
+    assert!(out.contains("taken in the workshop"), "{out}");
+    crate::in10_pools::days_on(&mut rig, 1);
+    crate::in10_pools::settle(&mut rig, 4);
+    assert_eq!(
+        lots_of(&rig.tw, hold, PLANT),
+        2,
+        "a plant fitted from the hold"
+    );
+
+    // ---- The window closes ----
+    let after = census(&mut rig);
+    eprintln!("in11 port half before {before:?}\nin11 port half after {after:?}");
+    assert_eq!(
+        before["balance"], after["balance"],
+        "matter is neither made nor lost"
+    );
+    let build = builds(&mut rig);
+    assert!(
+        build.iter().any(|(o, ..)| *o == i128::from(order)),
+        "the prospector's build: {build:?}"
+    );
+    assert!(
+        build
+            .iter()
+            .all(|(_, inputs, dry, waste)| *inputs == dry + waste),
+        "inputs = the hull + the waste: {build:?}"
+    );
+}

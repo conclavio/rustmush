@@ -8,7 +8,7 @@
 //!   order.
 //! - `+bay/order <hull>=<work>`: `all`, a kind (`armor`, `rebuild`, `mend`, `unjam`,
 //!   `replace`, `rearm`) or a section or part, comma-separated.
-//! - `+bay/fit <hull>=<slot> <lot>`: replace a part from a lot in the carrier's hold.
+//! - `+bay/fit <hull>=<slot> <lot|part>`: replace a part from a lot in the carrier's hold (doc 39 cut IN.11: or the part's good, its first free lot).
 //! - `+bay/strip <hull>=<part>`, `+bay/scrap <hull>`, `+bay/return <hull>` (doc 39 cut IN.8).
 //! - `+bay/cancel <hull>`, `+bay/berth <hull>`, `+bay/stow <hull>`.
 //!
@@ -55,6 +55,30 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
 
 /// `#<id>`, or a thing of that name in the actor's room — never a scrapped shell by name (doc
 /// 36a P1-7).
+/// **The first free lot of the part `good` in the carrier's hold that serves `hull`** (doc 39
+/// cut IN.11): held by no sale or order, in lot order.
+///
+/// # Errors
+///
+/// No facility or hold serves the hull, or the hold carries no free lot of that part.
+fn part_lot_named(ctx: &Ctx<'_>, hull: ObjId, good: &str) -> Result<mush_inventory::LotId, String> {
+    let good = mush_core::CanonicalId::new(good).map_err(|_| "That is not a lot.".to_owned())?;
+    let facility = super::facility_of(ctx.w, hull)?;
+    let vault = super::source_hold(ctx.w, hull, &facility)?;
+    let mut lots: Vec<_> =
+        crate::port::works::lots_in(ctx, mush_inventory::record::EndpointRef(vault))
+            .into_iter()
+            .filter(|(lot, held, _)| {
+                *held == good && super::act::lot_hold(ctx, *lot).is_ok_and(|hold| hold.is_none())
+            })
+            .map(|(lot, ..)| lot)
+            .collect();
+    lots.sort();
+    lots.first()
+        .copied()
+        .ok_or_else(|| format!("The carrier's hold carries no {good} to fit."))
+}
+
 fn hull_named(ctx: &Ctx<'_>, word: &str) -> Result<ObjId, String> {
     let word = word.trim();
     if let Some(id) = word.strip_prefix('#').and_then(|n| n.parse::<u32>().ok()) {
@@ -442,7 +466,12 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 return Ok(());
             }
             let (slot, lot) = rest.trim().split_once(' ').ok_or(BAY_USAGE)?;
-            let lot = mush_inventory::LotId::parse(lot).ok_or("That is not a lot.")?;
+            let lot = match mush_inventory::LotId::parse(lot.trim()) {
+                Some(lot) => lot,
+                // Doc 39 cut IN.11: or the part's good, which takes the first free lot of it in
+                // the carrier's hold (a player sees the part on the hold line, not its lot id).
+                None => part_lot_named(ctx, hull, lot.trim())?,
+            };
             let order = super::fit_order(ctx, hull, slot, lot)?.order;
             let line = taken_line(ctx, &order);
             say(ctx, line);
