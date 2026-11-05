@@ -50,6 +50,10 @@ pub(crate) struct OwedClose {
     /// laid it down. Absent from a close written before the cut.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub minds: Vec<super::record::CarriedRow>,
+    /// **The bay rigs a wrecked carrier took down under their claims** (doc 38a F-23.1): each
+    /// rig record is owed its claim's `Destroyed` Close by this close.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrecked: Vec<ObjId>,
 }
 
 /// The owed closes, by site (module state beside [`FieldBook`]).
@@ -78,6 +82,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Scen
     }
     super::boot::run_held(ctx);
     submit_owed(ctx);
+    // Doc 38a F-03: the irrecoverable claimed hulls whose claims have let them go.
+    super::close::land_owed_unplaces(ctx);
     // Doc 32 cut CF.5: the exits at the ramp and the extractions due.
     super::exit::tick(ctx);
     super::crew::tick(ctx);
@@ -208,9 +214,16 @@ pub(crate) fn owe_close(
     let Some(actor) = promoter(&open.by) else {
         return;
     };
-    let (units, remains, minds) = left.map_or_else(
-        || (record.units.clone(), Vec::new(), Vec::new()),
-        |demoted| (demoted.left, demoted.remains, demoted.minds),
+    let (units, remains, minds, wrecked) = left.map_or_else(
+        || (record.units.clone(), Vec::new(), Vec::new(), Vec::new()),
+        |demoted| {
+            (
+                demoted.left,
+                demoted.remains,
+                demoted.minds,
+                demoted.wrecked,
+            )
+        },
     );
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.closing.insert(site.clone());
@@ -222,6 +235,7 @@ pub(crate) fn owe_close(
         known,
         remains,
         minds,
+        wrecked,
     };
     // Doc 32 §15 (the review's CF-1): durable in this batch, beside the check-ins, before the
     // K3 write that cannot share its turn.

@@ -885,6 +885,17 @@ impl SiteRecord {
         Ok(())
     }
 
+    /// **Strike `unit`'s exit from the open field** (doc 40, the ramp exit's boarding window; the
+    /// 38b review's F-15): a hull let go at its ramp whose carrier was lost is back in the field,
+    /// so the record no longer names it out. Nothing when it names no exit.
+    pub fn rejoin(&mut self, unit: ObjId) {
+        if let Some(open) = self.promoted.as_mut()
+            && let Ok(at) = open.exits.binary_search(&unit)
+        {
+            open.exits.remove(at);
+        }
+    }
+
     /// Whether `unit` left the open field at its carrier's ramp ([`SiteRecord::exit`]).
     #[must_use]
     pub fn exited(&self, unit: ObjId) -> bool {

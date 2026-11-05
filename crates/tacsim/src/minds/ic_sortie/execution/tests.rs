@@ -492,3 +492,42 @@ fn s4b3_a_retained_source_that_no_longer_compiles_drops_to_the_rom() -> TestResu
     check!(drops(&mut arena)?.is_empty(), "journalled once");
     Ok(())
 }
+
+/// **Astra #11: a carried ABI drop is journalled once an epoch.** A mind dropped to the ROM for
+/// its ABI in an earlier field of the epoch carries the drop (doc 23 cut D-23-18); the next
+/// field seeds it before the claim's install, so the install finds the row dropped and the ROM
+/// committed and journals no second `mind_dropped` line. Without the seed the install journals
+/// it, as the first field's did.
+#[test]
+fn astra11_a_carried_abi_drop_is_not_journalled_again() -> TestResult {
+    let dropped_lines = |arena: &mut Arena| -> Result<usize, Box<dyn std::error::Error>> {
+        Ok(events(arena)?
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::MindDropped { .. }))
+            .count())
+    };
+    let (first, mut arena) = fixture(OLD_ABI, SOURCE)?;
+    first.install(&mut arena)?;
+    check_eq!(
+        dropped_lines(&mut arena)?,
+        1,
+        "the first field journals the drop"
+    );
+    let carried = arena.carried_mind(UNIT).ok_or("a carried mind")?;
+    check_eq!(carried.dropped, Some(DropCause::Abi));
+    let (next, mut arena) = fixture(OLD_ABI, SOURCE)?;
+    arena
+        .seed_carried_mind(UNIT, &carried)
+        .map_err(|e| e.to_string())?;
+    next.install(&mut arena)?;
+    check_eq!(
+        dropped_lines(&mut arena)?,
+        0,
+        "the next field journals none"
+    );
+    check_eq!(
+        arena.minds.get(&UNIT).ok_or("mind")?.dropped,
+        Some(DropCause::Abi)
+    );
+    Ok(())
+}

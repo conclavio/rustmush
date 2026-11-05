@@ -330,6 +330,29 @@ impl FieldProvider {
 }
 
 impl FieldProvider {
+    /// **A bay rig its wrecked carrier took down owes its claim's Close** (doc 38a F-23.1):
+    /// `Destroyed`, its queued launch cancelled; the claim arm lands the Close, and the host's
+    /// tick then wrecks the rig. A rig with no open claim is left alone.
+    fn close_wrecked_claim(&self, txn: &mut ActionTxn<'_>, rig: ObjId) -> Result<(), ActionError> {
+        let key = RigKey(rig);
+        let Some(mut record) = txn
+            .get(&self.excursions, &key)
+            .map_err(|_| integrity("the rig records are unavailable"))?
+            .cloned()
+        else {
+            return Ok(());
+        };
+        if !wreck_claim(&mut record) {
+            return Ok(());
+        }
+        record
+            .check()
+            .map_err(|_| integrity("a wrecked bay rig's record is out of bounds"))?;
+        txn.replace(&self.excursions, &key, record)
+            .map_err(|_| integrity("a wrecked bay rig's record did not stage"))?;
+        Ok(())
+    }
+
     /// **Lay the site's carried minds on their epoch records** (doc 23 cut D-23-18): each row
     /// the offer fixed for `site` whose rig record still has that epoch open becomes its
     /// `OpenSortie.mind`, staged in this write's bundle. A record whose epoch closed or moved on
@@ -371,6 +394,21 @@ impl FieldProvider {
         }
         Ok(())
     }
+}
+
+/// **A wrecked bay rig's record, its claim owed `Destroyed`** (doc 38a F-23.1): an open claim
+/// becomes `Closing { Destroyed }` and its queued launch is cancelled; anything else is left
+/// alone (`false`).
+fn wreck_claim(record: &mut RigRecord) -> bool {
+    if !matches!(
+        record.claim.as_deref(),
+        Some(crate::surface::excursion::ClaimCursor::Open { .. })
+    ) {
+        return false;
+    }
+    record.owe_claim_close(mush_roll::commerce::ic_claims::IcCloseKind::Destroyed);
+    record.queued = None;
+    true
 }
 
 /// **The minds the host owes their epoch records, by site** (doc 23 cut D-23-18): each live
@@ -426,8 +464,8 @@ impl ActionProvider for FieldProvider {
         parameters
             .get("op")
             .and_then(Value::as_str)
-            .filter(|op| matches!(*op, "open" | "close" | "exit"))
-            .ok_or_else(|| invalid("a field write opens, closes or exits"))?;
+            .filter(|op| matches!(*op, "open" | "close" | "exit" | "rejoin"))
+            .ok_or_else(|| invalid("a field write opens, closes, exits or rejoins"))?;
         Ok(())
     }
 
@@ -464,7 +502,7 @@ impl ActionProvider for FieldProvider {
                     .map(|(site, close)| {
                         (
                             site.to_string(),
-                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known, "remains": close.remains }),
+                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known, "remains": close.remains, "wrecked": close.wrecked }),
                         )
                     })
                     .collect()
@@ -474,6 +512,20 @@ impl ActionProvider for FieldProvider {
         // written out of a field at the ramp.
         let exiting: Map<String, Value> = w
             .module_state::<super::exit::OwedExits>()
+            .map(|owed| {
+                owed.0
+                    .iter()
+                    .map(|(site, units)| {
+                        let units: Vec<u32> = units.keys().map(|unit| unit.0).collect();
+                        (site.to_string(), json!(units))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Doc 40 (the ramp exit's boarding window; the 38b review's F-15): the exits the host
+        // owes the record struck, a hull back in the field once its carrier was lost.
+        let rejoining: Map<String, Value> = w
+            .module_state::<super::exit::OwedRejoins>()
             .map(|owed| {
                 owed.0
                     .iter()
@@ -500,7 +552,12 @@ impl ActionProvider for FieldProvider {
                 "op",
                 true,
                 ProjectedParameterKind::Choice {
-                    choices: vec!["open".to_owned(), "close".to_owned(), "exit".to_owned()],
+                    choices: vec![
+                        "open".to_owned(),
+                        "close".to_owned(),
+                        "exit".to_owned(),
+                        "rejoin".to_owned(),
+                    ],
                 },
             )?,
             crate::surface::act::parameter(
@@ -519,6 +576,7 @@ impl ActionProvider for FieldProvider {
             "now": w.world_ic_now().at,
             "closing": closing,
             "exiting": exiting,
+            "rejoining": rejoining,
             "carried": carried,
         });
         crate::surface::site_record::fix_sides(w, &mut fixed);
@@ -585,6 +643,24 @@ impl ActionProvider for FieldProvider {
                 self.lay_minds(txn, parameters, &key)?;
                 format!("#{} left field {} at the ramp", unit.0, record.ordinal)
             }
+            // Doc 40 (the ramp exit's boarding window; the 38b review's F-15).
+            "rejoin" => {
+                let unit = obj(parameters, "unit")?;
+                let owed = parameters
+                    .get("rejoining")
+                    .and_then(|rejoining| rejoining.get(key.0.as_str()))
+                    .and_then(Value::as_array)
+                    .is_some_and(|units| {
+                        units.iter().any(|n| n.as_u64() == Some(u64::from(unit.0)))
+                    });
+                if !owed {
+                    return Err(rejected(
+                        "only the field host writes a unit back into a field",
+                    ));
+                }
+                record.rejoin(unit);
+                format!("#{} is back in field {}", unit.0, record.ordinal)
+            }
             _ => {
                 let owed = parameters
                     .get("closing")
@@ -626,6 +702,17 @@ impl ActionProvider for FieldProvider {
                     .map_err(|_| invalid("a field's close lists the remains it leaves"))?
                     .unwrap_or_default();
                 self.lay_minds(txn, parameters, &key)?;
+                // Doc 38a F-23.1: a bay rig a wrecked carrier took down under its claim.
+                let wrecked: Vec<ObjId> = owed
+                    .get("wrecked")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| invalid("a field's close lists the bay rigs it wrecked"))?
+                    .unwrap_or_default();
+                for rig in wrecked {
+                    self.close_wrecked_claim(txn, rig)?;
+                }
                 for left in &remains {
                     self.close_destroyed(txn, context, &mut record, (left, now))?;
                 }
@@ -671,6 +758,32 @@ mod tests {
 
     /// A rig out on the ground, 100 s into a 200 s drive east from (10, 10) to (30, 10) that
     /// reserved 2,000 cu.
+    /// **Doc 38a F-23.1: a bay rig its wrecked carrier took down owes its claim `Destroyed`.**
+    /// An open claim closes `Destroyed`, its queued launch cancelled; an opening claim, or none,
+    /// is left alone.
+    #[test]
+    fn f23_1_a_wrecked_bay_rig_owes_its_claim_destroyed() {
+        use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
+        let open = mush_core::CommitToken::from_bytes([7; 16]);
+        let mut record = RigRecord::fresh_unread(ObjId(7));
+        record.claim = Some(Box::new(ClaimCursor::Open {
+            open,
+            operator: ObjId(42),
+        }));
+        assert!(wreck_claim(&mut record));
+        assert_eq!(
+            record.claim.map(|claim| *claim),
+            Some(ClaimCursor::Closing {
+                open,
+                kind: ClaimCloseKind::Destroyed,
+                operator: ObjId(42),
+            })
+        );
+        let mut bare = RigRecord::fresh_unread(ObjId(8));
+        assert!(!wreck_claim(&mut bare));
+        assert!(bare.claim.is_none());
+    }
+
     fn driving() -> RigRecord {
         let mut record = RigRecord::fresh_unread(ObjId(7));
         record.charge = Charge {
