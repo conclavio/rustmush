@@ -9033,7 +9033,7 @@ fn fly_on_to_stickney(rig: &mut Rig, hull: ObjId, total_secs: i64) {
 /// 3. `+helm/tow` puts her in *SalvorA*'s custody — one row in the domain's
 ///    `tacsim:space:custody:{domain}` document, which a full engine restart reads back — and files
 ///    on `+salvage/claim`'s own path: one economy contract whose window is
-///    `[tacsim.recovery].claim_window_s`, from real seconds. No bounty is paid, at the tow or at
+///    `[tacsim.recovery].claim_window_ic_days`, at the world's rate. No bounty is paid, at the tow or at
 ///    the dock; release and re-tow keep the one claim.
 /// 4. Docked at Stickney Yards (the interdicted leg's end), `+salvage`, `+salvage/inspect`,
 ///    `+salvage/report` and `+salvage/contest` work on her as on a ground hull.
@@ -9104,7 +9104,7 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
         credit_before,
         "no bounty at the tow"
     );
-    let window_s = store(&rig.tw).config().recovery.claim_window_s;
+    let window_s = tacsim::surface::claim::claim_window_real_secs(rig.tw.world());
     let (contract, filed_real_s, deadline_real_s, domain) = {
         let book = rig
             .tw

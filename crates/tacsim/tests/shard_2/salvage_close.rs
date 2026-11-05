@@ -47,7 +47,7 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
     cfg.recovery.inspect_s = 30;
     cfg.recovery.attach_s = 30;
     cfg.recovery.load_s = 60;
-    cfg.recovery.claim_window_s = WINDOW;
+    cfg.recovery.claim_window_ic_s = WINDOW;
 }
 
 fn record(rig: &mut Rig, entry: &str) -> SiteRecord {
@@ -538,4 +538,25 @@ async fn rs3_story_b_the_claims_close_on_urvara_reach() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rs3_story_b_the_claims_close_on_ahuna_flank() {
     story("ahuna", "ahuna_port", 256);
+}
+
+/// **The contest window is counted in IC days** (the owner's 2026-11-04 rule: any wait on a
+/// player's response is at least 28 IC days): the shipped 48 IC days are filed as 48 real hours
+/// at rate 24 and as 48 real days at rate 1 — before, 48 real hours at any rate, two IC days at
+/// rate 1.
+#[test]
+fn rs3_the_claim_window_is_forty_eight_ic_days_at_any_rate() {
+    let mut rig = stocked_tuned(|_| {});
+    crate::driving_rig::set_rate(&mut rig.tw, 24);
+    assert_eq!(
+        tacsim::surface::claim::claim_window_real_secs(rig.tw.world()),
+        48 * 3_600,
+        "48 IC days at rate 24: 48 real hours"
+    );
+    crate::driving_rig::set_rate(&mut rig.tw, 1);
+    assert_eq!(
+        tacsim::surface::claim::claim_window_real_secs(rig.tw.world()),
+        48 * 86_400,
+        "48 IC days at rate 1: 48 real days"
+    );
 }

@@ -2629,6 +2629,25 @@ pub fn create_debt(
     namespace: &str,
 ) -> Result<ObligationId, EconomyError> {
     let due = ctx.w.world_ic_now().at;
+    create_debt_due(ctx, (debit_account, credit_account), amount, namespace, due)
+}
+
+/// **[`create_debt`] falling due at `due`**, a World IC instant (doc 41's 2026-11-04 rule: any
+/// wait on a player's response is at least 28 IC days): the debt stands `Active` — payable at
+/// any time by [`pay_debt`] — until `due`, and is first swept then, going `Delinquent` only if
+/// the account cannot cover it. A `due` in the past is due now.
+///
+/// # Errors
+///
+/// Everything [`create_obligation`] refuses.
+pub fn create_debt_due(
+    ctx: &mut Ctx<'_>,
+    (debit_account, credit_account): (AccountId, AccountId),
+    amount: Amount,
+    namespace: &str,
+    due: i64,
+) -> Result<ObligationId, EconomyError> {
+    let due = due.max(ctx.w.world_ic_now().at);
     create_obligation(
         ctx,
         ObligationSpec {

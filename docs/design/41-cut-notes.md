@@ -665,3 +665,27 @@ berthed in Ceres's workshop, the delivery posted.
   account itself never buys (the plan's buy pays from its author's own account by design).
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
+
+## The 28-IC-day rule (2026-11-04)
+
+**The owner's standing rule: any wait on a player's response is at least 28 IC days.** Seven IC days is about seven
+real hours at rate 24, and no workflow here assumes a player is on constantly. The audit of the built cuts found
+four waits under it; the owner ruled "Apply all three" for doc 41's (the Co-op's seven-real-day dormancy is doc
+18's and unchanged):
+
+1. **The salvage claim's contest window (RS.3) is counted in IC**: `[tacsim.recovery].claim_window_ic_days` = 48
+   (the key `claim_window_s`, real seconds, is gone; pre-launch, no migration), `TacsimRecoveryCfg.claim_window_ic_s`
+   in IC seconds. The claim contract's deadline is real time by its shape, so the window is filed in real seconds at
+   the world's rate (`claim::claim_window_real_secs`): 48 real hours at rate 24, as before, and 48 real days at rate 1
+   (was 2 IC days). `MAX_SALVAGE_CLAIM_WINDOW_SECS` rises from a week to a year. A rate change after filing does not
+   re-time a filed window.
+2. **One-term debts (RS.5) have a 28-IC-day grace**: `mush_economy::create_debt_due` opens a debt due at a given IC
+   instant; tacsim's debts (the lease charge and the port fine) fall due `retrieval::DEBT_GRACE_IC_DAYS` (28) after
+   they are opened, payable at any time before by `+debts/pay`. Only past it, unpaid, does a debt go delinquent — so
+   the desk's refusal waits for it.
+3. **RS.7's port fine** is still levied at docking; the carrier is held (`DepartRefusalKind::Quarantined`) only
+   once the fine is past its grace unpaid (`security::holds`), and until then she may undock.
+
+**Tests.** `salvage_close::rs3_the_claim_window_is_forty_eight_ic_days_at_any_rate`; RS.5's story (the debt not
+delinquent within the grace, the desk refusing past it); RS.7's story (the carrier not held within the grace, held
+past it). Each fails without its change.

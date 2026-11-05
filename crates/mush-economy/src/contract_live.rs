@@ -5886,10 +5886,11 @@ pub(crate) fn on_world_clock_resumed(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEve
 /// `{id}`.
 pub const SALVAGE_CLAIM_LOCKED: &str = "Contract #{id} is a salvage claim: the registry settles it when its contest window runs, and +salvage/contest is the only answer to it.";
 
-/// The most real seconds a salvage claim's contest window may run (a week). The
-/// ruling's window is 48 real hours ([`SALVAGE_CLAIM_WINDOW_SECS`]); a host's test knob
-/// compresses it, and nothing may stretch it past this.
-pub const MAX_SALVAGE_CLAIM_WINDOW_SECS: i64 = 7 * 24 * 3_600;
+/// The most real seconds a salvage claim's contest window may run (a year). The host counts
+/// the window in IC days (doc 41: any wait on a player's response is at least 28 IC days) and
+/// files it in real seconds at the world's rate, so a slow world runs a long real window; a
+/// host's test knob compresses it, and nothing may stretch it past this.
+pub const MAX_SALVAGE_CLAIM_WINDOW_SECS: i64 = 365 * 24 * 3_600;
 
 /// A salvage claim's contest window, real seconds (doc 27 Q-S15, doc 36 Q-36-24: 48 real
 /// hours).
