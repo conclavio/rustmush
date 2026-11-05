@@ -47,7 +47,7 @@ mush-llm.workspace = true
 # `tests/arena_lane.rs`' fake server prints, so the lane serves the game's
 # own row); `mush-sim` and `mush-server` wire the account oracle the
 # simulator's slots are keyed on, as `crates/mushd/tests/sim_lenses/sim_solo.rs` does.
-tacsim.workspace = true
+tacsim = { workspace = true, features = ["test-ledger-floor"] }
 mush-sim.workspace = true
 mush-server.workspace = true
 # Doc 32 G-4: the field story wears the fixture raider's hulls with `@unit/damage` (server
