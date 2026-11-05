@@ -1382,6 +1382,10 @@ pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
     if crate::port::yard::is_dispatcher_of(w, hull, person) {
         return true;
     }
+    // Doc 41 cut RS.6b: and a recovery house's dispatcher, aboard its house's own hulls.
+    if crate::port::house::is_dispatcher_of(w, hull, person) {
+        return true;
+    }
     // Doc 39 cut IN.10 (Q-39-34): a house's DARK helm is aboard the hull its ferry sails,
     // wherever it stands (the dispatcher's precedent).
     if crate::port::pools::ferry_hull(w, person) == Some(hull) {
@@ -3521,9 +3525,11 @@ pub(crate) fn prepare_departure(
         }
     }
     // Doc 39 cut IN.10 (Q-39-34): a house ferry sails with the house's hands, one soul, under its
-    // DARK helm (a Thing, never counted aboard).
+    // DARK helm (a Thing, never counted aboard); doc 41 cut RS.6b: as does a recovery house's
+    // hull under its dispatcher.
     let souls = occupants(w, airlock).max(u32::from(
-        crate::port::pools::ferry_hull(w, pilot) == Some(hull),
+        crate::port::pools::ferry_hull(w, pilot) == Some(hull)
+            || crate::port::house::is_dispatcher_of(w, hull, pilot),
     ));
     let basis = basis(ctx, &view, souls).map_err(|error| {
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");

@@ -256,7 +256,7 @@ pub fn order_of(w: &World, hull: ObjId) -> Option<RetrievalOrder> {
 }
 
 /// Every readable retrieval record, by hull.
-fn orders(w: &World) -> Vec<RetrievalOrder> {
+pub(crate) fn orders(w: &World) -> Vec<RetrievalOrder> {
     w.module_state::<TacsimStore>()
         .map(|store| {
             store
