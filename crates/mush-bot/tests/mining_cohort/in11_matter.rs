@@ -14,7 +14,7 @@
 //! 4. The yard: a prospector from them (`+yard/order tv_prospector`), commissioned on the floor.
 //! 5. A light plant sold into the Yards' bid (`+market/sell <bid>=1`).
 //! 6. The prospector's plant destroyed by God (a fight's stand-in), the replace quote read
-//!    (`+bay/quote #<n>=replace`), the prospector stowed in the bot's Dray-P, berthed from it,
+//!    (`+bay/quote #<n>`, a replace among its jobs), the prospector stowed in the bot's Dray-P, berthed from it,
 //!    and a light plant fitted from the hold (`+bay/fit #<n>=power <good>`).
 //!
 //! God types `@industry/census` when the bot logs in and at the end: the `tacsim.matter_census`
@@ -37,11 +37,14 @@ const SIGHT: &str = "tacsim.part.sensor.visual_mk1";
 
 /// The census line's terms, typed by God.
 async fn census(god: &mut arena::Client) -> (i128, Vec<(i128, i128, i128)>) {
+    let from = god.seen.len();
     let (index, text) = god
         .answer("@industry/census", &["tacsim.matter_census"])
         .await;
     assert!(index.is_some(), "the census answered:\n{text}");
-    let text = lines::normalise(&text);
+    // The build lines follow the census line: read the whole answer.
+    god.idle(Duration::from_secs(2)).await;
+    let text = lines::normalise(god.seen.get(from..).unwrap_or(""));
     let terms = |line: &str| -> std::collections::BTreeMap<String, i128> {
         line.split_whitespace()
             .filter_map(|w| w.split_once('='))
@@ -344,12 +347,21 @@ pub(super) async fn matter_story(miner: Miner) {
         &[],
     )
     .await;
-    stamp(&format!("the sale's preview: {}", lines::normalise(&preview)));
+    stamp(&format!(
+        "the sale's preview: {}",
+        lines::normalise(&preview)
+    ));
     let (_, lines_now) = god
-        .answer(&format!("@industry/census {PLANT}"), &["tacsim.matter_census"])
+        .answer(
+            &format!("@industry/census {PLANT}"),
+            &["tacsim.matter_census"],
+        )
         .await;
     god.idle(Duration::from_secs(2)).await;
-    stamp(&format!("census before the sale: {}", lines::normalise(&lines_now)));
+    stamp(&format!(
+        "census before the sale: {}",
+        lines::normalise(&lines_now)
+    ));
     let (_, sold) = typed(
         &mut client,
         &format!("+market/sell {}=1", bid.number),
@@ -370,8 +382,8 @@ pub(super) async fn matter_story(miner: Miner) {
     stamp(&format!("God destroyed {mark}'s plant: {}", damaged.trim()));
     let (_, quote) = typed(
         &mut client,
-        &format!("+bay/quote #{built}=replace"),
-        &["replace", "power"],
+        &format!("+bay/quote #{built}"),
+        &["power", "cr"],
         &[],
     )
     .await;

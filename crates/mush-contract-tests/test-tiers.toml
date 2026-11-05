@@ -297,6 +297,18 @@ id = "mush-bot/tests::mining_cohort::in5_the_bot_mines_refines_and_sells_fitting
 tier = "by-hand"
 by_hand = "cdd30329"
 
+# Doc 39 cut IN.11: the matter story at 256 and 512, both green by hand at the revision below
+# (about 29 minutes a site, the two side by side, on the owner's Windows box).
+[[test]]
+id = "mush-bot/tests::mining_cohort::in11_the_bot_mines_and_builds_a_prospector_from_ahuna"
+tier = "by-hand"
+by_hand = "REV"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::in11_the_bot_mines_and_builds_a_prospector_from_urvara"
+tier = "by-hand"
+by_hand = "REV"
+
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
 [[test]]

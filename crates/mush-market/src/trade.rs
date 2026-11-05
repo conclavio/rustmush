@@ -1805,7 +1805,7 @@ fn held_for_sale(
     commodity: &mush_core::CanonicalId,
 ) -> Result<u64, MarketError> {
     // Doc 39 cut IN.11: an indivisible good is held as its free lots, never as a pool.
-    if crate::module::lot_supply(ctx.w).is_some_and(|f| f.is_indivisible(commodity)) {
+    if crate::module::sells_as_lots(ctx.w, commodity) {
         return Ok(u64::try_from(sale_lots(ctx, actor, source, commodity)?.len()).unwrap_or(0));
     }
     let Ok(pool) = crate::lot::pool_available(ctx, source, commodity) else {
@@ -2166,8 +2166,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         ));
     }
     // Doc 39 cut IN.11: an indivisible good sells one lot a sale, the lot itself handed over.
-    let sold_lot = if crate::module::lot_supply(ctx.w).is_some_and(|f| f.is_indivisible(&commodity))
-    {
+    let sold_lot = if crate::module::sells_as_lots(ctx.w, &commodity) {
         if quantity != 1 {
             return Err(MarketError::bad(ONE_LOT_A_SALE));
         }

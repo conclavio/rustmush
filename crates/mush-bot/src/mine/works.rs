@@ -74,8 +74,9 @@ pub fn in_vocabulary(line: &str) -> bool {
 }
 
 /// **Doc 39 cut IN.11's lines**: a part lot sold into a bid (`+market/sell <n>=1`), Stickney's
-/// walk to the Service Counter (`customs`, `service`), and the bay's look (by dbref or yard mark), replace quote, stow, berth and fit of a hull named by its dbref (`#<n>`), the
-/// stow's carrier by its name, the fit's part by its good.
+/// walk to the Service Counter (`customs`, `service`), and the bay's look (by dbref or yard
+/// mark), quote (a replace among its jobs), stow, berth and fit of a hull named by its dbref
+/// (`#<n>`), the stow's carrier by its name, the fit's part by its good.
 fn matter_line(line: &str) -> bool {
     let dbref = |s: &str| s.strip_prefix('#').is_some_and(|n| number(n, 9));
     if let Some(rest) = line.strip_prefix("+market/sell ") {
@@ -100,7 +101,7 @@ fn matter_line(line: &str) -> bool {
         return dbref(rest);
     }
     if let Some(rest) = line.strip_prefix("+bay/quote ") {
-        return rest.strip_suffix("=replace").is_some_and(dbref);
+        return dbref(rest);
     }
     if let Some((hull, carrier)) = line
         .strip_prefix("+bay/stow ")
@@ -292,7 +293,7 @@ mod tests {
             "+bay SYB-01",
             "customs",
             "service",
-            "+bay/quote #813=replace",
+            "+bay/quote #813",
             "+bay/stow #813=Long Ox",
             "+bay/berth #813",
             "+bay/fit #813=power tacsim.part.plant.light_mk1",
