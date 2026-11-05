@@ -213,6 +213,65 @@ carrier's withdrawal reading, at the 10 s `LIFT_CHECK_MS` pace.
   `field/boarding.rs` and `field/home.rs` (the new `Then` arm); `surface/site_record.rs` (the listing).
   `crew::set_resolve_for_tests` is a `#[doc(hidden)]` seam for the stories, never called by the game.
 
-**Cell delta (rule #14).** `domain_field` gains eight stories (`surrender::`), 108.6 s wall in parallel on
-the Windows host. The per-shard summed minutes come off this PR's CI JUnit and are recorded here before
-the PR goes ready. The lib gains three in-source tests of well under a second.
+**Cell delta (rule #14).** Measured from the JUnit `<testcase time>` sums of #491's run 42075225787. The
+eight `surrender::` stories add 11.5 summed minutes to `domain_field`, spread by nextest's partition over
+six shards:
+
+| Shard | Stories | Minutes |
+|---|---|---|
+| shard_1 | the yield at 256 (88.5 s) | 1.47 |
+| shard_2 | (s2) at 512 (76.1 s) | 1.27 |
+| shard_4 | (s5) at 256 (67.9 s) | 1.13 |
+| shard_6 | (s5) at 512 (105.2 s) | 1.75 |
+| shard_7 | (s3) at 512, (s2) at 256, the yield at 512 | 4.46 |
+| shard_8 | (s3) at 256 (86.5 s) | 1.44 |
+
+shard_7 is the run's longest at 49.8 summed minutes. The lib's three in-source tests are well under a
+second.
+
+## SU.4 — capture and the NPC handover
+
+Q-42b-17, Q-42b-18, Q-42b-19. The capture itself needed nothing new: CR.1's `captured_loaded` captures
+a yielded hull's crew (no contract, so `npc_exit_loaded` passes it by), and `capture` keeps the resolve.
+A raider is Hostile to its captor, so `capture_standing` writes nothing (Q-42b-17).
+
+**The NPC branch** (`field/crew.rs`). A *raider's crew* (`npc_captive`) is an NPC whose record carries a
+resolve. The raider seed is the only writer of one, so a hired pilot is never caught by these rules.
+- `hand_over` writes `Processing` as for anyone. The NPC hears nothing. The captor hears
+  `HANDED_OVER_NPC_CAPTOR`, "At {port} the {authority} take {who} into custody. You are paid nothing
+  for it."
+- `levy_release` returns at once for an NPC, so `charge` stays `None` and no obligation is created
+  (Q-42b-18).
+- `custody_pass` takes a raider's crew out of play (`leave_play`):
+  - at `release_due_ic` while in processing;
+  - when set down at a port;
+  - when stranded in a hull that is no raider's (its captor's wreck, CR.3's `wrecked_captive`) on a
+    site with no field running (Q-42b-19).
+  `leave_play` deletes the record, then `World::destroy` (marked `GOING`, out of the world) and an
+  `ObjDestroyed` event. A raider's own wreck or yielded hull still holds its crew for somebody to load.
+- `+ship/release` refuses a raider's crew anywhere but a port: "{who} has no way off this ground; hand
+  them over at a port." At a port it sets them down, and they leave play at the next crew tick.
+
+**Gate.**
+- The in-source test `su4_an_npcs_record_is_done_at_a_port_or_its_captors_wreck`.
+- The story (s1), `surrender::su4_a_yielded_crew_is_taken_in_and_handed_over` at 256 and `…_at_512`
+  (`surrender_rig::taken_in`):
+  1. The raider's first hull stands powerless beside the stranger's ramp, its crew at 0. Its barge and
+     its second hull are off the ground, so nothing fires on the Red Moth on its pad. The crew yields,
+     and the field settles with the hull a casualty.
+  2. The stranger's tug, launched after the demotion, tows and loads it.
+  3. The crew is `Captured` aboard the Red Moth with the resolve kept, listed by `+ship/captives`, and
+     refused `+ship/release` on the site.
+  4. The Red Moth lifts for Ceres. The crew goes into processing with `charge: None`, and at release
+     the record is gone and the object `GOING`. The captor holds nobody.
+
+**Departure from §6's sketch, and a gap found.** No shipped rig can tow a raider's hull. A line tank
+is 30 t laden. The tugs are the 6 t prospector (12 t cap), the 7 t tender and the 8 t escort (16 t). So
+Q-42b-14's "anyone may take it in" cannot be reached with the shipped raiders: every yielded line tank
+would sit out SU.5's window. The story's staff hand rebuilds the yielding hull as a drone
+(`@unit/create #<hull>=tacsim.unit.drone_mk1`), a combat hull light enough for the 6 t tug. A scout is
+16 t, still over the cap. A rig design such as the escort would read as a rig without a hopper and fail
+the captor's departure. Closing the gap is a content
+or ruling question (a heavier tug, a lighter raider hull, or a tow cap that counts a yielded hull
+differently) and is flagged to the owner. §7's (s1) also sketches the players wrecking a director raid's
+carrier. The story stands the raider's barge off the ground instead, the same "carrier lost" term.

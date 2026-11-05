@@ -53,3 +53,16 @@ async fn su3_a_restart_redraws_nothing() {
 async fn su3_a_restart_redraws_nothing_at_512() {
     surrender(&URVARA_REACH, Case::Restart).await;
 }
+
+/// **(s1) at 256** (doc 42b cut SU.4): the yielded hull is towed in, its crew captured, handed
+/// over at Ceres with no fee, and out of play at release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn su4_a_yielded_crew_is_taken_in_and_handed_over() {
+    crate::surrender_rig::taken_in(&AHUNA_FLANK).await;
+}
+
+/// **(s1) at 512**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn su4_a_yielded_crew_is_taken_in_and_handed_over_at_512() {
+    crate::surrender_rig::taken_in(&URVARA_REACH).await;
+}
