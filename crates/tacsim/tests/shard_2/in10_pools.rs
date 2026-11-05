@@ -395,10 +395,20 @@ in11 census after {after:?}"
         before["balance"], after["balance"],
         "matter is neither made nor lost"
     );
+    // Every build in the world (Tycho's house builds too, doc 41 RS.6a), the Trust's among them.
     let build = crate::in11_matter::builds(&mut rig);
-    assert_eq!(build.len(), 1, "{build:?}");
-    let (inputs, dry, waste) = build[0];
-    assert_eq!(inputs, dry + waste, "inputs = the hull + the waste");
+    assert!(
+        build
+            .iter()
+            .any(|(order, ..)| *order == i128::from(contract)),
+        "the Trust's build: {build:?}"
+    );
+    assert!(
+        build
+            .iter()
+            .all(|(_, inputs, dry, waste)| *inputs == dry + waste),
+        "inputs = the hull + the waste: {build:?}"
+    );
     let owned = tacsim::port::owned::owned(rig.tw.world(), hull)
         .cloned()
         .expect("a register row");

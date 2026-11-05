@@ -19,8 +19,8 @@ pub(crate) fn census(
         .collect()
 }
 
-/// The build lines: `(inputs, hull, waste)` a commission, kilograms.
-pub(crate) fn builds(rig: &mut crate::driving_rig::Rig) -> Vec<(i128, i128, i128)> {
+/// The build lines: `(order, inputs, hull, waste)` a commission, kilograms.
+pub(crate) fn builds(rig: &mut crate::driving_rig::Rig) -> Vec<(i128, i128, i128, i128)> {
     let out = run(&mut rig.tw, GOD, "@industry/census");
     out.lines()
         .filter(|l| l.contains(tacsim::port::census::BUILD_LINE))
@@ -30,7 +30,12 @@ pub(crate) fn builds(rig: &mut crate::driving_rig::Rig) -> Vec<(i128, i128, i128
                 .filter_map(|word| word.split_once('='))
                 .map(|(k, v)| (k, v.parse().expect("a number")))
                 .collect();
-            (terms["inputs"], terms["hull"], terms["waste"])
+            (
+                terms["order"],
+                terms["inputs"],
+                terms["hull"],
+                terms["waste"],
+            )
         })
         .collect()
 }
@@ -183,7 +188,7 @@ async fn in11_a_restart_between_consumption_and_title_finishes_the_hull_once() {
     assert!(
         build
             .iter()
-            .all(|(inputs, dry, waste)| inputs == &(dry + waste)),
+            .all(|(_, inputs, dry, waste)| inputs == &(dry + waste)),
         "inputs = the hull + the waste: {build:?}"
     );
 }
