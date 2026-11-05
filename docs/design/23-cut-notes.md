@@ -508,3 +508,71 @@ No pinned file is touched. `install_sealed_runners` keeps its exact rule for eve
 ### Cost (rule #14)
 
 From the PR run's JUnit once it lands.
+
+## D-23-18 (2026-11-04): the carried memory (§17.7, §17.10; D-23-18, Q-23-15)
+
+Built on `claude/d23-18-carried-memory-83dafb` off `main` `bf0b5f24` (S.4b-3 = #411 and FR.5 = #410/#433 merged, so `arena/*` is free), one PR. The owner accepted D-23-18 at its defaults on 2026-11-04: the memory lasts one epoch, and carrying it across epochs is out of scope.
+
+### What landed
+
+- **The return half (`arena/damage.rs`, `arena/mind.rs`).**
+  - `UnitReturn.mind: Option<Box<CarriedMind>>`, filled by `Arena::returned_units` from `Arena::carried_mind`. A `CarriedMind` holds the row's seal digest, its next `think_seq`, its memory and its `dropped` cause.
+  - A row whose memory is over its class cap carries nothing (`memory_bound::fits`, the bound a snapshot's decode uses: the largest cap of any class at or below the sealed class, doc 17 §23).
+  - Every return carries it: a demotion's `Ended`, an exit's `Withdrawn`, and a void's return from the last snapshot (`close::snapshot_returns` decodes the snapshot and calls the same `returned_units`).
+- **The check-in writes it (`field/close.rs`, `field/exit.rs`, `field/provider.rs`).**
+  - `demote_units` keeps a `CarriedRow { unit, epoch, mind }` for each hull whose claim the book holds active and whose rig record has an epoch open. The epoch is keyed by the rig record's own `sortie.id`. A stock mind carries nothing.
+  - The rig record is an action-family row, and the field writes it only through its own provider, so the row is held durable **in the check-in's own batch**:
+    - at the ramp, on `FieldLive.carried`;
+    - at a demotion or a void, on the closing tombstone's `OwedClose.minds`. A ramp row its `exit` had not yet laid rides the close too (`carry_unwritten`), at the bridge's demotion and at the boot's void alike.
+  - The offer fixes the rows by site (`carried`), as it fixes the owed closes and exits. Every `exit` and `close` on the site lays each row on `OpenSortie.mind`, in that write's bundle, while the record's epoch is still the row's (`FieldProvider::lay_minds`).
+  - The exit tick forgets a ramp row once its record holds it or its epoch has moved on.
+  - The offer's rows are capped at `MAX_CARRIED_BYTES` (half the rules value's 1 MiB). A row past the cap is logged and not carried, so the field's writes always fit.
+- **The record (`surface/excursion.rs`).**
+  - `OpenSortie.mind: Option<Box<CarriedMind>>`: serde default, skipped when `None` (schema 1 stands), boxed for the M7 stack-size lint.
+  - The memory is written as its canonical text (`memory_bound::text`), not as the snapshot's byte array. The excursion family caps a record at 256 KiB, and a Class III memory as a byte array would not fit. On the way in it is bounded as a snapshot's bytes are.
+  - The epoch's close takes the record's `sortie`, and the memory goes with it.
+- **The seed half (`arena_bridge.rs`, `arena/mind.rs`).**
+  - At a field's spawn, `carried_minds` reads each custody hull's `OpenSortie.mind`. `ic_retained` lays it on the hull's fresh row right after the claim's retained install (`Arena::seed_carried_mind`), before the first think:
+    - the memory, and the doctrine state read off it;
+    - the `think_seq`;
+    - the queued first `MindThink`, re-keyed to that sequence at its own millisecond.
+  - A carried drop drops the fresh hull to the ROM again (`drop_runtime_to_rom`), with no second `mind_dropped` line: a drop is journalled once an epoch, in the field that took it.
+  - The seed refuses, changing nothing, for: a row under another seal, a row that has thought, or memory over the cap (`SeedRefusal`). The field opens anyway and the mind starts afresh, logged.
+  - A field's resume passes no carried minds: its rows are the snapshot's. No second snapshot mechanism exists; the field's own cadence stands.
+
+### Departures from §17.7's text, and why
+
+- **The seed rides the field's spawn, not a `CustodyUnit` field.** The tree holds 126 `CustodyUnit` literals. `Arena::new` lays every row the same way for OOC and IC alike. The IC field's retained install already runs on the fresh arena before its first think, so the seed lands there, on the same row, with the same effect. `CustodyUnit` and `Arena::new` are unchanged.
+- **The write is the field's own `exit` or `close`, not the check-in's world write.** `mush_tactics::custody::check_in` writes the unit, but the rig record is an action-family row only a provider stages. The row is durable in the check-in's batch (above), so a restart before the write lands owes it again.
+- **A join never seeds.** A reinforcement joins on a launch of its own, which is a new epoch, so it has nothing carried.
+
+### Tests
+
+- **`tacsim` lib:** `arena::mind::tests::d23_18_a_carried_mind_lays_down_on_a_fresh_row_of_its_seal`. It covers:
+  - `carried_mind` and `UnitReturn` carry the row;
+  - the JSON round trip, with the memory as text and noncanonical text refused;
+  - the seed: memory, doctrine state, `think_seq`, and the first think re-keyed at its millisecond;
+  - the refusals, which change nothing: another seal, memory over the cap, a pilot's hull with no row, and a row that has thought;
+  - a carried drop: the ROM, and no new ledger line.
+- **`tacsim --test shard_9`, the stories** (ignored; the M8 gate stories run them). They are `d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256` (Ahuna Flank) and `…_at_512` (Urvara Reach): the S.4b-3 field story with `carry`, and these steps between its demotion and the recover:
+  - 4a. the demotion's check-in lays rig 1's mind on its open epoch's record: under the claim's seal, no drop, and `think_seq` positive and at least the field's last snapshot's;
+  - 4b. the world is handed back to the M8 world (`m8_world::Kept`) and rebooted from its store, and the record still carries the same mind;
+  - 4c. the raiders land again (`raiders::launch`) and mark rig 1, and a second field opens on the same ground and epoch. Rig 1 is admitted under its seal. The second field's first snapshot of its row has `think_seq` at least the carried one, never restarting from nought, with no drop and no fault;
+  - 4d. the raiders withdraw, the second field demotes, and its check-in carries the later mind;
+  - 5'. the recover closes the epoch, and the record holds no `sortie`, so no memory.
+
+  RESULTS-PENDING
+- **The S.4b-3 stories** run the same script with `carry` off, and are unchanged.
+
+### Hash pins (rule #13)
+
+`arena/*` is touched (`mind.rs`, `damage.rs`, `memory_bound.rs`), with no hashed or snapshotted state changed:
+- `UnitReturn` is no part of a hash or a snapshot;
+- `seed_carried_mind` runs only on an IC field's spawn;
+- no OOC arena calls it.
+
+HARNESS-PENDING
+
+### Cost (rule #14)
+
+COST-PENDING

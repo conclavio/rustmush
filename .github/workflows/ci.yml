@@ -178,6 +178,12 @@ jobs:
             test: m8_world::s4b3_a_licensed_mind_flies_a_field_at_256
           - name: S.4b-3 a licensed mind flies a field at 512
             test: m8_world::s4b3_a_licensed_mind_flies_a_field_at_512
+          # Doc 23 cut D-23-18: the carried memory between two fields on one epoch, and a
+          # restart from the store between them, at 256 and at 512.
+          - name: D-23-18 a licensed mind carries its memory at 256
+            test: m8_world::d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256
+          - name: D-23-18 a licensed mind carries its memory at 512
+            test: m8_world::d23_18_a_licensed_mind_carries_its_memory_between_fields_at_512
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain

@@ -258,11 +258,18 @@ pub fn snapshot_mind(
     site: &CanonicalId,
     unit: ObjId,
 ) -> Option<crate::arena::mind::MindState> {
-    let document = w.module_state::<FieldBook>()?.snapshot(site)?;
-    let row = document
-        .get("state")?
-        .get("minds")?
-        .get(unit.0.to_string())?;
+    mind_in_document(w.module_state::<FieldBook>()?.snapshot(site)?, unit)
+}
+
+/// **`unit`'s mind row in an arena snapshot document** (doc 23 cut D-23-18): the document's
+/// `state` is its escaped text, whose `minds` are keyed by the unit's id.
+#[must_use]
+pub fn mind_in_document(
+    document: &serde_json::Value,
+    unit: ObjId,
+) -> Option<crate::arena::mind::MindState> {
+    let state: serde_json::Value = serde_json::from_str(document.get("state")?.as_str()?).ok()?;
+    let row = state.get("minds")?.get(unit.0.to_string())?;
     serde_json::from_value(row.clone()).ok()
 }
 
