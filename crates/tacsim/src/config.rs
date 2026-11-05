@@ -2003,6 +2003,11 @@ pub const FIELD_RESCUE_BOUND_S: u32 = 86_400;
 /// minute, thirty IC days.
 pub const FIELD_CAPTIVE_BOUND_S: std::ops::RangeInclusive<u32> = 60..=2_592_000;
 
+/// **Doc 42b cut SU.5** (Q-42b-20): the band `[tacsim.field].yield_hold_s` must sit in. The floor
+/// is the owner's 28-IC-day player-response rule (2026-11-04) and the default; the ceiling is
+/// ninety IC days.
+pub const FIELD_YIELD_HOLD_S: std::ops::RangeInclusive<u32> = 2_419_200..=7_776_000;
+
 /// **Doc 42 cut CR.2** (Q-42-7): the band `[tacsim.field].release_s` must sit in: an IC minute, an
 /// IC day.
 pub const FIELD_RELEASE_S: std::ops::RangeInclusive<u32> = 60..=86_400;
@@ -2064,6 +2069,10 @@ pub struct FieldConfig {
     /// **Doc 42 cut CR.4** (Q-42-12): the chance, per mille, that an ejection from a cell a
     /// Hostile party holds is a capture (500, provisional: even); a gate sets 1,000 or 0.
     pub eject_capture_permille: u32,
+    /// **Doc 42b cut SU.5** (Q-42b-20): IC seconds a yielded raider hull left on a site after its
+    /// field demotes waits for anyone to load it (2,419,200: 28 IC days, the floor of
+    /// [`FIELD_YIELD_HOLD_S`]); then its crew leave play and the hull stays a casualty.
+    pub yield_hold_s: u32,
     /// **The field's dice seed, pinned** (doc 40 cut FR.5's follow-up; a test and replay knob):
     /// `None` (the default, and production's) seeds each field from `crate::match_::seed_for`,
     /// its ordinal, the world's clock at admission and the process's salt; `Some(seed)` seeds
@@ -2090,6 +2099,7 @@ impl Default for FieldConfig {
             launch_cycle_s: 60,
             release_s: 3_600,
             captive_bound_s: 604_800,
+            yield_hold_s: 2_419_200,
             eject_capture_permille: 500,
             seed: None,
         }
@@ -2141,6 +2151,14 @@ impl FieldConfig {
                 FIELD_CAPTIVE_BOUND_S.start(),
                 FIELD_CAPTIVE_BOUND_S.end(),
                 self.captive_bound_s
+            ));
+        }
+        if !FIELD_YIELD_HOLD_S.contains(&self.yield_hold_s) {
+            return Err(format!(
+                "[tacsim.field].yield_hold_s must be {} to {} (it is {})",
+                FIELD_YIELD_HOLD_S.start(),
+                FIELD_YIELD_HOLD_S.end(),
+                self.yield_hold_s
             ));
         }
         if self.eject_capture_permille > 1_000 {

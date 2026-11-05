@@ -275,3 +275,35 @@ the captor's departure. Closing the gap is a content
 or ruling question (a heavier tug, a lighter raider hull, or a tow cap that counts a yielded hull
 differently) and is flagged to the owner. §7's (s1) also sketches the players wrecking a director raid's
 carrier. The story stands the raider's barge off the ground instead, the same "carrier lost" term.
+
+## SU.5 — the captor's window
+
+Q-42b-20. A yielded hull nobody loads waits the owner's 28-IC-day floor. Then its crew leaves play, and
+the hull stays a casualty for doc 41's salvage loop.
+
+**The knob.** `[tacsim.field].yield_hold_s`, default 2,419,200 (28 IC days).
+- `FieldConfig::check` holds it to `FIELD_YIELD_HOLD_S`, 2,419,200 to 7,776,000. The floor is the
+  minimum, so no deployment can undercut it.
+- It is mirrored in `mush-config`'s `TacsimFieldCfg` (with its table row) and mapped in
+  `mush-server`'s `config_ext`.
+- The `player_wait_floors` guard pins the default, the band's floor and mush-config's default
+  (`the_captors_yield_window_is_at_least_28_ic_days`, item 9).
+
+**The lapse** (`field/crew.rs`, `lapse_pass`, at the end of the crew tick's `custody_pass`). A raider's
+crew still `Unit` or `Stranded` in a yielded hull leaves play (`leave_play`) once `yield_hold_s` has
+passed since its casualty row's `left_ic`, which is the demotion that left it. A site with a field
+running holds the lapse back.
+- The yield row now carries its `site` (`raiders::yielded_on`), so the pass finds the record without
+  a field.
+- A loaded hull's crew is `Captured` and never read here. The hull's row and its mark are untouched.
+
+**Gate.**
+- `surrender::su5_an_unloaded_yield_lapses_after_28_ic_days` at 256 and `…_at_512` (`Case::Lapse`):
+  1. The yield story runs to the demotion, the hull listed "casualty, yielded".
+  2. The IC clock is moved to a minute short of `left_ic + yield_hold_s`, and the crew still waits.
+  3. At the window the crew's record is gone and the object is `GOING`, and the hull is still a
+     `Casualty` on the site record.
+- The `player_wait_floors` guard, item 9.
+
+**Departure from §6's sketch.** "(s4) with the rate knob": the story moves the IC clock with the rig's
+`to_ic`, the same jump CR.3's bound story makes, rather than a rate setting.

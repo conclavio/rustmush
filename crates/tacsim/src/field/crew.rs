@@ -2794,6 +2794,54 @@ fn custody_pass(ctx: &mut Ctx<'_>, now: i64) {
             release_processed(ctx, record, now);
         }
     }
+    lapse_pass(ctx, now);
+}
+
+/// **The captor's window** (doc 42b cut SU.5, Q-42b-20): a raider's crew still in its yielded
+/// hull, on a site with no field running, whose casualty row has stood `yield_hold_s` since the
+/// demotion left it, leaves play. Nobody loaded it; the hull stays on the site record as a casualty
+/// for doc 41's salvage loop. A loaded hull's crew is `Captured` and never read here.
+fn lapse_pass(ctx: &mut Ctx<'_>, now: i64) {
+    let hold = i64::from(super::config(ctx.w).yield_hold_s);
+    let held: Vec<(ObjId, ObjId)> = ctx
+        .w
+        .module_state::<CrewBook>()
+        .map(|book| {
+            book.0
+                .values()
+                .filter(|record| npc_captive(ctx.w, record.character))
+                .filter_map(|record| match &record.location {
+                    CrewLocation::Unit { unit } | CrewLocation::Stranded { unit, .. } => {
+                        super::raiders::yielded(ctx.w, *unit).then_some((record.character, *unit))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (who, hull) in held {
+        let Some(site) = super::raiders::yielded_on(ctx.w, hull) else {
+            continue;
+        };
+        if ctx
+            .w
+            .module_state::<super::FieldBook>()
+            .and_then(|book| book.hosted(&site))
+            .is_some()
+        {
+            continue;
+        }
+        let since = super::close::site_record(ctx, &site).and_then(|record| {
+            record
+                .units
+                .iter()
+                .find(|row| row.unit == hull)
+                .map(|row| row.left_ic)
+        });
+        if since.is_some_and(|since| now >= since.saturating_add(hold)) {
+            leave_play(ctx, who);
+        }
+    }
 }
 
 /// **Whether `who` is a raider's crew** (doc 42b cut SU.4): an NPC whose record carries a resolve,
