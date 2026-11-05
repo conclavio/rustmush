@@ -205,3 +205,64 @@ fn rs6b_tycho_flies_an_unaccepted_retrieval_on_ahuna_flank() {
 fn rs6b_tycho_flies_an_unaccepted_retrieval_on_urvara_reach() {
     story("urvara", "urvara_port");
 }
+
+/// **A retrieval bound elsewhere than the house's port stays on the board** (review 38b F-10):
+/// Occator's job on its spare rig, to be delivered at Stickney, is unaccepted at its window's
+/// end; the house's arm flies to Ceres only, so the job stays Open for a player instead of
+/// passing to Tycho, who would never fly it.
+#[test]
+fn review_38b_f10_a_job_bound_elsewhere_stays_open() {
+    let mut rig = stocked_tuned(quick);
+    let entry = "ahuna_port";
+    let (_, _, tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("ahuna", entry), 1);
+    let schema = mush_tactics::module::unit_of(rig.tw.world(), tvs[0])
+        .expect("a rig")
+        .schema()
+        .clone();
+    let casualty = rig
+        .tw
+        .world()
+        .module_state::<mush_tactics::UnitStore>()
+        .expect("the units")
+        .units
+        .iter()
+        .filter(|(id, unit)| **id != tvs[0] && unit.schema() == &schema)
+        .map(|(id, _)| *id)
+        .find(|id| {
+            crate::driving_rig::store(&rig.tw)
+                .tv_lease_on(*id)
+                .is_none()
+        })
+        .expect("a spare rig");
+    let (rx, ry) = {
+        let (x, y, _) = ramp_at(&rig.tw, entry);
+        (x.div_euclid(1_000), y.div_euclid(1_000))
+    };
+    let at = (rx + 4, ry + 3);
+    to_cell_on(&mut rig, entry, casualty, at);
+    powerless(&mut rig, casualty);
+    let s = staff_member(&mut rig);
+    staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {entry} leave #{} casualty {},{}",
+            casualty.0, at.0, at.1
+        ),
+    );
+    let poster = occator(&rig);
+    let stickney = cid("stickney_port");
+    let posted = staff_hand(&mut rig, |ctx| {
+        tacsim::surface::retrieval::post(ctx, casualty, poster.clone(), stickney.clone(), None)
+    });
+    assert!(posted.is_ok(), "{posted:?}");
+    let job = order_of(rig.tw.world(), casualty).expect("the job");
+    skip_and_fire(&mut rig, job.accept_by_ic + 60);
+    let job = order_of(rig.tw.world(), casualty).expect("the job");
+    assert_eq!(
+        job.stage,
+        RetrievalStage::Open,
+        "bound for Stickney, the job is not the house's: {job:?}"
+    );
+    assert_eq!(job.acceptor, None);
+}

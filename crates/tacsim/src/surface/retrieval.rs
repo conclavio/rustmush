@@ -243,6 +243,14 @@ impl RetrievalOrder {
         )
     }
 
+    /// **Whether it still stands in the way of a new post** (review 38a #2): any stage but
+    /// `Closed` — a delivered job is still unpaid until the sweep settles it, and its delivery fact
+    /// is the one its contract settles on, so a repost before then would overwrite it.
+    #[must_use]
+    pub fn open(&self) -> bool {
+        self.stage != RetrievalStage::Closed
+    }
+
     /// The job's board word: the hull's dbref.
     #[must_use]
     pub fn job(&self) -> String {
@@ -526,7 +534,7 @@ pub fn post(
     fee_minor: Option<i64>,
 ) -> Result<RetrievalOrder, String> {
     let prior = order_of(ctx.w, hull);
-    if let Some(order) = prior.as_ref().filter(|order| order.active()) {
+    if let Some(order) = prior.as_ref().filter(|order| order.open()) {
         return Err(ALREADY_POSTED.replace("{job}", &order.job()));
     }
     let floor = floor_minor(ctx.w, hull, &destination).ok_or("no port runs a recovery service")?;
@@ -753,6 +761,11 @@ fn to_house(ctx: &mut Ctx<'_>, order: &RetrievalOrder) {
     let Some(house) = house(ctx.w) else {
         return;
     };
+    // Review 38b F-10: the house's arm delivers to its own port only; a job bound elsewhere stays
+    // Open on the board for a player.
+    if order.destination != house.port {
+        return;
+    }
     let Some(account) = house.account else {
         tracing::error!(
             hull = order.hull.0,
@@ -815,8 +828,14 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
     match fresh {
         Ok(contract) => {
             next.contract = contract.0;
+            // Review 38b F-10: bound elsewhere than the house's port, the fresh job stays Open on
+            // the board for a player, for its whole acceptance window.
+            let ours = next.destination == house.port;
+            if !ours {
+                next.accept_by_ic = now.saturating_add(window_secs(ctx.w));
+            }
             crate::store::put_retrieval(ctx, &next);
-            if let Err(why) = accept(ctx, next.hull, (house.org, account), true) {
+            if ours && let Err(why) = accept(ctx, next.hull, (house.org, account), true) {
                 tracing::warn!(hull = next.hull.0, %why, "tacsim: Tycho Mutual could not take a lapsed retrieval; the next tick tries again");
             }
         }
@@ -903,14 +922,19 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
         None => (head, None),
     };
     let hull = hull_word(ctx, hull_text).ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
-    let titled = ctx
+    // Review 38b F-21b: the title holder, or one who acts for its organization, which then posts
+    // the job in its own name and from its own account.
+    let owner = ctx
         .w
         .module_state::<EconomyStore>()
-        .and_then(|store| store.snapshot().asset(hull).cloned())
-        .is_some_and(|asset| asset.title_owner == PrincipalId::Object(ctx.actor));
-    if !titled {
-        return Err(CmdError::msg(NOT_YOUR_HULL));
-    }
+        .and_then(|store| {
+            store
+                .snapshot()
+                .asset(hull)
+                .map(|asset| asset.title_owner.clone())
+        })
+        .filter(|owner| acts_for(ctx.w, ctx.actor, owner))
+        .ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
     if matches!(
         crate::surface::act::where_is(ctx.w, hull),
         crate::surface::act::Where::Bay { .. }
@@ -932,7 +956,7 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
             UNDER_FLOOR.replace("{floor}", &crate::port::coop::money_minor(ctx, floor)),
         ));
     }
-    if let Some(order) = order_of(ctx.w, hull).filter(RetrievalOrder::active) {
+    if let Some(order) = order_of(ctx.w, hull).filter(RetrievalOrder::open) {
         return Err(CmdError::msg(ALREADY_POSTED.replace("{job}", &order.job())));
     }
     if !go {
@@ -945,17 +969,22 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
         ctx.out.sys_to_actor(ctx.actor, "tacsim.retrieval", line);
         return Ok(());
     }
-    let account = crate::port::credit::own_account(ctx.w, ctx.actor)
-        .map(|a| a.id)
-        .ok_or_else(|| CmdError::msg("You have no account to escrow the fee from."))?;
-    let order = post(
-        ctx,
-        hull,
-        (PrincipalId::Object(ctx.actor), account),
-        destination,
-        Some(fee_minor),
-    )
-    .map_err(CmdError::msg)?;
+    let account = match &owner {
+        PrincipalId::Object(_) => crate::port::credit::own_account(ctx.w, ctx.actor).map(|a| a.id),
+        org => ctx.w.module_state::<EconomyStore>().and_then(|store| {
+            store
+                .snapshot()
+                .accounts_of(org)
+                .find(|a| {
+                    a.instrument.as_str() == crate::economy::CREDIT
+                        && a.status == mush_economy::AccountStatus::Active
+                })
+                .map(|a| a.id)
+        }),
+    }
+    .ok_or_else(|| CmdError::msg("There is no account to escrow the fee from."))?;
+    let order =
+        post(ctx, hull, (owner, account), destination, Some(fee_minor)).map_err(CmdError::msg)?;
     let line = POSTED
         .replace("{name}", &name(ctx.w, hull))
         .replace("{job}", &order.job())
@@ -1135,12 +1164,26 @@ pub(crate) fn principal_name(w: &World, who: &PrincipalId) -> String {
     }
 }
 
-/// **The delinquent debts `actor` owes this layer**, with their amounts (the desk's read).
+/// **Whether a one-term debt is past its grace unpaid** (Q-41-13, Q-41-25; review 38a #1 / 38b
+/// F-13): `Delinquent`, or reinstated to `Active` by the desk or the docking (`missed_total` keeps
+/// the missed period) and not yet collected. A reinstatement only queues the next sweep's retry, so
+/// until it pays, the debt still refuses the desk and holds the carrier.
+#[must_use]
+pub fn past_due(o: &mush_economy::Obligation) -> bool {
+    match o.status {
+        mush_economy::ObligationStatus::Delinquent => true,
+        mush_economy::ObligationStatus::Active => o.missed_total > 0,
+        _ => false,
+    }
+}
+
+/// **The debts `actor` owes this layer past their grace** ([`past_due`]), with their amounts
+/// (the desk's read).
 #[must_use]
 pub fn delinquent_debts(w: &World, actor: ObjId) -> Vec<mush_economy::Obligation> {
     owed(w, &PrincipalId::Object(actor))
         .into_iter()
-        .filter(|o| matches!(o.status, mush_economy::ObligationStatus::Delinquent))
+        .filter(past_due)
         .collect()
 }
 
@@ -1155,7 +1198,10 @@ pub fn desk_refusal(ctx: &mut Ctx<'_>) -> Option<String> {
     let total = owed
         .iter()
         .fold(0_i64, |sum, o| sum.saturating_add(o.amount.minor()));
-    for o in &owed {
+    for o in owed
+        .iter()
+        .filter(|o| matches!(o.status, mush_economy::ObligationStatus::Delinquent))
+    {
         let reinstated = match debt_cause(o) {
             Some(mush_economy::DebtCause::Ruleset(namespace)) => {
                 mush_economy::reinstate_debt(ctx, o.id, namespace)

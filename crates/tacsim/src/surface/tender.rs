@@ -267,14 +267,6 @@ impl TendWork {
     }
 }
 
-/// **The fittings a structural point of `target` consumes, whole kg** (Q-41-2; doc 39 cut
-/// IN.8): the field-engineering library's per-point figure, from the design's budget rounded up
-/// to a kilogram (its own `billed_credits` is dropped and the draw is [`TendWork::need`]'s).
-fn library_kg_per_point(w: &World, target: ObjId) -> u64 {
-    crate::definitions::mass::hull_budget(w, target)
-        .map_or(0, |(_, budget)| budget.fittings_kg_for(1))
-}
-
 /// **A tend act's start facts**, fixed by the command for the start's prepare.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -600,7 +592,7 @@ fn run_library(
     tv: ObjId,
     target: &mut TacticalUnit,
     (pose, anatomy): (FieldPose, &UnitAnatomyProfile),
-    (work, kg_per_point): (&TendWork, u64),
+    work: &TendWork,
     (secs, now): (i64, i64),
 ) -> Result<(), String> {
     let result = match work {
@@ -623,17 +615,11 @@ fn run_library(
         TendWork::Stabilize { section, points } => {
             let id = SectionId::new(section).map_err(|e| e.to_string())?;
             book.field_stabilize_damaged_section(
-                tv,
-                target,
-                pose,
-                anatomy,
-                &id,
-                *points,
-                kg_per_point,
-                false,
-                false,
-                secs,
-                now,
+                tv, target, pose, anatomy, &id, *points,
+                // Review 38b F-20: the fittings are debited by tacsim at the draw ([`TendWork::need`],
+                // the design's figure for the whole patch); the library's own per-point check,
+                // rounded per point, would refuse a large patch the draw covers.
+                0, false, false, secs, now,
             )
         }
         TendWork::Rearm {
@@ -1293,7 +1279,7 @@ pub(crate) fn finish(
         tv,
         &mut after,
         (target_pose, &anatomy),
-        (work, library_kg_per_point(w, target)),
+        work,
         (secs, now),
     ) {
         return TendStep::Lost { why };
@@ -1547,6 +1533,72 @@ mod tests {
     }
 
     /// `register_tender` fed from the compartment.
+    #[test]
+    fn review_38b_f20_a_large_patch_finishes_on_the_fittings_the_draw_took() {
+        use mush_tactics::{CellSpec, FacetSpec, SectionSpec, UnitSpec};
+        let pose = FieldPose {
+            site: ObjId(9),
+            x_cm: 500,
+            y_cm: 500,
+        };
+        let spec = UnitSpec {
+            definition: crate::arena::test_support::dref("unit", "tacsim.unit.line_tank"),
+            sections: vec![SectionSpec {
+                id: SectionId::new("hull").expect("a section"),
+                condition: mush_tactics::ConditionId::new("damaged").expect("a condition"),
+                facets: vec![FacetSpec {
+                    id: mush_tactics::FacetId::new("front").expect("a facet"),
+                    cells: vec![CellSpec {
+                        id: CellId::new("armor").expect("a cell"),
+                        min: 0,
+                        max: 10,
+                        init: 10,
+                    }],
+                }],
+                slots: Vec::new(),
+                cells: vec![CellSpec {
+                    id: CellId::new("internals").expect("a cell"),
+                    min: 0,
+                    max: 600,
+                    init: 100,
+                }],
+            }],
+            unit_cells: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            mobility: None,
+            rules: crate::arena::test_support::rules(),
+        };
+        let mut unit = TacticalUnit::from_spec(&spec, ObjId(40)).expect("a unit");
+        let anatomy = UnitAnatomyProfile {
+            internals_cell: Some(CellId::new("internals").expect("a cell")),
+            ..UnitAnatomyProfile::default()
+        };
+        // 143 kg of fittings: what the draw took for the patch, under one kg a point.
+        let bale = Bale {
+            alloys_kg: 1_000,
+            fittings_kg: 143,
+        };
+        let mut book = register_tender(ObjId(7), pose, 1_500, Some(bale), &BTreeMap::new(), None)
+            .expect("registered");
+        let work = TendWork::Stabilize {
+            section: "hull".to_owned(),
+            points: 500,
+        };
+        assert_eq!(
+            run_library(
+                &mut book,
+                ObjId(7),
+                &mut unit,
+                (pose, &anatomy),
+                &work,
+                (60, 1_000)
+            ),
+            Ok(()),
+            "the patch finishes on the fittings the draw took"
+        );
+    }
+
     #[test]
     fn rs1_the_tender_registers_from_its_stores() {
         let pose = FieldPose {
