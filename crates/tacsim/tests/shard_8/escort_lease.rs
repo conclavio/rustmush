@@ -222,12 +222,7 @@ fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
 }
 
 /// **CF.6c's gate** (doc 32 §14): lease, fly out, fight from the line cockpit, withdraw, return.
-///
-/// Ignored since #451: under the field rigs' pinned seed the intruder's first volley destroys the
-/// escort before it can withdraw (doc 40 cut notes, FR.5 "After merge"); its follow-up PR makes the
-/// fight survivable on purpose. Last green on CI at `4390f04c`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "doc 32 CF.6c: the escort dies to the first volley under the pinned field seed; follow-up to #451 (tier by-hand)"]
 #[allow(clippy::too_many_lines)]
 async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     // The field stays up while the escort drives home under fire's quiet.
@@ -271,13 +266,25 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     assert!(!contacts.trim().is_empty(), "CONTACTS answers: {contacts}");
     let status = run(&mut rig.tw, escort, "STATUS");
     assert!(!status.trim().is_empty(), "STATUS answers: {status}");
-    // Fire both ways until the escort's rounds land and the intruder's land on it.
+    // Fire both ways.
     let gun = weapon_of(&rig, hull);
     let back = weapon_of(&rig, hostile);
-    // The exchange runs until the escort has fired and taken its first hit: the story's point is
-    // the withdrawal under fire, not surviving a full exchange, which the field's dice decide
-    // (`driving_rig::FIELD_SEED`, doc 40 FR.5's cut note).
-    let exchanged = until(&mut rig, &mut rx, &mut lines, 120, |rig, lines| {
+    // The exchange runs until the escort's own frame shows it struck: the story's point is the
+    // withdrawal under fire, not a duel between two line tanks, which the field's dice settle in
+    // about 30 s of arena time. The frame, not the ledger: the black box's lines reach the host
+    // in batches, long after the arena has moved on (doc 40 FR.5's cut note).
+    let struck = |rig: &Rig| {
+        frame(rig, escort).is_some_and(|frame| {
+            frame.sections.iter().any(|section| {
+                section
+                    .facets
+                    .iter()
+                    .any(|facet| facet.armor < facet.armor_max)
+                    || section.internals.is_some_and(|(now, max)| now < max)
+            })
+        })
+    };
+    let exchanged = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
         for (pilot, at, weapon) in [
             (escort, (146_u16, 122_u16), gun.as_str()),
             (intruder, (136, 122), back.as_str()),
@@ -289,19 +296,22 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
             }
             let _ = run(&mut rig.tw, pilot, &format!("FIRE {weapon}"));
         }
-        fired(lines, hull) > 0 && hits(lines, hostile, hull) > 0
+        struck(rig)
     })
     .await;
-    let exchange = format!(
-        "escort shots {}, escort hits {}, intruder hits {}, FIELD_SEED {:#x}",
-        fired(&lines, hull),
-        hits(&lines, hull, hostile),
-        hits(&lines, hostile, hull),
-        crate::driving_rig::FIELD_SEED
-    );
+    let exchange = |lines: &[LedgerEvent]| {
+        format!(
+            "escort shots {}, escort hits {}, intruder hits {}, FIELD_SEED {:#x}",
+            fired(lines, hull),
+            hits(lines, hull, hostile),
+            hits(lines, hostile, hull),
+            crate::driving_rig::FIELD_SEED
+        )
+    };
     assert!(
         exchanged,
-        "the escort fires and the intruder's fire lands on it: {exchange}; escort hears {}",
+        "the intruder's fire lands on the escort: {}; escort hears {}",
+        exchange(&lines),
         run(&mut rig.tw, escort, "STATUS")
     );
     let status = run(&mut rig.tw, escort, "STATUS");
@@ -314,7 +324,8 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     let drive = run(&mut rig.tw, escort, "DRIVE 128,124");
     assert!(
         task(&rig).is_some(),
-        "the field still runs: {drive} ({exchange})"
+        "the field still runs: {drive} ({})",
+        exchange(&lines)
     );
     let beside = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
         frame(rig, escort)
@@ -324,8 +335,9 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     .await;
     assert!(
         beside,
-        "the escort drives to the ramp ({drive}): {:?}; the exchange: {exchange}",
-        frame(&rig, escort).map(|frame| (frame.cell, frame.immobile, frame.motor))
+        "the escort drives to the ramp ({drive}): {:?}; the exchange: {}",
+        frame(&rig, escort).map(|frame| (frame.cell, frame.immobile, frame.motor)),
+        exchange(&lines)
     );
     let asked = run(&mut rig.tw, escort, "+tv/1 recover go");
     assert!(asked.contains("makes for the ramp"), "{asked}");
@@ -382,6 +394,12 @@ async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
         })
         .await,
         "the field demotes after its quiet interval"
+    );
+    // The black box has caught up by the close: the escort's own rounds were fired and landed.
+    assert!(
+        fired(&lines, hull) > 0 && hits(&lines, hull, hostile) > 0,
+        "the escort fired and its rounds landed: {}",
+        exchange(&lines)
     );
     leave_rig(&mut rig, escort);
     let carrier = carrier_of(&rig, escort);
