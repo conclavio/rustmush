@@ -33,6 +33,9 @@ pub const POST_CAPABILITY: &str = "economy.account.post";
 /// the house's hold vaults are the organization's on that scope, and a sailing plan's buy
 /// delivers into the lifter's hold, which `mush_inventory::may_take` asks of this grant.
 pub const HOLD_CAPABILITY: &str = "vault.withdraw";
+/// The capability the dispatcher holds over the house's root scope to pass a swept hull's title to
+/// the house (doc 41 cut RS.6c-1).
+pub const TITLE_CAPABILITY: &str = "asset.title.transfer";
 
 /// **Whether `person` is the dispatcher of the house that owns `hull`** (doc 41 cut RS.6b): the
 /// yard dispatcher's precedent (`crate::port::yard::is_dispatcher_of`) — the dispatcher is aboard
@@ -141,6 +144,7 @@ fn step(
             .ok_or("the operator has no map row yet")?;
         let grant = crate::port::apply::alloc_grant_id(ctx)?;
         let hold = crate::port::apply::alloc_grant_id(ctx)?;
+        let title = crate::port::apply::alloc_grant_id(ctx)?;
         let put = |id: mush_org::GrantId, capability: &str| -> Result<_, String> {
             Ok(mush_org::OrgMutationOp::PutGrant {
                 grant: mush_org::CapabilityGrant {
@@ -163,6 +167,9 @@ fn step(
         let plan = mush_org::OrgMutationPlan::of(vec![
             put(grant, POST_CAPABILITY)?,
             put(hold, HOLD_CAPABILITY)?,
+            // Doc 41 cut RS.6c-1: and the title grant, so a swept hull the dispatcher was awarded
+            // passes to the house (`authorize_title_receipt` asks it of the receiving scope).
+            put(title, TITLE_CAPABILITY)?,
         ]);
         mush_org::submit(
             ctx,

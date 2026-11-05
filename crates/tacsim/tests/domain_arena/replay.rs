@@ -21,7 +21,7 @@
 //! (`web/src/lib/fixtures/replay/replay.json` and `replay_window.json`), a
 //! hand-built replay on the cockpit fixtures' yard (`support::yard`), which 16b
 //! cut I.2's TUI and web compositors are written against. Re-bless with
-//! `TACSIM_BLESS=1 cargo test -p tacsim --test shard_1 replay::`.
+//! `TACSIM_BLESS=1 cargo test -p tacsim --test domain_arena replay::`.
 
 use crate::support;
 
@@ -330,7 +330,7 @@ fn pinned(name: &str, committed: &str, actual: &str) {
     assert_eq!(
         committed, actual,
         "web/src/lib/fixtures/replay/{name} is out of date; re-bless with \
-         `{BLESS}=1 cargo test -p tacsim --test shard_1 replay::`"
+         `{BLESS}=1 cargo test -p tacsim --test domain_arena replay::`"
     );
 }
 

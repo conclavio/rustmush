@@ -467,7 +467,7 @@ fn a3b_the_chart_frame_is_a_grid_with_the_chart_block_and_is_blessed_for_the_web
         assert_eq!(
             on_disk, pretty,
             "web/src/lib/fixtures/chart/sky_chart.json is out of date; re-bless with \
-             TACSIM_BLESS=1 cargo test -p tacsim --test shard_4 chart::"
+             TACSIM_BLESS=1 cargo test -p tacsim --test domain_world chart::"
         );
     }
 }

@@ -1263,7 +1263,7 @@ pub fn boot_packs() -> Result<Vec<mush_content::Pack>, String> {
 /// # Errors
 ///
 /// A message naming the file when a shipped pack does not verify — a build
-/// error, since `crates/tacsim/tests/shard_2/content.rs` pins both digests.
+/// error, since `crates/tacsim/tests/domain_arena/content.rs` pins both digests.
 pub fn winter_valley_packs() -> Result<Vec<mush_content::Pack>, String> {
     [
         (
@@ -1287,7 +1287,7 @@ pub fn winter_valley_packs() -> Result<Vec<mush_content::Pack>, String> {
 /// # Errors
 ///
 /// A message naming the file when a shipped pack does not verify — a build
-/// error, since `crates/tacsim/tests/shard_2/content.rs` pins both digests.
+/// error, since `crates/tacsim/tests/domain_arena/content.rs` pins both digests.
 pub fn mars_canyon_packs() -> Result<Vec<mush_content::Pack>, String> {
     [
         (

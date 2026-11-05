@@ -366,18 +366,18 @@ fn hits_in(rel_path: &str, source: &str) -> Vec<Hit> {
     hits
 }
 
-/// Doc 43 cut TS.8: a test-rig file's key survives a reshard; a production
+/// Doc 43 cut TS.8: a test-rig file's key survives a move between binaries; a production
 /// file's is its path.
 #[test]
 fn a_test_rig_site_is_keyed_by_its_module_and_a_production_one_by_its_path() {
     let root = scan::repo_root();
     for (rel, key) in [
         (
-            "crates/tacsim/tests/shard_3/drones.rs",
+            "crates/tacsim/tests/domain_economy/drones.rs",
             "tacsim/tests::drones",
         ),
         (
-            "crates/tacsim/tests/shard_5/drones.rs",
+            "crates/tacsim/tests/domain_world/drones.rs",
             "tacsim/tests::drones",
         ),
         (
@@ -462,9 +462,9 @@ impl Site {
 /// source is keyed by its workspace-relative path. A test-rig source — any file
 /// under a crate's `tests/` — is keyed `<crate>/tests::<module>`: its path under
 /// `tests/` as a module path, less a `mod.rs`, less the group directory of the
-/// test target that declares it (`shard_3/` beside `shard_3.rs`). So
-/// `crates/tacsim/tests/shard_3/drones.rs` is `tacsim/tests::drones`, and a
-/// reshard that moves it to `shard_5/` rewrites no row.
+/// test target that declares it (`domain_economy/` beside `domain_economy.rs`). So
+/// `crates/tacsim/tests/domain_economy/drones.rs` is `tacsim/tests::drones`, and a
+/// move to another domain (`domain_world/`) rewrites no row.
 fn site_key(root: &Path, rel: &str) -> String {
     let Some((krate, under)) = rel
         .strip_prefix("crates/")

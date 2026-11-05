@@ -53,7 +53,7 @@ use support::ground::{UNSIGNED, sign};
 /// ruling L0b).
 ///
 /// Doc 20 cut SM.2: v9, the six mining sites (re-signed with
-/// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test shard_4 lane::ic2_the_lane_pack_is_pinned`).
+/// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test domain_economy lane::ic2_the_lane_pack_is_pinned`).
 /// Doc 20 cut SM.3a: v10, the programme's `refits` row and Occator's rig pool (was
 /// `cce73a4c…` at v9).
 /// Doc 20 cut SM.5: v11, the Ceres ore bids with their daily refresh, the programme's
