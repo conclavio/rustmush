@@ -750,10 +750,10 @@ her title and the price change hands.
 
 **Cell cost (rule #14).** Owed from the PR's CI JUnit.
 
-## RS.10 — the landholder consent step (ruled 2026-11-04; not built)
+## RS.10 — the landholder consent step (2026-11-05)
 
-Added to the plan after RS.6c-2, one PR. It is RS.6c-1's named future cut: Tycho's sweep reaches a player's claimed
-block once it lands. **The owner's rulings:**
+Added to the plan after RS.6c-2, one PR; recorded in doc 41 §6 as a row. It is RS.6c-1's named future cut: Tycho's
+sweep reaches a player's claimed block. No lane rows. **The owner's rulings (2026-11-04):**
 
 1. **The notice** is a registry notice delivered as an obligation; the landholder answers with `+salvage/authorize`
    (RS.3's, the delegation row on the block) or a new `+salvage/refuse`.
@@ -764,9 +764,37 @@ block once it lands. **The owner's rulings:**
 4. **Who it covers**: the same notice serves a player salvor filing a claim on someone else's claimed block, not
    only Tycho.
 
-The timers in the built cuts under that standing rule (the claim's contest window in real hours, the one-term debt's
-zero grace, RS.7's fine at docking, the Co-op's seven-real-day dormancy) are listed for the owner's ruling and
-unchanged here.
+**Built.**
+
+- **The ask** (`surface/claim.rs`, `ConsentAsk` on `SiteRecord.consent_asks`, bounded as the delegations are): one
+  row a block, landholder and asker, riding the block's holding (`registered_ic`). Written by two new orders on the
+  tow action's `claim` op — `ClaimOrder::Ask` (the asker's own) and `ClaimOrder::Refuse` (the landholder's, which
+  also voids any delegation it gave the asker there) — and read by `consent_at` / `consent_on`: open ground, the
+  asker's own block, a live delegation or an ask unanswered past `CONSENT_IC_DAYS` (28) is `Consent::Given`; a
+  refusal inside its 28 IC days is `Refused`; an ask inside its wait is `Asked`; else `NotAsked`.
+- **Ruling 1, the notice "delivered as an obligation"**: read as a standing ask the landholder must answer, kept on
+  the record until answered or lapsed, with the registry's line delivered through `mush_economy::deliver_notice`
+  (straight to a connected landholder, queued durably for an absent one). No money obligation is opened — **flagged
+  for the owner** in case a ledger obligation was meant.
+- **Read at the attach** (Q-41-21): `pin_for`'s `landholder_authorized` is the delegation *or* consent by silence,
+  so a recovery after 28 IC days of silence is lawful off owned ground; one before it is not.
+- **The verbs**: `+salvage/ask <site>/<block> [go]` (ruling 4: any salvor); `+salvage/refuse <site>/<block>=<who>
+  [go]` (the landholder; asked or not); `+salvage/authorize <site>/<block>=<who>` as RS.3 built it is the consent.
+  `who_named` also answers a recovery house's dispatcher, so a landholder can answer Tycho by name or `#<id>`.
+- **Ruling 3**: a standing refusal refuses a new ask (`claim_refused`) and refuses `+salvage/claim` on a hull pinned
+  on that block (`CLAIM_REFUSED`); Tycho's sweep passes over an asked or refused block (`house_sweep::target`).
+- **The sweep** (`house_sweep::target` with the dispatcher, `HouseAct::Ask`): on a block nobody has asked, the house
+  asks first (`claim::ask_consent_at`), then sweeps other wrecks; once consent stands it recovers her.
+- **The floors**: `MIN_CLAIM_WINDOW_IC_DAYS` (28) is now `[tacsim.recovery].claim_window_ic_days`'s lower bound (was
+  1); `player_wait_floors` test 8 pins the claim window, that floor, the debt grace (RS.5's charge and RS.7's hold)
+  and the consent wait.
+- **Bot vocabulary**: `+salvage/ask <site>/<block> [go]` and `+salvage/refuse <site>/<block>=<who> [go]`.
+
+**Tests.** `claim::tests::rs10_an_ask_is_consent_by_silence_and_a_refusal_blocks` (the ask's own writer, silence,
+a new holding, the refusal voiding a delegation, a refused re-ask, the lapse); the story
+`domain_economy/consent_rs10.rs` — the sweep asks on a player's block and leaves her, then recovers her lawfully after 28
+IC days of silence (256 and 512), and a refusal holds the house off for 28 IC days and a fresh ask follows its lapse
+(256).
 
 ## The 28-IC-day rule (2026-11-04)
 

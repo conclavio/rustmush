@@ -37,6 +37,9 @@ pub enum HouseAct {
     Home(String),
     /// Hand the casualty over at the destination.
     Berth,
+    /// Doc 41 cut RS.10: ask the landholder of the wreck's block (its site and cell) for consent,
+    /// by the registry's notice.
+    Ask(CanonicalId, (i64, i64)),
     /// Doc 41 cut RS.6c-1: title an ownerless wreck to the dispatcher before the tow.
     Title,
     /// Doc 41 cut RS.6c-1: file the house's salvage claim on a swept hull in its custody.
@@ -323,7 +326,11 @@ fn sweep_act(
             },
         ));
     }
-    let (hull, _site) = target(ctx)?;
+    let (hull, site, cell, consent) = target(ctx, dispatcher)?;
+    // Doc 41 cut RS.10: on a block nobody has asked, the registry's notice first.
+    if consent == crate::surface::claim::Consent::NotAsked {
+        return Some((hull, HouseAct::Ask(site, cell)));
+    }
     if title_of(ctx.w, hull).is_none() {
         return Some((hull, HouseAct::Title));
     }
@@ -544,6 +551,7 @@ fn perform(
             crate::surface::tow::load_cmd(ctx, &rig, true).map_err(said)
         }
         HouseAct::Berth => berth_delivery(ctx, hull, home),
+        HouseAct::Ask(site, cell) => crate::surface::claim::ask_consent_at(ctx, site, *cell),
         HouseAct::Title => crate::port::house_sweep::title_ownerless(ctx, hull),
         HouseAct::Claim => {
             crate::surface::claim::tow_files_salvage(ctx, &format!("#{}", hull.0)).map_err(said)

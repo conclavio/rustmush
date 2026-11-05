@@ -95,7 +95,7 @@ use crate::surface::site_record::{GroundKind, KnownWhat, SiteKey, SiteRecord};
 /// The verb.
 pub const SALVAGE_VERB: &str = "+salvage";
 /// Its help.
-pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. +salvage/forsale lists the hulls the recovery houses have restored for sale, at their reference price; +salvage/buy <hull> [go] buys one, her title passing at the next settlement. Bare, each previews and commits nothing; go commits exactly the preview.";
+pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. +salvage/ask <site>/<block> [go] asks a block's landholder for consent to recover off it, by the registry's notice; 28 IC days of silence is consent. +salvage/refuse <site>/<block>=<who> [go] refuses one for 28 IC days. +salvage/forsale lists the hulls the recovery houses have restored for sale, at their reference price; +salvage/buy <hull> [go] buys one, her title passing at the next settlement. Bare, each previews and commits nothing; go commits exactly the preview.";
 /// The most witnesses a pin keeps.
 pub const MAX_WITNESSES: usize = 16;
 /// The most delivered or read evidence records one custody keeps.
@@ -107,7 +107,7 @@ pub const MAX_UNLAWFUL: usize = 64;
 pub const AWARD_ISSUER: &str = crate::port::hull::REGISTRY_ISSUER;
 
 /// `+salvage` usage.
-pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/report <site>[=<who>|#<hull>] registry, +salvage/inspect <hull>, +salvage/forsale, +salvage/buy <hull> [go] or +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go].";
+pub const SALVAGE_USAGE: &str = "Usage: +salvage, +salvage/claim <hull> [go], +salvage/contest <hull>[=recovery|procedure|right] [go], +salvage/report <hull>=<who> [go], +salvage/report <site>[=<who>|#<hull>] registry, +salvage/inspect <hull>, +salvage/forsale, +salvage/buy <hull> [go], +salvage/authorize <hull>|<site>/<block>=<who> [until=<when>] [go], +salvage/ask <site>/<block> [go] or +salvage/refuse <site>/<block>=<who> [go].";
 /// Nothing to list.
 pub const NO_CLAIMS: &str = "You stand in no salvage claim.";
 /// No custody record names the hull: `{hull}`.
@@ -208,6 +208,29 @@ pub const AUTHORIZE_BLOCK_SENT: &str =
     "You authorize {who} to recover hulls off your block {block}.";
 /// Not the block's holder: `{block}`.
 pub const NOT_LANDHOLDER: &str = "You hold no live claim on block {block}.";
+/// Doc 41 cut RS.10, the ask's preview: `{block}`, `{who}`, `{days}`.
+pub const ASK_PREVIEW: &str = "You would ask {who}, who holds block {block}, for consent to recover hulls off it. The registry's notice reaches them now or when they next connect; their silence for {days} IC days is consent. Add go to ask.";
+/// The ask sent: `{block}`, `{who}`, `{days}`.
+pub const ASK_SENT: &str = "The registry has sent {who} your ask to recover off block {block}. Unanswered in {days} IC days, it is consent.";
+/// Consent already stands: `{block}`.
+pub const ASK_GIVEN: &str = "You may already recover off block {block}.";
+/// An ask already waits: `{block}`.
+pub const ASK_PENDING: &str =
+    "Your ask to recover off block {block} is still waiting on its landholder.";
+/// A refusal stands: `{block}`.
+pub const ASK_REFUSED: &str =
+    "Block {block}'s landholder has refused you; you may ask again when the refusal lapses.";
+/// The landholder's notice: `{who}`, `{block}`, `{days}` (within the economy's 240-byte notice).
+pub const CONSENT_NOTICE: &str = "Registry: {who} asks to recover hulls off your block {block}. +salvage/authorize or +salvage/refuse {block}={who}; {days} IC days of silence is consent.";
+/// The refusal's preview: `{block}`, `{who}`, `{days}`.
+pub const REFUSE_PREVIEW: &str = "You would refuse {who} recovery off block {block} for {days} IC days, and void any authorization you gave them there. Add go to refuse.";
+/// The refusal sent: `{block}`, `{who}`, `{days}`.
+pub const REFUSE_SENT: &str = "The registry records your refusal: {who} may not recover off block {block} for {days} IC days.";
+/// The asker's notice of a refusal: `{who}`, `{block}`, `{days}`.
+pub const REFUSED_NOTICE: &str =
+    "Registry: {who} refuses you recovery off block {block} for {days} IC days.";
+/// A claim filed off a block whose landholder refused the claimant: `{block}`.
+pub const CLAIM_REFUSED: &str = "Block {block}'s landholder has refused you recovery there; the registry will not take your claim while the refusal stands.";
 /// No such block: `{block}`.
 pub const NO_SUCH_BLOCK: &str = "There is no block {block} on the lane's sites.";
 /// The most recovery delegations one site's record keeps.
@@ -321,6 +344,73 @@ impl LandGrant {
             && (self.landholder, self.registered_ic) == claim
             && self.until_ic.is_none_or(|until| now_ic < until)
     }
+}
+
+/// **How long a landholder's silence or refusal stands**, IC days (doc 41 cut RS.10; the owner's
+/// standing rule of 2026-11-04: any wait on a player's response is at least 28 IC days). An ask
+/// unanswered this long is consent; a refusal blocks the asker on the block this long.
+pub const CONSENT_IC_DAYS: i64 = 28;
+
+/// The same, IC seconds.
+pub const CONSENT_IC_SECS: i64 = CONSENT_IC_DAYS * 86_400;
+
+/// **A salvor's ask for a landholder's consent** (doc 41 cut RS.10, the owner's rulings of
+/// 2026-11-04): `asker` asked `landholder` — holding block `letter` under the claim registered at
+/// `registered_ic` — by the registry's notice at `asked_ic`, to recover hulls off the block. The
+/// landholder answers with `+salvage/authorize` (a [`LandGrant`]) or `+salvage/refuse`
+/// (`refused_ic`); silence for [`CONSENT_IC_DAYS`] is consent. Kept on the site's record
+/// ([`crate::surface::site_record::SiteRecord::consent_asks`]) beside the delegations, and read
+/// at the attach as they are.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsentAsk {
+    /// The block letter.
+    pub letter: char,
+    /// The claim's holder asked.
+    pub landholder: ObjId,
+    /// The claim's registration instant: the holding it rides.
+    pub registered_ic: i64,
+    /// Who asked.
+    pub asker: ObjId,
+    /// When the notice went, IC.
+    pub asked_ic: i64,
+    /// When the landholder refused, IC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_ic: Option<i64>,
+}
+
+impl ConsentAsk {
+    /// Whether it rides `claim` for `asker`.
+    #[must_use]
+    pub fn of(&self, asker: ObjId, claim: (ObjId, i64)) -> bool {
+        self.asker == asker && (self.landholder, self.registered_ic) == claim
+    }
+
+    /// Whether the landholder's silence is consent at `now_ic`.
+    #[must_use]
+    pub fn consented(&self, now_ic: i64) -> bool {
+        self.refused_ic.is_none() && now_ic >= self.asked_ic.saturating_add(CONSENT_IC_SECS)
+    }
+
+    /// Whether a refusal blocks the asker at `now_ic`.
+    #[must_use]
+    pub fn refuses(&self, now_ic: i64) -> bool {
+        self.refused_ic
+            .is_some_and(|at| now_ic < at.saturating_add(CONSENT_IC_SECS))
+    }
+}
+
+/// **Where a salvor stands with a block's landholder** (doc 41 cut RS.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Consent {
+    /// Open ground, the salvor's own block, a live delegation, or consent by silence.
+    Given,
+    /// Asked; the landholder has neither answered nor been silent long enough.
+    Asked,
+    /// Refused, and the refusal stands.
+    Refused,
+    /// Owned ground and nothing asked (or a refusal lapsed).
+    NotAsked,
 }
 
 impl TenurePin {
@@ -599,6 +689,64 @@ fn witnesses(
     found
 }
 
+/// **Where `asker` stands with the landholder of `cell` on `site`** (doc 41 cut RS.10): open
+/// ground (or a holder that is not a character) and the asker's own block are [`Consent::Given`];
+/// on another's block, a live delegation covering the asker or an ask unanswered past
+/// [`CONSENT_IC_DAYS`] is given, a standing refusal refuses, an ask inside its wait is asked.
+#[must_use]
+pub fn consent_at(
+    ctx: &Ctx<'_>,
+    record: &SiteRecord,
+    site: &CanonicalId,
+    cell: (i64, i64),
+    asker: ObjId,
+) -> Consent {
+    let Some((letter, claim)) = block_claim_at(ctx, site, cell) else {
+        return Consent::Given;
+    };
+    let PrincipalId::Object(landholder) = claim.holder else {
+        return Consent::Given;
+    };
+    consent_on(
+        record,
+        letter,
+        (landholder, claim.registered_ic),
+        asker,
+        ctx.w.world_ic_now().at,
+    )
+}
+
+/// [`consent_at`] on block `letter` held under `claim` `(landholder, registered_ic)`.
+#[must_use]
+pub fn consent_on(
+    record: &SiteRecord,
+    letter: char,
+    claim: (ObjId, i64),
+    asker: ObjId,
+    now_ic: i64,
+) -> Consent {
+    if asker == claim.0 {
+        return Consent::Given;
+    }
+    if record
+        .land_grants
+        .iter()
+        .any(|grant| grant.letter == letter && grant.covers(asker, claim, now_ic))
+    {
+        return Consent::Given;
+    }
+    match record
+        .consent_asks
+        .iter()
+        .find(|ask| ask.letter == letter && ask.of(asker, claim))
+    {
+        Some(ask) if ask.refuses(now_ic) => Consent::Refused,
+        Some(ask) if ask.consented(now_ic) => Consent::Given,
+        Some(ask) if ask.refused_ic.is_none() => Consent::Asked,
+        _ => Consent::NotAsked,
+    }
+}
+
 /// **The pin an attach of `casualty` by `tug` starts now** (the command's reading; the
 /// start's prepare writes it).
 pub(crate) fn pin_for(
@@ -609,16 +757,9 @@ pub(crate) fn pin_for(
     cell: (i64, i64),
 ) -> TenurePin {
     let (title, answerers) = title_of(ctx.w, casualty);
-    let now_ic = ctx.w.world_ic_now().at;
-    let landholder_authorized = block_claim_at(ctx, site, cell).is_some_and(|(letter, claim)| {
-        let PrincipalId::Object(landholder) = claim.holder else {
-            return false;
-        };
-        record.land_grants.iter().any(|grant| {
-            grant.letter == letter
-                && grant.covers(ctx.actor, (landholder, claim.registered_ic), now_ic)
-        })
-    });
+    // The landholder's delegation, or (doc 41 cut RS.10) its silence on the recoverer's ask.
+    let landholder_authorized = block_claim_at(ctx, site, cell).is_some()
+        && consent_at(ctx, record, site, cell, ctx.actor) == Consent::Given;
     TenurePin {
         casualty,
         tug,
@@ -855,6 +996,26 @@ pub enum ClaimOrder {
         /// The delegation.
         grant: LandGrant,
     },
+    /// **Doc 41 cut RS.10**: `+salvage/ask <site>/<block> go` (and Tycho's sweep), keyed by the
+    /// block's place: the salvor's ask for the landholder's consent.
+    Ask {
+        /// The site.
+        site: CanonicalId,
+        /// The block's place object.
+        place: ObjId,
+        /// The ask.
+        ask: ConsentAsk,
+    },
+    /// **Doc 41 cut RS.10**: `+salvage/refuse <site>/<block>=<who> go`, the landholder's refusal
+    /// (`ask.refused_ic` set), keyed by the block's place.
+    Refuse {
+        /// The site.
+        site: CanonicalId,
+        /// The block's place object.
+        place: ObjId,
+        /// The refused ask.
+        ask: ConsentAsk,
+    },
 }
 
 impl ClaimOrder {
@@ -868,7 +1029,9 @@ impl ClaimOrder {
             | Self::Inspect { site, .. }
             | Self::Settle { site, .. }
             | Self::AtRisk { site, .. }
-            | Self::AuthorizeBlock { site, .. } => site,
+            | Self::AuthorizeBlock { site, .. }
+            | Self::Ask { site, .. }
+            | Self::Refuse { site, .. } => site,
         }
     }
 
@@ -882,7 +1045,9 @@ impl ClaimOrder {
             | Self::Inspect { hull, .. }
             | Self::Settle { hull, .. }
             | Self::AtRisk { hull, .. } => *hull,
-            Self::AuthorizeBlock { place, .. } => *place,
+            Self::AuthorizeBlock { place, .. }
+            | Self::Ask { place, .. }
+            | Self::Refuse { place, .. } => *place,
         }
     }
 }
@@ -1072,6 +1237,49 @@ fn put_land_grant(
     Ok(())
 }
 
+/// **A consent ask or refusal written** (doc 41 cut RS.10): one row a block, landholder and
+/// asker, replaced. An ask is the asker's own, refused while a refusal stands; a refusal is the
+/// landholder's, and voids any delegation it gave the asker on the block. Past
+/// [`MAX_LAND_GRANTS`] the oldest goes.
+fn put_ask(
+    record: &mut SiteRecord,
+    actor: ObjId,
+    ask: &ConsentAsk,
+    now_ic: i64,
+) -> Result<String, &'static str> {
+    let same = |kept: &ConsentAsk| {
+        kept.letter == ask.letter && kept.landholder == ask.landholder && kept.asker == ask.asker
+    };
+    if ask.asker.0 == 0 || ask.asker == ask.landholder {
+        return Err("claim_not_landholder");
+    }
+    let word = if ask.refused_ic.is_some() {
+        if ask.landholder != actor {
+            return Err("claim_not_landholder");
+        }
+        record
+            .land_grants
+            .retain(|g| !(g.letter == ask.letter && g.landholder == actor && g.to == ask.asker));
+        "refused"
+    } else {
+        if ask.asker != actor {
+            return Err("claim_not_asker");
+        }
+        if record.consent_asks.iter().any(|kept| {
+            same(kept) && kept.registered_ic == ask.registered_ic && kept.refuses(now_ic)
+        }) {
+            return Err("claim_refused");
+        }
+        "asked"
+    };
+    record.consent_asks.retain(|kept| !same(kept));
+    record.consent_asks.push(ask.clone());
+    while record.consent_asks.len() > MAX_LAND_GRANTS {
+        record.consent_asks.remove(0);
+    }
+    Ok(word.to_owned())
+}
+
 /// **A claim order's prepare** (the tow provider's `claim` op): every fact re-checked against
 /// the record in the act's own transaction. Answers the outcome's result word.
 ///
@@ -1088,6 +1296,9 @@ pub(crate) fn prepare(
     if let ClaimOrder::AuthorizeBlock { grant, .. } = order {
         put_land_grant(record, actor, grant)?;
         return Ok("authorized".to_owned());
+    }
+    if let ClaimOrder::Ask { ask, .. } | ClaimOrder::Refuse { ask, .. } = order {
+        return put_ask(record, actor, ask, now_ic);
     }
     let hull = order.hull();
     let custody = custody_mut(record, hull).ok_or("claim_no_custody")?;
@@ -1242,7 +1453,9 @@ pub(crate) fn prepare(
             now_real,
             ..
         } => settle(record, hull, *settlement, (*window_end, *now_real), now_ic),
-        ClaimOrder::AuthorizeBlock { .. } => Err("claim_no_custody"),
+        ClaimOrder::AuthorizeBlock { .. } | ClaimOrder::Ask { .. } | ClaimOrder::Refuse { .. } => {
+            Err("claim_no_custody")
+        }
     }
 }
 
@@ -1709,7 +1922,9 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
             }
             Some(true)
         }
-        ClaimOrder::AuthorizeBlock { .. } => None,
+        ClaimOrder::AuthorizeBlock { .. } | ClaimOrder::Ask { .. } | ClaimOrder::Refuse { .. } => {
+            None
+        }
     }
 }
 
@@ -1756,6 +1971,18 @@ pub(crate) fn salvage_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             None => (rest, None),
         };
         return contest_cmd(ctx, &word, kind, go);
+    }
+    // Doc 41 cut RS.10: the landholder consent step.
+    if ctx.switches.has("ask") {
+        let (rest, go) = split_go(&raw);
+        return ask_cmd(ctx, rest.trim(), go);
+    }
+    if ctx.switches.has("refuse") {
+        let (rest, go) = split_go(&raw);
+        let (word, who) = rest
+            .split_once('=')
+            .ok_or_else(|| CmdError::msg(SALVAGE_USAGE))?;
+        return refuse_cmd(ctx, word.trim(), who.trim(), go);
     }
     if ctx.switches.has("authorize") {
         let (rest, go) = split_go(&raw);
@@ -1899,6 +2126,32 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
     let answering = pin.as_ref().and_then(|p| p.answering);
     if answering.is_none() || row.operation.is_none() {
         return Err(CmdError::msg(NO_TITLE.replace("{name}", &label)));
+    }
+    // Doc 41 cut RS.10 (ruling 3): a landholder's standing refusal of the claimant on the block
+    // she was pinned on blocks the claim.
+    if let Some(GroundTenure::Owned {
+        landholder,
+        claim_id: Some(block),
+    }) = pin.as_ref().map(|p| &p.tenure)
+        && let Some(letter) = block
+            .rsplit('/')
+            .next()
+            .and_then(|l| l.chars().next())
+            .map(|l| l.to_ascii_uppercase())
+    {
+        let now_ic = ctx.w.world_ic_now().at;
+        let record = crate::surface::tow::record_or_new(ctx, &site);
+        if record.consent_asks.iter().any(|ask| {
+            ask.letter == letter
+                && ask.landholder == *landholder
+                && ask.asker == ctx.actor
+                && ask.refuses(now_ic)
+        }) {
+            return Err(CmdError::msg(CLAIM_REFUSED.replace(
+                "{block}",
+                &format!("{}/{letter}", site_name(ctx.w, &site)),
+            )));
+        }
     }
     // Doc 41 Q-41-22, Q-41-28: everyone who answered for the title at the attach and everyone
     // who answers for it now, then the landholder.
@@ -2149,10 +2402,12 @@ fn contest_cmd(
 /// The character a `<who>` names: `#n`, or a player's name.
 fn who_named(ctx: &Ctx<'_>, who: &str) -> Result<ObjId, CmdError> {
     let wanted = who.trim();
+    // Doc 41 cut RS.10: a recovery house's dispatcher asks landholders too, and is answered by name.
+    let houses = crate::port::house::dispatchers(ctx.w);
     ctx.w
         .iter()
         .find(|o| {
-            o.kind == mush_core::ObjKind::Player
+            (o.kind == mush_core::ObjKind::Player || houses.contains(&o.id))
                 && (o.name.eq_ignore_ascii_case(wanted)
                     || wanted.strip_prefix('#') == Some(o.id.0.to_string().as_str()))
         })
@@ -2239,15 +2494,25 @@ fn authorize_cmd(
     Ok(())
 }
 
-/// `+salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go]`: the landholder's
-/// recovery delegation on the block's live claim (doc 41 Q-41-21).
-fn authorize_block(
-    ctx: &mut Ctx<'_>,
+/// **A block named `<site>/<letter>`** with a live claim on it: `(the words, site, letter, the
+/// block's place, the claim)`.
+///
+/// # Errors
+///
+/// [`NO_SUCH_BLOCK`] (no such site, letter or live claim) or [`FIELD_OPEN`].
+fn block_named(
+    ctx: &Ctx<'_>,
     (site_word, letter_word): (&str, &str),
-    (to, who_name): (ObjId, &str),
-    until: Option<i64>,
-    go: bool,
-) -> Result<(), CmdError> {
+) -> Result<
+    (
+        String,
+        CanonicalId,
+        char,
+        ObjId,
+        crate::surface::claims::BlockClaim,
+    ),
+    CmdError,
+> {
     use crate::port::site_map::SurfaceReads;
     let block = format!("{}/{}", site_word.trim(), letter_word.trim());
     let no_block = || CmdError::msg(NO_SUCH_BLOCK.replace("{block}", &block));
@@ -2282,9 +2547,220 @@ fn authorize_block(
         .ok_or_else(no_block)?;
     let claim = tenure
         .claim
-        .as_ref()
-        .filter(|claim| claim.live(now_ic) && claim.holder == PrincipalId::Object(ctx.actor))
-        .ok_or_else(|| CmdError::msg(NOT_LANDHOLDER.replace("{block}", &block)))?;
+        .clone()
+        .filter(|claim| claim.live(now_ic))
+        .ok_or_else(no_block)?;
+    Ok((block, site, letter, tenure.place, claim))
+}
+
+/// **Ask for a landholder's consent** (doc 41 cut RS.10) as `ctx.actor`, on block `letter` of
+/// `site` under `claim`: one [`ClaimOrder::Ask`] submitted, and the registry's notice to the
+/// landholder, which reaches them now or at their next connect. Shared by `+salvage/ask` and a
+/// recovery house's sweep.
+///
+/// # Errors
+///
+/// The sentence: a standing refusal, or the tow action unwired.
+pub(crate) fn ask_consent(
+    ctx: &mut Ctx<'_>,
+    (site, letter, place): (&CanonicalId, char, ObjId),
+    claim: &crate::surface::claims::BlockClaim,
+) -> Result<ObjId, String> {
+    let PrincipalId::Object(landholder) = claim.holder else {
+        return Err("Nobody answers for that block's claim.".to_owned());
+    };
+    let actor = ctx.actor;
+    let now_ic = ctx.w.world_ic_now().at;
+    let block = format!("{}/{letter}", site_name(ctx.w, site));
+    let record = crate::surface::tow::record_or_new(ctx, site);
+    if consent_on(
+        &record,
+        letter,
+        (landholder, claim.registered_ic),
+        actor,
+        now_ic,
+    ) == Consent::Refused
+    {
+        return Err(ASK_REFUSED.replace("{block}", &block));
+    }
+    let order = ClaimOrder::Ask {
+        site: site.clone(),
+        place,
+        ask: ConsentAsk {
+            letter,
+            landholder,
+            registered_ic: claim.registered_ic,
+            asker: actor,
+            asked_ic: now_ic,
+            refused_ic: None,
+        },
+    };
+    if !submit(ctx, actor, order, 7) {
+        return Err(crate::port::tv::TV_UNWIRED.to_owned());
+    }
+    mush_economy::deliver_notice(
+        ctx,
+        landholder,
+        CONSENT_NOTICE
+            .replace("{who}", &name(ctx.w, actor))
+            .replace("{block}", &block)
+            .replace("{days}", &CONSENT_IC_DAYS.to_string()),
+    );
+    Ok(landholder)
+}
+
+/// **Ask the landholder of `cell` on `site`** ([`ask_consent`]), for a recovery house's sweep.
+///
+/// # Errors
+///
+/// The sentence: open ground, or [`ask_consent`]'s.
+pub(crate) fn ask_consent_at(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    cell: (i64, i64),
+) -> Result<(), String> {
+    use crate::port::site_map::SurfaceReads;
+    let (letter, claim) = block_claim_at(ctx, site, cell).ok_or("that ground is open")?;
+    let place = ctx
+        .block_tenure(&crate::surface::claims::BlockKey {
+            site: site.clone(),
+            letter,
+        })
+        .ok()
+        .flatten()
+        .ok_or("that block has no place")?
+        .place;
+    ask_consent(ctx, (site, letter, place), &claim).map(|_| ())
+}
+
+/// `+salvage/ask <site>/<block> [go]` (doc 41 cut RS.10): ask the block's landholder for consent
+/// to recover hulls off it.
+fn ask_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
+    let (site_word, letter_word) = word
+        .split_once('/')
+        .ok_or_else(|| CmdError::msg(SALVAGE_USAGE))?;
+    let (block, site, letter, place, claim) = block_named(ctx, (site_word, letter_word))?;
+    let PrincipalId::Object(landholder) = claim.holder else {
+        return Err(CmdError::msg(NO_SUCH_BLOCK.replace("{block}", &block)));
+    };
+    let now_ic = ctx.w.world_ic_now().at;
+    let record = crate::surface::tow::record_or_new(ctx, &site);
+    let held = (landholder, claim.registered_ic);
+    let line = match consent_on(&record, letter, held, ctx.actor, now_ic) {
+        Consent::Given => Some(ASK_GIVEN.replace("{block}", &block)),
+        Consent::Refused => Some(ASK_REFUSED.replace("{block}", &block)),
+        Consent::Asked => Some(ASK_PENDING.replace("{block}", &block)),
+        Consent::NotAsked => None,
+    };
+    if let Some(line) = line {
+        return Err(CmdError::msg(line));
+    }
+    if !go {
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.salvage",
+            ASK_PREVIEW
+                .replace("{block}", &block)
+                .replace("{who}", &name(ctx.w, landholder))
+                .replace("{days}", &CONSENT_IC_DAYS.to_string()),
+        );
+        return Ok(());
+    }
+    ask_consent(ctx, (&site, letter, place), &claim).map_err(CmdError::msg)?;
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.salvage",
+        ASK_SENT
+            .replace("{block}", &block)
+            .replace("{who}", &name(ctx.w, landholder))
+            .replace("{days}", &CONSENT_IC_DAYS.to_string()),
+    );
+    Ok(())
+}
+
+/// `+salvage/refuse <site>/<block>=<who> [go]` (doc 41 cut RS.10): the landholder refuses `who`
+/// recovery off the block for [`CONSENT_IC_DAYS`], asked or not; any delegation it gave them there
+/// is void.
+fn refuse_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), CmdError> {
+    let (site_word, letter_word) = word
+        .split_once('/')
+        .ok_or_else(|| CmdError::msg(SALVAGE_USAGE))?;
+    let asker = who_named(ctx, who)?;
+    let (block, site, letter, place, claim) = block_named(ctx, (site_word, letter_word))?;
+    if claim.holder != PrincipalId::Object(ctx.actor) {
+        return Err(CmdError::msg(NOT_LANDHOLDER.replace("{block}", &block)));
+    }
+    if asker == ctx.actor {
+        return Err(CmdError::msg(SALVAGE_USAGE));
+    }
+    let who_name = name(ctx.w, asker);
+    if !go {
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.salvage",
+            REFUSE_PREVIEW
+                .replace("{block}", &block)
+                .replace("{who}", &who_name)
+                .replace("{days}", &CONSENT_IC_DAYS.to_string()),
+        );
+        return Ok(());
+    }
+    let actor = ctx.actor;
+    let now_ic = ctx.w.world_ic_now().at;
+    let record = crate::surface::tow::record_or_new(ctx, &site);
+    let asked_ic = record
+        .consent_asks
+        .iter()
+        .find(|ask| ask.letter == letter && ask.of(asker, (actor, claim.registered_ic)))
+        .map_or(now_ic, |ask| ask.asked_ic);
+    let order = ClaimOrder::Refuse {
+        site,
+        place,
+        ask: ConsentAsk {
+            letter,
+            landholder: actor,
+            registered_ic: claim.registered_ic,
+            asker,
+            asked_ic,
+            refused_ic: Some(now_ic),
+        },
+    };
+    if !submit(ctx, actor, order, 8) {
+        return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
+    }
+    mush_economy::deliver_notice(
+        ctx,
+        asker,
+        REFUSED_NOTICE
+            .replace("{who}", &name(ctx.w, actor))
+            .replace("{block}", &block)
+            .replace("{days}", &CONSENT_IC_DAYS.to_string()),
+    );
+    ctx.out.sys_to_actor(
+        actor,
+        "tacsim.salvage",
+        REFUSE_SENT
+            .replace("{block}", &block)
+            .replace("{who}", &who_name)
+            .replace("{days}", &CONSENT_IC_DAYS.to_string()),
+    );
+    Ok(())
+}
+
+/// `+salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go]`: the landholder's
+/// recovery delegation on the block's live claim (doc 41 Q-41-21).
+fn authorize_block(
+    ctx: &mut Ctx<'_>,
+    (site_word, letter_word): (&str, &str),
+    (to, who_name): (ObjId, &str),
+    until: Option<i64>,
+    go: bool,
+) -> Result<(), CmdError> {
+    let (block, site, letter, place, claim) = block_named(ctx, (site_word, letter_word))?;
+    let now_ic = ctx.w.world_ic_now().at;
+    if claim.holder != PrincipalId::Object(ctx.actor) {
+        return Err(CmdError::msg(NOT_LANDHOLDER.replace("{block}", &block)));
+    }
     if to == ctx.actor {
         return Err(CmdError::msg(SALVAGE_USAGE));
     }
@@ -2305,7 +2781,7 @@ fn authorize_block(
     let actor = ctx.actor;
     let order = ClaimOrder::AuthorizeBlock {
         site,
-        place: tenure.place,
+        place,
         grant: LandGrant {
             letter,
             landholder: actor,
@@ -3549,6 +4025,126 @@ mod tests {
         assert!(
             !grant.covers(ObjId(21), (ObjId(40), 10), 100),
             "another recoverer"
+        );
+        assert!(record.check().is_ok());
+    }
+
+    /// **Doc 41 cut RS.10**: an ask is the asker's own; silence for 28 IC days is consent; a
+    /// refusal is the landholder's, voids its delegation, blocks a new ask for 28 IC days and
+    /// then lapses.
+    #[test]
+    fn rs10_an_ask_is_consent_by_silence_and_a_refusal_blocks() {
+        let mut record = SiteRecord::new(CanonicalId::new("tacsim.port.urvara").expect("an id"));
+        let held = (ObjId(40), 10);
+        let ask = ConsentAsk {
+            letter: 'F',
+            landholder: ObjId(40),
+            registered_ic: 10,
+            asker: ObjId(20),
+            asked_ic: 100,
+            refused_ic: None,
+        };
+        let asked = ClaimOrder::Ask {
+            site: record.site.clone(),
+            place: ObjId(99),
+            ask: ask.clone(),
+        };
+        assert_eq!(asked.hull(), ObjId(99));
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(20), 100),
+            Consent::NotAsked
+        );
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(40), 100),
+            Consent::Given
+        );
+        assert_eq!(
+            prepare(&mut record, ObjId(21), &asked, 100),
+            Err("claim_not_asker")
+        );
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &asked, 100).as_deref(),
+            Ok("asked")
+        );
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(20), 101),
+            Consent::Asked
+        );
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(20), 100 + CONSENT_IC_SECS),
+            Consent::Given,
+            "silence for 28 IC days"
+        );
+        assert_eq!(
+            consent_on(
+                &record,
+                'F',
+                (ObjId(40), 11),
+                ObjId(20),
+                100 + CONSENT_IC_SECS
+            ),
+            Consent::NotAsked,
+            "a new holding"
+        );
+        // A delegation, then the refusal that voids it.
+        record.land_grants.push(LandGrant {
+            letter: 'F',
+            landholder: ObjId(40),
+            registered_ic: 10,
+            to: ObjId(20),
+            until_ic: None,
+            issued_ic: 120,
+        });
+        let refused = ClaimOrder::Refuse {
+            site: record.site.clone(),
+            place: ObjId(99),
+            ask: ConsentAsk {
+                refused_ic: Some(200),
+                ..ask.clone()
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &refused, 200),
+            Err("claim_not_landholder")
+        );
+        assert_eq!(
+            prepare(&mut record, ObjId(40), &refused, 200).as_deref(),
+            Ok("refused")
+        );
+        assert!(
+            record.land_grants.is_empty(),
+            "the refusal voids the delegation"
+        );
+        assert_eq!(record.consent_asks.len(), 1);
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(20), 201),
+            Consent::Refused
+        );
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &asked, 300),
+            Err("claim_refused"),
+            "no new ask while the refusal stands"
+        );
+        let lapsed = 200 + CONSENT_IC_SECS;
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(20), lapsed),
+            Consent::NotAsked
+        );
+        let again = ClaimOrder::Ask {
+            site: record.site.clone(),
+            place: ObjId(99),
+            ask: ConsentAsk {
+                asked_ic: lapsed,
+                ..ask
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(20), &again, lapsed).as_deref(),
+            Ok("asked")
+        );
+        assert_eq!(
+            consent_on(&record, 'F', held, ObjId(20), lapsed),
+            Consent::Asked
         );
         assert!(record.check().is_ok());
     }
