@@ -847,6 +847,7 @@ pub(crate) fn beds_at_ceres() {
                 organizer: None,
                 extraction: None,
                 treatment: None,
+                resolve_permille: None,
             };
             (
                 tacsim::field::crew::crew_key(*character),

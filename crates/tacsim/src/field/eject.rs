@@ -314,6 +314,7 @@ fn ejected(
                 capture,
             }),
             treatment: None,
+            resolve_permille: prior.as_ref().and_then(|record| record.resolve_permille),
         },
     );
     ctx.out.sys_to_actor(
