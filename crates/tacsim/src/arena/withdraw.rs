@@ -20,6 +20,12 @@
 //! profile, locomotion (the DT recover's own `recover_unit` test, read here on the live cells so
 //! the recover the host submits next cannot refuse what the kernel let go).
 //!
+//! **A carrier lost** (doc 40, the ramp exit's boarding window; the owner's ruling, 2026-11-04,
+//! "back in the field"): a withdrawal counts only once the unit is aboard, so a raider's hull,
+//! whose host names the carrier it boards ([`Arena::withdraw_to`]), is kept while that carrier is
+//! a wreck or no longer in the field — [`WithdrawRefusal::CarrierLost`], decided on the arena's
+//! own live facts at the same pulse head as the release, so no wreck can land between the two.
+//!
 //! **What leaves with it.** The unit's row, its seats, its mind and its runner, its motor row,
 //! its queued orders and card changes, its jamming fold; the spatial index is rebuilt. Every
 //! other reader already treats a unit "gone from the match" as gone — the frame drops a contact
@@ -43,6 +49,9 @@ pub enum WithdrawRefusal {
     NotUnderOwnPower,
     /// The unit does not stand within one cell of the ramp.
     NotAtRamp,
+    /// The carrier it would board is a wreck or no longer in the field (this module's head):
+    /// there is nothing to go aboard, so it stays in the field.
+    CarrierLost,
 }
 
 impl WithdrawRefusal {
@@ -56,6 +65,9 @@ impl WithdrawRefusal {
             }
             WithdrawRefusal::NotAtRamp => {
                 "That unit is not beside the ramp; drive it there first, then recover it."
+            }
+            WithdrawRefusal::CarrierLost => {
+                "That unit's carrier is lost; there is nothing to go aboard, so it stays in the field."
             }
         }
     }
@@ -91,10 +103,33 @@ impl Arena {
         unit: ObjId,
         ramp: Option<(i64, i64)>,
     ) -> Result<UnitReturn, WithdrawRefusal> {
+        self.withdraw_to(unit, ramp, None)
+    }
+
+    /// **[`Arena::withdraw`], boarding `carrier`** (this module's head, "a carrier lost"): with a
+    /// ramp and a carrier named, the unit is kept with [`WithdrawRefusal::CarrierLost`] while
+    /// that carrier is a wreck or not in the field, wherever the unit stands.
+    ///
+    /// # Errors
+    ///
+    /// [`WithdrawRefusal`], and the arena is unchanged.
+    pub fn withdraw_to(
+        &mut self,
+        unit: ObjId,
+        ramp: Option<(i64, i64)>,
+        carrier: Option<ObjId>,
+    ) -> Result<UnitReturn, WithdrawRefusal> {
         let state = self.unit(unit).ok_or(WithdrawRefusal::NotHere)?;
         let Some(ramp) = ramp else {
             return self.take_out(unit);
         };
+        if let Some(carrier) = carrier
+            && self
+                .unit(carrier)
+                .is_none_or(|carrier| carrier.limits.wreck)
+        {
+            return Err(WithdrawRefusal::CarrierLost);
+        }
         // **Doc 40 cut FR.5** (§4.1 item 5, Q-40-25): a casualty under tow cannot come in under
         // its own power, so it is judged by its tug — the tug in the field, under its own power
         // and beside the ramp — and goes out in tow with its own check-in row. The task applies
@@ -228,6 +263,36 @@ mod tests {
             Some(WithdrawRefusal::NotUnderOwnPower)
         );
         assert!(arena.unit(NEAR).is_some() && arena.unit(FAR).is_some());
+    }
+
+    #[test]
+    fn a_unit_whose_carrier_is_lost_stays() {
+        // Doc 40, the ramp exit's boarding window: NEAR boards FAR.
+        let mut arena = field();
+        if let Some(state) = arena.unit_mut(FAR) {
+            state.limits.wreck = true;
+        }
+        assert_eq!(
+            arena
+                .withdraw_to(NEAR, Some((2_500, 2_500)), Some(FAR))
+                .err(),
+            Some(WithdrawRefusal::CarrierLost)
+        );
+        assert_eq!(
+            arena
+                .withdraw_to(NEAR, Some((2_500, 2_500)), Some(ObjId(77)))
+                .err(),
+            Some(WithdrawRefusal::CarrierLost),
+            "a carrier not in the field is lost too"
+        );
+        assert!(arena.unit(NEAR).is_some(), "it stays in the field");
+        if let Some(state) = arena.unit_mut(FAR) {
+            state.limits.wreck = false;
+        }
+        let back = arena
+            .withdraw_to(NEAR, Some((2_500, 2_500)), Some(FAR))
+            .expect("a whole carrier takes it");
+        assert_eq!(back.unit, NEAR);
     }
 
     #[test]

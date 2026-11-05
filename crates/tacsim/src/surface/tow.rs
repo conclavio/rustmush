@@ -778,6 +778,12 @@ pub(crate) fn carried_kg(ctx: &Ctx<'_>, unit: ObjId) -> u64 {
             }
         };
     }
+    // Doc 40 (the ramp exit's boarding window): a raider's fixture carrier carries its hulls
+    // aboard, wrecks included.
+    let aboard = crate::field::raiders::aboard_kg(ctx.w, unit);
+    if aboard > 0 {
+        return aboard;
+    }
     if crate::port::vehicle::hopper_of(ctx.w, unit).is_none() {
         return 0;
     }

@@ -849,7 +849,11 @@ async fn field_story(at: &Ground) {
         {
             trail.push(cell);
         }
+        // Doc 40 (the ramp exit's boarding window): aboard in the batch that lets it go, its
+        // exit on the record after.
         now.is_none()
+            && site_record_at(rig, at.entry)
+                .is_some_and(|record| record.promoted.is_none() || record.exited(tank))
     })
     .await;
     assert!(home, "the tank goes home up the ramp and aboard: {trail:?}");

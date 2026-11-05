@@ -293,6 +293,9 @@ pub(crate) fn demote_units(
         if carrier {
             wreck_bay_rigs(ctx, *unit);
         }
+        // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04): a raider's
+        // fixture carrier checked in a wreck takes the hulls aboard it with it.
+        super::raiders::wreck_aboard(ctx, *unit, units);
         // Doc 36 cut GC.3 (Q-36-18): an irrecoverable hull leaves remains where it fell, and the
         // surface no longer holds it.
         if state == Some(OperationalState::Irrecoverable) && !carrier {

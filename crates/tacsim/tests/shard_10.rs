@@ -41,6 +41,8 @@ mod custody_rig;
 mod deliberation;
 #[path = "support/field/driving_rig.rs"]
 mod driving_rig;
+#[path = "shard_10/field_boarding.rs"]
+mod field_boarding;
 #[path = "shard_10/field_carrier.rs"]
 mod field_carrier;
 #[path = "shard_10/field_fr4.rs"]
