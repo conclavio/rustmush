@@ -169,7 +169,12 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             {
                 continue;
             }
+            // Doc 40 (the ramp exit's boarding window): a return whose carrier is lost places
+            // nothing; its finish puts the flight back in the field (`prepare`'s finish).
+            let lost = flight.phase == Phase::Returning
+                && crate::field::boarding::carrier_lost(ctx.w, &flight.site, flight.carrier);
             let moved = match flight.phase {
+                Phase::Returning if lost => Ok(()),
                 Phase::Departing => {
                     mush_sim::place(ctx, flight.key.unit, flight.domain, flight.ramp.clone())
                 }

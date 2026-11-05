@@ -263,6 +263,17 @@ impl Arena {
         {
             self.adopt_mind(id, None);
         }
+        // Doc 40 (the ramp exit's boarding window): a coupled pair the host takes back in, its
+        // carrier lost at the ramp, is coupled again once both halves stand in the field. A pair
+        // the kernel will not couple stays in the field uncoupled.
+        for (casualty, tug) in &host.tows {
+            if (*casualty == id || *tug == id)
+                && self.unit(*casualty).is_some()
+                && self.unit(*tug).is_some()
+            {
+                let _ = self.couple(*casualty, *tug);
+            }
+        }
         let hash = crate::arena::hash::state_hash(self);
         let _ = self.ledger.append(self.now_ms, line, Vec::new(), hash);
         super::snapshot_capacity::admit(self).map_err(|error| ArenaError::SnapshotCapacity {

@@ -1596,6 +1596,18 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                     (to[0], to[1]),
                 )
             });
+            // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04): a recovery
+            // counts only once the rig is aboard, and never into a carrier lost to the field on
+            // its site; the finish records the refusal and the field host takes the rig back in
+            // (`crate::field::boarding`).
+            if crate::field::boarding::carrier_lost(ctx.w, &entry, act.hull) {
+                tracing::info!(
+                    tv = tv.0,
+                    hull = act.hull.0,
+                    "tacsim: a recover into a carrier lost to the field places nothing"
+                );
+                return;
+            }
             if let Where::Ground {
                 domain: on,
                 x_cm,

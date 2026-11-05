@@ -22,6 +22,21 @@
 //!    field for both, both are checked in through the ordinary exit, and the load runs as on open
 //!    ground into the carrier's bay while the field still runs.
 //!
+//! **Doc 40, the ramp exit's boarding window, player hulls** (the owner's ruling, 2026-11-04,
+//! "back in the field"): a recovery or a load counts only once the hull is aboard.
+//!
+//! 4. **The carrier lost inside the load's window**
+//!    (`fr5_ahuna_a_carrier_lost_before_the_load_keeps_the_pair_in_the_field`): the pair is let
+//!    go at the ramp, its exits held on their way to the site record (the K3 lane's injected
+//!    fault, `field_crash`'s), and the stranger's fire takes the carrier's hull. The pair goes
+//!    back into the field coupled, its pilot still flying the tug, and nothing is loaded.
+//! 5. **The carrier lost inside the recover's window**
+//!    (`fr5_ahuna_a_carrier_lost_before_the_recover_keeps_the_rig_in_the_field`): the same for a
+//!    rig's `+tv/1 recover go`.
+//! 6. **The carrier lost before the release**
+//!    (`fr5_ahuna_a_rig_whose_carrier_is_lost_is_kept_in_the_field`): the kernel keeps the rig at
+//!    the ramp, its pilot's.
+//!
 //! **What is a fixture.** The escort's power, destroyed by staff hand, and its row on the site's
 //! index (GC.5's fixture, which the field that disabled it would have written; `field_rs5`'s
 //! precedent), standing in for the first field of `field_gc4`'s story; the wingman's armour at
@@ -33,7 +48,7 @@ use tacsim::arena_task::ArenaOut;
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving_rig::{
-    Rig, act_go, cid, command, finish, land, launched_at, on_pad_as_at, ramp_at, run, said,
+    Rig, act_go, cid, command, drain, finish, land, launched_at, on_pad_as_at, ramp_at, run, said,
     staff_hand, stocked_tuned, to_cell_on, warm,
 };
 use crate::field_host_rig::{
@@ -102,6 +117,9 @@ fn apart(a: (i64, i64), b: (i64, i64)) -> i64 {
 struct Ears {
     who: Vec<ObjId>,
     heard: Vec<String>,
+    /// The host's `op` writes held off the site record while set (`field_crash`'s injected
+    /// fault): the exits, to keep a boarding window open.
+    hold: Option<&'static str>,
 }
 
 impl Ears {
@@ -109,6 +127,7 @@ impl Ears {
         Self {
             who: who.to_vec(),
             heard: vec![String::new(); who.len()],
+            hold: None,
         }
     }
 
@@ -185,7 +204,11 @@ async fn until(
         pump(rig, rx, lines, ears);
         beat += 1;
         if beat.is_multiple_of(8) {
-            let refused: Vec<String> = second(rig)
+            let landed = match ears.hold {
+                Some(op) => second_holding(rig, op),
+                None => second(rig),
+            };
+            let refused: Vec<String> = landed
                 .into_iter()
                 .filter(|error| error.contains(tacsim::surface::tow::TOW_ACTION))
                 .collect();
@@ -196,6 +219,24 @@ async fn until(
         }
     }
     false
+}
+
+/// **One world second with the host's `op` writes held off the site record** (`field_crash`'s
+/// `second_dropping`): the ticks due and every other submission landed; answers the landings'
+/// errors.
+fn second_holding(rig: &mut Rig, op: &str) -> Vec<String> {
+    let t = rig.tw.world().now().saturating_add(1);
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let mut errors = Vec::new();
+    for submit in drain(&mut rig.tw) {
+        let held = submit.action.key().id.as_str() == tacsim::field::FIELD_ACTION
+            && submit.parameters.get("op").and_then(|op| op.as_str()) == Some(op);
+        if !held && let Err(error) = land(rig, &submit) {
+            errors.push(error);
+        }
+    }
+    errors
 }
 
 /// **The ground every story stands on** (this module's head): the captain's party with the
@@ -743,4 +784,242 @@ async fn fr5_ahuna_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fr5_urvara_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded() {
     withdrawn_on(&URVARA_REACH).await;
+}
+
+// ---- 4-6. the boarding window (doc 40, player hulls) ---------------------------------------
+
+/// Whether a ledger line names `unit` destroyed.
+fn destroyed(lines: &[LedgerEvent], unit: ObjId) -> bool {
+    lines.iter().any(
+        |line| matches!(line.kind, EventKind::UnitDestroyed { unit: fell, .. } if fell == unit),
+    )
+}
+
+/// Whether `site`'s field binds `pilot` to its task: the pilot still flies a unit there.
+fn flies(rig: &Rig, pilot: ObjId) -> bool {
+    task(rig).is_some_and(|task| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.pilots_of(task).contains(&pilot))
+    })
+}
+
+/// Whether the field holds `unit`.
+fn held(rig: &Rig, unit: ObjId) -> bool {
+    tacsim::field::field_of_unit(rig.tw.world(), unit).is_some()
+}
+
+/// **The stranger takes the carrier's hull** (the carrier made `fragile` before the field).
+async fn take_the_carrier(
+    rig: &mut Rig,
+    ground: &Ground,
+    set: &Set,
+    (rx, lines, ears): (&mut Receiver<ArenaOut>, &mut Vec<LedgerEvent>, &mut Ears),
+) {
+    let at = stand(rig, ground, set.carrier)
+        .map(|(cell, _)| cell)
+        .expect("the carrier's stand");
+    let carrier = set.carrier;
+    assert!(
+        fire_on(rig, set, (rx, lines, ears), at, |lines| destroyed(
+            lines, carrier
+        ))
+        .await,
+        "the stranger's fire takes the carrier's hull"
+    );
+}
+
+/// **A rig of the captain's beside its carrier's ramp**, the stranger's seated hull west of it,
+/// the carrier fragile: story 5's and 6's ground. The [`Set`]'s casualty and tug are the rig.
+fn rig_at_the_ramp(ground: &Ground) -> (Rig, Set) {
+    let mut rig = stocked_tuned(|cfg| quick(cfg, 300));
+    let (a, row, tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ground.site(), 1);
+    let carrier = ObjId(row.hull);
+    let tv = tvs[0];
+    launched_at(&mut rig, ground.entry, a, tv);
+    let (rx, ry, _) = ramp_at(&rig.tw, ground.entry);
+    let ramp = (rx.div_euclid(1_000), ry.div_euclid(1_000));
+    let (b, _, _) = on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), ground.site(), 1);
+    let hound = armed_on(
+        &mut rig,
+        ground.entry,
+        "Red Hound",
+        (ramp.0 - 8, ramp.1),
+        90_000,
+    );
+    seat(&mut rig, hound, b);
+    seat(&mut rig, tv, a);
+    fragile(&mut rig, carrier);
+    warm(&mut rig);
+    (
+        rig,
+        Set {
+            a,
+            b,
+            carrier,
+            casualty: tv,
+            tug: tv,
+            hound,
+            ramp,
+        },
+    )
+}
+
+/// **Story 4**: the pair let go at the ramp, its carrier lost before the load lands.
+#[allow(clippy::too_many_lines)] // one story, in order
+async fn lost_in_the_load_window_on(ground: &Ground) {
+    // The wingman beside the ramp, the casualty trailing it.
+    let (mut rig, set) = set_on(ground, ((1, 0), (2, 0)), 300);
+    let (a, casualty, tug, carrier) = (set.a, set.casualty, set.tug, set.carrier);
+    fragile(&mut rig, carrier);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let mut ears = Ears::new(&[a]);
+    open(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    // The coupled withdraw, its exits held: the pair is out and the load has not run.
+    ears.hold = Some("exit");
+    let (out, queued) = command(&mut rig, a, "+tv/2 load go");
+    assert!(queued.is_empty(), "a field act: {out}");
+    assert!(out.contains("makes for the ramp"), "{out}");
+    assert!(
+        until(
+            &mut rig,
+            (&mut rx, &mut lines, &mut ears),
+            30,
+            |rig, _, _| !held(rig, tug) && !held(rig, casualty)
+        )
+        .await,
+        "the pair is let go at the ramp: {}",
+        ears.of(a)
+    );
+    take_the_carrier(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    // The exits land again; the pair is back in the field, coupled, and nothing boards.
+    ears.hold = None;
+    let back = until(
+        &mut rig,
+        (&mut rx, &mut lines, &mut ears),
+        40,
+        |rig, _, _| {
+            held(rig, tug)
+                && held(rig, casualty)
+                && stand(rig, ground, casualty).is_some_and(|(_, towed)| towed == Some(tug))
+        },
+    )
+    .await;
+    assert!(
+        back,
+        "the pair is back in the field, coupled: tug held {}, casualty held {}, casualty stands {:?}, in the bay {}; heard {}",
+        held(&rig, tug),
+        held(&rig, casualty),
+        stand(&rig, ground, casualty),
+        tacsim::surface::tow::in_bay_of(rig.tw.world(), casualty, carrier),
+        ears.of(a)
+    );
+    assert!(
+        !tacsim::surface::tow::in_bay_of(rig.tw.world(), casualty, carrier),
+        "nothing is loaded into the wreck"
+    );
+    assert!(flies(&rig, a), "the captain still flies the wingman");
+}
+
+/// **Story 4 at 256**: Ahuna Flank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr5_ahuna_a_carrier_lost_before_the_load_keeps_the_pair_in_the_field() {
+    lost_in_the_load_window_on(&AHUNA_FLANK).await;
+}
+
+/// **Story 5**: the rig let go at the ramp, its carrier lost before the recover lands.
+async fn lost_in_the_recover_window_on(ground: &Ground) {
+    let (mut rig, set) = rig_at_the_ramp(ground);
+    let (a, tv, carrier) = (set.a, set.tug, set.carrier);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let mut ears = Ears::new(&[a]);
+    open(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    ears.hold = Some("exit");
+    let asked = run(&mut rig.tw, a, "+tv/1 recover go");
+    assert!(asked.contains("makes for the ramp"), "{asked}");
+    assert!(
+        until(
+            &mut rig,
+            (&mut rx, &mut lines, &mut ears),
+            30,
+            |rig, _, _| !held(rig, tv)
+        )
+        .await,
+        "the rig is let go at the ramp: {}",
+        ears.of(a)
+    );
+    take_the_carrier(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    ears.hold = None;
+    let back = until(
+        &mut rig,
+        (&mut rx, &mut lines, &mut ears),
+        40,
+        |rig, _, _| held(rig, tv) && flies(rig, a),
+    )
+    .await;
+    assert!(
+        back,
+        "the rig is back in the field, its pilot's: held {}, flies {}, in the bay {}; heard {}",
+        held(&rig, tv),
+        flies(&rig, a),
+        tacsim::surface::tow::in_bay_of(rig.tw.world(), tv, carrier),
+        ears.of(a)
+    );
+    assert!(
+        !tacsim::surface::tow::in_bay_of(rig.tw.world(), tv, carrier),
+        "it never boards the wreck"
+    );
+}
+
+/// **Story 5 at 256**: Ahuna Flank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr5_ahuna_a_carrier_lost_before_the_recover_keeps_the_rig_in_the_field() {
+    lost_in_the_recover_window_on(&AHUNA_FLANK).await;
+}
+
+/// **Story 6**: the carrier lost before the recover is asked; the kernel keeps the rig.
+async fn lost_before_the_release_on(ground: &Ground) {
+    let (mut rig, set) = rig_at_the_ramp(ground);
+    let (a, tv, carrier) = (set.a, set.tug, set.carrier);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let mut ears = Ears::new(&[a]);
+    open(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+    take_the_carrier(&mut rig, ground, &set, (&mut rx, &mut lines, &mut ears)).await;
+
+    let asked = run(&mut rig.tw, a, "+tv/1 recover go");
+    assert!(asked.contains("makes for the ramp"), "{asked}");
+    let kept = until(
+        &mut rig,
+        (&mut rx, &mut lines, &mut ears),
+        20,
+        |_, _, ears| ears.of(a).contains("carrier is lost"),
+    )
+    .await;
+    // A few more seconds: nobody is let go late.
+    let _ = until(&mut rig, (&mut rx, &mut lines, &mut ears), 3, |_, _, _| {
+        false
+    })
+    .await;
+    assert!(
+        kept && held(&rig, tv) && flies(&rig, a),
+        "the kernel keeps the rig, its pilot's: told {kept}, held {}, flies {}, in the bay {}; heard {}",
+        held(&rig, tv),
+        flies(&rig, a),
+        tacsim::surface::tow::in_bay_of(rig.tw.world(), tv, carrier),
+        ears.of(a)
+    );
+}
+
+/// **Story 6 at 256**: Ahuna Flank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fr5_ahuna_a_rig_whose_carrier_is_lost_is_kept_in_the_field() {
+    lost_before_the_release_on(&AHUNA_FLANK).await;
 }
