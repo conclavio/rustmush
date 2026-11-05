@@ -1,7 +1,7 @@
 //! **The Registry's claim channel over a field world** (doc 23 cut S.4b-T): `driving`'s keyed
 //! rig rebooted under a mind commerce with the Registry inspection and the quirk claim composed,
-//! the ported twin of `excursions.rs`'s `reboot_with_inspection` (shard_9), so `@mind/claim`
-//! runs through its production command path beside a running IC field. Every shard root that
+//! the ported twin of `excursions.rs`'s `reboot_with_inspection` (`domain_field`), so `@mind/claim`
+//! runs through its production command path beside a running IC field. Every domain root that
 //! needs it declares this module by path, like the other `*_rig` modules.
 #![allow(dead_code, unused_imports)]
 

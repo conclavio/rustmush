@@ -2471,7 +2471,7 @@ async fn view_follows_its_panel_with_the_line_about_what_the_window_could_not_fi
 // byte. That equality, and not three separate goldens, is what makes the three
 // renderers one renderer.
 //
-// Re-bless with `TACSIM_BLESS=1 cargo test -p tacsim --test shard_6 cockpit::`.
+// Re-bless with `TACSIM_BLESS=1 cargo test -p tacsim --test domain_arena cockpit::`.
 
 mod fixture {
     use super::m6_frame;
@@ -3011,7 +3011,7 @@ mod fixture {
         assert_eq!(
             committed, actual,
             "web/src/lib/fixtures/cockpit/{name} is out of date; re-bless with \
-             `{BLESS}=1 cargo test -p tacsim --test shard_6 cockpit::`"
+             `{BLESS}=1 cargo test -p tacsim --test domain_arena cockpit::`"
         );
     }
 }

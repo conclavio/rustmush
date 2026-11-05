@@ -20,12 +20,12 @@ use mush_net_ssh::tui::{TuiApp, TuiManifest, frame_text};
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent, PanelFrameKind};
 use serde_json::{Value, json};
 
-/// The viewer's own site view (`TACSIM_BLESS=1 cargo test -p tacsim --test shard_1
+/// The viewer's own site view (`TACSIM_BLESS=1 cargo test -p tacsim --test domain_field
 /// driving::sm4b_the_site_map_fixtures_are_blessed`).
 const SITE_MAP: &str = include_str!("../../../web/src/lib/fixtures/site/site_map.json");
 /// A second principal's site view on the same pad.
 const SITE_MAP_OTHER: &str = include_str!("../../../web/src/lib/fixtures/site/site_map_other.json");
-/// The Ceres ground chart (`TACSIM_BLESS=1 cargo test -p tacsim --test shard_2
+/// The Ceres ground chart (`TACSIM_BLESS=1 cargo test -p tacsim --test domain_economy
 /// quarry::sm9_the_ground_fixture_is_blessed`).
 const BODY_GROUND: &str = include_str!("../../../web/src/lib/fixtures/site/body_ground.json");
 
