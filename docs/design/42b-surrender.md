@@ -1,13 +1,19 @@
 # 42b. Surrender — survey
 
-**Draft 0.1, 2026-11-04, docs only.** Surveyed against `origin/main` at `bf0b5f24` (PR #468 merged;
-doc 42 Draft 0.5 with CR.0–CR.7 built). The first survey of the future that doc 42 §8 and §7b
-record: *surrender by circumstance and personality*. It follows docs 38–43. Each question has a
-proposed default, an alternative and a reason, and is grounded in the tree with file:line
+**Draft 0.2, 2026-11-05: ruled.** The owner accepted every default as written ("Q-42b all accepted
+at default, section 5 consequences of the defaults acknowledged"). Each of Q-42b-1 to Q-42b-20 now
+ends with a decision line, and its proposed text is the ruling. §5 is acknowledged. §7's cuts
+SU.0–SU.6 are **binding**. **SU.0 (the trait on the record) and SU.2 (the arena's reach count) may
+start now**, side by side, since they share no file. SU.1 follows SU.0, and SU.3 waits on SU.1
+and SU.2 (§7's order). Nothing else changed from Draft 0.1.
+
+Draft 0.1, 2026-11-04, docs only (PR #470). Surveyed against `origin/main` at `bf0b5f24` (PR #468
+merged; doc 42 Draft 0.5 with CR.0–CR.7 built). The first survey of the future that doc 42 §8 and
+§7b record: *surrender by circumstance and personality*. It follows docs 38–43. Each question has
+a proposed default, an alternative and a reason, and is grounded in the tree with file:line
 references. "Provisional" marks a number to be tuned after first play (the 2026-10-24 rule).
 **(expensive to reverse)** has doc 38 Q-38-10's meaning: undoing it would take a significant
-refactor. It is used once, on Q-42b-6. The survey ends with proposed cuts SU.0–SU.6 (§7). Nothing
-here is ruled yet.
+refactor. It is used once, on Q-42b-6. The survey ends with the cuts SU.0–SU.6 (§7).
 
 **The accepted defaults this builds on** (owner, 2026-11-04):
 
@@ -163,6 +169,9 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 
 ## 4. Owner survey
 
+**Ruled 2026-11-05.** Every default below is accepted as written; no question is amended, so each
+proposed default is its decision.
+
 ### A. What morale reads
 
 **Q-42b-1 — Who the raider's crew are.** **(the prerequisite)**
@@ -181,6 +190,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   NPC knowledge model (memory `npc-knowledge-model`) a body to hang memory on later. The cost is a
   few NPC objects per raider.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-2 — Whose crews may surrender in this version.**
 - **Proposed default:** fixture and director raider crews only (Q-42b-1's records). Hired NPC
   pilots in a player's detachment never surrender in this version, and their contract and Q-42-26
@@ -191,6 +201,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   needing its own rulings: the employer's consent, the contract's terms, who gets the fee, and the
   28-day rule for the employer's answer. Raiders are the case the owner named.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-3 — Does the carrier ever surrender?**
 - **Proposed default:** no. The fixture carrier is unarmed and has no crew under Q-42b-1. It lifts
   (GC.0) or it is wrecked. Taking a carrier is boarding, which doc 32 §5 keeps out.
@@ -198,6 +209,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** the ruling concerns units whose carrier is lost. A carrier yielding would mean a hull
   in a bay, a bay in a hull, and a lift that never comes. That is a later design, if ever.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-4 — The inputs, and how they combine.**
 - **Proposed default:** a per-hull **pressure**, 0 to 1,000, computed by the host from the
   decoded last snapshot `lift_check` already holds. Each term is provisional:
@@ -225,6 +237,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - The draw keeps personality as weight, not as a switch.
   - The gate keeps a crew that is merely damaged and winning from ever yielding.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ### B. The personality trait
 
 **Q-42b-5 — The trait's shape, and where it lives.**
@@ -243,6 +256,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
     trait for an NPC's talk or knowledge would want it on the person.
   - More axes can be added beside it the same way.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-6 — How it is authored.** **(expensive to reverse)**
 - **Proposed default:** `raiders.json` schema 5 adds `resolve_permille` to each raider (the crew's
   default) and an optional `resolve_permille` and `crew` name on each unit. The schema-4 brief
@@ -258,6 +272,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - It is expensive to reverse because the content schema, the seed, the stories and the record
     all carry it. Moving it later to organizations would touch all four.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-7 — Variation inside one crew.**
 - **Proposed default:** none beyond what the author writes. Each hull's crew takes its unit's
   value or the raider's.
@@ -265,6 +280,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** an authored spread is visible and testable. A random one makes the stories pin a seed
   for no play value yet.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ### C. The moment, and who it is offered to
 
 **Q-42b-8 — When the check runs.**
@@ -281,6 +297,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - The mark is durable, so a restart behaves.
   - Seeding on the step keeps a resumed field's draw identical.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-9 — Who it is offered to, and who accepts.**
 - **Proposed default:** nobody accepts. A yield is unilateral, and the field announces it. The line
   names the party that holds the hull's cell, by eject's holder rule (`eject.rs:220`): Hostile to
@@ -295,6 +312,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - Unilateral needs no wait.
   - The holder rule is the CR.4 reading the owner already accepted for "who holds the cell".
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-10 — Whole party or one hull.**
 - **Proposed default:** one hull at a time, each on its own draw. When every hull of the raider
   standing in the field has yielded, the leader's standing Hostile marks on the site are lifted
@@ -305,6 +323,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   keeps a half-broken raid hostile, which is honest, and lets the field end once nobody is left
   fighting.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ### D. What the field shows, and what players can do
 
 **Q-42b-11 — What a yield is in the kernel.**
@@ -328,6 +347,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - The cost is that the yielded hull leaves the tactical picture (Q-42b-13). If a later
     programme wants yielded hulls inside the fight, it reblesses for that.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-12 — The check-in condition of a yielded hull.**
 - **Proposed default:** a yielded hull is checked in as a **casualty** on the site record, whatever
   its cells say ("its crew powered it down"). `left_condition` (`close.rs:199`) gains one input
@@ -341,6 +361,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   hull really is out of action: the crew gave it up. A wreck is never yielded: a wrecked hull's
   crew is CR.3's stranded case.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-13 — How players see it.**
 - **Proposed default:** three things.
   1. **A line** to every character in the field and on the site, in the house voice: "The {hull}
@@ -357,6 +378,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** the default needs no frame or encoder change (doc 21's one Frame and three encoders). A
   badge is the alternative's natural partner, not the default's.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-14 — What players can do with it.**
 - **Proposed default:**
   - **Take it in.** After the field demotes (Q-CF-30: surface acts wait on a promoted site;
@@ -372,6 +394,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** taking prisoners once the fight is over is the shape the tree already has. Widening
   `pair_out` reopens FR.5's rule that a load runs only when both pieces are out at the ramp.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ### E. The seams
 
 **Q-42b-15 — The fight-to-the-death ruling.**
@@ -389,6 +412,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** the ruling's reason, no life support to wait, is met by the holder's carrier being on
   the site. The personality is the accepted default's weight.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-16 — The director (doc 40, GC.11) and the lift.**
 - **Proposed default:**
   - A yielded hull counts as **lost** in the `RaidReading`, never as exited, so a yield can
@@ -406,6 +430,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - A raid with a way home goes home; one without might yield.
   - The withdrawal triggers stay the GC.11 rulings.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-17 — Standing and evidence.**
 - **Proposed default:** no standing cost for capturing a yielded raider. It is Hostile to its
   captor, so `capture_standing` already writes nothing (`crew.rs:1177`, `held_hostile`). No
@@ -417,6 +442,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   written by custody, and the stance table (doc 40 H) is the place to rule it. Flagged for after
   first play.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ### F. What the captive becomes
 
 **Q-42b-18 — Through CR.1 and CR.2.**
@@ -438,6 +464,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
   - "Losses are real" applies to people too.
   - The fee is ruled to be the captive's own debt, and an NPC has none to owe.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 **Q-42b-19 — Held, released at will, or the captor's wreck.**
 - **Proposed default:**
   - **Held.** An NPC captive held past `captive_bound_s` stays held. Nobody asks for its
@@ -451,6 +478,7 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** each branch reuses CR.3's code and keeps the life-support ruling literal. A hoarding
   captor gains nothing, so no bound is needed yet.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ### G. Timers
 
 **Q-42b-20 — The captor's window, and every other timer.**
@@ -470,7 +498,10 @@ or temper. (A grep for those words finds only the `temperate` biome.)
 - **Why:** a captor who won the fight and logged off before towing deserves the full 28 days. The
   floor rule is the owner's. A range that starts at the floor keeps a config from undercutting it.
 
+- **Decision (accepted default, 2026-11-05):** the proposed default, as written.
 ## 5. Consequences of the defaults
+
+**Acknowledged by the owner, 2026-11-05.** SU.6 writes these amendments into the documents named.
 
 - **Doc 42.** §8's future line points here. `Captured` and `Processing` gain no variant, but the
   record gains `resolve_permille`. `levy_release` and the release pass learn the NPC branch.
@@ -503,7 +534,7 @@ Each story runs at both sizes (Q-38-29), with the bot typing the player's half o
   crew leave play, and the hull stays as a casualty.
 - **(s5) A restart** between two steps redraws nothing (`morale_step` durable).
 
-## 7. Proposed cuts SU.0–SU.6
+## 7. Cuts SU.0–SU.6 (binding since the ruling of 2026-11-05)
 
 Like doc 42's CR cuts: each runs through the production command paths, ships its gate at both
 sizes, and is recorded as built in `42b-cut-notes.md`. Two cuts touching the same files never run
@@ -511,7 +542,7 @@ at once.
 
 **SU.0 — The trait on the record.** Q-42b-5. `CrewRecord.resolve_permille`, decode tests (an old
 record reads `None`), `status_line` untouched. Files: `field/crew.rs`. Gate: in-source tests. *May
-start once ruled.*
+start now.*
 
 **SU.1 — Raider crews.** Q-42b-1, Q-42b-2, Q-42b-6, Q-42b-7. Schema 5 of `raiders.json`; the seed
 makes and seats one NPC crew member per hull with a record; `check_in` and `on_frames` widened to
@@ -544,6 +575,9 @@ lapse pass on the crew tick. Files: `field/crew.rs`, `mush-config`. Story (s4) w
 **SU.6 — Docs.** §5's amendments to docs 32, 36, 40 and 42; `42b-cut-notes.md`; the as-built
 draft. *Rides each PR; closes after SU.5.*
 
+**May start now (2026-11-05):** SU.0 and SU.2, in parallel. Before SU.1, check no doc 40 or
+doc 41 cut is open on `field/raiders.rs` (the edge below).
+
 **Order.** SU.0 → SU.1 → SU.3 → SU.4 → SU.5, one writer on `crew.rs` and `raiders.rs`. SU.2 runs
 beside SU.0/SU.1 and must land before SU.3. SU.6 rides along.
 
@@ -556,6 +590,8 @@ beside SU.0/SU.1 and must land before SU.3. SU.6 rides along.
   rebless, not a cut here.
 
 ## 8. Defaults held with least confidence
+
+Ruled as written; worth a second look after the first stranded raid is played.
 
 - **Q-42b-11, out of the field rather than holding fire in it.** It is cheap and safe. The cost is
   that a yield vanishes from the cockpit, and players may read that as a despawn. The line
