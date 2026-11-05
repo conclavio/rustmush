@@ -40,7 +40,7 @@ use serde_json::Value;
 use smol_str::SmolStr;
 use tacsim::config::PackSource;
 use tacsim::definitions::content::{
-    DRAY, DRAY_P, LANE_JSON, LANE_PACK, LANE_VERSION, LINE_TANK, TV_PROSPECTOR,
+    DRAY, DRAY_P, LANE_JSON, LANE_PACK, LANE_VERSION, TV_PROSPECTOR,
 };
 use tacsim::pack::{PackEntry, RulesPack, load_pack};
 use tacsim::port::apply::room_by_key;
@@ -3507,7 +3507,11 @@ fn sm3a_a_programme_without_refits_answers_refit_not_offered() {
     no_refused_writes(&rig.tw);
 }
 
-/// A chartered Dray-P with rig 1 in her bay whose unit staff then re-create as a line tank
+/// **A fielded design with no cab** (doc 39 cut IN.9b): the target, which no class template
+/// names; the line tank has `armour_cab` now.
+const NO_CAB: &str = "tacsim.unit.target_mk1";
+
+/// A chartered Dray-P with rig 1 in her bay whose unit staff then re-create as a target
 /// (`@unit/remove`, `@unit/create`): the hull's live unit names a definition with no
 /// interior, so `hull_view` reads `None` (correctness finding F5's case).
 fn dark_view(rig: &mut Rig) -> (ObjId, HullRow, ObjId) {
@@ -3518,9 +3522,9 @@ fn dark_view(rig: &mut Rig) -> (ObjId, HullRow, ObjId) {
     let made = run(
         &mut rig.tw,
         GOD,
-        &format!("@unit/create #{}={LINE_TANK}", hull.0),
+        &format!("@unit/create #{}={NO_CAB}", hull.0),
     );
-    assert_eq!(unit_id(&rig.tw, hull), LINE_TANK, "{removed}\n{made}");
+    assert_eq!(unit_id(&rig.tw, hull), NO_CAB, "{removed}\n{made}");
     assert!(
         tacsim::port::ship::hull_view(rig.tw.world(), hull).is_none(),
         "the hull's view is dark"
@@ -3798,13 +3802,13 @@ fn sm3a_the_rig_pools_preflight_refuses_each_recorded_breach() {
         ],
     );
     let mut rig = with_next(|doc| {
-        vehicles_block(doc)["unit"] = serde_json::json!(LINE_TANK);
+        vehicles_block(doc)["unit"] = serde_json::json!(NO_CAB);
     });
     assert_apply_refused(
         &mut rig,
         "the unit has no interior",
         &[&format!(
-            "ceres_port: vehicles occator.rig_lease: unit {LINE_TANK} carries no interior \
+            "ceres_port: vehicles occator.rig_lease: unit {NO_CAB} carries no interior \
              template or no logistics"
         )],
     );
