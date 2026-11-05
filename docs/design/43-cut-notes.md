@@ -486,6 +486,42 @@ upload.
 D-43-5's test was whether the partition's link cost is lower than the reshard cost. Measured, it is about 26 s a
 cell and no wall, against a hand-made layout PR every day or two. The decision is the owner's.
 
+**Refreshed on main `f9912792` (2026-11-05).** Two things on main changed under the first reading:
+- TS.3's opt-level 1 for dependencies;
+- the field rigs' pinned seed (`field.seed`, `0x5EED_0002`, `903fd04c`/`abbe8379`), which fixed `gc0` and `cf6c`.
+
+The setup:
+- **The roots.** The four domain roots were regenerated over current main. Nine new modules went to their domains:
+  `field_fr5`, `field_rs5` and `vacated_return_rs4` to field; `in5_production`, `in7_part_recipes`, `in10_pools`,
+  `yard_in9`, `port_security_rs7` and `tycho_house_rs6a` to economy.
+- **The runs.** Two attempts of run 41953124538, against main's runs at `f9912792` (the base; its one red was
+  `rest-server`, not a tacsim cell), `a6bea79f` and `a40aa5de`.
+- **The cells** were set up as in the first experiment.
+
+| Run | Compile + link, mean a cell (s) | Slowest cell's job (min) | Slowest other than cell 2 | Fastest (min) | Spread | Tacsim summed test min |
+|---|---|---|---|---|---|---|
+| main 41952369921 (`f9912792`) | 194 | 19.4 | 19.4 | 8.9 | 2.18 | 352 |
+| main 41944128660 (`a6bea79f`) | 198 | 18.6 | 18.6 | 9.9 | 1.88 | 361 |
+| main 41944094187 (`a40aa5de`) | 201 | 16.9 | 16.9 | 10.3 | 1.64 | 361 |
+| TS.12 41953124538 a1 | 219 | 16.4 | 16.4 | 10.6 | 1.55 | 343 |
+| TS.12 41953124538 a2 | 239 | 18.4 | 18.4 | 11.8 | 1.56 | 375 |
+
+- **The race is gone.** `field_gc4::gc4_the_wingman_drags…` passed in both partitioned attempts (203 s and 214 s),
+  and every tacsim cell was green. The only reds were the two guards that pin the shard layout (`tacsim-minds`,
+  `rest-libs`). The blocker the first reading named no longer stands.
+- **The link cost is about the same.** A cell compiles and links in 229 s on average against main's 198 s: about
+  +31 s a cell, or about 5 runner-minutes a run. The four domain binaries after the lib took 30–45 s together.
+- **The wall and the balance now favour the partition slightly.**
+  - The slowest cell was 16.4 and 18.4 min, against main's 16.9–19.4.
+  - The spread was 1.55–1.56, against 1.64–2.18.
+  - With opt-level 1, cost_lane no longer makes cell 2 the wall.
+  - Two attempts against three runs is still inside the hosted machines' 2× noise, so read this as "no worse",
+    not "better".
+- **What adoption needs is unchanged:** the guards and the `--test shard_N` lines (minds, M8) rewritten for
+  domain roots. A new module becomes one `mod` line in its domain root, and no reshard ever follows.
+
+The experiment PR #422 is closed. The decision on Q-43-5 is the owner's.
+
 ## TS.6 (2026-11-04) — the fiat budget
 
 D-43-9 as written. `crates/mush-contract-tests/tests/ci_policy/fiat_budget.rs` (module `fiat_budget::` of

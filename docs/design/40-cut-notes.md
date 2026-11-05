@@ -727,16 +727,24 @@ went red on main once IN.5 (#414) merged after this cut.
   `0x5EED_0002`), so a scripted field story's hits, jams and misses no longer hang on lane content or the
   world clock.
 - **The stories**: gc0 names a jammed escort plant in its failure, since a tender's `unjam` is the only way
-  back and the story has no tender. cf6c withdraws as soon as the escort has fired and taken its first hit,
-  the intruder ceasing fire too. Its point is the withdrawal, and a failure names the exchange and the seed.
+  back and the story has no tender.
+- **cf6c's cause** (found after #460): no balance or effects bug. The escort is `tv_escort`, a line tank
+  with the line tank's own sections, armour and guns, facing its intruder front to front, so the fight is a
+  duel between identical hulls that the dice settle in about 30 s of arena time (cannon HE at 120 a round on
+  a 6 s cycle). Neither side's content has changed since IN.1; FR.5's part effects and IN.5/IN.6's part lots
+  touch neither. The defect was the story's reading of the fight: it ended the exchange on the black box's
+  `hit` lines, which reach the host in batches. A probe saw the escort's first hit at arena 409 ms and the
+  story learn of it only at about 33 s, by which time the duel was over. The exchange now ends on the
+  escort's own cockpit frame, which shows it struck within a pulse (armour below its maximum). The intruder
+  ceases fire with the escort, and the escort's own fired and landed rounds are asserted once the field has
+  closed and the black box has caught up. cf6c is back on the PR tier.
 - **Long term**: doc 43c's clock seam (TS.10) is this knob's home, with a world clock a test can pin.
 - **cf6** (`shard_1 field_raiders::cf6_a_seeded_raider_fights_with_nobody_connected…`), also red on main
   without the pin, is the same luck in another form. The guard and a raider hull lost each other, the carrier
   fell, and the field demoted on the rig's 10 s disengage with that hull alive and healthy. A healthy hull
   leaves no row on the site record. The story's point is a fight to the raider's destruction, so its rig alone
-  raises `disengage_s` to 60 (#458). cf6c's gate stays ignored, its tier by hand at `4390f04c`, until #458's
-  follow-up makes its fight survivable.
-- **The ramp exit's boarding window** (built, PR "the ramp exit's boarding window", 2026-11-04). Before it, a
+  raises `disengage_s` to 60 (#460).
+- **The ramp exit's boarding window** (built, PR #468, 2026-11-04). Before it, a
   raider's withdrawal was let go by the arena at its carrier's ramp and checked in beside it, and
   `raiders::board` ran only once the record named the `exit`, with no carrier check. A carrier wrecked inside
   that window, or before the release, left the hull out of the field "aboard" a wreck. The owner's ruling

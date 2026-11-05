@@ -41,6 +41,8 @@ mod field_host_rig;
 mod field_raiders_rig;
 #[path = "support/field/grounds_rig.rs"]
 mod grounds_rig;
+#[path = "shard_7/house_arm_rs6b.rs"]
+mod house_arm_rs6b;
 #[path = "shard_7/mining.rs"]
 mod mining;
 #[path = "support/field/site_record_rig.rs"]

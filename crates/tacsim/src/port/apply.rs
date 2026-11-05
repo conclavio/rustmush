@@ -143,7 +143,7 @@ pub(crate) fn alloc_vault_id(ctx: &mut Ctx<'_>) -> Result<mush_economy::VaultId,
 /// # Errors
 ///
 /// When organizations are not composed.
-pub(super) fn alloc_grant_id(ctx: &mut Ctx<'_>) -> Result<mush_org::GrantId, String> {
+pub(crate) fn alloc_grant_id(ctx: &mut Ctx<'_>) -> Result<mush_org::GrantId, String> {
     ctx.w
         .module_state_mut::<OrgStore>()
         .map(OrgStore::alloc_grant)

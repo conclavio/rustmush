@@ -967,18 +967,72 @@ pub(crate) fn next_depart_targets(
         .copied()
         .unwrap_or(0);
     let depart_ic = plan_instant(w, due);
-    let targets = fill_targets(
-        planner.goods,
-        readings,
-        &cargo,
-        extra,
-        tank,
-        locker,
-        occupants.max(1),
-        planner.spec.allowance_kg,
-        |payload| planner.plan(&routes, payload, occupants.max(1), depart_ic, &options),
-    )
-    .map_err(|e| TargetError::Fill(e, port.clone()))?;
+    let fill = |extra_kg: u64| {
+        fill_targets(
+            planner.goods,
+            readings,
+            &cargo,
+            extra_kg,
+            tank,
+            locker,
+            occupants.max(1),
+            planner.spec.allowance_kg,
+            |payload| planner.plan(&routes, payload, occupants.max(1), depart_ic, &options),
+        )
+        .map_err(|e| TargetError::Fill(e, port.clone()))
+    };
+    let mut targets = fill(extra)?;
+    // A departure for a site holds back the leg home as well (doc 20 cut SM.2, decision 7;
+    // `SITE_TANK_SHORT`, `SITE_STORES_SHORT`), so a `fill` before one is sized for the passage
+    // out and the leg home: the home reserve over the payload left after the passage out, its
+    // mass carried out as extra payload, to a fixed point (the reserve aboard raises the burn
+    // out).
+    let home_routes = crate::port::market::ports(w)
+        .into_iter()
+        .find(|(_, site, _)| &site.venue == to && site.site.is_some())
+        .and_then(|(_, site, _)| site.routes.get(&def.venue).cloned());
+    if let Some(home_routes) = home_routes.filter(|routes| !routes.is_empty()) {
+        let fail = |e: CoreError| TargetError::Fill(FillError::Core(e), port.clone());
+        let mass_p = mass_of(planner.goods, &stores.propellant).map_err(fail)?;
+        let mass_v = mass_of(planner.goods, &stores.provisions).map_err(fail)?;
+        for _ in 0..FILL_ITERATIONS {
+            let left = targets
+                .payload_kg
+                .saturating_sub(targets.plan.burn_t.saturating_mul(mass_p))
+                .saturating_sub(u64::from(targets.plan.crew_days).saturating_mul(mass_v));
+            let home = crate::port::passage::home_reserve(
+                &planner.sky,
+                planner.pack,
+                &home_routes,
+                &planner.spec.drive,
+                planner.spec.dry_kg,
+                left,
+                occupants.max(1),
+                depart_ic.saturating_add(targets.plan.total_s),
+                crate::port::chart::PLAN_WINDOW_DAYS,
+            )
+            .map_err(|e| TargetError::Fill(FillError::Plan(e), port.clone()))?;
+            let reserve_kg = home
+                .burn_t
+                .saturating_mul(mass_p)
+                .saturating_add(u64::from(home.crew_days).saturating_mul(mass_v));
+            let next = fill(extra.saturating_add(reserve_kg))?;
+            let (want_tank, want_locker) = (
+                next.tank.max(next.plan.burn_t.saturating_add(home.burn_t)),
+                next.locker
+                    .max(u64::from(next.plan.crew_days).saturating_add(u64::from(home.crew_days))),
+            );
+            let settled = next.plan.burn_t == targets.plan.burn_t;
+            targets = FillTargets {
+                tank: want_tank,
+                locker: want_locker,
+                ..next
+            };
+            if settled {
+                break;
+            }
+        }
+    }
     Ok(Some(DepartTargets {
         to: to.clone(),
         targets,

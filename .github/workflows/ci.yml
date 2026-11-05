@@ -1322,14 +1322,6 @@ jobs:
   # crates/mush-contract-tests/test-tiers.toml, with its last run's revision. By hand:
   # cargo test --release -p tacsim --test shard_1 gc12_the_field_pulse_is_measured_at_scale -- --ignored --exact --test-threads=1 --nocapture
 
-  # Doc 32 CF.6c's gate, cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back
-  # (crates/tacsim/tests/shard_8/escort_lease.rs; #[ignore]d by #451): under the field rigs'
-  # pinned seed the intruder's first volley destroys the escort before it withdraws (doc 40 cut
-  # notes, FR.5 "After merge"). Its follow-up PR makes the fight survivable and lifts the ignore.
-  # Its tier is by-hand in crates/mush-contract-tests/test-tiers.toml, at its last green revision.
-  # By hand:
-  # cargo test -p tacsim --test shard_8 escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back -- --ignored --exact --nocapture
-
   # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
   # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
   # reinforcement, a tow struck and released under fire, a jammed sight, a segment rolled and
