@@ -315,13 +315,19 @@ async fn cf6b_the_raider_launches_fires_past_a_carrier_on_its_pad_and_withdraws_
         &format!("@field/raiders/withdraw {SKULKS}"),
     );
     assert!(ordered.contains("make for the"), "{ordered}");
+    // Doc 40 (the ramp exit's boarding window): each hull is aboard in the batch that lets it go,
+    // and its exit lands on the record after.
     let home = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
         let live = tacsim::field::live_on(rig.tw.world(), &cid(AHUNA));
+        let record = site_record(rig);
         raiders.iter().all(|hull| {
             mush_sim::pose_of(rig.tw.world(), *hull).is_none()
                 && live
                     .as_ref()
                     .is_none_or(|live| live.units.iter().all(|unit| unit.unit != *hull))
+                && record
+                    .as_ref()
+                    .is_some_and(|record| record.promoted.is_none() || record.exited(*hull))
         })
     })
     .await;

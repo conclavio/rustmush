@@ -744,17 +744,60 @@ went red on main once IN.5 (#414) merged after this cut.
   fell, and the field demoted on the rig's 10 s disengage with that hull alive and healthy. A healthy hull
   leaves no row on the site record. The story's point is a fight to the raider's destruction, so its rig alone
   raises `disengage_s` to 60 (#460).
-- **Known gap: the ramp exit's boarding window** (not built; nothing exercises it yet). A raider's withdrawal
-  is let go by the arena at its carrier's ramp and checked in beside it, but `raiders::board` runs only once
-  the record names the `exit`. A carrier wrecked inside that window would leave the hull on the site's ground,
-  in no field and aboard nothing. The owner's ruling for when it is built (2026-11-04, "back in the field"):
-  a withdrawal counts only once the raider is aboard. If the carrier is wrecked before the boarding lands, the
-  raider stays on the site as a stranded unit in the field, and under the earlier ruling it fights to the
-  death; the pad is never an exit. The lead's choice of shape: board in `exit::on_withdrawn` for
-  `Then::Raider`, in the batch that lets the hull go. A raider hull aboard a carrier wrecked later is lost with
-  it, a Wreck on the site record that stays in the wreck's bay (doc 41's salvage and the laden-mass tow,
-  Q-41-29, carry it). Scope: raider boarding only. Whether the same window exists for a player's hull at the
-  ramp is to be checked when this is built.
+- **The ramp exit's boarding window** (built, PR #468, 2026-11-04). Before it, a
+  raider's withdrawal was let go by the arena at its carrier's ramp and checked in beside it, and
+  `raiders::board` ran only once the record named the `exit`, with no carrier check. A carrier wrecked inside
+  that window, or before the release, left the hull out of the field "aboard" a wreck. The owner's ruling
+  (2026-11-04, "back in the field"): a withdrawal counts only once the raider is aboard; the pad is never an
+  exit. As built:
+  - **Aboard in the batch that lets it go.** `exit::on_withdrawn` checks a raider's hull in and boards it
+    (`raiders::board`: the WITHDRAW spent, off the ground) in the same batch. The record's `exit` is still owed
+    and written as before; once it lands, the continuation for `Then::Raider` runs only the carrier's
+    `lift_check`.
+  - **A carrier lost before the boarding: the kernel keeps the hull.** `ArenaMsg::Withdraw` gains
+    `carrier: Option<ObjId>`, named only for `Then::Raider`. `Arena::withdraw_to` refuses
+    `WithdrawRefusal::CarrierLost` while that carrier is a wreck or not in the field, wherever the hull
+    stands. It decides on the arena's live facts at the pulse head that would have let the hull go, so no
+    wreck can land between the check and the release. The host strands the hull (`raiders::strand`): it sends
+    the leader's order at sequence 2 with no directive, which lifts the WITHDRAW in the kernel so the doctrine
+    fights on (to the death, the earlier ruling), then spends the hull's `withdraw` mark so the host stops
+    asking. **Why this shape:** the arena never let the hull go, so nothing has to be undone or re-joined.
+    The host alone could only read the carrier's condition off the last snapshot (a 300 ms decode, up to
+    `snapshot_ms` stale), and a re-admit after a release would need a join, a home and a fresh row. A busy
+    field leaves the mark set, and the next ask's refusal strands the hull again. A restart that resumes a
+    snapshot from before the cancel would bring the WITHDRAW back with the mark already spent. That hull
+    holds at its ramp, firing only when cornered, until the field ends; nothing exercises this.
+  - **A carrier wrecked after the boarding takes its hulls with it.** In `close::demote_units`, a raider's
+    fixture carrier checked in a wreck runs `raiders::wreck_aboard`: each hull of its raider aboard it (off the
+    ground, launched from it, in no field, not remains) gets the arena's wreck mark on its own record
+    (`carrier_damage::wreck_plan`), as GC.3 wrecks a programme carrier's bay rigs. It stays aboard, under the
+    raider's mark naming the carrier, and nothing deletes it. `land_and_launch` never launches a wreck again.
+    **A deviation from the brief's wording:** the brief asked for "a `Wreck` row on the site record". The site
+    record's unit index holds only hulls on the ground (`keep_held_out` drops a row whose hull is off it), and
+    GC.3's bay rigs carry no rows, so the hull is a Wreck on its own record and stays in the bay, not on the
+    index. For Q-41-29's laden count, `tow::carried_kg` now weighs a fixture carrier's hulls aboard
+    (`raiders::aboard_kg`, dry mass, wrecks included), since the carrier has no programme bay for
+    `voyage::basis` to read. Salvage of the carrier's bay contents is doc 41's and is not touched here.
+  - **Tests** (`shard_10 field_boarding::`, doc 43 #3, the shard with room):
+    `boarding_a_raider_whose_carrier_is_lost_stays_in_the_field` (the carrier wrecked by staff hand before the
+    field) was red before the fix, with both hulls out of the field and off the ground, and is green after (18
+    s). `boarding_a_raider_aboard_a_carrier_wrecked_later_is_a_wreck_in_the_bay` (a grounded carrier, one hull
+    withdrawn and one aboard, then B's fire takes the carrier's hull) was red before at "aboard in the batch
+    that let it go", with the hull standing on the site's ground out of the field, and is green after (26 s).
+    `field_raiders::cf6b…` and `field_story::gc0…` wait for the record's exit as well as the boarding, because
+    the boarding now comes first. `field_raiders::`, `field_carrier::`, `field_fr5::`, `field_gc4::` and the
+    lib's `field::` and `withdraw` tests pass.
+  - **The player's hull at the ramp has the same window. Not fixed here.** `+tv/<n> recover`
+    (`Then::Rig`), `+sortie/recover` (`Then::Sortie`) and FR.5b's coupled load (`Then::TowLoad`, via
+    `surface/tow.rs` `field_load_cmd`) are all let go with no carrier check. Their recover or load runs as a
+    later step, once the record's exit lands. A player's carrier wrecked before the release, or inside that
+    window, leaves the rig beside the ramp, out of the field. The recover act does not refuse a wrecked
+    carrier, so the rig then goes into a wreck's bay, and GC.3 wrecks it only if the carrier checks in later.
+    The player keeps agency, since the record names the exit and their own recover passes. The fix is not the
+    same small change: the recover and the load are full surface acts with their own refusals and durations,
+    so they cannot run inside `on_withdrawn`'s batch. Naming the carrier on the ask would close only the
+    before-release half, and it would change a player-facing refusal with no ruling. The question is the
+    owner's.
 
 ## FR.5b — the coupled tow's surface half (§4.1 item 5; Q-40-7, Q-40-25)
 

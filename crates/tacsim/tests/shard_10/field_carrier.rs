@@ -559,7 +559,11 @@ fn pump_refusing(
                 tasks
                     .offer(
                         match_id,
-                        tacsim::arena_task::ArenaMsg::Withdraw { unit, ramp: None },
+                        tacsim::arena_task::ArenaMsg::Withdraw {
+                            unit,
+                            ramp: None,
+                            carrier: None,
+                        },
                     )
                     .expect("the kernel takes the withdrawal");
                 ArenaOut::Joined {

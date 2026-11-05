@@ -19,6 +19,15 @@
 //!    recover — and CF.1's refusal of surface work on a promoted site passes that one act for
 //!    that one unit (`crate::surface::site_record::SiteRecord::exited`). The field carries on.
 //!
+//! **A raider's hull boards in the batch that lets it go** (doc 40, the ramp exit's boarding
+//! window; the owner's ruling, 2026-11-04, "back in the field"): a withdrawal counts only once
+//! the raider is aboard, and the pad is never an exit. The ask names the hull's carrier, so the
+//! kernel keeps the hull while that carrier is a wreck or gone
+//! (`crate::arena::withdraw::WithdrawRefusal::CarrierLost`) and the host strands it in the field
+//! (`super::raiders::strand`); let go, [`on_withdrawn`] checks it in and puts it aboard in one
+//! batch (`super::raiders::board`), and step 3 only runs the carrier's lift check. A carrier
+//! wrecked after the boarding takes the hull with it (`super::raiders::wreck_aboard`).
+//!
 //! **A carrier lifting out of a running field** (doc 32 F-6, ruled 2026-10-31; cut CF.7) takes
 //! the same three steps with no ramp: a live `+ship/lift` or `+ship/undock` whose leave-behind
 //! confirmation names every unit the carrier has out (`crate::port::voyage::undock_cmd`) asks the
@@ -72,7 +81,8 @@ pub(crate) enum Then {
         lift: bool,
     },
     /// A raider's hull under its leader's WITHDRAW (doc 32 cut CF.6b): aboard its fixture
-    /// carrier again (`super::raiders::board`).
+    /// carrier again (`super::raiders::board`, in [`on_withdrawn`]'s batch since doc 40's
+    /// boarding window), then its carrier's lift check.
     Raider,
     /// A raider's fixture carrier whose hulls are all aboard or down (doc 36 cut GC.0; doc 32
     /// F-6's departure, run by the host for the NPC carrier): off the site's ground
@@ -176,8 +186,21 @@ pub(crate) fn request(
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .map(|registry| registry.tasks().clone())
         .ok_or_else(|| CmdError::msg("The field host is unavailable."))?;
+    // Doc 40 (the ramp exit's boarding window): a raider's hull names the carrier it boards, so
+    // the kernel keeps it while that carrier is lost.
+    let carrier = match then {
+        Then::Raider => super::raiders::carrier_of(ctx.w, unit),
+        _ => None,
+    };
     tasks
-        .offer(task, crate::arena_task::ArenaMsg::Withdraw { unit, ramp })
+        .offer(
+            task,
+            crate::arena_task::ArenaMsg::Withdraw {
+                unit,
+                ramp,
+                carrier,
+            },
+        )
         .map_err(|_| CmdError::msg("The field is busy; try the recover again."))?;
     let requester = ctx.actor;
     let line = match &then {
@@ -268,6 +291,7 @@ pub(crate) fn request_coupled(
                 crate::arena_task::ArenaMsg::Withdraw {
                     unit,
                     ramp: Some(ramp),
+                    carrier: None,
                 },
             )
             .map_err(|_| CmdError::msg("The field is busy; try the load again."))?;
@@ -337,6 +361,15 @@ pub(crate) fn on_withdrawn(
         Err(refusal) => {
             if let Some(book) = ctx.w.module_state_mut::<ExitBook>() {
                 book.0.remove(&unit);
+            }
+            // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04): a
+            // raider whose carrier is lost stays in the field, stranded, and fights on.
+            if refusal == WithdrawRefusal::CarrierLost
+                && asked
+                    .as_ref()
+                    .is_none_or(|asked| asked.then == Then::Raider)
+            {
+                super::raiders::strand(ctx, unit);
             }
             // Doc 40 cut FR.5 (Q-40-25): a coupled pair is refused as one — its tug's answer
             // tells, with the tow's own not-at-ramp sentence.
@@ -416,6 +449,21 @@ pub(crate) fn on_withdrawn(
     });
     if let Some(live) = live {
         super::record::write_live(ctx, &live);
+    }
+    // Doc 40 (the ramp exit's boarding window; the owner's ruling, 2026-11-04, "back in the
+    // field"): a raider's hull goes aboard in this batch, the one that lets it go, never as a
+    // later step once the record names the exit — a carrier wrecked in between would leave it on
+    // the site's ground in no field. The kernel judged its carrier whole at this pulse's head.
+    // A hull whose ask this boot no longer holds (a restart) is known by its standing WITHDRAW.
+    let raider = asked.as_ref().map_or_else(
+        || {
+            super::raiders::withdrawing(ctx.w, unit)
+                && super::raiders::carrier_of(ctx.w, unit).is_some()
+        },
+        |asked| asked.then == Then::Raider,
+    );
+    if raider && let Err(error) = super::raiders::board(ctx, unit) {
+        tracing::error!(site = %site, unit = unit.0, %error, "tacsim: a raider's hull out at its ramp could not go aboard");
     }
     if let Some(book) = ctx.w.module_state_mut::<ExitBook>()
         && let Some(asked) = book.0.get_mut(&unit)
@@ -636,7 +684,12 @@ fn continue_recover(
         Then::Lift { raw, lift } => {
             crate::port::voyage::undock_as(ctx, raw, *lift).map_err(|error| error.to_string())
         }
-        Then::Raider => super::raiders::board(ctx, unit, site),
+        // Doc 40 (the ramp exit's boarding window): the hull went aboard when it was let go
+        // ([`on_withdrawn`]); with its exit on the record, its carrier may lift.
+        Then::Raider => {
+            super::raiders::lift_check(ctx, site);
+            Ok(())
+        }
         Then::RaiderLift => super::raiders::lift(ctx, unit, site),
         // Doc 40 cut FR.5 (Q-40-25): the pair is out; the load runs as on open ground.
         Then::TowLoad { slot, .. } => {

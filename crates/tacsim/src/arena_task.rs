@@ -271,6 +271,10 @@ pub enum ArenaMsg {
         /// The ramp's site position, centimetres; `None` is a carrier lifting
         /// off its pad (doc 32 F-6), which takes no ramp.
         ramp: Option<(i64, i64)>,
+        /// **The carrier it boards** (doc 40, the ramp exit's boarding window): when named, the
+        /// unit stays while that carrier is a wreck or not in the field
+        /// (`Arena::withdraw_to`). Only a raider's hull names one.
+        carrier: Option<ObjId>,
     },
     /// **A pilot ejects from a doomed unit** (doc 42 cut CR.4; Q-42-10 to Q-42-12): read by
     /// `Arena::eject_read` at the next pulse's head, before the step, and answered as an
@@ -1544,6 +1548,10 @@ type PendingJoin = (
     Option<String>,
 );
 
+/// **One withdrawal asked** (doc 32 cut CF.5): the ramp's site position (`None` a carrier's
+/// lift) and the carrier the unit boards (doc 40, the ramp exit's boarding window).
+type WithdrawAsk = (Option<(i64, i64)>, Option<ObjId>);
+
 /// **Everything the world offered since the last pulse**, under the four rules
 /// above.
 #[derive(Default)]
@@ -1569,7 +1577,7 @@ struct PrePulse {
         BTreeMap<(crate::arena::PartyId, crate::arena::PartyId), Option<crate::arena::party::Mark>>,
     /// **Doc 32 cut CF.5**: the units the host asked out at the ramp,
     /// latest-wins per unit, so bounded by the field.
-    withdrawals: BTreeMap<ObjId, Option<(i64, i64)>>,
+    withdrawals: BTreeMap<ObjId, WithdrawAsk>,
     /// **Doc 42 cut CR.4**: the units whose pilots eject, bounded by the field.
     ejects: std::collections::BTreeSet<ObjId>,
     /// **Doc 36 cut GC.1b**: the units the host takes in, one per unit (the first offer wins:
@@ -1922,8 +1930,8 @@ async fn arena_loop(mut task: Task) {
                         waiting.marks.insert((by, of), mark);
                     }
                     // Doc 32 cut CF.5: and so does a withdrawal.
-                    Some(ArenaMsg::Withdraw { unit, ramp }) => {
-                        waiting.withdrawals.insert(unit, ramp);
+                    Some(ArenaMsg::Withdraw { unit, ramp, carrier }) => {
+                        waiting.withdrawals.insert(unit, (ramp, carrier));
                     }
                     // Doc 42 cut CR.4: and so does an eject's read.
                     Some(ArenaMsg::Eject { unit }) => {
@@ -2048,8 +2056,8 @@ impl Task {
                     .unit(*unit)
                     .is_some_and(|state| state.coupled_to.is_some())
             });
-        for (unit, ramp) in towed.into_iter().chain(rest) {
-            let outcome = self.arena.withdraw(unit, ramp).map(Box::new);
+        for (unit, (ramp, carrier)) in towed.into_iter().chain(rest) {
+            let outcome = self.arena.withdraw_to(unit, ramp, carrier).map(Box::new);
             self.queue_withdrawn(unit, outcome);
         }
         for zone in std::mem::take(&mut waiting.homes).into_values() {
@@ -4268,8 +4276,12 @@ mod tests {
         let (mut task, mut world) = af2_task(arena, 8, 5_000);
         task.terms = Some(fr5_terms());
         let mut waiting = PrePulse::default();
-        waiting.withdrawals.insert(tug, Some((2_500, 1_500)));
-        waiting.withdrawals.insert(casualty, Some((2_500, 1_500)));
+        waiting
+            .withdrawals
+            .insert(tug, (Some((2_500, 1_500)), None));
+        waiting
+            .withdrawals
+            .insert(casualty, (Some((2_500, 1_500)), None));
         task.apply_field_acts(&mut waiting);
         assert!(task.arena.unit(tug).is_none() && task.arena.unit(casualty).is_none());
         // The egress holds one; the rest wait behind it in the backlog, in order.
