@@ -29,9 +29,14 @@ is SU.3's to make, in `lift_check`, not the kernel's.
   once it has fired. A plot past the reach is not counted. A contact read dead stops counting. A wreck, a
   gunless hull and a stranger read `0`. At every step the party boolean equals "some hull of the party
   counts more than none".
-- The harness kind on conclav-dev (doc 43 rule 13), because the cut edits `arena/state.rs`. See below.
+- The harness kind on conclav-dev (doc 43 rule 13), because the cut edits `arena/state.rs`. It was green at
+  `a5348999`, run [42059596120](https://github.com/conclavio/rustmush/actions/runs/42059596120).
+  `tacsim_harness_delta_against_the_committed_baseline` passed against `arena.linux.json` (blessed at `a2ef4075`)
+  with every deterministic leaf equal and the four `minds` blocks equal. The timing gate is live on that host, and
+  every compared timing stayed inside 20%.
 
-**Doc 40 §4a's pins.** Expected unmoved, as Q-42b-11 says, and none moves:
+**Doc 40 §4a's pins.** Expected unmoved, as Q-42b-11 says, and none moves. The harness baseline is unmoved (above),
+and the pin tests run in ci.yml's tacsim shards on this PR:
 - The cut adds no draw, no `UnitState` or snapshot row, no pack byte and no API bump.
 - The only kernel behaviour touched is the boolean, and its body is the same predicate moved into a helper.
 - No pin is re-blessed. This cut shares no batch with a rebless (Q-36-56). FR.5's rebless is merged, and
