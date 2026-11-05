@@ -9,7 +9,7 @@
 //! field, the field settles with the casualty at its own trailing cell beside the tug, and the
 //! wingman loads it into the carrier's bay — a restart while loading keeps the load — before the
 //! carrier lifts. FR.5's own stories (release, a fallen tug, the coupled withdraw at the ramp)
-//! are `shard_10/field_fr5.rs`.
+//! are `domain_field/field_fr5.rs`.
 //!
 //! **What is a fixture.** The casualty's power is destroyed by staff hand before the first
 //! field, standing in for the round that disabled it (GC.3's precedent): the first field then

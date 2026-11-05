@@ -9,7 +9,7 @@
 
 use serde_json::Value;
 
-/// The viewer's own site view (`TACSIM_BLESS=1 cargo test -p tacsim --test shard_1
+/// The viewer's own site view (`TACSIM_BLESS=1 cargo test -p tacsim --test domain_field
 /// driving::sm4b_the_site_map_fixtures_are_blessed`).
 const MINE: &str = include_str!("../../../web/src/lib/fixtures/site/site_map.json");
 /// A second principal's site view on the same pad, at the same instant.

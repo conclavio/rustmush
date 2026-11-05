@@ -26,8 +26,8 @@
 # A row names its site by `path` (a production file, workspace-relative) or,
 # for a test-rig file under a crate's `tests/`, by `module =
 # "<crate>/tests::<module>"` — the file's module path less the test target's
-# group directory, so `crates/tacsim/tests/shard_3/drones.rs` is
-# `tacsim/tests::drones` and a reshard rewrites no row (doc 43 cut TS.8).
+# group directory, so `crates/tacsim/tests/domain_economy/drones.rs` is
+# `tacsim/tests::drones` and a move between domains rewrites no row (doc 43 cut TS.8).
 #
 # WHAT THE CENSUS FOUND. Every cross-owner MUTATION in the tree goes through
 # `World::module_state_mut` — the unchecked accessor that carries no module

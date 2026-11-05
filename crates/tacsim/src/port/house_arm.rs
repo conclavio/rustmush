@@ -37,6 +37,14 @@ pub enum HouseAct {
     Home(String),
     /// Hand the casualty over at the destination.
     Berth,
+    /// Doc 41 cut RS.6c-1: title an ownerless wreck to the dispatcher before the tow.
+    Title,
+    /// Doc 41 cut RS.6c-1: file the house's salvage claim on a swept hull in its custody.
+    Claim,
+    /// Doc 41 cut RS.6c-1: break a swept hull up at the home workshop (IN.8).
+    Scrap,
+    /// Doc 41 cut RS.6c-1: keep a swept hull for resale: her title to the house.
+    Keep,
     /// Under way, mid-act, or waiting on the world: nothing this fire.
     Wait,
 }
@@ -235,6 +243,79 @@ fn job(w: &World, home: &CanonicalId) -> Option<RetrievalOrder> {
         })
 }
 
+/// **The sweep's next act** (doc 41 cut RS.6c-1, [`crate::port::house_sweep`]): a swept hull the
+/// house holds (in the lifter's bay, or berthed in the home workshop) first, else the next wreck
+/// to sweep. `None` when there is nothing to sweep.
+fn sweep_act(
+    ctx: &Ctx<'_>,
+    (lifter, crawler): (ObjId, ObjId),
+    home: &CanonicalId,
+) -> Option<(ObjId, HouseAct)> {
+    use crate::port::house_sweep::{Disposition, assess, held, target, title_of};
+    let workshop = crate::port::market::ports(ctx.w)
+        .into_iter()
+        .find(|(id, ..)| id == home)
+        .and_then(|(entry, def, _)| {
+            crate::port::workshop::room(ctx.w, &entry, def)
+                .ok()
+                .flatten()
+        });
+    let dispatcher = crate::port::coop::helm_holder(ctx.w, lifter)?;
+    if let Some(hull) = held(ctx, (lifter, crawler), workshop) {
+        let custody = crate::surface::salvage::custody_of(ctx, hull);
+        let berthed = workshop.is_some() && ctx.w.get(hull).and_then(|o| o.location) == workshop;
+        if !berthed {
+            if custody
+                .as_ref()
+                .is_some_and(|row| row.claim == crate::surface::salvage::ClaimSeam::Owed)
+            {
+                return Some((hull, HouseAct::Claim));
+            }
+            return Some((hull, next_act(ctx, (lifter, crawler), hull, home)));
+        }
+        // Berthed at home: the claim must be awarded before anything is done with her.
+        if title_of(ctx.w, hull) != Some(mush_org::PrincipalId::Object(dispatcher)) {
+            return Some((hull, HouseAct::Wait));
+        }
+        return Some((
+            hull,
+            match assess(ctx.w, hull) {
+                Disposition::Keep { .. } => HouseAct::Keep,
+                Disposition::Scrap { .. } => HouseAct::Scrap,
+            },
+        ));
+    }
+    let (hull, _site) = target(ctx)?;
+    if title_of(ctx.w, hull).is_none() {
+        return Some((hull, HouseAct::Title));
+    }
+    Some((hull, next_act(ctx, (lifter, crawler), hull, home)))
+}
+
+/// **The house's accounts and root scope** for `dispatcher`: `(float, house account, org,
+/// root scope)`.
+fn house_accounts(
+    w: &World,
+    dispatcher: ObjId,
+) -> Option<(u64, u64, mush_org::OrgId, mush_org::OrgScopeId)> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find_map(|(_, def, map)| {
+            let map = map?;
+            let row = map.house.as_ref()?;
+            if row.dispatcher != Some(dispatcher.0) {
+                return None;
+            }
+            let org = map.orgs.get(&def.recovery.as_ref()?.operator)?;
+            Some((
+                row.account?,
+                org.account?,
+                mush_org::OrgId(org.org),
+                mush_org::OrgScopeId(org.root_scope),
+            ))
+        })
+}
+
 /// **The house arm's step** (`Arm::House`): one act of the house's one job this fire.
 pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) -> Step {
     let home = crate::port::market::ports(ctx.w)
@@ -248,14 +329,21 @@ pub(crate) fn house_step(ctx: &mut Ctx<'_>, fire: &mut Fire, dispatcher: ObjId) 
     let Some((lifter, crawler)) = crate::port::house::hulls(ctx.w, &home) else {
         return Step::Idle;
     };
-    let Some(order) = job(ctx.w, &home) else {
+    // The house's job: a retrieval it holds, else (doc 41 cut RS.6c-1) the sweep.
+    let Some((hull, act)) = job(ctx.w, &home)
+        .map(|order| {
+            (
+                order.hull,
+                next_act(ctx, (lifter, crawler), order.hull, &home),
+            )
+        })
+        .or_else(|| sweep_act(ctx, (lifter, crawler), &home))
+    else {
         return Step::Idle;
     };
-    let act = next_act(ctx, (lifter, crawler), order.hull, &home);
     if act == HouseAct::Wait {
         return Step::Idle;
     }
-    let hull = order.hull;
     let result = fire.as_principal(ctx, dispatcher, dispatcher, |ctx| {
         perform(ctx, &act, (lifter, crawler, hull), &home)
     });
@@ -310,8 +398,44 @@ fn perform(
             crate::surface::tow::load_cmd(ctx, &rig, true).map_err(said)
         }
         HouseAct::Berth => berth_delivery(ctx, hull, home),
+        HouseAct::Title => crate::port::house_sweep::title_ownerless(ctx, hull),
+        HouseAct::Claim => {
+            crate::surface::claim::tow_files_salvage(ctx, &format!("#{}", hull.0)).map_err(said)
+        }
+        HouseAct::Keep => {
+            let (_, _, org, scope) =
+                house_accounts(ctx.w, dispatcher).ok_or("the house's accounts are not open")?;
+            crate::port::house_sweep::to_house(ctx, hull, (org, scope))
+        }
+        HouseAct::Scrap => scrap_at_home(ctx, hull, home),
         HouseAct::Wait => Ok(()),
     }
+}
+
+/// **Break a swept hull up at the home workshop** (doc 41 cut RS.6c-1; IN.8's `scrap`): the
+/// dispatcher steps into the workshop room, scraps her as her title holder, steps back, and the
+/// scrap's credit (paid into its float) goes to the house's account.
+fn scrap_at_home(ctx: &mut Ctx<'_>, hull: ObjId, home: &CanonicalId) -> Result<(), String> {
+    let dispatcher = ctx.actor;
+    let (room, host) = {
+        let (entry, def, map) = crate::port::market::ports(ctx.w)
+            .into_iter()
+            .find(|(id, ..)| id == home)
+            .ok_or("the home port is not on the lane")?;
+        let room = crate::port::workshop::room(ctx.w, &entry, def)?
+            .ok_or("the home port has no workshop")?;
+        (room, map.and_then(|map| map.host).map(ObjId))
+    };
+    let back = ctx.w.get(dispatcher).and_then(|o| o.location).or(host);
+    ctx.w.move_to(dispatcher, room).map_err(|e| e.to_string())?;
+    let scrapped = crate::port::bay_work::strip::scrap(ctx, hull);
+    if let Some(back) = back {
+        let _ = ctx.w.move_to(dispatcher, back);
+    }
+    let credit = scrapped?.credit_minor;
+    let (float, house, _, _) =
+        house_accounts(ctx.w, dispatcher).ok_or("the house's accounts are not open")?;
+    crate::port::house_sweep::return_surplus(ctx, (float, house), credit)
 }
 
 /// **The handover at home**: the dispatcher steps into the workshop room and berths her there out

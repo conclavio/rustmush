@@ -1888,7 +1888,7 @@ fn bless(name: &str, text: &str) {
         assert_eq!(
             on_disk, text,
             "web/src/lib/fixtures/site/{name} is out of date; re-bless with TACSIM_BLESS=1 \
-             cargo test -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_blessed"
+             cargo test -p tacsim --test domain_field driving::sm4b_the_site_map_fixtures_are_blessed"
         );
     }
 }
