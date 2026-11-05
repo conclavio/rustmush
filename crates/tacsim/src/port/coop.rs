@@ -685,6 +685,10 @@ pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId> {
     if crate::relay_mobile::fleet_hull(w) == Some(hull) {
         return crate::relay_mobile::commander(w, hull);
     }
+    // Doc 41 cut RS.6b: a recovery house's own hulls are flown by its dispatcher.
+    if let Some(dispatcher) = crate::port::house::house_of(w, hull) {
+        return Some(dispatcher);
+    }
     if let Some(tenant) = charter_tenant(w, hull) {
         return Some(tenant);
     }

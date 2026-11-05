@@ -2006,6 +2006,9 @@ pub(crate) enum Step {
 /// The arms, in dispatch order (one step per agent per fire, D-18-32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arm {
+    /// Doc 41 cut RS.6b: a recovery house's dispatcher flying its one retrieval
+    /// ([`crate::port::house_arm::house_step`]).
+    House,
     /// Doc 18 cut IC8: a port's stock clerk — mint, dissolve, list
     /// ([`crate::port::stock::stock_step`]).
     Stock,
@@ -2138,6 +2141,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
         .unwrap_or_default();
     let site_clerks = crate::port::site::site_clerks(ctx.w);
     let dispatchers = crate::port::yard::dispatchers(ctx.w);
+    let houses = crate::port::house::dispatchers(ctx.w);
     let release = crate::port::stock::release_agent(ctx.w, state);
     let launches = crate::port::voyage::launch_agents(ctx.w, state);
     // Doc 18 cut IC13 (lead ruling L12): the recall agents read tickets (`&Ctx`), and
@@ -2186,6 +2190,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // budget gains one agent a yard.
     for dispatcher in dispatchers {
         offer(dispatcher, dispatcher, Arm::Dispatch);
+    }
+    // Doc 41 cut RS.6b: every recovery house's dispatcher, agent and principal both.
+    for dispatcher in houses {
+        offer(dispatcher, dispatcher, Arm::House);
     }
     // One per fire: a holder already offered this fire is refused by the
     // duplicate rule above and waits for the next.
@@ -2253,7 +2261,8 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
             Arm::Site => fire.stats.site.count(step),
             Arm::Dispatch => fire.stats.dispatch.count(step),
             Arm::Epoch => fire.stats.epoch.count(step),
-            Arm::Release { .. }
+            Arm::House
+            | Arm::Release { .. }
             | Arm::Launch { .. }
             | Arm::Recall { .. }
             | Arm::Order { .. }
@@ -2328,6 +2337,7 @@ fn step(
         }
         Arm::Site => crate::port::site::site_step(ctx, fire, agent),
         Arm::Dispatch => crate::port::yard::dispatch_step(ctx, state, fire, agent),
+        Arm::House => crate::port::house_arm::house_step(ctx, fire, agent),
         Arm::Epoch => crate::port::epoch::epoch_step(ctx, state, fire, agent, principal),
         Arm::Passenger { booking } => crate::port::passenger::step(ctx, fire, booking),
         Arm::Probe => match state.probe_action.clone() {

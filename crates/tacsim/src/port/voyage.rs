@@ -1357,6 +1357,10 @@ pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
     if crate::port::yard::is_dispatcher_of(w, hull, person) {
         return true;
     }
+    // Doc 41 cut RS.6b: and a recovery house's dispatcher, aboard its house's own hulls.
+    if crate::port::house::is_dispatcher_of(w, hull, person) {
+        return true;
+    }
     if hull_view(w, hull).and_then(|view| view.airlock()).is_none() {
         return false;
     }

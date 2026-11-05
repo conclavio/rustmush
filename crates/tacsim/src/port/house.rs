@@ -26,6 +26,53 @@ use crate::store::put_port_map;
 
 /// The dispatcher's name.
 pub const DISPATCHER_NAME: &str = "Tycho Mutual dispatcher";
+/// The capability the dispatcher holds over the house's root scope (doc 41 cut RS.6b): what
+/// `mush_economy::acts_for` reads.
+pub const POST_CAPABILITY: &str = "economy.account.post";
+
+/// **Whether `person` is the dispatcher of the house that owns `hull`** (doc 41 cut RS.6b): the
+/// yard dispatcher's precedent (`crate::port::yard::is_dispatcher_of`) — the dispatcher is aboard
+/// its house's own hulls wherever they stand, and holds their helm.
+#[must_use]
+pub fn is_dispatcher_of(w: &mush_core::World, hull: ObjId, person: ObjId) -> bool {
+    house_of(w, hull).is_some_and(|dispatcher| dispatcher == person)
+}
+
+/// **Every recovery house's live dispatcher** (doc 41 cut RS.6b): the port tick's `Arm::House`
+/// agents, once a house is granted and stowed (laid up whole).
+#[must_use]
+pub fn dispatchers(w: &mush_core::World) -> Vec<ObjId> {
+    let Some(store) = w.module_state::<crate::store::TacsimStore>() else {
+        return Vec::new();
+    };
+    store
+        .port_maps()
+        .filter_map(|map| {
+            let row = map.house.as_ref()?;
+            (row.stowed && row.grant.is_some())
+                .then_some(ObjId(row.dispatcher?))
+                .filter(|d| !crate::port_tick::gone(w, *d))
+        })
+        .collect()
+}
+
+/// **The dispatcher of the house that owns `hull`**, when `hull` is one of a house's two.
+#[must_use]
+pub fn house_of(w: &mush_core::World, hull: ObjId) -> Option<ObjId> {
+    let store = w.module_state::<crate::store::TacsimStore>()?;
+    store.port_maps().find_map(|map| {
+        let row = map.house.as_ref()?;
+        let ours = [row.lifter, row.crawler]
+            .into_iter()
+            .flatten()
+            .any(|order| {
+                crate::port::commission::commission(w, order)
+                    .and_then(YardCommission::object)
+                    .is_some_and(|obj| obj == hull)
+            });
+        (ours && row.grant.is_some()).then_some(ObjId(row.dispatcher?))
+    })
+}
 
 /// **The house arm** (the port tick, before the commission arm): every port whose recovery row
 /// authors a house is carried one step nearer laid up. A failure is logged and retried next fire.
@@ -35,8 +82,11 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         .filter_map(|(entry, def, map)| {
             let map = map?;
             def.recovery.as_ref()?.house.as_ref()?;
-            (!map.house.as_ref().is_some_and(|row| row.stowed))
-                .then(|| (entry, def.clone(), map.clone()))
+            (!map
+                .house
+                .as_ref()
+                .is_some_and(|row| row.stowed && row.grant.is_some()))
+            .then(|| (entry, def.clone(), map.clone()))
         })
         .collect();
     for (entry, def, map) in houses {
@@ -76,6 +126,44 @@ fn step(
             ObjId(thing)
         }
     };
+    // 1b. Doc 41 cut RS.6b: the dispatcher acts for the house (`mush_economy::acts_for`), by an
+    // `economy.account.post` grant on the operator's root scope (the lessor agent's precedent,
+    // `crate::port::equipment`), so the house's helm, title views and retrievals answer it.
+    if map.house.as_ref().is_some_and(|row| row.grant.is_none()) {
+        let org = map
+            .orgs
+            .get(&recovery.operator)
+            .cloned()
+            .ok_or("the operator has no map row yet")?;
+        let grant = crate::port::apply::alloc_grant_id(ctx)?;
+        let plan = mush_org::OrgMutationPlan::of(vec![mush_org::OrgMutationOp::PutGrant {
+            grant: mush_org::CapabilityGrant {
+                id: grant,
+                org: OrgId(org.org),
+                grantee: dispatcher,
+                capability: mush_org::CapabilityId::new(POST_CAPABILITY)
+                    .ok_or("the post capability id")?,
+                scope: mush_org::ScopeSelector::Exact(mush_org::OrgScopeId(org.root_scope)),
+                limit: None,
+                delegable: false,
+                valid_from: None,
+                valid_until: None,
+                revision: 1,
+            },
+        }]);
+        mush_org::submit(
+            ctx,
+            &plan,
+            mush_org::OrgAction {
+                action: "tacsim.house.dispatcher".into(),
+                org: Some(OrgId(org.org)),
+                detail: serde_json::json!({ "port": entry.as_str(), "dispatcher": dispatcher.0 }),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        row(&mut map).grant = Some(grant.0);
+        put_port_map(ctx, &map);
+    }
     // 2–3. The commissions.
     let designs = [
         (
