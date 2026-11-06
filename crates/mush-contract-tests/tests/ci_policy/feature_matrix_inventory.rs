@@ -323,8 +323,8 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (16, 11),
-        "16 toggleable features across 11 crates, including the opt-in testkit Store driver and tacsim's test ledger floor: {declared:?}"
+        (17, 11),
+        "17 toggleable features across 11 crates, including the opt-in testkit Store driver and tacsim's test ledger and dormancy floors: {declared:?}"
     );
 }
 
