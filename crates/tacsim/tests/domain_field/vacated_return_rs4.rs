@@ -219,14 +219,45 @@ fn story(venue: &str, entry: &str, side: u16) {
         panic!("two spare rigs in Occator's pool: {spares:?}");
     };
     let (a, d) = (*a, *d);
-    for hull in [a, d] {
+    // `a` is T's own; `d` is Brask Freight's, T its officer (doc 41 cut RS.9c: story (b)'s bot
+    // found an organization's held hull would not leave the workshop for its officer).
+    for line in [
+        "@org/create Brask".to_owned(),
+        format!("@org/grant #{}=Brask economy.account.post", t.0),
+    ] {
+        let out = run(&mut rig.tw, GOD, &line);
+        assert!(!out.contains("Permission denied"), "{line}: {out}");
+    }
+    let root = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|store| {
+            store
+                .state()
+                .orgs()
+                .find(|org| org.name.as_str() == "Brask")
+                .map(|org| org.root_scope.0)
+        })
+        .expect("Brask's root scope");
+    for (hull, to) in [
+        (a, format!("#{}", t.0)),
+        (d, format!("org:Brask scope={root}")),
+    ] {
         let moved = run(
             &mut rig.tw,
             GOD,
-            &format!("@asset/transfer #{}=#{}", hull.0, t.0),
+            &format!("@asset/transfer #{}={to}", hull.0),
         );
         assert!(!moved.contains("Permission denied"), "{moved}");
     }
+    let brask = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| e.snapshot().asset(d).map(|asset| asset.title_owner.clone()))
+        .filter(|owner| matches!(owner, PrincipalId::Organization(_)))
+        .expect("`d` is Brask's");
     let (rx, ry) = {
         let (x, y, _) = ramp_at(&rig.tw, entry);
         (x.div_euclid(1_000), y.div_euclid(1_000))
@@ -266,8 +297,8 @@ fn story(venue: &str, entry: &str, side: u16) {
             && custody(rig, entry, d).is_none()),
         "both vacating contests settle"
     );
-    for hull in [a, d] {
-        assert_eq!(held_for(&rig, hull), Some(PrincipalId::Object(t)));
+    for (hull, owner) in [(a, PrincipalId::Object(t)), (d, brask.clone())] {
+        assert_eq!(held_for(&rig, hull), Some(owner));
         assert_eq!(where_is(rig.tw.world(), hull), Where::Bay { hull: o_hull });
     }
     let shown = run(&mut rig.tw, t, &format!("+bay #{}", a.0));
@@ -295,10 +326,10 @@ fn story(venue: &str, entry: &str, side: u16) {
     }
     .expect("`d` is berthed at the docking");
     assert_eq!((berth.workshop, berth.carrier), (floor, None));
-    assert_eq!(held_for(&rig, d), Some(PrincipalId::Object(t)));
+    assert_eq!(held_for(&rig, d), Some(brask.clone()));
     assert_ne!(where_is(rig.tw.world(), d), Where::Bay { hull: o_hull });
 
-    // 4. T's carrier docks at Ceres and T stows `d` from the workshop floor.
+    // 4. T's carrier docks at Ceres and T, Brask's officer, stows `d` from the workshop floor.
     let ticket = file_and_launch(&mut rig, t, t_hull, "+ship/undock ceres");
     let _ = to_ic(&mut rig, ticket.plan.depart_ic + ticket.plan.total_s);
     let airlock = tacsim::port::ship::hull_view(rig.tw.world(), t_hull)

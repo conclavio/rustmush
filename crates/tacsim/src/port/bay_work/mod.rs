@@ -2348,7 +2348,15 @@ pub fn stow(ctx: &mut Ctx<'_>, hull: ObjId, carrier: Option<ObjId>) -> Result<Ob
             mush_core::output::display_name(ctx.w, custody.holder)
         ));
     }
-    let right = right_of(ctx, hull).ok_or(NO_RIGHT)?;
+    // Doc 41 cut RS.9c (story (b)'s bot): a hull held for her owner is theirs to take, as she
+    // is bay to bay (`stow_held`) — an organization's held hull by one who answers for it.
+    let held = record
+        .held_for
+        .as_ref()
+        .is_some_and(|owner| answers_for(ctx.w, ctx.actor, owner));
+    let right = right_of(ctx, hull)
+        .or(held.then_some(Right::Title))
+        .ok_or(NO_RIGHT)?;
     if !permits(right, Act::Berth) {
         return Err(NO_RIGHT.to_owned());
     }
