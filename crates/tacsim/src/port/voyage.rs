@@ -3002,14 +3002,22 @@ pub(crate) fn bay_gate_leaving(
     let mut left: Vec<ObjId> = Vec::new();
     // Each unit out the departure does not name: its label and its own refusal line.
     let mut unnamed: Vec<(String, String)> = Vec::new();
-    // Doc 36a lane 3 (P0-5): a combat hull a tow loaded is cargo here too — and (doc 41 cut
-    // RS.9a, story (d)) a carrier a tow loaded: a ship's hull in the bay is no rig.
+    // Doc 36a lane 3 (P0-5): a combat hull a tow loaded is cargo here too — and (doc 41 cuts
+    // RS.9a/b, stories (d) and (e)) a carrier a tow loaded (a ship's hull in the bay is no rig),
+    // and any hull aboard that is none of this carrier's live rigs and has no hopper vault at all
+    // (a raid's bare hull, swept). A rig whose hopper exists but will not read is no cargo: the
+    // departure plans dark on it (fails closed).
+    let own: std::collections::BTreeSet<ObjId> = crate::port::tv::live_on_hull(w, hull)
+        .into_iter()
+        .map(|record| record.tv)
+        .collect();
     let inert: std::collections::BTreeSet<_> = crate::port::vehicle::rigs_in_bay(w, view)
         .into_iter()
         .filter(|r| {
             crate::relay_foundry::cargo(w, r.tv)
                 || crate::port::vehicle::combat_hull(w, r.tv)
                 || crate::port::ship::hull_view(w, r.tv).is_some()
+                || (!own.contains(&r.tv) && crate::port::vehicle::hopper_of(w, r.tv).is_none())
         })
         .map(|r| r.tv)
         .collect();

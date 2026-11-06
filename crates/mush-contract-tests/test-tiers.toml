@@ -309,6 +309,19 @@ id = "mush-bot/tests::mining_cohort::in11_the_bot_mines_and_builds_a_prospector_
 tier = "by-hand"
 by_hand = "0b545480"
 
+# Doc 41 cut RS.9b: story (e) whole at 256 and 512, the bot the buyer of a swept, restored wreck,
+# green by hand at the revision below on conclav.dev, both sizes side by side through the built
+# test binary (3,205 s each at rate 3,600).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_e_the_bot_buys_a_swept_wreck_from_ahuna"
+tier = "by-hand"
+by_hand = "ca0ad46f"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_e_the_bot_buys_a_swept_wreck_from_urvara"
+tier = "by-hand"
+by_hand = "ca0ad46f"
+
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
 [[test]]

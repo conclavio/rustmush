@@ -30,6 +30,9 @@ mod fr7_round;
 mod grounds_rig;
 #[path = "mining_cohort/in11_matter.rs"]
 mod in11_matter;
+// Doc 41 cut RS.9b: story (e) whole at both sizes, the bot the buyer.
+#[path = "mining_cohort/rs9_story_e.rs"]
+mod rs9_story_e;
 /// The one name `grounds_rig` reads from tacsim's `driving_rig`: Ahuna Flank's port entry.
 mod driving_rig {
     pub(crate) const AHUNA: &str = "ahuna_port";
@@ -617,6 +620,48 @@ async fn in11_the_bot_mines_and_builds_a_prospector_from_urvara() {
     )
     .await
     .expect("the Urvara matter story finishes inside ninety minutes");
+}
+
+/// **Doc 41 cut RS.9b: story (e) whole, the bot over SSH at 256** (Ahuna Flank): a raider's
+/// wreck swept, restored and sold by Tycho Mutual, the bot the buyer, the matter census held
+/// (`rs9_story_e`). `#[ignore]`d, run by name:
+///
+/// `cargo test -j 8 -p mush-bot --test mining_cohort -- --ignored rs9_ --nocapture --test-threads 1`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9b's story (e) at 256: 56 IC days at rate 3600, the sweep, the restoration and the sale; run by name"]
+async fn rs9_story_e_the_bot_buys_a_swept_wreck_from_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        rs9_story_e::story_e(
+            Miner {
+                account: "rs9eahuna",
+                character: "Rseahuna",
+                site: Site::Ahuna,
+            },
+            &grounds_rig::AHUNA_FLANK,
+        ),
+    )
+    .await
+    .expect("the Ahuna story (e) finishes inside ninety minutes");
+}
+
+/// The same story at Urvara Reach (512). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9b's story (e) at 512: 56 IC days at rate 3600, the sweep, the restoration and the sale; run by name"]
+async fn rs9_story_e_the_bot_buys_a_swept_wreck_from_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        rs9_story_e::story_e(
+            Miner {
+                account: "rs9eurvara",
+                character: "Rseurvara",
+                site: Site::Urvara,
+            },
+            &grounds_rig::URVARA_REACH,
+        ),
+    )
+    .await
+    .expect("the Urvara story (e) finishes inside ninety minutes");
 }
 
 /// The production half's world rate: an IC hour a real second.

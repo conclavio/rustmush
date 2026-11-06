@@ -87,12 +87,12 @@ const JAMMING_PACK: &str = "fr7.pack.jamming_tank";
 /// The shipped line tank: the jamming design's source and the raider's hull.
 const LINE_TANK: &str = "tacsim.unit.line_tank";
 /// The stock rig design the casualty is (beat 3).
-const PROSPECTOR: &str = "tacsim.unit.tv_prospector";
+pub(crate) const PROSPECTOR: &str = "tacsim.unit.tv_prospector";
 /// The line tank's pack, as shipped.
 const LINE_TANK_JSON: &str = include_str!("../../../tacsim/content/units/line_tank.json");
 /// A heading due west, millidegrees (`grounds_rig`'s convention: 270 000 faces the pad from the
 /// east).
-const WEST: u32 = 270_000;
+pub(crate) const WEST: u32 = 270_000;
 
 /// Concord's captain: the bot's hired-crew lane.
 const CAPTAIN: mine::Miner = mine::Miner {
@@ -145,13 +145,13 @@ fn jamming_pack(dir: &std::path::Path) -> String {
 }
 
 /// A canonical id.
-fn cid(word: &str) -> mush_core::CanonicalId {
+pub(crate) fn cid(word: &str) -> mush_core::CanonicalId {
     mush_core::CanonicalId::new(word).expect("a canonical id")
 }
 
 /// **A staff hand on the booted engine** before the world task spawns (the fixture's seam, as
 /// tacsim's `driving_rig::staff_hand`): `f` over a `Ctx` acting as God.
-fn staff_hand<T>(
+pub(crate) fn staff_hand<T>(
     engine: &mut mush_core::Engine,
     f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T,
 ) -> T {
@@ -223,7 +223,7 @@ fn stands(engine: &mush_core::Engine, ground: &Ground) -> [(i64, i64); 3] {
 
 /// **A hull of `design` on `ground` at `cell`, facing `heading`** (the fixture, as
 /// `field_host_rig::armed_on`).
-fn placed(
+pub(crate) fn placed(
     engine: &mut mush_core::Engine,
     ground: &Ground,
     design: &str,

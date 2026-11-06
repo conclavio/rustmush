@@ -2287,12 +2287,12 @@ pub fn berth(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<ObjId, String> {
     if u32::try_from(used).unwrap_or(u32::MAX) >= berths {
         return Err("Every berth in the workshop is taken.".to_owned());
     }
-    // Doc 41 cut RS.9a (story (d)): a carrier berthed out of a bay ends her finished journey,
+    mush_sim::unplace(ctx, hull, "tacsim.bay.berth")?;
+    ctx.w.move_to(hull, room).map_err(|e| e.to_string())?;
+    // Doc 41 cut RS.9a (story (d)): a carrier berthed out of a bay ends her arrived journey,
     // so the simulation does not take her, unplaced in the room, for a stopped ship and
     // quarantine her into its recovery room.
     let _ = mush_sim::retire_finished_journey(ctx, hull);
-    mush_sim::unplace(ctx, hull, "tacsim.bay.berth")?;
-    ctx.w.move_to(hull, room).map_err(|e| e.to_string())?;
     record.berth = Some(BerthRow {
         workshop: room,
         carrier: Some(carrier),

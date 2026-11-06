@@ -36,7 +36,7 @@ const PLANT: &str = "tacsim.part.plant.light_mk1";
 const SIGHT: &str = "tacsim.part.sensor.visual_mk1";
 
 /// The census line's terms, typed by God.
-async fn census(god: &mut arena::Client) -> (i128, Vec<(i128, i128, i128)>) {
+pub(crate) async fn census(god: &mut arena::Client) -> (i128, Vec<(i128, i128, i128)>) {
     let from = god.seen.len();
     let (index, text) = god
         .answer("@industry/census", &["tacsim.matter_census"])

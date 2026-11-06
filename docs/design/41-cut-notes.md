@@ -889,3 +889,44 @@ the tick sets her down on her ramp's cell and indexes her a wreck, her two bay r
 it when the job's contract settles; her two rigs come home aboard her; `+bay/quote` prices her hull's rebuild.
 `tests/domain_economy/in8_mass_scrap.rs`'s whole-escort scrap reads the census while the mint is owed (unchanged)
 and after it lands (balanced, the yield a source) — it fails without the change (5,869 kg counted early).
+
+## RS.9b — story (e) whole, the bot over SSH (2026-11-05)
+
+Row: §6 RS.9, its second slice. Stacked on RS.9a (#503). No lane rows.
+
+**The story** (`mush-bot` `tests/mining_cohort/rs9_story_e.rs`; `mining_cohort::rs9_story_e_the_bot_buys_a_swept_wreck_from_{ahuna,urvara}`,
+`#[ignore]`d, run by name, TS.2 tier by-hand): God's fixture makes a raid's bare prospector hull (no title, no vaults)
+on the site's open ground, its chassis destroyed by `@unit/damage`, on the index by `@tacsim/site leave`; God opens and
+funds the bot's credit account and lifts the world to 3,600. The house sweeps her at 56 IC days, titles her to its
+dispatcher (salvage of the unowned), tows and loads her, flies her home, restores her and lists her; the bot types
+`+salvage/forsale` until she is on it, then `+salvage/buy <hull>` and `… go`, and reads her title as its own on
+`+bay/quote`. IN.11's `@industry/census` balance is held across the whole story. Green by hand at `38989d7e` at 256 (Windows, 3,206 s), then at `ca0ad46f` at both sizes side by side on
+conclav.dev (3,205 s each; the house took her at about 1,500 s and listed her at 3,173 s for 21,415.00cr).
+
+**What the story found** (fixed here):
+
+- **A swept bare hull is cargo** (`voyage::bay_gate_leaving`): the departure weighed every hull in the bay as one of
+  the carrier's rigs, and a raid's hull has no hopper vault, so the lifter's passage home planned dark and she never
+  lifted from the site. A hull aboard that is none of the carrier's live rigs and has no hopper is cargo. In-process:
+  `house_sweep_rs6c::rs9b_a_bare_raid_hull_swept_comes_home` (fails without; the in-process (e) stories used a line
+  tank, which the gate already read as a combat hull's cargo).
+- **The supply leg round Kirkwood** (`house_arm::SUPPLY_LEGS`): the restoration's leg to Stickney flew the corridor,
+  which Kirkwood's picket interdicts on main (doc 39's IN.5 note), and an NPC house answers no customs bubble. It now
+  sails the lane's own picket-free way out, Ceres → Luna → Deimos → Stickney, and home direct, as IN.5's bot does.
+
+**From the review of #503 and of this cut** (the RS.9c/d session, 2026-11-06):
+
+- **The bay gate fails closed.** Only a hull aboard with no hopper vault at all is cargo
+  (`port::vehicle::hopper_of` is `None`); a rig whose hopper exists but will not read still plans the departure dark,
+  as before this cut.
+- **Only an arrived journey retires** (`mush_sim::retire_finished_journey`): a `Failed` record keeps the anomaly a
+  human must decide, a `Captured` one its taker; `bay_work::berth` retires it after its unplace and move succeed.
+
+**Cell cost (rule #14).** The supply leg's two extra calls push RS.6c-2's resale stories past the CI profile's
+twenty minutes on the hosted runner (`tacsim-integration-6` and `-9`; 1,105 s and 790 s on main before); a
+`profile.ci` override in `.config/nextest.toml` gives those two tests forty. Locally (Windows debug, two at once)
+they run 569 s.
+
+**The harness.** `fr7_round`'s fixture helpers (`placed`, `staff_hand`, `cid`, `PROSPECTOR`, `WEST`) and
+`in11_matter::census` are `pub(crate)`. A side-by-side run goes through the built test binary: a second `cargo test`
+cannot relink the binary the first holds open (LNK1104 on Windows).

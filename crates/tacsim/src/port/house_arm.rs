@@ -49,9 +49,9 @@ pub enum HouseAct {
     /// Doc 41 cut RS.6c-1: keep a swept hull for resale: her title to the house (cut RS.6c-2:
     /// once she is restored, which lists her, [`crate::port::house_sale`]).
     Keep,
-    /// Doc 41 cut RS.6c-2: sail the lifter from home to the supply port ([`SUPPLY_VENUE`]) for
-    /// the restoration's bale goods.
-    Supply,
+    /// Doc 41 cut RS.6c-2: sail the lifter a leg toward the supply port ([`SUPPLY_VENUE`]) for
+    /// the restoration's bale goods, by [`SUPPLY_LEGS`] (its venue word).
+    Supply(String),
     /// Doc 41 cut RS.6c-2: at the supply port, buy the goods short in the lifter's hold, then
     /// sail home (its venue word).
     Stock(Vec<crate::port::bay_work::act::GoodUnits>, String),
@@ -124,6 +124,12 @@ fn sail(ctx: &mut Ctx<'_>, lifter: ObjId, word: &str) -> Result<(), String> {
 /// **The supply port** (doc 41 cut RS.6c-2, the owner's default of 2026-11-04): where the house's
 /// lifter buys a restoration's structural alloys and yard fittings (Stickney's yards sell both).
 pub const SUPPLY_VENUE: &str = "stickney";
+
+/// **The supply leg out, by venue** (doc 41 cut RS.9b): Ceres to Stickney the lane's own
+/// picket-free way, by Luna and Deimos — every Ceres→Stickney passage is interdicted at Kirkwood
+/// (`ceres_stickney`'s leg 0, `kirkwood_picket`), whose customs bubble an NPC house never answers,
+/// as IN.5's bot sails it. Home again is the one leg (`stickney_ceres`).
+pub const SUPPLY_LEGS: [&str; 3] = ["luna", "deimos", SUPPLY_VENUE];
 
 /// **A sailing plan as the dispatcher**: aboard the lifter, its float topped up to
 /// [`FLOAT_MINOR`] plus `extra_minor`, then each of `lines` filed as `+ship/order`.
@@ -362,14 +368,24 @@ fn restore_act(ctx: &Ctx<'_>, lifter: ObjId, hull: ObjId, home: &CanonicalId) ->
             } else if filed {
                 HouseAct::Wait
             } else {
-                HouseAct::Supply
+                HouseAct::Supply(SUPPLY_LEGS[0].to_owned())
             }
         }
-        Some(_) if !filed => match venue_of(w, home) {
-            Some(word) if short.is_empty() => HouseAct::Home(word),
-            Some(word) => HouseAct::Stock(short, word),
-            None => HouseAct::Wait,
-        },
+        Some(at) if !filed => {
+            let here = venue_of(w, &at);
+            match (venue_of(w, home), here.as_deref()) {
+                (Some(word), _) if short.is_empty() => HouseAct::Home(word),
+                (Some(word), Some(SUPPLY_VENUE)) => HouseAct::Stock(short, word),
+                // On the way out: the next leg (a port off the way sails on from its first).
+                (Some(_), here) => {
+                    let next = here
+                        .and_then(|v| SUPPLY_LEGS.iter().position(|leg| *leg == v))
+                        .map_or(0, |i| i + 1);
+                    HouseAct::Supply(SUPPLY_LEGS[next.min(SUPPLY_LEGS.len() - 1)].to_owned())
+                }
+                (None, _) => HouseAct::Wait,
+            }
+        }
         _ => HouseAct::Wait,
     }
 }
@@ -627,7 +643,7 @@ fn perform(
             crate::port::house_sweep::to_house(ctx, hull, (org, scope))
         }
         HouseAct::Scrap => scrap_at_home(ctx, hull, home),
-        HouseAct::Supply => sail(ctx, lifter, SUPPLY_VENUE),
+        HouseAct::Supply(word) => sail(ctx, lifter, word),
         HouseAct::Stock(short, word) => {
             let mut cost = 0u64;
             let mut lines = Vec::new();
