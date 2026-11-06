@@ -4,16 +4,20 @@
 //! A Co-op Dray-P on her pad loses her hull (GC.3's loss): she is a wreck that never lifts, and
 //! the two rigs in her bay are wrecks with her. Wrecked while docked, she is set down on her pad
 //! cell and indexed there by the field host's tick (the owner's ruling of 2026-11-05; no field
-//! runs, so the close does not). No shipped tug can take her (the floor line;
+//! runs, so the close does not). She flew out fuelled; wrecked, her tank vents to nothing (the
+//! owner's ruling of 2026-11-06), so her wreck weighs her dry hull, her two rigs and the ore in
+//! her hold. No shipped tug can take her (the floor line;
 //! `field_carrier::every_carrier_is_past_twice_any_tugs_tonnage` is the table's check), so her
-//! pilot's `+salvage/retrieve` goes unaccepted to Tycho Mutual. The house's 130 t
-//! crawler tows her, laden with her two wrecked rigs, into the 600 t lifter; the lifter berths her
-//! in Ceres's workshop (C14) with the two rigs still aboard, the delivery pays Tycho the escrowed
-//! fee, and `+bay/quote` prices her hull's rebuild.
+//! pilot's `+salvage/retrieve` goes unaccepted to Tycho Mutual. The house's 130 t crawler, which
+//! tows 400 t laden (the owner's ruling of 2026-11-06; its coupling's twice its own is 260 t),
+//! tows her into the 600 t lifter; the lifter berths her in Ceres's workshop (C14) with the two
+//! rigs still aboard, the delivery pays Tycho the escrowed fee, and `+bay/quote` prices her hull's
+//! rebuild.
 //!
 //! **What is a fixture.** The hull's loss by staff hand (doc 36a §8's damage seam: GC.3's table
-//! read off a section at its floor; the fought loss is GC.3's own story), and IC skipped past the
-//! job's acceptance window. The set-down, the bay rigs' wreck and the index are the tick's; every
+//! read off a section at its floor; the fought loss is GC.3's own story), the ore in her hold
+//! (seeded on the pad, as a miner's run would have left it), and IC skipped past the job's
+//! acceptance window. The set-down, the bay rigs' wreck and the index are the tick's; every
 //! act of the house's and the pilot's is the production path.
 
 use mush_core::ObjId;
@@ -48,8 +52,7 @@ fn skip_and_fire(rig: &mut Rig, target: i64) {
 #[allow(clippy::too_many_lines)]
 fn story(venue: &str, entry: &str) {
     let mut rig = stocked_tuned(quick);
-    // She flies out with the propellant the leg takes and little more: her laden mass is her dry
-    // hull and her two rigs (doc 41 §4.9's 256 t), under the crawler's twice-its-own 260 t.
+    // She flies out with a full tank.
     let (pilot, row, tvs) = crate::driving_rig::on_pad_loaded_at(
         &mut rig,
         ("Pilot", 1, "Salt Moth"),
@@ -59,10 +62,19 @@ fn story(venue: &str, entry: &str) {
                 crate::driving_rig::lease_one(rig, pilot);
             }
         },
-        (5, 4),
+        (80, 20),
     );
     assert_eq!(tvs.len(), 2);
     let carrier = ObjId(row.hull);
+    // Her hold: 30 t of metal ore, so her wreck weighs past the crawler's coupling's 260 t and
+    // under the lifter's 300 t load.
+    crate::driving_rig::seed_hold(&mut rig, &row, "metal_ore", 30, 9_900);
+    let vault = crate::driving_rig::hold_vault_of(&rig.tw, &row);
+    let fuelled = crate::driving_rig::hold_pool(&mut rig.tw, vault, "propellant");
+    assert!(
+        fuelled >= 20,
+        "she lands with her tank well up: {fuelled} t"
+    );
     // The hull's loss: the Dray-P's hull at its floor (the damage seam). Nothing else is staff's.
     set_section(
         &mut rig,
@@ -129,6 +141,25 @@ fn story(venue: &str, entry: &str) {
             tv.0
         );
     }
+    // Wrecked, her tank vents to nothing (the owner's ruling of 2026-11-06); her hold keeps its
+    // ore.
+    for _ in 0..30 {
+        if crate::driving_rig::hold_pool(&mut rig.tw, vault, "propellant") == 0 {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    assert_eq!(
+        crate::driving_rig::hold_pool(&mut rig.tw, vault, "propellant"),
+        0,
+        "the wreck's tank vented"
+    );
+    assert_eq!(
+        crate::driving_rig::hold_pool(&mut rig.tw, vault, "metal_ore"),
+        30,
+        "her hold keeps its ore"
+    );
     let ceres = cid("ceres_port");
     for _ in 0..60 {
         let (_, queued) = fire(&mut rig);
@@ -140,8 +171,9 @@ fn story(venue: &str, entry: &str) {
     let (lifter, crawler) =
         tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     // Her pilot posts the job: the Trust holds her title under the charter, and her live tenant
-    // acts for it (the RS.9a follow-up's default); the fee escrows from the Trust's account. A
-    // stranger may not. Nobody accepts it; at the window's end it is Tycho's.
+    // answers for her (the lead's ruling of 2026-11-06), posting in their own name, from their
+    // own account; a stranger may not. The tenant is told of claims on her. Nobody accepts it; at
+    // the window's end it is Tycho's.
     let hull = format!("#{}", carrier.0);
     let stranger = crate::driving_rig::pilot(&mut rig, "Stranger", 7);
     let refused = run(&mut rig.tw, stranger, &format!("+salvage/retrieve {hull}"));
@@ -150,18 +182,26 @@ fn story(venue: &str, entry: &str) {
         "{refused}"
     );
     let owner = tacsim::port::house_sweep::title_of(rig.tw.world(), carrier).expect("a title");
-    let trust = rig
+    assert!(
+        matches!(owner, mush_org::PrincipalId::Organization(_)),
+        "the Trust holds her title: {owner:?}"
+    );
+    assert!(
+        tacsim::surface::claim::answerers_of(rig.tw.world(), carrier, &owner).contains(&pilot),
+        "her live charter's tenant answers for her (and is told of claims)"
+    );
+    let own = rig
         .tw
         .world()
         .module_state::<mush_economy::EconomyStore>()
         .and_then(|e| {
             e.snapshot()
-                .accounts_of(&owner)
+                .accounts_of(&mush_org::PrincipalId::Object(pilot))
                 .find(|a| a.instrument.as_str() == tacsim::CREDIT)
                 .map(|a| a.id.0)
         })
-        .expect("her title holder's account");
-    let (posted_before, available_before) = (balance(&rig, trust), available(&rig, trust));
+        .expect("the pilot's own account");
+    let (posted_before, available_before) = (balance(&rig, own), available(&rig, own));
     let preview = run(&mut rig.tw, pilot, &format!("+salvage/retrieve {hull}"));
     assert!(preview.contains("Post a retrieval"), "{preview}");
     let posted = run(&mut rig.tw, pilot, &format!("+salvage/retrieve {hull} go"));
@@ -178,13 +218,15 @@ fn story(venue: &str, entry: &str) {
     let job = job.expect("the job");
     assert!(job.fee_minor > 0, "a fee: {job:?}");
     assert_eq!(
-        job.poster_account, trust,
-        "the fee escrows from her title holder's account"
+        job.poster,
+        mush_org::PrincipalId::Object(pilot),
+        "the tenant posts in their own name"
     );
+    assert_eq!(job.poster_account, own, "from their own account");
     assert_eq!(
-        available_before - available(&rig, trust),
+        available_before - available(&rig, own),
         job.fee_minor,
-        "the fee is held off the Trust's account at the post"
+        "the fee is held off the tenant's account at the post"
     );
     skip_and_fire(&mut rig, job.accept_by_ic + 60);
     assert_eq!(
@@ -266,12 +308,9 @@ fn story(venue: &str, entry: &str) {
         Some(RetrievalStage::Closed),
         "the delivery settled"
     );
-    // The escrowed fee is paid to Tycho at the close, out of the Trust's account.
-    assert_eq!(
-        posted_before - balance(&rig, trust),
-        job.fee_minor,
-        "the Trust paid the fee"
-    );
+    // The escrowed fee is paid out of the tenant's account at the close: the settled contract's one
+    // consideration (the account also pays the charter's own dues across the window).
+    let _ = posted_before;
     let contract = rig
         .tw
         .world()
@@ -284,6 +323,28 @@ fn story(venue: &str, entry: &str) {
     assert!(
         matches!(contract, Some(mush_economy::ContractState::Settled { .. })),
         "the job's contract settled to the house that took it: {contract:?}"
+    );
+    let paid_by = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .contract(mush_economy::ContractId(job.contract))
+                .map(|c| {
+                    c.consent
+                        .terms
+                        .consideration
+                        .iter()
+                        .map(|f| (f.from.clone(), f.account.0, f.amount.minor()))
+                        .collect::<Vec<_>>()
+                })
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        paid_by,
+        vec![(mush_org::PrincipalId::Object(pilot), own, job.fee_minor)],
+        "the tenant paid the fee from their own account"
     );
     // And the workshop quotes her hull's rebuild, priced.
     let quote = run(&mut rig.tw, pilot, &format!("+bay/quote {hull}"));

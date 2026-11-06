@@ -44,8 +44,9 @@ pub use recovery::{
     LoadIntoBayRequest, LoadedCasualtyOutcome, MAX_RECOVERY_OPERATIONS,
     MAX_TOW_MASS_RATIO_PERMILLE, RecoveryBook, RecoveryError, RecoveryOpId, RecoveryOperation,
     RecoveryStage, TowEvaluation, TowRigProfile, TugInspectionContext, UnitMassProfile,
-    inspect_field_unit, scaled_tow_speed_cms, tow_mass_ratio_permille, tow_mass_ratio_permille_for,
-    tow_speed_factor_permille,
+    inspect_field_unit, scaled_tow_speed_cms, scaled_tow_speed_cms_capped, tow_mass_ratio_permille,
+    tow_mass_ratio_permille_capped, tow_mass_ratio_permille_for, tow_speed_factor_permille,
+    tow_speed_factor_permille_capped,
 };
 pub use salvage::{
     AdjustedSalvageClaimDeadline, AtRiskRepairEntry, AuthoritativeRecoveryRecord,
@@ -852,6 +853,123 @@ mod tests {
             TowRigProfile::RecoveryOptimized.max_casualty_mass_kg(7_000),
             21_000
         );
+        // Doc 41's RS.9a follow-up (the owner's ruling of 2026-11-06): an explicit cap stands in
+        // for the profile's multiple, above it as Tycho's crawler's 400 t is, at the profile's
+        // own speed curve.
+        check_eq!(
+            scaled_tow_speed_cms_capped(
+                base_speed_cms,
+                tug_mass_kg,
+                50_000,
+                TowRigProfile::Heavy,
+                Some(50_000),
+            )?,
+            // 2.5x: 950 - 562 per mille.
+            (base_speed_cms * 388) / 1_000
+        );
+        check_eq!(
+            tow_mass_ratio_permille_capped(tug_mass_kg, 50_001, TowRigProfile::Heavy, Some(50_000)),
+            Err(RecoveryError::ExceedsTonnageCap {
+                tug_mass_kg: 20_000,
+                casualty_mass_kg: 50_001,
+                max_casualty_mass_kg: 50_000,
+            })
+        );
+        check_eq!(
+            tow_speed_factor_permille_capped(tug_mass_kg, 40_000, TowRigProfile::Heavy, None)?,
+            tow_speed_factor_permille(tug_mass_kg, 40_000, TowRigProfile::Heavy)?
+        );
+        Ok(())
+    }
+
+    /// **An explicit tow cap rides the attach and the inspection** (doc 41's RS.9a follow-up,
+    /// the owner's ruling of 2026-11-06): a 20 t heavy tug capped at 50 t takes a 45 t casualty
+    /// its 2x would refuse, the operation keeps the cap, and its wire round-trips it.
+    #[test]
+    fn an_explicit_tow_cap_rides_the_attach_and_the_inspection() -> TestResult {
+        let fixture = build_biped_fixture(ObjId(202))?;
+        let head = SectionId::new("head")?;
+        let kill_head = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: head.clone(),
+                        cell: CellId::new("internals")?,
+                    },
+                    value: 0,
+                },
+                UnitMutationOp::SetSectionCondition {
+                    section: head,
+                    condition: ConditionId::new("destroyed")?,
+                },
+            ],
+            Some(fixture.unit.revision()),
+            None,
+        )?;
+        let (casualty_unit, _) = apply(&fixture.unit, &kill_head, 500)?;
+        let casualty_assessment = assess_tactical_unit(&casualty_unit, &fixture.anatomy);
+        let casualty_mass = UnitMassProfile::new(42_000, 3_000, 1_200, 320, 480)?;
+        let site = ObjId(700);
+        let casualty_pose = FieldPose {
+            site,
+            x_cm: 1_000,
+            y_cm: 1_000,
+        };
+        let tug_pose = FieldPose {
+            site,
+            x_cm: 1_300,
+            y_cm: 1_400,
+        };
+        let request = |cap: Option<u64>| AttachTowRequest {
+            tug: ObjId(201),
+            tug_state: OperationalState::Operational,
+            tug_can_move: true,
+            tug_base_speed_cms: 1_000,
+            tug_mass_kg: 20_000,
+            rig_profile: TowRigProfile::Heavy,
+            max_casualty_mass_kg: cap,
+            tug_pose,
+            casualty_assessment: casualty_assessment.clone(),
+            casualty_mass,
+            casualty_pose,
+            max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+            at_ic: 1_000,
+        };
+        let inspect = |cap: Option<u64>| {
+            inspect_field_unit(
+                casualty_assessment.clone(),
+                casualty_mass,
+                casualty_pose,
+                Some(TugInspectionContext {
+                    tug: ObjId(201),
+                    tug_state: OperationalState::Operational,
+                    tug_can_move: true,
+                    tug_base_speed_cms: 1_000,
+                    tug_mass_kg: 20_000,
+                    rig_profile: TowRigProfile::Heavy,
+                    max_casualty_mass_kg: cap,
+                    tug_pose,
+                    max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
+                }),
+                None,
+            )
+            .tow_evaluation
+        };
+        let mut book = RecoveryBook::new();
+        check!(matches!(
+            book.attach(request(None)),
+            Err(RecoveryError::ExceedsTonnageCap { .. })
+        ));
+        check!(!inspect(None).ok_or("an evaluation")?.eligible);
+        let eval = inspect(Some(50_000)).ok_or("an evaluation")?;
+        check!(eval.eligible);
+        let op = book.attach(request(Some(50_000)))?;
+        check_eq!(op.max_casualty_mass_kg(), Some(50_000));
+        check_eq!(eval.coupled_speed_cms, Some(op.coupled_speed_cms()));
+        let wire = serde_json::to_string(&op)?;
+        check!(wire.contains("max_casualty_mass_kg"));
+        let back: RecoveryOperation = serde_json::from_str(&wire)?;
+        check_eq!(&back, op);
         Ok(())
     }
 
@@ -913,6 +1031,7 @@ mod tests {
                 tug_base_speed_cms: 1_000,
                 tug_mass_kg: 20_000,
                 rig_profile: TowRigProfile::Standard,
+                max_casualty_mass_kg: None,
                 tug_pose,
                 max_attach_distance_cm: DEFAULT_MAX_ATTACH_DISTANCE_CM,
             }),
@@ -933,6 +1052,7 @@ mod tests {
             tug_base_speed_cms: 1_000,
             tug_mass_kg: 20_000,
             rig_profile: TowRigProfile::Standard,
+            max_casualty_mass_kg: None,
             tug_pose,
             casualty_assessment: casualty_assessment.clone(),
             casualty_mass,
@@ -950,6 +1070,7 @@ mod tests {
             tug_base_speed_cms: 1_000,
             tug_mass_kg: 25_000,
             rig_profile: TowRigProfile::Standard,
+            max_casualty_mass_kg: None,
             tug_pose,
             casualty_assessment,
             casualty_mass,
