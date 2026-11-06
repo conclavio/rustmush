@@ -879,7 +879,8 @@ pub(crate) fn persist_journey(out: &mut Outbox, j: &CarrierJourney) -> bool {
 /// deleted, so a carrier a workshop has taken in — unplaced, standing in its room as a berthed hull
 /// does — is an object again and the tick's loose-terminal backstop does not quarantine it into
 /// the recovery room. Its next departure starts a journey of its own. `false` (nothing written)
-/// when `root` has no journey or is under way.
+/// when `root` has no journey or its journey is anything but [`JourneyState::Arrived`]: a
+/// `Failed` record keeps the anomaly a human must decide, and a `Captured` one its taker.
 pub fn retire_finished_journey(ctx: &mut Ctx<'_>, root: ObjId) -> bool {
     let Some(book) = ctx.w.module_state_mut::<JourneyBook>() else {
         return false;
@@ -887,7 +888,7 @@ pub fn retire_finished_journey(ctx: &mut Ctx<'_>, root: ObjId) -> bool {
     if book
         .journeys
         .get(&root)
-        .is_none_or(|j| j.state.is_under_way())
+        .is_none_or(|j| j.state != JourneyState::Arrived)
     {
         return false;
     }
