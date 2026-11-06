@@ -514,12 +514,36 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     let done = until(
         &mut client,
         &format!("+bay {e}"),
-        &["no order", "Condition"],
+        &["Condition: operational"],
         10,
         Duration::from_secs(20 * 60),
     )
     .await;
     println!("rs9a: under way: {}", done.trim_end());
+    // The mend took the cannon back to intact and the armour the hull's 40 points.
+    let cannon = done
+        .lines()
+        .find(|line| line.trim_start().starts_with("cannon "))
+        .unwrap_or_default();
+    assert!(
+        cannon.contains("intact"),
+        "the cannon is mended: {cannon}
+{done}"
+    );
+    let hull_line = done
+        .lines()
+        .find(|line| line.trim_start().starts_with("hull "))
+        .unwrap_or_default();
+    let full = hull_line
+        .split_whitespace()
+        .last()
+        .and_then(|cells| cells.split_once('/'))
+        .is_some_and(|(have, max)| have == max);
+    assert!(
+        full,
+        "the hull is whole again: {hull_line}
+{done}"
+    );
     assert!(
         !client
             .seen
