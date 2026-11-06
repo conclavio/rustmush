@@ -85,6 +85,7 @@ impl GameModule for RetrievalRuleset {
                     mush_economy::RetrievalSpec {
                         name: "Retrieval".into(),
                         poster: PrincipalId::Object(ctx.actor),
+                        title_holder: None,
                         poster_account: account,
                         hull,
                         fee: mush_economy::Amount::from_minor(fee),
