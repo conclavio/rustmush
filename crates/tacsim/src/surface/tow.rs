@@ -446,6 +446,10 @@ pub struct TugFacts {
     /// (`logistics.recovery_profile`), which carries its cap.
     #[serde(default)]
     pub profile: TowRigProfile,
+    /// **Doc 41's RS.9a follow-up** (the owner's ruling of 2026-11-06): the tow cap its
+    /// definition authors (`logistics.tow_cap_t`), kg; `None`, the coupling's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tow_cap_kg: Option<u64>,
 }
 
 /// **An attach's facts**: the tug's and the casualty's, read off the world.
@@ -602,6 +606,25 @@ pub enum TowOrder {
         /// The facts.
         facts: Box<crate::surface::tender::StoresFacts>,
     },
+    /// **Doc 41's RS.9a follow-up** (the owner's ruling of 2026-11-06): the tick's vent of a
+    /// wrecked carrier's tank, keyed by the hull; no site record is read or written.
+    Vent {
+        /// The facts.
+        facts: Box<VentFacts>,
+    },
+}
+
+/// **A wrecked carrier's tank, vented** (doc 41's RS.9a follow-up, the owner's ruling of
+/// 2026-11-06): her hold vault and the propellant good. The prepare debits every tonne the vault
+/// holds of it, so the wreck weighs her dry mass, cargo, bay hulls and hold goods, with no fuel
+/// (Q-41-29's laden basis).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VentFacts {
+    /// The hold vault, `VaultId.0`.
+    pub vault: u64,
+    /// The propellant good.
+    pub good: CanonicalId,
 }
 
 impl TowOrder {
@@ -620,6 +643,7 @@ impl TowOrder {
             Self::Tend { .. } => "tend",
             Self::Tended { .. } => "tended",
             Self::Stores { .. } => "stores",
+            Self::Vent { .. } => "vent",
         }
     }
 }
@@ -814,6 +838,17 @@ pub(crate) fn profile_of(w: &World, unit: ObjId) -> TowRigProfile {
     }
 }
 
+/// **The tow cap `unit`'s definition authors, kg** (doc 41's RS.9a follow-up, the owner's ruling
+/// of 2026-11-06): `logistics.tow_cap_t`, `None` when it authors none (its coupling's own cap).
+#[must_use]
+pub(crate) fn tow_cap_kg_of(w: &World, unit: ObjId) -> Option<u64> {
+    mush_tactics::module::unit_of(w, unit)
+        .and_then(|cells| crate::carrier_damage::spec_of(w, cells))
+        .and_then(|spec| spec.logistics.as_ref())
+        .and_then(|l| l.tow_cap_t)
+        .map(|t| u64::from(t) * 1_000)
+}
+
 /// **What `unit` carries, kg** (doc 41 cut RS.1, Q-41-29; doc 36's owed "the hopper's ore in a
 /// casualty's laden mass"): a rig's hopper or stores; a hull's hold, tank and locker and every
 /// rig in its bay, dry and laden, as the passage planner weighs her (`crate::port::voyage`).
@@ -871,6 +906,7 @@ fn tug_facts(w: &World, tug: ObjId) -> Option<(CanonicalId, TugFacts)> {
             mass_kg: mass.total_mass_kg(),
             pose,
             profile: profile_of(w, tug),
+            tow_cap_kg: tow_cap_kg_of(w, tug),
         },
     ))
 }
@@ -895,6 +931,7 @@ fn attach_facts(ctx: &Ctx<'_>, tug: ObjId, casualty: ObjId) -> Option<AttachFact
     if escorted(w, casualty, &assessment) {
         assessment.state = OperationalState::Disabled;
         tug_facts.mass_kg = tug_facts.mass_kg.max(mass.total_mass_kg());
+        tug_facts.tow_cap_kg = None;
     }
     let cfg = recovery_config(w);
     Some(AttachFacts {
@@ -936,6 +973,7 @@ fn attach_request(tug: ObjId, facts: &AttachFacts, now: i64) -> AttachTowRequest
         tug_base_speed_cms: facts.tug.base_speed_cms,
         tug_mass_kg: facts.tug.mass_kg,
         rig_profile: facts.tug.profile,
+        max_casualty_mass_kg: facts.tug.tow_cap_kg,
         tug_pose: facts.tug.pose,
         casualty_assessment: facts.assessment.clone(),
         casualty_mass: facts.mass,
@@ -1407,9 +1445,9 @@ pub(crate) fn register(
 }
 
 /// The action's `op` words.
-const OPS: [&str; 11] = [
+const OPS: [&str; 12] = [
     "attach", "attached", "release", "load", "loaded", "pickup", "claim", "scrap", "tend",
-    "tended", "stores",
+    "tended", "stores", "vent",
 ];
 
 fn parameters(
@@ -1519,6 +1557,20 @@ impl ActionProvider for TowProvider {
         }
         let actor = invocation.actor();
         // Doc 41 cut RS.1: the stores ops write the rig's record and its stores, never a site's.
+        // Doc 41's RS.9a follow-up: the vent writes the wreck's tank, never a site's record.
+        let vented = match &order {
+            TowOrder::Vent { facts } => Some(self.vent(txn, facts)?),
+            _ => None,
+        };
+        if let Some(result) = vented {
+            let outcome = RulesValue::new(
+                self.outcome.clone(),
+                json!({"actor": actor.0, "tv": tv.0, "op": op, "result": result}),
+            )
+            .map_err(|_| integrity("the tow result is out of bounds"))?;
+            return Ok(AuthoritativeActionOutput::new(outcome)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]));
+        }
         if let TowOrder::Stores { facts } = &order {
             let result = self.stores(txn, tv, facts)?;
             let outcome = RulesValue::new(
@@ -1531,7 +1583,7 @@ impl ActionProvider for TowProvider {
         }
         let site = match &order {
             TowOrder::Tend { facts } => facts.site.clone(),
-            TowOrder::Stores { .. } => return Err(invalid()),
+            TowOrder::Stores { .. } | TowOrder::Vent { .. } => return Err(invalid()),
             TowOrder::Attach { facts } => facts.site.clone(),
             TowOrder::Load { facts } => facts.site.clone(),
             TowOrder::Pickup { facts } => facts.site.clone(),
@@ -1786,7 +1838,7 @@ impl ActionProvider for TowProvider {
             TowOrder::Tended { ordinal, step, .. } => {
                 self.tended(txn, &mut record, (tv, actor, ordinal), &step, now)?
             }
-            TowOrder::Stores { .. } => return Err(invalid()),
+            TowOrder::Stores { .. } | TowOrder::Vent { .. } => return Err(invalid()),
         };
         record
             .check()
@@ -2437,6 +2489,90 @@ impl TowProvider {
                 Ok("opened".to_owned())
             }
         }
+    }
+}
+
+impl TowProvider {
+    /// **The vent** (doc 41's RS.9a follow-up): every tonne of propellant the wreck's hold vault
+    /// holds, debited; refused when it holds none.
+    fn vent(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        facts: &VentFacts,
+    ) -> Result<String, mush_core::ActionError> {
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or_else(|| refused("stores_unwired"))?;
+        let tank = mush_inventory::EndpointRef(mush_economy::VaultId(facts.vault));
+        let qty = inventory
+            .available(txn, tank, &facts.good)
+            .map_err(|_| integrity("the tank cannot be read"))?;
+        if qty == 0 {
+            return Err(refused("vent_dry"));
+        }
+        inventory
+            .debit(txn, tank, &facts.good, qty)
+            .map_err(|_| refused("vent_dry"))?;
+        Ok(format!("vented {qty}"))
+    }
+}
+
+/// **Vent every wrecked carrier's tank** (doc 41's RS.9a follow-up, the owner's ruling of
+/// 2026-11-06; the tow tick): a carrier wrecked anywhere — in a field, on her pad, under way —
+/// loses her reaction mass, so a tug weighs her wreck dry, with her cargo, her bay hulls and her
+/// hold goods and no fuel. Submitted as her helm holder; a tank already dry is done.
+fn vent_wrecked_carriers(ctx: &mut Ctx<'_>) {
+    let Some(good) = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(TacsimStore::goods)
+        .and_then(|goods| {
+            crate::port::burn::consumable_good(
+                goods,
+                crate::definitions::goods::Consumable::Propellant,
+            )
+        })
+    else {
+        return;
+    };
+    let wrecked: Vec<ObjId> = crate::surface::recovery::world_hulls(ctx.w)
+        .into_iter()
+        .filter(|hull| {
+            crate::carrier_damage::damage_of(ctx.w, *hull)
+                .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::Wrecked))
+        })
+        .collect();
+    for hull in wrecked {
+        let Some(vault) = crate::port::ship::hull_view(ctx.w, hull)
+            .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
+        else {
+            continue;
+        };
+        let held = crate::port_tick::read_pool(ctx, mush_inventory::EndpointRef(vault), &good)
+            .unwrap_or(0);
+        if held == 0 {
+            continue;
+        }
+        let Some(actor) = crate::port::coop::helm_holder(ctx.w, hull) else {
+            continue;
+        };
+        if ctx.authoritative_pending(actor) {
+            continue;
+        }
+        let order = TowOrder::Vent {
+            facts: Box::new(VentFacts {
+                vault: vault.0,
+                good: good.clone(),
+            }),
+        };
+        let _ = submit(
+            ctx,
+            actor,
+            hull,
+            order,
+            u32::try_from(held).unwrap_or(u32::MAX),
+        );
     }
 }
 
@@ -3221,6 +3357,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     if ctx.w.module_state::<TowIndex>().is_none() {
         return;
     }
+    vent_wrecked_carriers(ctx);
     let now = ctx.w.world_ic_now().at;
     let sites: Vec<CanonicalId> = crate::surface::chart::lane_sites(ctx.w)
         .into_iter()

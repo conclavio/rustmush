@@ -244,6 +244,26 @@ fn every_carrier_is_past_twice_any_tugs_tonnage() {
                         "the crawler ({light} kg) tows {carrier} ({heavy} kg)"
                     );
                 }
+                // Doc 41's RS.9a follow-up (the owner's ruling of 2026-11-06): it tows 400 t
+                // laden, past its heavy coupling's twice its 130 t, so a fuelled Dray-P with her
+                // bay rigs aboard is in reach.
+                let cap = tug.logistics.as_ref().and_then(|l| l.tow_cap_t);
+                assert_eq!(cap, Some(400), "the crawler authors its 400 t cap");
+                let profile = mush_tactics::field_ops::TowRigProfile::Heavy;
+                assert!(
+                    mush_tactics::field_ops::tow_mass_ratio_permille_for(light, 300_000, profile)
+                        .is_err(),
+                    "the coupling alone refuses 300 t"
+                );
+                assert!(
+                    mush_tactics::field_ops::tow_mass_ratio_permille_capped(
+                        light,
+                        400_000,
+                        profile,
+                        Some(400_000)
+                    )
+                    .is_ok()
+                );
                 continue;
             }
             assert!(

@@ -850,7 +850,8 @@ tow read "not a casualty or a wreck within a cell".)
 **The 256 t figure.** A Dray-P fresh from the pad with her two rigs is 272 t laden — her tank and locker count
 (Q-41-29) — over the 130 t crawler's twice-its-own 260 t. §4.9's 256 t is her dry hull and two rigs: the story's
 carrier flies out on the leg's propellant and little more (`driving_rig::on_pad_loaded_at`). A fuelled carrier on her
-pad is beyond the house's crawler.
+pad is beyond the house's crawler. (Superseded by the owner's two rulings of 2026-11-06, in the follow-up below: the
+crawler tows 400 t, and a wrecked carrier's tank vents.)
 
 **Stories.** `tacsim` `tests/domain_field/story_d_rs9.rs` at 256 and 512: the Dray-P's hull lost on her pad, her two
 rigs wrecked with her, set down on her pad cell; her title holder's retrieval unaccepted, Tycho's crawler tows her
@@ -883,13 +884,33 @@ Row: §6 RS.9, after RS.9a. The lead's list from the RS.9c/d session's review of
   title held by whoever holds it). Scoped to the live charter: a recalled or lapsed one answers nothing
   (`coop::charter_tenant` reads the live Trust lease only). Not built, a possible later rule: the Co-op posting a
   chartered wreck's retrieval itself.
+- **The owner's ruling on the fuelled-carrier tow limit (2026-11-06): "do both".**
+  - **Tycho's crawler tows 400 t laden.** A content change: `tacsim.unit.tycho_crawler` authors
+    `logistics.tow_cap_t: 400` (new, optional, `1..=1,000,000`), which stands in for its heavy coupling's twice its
+    own 130 t (260 t); the pack is re-signed. The cap rides the tug's facts (`TugFacts::tow_cap_kg`) into mush-tactics'
+    attach and inspection (`AttachTowRequest`/`TugInspectionContext::max_casualty_mass_kg`), and the operation keeps
+    it on its wire so the coupled speed re-validates (`RecoveryOperation::max_casualty_mass_kg`, serde-defaulted);
+    the speed curve is the profile's own (`*_capped` beside the ratio and speed functions). A yielded hull under
+    escort drops the cap, as it drops the rig's rating. No lane version: the lane (v33) names no unit pack, so only
+    the crawler's own digest moves. The carrier floor (Q-36-8, half the carrier's dry tonnage) is unchanged; the
+    crawler meets the Dray-P's 120 t.
+  - **A wrecked carrier loses her propellant.** The tow tick (`surface::tow::vent_wrecked_carriers`) finds every hull
+    whose loss reads `CarrierLoss::Wrecked` and whose hold vault still holds propellant, and submits the tow action's
+    new **`vent`** order as her helm holder: the prepare debits every tonne of the propellant pool. Her wreck then
+    weighs her dry mass, her cargo, her bay hulls and her hold goods, with no fuel (Q-41-29's laden basis). It runs
+    wherever she was wrecked — on her pad, in a field, under way — and a dry tank is done.
 - **The matter census counts a workshop scrap when its mint lands**: the scrap's kilograms ride on its settlement
   (`Settlement::minted_kg`) and `scrap::land` adds them to `BayHull::scrapped_kg`; before, they were counted at the
   order, so the census was off by the yield while the mint was owed, and for good if it never landed.
 
-**Stories.** `tacsim` `tests/domain_field/story_d_rs9.rs` at 256 and 512, now with no staff hand past the hull's loss:
-the tick sets her down on her ramp's cell and indexes her a wreck, her two bay rigs wrecks with her; a stranger's
+**Stories.** `tacsim` `tests/domain_field/story_d_rs9.rs` at 256 and 512, now with no staff hand past the hull's loss,
+on a normally fuelled Dray-P (a full 80 t tank out; the "nearly empty" staging is gone) with 30 t of metal ore in her
+hold (seeded on the pad): the tick sets her down on her ramp's cell and indexes her a wreck, her two bay rigs wrecks
+with her; her tank vents to nothing and her hold keeps its ore (fails without the vent); the crawler tows her past its
+coupling's 260 t (fails without the cap); a stranger's
 `+salvage/retrieve` is refused and her pilot's posts, in the pilot's name, from the pilot's account (the pilot among her
 answerers); the fee is held at the post and the settled contract's one consideration is the pilot's; her two rigs come home aboard her; `+bay/quote` prices her hull's rebuild.
 `tests/domain_economy/in8_mass_scrap.rs`'s whole-escort scrap reads the census while the mint is owed (unchanged)
 and after it lands (balanced, the yield a source) — it fails without the change (5,869 kg counted early).
+`field_carrier::every_carrier_is_past_twice_any_tugs_tonnage` pins the crawler's 400 t (the coupling alone refuses
+300 t); mush-tactics' `an_explicit_tow_cap_rides_the_attach_and_the_inspection` fails without the cap's plumbing.
