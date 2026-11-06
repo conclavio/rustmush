@@ -58,6 +58,9 @@ struct Made {
     c: ObjId,
     t: ObjId,
     c_letter: char,
+    /// `a`'s and `c`'s cells, for God's index writes once the world runs (one staged
+    /// authoritative action an actor at a time: two in `prepare` lose the second).
+    cells: [(i64, i64); 2],
 }
 
 /// The block letter of `cell` on a site of `side`.
@@ -167,10 +170,7 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
     assert_ne!(a_letter, c_letter, "`a` and `c` lie on two blocks");
     let a = placed(engine, ground, PROSPECTOR, "Brask Rig", a_cell, WEST);
     let c = placed(engine, ground, PROSPECTOR, "Pilot Rig", c_cell, WEST);
-    for (hull, cell, title) in [
-        (a, a_cell, "org:Brask".to_owned()),
-        (c, c_cell, format!("#{}", t.0)),
-    ] {
+    for (hull, title) in [(a, "org:Brask".to_owned()), (c, format!("#{}", t.0))] {
         said.push(mine::staff_line(
             engine,
             &format!("@unit/damage #{}={}", hull.0, powerless_plan()),
@@ -178,13 +178,6 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
         said.push(mine::staff_line(
             engine,
             &format!("@asset/title #{}={title}", hull.0),
-        ));
-        said.push(mine::staff_line(
-            engine,
-            &format!(
-                "@tacsim/site {} leave #{} casualty {},{}",
-                ground.entry, hull.0, cell.0, cell.1
-            ),
         ));
     }
     if std::env::var("RS9B_NO_BLOCKS").is_err() {
@@ -216,7 +209,16 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
         "T holds `c`: {said:?}"
     );
     let _ = o;
-    (said, Made { a, c, t, c_letter })
+    (
+        said,
+        Made {
+            a,
+            c,
+            t,
+            c_letter,
+            cells: [a_cell, c_cell],
+        },
+    )
 }
 
 /// A line the player types, in the bot's vocabulary, answered by one of `needles`.
@@ -439,6 +441,32 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
     )
     .await;
     let (a, c) = (format!("#{}", made.a.0), format!("#{}", made.c.0));
+    // Both hulls on the site's index as casualties (GC.5's fixture), one write at a time.
+    for (hull, (x, y)) in [made.a, made.c].into_iter().zip(made.cells) {
+        let left = god
+            .say(
+                &format!("@tacsim/site {site} leave #{} casualty {x},{y}", hull.0),
+                "Site record write requested",
+            )
+            .await;
+        println!("rs9b: {}", left.trim_end());
+        let indexed = Instant::now() + Duration::from_secs(60);
+        loop {
+            god.idle(Duration::from_secs(2)).await;
+            let (_, record) = god
+                .answer(&format!("@tacsim/site {site}"), &["Objects:"])
+                .await;
+            if record.contains(&format!("Unit #{}:", hull.0)) {
+                break;
+            }
+            assert!(
+                Instant::now() < indexed,
+                "#{} never indexed:
+{record}",
+                hull.0
+            );
+        }
+    }
     let (o_name, t_name) = (cast.o.character, cast.t.character);
 
     if let Ok(wait) = std::env::var("RS9B_READY_WAIT_S") {
