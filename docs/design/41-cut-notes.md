@@ -973,3 +973,34 @@ deposits are not available to `@econ/pay`. The fine's line wraps at the session'
 
 **Runs (by hand, conclav.dev, both sizes side by side):** (b) green at `24594391` (1,202 s at 256, 1,203 s at 512); (c) green at `df517c94`
 (995 s each).
+
+## RS.9d — story (a) whole, the bot over SSH; the notes closed (2026-11-06)
+
+Row: §6 RS.9, its last slice. Stacked on RS.9c. No lane rows, no engine change.
+
+**Story (a)** (`tests/mining_cohort/rs9_story_a.rs`; `mining_cohort::rs9_story_a_the_tender_and_the_bay_work_on_{ahuna,urvara}`):
+the bot kits up as an escort pilot and leases Occator's tender beside it (`+tv/lease tender go`). Ceres sells neither
+structural alloys nor yard fittings, so it sails for Stickney Yards by Luna and Deimos (round Kirkwood's picket), buys
+the tender's stores and the bay's goods, sails home and lifts for the site. On the ground: the stores loaded and the bale
+opened, both rigs down the ramp, and — God's `@unit/damage` jamming the escort's cannon, holing its hull 40 points and
+emptying its magazine to 10 — the tender clears the jam, patches the hull and rearms the magazine
+(`+tv/2 unjam|stabilize|rearm #<escort> [go]`). The escort back in the bay, its machine gun destroyed and its armour
+dented: `+bay` reads her away from port with no fee and names the nearest workshop for the destroyed part,
+`+bay/order …=replace` is refused with the same line, `+bay/order …=mend,armor` is taken in the carrier bay at no fee; the
+carrier lifts for Ceres and the order finishes under way.
+
+**From the row.** §4.9 says "the carrier lifts for Stickney": no site has a route to Stickney (every site's legs are to
+and from Ceres), so she lifts for Ceres, as `field_rs2` does. Not run over SSH: GC.4's tow before it (`field_gc4`; the
+bot's own GC.4 lines are `fr7_round`'s) and the bay's wait under a field (`field_rs2`). (c)'s refit at Stickney Yards
+— the replace drawing doc 39's store — stays `bay_gc8`'s and `in6_part_lot`'s.
+
+**The vocabulary**: RS.1's `+tv/lease tender [go]`, a second rig's `+tv/<n> launch go` and `+tv/<n> recover [go]`, and a
+rig's own line, `+tv/<n>`.
+
+**Runs:** green at `{A_REV}` ({A_TIMES}).
+
+**The notes closed.** Every cut's test path now names its domain binary (TS.12's `shard_N` files are gone), and every
+owed cell cost is filled from its PR's CI JUnit. Doc 41 is complete: RS.0–RS.10 have landed. Owed elsewhere: the
+fuelled-carrier tow limit (a Dray-P fresh from the pad is 272 t laden against the crawler's 260 t) is with the owner;
+the chartered tenant's retrieval post (#506) is a default awaiting the owner's ruling; the retrieval-contract `right`
+ground is unbuilt.
