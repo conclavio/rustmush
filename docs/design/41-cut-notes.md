@@ -1004,7 +1004,7 @@ departure for minutes ("Quote #…'s goods have not come aboard yet"); the cohor
 story (a) keeps its own patient `sail` and buys each leg's exact shortfall (`bunker_lean`), not the cohort's margin.
 Worth a look of its own: IN.5's bot story sails the same legs.
 
-**Runs:** green at `{A_REV}` ({A_TIMES}).
+**Runs (by hand, conclav.dev, both sizes side by side):** green at `91a01264` (1,551 s at 256, 1,573 s at 512).
 
 **The notes closed.** Every cut's test path now names its domain binary (TS.12's `shard_N` files are gone), and every
 owed cell cost is filled from its PR's CI JUnit. Doc 41 is complete: RS.0–RS.10 have landed. Owed elsewhere: the

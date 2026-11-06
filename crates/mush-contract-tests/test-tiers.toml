@@ -348,6 +348,19 @@ id = "mush-bot/tests::mining_cohort::rs9_story_b_the_claims_are_contested_on_urv
 tier = "by-hand"
 by_hand = "24594391"
 
+# Doc 41 cut RS.9d: story (a) whole at 256 and 512 (the tender's unjam, patch and rearm on the
+# ground; the bay's mend and armour away from port, finished after the lift), green by hand at the
+# revision below on conclav.dev, both sizes side by side (1,551 s and 1,573 s).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_a_the_tender_and_the_bay_work_on_ahuna"
+tier = "by-hand"
+by_hand = "91a01264"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_a_the_tender_and_the_bay_work_on_urvara"
+tier = "by-hand"
+by_hand = "91a01264"
+
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
 [[test]]
