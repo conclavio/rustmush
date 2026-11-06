@@ -86,7 +86,7 @@ fn fixture(
 
 /// **The bot's money** (a staff seed): God opens its credit account and mints it 5,000,000.00cr
 /// from a system source.
-async fn fund(god: &mut arena::Client, bot: ObjId) {
+pub(crate) async fn fund(god: &mut arena::Client, bot: ObjId) {
     let id = |text: &str, after: &str| {
         text.split(after)
             .nth(1)

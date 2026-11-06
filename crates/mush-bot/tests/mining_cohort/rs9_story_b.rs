@@ -79,7 +79,7 @@ fn letter_of(side: i64, cell: (i64, i64)) -> char {
 }
 
 /// The object called `name`.
-fn named(engine: &mush_core::Engine, name: &str) -> ObjId {
+pub(crate) fn named(engine: &mush_core::Engine, name: &str) -> ObjId {
     engine
         .world
         .iter()
@@ -231,7 +231,7 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
 }
 
 /// A line the player types, in the bot's vocabulary, answered by one of `needles`.
-async fn typed(
+pub(crate) async fn typed(
     client: &mut arena::Client,
     line: &str,
     needles: &[&str],
@@ -248,7 +248,7 @@ async fn typed(
 
 /// `line` typed until its answer holds `needle` (index 0 of `needles`), every `every` real
 /// seconds, inside `bound`; the answer.
-async fn until(
+pub(crate) async fn until(
     client: &mut arena::Client,
     line: &str,
     needles: &[&str],
@@ -283,7 +283,11 @@ fn lane_bound() -> Duration {
 /// **A player's lane to its enrolment**, at the boot's rate: the Co-op's desk is open only while
 /// the readiness report reads Ready, whose rate line wants the boot's 24, so every player enrols
 /// before God lifts the rate.
-async fn enrol(client: &mut arena::Client, miner: mine::Miner, started: Instant) -> Lane {
+pub(crate) async fn enrol(
+    client: &mut arena::Client,
+    miner: mine::Miner,
+    started: Instant,
+) -> Lane {
     let hull = hull_name(&format!("{}+{}", miner.account, miner.character)).expect("a hull name");
     let mut lane = Lane::new(
         miner.site,
@@ -307,7 +311,7 @@ async fn enrol(client: &mut arena::Client, miner: mine::Miner, started: Instant)
 }
 
 /// **A player's lane on from its enrolment** (kit-up and the hop to the site) until `until`.
-async fn fly(
+pub(crate) async fn fly(
     client: &mut arena::Client,
     lane: &mut Lane,
     started: Instant,
@@ -326,7 +330,7 @@ async fn fly(
 }
 
 /// The id after `after` in `text`.
-fn id_after(text: &str, after: &str) -> u64 {
+pub(crate) fn id_after(text: &str, after: &str) -> u64 {
     text.split(after)
         .nth(1)
         .and_then(|rest| {
@@ -355,8 +359,15 @@ async fn credit_of(client: &mut arena::Client) -> (u64, i64) {
     (id, amount.parse().unwrap_or(0))
 }
 
-/// **O's rig tows `hull` from beside the ramp and loads it into O's bay** (GC.4's tow, aimed).
-async fn tow_and_load(o: &mut arena::Client, god: &mut arena::Client, site: &str, hull: ObjId) {
+/// **A tug's tow of `hull` from beside the ramp, then its load** (GC.4's tow, aimed): the tow
+/// typed and its attach read off the tow's own line, then `+tv/1 load go`; the caller waits for
+/// the custody the load lands.
+pub(crate) async fn tow_in(
+    o: &mut arena::Client,
+    god: &mut arena::Client,
+    site: &str,
+    hull: ObjId,
+) {
     // Where everyone stands before the tow (the story's own trace).
     let (_, rigs) = typed(o, "+tv", &["Rig 1"]).await;
     let (_, index) = god
@@ -366,9 +377,7 @@ async fn tow_and_load(o: &mut arena::Client, god: &mut arena::Client, site: &str
         )
         .await;
     println!(
-        "rs9b: before the tow of #{}:
-{}
-{}",
+        "rs9b: before the tow of #{}:\n{}\n{}",
         hull.0,
         rigs.trim_end(),
         index.trim_end()
@@ -376,22 +385,23 @@ async fn tow_and_load(o: &mut arena::Client, god: &mut arena::Client, site: &str
     let tow = format!("+tv/1 tow #{} go", hull.0);
     let from = o.seen.len();
     let (_, said) = typed(o, &tow, &["in tow", "Tow", "not a casualty", "cannot"]).await;
-    println!(
-        "rs9b: O> {tow}
-{}",
-        said.trim_end()
-    );
+    println!("rs9b: {tow}\n{}", said.trim_end());
     // The attach lands a few IC minutes on: the tow's own line, "Rig 1 has the … in tow".
     assert!(
         o.watch(from, " in tow, at ", Duration::from_secs(10 * 60))
             .await,
-        "the tow never attached:
-{}",
+        "the tow never attached:\n{}",
         mush_bot::tail(&o.seen, 4 * 1024)
     );
-    let preview = format!("+salvage/claim #{}", hull.0);
     let (_, said) = typed(o, "+tv/1 load go", &["load", "Load", "cannot"]).await;
-    println!("rs9b: O> +tv/1 load go\n{}", said.trim_end());
+    println!("rs9b: +tv/1 load go\n{}", said.trim_end());
+}
+
+/// **O's rig tows `hull` from beside the ramp and loads it into O's bay** ([`tow_in`]), until her
+/// salvage custody reads.
+async fn tow_and_load(o: &mut arena::Client, god: &mut arena::Client, site: &str, hull: ObjId) {
+    tow_in(o, god, site, hull).await;
+    let preview = format!("+salvage/claim #{}", hull.0);
     // In custody once the load lands: the claim's preview names the registry.
     let filed = until(
         o,
