@@ -37,13 +37,16 @@ pub(crate) struct Pair {
     pub(crate) b: mine::Miner,
 }
 
+/// The two hulls and their cells.
+type Hulls = [(ObjId, (i64, i64)); 2];
+
 /// **The fixture**: two prospectors beside the ramp, powerless, titled to A. Answers the two
 /// hulls, their cells and A.
 fn fixture(
     engine: &mut mush_core::Engine,
     ground: &Ground,
     pair: Pair,
-) -> (Vec<String>, [(ObjId, (i64, i64)); 2], ObjId) {
+) -> (Vec<String>, Hulls, ObjId) {
     let a = named(engine, pair.a.character);
     let (x, y) = tacsim::surface::excursion::site_pad_cm(&engine.world, &cid(ground.entry));
     let side = i64::from(tacsim::surface::ground::SITE_CELL_CM);
@@ -74,7 +77,7 @@ fn fixture(
 }
 
 /// What the fixture made: the two hulls and their cells, A, B and Ceres's workshop room.
-type Made = ([(ObjId, (i64, i64)); 2], ObjId, ObjId, ObjId);
+type Made = (Hulls, ObjId, ObjId, ObjId);
 
 /// **Story (c)'s retrieval half on `ground`**, the pair `pair`.
 #[allow(clippy::too_many_lines)]
