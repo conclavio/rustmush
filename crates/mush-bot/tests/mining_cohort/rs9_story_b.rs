@@ -259,14 +259,20 @@ async fn until(
     }
 }
 
-/// A player's lane: kit-up and the hop to `ground`, driven until `until` holds.
-async fn fly_out(
-    client: &mut arena::Client,
-    god: &mut arena::Client,
-    miner: mine::Miner,
-    started: Instant,
-    until: impl Fn(&Lane) -> bool + Copy,
-) -> Lane {
+/// The lanes' real-time bound (`RS9_LANE_BOUND_S` overrides it for a short local probe).
+fn lane_bound() -> Duration {
+    Duration::from_secs(
+        std::env::var("RS9_LANE_BOUND_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40 * 60),
+    )
+}
+
+/// **A player's lane to its enrolment**, at the boot's rate: the Co-op's desk is open only while
+/// the readiness report reads Ready, whose rate line wants the boot's 24, so every player enrols
+/// before God lifts the rate.
+async fn enrol(client: &mut arena::Client, miner: mine::Miner, started: Instant) -> Lane {
     let hull = hull_name(&format!("{}+{}", miner.account, miner.character)).expect("a hull name");
     let mut lane = Lane::new(
         miner.site,
@@ -277,34 +283,35 @@ async fn fly_out(
         miner.character.to_owned(),
     );
     let enrolled = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
-    let bound = Duration::from_secs(
-        std::env::var("RS9_LANE_BOUND_S")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(40 * 60),
-    );
-    mine::drive_lane_since(
-        client,
-        &mut lane,
-        started,
-        |lane| enrolled(lane) || until(lane),
-        bound,
-    )
-    .await;
-    if enrolled(&lane) {
-        mine::lift_rate(god, mine::LIFTED_RATE).await;
-    }
-    mine::drive_lane_since(client, &mut lane, started, until, bound).await;
+    mine::drive_lane_since(client, &mut lane, started, enrolled, lane_bound()).await;
     assert!(
-        until(&lane),
-        "{}'s lane stopped at {:?}: {:?}; the client's last 4 KiB:
+        enrolled(&lane),
+        "{} never enrolled: {:?}; the client's last 4 KiB:
 {}",
         miner.character,
-        lane.beat(),
         lane.result(),
         mush_bot::tail(&client.seen, 4 * 1024)
     );
     lane
+}
+
+/// **A player's lane on from its enrolment** (kit-up and the hop to the site) until `until`.
+async fn fly(
+    client: &mut arena::Client,
+    lane: &mut Lane,
+    started: Instant,
+    until: impl Fn(&Lane) -> bool,
+) {
+    mine::drive_lane_since(client, lane, started, &until, lane_bound()).await;
+    assert!(
+        until(lane),
+        "{}'s lane stopped at {:?}: {:?}; the client's last 4 KiB:
+{}",
+        lane.me(),
+        lane.beat(),
+        lane.result(),
+        mush_bot::tail(&client.seen, 4 * 1024)
+    );
 }
 
 /// The id after `after` in `text`.
@@ -431,12 +438,16 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
         );
     }
     // 0. T and O fly out; T sits on the pad, O's rig comes down the ramp.
-    let t_lane = fly_out(&mut t, &mut god, cast.t, started, |lane| {
+    let mut t_lane = enrol(&mut t, cast.t, started).await;
+    let mut o_lane = enrol(&mut o, cast.o, started).await;
+    mine::lift_rate(&mut god, mine::LIFTED_RATE).await;
+    stamp("T and O are enrolled; the rate lifted");
+    fly(&mut t, &mut t_lane, started, |lane| {
         lane.reached(Milestone::ArrivedSite)
     })
     .await;
     stamp("T is on the pad");
-    let _o_lane = fly_out(&mut o, &mut god, cast.o, started, |lane| {
+    fly(&mut o, &mut o_lane, started, |lane| {
         lane.reached(Milestone::Launched)
     })
     .await;
