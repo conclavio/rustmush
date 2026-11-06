@@ -513,14 +513,23 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     )
     .await;
     println!("rs9a: +ship/lift ceres → {}", said.trim_end());
-    let done = until(
-        &mut client,
-        &format!("+bay {e}"),
-        &["Condition: operational"],
-        10,
-        Duration::from_secs(20 * 60),
-    )
-    .await;
+    // Done when the bay lists no open order and no work left on her.
+    let deadline = Instant::now() + Duration::from_secs(20 * 60);
+    let done = loop {
+        let (_, text) = typed(&mut client, &format!("+bay {e}"), &["Condition:"]).await;
+        if !text.contains("Order 1:")
+            && !text.contains("mend cannon")
+            && !text.contains("armor hull")
+        {
+            break text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the bay's order never finished:
+{text}"
+        );
+        client.idle(Duration::from_secs(10)).await;
+    };
     println!("rs9a: under way: {}", done.trim_end());
     // The mend took the cannon back to intact and the armour the hull's 40 points.
     let cannon = done
