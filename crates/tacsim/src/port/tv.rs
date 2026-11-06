@@ -4248,10 +4248,10 @@ fn take(
 ) -> Result<(), CmdError> {
     let now = ctx.w.world_ic_now().at;
     // Doc 41 cut RS.5 (Q-41-13): the desk refuses a delinquent debtor, naming the amount, and
-    // reinstates the debt so the next sweep tries it once more (pinned: a refusal's writes).
-    if let Some(line) = crate::surface::retrieval::desk_refusal(ctx) {
-        ctx.out.pin_deferred();
-        return Err(CmdError::msg(line));
+    // reinstates the debt so the next sweep tries it once more (pinned: a refusal's writes, its
+    // line on their commit).
+    if crate::surface::retrieval::refused_at_desk(ctx) {
+        return Ok(());
     }
     let plan = match plan_take(ctx, named, design) {
         Ok(plan) => plan,

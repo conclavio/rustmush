@@ -427,7 +427,9 @@ fn charter_on(ground: &Ground) {
         "{debt_now:?}"
     );
     crate::driving_rig::at_counter(&mut rig, a);
-    let refused = run(&mut rig.tw, a, "+tv/lease go");
+    // The refusal commits the debt's reinstatement, so its line must ride the commit: read as the
+    // server releases a committing step's output (doc 41 cut RS.9c).
+    let refused = crate::driving_rig::run_committed(&mut rig.tw, a, "+tv/lease go");
     assert!(
         refused.contains("delinquent debts") && refused.contains("will not deal with you"),
         "{refused}"

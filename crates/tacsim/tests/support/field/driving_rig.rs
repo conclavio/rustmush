@@ -480,6 +480,30 @@ pub(crate) fn run(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     said(tw, &events, who)
 }
 
+/// [`run`], keeping only what a **committing** step releases (doc 41 cut RS.9c): the server
+/// withholds a refusal (`OnAbort`) when the step commits a write, which the in-process `run`
+/// would still show.
+pub(crate) fn run_committed(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    tw.engine_mut().step(
+        mush_core::Inbound::Cmd {
+            conn: 0,
+            actor: who,
+            line: line.to_owned(),
+        },
+        &mut out,
+        &mut fx,
+    );
+    let events: Vec<_> = out
+        .take_classified()
+        .into_iter()
+        .filter(|(class, _, _)| class.releases_on(mush_core::DeliveryOutcome::Committed))
+        .map(|(_, audience, event)| (audience, event))
+        .collect();
+    said(tw, &events, who)
+}
+
 pub(crate) fn store(tw: &TestWorld) -> &TacsimStore {
     tw.world()
         .module_state::<TacsimStore>()
