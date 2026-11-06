@@ -656,21 +656,28 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
         )
         .await;
     let sink = id_after(&sink, "Opened account #");
-    if o_balance > 10_000 {
-        let (index, paid) = god
-            .answer(
-                &format!("@econ/pay {o_account}={sink} {}", o_balance - 10_000),
-                &["Paid: transaction #", "Usage", "denied", "cannot", "not "],
-            )
-            .await;
-        println!("rs9b: O spent down: {}", paid.trim_end());
-        assert_eq!(
-            index,
-            Some(0),
-            "God spends O down:
+    // Held funds (the leases' deposits) are not available, so God moves O's money out in
+    // shrinking amounts until each is refused: O is left with less than the smallest.
+    let _ = o_balance;
+    for chunk in [500_000_u64, 100_000, 10_000] {
+        loop {
+            let (index, paid) = god
+                .answer(
+                    &format!("@econ/pay {o_account}={sink} {chunk}"),
+                    &["Paid: transaction #", "insufficient", "Usage", "denied"],
+                )
+                .await;
+            match index {
+                Some(0) => {}
+                Some(1) => break,
+                _ => panic!(
+                    "God spends O down:
 {paid}"
-        );
+                ),
+            }
+        }
     }
+    println!("rs9b: O is spent down under 100.00cr available");
     let lifted = mine::lift_rate(&mut god, 3_600).await;
     stamp(&format!("rate: {}", lifted.lines().next().unwrap_or("")));
     let (_, said) = typed(
