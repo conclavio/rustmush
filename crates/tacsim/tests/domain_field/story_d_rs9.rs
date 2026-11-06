@@ -140,8 +140,9 @@ fn story(venue: &str, entry: &str) {
     let (lifter, crawler) =
         tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     // Her pilot posts the job: the Trust holds her title under the charter, and her live tenant
-    // acts for it (the RS.9a follow-up's default); the fee escrows from the Trust's account. A
-    // stranger may not. Nobody accepts it; at the window's end it is Tycho's.
+    // answers for her (the lead's ruling of 2026-11-06), posting in their own name, from their
+    // own account; a stranger may not. The tenant is told of claims on her. Nobody accepts it; at
+    // the window's end it is Tycho's.
     let hull = format!("#{}", carrier.0);
     let stranger = crate::driving_rig::pilot(&mut rig, "Stranger", 7);
     let refused = run(&mut rig.tw, stranger, &format!("+salvage/retrieve {hull}"));
@@ -150,18 +151,26 @@ fn story(venue: &str, entry: &str) {
         "{refused}"
     );
     let owner = tacsim::port::house_sweep::title_of(rig.tw.world(), carrier).expect("a title");
-    let trust = rig
+    assert!(
+        matches!(owner, mush_org::PrincipalId::Organization(_)),
+        "the Trust holds her title: {owner:?}"
+    );
+    assert!(
+        tacsim::surface::claim::answerers_of(rig.tw.world(), carrier, &owner).contains(&pilot),
+        "her live charter's tenant answers for her (and is told of claims)"
+    );
+    let own = rig
         .tw
         .world()
         .module_state::<mush_economy::EconomyStore>()
         .and_then(|e| {
             e.snapshot()
-                .accounts_of(&owner)
+                .accounts_of(&mush_org::PrincipalId::Object(pilot))
                 .find(|a| a.instrument.as_str() == tacsim::CREDIT)
                 .map(|a| a.id.0)
         })
-        .expect("her title holder's account");
-    let (posted_before, available_before) = (balance(&rig, trust), available(&rig, trust));
+        .expect("the pilot's own account");
+    let (posted_before, available_before) = (balance(&rig, own), available(&rig, own));
     let preview = run(&mut rig.tw, pilot, &format!("+salvage/retrieve {hull}"));
     assert!(preview.contains("Post a retrieval"), "{preview}");
     let posted = run(&mut rig.tw, pilot, &format!("+salvage/retrieve {hull} go"));
@@ -178,13 +187,15 @@ fn story(venue: &str, entry: &str) {
     let job = job.expect("the job");
     assert!(job.fee_minor > 0, "a fee: {job:?}");
     assert_eq!(
-        job.poster_account, trust,
-        "the fee escrows from her title holder's account"
+        job.poster,
+        mush_org::PrincipalId::Object(pilot),
+        "the tenant posts in their own name"
     );
+    assert_eq!(job.poster_account, own, "from their own account");
     assert_eq!(
-        available_before - available(&rig, trust),
+        available_before - available(&rig, own),
         job.fee_minor,
-        "the fee is held off the Trust's account at the post"
+        "the fee is held off the tenant's account at the post"
     );
     skip_and_fire(&mut rig, job.accept_by_ic + 60);
     assert_eq!(
@@ -266,12 +277,9 @@ fn story(venue: &str, entry: &str) {
         Some(RetrievalStage::Closed),
         "the delivery settled"
     );
-    // The escrowed fee is paid to Tycho at the close, out of the Trust's account.
-    assert_eq!(
-        posted_before - balance(&rig, trust),
-        job.fee_minor,
-        "the Trust paid the fee"
-    );
+    // The escrowed fee is paid out of the tenant's account at the close: the settled contract's one
+    // consideration (the account also pays the charter's own dues across the window).
+    let _ = posted_before;
     let contract = rig
         .tw
         .world()
@@ -284,6 +292,28 @@ fn story(venue: &str, entry: &str) {
     assert!(
         matches!(contract, Some(mush_economy::ContractState::Settled { .. })),
         "the job's contract settled to the house that took it: {contract:?}"
+    );
+    let paid_by = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .contract(mush_economy::ContractId(job.contract))
+                .map(|c| {
+                    c.consent
+                        .terms
+                        .consideration
+                        .iter()
+                        .map(|f| (f.from.clone(), f.account.0, f.amount.minor()))
+                        .collect::<Vec<_>>()
+                })
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        paid_by,
+        vec![(mush_org::PrincipalId::Object(pilot), own, job.fee_minor)],
+        "the tenant paid the fee from their own account"
     );
     // And the workshop quotes her hull's rebuild, priced.
     let quote = run(&mut rig.tw, pilot, &format!("+bay/quote {hull}"));

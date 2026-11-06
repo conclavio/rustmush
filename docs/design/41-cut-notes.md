@@ -874,18 +874,22 @@ Row: §6 RS.9, after RS.9a. The lead's list from the RS.9c/d session's review of
   GOD from a tick). The op's rows are fixed into the action's offer from the host's `OwedSetDowns`, as the exits and
   closes are, so only the host can index a carrier there; it is refused while a field is open on the site (the
   close indexes her then).
-- **A chartered hull's tenant may post her retrieval** (a default; the owner's ruling is asked): nobody answered for a
-  Trust hull out on charter — the Trust has no members and no grantees, and the lessee held no title — so
-  `+salvage/retrieve` could never be typed for a chartered carrier wrecked on her pad. The live charter tenant now
-  acts for her title holder there, as an officer does for an organization (38b F-21b): the job posts in the Trust's
-  name and escrows from the Trust's account. `claim::answerers_of` is unchanged.
+- **A chartered hull's live tenant answers for her** (the lead's ruling of 2026-11-06). An engine gap #503's staff hand
+  had hidden: nobody answered for a Trust hull out on charter — the Trust has no members or grantees, and the lessee held
+  no title — so no player could `+salvage/retrieve` a chartered carrier wrecked on her pad. The live charter tenant now
+  answers for her as a rig's lessee already does (`claim::answerers_of`, so the tenant is told of claims on her too):
+  `+salvage/retrieve` posts the job in the tenant's own name, from the tenant's own account, and the tenant takes the
+  delivery. The contract conditions on the Trust's title (`RetrievalSpec::title_holder`; the retrieval shape reads the
+  title held by whoever holds it). Scoped to the live charter: a recalled or lapsed one answers nothing
+  (`coop::charter_tenant` reads the live Trust lease only). Not built, a possible later rule: the Co-op posting a
+  chartered wreck's retrieval itself.
 - **The matter census counts a workshop scrap when its mint lands**: the scrap's kilograms ride on its settlement
   (`Settlement::minted_kg`) and `scrap::land` adds them to `BayHull::scrapped_kg`; before, they were counted at the
   order, so the census was off by the yield while the mint was owed, and for good if it never landed.
 
 **Stories.** `tacsim` `tests/domain_field/story_d_rs9.rs` at 256 and 512, now with no staff hand past the hull's loss:
 the tick sets her down on her ramp's cell and indexes her a wreck, her two bay rigs wrecks with her; a stranger's
-`+salvage/retrieve` is refused and her pilot's posts; the fee is held off the Trust's account at the post and paid out of
-it when the job's contract settles; her two rigs come home aboard her; `+bay/quote` prices her hull's rebuild.
+`+salvage/retrieve` is refused and her pilot's posts, in the pilot's name, from the pilot's account (the pilot among her
+answerers); the fee is held at the post and the settled contract's one consideration is the pilot's; her two rigs come home aboard her; `+bay/quote` prices her hull's rebuild.
 `tests/domain_economy/in8_mass_scrap.rs`'s whole-escort scrap reads the census while the mint is owed (unchanged)
 and after it lands (balanced, the yield a source) — it fails without the change (5,869 kg counted early).

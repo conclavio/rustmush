@@ -550,6 +550,7 @@ pub fn post(
         mush_economy::RetrievalSpec {
             name: SmolStr::new(format!("Retrieval: {}", name(ctx.w, hull))),
             poster: poster.clone(),
+            title_holder: tenant_for(ctx.w, hull, &poster),
             poster_account,
             hull,
             fee: Amount::from_minor(fee),
@@ -692,6 +693,25 @@ pub fn withdraw(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
 }
 
+/// **The title holder a retrieval conditions on when `poster` is not it** (doc 41's RS.9a
+/// follow-up): `hull`'s title holder, when `poster` is her live charter's tenant posting for her;
+/// `None` when `poster` holds the title (or acts for its organization) itself.
+fn tenant_for(w: &World, hull: ObjId, poster: &PrincipalId) -> Option<PrincipalId> {
+    let owner = w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .asset(hull)
+        .map(|asset| asset.title_owner.clone())?;
+    match poster {
+        PrincipalId::Object(tenant)
+            if owner != *poster && crate::port::coop::charter_tenant(w, hull) == Some(*tenant) =>
+        {
+            Some(owner)
+        }
+        _ => None,
+    }
+}
+
 /// Tell `principal` a line: the character, or everyone acting for the organization.
 fn tell(ctx: &mut Ctx<'_>, principal: &PrincipalId, line: &str) {
     let who = match principal {
@@ -808,6 +828,7 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
         mush_economy::RetrievalSpec {
             name: SmolStr::new(format!("Retrieval: {}", name(ctx.w, order.hull))),
             poster: order.poster.clone(),
+            title_holder: tenant_for(ctx.w, order.hull, &order.poster),
             poster_account: AccountId(order.poster_account),
             hull: order.hull,
             fee: Amount::from_minor(order.fee_minor),
@@ -923,10 +944,10 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
     };
     let hull = hull_word(ctx, hull_text).ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
     // Review 38b F-21b: the title holder, or one who acts for its organization, which then posts
-    // the job in its own name and from its own account. Doc 41's RS.9a follow-up (story (d), a
-    // default pending the owner's ruling): a chartered hull's live tenant acts for her title
-    // holder here too — nobody else answers for a Trust hull out on charter, so without it a
-    // chartered carrier wrecked on her pad could never be posted.
+    // the job in its own name and from its own account. Doc 41's RS.9a follow-up (the lead's
+    // ruling of 2026-11-06): a chartered hull's live tenant answers for her, as a rig's lessee
+    // does (`claim::answerers_of`), and posts the job in their own name, from their own account,
+    // and takes the delivery; the contract conditions on the Trust's title.
     let owner = ctx
         .w
         .module_state::<EconomyStore>()
@@ -936,9 +957,14 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
                 .asset(hull)
                 .map(|asset| asset.title_owner.clone())
         })
-        .filter(|owner| {
-            acts_for(ctx.w, ctx.actor, owner)
-                || crate::port::coop::charter_tenant(ctx.w, hull) == Some(ctx.actor)
+        .and_then(|owner| {
+            if acts_for(ctx.w, ctx.actor, &owner) {
+                Some(owner)
+            } else if crate::port::coop::charter_tenant(ctx.w, hull) == Some(ctx.actor) {
+                Some(PrincipalId::Object(ctx.actor))
+            } else {
+                None
+            }
         })
         .ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
     if matches!(
