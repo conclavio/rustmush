@@ -56,11 +56,12 @@ use super::lines::{
     CLAIMED, CLEARANCE, COLD, DRILLING, DRIVE_HERE, GOODS_LEAVING, GOODS_WAIT, LAUNCHED,
     LEARN_NOTHING, LEASE_NO_LICENCE, LEASE_SHORT, LEASE_SIGNED, LEGEND_HEAD, LICENCE_IN_FORCE,
     LICENCE_NONE, LICENCE_PREVIEWED, LOCKED, Listing, NO_HOLD_ROOM, NO_ORE, NO_ROOM, NOT_OPEN,
-    PLAN_HEAD, PlanFigures, Pocket, RECOVER_PREVIEWED, REFITTED, RIG_ONE, ROOM_ARRIVALS,
-    ROOM_CHANDLERY, ROOM_CONCOURSE, ROOM_EXCHANGE, ROOM_GALLERY, ROOM_LOBBY, ROOM_REGISTRY,
-    SCAN_PREVIEWED, SCANNED, SELL_PREVIEW, SITE_CLOSED, SOUND_STARTED, SOUNDED, STAKE_COMMONS,
-    STAKE_COOLING, STAKE_FILED, STAKE_IN_BAY, STAKE_LAPSING, STAKE_NO_EVIDENCE, STAKE_RECORDED,
-    STAKE_YOURS, UNLOADED, UNLOADED_EMPTY, UNLOADED_NONE, WORKED_OUT, WOULD_MINE, has, normalise,
+    PLAN_HEAD, PlanFigures, Pocket, RECOVER_PREVIEWED, REFIT_ALREADY, REFITTED, RIG_ONE,
+    ROOM_ARRIVALS, ROOM_CHANDLERY, ROOM_CONCOURSE, ROOM_EXCHANGE, ROOM_GALLERY, ROOM_LOBBY,
+    ROOM_REGISTRY, SCAN_PREVIEWED, SCANNED, SELL_PREVIEW, SITE_CLOSED, SOUND_STARTED, SOUNDED,
+    STAKE_COMMONS, STAKE_COOLING, STAKE_FILED, STAKE_IN_BAY, STAKE_LAPSING, STAKE_NO_EVIDENCE,
+    STAKE_RECORDED, STAKE_YOURS, UNLOADED, UNLOADED_EMPTY, UNLOADED_NONE, WORKED_OUT, WOULD_MINE,
+    has, normalise,
 };
 use super::report::{BeatSpan, HeardAt, MilestoneAt, Report, SoundingSpan};
 use super::{Family, Settings, Site};
@@ -896,7 +897,8 @@ impl Lane {
                     done_if(has(&text, &format!("now the {hull}")))
                 }
             }
-            Kind::Refit => done_if(has(&text, REFITTED)),
+            // Doc 41 cut RS.9c: a hull a recall freed comes back already a Dray-P.
+            Kind::Refit => done_if(has(&text, REFITTED) || has(&text, REFIT_ALREADY)),
             Kind::LicencePreview => done_if(has(&text, LICENCE_PREVIEWED)),
             Kind::LicenceGo => done_if(now_ms >= opened.saturating_add(LICENCE_GO_MS)),
             Kind::LicenceCheck => {
@@ -2050,6 +2052,9 @@ mod tests {
         /// player (`Queued.` and `Done.` are that one's; the filed sentence and the refusal
         /// are the line's, which never ran).
         pushed: BTreeSet<&'static str>,
+        /// Doc 41 cut RS.9c: the desk charters a hull a recall freed, already a Dray-P, so the
+        /// refit answers that it is one.
+        refitted: bool,
     }
 
     impl Script {
@@ -2067,6 +2072,7 @@ mod tests {
                 arrive_after_ms: 0,
                 busy: ["+licence/buy go", "+tv/1 launch go"].into_iter().collect(),
                 pushed: BTreeSet::new(),
+                refitted: false,
             }
         }
     }
@@ -2198,6 +2204,11 @@ mod tests {
                 "chandlery" => self.room(lines::ROOM_CHANDLERY),
                 "lobby" => self.room(lines::ROOM_LOBBY),
                 "gallery" => self.room(lines::ROOM_GALLERY),
+                "+coop/refit prospector" if self.script.refitted => {
+                    lines(&[tacsim::port::refit::REFIT_ALREADY
+                        .replace("{name}", HULL)
+                        .replace("{class}", "Dray-P")])
+                }
                 "+coop/refit prospector" => lines(&[tacsim::port::refit::REFITTED_PROSPECTOR
                     .replace("{name}", HULL)
                     .replace("{mark}", "DRAY-07")]),
@@ -2567,6 +2578,23 @@ mod tests {
     /// committing; try again in a moment.` and `Done.` was never queued — the receipt and the
     /// commit are the world's own submission as the player. The lane types it again a moment
     /// later instead of waiting out its 300 s for a bay it never asked for.
+    /// Doc 41 cut RS.9c: a charter of a hull a recall freed, already a Dray-P, kits up all the
+    /// same (story (c)'s second player was chartered the first's recalled hull).
+    #[test]
+    fn a_hull_already_refitted_kits_up() {
+        let mut script = Script::story();
+        script.refitted = true;
+        let (lane, sent) = play(script);
+        assert_eq!(
+            lane.result().map(|r| r.status.as_str()),
+            Some("done"),
+            "{:?}
+{:#?}",
+            lane.result(),
+            lines_of(&sent)
+        );
+    }
+
     #[test]
     fn a_line_the_engine_pushed_back_is_typed_again() {
         let mut script = Script::story();
