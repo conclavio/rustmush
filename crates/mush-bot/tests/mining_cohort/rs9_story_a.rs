@@ -6,8 +6,8 @@
 //! and leases Occator's tender beside it. Ceres sells neither structural alloys nor yard fittings,
 //! so it sails for Stickney Yards by Luna and Deimos (round Kirkwood's customs picket, as IN.5's
 //! story does), buys the tender's stores and the bay's goods there, sails home, and lifts for the
-//! site. On the ground: the stores loaded and the bale opened (`+tv/2 stores …`), both rigs down the
-//! ramp, and — the escort's cannon jammed, its hull 40 points down and its magazine at 10 — the
+//! site. On the pad: the stores loaded and the bale opened (`+tv/2 stores …`), the escort down
+//! the ramp (the tender works on her from the bay, within its reach), and — the escort's cannon jammed, its hull 40 points down and its magazine at 10 — the
 //! tender clears the jam, patches the hull and rearms the magazine (`+tv/2 unjam|stabilize|rearm`).
 //! The escort back in the bay, its machine gun destroyed and its armour dented: `+bay` reads her
 //! away from port with no fee and names the nearest workshop for the destroyed part; `+bay/order`
@@ -307,24 +307,18 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     assert!(shown.contains("1000 kg of structural alloys"), "{shown}");
     stamp("the tender's stores are loaded");
 
-    // 5. Both rigs down the ramp; the escort's first damage.
-    for n in [1, 2] {
-        let (_, said) = typed(
-            &mut client,
-            &format!("+tv/{n} launch go"),
-            &["launch", "ramp"],
-        )
-        .await;
-        println!("rs9a: +tv/{n} launch go → {}", said.trim_end());
-        until(
-            &mut client,
-            &format!("+tv/{n}"),
-            &[escort::AT_RAMP, "on the ground"],
-            5,
-            Duration::from_secs(3 * 60),
-        )
-        .await;
-    }
+    // 5. The escort down the ramp (the tender works on her from the bay, within its reach of the
+    //    ramp); the escort's first damage.
+    let (_, said) = typed(&mut client, "+tv/1 launch go", &["launch", "ramp"]).await;
+    println!("rs9a: +tv/1 launch go → {}", said.trim_end());
+    until(
+        &mut client,
+        "+tv/1",
+        &[escort::AT_RAMP, "on the ground"],
+        5,
+        Duration::from_secs(3 * 60),
+    )
+    .await;
     let (_, rig1) = typed(&mut client, "+tv/1", &["Rig 1: "]).await;
     let mark = rig1
         .split("Rig 1: ")
@@ -338,7 +332,8 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         .await;
     let escort_id = ObjId(u32::try_from(id_after(&found, "(#")).expect("an id"));
     let e = format!("#{}", escort_id.0);
-    god.say(&format!("@unit/damage {e}={first}"), "Applied ").await;
+    god.say(&format!("@unit/damage {e}={first}"), "Applied ")
+        .await;
     stamp(&format!(
         "the escort {mark} ({e}) is jammed, holed and short"
     ));
@@ -355,17 +350,27 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         let (index, said) = typed(&mut client, &line, &[needle]).await;
         assert_eq!(index, Some(0), "{line}:\n{said}");
         let go = format!("{line} go");
-        let (_, said) = typed(&mut client, &go, &["starts", "begins", "Rig 2"]).await;
-        println!("rs9a: {go} → {}", said.trim_end());
-        // Done when the tender stands idle again.
-        until(
-            &mut client,
-            "+tv/2",
-            &["standing by", "idle", "on the ground"],
-            5,
-            Duration::from_secs(5 * 60),
-        )
-        .await;
+        let from = client.seen.len();
+        let (index, said) = typed(&mut client, &go, &["sets to work on the"]).await;
+        assert_eq!(
+            index,
+            Some(0),
+            "{go}:
+{said}"
+        );
+        // Done when the tender says so (`surface::tender::TENDED`).
+        assert!(
+            client
+                .watch(
+                    from,
+                    "Rig 2 has finished on the ",
+                    Duration::from_secs(5 * 60)
+                )
+                .await,
+            "{go} never finished:
+{}",
+            mush_bot::tail(&client.seen, 4 * 1024)
+        );
     }
     stamp("the tender cleared, patched and rearmed the escort");
 
@@ -380,7 +385,8 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         Duration::from_secs(5 * 60),
     )
     .await;
-    god.say(&format!("@unit/damage {e}={second}"), "Applied ").await;
+    god.say(&format!("@unit/damage {e}={second}"), "Applied ")
+        .await;
     let (index, said) = typed(
         &mut client,
         &format!("+bay {e}"),
@@ -410,17 +416,7 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     assert!(said.contains("No fee away from port"), "{said}");
     stamp("the bay's order is taken on the site");
 
-    // 8. The tender home, the lift for Ceres, the order finished under way.
-    let (_, said) = typed(&mut client, "+tv/2 recover go", &["ramp", "recover"]).await;
-    println!("rs9a: +tv/2 recover go → {}", said.trim_end());
-    until(
-        &mut client,
-        "+tv/2",
-        &[escort::IN_BAY],
-        5,
-        Duration::from_secs(5 * 60),
-    )
-    .await;
+    // 8. The lift for Ceres, the order finished under way.
     let from = client.seen.len();
     let (_, said) = crate::typed(
         &mut client,
