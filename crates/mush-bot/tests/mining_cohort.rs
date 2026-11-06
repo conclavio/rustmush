@@ -36,6 +36,9 @@ mod rs9_story_a;
 // Doc 41 cut RS.9c: story (c)'s retrieval half at both sizes, two players.
 #[path = "mining_cohort/rs9_story_c.rs"]
 mod rs9_story_c;
+// Doc 41 cut RS.9c: story (c)'s charter half at both sizes, two players.
+#[path = "mining_cohort/rs9_story_c_charter.rs"]
+mod rs9_story_c_charter;
 // Doc 41 cut RS.9c: story (b) whole at both sizes, three players.
 #[path = "mining_cohort/rs9_story_b.rs"]
 mod rs9_story_b;
@@ -764,6 +767,61 @@ async fn rs9_story_c_a_retrieval_is_accepted_and_paid_on_urvara() {
     )
     .await
     .expect("the Urvara story (c) finishes inside 90 minutes");
+}
+
+/// **Doc 41 cut RS.9c: story (c)'s charter half, the bot over SSH at 256** (Ahuna Flank): a
+/// dormant lessee's prospector repossessed where it lies, retrieved by a second player who is
+/// paid, and the debt past its grace refused at the desk and paid (`rs9_story_c_charter`).
+/// `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9c's story (c) charter half at 256: the dormancy window, the repossession, the retrieval, the debt; run by name"]
+async fn rs9_story_c_a_dormant_charter_is_repossessed_on_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(100 * 60),
+        rs9_story_c_charter::story_c_charter(
+            rs9_story_c_charter::Pair {
+                a: Miner {
+                    account: "rs9cda",
+                    character: "Cdahuna",
+                    site: Site::Ahuna,
+                },
+                b: Miner {
+                    account: "rs9cea",
+                    character: "Ceahuna",
+                    site: Site::Ahuna,
+                },
+            },
+            &grounds_rig::AHUNA_FLANK,
+        ),
+    )
+    .await
+    .expect("the Ahuna story (c) charter half finishes inside 100 minutes");
+}
+
+/// The same story at Urvara Reach (512). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9c's story (c) charter half at 512: the dormancy window, the repossession, the retrieval, the debt; run by name"]
+async fn rs9_story_c_a_dormant_charter_is_repossessed_on_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(100 * 60),
+        rs9_story_c_charter::story_c_charter(
+            rs9_story_c_charter::Pair {
+                a: Miner {
+                    account: "rs9cdu",
+                    character: "Cdurvara",
+                    site: Site::Urvara,
+                },
+                b: Miner {
+                    account: "rs9ceu",
+                    character: "Ceurvara",
+                    site: Site::Urvara,
+                },
+            },
+            &grounds_rig::URVARA_REACH,
+        ),
+    )
+    .await
+    .expect("the Urvara story (c) charter half finishes inside 100 minutes");
 }
 
 /// **Doc 41 cut RS.9c: story (b) whole, the bot over SSH at 256** (Ahuna Flank): the contested

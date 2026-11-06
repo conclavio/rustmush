@@ -438,6 +438,10 @@ pub struct TacsimStore {
     /// provenance and serving [`crate::ground::draft_from_world`] both before and after
     /// `@atlas/pack apply`.
     pub(crate) staged_drafts: BTreeMap<String, crate::ground::GroundDraft>,
+    /// **Doc 41 cut RS.9c** — RAM-only: the dormancy window in real seconds in place of the
+    /// programme's `dormancy_real_days`, set only by [`lower_dormancy_floor_for_test`]. `None`
+    /// in every shipped binary.
+    pub(crate) dormancy_span_override_s: Option<i64>,
 }
 
 /// Maximum bytes one staffer's `@ground/stage` chunk buffer may hold in RAM (2 MiB).
@@ -467,6 +471,26 @@ pub fn lower_ledger_floor_for_test(
     };
     store.cfg.arena.ledger.max_bytes = max_bytes;
     store.cfg.arena.ledger.summary_ms = summary_ms;
+    true
+}
+
+/// **The dormancy window below the content's floor, for a test root** (doc 41 cut RS.9c): the
+/// charter recall's dormancy window becomes `seconds` real seconds in place of the programme's
+/// `dormancy_real_days` (at least one real day, `port::def`'s validation), so the bot's story (c)
+/// on a production root sees a charter go dormant in minutes. Whether the layer was there to
+/// lower.
+///
+/// **Gated twice**, as [`lower_ledger_floor_for_test`] is: compiled only under `cfg(test)` or the
+/// `test-dormancy-floor` feature, which is off by default and turned on by `mush-bot`'s
+/// `[dev-dependencies]` edge alone (`feature_matrix_inventory` pins that), so no shipped binary
+/// carries it; and no config key reaches it, since only Rust code holding the booted world can
+/// call it. The production floor is unchanged.
+#[cfg(any(test, feature = "test-dormancy-floor"))]
+pub fn lower_dormancy_floor_for_test(w: &mut mush_core::World, seconds: u32) -> bool {
+    let Some(store) = w.module_state_mut::<TacsimStore>() else {
+        return false;
+    };
+    store.dormancy_span_override_s = Some(i64::from(seconds.max(1)));
     true
 }
 

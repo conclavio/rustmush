@@ -101,6 +101,12 @@ fault-injection = []
 # minutes. Off by default; `mush-bot`'s `[dev-dependencies]` edge is the only thing in the tree
 # that turns it on, and `feature_matrix_inventory.rs` pins that claim. No config key reaches it.
 test-ledger-floor = []
+# Doc 41 cut RS.9c: `tacsim::store::lower_dormancy_floor_for_test`, which lowers the charter
+# recall's dormancy window below the programme's validated floor (one real day) on a booted
+# engine, so the bot's story (c) on a production root sees a charter go dormant in minutes. Off by
+# default; `mush-bot`'s `[dev-dependencies]` edge is the only thing in the tree that turns it on,
+# and `feature_matrix_inventory.rs` pins that claim. No config key reaches it.
+test-dormancy-floor = []
 
 [dev-dependencies]
 mush-testkit.workspace = true
