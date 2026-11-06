@@ -220,6 +220,8 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         "rs9a: +tv/1/permissions go → {index:?}\n{}",
         said.trim_end()
     );
+    // The working float first: the tender's term and deposit are 8,800 cr.
+    crate::float(&mut god, &mut client).await;
     let (index, said) = typed(
         &mut client,
         "+tv/lease tender go",
@@ -229,7 +231,6 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     assert_eq!(index, Some(0), "the tender's lease:\n{said}");
     stamp("the tender is leased");
     mine::lift_rate(&mut god, 3_600).await;
-    crate::float(&mut god, &mut client).await;
 
     // 2. The goods at Stickney, by Luna and Deimos; home to Ceres.
     for (word, room) in [
