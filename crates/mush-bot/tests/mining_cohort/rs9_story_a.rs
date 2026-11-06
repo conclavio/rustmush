@@ -123,24 +123,36 @@ async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
     typed(client, "+ship/leave", &[lines::ASHORE]).await;
 }
 
-/// **Bunker at a port of call only what the passage to `port` lacks** (no margin): the way out
-/// was bunkered at Ceres, and a purchase at Luna or Deimos has been seen to hold the departure for
-/// good (its quote's goods never come aboard).
+/// **Bunker for the passage to `port`, buying exactly what it lacks** (the cohort's `bunker` buys a
+/// margin with no regard to the tank's room, and a purchase past the room leaves its remainder a
+/// pending draw that holds every later departure: "Quote #…'s goods have not come aboard yet").
 async fn bunker_lean(client: &mut arena::Client, port: &str) {
-    let from = client.seen.len();
-    typed(client, &format!("+ship/plan {port}"), &["Stores "]).await;
-    client.idle(Duration::from_secs(1)).await;
-    let text = client.seen.get(from..).unwrap_or("").to_owned();
-    let raw: Vec<String> = text.lines().map(str::to_owned).collect();
-    let plan = lines::plan_figures(&raw).expect("the plan's figures");
-    println!(
-        "rs9a: the plan for {port}: tank {} t for a burn of {} t, locker {} for {} crew-days",
-        plan.tank_t, plan.burn_t, plan.locker, plan.crew_days
-    );
-    if plan.tank_t >= plan.burn_t && plan.locker >= plan.crew_days {
-        return;
+    for _ in 0..4 {
+        let from = client.seen.len();
+        typed(client, &format!("+ship/plan {port}"), &["Stores "]).await;
+        client.idle(Duration::from_secs(1)).await;
+        let text = client.seen.get(from..).unwrap_or("").to_owned();
+        let raw: Vec<String> = text.lines().map(str::to_owned).collect();
+        let plan = lines::plan_figures(&raw).expect("the plan's figures");
+        println!(
+            "rs9a: the plan for {port}: tank {} t for a burn of {} t, locker {} for {} crew-days",
+            plan.tank_t, plan.burn_t, plan.locker, plan.crew_days
+        );
+        if plan.tank_t >= plan.burn_t && plan.locker >= plan.crew_days {
+            return;
+        }
+        let rows = crate::board_rows(client).await;
+        if plan.tank_t < plan.burn_t {
+            let fuel = lines::ask_for(&rows, "reaction mass").expect("a reaction mass ask");
+            crate::buy(client, fuel, plan.burn_t - plan.tank_t + 1).await;
+        }
+        if plan.locker < plan.crew_days {
+            let food = lines::ask_for(&rows, "provisions").expect("a provisions ask");
+            crate::buy(client, food, plan.crew_days - plan.locker + 1).await;
+        }
+        client.idle(Duration::from_secs(5)).await;
     }
-    crate::bunker(client, port).await;
+    panic!("the bunkers for {port} never covered the plan");
 }
 
 /// A mutation plan's JSON from `ops`.
@@ -308,15 +320,7 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     ] {
         typed(&mut client, word, &[room]).await;
     }
-    // The whole way out bunkered at Ceres, so the calls at Luna and Deimos buy nothing: a market's
-    // draw at a port of call has been seen to stall the departure for good (its quote's goods
-    // never come aboard). `bunker` tops up only what a leg still lacks.
-    let rows = crate::board_rows(&mut client).await;
-    for (label, qty) in [("reaction mass", 60), ("provisions", 30)] {
-        let n = lines::ask_for(&rows, label).unwrap_or_else(|| panic!("a {label} ask: {rows:?}"));
-        crate::buy(&mut client, n, qty).await;
-    }
-    crate::bunker(&mut client, "luna").await;
+    bunker_lean(&mut client, "luna").await;
     sail(&mut client, &hull, "luna").await;
     bunker_lean(&mut client, "deimos").await;
     sail(&mut client, &hull, "deimos").await;
@@ -333,12 +337,12 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         crate::buy(&mut client, n, qty).await;
     }
     stamp("bought the stores and the bay's goods");
-    crate::bunker(&mut client, "ceres").await;
+    bunker_lean(&mut client, "ceres").await;
     sail(&mut client, &hull, "ceres").await;
     stamp("home at Ceres");
 
     // 3. To the site.
-    crate::bunker(&mut client, ground.venue).await;
+    bunker_lean(&mut client, ground.venue).await;
     typed(&mut client, "+ship/board", &[lines::BOARDED]).await;
     let from = client.seen.len();
     let (_, said) = crate::typed(
