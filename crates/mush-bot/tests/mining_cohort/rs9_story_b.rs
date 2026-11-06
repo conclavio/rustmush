@@ -211,12 +211,17 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
         "T holds `c`: {said:?}"
     );
     let _ = o;
-    let workshop = engine
-        .world
-        .iter()
-        .find(|row| row.kind == mush_core::ObjKind::Room && row.name.contains("C14"))
-        .map(|row| row.id)
-        .expect("Ceres's C14 workshop room");
+    // Ceres's workshop room (C14), as the bay resolves it: the lane pack's port def.
+    let lane = tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON).expect("the lane");
+    let workshop = match lane.entry(&cid("ceres_port")) {
+        Some(tacsim::pack::PackEntry::Port(def)) => {
+            tacsim::port::workshop::room(&engine.world, &cid("ceres_port"), def)
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    }
+    .expect("Ceres's C14 workshop room");
     (
         said,
         Made {
