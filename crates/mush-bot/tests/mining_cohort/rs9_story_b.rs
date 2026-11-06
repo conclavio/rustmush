@@ -187,8 +187,10 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
             ),
         ));
     }
-    seed_block(engine, ground.entry, a_letter, l);
-    seed_block(engine, ground.entry, c_letter, l);
+    if std::env::var("RS9B_NO_BLOCKS").is_err() {
+        seed_block(engine, ground.entry, a_letter, l);
+        seed_block(engine, ground.entry, c_letter, l);
+    }
     said.push(format!(
         "a #{} at {a_cell:?} on {a_letter}, c #{} at {c_cell:?} on {c_letter}",
         a.0, c.0
@@ -275,7 +277,12 @@ async fn fly_out(
         miner.character.to_owned(),
     );
     let enrolled = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
-    let bound = Duration::from_secs(40 * 60);
+    let bound = Duration::from_secs(
+        std::env::var("RS9_LANE_BOUND_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40 * 60),
+    );
     mine::drive_lane_since(
         client,
         &mut lane,
@@ -290,10 +297,12 @@ async fn fly_out(
     mine::drive_lane_since(client, &mut lane, started, until, bound).await;
     assert!(
         until(&lane),
-        "{}'s lane stopped at {:?}: {:?}",
+        "{}'s lane stopped at {:?}: {:?}; the client's last 4 KiB:
+{}",
         miner.character,
         lane.beat(),
-        lane.result()
+        lane.result(),
+        mush_bot::tail(&client.seen, 4 * 1024)
     );
     lane
 }
@@ -405,6 +414,22 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
     let (a, c) = (format!("#{}", made.a.0), format!("#{}", made.c.0));
     let (o_name, t_name) = (cast.o.character, cast.t.character);
 
+    if let Ok(wait) = std::env::var("RS9B_READY_WAIT_S") {
+        god.idle(Duration::from_secs(wait.parse().unwrap_or(120)))
+            .await;
+        let (_, status) = god
+            .answer("@tacsim/port status", &[mine::READY, mine::NOT_READY])
+            .await;
+        let shut: Vec<&str> = status.lines().filter(|l| !l.contains("[ready]")).collect();
+        println!(
+            "rs9b: readiness:
+{}",
+            shut.join(
+                "
+"
+            )
+        );
+    }
     // 0. T and O fly out; T sits on the pad, O's rig comes down the ramp.
     let t_lane = fly_out(&mut t, &mut god, cast.t, started, |lane| {
         lane.reached(Milestone::ArrivedSite)
