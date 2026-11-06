@@ -733,6 +733,36 @@ fn on_ground(w: &World, unit: ObjId) -> Option<(CanonicalId, mush_sim::DomainId,
     ground_of_unit(w, unit)
 }
 
+/// **Set a carrier wrecked while docked at a site down on her pad cell** (doc 41 cut RS.9a; the
+/// owner's ruling of 2026-11-05): a docked hull's surface placement is the port domain's origin,
+/// out of any tug's reach, so a wreck on her pad is placed on the cell her ramp stands on — still
+/// in the port's domain, so she stays docked and never lifts — and the tow and the house arm read
+/// her like any casualty. Answers her pose there; `None` for a hull not docked at a site's pad.
+pub fn set_down_on_pad(ctx: &mut Ctx<'_>, carrier: ObjId) -> Option<mush_sim::data::Pose> {
+    let (_, domain, ramp, _, _) = crate::surface::tick::hull_view_berth(ctx.w, carrier)?;
+    // The centre of the ramp's cell: a casualty stands at a cell's centre, as the index reads it.
+    let centre = |cm: i64| {
+        cm.div_euclid(1_000)
+            .saturating_mul(1_000)
+            .saturating_add(500)
+    };
+    let pose = mush_sim::data::Pose {
+        x_cm: centre(ramp.x_cm),
+        y_cm: centre(ramp.y_cm),
+        ..ramp
+    };
+    if mush_sim::pose_of(ctx.w, carrier)
+        .is_some_and(|(on, at)| on == domain && at.x_cm == pose.x_cm && at.y_cm == pose.y_cm)
+    {
+        return Some(pose);
+    }
+    if let Err(error) = mush_sim::place(ctx, carrier, domain, pose.clone()) {
+        tracing::warn!(carrier = carrier.0, %error, "tacsim: a wrecked carrier could not be set down on her pad");
+        return None;
+    }
+    Some(pose)
+}
+
 /// **Where `unit` stands on a site's ground** (the salvage's reader): the site and its pose.
 pub(crate) fn ground_pose(w: &World, unit: ObjId) -> Option<(CanonicalId, FieldPose)> {
     ground_of_unit(w, unit).map(|(site, _, pose)| (site, pose))

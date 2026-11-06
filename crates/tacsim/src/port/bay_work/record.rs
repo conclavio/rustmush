@@ -192,6 +192,11 @@ pub struct BayHull {
     /// into it, less the bale after), so `@industry/census` sums repairs as a sink. Omitted at 0.
     #[serde(default, skip_serializing_if = "is_zero_kg")]
     pub repaired_kg: u64,
+    /// **The kilograms a workshop's scrap of this hull minted** (doc 41 cut RS.9a, story (e)): her
+    /// structure's yield and her stripped parts' lots. Her mass was never in the census, so
+    /// `@industry/census` sums them as a source beside a site's remains scrap. Omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero_kg")]
+    pub scrapped_kg: u64,
 }
 
 /// Serde's skip for a zero kilogram count.
@@ -349,6 +354,7 @@ impl BayHull {
             bale: None,
             held_for: None,
             repaired_kg: 0,
+            scrapped_kg: 0,
         }
     }
 

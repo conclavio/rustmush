@@ -819,3 +819,43 @@ four waits under it; the owner ruled "Apply all three" for doc 41's (the Co-op's
 **Tests.** `salvage_close::rs3_the_claim_window_is_forty_eight_ic_days_at_any_rate`; RS.5's story (the debt not
 delinquent within the grace, the desk refusing past it); RS.7's story (the carrier not held within the grace, held
 past it). Each fails without its change.
+
+## RS.9a — the stories' in-process gaps: story (d) and (e)'s census (2026-11-05)
+
+Row: §6 RS.9, its first slice. RS.9 is sliced: **9a** the in-process gaps (story (d), never built; story (e) reading
+the matter census); **9b** the bot over SSH on (e) at 256 and 512; **9c** the bot on (b) and (c); **9d** the bot on (a),
+then this file closed. No lane rows. Stacked on the 38a/b fixes (#489).
+
+**The owner's ruling (2026-11-05).** A carrier wrecked while docked at a site is **set down on her pad cell** — the
+centre of the cell her ramp stands on — so the tow and the house arm read her like any casualty. (A docked hull's
+surface placement is the port domain's origin, out of any tug's reach: story (d)'s crawler drove beside her and every
+tow read "not a casualty or a wreck within a cell".)
+
+**Built.**
+
+- **The set-down** (`surface::tow::set_down_on_pad`): placed at her ramp cell's centre in the port's domain, so she is
+  still docked there (`berth_of` reads the domain) and never lifts. The field's close (`field::close::demote_units`)
+  sets a carrier checked in a wreck down and indexes her there; a staff fixture calls it by hand.
+- **A carrier is cargo in a bay** (`voyage::bay_gate_leaving`): a ship's hull a tow loaded is no rig. The departure
+  read her hopper and planned dark ("could not read a rig's hopper … no hopper vault").
+- **A berthed carrier keeps her place** (`mush_sim::retire_finished_journey`, called by `bay_work::berth`): berthed
+  out of a bay she is unplaced in the workshop room as a rig is, and the journey tick's loose-terminal backstop took
+  her finished journey's root for a stopped ship and quarantined her into the recovery room (LIMBO) on the next fire.
+  Retiring the finished journey makes her an object again; her next departure starts a journey of its own.
+- **Story (e)'s census** (`port::census`): a workshop's scrap (IN.8's `strip::scrap`, Tycho's at Ceres) mints from a
+  hull the census never held, but only a site's remains scrap counted as the `scrapped` source, so the census fell by
+  the yield across the sweep (1,183 kg: a tonne into lots, the rest into the shop bale). `BayHull.scrapped_kg` records
+  the yield and the stripped parts' lots; the census sums it.
+
+**The 256 t figure.** A Dray-P fresh from the pad with her two rigs is 272 t laden — her tank and locker count
+(Q-41-29) — over the 130 t crawler's twice-its-own 260 t. §4.9's 256 t is her dry hull and two rigs: the story's
+carrier flies out on the leg's propellant and little more (`driving_rig::on_pad_loaded_at`). A fuelled carrier on her
+pad is beyond the house's crawler.
+
+**Stories.** `tacsim` `tests/domain_field/story_d_rs9.rs` at 256 and 512: the Dray-P's hull lost on her pad, her two
+rigs wrecked with her, set down on her pad cell; her title holder's retrieval unaccepted, Tycho's crawler tows her
+laden, the lifter flies her to Ceres and berths her in C14 (where she stays), the delivery settles, `+bay` quotes her
+rebuild. "No shipped tug can take her" is the table's own check
+(`field_carrier::every_carrier_is_past_twice_any_tugs_tonnage`). Story (e): `house_sweep_rs6c`'s scrap stories and
+`house_resale_rs6c2`'s resale stories hold the census balance (`in11_matter::steady_balance`) across the sweep, the
+scrap, the supply leg, the restoration and the sale, at 256 and 512.

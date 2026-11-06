@@ -9,9 +9,10 @@
 //!
 //! - **Sources**: the opened deposits' reserves (`opened`; mining is a transfer out of a deposit's
 //!   vault, so `mined` = `opened` − `in_ground`), the stock clerk's mints (`stock`, the
-//!   `tacsim.port_stock` receipts), and the alloys remains scrap mints on a site (`scrapped`:
-//!   the hull's mass was never in the census; the sub-tonne under its whole tonnes is §4.6's
-//!   declared loss).
+//!   `tacsim.port_stock` receipts), and what a scrap mints (`scrapped`: the hull's mass was never
+//!   in the census) — the alloys remains scrap mints on a site (the sub-tonne under its whole
+//!   tonnes is §4.6's declared loss), and a workshop's scrap's yield and stripped parts (doc 41
+//!   cut RS.9a; its sub-tonne goes to the shop bale, a holding).
 //! - **Holdings**: every pool and lot of a chain good outside the deposits (`pools`, `lots`), the
 //!   hulls' opened bales and the workshops' shop bales (`bales`).
 //! - **Sinks and declared losses**: every completed work order's inputs less its outputs
@@ -255,6 +256,8 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
     for state in store.bay_hulls.values() {
         if let crate::port::bay_work::BayHullState::Present(row) = state {
             out.repaired = out.repaired.saturating_add(row.repaired_kg);
+            // Doc 41 cut RS.9a: a workshop's scrap mints from a hull the census never held.
+            out.scrapped = out.scrapped.saturating_add(row.scrapped_kg);
             if let Some(bale) = row.bale.as_ref() {
                 out.bales = out
                     .bales

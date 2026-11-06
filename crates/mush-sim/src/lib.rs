@@ -105,8 +105,8 @@ pub use journey::{
     JourneyBook, JourneyId, JourneyState, MAX_CARRIER_JOURNEYS, MAX_CARRIER_SUBTREE,
     MAX_JOURNEY_ANOMALY_BYTES, MAX_JOURNEYS_VISITED_PER_FIRE, MAX_JOURNEYS_WORKED_PER_FIRE,
     carrier_journey_key, dock_carrier_at_destination, fail_carrier_journey,
-    promote_carrier_journey, recouple_carrier_journey, resume_carrier_journey, same_place,
-    under_way_root_of,
+    promote_carrier_journey, recouple_carrier_journey, resume_carrier_journey,
+    retire_finished_journey, same_place, under_way_root_of,
 };
 pub use route::{
     CadenceId, DistanceLaw, DriveProfile, DriveProfileWire, LegDef, LegDefWire, MAX_HAZARD_BAND,

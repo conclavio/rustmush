@@ -19,6 +19,30 @@ pub(crate) fn census(
         .collect()
 }
 
+/// **The matter census's balance once it holds still** for three reads a few fires apart (IN.11's
+/// window: the house's boot builds settle first).
+pub(crate) fn steady_balance(rig: &mut crate::driving_rig::Rig) -> i128 {
+    let mut before = census(rig)["balance"];
+    let mut steady = 0;
+    for _ in 0..60 {
+        for _ in 0..5 {
+            let (_, queued) = crate::driving_rig::fire(rig);
+            crate::driving_rig::land_quietly(rig, &queued);
+        }
+        let now = census(rig)["balance"];
+        if now == before {
+            steady += 1;
+            if steady >= 3 {
+                return now;
+            }
+        } else {
+            steady = 0;
+            before = now;
+        }
+    }
+    panic!("the matter census never held still: {before}");
+}
+
 /// The build lines: `(order, inputs, hull, waste)` a commission, kilograms.
 pub(crate) fn builds(rig: &mut crate::driving_rig::Rig) -> Vec<(i128, i128, i128, i128)> {
     let out = run(&mut rig.tw, GOD, "@industry/census");

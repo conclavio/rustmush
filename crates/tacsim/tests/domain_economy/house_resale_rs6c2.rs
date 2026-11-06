@@ -139,6 +139,9 @@ fn story(venue: &str, entry: &str) {
         tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     let dispatcher = tacsim::port::house::dispatcher(rig.tw.world(), &ceres).expect("dispatcher");
     let (house, house_account) = tycho(&rig);
+    // Doc 41 story (e) (RS.9a): the matter census (IN.11's `@industry/census`) holds across the
+    // sweep, the supply leg's buys, the restoration's draw and the sale.
+    let matter = crate::in11_matter::steady_balance(&mut rig);
     let now = rig.tw.world().world_ic_now().at;
     skip_and_fire(
         &mut rig,
@@ -279,6 +282,11 @@ fn story(venue: &str, entry: &str) {
             .iter()
             .all(|l| l.hull != wreck),
         "sold, she is off the list"
+    );
+    assert_eq!(
+        crate::in11_matter::census(&mut rig)["balance"],
+        matter,
+        "the matter census holds across the sweep, the restoration and the sale"
     );
 }
 

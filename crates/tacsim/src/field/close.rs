@@ -366,9 +366,15 @@ pub(crate) fn demote_units(
         let Some(condition) = left_condition(state, back) else {
             continue;
         };
-        let at = match back.filter(|_| carrier) {
-            Some(back) => back.pose.clone(),
-            None => {
+        // Doc 41 cut RS.9a (the owner's ruling of 2026-11-05): a carrier wrecked while docked is
+        // set down on her pad cell, where a tug can reach her, and indexed there.
+        let set_down = (carrier && condition == LeftCondition::Wreck)
+            .then(|| crate::surface::tow::set_down_on_pad(ctx, *unit))
+            .flatten();
+        let at = match (set_down, back.filter(|_| carrier)) {
+            (Some(pose), _) => pose,
+            (None, Some(back)) => back.pose.clone(),
+            (None, None) => {
                 let Some((_, at)) = mush_sim::pose_of(ctx.w, *unit) else {
                     continue;
                 };

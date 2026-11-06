@@ -875,6 +875,27 @@ pub(crate) fn persist_journey(out: &mut Outbox, j: &CarrierJourney) -> bool {
     }
 }
 
+/// **Retire a finished journey** (doc 41 cut RS.9a): `root`'s terminal journey record is
+/// deleted, so a carrier a workshop has taken in — unplaced, standing in its room as a berthed hull
+/// does — is an object again and the tick's loose-terminal backstop does not quarantine it into
+/// the recovery room. Its next departure starts a journey of its own. `false` (nothing written)
+/// when `root` has no journey or is under way.
+pub fn retire_finished_journey(ctx: &mut Ctx<'_>, root: ObjId) -> bool {
+    let Some(book) = ctx.w.module_state_mut::<JourneyBook>() else {
+        return false;
+    };
+    if book
+        .journeys
+        .get(&root)
+        .is_none_or(|j| j.state.is_under_way())
+    {
+        return false;
+    }
+    book.journeys.remove(&root);
+    persist_journey_del(ctx.out, root);
+    true
+}
+
 pub(crate) fn persist_journey_del(out: &mut Outbox, root: ObjId) {
     push_op(
         out,

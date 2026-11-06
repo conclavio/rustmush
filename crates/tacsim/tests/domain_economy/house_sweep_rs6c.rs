@@ -132,6 +132,10 @@ fn story(venue: &str, entry: &str) {
         tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
     let dispatcher = tacsim::port::house::dispatcher(rig.tw.world(), &ceres).expect("dispatcher");
     let before = tycho_balance(&rig);
+    // Doc 41 story (e) (RS.9a): the matter census (IN.11's `@industry/census`) holds to the
+    // kilogram across the sweep and the scrap, once the house's boot builds have settled.
+    let matter = crate::in11_matter::steady_balance(&mut rig);
+    let terms_before = crate::in11_matter::census(&mut rig);
     // Nothing sweeps her before her time.
     assert!(
         rig.tw
@@ -232,6 +236,12 @@ fn story(venue: &str, entry: &str) {
     assert!(
         tycho_balance(&rig) > before_scrap,
         "the scrap's credit went to Tycho"
+    );
+    assert_eq!(
+        crate::in11_matter::census(&mut rig)["balance"],
+        matter,
+        "the matter census holds across the sweep and the scrap: before {terms_before:?}, after {:?}",
+        crate::in11_matter::census(&mut rig)
     );
     // The census: the site's index no longer lists her.
     let record = crate::field_host_rig::site_record_at(&mut rig, entry).expect("the record");
