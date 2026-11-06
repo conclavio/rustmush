@@ -439,7 +439,7 @@ pub struct TacsimStore {
     /// `@atlas/pack apply`.
     pub(crate) staged_drafts: BTreeMap<String, crate::ground::GroundDraft>,
     /// **Doc 41 cut RS.9c** — RAM-only: the dormancy window in real seconds in place of the
-    /// programme's `dormancy_real_days`, set only by [`lower_dormancy_floor_for_test`]. `None`
+    /// programme's `dormancy_real_days`, set only by `lower_dormancy_floor_for_test` (test roots). `None`
     /// in every shipped binary.
     pub(crate) dormancy_span_override_s: Option<i64>,
 }

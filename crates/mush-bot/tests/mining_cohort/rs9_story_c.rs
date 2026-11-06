@@ -15,10 +15,9 @@
 //! their power destroyed (`@unit/damage`) and titled to A (`@asset/title`), on the site's index as
 //! casualties (`@tacsim/site leave`), A's money (`@econ/mint`), and the world's rate.
 //!
-//! **What this story does not run** (in-process instead): the charter's repossession of a
-//! dormant lessee's prospector with the wear allowance and a debt beyond the deposit
-//! (`field_rs5`): the programme's dormancy is counted in real days (at least one), which no bot
-//! run waits out. Story (a)'s run carries (c)'s refit at Stickney Yards.
+//! **The charter half** — the repossession of a dormant lessee's prospector with the wear
+//! allowance and a debt beyond the deposit — is `rs9_story_c_charter`'s, through a test-only
+//! dormancy window. Story (a)'s run carries (c)'s refit at Stickney Yards.
 
 use std::time::{Duration, Instant};
 

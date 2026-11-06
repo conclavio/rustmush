@@ -335,6 +335,20 @@ id = "mush-bot/tests::mining_cohort::rs9_story_c_a_retrieval_is_accepted_and_pai
 tier = "by-hand"
 by_hand = "df517c94"
 
+# Doc 41 cut RS.9c: story (c)'s charter half at 256 and 512 (the dormancy window lowered through
+# the test-only `test-dormancy-floor` seam; the repossession where it lies, the retrieval, the debt
+# past its grace), green by hand at the revision below on conclav.dev, both sizes side by side
+# (2,070 s each).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_c_a_dormant_charter_is_repossessed_on_ahuna"
+tier = "by-hand"
+by_hand = "6d2a99d2"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_c_a_dormant_charter_is_repossessed_on_urvara"
+tier = "by-hand"
+by_hand = "6d2a99d2"
+
 # Doc 41 cut RS.9c: story (b) whole at 256 and 512 (three players: the claims, the contests, the
 # fine, the quarantine and the held hulls), green by hand at the revision below on conclav.dev,
 # both sizes side by side (1,202 s and 1,203 s).

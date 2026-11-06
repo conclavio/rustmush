@@ -1013,8 +1013,8 @@ C14 (`@teleport`), and the world's rate.
 a W-clock freeze (`salvage_close`, `field_gc6`), the at-risk repair itself (`bay_36a`), the bay-to-bay `+bay/stow` with
 T's carrier docked first (`vacated_return_rs4`), and the retrieval-contract `right` ground §4.9 names beside the
 authorization — **not built**: `claim.rs` has no retrieval ground and a retrieval load writes no salvage row, so (b)
-runs the authorization variant §4.9 allows. (c)'s charter repossession of a dormant lessee (`field_rs5`): the programme's
-dormancy is counted in real days, at least one, which no bot run waits out (asked of the lead; no test knob was added).
+runs the authorization variant §4.9 allows. (c)'s charter repossession of a dormant lessee ran in-process only (`field_rs5`) until the
+charter half below: the programme's dormancy is counted in real days, at least one, which no bot run waits out.
 
 **The vocabulary** (`mine::lane::salvage`): `+tv/<n> tow #<id> [go]` (GC.4's bare tow takes the nearest casualty),
 `+tv/<n> load [go]`, RS.5's `+debts` and `+debts/pay <n>`. mush-bot's dev-dependencies gain mush-economy and mush-org
@@ -1065,3 +1065,44 @@ Worth a look of its own: IN.5's bot story sails the same legs.
 owed cell cost is filled from its PR's CI JUnit. Doc 41 is complete: RS.0–RS.10 have landed. Owed elsewhere: the
 retrieval-contract `right` ground is unbuilt. (The fuelled-carrier tow limit and the chartered tenant's retrieval post,
 open when this was written, were ruled on 2026-11-06 and built in the RS.9a follow-up above.)
+
+## RS.9c, the charter half — story (c)'s repossession, the bot over SSH (2026-11-06)
+
+Row: §6 RS.9, after RS.9c. No lane rows. The lead's ruling of 2026-11-06 on the dormancy seam: a test-only knob behind an
+off-by-default feature, FR.7c's `test-ledger-floor` pattern.
+
+**The knob** (`tacsim::store::lower_dormancy_floor_for_test`, feature `test-dormancy-floor`): the charter recall's
+dormancy window becomes a number of real seconds in place of the programme's `dormancy_real_days` (`port::recall`'s
+`dormancy_span`; the RAM-only `TacsimStore::dormancy_span_override_s`). Compiled only under `cfg(test)` or the feature;
+`mush-bot`'s `[dev-dependencies]` edge alone turns it on (`feature_matrix_inventory` pins it, now 17 features); no config
+key reaches it, since only Rust code holding the booted engine calls it; the production floor (one real day) is
+unchanged. `recall::rs9c_a_test_root_lowers_the_dormancy_window` fails without it.
+
+**The story** (`mush-bot` `tests/mining_cohort/rs9_story_c_charter.rs`;
+`mining_cohort::rs9_story_c_a_dormant_charter_is_repossessed_on_{ahuna,urvara}`, `#[ignore]`d, TS.2 tier by-hand):
+`field_rs5`'s charter story, typed. A enrols, flies out and sends the prospector down the ramp; God damages it there
+(power destroyed, chassis damaged at 40) and indexes it; A sails home without it (`+ship/lift ceres leave=1`) and is spent
+down. With the window lowered to 900 s and the world at the boot's 24 (so none of the prospector's 28-IC-day clocks run
+inside it), the recall repossesses the prospector where it lies and posts its retrieval; A hears the wear allowance and
+the debt, and `+debts` reads it due. B enrols only then (B's own charter never spans the window), flies out, accepts the
+job from `+salvage/jobs`, tows and loads it (`+bay` reads "Your right: retrieval"), sails home, and the shed's hand-back
+at the docking pays B. A at Occator's counter: past the 28 IC days `+debts` reads it delinquent, `+tv/lease go` is
+refused naming the delinquent debts and the desk reinstates it (due again), `+debts/pay` cannot cover it, and pays once
+A is funded.
+
+**What the story found** (fixed here): **the desk's refusal of a delinquent debtor never reached the player over the
+server.** `retrieval::desk_refusal` reinstates every delinquent debt (pinned writes, so the step commits) and the lease
+and enrol desks answered `Err`, whose line is `OnAbort` output: withheld on a committing step. The in-process harness
+delivers every class, so `field_rs5` read it. `retrieval::refused_at_desk` now queues the line with `error_on_commit`
+and the desks answer `Ok`; `field_rs5` reads the desk as a committing step releases (`driving_rig::run_committed`) and
+fails without the fix. The same shape — a handler that pins its writes and then returns `Err` — loses its line anywhere
+in the engine; that general gap is owed to the engine, not fixed here. And the lane kits up a hull a recall freed (B is
+chartered A's recalled Dray-P, already refitted: `+coop/refit prospector` answers "is already a Dray-P";
+`lane::a_hull_already_refitted_kits_up`).
+
+**What is a fixture** (doc 36a §8's seams): the prospector's damage and index row, A's spend-down and later funds, A's walk
+to the counter (`@teleport`), the rate, and the window itself (the knob). A's rig is found by its mark (`+tv/1`, then
+God's `@find`), as story (a) finds its escort.
+
+**Runs (by hand, conclav.dev, both sizes side by side):** green at `6d2a99d2` (2,070 s each).
+
