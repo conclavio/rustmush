@@ -954,5 +954,5 @@ idempotency key (the record's serial has not moved), so the second was dropped: 
 session, one write at a time. An unscoped `@asset/title` to an organization is outside its scope tree's grants. Held
 deposits are not available to `@econ/pay`. The fine's line wraps at the session's width: read it whole.
 
-**Runs (by hand, conclav.dev, both sizes side by side):** (b) green at `{B_REV}` ({B_TIMES}); (c) green at `df517c94`
+**Runs (by hand, conclav.dev, both sizes side by side):** (b) green at `24594391` (1,202 s at 256, 1,203 s at 512); (c) green at `df517c94`
 (995 s each).
