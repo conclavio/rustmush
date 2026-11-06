@@ -266,10 +266,11 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     crate::bunker(&mut client, ground.venue).await;
     typed(&mut client, "+ship/board", &[lines::BOARDED]).await;
     let from = client.seen.len();
-    let (_, said) = typed(
+    let (_, said) = crate::typed(
         &mut client,
         &format!("+ship/lift {}", ground.venue),
-        &[lines::CLEARANCE, "lifts", "cannot"],
+        &[lines::CLEARANCE],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
     )
     .await;
     println!("rs9a: +ship/lift {} → {}", ground.venue, said.trim_end());
@@ -421,10 +422,11 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     )
     .await;
     let from = client.seen.len();
-    let (_, said) = typed(
+    let (_, said) = crate::typed(
         &mut client,
         "+ship/lift ceres",
-        &[lines::CLEARANCE, "lifts", "cannot"],
+        &[lines::CLEARANCE],
+        &[lines::GOODS_WAIT, lines::GOODS_LEAVING],
     )
     .await;
     println!("rs9a: +ship/lift ceres → {}", said.trim_end());
