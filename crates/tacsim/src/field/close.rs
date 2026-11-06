@@ -502,6 +502,119 @@ pub(crate) fn is_irrecoverable(w: &mush_core::World, unit: ObjId) -> bool {
         .is_some_and(|assessment| assessment.state == OperationalState::Irrecoverable)
 }
 
+/// **The set-downs the host owes the site records** (doc 41's RS.9a follow-up): per site, each
+/// carrier wrecked while docked outside a field, the character who submits her `set_down` (her
+/// helm holder) and the row it indexes. RAM: rebuilt by the tick from the hulls themselves.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OwedSetDowns(
+    pub(crate)  std::collections::BTreeMap<
+        CanonicalId,
+        std::collections::BTreeMap<ObjId, (ObjId, LeftUnit)>,
+    >,
+);
+
+/// **Set down every carrier wrecked while docked at a site, outside a field** (doc 41's RS.9a
+/// follow-up; the owner's ruling of 2026-11-05; the host's tick): a hull loss no field checked
+/// in — a hazard, a staff hand's damage, any later damage path — leaves the carrier on her pad as
+/// the field's close does ([`demote_units`]): set down on her pad cell
+/// ([`crate::surface::tow::set_down_on_pad`]), every rig in her bay a wreck with her
+/// ([`wreck_bay_rigs`]), and indexed on the site's record as a wreck by the field action's
+/// `set_down`, submitted as her helm holder, so a tug and the house arm read her like any
+/// casualty. A carrier a running field holds is the close's; one already indexed is done.
+pub(crate) fn set_down_docked_wrecks(ctx: &mut Ctx<'_>) {
+    use crate::port::ship::{Berth, berth_of};
+    let wrecked: Vec<ObjId> = crate::surface::recovery::world_hulls(ctx.w)
+        .into_iter()
+        .filter(|hull| {
+            matches!(berth_of(ctx.w, *hull), Berth::Docked { def, .. } if def.site.is_some())
+        })
+        .filter(|hull| {
+            crate::carrier_damage::damage_of(ctx.w, *hull)
+                .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::Wrecked))
+        })
+        .collect();
+    let mut owed: std::collections::BTreeMap<
+        CanonicalId,
+        std::collections::BTreeMap<ObjId, (ObjId, LeftUnit)>,
+    > = std::collections::BTreeMap::new();
+    for carrier in wrecked {
+        let Some((site, ..)) = crate::surface::tick::hull_view_berth(ctx.w, carrier) else {
+            continue;
+        };
+        let in_field = ctx
+            .w
+            .module_state::<FieldBook>()
+            .and_then(|book| book.hosted(&site))
+            .is_some_and(|hosted| hosted.live.units.iter().any(|row| row.unit == carrier));
+        if in_field
+            || site_record(ctx, &site)
+                .is_some_and(|record| record.units.iter().any(|row| row.unit == carrier))
+        {
+            continue;
+        }
+        let Some(actor) = crate::port::coop::helm_holder(ctx.w, carrier) else {
+            tracing::warn!(
+                carrier = carrier.0,
+                "tacsim: a wrecked docked carrier has no helm holder to set her down"
+            );
+            continue;
+        };
+        let Some(pose) = crate::surface::tow::set_down_on_pad(ctx, carrier) else {
+            continue;
+        };
+        let _ = wreck_bay_rigs(ctx, carrier);
+        owed.entry(site).or_default().insert(
+            carrier,
+            (
+                actor,
+                LeftUnit {
+                    unit: carrier,
+                    pose: SitePose {
+                        x_cm: pose.x_cm,
+                        y_cm: pose.y_cm,
+                        heading_mdeg: pose.heading_mdeg,
+                    },
+                    condition: LeftCondition::Wreck,
+                    epoch: None,
+                    left_ic: ctx.w.world_ic_now().at,
+                },
+            ),
+        );
+    }
+    let Some(action) = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|handles| handles.field.clone())
+    else {
+        return;
+    };
+    if let Some(book) = ctx.w.module_state_mut::<OwedSetDowns>() {
+        book.0.clone_from(&owed);
+    }
+    let now = ctx.w.world_ic_now().at;
+    for (site, rows) in owed {
+        for (carrier, (actor, _)) in rows {
+            if ctx.authoritative_pending(actor) {
+                continue;
+            }
+            let Some(key) = super::provider::field_key(actor, &site, "set_down", carrier.0, now)
+            else {
+                continue;
+            };
+            let saved = ctx.actor;
+            ctx.actor = actor;
+            ctx.submit_authoritative(
+                action.clone(),
+                mush_core::PerceivedRef::SelfActor,
+                Vec::new(),
+                serde_json::json!({ "site": site.to_string(), "op": "set_down", "unit": carrier.0 }),
+                key,
+            );
+            ctx.actor = saved;
+        }
+    }
+}
+
 /// **A wrecked carrier's bay** (doc 36 cut GC.3; Q-36-8): when `carrier`'s checked-in record
 /// says its hull fell, every rig in its bay becomes a wreck where the carrier stands — the
 /// arena's wreck mark written onto its own record ([`crate::carrier_damage::wreck_plan`]). The

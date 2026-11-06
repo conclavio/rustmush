@@ -464,8 +464,8 @@ impl ActionProvider for FieldProvider {
         parameters
             .get("op")
             .and_then(Value::as_str)
-            .filter(|op| matches!(*op, "open" | "close" | "exit" | "rejoin"))
-            .ok_or_else(|| invalid("a field write opens, closes, exits or rejoins"))?;
+            .filter(|op| matches!(*op, "open" | "close" | "exit" | "rejoin" | "set_down"))
+            .ok_or_else(|| invalid("a field write opens, closes, exits, rejoins or sets down"))?;
         Ok(())
     }
 
@@ -536,6 +536,20 @@ impl ActionProvider for FieldProvider {
                     .collect()
             })
             .unwrap_or_default();
+        // Doc 41's RS.9a follow-up: the set-downs the host owes, fixed the same way: only these
+        // carriers may be indexed where they were set down, and only with these rows.
+        let setting_down: Map<String, Value> = w
+            .module_state::<super::close::OwedSetDowns>()
+            .map(|owed| {
+                owed.0
+                    .iter()
+                    .map(|(site, rows)| {
+                        let rows: Vec<&LeftUnit> = rows.values().map(|(_, row)| row).collect();
+                        (site.to_string(), json!(rows))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let carried = carried_offer(w);
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
@@ -557,6 +571,7 @@ impl ActionProvider for FieldProvider {
                         "close".to_owned(),
                         "exit".to_owned(),
                         "rejoin".to_owned(),
+                        "set_down".to_owned(),
                     ],
                 },
             )?,
@@ -577,6 +592,7 @@ impl ActionProvider for FieldProvider {
             "closing": closing,
             "exiting": exiting,
             "rejoining": rejoining,
+            "setting_down": setting_down,
             "carried": carried,
         });
         crate::surface::site_record::fix_sides(w, &mut fixed);
@@ -660,6 +676,34 @@ impl ActionProvider for FieldProvider {
                 }
                 record.rejoin(unit);
                 format!("#{} is back in field {}", unit.0, record.ordinal)
+            }
+            // Doc 41's RS.9a follow-up: a carrier wrecked while docked, outside a field, indexed
+            // where the host set her down on her pad.
+            "set_down" => {
+                let unit = obj(parameters, "unit")?;
+                let row: LeftUnit = parameters
+                    .get("setting_down")
+                    .and_then(|owed| owed.get(key.0.as_str()))
+                    .and_then(Value::as_array)
+                    .and_then(|rows| {
+                        rows.iter().find(|row| {
+                            row.get("unit").and_then(Value::as_u64) == Some(u64::from(unit.0))
+                        })
+                    })
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| invalid("a set-down's row is a left unit"))?
+                    .ok_or_else(|| rejected("only the field host sets a wrecked carrier down"))?;
+                if record.open_field().is_some() {
+                    return Err(rejected(
+                        "a field is open on the site; its close indexes her",
+                    ));
+                }
+                record
+                    .leave_unit(row)
+                    .map_err(|why| rejected(why.sentence()))?;
+                format!("#{} is set down on her pad, a wreck", unit.0)
             }
             _ => {
                 let owed = parameters
