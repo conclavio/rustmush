@@ -984,18 +984,25 @@ structural alloys nor yard fittings, so it sails for Stickney Yards by Luna and 
 the tender's stores and the bay's goods, sails home and lifts for the site. On the ground: the stores loaded and the bale
 opened, both rigs down the ramp, and — God's `@unit/damage` jamming the escort's cannon, holing its hull 40 points and
 emptying its magazine to 10 — the tender clears the jam, patches the hull and rearms the magazine
-(`+tv/2 unjam|stabilize|rearm #<escort> [go]`). The escort back in the bay, its machine gun destroyed and its armour
-dented: `+bay` reads her away from port with no fee and names the nearest workshop for the destroyed part,
+(`+tv/2 unjam|stabilize|rearm #<escort> [go]`). The escort back in the bay, her cannon damaged, her machine gun destroyed
+and her hull holed again: `+bay` reads her away from port with no fee and names the nearest workshop for the destroyed part,
 `+bay/order …=replace` is refused with the same line, `+bay/order …=mend,armor` is taken in the carrier bay at no fee; the
-carrier lifts for Ceres and the order finishes under way.
+carrier lifts for Ceres and the order finishes after the lift, the cannon whole and the hull's 40 points back. Which ends
+first, her hop or the order, is a matter of real seconds at the lifted rate and not the bot's to watch: `field_rs2` holds
+the order through the passage in-process.
 
 **From the row.** §4.9 says "the carrier lifts for Stickney": no site has a route to Stickney (every site's legs are to
 and from Ceres), so she lifts for Ceres, as `field_rs2` does. Not run over SSH: GC.4's tow before it (`field_gc4`; the
 bot's own GC.4 lines are `fr7_round`'s) and the bay's wait under a field (`field_rs2`). (c)'s refit at Stickney Yards
 — the replace drawing doc 39's store — stays `bay_gc8`'s and `in6_part_lot`'s.
 
-**The vocabulary**: RS.1's `+tv/lease tender [go]`, a second rig's `+tv/<n> launch go` and `+tv/<n> recover [go]`, and a
-rig's own line, `+tv/<n>`.
+**The vocabulary** (RS.9c's PR): RS.1's `+tv/lease tender [go]`, the tender's `+tv/2 launch go` and `+tv/2 recover [go]`,
+and a rig's own line, `+tv/<n>`.
+
+**What the harness found.** At the ports of call (Luna, Deimos) a bunker purchase's market draw was seen to hold the
+departure for minutes ("Quote #…'s goods have not come aboard yet"); the cohort's `sail` gives up after 60 tries, so
+story (a) keeps its own patient `sail` and buys each leg's exact shortfall (`bunker_lean`), not the cohort's margin.
+Worth a look of its own: IN.5's bot story sails the same legs.
 
 **Runs:** green at `{A_REV}` ({A_TIMES}).
 
