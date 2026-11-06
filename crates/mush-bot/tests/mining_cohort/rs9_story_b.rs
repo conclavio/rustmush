@@ -227,17 +227,7 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
         "T holds `c`: {said:?}"
     );
     let _ = o;
-    // Ceres's workshop room (C14), as the bay resolves it: the lane pack's port def.
-    let lane = tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON).expect("the lane");
-    let workshop = match lane.entry(&cid("ceres_port")) {
-        Some(tacsim::pack::PackEntry::Port(def)) => {
-            tacsim::port::workshop::room(&engine.world, &cid("ceres_port"), def)
-                .ok()
-                .flatten()
-        }
-        _ => None,
-    }
-    .expect("Ceres's C14 workshop room");
+    let workshop = ceres_workshop(engine);
     (
         said,
         Made {
@@ -249,6 +239,21 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
             workshop,
         },
     )
+}
+
+/// **Ceres's workshop room (C14)**, as the bay resolves it: the lane pack's port def through
+/// `port::workshop::room`.
+pub(crate) fn ceres_workshop(engine: &mush_core::Engine) -> ObjId {
+    let lane = tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON).expect("the lane");
+    match lane.entry(&cid("ceres_port")) {
+        Some(tacsim::pack::PackEntry::Port(def)) => {
+            tacsim::port::workshop::room(&engine.world, &cid("ceres_port"), def)
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    }
+    .expect("Ceres's C14 workshop room")
 }
 
 /// A line the player types, in the bot's vocabulary, answered by one of `needles`.

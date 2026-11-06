@@ -27,7 +27,7 @@ use mush_core::ObjId;
 
 use crate::fr7_round::{PROSPECTOR, WEST, cid, placed, powerless_plan};
 use crate::grounds_rig::Ground;
-use crate::rs9_story_b::{enrol, fly, named, tow_in, typed, until};
+use crate::rs9_story_b::{ceres_workshop, enrol, fly, named, tow_in, typed, until};
 use crate::{arena, mine};
 
 /// The two players: A the owner, B the acceptor.
@@ -73,6 +73,9 @@ fn fixture(
     (said, hulls, a)
 }
 
+/// What the fixture made: the two hulls and their cells, A, B and Ceres's workshop room.
+type Made = ([(ObjId, (i64, i64)); 2], ObjId, ObjId, ObjId);
+
 /// **Story (c)'s retrieval half on `ground`**, the pair `pair`.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn story_c(pair: Pair, ground: &'static Ground) {
@@ -89,12 +92,13 @@ pub(crate) async fn story_c(pair: Pair, ground: &'static Ground) {
         },
         |engine| {
             let (said, hulls, a) = fixture(engine, ground, pair);
-            made = Some((hulls, a));
+            let b = named(engine, pair.b.character);
+            made = Some::<Made>((hulls, a, b, ceres_workshop(engine)));
             said
         },
     )
     .await;
-    let (hulls, a_id) = made.expect("the fixture ran");
+    let (hulls, a_id, b_id, workshop) = made.expect("the fixture ran");
     stamp(&format!("the fixture: {} lines", said.len()));
     let mut god = arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
     let mut a = arena::Client::login(
@@ -223,6 +227,54 @@ pub(crate) async fn story_c(pair: Pair, ground: &'static Ground) {
     )
     .await;
     println!("rs9c: B> +ship/lift ceres leave=1\n{}", said.trim_end());
+    assert!(
+        b.watch(
+            from,
+            &mush_bot::mine::lines::docks(&lane.settings().hull),
+            Duration::from_secs(20 * 60)
+        )
+        .await,
+        "B never docked at Ceres:
+{}",
+        mush_bot::tail(&b.seen, 4 * 1024)
+    );
+    stamp("B docked at Ceres");
+    // The handover: B ashore and in the workshop (God's hand, the `move_to` seam), where B's
+    // `+bay/berth` berths her and posts the delivery.
+    let (_, said) = typed(&mut b, "+ship/leave", &["leave", "Leave", "aboard", "lock"]).await;
+    println!(
+        "rs9c: B> +ship/leave
+{}",
+        said.trim_end()
+    );
+    let (_, moved) = god
+        .answer(
+            &format!("@teleport #{}=#{}", b_id.0, workshop.0),
+            &[
+                "Teleported",
+                "teleport",
+                "Done",
+                "denied",
+                "Huh",
+                "can't",
+                "Office",
+            ],
+        )
+        .await;
+    println!("rs9c: God> @teleport B to C14: {}", moved.trim_end());
+    b.idle(Duration::from_secs(2)).await;
+    let (index, said) = typed(
+        &mut b,
+        &format!("+bay/berth {first}"),
+        &["berthed in the workshop"],
+    )
+    .await;
+    assert_eq!(
+        index,
+        Some(0),
+        "B berths her:
+{said}"
+    );
     let paid = tacsim::surface::retrieval::TOLD_PAID
         .split("{fee}")
         .next()
