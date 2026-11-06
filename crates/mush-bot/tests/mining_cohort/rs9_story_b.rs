@@ -345,7 +345,23 @@ async fn credit_of(client: &mut arena::Client) -> (u64, i64) {
 }
 
 /// **O's rig tows `hull` from beside the ramp and loads it into O's bay** (GC.4's tow, aimed).
-async fn tow_and_load(o: &mut arena::Client, hull: ObjId) {
+async fn tow_and_load(o: &mut arena::Client, god: &mut arena::Client, site: &str, hull: ObjId) {
+    // Where everyone stands before the tow (the story's own trace).
+    let (_, rigs) = typed(o, "+tv", &["Rig 1"]).await;
+    let (_, index) = god
+        .answer(
+            &format!("@tacsim/site {site}"),
+            &["Unit #", "units", "nothing"],
+        )
+        .await;
+    println!(
+        "rs9b: before the tow of #{}:
+{}
+{}",
+        hull.0,
+        rigs.trim_end(),
+        index.trim_end()
+    );
     let tow = format!("+tv/1 tow #{} go", hull.0);
     let from = o.seen.len();
     let (_, said) = typed(o, &tow, &["in tow", "Tow", "not a casualty", "cannot"]).await;
@@ -503,7 +519,7 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
     // 2. O recovers both into O's bay and files a claim on each; every holder is told.
     o.idle(Duration::from_secs(5)).await;
     for hull in [made.a, made.c] {
-        tow_and_load(&mut o, hull).await;
+        tow_and_load(&mut o, &mut god, site, hull).await;
     }
     for hull in [&a, &c] {
         let (index, said) = typed(
