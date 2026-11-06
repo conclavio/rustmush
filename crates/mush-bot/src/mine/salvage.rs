@@ -44,7 +44,9 @@ const WORK_KINDS: [&str; 7] = [
 ///   `+bay/stow <hull>[=<carrier>]` (RS.4's bay-to-bay form, doc 39's IN.9 verb);
 /// - doc 41 cut RS.9c (story (b) whole): the tow aimed at one hull, `+tv/<n> tow #<id> [go]`
 ///   (GC.4's bare `+tv/1 tow go` takes whichever casualty lies nearest), the load, `+tv/<n>
-///   load [go]`, and RS.5's debt lines, `+debts` and `+debts/pay <n>`.
+///   load [go]`, and RS.5's debt lines, `+debts` and `+debts/pay <n>`; cut RS.9d (story (a)
+///   whole): the tender's lease, `+tv/lease tender [go]` (RS.1's lease row), and a second rig's
+///   launch and recovery, `+tv/<n> launch go` and `+tv/<n> recover [go]`.
 ///
 /// A `<hull>` is `#<id>` or a name; a `<who>` a plain name or `#<id>`; a site a route word.
 #[must_use]
@@ -52,10 +54,18 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 160 || line.contains(['\n', '\r']) {
         return false;
     }
+    // Doc 41 cut RS.9d: RS.1's tender lease.
+    if line == "+tv/lease tender" || line == "+tv/lease tender go" {
+        return true;
+    }
     if let Some(rest) = line.strip_prefix("+tv/") {
         return tv_word(rest);
     }
-    if line == SALVAGE || line == DEBTS {
+    if line == SALVAGE
+        || line == DEBTS
+        || line == "+tv/lease tender"
+        || line == "+tv/lease tender go"
+    {
         return true;
     }
     // Doc 41 cut RS.9c: RS.5's `+debts/pay <n>`.
@@ -121,8 +131,8 @@ fn tv_word(rest: &str) -> bool {
         return false;
     }
     let (tail, go) = split_go(tail);
-    // Doc 41 cut RS.9c: the aimed tow and the load.
-    if tail == "load" {
+    // Doc 41 cut RS.9c: the aimed tow and the load; cut RS.9d: a launch and a recovery.
+    if tail == "load" || tail == "recover" || (tail == "launch" && go) {
         return true;
     }
     if let Some(id) = tail.strip_prefix("tow #") {
@@ -484,6 +494,12 @@ mod tests {
             "+tv/1 load go",
             "+debts",
             "+debts/pay 17",
+            // Doc 41 cut RS.9d.
+            "+tv/lease tender",
+            "+tv/lease tender go",
+            "+tv/2 launch go",
+            "+tv/2 recover",
+            "+tv/2 recover go",
         ] {
             assert!(in_vocabulary(line), "{line}");
         }
@@ -506,6 +522,8 @@ mod tests {
             "+debts/pay",
             "+debts/pay 07",
             "+debts/pay all",
+            "+tv/2 launch",
+            "+tv/lease tender now",
             "+salvage/claim",
             "+salvage/claim #",
             "+salvage/claim #81x",
