@@ -166,6 +166,7 @@ pub fn apply(
         drive: None,
         tender: None,
         recovery_profile: crate::definitions::logistics::RecoveryProfile::default(),
+        tow_cap_t: None,
         derived_mass: true,
     };
     logistics.check(entry)?;

@@ -108,6 +108,11 @@ pub struct LogisticsDef {
     /// **The tow coupling it carries** (doc 41 cut RS.1, Q-41-27): `standard` unless authored.
     #[serde(default, skip_serializing_if = "RecoveryProfile::is_standard")]
     pub recovery_profile: RecoveryProfile,
+    /// **The most it tows, tonnes laden** (doc 41's RS.9a follow-up, the owner's ruling of
+    /// 2026-11-06: Tycho's crawler tows 400 t), in place of its coupling's multiple of its own
+    /// mass; `1..=`[`MAX_TOW_CAP_T`]. `None`, the coupling's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tow_cap_t: Option<u32>,
     /// **Doc 39 cut IN.9b**: a block a class template gave the design
     /// (`crate::definitions::templates`), never authored: its `dry_mass_t` is the design's
     /// field-ops mass rounded up for the readouts that print tonnes, and every mass the engine
@@ -115,6 +120,9 @@ pub struct LogisticsDef {
     #[serde(skip)]
     pub derived_mass: bool,
 }
+
+/// The heaviest tow cap a unit may author, tonnes.
+pub const MAX_TOW_CAP_T: u32 = 1_000_000;
 
 /// The longest service reach a tender may author, cm (a site cell's diagonal and then some).
 pub const MAX_TENDER_REACH_CM: u32 = 10_000;
@@ -428,6 +436,14 @@ impl LogisticsDef {
                     ),
                 ));
             }
+        }
+        if let Some(cap) = self.tow_cap_t
+            && !(1..=MAX_TOW_CAP_T).contains(&cap)
+        {
+            return Err(DefinitionError::value(
+                entry,
+                format!("logistics.tow_cap_t is 1 to {MAX_TOW_CAP_T}; {cap} is not"),
+            ));
         }
         // Doc 18 §4.2: "a rail at or above the stowage maxima plus occupants".
         let Some(floor) = self.payload_floor_kg() else {

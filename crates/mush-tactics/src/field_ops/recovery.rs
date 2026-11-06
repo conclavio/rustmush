@@ -200,13 +200,33 @@ pub fn tow_mass_ratio_permille_for(
     casualty_mass_kg: u64,
     profile: TowRigProfile,
 ) -> Result<u64, RecoveryError> {
+    tow_mass_ratio_permille_capped(tug_mass_kg, casualty_mass_kg, profile, None)
+}
+
+/// [`tow_mass_ratio_permille_for`] under an explicit cap when the tug's definition authors one
+/// (doc 41's RS.9a follow-up, the owner's ruling of 2026-11-06: Tycho's crawler tows 400 t),
+/// `cap_kg`; `None` is the profile's own.
+///
+/// # Errors
+/// As [`tow_mass_ratio_permille_for`].
+pub fn tow_mass_ratio_permille_capped(
+    tug_mass_kg: u64,
+    casualty_mass_kg: u64,
+    profile: TowRigProfile,
+    cap_kg: Option<u64>,
+) -> Result<u64, RecoveryError> {
     if tug_mass_kg == 0 || casualty_mass_kg == 0 {
         return Err(RecoveryError::ZeroDryMass);
     }
-    let max_casualty_mass_kg = tug_mass_kg
-        .checked_mul(profile.cap_permille())
-        .ok_or(RecoveryError::MassOverflow)?
-        / 1_000;
+    let max_casualty_mass_kg = match cap_kg {
+        Some(cap) => cap,
+        None => {
+            tug_mass_kg
+                .checked_mul(profile.cap_permille())
+                .ok_or(RecoveryError::MassOverflow)?
+                / 1_000
+        }
+    };
     if casualty_mass_kg > max_casualty_mass_kg {
         return Err(RecoveryError::ExceedsTonnageCap {
             tug_mass_kg,
@@ -229,7 +249,22 @@ pub fn tow_speed_factor_permille(
     casualty_mass_kg: u64,
     profile: TowRigProfile,
 ) -> Result<u32, RecoveryError> {
-    let ratio_permille = tow_mass_ratio_permille_for(tug_mass_kg, casualty_mass_kg, profile)?;
+    tow_speed_factor_permille_capped(tug_mass_kg, casualty_mass_kg, profile, None)
+}
+
+/// [`tow_speed_factor_permille`] under an explicit cap (`cap_kg`,
+/// [`tow_mass_ratio_permille_capped`]).
+///
+/// # Errors
+/// As [`tow_speed_factor_permille`].
+pub fn tow_speed_factor_permille_capped(
+    tug_mass_kg: u64,
+    casualty_mass_kg: u64,
+    profile: TowRigProfile,
+    cap_kg: Option<u64>,
+) -> Result<u32, RecoveryError> {
+    let ratio_permille =
+        tow_mass_ratio_permille_capped(tug_mass_kg, casualty_mass_kg, profile, cap_kg)?;
     let factor = match profile {
         TowRigProfile::Standard => 850_u64.saturating_sub((ratio_permille * 300) / 1_000),
         TowRigProfile::RecoveryOptimized | TowRigProfile::Heavy => {
@@ -251,13 +286,29 @@ pub fn scaled_tow_speed_cms(
     casualty_mass_kg: u64,
     profile: TowRigProfile,
 ) -> Result<u32, RecoveryError> {
+    scaled_tow_speed_cms_capped(base_speed_cms, tug_mass_kg, casualty_mass_kg, profile, None)
+}
+
+/// [`scaled_tow_speed_cms`] under an explicit cap (`cap_kg`,
+/// [`tow_mass_ratio_permille_capped`]).
+///
+/// # Errors
+/// As [`scaled_tow_speed_cms`].
+pub fn scaled_tow_speed_cms_capped(
+    base_speed_cms: u32,
+    tug_mass_kg: u64,
+    casualty_mass_kg: u64,
+    profile: TowRigProfile,
+    cap_kg: Option<u64>,
+) -> Result<u32, RecoveryError> {
     if base_speed_cms == 0 {
         return Err(RecoveryError::ZeroTugBaseSpeed);
     }
-    let factor_permille = u64::from(tow_speed_factor_permille(
+    let factor_permille = u64::from(tow_speed_factor_permille_capped(
         tug_mass_kg,
         casualty_mass_kg,
         profile,
+        cap_kg,
     )?);
     let scaled = (u64::from(base_speed_cms) * factor_permille) / 1_000;
     u32::try_from(scaled.max(1)).map_err(|_| RecoveryError::MassOverflow)
@@ -330,6 +381,9 @@ pub struct TugInspectionContext {
     pub tug_mass_kg: u64,
     /// Tug rig profile.
     pub rig_profile: TowRigProfile,
+    /// **The tug's explicit tow cap, kg**, when its definition authors one (doc 41's RS.9a
+    /// follow-up); `None` is the profile's own ([`TowRigProfile::max_casualty_mass_kg`]).
+    pub max_casualty_mass_kg: Option<u64>,
     /// Tug field pose.
     pub tug_pose: FieldPose,
     /// Maximum attach distance in centimeters.
@@ -389,7 +443,9 @@ pub fn inspect_field_unit(
     let target = assessment.unit;
     let tow_evaluation = tug_ctx.map(|ctx| {
         let casualty_mass_kg = mass.total_mass_kg();
-        let max_casualty_mass_kg = ctx.rig_profile.max_casualty_mass_kg(ctx.tug_mass_kg);
+        let max_casualty_mass_kg = ctx
+            .max_casualty_mass_kg
+            .unwrap_or_else(|| ctx.rig_profile.max_casualty_mass_kg(ctx.tug_mass_kg));
         let mass_ratio_permille =
             (ctx.tug_mass_kg > 0).then(|| casualty_mass_kg.saturating_mul(1_000) / ctx.tug_mass_kg);
         let distance_cm = ctx.tug_pose.distance_cm_to(&pose);
@@ -422,11 +478,12 @@ pub fn inspect_field_unit(
         };
 
         let coupled_speed_cms = if refusal.is_none() {
-            scaled_tow_speed_cms(
+            scaled_tow_speed_cms_capped(
                 ctx.tug_base_speed_cms,
                 ctx.tug_mass_kg,
                 casualty_mass_kg,
                 ctx.rig_profile,
+                ctx.max_casualty_mass_kg,
             )
             .ok()
         } else {
@@ -640,6 +697,7 @@ pub struct RecoveryOperation {
     tug: ObjId,
     casualty: ObjId,
     rig_profile: TowRigProfile,
+    max_casualty_mass_kg: Option<u64>,
     tug_base_speed_cms: u32,
     tug_mass_kg: u64,
     casualty_mass: UnitMassProfile,
@@ -652,6 +710,13 @@ pub struct RecoveryOperation {
 }
 
 impl RecoveryOperation {
+    /// **The tug's explicit tow cap, kg**, when its definition authored one at the attach (doc
+    /// 41's RS.9a follow-up); `None` is the profile's own.
+    #[must_use]
+    pub const fn max_casualty_mass_kg(&self) -> Option<u64> {
+        self.max_casualty_mass_kg
+    }
+
     /// Operation id.
     #[must_use]
     pub const fn id(&self) -> RecoveryOpId {
@@ -764,11 +829,12 @@ impl RecoveryOperation {
                 state: self.casualty_state,
             });
         }
-        let expected_speed = scaled_tow_speed_cms(
+        let expected_speed = scaled_tow_speed_cms_capped(
             self.tug_base_speed_cms,
             self.tug_mass_kg,
             self.casualty_mass.total_mass_kg(),
             self.rig_profile,
+            self.max_casualty_mass_kg,
         )?;
         if self.coupled_speed_cms != expected_speed {
             return Err(RecoveryError::CoupledSpeedMismatch {
@@ -789,6 +855,8 @@ struct RecoveryOperationWire {
     tug: ObjId,
     casualty: ObjId,
     rig_profile: TowRigProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_casualty_mass_kg: Option<u64>,
     tug_base_speed_cms: u32,
     tug_mass_kg: u64,
     casualty_mass: UnitMassProfile,
@@ -810,6 +878,7 @@ impl TryFrom<RecoveryOperationWire> for RecoveryOperation {
             tug: wire.tug,
             casualty: wire.casualty,
             rig_profile: wire.rig_profile,
+            max_casualty_mass_kg: wire.max_casualty_mass_kg,
             tug_base_speed_cms: wire.tug_base_speed_cms,
             tug_mass_kg: wire.tug_mass_kg,
             casualty_mass: wire.casualty_mass,
@@ -833,6 +902,7 @@ impl From<RecoveryOperation> for RecoveryOperationWire {
             tug: op.tug,
             casualty: op.casualty,
             rig_profile: op.rig_profile,
+            max_casualty_mass_kg: op.max_casualty_mass_kg,
             tug_base_speed_cms: op.tug_base_speed_cms,
             tug_mass_kg: op.tug_mass_kg,
             casualty_mass: op.casualty_mass,
@@ -861,6 +931,9 @@ pub struct AttachTowRequest {
     pub tug_mass_kg: u64,
     /// Tug rig profile (`Standard` vs `RecoveryOptimized`).
     pub rig_profile: TowRigProfile,
+    /// **The tug's explicit tow cap, kg**, when its definition authors one (doc 41's RS.9a
+    /// follow-up); `None` is the profile's own.
+    pub max_casualty_mass_kg: Option<u64>,
     /// Tug field pose at attachment.
     pub tug_pose: FieldPose,
     /// Target casualty assessment.
@@ -1074,11 +1147,12 @@ impl RecoveryBook {
             });
         }
 
-        let coupled_speed_cms = scaled_tow_speed_cms(
+        let coupled_speed_cms = scaled_tow_speed_cms_capped(
             req.tug_base_speed_cms,
             req.tug_mass_kg,
             req.casualty_mass.total_mass_kg(),
             req.rig_profile,
+            req.max_casualty_mass_kg,
         )?;
 
         if self.operations.len() >= MAX_RECOVERY_OPERATIONS {
@@ -1096,6 +1170,7 @@ impl RecoveryBook {
             tug: req.tug,
             casualty,
             rig_profile: req.rig_profile,
+            max_casualty_mass_kg: req.max_casualty_mass_kg,
             tug_base_speed_cms: req.tug_base_speed_cms,
             tug_mass_kg: req.tug_mass_kg,
             casualty_mass: req.casualty_mass,
