@@ -123,6 +123,26 @@ async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
     typed(client, "+ship/leave", &[lines::ASHORE]).await;
 }
 
+/// **Bunker at a port of call only what the passage to `port` lacks** (no margin): the way out
+/// was bunkered at Ceres, and a purchase at Luna or Deimos has been seen to hold the departure for
+/// good (its quote's goods never come aboard).
+async fn bunker_lean(client: &mut arena::Client, port: &str) {
+    let from = client.seen.len();
+    typed(client, &format!("+ship/plan {port}"), &["Stores "]).await;
+    client.idle(Duration::from_secs(1)).await;
+    let text = client.seen.get(from..).unwrap_or("").to_owned();
+    let raw: Vec<String> = text.lines().map(str::to_owned).collect();
+    let plan = lines::plan_figures(&raw).expect("the plan's figures");
+    println!(
+        "rs9a: the plan for {port}: tank {} t for a burn of {} t, locker {} for {} crew-days",
+        plan.tank_t, plan.burn_t, plan.locker, plan.crew_days
+    );
+    if plan.tank_t >= plan.burn_t && plan.locker >= plan.crew_days {
+        return;
+    }
+    crate::bunker(client, port).await;
+}
+
 /// A mutation plan's JSON from `ops`.
 fn plan(ops: Vec<mush_tactics::UnitMutationOp>, cause: &str) -> String {
     let plan = mush_tactics::UnitMutationPlan::new(ops, None, Some(cause.to_owned().into()))
@@ -292,15 +312,15 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     // draw at a port of call has been seen to stall the departure for good (its quote's goods
     // never come aboard). `bunker` tops up only what a leg still lacks.
     let rows = crate::board_rows(&mut client).await;
-    for (label, qty) in [("reaction mass", 40), ("provisions", 20)] {
+    for (label, qty) in [("reaction mass", 60), ("provisions", 30)] {
         let n = lines::ask_for(&rows, label).unwrap_or_else(|| panic!("a {label} ask: {rows:?}"));
         crate::buy(&mut client, n, qty).await;
     }
     crate::bunker(&mut client, "luna").await;
     sail(&mut client, &hull, "luna").await;
-    crate::bunker(&mut client, "deimos").await;
+    bunker_lean(&mut client, "deimos").await;
     sail(&mut client, &hull, "deimos").await;
-    crate::bunker(&mut client, "stickney").await;
+    bunker_lean(&mut client, "stickney").await;
     sail(&mut client, &hull, "stickney").await;
     stamp("docked at Stickney Yards");
     let rows = crate::board_rows(&mut client).await;
