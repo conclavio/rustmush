@@ -304,7 +304,20 @@ pub(crate) async fn story_c_charter(pair: Pair, ground: &'static Ground) {
     )
     .await;
     assert_eq!(index, Some(0), "B accepts:\n{said}");
+    let from = b.seen.len();
     tow_in(&mut b, &mut god, site, prospect).await;
+    // The load's own finish (`+bay` reads the retrieval right while she is still in tow).
+    let loaded = tacsim::surface::tow::LOADED_RETRIEVAL
+        .split("{carrier}")
+        .nth(1)
+        .expect("the load line's tail")
+        .to_owned();
+    assert!(
+        b.watch(from, &loaded, Duration::from_secs(10 * 60)).await,
+        "the load never finished:
+{}",
+        mush_bot::tail(&b.seen, 4 * 1024)
+    );
     until(
         &mut b,
         &format!("+bay {p}"),
@@ -370,7 +383,13 @@ pub(crate) async fn story_c_charter(pair: Pair, ground: &'static Ground) {
     let (index, refused) = typed(
         &mut a,
         "+tv/lease go",
-        &["will not deal with you", "lease", "Lease"],
+        // Never a word the echoed line carries.
+        &[
+            "will not deal with you",
+            "Occator leases",
+            "deposit",
+            "signed",
+        ],
     )
     .await;
     assert_eq!(
