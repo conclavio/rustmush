@@ -449,3 +449,181 @@ pub(crate) async fn taken_in(at: &Ground) {
     let held = run(&mut rig.tw, b, "+ship/captives");
     assert!(held.contains("You hold nobody aboard."), "{held}");
 }
+
+/// **Doc 42b cut SU.7, the yielded hull drives itself aboard** (the owner's ruling on Q-42b-14,
+/// 2026-11-05) on `at`'s ground. The content's raider: its first hull, a line tank of 30 t laden,
+/// stands beside the stranger's ramp, stripped but mobile, its crew at resolve 0; its barge and its
+/// second hull are gone. The crew yields and the field settles with the hull a casualty. The
+/// stranger's 6 t tug, launched after the demotion, takes it under escort — no tow rating binds,
+/// and every line reads it driving itself — leads it to the Red Moth's ramp, and it drives up into
+/// the bay: in the Red Moth's custody with a salvage claim owed, its crew `Captured` aboard by
+/// CR.1's branch, the resolve kept.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn escorted_aboard(at: &Ground) {
+    use crate::custody_rig::{ramp_cell_on, seconds_until};
+    let mut rig = stocked_tuned(quick);
+    let (b, b_row, b_tvs) = on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), at.site(), 1);
+    let b_carrier = ObjId(b_row.hull);
+    let tug = b_tvs[0];
+    let ramp = ramp_cell_on(&rig, at.entry);
+    let seeded = run(&mut rig.tw, GOD, &format!("@field/raiders {}", at.raider));
+    assert!(seeded.contains("seeded"), "{seeded}");
+    let launched = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@field/raiders/launch {}", at.raider),
+    );
+    assert!(launched.contains("launch from"), "{launched}");
+    let hulls = raider_hulls(&rig);
+    let barge = tacsim::field::raiders::carrier_of(rig.tw.world(), hulls[0]).expect("a carrier");
+    let hull = hulls[0];
+    crate::driving_rig::to_cell_on(&mut rig, at.entry, hull, (ramp.0 + 1, ramp.1));
+    stripped(&mut rig, hull);
+    let crews: Vec<ObjId> = hulls
+        .iter()
+        .map(|hull| {
+            tacsim::field::crew::seated_in(rig.tw.world(), *hull).expect("each hull has its crew")
+        })
+        .collect();
+    let crew = crews[0];
+    staff_hand(&mut rig, |ctx| {
+        for (who, resolve) in crews.iter().zip([0, 1_000]) {
+            assert!(tacsim::field::crew::set_resolve_for_tests(
+                ctx,
+                *who,
+                Some(resolve)
+            ));
+        }
+        mush_sim::unplace(ctx, barge, "test: the raider's barge is gone").expect("unplaced");
+        mush_sim::unplace(ctx, hulls[1], "test: the second hull is gone").expect("unplaced");
+    });
+    let hound = armed_on(
+        &mut rig,
+        at.entry,
+        "Red Hound",
+        (ramp.0 - 8, ramp.1),
+        90_000,
+    );
+    seat(&mut rig, hound, b);
+    warm(&mut rig);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let (out, queued) = command(&mut rig, b, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the promotion lands");
+    let entry = at.entry;
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 60, |rig, _| {
+            tacsim::field::raiders::yielded(rig.tw.world(), hull)
+        })
+        .await,
+        "the crew yields: {}",
+        mark(&rig, hull)
+    );
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 180, |rig, _| settled(
+            rig, entry
+        ))
+        .await,
+        "the field settles"
+    );
+    assert_eq!(
+        site_record_at(&mut rig, entry)
+            .and_then(|record| record.units.into_iter().find(|row| row.unit == hull))
+            .map(|row| row.condition),
+        Some(LeftCondition::Casualty),
+        "the yielded hull lies a casualty"
+    );
+    for _ in 0..5 {
+        let _ = crate::field_host_rig::second(&mut rig);
+    }
+
+    // The escort: the stranger's 6 t tug beside the 30 t hull, which drives itself.
+    crate::driving_rig::launched_at(&mut rig, at.entry, b, tug);
+    let (_, pose) = mush_sim::pose_of(rig.tw.world(), hull).expect("the hull stands");
+    let cell = tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm);
+    crate::driving_rig::to_cell_on(&mut rig, at.entry, tug, (cell.0, cell.1 + 1));
+    let _ = crate::field_host_rig::second(&mut rig);
+    let preview = run(&mut rig.tw, b, &format!("+tv/1 tow #{}", hull.0));
+    assert!(
+        preview.contains("under escort") && preview.contains("drives itself"),
+        "the escort, never a tow: {preview}"
+    );
+    let (out, queued) = command(&mut rig, b, &format!("+tv/1 tow #{} go", hull.0));
+    assert_eq!(queued.len(), 1, "one escort start: {out}");
+    crate::driving_rig::land(&mut rig, &queued[0]).expect("the escort start lands");
+    assert!(
+        seconds_until(&mut rig, 120, |rig| site_record_at(rig, entry)
+            .and_then(|record| record.tows.towing(tug).map(|op| op.casualty()))
+            == Some(hull)),
+        "the escort is set"
+    );
+
+    // At the Red Moth's ramp: the Dray-P's 20 t bay cannot take a 30 t tank, so (the owner's
+    // ruling, 2026-11-05) its crew come aboard as captives and the hull stays, titled to the captor.
+    crate::driving_rig::to_cell_on(&mut rig, at.entry, tug, (ramp.0 + 1, ramp.1 + 1));
+    let _ = crate::field_host_rig::second(&mut rig);
+    let preview = run(&mut rig.tw, b, "+tv/1 load");
+    assert!(
+        preview.contains("will not fit the Red Moth's bay")
+            && preview.contains("salvage of the unowned"),
+        "{preview}"
+    );
+    let done = run(&mut rig.tw, b, "+tv/1 load go");
+    let _ = crate::field_host_rig::second(&mut rig);
+    let record = crew_of(rig.tw.world(), crew)
+        .cloned()
+        .expect("the crew's record");
+    assert!(
+        matches!(record.location, CrewLocation::Captured { carrier, captor, .. }
+            if carrier == b_carrier && captor == b),
+        "the crew is held aboard the Red Moth: {record:?} ({done})"
+    );
+    assert_eq!(record.resolve_permille, Some(0));
+    let held = run(&mut rig.tw, b, "+ship/captives");
+    let name = rig
+        .tw
+        .world()
+        .get(crew)
+        .map(|o| o.name.clone())
+        .expect("a name");
+    assert!(held.contains(&name), "{held}");
+    assert!(
+        !tacsim::surface::tow::in_bay_of(rig.tw.world(), hull, b_carrier)
+            && mush_sim::pose_of(rig.tw.world(), hull).is_some(),
+        "the hull stays on the site"
+    );
+    let title = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|store| store.snapshot().asset(hull).map(|a| a.title_owner.clone()));
+    assert_eq!(
+        title,
+        Some(mush_org::PrincipalId::Object(b)),
+        "titled to the captor as salvage of the unowned"
+    );
+    assert!(
+        seconds_until(&mut rig, 60, |rig| site_record_at(rig, entry).is_some_and(
+            |record| record.tows.towing(tug).is_none() && record.tows.act_of(tug).is_none()
+        )),
+        "the escort lets it go"
+    );
+
+    // The captor posts its retrieval; nobody accepts, so Tycho Mutual takes it (RS.5, RS.6b).
+    let posted = run(&mut rig.tw, b, &format!("+salvage/retrieve #{} go", hull.0));
+    let job = tacsim::surface::retrieval::order_of(rig.tw.world(), hull)
+        .unwrap_or_else(|| panic!("the job is posted: {posted}"));
+    let _ = crate::driving_rig::to_ic(&mut rig, job.accept_by_ic + 60);
+    assert!(
+        seconds_until(&mut rig, 60, |rig| tacsim::surface::retrieval::order_of(
+            rig.tw.world(),
+            hull
+        )
+        .is_some_and(
+            |o| o.stage == tacsim::surface::retrieval::RetrievalStage::House
+        )),
+        "Tycho Mutual takes the retrieval: {:?}",
+        tacsim::surface::retrieval::order_of(rig.tw.world(), hull)
+    );
+}

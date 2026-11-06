@@ -119,6 +119,26 @@ pub const TOW_FILED: &str =
     "Rig {n} inspects the {name} and makes fast; the tow is attached in about {min} IC minutes.";
 /// The tow attached: `{n}`, `{name}`, `{speed}`.
 pub const TOW_ATTACHED: &str = "Rig {n} has the {name} in tow, at {speed} m/s. Drive it to a carrier's ramp and +tv/{n} load go, or +tv/{n} release go.";
+/// **Doc 42b cut SU.7** (the owner's ruling on Q-42b-14, 2026-11-05): a yielded hull is escorted,
+/// never towed: it drives itself under the rig's escort. The preview: `{n}`, `{name}`, `{speed}`,
+/// `{min}`.
+pub const ESCORT_PREVIEW: &str = "Rig {n} can take the {name} under escort: its crew yielded, and it drives itself at your rig's side at {speed} m/s, your rig's tow rating no matter. Closing up and signalling take about {min} IC minutes. +tv/{n} tow go";
+/// The escort filed: `{n}`, `{name}`, `{min}`.
+pub const ESCORT_FILED: &str = "Rig {n} closes on the {name} and signals it to follow; the escort is set in about {min} IC minutes.";
+/// The escort set: `{n}`, `{name}`, `{speed}`.
+pub const ESCORT_SET: &str = "Rig {n} has the {name} under escort, at {speed} m/s; it drives itself at your side. Lead it to a carrier's ramp and +tv/{n} load go, or +tv/{n} release go.";
+/// The escorted hull's load previewed: `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const ESCORT_LOAD_PREVIEW: &str = "Rig {n} can bring the {name} aboard: it drives up the {carrier}'s ramp under your rig's escort into the bay, in about {min} IC minutes. Aboard, it is in the {carrier}'s custody with a salvage claim owed, never its title, and its crew are held in your custody aboard the {carrier}. +tv/{n} load go";
+/// The escorted hull's load filed: `{n}`, `{name}`, `{carrier}`, `{min}`.
+pub const ESCORT_LOAD_FILED: &str = "The {name} drives up the {carrier}'s ramp under rig {n}'s escort; it is aboard in about {min} IC minutes.";
+/// **Crew aboard, hull titled** (the owner's ruling of 2026-11-05 on SU.7's bay: "crew aboard,
+/// claim hull"; the unowned rule of doc 41 RS.6c-1): a yielded hull too big for the bay, previewed.
+/// `{n}`, `{name}`, `{carrier}`, `{why}`.
+pub const ESCORT_TOO_BIG_PREVIEW: &str = "The {name} will not fit the {carrier}'s bay: {why}. Its crew can come aboard as your captives, and the hull stays here on the site, titled to you as salvage of the unowned (a raider's hull carries no title): bring a bigger carrier, or post its retrieval with +salvage/retrieve. Rig {n} lets it go once the crew are aboard. +tv/{n} load go";
+/// The same, done: `{name}`, `{carrier}`, `{who}` (the captor).
+pub const ESCORT_LEFT_TITLED: &str = "The {name}'s crew walk up the {carrier}'s ramp into custody; the hull stays on the site, titled to {who} as salvage of the unowned.";
+/// The escorted hull aboard: `{name}`, `{carrier}`.
+pub const ESCORT_LOADED: &str = "The {name} has driven up the {carrier}'s ramp under escort and stands in its bay, held in custody pending a salvage claim.";
 /// The tow refused at its landing: `{n}`, `{name}`, `{why}`.
 pub const TOW_REFUSED: &str = "Rig {n} could not take the {name} in tow: {why}.";
 /// An attach or a load interrupted: `{n}`, `{name}`.
@@ -834,8 +854,18 @@ fn attach_facts(ctx: &Ctx<'_>, tug: ObjId, casualty: ObjId) -> Option<AttachFact
     if there != site {
         return None;
     }
-    let (_, assessment, dry, _, _) = unit_facts(w, casualty)?;
+    let (_, mut assessment, dry, _, _) = unit_facts(w, casualty)?;
     let mass = laden(dry, carried_kg(ctx, casualty));
+    let mut tug_facts = tug_facts;
+    // Doc 42b cut SU.7 (the owner's ruling on Q-42b-14): a yielded hull that can move drives
+    // itself aboard under the rig's escort. Its crew powered it down to the rig's orders, so the
+    // library reads it as disabled (towable), and the rig's tow rating never binds: the coupling
+    // is weighed as a rig at least the hull's own mass. Only a yielded hull: a sound hull whose
+    // crew never yielded still refuses as not towable.
+    if escorted(w, casualty, &assessment) {
+        assessment.state = OperationalState::Disabled;
+        tug_facts.mass_kg = tug_facts.mass_kg.max(mass.total_mass_kg());
+    }
     let cfg = recovery_config(w);
     Some(AttachFacts {
         secs: cfg.inspect_s.saturating_add(cfg.attach_s),
@@ -848,6 +878,23 @@ fn attach_facts(ctx: &Ctx<'_>, tug: ObjId, casualty: ObjId) -> Option<AttachFact
         carrier_refusal: crate::field::carrier::refuse_tow(w, casualty, tug),
         pin: None,
     })
+}
+
+/// **Whether `casualty` goes under escort rather than in tow** (doc 42b cut SU.7): a raider hull
+/// whose crew yielded and that can still move under its own power.
+pub(crate) fn escorted(w: &World, casualty: ObjId, assessment: &FieldUnitAssessment) -> bool {
+    assessment.can_move
+        && crate::field::raiders::yielded(w, casualty)
+        && !matches!(
+            assessment.state,
+            OperationalState::Wreck | OperationalState::Irrecoverable
+        )
+}
+
+/// **Whether `casualty`, as it stands, would go under escort** (the lines' choice).
+fn escorted_now(w: &World, casualty: ObjId) -> bool {
+    unit_facts(w, casualty)
+        .is_some_and(|(_, assessment, _, _, _)| escorted(w, casualty, &assessment))
 }
 
 /// The library's attach request for `facts` at `now`.
@@ -2513,8 +2560,10 @@ pub(crate) fn tow_cmd(
     };
     let cfg = recovery_config(ctx.w);
     let min = minutes(cfg.inspect_s.saturating_add(cfg.attach_s)).to_string();
+    let escort = escorted_now(ctx.w, casualty);
     if !go {
-        let line = TOW_PREVIEW
+        let template = if escort { ESCORT_PREVIEW } else { TOW_PREVIEW };
+        let line = template
             .replace("{n}", &n)
             .replace("{name}", &label)
             .replace("{t}", &(facts.mass.total_mass_kg() / 1_000).to_string())
@@ -2536,10 +2585,11 @@ pub(crate) fn tow_cmd(
     ) {
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
+    let filed = if escort { ESCORT_FILED } else { TOW_FILED };
     ctx.out.sys_to_actor(
         actor,
         "tacsim.tow",
-        TOW_FILED
+        filed
             .replace("{n}", &n)
             .replace("{name}", &label)
             .replace("{min}", &min),
@@ -2644,6 +2694,11 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
         .room
         .check_can_load(op.casualty_mass().total_mass_kg(), facts.volume_l)
     {
+        // The owner's ruling (2026-11-05): a yielded hull the bay cannot take leaves its crew
+        // aboard as captives and itself on the site, the captor's.
+        if escorted_now(ctx.w, casualty) && !facts.friendly {
+            return crew_aboard_hull_titled(ctx, rig, (&site, casualty, carrier), &why(&error), go);
+        }
         return Err(CmdError::msg(
             BAY_NO_ROOM
                 .replace("{carrier}", &carrier_name)
@@ -2659,8 +2714,11 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
             .replace("{carrier}", &carrier_name)
             .replace("{min}", &min)
     };
+    let escort = escorted_now(ctx.w, casualty) && !facts.friendly;
     if !go {
-        let preview = if facts.retrieval {
+        let preview = if escort {
+            ESCORT_LOAD_PREVIEW
+        } else if facts.retrieval {
             LOAD_PREVIEW_RETRIEVAL
         } else if facts.written_off {
             LOAD_PREVIEW_HAND_BACK
@@ -2684,8 +2742,88 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
     ) {
         return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
     }
-    ctx.out.sys_to_actor(actor, "tacsim.tow", fill(LOAD_FILED));
+    let filed = if escort {
+        ESCORT_LOAD_FILED
+    } else {
+        LOAD_FILED
+    };
+    ctx.out.sys_to_actor(actor, "tacsim.tow", fill(filed));
     Ok(())
+}
+
+/// **Crew aboard, hull titled** (doc 42b cut SU.7; the owner's ruling of 2026-11-05: "crew aboard,
+/// claim hull … it's the starter ship"): a yielded hull escorted to a carrier whose bay cannot take
+/// it. Its crew are captured into the bay room by CR.1's branch ([`load_crew`]); the hull, which a
+/// raid's seed makes with no title, is titled to the captor under the registry issuer as salvage of
+/// the unowned — doc 41's RS.6c-1 rule for an ownerless wreck — so the captor may retrieve it later
+/// with a bigger carrier or post `+salvage/retrieve`; and the escort lets it go. A hull already
+/// titled is the bay's ordinary refusal.
+fn crew_aboard_hull_titled(
+    ctx: &mut Ctx<'_>,
+    rig: &act::RigAt,
+    (site, casualty, carrier): (&CanonicalId, ObjId, ObjId),
+    why_not: &str,
+    go: bool,
+) -> Result<(), CmdError> {
+    let n = rig.slot.to_string();
+    let label = name(ctx.w, casualty);
+    let carrier_name = name(ctx.w, carrier);
+    let titled = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|store| store.snapshot().asset(casualty).is_some());
+    if titled {
+        return Err(CmdError::msg(
+            BAY_NO_ROOM
+                .replace("{carrier}", &carrier_name)
+                .replace("{name}", &label)
+                .replace("{why}", why_not),
+        ));
+    }
+    if !go {
+        ctx.out.sys_to_actor(
+            ctx.actor,
+            "tacsim.tow",
+            ESCORT_TOO_BIG_PREVIEW
+                .replace("{n}", &n)
+                .replace("{name}", &label)
+                .replace("{carrier}", &carrier_name)
+                .replace("{why}", why_not),
+        );
+        return Ok(());
+    }
+    let Some((_, _, _, room, _)) = crate::surface::tick::hull_view_berth(ctx.w, carrier) else {
+        return Err(CmdError::msg(NOT_AT_RAMP.replace("{n}", &n)));
+    };
+    let actor = ctx.actor;
+    let captor = custodian_of(ctx, site, carrier).unwrap_or(actor);
+    let issuer = mush_org::SystemPrincipalId::new(crate::port::hull::REGISTRY_ISSUER)
+        .ok_or_else(|| CmdError::msg("The registry cannot title the hull."))?;
+    let saved = ctx.actor;
+    ctx.actor = captor;
+    let issued = mush_economy::issue_title(
+        ctx,
+        casualty,
+        mush_org::PrincipalId::Object(captor),
+        None,
+        issuer,
+        None,
+    );
+    ctx.actor = saved;
+    issued.map_err(|error| {
+        CmdError::msg(format!(
+            "The registry could not title the {label}: {error}."
+        ))
+    })?;
+    let captives = load_crew(ctx, site, (casualty, carrier, room), false, actor);
+    tracing::info!(site = %site, hull = casualty.0, captor = captor.0, captives = captives.len(), "tacsim: a yielded hull too big for the bay is titled to its captor and its crew taken aboard");
+    let line = ESCORT_LEFT_TITLED
+        .replace("{name}", &label)
+        .replace("{carrier}", &carrier_name)
+        .replace("{who}", &name(ctx.w, captor));
+    crate::field::tell_site(ctx, site, &line);
+    ctx.out.sys_to_actor(actor, "tacsim.tow", line);
+    release_cmd(ctx, rig, true)
 }
 
 // ---- the tow inside a running field (doc 40 cut FR.5) ----------------------------------------
@@ -3249,6 +3387,8 @@ fn place_in_bay(
     }
     let template = if written_off {
         HANDED_BACK
+    } else if !friend && crate::field::raiders::yielded(ctx.w, casualty) {
+        ESCORT_LOADED
     } else if retrieval {
         LOADED_RETRIEVAL
     } else if friend {
@@ -3329,10 +3469,16 @@ fn tell_landed(
             TowStage::Attach { casualty } => {
                 let label = name(ctx.w, casualty);
                 match index.get(&tug) {
-                    Some((_, op)) if op.casualty() == casualty => TOW_ATTACHED
+                    Some((_, op)) if op.casualty() == casualty => {
+                        if escorted_now(ctx.w, casualty) {
+                            ESCORT_SET
+                        } else {
+                            TOW_ATTACHED
+                        }
                         .replace("{n}", &slot)
                         .replace("{name}", &label)
-                        .replace("{speed}", &metres_s(op.coupled_speed_cms())),
+                        .replace("{speed}", &metres_s(op.coupled_speed_cms()))
+                    }
                     _ => TOW_INTERRUPTED
                         .replace("{n}", &slot)
                         .replace("{name}", &label),
