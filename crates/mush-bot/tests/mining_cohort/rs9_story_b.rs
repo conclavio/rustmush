@@ -172,7 +172,23 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
     assert_ne!(a_letter, c_letter, "`a` and `c` lie on two blocks");
     let a = placed(engine, ground, PROSPECTOR, "Brask Rig", a_cell, WEST);
     let c = placed(engine, ground, PROSPECTOR, "Pilot Rig", c_cell, WEST);
-    for (hull, title) in [(a, "org:Brask".to_owned()), (c, format!("#{}", t.0))] {
+    // Brask's root scope, off `@org/create`'s answer: `a` is titled there, inside the scope tree
+    // T's grant covers (an unscoped title is outside it, and T would hold no right to have her
+    // worked on).
+    let root: u64 = said[0]
+        .split("root scope #")
+        .nth(1)
+        .map(|rest| {
+            rest.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or_else(|| panic!("Brask's root scope: {said:?}"));
+    for (hull, title) in [
+        (a, format!("org:Brask scope={root}")),
+        (c, format!("#{}", t.0)),
+    ] {
         said.push(mine::staff_line(
             engine,
             &format!("@unit/damage #{}={}", hull.0, powerless_plan()),
