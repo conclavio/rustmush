@@ -9,7 +9,8 @@
 //! site. On the pad: the stores loaded and the bale opened (`+tv/2 stores …`), both rigs down the
 //! ramp, and — the escort's cannon jammed, its hull 40 points down and its magazine at 10 — the
 //! tender clears the jam, patches the hull and rearms the magazine (`+tv/2 unjam|stabilize|rearm`).
-//! The escort back in the bay, its machine gun destroyed and its armour dented: `+bay` reads her
+//! The escort back in the bay, her cannon damaged, her machine gun destroyed and her hull holed
+//! again: `+bay` reads her
 //! away from port with no fee and names the nearest workshop for the destroyed part; `+bay/order`
 //! refuses the replace and takes the mend and the armour at twice the workshop's time from the
 //! hold's goods; the carrier lifts for Ceres (the site's one route) and the order finishes under
@@ -128,21 +129,27 @@ fn first_damage(engine_unit: &mush_tactics::TacticalUnit) -> String {
     )
 }
 
-/// **The second damage**, for the bay: the machine gun destroyed and every armour cell ten under
-/// its maximum.
+/// **The second damage**, for the bay (`field_rs2`'s fixture): the cannon damaged (a mend), the
+/// machine gun destroyed (a replace, which only a workshop does) and the hull's section damaged
+/// 40 points down (the armour).
 fn second_damage(unit: &mush_tactics::TacticalUnit) -> String {
-    let mut ops = vec![component("machine_gun", "destroyed")];
-    for (addr, c) in unit.cells() {
-        let name = match addr {
-            mush_tactics::CellAddr::Facet { cell, .. }
-            | mush_tactics::CellAddr::Section { cell, .. } => cell.as_str(),
-            _ => continue,
-        };
-        if name == tacsim::definitions::unit::ARMOR_CELL && c.max > c.min + 10 {
-            ops.push(cell(addr.clone(), c.max - 10));
-        }
-    }
-    plan(ops, "bot-story:rs9a-second")
+    let internals = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull").expect("an id"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL).expect("an id"),
+    };
+    let full = unit.cell(&internals).map_or(100, |c| c.max);
+    plan(
+        vec![
+            component("cannon", "damaged"),
+            component("machine_gun", "destroyed"),
+            mush_tactics::UnitMutationOp::SetSectionCondition {
+                section: mush_tactics::SectionId::new("hull").expect("an id"),
+                condition: mush_tactics::ConditionId::new("damaged").expect("a condition"),
+            },
+            cell(internals, full - 40),
+        ],
+        "bot-story:rs9a-second",
+    )
 }
 
 /// **A fresh escort's cells**, from its spec on the booted engine (the damage plans' maxima).
