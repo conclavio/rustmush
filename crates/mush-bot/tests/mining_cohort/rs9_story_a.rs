@@ -10,15 +10,17 @@
 //! ramp, and — the escort's cannon jammed, its hull 40 points down and its magazine at 10 — the
 //! tender clears the jam, patches the hull and rearms the magazine (`+tv/2 unjam|stabilize|rearm`).
 //! The escort back in the bay, her cannon damaged, her machine gun destroyed and her hull holed
-//! again: `+bay` reads her
-//! away from port with no fee and names the nearest workshop for the destroyed part; `+bay/order`
-//! refuses the replace and takes the mend and the armour at twice the workshop's time from the
-//! hold's goods; the carrier lifts for Ceres (the site's one route) and the order finishes under
-//! way.
+//! again: `+bay` reads her away from port with no fee and names the nearest workshop for the
+//! destroyed part; `+bay/order` refuses the replace and takes the mend and the armour at twice the
+//! workshop's time from the hold's goods; the carrier lifts for Ceres (the site's one route) and
+//! the order finishes under way.
 //!
 //! **What is a fixture** (doc 36a §8's damage and funding seams): God's `@unit/damage` on the
-//! escort (the jam, the hull, the magazine, then the machine gun and the armour), the bot's working
-//! float (`@econ/mint`), and the world's rate. Every act of the player's is typed by the bot.
+//! escort (the jam, the hull, the magazine; then the cannon, the machine gun and the hull again),
+//! the bot's working float (`@econ/mint`), and the world's rate. Every act of the player's is typed
+//! by the bot. Its own `sail` and `bunker_lean` are the cohort's, made patient and exact: a port
+//! of call's market draws were seen to take minutes to bring the goods aboard (the departure waits
+//! on them), so it buys only what each leg lacks and types the undock again while it waits.
 //!
 //! **What this story does not run** (in-process instead): GC.4's tow before it (`field_gc4`, and
 //! the bot's own GC.4 lines in `fr7_round`), the bay's wait under a field (`field_rs2`), and the
@@ -123,9 +125,9 @@ async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
     typed(client, "+ship/leave", &[lines::ASHORE]).await;
 }
 
-/// **Bunker for the passage to `port`, buying exactly what it lacks** (the cohort's `bunker` buys a
-/// margin with no regard to the tank's room, and a purchase past the room leaves its remainder a
-/// pending draw that holds every later departure: "Quote #…'s goods have not come aboard yet").
+/// **Bunker for the passage to `port`, buying exactly what it lacks** (the cohort's `bunker`
+/// buys a margin): every purchase is a market draw the departure waits on, and at the ports of
+/// call those draws were seen to take minutes.
 async fn bunker_lean(client: &mut arena::Client, port: &str) {
     for _ in 0..4 {
         let from = client.seen.len();
