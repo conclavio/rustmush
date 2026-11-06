@@ -657,13 +657,19 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
         .await;
     let sink = id_after(&sink, "Opened account #");
     if o_balance > 10_000 {
-        let paid = god
-            .say(
+        let (index, paid) = god
+            .answer(
                 &format!("@econ/pay {o_account}={sink} {}", o_balance - 10_000),
-                "",
+                &["Paid: transaction #", "Usage", "denied", "cannot", "not "],
             )
             .await;
         println!("rs9b: O spent down: {}", paid.trim_end());
+        assert_eq!(
+            index,
+            Some(0),
+            "God spends O down:
+{paid}"
+        );
     }
     let lifted = mine::lift_rate(&mut god, 3_600).await;
     stamp(&format!("rate: {}", lifted.lines().next().unwrap_or("")));
@@ -764,11 +770,22 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
     println!("rs9b: T> +ship/leave\n{}", said.trim_end());
     let floor = god.answer("@find C14", &["C14", "Nothing"]).await.1;
     println!("rs9b: {}", floor.trim_end());
-    god.say(
-        &format!("@tel #{}=#{}", made.t.0, id_after(&floor, "(#")),
-        "",
-    )
-    .await;
+    let (_, moved) = god
+        .answer(
+            &format!("@tel #{}=#{}", made.t.0, id_after(&floor, "(#")),
+            &[
+                "Teleported",
+                "teleport",
+                "Done",
+                "denied",
+                "Huh",
+                "can't",
+                "C14",
+            ],
+        )
+        .await;
+    println!("rs9b: God> @tel T to C14: {}", moved.trim_end());
+    t.idle(Duration::from_secs(2)).await;
     for hull in [&a, &c] {
         let (index, said) = typed(
             &mut t,
