@@ -347,17 +347,21 @@ async fn credit_of(client: &mut arena::Client) -> (u64, i64) {
 /// **O's rig tows `hull` from beside the ramp and loads it into O's bay** (GC.4's tow, aimed).
 async fn tow_and_load(o: &mut arena::Client, hull: ObjId) {
     let tow = format!("+tv/1 tow #{} go", hull.0);
+    let from = o.seen.len();
     let (_, said) = typed(o, &tow, &["in tow", "Tow", "not a casualty", "cannot"]).await;
-    println!("rs9b: O> {tow}\n{}", said.trim_end());
-    let attached = Instant::now() + Duration::from_secs(10 * 60);
-    loop {
-        let (_, seen) = typed(o, "+tv/1", &["in tow", "towing", "Rig 1"]).await;
-        if seen.contains("towing") || seen.contains("in tow") {
-            break;
-        }
-        assert!(Instant::now() < attached, "the tow never attached:\n{seen}");
-        o.idle(Duration::from_secs(5)).await;
-    }
+    println!(
+        "rs9b: O> {tow}
+{}",
+        said.trim_end()
+    );
+    // The attach lands a few IC minutes on: the tow's own line, "Rig 1 has the … in tow".
+    assert!(
+        o.watch(from, " in tow, at ", Duration::from_secs(10 * 60))
+            .await,
+        "the tow never attached:
+{}",
+        mush_bot::tail(&o.seen, 4 * 1024)
+    );
     let preview = format!("+salvage/claim #{}", hull.0);
     let (_, said) = typed(o, "+tv/1 load go", &["load", "Load", "cannot"]).await;
     println!("rs9b: O> +tv/1 load go\n{}", said.trim_end());
