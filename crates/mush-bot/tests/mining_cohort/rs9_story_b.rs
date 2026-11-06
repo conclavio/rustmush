@@ -198,10 +198,8 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
             &format!("@asset/title #{}={title}", hull.0),
         ));
     }
-    if std::env::var("RS9B_NO_BLOCKS").is_err() {
-        seed_block(engine, ground.entry, a_letter, l);
-        seed_block(engine, ground.entry, c_letter, l);
-    }
+    seed_block(engine, ground.entry, a_letter, l);
+    seed_block(engine, ground.entry, c_letter, l);
     said.push(format!(
         "a #{} at {a_cell:?} on {a_letter}, c #{} at {c_cell:?} on {c_letter}",
         a.0, c.0
@@ -296,14 +294,9 @@ pub(crate) async fn until(
     }
 }
 
-/// The lanes' real-time bound (`RS9_LANE_BOUND_S` overrides it for a short local probe).
+/// The lanes' real-time bound.
 fn lane_bound() -> Duration {
-    Duration::from_secs(
-        std::env::var("RS9_LANE_BOUND_S")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(40 * 60),
-    )
+    Duration::from_secs(40 * 60)
 }
 
 /// **A player's lane to its enrolment**, at the boot's rate: the Co-op's desk is open only while
@@ -514,22 +507,6 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
     }
     let (o_name, t_name) = (cast.o.character, cast.t.character);
 
-    if let Ok(wait) = std::env::var("RS9B_READY_WAIT_S") {
-        god.idle(Duration::from_secs(wait.parse().unwrap_or(120)))
-            .await;
-        let (_, status) = god
-            .answer("@tacsim/port status", &[mine::READY, mine::NOT_READY])
-            .await;
-        let shut: Vec<&str> = status.lines().filter(|l| !l.contains("[ready]")).collect();
-        println!(
-            "rs9b: readiness:
-{}",
-            shut.join(
-                "
-"
-            )
-        );
-    }
     // 0. T and O fly out; T sits on the pad, O's rig comes down the ramp.
     let mut t_lane = enrol(&mut t, cast.t, started).await;
     let mut o_lane = enrol(&mut o, cast.o, started).await;
