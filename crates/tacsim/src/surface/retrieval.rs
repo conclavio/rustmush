@@ -923,7 +923,10 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
     };
     let hull = hull_word(ctx, hull_text).ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
     // Review 38b F-21b: the title holder, or one who acts for its organization, which then posts
-    // the job in its own name and from its own account.
+    // the job in its own name and from its own account. Doc 41's RS.9a follow-up (story (d), a
+    // default pending the owner's ruling): a chartered hull's live tenant acts for her title
+    // holder here too — nobody else answers for a Trust hull out on charter, so without it a
+    // chartered carrier wrecked on her pad could never be posted.
     let owner = ctx
         .w
         .module_state::<EconomyStore>()
@@ -933,7 +936,10 @@ pub(crate) fn retrieve_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError>
                 .asset(hull)
                 .map(|asset| asset.title_owner.clone())
         })
-        .filter(|owner| acts_for(ctx.w, ctx.actor, owner))
+        .filter(|owner| {
+            acts_for(ctx.w, ctx.actor, owner)
+                || crate::port::coop::charter_tenant(ctx.w, hull) == Some(ctx.actor)
+        })
         .ok_or_else(|| CmdError::msg(NOT_YOUR_HULL))?;
     if matches!(
         crate::surface::act::where_is(ctx.w, hull),

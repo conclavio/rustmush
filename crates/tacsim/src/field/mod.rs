@@ -306,6 +306,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(FieldBook::default());
     reg.state(admit::OwedCloses::default());
     reg.state(close::OwedUnplaces::default());
+    reg.state(close::OwedSetDowns::default());
     reg.state(known::Sightings::default());
     reg.state(exit::ExitBook::default());
     reg.state(exit::OwedExits::default());

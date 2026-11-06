@@ -193,8 +193,9 @@ pub struct BayHull {
     #[serde(default, skip_serializing_if = "is_zero_kg")]
     pub repaired_kg: u64,
     /// **The kilograms a workshop's scrap of this hull minted** (doc 41 cut RS.9a, story (e)): her
-    /// structure's yield and her stripped parts' lots. Her mass was never in the census, so
-    /// `@industry/census` sums them as a source beside a site's remains scrap. Omitted at 0.
+    /// structure's yield and her stripped parts' lots, written when the mint lands. Her mass was
+    /// never in the census, so `@industry/census` sums them as a source beside a site's remains
+    /// scrap. Omitted at 0.
     #[serde(default, skip_serializing_if = "is_zero_kg")]
     pub scrapped_kg: u64,
 }

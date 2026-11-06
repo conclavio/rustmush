@@ -493,29 +493,8 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
     )
     .map_err(|e| e.to_string())?;
     hold_takes(ctx, stores, &lots)?;
-    let settle = super::scrap::Settlement {
-        credit_minor: terms.credit_minor(),
-        operator: operator.0,
-        operator_account: operator_account.0,
-        holder_account: holder.0,
-        shop: super::ShopBale {
-            kg: terms.shop_after,
-            pending: None,
-            ..shop.clone()
-        },
-        clear_bale: record.bale.is_some(),
-    };
-    let scrapped = Scrapped {
-        alloys_t: terms.alloys_t,
-        yield_kg,
-        parts: lots
-            .iter()
-            .filter(|l| l.part.is_some())
-            .map(|l| l.lot)
-            .collect(),
-        credit_minor: terms.credit_minor(),
-    };
-    // Doc 41 cut RS.9a: what the scrap mints is a source in the matter census.
+    // Doc 41 cut RS.9a: what the scrap mints is a source in the matter census, counted when its
+    // lots land (`scrap::land`).
     let goods = ctx
         .w
         .module_state::<crate::store::TacsimStore>()
@@ -530,10 +509,29 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
                 .map_or(0, |per| per.saturating_mul(l.quantity))
         })
         .fold(0_u64, u64::saturating_add);
-    record.scrapped_kg = record
-        .scrapped_kg
-        .saturating_add(yield_kg)
-        .saturating_add(part_kg);
+    let settle = super::scrap::Settlement {
+        credit_minor: terms.credit_minor(),
+        operator: operator.0,
+        operator_account: operator_account.0,
+        holder_account: holder.0,
+        shop: super::ShopBale {
+            kg: terms.shop_after,
+            pending: None,
+            ..shop.clone()
+        },
+        clear_bale: record.bale.is_some(),
+        minted_kg: yield_kg.saturating_add(part_kg),
+    };
+    let scrapped = Scrapped {
+        alloys_t: terms.alloys_t,
+        yield_kg,
+        parts: lots
+            .iter()
+            .filter(|l| l.part.is_some())
+            .map(|l| l.lot)
+            .collect(),
+        credit_minor: terms.credit_minor(),
+    };
     if lots.is_empty() {
         // Nothing to lay in the stores: the hull is broken up now.
         if let Some(plan) = plan {
@@ -580,6 +578,7 @@ pub fn return_bale(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Returned, String> {
             ..shop.clone()
         },
         clear_bale: true,
+        minted_kg: 0,
     };
     settle_or_owe(
         ctx,

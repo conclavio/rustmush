@@ -157,6 +157,17 @@ pub struct Settlement {
     pub shop: ShopBale,
     /// Whether the hull's own bale is emptied (bought back).
     pub clear_bale: bool,
+    /// **The kilograms the scrap mints from the hull** (doc 41's RS.9a follow-up): her
+    /// structure's yield and her stripped parts' lots, which the census counts as a source only
+    /// once they land (`land`). 0 for a bale return, and omitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub minted_kg: u64,
+}
+
+/// Serde's skip for a zero count.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// **Whether the operator can pay `credit` now**: its account's available balance covers it.
@@ -175,10 +186,15 @@ pub fn operator_covers(w: &World, account: AccountId, credit: u64) -> bool {
 /// not post is logged for staff (the matter has already moved).
 pub(crate) fn land(ctx: &mut Ctx<'_>, hull: ObjId, act: u32, by: ObjId, settle: &Settlement) {
     crate::store::put_shop_bale(ctx, &settle.shop);
-    if settle.clear_bale
+    if (settle.clear_bale || settle.minted_kg > 0)
         && let Ok(mut record) = super::record_of(ctx.w, hull)
     {
-        record.bale = None;
+        if settle.clear_bale {
+            record.bale = None;
+        }
+        // Doc 41's RS.9a follow-up: the scrap's mint is a census source now that its lots and
+        // its shop bale stand where the census reads them, never before.
+        record.scrapped_kg = record.scrapped_kg.saturating_add(settle.minted_kg);
         crate::store::put_bay_hull(ctx, &record);
     }
     if settle.credit_minor == 0 {

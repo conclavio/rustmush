@@ -3,23 +3,24 @@
 //!
 //! A Co-op Dray-P on her pad loses her hull (GC.3's loss): she is a wreck that never lifts, and
 //! the two rigs in her bay are wrecks with her. Wrecked while docked, she is set down on her pad
-//! cell (the owner's ruling of 2026-11-05). No shipped tug can take her (the floor line;
+//! cell and indexed there by the field host's tick (the owner's ruling of 2026-11-05; no field
+//! runs, so the close does not). No shipped tug can take her (the floor line;
 //! `field_carrier::every_carrier_is_past_twice_any_tugs_tonnage` is the table's check), so her
-//! retrieval goes unaccepted to Tycho Mutual. The house's 130 t
+//! pilot's `+salvage/retrieve` goes unaccepted to Tycho Mutual. The house's 130 t
 //! crawler tows her, laden with her two wrecked rigs, into the 600 t lifter; the lifter berths her
-//! in Ceres's workshop (C14), the delivery pays the fee, and `+bay` quotes her rebuild.
+//! in Ceres's workshop (C14) with the two rigs still aboard, the delivery pays Tycho the escrowed
+//! fee, and `+bay/quote` prices her hull's rebuild.
 //!
-//! **What is a fixture.** The hull's loss by staff hand (GC.3's table read off a section at its
-//! floor; the fought loss is GC.3's own story), the carrier and her rigs on the site's index as
-//! wrecks (GC.5's fixture), and IC skipped past the job's acceptance window. Every act of the
-//! house's and the players' is the production path.
+//! **What is a fixture.** The hull's loss by staff hand (doc 36a §8's damage seam: GC.3's table
+//! read off a section at its floor; the fought loss is GC.3's own story), and IC skipped past the
+//! job's acceptance window. The set-down, the bay rigs' wreck and the index are the tick's; every
+//! act of the house's and the pilot's is the production path.
 
 use mush_core::ObjId;
 use tacsim::surface::retrieval::{RetrievalStage, order_of};
 
-use crate::driving_rig::{Rig, cid, fire, land_quietly, staff_hand, stocked_tuned};
+use crate::driving_rig::{Rig, cid, fire, land_quietly, run, staff_hand, stocked_tuned};
 use crate::field_host_rig::{second, set_section, tune};
-use crate::site_record_rig::{staff, staff_member};
 
 /// Short tow stages.
 fn quick(cfg: &mut tacsim::TacsimConfig) {
@@ -49,7 +50,7 @@ fn story(venue: &str, entry: &str) {
     let mut rig = stocked_tuned(quick);
     // She flies out with the propellant the leg takes and little more: her laden mass is her dry
     // hull and her two rigs (doc 41 §4.9's 256 t), under the crawler's twice-its-own 260 t.
-    let (_pilot, row, tvs) = crate::driving_rig::on_pad_loaded_at(
+    let (pilot, row, tvs) = crate::driving_rig::on_pad_loaded_at(
         &mut rig,
         ("Pilot", 1, "Salt Moth"),
         (venue, entry),
@@ -62,7 +63,7 @@ fn story(venue: &str, entry: &str) {
     );
     assert_eq!(tvs.len(), 2);
     let carrier = ObjId(row.hull);
-    // The hull's loss: the Dray-P's hull at its floor, and both rigs in her bay wrecked with her.
+    // The hull's loss: the Dray-P's hull at its floor (the damage seam). Nothing else is staff's.
     set_section(
         &mut rig,
         carrier,
@@ -70,21 +71,49 @@ fn story(venue: &str, entry: &str) {
         Some(tacsim::arena::damage::WRECK_CONDITION),
         Some(0),
     );
-    for tv in &tvs {
-        set_section(&mut rig, *tv, "chassis", Some("destroyed"), Some(0));
-    }
     assert!(
         mush_tactics::module::unit_of(rig.tw.world(), carrier)
             .is_some_and(tacsim::arena::damage::is_wreck),
         "the carrier is a wreck"
     );
-    // Wrecked while docked, she is set down on her pad cell (the field's close does this for a
-    // fought loss; the owner's ruling of 2026-11-05).
-    let pose = staff_hand(&mut rig, |ctx| {
-        tacsim::surface::tow::set_down_on_pad(ctx, carrier)
-    })
-    .expect("set down on her pad");
-    let at = (pose.x_cm.div_euclid(1_000), pose.y_cm.div_euclid(1_000));
+    // Wrecked while docked, outside a field: the field host's tick sets her down on her pad cell,
+    // wrecks her bay rigs with her and indexes her there (the owner's ruling of 2026-11-05).
+    let mut indexed = None;
+    for _ in 0..30 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        indexed = crate::field_host_rig::site_record_at(&mut rig, entry).and_then(|record| {
+            record
+                .units
+                .iter()
+                .find(|row| row.unit == carrier)
+                .map(|row| (row.condition, row.pose.cell()))
+        });
+        if indexed.is_some() {
+            break;
+        }
+    }
+    let (condition, at) = indexed.expect("the tick indexes her on the site");
+    assert_eq!(
+        condition,
+        tacsim::surface::site_record::LeftCondition::Wreck
+    );
+    assert_eq!(
+        at,
+        crate::custody_rig::ramp_cell_on(&rig, entry),
+        "indexed on her ramp's cell"
+    );
+    let (on, pose) = mush_sim::pose_of(rig.tw.world(), carrier).expect("placed");
+    assert_eq!(
+        on,
+        crate::driving_rig::site_domain(&rig.tw, entry),
+        "on the site's ground"
+    );
+    assert_eq!(
+        (pose.x_cm.div_euclid(1_000), pose.y_cm.div_euclid(1_000)),
+        at,
+        "standing where she is indexed"
+    );
     assert!(
         matches!(
             tacsim::port::ship::berth_of(rig.tw.world(), carrier),
@@ -92,15 +121,14 @@ fn story(venue: &str, entry: &str) {
         ),
         "set down on her pad, she is still docked there"
     );
-    let s = staff_member(&mut rig);
-    staff(
-        &mut rig,
-        s,
-        &format!(
-            "@tacsim/site {entry} leave #{} wreck {},{}",
-            carrier.0, at.0, at.1
-        ),
-    );
+    for tv in &tvs {
+        assert!(
+            mush_tactics::module::unit_of(rig.tw.world(), *tv)
+                .is_some_and(tacsim::arena::damage::is_wreck),
+            "her bay rig #{} is a wreck with her",
+            tv.0
+        );
+    }
     let ceres = cid("ceres_port");
     for _ in 0..60 {
         let (_, queued) = fire(&mut rig);
@@ -111,9 +139,18 @@ fn story(venue: &str, entry: &str) {
     }
     let (lifter, crawler) =
         tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
-    // Her title holder posts the job; nobody accepts it; at the window's end it is Tycho's.
+    // Her pilot posts the job: the Trust holds her title under the charter, and her live tenant
+    // acts for it (the RS.9a follow-up's default); the fee escrows from the Trust's account. A
+    // stranger may not. Nobody accepts it; at the window's end it is Tycho's.
+    let hull = format!("#{}", carrier.0);
+    let stranger = crate::driving_rig::pilot(&mut rig, "Stranger", 7);
+    let refused = run(&mut rig.tw, stranger, &format!("+salvage/retrieve {hull}"));
+    assert!(
+        refused.contains(tacsim::surface::retrieval::NOT_YOUR_HULL),
+        "{refused}"
+    );
     let owner = tacsim::port::house_sweep::title_of(rig.tw.world(), carrier).expect("a title");
-    let account = rig
+    let trust = rig
         .tw
         .world()
         .module_state::<mush_economy::EconomyStore>()
@@ -121,20 +158,34 @@ fn story(venue: &str, entry: &str) {
             e.snapshot()
                 .accounts_of(&owner)
                 .find(|a| a.instrument.as_str() == tacsim::CREDIT)
-                .map(|a| a.id)
+                .map(|a| a.id.0)
         })
-        .expect("the title holder's account");
-    let posted = staff_hand(&mut rig, |ctx| {
-        tacsim::surface::retrieval::post(
-            ctx,
-            carrier,
-            (owner.clone(), account),
-            ceres.clone(),
-            None,
-        )
-    });
-    assert!(posted.is_ok(), "{posted:?}");
-    let job = order_of(rig.tw.world(), carrier).expect("the job");
+        .expect("her title holder's account");
+    let (posted_before, available_before) = (balance(&rig, trust), available(&rig, trust));
+    let preview = run(&mut rig.tw, pilot, &format!("+salvage/retrieve {hull}"));
+    assert!(preview.contains("Post a retrieval"), "{preview}");
+    let posted = run(&mut rig.tw, pilot, &format!("+salvage/retrieve {hull} go"));
+    assert!(posted.contains("posted for"), "{posted}");
+    let mut job = None;
+    for _ in 0..30 {
+        if job.is_some() {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        job = order_of(rig.tw.world(), carrier);
+    }
+    let job = job.expect("the job");
+    assert!(job.fee_minor > 0, "a fee: {job:?}");
+    assert_eq!(
+        job.poster_account, trust,
+        "the fee escrows from her title holder's account"
+    );
+    assert_eq!(
+        available_before - available(&rig, trust),
+        job.fee_minor,
+        "the fee is held off the Trust's account at the post"
+    );
     skip_and_fire(&mut rig, job.accept_by_ic + 60);
     assert_eq!(
         order_of(rig.tw.world(), carrier).map(|o| o.stage),
@@ -179,6 +230,22 @@ fn story(venue: &str, entry: &str) {
         Some(floor),
         "berthed in C14"
     );
+    // Her two wrecked rigs came home aboard her.
+    let aboard: Vec<ObjId> = tacsim::port::ship::hull_view(rig.tw.world(), carrier)
+        .map(|view| {
+            tacsim::port::vehicle::rigs_in_bay(rig.tw.world(), &view)
+                .into_iter()
+                .map(|r| r.tv)
+                .collect()
+        })
+        .unwrap_or_default();
+    for tv in &tvs {
+        assert!(
+            aboard.contains(tv),
+            "her rig #{} is aboard her: {aboard:?}",
+            tv.0
+        );
+    }
     // The delivery pays: the job closes on its settlement.
     for step in 0..600 {
         // She stays berthed: the simulation does not take a carrier the workshop holds.
@@ -197,15 +264,64 @@ fn story(venue: &str, entry: &str) {
     assert_eq!(
         order_of(rig.tw.world(), carrier).map(|o| o.stage),
         Some(RetrievalStage::Closed),
-        "the delivery settled and paid Tycho"
+        "the delivery settled"
     );
-    // And the workshop quotes her rebuild.
-    let quote = crate::driving_rig::run(
-        &mut rig.tw,
-        mush_core::GOD,
-        &format!("+bay/quote #{}", carrier.0),
+    // The escrowed fee is paid to Tycho at the close, out of the Trust's account.
+    assert_eq!(
+        posted_before - balance(&rig, trust),
+        job.fee_minor,
+        "the Trust paid the fee"
     );
-    assert!(quote.contains("rebuild"), "{quote}");
+    let contract = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .contract(mush_economy::ContractId(job.contract))
+                .map(|c| c.state)
+        });
+    assert!(
+        matches!(contract, Some(mush_economy::ContractState::Settled { .. })),
+        "the job's contract settled to the house that took it: {contract:?}"
+    );
+    // And the workshop quotes her hull's rebuild, priced.
+    let quote = run(&mut rig.tw, pilot, &format!("+bay/quote {hull}"));
+    let rebuild = quote
+        .lines()
+        .find(|line| line.contains("hull") && line.contains("rebuild"))
+        .unwrap_or_else(|| panic!("no rebuild of her hull in the quote:\n{quote}"));
+    assert!(
+        rebuild.contains("cr"),
+        "the rebuild is priced: {rebuild}\n{quote}"
+    );
+}
+
+/// A credit account's posted balance, minor units.
+fn balance(rig: &Rig, account: u64) -> i64 {
+    rig.tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .account(mush_economy::AccountId(account))
+                .map(|a| a.posted_balance.minor())
+        })
+        .expect("the account")
+}
+
+/// A credit account's available balance, minor units (its holds deducted).
+fn available(rig: &Rig, account: u64) -> i64 {
+    rig.tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .account(mush_economy::AccountId(account))
+                .and_then(|a| a.available())
+                .map(|a| a.minor())
+        })
+        .expect("the account")
 }
 
 /// **Story (d) on Urvara Reach (512).**
