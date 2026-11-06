@@ -6351,8 +6351,14 @@ pub fn award_salvage_title(
 pub struct RetrievalSpec {
     /// A short human label for `@contract/show`.
     pub name: SmolStr,
-    /// The poster: the hull's title holder, who pays. The contract's issuer and first party.
+    /// The poster, who pays: the contract's issuer and first party. The hull's title holder, or
+    /// (doc 41's RS.9a follow-up) one who answers for it in the host's rules, named with
+    /// [`RetrievalSpec::title_holder`].
     pub poster: PrincipalId,
+    /// **Whose title the contract conditions on** when it is not the poster's (doc 41's RS.9a
+    /// follow-up: a chartered hull's live tenant posts for the Trust that holds her). `None`: the
+    /// poster's own.
+    pub title_holder: Option<PrincipalId>,
     /// The poster's account the fee is escrowed from at posting.
     pub poster_account: AccountId,
     /// The hull to be retrieved: the poster must hold its title throughout.
@@ -6370,7 +6376,8 @@ pub struct RetrievalSpec {
 
 /// **Whether `c` is a retrieval contract**, and on which hull (doc 41 cut RS.5, Q-41-8): one
 /// consideration, the fee, from the issuer; nothing delivered, split or outcome-bound; exactly
-/// two conditions — the issuer holding the hull's title and one external fact (the delivery);
+/// two conditions — the hull's title held (by the issuer, or by the principal the issuer answers
+/// for, doc 41's RS.9a follow-up) and one external fact (the delivery);
 /// a `WorldIc` deadline; `Public`; and at most one party beside the issuer (the acceptor).
 #[must_use]
 pub fn retrieval_contract_hull(c: &EconomicContract) -> Option<ObjId> {
@@ -6401,9 +6408,9 @@ pub fn retrieval_contract_hull(c: &EconomicContract) -> Option<ObjId> {
     }
     match consent.conditions.as_slice() {
         [
-            TypedCondition::TitleHeld { object, by },
+            TypedCondition::TitleHeld { object, .. },
             TypedCondition::Fact { .. },
-        ] if principal_key(by) == issuer => Some(*object),
+        ] => Some(*object),
         _ => None,
     }
 }
@@ -6456,12 +6463,16 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
     if spec.name.is_empty() || spec.name.len() > MAX_CONTRACT_NAME_BYTES {
         return Err(ContractError::TooLarge("the name is empty or too long"));
     }
+    let holder = spec
+        .title_holder
+        .clone()
+        .unwrap_or_else(|| spec.poster.clone());
     let titled = ctx
         .w
         .module_state::<EconomyStore>()
         .and_then(|store| store.snapshot().asset(spec.hull))
         .is_some_and(|asset| {
-            principal_key(&asset.title_owner) == principal_key(&spec.poster)
+            principal_key(&asset.title_owner) == principal_key(&holder)
                 && matches!(
                     asset.lifecycle,
                     crate::record::AssetLifecycle::Active
@@ -6491,7 +6502,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
         conditions: vec![
             TypedCondition::TitleHeld {
                 object: spec.hull,
-                by: spec.poster.clone(),
+                by: holder,
             },
             TypedCondition::Fact {
                 fact: spec.delivered,

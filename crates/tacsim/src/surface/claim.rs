@@ -453,7 +453,8 @@ pub(crate) fn pin(pins: &mut Vec<TenurePin>, pin: TenurePin) {
 }
 
 /// **Who answers for `title`** (doc 41 Q-41-22, Q-41-28): a character's own title is theirs;
-/// an organization's is answered by its live rig lessee on `hull` first, then by its active
+/// an organization's is answered by its live rig lessee on `hull` first (and, doc 41's RS.9a
+/// follow-up, a carrier's live charter tenant), then by its active
 /// members and its live grantees, unfiltered by capability — an NPC organization's grantee is
 /// its house agent (the lessor agent, a clerk), a player organization's its officers — in
 /// object order, at most [`MAX_WITNESSES`]. A system principal answers by nobody.
@@ -469,6 +470,14 @@ pub fn answerers_of(w: &World, hull: ObjId, title: &PrincipalId) -> Vec<ObjId> {
                 .map(|lease| lease.pilot)
                 .into_iter()
                 .collect();
+            // Doc 41's RS.9a follow-up (the lead's ruling of 2026-11-06): a carrier's live charter
+            // tenant answers for her as a rig's lessee does; a recalled or lapsed charter answers
+            // nothing (`coop::charter_tenant` reads the live Trust lease only).
+            if let Some(tenant) = crate::port::coop::charter_tenant(w, hull)
+                && !found.contains(&tenant)
+            {
+                found.push(tenant);
+            }
             let now = w.now();
             let mut named: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
             if let Some(store) = w.module_state::<mush_org::OrgStore>() {

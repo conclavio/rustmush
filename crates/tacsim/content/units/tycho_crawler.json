@@ -146,7 +146,8 @@
                 "si.volume_l": 6000
               }
             }
-          }
+          },
+          "tow_cap_t": 400
         },
         "mobility": {
           "tracked": {
@@ -157,7 +158,7 @@
             "turn_rate_mdeg_s": 8000
           }
         },
-        "note": "Doc 41 cut RS.6a (Q-41-15, Q-41-29): Tycho Mutual's heavy recovery crawler, 130 t dry (provisional), tracked, unarmed, a crew of two. logistics.recovery_profile heavy tows twice its mass on the casualty's laden mass (Q-41-27), so it takes a Dray-P at 256 t with two wrecked rigs aboard. Its own stores are a tool locker (3 t / 6 m3 stow.bulk). It rides in a Tycho lifter's bay; a registered design the Stickney yard builds at its bill.",
+        "note": "Doc 41 cut RS.6a (Q-41-15, Q-41-29): Tycho Mutual's heavy recovery crawler, 130 t dry (provisional), tracked, unarmed, a crew of two. logistics.recovery_profile heavy couples at the optimized speed, and logistics.tow_cap_t 400 caps the casualty's laden mass at 400 t in place of twice its own (the owner's ruling of 2026-11-06), so it takes a fuelled Dray-P with her bay rigs aboard. Its own stores are a tool locker (3 t / 6 m3 stow.bulk). It rides in a Tycho lifter's bay; a registered design the Stickney yard builds at its bill.",
         "sections": [
           {
             "consequences": [
@@ -264,7 +265,7 @@
     }
   },
   "manifest": {
-    "digest": "8e8d1ead844ad1dcc50f6200409e0385dc878557565c263f257cc3a4673577b8",
+    "digest": "fab06fc1ef17279fb8282b59d05df463c8608051861938e43235220d73296e92",
     "id": "tacsim.pack.tycho_crawler",
     "kind": "rules_definition",
     "requires": [
