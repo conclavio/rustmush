@@ -900,3 +900,59 @@ they run 569 s.
 **The harness.** `fr7_round`'s fixture helpers (`placed`, `staff_hand`, `cid`, `PROSPECTOR`, `WEST`) and
 `in11_matter::census` are `pub(crate)`. A side-by-side run goes through the built test binary: a second `cargo test`
 cannot relink the binary the first holds open (LNK1104 on Windows).
+
+## RS.9c — stories (b) and (c) whole, the bot over SSH (2026-11-06)
+
+Row: §6 RS.9, its third slice. Stacked on RS.9b (#505). No lane rows; one engine change, which the bot found.
+
+**Story (b)** (`mush-bot` `tests/mining_cohort/rs9_story_b.rs`; `mining_cohort::rs9_story_b_the_claims_are_contested_on_{ahuna,urvara}`,
+`#[ignore]`d, TS.2 tier by-hand): three players over their own sessions. T, Brask's officer (`@org/grant`), and O each
+kit up and fly a Co-op Dray-P to the site; L holds the Registry's claims on two blocks. Brask's `a` (titled at Brask's
+root scope) and T's own `c` lie a cell either side of the ramp, a block line between them. L may not authorize T's hull;
+T authorizes O and L to recover `c`; O holds no block to delegate; L delegates `c`'s block to O. O's rig tows each
+(`+tv/1 tow #<id> go`) and loads it; O files a claim on each; O's quote of `c` reads "At your risk". The contests: on
+`a` T's `procedure` finds no defect and O may not contest, T's `right` finds nothing that bound O, T's `recovery` (T's
+sensor record) vacates; on `c` L's `right` is no ground and T's `right` (T's authorization bound O) vacates. O sails home
+leaving the tug (`+ship/lift ceres leave=1`); at docking the Registry fines O 5,000 cr for `a`'s unlawful recovery,
+standing as a debt, and the port berths both hulls "held for" T in C14 (T has no carrier docked). Past the fine's
+28 IC days O's `+ship/undock luna` is refused ("lifts when it is paid"); O lists and pays the debt (`+debts`,
+`+debts/pay <n>`). T sails home and, as Brask's officer, `+bay/stow`s Brask's `a` out of the workshop into T's own carrier
+(her one free slot beside T's rig); T's own `c` waits there, held for T.
+
+**What the bot found** (fixed here): **an organization's held hull would not leave the workshop for its officer.** A
+vacated hull berthed in a workshop held for an organization (Q-41-18) refused the officer's `+bay/stow` (`NO_RIGHT`): the
+workshop path read `bay_work::right_of`, which knows no `held_for`; only the bay-to-bay path (`stow_held`) admitted
+whoever answers for the holder. The workshop path now admits them too. In-process: `vacated_return_rs4`'s `d` is now
+Brask's, T its officer, stowed from C14 (fails without).
+
+**Story (c)'s retrieval half** (`tests/mining_cohort/rs9_story_c.rs`;
+`mining_cohort::rs9_story_c_a_retrieval_is_accepted_and_paid_on_{ahuna,urvara}`): A posts a retrieval of each of two
+damaged prospectors beside the ramp (`+salvage/retrieve <hull> go`); B flies out, reads `+salvage/jobs`, accepts the
+first (`+salvage/accept #<job> go`), tows and loads her — `+bay` reads "Your right: retrieval" — sails home, berths her
+in C14 (`+bay/berth`, the first handover) and is paid; A is told she was handed over. Nobody accepts the second: past
+its 28 IC days the clerk hands it to Tycho Mutual and A is told.
+
+**What a fixture is** (doc 36a §8's seams): the organization and its grant, the hulls placed with their power destroyed
+(`@unit/damage`) and titled (`@asset/title`), the site's index (`@tacsim/site leave`), L's block claims (typed records),
+the players' money (`@econ/mint`) and O's spend-down (`@econ/pay`, so the fine stands as a debt), T's and B's walk to
+C14 (`@teleport`), and the world's rate.
+
+**Not run over SSH** (in-process instead, named in each story's head): (b)'s third salvager's lawful claim awarded across
+a W-clock freeze (`salvage_close`, `field_gc6`), the at-risk repair itself (`bay_36a`), the bay-to-bay `+bay/stow` with
+T's carrier docked first (`vacated_return_rs4`), and the retrieval-contract `right` ground §4.9 names beside the
+authorization — **not built**: `claim.rs` has no retrieval ground and a retrieval load writes no salvage row, so (b)
+runs the authorization variant §4.9 allows. (c)'s charter repossession of a dormant lessee (`field_rs5`): the programme's
+dormancy is counted in real days, at least one, which no bot run waits out (asked of the lead; no test knob was added).
+
+**The vocabulary** (`mine::lane::salvage`): `+tv/<n> tow #<id> [go]` (GC.4's bare tow takes the nearest casualty),
+`+tv/<n> load [go]`, RS.5's `+debts` and `+debts/pay <n>`. mush-bot's dev-dependencies gain mush-economy and mush-org
+(the fixture's titles and block claims).
+
+**What the harness found.** The Co-op's desk is open only while the readiness report reads Ready, whose rate line wants
+the boot's 24: every player enrols before God lifts the rate. Two `@tacsim/site leave` writes in `prepare` share one
+idempotency key (the record's serial has not moved), so the second was dropped: the index is written from God's live
+session, one write at a time. An unscoped `@asset/title` to an organization is outside its scope tree's grants. Held
+deposits are not available to `@econ/pay`. The fine's line wraps at the session's width: read it whole.
+
+**Runs (by hand, conclav.dev, both sizes side by side):** (b) green at `{B_REV}` ({B_TIMES}); (c) green at `df517c94`
+(995 s each).
