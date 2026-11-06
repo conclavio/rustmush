@@ -338,7 +338,7 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         .await;
     let escort_id = ObjId(u32::try_from(id_after(&found, "(#")).expect("an id"));
     let e = format!("#{}", escort_id.0);
-    god.say(&format!("@unit/damage {e}={first}"), "").await;
+    god.say(&format!("@unit/damage {e}={first}"), "Applied ").await;
     stamp(&format!(
         "the escort {mark} ({e}) is jammed, holed and short"
     ));
@@ -380,7 +380,7 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         Duration::from_secs(5 * 60),
     )
     .await;
-    god.say(&format!("@unit/damage {e}={second}"), "").await;
+    god.say(&format!("@unit/damage {e}={second}"), "Applied ").await;
     let (index, said) = typed(
         &mut client,
         &format!("+bay {e}"),

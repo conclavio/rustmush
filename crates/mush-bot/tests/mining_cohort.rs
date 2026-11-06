@@ -33,6 +33,9 @@ mod in11_matter;
 // Doc 41 cut RS.9d: story (a) whole at both sizes, the tender and the bay.
 #[path = "mining_cohort/rs9_story_a.rs"]
 mod rs9_story_a;
+// Doc 41 cut RS.9c: story (c)'s retrieval half at both sizes, two players.
+#[path = "mining_cohort/rs9_story_c.rs"]
+mod rs9_story_c;
 // Doc 41 cut RS.9c: story (b) whole at both sizes, three players.
 #[path = "mining_cohort/rs9_story_b.rs"]
 mod rs9_story_b;
@@ -707,6 +710,60 @@ async fn rs9_story_a_the_tender_and_the_bay_work_on_urvara() {
     )
     .await
     .expect("the Urvara story (a) finishes inside 100 minutes");
+}
+
+/// **Doc 41 cut RS.9c: story (c)'s retrieval half, the bot over SSH at 256** (Ahuna Flank): a
+/// job accepted, towed, loaded and paid at Ceres, and a job nobody takes handed to Tycho
+/// (`rs9_story_c`). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9c's story (c) at 256: the retrieval accepted and paid, the 28 IC days to Tycho; run by name"]
+async fn rs9_story_c_a_retrieval_is_accepted_and_paid_on_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        rs9_story_c::story_c(
+            rs9_story_c::Pair {
+                a: Miner {
+                    account: "rs9caa",
+                    character: "Caahuna",
+                    site: Site::Ahuna,
+                },
+                b: Miner {
+                    account: "rs9cba",
+                    character: "Cbahuna",
+                    site: Site::Ahuna,
+                },
+            },
+            &grounds_rig::AHUNA_FLANK,
+        ),
+    )
+    .await
+    .expect("the Ahuna story (c) finishes inside 90 minutes");
+}
+
+/// The same story at Urvara Reach (512). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9c's story (c) at 512: the retrieval accepted and paid, the 28 IC days to Tycho; run by name"]
+async fn rs9_story_c_a_retrieval_is_accepted_and_paid_on_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        rs9_story_c::story_c(
+            rs9_story_c::Pair {
+                a: Miner {
+                    account: "rs9cau",
+                    character: "Caurvara",
+                    site: Site::Urvara,
+                },
+                b: Miner {
+                    account: "rs9cbu",
+                    character: "Cburvara",
+                    site: Site::Urvara,
+                },
+            },
+            &grounds_rig::URVARA_REACH,
+        ),
+    )
+    .await
+    .expect("the Urvara story (c) finishes inside 90 minutes");
 }
 
 /// **Doc 41 cut RS.9c: story (b) whole, the bot over SSH at 256** (Ahuna Flank): the contested
