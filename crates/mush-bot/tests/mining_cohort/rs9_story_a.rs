@@ -83,6 +83,46 @@ fn id_after(text: &str, after: &str) -> u64 {
         .unwrap_or_else(|| panic!("no number after {after:?}:\n{text}"))
 }
 
+/// **Board, file the passage to `port` and wait for her to dock there; then ashore** (the cohort's
+/// `sail`, patient): a market's hand-overs settle on its sweep, and at Deimos the bunkers have
+/// been seen to take minutes to come aboard, so the undock is typed again every ten seconds for up
+/// to ten minutes while it answers that the goods are still on their way.
+async fn sail(client: &mut arena::Client, hull: &str, port: &str) {
+    typed(client, "+ship/board", &[lines::BOARDED]).await;
+    let from = client.seen.len();
+    let line = format!("+ship/undock {port}");
+    let deadline = Instant::now() + Duration::from_secs(10 * 60);
+    loop {
+        let (index, said) = typed(
+            client,
+            &line,
+            &[lines::CLEARANCE, lines::GOODS_WAIT, lines::GOODS_LEAVING],
+        )
+        .await;
+        if index == Some(0) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{line}: the goods never settled:
+{said}"
+        );
+        if index.is_some() {
+            println!("rs9a: {line}: {}", said.lines().last().unwrap_or("").trim());
+        }
+        client.idle(Duration::from_secs(10)).await;
+    }
+    assert!(
+        client
+            .watch(from, &lines::docks(hull), Duration::from_secs(20 * 60))
+            .await,
+        "{hull} did not dock at {port}:
+{}",
+        mush_bot::tail(&client.seen, 4 * 1024)
+    );
+    typed(client, "+ship/leave", &[lines::ASHORE]).await;
+}
+
 /// A mutation plan's JSON from `ops`.
 fn plan(ops: Vec<mush_tactics::UnitMutationOp>, cause: &str) -> String {
     let plan = mush_tactics::UnitMutationPlan::new(ops, None, Some(cause.to_owned().into()))
@@ -249,11 +289,11 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         typed(&mut client, word, &[room]).await;
     }
     crate::bunker(&mut client, "luna").await;
-    crate::sail(&mut client, &hull, "luna").await;
+    sail(&mut client, &hull, "luna").await;
     crate::bunker(&mut client, "deimos").await;
-    crate::sail(&mut client, &hull, "deimos").await;
+    sail(&mut client, &hull, "deimos").await;
     crate::bunker(&mut client, "stickney").await;
-    crate::sail(&mut client, &hull, "stickney").await;
+    sail(&mut client, &hull, "stickney").await;
     stamp("docked at Stickney Yards");
     let rows = crate::board_rows(&mut client).await;
     for (label, qty) in [
@@ -266,7 +306,7 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     }
     stamp("bought the stores and the bay's goods");
     crate::bunker(&mut client, "ceres").await;
-    crate::sail(&mut client, &hull, "ceres").await;
+    sail(&mut client, &hull, "ceres").await;
     stamp("home at Ceres");
 
     // 3. To the site.
