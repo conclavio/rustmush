@@ -53,6 +53,10 @@ mush-server.workspace = true
 # Doc 32 G-4: the field story wears the fixture raider's hulls with `@unit/damage` (server
 # fixture setup only).
 mush-tactics.workspace = true
+# Doc 41 cut RS.9c: story (b)'s fixture titles its hulls and seeds the landholder's block claims
+# (server fixture setup only).
+mush-economy.workspace = true
+mush-org.workspace = true
 
 [lints]
 workspace = true

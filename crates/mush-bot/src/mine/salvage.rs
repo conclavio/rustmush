@@ -19,6 +19,8 @@
 pub const SALVAGE: &str = "+salvage";
 /// The bay verb.
 pub const BAY: &str = "+bay";
+/// RS.5's debt list.
+pub const DEBTS: &str = "+debts";
 
 /// The contest kinds (`ContestKind`, Q-41-23).
 const CONTEST_KINDS: [&str; 3] = ["recovery", "procedure", "right"];
@@ -39,7 +41,13 @@ const WORK_KINDS: [&str; 7] = [
 ///   <site>[=<who>|#<hull>] registry` (Q-41-24);
 /// - `+bay <hull>`, `+bay/quote <hull>`, `+bay/order <hull>=<work>[,<work>…]`, `+bay/fit
 ///   <hull>=<slot> <lot>`, `+bay/strip <hull>=<part>`, `+bay/scrap|cancel|berth <hull>`, and
-///   `+bay/stow <hull>[=<carrier>]` (RS.4's bay-to-bay form, doc 39's IN.9 verb).
+///   `+bay/stow <hull>[=<carrier>]` (RS.4's bay-to-bay form, doc 39's IN.9 verb);
+/// - doc 41 cut RS.9c (story (b) whole): the tow aimed at one hull, `+tv/<n> tow #<id> [go]`
+///   (GC.4's bare `+tv/1 tow go` takes whichever casualty lies nearest), the load, `+tv/<n>
+///   load [go]`, and RS.5's debt lines, `+debts` and `+debts/pay <n>`; cut RS.9d (story (a)
+///   whole): the tender's lease, `+tv/lease tender [go]` (RS.1's lease row), the tender's launch
+///   and recovery as rig 2, `+tv/2 launch go` and `+tv/2 recover [go]`, and a rig's own line,
+///   `+tv/<n>`.
 ///
 /// A `<hull>` is `#<id>` or a name; a `<who>` a plain name or `#<id>`; a site a route word.
 #[must_use]
@@ -47,11 +55,19 @@ pub fn in_vocabulary(line: &str) -> bool {
     if line.len() > 160 || line.contains(['\n', '\r']) {
         return false;
     }
+    // Doc 41 cut RS.9d: RS.1's tender lease.
+    if line == "+tv/lease tender" || line == "+tv/lease tender go" {
+        return true;
+    }
     if let Some(rest) = line.strip_prefix("+tv/") {
         return tv_word(rest);
     }
-    if line == SALVAGE {
+    if line == SALVAGE || line == DEBTS {
         return true;
+    }
+    // Doc 41 cut RS.9c: RS.5's `+debts/pay <n>`.
+    if let Some(n) = line.strip_prefix("+debts/pay ") {
+        return number(n, 10);
     }
     if let Some(rest) = line.strip_prefix("+salvage/") {
         return salvage_switch(rest);
@@ -105,6 +121,10 @@ fn split_go(rest: &str) -> (&str, bool) {
 
 /// `<n> pickup|scrap [<object>] [go]` after `+tv/`.
 fn tv_word(rest: &str) -> bool {
+    // Doc 41 cut RS.9d: a rig's own line, `+tv/<n>` (where it stands, what it is doing).
+    if number(rest, 2) {
+        return true;
+    }
     let Some((rig, tail)) = rest.split_once(' ') else {
         return false;
     };
@@ -112,6 +132,17 @@ fn tv_word(rest: &str) -> bool {
         return false;
     }
     let (tail, go) = split_go(tail);
+    // Doc 41 cut RS.9c: the aimed tow and the load; cut RS.9d: the tender's launch and recovery
+    // (rig 2: rig 1's are the lane's own, and no party flies a third).
+    if tail == "load" {
+        return true;
+    }
+    if rig == "2" && (tail == "recover" || (tail == "launch" && go)) {
+        return true;
+    }
+    if let Some(id) = tail.strip_prefix("tow #") {
+        return number(id, 10);
+    }
     if let Some(after) = tail
         .strip_prefix("pickup")
         .or_else(|| tail.strip_prefix("scrap"))
@@ -461,6 +492,21 @@ mod tests {
             "+bay/berth #812",
             "+bay/stow #812",
             "+bay/stow #812=Salt Moth",
+            // Doc 41 cut RS.9c.
+            "+tv/1 tow #812",
+            "+tv/1 tow #812 go",
+            "+tv/1 load",
+            "+tv/1 load go",
+            "+debts",
+            "+debts/pay 17",
+            // Doc 41 cut RS.9d.
+            "+tv/lease tender",
+            "+tv/lease tender go",
+            "+tv/2 launch go",
+            "+tv/2 recover",
+            "+tv/2 recover go",
+            "+tv/2",
+            "+tv/12",
         ] {
             assert!(in_vocabulary(line), "{line}");
         }
@@ -477,6 +523,18 @@ mod tests {
             "+tv/1 scrap go 4",
             "+tv/1 pickup all",
             "+tv/1 release",
+            "+tv/1 tow",
+            "+tv/1 tow Salt Moth go",
+            "+tv/1 load #812",
+            "+debts/pay",
+            "+debts/pay 07",
+            "+debts/pay all",
+            "+tv/2 launch",
+            "+tv/3 launch go",
+            "+tv/3 recover go",
+            "+tv/0",
+            "+tv/100",
+            "+tv/lease tender now",
             "+salvage/claim",
             "+salvage/claim #",
             "+salvage/claim #81x",
