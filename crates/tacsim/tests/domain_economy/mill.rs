@@ -2570,7 +2570,9 @@ fn sm12a_only_the_mill_restocks() {
 /// `stores open` takes a tonne of each line into the bale: matter spent on a hull or held as the
 /// bale's kilograms (IN.1's accounting, as the bay's draw), never made. **Doc 39 cut IN.6**: the
 /// clerk's one mint moved to `.mint_origins_from(` (a source a row: a bulk row's mint lays its
-/// vendor's part rows too, each lot rooted in its own stock issue).
+/// vendor's part rows too, each lot rooted in its own stock issue). **Doc 41's RS.9a follow-up**
+/// (the owner's ruling of 2026-11-06): a third `.debit(` in `surface/tow.rs`, the wrecked
+/// carrier's vent — her propellant pool debited to zero: matter leaving the world, never made.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2601,7 +2603,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
-            ("tacsim/src/surface/tow.rs".to_owned(), 2),
+            ("tacsim/src/surface/tow.rs".to_owned(), 3),
         ]
     );
 }
