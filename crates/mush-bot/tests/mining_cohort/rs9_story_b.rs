@@ -61,6 +61,8 @@ struct Made {
     /// `a`'s and `c`'s cells, for God's index writes once the world runs (one staged
     /// authoritative action an actor at a time: two in `prepare` lose the second).
     cells: [(i64, i64); 2],
+    /// Ceres's workshop room, C14 (where the port berths a held hull).
+    workshop: ObjId,
 }
 
 /// The block letter of `cell` on a site of `side`.
@@ -209,6 +211,12 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
         "T holds `c`: {said:?}"
     );
     let _ = o;
+    let workshop = engine
+        .world
+        .iter()
+        .find(|row| row.kind == mush_core::ObjKind::Room && row.name.contains("C14"))
+        .map(|row| row.id)
+        .expect("Ceres's C14 workshop room");
     (
         said,
         Made {
@@ -217,6 +225,7 @@ fn fixture(engine: &mut mush_core::Engine, ground: &Ground, cast: Cast) -> (Vec<
             t,
             c_letter,
             cells: [a_cell, c_cell],
+            workshop,
         },
     )
 }
@@ -656,15 +665,28 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
         )
         .await;
     let sink = id_after(&sink, "Opened account #");
-    if o_balance > 10_000 {
-        let paid = god
-            .say(
-                &format!("@econ/pay {o_account}={sink} {}", o_balance - 10_000),
-                "",
-            )
-            .await;
-        println!("rs9b: O spent down: {}", paid.trim_end());
+    // Held funds (the leases' deposits) are not available, so God moves O's money out in
+    // shrinking amounts until each is refused: O is left with less than the smallest.
+    let _ = o_balance;
+    for chunk in [500_000_u64, 100_000, 10_000] {
+        loop {
+            let (index, paid) = god
+                .answer(
+                    &format!("@econ/pay {o_account}={sink} {chunk}"),
+                    &["Paid: transaction #", "insufficient", "Usage", "denied"],
+                )
+                .await;
+            match index {
+                Some(0) => {}
+                Some(1) => break,
+                _ => panic!(
+                    "God spends O down:
+{paid}"
+                ),
+            }
+        }
     }
+    println!("rs9b: O is spent down under 100.00cr available");
     let lifted = mine::lift_rate(&mut god, 3_600).await;
     stamp(&format!("rate: {}", lifted.lines().next().unwrap_or("")));
     let (_, said) = typed(
@@ -690,7 +712,8 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
         .to_owned();
     stamp(&format!("O at Ceres: {fine_line}"));
     assert!(fine_line.contains("an unlawful recovery"), "{fine_line}");
-    let owed = fine_line.contains("stands as a debt");
+    // The game wraps a long line at the session's width: read the fine whole.
+    let owed = mush_bot::mine::lines::normalise(&heard).contains("stands as a debt");
     // The vacated hulls, berthed held for T (T has no carrier docked).
     for hull in [&a, &c] {
         let held = until(
@@ -762,13 +785,22 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
     // T walks to the workshop (God's hand, the `move_to` seam): off the ship, then to C14.
     let (_, said) = typed(&mut t, "+ship/leave", &["leave", "Leave", "aboard"]).await;
     println!("rs9b: T> +ship/leave\n{}", said.trim_end());
-    let floor = god.answer("@find C14", &["C14", "Nothing"]).await.1;
-    println!("rs9b: {}", floor.trim_end());
-    god.say(
-        &format!("@tel #{}=#{}", made.t.0, id_after(&floor, "(#")),
-        "",
-    )
-    .await;
+    let (_, moved) = god
+        .answer(
+            &format!("@teleport #{}=#{}", made.t.0, made.workshop.0),
+            &[
+                "Teleported",
+                "teleport",
+                "Done",
+                "denied",
+                "Huh",
+                "can't",
+                "C14",
+            ],
+        )
+        .await;
+    println!("rs9b: God> @teleport T to C14: {}", moved.trim_end());
+    t.idle(Duration::from_secs(2)).await;
     for hull in [&a, &c] {
         let (index, said) = typed(
             &mut t,
