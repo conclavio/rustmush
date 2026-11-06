@@ -45,8 +45,8 @@ const WORK_KINDS: [&str; 7] = [
 /// - doc 41 cut RS.9c (story (b) whole): the tow aimed at one hull, `+tv/<n> tow #<id> [go]`
 ///   (GC.4's bare `+tv/1 tow go` takes whichever casualty lies nearest), the load, `+tv/<n>
 ///   load [go]`, and RS.5's debt lines, `+debts` and `+debts/pay <n>`; cut RS.9d (story (a)
-///   whole): the tender's lease, `+tv/lease tender [go]` (RS.1's lease row), and a second rig's
-///   launch and recovery, `+tv/<n> launch go` and `+tv/<n> recover [go]`, and a rig's own line,
+///   whole): the tender's lease, `+tv/lease tender [go]` (RS.1's lease row), the tender's launch
+///   and recovery as rig 2, `+tv/2 launch go` and `+tv/2 recover [go]`, and a rig's own line,
 ///   `+tv/<n>`.
 ///
 /// A `<hull>` is `#<id>` or a name; a `<who>` a plain name or `#<id>`; a site a route word.
@@ -132,8 +132,12 @@ fn tv_word(rest: &str) -> bool {
         return false;
     }
     let (tail, go) = split_go(tail);
-    // Doc 41 cut RS.9c: the aimed tow and the load; cut RS.9d: a launch and a recovery.
-    if tail == "load" || tail == "recover" || (tail == "launch" && go) {
+    // Doc 41 cut RS.9c: the aimed tow and the load; cut RS.9d: the tender's launch and recovery
+    // (rig 2: rig 1's are the lane's own, and no party flies a third).
+    if tail == "load" {
+        return true;
+    }
+    if rig == "2" && (tail == "recover" || (tail == "launch" && go)) {
         return true;
     }
     if let Some(id) = tail.strip_prefix("tow #") {
@@ -526,6 +530,8 @@ mod tests {
             "+debts/pay 07",
             "+debts/pay all",
             "+tv/2 launch",
+            "+tv/3 launch go",
+            "+tv/3 recover go",
             "+tv/0",
             "+tv/100",
             "+tv/lease tender now",
