@@ -1219,6 +1219,22 @@ pub fn delinquent_debts(w: &World, actor: ObjId) -> Vec<mush_economy::Obligation
         .collect()
 }
 
+/// **The desk refuses a delinquent debtor, and says so** (Q-41-13; doc 41 cut RS.9c): whether it
+/// refused. The refusal's writes (every delinquent debt reinstated) are pinned, so the step
+/// commits them, and its line is queued to ride that commit (`error_on_commit`): an ordinary
+/// refusal (`Err`, `OnAbort`) is withheld on a committing step, so over the server the player
+/// never heard it (the bot's story (c) found it; the in-process harness delivers every class).
+/// The caller answers `Ok(())`.
+pub fn refused_at_desk(ctx: &mut Ctx<'_>) -> bool {
+    let Some(line) = desk_refusal(ctx) else {
+        return false;
+    };
+    ctx.out.pin_deferred();
+    let actor = ctx.actor;
+    ctx.out.error_on_commit(actor, line);
+    true
+}
+
 /// **The desk's refusal of a delinquent debtor** (Q-41-13): `None` when `actor` owes nothing
 /// delinquent; else the sentence naming the amount — and every such debt is reinstated, so the
 /// next sweep tries it once more.

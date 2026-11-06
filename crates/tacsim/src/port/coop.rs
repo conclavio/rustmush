@@ -1584,10 +1584,10 @@ fn unwind_lease(ctx: &mut Ctx<'_>, lease: ContractId, plan: &EnrolPlan) {
 /// **`+coop/enrol <name>`** — ONE command, ONE batch (doc 18 §4.1; L6).
 #[allow(clippy::too_many_lines)]
 fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    // Doc 41 cut RS.5 (Q-41-13): the desk refuses a delinquent debtor and reinstates the debt.
-    if let Some(line) = crate::surface::retrieval::desk_refusal(ctx) {
-        ctx.out.pin_deferred();
-        return Err(CmdError::msg(line));
+    // Doc 41 cut RS.5 (Q-41-13): the desk refuses a delinquent debtor and reinstates the debt
+    // (its line on the reinstatement's commit).
+    if crate::surface::retrieval::refused_at_desk(ctx) {
+        return Ok(());
     }
     let plan = plan_enrolment(ctx).map_err(CmdError::msg)?;
     let actor = ctx.actor;

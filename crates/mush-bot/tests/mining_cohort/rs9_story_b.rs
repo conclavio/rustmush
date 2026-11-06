@@ -361,7 +361,7 @@ pub(crate) fn id_after(text: &str, after: &str) -> u64 {
 
 /// **A player's credit account and balance, minor units**, off their own `@account/list` (a
 /// read; the float's precedent).
-async fn credit_of(client: &mut arena::Client) -> (u64, i64) {
+pub(crate) async fn credit_of(client: &mut arena::Client) -> (u64, i64) {
     let listed = client.say("@account/list", " tacsim.credit = ").await;
     let row = listed
         .lines()

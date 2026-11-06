@@ -147,6 +147,9 @@ pub const ROOM_CHANDLERY: &str = "Co-op Chandlery";
 pub const NOT_OPEN: &str = "The Co-op is not enrolling yet";
 /// `tacsim::port::refit::REFITTED_PROSPECTOR` (`refit.rs:51`, "… as a Dray-P: …").
 pub const REFITTED: &str = "as a Dray-P";
+/// `tacsim::port::refit::REFIT_ALREADY` for a Dray-P (`refit.rs:45`, "The … is already a
+/// Dray-P."): a hull a recall freed, chartered again (doc 41 cut RS.9c).
+pub const REFIT_ALREADY: &str = "is already a Dray-P.";
 /// `tacsim::port::licence::LICENCE_PREVIEW`'s tail (`licence.rs:138`).
 pub const LICENCE_PREVIEWED: &str = "+licence/buy go buys it.";
 /// `licence::LICENCE_IN_FORCE` (`licence.rs:112`).
@@ -1308,6 +1311,11 @@ mod tests {
         // The desk.
         assert!(coop::NOT_OPEN.contains(NOT_OPEN));
         assert!(tacsim::port::refit::REFITTED_PROSPECTOR.contains(REFITTED));
+        assert!(
+            tacsim::port::refit::REFIT_ALREADY
+                .replace("{class}", "Dray-P")
+                .contains(REFIT_ALREADY)
+        );
         assert_eq!(super::super::HULL_NAME_RULE, coop::BAD_NAME);
         assert!(licence::LICENCE_IN_FORCE.contains(LICENCE_IN_FORCE));
         assert!(licence::LICENCE_NONE.contains(LICENCE_NONE));

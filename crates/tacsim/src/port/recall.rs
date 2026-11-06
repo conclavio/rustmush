@@ -792,6 +792,7 @@ pub(crate) fn revoke_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `cutoff_ic` (the IC second of `now − D`) and no reach at or after `now − D`
 /// (`>=` counts as a departure). An overflowing `D` never recalls.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn idle(
     now: i64,
     leased_at: i64,
@@ -803,6 +804,25 @@ pub(crate) fn idle(
     let Some(span) = i64::from(days).checked_mul(DAY_SECS) else {
         return false;
     };
+    idle_over(
+        now,
+        leased_at,
+        span,
+        last_burn_ic,
+        cutoff_ic,
+        last_reach_utc,
+    )
+}
+
+/// `idle` over a window of `span` real seconds.
+fn idle_over(
+    now: i64,
+    leased_at: i64,
+    span: i64,
+    last_burn_ic: Option<i64>,
+    cutoff_ic: i64,
+    last_reach_utc: Option<i64>,
+) -> bool {
     let Some(cutoff) = now.checked_sub(span) else {
         return false;
     };
@@ -820,7 +840,7 @@ pub(crate) fn idle(
 pub(crate) fn dormant(ctx: &Ctx<'_>, e: &Enrolment, days: u32) -> Result<bool, ()> {
     let w: &World = ctx.w;
     let now = w.now();
-    let span = i64::from(days).checked_mul(DAY_SECS).ok_or(())?;
+    let span = dormancy_span(w, days).ok_or(())?;
     if now.saturating_sub(e.leased_at) < span {
         return Ok(false);
     }
@@ -862,14 +882,29 @@ pub(crate) fn dormant(ctx: &Ctx<'_>, e: &Enrolment, days: u32) -> Result<bool, (
             .filter_map(|order| order.reached.as_ref().map(|reach| reach.utc))
             .max(),
     };
-    Ok(idle(
+    Ok(idle_over(
         now,
         e.leased_at,
-        days,
+        span,
         last_burn_ic,
         cutoff_ic,
         last_reach_utc,
     ))
+}
+
+/// **The dormancy window, real seconds**: `days` real days, or a test root's lowered window
+/// (`crate::store::lower_dormancy_floor_for_test`, doc 41 cut RS.9c). `None` on overflow.
+fn dormancy_span(w: &World, days: u32) -> Option<i64> {
+    span_secs(
+        w.module_state::<TacsimStore>()
+            .and_then(|store| store.dormancy_span_override_s),
+        days,
+    )
+}
+
+/// [`dormancy_span`] over the read: `lowered` when a test root set it, else `days` real days.
+fn span_secs(lowered: Option<i64>, days: u32) -> Option<i64> {
+    lowered.or_else(|| i64::from(days).checked_mul(DAY_SECS))
 }
 
 // ---- the recall arm on the port tick ------------------------------------------------
@@ -1340,5 +1375,19 @@ mod tests {
         assert!(!idle(now, leased, 7, None, cutoff_ic, Some(cutoff)));
         // The lease exactly D old is old enough.
         assert!(idle(leased + D, leased, 7, None, cutoff_ic, None));
+    }
+
+    /// Doc 41 cut RS.9c: a test root's lowered window stands in for the programme's real days;
+    /// without it the window is the days' own.
+    #[test]
+    fn rs9c_a_test_root_lowers_the_dormancy_window() {
+        assert_eq!(span_secs(None, 7), Some(D));
+        assert_eq!(span_secs(Some(900), 7), Some(900));
+        assert!(!crate::store::lower_dormancy_floor_for_test(
+            &mut mush_core::World::default(),
+            900
+        ));
+        assert!(idle_over(1_900, 1_000, 900, None, 0, None));
+        assert!(!idle(1_900, 1_000, 7, None, 0, None));
     }
 }
