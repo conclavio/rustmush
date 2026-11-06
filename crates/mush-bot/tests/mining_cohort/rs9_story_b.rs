@@ -16,8 +16,8 @@
 //! `c` while the claim stands reads "at your risk". O sails home leaving the tug; at docking the
 //! Registry fines O for `a`'s unlawful recovery, and the port berths both vacated hulls "held for"
 //! T, who has no carrier docked. Past the fine's 28 IC days of grace O's carrier is held at
-//! Ceres until O pays it (`+debts/pay`). T sails home and `+bay/stow`s both hulls out of the
-//! workshop into T's own carrier.
+//! Ceres until O pays it (`+debts/pay`). T sails home and, as Brask's officer, `+bay/stow`s
+//! Brask's `a` out of the workshop into T's own carrier (its one free slot); `c` waits there.
 //!
 //! **What is a fixture** (doc 36a §8's seams): God's: the organization (`@org/create`,
 //! `@org/grant`), the two hulls placed beside the ramp with their power destroyed (`@unit/damage`)
@@ -814,16 +814,23 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
         .await;
     println!("rs9b: God> @teleport T to C14: {}", moved.trim_end());
     t.idle(Duration::from_secs(2)).await;
-    for hull in [&a, &c] {
-        let (index, said) = typed(
-            &mut t,
-            &format!("+bay/stow {hull}={t_hull}"),
-            &[&format!("is stowed in the {t_hull}'s bay")],
-        )
-        .await;
-        assert_eq!(index, Some(0), "T stows {hull}:\n{said}");
-    }
-    stamp("T has both hulls aboard");
+    // T, Brask's officer, takes Brask's `a` out of the workshop (T's bay has one slot free beside
+    // T's own rig); `c` waits there, held for T.
+    let (index, said) = typed(
+        &mut t,
+        &format!("+bay/stow {a}={t_hull}"),
+        &[&format!("is stowed in the {t_hull}'s bay")],
+    )
+    .await;
+    assert_eq!(index, Some(0), "T stows {a}:\n{said}");
+    let (index, said) = typed(
+        &mut t,
+        &format!("+bay {c}"),
+        &[&format!("is held for {t_name}")],
+    )
+    .await;
+    assert_eq!(index, Some(0), "{c} waits in C14 for T:\n{said}");
+    stamp("T has Brask's hull aboard; T's own waits in C14");
     assert!(started.elapsed() < STORY_BOUND);
     for client in [t, o, l, god] {
         client.close().await;

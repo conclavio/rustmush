@@ -322,6 +322,32 @@ id = "mush-bot/tests::mining_cohort::rs9_story_e_the_bot_buys_a_swept_wreck_from
 tier = "by-hand"
 by_hand = "ca0ad46f"
 
+# Doc 41 cut RS.9c: story (c)'s retrieval half at 256 and 512 (a job accepted, towed, loaded,
+# berthed and paid; a job nobody takes handed to Tycho after 28 IC days), green by hand at the
+# revision below on conclav.dev, both sizes side by side (995 s each).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_c_a_retrieval_is_accepted_and_paid_on_ahuna"
+tier = "by-hand"
+by_hand = "df517c94"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_c_a_retrieval_is_accepted_and_paid_on_urvara"
+tier = "by-hand"
+by_hand = "df517c94"
+
+# Doc 41 cut RS.9c: story (b) whole at 256 and 512 (three players: the claims, the contests, the
+# fine, the quarantine and the held hulls), green by hand at the revision below on conclav.dev,
+# both sizes side by side (1,202 s and 1,203 s).
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_b_the_claims_are_contested_on_ahuna"
+tier = "by-hand"
+by_hand = "24594391"
+
+[[test]]
+id = "mush-bot/tests::mining_cohort::rs9_story_b_the_claims_are_contested_on_urvara"
+tier = "by-hand"
+by_hand = "24594391"
+
 # Doc 36 GC.12: the second measurement, after GC.2, on conclav.dev in release
 # (doc 36 "As built (GC.12)"); FIELD_MAX_UNITS was set from it.
 [[test]]
