@@ -288,6 +288,14 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     ] {
         typed(&mut client, word, &[room]).await;
     }
+    // The whole way out bunkered at Ceres, so the calls at Luna and Deimos buy nothing: a market's
+    // draw at a port of call has been seen to stall the departure for good (its quote's goods
+    // never come aboard). `bunker` tops up only what a leg still lacks.
+    let rows = crate::board_rows(&mut client).await;
+    for (label, qty) in [("reaction mass", 40), ("provisions", 20)] {
+        let n = lines::ask_for(&rows, label).unwrap_or_else(|| panic!("a {label} ask: {rows:?}"));
+        crate::buy(&mut client, n, qty).await;
+    }
     crate::bunker(&mut client, "luna").await;
     sail(&mut client, &hull, "luna").await;
     crate::bunker(&mut client, "deimos").await;
