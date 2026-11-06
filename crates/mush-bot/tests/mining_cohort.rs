@@ -30,6 +30,9 @@ mod fr7_round;
 mod grounds_rig;
 #[path = "mining_cohort/in11_matter.rs"]
 mod in11_matter;
+// Doc 41 cut RS.9c: story (b) whole at both sizes, three players.
+#[path = "mining_cohort/rs9_story_b.rs"]
+mod rs9_story_b;
 // Doc 41 cut RS.9b: story (e) whole at both sizes, the bot the buyer.
 #[path = "mining_cohort/rs9_story_e.rs"]
 mod rs9_story_e;
@@ -662,6 +665,69 @@ async fn rs9_story_e_the_bot_buys_a_swept_wreck_from_urvara() {
     )
     .await
     .expect("the Urvara story (e) finishes inside ninety minutes");
+}
+
+/// **Doc 41 cut RS.9c: story (b) whole, the bot over SSH at 256** (Ahuna Flank): the contested
+/// salvage, three players (`rs9_story_b`). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9c's story (b) at 256: two kit-ups and hops, the claims and contests, the fine's 28 IC days; run by name"]
+async fn rs9_story_b_the_claims_are_contested_on_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(100 * 60),
+        rs9_story_b::story_b(
+            rs9_story_b::Cast {
+                t: Miner {
+                    account: "rs9bta",
+                    character: "Tahuna",
+                    site: Site::Ahuna,
+                },
+                o: Miner {
+                    account: "rs9boa",
+                    character: "Oahuna",
+                    site: Site::Ahuna,
+                },
+                l: Miner {
+                    account: "rs9bla",
+                    character: "Lahuna",
+                    site: Site::Ahuna,
+                },
+            },
+            &grounds_rig::AHUNA_FLANK,
+        ),
+    )
+    .await
+    .expect("the Ahuna story (b) finishes inside 100 minutes");
+}
+
+/// The same story at Urvara Reach (512). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9c's story (b) at 512: two kit-ups and hops, the claims and contests, the fine's 28 IC days; run by name"]
+async fn rs9_story_b_the_claims_are_contested_on_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(100 * 60),
+        rs9_story_b::story_b(
+            rs9_story_b::Cast {
+                t: Miner {
+                    account: "rs9btu",
+                    character: "Turvara",
+                    site: Site::Urvara,
+                },
+                o: Miner {
+                    account: "rs9bou",
+                    character: "Ourvara",
+                    site: Site::Urvara,
+                },
+                l: Miner {
+                    account: "rs9blu",
+                    character: "Lurvara",
+                    site: Site::Urvara,
+                },
+            },
+            &grounds_rig::URVARA_REACH,
+        ),
+    )
+    .await
+    .expect("the Urvara story (b) finishes inside 100 minutes");
 }
 
 /// The production half's world rate: an IC hour a real second.

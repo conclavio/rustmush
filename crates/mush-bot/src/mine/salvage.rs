@@ -19,6 +19,8 @@
 pub const SALVAGE: &str = "+salvage";
 /// The bay verb.
 pub const BAY: &str = "+bay";
+/// RS.5's debt list.
+pub const DEBTS: &str = "+debts";
 
 /// The contest kinds (`ContestKind`, Q-41-23).
 const CONTEST_KINDS: [&str; 3] = ["recovery", "procedure", "right"];
@@ -39,7 +41,10 @@ const WORK_KINDS: [&str; 7] = [
 ///   <site>[=<who>|#<hull>] registry` (Q-41-24);
 /// - `+bay <hull>`, `+bay/quote <hull>`, `+bay/order <hull>=<work>[,<work>…]`, `+bay/fit
 ///   <hull>=<slot> <lot>`, `+bay/strip <hull>=<part>`, `+bay/scrap|cancel|berth <hull>`, and
-///   `+bay/stow <hull>[=<carrier>]` (RS.4's bay-to-bay form, doc 39's IN.9 verb).
+///   `+bay/stow <hull>[=<carrier>]` (RS.4's bay-to-bay form, doc 39's IN.9 verb);
+/// - doc 41 cut RS.9c (story (b) whole): the tow aimed at one hull, `+tv/<n> tow #<id> [go]`
+///   (GC.4's bare `+tv/1 tow go` takes whichever casualty lies nearest), the load, `+tv/<n>
+///   load [go]`, and RS.5's debt lines, `+debts` and `+debts/pay <n>`.
 ///
 /// A `<hull>` is `#<id>` or a name; a `<who>` a plain name or `#<id>`; a site a route word.
 #[must_use]
@@ -50,8 +55,12 @@ pub fn in_vocabulary(line: &str) -> bool {
     if let Some(rest) = line.strip_prefix("+tv/") {
         return tv_word(rest);
     }
-    if line == SALVAGE {
+    if line == SALVAGE || line == DEBTS {
         return true;
+    }
+    // Doc 41 cut RS.9c: RS.5's `+debts/pay <n>`.
+    if let Some(n) = line.strip_prefix("+debts/pay ") {
+        return number(n, 10);
     }
     if let Some(rest) = line.strip_prefix("+salvage/") {
         return salvage_switch(rest);
@@ -112,6 +121,13 @@ fn tv_word(rest: &str) -> bool {
         return false;
     }
     let (tail, go) = split_go(tail);
+    // Doc 41 cut RS.9c: the aimed tow and the load.
+    if tail == "load" {
+        return true;
+    }
+    if let Some(id) = tail.strip_prefix("tow #") {
+        return number(id, 10);
+    }
     if let Some(after) = tail
         .strip_prefix("pickup")
         .or_else(|| tail.strip_prefix("scrap"))
@@ -461,6 +477,13 @@ mod tests {
             "+bay/berth #812",
             "+bay/stow #812",
             "+bay/stow #812=Salt Moth",
+            // Doc 41 cut RS.9c.
+            "+tv/1 tow #812",
+            "+tv/1 tow #812 go",
+            "+tv/1 load",
+            "+tv/1 load go",
+            "+debts",
+            "+debts/pay 17",
         ] {
             assert!(in_vocabulary(line), "{line}");
         }
@@ -477,6 +500,12 @@ mod tests {
             "+tv/1 scrap go 4",
             "+tv/1 pickup all",
             "+tv/1 release",
+            "+tv/1 tow",
+            "+tv/1 tow Salt Moth go",
+            "+tv/1 load #812",
+            "+debts/pay",
+            "+debts/pay 07",
+            "+debts/pay all",
             "+salvage/claim",
             "+salvage/claim #",
             "+salvage/claim #81x",
