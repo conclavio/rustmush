@@ -46,7 +46,8 @@ const WORK_KINDS: [&str; 7] = [
 ///   (GC.4's bare `+tv/1 tow go` takes whichever casualty lies nearest), the load, `+tv/<n>
 ///   load [go]`, and RS.5's debt lines, `+debts` and `+debts/pay <n>`; cut RS.9d (story (a)
 ///   whole): the tender's lease, `+tv/lease tender [go]` (RS.1's lease row), and a second rig's
-///   launch and recovery, `+tv/<n> launch go` and `+tv/<n> recover [go]`.
+///   launch and recovery, `+tv/<n> launch go` and `+tv/<n> recover [go]`, and a rig's own line,
+///   `+tv/<n>`.
 ///
 /// A `<hull>` is `#<id>` or a name; a `<who>` a plain name or `#<id>`; a site a route word.
 #[must_use]
@@ -61,11 +62,7 @@ pub fn in_vocabulary(line: &str) -> bool {
     if let Some(rest) = line.strip_prefix("+tv/") {
         return tv_word(rest);
     }
-    if line == SALVAGE
-        || line == DEBTS
-        || line == "+tv/lease tender"
-        || line == "+tv/lease tender go"
-    {
+    if line == SALVAGE || line == DEBTS {
         return true;
     }
     // Doc 41 cut RS.9c: RS.5's `+debts/pay <n>`.
@@ -124,6 +121,10 @@ fn split_go(rest: &str) -> (&str, bool) {
 
 /// `<n> pickup|scrap [<object>] [go]` after `+tv/`.
 fn tv_word(rest: &str) -> bool {
+    // Doc 41 cut RS.9d: a rig's own line, `+tv/<n>` (where it stands, what it is doing).
+    if number(rest, 2) {
+        return true;
+    }
     let Some((rig, tail)) = rest.split_once(' ') else {
         return false;
     };
@@ -500,6 +501,8 @@ mod tests {
             "+tv/2 launch go",
             "+tv/2 recover",
             "+tv/2 recover go",
+            "+tv/2",
+            "+tv/12",
         ] {
             assert!(in_vocabulary(line), "{line}");
         }
@@ -523,6 +526,8 @@ mod tests {
             "+debts/pay 07",
             "+debts/pay all",
             "+tv/2 launch",
+            "+tv/0",
+            "+tv/100",
             "+tv/lease tender now",
             "+salvage/claim",
             "+salvage/claim #",
