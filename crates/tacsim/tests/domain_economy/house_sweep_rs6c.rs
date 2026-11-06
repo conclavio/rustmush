@@ -577,3 +577,101 @@ fn review_38b_f09_a_retrieval_waits_for_the_sweep_under_way() {
         "the swept wreck reached Ceres before the retrieval was delivered"
     );
 }
+
+/// **A raid's bare hull, swept, comes home** (doc 41 cut RS.9b, story (e) over SSH): a prospector
+/// hull made with no title and no vaults (as a raid's are, and the bot story's fixture), its chassis
+/// destroyed on Ahuna Flank's open ground. The house titles, tows and loads her, and the lifter flies
+/// her home to Ceres: the departure reads her as cargo, not a rig whose hopper it must weigh (with no
+/// hopper vault the passage planned dark and the lifter never lifted from the site).
+#[test]
+fn rs9b_a_bare_raid_hull_swept_comes_home() {
+    let mut rig = stocked_tuned(quick);
+    let entry = "ahuna_port";
+    let _ = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ("ahuna", entry), 1);
+    let (rx, ry) = {
+        let (x, y, _) = ramp_at(&rig.tw, entry);
+        (x.div_euclid(1_000), y.div_euclid(1_000))
+    };
+    let at = (rx + 4, ry + 3);
+    let domain = port_map(&rig.tw, entry).domain.expect("the site's domain");
+    let wreck = crate::driving_rig::staff_hand(&mut rig, |ctx| {
+        let spec = ctx
+            .w
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the layer")
+            .definitions()
+            .bindings
+            .get(&cid("tacsim.unit.tv_prospector"))
+            .expect("the prospector is bound")
+            .spec
+            .clone();
+        let hull = ctx
+            .w
+            .create(
+                mush_core::ObjKind::Thing,
+                "Raider Wreck",
+                mush_core::GOD,
+                None,
+            )
+            .expect("the hull's object");
+        mush_tactics::module::create_unit(ctx, hull, &spec).expect("the hull's unit record");
+        let pose = tacsim::surface::excursion::cell_pose([at.0, at.1], 270_000).expect("a pose");
+        mush_sim::place(ctx, hull, mush_sim::DomainId(domain), pose).expect("on the ground");
+        hull
+    });
+    set_section(&mut rig, wreck, "chassis", Some("destroyed"), Some(0));
+    assert_eq!(
+        tacsim::port::house_sweep::title_of(rig.tw.world(), wreck),
+        None,
+        "a raid's hull has no title"
+    );
+    let s = staff_member(&mut rig);
+    staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {entry} leave #{} wreck {},{}",
+            wreck.0, at.0, at.1
+        ),
+    );
+    let ceres = cid("ceres_port");
+    for _ in 0..60 {
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+        if tacsim::port::house::dispatchers(rig.tw.world()).len() == 1 {
+            break;
+        }
+    }
+    let (lifter, _) = tacsim::port::house::hulls(rig.tw.world(), &ceres).expect("Tycho's house");
+    let now = rig.tw.world().world_ic_now().at;
+    skip_and_fire(
+        &mut rig,
+        now + (tacsim::port::house_sweep::SWEEP_IC_DAYS + 1) * 86_400,
+    );
+    let mut steps = 0u32;
+    while !(tacsim::port::bay_work::held(rig.tw.world(), wreck)
+        || tacsim::port::bay_work::scrapped(rig.tw.world(), wreck))
+    {
+        assert!(
+            steps < 6_000,
+            "she never came home: the wreck {:?}, the lifter {:?}",
+            tacsim::surface::act::where_is(rig.tw.world(), wreck),
+            match tacsim::port::ship::berth_of(rig.tw.world(), lifter) {
+                tacsim::port::ship::Berth::Docked { map, .. } => map.entry.to_string(),
+                other => format!("{other:?}"),
+            }
+        );
+        let step = if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), lifter),
+            tacsim::port::ship::Berth::UnderWay
+        ) {
+            300
+        } else {
+            1
+        };
+        let t = rig.tw.world().now().saturating_add(step);
+        rig.tw.set_now(t);
+        let _ = second(&mut rig);
+        steps += 1;
+    }
+}
