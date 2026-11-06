@@ -513,14 +513,19 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
     )
     .await;
     println!("rs9a: +ship/lift ceres → {}", said.trim_end());
-    // Done when the bay lists no open order and no work left on her.
+    // Done when her order reads done and the mend and the armour have left her quote.
     let deadline = Instant::now() + Duration::from_secs(20 * 60);
     let done = loop {
-        let (_, text) = typed(&mut client, &format!("+bay {e}"), &["Condition:"]).await;
-        if !text.contains("Order 1:")
+        // The order's line is the readout's last: wait for it, then a moment for the line's end.
+        let (_, _) = typed(&mut client, &format!("+bay {e}"), &["Order 1:"]).await;
+        let from = client.seen.len().saturating_sub(4 * 1024);
+        client.idle(Duration::from_secs(1)).await;
+        let text = client.seen.get(from..).unwrap_or("").to_owned();
+        // A finished order stays listed, `done`; the work it took leaves her quote.
+        let finished = text.contains("Order 1: carrier bay for no fee, done.")
             && !text.contains("mend cannon")
-            && !text.contains("armor hull")
-        {
+            && !text.contains("armor hull");
+        if finished {
             break text;
         }
         assert!(
