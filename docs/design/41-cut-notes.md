@@ -859,3 +859,33 @@ rebuild. "No shipped tug can take her" is the table's own check
 (`field_carrier::every_carrier_is_past_twice_any_tugs_tonnage`). Story (e): `house_sweep_rs6c`'s scrap stories and
 `house_resale_rs6c2`'s resale stories hold the census balance (`in11_matter::steady_balance`) across the sweep, the
 scrap, the supply leg, the restoration and the sale, at 256 and 512.
+
+## RS.9a follow-up — the review of #503 (2026-11-06)
+
+Row: §6 RS.9, after RS.9a. The lead's list from the RS.9c/d session's review of #503; no lane rows.
+
+**Built.**
+
+- **A carrier wrecked while docked is set down outside a field too** (the owner's ruling of 2026-11-05):
+  `field::close::set_down_docked_wrecks`, on the field host's tick, finds every hull docked at a site whose hull loss
+  reads `CarrierLoss::Wrecked` and that no running field holds and no index row names; it sets her down on her pad
+  cell (`surface::tow::set_down_on_pad`), wrecks her bay rigs with her (the close's `wreck_bay_rigs`) and owes her
+  site record the field action's new **`set_down`** op, submitted as her helm holder (`port::coop::helm_holder`; never
+  GOD from a tick). The op's rows are fixed into the action's offer from the host's `OwedSetDowns`, as the exits and
+  closes are, so only the host can index a carrier there; it is refused while a field is open on the site (the
+  close indexes her then).
+- **A chartered hull's tenant may post her retrieval** (a default; the owner's ruling is asked): nobody answered for a
+  Trust hull out on charter — the Trust has no members and no grantees, and the lessee held no title — so
+  `+salvage/retrieve` could never be typed for a chartered carrier wrecked on her pad. The live charter tenant now
+  acts for her title holder there, as an officer does for an organization (38b F-21b): the job posts in the Trust's
+  name and escrows from the Trust's account. `claim::answerers_of` is unchanged.
+- **The matter census counts a workshop scrap when its mint lands**: the scrap's kilograms ride on its settlement
+  (`Settlement::minted_kg`) and `scrap::land` adds them to `BayHull::scrapped_kg`; before, they were counted at the
+  order, so the census was off by the yield while the mint was owed, and for good if it never landed.
+
+**Stories.** `tacsim` `tests/domain_field/story_d_rs9.rs` at 256 and 512, now with no staff hand past the hull's loss:
+the tick sets her down on her ramp's cell and indexes her a wreck, her two bay rigs wrecks with her; a stranger's
+`+salvage/retrieve` is refused and her pilot's posts; the fee is held off the Trust's account at the post and paid out of
+it when the job's contract settles; her two rigs come home aboard her; `+bay/quote` prices her hull's rebuild.
+`tests/domain_economy/in8_mass_scrap.rs`'s whole-escort scrap reads the census while the mint is owed (unchanged)
+and after it lands (balanced, the yield a source) — it fails without the change (5,869 kg counted early).

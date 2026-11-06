@@ -328,12 +328,36 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
     let hold_before = hold_pool(&mut rig.tw, vault, "structural_alloys");
     let paid_before = credit(&rig, pilot);
 
-    // (2) The whole intact escort, scrapped.
-    let out = settled(
-        &mut rig,
-        pilot,
-        &format!("+bay/scrap #{}", escort.0),
-        escort,
+    // (2) The whole intact escort, scrapped. Doc 41's RS.9a follow-up: the matter census holds
+    // while the scrap's mint is owed (its source counted only when the lots land) and after.
+    let before_scrap = crate::in11_matter::census(&mut rig);
+    let line = format!("+bay/scrap #{}", escort.0);
+    let ordered = run(&mut rig.tw, pilot, &line);
+    let owed = crate::in11_matter::census(&mut rig);
+    assert_eq!(
+        (owed["balance"], owed["scrapped"]),
+        (before_scrap["balance"], before_scrap["scrapped"]),
+        "an owed scrap mints nothing yet: {before_scrap:?} → {owed:?}\n{ordered}"
+    );
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    for _ in 0..6 {
+        if matches!(store(&rig.tw).bay_hull(escort), Some(BayHullState::Present(r)) if r.owed.is_none())
+        {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    let out = ordered;
+    let landed = crate::in11_matter::census(&mut rig);
+    assert_eq!(
+        landed["balance"], before_scrap["balance"],
+        "the landed scrap balances: {before_scrap:?} → {landed:?}"
+    );
+    assert!(
+        landed["scrapped"] - before_scrap["scrapped"] >= 1_539,
+        "the yield is a source: {landed:?}"
     );
     assert!(
         out.contains("1539 kg of structural alloys (1 t to the workshop's stock) and 4 part(s)"),
