@@ -380,24 +380,31 @@ pub(crate) async fn story_c_charter(pair: Pair, ground: &'static Ground) {
     )
     .await;
     println!("rs9c-charter: past the grace:\n{}", delinquent.trim_end());
-    let (index, refused) = typed(
+    // The refusal pins its writes (the debt's reinstatement), so its line comes once they land:
+    // typed once, then watched for.
+    let from = a.seen.len();
+    let (_, said) = typed(
         &mut a,
         "+tv/lease go",
-        // Never a word the echoed line carries.
-        &[
-            "will not deal with you",
-            "Occator leases",
-            "deposit",
-            "signed",
-        ],
+        &["will not deal with you", "Occator leases"],
     )
     .await;
-    assert_eq!(
-        index,
-        Some(0),
-        "the desk refuses the delinquent lessee:\n{refused}"
+    println!(
+        "rs9c-charter: A> +tv/lease go
+{}",
+        said.trim_end()
     );
-    assert!(refused.contains("delinquent debts"), "{refused}");
+    assert!(
+        a.watch(
+            from,
+            "in delinquent debts; the desk will not deal with you",
+            Duration::from_secs(2 * 60)
+        )
+        .await,
+        "the desk never refused the delinquent lessee:
+{}",
+        mush_bot::tail(&a.seen, 4 * 1024)
+    );
     let (_, listed) = typed(&mut a, "+debts", &["Your debts:", "You owe nothing."]).await;
     assert!(
         listed.contains(&format!("#{debt}")) && listed.contains("(due)"),
