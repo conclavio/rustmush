@@ -79,3 +79,16 @@ async fn su5_an_unloaded_yield_lapses_after_28_ic_days() {
 async fn su5_an_unloaded_yield_lapses_after_28_ic_days_at_512() {
     surrender(&URVARA_REACH, Case::Lapse).await;
 }
+
+/// **SU.7 at 256** (the owner's ruling on Q-42b-14): the yielded line tank drives itself aboard
+/// under a 6 t tug's escort, and its crew is captured at the load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn su7_a_yielded_line_tank_drives_aboard_under_escort() {
+    crate::surrender_rig::escorted_aboard(&AHUNA_FLANK).await;
+}
+
+/// **SU.7 at 512**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn su7_a_yielded_line_tank_drives_aboard_under_escort_at_512() {
+    crate::surrender_rig::escorted_aboard(&URVARA_REACH).await;
+}

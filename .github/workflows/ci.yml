@@ -219,11 +219,18 @@ jobs:
       - name: Complete author story and fresh thirty-match external comparison
         # The script makes its evidence directory without parents, and a fresh
         # runner has built nothing yet, so `target/` itself may not exist.
+        # It also refuses a directory that already exists (`exist_ok=False`,
+        # so one run's evidence is never mixed with another's), and
+        # Swatinem/rust-cache restores `target/` with the last saved run's
+        # evidence in it: the real-pace nightly of 2026-11-05 (run 42120971492)
+        # failed here on FileExistsError before the story ran. The step clears
+        # the stale copy first; the script's guard stays for local runs.
         # The win-rate parity comparison is report-only under the owner's
         # c58c3d98 exception (17e); the story, decoders and zero mind faults
         # still fail the job.
         run: |
           mkdir -p target
+          rm -rf target/m6-acceptance-evidence
           python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
       # The evidence upload continues on error (see the test job's JUnit
       # upload): a transient artifact-service failure must not turn a passed
