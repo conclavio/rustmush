@@ -30,6 +30,9 @@ mod fr7_round;
 mod grounds_rig;
 #[path = "mining_cohort/in11_matter.rs"]
 mod in11_matter;
+// Doc 41 cut RS.9d: story (a) whole at both sizes, the tender and the bay.
+#[path = "mining_cohort/rs9_story_a.rs"]
+mod rs9_story_a;
 // Doc 41 cut RS.9c: story (c)'s retrieval half at both sizes, two players.
 #[path = "mining_cohort/rs9_story_c.rs"]
 mod rs9_story_c;
@@ -668,6 +671,45 @@ async fn rs9_story_e_the_bot_buys_a_swept_wreck_from_urvara() {
     )
     .await
     .expect("the Urvara story (e) finishes inside ninety minutes");
+}
+
+/// **Doc 41 cut RS.9d: story (a) whole, the bot over SSH at 256** (Ahuna Flank): the tender and
+/// the bay on the site and under way (`rs9_story_a`). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9d's story (a) at 256: the kit-up, Stickney by Luna and Deimos, the site; run by name"]
+async fn rs9_story_a_the_tender_and_the_bay_work_on_ahuna() {
+    tokio::time::timeout(
+        Duration::from_secs(100 * 60),
+        rs9_story_a::story_a(
+            Miner {
+                account: "rs9aahuna",
+                character: "Raahuna",
+                site: Site::Ahuna,
+            },
+            &grounds_rig::AHUNA_FLANK,
+        ),
+    )
+    .await
+    .expect("the Ahuna story (a) finishes inside 100 minutes");
+}
+
+/// The same story at Urvara Reach (512). `#[ignore]`d, run by name (`rs9_`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "doc 41 cut RS.9d's story (a) at 512: the kit-up, Stickney by Luna and Deimos, the site; run by name"]
+async fn rs9_story_a_the_tender_and_the_bay_work_on_urvara() {
+    tokio::time::timeout(
+        Duration::from_secs(100 * 60),
+        rs9_story_a::story_a(
+            Miner {
+                account: "rs9aurvara",
+                character: "Raurvara",
+                site: Site::Urvara,
+            },
+            &grounds_rig::URVARA_REACH,
+        ),
+    )
+    .await
+    .expect("the Urvara story (a) finishes inside 100 minutes");
 }
 
 /// **Doc 41 cut RS.9c: story (c)'s retrieval half, the bot over SSH at 256** (Ahuna Flank): a

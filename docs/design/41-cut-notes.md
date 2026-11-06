@@ -58,7 +58,7 @@ TS.8's one strip chain.
 - `+tv` takes the four words (`ACT_WORDS` 24); the bot's `salvage::in_vocabulary` admits them; `help
   field` gains the tender and the laden tow; doc 36's two owed lines are marked closed.
 
-**Story.** `crates/tacsim/tests/shard_10/field_rs1.rs`, `rs1_ahuna_…` (256) and `rs1_urvara_…` (512),
+**Story.** `tacsim` `tests/domain_field/field_rs1.rs` (binary `domain_field`; `shard_10` when built), `rs1_ahuna_…` (256) and `rs1_urvara_…` (512),
 one body: the captain leases the escort and the tender, stocks the stores from the hold, opens the
 bale and launches both; the escort, jammed, 40 points down and its magazine at 10, stands beside the
 tender; `+tv/2 unjam`, `stabilize … all` and `rearm` are each filed, paused by a stranger's
@@ -90,7 +90,7 @@ mush-bot's `rs0_the_salvage_lines_are_closed` (the tender's lines). Re-run green
   the bay's contents are still counted dry, as before.
 - The census pin (`mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`) is re-blessed for
   the tender's two `.debit(` calls, matter spent or held in the bale, never made.
-- **The tender shows in Occator's readiness line**, as Q-41-1 means (Occator leases it): `shard_6`'s
+- **The tender shows in Occator's readiness line**, as Q-41-1 means (Occator leases it): `domain_world/vehicles.rs`'s (`shard_6`'s when built)
   `vehicles::sm3a_the_apply_lays_up_occators_rigs_and_every_hulls_bay` pins "tender: 2 of 2 made; 2 in
   the shed, 0 leased.", and `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach` the port map's
   12 rigs (8 + 2 escorts + 2 tenders).
@@ -116,7 +116,9 @@ mush-bot's `rs0_the_salvage_lines_are_closed` (the tender's lines). Re-run green
   reaches the raid's leaving (it boards by the field's withdraw and lifts on the bay gate, still
   counted dry); the extra boot objects only moved the draw.
 
-**Cell cost (rule #14).** Pending the PR run's JUnit; filled in on the PR.
+**Cell cost (rule #14).** `tacsim-integration-10` (shard_10): **+2.85 min** for the two story tests, 86.3 s at 256 and
+85.0 s at 512 on #397's run 41788785555 (head `1a70c8f7`). The cell reads 363 → 365 tests against main's run at the
+merge parent (41787502887); its sum fell 53.19 → 43.95 min on a faster runner, so the sum is not the delta.
 
 ## RS.3 — the claim's close (2026-11-03)
 
@@ -168,13 +170,13 @@ Rulings: Q-41-20..23, Q-41-28, Q-38-19, Q-S13, Q-S14; round-2 items 41-1, 41-8, 
   `TacsimStore::bay_vacated_lot_hulls` resumes the list each tick). The mush-tactics
   `mark_stripped_component_contraband_on_vacated_claim` is deleted.
 
-**Story.** `crates/tacsim/tests/shard_2/salvage_close.rs`, `rs3_story_b_the_claims_close_on_urvara_reach` (512)
+**Story.** `tacsim` `tests/domain_field/salvage_close.rs` (binary `domain_field`; `shard_2` when built), `rs3_story_b_the_claims_close_on_urvara_reach` (512)
 and `…_on_ahuna_flank` (256), one body: Brask Freight's hull `a` (T its grantee) off L's block without
 authority — T's `procedure` finds no defect, T's `right` no right, T's `recovery` vacates; T's own hull `c`,
 recovered under T's `+salvage/authorize` and L's block delegation (both on the pin) — lawful, L's `right` is no
 ground, T's `right` vacates; Occator's spare `b` — the lessor agent is told, contests on bare title, the claim is
 awarded to P. The at-risk line in the quote, the written entry and the vacate notice:
-`shard_1/bay_36a.rs` `b36a_rs3_the_salvors_repair_is_at_risk_and_reported` (the bay works only docked at a
+`domain_field/bay_36a.rs` (`shard_1` when built) `b36a_rs3_the_salvors_repair_is_at_risk_and_reported` (the bay works only docked at a
 workshop port, so it rides 36a's salvor-at-Ceres fixture). Unit tests: `surface::claim::tests::rs3_*` (the
 procedure reading, the right, the at-risk list, the land grant). Re-run unchanged and green: `field_gc5`,
 `field_gc6`, `bay_gc8`, `review_36a`, `bay_36a`.
@@ -195,9 +197,10 @@ procedure reading, the right, the at-risk list, the land grant). Re-run unchange
   RS.7; the freeze-paused window stays proven by `field_gc6` at 512.
 - Story parties: a second salvager P takes `b`, since O's Dray-P bay holds two casualties.
 
-**Cell cost (rule #14).** shard_2 gains the two story tests (local Windows debug: 32.4 s at 512, 29.7 s at 256);
-shard_1 gains `b36a_rs3_…` (bay_36a's 14 tests ran in 19.9 s). The PR run's JUnit deltas are recorded on the
-PR.
+**Cell cost (rule #14).** shard_2 (now `domain_field/salvage_close.rs`) gains the two story tests (local Windows
+debug: 32.4 s at 512, 29.7 s at 256); shard_1 (now `domain_field/bay_36a.rs`) gains `b36a_rs3_…` (bay_36a's 14 tests
+ran in 19.9 s). On #371's CI run 41734022473 (head `e08bda22`): `tacsim-integration-2` 50.4 s at 256, 50.8 s at 512,
+**+1.69 min**; `tacsim-integration-1` 11.8 s for `b36a_rs3_…`, **+0.20 min**.
 
 ## RS.0 — the vocabulary (2026-11-03)
 
@@ -318,7 +321,7 @@ reverse). No lane rows: lane v22 (IN.6) stands, v23 stays free.
   `surface/tow.rs` is written (CR.1's); the field is read through `tow::record_or_new`.
 - `+bay`'s help names the bay away from port and the fit there.
 
-**Story.** `crates/tacsim/tests/shard_10/field_rs2.rs`, `rs2_ahuna_…` (256) and `rs2_urvara_…` (512), one
+**Story.** `tacsim` `tests/domain_field/field_rs2.rs` (binary `domain_field`; `shard_10` when built), `rs2_ahuna_…` (256) and `rs2_urvara_…` (512), one
 body: the captain leases the escort and a prospector and sails to the site; the escort, in the bay, has a
 damaged cannon, a hull 40 points down and a destroyed machine gun. `+bay` quotes the mend and the armour at
 2× with no fee and the machine gun's workshop line (Ceres before Stickney); `+bay/order …=replace` is refused
@@ -347,7 +350,8 @@ whole, the tonnes gone from the hold, nobody paid. Re-run green: `bay_gc8` (its 
 512 on PR run 41819115615's JUnit, head `279d895a`). The cell's sum reads 58.17 → 60.08 min, main's run at the merge base
 (41814093413, `3fb3e861`) against the PR's, 366 → 368 tests; the other 0.11 min is runner noise spread over unchanged
 tests (`landing::sm2_rheasilvia…` 144.8 → 149.6 s), and `field_rs1` ran no longer (95.2 → 95.0 s, 100.3 → 99.6 s).
-`bay_gc8` changed one `expect`, nothing timed. shard_10 stays the room for growth, so nothing moves shard (rule #3).
+`bay_gc8` changed one `expect`, nothing timed. shard_10 stayed the room for growth, so nothing moved shard (rule #3);
+TS.12 has since replaced the shards with hash-partitioned cells over the four domain binaries.
 
 ## RS.5 — the retrieval contract and the charge (2026-11-04)
 
@@ -436,8 +440,9 @@ story (c) at 256 and 512).
 - **A rig aboard the charter's own hull still goes to the shed** at a repossession away from port: the
   recall takes the hull back, so nothing would be left aboard a carrier anyone holds.
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** `tacsim-integration-10` (shard_10's `field_rs5`): **+2.01 min** for the three story tests on
+#415's last green run 41845407952 (19.7 s the clerk's hand-over, 50.5 s at 256, 50.6 s at 512); the head's run
+41873081819 read 1.60 min. `rest-libs` gains e4c's three `rs5_*` tests, 0.05 s in all. No other cell gained a test.
 ## RS.7 — port security (2026-11-04)
 
 Row: §6 RS.7; Q-41-24, Q-41-25, Q-38-20, doc 27 Q-S4. No lane rows (v23 stays IN.5's). Built on RS.5's
@@ -469,7 +474,7 @@ branch (#415): the fine is RS.5's one-term debt.
   against the master or operator, with the ruled line; the queued-departure arm reports the line.
   `+debts/pay` lifts it.
 
-**Story.** `tacsim` `tests/shard_5/port_security_rs7.rs`, story (b) extended at 512 (Urvara) and 256
+**Story.** `tacsim` `tests/domain_economy/port_security_rs7.rs` (`shard_5` when built), story (b) extended at 512 (Urvara) and 256
 (Ahuna): O's two unlawful recoveries, one vacated on T's `recovery` contest (proven), one left bare; O
 docks at Ceres short, is fined 5,000 cr for the proven one only, held, refused `+debts/pay` short, paid
 once funded, released; T reports the bare one to the registry on T's sensor record, L cannot.
@@ -488,8 +493,9 @@ once funded, released; T reports the bare one to the registry on T's sensor reco
   kind-blind: no row is fined unless proven.
 - **Security venues are a constant**, not a lane field, to take no lane version.
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** `tacsim-integration-5` (shard_5): **+1.56 min** for the two story tests, 46.3 s at 256 and
+47.2 s at 512 on #426's run 41884899859 (head `dd17c83a`; the run's one red cell was `tacsim-integration-1`'s gc4
+wingman race, not this cut). The cell reads 62 → 64 tests against main's 41888309144.
 ## RS.8 — the space seams (2026-11-04)
 
 Row: §6 RS.8; Q-41-26, Q-36-46, Q-36-47. The owner moved it from the space track to the programme
@@ -498,7 +504,7 @@ session. The as-built is doc 35c §12.1. No lane rows, no config keys, no kernel
 **Built.** In the space tree (`space/custody.rs`, `commands.rs`, `tick.rs`, `bubble.rs`, `docking.rs`,
 `picket.rs`, `mod.rs`), plus three changes outside it:
 - `surface/claim.rs`:
-  - `tow_files_salvage` (named clear of `shard_3`'s industry-seam tripwire, which forbids `file_claim(`) is `+salvage/claim`'s filing, and `+helm/tow` calls it.
+  - `tow_files_salvage` (named clear of the industry-seam tripwire in `domain_economy/deposits.rs`, `shard_3`'s when built, which forbids `file_claim(`) is `+salvage/claim`'s filing, and `+helm/tow` calls it.
   - `title_of` is now `pub(crate)`.
   - The space orders persist the custody document, and the RAM claim-book mirrors are gone.
 - `composition/sim_routes.rs`: one call. A hull her retriever docks under her own power is
@@ -517,7 +523,7 @@ The retrieval:
 - A tug holding a derelict's retrieval tows her for the job.
 - Docking delivers it, both for a towed derelict and for a hull under her own power.
 
-**Story.** Both stories are in `shard_10/voyage.rs`.
+**Story.** Both stories are in `tacsim` `tests/domain_world/voyage.rs` (`shard_10/voyage.rs` when built).
 - `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy` is rewritten as RS.8's
   acceptance. A derelict is clamped, towed and docked under the one window, survives a full restart
   in her domain's custody document, is contested by `+salvage/contest`, and is awarded by the claim
@@ -541,7 +547,7 @@ Rule #1's 256/512 is not applicable: a space bubble has no site scheme. The bot 
   their own carrier.
 - **A derelict nobody held** is towed into custody with no claim, as the ground's `NO_TITLE` does.
 
-**Cell cost (rule #14).** The stories run in `tacsim-integration-10` (shard_10's `voyage::`). Measured from the JUnit `<testcase time>` sums of #439's run 41898886949 against `main`'s pre-RS.8 run 41888309144.
+**Cell cost (rule #14).** The stories ran in `tacsim-integration-10` (shard_10's `voyage::`, now `domain_world/voyage.rs`). Measured from the JUnit `<testcase time>` sums of #439's run 41898886949 against `main`'s pre-RS.8 run 41888309144.
 - The new `rs8_…` story takes 7.6 s: **+0.13 summed min**.
 - The rewritten `sfr19_…` reads 9.1 s against 13.5 s, on a baseline whose whole cell ran 1.64× slower (71.9 against 43.9 summed min; TS.3's optimised dependencies landed in between). Scaled, that is about +0.9 s.
 - sfr2, sfr7, sfr8, sfr12 and sfr15 hold their scaled times.
@@ -572,7 +578,7 @@ Row: §6 RS.4; Q-41-18, Q-41-19, Q-38-19, round-2 item 41-15. No lane rows. Cons
 - `surface::act::where_is` is `pub` (the story reads it).
 - The fix thread's defect note (§2.2, the vacated hull's missing return verb) is closed by this cut.
 
-**Story.** `tacsim` `tests/shard_7/vacated_return_rs4.rs`, story (b) extended at 512 (Urvara) and 256
+**Story.** `tacsim` `tests/domain_field/vacated_return_rs4.rs` (`shard_7` when built), story (b) extended at 512 (Urvara) and 256
 (Ahuna): both of O's unlawful recoveries vacated on T's `recovery` contests and held for T; O cannot move
 them; T aboard T's own carrier on the same pad takes one bay to bay; O docks at Ceres with the other, which
 the port berths in the workshop held for T; T's carrier docks and T stows her from the floor.
@@ -585,8 +591,9 @@ the port berths in the workshop held for T; T's carrier docks and T stows her fr
 - **The return carries no crew**, and a hull vacated while crewed keeps whoever is aboard where they are
   (doc 42 owns it).
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** `tacsim-integration-7` (shard_7): **+0.92 min** for the two story tests, 25.9 s at 256 and
+29.4 s at 512 on #445's run 41933633140 (head `b4063d84`); RS.6a's run read them at 36.3 s and 39.9 s. The cell reads
+218 → 220 tests against main's run at the merge parent (41933404757).
 ## RS.6a — Tycho Mutual's designs and house (2026-11-04)
 
 Row: §6 RS.6, its first slice (RS.6a/b/c, sliced with the lead's OK); Q-41-15, Q-41-17, Q-41-29. **Lane
@@ -611,7 +618,7 @@ chain. RS.6b (the house arm flying a retrieval, story d) and RS.6c (the sweep, s
 - **The capital** (Q-41-17): Tycho's `capital_major` stays 50,000 and the row gains
   `"raises": [ 450000 ]` — 500,000 in all.
 
-**Story.** `tacsim` `tests/shard_7/tycho_house_rs6a.rs`: the composed lane lays the house up on the port
+**Story.** `tacsim` `tests/domain_economy/tycho_house_rs6a.rs` (`shard_7` when built): the composed lane lays the house up on the port
 tick — both hulls Tycho's, the lifter docked at Ceres, the crawler in her bay, the dispatcher in the host
 room — and a minute more of fires seeds nothing again.
 
@@ -626,8 +633,9 @@ room — and a minute more of fires seeds nothing again.
 - **No looks**: the kit has none for either (doc 41 §7); `+ship` prints the lifter's class as a refit
   hull's, since the class word reads only the Dray family. RS.6b gives it a word when the arm flies it.
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** `tacsim-integration-7` (shard_7): **+0.24 min** for the one story test, 14.2 s on #455's run
+41943351940 (head `1b80f2ad`). The cell reads 220 → 221 tests and 38.57 → 39.52 min against main's 41944128660. The
+lane v28 re-blesses change tests, not their number.
 ## RS.6b — Tycho Mutual's house arm flies a retrieval (2026-11-04)
 
 Row: §6 RS.6, its second slice; §4.4 "How it reaches a site", Q-41-11, Q-41-15. No lane rows. Stacked on
@@ -651,7 +659,7 @@ RS.6a (#455); carries the production fix #464 (a plan's fill before a site depar
   goes to its shed and the delivery is posted). `next_act` re-derives the next act every fire from where the
   casualty, the crawler and the lifter stand: nothing about a job's progress is stored.
 
-**Story.** `tacsim` `tests/shard_7/house_arm_rs6b.rs` at 256 (Ahuna) and 512 (Urvara): Occator's dead rig on the
+**Story.** `tacsim` `tests/domain_economy/house_arm_rs6b.rs` (`shard_7` when built) at 256 (Ahuna) and 512 (Urvara): Occator's dead rig on the
 ground, its retrieval to Ceres unaccepted for the window and handed to Tycho, flown by the arm end to end and
 berthed in Ceres's workshop, the delivery posted.
 
@@ -664,8 +672,9 @@ berthed in Ceres's workshop, the delivery posted.
 - **The float**: a house's sailing buys through its dispatcher's own account, topped from the house's; the house
   account itself never buys (the plan's buy pays from its author's own account by design).
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** `tacsim-integration-7` (shard_7): **+3.09 min** for the two story tests, 93.0 s at 256 and
+92.7 s at 512 on #462's run 41956792752 (head `27483239`). The cell reads 221 → 223 tests against main's run at the
+merge parent (41954976184); its sum is not the delta (23.2 → 43.0 min across runners).
 ## RS.6c-1 — Tycho Mutual's sweep, the scrap half (2026-11-05)
 
 Row: §6 RS.6, its third slice (RS.6c sliced -1/-2 with the owner's "accept all" of 2026-11-04); §4.4 "On its
@@ -702,12 +711,13 @@ own account", Q-41-16, round-2 item 41-7. No lane rows (IN.11 holds v30; this cu
   IN.8's `strip::scrap` as her title holder in the workshop room), and the credit, paid into the dispatcher's
   float, goes back to Tycho's account (`return_surplus`).
 
-**Story.** `tacsim` `tests/shard_7/house_sweep_rs6c.rs` at 256 and 512: Occator's spare rig wrecked on open ground,
+**Story.** `tacsim` `tests/domain_economy/house_sweep_rs6c.rs` (`shard_7` when built) at 256 and 512: Occator's spare rig wrecked on open ground,
 unclaimed for 57 IC days; Tycho sweeps it, files and wins the claim, berths it at Ceres, assesses it past its line
 and scraps it; Tycho's account takes the credit; the site's index is clear of her.
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** `tacsim-integration-7` (shard_7): **+6.69 min** for three tests on #469's run 41966540898
+(head `291d5849`): 87.5 s at 256, 88.2 s at 512, and 226.0 s for the ownerless wreck's titling. The cell reads
+223 → 226 tests and 42.46 → 49.76 min against main's 41963575835. RS.6c-2 brought the ownerless test to 62.8 s.
 ## RS.6c-2 — Tycho Mutual's sweep, the resale half (2026-11-05)
 
 Row: §6 RS.6, its last slice; §4.4 "On its own account", Q-41-16. No lane rows (IN.11 holds v30, the 28-IC-day
@@ -748,8 +758,11 @@ destroyed, unclaimed for 57 IC days; Tycho sweeps, claims and berths her, assess
 supply leg to Stickney, restores her and takes her title; the pilot finds her in `+salvage/forsale`, buys her, and
 her title and the price change hands.
 
-**Cell cost (rule #14).** Owed from the PR's CI JUnit.
-
+**Cell cost (rule #14).** Two story tests, each the longest in its cell, on #476's run 42061071702 (head `4062bbae`):
+`tacsim-integration-6` 1022 s (the Urvara body), `tacsim-integration-9` 1011 s (Ahuna): **+33.9 min** summed. Main
+after the merge (42064992610) reads them at 719 s and 736 s, 24.2 min. The cut also cut `house_sweep_rs6c`'s
+ownerless test from 227 s to 63 s (**-2.8 min** across `tacsim-integration-2` and `-8`). Cells 6 and 9 read 251 and 208 tests
+against main's 42060373799 (250, 207).
 ## RS.10 — the landholder consent step (2026-11-05)
 
 Added to the plan after RS.6c-2, one PR; recorded in doc 41 §6 as a row. It is RS.6c-1's named future cut: Tycho's
@@ -795,6 +808,10 @@ a new holding, the refusal voiding a delegation, a refused re-ask, the lapse); t
 `domain_economy/consent_rs10.rs` — the sweep asks on a player's block and leaves her, then recovers her lawfully after 28
 IC days of silence (256 and 512), and a refusal holds the house off for 28 IC days and a fresh ask follows its lapse
 (256).
+
+**Cell cost (rule #14).** Three tests across three cells on #478's run 42051987761 (head `bb531da7`): the refusal
+51.3 s in `tacsim-integration-3`, Ahuna's silence 46.6 s in `tacsim-integration-10`, Urvara's 62.3 s in
+`tacsim-integration-9`: **+2.67 min** summed. Each cell gains one test against main's 42045451423.
 
 ## The 28-IC-day rule (2026-11-04)
 
@@ -986,3 +1003,41 @@ deposits are not available to `@econ/pay`. The fine's line wraps at the session'
 
 **Runs (by hand, conclav.dev, both sizes side by side):** (b) green at `24594391` (1,202 s at 256, 1,203 s at 512); (c) green at `df517c94`
 (995 s each).
+
+## RS.9d — story (a) whole, the bot over SSH; the notes closed (2026-11-06)
+
+Row: §6 RS.9, its last slice. Stacked on RS.9c. No lane rows, no engine change.
+
+**Story (a)** (`tests/mining_cohort/rs9_story_a.rs`; `mining_cohort::rs9_story_a_the_tender_and_the_bay_work_on_{ahuna,urvara}`):
+the bot kits up as an escort pilot and leases Occator's tender beside it (`+tv/lease tender go`). Ceres sells neither
+structural alloys nor yard fittings, so it sails for Stickney Yards by Luna and Deimos (round Kirkwood's picket), buys
+the tender's stores and the bay's goods, sails home and lifts for the site. On the ground: the stores loaded and the bale
+opened, both rigs down the ramp, and — God's `@unit/damage` jamming the escort's cannon, holing its hull 40 points and
+emptying its magazine to 10 — the tender clears the jam, patches the hull and rearms the magazine
+(`+tv/2 unjam|stabilize|rearm #<escort> [go]`). The escort back in the bay, her cannon damaged, her machine gun destroyed
+and her hull holed again: `+bay` reads her away from port with no fee and names the nearest workshop for the destroyed part,
+`+bay/order …=replace` is refused with the same line, `+bay/order …=mend,armor` is taken in the carrier bay at no fee; the
+carrier lifts for Ceres and the order finishes after the lift, the cannon whole and the hull's 40 points back. Which ends
+first, her hop or the order, is a matter of real seconds at the lifted rate and not the bot's to watch: `field_rs2` holds
+the order through the passage in-process.
+
+**From the row.** §4.9 says "the carrier lifts for Stickney": no site has a route to Stickney (every site's legs are to
+and from Ceres), so she lifts for Ceres, as `field_rs2` does. Not run over SSH: GC.4's tow before it (`field_gc4`; the
+bot's own GC.4 lines are `fr7_round`'s) and the bay's wait under a field (`field_rs2`). (c)'s refit at Stickney Yards
+— the replace drawing doc 39's store — stays `bay_gc8`'s and `in6_part_lot`'s.
+
+**The vocabulary** (RS.9c's PR): RS.1's `+tv/lease tender [go]`, the tender's `+tv/2 launch go` and `+tv/2 recover [go]`,
+and a rig's own line, `+tv/<n>`.
+
+**What the harness found.** At the ports of call (Luna, Deimos) a bunker purchase's market draw was seen to hold the
+departure for minutes ("Quote #…'s goods have not come aboard yet"); the cohort's `sail` gives up after 60 tries, so
+story (a) keeps its own patient `sail` and buys each leg's exact shortfall (`bunker_lean`), not the cohort's margin.
+Worth a look of its own: IN.5's bot story sails the same legs.
+
+**Runs (by hand, conclav.dev, both sizes side by side):** green at `91a01264` (1,551 s at 256, 1,573 s at 512).
+
+**The notes closed.** Every cut's test path now names its domain binary (TS.12's `shard_N` files are gone), and every
+owed cell cost is filled from its PR's CI JUnit. Doc 41 is complete: RS.0–RS.10 have landed. Owed elsewhere: the
+fuelled-carrier tow limit (a Dray-P fresh from the pad is 272 t laden against the crawler's 260 t) is with the owner;
+the chartered tenant's retrieval post (#506) is a default awaiting the owner's ruling; the retrieval-contract `right`
+ground is unbuilt.
