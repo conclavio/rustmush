@@ -185,10 +185,12 @@ pub(crate) async fn story_c_charter(pair: Pair, ground: &'static Ground) {
         .expect("rig 1's mark")
         .trim()
         .to_owned();
+    // The mark's own line (`OWP-TV-01(#548)`): other lines (an NPC's) may carry a `(#` first.
+    let hit = format!("{mark}(#");
     let (_, found) = god
-        .answer(&format!("@find {mark}"), &["(#", "Nothing"])
+        .answer(&format!("@find {mark}"), &[hit.as_str(), "Nothing"])
         .await;
-    let prospect = ObjId(u32::try_from(id_after(&found, "(#")).expect("an id"));
+    let prospect = ObjId(u32::try_from(id_after(&found, &hit)).expect("an id"));
     let p = format!("#{}", prospect.0);
     stamp(&format!("A's prospector {mark} ({p}) is down the ramp"));
     // The damage, and its row on the site's index (the field that did it would have written it).
