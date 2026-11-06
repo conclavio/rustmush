@@ -456,7 +456,7 @@ pub(crate) async fn story_b(cast: Cast, ground: &'static Ground) {
 
     // 1. The authorizations, before any attach (Q-41-21): a stranger may authorize nothing; T
     //    authorizes O (and L) to recover `c`; O holds no block; L delegates `c`'s block to O.
-    let c_block = format!("{}/{}", ground.venue, made.c_letter);
+    let c_block = format!("{}/{}", ground.entry, made.c_letter);
     let (index, said) = typed(
         &mut l,
         &format!("+salvage/authorize {c}={o_name}"),
