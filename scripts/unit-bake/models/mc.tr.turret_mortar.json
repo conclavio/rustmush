@@ -1,0 +1,41 @@
+{
+  "model": "mc.tr.turret_mortar",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+  "package": "Slava Z/3D ModelsPropsWeapons/Sci-Fi Turret Constructor.unitypackage",
+  "root": "Assets/Mech_Constructor_Turrets/",
+  "id_texture": "Materials/MC_Turrets_X_Color_ID.png",
+  "id_classes": ["second", "second", "paint", "bright", "accent", "bright", "bright", "bright"],
+  "prefab": "Prefabs/Base/Base_Turret_Lvl4.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpits/Cockpit_Weapon_Mortar_Lvl3",
+      "mount": "Mount_Top",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapons/Weapon_Radar_Lvl2",
+      "mount": "Mount_Weapon_L",
+      "parent": "Cockpit_Weapon_Mortar_Lvl3"
+    },
+    {
+      "prefab": "Prefabs/Weapons/Weapon_Plasma_Lvl3",
+      "mount": "Mount_Weapon_R",
+      "parent": "Cockpit_Weapon_Mortar_Lvl3"
+    }
+  ],
+  "muzzles": [
+    {
+      "locator": "Cockpit_Weapon_Mortar_Lvl3/Barrel_End",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Weapon_Plasma_Lvl3/Barrel_End",
+      "weapon": "laser"
+    }
+  ],
+  "size_cm": [
+    420,
+    300
+  ]
+}

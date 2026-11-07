@@ -1,0 +1,58 @@
+{
+  "model": "mc.hm.walker_med",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Humanoid Robots (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Humanoid Robots.unitypackage",
+  "root": "Assets/Mech_Constructor_Humanoids/",
+  "id_texture": "Materials/MC_Humanoids_X_Color_ID.png",
+  "id_classes": ["second", "second", "paint", "bright", "accent", "bright", "bright", "bright"],
+  "prefab": "Prefabs/Walkers/Mech_Walker_Full_Med.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Bulldog",
+      "mount": "Mount_Cockpit",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_Shotgun_Lvl3",
+      "mount": "Mount_Weapon_R",
+      "parent": "Cockpit_Bulldog"
+    },
+    {
+      "prefab": "Prefabs/Gadgets/Gadget_Weapon_Launcher",
+      "mount": "Mount_Weapon_L",
+      "parent": "Cockpit_Bulldog"
+    },
+    {
+      "prefab": "Prefabs/Backpack_Radar",
+      "mount": "Mount_Backpack",
+      "parent": "Cockpit_Bulldog"
+    }
+  ],
+  "still": {
+    "file": "Animations/Mech_Walker@Walker_Idle.fbx",
+    "name": "Walker_Idle"
+  },
+  "moving": {
+    "file": "Animations/Mech_Walker@Walker_Walk.fbx",
+    "name": "Walker_Walk"
+  },
+  "wreck": {
+    "file": "Animations/Mech_Walker@Walker_Die.fbx",
+    "name": "Walker_Die"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_Shotgun_Lvl3/Barrel_End",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Gadget_Weapon_Launcher/Barrel_End",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    550,
+    1180
+  ]
+}

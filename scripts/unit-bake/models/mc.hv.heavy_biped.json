@@ -1,0 +1,62 @@
+{
+  "model": "mc.hv.heavy_biped",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Heavy Robot (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Heavy Robot.unitypackage",
+  "root": "Assets/Mech_Constructor_Heavy/",
+  "id_texture": "Materials/MC_Heavy_X_Color_ID.png",
+  "prefab": "Prefabs/Legs_Heavy_lvl2.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Shoulders_Heavy_lvl2",
+      "mount": "Mount_top",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Cockpit_Heavy",
+      "mount": "Mount_cockpit",
+      "parent": "Shoulders_Heavy_lvl2"
+    },
+    {
+      "prefab": "Prefabs/Weapon_Flak_1x_Lvl3",
+      "mount": "Mount_Weapon_R",
+      "parent": "Shoulders_Heavy_lvl2"
+    },
+    {
+      "prefab": "Prefabs/Weapon_Flak_2x_Lvl2",
+      "mount": "Mount_Weapon_L",
+      "parent": "Shoulders_Heavy_lvl2"
+    },
+    {
+      "prefab": "Prefabs/Weapon_BigRocket_lvl3",
+      "mount": "Mount_Rockets_shoulder_R",
+      "parent": "Shoulders_Heavy_lvl2"
+    }
+  ],
+  "still": {
+    "file": "Animations/Legs_Heavy@Legs_Heavy_idle.fbx",
+    "name": "Legs_Heavy_idle_simple"
+  },
+  "moving": {
+    "file": "Animations/Legs_Heavy@Legs_Heavy_walk.fbx",
+    "name": "Legs_Heavy_walk"
+  },
+  "wreck": {
+    "file": "Animations/Legs_Heavy@Legs_Heavy_fall_back.fbx",
+    "name": "Legs_Heavy_fall_back"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_Flak_1x_Lvl3/Barrel_end",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Weapon_Flak_2x_Lvl2/Barrel_end_1",
+      "weapon": "autocannon"
+    }
+  ],
+  "size_cm": [
+    680,
+    1300
+  ]
+}

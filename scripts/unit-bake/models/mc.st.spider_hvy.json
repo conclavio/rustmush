@@ -1,0 +1,61 @@
+{
+  "model": "mc.st.spider_hvy",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Legs_Spider_Hvy.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Gun_Flat_Full",
+      "mount": "Mount_Top",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_Sniper_lvl4",
+      "mount": "Mount_Weapon_Main",
+      "parent": "Cockpit_Gun_Flat_Full"
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl2",
+      "mount": "Mount_HalfShoulder_R",
+      "parent": "Cockpit_Gun_Flat_Full"
+    },
+    {
+      "prefab": "Prefabs/Weapon_GLauncher_lvl2",
+      "mount": "Mount_HalfShoulder_L",
+      "parent": "Cockpit_Gun_Flat_Full"
+    }
+  ],
+  "still": {
+    "file": "Animations/Legs_Spider_Hvy@Legs_Spider_Hvy_Idle.fbx",
+    "name": "Legs_Spider_Hvy_Idle"
+  },
+  "moving": {
+    "file": "Animations/Legs_Spider_Hvy@Legs_Spider_Hvy_Walk.fbx",
+    "name": "Legs_Spider_Hvy_Walk"
+  },
+  "wreck": {
+    "file": "Animations/Legs_Spider_Hvy@Legs_Spider_Hvy_Death.fbx",
+    "name": "Legs_Spider_Hvy_Death"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_Sniper_lvl4/Barrel_end",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Weapon_DoubleGun_lvl2/Barrel_End_1",
+      "weapon": "machine_gun"
+    },
+    {
+      "locator": "Weapon_GLauncher_lvl2/Barrel_end_1",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    650,
+    340
+  ]
+}

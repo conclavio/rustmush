@@ -1,0 +1,58 @@
+{
+  "model": "mc.hm.walker_lt",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Humanoid Robots (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Humanoid Robots.unitypackage",
+  "root": "Assets/Mech_Constructor_Humanoids/",
+  "id_texture": "Materials/MC_Humanoids_X_Color_ID.png",
+  "id_classes": ["second", "second", "paint", "bright", "accent", "bright", "bright", "bright"],
+  "prefab": "Prefabs/Walkers/Mech_Walker_Full_Lt.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Trooper",
+      "mount": "Mount_Cockpit",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_Shotgun_Lvl2",
+      "mount": "Mount_Weapon_R",
+      "parent": "Cockpit_Trooper"
+    },
+    {
+      "prefab": "Prefabs/Gadgets/Gadget_Weapon_Minigun_Lvl2",
+      "mount": "Mount_Weapon_L",
+      "parent": "Cockpit_Trooper"
+    },
+    {
+      "prefab": "Prefabs/Gadgets/Gadget_Hand_Gun",
+      "mount": "Mount_Hand_R",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "Animations/Mech_Walker@Walker_Idle.fbx",
+    "name": "Walker_Idle"
+  },
+  "moving": {
+    "file": "Animations/Mech_Walker@Walker_Walk.fbx",
+    "name": "Walker_Walk"
+  },
+  "wreck": {
+    "file": "Animations/Mech_Walker@Walker_Die.fbx",
+    "name": "Walker_Die"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_Shotgun_Lvl2/Barrel_End",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Gadget_Weapon_Minigun_Lvl2/Barrel_End_1",
+      "weapon": "machine_gun"
+    }
+  ],
+  "size_cm": [
+    480,
+    1050
+  ]
+}

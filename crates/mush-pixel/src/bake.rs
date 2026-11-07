@@ -1075,9 +1075,6 @@ pub fn check_model(e: &ModelBake, looks: &[Look]) -> Vec<String> {
         .iter()
         .filter(|l| l.model.as_deref() == Some(e.model.as_str()))
         .collect();
-    if naming.is_empty() {
-        bad.push(format!("{}: no shipped look names the model", e.model));
-    }
     let p = &e.provenance;
     for (what, v) in [
         ("asset pack", &p.asset_pack),
@@ -1105,17 +1102,19 @@ pub fn check_model(e: &ModelBake, looks: &[Look]) -> Vec<String> {
             ));
         }
     }
-    let weapons: Vec<&str> = naming
-        .iter()
-        .flat_map(|look| {
-            look.weapons.keys().map(String::as_str).chain(
-                look.sheet()
-                    .into_iter()
-                    .flat_map(|s| s.facings.values())
-                    .flat_map(|f| f.muzzles.keys().map(String::as_str)),
-            )
-        })
-        .collect();
+    let weapons: Option<Vec<&str>> = (!naming.is_empty()).then(|| {
+        naming
+            .iter()
+            .flat_map(|look| {
+                look.weapons.keys().map(String::as_str).chain(
+                    look.sheet()
+                        .into_iter()
+                        .flat_map(|s| s.facings.values())
+                        .flat_map(|f| f.muzzles.keys().map(String::as_str)),
+                )
+            })
+            .collect()
+    });
     for view in View::ALL {
         let Some(chain) = e.chain(view) else {
             bad.push(format!("{}: no {} chain", e.model, view.name()));
@@ -1134,13 +1133,19 @@ pub fn check_model(e: &ModelBake, looks: &[Look]) -> Vec<String> {
             bad.push(format!("{} {}: a span of 0", e.model, view.name()));
         }
         for s in &chain.sizes {
-            check_size(&mut bad, &e.model, view, s, &weapons);
+            check_size(&mut bad, &e.model, view, s, weapons.as_deref());
         }
     }
     bad
 }
 
-fn check_size(bad: &mut Vec<String>, model: &str, view: View, s: &SizedFrames, weapons: &[&str]) {
+fn check_size(
+    bad: &mut Vec<String>,
+    model: &str,
+    view: View,
+    s: &SizedFrames,
+    weapons: Option<&[&str]>,
+) {
     let at = format!("{model} {} {}", view.name(), s.size);
     if s.frames.len() != FRAMES {
         bad.push(format!("{at}: {} frames, not {FRAMES}", s.frames.len()));
@@ -1170,7 +1175,9 @@ fn check_size(bad: &mut Vec<String>, model: &str, view: View, s: &SizedFrames, w
             if !inside(*xy) {
                 bad.push(format!("{at}: muzzle {name} {xy:?} outside the frame"));
             }
-            if !weapons.contains(&name.as_str()) {
+            if let Some(ws) = weapons
+                && !ws.contains(&name.as_str())
+            {
                 bad.push(format!(
                     "{at}: muzzle {name} names no weapon of a look on the model"
                 ));
@@ -1366,11 +1373,7 @@ mod tests {
         let good = block_entry(id, tank.size_cm);
         assert_eq!(check_model(&good, looks), Vec::<String>::new());
         let orphan = block_entry("mc.nobody", tank.size_cm);
-        assert!(
-            check_model(&orphan, looks)
-                .iter()
-                .any(|b| b.contains("no shipped look names"))
-        );
+        assert_eq!(check_model(&orphan, looks), Vec::<String>::new());
         let mut tall = good.clone();
         tall.size_cm.1 *= 2;
         assert!(

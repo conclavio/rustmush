@@ -1,0 +1,41 @@
+{
+  "model": "mc.vh.bug_rover",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Vehicle Constructor (Slava Z)",
+  "package": "Slava Z/3D ModelsVehiclesAir/Sci-Fi Vehicle Constructor.unitypackage",
+  "root": "Assets/Mech_Constructor_Vehicles/",
+  "id_texture": "Materials/MC_Vehicles_X_Color_ID.png",
+  "id_classes": ["dark", "second", "paint", "bright", "accent", "bright", "bright", "dark"],
+  "prefab": "Prefabs/Chassis/Chassis_Bug/Chassis_Bug_Lvl2.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpits/Cockpit_Aero_Blunt",
+      "mount": "Mount_Cockpit",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Backs/Back_Cargo_Lvl2",
+      "mount": "Mount_Back",
+      "parent": "Cockpit_Aero_Blunt"
+    },
+    {
+      "prefab": "Prefabs/Sides/Weapon/Weapon_QuadCannon_Lvl2",
+      "mount": "Mount_Weapon_Top",
+      "parent": "Cockpit_Aero_Blunt"
+    }
+  ],
+  "moving": {
+    "file": "Animations/Chassis_Bug@Chassis_Bug_Go_Forward.fbx",
+    "name": "Chassis_Bug_Go_Forward"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_QuadCannon_Lvl2/Barrel_End_1",
+      "weapon": "autocannon"
+    }
+  ],
+  "size_cm": [
+    500,
+    220
+  ]
+}

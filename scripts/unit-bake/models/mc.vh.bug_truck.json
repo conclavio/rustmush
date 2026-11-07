@@ -1,0 +1,56 @@
+{
+  "model": "mc.vh.bug_truck",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Vehicle Constructor (Slava Z)",
+  "package": "Slava Z/3D ModelsVehiclesAir/Sci-Fi Vehicle Constructor.unitypackage",
+  "root": "Assets/Mech_Constructor_Vehicles/",
+  "id_texture": "Materials/MC_Vehicles_X_Color_ID.png",
+  "id_classes": ["dark", "second", "paint", "bright", "accent", "bright", "bright", "dark"],
+  "prefab": "Prefabs/Chassis/Chassis_Bug/Chassis_Bug_Wide_Lvl2.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpits/Cockpit_Freight_Wide",
+      "mount": "Mount_Cockpit",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Container/Container_Gunship",
+      "mount": "Mount_Container",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Top/Top_Mount_Top_Turret",
+      "mount": "Mount_Top",
+      "parent": "Container_Gunship"
+    },
+    {
+      "prefab": "Prefabs/Top/Top_Turret_Lvl1",
+      "mount": "Mount_Top_Turret",
+      "parent": "Top_Mount_Top_Turret"
+    },
+    {
+      "prefab": "Prefabs/Sides/Weapon/Weapon_TwinCannon_Lvl2",
+      "mount": "Mount_Weapon_R",
+      "parent": "Top_Turret_Lvl1"
+    },
+    {
+      "prefab": "Prefabs/Sides/Weapon/Weapon_TwinCannon_Lvl2",
+      "mount": "Mount_Weapon_L",
+      "parent": "Top_Turret_Lvl1"
+    }
+  ],
+  "moving": {
+    "file": "Animations/Chassis_Bug_Wide@Chassis_Bug_Wide_Go_Forward.fbx",
+    "name": "Chassis_Bug_Wide_Go_Forward"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_TwinCannon_Lvl2/Barrel_End_1",
+      "weapon": "machine_gun"
+    }
+  ],
+  "size_cm": [
+    820,
+    310
+  ]
+}

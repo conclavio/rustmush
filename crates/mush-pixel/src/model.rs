@@ -132,7 +132,13 @@ pub fn sheet_sources() -> &'static [(&'static str, &'static str)] {
 #[must_use]
 pub fn sheet(id: &str) -> Option<&'static Sheet> {
     static SHEETS: OnceLock<Vec<(String, Sheet)>> = OnceLock::new();
-    let file = entry(id)?.sheet.as_deref()?;
+    let m = entry(id)?;
+    let file = m.sheet.as_deref().or_else(|| {
+        look::unknown()?
+            .model
+            .as_deref()
+            .and_then(|u| entry(u)?.sheet.as_deref())
+    })?;
     SHEETS
         .get_or_init(|| {
             MODEL_SHEETS

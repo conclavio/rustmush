@@ -1,0 +1,48 @@
+{
+  "model": "mc.st.tracks_lvl2",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Legs_Tracks_Lvl2.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Gun_2x",
+      "mount": "Mount_Top",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl3",
+      "mount": "Mount_Weapon_R",
+      "parent": "Cockpit_Gun_2x"
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl3",
+      "mount": "Mount_Weapon_L",
+      "parent": "Cockpit_Gun_2x"
+    }
+  ],
+  "still": {
+    "file": "Animations/Legs_Tracks_Lvl2@Legs_Tracks_Lvl2_Idle.fbx",
+    "name": "Legs_Tracks_Lvl2_Idle"
+  },
+  "moving": {
+    "file": "Animations/Legs_Tracks_Lvl2@Legs_Tracks_Lvl2_Roll.fbx",
+    "name": "Legs_Tracks_Lvl2_Roll"
+  },
+  "wreck": {
+    "file": "Animations/Legs_Tracks_Lvl2@Legs_Tracks_Lvl2_Death.fbx",
+    "name": "Legs_Tracks_Lvl2_Death"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_DoubleGun_lvl3/Barrel_End_1",
+      "weapon": "autocannon"
+    }
+  ],
+  "size_cm": [
+    450,
+    240
+  ]
+}
