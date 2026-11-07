@@ -174,9 +174,10 @@ for the dark tone, `Grey` (132) for `steel`, `GreyLight` (174) for the light —
 budget is unchanged and `steel` in the hand-drawn fallback sheets moves from the dark bluish grey
 to the mid one; the 2.5D and the reducer's preview get the matching RGB. Rule 7's run byte had
 three bits of material (seven at most), so the pack is **format 4**: four bits of material, three
-of length, a run of up to eight in one byte (was sixteen; the six models grew SIZES). An unknown
+of length, a run of up to eight in one byte (was sixteen; the six models grew by 5–16 %). An unknown
 contact's team greys and bare metal now share tones, which is what unknown means (the `unknown`
-look is a hump). Rebaked: SIZES2.
+look is a hump). Rebaked: 230,964 / 206,481 / 187,137 / 228,022 / 204,535 / 89,656 bytes, the matrix
+check holding on each; the line-ups re-rendered and the web golden re-blessed.
 The six models rebaked (208,503 / 181,431 / 178,923 / 207,002 / 191,256 / 77,381 bytes; the
 matrix check holds on each), the line-ups under `images/22-u6/` re-rendered, the web golden
 re-blessed. The alternatives, not taken: the model config's `id_classes` sending the secondary
