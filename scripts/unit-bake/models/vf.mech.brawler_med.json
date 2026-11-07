@@ -1,0 +1,57 @@
+{
+  "model": "vf.mech.brawler_med",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+  "package": "The Visual Forge/3D ModelsCharactersRobots/Sci-Fi Mechs and Weapons Pack.unitypackage",
+  "root": "Assets/Mech Pack/",
+  "albedo_id": true,
+  "albedo_mode": 1,
+  "prefab": "Prefabs/Mech2.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/FlameThrowerL",
+      "mount": "HardpointLeftArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/HeavyCannonR",
+      "mount": "HardpointRightArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/MissilePodR",
+      "mount": "HardpointRightShoulder",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "models/Mech2@Mech2Stay.fbx",
+    "name": "Mech2Stay"
+  },
+  "moving": {
+    "file": "models/Mech2@Mech2Walk.fbx",
+    "name": "Mech2Walk"
+  },
+  "wreck": {
+    "file": "models/Mech2@Mech2Death.fbx",
+    "name": "Mech2Death"
+  },
+  "muzzles": [
+    {
+      "locator": "FlameThrowerL/FxFlameJet",
+      "weapon": "flamethrower"
+    },
+    {
+      "locator": "HeavyCannonR/FxCannonMuzzle",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "MissilePodR/FxMissilePodFire1",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    620,
+    1050
+  ]
+}

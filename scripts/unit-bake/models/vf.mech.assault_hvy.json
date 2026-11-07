@@ -1,0 +1,66 @@
+{
+  "model": "vf.mech.assault_hvy",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+  "package": "The Visual Forge/3D ModelsCharactersRobots/Sci-Fi Mechs and Weapons Pack.unitypackage",
+  "root": "Assets/Mech Pack/",
+  "albedo_id": true,
+  "albedo_paint_lum": 0.5,
+  "prefab": "Prefabs/Mech4.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/HeavyCannonL",
+      "mount": "HardpointLeftArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/HeavyCannonR",
+      "mount": "HardpointRightArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/MissilePodL",
+      "mount": "HardpointLeftShoulder",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/MissilePodR",
+      "mount": "HardpointRightShoulder",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "models/Mech4@Mech4Stay.fbx",
+    "name": "Mech4Stay"
+  },
+  "moving": {
+    "file": "models/Mech4@Mech4Walk.fbx",
+    "name": "Mech4Walk"
+  },
+  "wreck": {
+    "file": "models/Mech4@Mech4Death.fbx",
+    "name": "Mech4Death"
+  },
+  "muzzles": [
+    {
+      "locator": "HeavyCannonL/FxCannonMuzzle",
+      "weapon": "cannon_l"
+    },
+    {
+      "locator": "HeavyCannonR/FxCannonMuzzle",
+      "weapon": "cannon_r"
+    },
+    {
+      "locator": "MissilePodL/FxMissilePodFire1",
+      "weapon": "missiles_l"
+    },
+    {
+      "locator": "MissilePodR/FxMissilePodFire1",
+      "weapon": "missiles_r"
+    }
+  ],
+  "size_cm": [
+    700,
+    1200
+  ]
+}

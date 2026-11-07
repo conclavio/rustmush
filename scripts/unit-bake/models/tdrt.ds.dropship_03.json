@@ -1,0 +1,22 @@
+{
+  "model": "tdrt.ds.dropship_03",
+  "asset_version": "",
+  "asset_pack": "Sci-fi Dropships (3DRT)",
+  "package": "3DRT/3D ModelsVehiclesAir/Sci-fi Dropships.unitypackage",
+  "root": "Assets/Sci-Fi Dropships/",
+  "albedo_id": true,
+  "albedo_dark_lum": 0.11,
+  "albedo_paint_lum": 0.2,
+  "material_parts": [
+    {
+      "match": "glass",
+      "part": "bright"
+    }
+  ],
+  "prefab": "Prefabs/ds-03_HI-3ds_Prefab.prefab",
+  "muzzles": [],
+  "size_cm": [
+    920,
+    400
+  ]
+}

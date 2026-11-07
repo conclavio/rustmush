@@ -1,0 +1,56 @@
+{
+  "model": "vf.mech.recon_lt",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+  "package": "The Visual Forge/3D ModelsCharactersRobots/Sci-Fi Mechs and Weapons Pack.unitypackage",
+  "root": "Assets/Mech Pack/",
+  "albedo_id": true,
+  "prefab": "Prefabs/Mech1.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/MachinegunL",
+      "mount": "HardpointLeftArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/LaserCannonR",
+      "mount": "HardpointRightArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/MissilePodL",
+      "mount": "HardpointLeftShoulder",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "models/Mech1@Mech1Stay.fbx",
+    "name": "Mech1Stay"
+  },
+  "moving": {
+    "file": "models/Mech1@Mech1Walk.fbx",
+    "name": "Mech1Walk"
+  },
+  "wreck": {
+    "file": "models/Mech1@Mech1Death.fbx",
+    "name": "Mech1Death"
+  },
+  "muzzles": [
+    {
+      "locator": "MachinegunL/FxMachinegunMuzzleFlash",
+      "weapon": "machine_gun"
+    },
+    {
+      "locator": "LaserCannonR/FxLaserMuzzle",
+      "weapon": "laser"
+    },
+    {
+      "locator": "MissilePodL/FxMissilePodFire1",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    520,
+    950
+  ]
+}
