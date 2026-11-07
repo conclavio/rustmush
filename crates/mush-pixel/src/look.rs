@@ -61,8 +61,10 @@ const SHIPPED: &[(&str, &str)] = &[
 ];
 
 /// What a sprite pixel is made of (doc 22 D-22-7): the three team slots,
-/// recoloured by the contact's team when it is drawn, and three fixed
-/// materials. A closed set, so the picture's palette stays closed.
+/// recoloured by the contact's team when it is drawn, and five fixed
+/// materials — black, a three-tone steel (U.6 follow-up, 2026-11-06: bare
+/// metal models its form by light as the paint does) and pale. A closed
+/// set, so the picture's palette stays closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Material {
     /// The team's dark shade.
@@ -73,8 +75,12 @@ pub enum Material {
     TeamLight,
     /// Black: outlines, openings, shadowed parts.
     Black,
+    /// Steel in shadow: the dark tone of bare metal.
+    SteelDark,
     /// Steel: tracks, wheels, barrels, bare metal.
     Steel,
+    /// Steel in the light: the light tone of bare metal.
+    SteelLight,
     /// Pale: glass, lamps, highlights.
     Pale,
 }
@@ -86,7 +92,9 @@ impl Material {
             "team" => Material::Team,
             "team-light" => Material::TeamLight,
             "black" => Material::Black,
+            "steel-dark" => Material::SteelDark,
             "steel" => Material::Steel,
+            "steel-light" => Material::SteelLight,
             "pale" => Material::Pale,
             _ => return None,
         })

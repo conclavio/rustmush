@@ -9,9 +9,10 @@
 //! The material of a render pixel is its part (the colour-ID pass: three bits
 //! of red, green and blue name the part, [`Part`]) lit by a light fixed to the
 //! viewer, upper left and toward the eye (the normal pass): the main paint into
-//! the three team tones by light, secondary panels steel or black, dark
-//! metal black, accents team-light, lamps and glass pale — the rule the
-//! sprite-vs-voxel PoC's `reduce.py` used, which this replaces.
+//! the three team tones by light, secondary panels into the three steel
+//! tones by the same cuts, dark metal black, accents team-light, lamps and
+//! glass pale — the sprite-vs-voxel PoC's `reduce.py` rule, with the steel
+//! given the paint's modelling (U.6 follow-up, 2026-11-06).
 //!
 //! `examples/unit_reduce.rs` runs it over a bake directory and writes the
 //! pack; `scripts/unit-bake/bake.sh` runs the bake and then it.
@@ -28,11 +29,10 @@ use crate::look::Facing;
 pub enum Part {
     /// The main paint: the team's three tones by light.
     Paint,
-    /// Secondary panels: steel lit, black in shadow (so bare metal shades
-    /// as metal, not as a hole in the paint). The cut is the paint's shadow
-    /// cut, 0.35: a face square to the viewer is lit 0.45 under the fixed
-    /// light, and a cut there split every such face between steel and
-    /// black on noise.
+    /// Secondary panels: the three steel tones by light, at the paint's
+    /// cuts (0.72 and 0.35), so bare metal models its form as the paint
+    /// does. A face square to the viewer is lit 0.45 under the fixed light,
+    /// so a cut at 0.45 — the first rule — split every such face on noise.
     Second,
     /// Dark metal: black.
     Dark,
@@ -101,8 +101,9 @@ pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<
                 Part::Paint if lit > 0.72 => 3,
                 Part::Paint if lit > 0.35 => 2,
                 Part::Paint => 1,
+                Part::Second if lit > 0.72 => 8,
                 Part::Second if lit > 0.35 => 5,
-                Part::Second => 4,
+                Part::Second => 7,
                 Part::Dark => 4,
                 Part::Accent => 3,
                 Part::Bright => 6,
@@ -578,11 +579,15 @@ mod tests {
             "paint in shadow: team-dark"
         );
         assert_eq!(codes(px([0, 0, 0], 255), &up), 4, "dark metal: black");
-        assert_eq!(codes(px([0, 0, 255], 255), &up), 5, "lit secondary: steel");
+        assert_eq!(
+            codes(px([0, 0, 255], 255), &up),
+            8,
+            "lit secondary: steel-light"
+        );
         assert_eq!(
             codes(px([0, 0, 255], 255), &down),
-            4,
-            "secondary in shadow: black, not team-dark"
+            7,
+            "secondary in shadow: steel-dark, not team-dark"
         );
         assert_eq!(codes(px([255, 0, 0], 255), &up), 3, "accent");
         assert_eq!(codes(px([255, 255, 255], 255), &up), 6, "bright: pale");

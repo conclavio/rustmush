@@ -211,8 +211,10 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   can be chosen by. The format names facings by word; `front_left` and the other diagonals are
   reserved for the day the owner lets a sensor say more.
 - **Materials and team colour** (D-22-3, D-22-7 as built): a palette maps each character to one
-  of six materials — `team-dark`, `team`, `team-light`, `black`, `steel`, `pale` — never to a
-  colour. The three team slots are recoloured when the sprite is drawn: red for the red team, blue
+  of eight materials — `team-dark`, `team`, `team-light`, `black`, `steel-dark`, `steel`,
+  `steel-light`, `pale` — never to a colour (the steel's dark and light tones came with the U.6
+  follow-up of 2026-11-06, so bare metal models its form by light as the paint does; they draw
+  from the palette's existing greys, so the budget below is unchanged). The three team slots are recoloured when the sprite is drawn: red for the red team, blue
   for the blue, a neutral grey while the contact is unknown; a wreck has no team (its team slots
   draw black, burnt and steel). The renderer fogs the materials in six steps (the ground has
   twelve), so the ground's bases, the sky and the sprites are exactly 256 colours.

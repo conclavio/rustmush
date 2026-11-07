@@ -446,7 +446,9 @@ pub(crate) fn sprite_colour(
     };
     let paint = match (material, kind) {
         (Material::Black, _) | (Material::TeamDark, SpriteKind::Wreck) => None,
-        (Material::Steel, _) | (Material::TeamLight, SpriteKind::Wreck) => Some(Paint::Steel),
+        (Material::SteelDark, _) | (Material::TeamLight, SpriteKind::Wreck) => Some(Paint::Steel),
+        (Material::Steel, _) => Some(Paint::Grey),
+        (Material::SteelLight, _) => Some(Paint::GreyLight),
         (Material::Pale, _) => Some(Paint::Pale),
         (Material::Team, SpriteKind::Wreck) => return shades.shade(Base::Wreck, step),
         (_, SpriteKind::Hostile) => team(Paint::RedDark, Paint::Red, Paint::RedLight),

@@ -170,7 +170,9 @@ fn colour(m: look::Material) -> [u8; 3] {
         look::Material::Team => [178, 54, 48],
         look::Material::TeamLight => [214, 98, 84],
         look::Material::Black => [20, 22, 26],
+        look::Material::SteelDark => [84, 88, 96],
         look::Material::Steel => [118, 124, 132],
+        look::Material::SteelLight => [160, 164, 170],
         look::Material::Pale => [216, 216, 198],
     }
 }

@@ -47,8 +47,9 @@ pub mod reduce;
 pub const FORMAT_MAGIC: [u8; 4] = *b"MUPK";
 /// The pack format's version (version 1 was PR #154's positional `M25D`;
 /// version 2, U.6's, keyed its entries by look id; version 3 by model id,
-/// doc 31 D-31-2).
-pub const FORMAT_VERSION: u16 = 3;
+/// doc 31 D-31-2; version 4 widened a run's material to four bits for the
+/// three-tone steel, U.6 follow-up of 2026-11-06).
+pub const FORMAT_VERSION: u16 = 4;
 /// The side of the render every size is reduced from, pixels.
 pub const RENDER_PX: u16 = 384;
 /// The `fp` chain, largest first (Q-22-4: the floor is 8 px; under it the
@@ -210,7 +211,7 @@ pub struct BakedFrame {
     pub height: u8,
     /// Where each weapon's shot leaves, by weapon component id, frame pixels.
     pub muzzles: Vec<(String, (u8, u8))>,
-    /// The box's material codes, row-major: `0` nothing, `1..=6` the
+    /// The box's material codes, row-major: `0` nothing, `1..=8` the
     /// materials ([`material_from_code`]).
     pub pixels: Vec<u8>,
 }
@@ -642,12 +643,13 @@ fn put_str(out: &mut Vec<u8>, s: &str) {
 }
 
 /// **Rule 7's runs**: the box's codes, row-major, as runs, each a material
-/// and a varint length. The material rides in the run's first byte — three
-/// bits of material, the low four bits of the length less one, a continuation
-/// bit — and any further length follows as LEB128 groups of seven: a run of up
-/// to sixteen is one byte. (A whole byte for the material measured at twice
-/// the size on the shipped art: 3.1 MB against 1.6 MB for six looks, doc 22
-/// cut notes, U.6.)
+/// and a varint length. The material rides in the run's first byte — four
+/// bits of material, the low three bits of the length less one, a
+/// continuation bit — and any further length follows as LEB128 groups of
+/// seven: a run of up to eight is one byte. (A whole byte for the material
+/// measured at twice the size on the shipped art: 3.1 MB against 1.6 MB for
+/// six looks, doc 22 cut notes, U.6. Format 3 gave the material three bits
+/// and the length four; the three-tone steel needed eight materials.)
 #[must_use]
 pub fn encode_runs(codes: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -657,12 +659,12 @@ pub fn encode_runs(codes: &[u8]) -> Vec<u8> {
             .get(i..)
             .map_or(1, |rest| rest.iter().take_while(|&&c| c == m).count());
         let more = run as u64 - 1;
-        let first = (m & 0x07) | (((more & 0x0f) as u8) << 3);
-        if more >> 4 == 0 {
+        let first = (m & 0x0f) | (((more & 0x07) as u8) << 4);
+        if more >> 3 == 0 {
             out.push(first);
         } else {
             out.push(first | 0x80);
-            put_varint(&mut out, more >> 4);
+            put_varint(&mut out, more >> 3);
         }
         i += run;
     }
@@ -674,19 +676,19 @@ pub fn encode_runs(codes: &[u8]) -> Vec<u8> {
 /// # Errors
 ///
 /// [`PackError`] when the runs overrun or fall short of `len`, name a
-/// material code past `6`, or end inside a run.
+/// material code past `8`, or end inside a run.
 pub fn decode_runs(bytes: &[u8], len: usize) -> Result<Vec<u8>, PackError> {
     let mut out = Vec::with_capacity(len);
     let mut r = Reader { b: bytes, at: 0 };
     while r.at < bytes.len() {
         let b = r.u8()?;
-        let m = b & 0x07;
-        if m > 6 {
+        let m = b & 0x0f;
+        if m > 8 {
             return refuse(format!("material code {m}"));
         }
-        let mut more = u64::from((b >> 3) & 0x0f);
+        let mut more = u64::from((b >> 4) & 0x07);
         if b & 0x80 != 0 {
-            more |= r.varint()? << 4;
+            more |= r.varint()? << 3;
         }
         let run = usize::try_from(more)
             .unwrap_or(usize::MAX)
@@ -702,7 +704,8 @@ pub fn decode_runs(bytes: &[u8], len: usize) -> Result<Vec<u8>, PackError> {
     Ok(out)
 }
 
-/// The material a pack code names: `1..=6` the six, anything else nothing.
+/// The material a pack code names: `1..=8` the eight, anything else nothing
+/// (`7` and `8`, the steel's dark and light tones, came with format 4).
 #[must_use]
 pub fn material_from_code(code: u8) -> Option<Material> {
     match code {
@@ -712,6 +715,8 @@ pub fn material_from_code(code: u8) -> Option<Material> {
         4 => Some(Material::Black),
         5 => Some(Material::Steel),
         6 => Some(Material::Pale),
+        7 => Some(Material::SteelDark),
+        8 => Some(Material::SteelLight),
         _ => None,
     }
 }
@@ -726,6 +731,8 @@ pub fn code_of(material: Material) -> u8 {
         Material::Black => 4,
         Material::Steel => 5,
         Material::Pale => 6,
+        Material::SteelDark => 7,
+        Material::SteelLight => 8,
     }
 }
 
@@ -1184,20 +1191,25 @@ mod tests {
     fn runs_round_trip_and_a_short_run_is_one_byte() {
         let codes: Vec<u8> = (0..500u32)
             .map(|i| match i {
-                0..16 => 1,
-                16..17 => 0,
-                17..300 => 6,
-                _ => u8::try_from(i % 7).unwrap(),
+                0..8 => 1,
+                8..9 => 0,
+                9..300 => 6,
+                _ => u8::try_from(i % 9).unwrap(),
             })
             .collect();
         let runs = encode_runs(&codes);
         assert_eq!(decode_runs(&runs, codes.len()).unwrap(), codes);
-        assert_eq!(runs[0], 1 | (15 << 3), "sixteen ones in one byte");
+        assert_eq!(runs[0], 1 | (7 << 4), "eight ones in one byte");
         assert_eq!(runs[1], 0, "one nothing in one byte");
-        assert_eq!(runs[2] & 0x80, 0x80, "283 sixes need a second byte");
+        assert_eq!(runs[2] & 0x80, 0x80, "291 sixes need a second byte");
         assert!(decode_runs(&runs, codes.len() - 1).is_err(), "an overrun");
         assert!(decode_runs(&runs, codes.len() + 1).is_err(), "a short fill");
-        assert!(decode_runs(&[7], 1).is_err(), "no material 7");
+        assert_eq!(
+            decode_runs(&[8], 1).unwrap(),
+            vec![8],
+            "material 8 is steel-light"
+        );
+        assert!(decode_runs(&[9], 1).is_err(), "no material 9");
         assert!(decode_runs(&[0x80], 2).is_err(), "a run cut off");
         assert!(encode_runs(&[]).is_empty());
     }
