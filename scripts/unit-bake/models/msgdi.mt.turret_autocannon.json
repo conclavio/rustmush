@@ -1,0 +1,25 @@
+{
+  "model": "msgdi.mt.turret_autocannon",
+  "asset_version": "",
+  "asset_pack": "Modular Turrets Pack (MSGDI)",
+  "package": "MSGDI/3D ModelsPropsWeapons/Modular Turrets Pack.unitypackage",
+  "root": "Assets/ModularTurretsPack/",
+  "albedo_id": true,
+  "prefab": "Prefabs/ModularTurrets/ExampleTurret2MasterPrefab.prefab",
+  "enable": [
+    "Green"
+  ],
+  "disable": [
+    "Blue"
+  ],
+  "muzzles": [
+    {
+      "locator": "Green/Barrels/Barrel1Animated",
+      "weapon": "autocannon"
+    }
+  ],
+  "size_cm": [
+    473,
+    350
+  ]
+}

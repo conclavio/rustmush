@@ -56,7 +56,16 @@ public static class Bake {
         public string prefab = "";
         public string primitive = "";
         public Part[] attach = new Part[0];
+        public string[] enable = new string[0];
+        public string[] disable = new string[0];
+        public string material = "";
         public string id_texture = "";
+        public bool albedo_id = false;
+        public int albedo_mode = 0;
+        public float albedo_paint_lum = 0f;
+        public float albedo_dark_lum = 0.26f;
+        public float emission_scale = 1f;
+        public bool tight_bounds = false;
         public MaterialPart[] material_parts = new MaterialPart[0];
         public string default_part = "paint";
         // Materials (by name substring) that are rubber: tracks, tyres. The
@@ -111,6 +120,12 @@ public static class Bake {
         return null;
     }
 
+    static IEnumerable<Transform> FindAll(Transform t, string[] segs, int idx = 0) {
+        int next = t.name == segs[idx] ? idx + 1 : idx;
+        if (next == segs.Length) yield return t;
+        else foreach (Transform c in t) foreach (var r in FindAll(c, segs, next)) yield return r;
+    }
+
     static IEnumerable<string> Mounts(Transform t) {
         if (t.name.StartsWith("Mount", StringComparison.OrdinalIgnoreCase)) yield return t.name;
         foreach (Transform c in t) foreach (var m in Mounts(c)) yield return m;
@@ -143,16 +158,33 @@ public static class Bake {
         var found = new List<string>();
         foreach (var o in AssetDatabase.LoadAllAssetsAtPath(root + r.file)) {
             if (o is AnimationClip c && !c.name.StartsWith("__preview__")) {
-                if (c.name == r.name) return c;
+                if (c.name == r.name || c.name.EndsWith("|" + r.name)) return c;
                 found.Add(c.name);
             }
         }
         throw new Exception("no clip " + r.name + " in " + root + r.file + "; it has: " + string.Join(", ", found));
     }
 
-    static Bounds Measure(Renderer[] rs) {
-        var b = rs[0].bounds;
-        foreach (var r in rs) b.Encapsulate(r.bounds);
+    static Bounds BoundsOf(Renderer r, bool tight) {
+        if (tight && r is SkinnedMeshRenderer smr && smr.sharedMesh != null) {
+            var m = new Mesh();
+            smr.BakeMesh(m, false);
+            var vs = m.vertices;
+            var pos = smr.transform.position;
+            var rot = smr.transform.rotation;
+            UnityEngine.Object.DestroyImmediate(m);
+            if (vs.Length > 0) {
+                var b = new Bounds(pos + rot * vs[0], Vector3.zero);
+                for (int i = 1; i < vs.Length; i++) b.Encapsulate(pos + rot * vs[i]);
+                return b;
+            }
+        }
+        return r.bounds;
+    }
+
+    static Bounds Measure(Renderer[] rs, bool tight = false) {
+        var b = BoundsOf(rs[0], tight);
+        foreach (var r in rs) b.Encapsulate(BoundsOf(r, tight));
         return b;
     }
 
@@ -164,7 +196,7 @@ public static class Bake {
     // clip's root motion would carry the unit out of the frame), and turns it
     // to `yaw`.
     static void Pose(GameObject unit, Renderer[] rs, AnimationClip clip, float t, float yaw, float lift,
-                     bool wreck, bool recentre, WreckPose tilt, Vector3? hold = null) {
+                     bool wreck, bool recentre, WreckPose tilt, Vector3? hold = null, bool tight = false) {
         unit.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
         if (clip != null) clip.SampleAnimation(unit, t);
         if (tilt != null)
@@ -172,11 +204,11 @@ public static class Bake {
         var off = unit.transform.position + Vector3.up * lift;
         if (wreck) {
             unit.transform.position = off;
-            var b = Measure(rs);
+            var b = Measure(rs, tight);
             off += new Vector3(recentre ? -b.center.x : 0, -b.min.y, recentre ? -b.center.z : 0);
         } else if (hold.HasValue) {
             unit.transform.position = off;
-            var b = Measure(rs);
+            var b = Measure(rs, tight);
             off += new Vector3(hold.Value.x - b.center.x, 0, hold.Value.z - b.center.z);
         }
         var rot = Quaternion.Euler(0, yaw, 0);
@@ -224,6 +256,21 @@ public static class Bake {
         if (ti.sRGBTexture || ti.mipmapEnabled || ti.textureCompression != TextureImporterCompression.Uncompressed) {
             ti.sRGBTexture = false; ti.mipmapEnabled = false;
             ti.textureCompression = TextureImporterCompression.Uncompressed; ti.maxTextureSize = 8192;
+            ti.SaveAndReimport();
+        }
+        return Load<Texture2D>(path);
+    }
+
+    static Texture PrepareAlbedoIdTexture(Texture tex) {
+        var path = AssetDatabase.GetAssetPath(tex);
+        var ti = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (ti == null) return tex;
+        if (ti.sRGBTexture || ti.mipmapEnabled || ti.filterMode != FilterMode.Point ||
+            ti.textureCompression != TextureImporterCompression.Uncompressed ||
+            ti.alphaSource != TextureImporterAlphaSource.None) {
+            ti.sRGBTexture = false; ti.mipmapEnabled = false; ti.filterMode = FilterMode.Point;
+            ti.textureCompression = TextureImporterCompression.Uncompressed; ti.maxTextureSize = 8192;
+            ti.alphaSource = TextureImporterAlphaSource.None; ti.alphaIsTransparency = false;
             ti.SaveAndReimport();
         }
         return Load<Texture2D>(path);
@@ -291,11 +338,38 @@ public static class Bake {
                 placed[go.name] = go;
                 built.Add(p.prefab + " on " + p.mount);
             }
+            foreach (var pat in cfg.enable) {
+                var hits = FindAll(unit.transform, pat.Split('/')).ToArray();
+                if (hits.Length == 0) throw new Exception("enable: no child '" + pat + "' on " + unit.name);
+                foreach (var h in hits) {
+                    for (var p = h; p != null && p != unit.transform; p = p.parent) p.gameObject.SetActive(true);
+                }
+                built.Add("+" + pat);
+            }
+            foreach (var pat in cfg.disable) {
+                var hits = FindAll(unit.transform, pat.Split('/')).ToArray();
+                if (hits.Length == 0) throw new Exception("disable: no child '" + pat + "' on " + unit.name);
+                foreach (var h in hits) h.gameObject.SetActive(false);
+                built.Add("-" + pat);
+            }
+            var dummy = Find(unit.transform, "MouselookDummy");
+            var spine1 = Find(unit.transform, "Spine1");
+            if (dummy != null && spine1 != null && dummy.parent != spine1)
+                dummy.SetParent(spine1, true);
+            foreach (var mr in unit.GetComponentsInChildren<MeshRenderer>()) {
+                if (mr.sharedMaterial != null && mr.sharedMaterial.name == "Default-Diffuse")
+                    mr.enabled = false;
+            }
         }
         foreach (var an in unit.GetComponentsInChildren<Animator>()) an.enabled = false;
         var rs = unit.GetComponentsInChildren<Renderer>()
-            .Where(r => r is MeshRenderer || r is SkinnedMeshRenderer).ToArray();
+            .Where(r => (r is MeshRenderer || r is SkinnedMeshRenderer) && r.enabled).ToArray();
         if (rs.Length == 0) throw new Exception("the unit has nothing to render");
+        if (!string.IsNullOrEmpty(cfg.material)) {
+            var overrideMat = Load<Material>(root + cfg.material);
+            foreach (var r in rs)
+                r.sharedMaterials = r.sharedMaterials.Select(_ => overrideMat).ToArray();
+        }
 
         // 2. The passes' materials.
         var original = rs.Select(r => r.sharedMaterials).ToArray();
@@ -313,10 +387,25 @@ public static class Bake {
                 }
                 return m;
             }
+            var albIdOf = new Dictionary<Material, Material>();
             idMats = original.Select(ms => ms.Select(mat => {
                 var name = mat ? mat.name : "";
                 var hit = cfg.material_parts.FirstOrDefault(mp => name.IndexOf(mp.match, StringComparison.OrdinalIgnoreCase) >= 0);
-                return For(hit != null ? hit.part : cfg.default_part);
+                if (hit != null) return For(hit.part);
+                if (cfg.albedo_id && mat != null) {
+                    if (albIdOf.TryGetValue(mat, out var done)) return done;
+                    var albedo = SavedTexture(mat, "_BaseMap") ?? SavedTexture(mat, "_MainTex");
+                    if (albedo != null) {
+                        var im = new Material(Shader.Find("Hidden/IdOut")) { mainTexture = PrepareAlbedoIdTexture(albedo) };
+                        im.SetFloat("_AlbedoId", 1);
+                        im.SetFloat("_AlbedoMode", cfg.albedo_mode);
+                        im.SetFloat("_PaintLum", cfg.albedo_paint_lum);
+                        im.SetFloat("_DarkLum", cfg.albedo_dark_lum);
+                        albIdOf[mat] = im;
+                        return im;
+                    }
+                }
+                return For(cfg.default_part);
             }).ToArray()).ToArray();
         }
         var nMat = new Material(Shader.Find("Hidden/NormalOut"));
@@ -342,7 +431,7 @@ public static class Bake {
             var rubber = cfg.rubber_materials.Any(r => mat.name.IndexOf(r, StringComparison.OrdinalIgnoreCase) >= 0);
             mm.SetFloat("_Rubber", rubber ? 1 : 0);
             var emisMap = SavedTexture(mat, "_EmissionMap");
-            var ec = SavedColor(mat, "_EmissionColor", Color.black);
+            var ec = SavedColor(mat, "_EmissionColor", Color.black) * cfg.emission_scale;
             if (emisMap != null && ec.maxColorComponent > 0.01f) { mm.SetTexture("_EmissionMap", PrepareDataTexture(emisMap)); mm.SetFloat("_HasEmisMap", 1); }
             mm.SetColor("_EmissionColor", ec);
             maskOf[mat] = mm;
@@ -388,16 +477,16 @@ public static class Bake {
         }
 
         // 4. The model to its look's height, standing on the ground.
-        Pose(unit, rs, still, 0, 0, 0, false, false, null);
-        var b0 = Measure(rs);
+        Pose(unit, rs, still, 0, 0, 0, false, false, null, null, cfg.tight_bounds);
+        var b0 = Measure(rs, cfg.tight_bounds);
         if (b0.size.y <= 0) throw new Exception("the unit has no height");
         unit.transform.localScale = unit.transform.localScale * (cfg.size_cm[1] / 100f / b0.size.y);
-        Pose(unit, rs, still, 0, 0, 0, false, false, null);
-        float lift = -Measure(rs).min.y;
-        Pose(unit, rs, still, 0, 0, lift, false, false, null);
-        var middle = Measure(rs).center;
-        Pose(unit, rs, still, 0, cfg.yaw_offset_deg, lift, false, false, null);
-        var b = Measure(rs);
+        Pose(unit, rs, still, 0, 0, 0, false, false, null, null, cfg.tight_bounds);
+        float lift = -Measure(rs, cfg.tight_bounds).min.y;
+        Pose(unit, rs, still, 0, 0, lift, false, false, null, null, cfg.tight_bounds);
+        var middle = Measure(rs, cfg.tight_bounds).center;
+        Pose(unit, rs, still, 0, cfg.yaw_offset_deg, lift, false, false, null, null, cfg.tight_bounds);
+        var b = Measure(rs, cfg.tight_bounds);
         float H = b.max.y;
         float Rc = 0;
         foreach (var x in new[] { b.min.x, b.max.x })
@@ -429,7 +518,7 @@ public static class Bake {
                 for (int k = 0; k < Poses.Length; k++) {
                     var (clip, t, wreck, tilted) = PoseOf(k);
                     Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted,
-                         tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null);
+                         tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null, cfg.tight_bounds);
                     foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats), ("m", mMats), ("l", lMats), ("d", dMats) }) {
                         for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = mats[i];
                         cam.Render();

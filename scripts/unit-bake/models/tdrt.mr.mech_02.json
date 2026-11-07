@@ -1,0 +1,51 @@
+{
+  "model": "tdrt.mr.mech_02",
+  "asset_version": "",
+  "asset_pack": "Mech Robots Pack (3DRT)",
+  "package": "3DRT/3D ModelsCharactersRobots/Mech Robots Pack.unitypackage",
+  "root": "Assets/Mech Robots/",
+  "material": "Materials/mech-02-2.mat",
+  "albedo_id": true,
+  "albedo_dark_lum": 0.11,
+  "albedo_paint_lum": 0.18,
+  "tight_bounds": true,
+  "prefab": "Prefabs/mech-02_prefab.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/gun-03_prefab",
+      "mount": "L_gun",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/gun-04_prefab",
+      "mount": "R_gun",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "Models/mech-02.FBX",
+    "name": "idle1"
+  },
+  "moving": {
+    "file": "Models/mech-02.FBX",
+    "name": "walk"
+  },
+  "wreck": {
+    "file": "Models/mech-02.FBX",
+    "name": "power-OFF_2"
+  },
+  "muzzles": [
+    {
+      "locator": "gun-03_prefab",
+      "weapon": "gun_l"
+    },
+    {
+      "locator": "gun-04_prefab",
+      "weapon": "gun_r"
+    }
+  ],
+  "size_cm": [
+    560,
+    1000
+  ]
+}
