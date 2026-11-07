@@ -272,7 +272,7 @@ tree does not have it yet.
 | Facing | eight at 45°, each its own art (D-22-9); Q-22-1 on sixteen for `iso` | |
 | Pose | `still`, `moving` × 4, `wreck` (D-22-9) | |
 | Size | `fp`: 192, 96, 64, 48, 32, 24, 16, 12, 8 px (192 from 2026-11-06: the retained picture runs 1280 wide, where a near contact projects past 96); `iso`: 96, 80, 64, 56, 48, 40, 32, 24 px (Draft 0.6: eight sizes, every step under 25 %; the 2.5D's 96, 86, 78, 70, 64, 56 retired with its pick) | a contact draws from the size nearest above its projected height — from `size_cm` at its range in the heightfield, through the projection and the zoom in the 2.5D (§5) — never resampled from a smaller one; `fp`'s chain reaches 1 km in the 640 frame (Q-22-4 on the floor); `iso`'s reaches a drone at 0.5× |
-| Material | the eleven materials through the colour-ID, normal and mask passes, team slots recoloured at draw (D-22-3, D-22-7); at most 16 colours a sheet | the frame's 256 colours by construction |
+| Material | the eleven materials through the colour-ID, normal and mask passes, team slots recoloured at draw (D-22-3, D-22-7); at most 16 colours a sheet. **Shade** (format 5, 2026-11-06): beside its material every baked pixel carries a shade in fifteen steps from the lit and depth passes — the kit's normal map and albedo detail under a key and a fill, occlusion, an ink line on creases and part edges — levelled a material; the first-person stream picks the family's dark, mid or light tone from it, the retained pictures draw the full ramp | the frame's 256 colours by construction |
 | Marks | anchor, height (the 2.5D's depth sort, the lock box) and a muzzle a weapon — per view, per facing, per size | the pitch moves them |
 
 The rules:

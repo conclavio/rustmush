@@ -43,43 +43,11 @@ use crate::look::{self, Facing, Look, Material, Sheet};
 #[cfg(feature = "encode")]
 pub mod reduce;
 
-/// The pack's first four bytes.
-pub const FORMAT_MAGIC: [u8; 4] = *b"MUPK";
-/// The pack format's version (version 1 was PR #154's positional `M25D`;
-/// version 2, U.6's, keyed its entries by look id; version 3 by model id,
-/// doc 31 D-31-2; version 4 widened a run's material to four bits for the
-/// three-tone steel, U.6 follow-up of 2026-11-06; version 5, the same day,
-/// gave every pixel a shade beside its material — the shade plane).
-pub const FORMAT_VERSION: u16 = 5;
-/// The shade a text sheet's pixels carry: its tones are in its materials.
-pub const SHEET_SHADE: u8 = 8;
-/// The side of the render every size is reduced from, pixels.
-pub const RENDER_PX: u16 = 384;
-/// The `fp` chain, largest first (Q-22-4: the floor is 8 px; under it the
-/// bracket alone). 192 came with the 1280-wide retained picture (U.6
-/// follow-up, 2026-11-06): at twice the width a near contact projects past
-/// 96, and the largest size is what a terminal would otherwise scale up.
-pub const FP_SIZES: [u16; 9] = [192, 96, 64, 48, 32, 24, 16, 12, 8];
-/// The `iso` chain, largest first: every step under 25 %, and 96/80/64/48
-/// halve onto 48/40/32/24, so 0.5× zoom draws the same chain one octave down.
-pub const ISO_SIZES: [u16; 8] = [96, 80, 64, 56, 48, 40, 32, 24];
-/// The `fp` bake's pitch, degrees down (Q-22-3).
-pub const FP_PITCH_DEG: f32 = 3.0;
-/// The `iso` bake's pitch, degrees down: the 2.5D's fixed angle.
-pub const ISO_PITCH_DEG: f32 = 28.0;
-/// The depression, degrees, past which the heightfield draws a contact from
-/// the `iso` chain rather than the `fp` one (about halfway between the two
-/// pitches, doc 22 §5).
-pub const CROSSOVER_DEG: f32 = 15.0;
-/// The poses, in pack order: still, the four-frame moving cycle, the wreck.
-pub const POSES: [&str; 6] = ["still", "moving0", "moving1", "moving2", "moving3", "wreck"];
-/// The wreck's pose index.
-pub const POSE_WRECK: usize = 5;
-/// Frames a size: eight facings by six poses, facing-major.
-pub const FRAMES: usize = 48;
 /// Rule 7's budget, bytes: since doc 31 (D-31-12) a ceiling on **one
-/// model's** file, which is what the web fetches.
-pub const BUDGET_BYTES: usize = 512 * 1024;
+/// model's** file, which is what the web fetches once and caches by name.
+/// 512 KiB through format 4; 2 MiB from format 5, whose shade plane breaks
+/// the runs (a 192 px model packs at 0.9 to 1.2 MB).
+pub const BUDGET_BYTES: usize = 2 * 1024 * 1024;
 /// The longest string the pack carries.
 const MAX_STR: u64 = 4096;
 /// The most clips, weapons or muzzles one entry carries.

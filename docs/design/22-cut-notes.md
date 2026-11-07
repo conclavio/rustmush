@@ -222,6 +222,39 @@ with the four material bits and the 192px top-end".
   wheels share the main material), a flat black at 192 px — a two-tone dark class, or a wheel
   material name in the config, is the next thing to try.
 
+## U.6 follow-up (2026-11-06, last) — the shade plane, format 5
+
+The owner, on the corrected 192 px frames: still three flat tones a material, "is this the right
+approach"; and "i dont necessarily need a cheap approach here, doesnt matter how long the bake
+takes". Ruled the same evening: **build the shade plane**.
+
+- **The pack** (format 5): a pixel is its material (low four bits) and a **shade** (high four:
+  `0` the ink line, `1` darkest to `15` lightest); a run is a byte and a varint length, since the
+  shade fills the byte format 4 shared with the length. `BakedFrame::shade` beside `code`; rule
+  7's per-model ceiling moves from 512 KiB to 2 MiB (a 192 px model packs at 0.9 to 1.2 MB: the
+  shade breaks the runs, which is the cost of continuous shading).
+- **The bake**: five passes. The **lit pass** (`LitOut.shader`) lights the kit's real surface —
+  its normal map under the reducer's key light and a fill, times its albedo's luminance for the
+  painted detail (seams, grime, decals); the **depth pass** (`DepthOut.shader`) is sixteen bits of
+  eye depth over 150–250 m. Both read the material's slots from its saved properties, as the mask
+  pass does. About a minute a model.
+- **The reducer**: `classify` names only the family bases now (the team's colour, steel, rubber)
+  and the fixed materials; the shade is the lit value darkened by **occlusion** from the depth
+  plane (eight neighbours six pixels out, nearer by 0.3 m), **levelled a material over the whole
+  model** (2nd to 98th percentile — so a red paint's ramp runs its full span whatever its albedo's
+  luminance) and quantised to fifteen steps; a pixel on a crease (normals past 57°) or a step
+  between parts (0.5 m) is the **ink line**. A cell takes its material's mean shade, or the ink
+  when four tenths of it are ink. A bake without the lit or depth pass shades by the normal pass
+  as before, so the synthetic test bake still reduces.
+- **The pictures**: the first-person stream keeps its three tones a family — `Material::toned`
+  picks dark, mid or light from the shade, so the 256-colour budget is untouched; the retained
+  pictures (the 2.5D, the kitty sheets, the design preview, the reducer's preview) draw the full
+  ramp (`bake::shaded_rgb`: an ink darker than the dark tone at `0`, the mid tone at `7`, the
+  light at `15`); a text sheet's pixels carry `SHEET_SHADE` (8) and their explicit tones.
+- **Rebaked**: 1,121,682 / 1,081,967 / 865,843 / 1,152,252 / 902,059 / 455,527 bytes, the matrix
+  check holding on each; line-ups re-rendered, web golden re-blessed. The 192 px frames now carry
+  panel lines, the wheels' and tracks' modelling and an edge line between parts.
+
 ## D-22-9 format & 8-way sensor facing (2026-10-28)
 
 - **Sheet format & parser (`mush_pixel::look`)**: `SPRITE_MAX` raised from `64` to `96`; `Facing` expanded to all eight directions (`Front`, `FrontRight`, `Right`, `RearRight`, `Rear`, `RearLeft`, `Left`, `FrontLeft`) in clockwise 45° order with `Facing::ALL`, `Facing::named`, `Facing::from_aspect`, `Facing::as_str`, and `Facing::cardinal`. `Look::parse` accepts all eight facings (requiring all eight when any diagonal is present, while keeping 3/4-facing hand-drawn sheets valid), optional per-facing `"wreck"` inside each facing object, and up to eight top-level `"wreck"` frames. `Sheet::frame` and `Sheet::wreck_frame` resolve exact diagonal frames on 8-facing sheets and fall back to `facing.cardinal()` on 3/4-facing sheets.

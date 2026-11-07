@@ -33,7 +33,7 @@ UNITY_PACKAGES=/c/Users/you/3d_assets scripts/unit-bake/bake.sh /c/scratch/unity
   (`... unitybake mc.lt.fox_biped mc.st.spider_flybot`); with none, every
   config under `models/`. `UNIT_MODELS=/elsewhere` writes a trial catalogue and
   leaves the tree's alone.
-- Each model: `Bake.cs` renders it (`bake_out/<model>/`, 288 PNGs and
+- Each model: `Bake.cs` renders it (`bake_out/<model>/`, 480 PNGs and
   `meta.json`), then the reducer (`crates/mush-pixel/examples/unit_reduce.rs`)
   writes its content-named file (removing the model's older one) and its
   `index.json` entry, prints the size by chain, the file's size against rule
@@ -83,24 +83,31 @@ baked.
 
 - `unity/Editor/Bake.cs` — assembles the unit from its config, scales it to
   its looks' height standing on the ground, and renders each view, facing and
-  pose three times at 384 px orthographic: the colour-ID pass (`IdOut.shader`
+  pose five times at 384 px orthographic: the colour-ID pass (`IdOut.shader`
   with the kit's texture, or `FlatId.shader` a part), world normals
   (`NormalOut.shader`) and the mask pass (`MaskOut.shader`: each material's
   own metallic map in red, a rubber flag in green for a material whose name
   the config's `rubber_materials` matches — tracks and tyres by default — and
   its emission map in blue, so the reducer draws rubber and lights a lamp;
   the slots are read from the material's saved properties, since the kit's
-  shaders are not in the scratch project). The frame spans the unit's turning circle at any
+  shaders are not in the scratch project), the lit pass (`LitOut.shader`: the
+  kit's surface under a key light and a fill through its normal map in red,
+  its albedo's luminance in green) and the depth pass (`DepthOut.shader`:
+  sixteen bits of eye depth over red and green) — the shade plane's two. The frame spans the unit's turning circle at any
   facing, so every frame of a view is to one scale (`span_cm` in `meta.json`);
   the anchor is the ground point under the unit's pivot, the muzzles the
   locators' points.
 - `crates/mush-pixel/src/bake/reduce.rs` (run by `examples/unit_reduce.rs`) —
   the part (the colour-ID bits) lit by a light fixed to the viewer picks each
-  render pixel's material: the main paint into the three team tones by light,
-  secondary panels steel or black, dark metal black, accents team-light,
-  lamps and glass pale. Each size is reduced from the 384 px render as masses
-  (a cell drawn at 30 % coverage, its most common material), its frame kept
-  as a tight box, its anchor and muzzles scaled.
+  render pixel's material: the main paint the team's colour, secondary panels
+  steel (rubber where the mask flags them), dark metal black, accents
+  team-light, glass pale, lamps where the kit lights them — and its **shade**:
+  the lit pass darkened by the depth pass's occlusion, levelled a material
+  over the model, in fifteen steps, with the ink line (shade 0) on creases
+  and steps between parts. Each size is reduced from the 384 px render as
+  masses (a cell drawn at 30 % coverage, its most common material at that
+  material's mean shade, or the ink), its frame kept as a tight box, its
+  anchor and muzzles scaled.
 
 The sprite-vs-voxel PoC's `reduce.py` and voxel grids are gone (D-22-9 chose
 sprites; the reducer is the Rust one, tested on a synthetic render in
