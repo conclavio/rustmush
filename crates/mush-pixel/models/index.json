@@ -74,11 +74,11 @@
     },
     {
       "asset_pack": "Mech Constructor: Light and Medium Robots (Slava Z)",
-      "bytes": 1121682,
-      "file": "mc.lt.fox_biped.733fbe859942.mupk",
+      "bytes": 1121670,
+      "file": "mc.lt.fox_biped.7d95cda23ec6.mupk",
       "id": "mc.lt.fox_biped",
       "prefab": "Prefabs/Legs_Lt.prefab + Prefabs/Cockpit_fox on Mount_top + Prefabs/Weapon_cannon_lvl3 on Mount_Weapon_R + Prefabs/Weapon_machinegun_lvl3 on Mount_Weapon_L + Prefabs/Weapon_rockets_shoulder_lvl1 on Mount_Weapon_top",
-      "sha256": "733fbe859942c86ea6c191d4f61f71bb631b573c09ea494471d08822c8710070",
+      "sha256": "7d95cda23ec65f90e6a3e7237d517b0834cd2476d0b44d5590ec901aabfa733a",
       "sheet": "mc.lt.fox_biped.sheet.json",
       "size_cm": [
         963,
@@ -99,11 +99,11 @@
     },
     {
       "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
-      "bytes": 1081967,
-      "file": "mc.st.buggy_lvl1.6cfd98c47739.mupk",
+      "bytes": 1081955,
+      "file": "mc.st.buggy_lvl1.437bd958032f.mupk",
       "id": "mc.st.buggy_lvl1",
       "prefab": "Prefabs/Buggies/Buggy_Chassis_Lvl1.prefab + Prefabs/Buggies/Buggy_Wheel_Front on Mount_Wheel_FL + Prefabs/Buggies/Buggy_Wheel_Front on Mount_Wheel_FR + Prefabs/Buggies/Buggy_Wheel_Rear on Mount_Wheel_RL + Prefabs/Buggies/Buggy_Wheel_Rear on Mount_Wheel_RR + Prefabs/Cockpit_Gun_Flat_Part on Mount_Cockpit + Prefabs/Weapon_DoubleGun_lvl2 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl1 on Mount_HalfShoulder_R",
-      "sha256": "6cfd98c47739151267780cf44dee820abfa69077807673b88217355b17cfa3dc",
+      "sha256": "437bd958032f512cd6fdc6ceaf3ac84478aab766272ff00aa6f8ca704c6e56d6",
       "sheet": "mc.st.buggy_lvl1.sheet.json",
       "size_cm": [
         428,
@@ -136,11 +136,11 @@
     },
     {
       "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
-      "bytes": 865843,
-      "file": "mc.st.spider_flybot.084472a1cdc3.mupk",
+      "bytes": 865831,
+      "file": "mc.st.spider_flybot.b9c218391d8b.mupk",
       "id": "mc.st.spider_flybot",
       "prefab": "Prefabs/Legs_Spider_Lt.prefab + Prefabs/Cockpit_Flybot on Mount_Top",
-      "sha256": "084472a1cdc3d6d8f918a5ba381c66e7593acce25406a6227e17e2fdd9ada807",
+      "sha256": "b9c218391d8b81dbc1f4ebef10e391145973b720a86eb13d68ca75dc6b7ffc8d",
       "sheet": "mc.st.spider_flybot.sheet.json",
       "size_cm": [
         136,
@@ -197,11 +197,11 @@
     },
     {
       "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
-      "bytes": 1152252,
-      "file": "mc.st.tank_lvl2.5112b7120763.mupk",
+      "bytes": 1152240,
+      "file": "mc.st.tank_lvl2.73a624ef3c77.mupk",
       "id": "mc.st.tank_lvl2",
       "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Tank_Lvl2 on Mount_Chassis + Prefabs/Cockpit_Gun_Flat_Part on Mount_Top + Prefabs/Weapon_Sniper_lvl3 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl1 on Mount_HalfShoulder_R",
-      "sha256": "5112b712076326c8dbe13eb120e9940076f982771363496a7eef26ff6e994876",
+      "sha256": "73a624ef3c77309798b0d657c8df65b38731f3f127c7eaa6f4f286303bc1c0f8",
       "sheet": "mc.st.tank_lvl2.sheet.json",
       "size_cm": [
         410,
@@ -210,11 +210,11 @@
     },
     {
       "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
-      "bytes": 902059,
-      "file": "mc.st.tank_lvl3.b96ecdd1e4b7.mupk",
+      "bytes": 902047,
+      "file": "mc.st.tank_lvl3.008d0b8f1a18.mupk",
       "id": "mc.st.tank_lvl3",
       "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Tank_Lvl3 on Mount_Chassis + Prefabs/Cockpit_Gun_Flat_Full on Mount_Top + Prefabs/Weapon_Sniper_lvl5 on Mount_Weapon_Main + Prefabs/HalfShoulder_Tank on Mount_HalfShoulder_L + Prefabs/Weapon_GLauncher_lvl3 on Mount_Weapon + Prefabs/Weapon_DoubleGun_lvl2 on Mount_HalfShoulder_R",
-      "sha256": "b96ecdd1e4b7fe143058f9ef1b03657d0183d6575c6ad3d3995b4d7e6530603c",
+      "sha256": "008d0b8f1a18f7183c5125071e6e21c6c5a7bcbfe709ac58fd5b2804d83b9075",
       "sheet": "mc.st.tank_lvl3.sheet.json",
       "size_cm": [
         440,
@@ -475,11 +475,11 @@
     },
     {
       "asset_pack": "Unity built-in primitives",
-      "bytes": 455527,
-      "file": "prim.sphere_hump.4d58fa91a4bf.mupk",
+      "bytes": 455515,
+      "file": "prim.sphere_hump.fb4b1582a737.mupk",
       "id": "prim.sphere_hump",
       "prefab": "primitive Sphere",
-      "sha256": "4d58fa91a4bfeedccd0f02361e1a92cbfafebf2c81ae3d27f6933c332c641472",
+      "sha256": "fb4b1582a7378c12843c1a9ab953e20da0b882f49e4b1fe898e206cd8e43f80a",
       "sheet": "prim.sphere_hump.sheet.json",
       "size_cm": [
         700,
