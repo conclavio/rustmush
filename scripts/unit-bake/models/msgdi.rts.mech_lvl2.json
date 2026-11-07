@@ -1,0 +1,38 @@
+{
+  "model": "msgdi.rts.mech_lvl2",
+  "asset_version": "",
+  "asset_pack": "Scifi RTS Series Mechs (MSGDI)",
+  "package": "MSGDI/3D ModelsVehiclesLand/Scifi RTS Series Mechs.unitypackage",
+  "root": "Assets/Scifi RTS Series Mechs/",
+  "albedo_id": true,
+  "prefab": "Prefabs/MechLvl2/Green/MechLvl2Green.prefab",
+  "disable": [
+    "RTSDecal1"
+  ],
+  "still": {
+    "file": "FBX/MechLvl2/MechLvl2.fbx",
+    "name": "MechLvl2Idle"
+  },
+  "moving": {
+    "file": "FBX/MechLvl2/MechLvl2.fbx",
+    "name": "MechLvl2Walk"
+  },
+  "wreck": {
+    "file": "FBX/MechLvl2/MechLvl2.fbx",
+    "name": "MechLvl2Death"
+  },
+  "muzzles": [
+    {
+      "locator": "TorsoWeapons/MechLvl2TorsoCannonRightGreen",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "TorsoWeapons/MechLvl2MissileLauncherRightGreen",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    680,
+    1250
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "model": "msgdi.bd.droid_minigun",
+  "asset_version": "",
+  "asset_pack": "Scifi RTS Series Battle Droid (MSGDI)",
+  "package": "MSGDI/3D ModelsCharactersRobots/Scifi RTS Series Battle Droid.unitypackage",
+  "root": "Assets/Scifi RTS Series Battle Droids/",
+  "albedo_id": true,
+  "prefab": "Prefabs/BattleDroids/Green/BattleDroidGreen.prefab",
+  "enable": [
+    "MinigunGreen",
+    "UpperArmArmorGreen",
+    "LowerArmArmorGreen",
+    "UpperLegArmorGreen",
+    "LowerLegArmorGreen",
+    "TorsoEquipment"
+  ],
+  "disable": [
+    "Decals",
+    "BackpackJumpjetsGreen",
+    "CannonGreen",
+    "FrontArmorLvl1Green"
+  ],
+  "still": {
+    "file": "FBX/BattleDroids/BattleDroids.fbx",
+    "name": "Idle"
+  },
+  "moving": {
+    "file": "FBX/BattleDroids/BattleDroids.fbx",
+    "name": "Walk"
+  },
+  "wreck": {
+    "file": "FBX/BattleDroids/BattleDroids.fbx",
+    "name": "Death"
+  },
+  "muzzles": [
+    {
+      "locator": "LowerArm_R/MinigunGreen/MinigunBarrel",
+      "weapon": "minigun"
+    },
+    {
+      "locator": "TorsoEquipment/MissileLauncherRightGreen",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    460,
+    880
+  ]
+}

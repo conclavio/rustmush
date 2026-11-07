@@ -1,0 +1,29 @@
+{
+  "model": "msgdi.mt.turret_missile",
+  "asset_version": "",
+  "asset_pack": "Modular Turrets Pack (MSGDI)",
+  "package": "MSGDI/3D ModelsPropsWeapons/Modular Turrets Pack.unitypackage",
+  "root": "Assets/ModularTurretsPack/",
+  "albedo_id": true,
+  "prefab": "Prefabs/ModularTurrets/ExampleTurret2MasterPrefab.prefab",
+  "enable": [
+    "Green",
+    "Green/Barrels/BarrelMissile",
+    "Green/Barrels (1)/BarrelMissile"
+  ],
+  "disable": [
+    "Blue",
+    "Green/Barrels/Barrel1Animated",
+    "Green/Barrels (1)/Barrel1Animated"
+  ],
+  "muzzles": [
+    {
+      "locator": "Green/Barrels/BarrelMissile",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    420,
+    360
+  ]
+}
