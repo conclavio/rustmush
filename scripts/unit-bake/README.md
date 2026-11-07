@@ -2,8 +2,8 @@
 
 The bake matrix: for every model, two views (`fp` at 3° down for the
 first-person pictures, `iso` at the 2.5D's 28°) × eight facings × six poses
-(still, a four-frame moving cycle, the wreck) × a size chain each (`fp` 96, 64,
-48, 32, 24, 16, 12, 8 px; `iso` 96, 80, 64, 56, 48, 40, 32, 24 px), every size
+(still, a four-frame moving cycle, the wreck) × a size chain each (`fp` 192, 96,
+64, 48, 32, 24, 16, 12, 8 px; `iso` 96, 80, 64, 56, 48, 40, 32, 24 px), every size
 reduced from one 384 px render of one named asset by one script. Each model is
 its own file in `crates/mush-pixel/models/` (doc 31 D-31-2):
 `<model id>.<first 12 hex of its SHA-256>.mupk`, a one-entry pack (format 3,
@@ -33,7 +33,7 @@ UNITY_PACKAGES=/c/Users/you/3d_assets scripts/unit-bake/bake.sh /c/scratch/unity
   (`... unitybake mc.lt.fox_biped mc.st.spider_flybot`); with none, every
   config under `models/`. `UNIT_MODELS=/elsewhere` writes a trial catalogue and
   leaves the tree's alone.
-- Each model: `Bake.cs` renders it (`bake_out/<model>/`, 192 PNGs and
+- Each model: `Bake.cs` renders it (`bake_out/<model>/`, 288 PNGs and
   `meta.json`), then the reducer (`crates/mush-pixel/examples/unit_reduce.rs`)
   writes its content-named file (removing the model's older one) and its
   `index.json` entry, prints the size by chain, the file's size against rule
@@ -68,6 +68,7 @@ Commit first and bake from a clean tree: the provenance records the commit
 | `size_cm` | the `[width, height]` of the looks on it: the model is scaled to the height, and its widest silhouette is measured (the matrix check holds it within half to twice the width: barrels stand past the sim's silhouette) |
 | `yaw_offset_deg` | for a model whose front is not +Z |
 | `id_classes` | optional: eight parts for the colour-ID bits `r·4 + g·2 + b` (the default is the Mech Constructor kits') |
+| `rubber_materials` | optional: material-name substrings that are rubber (default `Tracks`, `Track`, `Tire`, `Tyre`, `Rubber`); the mask pass flags their pixels |
 
 The six configs name assemblies from the owner's Mech Constructor packs
 (the light biped from *Light and Medium Robots* as the sprite-vs-voxel PoC
@@ -82,9 +83,14 @@ baked.
 
 - `unity/Editor/Bake.cs` — assembles the unit from its config, scales it to
   its looks' height standing on the ground, and renders each view, facing and
-  pose twice at 384 px orthographic: the colour-ID pass (`IdOut.shader` with
-  the kit's texture, or `FlatId.shader` a part) and world normals
-  (`NormalOut.shader`). The frame spans the unit's turning circle at any
+  pose three times at 384 px orthographic: the colour-ID pass (`IdOut.shader`
+  with the kit's texture, or `FlatId.shader` a part), world normals
+  (`NormalOut.shader`) and the mask pass (`MaskOut.shader`: each material's
+  own metallic map in red, a rubber flag in green for a material whose name
+  the config's `rubber_materials` matches — tracks and tyres by default — and
+  its emission map in blue, so the reducer draws rubber and lights a lamp;
+  the slots are read from the material's saved properties, since the kit's
+  shaders are not in the scratch project). The frame spans the unit's turning circle at any
   facing, so every frame of a view is to one scale (`span_cm` in `meta.json`);
   the anchor is the ground point under the unit's pivot, the muzzles the
   locators' points.

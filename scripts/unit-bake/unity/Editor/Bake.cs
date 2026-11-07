@@ -2,8 +2,9 @@
 // named asset pack — both views (`fp` at 3 degrees down, Q-22-3; `iso` at the
 // 2.5D's 28), eight facings, six poses (still, four moving, the wreck), each
 // rendered orthographic at 384 px three times, a colour-ID pass, a world-normal
-// pass and a mask pass (red metallic, green smoothness, blue emission, from the
-// kit's own maps; U.6 follow-up of 2026-11-06, for rubber and lamps) — and
+// pass and a mask pass (red the kit's metallic map, green a rubber flag from
+// the material's name, blue the kit's emission map; U.6 follow-up of
+// 2026-11-06, for rubber and lamps) — and
 // `meta.json` (format 3): every frame's anchor and muzzles, each view's world
 // span, the model's size and the provenance the pack records.
 //
@@ -55,6 +56,9 @@ public static class Bake {
         public string id_texture = "";
         public MaterialPart[] material_parts = new MaterialPart[0];
         public string default_part = "paint";
+        // Materials (by name substring) that are rubber: tracks, tyres. The
+        // mask pass flags their pixels (green), whatever the colour-ID says.
+        public string[] rubber_materials = new[] { "Tracks", "Track", "Tire", "Tyre", "Rubber" };
         public ClipRef still = new ClipRef();
         public ClipRef moving = new ClipRef();
         public ClipRef wreck = new ClipRef();
@@ -332,6 +336,8 @@ public static class Bake {
             var metalMap = SavedTexture(mat, "_MetallicGlossMap");
             if (metalMap != null) { mm.SetTexture("_MetallicGlossMap", PrepareDataTexture(metalMap)); mm.SetFloat("_HasMetalMap", 1); }
             mm.SetFloat("_Metallic", SavedFloat(mat, "_Metallic", 0));
+            var rubber = cfg.rubber_materials.Any(r => mat.name.IndexOf(r, StringComparison.OrdinalIgnoreCase) >= 0);
+            mm.SetFloat("_Rubber", rubber ? 1 : 0);
             var emisMap = SavedTexture(mat, "_EmissionMap");
             var ec = SavedColor(mat, "_EmissionColor", Color.black);
             if (emisMap != null && ec.maxColorComponent > 0.01f) { mm.SetTexture("_EmissionMap", PrepareDataTexture(emisMap)); mm.SetFloat("_HasEmisMap", 1); }

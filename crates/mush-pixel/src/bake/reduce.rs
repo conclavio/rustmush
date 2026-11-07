@@ -13,10 +13,12 @@
 //! tones by the same cuts, dark metal black, accents team-light, glass pale
 //! — the sprite-vs-voxel PoC's `reduce.py` rule, with the steel given the
 //! paint's modelling (U.6 follow-up, 2026-11-06). The **mask pass** (`_m`,
-//! the same day; red metallic, green smoothness, blue emission, from the
-//! kit's own maps) refines that: a secondary pixel the kit says is not metal
-//! is rubber, in two tones, and any pixel the kit lights is a lamp. A bake
-//! without the pass reduces as before.
+//! the same day; red the kit's metallic map, green a rubber flag from the
+//! material's name — tracks, tyres — blue the kit's emission map) refines
+//! that: a rubber pixel is rubber, in two tones, whatever the colour-ID says
+//! of it, and any pixel the kit lights is a lamp. The metallic map is
+//! carried but unused: this kit paints nine tenths of every part dielectric,
+//! so it tells nothing apart. A bake without the pass reduces as before.
 //!
 //! `examples/unit_reduce.rs` runs it over a bake directory and writes the
 //! pack; `scripts/unit-bake/bake.sh` runs the bake and then it.
@@ -80,7 +82,7 @@ const COVERAGE_TENTHS: usize = 3;
 
 /// Classify one render: each pixel's pack code (`0` nothing, `1..=11` the
 /// materials) from its colour-ID and world-normal pixels (RGBA, the same
-/// size), the mask pixels when the bake has them (red metallic, blue
+/// size), the mask pixels when the bake has them (green rubber, blue
 /// emission), with the part table `classes`.
 #[must_use]
 pub fn classify(
@@ -109,16 +111,16 @@ pub fn classify(
             let unit = |v: u8| f32::from(v) / 255.0 * 2.0 - 1.0;
             let lit =
                 (unit(nx) * light[0] + unit(ny) * light[1] + unit(nz) * light[2]).clamp(0.0, 1.0);
-            let (metal, emission) = mask
+            let (rubber, emission) = mask
                 .and_then(|m| m.get(i))
-                .map_or((true, false), |&[mt, _, em, _]| (mt > 127, em > 64));
+                .map_or((false, false), |&[_, rb, em, _]| (rb > 127, em > 64));
             match classes.get(bits).copied().unwrap_or(Part::Dark) {
                 _ if emission => 11,
+                _ if rubber && lit > 0.5 => 10,
+                _ if rubber => 9,
                 Part::Paint if lit > 0.72 => 3,
                 Part::Paint if lit > 0.35 => 2,
                 Part::Paint => 1,
-                Part::Second if !metal && lit > 0.5 => 10,
-                Part::Second if !metal => 9,
                 Part::Second if lit > 0.72 => 8,
                 Part::Second if lit > 0.35 => 5,
                 Part::Second => 7,
@@ -620,28 +622,28 @@ mod tests {
         assert_eq!(codes(px([255, 0, 0], 255), &up), 3, "accent");
         assert_eq!(codes(px([255, 255, 255], 255), &up), 6, "bright: pale");
         assert_eq!(codes(px([0, 255, 0], 0), &up), 0, "transparent");
-        // The mask pass: a secondary pixel the kit says is not metal is
-        // rubber, lit or not; a lit pixel is a lamp whatever its part.
+        // The mask pass: a rubber-flagged pixel is rubber whatever its part,
+        // lit or not; a lit pixel is a lamp whatever its part.
         let masked = |id: Vec<u8>, n: &Vec<u8>, m: Vec<u8>| {
             classify(&id, n, Some(&m), &DEFAULT_ID_CLASSES)[0]
         };
-        let non_metal = px([0, 0, 0], 255);
-        let metal = px([255, 0, 0], 255);
-        let lamp = px([255, 0, 255], 255);
+        let rubber = px([0, 255, 0], 255);
+        let plain = px([0, 0, 0], 255);
+        let lamp = px([0, 0, 255], 255);
         assert_eq!(
-            masked(px([0, 0, 255], 255), &up, non_metal.clone()),
+            masked(px([0, 255, 0], 255), &up, rubber.clone()),
             10,
             "lit rubber"
         );
         assert_eq!(
-            masked(px([0, 0, 255], 255), &down, non_metal),
+            masked(px([0, 0, 255], 255), &down, rubber),
             9,
             "rubber in shadow"
         );
         assert_eq!(
-            masked(px([0, 0, 255], 255), &up, metal),
+            masked(px([0, 0, 255], 255), &up, plain),
             8,
-            "metal stays steel"
+            "unflagged: steel"
         );
         assert_eq!(
             masked(px([0, 255, 0], 255), &up, lamp),
