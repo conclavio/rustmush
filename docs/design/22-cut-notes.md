@@ -207,8 +207,16 @@ with the four material bits and the 192px top-end".
   flagged pixel whatever its colour-ID class, by light at 0.5) and `lamp` (11; any emissive
   pixel). The raycaster maps them onto existing paints (shadow, steel, pale); the 2.5D and the
   preview get their own RGB. Eleven materials; four slots left.
-- **Rebaked**: 324,843 / 272,154 / 254,562 / 283,114 / 270,345 / 111,143 bytes (the 192 size is
-  most of the growth; the biped at 317 KiB is the nearest the 512 KiB ceiling), the matrix check
+- **The vote bug.** The owner, on the 192 px tank: "there's no definition on this at all". The
+  cause was not the size: `reduce()` clamped a pixel's code to six before the cell vote, so every
+  code past six — the steel's dark and light tones, rubber, the lamp — was voted as **pale**. Both
+  of the day's earlier bakes shipped pale where the hull's steel tones should be (the "cream"
+  hull the three-tone note above excused as the preview's brighter light tone was this). Fixed
+  with a slot a code and a test; the three-tone steel, rubber and lamps reach the catalogue only
+  from this bake on.
+- **Rebaked** (after the fix): 330,294 / 295,315 / 266,667 / 319,564 / 300,226 / 111,143 bytes
+  (the 192 size is
+  most of the growth; the biped at 323 KiB is the nearest the 512 KiB ceiling), the matrix check
   holding on each; line-ups re-rendered, web golden re-blessed. On the tank the track run is now
   rubber under a three-tone hull; on the buggy the tyres stay the kit's dark-metal class (its
   wheels share the main material), a flat black at 192 px — a two-tone dark class, or a wheel
