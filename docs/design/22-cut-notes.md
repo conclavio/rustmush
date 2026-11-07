@@ -151,6 +151,110 @@ the pipeline.
   tighter frame than the turning circle, would be a doc 22 decision); the kitty compositor's
   follow-ups from the PR #154 review (doc 30 WG.6).
 
+## U.6 follow-up (2026-11-06) — shadowed steel is black
+
+The owner, reviewing a wider bake pre-commit: the tanks' red read as finished and the grey as
+"a lack of colour". The cause is the reducer's rule for the kit's secondary class, which covers
+most of a vehicle's chassis: one flat steel tone where lit and **team-dark** in shadow, so grey
+had no shading of its own and its shadow side turned red — holes in the paint, not bare metal.
+`bake::reduce::classify` now sends shadowed secondary panels to **black** (the dark-metal
+code), so metal shades as metal, and the cut moves from 0.45 to the paint's 0.35: under the fixed
+viewer light a face square to the viewer is lit exactly 0.45, so the old cut split every such face
+between steel and black on noise (the mottled hull sides in the first rebake's `iso` frames;
+measured on `mc.st.tank_lvl1`: 42 % of the right facing's secondary pixels sit in the 0.4
+decile). Tried and dropped: `pale` as a highlight on lit steel, at 0.9 (white specks) and at 0.72
+(a cream hull that out-shouts the paint). What remained was one flat grey over most of a vehicle:
+the paint reads because it has three tones and steel had one.
+
+**Three-tone steel (the owner, the same day: "yes, three-tone steel").** `Material` gains
+`steel-dark` and `steel-light` (pack codes 7 and 8); the reducer gives the secondary class the
+paint's cuts, 0.72 and 0.35, into the three steel tones, and black stays the dark-metal class's.
+The raycaster draws the three from the palette's existing greys — `Paint::Steel` (96, 100, 108)
+for the dark tone, `Grey` (132) for `steel`, `GreyLight` (174) for the light — so the 256-colour
+budget is unchanged and `steel` in the hand-drawn fallback sheets moves from the dark bluish grey
+to the mid one; the 2.5D and the reducer's preview get the matching RGB. Rule 7's run byte had
+three bits of material (seven at most), so the pack is **format 4**: four bits of material, three
+of length, a run of up to eight in one byte (was sixteen; the six models grew by 5–16 %). An unknown
+contact's team greys and bare metal now share tones, which is what unknown means (the `unknown`
+look is a hump). Rebaked: 230,964 / 206,481 / 187,137 / 228,022 / 204,535 / 89,656 bytes, the matrix
+check holding on each; the line-ups re-rendered and the web golden re-blessed.
+The six models rebaked (208,503 / 181,431 / 178,923 / 207,002 / 191,256 / 77,381 bytes; the
+matrix check holds on each), the line-ups under `images/22-u6/` re-rendered, the web golden
+re-blessed. The alternatives, not taken: the model config's `id_classes` sending the secondary
+slot to `paint` (an all-team chassis), or a second grey in the palette (six fogged entries the
+256-colour budget does not have).
+
+## U.6 follow-up (2026-11-06, later) — 192 px and the mask pass
+
+The owner, on the retained pictures: the first-person kitty view runs 1280 wide now, so the sheet
+cost is one upload a size, not a stream, and resolution and colour are what show; "lets try it
+with the four material bits and the 192px top-end".
+
+- **192 px** tops the `fp` chain (nine sizes; a 2:1 reduce of the 384 render; `View::sizes` is a
+  slice). At 1280 a near contact projects past 96 and the terminal was scaling the largest frame
+  up. The `iso` chain keeps 96 (the 2.5D's ceiling, a separate decision). The preview's cell
+  follows the largest size.
+- **The mask pass** (`_m.png`, the bake's third render, `MaskOut.shader`): red the kit's metallic
+  map, green a rubber flag, blue the kit's emission map. Two findings on the way: the scratch
+  project has no render pipeline the kit's URP shaders need, so a kit material has no live shader
+  there and `HasProperty` says no to every slot — the slots are read from the material's
+  serialized properties, and the maps reimported as linear data; and the metallic map tells
+  nothing apart — this kit paints nine tenths of every part dielectric (PBR paint), evenly across
+  the colour-ID classes — so rubber is named by **material** (`rubber_materials`, tracks and tyres
+  by default) and the metallic channel is carried unused. The emission map works: the fox biped's
+  magenta class is its lamps, 100 % emissive.
+- **Three materials** on format 4's spare slots: `rubber` and `rubber-light` (codes 9, 10; a
+  flagged pixel whatever its colour-ID class, by light at 0.5) and `lamp` (11; any emissive
+  pixel). The raycaster maps them onto existing paints (shadow, steel, pale); the 2.5D and the
+  preview get their own RGB. Eleven materials; four slots left.
+- **The vote bug.** The owner, on the 192 px tank: "there's no definition on this at all". The
+  cause was not the size: `reduce()` clamped a pixel's code to six before the cell vote, so every
+  code past six — the steel's dark and light tones, rubber, the lamp — was voted as **pale**. Both
+  of the day's earlier bakes shipped pale where the hull's steel tones should be (the "cream"
+  hull the three-tone note above excused as the preview's brighter light tone was this). Fixed
+  with a slot a code and a test; the three-tone steel, rubber and lamps reach the catalogue only
+  from this bake on.
+- **Rebaked** (after the fix): 330,294 / 295,315 / 266,667 / 319,564 / 300,226 / 111,143 bytes
+  (the 192 size is
+  most of the growth; the biped at 323 KiB is the nearest the 512 KiB ceiling), the matrix check
+  holding on each; line-ups re-rendered, web golden re-blessed. On the tank the track run is now
+  rubber under a three-tone hull; on the buggy the tyres stay the kit's dark-metal class (its
+  wheels share the main material), a flat black at 192 px — a two-tone dark class, or a wheel
+  material name in the config, is the next thing to try.
+
+## U.6 follow-up (2026-11-06, last) — the shade plane, format 5
+
+The owner, on the corrected 192 px frames: still three flat tones a material, "is this the right
+approach"; and "i dont necessarily need a cheap approach here, doesnt matter how long the bake
+takes". Ruled the same evening: **build the shade plane**.
+
+- **The pack** (format 5): a pixel is its material (low four bits) and a **shade** (high four:
+  `0` the ink line, `1` darkest to `15` lightest); a run is a byte and a varint length, since the
+  shade fills the byte format 4 shared with the length. `BakedFrame::shade` beside `code`; rule
+  7's per-model ceiling moves from 512 KiB to 2 MiB (a 192 px model packs at 0.9 to 1.2 MB: the
+  shade breaks the runs, which is the cost of continuous shading).
+- **The bake**: five passes. The **lit pass** (`LitOut.shader`) lights the kit's real surface —
+  its normal map under the reducer's key light and a fill, times its albedo's luminance for the
+  painted detail (seams, grime, decals); the **depth pass** (`DepthOut.shader`) is sixteen bits of
+  eye depth over 150–250 m. Both read the material's slots from its saved properties, as the mask
+  pass does. About a minute a model.
+- **The reducer**: `classify` names only the family bases now (the team's colour, steel, rubber)
+  and the fixed materials; the shade is the lit value darkened by **occlusion** from the depth
+  plane (eight neighbours six pixels out, nearer by 0.3 m), **levelled a material over the whole
+  model** (2nd to 98th percentile — so a red paint's ramp runs its full span whatever its albedo's
+  luminance) and quantised to fifteen steps; a pixel on a crease (normals past 57°) or a step
+  between parts (0.5 m) is the **ink line**. A cell takes its material's mean shade, or the ink
+  when four tenths of it are ink. A bake without the lit or depth pass shades by the normal pass
+  as before, so the synthetic test bake still reduces.
+- **The pictures**: the first-person stream keeps its three tones a family — `Material::toned`
+  picks dark, mid or light from the shade, so the 256-colour budget is untouched; the retained
+  pictures (the 2.5D, the kitty sheets, the design preview, the reducer's preview) draw the full
+  ramp (`bake::shaded_rgb`: an ink darker than the dark tone at `0`, the mid tone at `7`, the
+  light at `15`); a text sheet's pixels carry `SHEET_SHADE` (8) and their explicit tones.
+- **Rebaked**: 1,121,682 / 1,081,967 / 865,843 / 1,152,252 / 902,059 / 455,527 bytes, the matrix
+  check holding on each; line-ups re-rendered, web golden re-blessed. The 192 px frames now carry
+  panel lines, the wheels' and tracks' modelling and an edge line between parts.
+
 ## D-22-9 format & 8-way sensor facing (2026-10-28)
 
 - **Sheet format & parser (`mush_pixel::look`)**: `SPRITE_MAX` raised from `64` to `96`; `Facing` expanded to all eight directions (`Front`, `FrontRight`, `Right`, `RearRight`, `Rear`, `RearLeft`, `Left`, `FrontLeft`) in clockwise 45° order with `Facing::ALL`, `Facing::named`, `Facing::from_aspect`, `Facing::as_str`, and `Facing::cardinal`. `Look::parse` accepts all eight facings (requiring all eight when any diagonal is present, while keeping 3/4-facing hand-drawn sheets valid), optional per-facing `"wreck"` inside each facing object, and up to eight top-level `"wreck"` frames. `Sheet::frame` and `Sheet::wreck_frame` resolve exact diagonal frames on 8-facing sheets and fall back to `facing.cardinal()` on 3/4-facing sheets.

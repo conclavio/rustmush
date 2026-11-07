@@ -211,8 +211,12 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   can be chosen by. The format names facings by word; `front_left` and the other diagonals are
   reserved for the day the owner lets a sensor say more.
 - **Materials and team colour** (D-22-3, D-22-7 as built): a palette maps each character to one
-  of six materials — `team-dark`, `team`, `team-light`, `black`, `steel`, `pale` — never to a
-  colour. The three team slots are recoloured when the sprite is drawn: red for the red team, blue
+  of eleven materials — `team-dark`, `team`, `team-light`, `black`, `steel-dark`, `steel`,
+  `steel-light`, `pale`, `rubber`, `rubber-light`, `lamp` — never to a colour (the steel's dark
+  and light tones came with the U.6 follow-up of 2026-11-06, so bare metal models its form by
+  light as the paint does; rubber and the lamp the same day from the bake's mask pass, the tracks' and tyres' own materials
+  and the kit's emission map; on the first-person stream they draw from the palette's existing
+  paints, so the budget below is unchanged, and the retained pictures give them their own RGB). The three team slots are recoloured when the sprite is drawn: red for the red team, blue
   for the blue, a neutral grey while the contact is unknown; a wreck has no team (its team slots
   draw black, burnt and steel). The renderer fogs the materials in six steps (the ground has
   twelve), so the ground's bases, the sky and the sprites are exactly 256 colours.
@@ -267,8 +271,8 @@ tree does not have it yet.
 | View | `fp` — a 1.5 m eye, pitch **3°** (Q-22-3, ruled in Draft 0.6; `Bake.cs` has 8° today); `iso` — the 2.5D's fixed 28°; `top` reserved (Q-22-2) | the two pictures look from different heights; one bake cannot serve both; a contact draws from the chain whose pitch is nearer its line of sight (§5) |
 | Facing | eight at 45°, each its own art (D-22-9); Q-22-1 on sixteen for `iso` | |
 | Pose | `still`, `moving` × 4, `wreck` (D-22-9) | |
-| Size | `fp`: 96, 64, 48, 32, 24, 16, 12, 8 px; `iso`: 96, 80, 64, 56, 48, 40, 32, 24 px (Draft 0.6: eight sizes, every step under 25 %; the 2.5D's 96, 86, 78, 70, 64, 56 retired with its pick) | a contact draws from the size nearest above its projected height — from `size_cm` at its range in the heightfield, through the projection and the zoom in the 2.5D (§5) — never resampled from a smaller one; `fp`'s chain reaches 1 km in the 640 frame (Q-22-4 on the floor); `iso`'s reaches a drone at 0.5× |
-| Material | the six materials through the colour-ID pass, team slots recoloured at draw (D-22-3, D-22-7); at most 16 colours a sheet | the frame's 256 colours by construction |
+| Size | `fp`: 192, 96, 64, 48, 32, 24, 16, 12, 8 px (192 from 2026-11-06: the retained picture runs 1280 wide, where a near contact projects past 96); `iso`: 96, 80, 64, 56, 48, 40, 32, 24 px (Draft 0.6: eight sizes, every step under 25 %; the 2.5D's 96, 86, 78, 70, 64, 56 retired with its pick) | a contact draws from the size nearest above its projected height — from `size_cm` at its range in the heightfield, through the projection and the zoom in the 2.5D (§5) — never resampled from a smaller one; `fp`'s chain reaches 1 km in the 640 frame (Q-22-4 on the floor); `iso`'s reaches a drone at 0.5× |
+| Material | the eleven materials through the colour-ID, normal and mask passes, team slots recoloured at draw (D-22-3, D-22-7); at most 16 colours a sheet. **Shade** (format 5, 2026-11-06): beside its material every baked pixel carries a shade in fifteen steps from the lit and depth passes — the kit's normal map and albedo detail under a key and a fill, occlusion, an ink line on creases and part edges — levelled a material; the first-person stream picks the family's dark, mid or light tone from it, the retained pictures draw the full ramp | the frame's 256 colours by construction |
 | Marks | anchor, height (the 2.5D's depth sort, the lock box) and a muzzle a weapon — per view, per facing, per size | the pitch moves them |
 
 The rules:

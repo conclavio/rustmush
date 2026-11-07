@@ -250,7 +250,8 @@ pub fn preview_rgba(
             #[allow(clippy::cast_possible_wrap)]
             let code = frame.code(x as i64, y as i64);
             if let Some(material) = bake::material_from_code(code) {
-                let [r, g, b] = crate::iso25d::material_rgb(material, kind);
+                let shade = frame.shade(x as i64, y as i64);
+                let [r, g, b] = crate::iso25d::material_rgb_shaded(material, kind, shade);
                 let i = (y * n + x) * 4;
                 if let Some(px) = rgba.get_mut(i..i + 4) {
                     px.copy_from_slice(&[r, g, b, 255]);

@@ -6,12 +6,27 @@
 //! when 30 % of its render pixels are, so thin parts survive; its material is
 //! the most common among them).
 //!
-//! The material of a render pixel is its part (the colour-ID pass: three bits
-//! of red, green and blue name the part, [`Part`]) lit by a light fixed to the
-//! viewer, upper left and toward the eye (the normal pass): the main paint into
-//! the three team tones by light, secondary panels steel or team-dark, dark
-//! metal black, accents team-light, lamps and glass pale — the rule the
-//! sprite-vs-voxel PoC's `reduce.py` used, which this replaces.
+//! The **material** of a render pixel is its part (the colour-ID pass: three
+//! bits of red, green and blue name the part, [`Part`]): the main paint the
+//! team's colour, secondary panels steel, dark metal black, accents
+//! team-light, glass pale; the **mask pass** (`_m`; red the kit's metallic
+//! map, green a rubber flag from the material's name — tracks, tyres — blue
+//! the kit's emission map) makes a flagged pixel rubber whatever its part and
+//! a lit pixel a lamp. (The metallic map is carried but unused: this kit
+//! paints nine tenths of every part dielectric, so it tells nothing apart.)
+//!
+//! The **shade** of a render pixel (format 5, the shade plane, U.6 follow-up
+//! of 2026-11-06) is the bake's **lit pass** (`_l`: the kit's surface under a
+//! key light and a fill through its normal map, times its albedo's
+//! luminance for the painted detail), darkened by occlusion from the **depth
+//! pass** (`_d`), levelled a material over the whole model (so a red paint's
+//! ramp runs its full span whatever its albedo's luminance) and quantised to
+//! fifteen steps; a pixel on a crease or a step between parts is the **ink
+//! line**, shade `0`. A bake without the lit pass shades by the normal pass
+//! under the same key light; without the depth pass, no occlusion and
+//! creases only. A cell of the reduced frame takes the most common material
+//! of its render pixels and the mean shade of that material's, or the ink
+//! when four tenths of them are ink.
 //!
 //! `examples/unit_reduce.rs` runs it over a bake directory and writes the
 //! pack; `scripts/unit-bake/bake.sh` runs the bake and then it.
@@ -28,7 +43,10 @@ use crate::look::Facing;
 pub enum Part {
     /// The main paint: the team's three tones by light.
     Paint,
-    /// Secondary panels: steel lit, team-dark in shadow.
+    /// Secondary panels: the three steel tones by light, at the paint's
+    /// cuts (0.72 and 0.35), so bare metal models its form as the paint
+    /// does. A face square to the viewer is lit 0.45 under the fixed light,
+    /// so a cut at 0.45 — the first rule — split every such face on noise.
     Second,
     /// Dark metal: black.
     Dark,
@@ -70,35 +88,38 @@ pub const DEFAULT_ID_CLASSES: [Part; 8] = [
 /// be, in tenths: three (masses, and thin parts survive).
 const COVERAGE_TENTHS: usize = 3;
 
-/// Classify one render: each pixel's pack code (`0` nothing, `1..=6` the
-/// materials) from its colour-ID and world-normal pixels (RGBA, the same
-/// size), with the part table `classes`.
+/// Classify one render: each pixel's material code (`0` nothing, else a
+/// family base — `2` the team's colour, `5` steel, `9` rubber — or a fixed
+/// material) from its colour-ID pixels (RGBA), the mask pixels when the
+/// bake has them (green rubber, blue emission), with the part table
+/// `classes`. The normal pass is read only for the pixel's presence.
 #[must_use]
-pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<u8> {
-    // Viewer-relative light: upper left, toward the viewer (the camera looks
-    // along +Z), normalised.
-    let (lx, ly, lz) = (-0.4f32, 0.8f32, -0.45f32);
-    let len = (lx * lx + ly * ly + lz * lz).sqrt();
-    let light = [lx / len, ly / len, lz / len];
+pub fn classify(
+    id_rgba: &[u8],
+    normal_rgba: &[u8],
+    mask_rgba: Option<&[u8]>,
+    classes: &[Part; 8],
+) -> Vec<u8> {
+    let mask = mask_rgba.map(|m| m.as_chunks::<4>().0);
     id_rgba
         .as_chunks::<4>()
         .0
         .iter()
         .zip(normal_rgba.as_chunks::<4>().0)
-        .map(|(&[r, g, b, a], &[nx, ny, nz, _])| {
+        .enumerate()
+        .map(|(i, (&[r, g, b, a], _))| {
             if a <= 127 {
                 return 0;
             }
             let bits = usize::from(r > 127) * 4 + usize::from(g > 127) * 2 + usize::from(b > 127);
-            let unit = |v: u8| f32::from(v) / 255.0 * 2.0 - 1.0;
-            let lit =
-                (unit(nx) * light[0] + unit(ny) * light[1] + unit(nz) * light[2]).clamp(0.0, 1.0);
+            let (rubber, emission) = mask
+                .and_then(|m| m.get(i))
+                .map_or((false, false), |&[_, rb, em, _]| (rb > 127, em > 64));
             match classes.get(bits).copied().unwrap_or(Part::Dark) {
-                Part::Paint if lit > 0.72 => 3,
-                Part::Paint if lit > 0.35 => 2,
-                Part::Paint => 1,
-                Part::Second if lit > 0.45 => 5,
-                Part::Second => 1,
+                _ if emission => 11,
+                _ if rubber => 9,
+                Part::Paint => 2,
+                Part::Second => 5,
                 Part::Dark => 4,
                 Part::Accent => 3,
                 Part::Bright => 6,
@@ -107,12 +128,205 @@ pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<
         .collect()
 }
 
-/// **Reduce** a `res` by `res` grid of codes to `n` by `n` as masses: a cell
-/// covers the render pixels between its edges (`c·res/n` to `(c+1)·res/n`),
-/// is drawn when at least three tenths of them are, and takes the most common
-/// material among them (the lower code on a tie).
+/// The key light, viewer-relative and normalised: upper left, toward the
+/// viewer (the camera looks along +Z). The lit pass uses the same.
+fn key_light() -> [f32; 3] {
+    let (lx, ly, lz) = (-0.4f32, 0.8f32, -0.45f32);
+    let len = (lx * lx + ly * ly + lz * lz).sqrt();
+    [lx / len, ly / len, lz / len]
+}
+
+/// A render pixel's lit value from the world-normal pass alone: what shades
+/// a bake without the lit pass (`0.18` ambient plus the key light).
+#[must_use]
+pub fn shade_from_normal(normal_rgba: &[u8]) -> Vec<f32> {
+    let light = key_light();
+    let unit = |v: u8| f32::from(v) / 255.0 * 2.0 - 1.0;
+    normal_rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[nx, ny, nz, _]| {
+            let lit =
+                (unit(nx) * light[0] + unit(ny) * light[1] + unit(nz) * light[2]).clamp(0.0, 1.0);
+            0.18 + 0.82 * lit
+        })
+        .collect()
+}
+
+/// The depth pass decoded: metres from the camera (its red the high byte,
+/// green the low, over 150 to 250 m), infinity where nothing was drawn.
+#[must_use]
+pub fn depth_metres(depth_rgba: &[u8]) -> Vec<f32> {
+    depth_rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[hi, lo, _, a]| {
+            if a <= 127 {
+                f32::INFINITY
+            } else {
+                150.0 + 100.0 * ((f32::from(hi) + f32::from(lo) / 255.0) / 255.0)
+            }
+        })
+        .collect()
+}
+
+/// Occlusion from the depth plane: `1` in the open, down to `0.5` in a
+/// crease — the share of eight neighbours, six pixels out, that stand nearer
+/// the camera by over 0.3 m.
+#[must_use]
+pub fn occlusion(depth: &[f32], res: usize) -> Vec<f32> {
+    const RADIUS: i64 = 6;
+    const STEP_M: f32 = 0.3;
+    let at = |x: i64, y: i64| -> Option<f32> {
+        if x < 0 || y < 0 || x >= res as i64 || y >= res as i64 {
+            return None;
+        }
+        depth
+            .get(usize::try_from(y * res as i64 + x).ok()?)
+            .copied()
+            .filter(|d| d.is_finite())
+    };
+    (0..res * res)
+        .map(|i| {
+            let (x, y) = ((i % res) as i64, (i / res) as i64);
+            let Some(d) = at(x, y) else {
+                return 1.0;
+            };
+            let mut nearer = 0;
+            for (dx, dy) in [
+                (1, 0),
+                (1, 1),
+                (0, 1),
+                (-1, 1),
+                (-1, 0),
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+            ] {
+                if at(x + dx * RADIUS, y + dy * RADIUS).is_some_and(|n| n < d - STEP_M) {
+                    nearer += 1;
+                }
+            }
+            1.0 - 0.5 * (nearer as f32 / 8.0)
+        })
+        .collect()
+}
+
+/// The ink line: a drawn pixel on a crease (a neighbour's normal turned past
+/// about 57°) or, with the depth plane, on a step between parts (a
+/// neighbour over 0.5 m nearer or farther).
+#[must_use]
+pub fn ink(normal_rgba: &[u8], depth: Option<&[f32]>, res: usize) -> Vec<bool> {
+    const CREASE: f32 = 0.55;
+    const STEP_M: f32 = 0.5;
+    let normals = normal_rgba.as_chunks::<4>().0;
+    let unit = |v: u8| f32::from(v) / 255.0 * 2.0 - 1.0;
+    let normal = |x: i64, y: i64| -> Option<[f32; 3]> {
+        if x < 0 || y < 0 || x >= res as i64 || y >= res as i64 {
+            return None;
+        }
+        let &[nx, ny, nz, a] = normals.get(usize::try_from(y * res as i64 + x).ok()?)?;
+        (a > 127).then_some([unit(nx), unit(ny), unit(nz)])
+    };
+    (0..res * res)
+        .map(|i| {
+            let (x, y) = ((i % res) as i64, (i / res) as i64);
+            let Some(n0) = normal(x, y) else {
+                return false;
+            };
+            let d0 = depth
+                .and_then(|d| d.get(i).copied())
+                .unwrap_or(f32::INFINITY);
+            [(1, 0), (0, 1), (-1, 0), (0, -1)].iter().any(|&(dx, dy)| {
+                let Some(n1) = normal(x + dx, y + dy) else {
+                    return false;
+                };
+                let dot = n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2];
+                if dot < CREASE {
+                    return true;
+                }
+                let j = usize::try_from((y + dy) * res as i64 + x + dx).unwrap_or(usize::MAX);
+                let d1 = depth
+                    .and_then(|d| d.get(j).copied())
+                    .unwrap_or(f32::INFINITY);
+                d0.is_finite() && d1.is_finite() && (d0 - d1).abs() > STEP_M
+            })
+        })
+        .collect()
+}
+
+/// Every render pixel's shade value (unlevelled) and whether it is ink: the
+/// lit pass's light times its albedo luminance (`0.5` plus the luminance),
+/// else the normal pass's light; times the depth pass's occlusion.
+#[must_use]
+pub fn shade_values(
+    normal_rgba: &[u8],
+    lit_rgba: Option<&[u8]>,
+    depth: Option<&[f32]>,
+    res: usize,
+) -> (Vec<f32>, Vec<bool>) {
+    let base: Vec<f32> = match lit_rgba {
+        Some(l) => l
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[lit, lum, _, _]| f32::from(lit) / 255.0 * (0.5 + f32::from(lum) / 255.0))
+            .collect(),
+        None => shade_from_normal(normal_rgba),
+    };
+    let ao = depth.map(|d| occlusion(d, res));
+    let values = base
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| v * ao.as_ref().and_then(|a| a.get(i)).copied().unwrap_or(1.0))
+        .collect();
+    (values, ink(normal_rgba, depth, res))
+}
+
+/// The span of shade values the levels histogram covers.
+const SHADE_SPAN: f32 = 1.5;
+
+/// A material's levels from its shade histogram: the 2nd and 98th
+/// percentiles, at least 0.05 apart.
+fn percentile_levels(h: &[u32; 256]) -> (f32, f32) {
+    let total: u32 = h.iter().sum();
+    if total == 0 {
+        return (0.0, 1.0);
+    }
+    let at = |p: f32| -> f32 {
+        let want = (total as f32 * p) as u32;
+        let mut seen = 0u32;
+        for (bin, &k) in h.iter().enumerate() {
+            seen += k;
+            if seen >= want {
+                return bin as f32 / 255.0 * SHADE_SPAN;
+            }
+        }
+        SHADE_SPAN
+    };
+    let lo = at(0.02);
+    let hi = at(0.98).max(lo + 0.05);
+    (lo, hi)
+}
+
+/// A shade value to its step, `1` darkest to `15` lightest, between levels.
+#[must_use]
+pub fn quantise(value: f32, levels: (f32, f32)) -> u8 {
+    let s = ((value - levels.0) / (levels.1 - levels.0)).clamp(0.0, 1.0);
+    1 + (s * 14.0).round() as u8
+}
+
+/// **Reduce** a `res` by `res` grid of pixels (material and shade) to `n` by
+/// `n` as masses: a cell covers the render pixels between its edges (`c·res/n`
+/// to `(c+1)·res/n`), is drawn when at least three tenths of them are, takes
+/// the most common material among them (the lower code on a tie) and the
+/// mean shade of that material's pixels — or the ink line when four tenths
+/// of them are ink.
 #[must_use]
 pub fn reduce(hi: &[u8], res: usize, n: usize) -> Vec<u8> {
+    const INK_TENTHS: usize = 4;
     let mut out = vec![0u8; n * n];
     if n == 0 || res < n {
         return out;
@@ -121,12 +335,24 @@ pub fn reduce(hi: &[u8], res: usize, n: usize) -> Vec<u8> {
         let (y0, y1) = (r * res / n, (r + 1) * res / n);
         for (c, cell) in row.iter_mut().enumerate() {
             let (x0, x1) = (c * res / n, (c + 1) * res / n);
-            let mut counts = [0usize; 7];
+            // One slot a code format 5 can carry; a vote that stopped at six
+            // once collapsed every later material into pale.
+            let mut counts = [0usize; 16];
+            let mut shade_sum = [0usize; 16];
+            let mut inked = [0usize; 16];
             for y in y0..y1 {
                 for x in x0..x1 {
-                    let code = usize::from(hi.get(y * res + x).copied().unwrap_or(0)).min(6);
+                    let b = hi.get(y * res + x).copied().unwrap_or(0);
+                    let code = usize::from(b & 0x0f);
                     if let Some(k) = counts.get_mut(code) {
                         *k += 1;
+                    }
+                    if b >> 4 == 0 {
+                        if let Some(k) = inked.get_mut(code) {
+                            *k += 1;
+                        }
+                    } else if let Some(k) = shade_sum.get_mut(code) {
+                        *k += usize::from(b >> 4);
                     }
                 }
             }
@@ -135,13 +361,22 @@ pub fn reduce(hi: &[u8], res: usize, n: usize) -> Vec<u8> {
             if filled * 10 < total * COVERAGE_TENTHS || filled == 0 {
                 continue;
             }
-            let mut best = (0usize, 0u8);
+            let mut best = (0usize, 0usize);
             for (code, &k) in counts.iter().enumerate().skip(1) {
                 if k > best.0 {
-                    best = (k, u8::try_from(code).unwrap_or(0));
+                    best = (k, code);
                 }
             }
-            *cell = best.1;
+            let (k, code) = best;
+            let ink_k = inked.get(code).copied().unwrap_or(0);
+            let sum = shade_sum.get(code).copied().unwrap_or(0);
+            let shaded = k.saturating_sub(ink_k);
+            let shade = if ink_k * 10 >= k * INK_TENTHS || shaded == 0 {
+                0
+            } else {
+                u8::try_from((sum + shaded / 2) / shaded).unwrap_or(15)
+            };
+            *cell = u8::try_from(code).unwrap_or(0) | (shade << 4);
         }
     }
     out
@@ -377,60 +612,129 @@ pub fn reduce_bake(
     load: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> Result<ModelBake, String> {
     let res = meta.res;
-    let mut chains = Vec::new();
-    for mv in &meta.views {
-        let mut sizes: Vec<SizedFrames> = mv
-            .view
-            .sizes()
-            .iter()
-            .map(|&size| SizedFrames {
-                size,
-                frames: vec![BakedFrame::default(); FRAMES],
-            })
-            .collect();
+    // Pass one: every frame's materials, shade values and ink, and a shade
+    // histogram a material over the whole model (the levels are the model's,
+    // so a paint's ramp runs its full span whatever the kit's albedo makes of
+    // its luminance).
+    struct Classified {
+        view: usize,
+        facing: usize,
+        pose: usize,
+        codes: Vec<u8>,
+        values: Vec<f32>,
+        ink: Vec<bool>,
+    }
+    let mut classified = Vec::new();
+    let mut hist = vec![[0u32; 256]; 16];
+    for (vi, mv) in meta.views.iter().enumerate() {
         for (fi, &facing) in Facing::ALL.iter().enumerate() {
             for pose in 0..POSES.len() {
-                let Some(mf) = mv
+                if !mv
                     .frames
                     .iter()
-                    .find(|f| f.facing == facing && f.pose == pose)
-                else {
+                    .any(|f| f.facing == facing && f.pose == pose)
+                {
                     continue;
-                };
-                let mut pass = |p: &str| -> Result<Vec<u8>, String> {
+                }
+                let mut pass = |p: &str| -> Result<Option<Vec<u8>>, String> {
                     let name = render_name(mv.view, facing, pose, p);
-                    let rgba = load(&name)?;
-                    if rgba.len() != res * res * 4 {
-                        return Err(format!("{name}: not {res}x{res}"));
+                    match load(&name) {
+                        Ok(rgba) if rgba.len() == res * res * 4 => Ok(Some(rgba)),
+                        Ok(_) => Err(format!("{name}: not {res}x{res}")),
+                        Err(e) if matches!(p, "id" | "n") => Err(e),
+                        // The mask, lit and depth passes are optional: a bake
+                        // from before them has none.
+                        Err(_) => Ok(None),
                     }
-                    Ok(rgba)
                 };
-                let (id, normal) = (pass("id")?, pass("n")?);
-                let hi = classify(&id, &normal, &meta.id_classes);
-                for s in &mut sizes {
-                    let n = usize::from(s.size);
-                    let grid = reduce(&hi, res, n);
-                    let muzzles = mf
-                        .muzzles
-                        .iter()
-                        .map(|(name, xy)| (name.clone(), scale_point(*xy, res, n)))
-                        .collect();
-                    if let Some(slot) = s.frames.get_mut(fi * POSES.len() + pose) {
-                        *slot = BakedFrame::from_grid(
-                            &grid,
-                            n,
-                            scale_point(mf.anchor, res, n),
-                            muzzles,
-                        );
+                let id = pass("id")?.ok_or("the colour-ID pass")?;
+                let normal = pass("n")?.ok_or("the normal pass")?;
+                let (mask, lit, depth) = (pass("m")?, pass("l")?, pass("d")?);
+                let codes = classify(&id, &normal, mask.as_deref(), &meta.id_classes);
+                let depth_m = depth.as_deref().map(depth_metres);
+                let (values, ink) = shade_values(&normal, lit.as_deref(), depth_m.as_deref(), res);
+                for (i, &c) in codes.iter().enumerate() {
+                    if c != 0 {
+                        let v = values.get(i).copied().unwrap_or(0.0);
+                        let bin = (v / SHADE_SPAN * 255.0).clamp(0.0, 255.0) as usize;
+                        if let Some(h) = hist.get_mut(usize::from(c)).and_then(|h| h.get_mut(bin)) {
+                            *h += 1;
+                        }
                     }
                 }
+                classified.push(Classified {
+                    view: vi,
+                    facing: fi,
+                    pose,
+                    codes,
+                    values,
+                    ink,
+                });
             }
         }
-        chains.push(Chain {
+    }
+    let levels: Vec<(f32, f32)> = hist.iter().map(percentile_levels).collect();
+    // Pass two: the shade quantised between its material's levels, and the
+    // frame reduced to every size of its view's chain.
+    let mut chains: Vec<Chain> = meta
+        .views
+        .iter()
+        .map(|mv| Chain {
             view: mv.view,
             span_cm: mv.span_cm,
-            sizes,
-        });
+            sizes: mv
+                .view
+                .sizes()
+                .iter()
+                .map(|&size| SizedFrames {
+                    size,
+                    frames: vec![BakedFrame::default(); FRAMES],
+                })
+                .collect(),
+        })
+        .collect();
+    for f in &classified {
+        let (Some(mv), Some(&facing)) = (meta.views.get(f.view), Facing::ALL.get(f.facing)) else {
+            continue;
+        };
+        let Some(mf) = mv
+            .frames
+            .iter()
+            .find(|m| m.facing == facing && m.pose == f.pose)
+        else {
+            continue;
+        };
+        let hi: Vec<u8> = f
+            .codes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                if c == 0 {
+                    0
+                } else if f.ink.get(i).copied().unwrap_or(false) {
+                    c
+                } else {
+                    let v = f.values.get(i).copied().unwrap_or(0.0);
+                    let lv = levels.get(usize::from(c)).copied().unwrap_or((0.0, 1.0));
+                    c | (quantise(v, lv) << 4)
+                }
+            })
+            .collect();
+        let Some(chain) = chains.get_mut(f.view) else {
+            continue;
+        };
+        for s in &mut chain.sizes {
+            let n = usize::from(s.size);
+            let grid = reduce(&hi, res, n);
+            let muzzles = mf
+                .muzzles
+                .iter()
+                .map(|(name, xy)| (name.clone(), scale_point(*xy, res, n)))
+                .collect();
+            if let Some(slot) = s.frames.get_mut(f.facing * POSES.len() + f.pose) {
+                *slot = BakedFrame::from_grid(&grid, n, scale_point(mf.anchor, res, n), muzzles);
+            }
+        }
     }
     Ok(ModelBake {
         model: meta.model.clone(),
@@ -555,6 +859,9 @@ mod tests {
                 .position(|f| f.as_str() == facing_word)
                 .ok_or("facing")?;
             let pose = POSES.iter().position(|p| *p == pose_word).ok_or("pose")?;
+            if pass != "id" && pass != "n" {
+                return Err("the synthetic bake has the colour-ID and normal passes only".into());
+            }
             let (id, n) = render(view, facing, pose);
             Ok(if pass == "id" { id } else { n })
         };
@@ -562,22 +869,102 @@ mod tests {
     }
 
     #[test]
-    fn classify_lights_the_paint_and_keeps_the_parts() {
+    fn reduce_votes_every_material_code() {
+        // A 4x4 render of steel-light (8) with one lamp (11) reduces to a
+        // 2x2 of 8 with the lamp's cell 11: codes past six are not pale.
+        let mut hi = vec![8u8; 16];
+        hi[0] = 11;
+        hi[1] = 11;
+        hi[4] = 11;
+        assert_eq!(reduce(&hi, 4, 2), vec![11, 8, 8, 8]);
+    }
+
+    #[test]
+    fn classify_names_the_family_and_keeps_the_parts() {
         let px = |rgb: [u8; 3], a: u8| vec![rgb[0], rgb[1], rgb[2], a];
         let up = px([128, 255, 128], 255);
-        let down = px([128, 0, 128], 255);
-        let codes = |id: Vec<u8>, n: &Vec<u8>| classify(&id, n, &DEFAULT_ID_CLASSES)[0];
-        assert_eq!(codes(px([0, 255, 0], 255), &up), 3, "lit paint: team-light");
+        let codes = |id: Vec<u8>| classify(&id, &up, None, &DEFAULT_ID_CLASSES)[0];
+        assert_eq!(codes(px([0, 255, 0], 255)), 2, "paint: the team's base");
+        assert_eq!(codes(px([0, 0, 0], 255)), 4, "dark metal: black");
+        assert_eq!(codes(px([0, 0, 255], 255)), 5, "secondary: the steel base");
+        assert_eq!(codes(px([255, 0, 0], 255)), 3, "accent: team-light");
+        assert_eq!(codes(px([255, 255, 255], 255)), 6, "bright: pale");
+        assert_eq!(codes(px([0, 255, 0], 0)), 0, "transparent");
+        // The mask pass: a rubber-flagged pixel is rubber whatever its part;
+        // a lit pixel is a lamp whatever its part.
+        let masked = |id: Vec<u8>, m: Vec<u8>| classify(&id, &up, Some(&m), &DEFAULT_ID_CLASSES)[0];
         assert_eq!(
-            codes(px([0, 255, 0], 255), &down),
-            1,
-            "paint in shadow: team-dark"
+            masked(px([0, 255, 0], 255), px([0, 255, 0], 255)),
+            9,
+            "rubber"
         );
-        assert_eq!(codes(px([0, 0, 0], 255), &up), 4, "dark metal: black");
-        assert_eq!(codes(px([0, 0, 255], 255), &up), 5, "lit secondary: steel");
-        assert_eq!(codes(px([255, 0, 0], 255), &up), 3, "accent");
-        assert_eq!(codes(px([255, 255, 255], 255), &up), 6, "bright: pale");
-        assert_eq!(codes(px([0, 255, 0], 0), &up), 0, "transparent");
+        assert_eq!(
+            masked(px([0, 0, 255], 255), px([0, 0, 0], 255)),
+            5,
+            "unflagged: steel"
+        );
+        assert_eq!(
+            masked(px([0, 255, 0], 255), px([0, 0, 255], 255)),
+            11,
+            "a lamp"
+        );
+    }
+
+    #[test]
+    fn the_shade_plane_lights_levels_and_inks() {
+        let px = |rgb: [u8; 3], a: u8| vec![rgb[0], rgb[1], rgb[2], a];
+        let (up, down) = (px([128, 255, 128], 255), px([128, 0, 128], 255));
+        let v = shade_from_normal(&[up.clone(), down.clone()].concat());
+        assert!(
+            v[0] > 0.7 && v[1] < 0.2,
+            "a face up is lit, a face down is dark"
+        );
+        assert_eq!(quantise(0.0, (0.0, 1.0)), 1);
+        assert_eq!(quantise(1.0, (0.0, 1.0)), 15);
+        assert_eq!(quantise(2.0, (0.0, 1.0)), 15, "clamped");
+        assert_eq!(
+            percentile_levels(&[0; 256]),
+            (0.0, 1.0),
+            "nothing: a unit span"
+        );
+        // The depth pass: a step of a metre between neighbours is ink, and the
+        // lower pixel beside a nearer one is occluded.
+        let res = 16;
+        let mut depth = vec![f32::INFINITY; res * res];
+        let mut normal = Vec::new();
+        for (i, d) in depth.iter_mut().enumerate() {
+            *d = if i % res < 8 { 200.0 } else { 201.0 };
+            normal.extend_from_slice(&up);
+        }
+        let inked = ink(&normal, Some(&depth), res);
+        assert!(
+            inked[7] && inked[8] && !inked[3] && !inked[12],
+            "the step is ink"
+        );
+        let ao = occlusion(&depth, res);
+        assert!(
+            ao[8 + res * 8] < 1.0 && (ao[1 + res * 8] - 1.0).abs() < 1e-6,
+            "the far side is occluded"
+        );
+        // A cell takes the mean shade of its material, or the ink when four
+        // tenths of it are ink.
+        assert_eq!(
+            reduce(
+                &[5 | (4 << 4), 5 | (6 << 4), 5 | (8 << 4), 5 | (10 << 4)],
+                2,
+                1
+            ),
+            vec![5 | (7 << 4)]
+        );
+        assert_eq!(
+            reduce(&[5, 5, 5 | (8 << 4), 5 | (8 << 4)], 2, 1),
+            vec![5],
+            "half the cell on the ink line"
+        );
+        assert_eq!(
+            reduce(&[5, 5 | (8 << 4), 5 | (8 << 4), 5 | (8 << 4)], 2, 1),
+            vec![5 | (8 << 4)]
+        );
     }
 
     #[test]
@@ -635,15 +1022,23 @@ mod tests {
         // Rule 1: the 8 px frame is the render reduced to 8, not the 12 px
         // frame reduced again.
         let (id, n) = render(View::Fp, 0, 0);
-        let hi = classify(&id, &n, &DEFAULT_ID_CLASSES);
+        let hi = classify(&id, &n, None, &DEFAULT_ID_CLASSES);
         let direct = BakedFrame::from_grid(&reduce(&hi, RES, 8), 8, (4, 6), Vec::new());
-        let eight = fp.sizes[7].frame(Facing::Front, 0).unwrap();
-        assert_eq!(eight.pixels, direct.pixels);
-        // The marks scale with the size; the iso view shows more roof.
-        let big = fp.sizes[0].frame(Facing::Front, 0).unwrap();
+        let eight = fp.sizes[8].frame(Facing::Front, 0).unwrap();
+        assert_eq!(
+            eight.pixels.iter().map(|c| c & 0x0f).collect::<Vec<_>>(),
+            direct.pixels,
+            "the materials; the shade plane rides above them"
+        );
+        // The marks scale with the size (the 192 px frame is the render at
+        // 2:1); the iso view shows more roof.
+        let biggest = fp.sizes[0].frame(Facing::Front, 0).unwrap();
+        assert_eq!(biggest.anchor, (96, 144));
+        assert_eq!(biggest.muzzles, vec![("cannon".to_string(), (164, 88))]);
+        let big = fp.sizes[1].frame(Facing::Front, 0).unwrap();
         assert_eq!(big.anchor, (48, 72));
         assert_eq!(big.muzzles, vec![("cannon".to_string(), (82, 44))]);
-        let lit = |f: &BakedFrame| f.pixels.iter().filter(|&&c| c == 3).count();
+        let lit = |f: &BakedFrame| f.pixels.iter().filter(|&&c| c != 0 && c >> 4 >= 11).count();
         let iso_big = iso.sizes[0].frame(Facing::Front, 0).unwrap();
         assert!(lit(iso_big) > lit(big) * 2, "the 28° bake shows the roof");
         // The wreck is not the still.

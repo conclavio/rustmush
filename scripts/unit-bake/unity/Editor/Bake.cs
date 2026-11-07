@@ -1,9 +1,15 @@
 // The unit bake (doc 22 D-22-10, cut U.6): one model's bake matrix from one
 // named asset pack — both views (`fp` at 3 degrees down, Q-22-3; `iso` at the
 // 2.5D's 28), eight facings, six poses (still, four moving, the wreck), each
-// rendered orthographic at 384 px twice, a colour-ID pass and a world-normal
-// pass — and `meta.json` (format 3): every frame's anchor and muzzles, each
-// view's world span, the model's size and the provenance the pack records.
+// rendered orthographic at 384 px five times: a colour-ID pass, a world-normal
+// pass, a mask pass (red the kit's metallic map, green a rubber flag from the
+// material's name, blue the kit's emission map; U.6 follow-up of 2026-11-06,
+// for rubber and lamps), a lit pass (red the unit lit by a key and a fill
+// through the kit's normal map, green its albedo's luminance) and a depth pass
+// (16 bits of eye depth over red and green) — the last two the shade plane's
+// (the same day) — and
+// `meta.json` (format 3): every frame's anchor and muzzles, each view's world
+// span, the model's size and the provenance the pack records.
 //
 // Driven by one per-model config (`scripts/unit-bake/models/<model>.json`) and
 // run by `scripts/unit-bake/bake.sh`, which hands the renders to the reducer
@@ -53,6 +59,9 @@ public static class Bake {
         public string id_texture = "";
         public MaterialPart[] material_parts = new MaterialPart[0];
         public string default_part = "paint";
+        // Materials (by name substring) that are rubber: tracks, tyres. The
+        // mask pass flags their pixels (green), whatever the colour-ID says.
+        public string[] rubber_materials = new[] { "Tracks", "Track", "Tire", "Tyre", "Rubber" };
         public ClipRef still = new ClipRef();
         public ClipRef moving = new ClipRef();
         public ClipRef wreck = new ClipRef();
@@ -174,6 +183,52 @@ public static class Bake {
         unit.transform.SetPositionAndRotation(rot * off, rot * unit.transform.rotation);
     }
 
+    // A material's saved texture, float or colour property by name, read
+    // from its serialized properties so a material whose shader is missing
+    // in this project still answers.
+    static Texture SavedTexture(Material mat, string name) {
+        var so = new SerializedObject(mat);
+        var list = so.FindProperty("m_SavedProperties.m_TexEnvs");
+        for (int i = 0; list != null && i < list.arraySize; i++) {
+            var e = list.GetArrayElementAtIndex(i);
+            if (e.FindPropertyRelative("first").stringValue == name)
+                return e.FindPropertyRelative("second.m_Texture").objectReferenceValue as Texture;
+        }
+        return null;
+    }
+    static float SavedFloat(Material mat, string name, float dflt) {
+        var so = new SerializedObject(mat);
+        var list = so.FindProperty("m_SavedProperties.m_Floats");
+        for (int i = 0; list != null && i < list.arraySize; i++) {
+            var e = list.GetArrayElementAtIndex(i);
+            if (e.FindPropertyRelative("first").stringValue == name) return e.FindPropertyRelative("second").floatValue;
+        }
+        return dflt;
+    }
+    static Color SavedColor(Material mat, string name, Color dflt) {
+        var so = new SerializedObject(mat);
+        var list = so.FindProperty("m_SavedProperties.m_Colors");
+        for (int i = 0; list != null && i < list.arraySize; i++) {
+            var e = list.GetArrayElementAtIndex(i);
+            if (e.FindPropertyRelative("first").stringValue == name) return e.FindPropertyRelative("second").colorValue;
+        }
+        return dflt;
+    }
+
+    // A data texture (metallic, emission) read as data: linear, no mips,
+    // uncompressed, so the mask pass samples what the file says.
+    static Texture PrepareDataTexture(Texture tex) {
+        var path = AssetDatabase.GetAssetPath(tex);
+        var ti = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (ti == null) return tex;
+        if (ti.sRGBTexture || ti.mipmapEnabled || ti.textureCompression != TextureImporterCompression.Uncompressed) {
+            ti.sRGBTexture = false; ti.mipmapEnabled = false;
+            ti.textureCompression = TextureImporterCompression.Uncompressed; ti.maxTextureSize = 8192;
+            ti.SaveAndReimport();
+        }
+        return Load<Texture2D>(path);
+    }
+
     static Texture2D PrepareIdTexture(string path) {
         var ti = (TextureImporter)AssetImporter.GetAtPath(path);
         if (ti == null) throw new Exception("missing id texture " + path);
@@ -266,6 +321,57 @@ public static class Bake {
         }
         var nMat = new Material(Shader.Find("Hidden/NormalOut"));
         var nMats = original.Select(ms => ms.Select(_ => nMat).ToArray()).ToArray();
+        // The mask pass reads each original material's own maps: metallic
+        // (red; its alpha is smoothness) and emission, when the material
+        // assigns them. The slots are read from the material's saved
+        // properties, not through its shader: the scratch project has no
+        // render pipeline the kit's shaders need, so a kit material has no
+        // live shader here and `HasProperty` would say no to every slot. A
+        // material without a metallic map is as metallic as its `_Metallic`
+        // slider says (0 when it has none), so a kit without maps bakes as
+        // before; emission counts when a map is assigned and the emission
+        // colour is not black.
+        var maskOf = new Dictionary<Material, Material>();
+        Material MaskFor(Material mat) {
+            if (mat == null) return MaskFor(new Material(Shader.Find("Standard")));
+            if (maskOf.TryGetValue(mat, out var done)) return done;
+            var mm = new Material(Shader.Find("Hidden/MaskOut"));
+            var metalMap = SavedTexture(mat, "_MetallicGlossMap");
+            if (metalMap != null) { mm.SetTexture("_MetallicGlossMap", PrepareDataTexture(metalMap)); mm.SetFloat("_HasMetalMap", 1); }
+            mm.SetFloat("_Metallic", SavedFloat(mat, "_Metallic", 0));
+            var rubber = cfg.rubber_materials.Any(r => mat.name.IndexOf(r, StringComparison.OrdinalIgnoreCase) >= 0);
+            mm.SetFloat("_Rubber", rubber ? 1 : 0);
+            var emisMap = SavedTexture(mat, "_EmissionMap");
+            var ec = SavedColor(mat, "_EmissionColor", Color.black);
+            if (emisMap != null && ec.maxColorComponent > 0.01f) { mm.SetTexture("_EmissionMap", PrepareDataTexture(emisMap)); mm.SetFloat("_HasEmisMap", 1); }
+            mm.SetColor("_EmissionColor", ec);
+            maskOf[mat] = mm;
+            return mm;
+        }
+        var mMats = original.Select(ms => ms.Select(MaskFor).ToArray()).ToArray();
+        // The lit pass lights the kit's real surface: its normal map under a
+        // key light and a fill, and its albedo's luminance for the painted
+        // detail; the depth pass gives the reducer occlusion and part edges.
+        var litOf = new Dictionary<Material, Material>();
+        Material LitFor(Material mat) {
+            if (mat == null) return LitFor(new Material(Shader.Find("Standard")));
+            if (litOf.TryGetValue(mat, out var done)) return done;
+            var lm = new Material(Shader.Find("Hidden/LitOut"));
+            var albedo = SavedTexture(mat, "_BaseMap");
+            if (albedo == null) albedo = SavedTexture(mat, "_MainTex");
+            if (albedo != null) { lm.SetTexture("_MainTex", albedo); lm.SetFloat("_HasAlbedo", 1); }
+            var bump = SavedTexture(mat, "_BumpMap");
+            if (bump != null) { lm.SetTexture("_BumpMap", bump); lm.SetFloat("_HasBump", 1); }
+            litOf[mat] = lm;
+            return lm;
+        }
+        var lMats = original.Select(ms => ms.Select(LitFor).ToArray()).ToArray();
+        var dMat = new Material(Shader.Find("Hidden/DepthOut"));
+        var dMats = original.Select(ms => ms.Select(_ => dMat).ToArray()).ToArray();
+        // The reducer's light, world space (the camera only pitches): upper
+        // left, toward the viewer; the fill low from the other side.
+        Shader.SetGlobalVector("_KeyDir", new Vector4(-0.4f, 0.8f, -0.45f, 0));
+        Shader.SetGlobalVector("_FillDir", new Vector4(0.6f, 0.15f, -0.5f, 0));
 
         // 3. The poses' clips.
         var still = Clip(root, cfg.still);
@@ -324,7 +430,7 @@ public static class Bake {
                     var (clip, t, wreck, tilted) = PoseOf(k);
                     Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted,
                          tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null);
-                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats) }) {
+                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats), ("m", mMats), ("l", lMats), ("d", dMats) }) {
                         for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = mats[i];
                         cam.Render();
                         RenderTexture.active = rt;
@@ -363,6 +469,6 @@ public static class Bake {
         meta.Append(",\"views\":[").Append(string.Join(",", views)).Append("]}");
         File.WriteAllText(Path.Combine(outDir, "meta.json"), meta.ToString());
         Debug.Log("BAKE DONE " + cfg.model + ": " + heightCm + " cm tall, " + widthCm + " cm wide, " +
-                  (Views.Length * Facings.Length * Poses.Length * 2) + " renders in " + outDir);
+                  (Views.Length * Facings.Length * Poses.Length * 5) + " renders in " + outDir);
     }
 }

@@ -446,8 +446,12 @@ pub(crate) fn sprite_colour(
     };
     let paint = match (material, kind) {
         (Material::Black, _) | (Material::TeamDark, SpriteKind::Wreck) => None,
-        (Material::Steel, _) | (Material::TeamLight, SpriteKind::Wreck) => Some(Paint::Steel),
-        (Material::Pale, _) => Some(Paint::Pale),
+        (Material::SteelDark, _) | (Material::TeamLight, SpriteKind::Wreck) => Some(Paint::Steel),
+        (Material::Steel, _) => Some(Paint::Grey),
+        (Material::SteelLight, _) => Some(Paint::GreyLight),
+        (Material::Pale, _) | (Material::Lamp, _) => Some(Paint::Pale),
+        (Material::Rubber, _) => Some(Paint::Shadow),
+        (Material::RubberLight, _) => Some(Paint::Steel),
         (Material::Team, SpriteKind::Wreck) => return shades.shade(Base::Wreck, step),
         (_, SpriteKind::Hostile) => team(Paint::RedDark, Paint::Red, Paint::RedLight),
         (_, SpriteKind::Friend) => team(Paint::BlueDark, Paint::Blue, Paint::BlueLight),
@@ -1408,6 +1412,7 @@ fn draw_chain(
             }
             let sx = ((x as f32 + 0.5 - left) / k).floor() as i64;
             if let Some(material) = bake::material_from_code(f.code(sx, sy)) {
+                let material = material.toned(f.shade(sx, sy));
                 frame.put(x, y, sprite_colour(shades, at.kind, material, step));
                 drawn.pixels += 1;
                 row = true;

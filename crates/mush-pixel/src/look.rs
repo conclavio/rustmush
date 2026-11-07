@@ -61,8 +61,12 @@ const SHIPPED: &[(&str, &str)] = &[
 ];
 
 /// What a sprite pixel is made of (doc 22 D-22-7): the three team slots,
-/// recoloured by the contact's team when it is drawn, and three fixed
-/// materials. A closed set, so the picture's palette stays closed.
+/// recoloured by the contact's team when it is drawn, and five fixed
+/// materials — black, a three-tone steel (U.6 follow-up, 2026-11-06: bare
+/// metal models its form by light as the paint does), a two-tone rubber and
+/// a lamp (the same day, from the bake's mask pass: the kit's metallic and
+/// emission maps), and pale. A closed set, so the picture's palette stays
+/// closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Material {
     /// The team's dark shade.
@@ -73,10 +77,21 @@ pub enum Material {
     TeamLight,
     /// Black: outlines, openings, shadowed parts.
     Black,
+    /// Steel in shadow: the dark tone of bare metal.
+    SteelDark,
     /// Steel: tracks, wheels, barrels, bare metal.
     Steel,
-    /// Pale: glass, lamps, highlights.
+    /// Steel in the light: the light tone of bare metal.
+    SteelLight,
+    /// Pale: glass, highlights.
     Pale,
+    /// Rubber: tracks, tyres, hoses — a non-metal the mask pass tells from
+    /// steel.
+    Rubber,
+    /// Rubber in the light.
+    RubberLight,
+    /// A lamp: what the kit's emission map lights.
+    Lamp,
 }
 
 impl Material {
@@ -86,10 +101,37 @@ impl Material {
             "team" => Material::Team,
             "team-light" => Material::TeamLight,
             "black" => Material::Black,
+            "steel-dark" => Material::SteelDark,
             "steel" => Material::Steel,
+            "steel-light" => Material::SteelLight,
             "pale" => Material::Pale,
+            "rubber" => Material::Rubber,
+            "rubber-light" => Material::RubberLight,
+            "lamp" => Material::Lamp,
             _ => return None,
         })
+    }
+}
+
+impl Material {
+    /// The tone a family base takes at a shade on the first-person stream,
+    /// whose palette has three tones a family: the team's colour, steel and
+    /// rubber pick their dark, mid or light sibling (`0` the ink line, `1`
+    /// darkest, `15` lightest); an explicit tone and the fixed materials pass
+    /// through.
+    #[must_use]
+    pub fn toned(self, shade: u8) -> Material {
+        match self {
+            Material::Team if shade < 5 => Material::TeamDark,
+            Material::Team if shade < 11 => Material::Team,
+            Material::Team => Material::TeamLight,
+            Material::Steel if shade < 5 => Material::SteelDark,
+            Material::Steel if shade < 11 => Material::Steel,
+            Material::Steel => Material::SteelLight,
+            Material::Rubber if shade < 8 => Material::Rubber,
+            Material::Rubber => Material::RubberLight,
+            m => m,
+        }
     }
 }
 

@@ -123,10 +123,11 @@ fn run() -> Result<(), String> {
 }
 
 /// Every size's still front, right, rear and left, the `fp` chain above the
-/// `iso`, a 104 px cell each, in the red team's colours over a dark ground.
+/// `iso`, a cell the largest size plus eight each, in the red team's colours
+/// over a dark ground.
 fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
     let facings = [Facing::Front, Facing::Right, Facing::Rear, Facing::Left];
-    let cell = 104usize;
+    let cell = usize::from(bake::FP_SIZES[0].max(bake::ISO_SIZES[0])) + 8;
     let sizes = bake::FP_SIZES.len();
     let (w, h) = (cell * facings.len() * 2, cell * sizes);
     let mut rgba = [40u8, 44, 40, 255].repeat(w * h);
@@ -143,8 +144,9 @@ fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
                 let n = usize::from(sized.size);
                 for y in 0..n {
                     for x in 0..n {
+                        let shade = f.shade(x as i64, y as i64);
                         let rgb = match bake::material_from_code(f.code(x as i64, y as i64)) {
-                            Some(m) => colour(m),
+                            Some(m) => bake::shaded_rgb(m, RED, shade),
                             None if (x, y)
                                 == (usize::from(f.anchor.0), usize::from(f.anchor.1)) =>
                             {
@@ -164,13 +166,22 @@ fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
     png::encode_rgba(w, h, &rgba)
 }
 
+/// The red team's tones, the preview's.
+const RED: ([u8; 3], [u8; 3], [u8; 3]) = ([120, 36, 32], [178, 54, 48], [214, 98, 84]);
+
+#[allow(dead_code)]
 fn colour(m: look::Material) -> [u8; 3] {
     match m {
         look::Material::TeamDark => [120, 36, 32],
         look::Material::Team => [178, 54, 48],
         look::Material::TeamLight => [214, 98, 84],
         look::Material::Black => [20, 22, 26],
+        look::Material::SteelDark => [84, 88, 96],
         look::Material::Steel => [118, 124, 132],
+        look::Material::SteelLight => [160, 164, 170],
         look::Material::Pale => [216, 216, 198],
+        look::Material::Rubber => [52, 50, 48],
+        look::Material::RubberLight => [88, 86, 82],
+        look::Material::Lamp => [240, 216, 120],
     }
 }
