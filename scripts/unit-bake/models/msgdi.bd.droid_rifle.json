@@ -1,0 +1,47 @@
+{
+  "model": "msgdi.bd.droid_rifle",
+  "asset_version": "",
+  "asset_pack": "Scifi RTS Series Battle Droid (MSGDI)",
+  "package": "MSGDI/3D ModelsCharactersRobots/Scifi RTS Series Battle Droid.unitypackage",
+  "root": "Assets/Scifi RTS Series Battle Droids/",
+  "albedo_id": true,
+  "prefab": "Prefabs/BattleDroids/Green/BattleDroidGreen.prefab",
+  "enable": [
+    "StandardGunsGreen",
+    "TorsoEquipment"
+  ],
+  "disable": [
+    "Decals",
+    "BackpackJumpjetsGreen",
+    "CannonGreen",
+    "FrontArmorLvl2Green",
+    "MissileLauncherLeftGreen",
+    "MissileLauncherRightGreen"
+  ],
+  "still": {
+    "file": "FBX/BattleDroids/BattleDroids.fbx",
+    "name": "Idle"
+  },
+  "moving": {
+    "file": "FBX/BattleDroids/BattleDroids.fbx",
+    "name": "Walk"
+  },
+  "wreck": {
+    "file": "FBX/BattleDroids/BattleDroids.fbx",
+    "name": "Death"
+  },
+  "muzzles": [
+    {
+      "locator": "LowerArm_R/StandardGunsGreen",
+      "weapon": "rifle"
+    },
+    {
+      "locator": "LowerArm_L/StandardGunsGreen",
+      "weapon": "carbine"
+    }
+  ],
+  "size_cm": [
+    420,
+    850
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "model": "msgdi.hm.mech_missile",
+  "asset_version": "",
+  "asset_pack": "Humanoid Mech (MSGDI)",
+  "package": "MSGDI/3D ModelsCharactersRobots/Humanoid Mech.unitypackage",
+  "root": "Assets/Humanoid Mech/",
+  "albedo_id": true,
+  "prefab": "Prefabs/Mech/Mech1Green.prefab",
+  "enable": [
+    "WeaponSlotArmGreen",
+    "WeaponSlotArmGreen (1)",
+    "MissileLauncherTorsoLeftGreen",
+    "MissileLauncherTorsoRightGreen",
+    "SmallMissileLauncherGreen",
+    "SmallMissileLauncherGreen (1)"
+  ],
+  "disable": [
+    "ArmBallisticWeaponGreen"
+  ],
+  "still": {
+    "file": "FBX/Mech1.fbx",
+    "name": "Idle2ArmsAim"
+  },
+  "moving": {
+    "file": "FBX/Mech1.fbx",
+    "name": "RunCycle2ArmsAim"
+  },
+  "wreck": {
+    "file": "FBX/Mech1.fbx",
+    "name": "xxxDeath"
+  },
+  "muzzles": [
+    {
+      "locator": "LowerArm_R/WeaponSlotArmGreen (1)/ArmMissileLauncherGreen",
+      "weapon": "missiles"
+    },
+    {
+      "locator": "MissileLauncherTorsoRightGreen",
+      "weapon": "rockets"
+    }
+  ],
+  "size_cm": [
+    650,
+    1250
+  ]
+}

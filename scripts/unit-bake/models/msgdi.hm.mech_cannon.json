@@ -1,0 +1,44 @@
+{
+  "model": "msgdi.hm.mech_cannon",
+  "asset_version": "",
+  "asset_pack": "Humanoid Mech (MSGDI)",
+  "package": "MSGDI/3D ModelsCharactersRobots/Humanoid Mech.unitypackage",
+  "root": "Assets/Humanoid Mech/",
+  "albedo_id": true,
+  "prefab": "Prefabs/Mech/Mech1Green.prefab",
+  "enable": [
+    "WeaponSlotArmGreen",
+    "WeaponSlotArmGreen (1)",
+    "TorsoCannonGreen",
+    "TorsoCannonGreen (1)"
+  ],
+  "disable": [
+    "ArmMissileLauncherGreen"
+  ],
+  "still": {
+    "file": "FBX/Mech1.fbx",
+    "name": "Idle2ArmsAim"
+  },
+  "moving": {
+    "file": "FBX/Mech1.fbx",
+    "name": "WalkCycle2ArmsAim"
+  },
+  "wreck": {
+    "file": "FBX/Mech1.fbx",
+    "name": "xxxDeath"
+  },
+  "muzzles": [
+    {
+      "locator": "LowerArm_R/WeaponSlotArmGreen (1)/ArmBallisticWeaponGreen",
+      "weapon": "autocannon"
+    },
+    {
+      "locator": "TorsoCannonGreen/TorsoCannonBaseRed/TorsoCannonTurretRed/TorsoCannonBarrelRed",
+      "weapon": "cannon"
+    }
+  ],
+  "size_cm": [
+    650,
+    1250
+  ]
+}

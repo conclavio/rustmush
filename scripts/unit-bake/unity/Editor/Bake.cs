@@ -56,7 +56,11 @@ public static class Bake {
         public string prefab = "";
         public string primitive = "";
         public Part[] attach = new Part[0];
+        public string[] enable = new string[0];
+        public string[] disable = new string[0];
         public string id_texture = "";
+        public bool albedo_id = false;
+        public float albedo_paint_lum = 0f;
         public MaterialPart[] material_parts = new MaterialPart[0];
         public string default_part = "paint";
         // Materials (by name substring) that are rubber: tracks, tyres. The
@@ -111,6 +115,12 @@ public static class Bake {
         return null;
     }
 
+    static IEnumerable<Transform> FindAll(Transform t, string[] segs, int idx = 0) {
+        int next = t.name == segs[idx] ? idx + 1 : idx;
+        if (next == segs.Length) yield return t;
+        else foreach (Transform c in t) foreach (var r in FindAll(c, segs, next)) yield return r;
+    }
+
     static IEnumerable<string> Mounts(Transform t) {
         if (t.name.StartsWith("Mount", StringComparison.OrdinalIgnoreCase)) yield return t.name;
         foreach (Transform c in t) foreach (var m in Mounts(c)) yield return m;
@@ -143,7 +153,7 @@ public static class Bake {
         var found = new List<string>();
         foreach (var o in AssetDatabase.LoadAllAssetsAtPath(root + r.file)) {
             if (o is AnimationClip c && !c.name.StartsWith("__preview__")) {
-                if (c.name == r.name) return c;
+                if (c.name == r.name || c.name.EndsWith("|" + r.name)) return c;
                 found.Add(c.name);
             }
         }
@@ -229,6 +239,18 @@ public static class Bake {
         return Load<Texture2D>(path);
     }
 
+    static Texture PrepareAlbedoIdTexture(Texture tex) {
+        var path = AssetDatabase.GetAssetPath(tex);
+        var ti = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (ti == null) return tex;
+        if (ti.sRGBTexture || ti.mipmapEnabled || ti.filterMode != FilterMode.Point || ti.textureCompression != TextureImporterCompression.Uncompressed) {
+            ti.sRGBTexture = false; ti.mipmapEnabled = false; ti.filterMode = FilterMode.Point;
+            ti.textureCompression = TextureImporterCompression.Uncompressed; ti.maxTextureSize = 8192;
+            ti.SaveAndReimport();
+        }
+        return Load<Texture2D>(path);
+    }
+
     static Texture2D PrepareIdTexture(string path) {
         var ti = (TextureImporter)AssetImporter.GetAtPath(path);
         if (ti == null) throw new Exception("missing id texture " + path);
@@ -291,6 +313,20 @@ public static class Bake {
                 placed[go.name] = go;
                 built.Add(p.prefab + " on " + p.mount);
             }
+            foreach (var pat in cfg.enable) {
+                var hits = FindAll(unit.transform, pat.Split('/')).ToArray();
+                if (hits.Length == 0) throw new Exception("enable: no child '" + pat + "' on " + unit.name);
+                foreach (var h in hits) {
+                    for (var p = h; p != null && p != unit.transform; p = p.parent) p.gameObject.SetActive(true);
+                }
+                built.Add("+" + pat);
+            }
+            foreach (var pat in cfg.disable) {
+                var hits = FindAll(unit.transform, pat.Split('/')).ToArray();
+                if (hits.Length == 0) throw new Exception("disable: no child '" + pat + "' on " + unit.name);
+                foreach (var h in hits) h.gameObject.SetActive(false);
+                built.Add("-" + pat);
+            }
         }
         foreach (var an in unit.GetComponentsInChildren<Animator>()) an.enabled = false;
         var rs = unit.GetComponentsInChildren<Renderer>()
@@ -313,10 +349,23 @@ public static class Bake {
                 }
                 return m;
             }
+            var albIdOf = new Dictionary<Material, Material>();
             idMats = original.Select(ms => ms.Select(mat => {
                 var name = mat ? mat.name : "";
                 var hit = cfg.material_parts.FirstOrDefault(mp => name.IndexOf(mp.match, StringComparison.OrdinalIgnoreCase) >= 0);
-                return For(hit != null ? hit.part : cfg.default_part);
+                if (hit != null) return For(hit.part);
+                if (cfg.albedo_id && mat != null) {
+                    if (albIdOf.TryGetValue(mat, out var done)) return done;
+                    var albedo = SavedTexture(mat, "_BaseMap") ?? SavedTexture(mat, "_MainTex");
+                    if (albedo != null) {
+                        var im = new Material(Shader.Find("Hidden/IdOut")) { mainTexture = PrepareAlbedoIdTexture(albedo) };
+                        im.SetFloat("_AlbedoId", 1);
+                        im.SetFloat("_PaintLum", cfg.albedo_paint_lum);
+                        albIdOf[mat] = im;
+                        return im;
+                    }
+                }
+                return For(cfg.default_part);
             }).ToArray()).ToArray();
         }
         var nMat = new Material(Shader.Find("Hidden/NormalOut"));
