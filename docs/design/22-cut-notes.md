@@ -163,10 +163,20 @@ viewer light a face square to the viewer is lit exactly 0.45, so the old cut spl
 between steel and black on noise (the mottled hull sides in the first rebake's `iso` frames;
 measured on `mc.st.tank_lvl1`: 42 % of the right facing's secondary pixels sit in the 0.4
 decile). Tried and dropped: `pale` as a highlight on lit steel, at 0.9 (white specks) and at 0.72
-(a cream hull that out-shouts the paint). What remains is one flat grey over most of a vehicle:
-the paint reads because it has three tones and steel has one. The palette already holds a grey
-triple (the unknown team's `GreyDark`/`Grey`/`GreyLight`), so a two-tone or three-tone steel is
-two pack material codes and the pictures' material maps, not new colours — a doc 22 decision.
+(a cream hull that out-shouts the paint). What remained was one flat grey over most of a vehicle:
+the paint reads because it has three tones and steel had one.
+
+**Three-tone steel (the owner, the same day: "yes, three-tone steel").** `Material` gains
+`steel-dark` and `steel-light` (pack codes 7 and 8); the reducer gives the secondary class the
+paint's cuts, 0.72 and 0.35, into the three steel tones, and black stays the dark-metal class's.
+The raycaster draws the three from the palette's existing greys — `Paint::Steel` (96, 100, 108)
+for the dark tone, `Grey` (132) for `steel`, `GreyLight` (174) for the light — so the 256-colour
+budget is unchanged and `steel` in the hand-drawn fallback sheets moves from the dark bluish grey
+to the mid one; the 2.5D and the reducer's preview get the matching RGB. Rule 7's run byte had
+three bits of material (seven at most), so the pack is **format 4**: four bits of material, three
+of length, a run of up to eight in one byte (was sixteen; the six models grew SIZES). An unknown
+contact's team greys and bare metal now share tones, which is what unknown means (the `unknown`
+look is a hump). Rebaked: SIZES2.
 The six models rebaked (208,503 / 181,431 / 178,923 / 207,002 / 191,256 / 77,381 bytes; the
 matrix check holds on each), the line-ups under `images/22-u6/` re-rendered, the web golden
 re-blessed. The alternatives, not taken: the model config's `id_classes` sending the secondary
