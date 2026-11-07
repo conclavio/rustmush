@@ -184,6 +184,36 @@ re-blessed. The alternatives, not taken: the model config's `id_classes` sending
 slot to `paint` (an all-team chassis), or a second grey in the palette (six fogged entries the
 256-colour budget does not have).
 
+## U.6 follow-up (2026-11-06, later) — 192 px and the mask pass
+
+The owner, on the retained pictures: the first-person kitty view runs 1280 wide now, so the sheet
+cost is one upload a size, not a stream, and resolution and colour are what show; "lets try it
+with the four material bits and the 192px top-end".
+
+- **192 px** tops the `fp` chain (nine sizes; a 2:1 reduce of the 384 render; `View::sizes` is a
+  slice). At 1280 a near contact projects past 96 and the terminal was scaling the largest frame
+  up. The `iso` chain keeps 96 (the 2.5D's ceiling, a separate decision). The preview's cell
+  follows the largest size.
+- **The mask pass** (`_m.png`, the bake's third render, `MaskOut.shader`): red the kit's metallic
+  map, green a rubber flag, blue the kit's emission map. Two findings on the way: the scratch
+  project has no render pipeline the kit's URP shaders need, so a kit material has no live shader
+  there and `HasProperty` says no to every slot — the slots are read from the material's
+  serialized properties, and the maps reimported as linear data; and the metallic map tells
+  nothing apart — this kit paints nine tenths of every part dielectric (PBR paint), evenly across
+  the colour-ID classes — so rubber is named by **material** (`rubber_materials`, tracks and tyres
+  by default) and the metallic channel is carried unused. The emission map works: the fox biped's
+  magenta class is its lamps, 100 % emissive.
+- **Three materials** on format 4's spare slots: `rubber` and `rubber-light` (codes 9, 10; a
+  flagged pixel whatever its colour-ID class, by light at 0.5) and `lamp` (11; any emissive
+  pixel). The raycaster maps them onto existing paints (shadow, steel, pale); the 2.5D and the
+  preview get their own RGB. Eleven materials; four slots left.
+- **Rebaked**: 324,843 / 272,154 / 254,562 / 283,114 / 270,345 / 111,143 bytes (the 192 size is
+  most of the growth; the biped at 317 KiB is the nearest the 512 KiB ceiling), the matrix check
+  holding on each; line-ups re-rendered, web golden re-blessed. On the tank the track run is now
+  rubber under a three-tone hull; on the buggy the tyres stay the kit's dark-metal class (its
+  wheels share the main material), a flat black at 192 px — a two-tone dark class, or a wheel
+  material name in the config, is the next thing to try.
+
 ## D-22-9 format & 8-way sensor facing (2026-10-28)
 
 - **Sheet format & parser (`mush_pixel::look`)**: `SPRITE_MAX` raised from `64` to `96`; `Facing` expanded to all eight directions (`Front`, `FrontRight`, `Right`, `RearRight`, `Rear`, `RearLeft`, `Left`, `FrontLeft`) in clockwise 45° order with `Facing::ALL`, `Facing::named`, `Facing::from_aspect`, `Facing::as_str`, and `Facing::cardinal`. `Look::parse` accepts all eight facings (requiring all eight when any diagonal is present, while keeping 3/4-facing hand-drawn sheets valid), optional per-facing `"wreck"` inside each facing object, and up to eight top-level `"wreck"` frames. `Sheet::frame` and `Sheet::wreck_frame` resolve exact diagonal frames on 8-facing sheets and fall back to `facing.cardinal()` on 3/4-facing sheets.
