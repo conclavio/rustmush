@@ -176,6 +176,52 @@ public static class Bake {
         unit.transform.SetPositionAndRotation(rot * off, rot * unit.transform.rotation);
     }
 
+    // A material's saved texture, float or colour property by name, read
+    // from its serialized properties so a material whose shader is missing
+    // in this project still answers.
+    static Texture SavedTexture(Material mat, string name) {
+        var so = new SerializedObject(mat);
+        var list = so.FindProperty("m_SavedProperties.m_TexEnvs");
+        for (int i = 0; list != null && i < list.arraySize; i++) {
+            var e = list.GetArrayElementAtIndex(i);
+            if (e.FindPropertyRelative("first").stringValue == name)
+                return e.FindPropertyRelative("second.m_Texture").objectReferenceValue as Texture;
+        }
+        return null;
+    }
+    static float SavedFloat(Material mat, string name, float dflt) {
+        var so = new SerializedObject(mat);
+        var list = so.FindProperty("m_SavedProperties.m_Floats");
+        for (int i = 0; list != null && i < list.arraySize; i++) {
+            var e = list.GetArrayElementAtIndex(i);
+            if (e.FindPropertyRelative("first").stringValue == name) return e.FindPropertyRelative("second").floatValue;
+        }
+        return dflt;
+    }
+    static Color SavedColor(Material mat, string name, Color dflt) {
+        var so = new SerializedObject(mat);
+        var list = so.FindProperty("m_SavedProperties.m_Colors");
+        for (int i = 0; list != null && i < list.arraySize; i++) {
+            var e = list.GetArrayElementAtIndex(i);
+            if (e.FindPropertyRelative("first").stringValue == name) return e.FindPropertyRelative("second").colorValue;
+        }
+        return dflt;
+    }
+
+    // A data texture (metallic, emission) read as data: linear, no mips,
+    // uncompressed, so the mask pass samples what the file says.
+    static Texture PrepareDataTexture(Texture tex) {
+        var path = AssetDatabase.GetAssetPath(tex);
+        var ti = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (ti == null) return tex;
+        if (ti.sRGBTexture || ti.mipmapEnabled || ti.textureCompression != TextureImporterCompression.Uncompressed) {
+            ti.sRGBTexture = false; ti.mipmapEnabled = false;
+            ti.textureCompression = TextureImporterCompression.Uncompressed; ti.maxTextureSize = 8192;
+            ti.SaveAndReimport();
+        }
+        return Load<Texture2D>(path);
+    }
+
     static Texture2D PrepareIdTexture(string path) {
         var ti = (TextureImporter)AssetImporter.GetAtPath(path);
         if (ti == null) throw new Exception("missing id texture " + path);
@@ -269,22 +315,26 @@ public static class Bake {
         var nMat = new Material(Shader.Find("Hidden/NormalOut"));
         var nMats = original.Select(ms => ms.Select(_ => nMat).ToArray()).ToArray();
         // The mask pass reads each original material's own maps: metallic
-        // (red; its alpha is smoothness) and emission, when the material has
-        // them and, for emission, has it on. A material without a metallic
-        // map is as metallic as its `_Metallic` slider says (0 when it has
-        // none), so a kit without maps bakes as before.
+        // (red; its alpha is smoothness) and emission, when the material
+        // assigns them. The slots are read from the material's saved
+        // properties, not through its shader: the scratch project has no
+        // render pipeline the kit's shaders need, so a kit material has no
+        // live shader here and `HasProperty` would say no to every slot. A
+        // material without a metallic map is as metallic as its `_Metallic`
+        // slider says (0 when it has none), so a kit without maps bakes as
+        // before; emission counts when a map is assigned and the emission
+        // colour is not black.
         var maskOf = new Dictionary<Material, Material>();
         Material MaskFor(Material mat) {
             if (mat == null) return MaskFor(new Material(Shader.Find("Standard")));
             if (maskOf.TryGetValue(mat, out var done)) return done;
             var mm = new Material(Shader.Find("Hidden/MaskOut"));
-            var metalMap = mat.HasProperty("_MetallicGlossMap") ? mat.GetTexture("_MetallicGlossMap") : null;
-            if (metalMap != null) { mm.SetTexture("_MetallicGlossMap", metalMap); mm.SetFloat("_HasMetalMap", 1); }
-            mm.SetFloat("_Metallic", mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic") : 0);
-            var emisMap = mat.HasProperty("_EmissionMap") ? mat.GetTexture("_EmissionMap") : null;
-            var emisOn = mat.IsKeywordEnabled("_EMISSION");
-            if (emisOn && emisMap != null) { mm.SetTexture("_EmissionMap", emisMap); mm.SetFloat("_HasEmisMap", 1); }
-            var ec = emisOn && mat.HasProperty("_EmissionColor") ? mat.GetColor("_EmissionColor") : Color.black;
+            var metalMap = SavedTexture(mat, "_MetallicGlossMap");
+            if (metalMap != null) { mm.SetTexture("_MetallicGlossMap", PrepareDataTexture(metalMap)); mm.SetFloat("_HasMetalMap", 1); }
+            mm.SetFloat("_Metallic", SavedFloat(mat, "_Metallic", 0));
+            var emisMap = SavedTexture(mat, "_EmissionMap");
+            var ec = SavedColor(mat, "_EmissionColor", Color.black);
+            if (emisMap != null && ec.maxColorComponent > 0.01f) { mm.SetTexture("_EmissionMap", PrepareDataTexture(emisMap)); mm.SetFloat("_HasEmisMap", 1); }
             mm.SetColor("_EmissionColor", ec);
             maskOf[mat] = mm;
             return mm;
