@@ -318,6 +318,162 @@
       ]
     },
     {
+      "asset_pack": "Scifi RTS Series Battle Droid (MSGDI)",
+      "bytes": 1279754,
+      "file": "msgdi.bd.droid_flamer.b750f36903f7.mupk",
+      "id": "msgdi.bd.droid_flamer",
+      "prefab": "Prefabs/BattleDroids/Green/BattleDroidGreen.prefab + +FlamerGreen + +UpperLegArmorGreen + +LowerLegArmorGreen + +TorsoEquipment + -Decals + -BackpackGreen + -FrontArmorLvl2Green + -MissileLauncherLeftGreen + -MissileLauncherRightGreen",
+      "sha256": "b750f36903f7a0ceb2f6260bc1d7475899dfe64513e3f713fd1aa0a0363eab6e",
+      "size_cm": [
+        789,
+        870
+      ]
+    },
+    {
+      "asset_pack": "Scifi RTS Series Battle Droid (MSGDI)",
+      "bytes": 1309860,
+      "file": "msgdi.bd.droid_minigun.bc08a4707622.mupk",
+      "id": "msgdi.bd.droid_minigun",
+      "prefab": "Prefabs/BattleDroids/Green/BattleDroidGreen.prefab + +MinigunGreen + +UpperArmArmorGreen + +LowerArmArmorGreen + +UpperLegArmorGreen + +LowerLegArmorGreen + +TorsoEquipment + -Decals + -BackpackJumpjetsGreen + -CannonGreen + -FrontArmorLvl1Green",
+      "sha256": "bc08a47076226a42767363274252d25b2854aee43d0fbee2c6a35f29aab71b15",
+      "size_cm": [
+        779,
+        880
+      ]
+    },
+    {
+      "asset_pack": "Scifi RTS Series Battle Droid (MSGDI)",
+      "bytes": 1078285,
+      "file": "msgdi.bd.droid_rifle.953c58295524.mupk",
+      "id": "msgdi.bd.droid_rifle",
+      "prefab": "Prefabs/BattleDroids/Green/BattleDroidGreen.prefab + +StandardGunsGreen + +TorsoEquipment + -Decals + -BackpackJumpjetsGreen + -CannonGreen + -FrontArmorLvl2Green + -MissileLauncherLeftGreen + -MissileLauncherRightGreen",
+      "sha256": "953c58295524352d1b5a2149c9ec31bf85b8692ba60544b30f4c6020ef751d5b",
+      "size_cm": [
+        771,
+        850
+      ]
+    },
+    {
+      "asset_pack": "Humanoid Mech (MSGDI)",
+      "bytes": 872611,
+      "file": "msgdi.hm.mech_cannon.61a434a91502.mupk",
+      "id": "msgdi.hm.mech_cannon",
+      "prefab": "Prefabs/Mech/Mech1Green.prefab + +WeaponSlotArmGreen + +WeaponSlotArmGreen (1) + +TorsoCannonGreen + +TorsoCannonGreen (1) + -ArmMissileLauncherGreen",
+      "sha256": "61a434a91502d0498965abb4971df2bcd36b48a752eea2d0c4da2cba4ef01f45",
+      "size_cm": [
+        603,
+        1250
+      ]
+    },
+    {
+      "asset_pack": "Humanoid Mech (MSGDI)",
+      "bytes": 821214,
+      "file": "msgdi.hm.mech_missile.85b53337d4b5.mupk",
+      "id": "msgdi.hm.mech_missile",
+      "prefab": "Prefabs/Mech/Mech1Green.prefab + +WeaponSlotArmGreen + +WeaponSlotArmGreen (1) + +MissileLauncherTorsoLeftGreen + +MissileLauncherTorsoRightGreen + +SmallMissileLauncherGreen + +SmallMissileLauncherGreen (1) + -ArmBallisticWeaponGreen",
+      "sha256": "85b53337d4b590d4845653ec1d6051e1809b88166afdb4e43d93ab67c603931f",
+      "size_cm": [
+        652,
+        1250
+      ]
+    },
+    {
+      "asset_pack": "Modular Turrets Pack (MSGDI)",
+      "bytes": 757424,
+      "file": "msgdi.mt.turret_autocannon.0593ce6b6c57.mupk",
+      "id": "msgdi.mt.turret_autocannon",
+      "prefab": "Prefabs/ModularTurrets/ExampleTurret2MasterPrefab.prefab + +Green + -Blue",
+      "sha256": "0593ce6b6c57d878e56d6f512c44b993bad128b9fce11721f409b8121e6c3ed0",
+      "size_cm": [
+        473,
+        350
+      ]
+    },
+    {
+      "asset_pack": "Modular Turrets Pack (MSGDI)",
+      "bytes": 488202,
+      "file": "msgdi.mt.turret_beam.50767e11bc40.mupk",
+      "id": "msgdi.mt.turret_beam",
+      "prefab": "Prefabs/ModularTurrets/ExampleTurret1MasterPrefab.prefab + +Green + -Blue",
+      "sha256": "50767e11bc40ed7d0c438ac02e5be358e4566de0ea18af5e0de8caa92ef9a09e",
+      "size_cm": [
+        527,
+        240
+      ]
+    },
+    {
+      "asset_pack": "Modular Turrets Pack (MSGDI)",
+      "bytes": 1108083,
+      "file": "msgdi.mt.turret_gatling.05561bca98a3.mupk",
+      "id": "msgdi.mt.turret_gatling",
+      "prefab": "Prefabs/ModularTurrets/ExampleTurret4MasterPrefab.prefab + +Green + -Blue",
+      "sha256": "05561bca98a31290cfeb5f270dd88eabc931a35f78b6e58041a8914ddaa72b60",
+      "size_cm": [
+        476,
+        380
+      ]
+    },
+    {
+      "asset_pack": "Modular Turrets Pack (MSGDI)",
+      "bytes": 441185,
+      "file": "msgdi.mt.turret_heavy_cannon.35766f80cb22.mupk",
+      "id": "msgdi.mt.turret_heavy_cannon",
+      "prefab": "Prefabs/ModularTurrets/ExampleTurret3MasterPrefab.prefab + +Green + +Green/Barrels/Barrel1Animated + -Blue + -Green/Barrels/Barrel5Animated",
+      "sha256": "35766f80cb2290450cefd407bee52c79ea7c8f622332f823b1b0cf171543f709",
+      "size_cm": [
+        733,
+        250
+      ]
+    },
+    {
+      "asset_pack": "Modular Turrets Pack (MSGDI)",
+      "bytes": 1097339,
+      "file": "msgdi.mt.turret_missile.aa83fe4e1d97.mupk",
+      "id": "msgdi.mt.turret_missile",
+      "prefab": "Prefabs/ModularTurrets/ExampleTurret2MasterPrefab.prefab + +Green + +Green/Barrels/BarrelMissile + +Green/Barrels (1)/BarrelMissile + -Blue + -Green/Barrels/Barrel1Animated + -Green/Barrels (1)/Barrel1Animated",
+      "sha256": "aa83fe4e1d97f84d27aaf0b679a0d3f7bcb644c7f0bac68d788ffb8c6034a74a",
+      "size_cm": [
+        374,
+        360
+      ]
+    },
+    {
+      "asset_pack": "Scifi RTS Series Mechs (MSGDI)",
+      "bytes": 860795,
+      "file": "msgdi.rts.mech_lvl1.3af3cd456f4d.mupk",
+      "id": "msgdi.rts.mech_lvl1",
+      "prefab": "Prefabs/MechLvl1/Green/MechLvl1Green.prefab + -RTSDecal1",
+      "sha256": "3af3cd456f4d7e035714b850c48e3d91d120abf912ecaee84332db07510354af",
+      "size_cm": [
+        1038,
+        1050
+      ]
+    },
+    {
+      "asset_pack": "Scifi RTS Series Mechs (MSGDI)",
+      "bytes": 899357,
+      "file": "msgdi.rts.mech_lvl2.7054b131ec66.mupk",
+      "id": "msgdi.rts.mech_lvl2",
+      "prefab": "Prefabs/MechLvl2/Green/MechLvl2Green.prefab + -RTSDecal1",
+      "sha256": "7054b131ec660a9e594cd10e14ce2a42ff6db590a5e59538dec1f4ed45d793a3",
+      "size_cm": [
+        1232,
+        1250
+      ]
+    },
+    {
+      "asset_pack": "Scifi RTS Series Mechs (MSGDI)",
+      "bytes": 820135,
+      "file": "msgdi.rts.mech_lvl3.96e17a8d9b75.mupk",
+      "id": "msgdi.rts.mech_lvl3",
+      "prefab": "Prefabs/MechLvl3/Green/MechLvl3Green.prefab + -RTSDecal1",
+      "sha256": "96e17a8d9b7524fce3a8da014824f1bc11f9186215563906c7e561899552a19d",
+      "size_cm": [
+        1629,
+        1480
+      ]
+    },
+    {
       "asset_pack": "Unity built-in primitives",
       "bytes": 455527,
       "file": "prim.sphere_hump.4d58fa91a4bf.mupk",
