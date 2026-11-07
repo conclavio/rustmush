@@ -1,10 +1,13 @@
 // The unit bake (doc 22 D-22-10, cut U.6): one model's bake matrix from one
 // named asset pack — both views (`fp` at 3 degrees down, Q-22-3; `iso` at the
 // 2.5D's 28), eight facings, six poses (still, four moving, the wreck), each
-// rendered orthographic at 384 px three times, a colour-ID pass, a world-normal
-// pass and a mask pass (red the kit's metallic map, green a rubber flag from
-// the material's name, blue the kit's emission map; U.6 follow-up of
-// 2026-11-06, for rubber and lamps) — and
+// rendered orthographic at 384 px five times: a colour-ID pass, a world-normal
+// pass, a mask pass (red the kit's metallic map, green a rubber flag from the
+// material's name, blue the kit's emission map; U.6 follow-up of 2026-11-06,
+// for rubber and lamps), a lit pass (red the unit lit by a key and a fill
+// through the kit's normal map, green its albedo's luminance) and a depth pass
+// (16 bits of eye depth over red and green) — the last two the shade plane's
+// (the same day) — and
 // `meta.json` (format 3): every frame's anchor and muzzles, each view's world
 // span, the model's size and the provenance the pack records.
 //
@@ -346,6 +349,29 @@ public static class Bake {
             return mm;
         }
         var mMats = original.Select(ms => ms.Select(MaskFor).ToArray()).ToArray();
+        // The lit pass lights the kit's real surface: its normal map under a
+        // key light and a fill, and its albedo's luminance for the painted
+        // detail; the depth pass gives the reducer occlusion and part edges.
+        var litOf = new Dictionary<Material, Material>();
+        Material LitFor(Material mat) {
+            if (mat == null) return LitFor(new Material(Shader.Find("Standard")));
+            if (litOf.TryGetValue(mat, out var done)) return done;
+            var lm = new Material(Shader.Find("Hidden/LitOut"));
+            var albedo = SavedTexture(mat, "_BaseMap");
+            if (albedo == null) albedo = SavedTexture(mat, "_MainTex");
+            if (albedo != null) { lm.SetTexture("_MainTex", albedo); lm.SetFloat("_HasAlbedo", 1); }
+            var bump = SavedTexture(mat, "_BumpMap");
+            if (bump != null) { lm.SetTexture("_BumpMap", bump); lm.SetFloat("_HasBump", 1); }
+            litOf[mat] = lm;
+            return lm;
+        }
+        var lMats = original.Select(ms => ms.Select(LitFor).ToArray()).ToArray();
+        var dMat = new Material(Shader.Find("Hidden/DepthOut"));
+        var dMats = original.Select(ms => ms.Select(_ => dMat).ToArray()).ToArray();
+        // The reducer's light, world space (the camera only pitches): upper
+        // left, toward the viewer; the fill low from the other side.
+        Shader.SetGlobalVector("_KeyDir", new Vector4(-0.4f, 0.8f, -0.45f, 0));
+        Shader.SetGlobalVector("_FillDir", new Vector4(0.6f, 0.15f, -0.5f, 0));
 
         // 3. The poses' clips.
         var still = Clip(root, cfg.still);
@@ -404,7 +430,7 @@ public static class Bake {
                     var (clip, t, wreck, tilted) = PoseOf(k);
                     Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted,
                          tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null);
-                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats), ("m", mMats) }) {
+                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats), ("m", mMats), ("l", lMats), ("d", dMats) }) {
                         for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = mats[i];
                         cam.Render();
                         RenderTexture.active = rt;
@@ -443,6 +469,6 @@ public static class Bake {
         meta.Append(",\"views\":[").Append(string.Join(",", views)).Append("]}");
         File.WriteAllText(Path.Combine(outDir, "meta.json"), meta.ToString());
         Debug.Log("BAKE DONE " + cfg.model + ": " + heightCm + " cm tall, " + widthCm + " cm wide, " +
-                  (Views.Length * Facings.Length * Poses.Length * 3) + " renders in " + outDir);
+                  (Views.Length * Facings.Length * Poses.Length * 5) + " renders in " + outDir);
     }
 }

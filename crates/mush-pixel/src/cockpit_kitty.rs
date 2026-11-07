@@ -60,7 +60,7 @@ use crate::cockpit::{
 use crate::frame::{Frame, Rgb};
 use crate::fx::{self, CombatFxKind};
 use crate::heightfield::{self, Terrain};
-use crate::iso25d::{Viewport25D, material_rgb, viewport_25d};
+use crate::iso25d::{Viewport25D, material_rgb_shaded, viewport_25d};
 use crate::kitty::{self, Placement};
 use crate::look::Facing;
 use crate::math::Det as _;
@@ -298,7 +298,8 @@ fn render_fp_sheet_rgba(key: FpSheetKey) -> (usize, usize, Vec<u8>) {
                     let dst_c = dst_x0 + lc;
                     let code = f.code(lc as i64, lr as i64);
                     if let Some(mat) = material_from_code(code) {
-                        let [rr, gg, bb] = material_rgb(mat, col_kind);
+                        let [rr, gg, bb] =
+                            material_rgb_shaded(mat, col_kind, f.shade(lc as i64, lr as i64));
                         let off = (dst_r * sheet_w + dst_c) * 4;
                         if let Some(dst) = rgba.get_mut(off..off + 4) {
                             dst.copy_from_slice(&[rr, gg, bb, 255]);

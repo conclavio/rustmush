@@ -144,8 +144,9 @@ fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
                 let n = usize::from(sized.size);
                 for y in 0..n {
                     for x in 0..n {
+                        let shade = f.shade(x as i64, y as i64);
                         let rgb = match bake::material_from_code(f.code(x as i64, y as i64)) {
-                            Some(m) => colour(m),
+                            Some(m) => bake::shaded_rgb(m, RED, shade),
                             None if (x, y)
                                 == (usize::from(f.anchor.0), usize::from(f.anchor.1)) =>
                             {
@@ -165,6 +166,10 @@ fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
     png::encode_rgba(w, h, &rgba)
 }
 
+/// The red team's tones, the preview's.
+const RED: ([u8; 3], [u8; 3], [u8; 3]) = ([120, 36, 32], [178, 54, 48], [214, 98, 84]);
+
+#[allow(dead_code)]
 fn colour(m: look::Material) -> [u8; 3] {
     match m {
         look::Material::TeamDark => [120, 36, 32],

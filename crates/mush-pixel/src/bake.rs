@@ -48,8 +48,11 @@ pub const FORMAT_MAGIC: [u8; 4] = *b"MUPK";
 /// The pack format's version (version 1 was PR #154's positional `M25D`;
 /// version 2, U.6's, keyed its entries by look id; version 3 by model id,
 /// doc 31 D-31-2; version 4 widened a run's material to four bits for the
-/// three-tone steel, U.6 follow-up of 2026-11-06).
-pub const FORMAT_VERSION: u16 = 4;
+/// three-tone steel, U.6 follow-up of 2026-11-06; version 5, the same day,
+/// gave every pixel a shade beside its material — the shade plane).
+pub const FORMAT_VERSION: u16 = 5;
+/// The shade a text sheet's pixels carry: its tones are in its materials.
+pub const SHEET_SHADE: u8 = 8;
 /// The side of the render every size is reduced from, pixels.
 pub const RENDER_PX: u16 = 384;
 /// The `fp` chain, largest first (Q-22-4: the floor is 8 px; under it the
@@ -213,21 +216,35 @@ pub struct BakedFrame {
     pub height: u8,
     /// Where each weapon's shot leaves, by weapon component id, frame pixels.
     pub muzzles: Vec<(String, (u8, u8))>,
-    /// The box's material codes, row-major: `0` nothing, `1..=11` the
-    /// materials ([`material_from_code`]).
+    /// The box's pixels, row-major: `0` nothing; else the material code
+    /// (`1..=11`, [`material_from_code`]) in the low four bits and the
+    /// **shade** in the high four — `0` the ink line, `1` darkest to `15`
+    /// lightest: the bake's lighting, occlusion and albedo detail, levelled a
+    /// material (format 5, the shade plane).
     pub pixels: Vec<u8>,
 }
 
 impl BakedFrame {
-    /// The material code at frame pixel `(x, y)`; `0` outside the box.
-    #[must_use]
-    pub fn code(&self, x: i64, y: i64) -> u8 {
+    fn byte(&self, x: i64, y: i64) -> u8 {
         let (bx, by) = (x - i64::from(self.x), y - i64::from(self.y));
         if bx < 0 || by < 0 || bx >= i64::from(self.w) || by >= i64::from(self.h) {
             return 0;
         }
         let i = usize::try_from(by * i64::from(self.w) + bx).unwrap_or(usize::MAX);
         self.pixels.get(i).copied().unwrap_or(0)
+    }
+
+    /// The material code at frame pixel `(x, y)`; `0` outside the box.
+    #[must_use]
+    pub fn code(&self, x: i64, y: i64) -> u8 {
+        self.byte(x, y) & 0x0f
+    }
+
+    /// The shade at frame pixel `(x, y)`: `0` the ink line, `1..=15` dark to
+    /// light; `0` outside the box.
+    #[must_use]
+    pub fn shade(&self, x: i64, y: i64) -> u8 {
+        self.byte(x, y) >> 4
     }
 
     /// A frame from a full `n` by `n` grid of codes, tightened to the box of
@@ -644,14 +661,10 @@ fn put_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
-/// **Rule 7's runs**: the box's codes, row-major, as runs, each a material
-/// and a varint length. The material rides in the run's first byte — four
-/// bits of material, the low three bits of the length less one, a
-/// continuation bit — and any further length follows as LEB128 groups of
-/// seven: a run of up to eight is one byte. (A whole byte for the material
-/// measured at twice the size on the shipped art: 3.1 MB against 1.6 MB for
-/// six looks, doc 22 cut notes, U.6. Format 3 gave the material three bits
-/// and the length four; the three-tone steel needed eight materials.)
+/// **Rule 7's runs**: the box's pixels, row-major, as runs, each a pixel
+/// byte (its material and its shade) and a varint length less one: a run of
+/// up to 128 is two bytes. (Format 4 packed the material into the length's
+/// byte; format 5's shade plane fills the byte, so the length has its own.)
 #[must_use]
 pub fn encode_runs(codes: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -660,25 +673,19 @@ pub fn encode_runs(codes: &[u8]) -> Vec<u8> {
         let run = codes
             .get(i..)
             .map_or(1, |rest| rest.iter().take_while(|&&c| c == m).count());
-        let more = run as u64 - 1;
-        let first = (m & 0x0f) | (((more & 0x07) as u8) << 4);
-        if more >> 3 == 0 {
-            out.push(first);
-        } else {
-            out.push(first | 0x80);
-            put_varint(&mut out, more >> 3);
-        }
+        out.push(m);
+        put_varint(&mut out, run as u64 - 1);
         i += run;
     }
     out
 }
 
-/// The codes [`encode_runs`] wrote, exactly `len` of them.
+/// The pixels [`encode_runs`] wrote, exactly `len` of them.
 ///
 /// # Errors
 ///
 /// [`PackError`] when the runs overrun or fall short of `len`, name a
-/// material code past `11`, or end inside a run.
+/// material code past `11`, give nothing a shade, or end inside a run.
 pub fn decode_runs(bytes: &[u8], len: usize) -> Result<Vec<u8>, PackError> {
     let mut out = Vec::with_capacity(len);
     let mut r = Reader { b: bytes, at: 0 };
@@ -688,17 +695,16 @@ pub fn decode_runs(bytes: &[u8], len: usize) -> Result<Vec<u8>, PackError> {
         if m > 11 {
             return refuse(format!("material code {m}"));
         }
-        let mut more = u64::from((b >> 4) & 0x07);
-        if b & 0x80 != 0 {
-            more |= r.varint()? << 3;
+        if m == 0 && b != 0 {
+            return refuse("nothing with a shade");
         }
-        let run = usize::try_from(more)
+        let run = usize::try_from(r.varint()?)
             .unwrap_or(usize::MAX)
             .saturating_add(1);
         if out.len().saturating_add(run) > len {
             return refuse("a frame's runs overrun its box");
         }
-        out.resize(out.len() + run, m);
+        out.resize(out.len() + run, b);
     }
     if out.len() != len {
         return refuse(format!("a frame's runs fill {} of {len}", out.len()));
@@ -725,6 +731,46 @@ pub fn material_from_code(code: u8) -> Option<Material> {
         10 => Some(Material::RubberLight),
         11 => Some(Material::Lamp),
         _ => None,
+    }
+}
+
+/// A material's colour at a shade (format 5), for the pictures that draw
+/// RGB: a family base — the team's colour, steel, rubber — runs a ramp from
+/// an ink (darker than its dark tone) at `0` through its mid tone at `7` to
+/// its light tone at `15`; an explicit tone (a text sheet's) and the fixed
+/// materials are their colour. `team` is the contact's dark, mid and light.
+#[must_use]
+pub fn shaded_rgb(material: Material, team: ([u8; 3], [u8; 3], [u8; 3]), shade: u8) -> [u8; 3] {
+    let lerp = |a: [u8; 3], b: [u8; 3], t: f32| -> [u8; 3] {
+        let mut out = [0u8; 3];
+        for (o, (&x, &y)) in out.iter_mut().zip(a.iter().zip(&b)) {
+            *o = (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+        }
+        out
+    };
+    let ramp = |dark: [u8; 3], mid: [u8; 3], light: [u8; 3]| -> [u8; 3] {
+        let s = f32::from(shade.min(15));
+        let ink = lerp([0, 0, 0], dark, 0.55);
+        if s <= 7.0 {
+            lerp(ink, mid, s / 7.0)
+        } else {
+            lerp(mid, light, (s - 7.0) / 8.0)
+        }
+    };
+    const STEEL: ([u8; 3], [u8; 3], [u8; 3]) = ([84, 88, 96], [118, 124, 132], [160, 164, 170]);
+    const RUBBER: ([u8; 3], [u8; 3], [u8; 3]) = ([30, 29, 28], [52, 50, 48], [88, 86, 82]);
+    match material {
+        Material::Team => ramp(team.0, team.1, team.2),
+        Material::Steel => ramp(STEEL.0, STEEL.1, STEEL.2),
+        Material::Rubber => ramp(RUBBER.0, RUBBER.1, RUBBER.2),
+        Material::TeamDark => team.0,
+        Material::TeamLight => team.2,
+        Material::SteelDark => STEEL.0,
+        Material::SteelLight => STEEL.2,
+        Material::RubberLight => RUBBER.2,
+        Material::Black => [20, 22, 26],
+        Material::Pale => [216, 216, 198],
+        Material::Lamp => [240, 216, 120],
     }
 }
 
@@ -989,7 +1035,7 @@ fn sheet_frame(
                 if let Some(Some(m)) = pixels.get(sy * sw + sx)
                     && let Some(cell) = grid.get_mut((off_y + dy) * n + off_x + dx)
                 {
-                    *cell = code_of(*m);
+                    *cell = code_of(*m) | (SHEET_SHADE << 4);
                 }
             }
         }
@@ -1198,29 +1244,34 @@ mod tests {
     }
 
     #[test]
-    fn runs_round_trip_and_a_short_run_is_one_byte() {
+    fn runs_round_trip_and_a_run_is_two_bytes() {
         let codes: Vec<u8> = (0..500u32)
             .map(|i| match i {
-                0..8 => 1,
+                0..8 => 1 | (9 << 4),
                 8..9 => 0,
-                9..300 => 6,
+                9..300 => 6 | (15 << 4),
                 _ => u8::try_from(i % 9).unwrap(),
             })
             .collect();
         let runs = encode_runs(&codes);
         assert_eq!(decode_runs(&runs, codes.len()).unwrap(), codes);
-        assert_eq!(runs[0], 1 | (7 << 4), "eight ones in one byte");
-        assert_eq!(runs[1], 0, "one nothing in one byte");
-        assert_eq!(runs[2] & 0x80, 0x80, "291 sixes need a second byte");
+        assert_eq!(
+            &runs[..2],
+            &[1 | (9 << 4), 7],
+            "eight shaded ones in two bytes"
+        );
+        assert_eq!(&runs[2..4], &[0, 0], "one nothing");
+        assert_eq!(runs[4], 6 | (15 << 4), "291 pale at the lightest shade");
         assert!(decode_runs(&runs, codes.len() - 1).is_err(), "an overrun");
         assert!(decode_runs(&runs, codes.len() + 1).is_err(), "a short fill");
         assert_eq!(
-            decode_runs(&[11], 1).unwrap(),
+            decode_runs(&[11, 0], 1).unwrap(),
             vec![11],
             "material 11 is the lamp"
         );
-        assert!(decode_runs(&[12], 1).is_err(), "no material 12");
-        assert!(decode_runs(&[0x80], 2).is_err(), "a run cut off");
+        assert!(decode_runs(&[12, 0], 1).is_err(), "no material 12");
+        assert!(decode_runs(&[0x80, 0], 1).is_err(), "nothing with a shade");
+        assert!(decode_runs(&[1], 1).is_err(), "a run cut off");
         assert!(encode_runs(&[]).is_empty());
     }
 

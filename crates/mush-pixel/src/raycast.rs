@@ -1412,6 +1412,7 @@ fn draw_chain(
             }
             let sx = ((x as f32 + 0.5 - left) / k).floor() as i64;
             if let Some(material) = bake::material_from_code(f.code(sx, sy)) {
+                let material = material.toned(f.shade(sx, sy));
                 frame.put(x, y, sprite_colour(shades, at.kind, material, step));
                 drawn.pixels += 1;
                 row = true;

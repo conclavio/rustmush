@@ -113,6 +113,28 @@ impl Material {
     }
 }
 
+impl Material {
+    /// The tone a family base takes at a shade on the first-person stream,
+    /// whose palette has three tones a family: the team's colour, steel and
+    /// rubber pick their dark, mid or light sibling (`0` the ink line, `1`
+    /// darkest, `15` lightest); an explicit tone and the fixed materials pass
+    /// through.
+    #[must_use]
+    pub fn toned(self, shade: u8) -> Material {
+        match self {
+            Material::Team if shade < 5 => Material::TeamDark,
+            Material::Team if shade < 11 => Material::Team,
+            Material::Team => Material::TeamLight,
+            Material::Steel if shade < 5 => Material::SteelDark,
+            Material::Steel if shade < 11 => Material::Steel,
+            Material::Steel => Material::SteelLight,
+            Material::Rubber if shade < 8 => Material::Rubber,
+            Material::Rubber => Material::RubberLight,
+            m => m,
+        }
+    }
+}
+
 /// Which of the eight faces a sprite shows (doc 22 D-22-9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Facing {

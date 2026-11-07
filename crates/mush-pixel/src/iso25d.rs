@@ -235,27 +235,21 @@ impl SheetKey {
     }
 }
 
-pub(crate) fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
-    // Unfogged RGB colours matching raycast::Paint's sprite palette.
-    let (td, tm, tl) = match kind {
+/// A contact's team tones: dark, mid, light — unfogged RGB matching
+/// raycast::Paint's sprite palette.
+pub(crate) fn team_rgb(kind: SpriteKind) -> (Rgb, Rgb, Rgb) {
+    match kind {
         SpriteKind::Hostile => ([120, 36, 32], [178, 54, 48], [214, 98, 84]),
         SpriteKind::Friend => ([40, 78, 140], [64, 124, 204], [118, 166, 228]),
         SpriteKind::Unknown => ([92, 92, 88], [132, 132, 126], [174, 174, 166]),
         SpriteKind::Wreck => ([44, 36, 30], [74, 58, 46], [104, 84, 68]),
-    };
-    match mat {
-        Material::TeamDark => td,
-        Material::Team => tm,
-        Material::TeamLight => tl,
-        Material::Black => [20, 22, 26],
-        Material::SteelDark => [84, 88, 96],
-        Material::Steel => [118, 124, 132],
-        Material::SteelLight => [160, 164, 170],
-        Material::Pale => [216, 216, 198],
-        Material::Rubber => [52, 50, 48],
-        Material::RubberLight => [88, 86, 82],
-        Material::Lamp => [240, 216, 120],
     }
+}
+
+/// A material at a shade (format 5) in a contact's colours: the retained
+/// pictures draw the shade plane's full ramp ([`bake::shaded_rgb`]).
+pub(crate) fn material_rgb_shaded(mat: Material, kind: SpriteKind, shade: u8) -> Rgb {
+    bake::shaded_rgb(mat, team_rgb(kind), shade)
 }
 
 /// The size of shipped look `look`'s `iso` chain at index `size`.
@@ -332,7 +326,8 @@ fn render_sheet_rgba(key: SheetKey) -> (usize, usize, Vec<u8>) {
                     let dst_c = dst_x0 + lc;
                     let code = f.code(lc as i64, lr as i64);
                     if let Some(mat) = material_from_code(code) {
-                        let [rr, gg, bb] = material_rgb(mat, col_kind);
+                        let [rr, gg, bb] =
+                            material_rgb_shaded(mat, col_kind, f.shade(lc as i64, lr as i64));
                         let off = (dst_r * sheet_w + dst_c) * 4;
                         if let Some(dst) = rgba.get_mut(off..off + 4) {
                             dst.copy_from_slice(&[rr, gg, bb, 255]);
@@ -2706,7 +2701,11 @@ impl Iso25DPicture {
                     }
                     let code = f.code(c as i64, r as i64);
                     if let Some(mat) = material_from_code(code) {
-                        out.put(sx, sy, material_rgb(mat, col_kind));
+                        out.put(
+                            sx,
+                            sy,
+                            material_rgb_shaded(mat, col_kind, f.shade(c as i64, r as i64)),
+                        );
                     } else {
                         let adj = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)]
                             .iter()
