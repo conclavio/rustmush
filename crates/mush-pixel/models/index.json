@@ -485,6 +485,150 @@
         700,
         350
       ]
+    },
+    {
+      "asset_pack": "Sci-fi Dropships (3DRT)",
+      "bytes": 764908,
+      "file": "tdrt.ds.dropship_01.1acda7ccb3b2.mupk",
+      "id": "tdrt.ds.dropship_01",
+      "prefab": "Prefabs/ds-01_HI-3ds_Prefab.prefab",
+      "sha256": "1acda7ccb3b2ea33fc91740c8cb4b74e94288f5f5d7e18a5ffd01c6d5fdbb296",
+      "size_cm": [
+        807,
+        380
+      ]
+    },
+    {
+      "asset_pack": "Sci-fi Dropships (3DRT)",
+      "bytes": 873918,
+      "file": "tdrt.ds.dropship_02.01b1d5f99b01.mupk",
+      "id": "tdrt.ds.dropship_02",
+      "prefab": "Prefabs/ds-02_HI-3ds_Prefab.prefab",
+      "sha256": "01b1d5f99b01eeb6181cd5a168d9fb2729205b5ba3b5666b037c3f1bffdbfa98",
+      "size_cm": [
+        558,
+        360
+      ]
+    },
+    {
+      "asset_pack": "Sci-fi Dropships (3DRT)",
+      "bytes": 719834,
+      "file": "tdrt.ds.dropship_03.18c851696790.mupk",
+      "id": "tdrt.ds.dropship_03",
+      "prefab": "Prefabs/ds-03_HI-3ds_Prefab.prefab",
+      "sha256": "18c851696790e44282781ac1b1757ab88e6122fc434de43c3943b5d28cc09c78",
+      "size_cm": [
+        923,
+        400
+      ]
+    },
+    {
+      "asset_pack": "Sci-fi Dropships (3DRT)",
+      "bytes": 809137,
+      "file": "tdrt.ds.dropship_04.b8d76904e67c.mupk",
+      "id": "tdrt.ds.dropship_04",
+      "prefab": "Prefabs/ds-04_HI-3ds_Prefab.prefab",
+      "sha256": "b8d76904e67ca48f945cb40aa611fca26e7797d93110b72b7c670c0089e15d25",
+      "size_cm": [
+        677,
+        380
+      ]
+    },
+    {
+      "asset_pack": "Mech Robots Pack (3DRT)",
+      "bytes": 1953061,
+      "file": "tdrt.mr.mech_01.20b3fea3ff92.mupk",
+      "id": "tdrt.mr.mech_01",
+      "prefab": "Prefabs/mech-01_prefab.prefab + Prefabs/gun-01_prefab on L_gun + Prefabs/gun-02_prefab on R_gun",
+      "sha256": "20b3fea3ff927e2bcdf046a871fa2db842a468991d0200a653e05e796505f2cf",
+      "size_cm": [
+        882,
+        1050
+      ]
+    },
+    {
+      "asset_pack": "Mech Robots Pack (3DRT)",
+      "bytes": 1738292,
+      "file": "tdrt.mr.mech_02.cbe80d309466.mupk",
+      "id": "tdrt.mr.mech_02",
+      "prefab": "Prefabs/mech-02_prefab.prefab + Prefabs/gun-03_prefab on L_gun + Prefabs/gun-04_prefab on R_gun",
+      "sha256": "cbe80d309466e910cb2eb350bdf5e4810ce907bc85e5673e84b81eb4b3174876",
+      "size_cm": [
+        916,
+        1000
+      ]
+    },
+    {
+      "asset_pack": "Mech Robots Pack (3DRT)",
+      "bytes": 1553901,
+      "file": "tdrt.mr.mech_03.41975ecd7adc.mupk",
+      "id": "tdrt.mr.mech_03",
+      "prefab": "Prefabs/mech-03_prefab.prefab + Prefabs/gun-05_prefab on L_gun + Prefabs/gun-06_prefab on R_gun",
+      "sha256": "41975ecd7adc3a9a7cf8283f9283fe85c6e6d8778d958d9b3a5d04bd10aacaaa",
+      "size_cm": [
+        982,
+        1050
+      ]
+    },
+    {
+      "asset_pack": "Mech Robots Pack (3DRT)",
+      "bytes": 1437473,
+      "file": "tdrt.mr.mech_04.d5d7e207c7f4.mupk",
+      "id": "tdrt.mr.mech_04",
+      "prefab": "Prefabs/mech-04_prefab.prefab + Prefabs/gun-07_prefab on L_gun + Prefabs/gun-09_prefab on R_gun",
+      "sha256": "d5d7e207c7f4a387dbaaf96363424064ed0417a2bddb1e27c9305024287d75fe",
+      "size_cm": [
+        1126,
+        1150
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+      "bytes": 1577224,
+      "file": "vf.mech.assault_hvy.6f0652f55af7.mupk",
+      "id": "vf.mech.assault_hvy",
+      "prefab": "Prefabs/Mech4.prefab + Prefabs/HeavyCannonL on HardpointLeftArm + Prefabs/HeavyCannonR on HardpointRightArm + Prefabs/MissilePodL on HardpointLeftShoulder + Prefabs/MissilePodR on HardpointRightShoulder",
+      "sha256": "6f0652f55af7927eb1b4a6f31e3ee687871f2caffb910c95883b727ab16be23e",
+      "size_cm": [
+        845,
+        1200
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+      "bytes": 1523819,
+      "file": "vf.mech.brawler_med.e442a3a440a5.mupk",
+      "id": "vf.mech.brawler_med",
+      "prefab": "Prefabs/Mech2.prefab + Prefabs/FlameThrowerL on HardpointLeftArm + Prefabs/HeavyCannonR on HardpointRightArm + Prefabs/MissilePodR on HardpointRightShoulder",
+      "sha256": "e442a3a440a51a827f483aaa490c8bec7d5881852f362643326b6c701d649379",
+      "size_cm": [
+        914,
+        1050
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+      "bytes": 1299811,
+      "file": "vf.mech.recon_lt.1378ae26ad7a.mupk",
+      "id": "vf.mech.recon_lt",
+      "prefab": "Prefabs/Mech1.prefab + Prefabs/MachinegunL on HardpointLeftArm + Prefabs/LaserCannonR on HardpointRightArm + Prefabs/MissilePodL on HardpointLeftShoulder",
+      "sha256": "1378ae26ad7a91e7e50b2e8e806869f94b696b578715f06805ad5cb2d619af03",
+      "size_cm": [
+        645,
+        950
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+      "bytes": 1493334,
+      "file": "vf.mech.support_hvy.7b12d461dfe4.mupk",
+      "id": "vf.mech.support_hvy",
+      "prefab": "Prefabs/Mech3.prefab + Prefabs/RailgunL on HardpointLeftArm + Prefabs/RailgunR on HardpointRightArm + Prefabs/MissilePodL on HardpointLeftShoulder + Prefabs/MissilePodR on HardpointRightShoulder",
+      "sha256": "7b12d461dfe4b05d342788503fc4ad36c5651e095f4e04f74cd4aa1818f74d41",
+      "size_cm": [
+        849,
+        1150
+      ]
     }
   ]
 }
