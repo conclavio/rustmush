@@ -146,10 +146,12 @@ pub fn reduce(hi: &[u8], res: usize, n: usize) -> Vec<u8> {
         let (y0, y1) = (r * res / n, (r + 1) * res / n);
         for (c, cell) in row.iter_mut().enumerate() {
             let (x0, x1) = (c * res / n, (c + 1) * res / n);
-            let mut counts = [0usize; 7];
+            // One slot a code format 4 can carry (`0..=15`); a vote that
+            // stopped at six collapsed every later material into pale.
+            let mut counts = [0usize; 16];
             for y in y0..y1 {
                 for x in x0..x1 {
-                    let code = usize::from(hi.get(y * res + x).copied().unwrap_or(0)).min(6);
+                    let code = usize::from(hi.get(y * res + x).copied().unwrap_or(0)).min(15);
                     if let Some(k) = counts.get_mut(code) {
                         *k += 1;
                     }
@@ -594,6 +596,17 @@ mod tests {
             Ok(if pass == "id" { id } else { n })
         };
         reduce_bake(&meta, "reducecommit", &mut load).expect("the synthetic bake reduces")
+    }
+
+    #[test]
+    fn reduce_votes_every_material_code() {
+        // A 4x4 render of steel-light (8) with one lamp (11) reduces to a
+        // 2x2 of 8 with the lamp's cell 11: codes past six are not pale.
+        let mut hi = vec![8u8; 16];
+        hi[0] = 11;
+        hi[1] = 11;
+        hi[4] = 11;
+        assert_eq!(reduce(&hi, 4, 2), vec![11, 8, 8, 8]);
     }
 
     #[test]
