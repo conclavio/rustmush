@@ -344,11 +344,15 @@ pub fn reduce(hi: &[u8], res: usize, n: usize) -> Vec<u8> {
                 for x in x0..x1 {
                     let b = hi.get(y * res + x).copied().unwrap_or(0);
                     let code = usize::from(b & 0x0f);
-                    counts[code] += 1;
+                    if let Some(k) = counts.get_mut(code) {
+                        *k += 1;
+                    }
                     if b >> 4 == 0 {
-                        inked[code] += 1;
-                    } else {
-                        shade_sum[code] += usize::from(b >> 4);
+                        if let Some(k) = inked.get_mut(code) {
+                            *k += 1;
+                        }
+                    } else if let Some(k) = shade_sum.get_mut(code) {
+                        *k += usize::from(b >> 4);
                     }
                 }
             }
@@ -364,11 +368,13 @@ pub fn reduce(hi: &[u8], res: usize, n: usize) -> Vec<u8> {
                 }
             }
             let (k, code) = best;
-            let shaded = k - inked[code];
-            let shade = if inked[code] * 10 >= k * INK_TENTHS || shaded == 0 {
+            let ink_k = inked.get(code).copied().unwrap_or(0);
+            let sum = shade_sum.get(code).copied().unwrap_or(0);
+            let shaded = k.saturating_sub(ink_k);
+            let shade = if ink_k * 10 >= k * INK_TENTHS || shaded == 0 {
                 0
             } else {
-                u8::try_from((shade_sum[code] + shaded / 2) / shaded).unwrap_or(15)
+                u8::try_from((sum + shaded / 2) / shaded).unwrap_or(15)
             };
             *cell = u8::try_from(code).unwrap_or(0) | (shade << 4);
         }
@@ -651,7 +657,9 @@ pub fn reduce_bake(
                     if c != 0 {
                         let v = values.get(i).copied().unwrap_or(0.0);
                         let bin = (v / SHADE_SPAN * 255.0).clamp(0.0, 255.0) as usize;
-                        hist[usize::from(c)][bin] += 1;
+                        if let Some(h) = hist.get_mut(usize::from(c)).and_then(|h| h.get_mut(bin)) {
+                            *h += 1;
+                        }
                     }
                 }
                 classified.push(Classified {
@@ -686,8 +694,9 @@ pub fn reduce_bake(
         })
         .collect();
     for f in &classified {
-        let mv = &meta.views[f.view];
-        let facing = Facing::ALL[f.facing];
+        let (Some(mv), Some(&facing)) = (meta.views.get(f.view), Facing::ALL.get(f.facing)) else {
+            continue;
+        };
         let Some(mf) = mv
             .frames
             .iter()
@@ -706,11 +715,15 @@ pub fn reduce_bake(
                     c
                 } else {
                     let v = f.values.get(i).copied().unwrap_or(0.0);
-                    c | (quantise(v, levels[usize::from(c)]) << 4)
+                    let lv = levels.get(usize::from(c)).copied().unwrap_or((0.0, 1.0));
+                    c | (quantise(v, lv) << 4)
                 }
             })
             .collect();
-        for s in &mut chains[f.view].sizes {
+        let Some(chain) = chains.get_mut(f.view) else {
+            continue;
+        };
+        for s in &mut chain.sizes {
             let n = usize::from(s.size);
             let grid = reduce(&hi, res, n);
             let muzzles = mf
@@ -919,9 +932,8 @@ mod tests {
         let res = 16;
         let mut depth = vec![f32::INFINITY; res * res];
         let mut normal = Vec::new();
-        for i in 0..res * res {
-            let x = i % res;
-            depth[i] = if x < 8 { 200.0 } else { 201.0 };
+        for (i, d) in depth.iter_mut().enumerate() {
+            *d = if i % res < 8 { 200.0 } else { 201.0 };
             normal.extend_from_slice(&up);
         }
         let inked = ink(&normal, Some(&depth), res);
