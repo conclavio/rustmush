@@ -29,7 +29,10 @@ pub enum Part {
     /// The main paint: the team's three tones by light.
     Paint,
     /// Secondary panels: steel lit, black in shadow (so bare metal shades
-    /// as metal, not as a hole in the paint).
+    /// as metal, not as a hole in the paint). The cut is the paint's shadow
+    /// cut, 0.35: a face square to the viewer is lit 0.45 under the fixed
+    /// light, and a cut there split every such face between steel and
+    /// black on noise.
     Second,
     /// Dark metal: black.
     Dark,
@@ -98,7 +101,7 @@ pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<
                 Part::Paint if lit > 0.72 => 3,
                 Part::Paint if lit > 0.35 => 2,
                 Part::Paint => 1,
-                Part::Second if lit > 0.45 => 5,
+                Part::Second if lit > 0.35 => 5,
                 Part::Second => 4,
                 Part::Dark => 4,
                 Part::Accent => 3,
