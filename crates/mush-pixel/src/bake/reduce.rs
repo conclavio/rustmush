@@ -9,7 +9,7 @@
 //! The material of a render pixel is its part (the colour-ID pass: three bits
 //! of red, green and blue name the part, [`Part`]) lit by a light fixed to the
 //! viewer, upper left and toward the eye (the normal pass): the main paint into
-//! the three team tones by light, secondary panels steel or team-dark, dark
+//! the three team tones by light, secondary panels steel or black, dark
 //! metal black, accents team-light, lamps and glass pale — the rule the
 //! sprite-vs-voxel PoC's `reduce.py` used, which this replaces.
 //!
@@ -28,7 +28,8 @@ use crate::look::Facing;
 pub enum Part {
     /// The main paint: the team's three tones by light.
     Paint,
-    /// Secondary panels: steel lit, team-dark in shadow.
+    /// Secondary panels: steel lit, black in shadow (so bare metal shades
+    /// as metal, not as a hole in the paint).
     Second,
     /// Dark metal: black.
     Dark,
@@ -98,7 +99,7 @@ pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<
                 Part::Paint if lit > 0.35 => 2,
                 Part::Paint => 1,
                 Part::Second if lit > 0.45 => 5,
-                Part::Second => 1,
+                Part::Second => 4,
                 Part::Dark => 4,
                 Part::Accent => 3,
                 Part::Bright => 6,
@@ -575,6 +576,11 @@ mod tests {
         );
         assert_eq!(codes(px([0, 0, 0], 255), &up), 4, "dark metal: black");
         assert_eq!(codes(px([0, 0, 255], 255), &up), 5, "lit secondary: steel");
+        assert_eq!(
+            codes(px([0, 0, 255], 255), &down),
+            4,
+            "secondary in shadow: black, not team-dark"
+        );
         assert_eq!(codes(px([255, 0, 0], 255), &up), 3, "accent");
         assert_eq!(codes(px([255, 255, 255], 255), &up), 6, "bright: pale");
         assert_eq!(codes(px([0, 255, 0], 0), &up), 0, "transparent");

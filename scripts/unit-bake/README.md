@@ -91,7 +91,7 @@ baked.
 - `crates/mush-pixel/src/bake/reduce.rs` (run by `examples/unit_reduce.rs`) —
   the part (the colour-ID bits) lit by a light fixed to the viewer picks each
   render pixel's material: the main paint into the three team tones by light,
-  secondary panels steel or team-dark, dark metal black, accents team-light,
+  secondary panels steel or black, dark metal black, accents team-light,
   lamps and glass pale. Each size is reduced from the 384 px render as masses
   (a cell drawn at 30 % coverage, its most common material), its frame kept
   as a tight box, its anchor and muzzles scaled.
