@@ -1,9 +1,11 @@
 // The unit bake (doc 22 D-22-10, cut U.6): one model's bake matrix from one
 // named asset pack — both views (`fp` at 3 degrees down, Q-22-3; `iso` at the
 // 2.5D's 28), eight facings, six poses (still, four moving, the wreck), each
-// rendered orthographic at 384 px twice, a colour-ID pass and a world-normal
-// pass — and `meta.json` (format 3): every frame's anchor and muzzles, each
-// view's world span, the model's size and the provenance the pack records.
+// rendered orthographic at 384 px three times, a colour-ID pass, a world-normal
+// pass and a mask pass (red metallic, green smoothness, blue emission, from the
+// kit's own maps; U.6 follow-up of 2026-11-06, for rubber and lamps) — and
+// `meta.json` (format 3): every frame's anchor and muzzles, each view's world
+// span, the model's size and the provenance the pack records.
 //
 // Driven by one per-model config (`scripts/unit-bake/models/<model>.json`) and
 // run by `scripts/unit-bake/bake.sh`, which hands the renders to the reducer
@@ -266,6 +268,28 @@ public static class Bake {
         }
         var nMat = new Material(Shader.Find("Hidden/NormalOut"));
         var nMats = original.Select(ms => ms.Select(_ => nMat).ToArray()).ToArray();
+        // The mask pass reads each original material's own maps: metallic
+        // (red; its alpha is smoothness) and emission, when the material has
+        // them and, for emission, has it on. A material without a metallic
+        // map is as metallic as its `_Metallic` slider says (0 when it has
+        // none), so a kit without maps bakes as before.
+        var maskOf = new Dictionary<Material, Material>();
+        Material MaskFor(Material mat) {
+            if (mat == null) return MaskFor(new Material(Shader.Find("Standard")));
+            if (maskOf.TryGetValue(mat, out var done)) return done;
+            var mm = new Material(Shader.Find("Hidden/MaskOut"));
+            var metalMap = mat.HasProperty("_MetallicGlossMap") ? mat.GetTexture("_MetallicGlossMap") : null;
+            if (metalMap != null) { mm.SetTexture("_MetallicGlossMap", metalMap); mm.SetFloat("_HasMetalMap", 1); }
+            mm.SetFloat("_Metallic", mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic") : 0);
+            var emisMap = mat.HasProperty("_EmissionMap") ? mat.GetTexture("_EmissionMap") : null;
+            var emisOn = mat.IsKeywordEnabled("_EMISSION");
+            if (emisOn && emisMap != null) { mm.SetTexture("_EmissionMap", emisMap); mm.SetFloat("_HasEmisMap", 1); }
+            var ec = emisOn && mat.HasProperty("_EmissionColor") ? mat.GetColor("_EmissionColor") : Color.black;
+            mm.SetColor("_EmissionColor", ec);
+            maskOf[mat] = mm;
+            return mm;
+        }
+        var mMats = original.Select(ms => ms.Select(MaskFor).ToArray()).ToArray();
 
         // 3. The poses' clips.
         var still = Clip(root, cfg.still);
@@ -324,7 +348,7 @@ public static class Bake {
                     var (clip, t, wreck, tilted) = PoseOf(k);
                     Pose(unit, rs, clip, t, yaw + cfg.yaw_offset_deg, lift, wreck, wreck && !tilted,
                          tilted ? cfg.wreck_pose : null, k >= 1 && k <= 4 ? middle : (Vector3?)null);
-                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats) }) {
+                    foreach (var (tag, mats) in new[] { ("id", idMats), ("n", nMats), ("m", mMats) }) {
                         for (int i = 0; i < rs.Length; i++) rs[i].sharedMaterials = mats[i];
                         cam.Render();
                         RenderTexture.active = rt;
@@ -363,6 +387,6 @@ public static class Bake {
         meta.Append(",\"views\":[").Append(string.Join(",", views)).Append("]}");
         File.WriteAllText(Path.Combine(outDir, "meta.json"), meta.ToString());
         Debug.Log("BAKE DONE " + cfg.model + ": " + heightCm + " cm tall, " + widthCm + " cm wide, " +
-                  (Views.Length * Facings.Length * Poses.Length * 2) + " renders in " + outDir);
+                  (Views.Length * Facings.Length * Poses.Length * 3) + " renders in " + outDir);
     }
 }

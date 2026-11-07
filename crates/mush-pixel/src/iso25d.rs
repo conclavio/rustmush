@@ -252,6 +252,9 @@ pub(crate) fn material_rgb(mat: Material, kind: SpriteKind) -> Rgb {
         Material::Steel => [118, 124, 132],
         Material::SteelLight => [160, 164, 170],
         Material::Pale => [216, 216, 198],
+        Material::Rubber => [52, 50, 48],
+        Material::RubberLight => [88, 86, 82],
+        Material::Lamp => [240, 216, 120],
     }
 }
 

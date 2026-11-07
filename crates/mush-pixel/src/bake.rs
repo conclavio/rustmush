@@ -53,8 +53,10 @@ pub const FORMAT_VERSION: u16 = 4;
 /// The side of the render every size is reduced from, pixels.
 pub const RENDER_PX: u16 = 384;
 /// The `fp` chain, largest first (Q-22-4: the floor is 8 px; under it the
-/// bracket alone).
-pub const FP_SIZES: [u16; 8] = [96, 64, 48, 32, 24, 16, 12, 8];
+/// bracket alone). 192 came with the 1280-wide retained picture (U.6
+/// follow-up, 2026-11-06): at twice the width a near contact projects past
+/// 96, and the largest size is what a terminal would otherwise scale up.
+pub const FP_SIZES: [u16; 9] = [192, 96, 64, 48, 32, 24, 16, 12, 8];
 /// The `iso` chain, largest first: every step under 25 %, and 96/80/64/48
 /// halve onto 48/40/32/24, so 0.5× zoom draws the same chain one octave down.
 pub const ISO_SIZES: [u16; 8] = [96, 80, 64, 56, 48, 40, 32, 24];
@@ -116,7 +118,7 @@ impl View {
 
     /// The view's size chain, largest first.
     #[must_use]
-    pub const fn sizes(self) -> &'static [u16; 8] {
+    pub const fn sizes(self) -> &'static [u16] {
         match self {
             View::Fp => &FP_SIZES,
             View::Iso => &ISO_SIZES,
@@ -211,7 +213,7 @@ pub struct BakedFrame {
     pub height: u8,
     /// Where each weapon's shot leaves, by weapon component id, frame pixels.
     pub muzzles: Vec<(String, (u8, u8))>,
-    /// The box's material codes, row-major: `0` nothing, `1..=8` the
+    /// The box's material codes, row-major: `0` nothing, `1..=11` the
     /// materials ([`material_from_code`]).
     pub pixels: Vec<u8>,
 }
@@ -676,14 +678,14 @@ pub fn encode_runs(codes: &[u8]) -> Vec<u8> {
 /// # Errors
 ///
 /// [`PackError`] when the runs overrun or fall short of `len`, name a
-/// material code past `8`, or end inside a run.
+/// material code past `11`, or end inside a run.
 pub fn decode_runs(bytes: &[u8], len: usize) -> Result<Vec<u8>, PackError> {
     let mut out = Vec::with_capacity(len);
     let mut r = Reader { b: bytes, at: 0 };
     while r.at < bytes.len() {
         let b = r.u8()?;
         let m = b & 0x0f;
-        if m > 8 {
+        if m > 11 {
             return refuse(format!("material code {m}"));
         }
         let mut more = u64::from((b >> 4) & 0x07);
@@ -704,8 +706,10 @@ pub fn decode_runs(bytes: &[u8], len: usize) -> Result<Vec<u8>, PackError> {
     Ok(out)
 }
 
-/// The material a pack code names: `1..=8` the eight, anything else nothing
-/// (`7` and `8`, the steel's dark and light tones, came with format 4).
+/// The material a pack code names: `1..=11` the eleven, anything else
+/// nothing (`7` and `8`, the steel's dark and light tones, came with format
+/// 4; `9..=11`, rubber, its light tone and the lamp, with the mask pass the
+/// same day — format 4 has room to `15`).
 #[must_use]
 pub fn material_from_code(code: u8) -> Option<Material> {
     match code {
@@ -717,6 +721,9 @@ pub fn material_from_code(code: u8) -> Option<Material> {
         6 => Some(Material::Pale),
         7 => Some(Material::SteelDark),
         8 => Some(Material::SteelLight),
+        9 => Some(Material::Rubber),
+        10 => Some(Material::RubberLight),
+        11 => Some(Material::Lamp),
         _ => None,
     }
 }
@@ -733,6 +740,9 @@ pub fn code_of(material: Material) -> u8 {
         Material::Pale => 6,
         Material::SteelDark => 7,
         Material::SteelLight => 8,
+        Material::Rubber => 9,
+        Material::RubberLight => 10,
+        Material::Lamp => 11,
     }
 }
 
@@ -1205,11 +1215,11 @@ mod tests {
         assert!(decode_runs(&runs, codes.len() - 1).is_err(), "an overrun");
         assert!(decode_runs(&runs, codes.len() + 1).is_err(), "a short fill");
         assert_eq!(
-            decode_runs(&[8], 1).unwrap(),
-            vec![8],
-            "material 8 is steel-light"
+            decode_runs(&[11], 1).unwrap(),
+            vec![11],
+            "material 11 is the lamp"
         );
-        assert!(decode_runs(&[9], 1).is_err(), "no material 9");
+        assert!(decode_runs(&[12], 1).is_err(), "no material 12");
         assert!(decode_runs(&[0x80], 2).is_err(), "a run cut off");
         assert!(encode_runs(&[]).is_empty());
     }
@@ -1257,7 +1267,7 @@ mod tests {
         assert!(Pack::decode(&v2).unwrap_err().0.contains("version 2"));
         let mut wide = Pack::default();
         let mut e = block_entry("drone", (250, 100));
-        e.chains[0].sizes[7].frames[0].w = 9;
+        e.chains[0].sizes[8].frames[0].w = 9;
         wide.put(e);
         assert!(
             Pack::decode(&wide.encode()).is_err(),
@@ -1273,7 +1283,7 @@ mod tests {
         assert_eq!(fp.pick(3.3).unwrap().1.size, 48);
         assert_eq!(fp.pick(3.2).unwrap().1.size, 32);
         assert_eq!(fp.pick(0.1).unwrap().1.size, 8, "the floor");
-        assert_eq!(fp.pick(50.0).unwrap().1.size, 96, "past the largest");
+        assert_eq!(fp.pick(50.0).unwrap().1.size, 192, "past the largest");
         let iso = e.chain(View::Iso).unwrap();
         assert_eq!(iso.pick(7.0).unwrap().1.size, 80);
         assert_eq!(

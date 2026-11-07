@@ -10,9 +10,13 @@
 //! of red, green and blue name the part, [`Part`]) lit by a light fixed to the
 //! viewer, upper left and toward the eye (the normal pass): the main paint into
 //! the three team tones by light, secondary panels into the three steel
-//! tones by the same cuts, dark metal black, accents team-light, lamps and
-//! glass pale — the sprite-vs-voxel PoC's `reduce.py` rule, with the steel
-//! given the paint's modelling (U.6 follow-up, 2026-11-06).
+//! tones by the same cuts, dark metal black, accents team-light, glass pale
+//! — the sprite-vs-voxel PoC's `reduce.py` rule, with the steel given the
+//! paint's modelling (U.6 follow-up, 2026-11-06). The **mask pass** (`_m`,
+//! the same day; red metallic, green smoothness, blue emission, from the
+//! kit's own maps) refines that: a secondary pixel the kit says is not metal
+//! is rubber, in two tones, and any pixel the kit lights is a lamp. A bake
+//! without the pass reduces as before.
 //!
 //! `examples/unit_reduce.rs` runs it over a bake directory and writes the
 //! pack; `scripts/unit-bake/bake.sh` runs the bake and then it.
@@ -74,22 +78,30 @@ pub const DEFAULT_ID_CLASSES: [Part; 8] = [
 /// be, in tenths: three (masses, and thin parts survive).
 const COVERAGE_TENTHS: usize = 3;
 
-/// Classify one render: each pixel's pack code (`0` nothing, `1..=6` the
+/// Classify one render: each pixel's pack code (`0` nothing, `1..=11` the
 /// materials) from its colour-ID and world-normal pixels (RGBA, the same
-/// size), with the part table `classes`.
+/// size), the mask pixels when the bake has them (red metallic, blue
+/// emission), with the part table `classes`.
 #[must_use]
-pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<u8> {
+pub fn classify(
+    id_rgba: &[u8],
+    normal_rgba: &[u8],
+    mask_rgba: Option<&[u8]>,
+    classes: &[Part; 8],
+) -> Vec<u8> {
     // Viewer-relative light: upper left, toward the viewer (the camera looks
     // along +Z), normalised.
     let (lx, ly, lz) = (-0.4f32, 0.8f32, -0.45f32);
     let len = (lx * lx + ly * ly + lz * lz).sqrt();
     let light = [lx / len, ly / len, lz / len];
+    let mask = mask_rgba.map(|m| m.as_chunks::<4>().0);
     id_rgba
         .as_chunks::<4>()
         .0
         .iter()
         .zip(normal_rgba.as_chunks::<4>().0)
-        .map(|(&[r, g, b, a], &[nx, ny, nz, _])| {
+        .enumerate()
+        .map(|(i, (&[r, g, b, a], &[nx, ny, nz, _]))| {
             if a <= 127 {
                 return 0;
             }
@@ -97,10 +109,16 @@ pub fn classify(id_rgba: &[u8], normal_rgba: &[u8], classes: &[Part; 8]) -> Vec<
             let unit = |v: u8| f32::from(v) / 255.0 * 2.0 - 1.0;
             let lit =
                 (unit(nx) * light[0] + unit(ny) * light[1] + unit(nz) * light[2]).clamp(0.0, 1.0);
+            let (metal, emission) = mask
+                .and_then(|m| m.get(i))
+                .map_or((true, false), |&[mt, _, em, _]| (mt > 127, em > 64));
             match classes.get(bits).copied().unwrap_or(Part::Dark) {
+                _ if emission => 11,
                 Part::Paint if lit > 0.72 => 3,
                 Part::Paint if lit > 0.35 => 2,
                 Part::Paint => 1,
+                Part::Second if !metal && lit > 0.5 => 10,
+                Part::Second if !metal => 9,
                 Part::Second if lit > 0.72 => 8,
                 Part::Second if lit > 0.35 => 5,
                 Part::Second => 7,
@@ -411,7 +429,14 @@ pub fn reduce_bake(
                     Ok(rgba)
                 };
                 let (id, normal) = (pass("id")?, pass("n")?);
-                let hi = classify(&id, &normal, &meta.id_classes);
+                // The mask pass is optional: a bake from before it has none.
+                let mask_name = render_name(mv.view, facing, pose, "m");
+                let mask = match load(&mask_name) {
+                    Ok(rgba) if rgba.len() == res * res * 4 => Some(rgba),
+                    Ok(_) => return Err(format!("{mask_name}: not {res}x{res}")),
+                    Err(_) => None,
+                };
+                let hi = classify(&id, &normal, mask.as_deref(), &meta.id_classes);
                 for s in &mut sizes {
                     let n = usize::from(s.size);
                     let grid = reduce(&hi, res, n);
@@ -560,6 +585,9 @@ mod tests {
                 .position(|f| f.as_str() == facing_word)
                 .ok_or("facing")?;
             let pose = POSES.iter().position(|p| *p == pose_word).ok_or("pose")?;
+            if pass == "m" {
+                return Err("the synthetic bake has no mask pass".into());
+            }
             let (id, n) = render(view, facing, pose);
             Ok(if pass == "id" { id } else { n })
         };
@@ -571,7 +599,7 @@ mod tests {
         let px = |rgb: [u8; 3], a: u8| vec![rgb[0], rgb[1], rgb[2], a];
         let up = px([128, 255, 128], 255);
         let down = px([128, 0, 128], 255);
-        let codes = |id: Vec<u8>, n: &Vec<u8>| classify(&id, n, &DEFAULT_ID_CLASSES)[0];
+        let codes = |id: Vec<u8>, n: &Vec<u8>| classify(&id, n, None, &DEFAULT_ID_CLASSES)[0];
         assert_eq!(codes(px([0, 255, 0], 255), &up), 3, "lit paint: team-light");
         assert_eq!(
             codes(px([0, 255, 0], 255), &down),
@@ -592,6 +620,34 @@ mod tests {
         assert_eq!(codes(px([255, 0, 0], 255), &up), 3, "accent");
         assert_eq!(codes(px([255, 255, 255], 255), &up), 6, "bright: pale");
         assert_eq!(codes(px([0, 255, 0], 0), &up), 0, "transparent");
+        // The mask pass: a secondary pixel the kit says is not metal is
+        // rubber, lit or not; a lit pixel is a lamp whatever its part.
+        let masked = |id: Vec<u8>, n: &Vec<u8>, m: Vec<u8>| {
+            classify(&id, n, Some(&m), &DEFAULT_ID_CLASSES)[0]
+        };
+        let non_metal = px([0, 0, 0], 255);
+        let metal = px([255, 0, 0], 255);
+        let lamp = px([255, 0, 255], 255);
+        assert_eq!(
+            masked(px([0, 0, 255], 255), &up, non_metal.clone()),
+            10,
+            "lit rubber"
+        );
+        assert_eq!(
+            masked(px([0, 0, 255], 255), &down, non_metal),
+            9,
+            "rubber in shadow"
+        );
+        assert_eq!(
+            masked(px([0, 0, 255], 255), &up, metal),
+            8,
+            "metal stays steel"
+        );
+        assert_eq!(
+            masked(px([0, 255, 0], 255), &up, lamp),
+            11,
+            "a lit pixel is a lamp"
+        );
     }
 
     #[test]
@@ -649,12 +705,16 @@ mod tests {
         // Rule 1: the 8 px frame is the render reduced to 8, not the 12 px
         // frame reduced again.
         let (id, n) = render(View::Fp, 0, 0);
-        let hi = classify(&id, &n, &DEFAULT_ID_CLASSES);
+        let hi = classify(&id, &n, None, &DEFAULT_ID_CLASSES);
         let direct = BakedFrame::from_grid(&reduce(&hi, RES, 8), 8, (4, 6), Vec::new());
-        let eight = fp.sizes[7].frame(Facing::Front, 0).unwrap();
+        let eight = fp.sizes[8].frame(Facing::Front, 0).unwrap();
         assert_eq!(eight.pixels, direct.pixels);
-        // The marks scale with the size; the iso view shows more roof.
-        let big = fp.sizes[0].frame(Facing::Front, 0).unwrap();
+        // The marks scale with the size (the 192 px frame is the render at
+        // 2:1); the iso view shows more roof.
+        let biggest = fp.sizes[0].frame(Facing::Front, 0).unwrap();
+        assert_eq!(biggest.anchor, (96, 144));
+        assert_eq!(biggest.muzzles, vec![("cannon".to_string(), (164, 88))]);
+        let big = fp.sizes[1].frame(Facing::Front, 0).unwrap();
         assert_eq!(big.anchor, (48, 72));
         assert_eq!(big.muzzles, vec![("cannon".to_string(), (82, 44))]);
         let lit = |f: &BakedFrame| f.pixels.iter().filter(|&&c| c == 3).count();

@@ -123,10 +123,11 @@ fn run() -> Result<(), String> {
 }
 
 /// Every size's still front, right, rear and left, the `fp` chain above the
-/// `iso`, a 104 px cell each, in the red team's colours over a dark ground.
+/// `iso`, a cell the largest size plus eight each, in the red team's colours
+/// over a dark ground.
 fn preview_png(entry: &bake::ModelBake) -> Vec<u8> {
     let facings = [Facing::Front, Facing::Right, Facing::Rear, Facing::Left];
-    let cell = 104usize;
+    let cell = usize::from(bake::FP_SIZES[0].max(bake::ISO_SIZES[0])) + 8;
     let sizes = bake::FP_SIZES.len();
     let (w, h) = (cell * facings.len() * 2, cell * sizes);
     let mut rgba = [40u8, 44, 40, 255].repeat(w * h);
@@ -174,5 +175,8 @@ fn colour(m: look::Material) -> [u8; 3] {
         look::Material::Steel => [118, 124, 132],
         look::Material::SteelLight => [160, 164, 170],
         look::Material::Pale => [216, 216, 198],
+        look::Material::Rubber => [52, 50, 48],
+        look::Material::RubberLight => [88, 86, 82],
+        look::Material::Lamp => [240, 216, 120],
     }
 }
