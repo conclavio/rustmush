@@ -151,6 +151,28 @@ the pipeline.
   tighter frame than the turning circle, would be a doc 22 decision); the kitty compositor's
   follow-ups from the PR #154 review (doc 30 WG.6).
 
+## U.6 follow-up (2026-11-06) — shadowed steel is black
+
+The owner, reviewing a wider bake pre-commit: the tanks' red read as finished and the grey as
+"a lack of colour". The cause is the reducer's rule for the kit's secondary class, which covers
+most of a vehicle's chassis: one flat steel tone where lit and **team-dark** in shadow, so grey
+had no shading of its own and its shadow side turned red — holes in the paint, not bare metal.
+`bake::reduce::classify` now sends shadowed secondary panels to **black** (the dark-metal
+code), so metal shades as metal, and the cut moves from 0.45 to the paint's 0.35: under the fixed
+viewer light a face square to the viewer is lit exactly 0.45, so the old cut split every such face
+between steel and black on noise (the mottled hull sides in the first rebake's `iso` frames;
+measured on `mc.st.tank_lvl1`: 42 % of the right facing's secondary pixels sit in the 0.4
+decile). Tried and dropped: `pale` as a highlight on lit steel, at 0.9 (white specks) and at 0.72
+(a cream hull that out-shouts the paint). What remains is one flat grey over most of a vehicle:
+the paint reads because it has three tones and steel has one. The palette already holds a grey
+triple (the unknown team's `GreyDark`/`Grey`/`GreyLight`), so a two-tone or three-tone steel is
+two pack material codes and the pictures' material maps, not new colours — a doc 22 decision.
+The six models rebaked (208,503 / 181,431 / 178,923 / 207,002 / 191,256 / 77,381 bytes; the
+matrix check holds on each), the line-ups under `images/22-u6/` re-rendered, the web golden
+re-blessed. The alternatives, not taken: the model config's `id_classes` sending the secondary
+slot to `paint` (an all-team chassis), or a second grey in the palette (six fogged entries the
+256-colour budget does not have).
+
 ## D-22-9 format & 8-way sensor facing (2026-10-28)
 
 - **Sheet format & parser (`mush_pixel::look`)**: `SPRITE_MAX` raised from `64` to `96`; `Facing` expanded to all eight directions (`Front`, `FrontRight`, `Right`, `RearRight`, `Rear`, `RearLeft`, `Left`, `FrontLeft`) in clockwise 45° order with `Facing::ALL`, `Facing::named`, `Facing::from_aspect`, `Facing::as_str`, and `Facing::cardinal`. `Look::parse` accepts all eight facings (requiring all eight when any diagonal is present, while keeping 3/4-facing hand-drawn sheets valid), optional per-facing `"wreck"` inside each facing object, and up to eight top-level `"wreck"` frames. `Sheet::frame` and `Sheet::wreck_frame` resolve exact diagonal frames on 8-facing sheets and fall back to `facing.cardinal()` on 3/4-facing sheets.
