@@ -1,0 +1,48 @@
+{
+  "model": "mc.st.spider_med",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Legs_Spider_Med.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Gunbot",
+      "mount": "Mount_Top",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl3",
+      "mount": "Mount_Weapon_R",
+      "parent": "Cockpit_Gunbot"
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl3",
+      "mount": "Mount_Weapon_L",
+      "parent": "Cockpit_Gunbot"
+    }
+  ],
+  "still": {
+    "file": "Animations/Legs_Spider_Med@Legs_Spider_Med_Idle.fbx",
+    "name": "Legs_Spider_Med_Idle"
+  },
+  "moving": {
+    "file": "Animations/Legs_Spider_Med@Legs_Spider_Med_Walk.fbx",
+    "name": "Legs_Spider_Med_Walk"
+  },
+  "wreck": {
+    "file": "Animations/Legs_Spider_Med@Legs_Spider_Med_Death.fbx",
+    "name": "Legs_Spider_Med_Death"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_DoubleGun_lvl3/Barrel_End_1",
+      "weapon": "autocannon"
+    }
+  ],
+  "size_cm": [
+    480,
+    260
+  ]
+}

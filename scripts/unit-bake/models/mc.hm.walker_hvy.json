@@ -1,0 +1,67 @@
+{
+  "model": "mc.hm.walker_hvy",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Humanoid Robots (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Humanoid Robots.unitypackage",
+  "root": "Assets/Mech_Constructor_Humanoids/",
+  "id_texture": "Materials/MC_Humanoids_X_Color_ID.png",
+  "id_classes": ["second", "second", "paint", "bright", "accent", "bright", "bright", "bright"],
+  "prefab": "Prefabs/Walkers/Mech_Walker_Full_Hvy.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Cockpit_Rhino_No_Interior",
+      "mount": "Mount_Cockpit",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_Shotgun_Lvl5",
+      "mount": "Mount_Weapon_R",
+      "parent": "Cockpit_Rhino_No_Interior"
+    },
+    {
+      "prefab": "Prefabs/Gadgets/Gadget_Weapon_Minigun_Lvl3",
+      "mount": "Mount_Weapon_L",
+      "parent": "Cockpit_Rhino_No_Interior"
+    },
+    {
+      "prefab": "Prefabs/Gadgets/Gadget_Weapon_Launcher",
+      "mount": "Mount_Weapon_Top",
+      "parent": "Cockpit_Rhino_No_Interior"
+    },
+    {
+      "prefab": "Prefabs/Backpack_Box",
+      "mount": "Mount_Backpack",
+      "parent": "Cockpit_Rhino_No_Interior"
+    }
+  ],
+  "still": {
+    "file": "Animations/Mech_Walker@Walker_Idle.fbx",
+    "name": "Walker_Idle"
+  },
+  "moving": {
+    "file": "Animations/Mech_Walker@Walker_Walk.fbx",
+    "name": "Walker_Walk"
+  },
+  "wreck": {
+    "file": "Animations/Mech_Walker@Walker_Die.fbx",
+    "name": "Walker_Die"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_Shotgun_Lvl5/Barrel_End",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Gadget_Weapon_Minigun_Lvl3/Barrel_End_1",
+      "weapon": "autocannon"
+    },
+    {
+      "locator": "Gadget_Weapon_Launcher/Barrel_End",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    640,
+    1300
+  ]
+}

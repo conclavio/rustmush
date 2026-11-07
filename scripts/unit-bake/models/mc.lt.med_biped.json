@@ -1,0 +1,62 @@
+{
+  "model": "mc.lt.med_biped",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Light and Medium Robots (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Light and Medium Robots.unitypackage",
+  "root": "Assets/Mech_Constructor_LtMed/",
+  "id_texture": "Materials/MC_LtMed_X_Color_ID.png",
+  "prefab": "Prefabs/Legs_Med.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Shoulders_med_shield",
+      "mount": "Mount_top",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Cockpit_tractor",
+      "mount": "Mount_cockpit",
+      "parent": "Shoulders_med_shield"
+    },
+    {
+      "prefab": "Prefabs/Weapon_cannon_lvl4",
+      "mount": "Mount_Weapon_R",
+      "parent": "Shoulders_med_shield"
+    },
+    {
+      "prefab": "Prefabs/Weapons_minigun_lvl3",
+      "mount": "Mount_Weapon_L",
+      "parent": "Shoulders_med_shield"
+    },
+    {
+      "prefab": "Prefabs/Weapon_rockets_2x_lvl3",
+      "mount": "Mount_Shoulder_rockets_lvl2_R",
+      "parent": "Shoulders_med_shield"
+    }
+  ],
+  "still": {
+    "file": "Animations/Legs_Med@Legs_Med_idle.fbx",
+    "name": "Legs_Med_idle_simple"
+  },
+  "moving": {
+    "file": "Animations/Legs_Med@Legs_Med_walk.fbx",
+    "name": "Legs_Med_walk"
+  },
+  "wreck": {
+    "file": "Animations/Legs_Med@Legs_Med_fall_back.fbx",
+    "name": "Legs_Med_fall_back"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_cannon_lvl4/Barrel_end",
+      "weapon": "cannon"
+    },
+    {
+      "locator": "Weapons_minigun_lvl3/Barrel_end",
+      "weapon": "machine_gun"
+    }
+  ],
+  "size_cm": [
+    580,
+    1200
+  ]
+}

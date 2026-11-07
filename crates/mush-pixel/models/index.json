@@ -1,6 +1,78 @@
 {
   "models": [
     {
+      "asset_pack": "Mech Constructor: Humanoid Robots (Slava Z)",
+      "bytes": 1172104,
+      "file": "mc.hm.walker_hvy.6c07bba549c4.mupk",
+      "id": "mc.hm.walker_hvy",
+      "prefab": "Prefabs/Walkers/Mech_Walker_Full_Hvy.prefab + Prefabs/Cockpit_Rhino_No_Interior on Mount_Cockpit + Prefabs/Weapon_Shotgun_Lvl5 on Mount_Weapon_R + Prefabs/Gadgets/Gadget_Weapon_Minigun_Lvl3 on Mount_Weapon_L + Prefabs/Gadgets/Gadget_Weapon_Launcher on Mount_Weapon_Top + Prefabs/Backpack_Box on Mount_Backpack",
+      "sha256": "6c07bba549c4fed90927921a92525dc875a9e1e897234fe9771e41ac4dbfd31b",
+      "size_cm": [
+        1229,
+        1300
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Humanoid Robots (Slava Z)",
+      "bytes": 964683,
+      "file": "mc.hm.walker_lt.ff44cf933827.mupk",
+      "id": "mc.hm.walker_lt",
+      "prefab": "Prefabs/Walkers/Mech_Walker_Full_Lt.prefab + Prefabs/Cockpit_Trooper on Mount_Cockpit + Prefabs/Weapon_Shotgun_Lvl2 on Mount_Weapon_R + Prefabs/Gadgets/Gadget_Weapon_Minigun_Lvl2 on Mount_Weapon_L + Prefabs/Gadgets/Gadget_Hand_Gun on Mount_Hand_R",
+      "sha256": "ff44cf933827670b744635819a195d168f9d5c4f4caca0316e2e0e32b33e82e4",
+      "size_cm": [
+        1006,
+        1050
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Humanoid Robots (Slava Z)",
+      "bytes": 1103284,
+      "file": "mc.hm.walker_med.bc3eceb50f11.mupk",
+      "id": "mc.hm.walker_med",
+      "prefab": "Prefabs/Walkers/Mech_Walker_Full_Med.prefab + Prefabs/Cockpit_Bulldog on Mount_Cockpit + Prefabs/Weapon_Shotgun_Lvl3 on Mount_Weapon_R + Prefabs/Gadgets/Gadget_Weapon_Launcher on Mount_Weapon_L + Prefabs/Backpack_Radar on Mount_Backpack",
+      "sha256": "bc3eceb50f11cfd79ec754a60aa277eaa0c2614fc4c553c80c85fe0495f0f2c4",
+      "size_cm": [
+        950,
+        1180
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Heavy Robot (Slava Z)",
+      "bytes": 1524783,
+      "file": "mc.hv.assault_biped.cb52d7417c0c.mupk",
+      "id": "mc.hv.assault_biped",
+      "prefab": "Prefabs/Legs_Heavy_lvl3.prefab + Prefabs/Shoulders_Heavy_lvl3 on Mount_top + Prefabs/Cockpit_Heavy on Mount_cockpit + Prefabs/Weapon_Flak_2x_Lvl4 on Mount_Weapon_R + Prefabs/Weapon_Flak_1x_Lvl5 on Mount_Weapon_L + Prefabs/Weapon_BigRocket_Combined/Weapon_BigRocket_combined_lvl4 on Mount_Rockets_shoulder_L",
+      "sha256": "cb52d7417c0c740424df3bacda5c7c4438c983ae9943bd2e927188e643d120bc",
+      "size_cm": [
+        1244,
+        1400
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Heavy Robot (Slava Z)",
+      "bytes": 1250289,
+      "file": "mc.hv.heavy_biped.aaeab3146b4a.mupk",
+      "id": "mc.hv.heavy_biped",
+      "prefab": "Prefabs/Legs_Heavy_lvl2.prefab + Prefabs/Shoulders_Heavy_lvl2 on Mount_top + Prefabs/Cockpit_Heavy on Mount_cockpit + Prefabs/Weapon_Flak_1x_Lvl3 on Mount_Weapon_R + Prefabs/Weapon_Flak_2x_Lvl2 on Mount_Weapon_L + Prefabs/Weapon_BigRocket_lvl3 on Mount_Rockets_shoulder_R",
+      "sha256": "aaeab3146b4aefbbb33f1cb69f27c7581fe0fa88af98d0a92517bb24a5fa4694",
+      "size_cm": [
+        1184,
+        1300
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Light and Medium Robots (Slava Z)",
+      "bytes": 1268669,
+      "file": "mc.lt.chicken_biped.74f285d0d4c1.mupk",
+      "id": "mc.lt.chicken_biped",
+      "prefab": "Prefabs/Legs_LtMed.prefab + Prefabs/Cockpit_jet_upgrade on Mount_top + Prefabs/Weapon_laser_lvl3 on Mount_Weapon_R + Prefabs/Weapon_machinegun_lvl3 on Mount_Weapon_L + Prefabs/Weapon_rockets_shoulder_lvl2 on Mount_Weapon_top",
+      "sha256": "74f285d0d4c188da5b1ac4ea4b26abaa10bae4642458b7d99bc72b0631f15c17",
+      "size_cm": [
+        903,
+        1050
+      ]
+    },
+    {
       "asset_pack": "Mech Constructor: Light and Medium Robots (Slava Z)",
       "bytes": 1121682,
       "file": "mc.lt.fox_biped.733fbe859942.mupk",
@@ -11,6 +83,18 @@
       "size_cm": [
         963,
         1100
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Light and Medium Robots (Slava Z)",
+      "bytes": 1297198,
+      "file": "mc.lt.med_biped.47a6bfa0d625.mupk",
+      "id": "mc.lt.med_biped",
+      "prefab": "Prefabs/Legs_Med.prefab + Prefabs/Shoulders_med_shield on Mount_top + Prefabs/Cockpit_tractor on Mount_cockpit + Prefabs/Weapon_cannon_lvl4 on Mount_Weapon_R + Prefabs/Weapons_minigun_lvl3 on Mount_Weapon_L + Prefabs/Weapon_rockets_2x_lvl3 on Mount_Shoulder_rockets_lvl2_R",
+      "sha256": "47a6bfa0d625244a86f398c931fa7b347a161d72ac2575ad0f84fd0aea30c8b6",
+      "size_cm": [
+        985,
+        1200
       ]
     },
     {
@@ -28,6 +112,30 @@
     },
     {
       "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 952382,
+      "file": "mc.st.buggy_lvl3.e5190916d989.mupk",
+      "id": "mc.st.buggy_lvl3",
+      "prefab": "Prefabs/Buggies/Buggy_Chassis_Lvl3.prefab + Prefabs/Buggies/Buggy_Wheel_Tractor_Front on Mount_Wheel_FL + Prefabs/Buggies/Buggy_Wheel_Tractor_Front on Mount_Wheel_FR + Prefabs/Buggies/Buggy_Wheel_Tractor_Rear on Mount_Wheel_RL + Prefabs/Buggies/Buggy_Wheel_Tractor_Rear on Mount_Wheel_RR + Prefabs/Cockpit_Gun_Flat_Full on Mount_Cockpit + Prefabs/Weapon_DoubleGun_lvl4 on Mount_Weapon_Main + Prefabs/Weapon_GLauncher_lvl1 on Mount_HalfShoulder_R",
+      "sha256": "e5190916d98908be9055f82aa74bfbb3818b98be49d01d14b623c45964aef0c1",
+      "size_cm": [
+        464,
+        260
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 1082056,
+      "file": "mc.st.carrier_lvl2.2ae1db0e23bc.mupk",
+      "id": "mc.st.carrier_lvl2",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Carrier_Lvl2 on Mount_Chassis + Prefabs/Cockpit_Gun_Flat_Part on Mount_Top + Prefabs/Weapon_DoubleGun_lvl3 on Mount_Weapon_Main + Prefabs/Weapon_GLauncher_lvl2 on Mount_HalfShoulder_R + Prefabs/Backpack_Tank_Hvy on Mount_Backpack_Med",
+      "sha256": "2ae1db0e23bc4d48e4432fc2140a6285f72af5264d91c0d7ae03e29c17c0019b",
+      "size_cm": [
+        446,
+        270
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
       "bytes": 865843,
       "file": "mc.st.spider_flybot.084472a1cdc3.mupk",
       "id": "mc.st.spider_flybot",
@@ -37,6 +145,54 @@
       "size_cm": [
         136,
         100
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 949668,
+      "file": "mc.st.spider_hvy.9a268f08977d.mupk",
+      "id": "mc.st.spider_hvy",
+      "prefab": "Prefabs/Legs_Spider_Hvy.prefab + Prefabs/Cockpit_Gun_Flat_Full on Mount_Top + Prefabs/Weapon_Sniper_lvl4 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl2 on Mount_HalfShoulder_R + Prefabs/Weapon_GLauncher_lvl2 on Mount_HalfShoulder_L",
+      "sha256": "9a268f08977d0c2d16c595af69652b5ee4db881cf17c4574c1829f287ffaa506",
+      "size_cm": [
+        514,
+        340
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 866877,
+      "file": "mc.st.spider_med.d2c3717c1afc.mupk",
+      "id": "mc.st.spider_med",
+      "prefab": "Prefabs/Legs_Spider_Med.prefab + Prefabs/Cockpit_Gunbot on Mount_Top + Prefabs/Weapon_DoubleGun_lvl3 on Mount_Weapon_R + Prefabs/Weapon_DoubleGun_lvl3 on Mount_Weapon_L",
+      "sha256": "d2c3717c1afcd871c6c35ce00f46070cc914ca1d500267a62cb464b5bf45c21c",
+      "size_cm": [
+        338,
+        260
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 1166999,
+      "file": "mc.st.tank_laser.e4070588eddf.mupk",
+      "id": "mc.st.tank_laser",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Tank_Lvl2 on Mount_Chassis + Prefabs/Cockpit_Gun_Flat_Part on Mount_Top + Prefabs/Weapon_Shock_Rifle_lvl4 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl1 on Mount_HalfShoulder_R + Prefabs/Backpack_Tank_Med on Mount_Backpack_Med",
+      "sha256": "e4070588eddfcebc5ab1d39fe0b2b285048d3f6a6aff4ad031a7e8a8d058ed08",
+      "size_cm": [
+        414,
+        250
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 1192881,
+      "file": "mc.st.tank_lvl1.31cc9f53bb31.mupk",
+      "id": "mc.st.tank_lvl1",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Tank_Lvl1 on Mount_Chassis + Prefabs/Cockpit_Gun on Mount_Top + Prefabs/Weapon_Sniper_lvl2 on Mount_Weapon_Main + Prefabs/Weapon_DoubleGun_lvl1 on Mount_Weapon_R + Prefabs/Backpack_Tank_Lt on Mount_Backpack_Med",
+      "sha256": "31cc9f53bb316a99b5476ef326ba13f8e2e9cbc0753be5211f6fc6439b570a58",
+      "size_cm": [
+        313,
+        230
       ]
     },
     {
@@ -62,6 +218,102 @@
       "sheet": "mc.st.tank_lvl3.sheet.json",
       "size_cm": [
         440,
+        280
+      ]
+    },
+    {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 1353813,
+      "file": "mc.st.tracks_lvl2.eb40c554502a.mupk",
+      "id": "mc.st.tracks_lvl2",
+      "prefab": "Prefabs/Legs_Tracks_Lvl2.prefab + Prefabs/Cockpit_Gun_2x on Mount_Top + Prefabs/Weapon_DoubleGun_lvl3 on Mount_Weapon_R + Prefabs/Weapon_DoubleGun_lvl3 on Mount_Weapon_L",
+      "sha256": "eb40c554502a9f54f2ff69b73738a44ed00115cd91b056c2dc092dceb94b2544",
+      "size_cm": [
+        257,
+        240
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+      "bytes": 1242511,
+      "file": "mc.tr.drone_fighter.c8cea5292e12.mupk",
+      "id": "mc.tr.drone_fighter",
+      "prefab": "Prefabs/Drone_Fighter.prefab",
+      "sha256": "c8cea5292e123b434cd74988dfdc71494ff054a1805f9164b65f8dd813102c0a",
+      "size_cm": [
+        155,
+        140
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+      "bytes": 1267624,
+      "file": "mc.tr.drone_worker.26a62a927684.mupk",
+      "id": "mc.tr.drone_worker",
+      "prefab": "Prefabs/Drone_Worker.prefab",
+      "sha256": "26a62a927684b3ef54e86a4f9cabe686ee20284f9f183c1f169c088b1ccb9ed8",
+      "size_cm": [
+        128,
+        150
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+      "bytes": 734568,
+      "file": "mc.tr.turret_autocannon.28ee813351f9.mupk",
+      "id": "mc.tr.turret_autocannon",
+      "prefab": "Prefabs/Base/Base_Turret_Lvl2.prefab + Prefabs/Cockpits/Cockpit_Weapon_DoubleGun_Lvl2 on Mount_Top + Prefabs/Weapons/Weapon_Bazooka_Simple_Lvl2 on Mount_Weapon_L + Prefabs/Weapons/Weapon_Plasma_Lvl2 on Mount_Weapon_R",
+      "sha256": "28ee813351f919dbeda3029ab7a8ffaa1b6d3b7cdad8348f37b27abd3e5d16fd",
+      "size_cm": [
+        592,
+        260
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+      "bytes": 726530,
+      "file": "mc.tr.turret_mortar.1d06b3c9d2f5.mupk",
+      "id": "mc.tr.turret_mortar",
+      "prefab": "Prefabs/Base/Base_Turret_Lvl4.prefab + Prefabs/Cockpits/Cockpit_Weapon_Mortar_Lvl3 on Mount_Top + Prefabs/Weapons/Weapon_Radar_Lvl2 on Mount_Weapon_L + Prefabs/Weapons/Weapon_Plasma_Lvl3 on Mount_Weapon_R",
+      "sha256": "1d06b3c9d2f5ed95913418f9a8bdf97f04ead0079f7fa9e9ee6d7387528d42bd",
+      "size_cm": [
+        626,
+        300
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Vehicle Constructor (Slava Z)",
+      "bytes": 1183444,
+      "file": "mc.vh.bug_rover.3ad22e7b2fdb.mupk",
+      "id": "mc.vh.bug_rover",
+      "prefab": "Prefabs/Chassis/Chassis_Bug/Chassis_Bug_Lvl2.prefab + Prefabs/Cockpits/Cockpit_Aero_Blunt on Mount_Cockpit + Prefabs/Backs/Back_Cargo_Lvl2 on Mount_Back + Prefabs/Sides/Weapon/Weapon_QuadCannon_Lvl2 on Mount_Weapon_Top",
+      "sha256": "3ad22e7b2fdb3d8d9bbc9273e93f9866b4b7c4b89b52ce1fbafb6d0282467d74",
+      "size_cm": [
+        340,
+        220
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Vehicle Constructor (Slava Z)",
+      "bytes": 1130267,
+      "file": "mc.vh.bug_truck.1b9bd2949266.mupk",
+      "id": "mc.vh.bug_truck",
+      "prefab": "Prefabs/Chassis/Chassis_Bug/Chassis_Bug_Wide_Lvl2.prefab + Prefabs/Cockpits/Cockpit_Freight_Wide on Mount_Cockpit + Prefabs/Container/Container_Gunship on Mount_Container + Prefabs/Top/Top_Mount_Top_Turret on Mount_Top + Prefabs/Top/Top_Turret_Lvl1 on Mount_Top_Turret + Prefabs/Sides/Weapon/Weapon_TwinCannon_Lvl2 on Mount_Weapon_R + Prefabs/Sides/Weapon/Weapon_TwinCannon_Lvl2 on Mount_Weapon_L",
+      "sha256": "1b9bd2949266c7c2be30573c57585e3366887fe69f104aac4dfbaa7c73136e30",
+      "size_cm": [
+        489,
+        310
+      ]
+    },
+    {
+      "asset_pack": "Sci-Fi Vehicle Constructor (Slava Z)",
+      "bytes": 1315008,
+      "file": "mc.vh.transporter_apc.4de0d609f5c5.mupk",
+      "id": "mc.vh.transporter_apc",
+      "prefab": "Prefabs/Chassis/Chassis_Transporter/Chassis_Transporter_Lvl2.prefab + Prefabs/Top/Top_Turret_Lvl2 on Mount_Top_Turret + Prefabs/Sides/Weapon/Weapon_TwinCannon_Lvl3 on Mount_Weapon_R + Prefabs/Sides/Weapon/Weapon_TwinCannon_Lvl3 on Mount_Weapon_L",
+      "sha256": "4de0d609f5c528410897a1a2c38b37c73f39e6b22c2ea717369d1cbe38e158f3",
+      "size_cm": [
+        432,
         280
       ]
     },

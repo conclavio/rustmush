@@ -1,0 +1,72 @@
+{
+  "model": "mc.st.buggy_lvl3",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Buggies/Buggy_Chassis_Lvl3.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Buggies/Buggy_Wheel_Tractor_Front",
+      "mount": "Mount_Wheel_FL",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Buggies/Buggy_Wheel_Tractor_Front",
+      "mount": "Mount_Wheel_FR",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Buggies/Buggy_Wheel_Tractor_Rear",
+      "mount": "Mount_Wheel_RL",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Buggies/Buggy_Wheel_Tractor_Rear",
+      "mount": "Mount_Wheel_RR",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Cockpit_Gun_Flat_Full",
+      "mount": "Mount_Cockpit",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Weapon_DoubleGun_lvl4",
+      "mount": "Mount_Weapon_Main",
+      "parent": "Cockpit_Gun_Flat_Full"
+    },
+    {
+      "prefab": "Prefabs/Weapon_GLauncher_lvl1",
+      "mount": "Mount_HalfShoulder_R",
+      "parent": "Cockpit_Gun_Flat_Full"
+    }
+  ],
+  "still": {
+    "file": "Animations/Buggy_Chassis_Lvl1@Buggy_Chassis_Lvl1_Idle.fbx",
+    "name": "Buggy_Chassis_Lvl1_Idle"
+  },
+  "moving": {
+    "file": "Animations/Buggy_Chassis_Lvl1@Buggy_Chassis_Lvl1_Forward.fbx",
+    "name": "Buggy_Chassis_Lvl1_Forward"
+  },
+  "wreck": {
+    "file": "Animations/Buggy_Chassis_Lvl1@Buggy_Chassis_Lvl1_Death.fbx",
+    "name": "Buggy_Chassis_Lvl1_Death"
+  },
+  "muzzles": [
+    {
+      "locator": "Weapon_DoubleGun_lvl4/Barrel_End_1",
+      "weapon": "autocannon"
+    },
+    {
+      "locator": "Weapon_GLauncher_lvl1/Barrel_end_1",
+      "weapon": "missiles"
+    }
+  ],
+  "size_cm": [
+    600,
+    260
+  ]
+}

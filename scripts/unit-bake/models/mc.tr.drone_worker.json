@@ -1,0 +1,28 @@
+{
+  "model": "mc.tr.drone_worker",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+  "package": "Slava Z/3D ModelsPropsWeapons/Sci-Fi Turret Constructor.unitypackage",
+  "root": "Assets/Mech_Constructor_Turrets/",
+  "id_texture": "Materials/MC_Turrets_X_Color_ID.png",
+  "id_classes": ["second", "second", "paint", "bright", "accent", "bright", "bright", "bright"],
+  "prefab": "Prefabs/Drone_Worker.prefab",
+  "attach": [],
+  "still": {
+    "file": "Animations/Drone_Worker@Drone_Worker_Idle.fbx",
+    "name": "Drone_Worker_Idle"
+  },
+  "moving": {
+    "file": "Animations/Drone_Worker@Drone_Worker_Move.fbx",
+    "name": "Drone_Worker_Move"
+  },
+  "wreck": {
+    "file": "Animations/Drone_Worker@Drone_Worker_Die.fbx",
+    "name": "Drone_Worker_Die"
+  },
+  "muzzles": [],
+  "size_cm": [
+    260,
+    150
+  ]
+}

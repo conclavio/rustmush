@@ -1,0 +1,33 @@
+{
+  "model": "mc.tr.drone_fighter",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
+  "package": "Slava Z/3D ModelsPropsWeapons/Sci-Fi Turret Constructor.unitypackage",
+  "root": "Assets/Mech_Constructor_Turrets/",
+  "id_texture": "Materials/MC_Turrets_X_Color_ID.png",
+  "id_classes": ["second", "second", "paint", "bright", "accent", "bright", "bright", "bright"],
+  "prefab": "Prefabs/Drone_Fighter.prefab",
+  "attach": [],
+  "still": {
+    "file": "Animations/Drone_Fighter@Drone_Fighter_Idle.fbx",
+    "name": "Drone_Fighter_Idle"
+  },
+  "moving": {
+    "file": "Animations/Drone_Fighter@Drone_Fighter_Move.fbx",
+    "name": "Drone_Fighter_Move"
+  },
+  "wreck": {
+    "file": "Animations/Drone_Fighter@Drone_Fighter_Die.fbx",
+    "name": "Drone_Fighter_Die"
+  },
+  "muzzles": [
+    {
+      "locator": "Barrel_End_R",
+      "weapon": "machine_gun"
+    }
+  ],
+  "size_cm": [
+    280,
+    140
+  ]
+}
