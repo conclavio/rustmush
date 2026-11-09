@@ -2463,6 +2463,9 @@ impl Iso25DPicture {
                 kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_LOCK);
                 self.lock_uploaded = true;
                 self.last_lock_signature = lock_sig;
+                // A re-transmit under the same image id does not refresh an
+                // existing placement: re-send `a=p` below.
+                self.last_lock_placement = None;
             }
             let lock_p = Placement {
                 image_id: IMAGE_ID_LOCK,
