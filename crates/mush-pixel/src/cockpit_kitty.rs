@@ -1914,4 +1914,44 @@ mod tests {
         assert!(!s.contains("a=t,f=100,t=d,i=141,"));
         assert!(!s.contains("a=t,f=100,t=d,i=60"));
     }
+
+    /// At the 1280-wide retained picture a near contact projects past 96 px,
+    /// and the sheet placed for it is the chain's 192 px top (the U.6
+    /// follow-up of 2026-11-06), not the 96 scaled up.
+    #[test]
+    fn a_near_contact_at_1280_wide_draws_from_the_192_px_sheet() {
+        let cell = CellSize {
+            width: 14,
+            height: 28,
+        };
+        let area = (1, 2, 128, 28);
+        let mut cockpit = fixture_cockpit();
+        cockpit["contacts"][0]["range_m"] = 50.into();
+        cockpit["contacts"][0]["band"] = "close".into();
+        cockpit["lock_range_m"] = 50.into();
+
+        let mut pic = CockpitPicture::new();
+        let (vp, wire) = pic
+            .draw_kitty(
+                &fixture_feeds(cockpit),
+                &Look::default(),
+                area,
+                Some(cell),
+                false,
+                true,
+            )
+            .expect("frame");
+        assert_eq!(vp.width_px, 1280);
+        let s = String::from_utf8_lossy(&wire);
+        let img = unit_image_id(&s, 101).expect("the near contact is placed");
+        let size_idx = (img - IMAGE_ID_FP_SHEET_BASE) % 16;
+        assert_eq!(size_idx, 0, "the chain's largest size is picked");
+        let (chain, _) =
+            bake::view_chain(look_index(Some("tacsim.unit.line_tank")), bake::View::Fp)
+                .expect("the line tank's fp chain");
+        assert_eq!(
+            chain.sizes[0].size, 192,
+            "and the largest is the 192 px top"
+        );
+    }
 }

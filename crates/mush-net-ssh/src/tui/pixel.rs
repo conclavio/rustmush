@@ -231,6 +231,20 @@ pub enum CockpitCamera {
     Tactical25D,
 }
 
+/// The 2.5D camera's opening zoom, permille: half, two `-` steps under the
+/// `1.0x` the other cameras open at (the owner, 2026-11-09: "I always have
+/// to zoom out twice to see stuff").
+pub const ZOOM_25D_DEFAULT_PERMILLE: u16 = 500;
+
+/// A camera's index into the per-camera zoom table.
+fn zoom_slot(camera: CockpitCamera) -> usize {
+    match camera {
+        CockpitCamera::FirstPerson => 0,
+        CockpitCamera::Overhead => 1,
+        CockpitCamera::Tactical25D => 2,
+    }
+}
+
 /// What [`PixelView::key`] made of a key (doc 21 cut G.12b).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyUse {
@@ -387,6 +401,10 @@ pub struct PixelView {
     throttle: Throttle,
     /// The cockpit's camera, `v` (G.12b).
     camera: CockpitCamera,
+    /// Each camera's zoom, permille, indexed by [`zoom_slot`]: `+`/`-` step
+    /// the current camera's own, so the 2.5D opens at its half-zoom default
+    /// ([`ZOOM_25D_DEFAULT_PERMILLE`]) whatever the first-person was left at.
+    zoom_by_camera: [u16; 3],
     /// The first-person picture and retained Kitty compositor.
     cockpit_fp: CockpitPicture,
     /// The overhead picture the camera swaps in (G.12b).
@@ -545,6 +563,7 @@ impl PixelView {
             helm: Helm::new(),
             throttle: Throttle::new(),
             camera: CockpitCamera::FirstPerson,
+            zoom_by_camera: [1000, 1000, ZOOM_25D_DEFAULT_PERMILLE],
             cockpit_fp: CockpitPicture::new(),
             overhead: OverheadPicture::new(),
             iso25d: Iso25DPicture::new(),
@@ -1050,10 +1069,14 @@ impl PixelView {
         })
     }
 
-    /// Current optical/radar/tactical zoom factor in permille (`1000` = `1.0x`).
+    /// The current camera's zoom factor in permille (`1000` = `1.0x`).
     #[must_use]
     pub fn zoom_permille(&self) -> u16 {
-        self.iso25d.zoom_permille()
+        self.zoom_by_camera[zoom_slot(self.camera)]
+    }
+
+    fn set_zoom_permille(&mut self, zoom_permille: u16) {
+        self.zoom_by_camera[zoom_slot(self.camera)] = zoom_permille;
     }
 
     /// Whether the first-person cockpit canopy glass overlay is enabled.
@@ -1686,12 +1709,12 @@ impl PixelView {
             }
             Key::Char('+' | '=') => {
                 let base = if self.camera == CockpitCamera::FirstPerson {
-                    self.iso25d.zoom_permille().max(1000)
+                    self.zoom_permille().max(1000)
                 } else {
-                    self.iso25d.zoom_permille()
+                    self.zoom_permille()
                 };
                 let next = base.saturating_add(250).min(2000);
-                self.iso25d.set_zoom_permille(next);
+                self.set_zoom_permille(next);
                 self.last_sent = None;
             }
             Key::Char('-' | '_') => {
@@ -1700,8 +1723,8 @@ impl PixelView {
                 } else {
                     500
                 };
-                let next = self.iso25d.zoom_permille().saturating_sub(250).max(floor);
-                self.iso25d.set_zoom_permille(next);
+                let next = self.zoom_permille().saturating_sub(250).max(floor);
+                self.set_zoom_permille(next);
                 self.last_sent = None;
             }
             Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
@@ -1846,7 +1869,7 @@ impl PixelView {
                 .filter(|o| arc(predicted, *o).abs() > 1_000),
             dx_cm,
             dy_cm,
-            zoom_permille: self.iso25d.zoom_permille(),
+            zoom_permille: self.zoom_permille(),
         };
         if encoder == Encoder::Kitty {
             let step_down = self.stepped_down || self.want == FRAME_W_LO;
@@ -3592,16 +3615,30 @@ mod tests {
         v.key(Key::Char('+'), t0);
         v.key(Key::Char('='), t0);
         assert_eq!(v.zoom_permille(), 1500);
+        // Each camera keeps its own zoom: the overhead opens at 1.0x
+        // whatever the first-person was left at, steps below 1000 and floors
+        // at 500.
         v.key(Key::Char('v'), t0);
         assert_eq!(v.camera(), CockpitCamera::Overhead);
+        assert_eq!(v.zoom_permille(), 1000, "the overhead's own zoom");
         v.key(Key::Char('-'), t0);
         v.key(Key::Char('-'), t0);
         v.key(Key::Char('-'), t0);
         assert_eq!(
             v.zoom_permille(),
-            750,
-            "overhead zoom steps below 1000 down toward 500"
+            500,
+            "overhead zoom steps below 1000 down to the 500 floor"
         );
+        // The 2.5D opens two steps out (half zoom) and steps back in from there.
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::Tactical25D);
+        assert_eq!(v.zoom_permille(), ZOOM_25D_DEFAULT_PERMILLE);
+        v.key(Key::Char('+'), t0);
+        assert_eq!(v.zoom_permille(), 750);
+        // Back in first-person, its zoom is where `+`/`=` left it.
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::FirstPerson);
+        assert_eq!(v.zoom_permille(), 1500);
 
         // `frame_elapsed_ms` tracks sub-pulse elapsed time and resets on a new pulse.
         assert_eq!(v.frame_elapsed_ms(t0 + Duration::from_millis(420)), 420);
