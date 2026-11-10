@@ -2897,6 +2897,7 @@ mod fixture {
             weapons_free: true,
             max_speed_cms: 1_500,
             reverse_cms: 750,
+            turn_rate_mdeg_s: 30_000,
         }
     }
 
@@ -16181,6 +16182,7 @@ async fn g12a_fire_hold_flips_weapons_free_on_the_arenas_frame() {
     assert_eq!(payload["weapons_free"], false, "{payload}");
     assert_eq!(payload["max_speed_kph"], 54, "{payload}");
     assert_eq!(payload["reverse_kph"], 27, "{payload}");
+    assert_eq!(payload["turn_rate_mdeg_s"], 30_000, "{payload}");
     m1b4_next_second(&mut rig).await;
     assert_eq!(rig.say(0, "fire free"), cockpit::WEAPONS_FREE);
     m1b4_until(&mut rig, "the arena frees the gate", |rig| {

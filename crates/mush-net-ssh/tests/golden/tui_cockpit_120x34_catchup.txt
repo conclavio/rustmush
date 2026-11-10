@@ -1,4 +1,4 @@
-rustmush  1 scene   2 sheet   3 mail   4 chan   5 rolls   6 intel   7 actions   8 damage   9 unit   0 cockpit
+rustmush  1 scene   2 sheet   3 mail   4 chan 1   5 rolls   6 intel   7 actions   8 damage   9 unit   0 cockpit
 The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 ┌status──────────────────────────┐┌ map ───────────────────────────────┐┌weapons───────────────────────────────────────┐
 │Callsign RA                     ││Map — heading 045°                  ││rules: S1 fire; MIND RULES                    │

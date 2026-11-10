@@ -6,8 +6,8 @@
 import { parseRollPanel, type Owod20Outcome } from "../roll";
 
 /** Ring cap — recent rolls only; this is a live readout, not a log (that's
- * `+roll/last`, a terminal command). */
-const MAX_ROLLS = 30;
+ * `+roll/last`, a terminal command). The TUI's `ROLLS_RING`. */
+const MAX_ROLLS = 100;
 
 export interface RollEntry {
   /** Store-assigned id — the panel's `#each` key (mirrors ScrollbackStore's

@@ -8,7 +8,7 @@ import { LegalActionsStore, type LegalAction } from "$lib/stores/actions.svelte"
 import type { GameApp } from "$lib/game.svelte";
 
 describe("persistent transaction controls", () => {
-  it("retains returned-reference status after offers disappear and disables unsupported targets", async () => {
+  it("retains returned-reference status after offers disappear, hands an aimed offer to +act and disables what it cannot read", async () => {
     const reference = `k5:market:purchase:0000000000000000:${"c".repeat(32)}`;
     const request = vi.fn().mockResolvedValueOnce({ state: "owned", reference }).mockResolvedValue({ state: "pending", reference });
     const requests = new ActionRequestsStore(request);
@@ -17,11 +17,21 @@ describe("persistent transaction controls", () => {
     await requests.submit(action, {});
     const actions = new LegalActionsStore();
     actions.loaded = true;
-    actions.actions = [{ ...action, offer: "b".repeat(64), presentation: { ...action.presentation, label: "Unsupported" },
-      projected: { ...action.projected, targets: { kind: "choose" } } }];
+    actions.actions = [{ ...action, offer: "b".repeat(64), presentation: { ...action.presentation, label: "Aimed" },
+      projected: { ...action.projected, targets: { kind: "choose" } } },
+      { ...action, offer: "d".repeat(64), presentation: { ...action.presentation, label: "Unsupported" },
+      projected: { ...action.projected, parameters: "nonsense" } }];
     const onCmd = vi.fn();
-    const app = { actions, actionRequests: requests, refreshLegalActions: vi.fn(), submitLegalAction: vi.fn() } as unknown as GameApp;
+    const focusComposer = vi.fn();
+    const app = { actions, actionRequests: requests, refreshLegalActions: vi.fn(), submitLegalAction: vi.fn(), focusComposer } as unknown as GameApp;
     render(ActionsPanel, { props: { app, onCmd } });
+    // An aimed offer is a live button that prefills the verb, as the TUI's `A` does.
+    const aimed = screen.getByRole("button", { name: /Aimed/ }) as HTMLButtonElement;
+    expect(aimed.disabled).toBe(false);
+    expect(within(aimed).getByText("This action needs a target; use +act.")).toBeTruthy();
+    await fireEvent.click(aimed);
+    expect(focusComposer).toHaveBeenCalledExactlyOnceWith("+act purchase");
+    // One this client cannot read at all stays a dead button.
     expect((screen.getByRole("button", { name: /Unsupported/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(onCmd).not.toHaveBeenCalled();
     actions.actions = []; await tick();

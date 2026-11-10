@@ -29,6 +29,7 @@
   // Every string printed here comes out of `cockpitView`, and the canvas draws
   // from `composeWindow` — both pure, both pinned by vitest against the
   // committed fixtures, so what the test reads is what the player sees.
+  import { untrack } from "svelte";
   import type { GameApp } from "$lib/game.svelte";
   import {
     COCKPIT_VIEW_CELLS,
@@ -62,22 +63,25 @@
 
   let { app }: { app: GameApp } = $props();
 
-  /** What a marker is painted in. The five kinds are the whole vocabulary:
-   * by the viewer's relation (doc 32 cut CF.0, Q-CF-12; `contactKind`) —
-   * neutral or not yet classified, own or friend, hostile — you, and (16b
-   * cut V.1) a named spot of the ground, in a sand tone none of the four is. */
+  /** What a marker is painted in. The kinds are the whole vocabulary: by the
+   * viewer's relation (doc 32 cut CF.0, Q-CF-12; `contactKind`) — neutral or
+   * not yet classified, own or friend, hostile — a contact that reads dead,
+   * you, and (16b cut V.1) a named spot of the ground, in a sand tone none of
+   * the others is. The contacts' and your own colours are the picture's
+   * (`mush-pixel`'s overlay: FRIEND, HOSTILE, UNKNOWN, YOU, WRECK), so one
+   * contact is one colour on the map and in the picture above it. */
   const MARKER_COLOURS: Record<Marker["kind"], string> = {
-    you: "#f2c94c",
-    unknown: "#b9a23a",
-    friendly: "#4fa86a",
-    hostile: "#e05a5a",
+    you: "#ffffff",
+    unknown: "#aaaaa2",
+    friendly: "#5a96f0",
+    hostile: "#e6463c",
+    wreck: "#6e645a",
     spot: "#d8c8a0",
     // 16b cut I.2: a replay's kinds, which `composeWindow` never produces —
     // named here only because the record is total over `MarkerKind`; the
     // replay screen paints them (`ReplayScreen.svelte`).
     red: "#e05a5a",
     blue: "#4f7fd1",
-    wreck: "#777",
     // Doc 32 cut CF.4: the campaign layer's glyphs, ground-toned.
     campaign: "#c8b88a",
   };
@@ -93,6 +97,9 @@
     frame !== null && ground !== null ? composeWindow(ground, frame, cells, cells) : null,
   );
   const view = $derived(frame === null ? null : cockpitView(frame, win, app.cockpit.notices));
+  /** The status pane's scope row. EMCON rides it and auto-target the lock row
+   * under it, whatever rows follow them (a rig's line is one more). */
+  const scopeRow = $derived(view === null ? -1 : view.status.findIndex((l) => l.startsWith("scope ")));
   /** Doc 22 cut U.4: the pilot's own unit's look — static art keyed by the
    * frame's own `unit_type`, never a lookup into another store. */
   const look = $derived(frame === null ? null : lookFor(frame.unit_type));
@@ -163,44 +170,62 @@
     app.helm(speedLine(0));
   }
 
+  // The standing rules' two buttons follow the frame, as the picture's keys do
+  // (`PictureView`): when what the frame shows changes (a rule armed or
+  // removed from the terminal) the button follows it, and it is otherwise left
+  // as the last press set it, so an arming still in flight is not shown as
+  // undone. A disarm removes the slots the frame names, never a guessed one.
   let autoTargetArmed = $state(false);
+  let lockRuleSlot: number | null = null;
+  let frameShowsLockRule = false;
+
+  let fireRuleWeapon = $state("ALL");
+  let fireRuleOdds = $state(60);
+  let fireRuleArmed = $state(false);
+  let fireRuleSlots: number[] = [];
+  let frameShowsFireRule = false;
 
   $effect(() => {
     const f = frame;
-    if (!f) {
-      autoTargetArmed = false;
-      return;
-    }
-    if (f.rules.some((r) => r.action === "lock")) {
-      autoTargetArmed = true;
-    }
+    untrack(() => {
+      if (!f) {
+        autoTargetArmed = false;
+        fireRuleArmed = false;
+        lockRuleSlot = null;
+        fireRuleSlots = [];
+        frameShowsLockRule = false;
+        frameShowsFireRule = false;
+        return;
+      }
+      lockRuleSlot = f.rules.find((r) => r.action === "lock")?.slot ?? null;
+      fireRuleSlots = f.rules.filter((r) => r.action === "fire").map((r) => r.slot);
+      if ((lockRuleSlot !== null) !== frameShowsLockRule) {
+        frameShowsLockRule = lockRuleSlot !== null;
+        autoTargetArmed = frameShowsLockRule;
+      }
+      if (fireRuleSlots.length > 0 !== frameShowsFireRule) {
+        frameShowsFireRule = fireRuleSlots.length > 0;
+        fireRuleArmed = frameShowsFireRule;
+      }
+      if (fireRuleWeapon !== "ALL" && !f.weapons.some((w) => w.id === fireRuleWeapon)) {
+        fireRuleWeapon = "ALL";
+      }
+    });
   });
 
+  /** Arm the lock rule, or remove the slot the frame shows holding it; with
+   * none shown (an arming still in flight) there is no slot to name. */
   function toggleAutoTarget(): void {
-    const lockRule = frame?.rules.find((r) => r.action === "lock") ?? null;
-    if (autoTargetArmed || lockRule !== null) {
+    if (autoTargetArmed) {
       autoTargetArmed = false;
-      app.helm(`MIND RULE ${lockRule?.slot ?? 1} OFF`);
+      const slot = lockRuleSlot;
+      lockRuleSlot = null;
+      if (slot !== null) app.helm(`MIND RULE ${slot} OFF`);
     } else {
       autoTargetArmed = true;
       app.helm("LOCK nearest WHEN nolock");
     }
   }
-
-  let fireRuleWeapon = $state("ALL");
-  let fireRuleOdds = $state(60);
-  let fireRuleArmed = $state(false);
-
-  $effect(() => {
-    const f = frame;
-    if (!f) {
-      fireRuleArmed = false;
-      return;
-    }
-    if (fireRuleWeapon !== "ALL" && !f.weapons.some((w) => w.id === fireRuleWeapon)) {
-      fireRuleWeapon = "ALL";
-    }
-  });
 
   function sendFireRule(): void {
     fireRuleArmed = true;
@@ -223,10 +248,16 @@
     sendFireRule();
   }
 
+  /** Arm the fire rule, or remove the slots the frame shows holding fire
+   * rules (and no hold rule with them); with none shown (an arming still in
+   * flight), the one disarm that reaches a rule not yet given a slot. */
   function toggleFireRule(): void {
     if (fireRuleArmed) {
       fireRuleArmed = false;
-      app.helm(`FIRE ${fireRuleWeapon} OFF`);
+      const slots = fireRuleSlots;
+      fireRuleSlots = [];
+      if (slots.length === 0) app.helm(`FIRE ${fireRuleWeapon} OFF`);
+      for (const slot of slots) app.helm(`MIND RULE ${slot} OFF`);
     } else {
       sendFireRule();
     }
@@ -499,7 +530,9 @@
             {#if row.chips.length > 0}
               <p class="chips" title={scanText(row.chips)}>
                 {#each row.chips as chip, i (i)}
-                  <span class="chip" data-band={chip.band}>{chip.word}</span>
+                  <span class="chip" data-band={chip.band}
+                    >{chip.letter === "g" ? chip.word : `${chip.word}/${chip.letter}`}</span
+                  >
                 {/each}
               </p>
             {/if}
@@ -543,7 +576,7 @@
                 class="inline-btn"
                 onclick={() => app.helm("STARTUP")}>Startup</button
               >
-            {:else if i === view.status.length - 2 && frame.ecm !== null}
+            {:else if i === scopeRow && frame.ecm !== null}
               <button
                 type="button"
                 class="inline-btn"
@@ -552,7 +585,7 @@
                 title={`EMCON ${frame.ecm === "on" ? "off" : "on"}`}
                 onclick={() => app.helm(`EMCON ${frame.ecm === "on" ? "off" : "on"}`)}
               >EMCON</button>
-            {:else if i === view.status.length - 1}
+            {:else if scopeRow >= 0 && i === scopeRow + 1}
               <button
                 type="button"
                 class="inline-btn"

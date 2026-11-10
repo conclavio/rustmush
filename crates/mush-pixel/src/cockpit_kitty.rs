@@ -1303,6 +1303,15 @@ impl CockpitPicture {
                     src_h: cb.src_h,
                     z,
                 };
+                // A placement id is scoped to its image: when the contact's
+                // sheet changed (mip size, view, paint, or wreck) the old
+                // `(image_id, pid)` placement is a separate one the new `a=p`
+                // never replaces, so delete it or it stays as a ghost.
+                if let Some(old_p) = self.kitty.active_unit_placements.get(&pid)
+                    && old_p.image_id != img_id
+                {
+                    kitty::delete_placement_bytes(&mut ops, old_p.image_id, old_p.placement_id);
+                }
                 if self.kitty.active_unit_placements.get(&pid) != Some(&unit_p) {
                     kitty::place_bytes(&mut ops, &unit_p);
                 }
@@ -1349,6 +1358,9 @@ impl CockpitPicture {
                 kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_INSET);
                 self.kitty.inset_uploaded = true;
                 self.kitty.last_inset_hash = inset_hash;
+                // A re-transmit under the same image id does not refresh an
+                // existing placement, so the placement is re-sent below.
+                self.kitty.last_inset_placement = None;
             }
             let inset_p = Placement {
                 image_id: IMAGE_ID_FP_INSET,
@@ -1393,6 +1405,10 @@ impl CockpitPicture {
             kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_HUD);
             self.kitty.hud_uploaded = true;
             self.kitty.last_hud_sig = hud_sig;
+            // Re-place after every re-transmit: the terminal keeps showing the
+            // pixels the existing placement was made from (so the heading tape
+            // and speed bar froze on the first frame) until `a=p` is re-sent.
+            self.kitty.last_hud_placement = None;
         }
         let hud_p = Placement {
             image_id: IMAGE_ID_FP_HUD,
@@ -1442,6 +1458,7 @@ impl CockpitPicture {
                     lw_px.saturating_sub(2 * SHEET_PAD_X),
                     lh_px.saturating_sub(2 * SHEET_PAD_Y),
                 );
+                self.kitty.last_lock_placement = None;
             }
             let (inner_w, inner_h) = self.kitty.last_lock_dims;
             let cx = x + bw / 2;
@@ -1489,6 +1506,7 @@ impl CockpitPicture {
                 kitty::transmit_bytes(&mut ops, &png, IMAGE_ID_FP_GLASS);
                 self.kitty.glass_uploaded = true;
                 self.kitty.last_glass_sig = glass_sig;
+                self.kitty.last_glass_placement = None;
             }
             let glass_p = Placement {
                 image_id: IMAGE_ID_FP_GLASS,
@@ -1779,5 +1797,161 @@ mod tests {
             .expect("glass off tick");
         let s_noglass = String::from_utf8_lossy(&wire_noglass);
         assert!(s_noglass.contains("a=d,d=i,i=145,p=45"));
+    }
+
+    /// The sheet image id placed under `p=<pid>` in a wire, if any.
+    fn unit_image_id(wire: &str, pid: u32) -> Option<u32> {
+        let tail = format!(",p={pid},");
+        wire.split("\x1b_Ga=p,i=").skip(1).find_map(|rest| {
+            let (id, after) = rest.split_once(',')?;
+            after
+                .starts_with(&tail[1..])
+                .then(|| id.parse::<u32>().ok())
+                .flatten()
+        })
+    }
+
+    fn fixture_feeds(cockpit: Value) -> HashMap<String, Value> {
+        let map: Value = serde_json::from_str(include_str!(
+            "../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .expect("map fixture");
+        [
+            (crate::cockpit::COCKPIT_FEED.to_string(), cockpit),
+            (crate::cockpit::ARENA_MAP_FEED.to_string(), map),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn fixture_cockpit() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture")
+    }
+
+    /// A contact that closes from 450 m to 200 m crosses to a larger mip
+    /// sheet: its old `(image, p=101)` placement is deleted in the same tick
+    /// the new sheet is placed under `p=101`, or the old sprite stays behind
+    /// as a ghost (the "four copies of the enemy" of 2026-11-09).
+    #[test]
+    fn a_contact_crossing_to_another_sheet_deletes_its_old_placement() {
+        let area = (1, 2, 120, 26);
+        let look = Look::default();
+        let far = fixture_cockpit();
+        let mut near = far.clone();
+        near["contacts"][0]["range_m"] = 200.into();
+        near["contacts"][0]["band"] = "effective".into();
+        near["lock_range_m"] = 200.into();
+
+        let mut pic = CockpitPicture::new();
+        let (_, wire_far) = pic
+            .draw_kitty(&fixture_feeds(far), &look, area, None, false, true)
+            .expect("far tick");
+        let s_far = String::from_utf8_lossy(&wire_far);
+        let far_img = unit_image_id(&s_far, 101).expect("the far contact is placed");
+
+        let (_, wire_near) = pic
+            .draw_kitty(&fixture_feeds(near), &look, area, None, false, true)
+            .expect("near tick");
+        let s_near = String::from_utf8_lossy(&wire_near);
+        let near_img = unit_image_id(&s_near, 101).expect("the near contact is placed");
+        assert_ne!(
+            far_img, near_img,
+            "the contact should have crossed to another sheet"
+        );
+
+        let delete = format!("\x1b_Ga=d,d=i,i={far_img},p=101,q=2;\x1b\\");
+        let del_at = s_near
+            .find(&delete)
+            .expect("old (image, p=101) placement deleted");
+        let place_at = s_near
+            .find(&format!("\x1b_Ga=p,i={near_img},p=101,"))
+            .expect("new sheet placed under p=101");
+        assert!(
+            del_at < place_at,
+            "the ghost is deleted before the new sprite lands"
+        );
+    }
+
+    /// A re-transmit under a retained overlay's image id (`a=t`) does not
+    /// refresh the placement already made from it, so the HUD (heading tape,
+    /// speed bar) and the lock bracket re-send `a=p` after every re-upload.
+    #[test]
+    fn re_uploading_a_retained_overlay_re_sends_its_placement() {
+        let area = (1, 2, 120, 26);
+        let look = Look::default();
+        let first = fixture_cockpit();
+        let mut second = first.clone();
+        second["speed_kph"] = 12.into();
+        second["lock_range_m"] = 380.into();
+
+        let mut pic = CockpitPicture::new();
+        pic.draw_kitty(&fixture_feeds(first), &look, area, None, false, true)
+            .expect("first tick");
+        let (_, wire) = pic
+            .draw_kitty(&fixture_feeds(second), &look, area, None, false, true)
+            .expect("second tick");
+        let s = String::from_utf8_lossy(&wire);
+
+        for (img, pid) in [
+            (IMAGE_ID_FP_HUD, PLACEMENT_FP_HUD),
+            (IMAGE_ID_FP_LOCK, PLACEMENT_FP_LOCK),
+        ] {
+            let upload = format!("a=t,f=100,t=d,i={img},");
+            let place = format!("\x1b_Ga=p,i={img},p={pid},");
+            let up_at = s
+                .find(&upload)
+                .unwrap_or_else(|| panic!("i={img} re-uploaded"));
+            let pl_at = s
+                .find(&place)
+                .unwrap_or_else(|| panic!("i={img} p={pid} re-placed"));
+            assert!(up_at < pl_at, "i={img}: the upload precedes its placement");
+        }
+        // The world canvas and the sprite sheets were not touched.
+        assert!(!s.contains("a=t,f=100,t=d,i=140,"));
+        assert!(!s.contains("a=t,f=100,t=d,i=141,"));
+        assert!(!s.contains("a=t,f=100,t=d,i=60"));
+    }
+
+    /// At the 1280-wide retained picture a near contact projects past 96 px,
+    /// and the sheet placed for it is the chain's 192 px top (the U.6
+    /// follow-up of 2026-11-06), not the 96 scaled up.
+    #[test]
+    fn a_near_contact_at_1280_wide_draws_from_the_192_px_sheet() {
+        let cell = CellSize {
+            width: 14,
+            height: 28,
+        };
+        let area = (1, 2, 128, 28);
+        let mut cockpit = fixture_cockpit();
+        cockpit["contacts"][0]["range_m"] = 50.into();
+        cockpit["contacts"][0]["band"] = "close".into();
+        cockpit["lock_range_m"] = 50.into();
+
+        let mut pic = CockpitPicture::new();
+        let (vp, wire) = pic
+            .draw_kitty(
+                &fixture_feeds(cockpit),
+                &Look::default(),
+                area,
+                Some(cell),
+                false,
+                true,
+            )
+            .expect("frame");
+        assert_eq!(vp.width_px, 1280);
+        let s = String::from_utf8_lossy(&wire);
+        let img = unit_image_id(&s, 101).expect("the near contact is placed");
+        let size_idx = (img - IMAGE_ID_FP_SHEET_BASE) % 16;
+        assert_eq!(size_idx, 0, "the chain's largest size is picked");
+        let (chain, _) =
+            bake::view_chain(look_index(Some("tacsim.unit.line_tank")), bake::View::Fp)
+                .expect("the line tank's fp chain");
+        assert_eq!(
+            chain.sizes[0].size, 192,
+            "and the largest is the 192 px top"
+        );
     }
 }

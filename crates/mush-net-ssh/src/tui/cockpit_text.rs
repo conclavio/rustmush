@@ -32,7 +32,9 @@ use serde_json::Value;
 use mush_pixel::look;
 
 use super::pixel::picture_area;
-use super::render::PaneRows;
+use super::render::{
+    NOT_IN_A_COCKPIT, PaneRows, readiness_word, rule_summary_lines, section_words,
+};
 
 /// The armour column's width: the doll and a section a row.
 const ARMOUR_W: u16 = 26;
@@ -125,17 +127,7 @@ pub fn draw_panel(
         // Keep the recipient's current order above the roster at short terminal
         // heights. The text cockpit has the complete, wrapped command strings.
         let mut lines = vec![Line::from("p: roster + commands")];
-        if let Some(order) = &detachment.my_order {
-            lines.push(Line::from(format!("Order: {}", order.objective)));
-            lines.push(Line::from(format!("From: {}", order.from)));
-            lines.push(Line::from(format!(
-                "Reply: {}",
-                order
-                    .response
-                    .as_ref()
-                    .map_or_else(|| "none".into(), |r| r.to_uppercase())
-            )));
-        }
+        lines.extend(detachment.order_lines().into_iter().map(Line::from));
         lines.extend(
             detachment
                 .lines()
@@ -173,7 +165,7 @@ pub fn draw_panel(
             ),
         ),
         None => (
-            vec![dim("No cockpit frame held: take a seat in the arena.")],
+            vec![dim(NOT_IN_A_COCKPIT)],
             Vec::new(),
             Vec::new(),
             "CONTACTS".to_string(),
@@ -476,75 +468,116 @@ fn doll_rows(cockpit: &Value, width: usize, utf8: bool) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// A section's short name: the tracks as `L track` and `R track`, others
-/// with spaces for underscores, cut to ten.
-fn short(id: &str) -> String {
-    let name = match id {
-        "left_track" => "L track".to_string(),
-        "right_track" => "R track".to_string(),
-        other => other.replace('_', " "),
-    };
-    name.chars().take(10).collect()
+/// Fields laid into rows at most `width` characters wide, `gap` between two
+/// fields (the damage pane's two spaces, or one where sections pack several to
+/// a row); every row after the first starts with `indent`. A field is never
+/// cut: one that would carry a row past `width` starts the next row, and one
+/// wider than any row is a row of its own (the column clips it, as it clips
+/// any line).
+fn pack_fields(
+    fields: Vec<Vec<Span<'static>>>,
+    width: usize,
+    gap: &str,
+    indent: &str,
+) -> Vec<Line<'static>> {
+    let gap_w = gap.chars().count();
+    let mut lines = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for field in fields {
+        let len: usize = field.iter().map(|s| s.content.chars().count()).sum();
+        if !row.is_empty() && used + gap_w + len > width {
+            lines.push(Line::from(std::mem::take(&mut row)));
+        }
+        if row.is_empty() {
+            used = 0;
+            if !lines.is_empty() && !indent.is_empty() {
+                row.push(Span::raw(indent.to_string()));
+                used = indent.chars().count();
+            }
+        } else {
+            row.push(Span::raw(gap.to_string()));
+            used += gap_w;
+        }
+        row.extend(field);
+        used += len;
+    }
+    if !row.is_empty() {
+        lines.push(Line::from(row));
+    }
+    lines
 }
 
-/// The armour column: the doll from the unit's look ([`doll_rows`]) and a
-/// row a section — its name, condition word and internals (without redundant
-/// block bars under the doll) — or, where those would not fit in `rows`, two
-/// sections a row (the dev2 smoke: a biped's eight doll rows and six sections
-/// left its torso off the bottom).
+/// The armour column: the doll from the unit's look ([`doll_rows`]), then each
+/// section in screen 0's damage-pane words ([`section_words`]:
+/// `right_track  destroyed  0/24  right 0/24`), laid into the column's width
+/// at the fields so no word is cut, the condition coloured by what is left of
+/// the internals and each facet by its armour. Where those would not fit in
+/// `rows`, each section shrinks to its name and internals (`right_track
+/// 0/24`), packed several to a row (the dev2 smoke: a biped's eight doll rows
+/// and six sections left its torso off the bottom).
 #[must_use]
 pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static>> {
-    let mut lines = doll_rows(cockpit, usize::from(ARMOUR_W), utf8);
+    let width = usize::from(ARMOUR_W);
+    let mut lines = doll_rows(cockpit, width, utf8);
     let sections: Vec<&Value> = cockpit
         .get("sections")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .collect();
-    if lines.len() + sections.len() > rows {
-        for pair in sections.chunks(2) {
-            let mut spans = Vec::new();
-            for sec in pair {
-                let (left, max) = internals(sec);
-                let id = sec.get("id").and_then(Value::as_str).unwrap_or("?");
-                let name: String = short(id).chars().take(7).collect();
-                spans.push(Span::raw(format!("{name:<7} ")));
-                spans.push(Span::styled(
-                    format!("{left}/{max:<3}"),
-                    Style::default().fg(ramp(left, max)),
-                ));
-                spans.push(Span::raw(" "));
-            }
-            lines.push(Line::from(spans));
+    let mut full = Vec::new();
+    for sec in &sections {
+        let (left, max) = internals(sec);
+        let ([id, condition, inside], cells) = section_words(sec);
+        let facets = sec
+            .get("facets")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        let mut fields = vec![
+            vec![Span::raw(id)],
+            vec![Span::styled(
+                condition,
+                Style::default().fg(ramp(left, max)),
+            )],
+            vec![Span::raw(inside)],
+        ];
+        for (cell, facet) in cells.into_iter().zip(facets) {
+            let armour = (num(facet.get("armor")), num(facet.get("armor_max")));
+            fields.push(vec![Span::styled(
+                cell,
+                Style::default().fg(ramp(armour.0, armour.1)),
+            )]);
         }
+        full.extend(pack_fields(fields, width, "  ", "  "));
+    }
+    if lines.len() + full.len() <= rows {
+        lines.extend(full);
         return lines;
     }
-    for sec in sections {
-        let (left, max) = internals(sec);
-        let id = sec.get("id").and_then(Value::as_str).unwrap_or("?");
-        let cond = sec
-            .get("condition")
-            .and_then(Value::as_str)
-            .unwrap_or("intact");
-        let cond_short: String = cond.chars().take(7).collect();
-        lines.push(Line::from(vec![
-            Span::raw(format!("{:<10} ", short(id))),
-            Span::styled(
-                format!("{cond_short:<7}"),
-                Style::default().fg(ramp(left, max)),
-            ),
-            Span::raw(format!(" {left}/{max}")),
-        ]));
-    }
+    let cells = sections
+        .iter()
+        .map(|sec| {
+            let (left, max) = internals(sec);
+            let ([id, _, inside], _) = section_words(sec);
+            vec![
+                Span::raw(format!("{id} ")),
+                Span::styled(inside, Style::default().fg(ramp(left, max))),
+            ]
+        })
+        .collect();
+    lines.extend(pack_fields(cells, width, " ", ""));
     lines
 }
 
 // ---- weapons and heat ------------------------------------------------------
 
-/// The weapons column: the heat bar, then a row a weapon — its name,
-/// `READY` or the seconds and a 4-cell reload bar to its next shot (`EMPTY`
-/// with no rounds), its rounds and the hit chance on the lock — followed by
-/// active standing rules and mind profile when present.
+/// The weapons column: the heat in screen 0's words (`heat 40/100
+/// OVERHEATED`, a bar beside them; no row for a platform without heat), then
+/// a row a weapon — its name, screen 0's readiness word (`ready`, or `1 s` to
+/// its next shot), its rounds and the hit chance on the lock — then the mind's
+/// active profile and screen 0's rule summary (`rules: S1 fire; MIND RULES`)
+/// when present. The frame carries no cycle length, so there is no reload bar.
 #[must_use]
 pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
     weapon_rows_with_elapsed(cockpit, utf8, 0)
@@ -552,7 +585,7 @@ pub fn weapon_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
 
 /// Like [`weapon_rows`], subtracting `elapsed_ms` (quantized to 100 ms steps
 /// within the 1 s pulse window) from cycling weapons' `ready_in_ms` so the
-/// countdown and 4-cell reload bar advance smoothly between server pulses.
+/// countdown advances between server pulses.
 #[must_use]
 pub fn weapon_rows_with_elapsed(
     cockpit: &Value,
@@ -561,31 +594,28 @@ pub fn weapon_rows_with_elapsed(
 ) -> Vec<Line<'static>> {
     let step_ms = (elapsed_ms.clamp(0, 900) / 100) * 100;
     let mut lines = Vec::new();
-    match cockpit.get("heat").filter(|h| !h.is_null()) {
-        Some(h) => {
-            let (heat, max) = (num(h.get("heat")), num(h.get("max")));
-            let colour = if h.get("overheated").and_then(Value::as_bool) == Some(true) {
-                Color::Red
-            } else {
-                ramp(max - heat, max)
-            };
-            let mut spans = vec![
-                Span::raw("HEAT "),
-                Span::styled(
-                    glyphs(&bar(heat, max, 10), utf8),
-                    Style::default().fg(colour),
-                ),
-                Span::raw(format!(" {heat}/{max}")),
-            ];
-            if h.get("overheated").and_then(Value::as_bool) == Some(true) {
-                spans.push(Span::styled(
-                    " OVERHEAT",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ));
-            }
-            lines.push(Line::from(spans));
+    // 16b cut X.1's rule, as screen 0 keeps it: heat is a row only for a
+    // platform that carries it.
+    if let Some(h) = cockpit.get("heat").filter(|h| !h.is_null()) {
+        let (heat, max) = (num(h.get("heat")), num(h.get("max")));
+        let over = h.get("overheated").and_then(Value::as_bool) == Some(true);
+        let colour = if over {
+            Color::Red
+        } else {
+            ramp(max - heat, max)
+        };
+        let mut spans = vec![Span::raw(format!("heat {heat}/{max}"))];
+        if over {
+            spans.push(Span::styled(
+                "  OVERHEATED",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
         }
-        None => lines.push(dim("HEAT - (no heat model)")),
+        spans.push(Span::styled(
+            format!("  {}", glyphs(&bar(heat, max, 10), utf8)),
+            Style::default().fg(colour),
+        ));
+        lines.push(Line::from(spans));
     }
     let weapons: Vec<&Value> = cockpit
         .get("weapons")
@@ -616,18 +646,8 @@ pub fn weapon_rows_with_elapsed(
         } else {
             raw_ms
         };
-        let (state, colour, cooldown_bar) = if rounds_max > 0 && rounds <= 0 {
-            ("EMPTY".to_string(), Color::Red, None)
-        } else if ready {
-            ("READY".to_string(), Color::Green, None)
-        } else {
-            let progress = (3_000 - ms.clamp(0, 3_000)).max(250);
-            (
-                format!("{}.{}s", ms / 1_000, ms % 1_000 / 100),
-                Color::Yellow,
-                Some(glyphs(&bar(progress, 3_000, 4), utf8)),
-            )
-        };
+        let colour = if ready { Color::Green } else { Color::Yellow };
+        let state = readiness_word(ready, ms);
         let mut spans = vec![
             Span::raw(format!("{name:<name_w$} ")),
             Span::styled(format!("{state:<6}"), Style::default().fg(colour)),
@@ -639,58 +659,26 @@ pub fn weapon_rows_with_elapsed(
         if let Some(p) = w.get("percent").and_then(Value::as_i64) {
             spans.push(Span::raw(format!(" {p:>3}%")));
         }
-        if let Some(reload) = cooldown_bar {
-            spans.push(Span::styled(
-                format!(" {reload}"),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
         lines.push(Line::from(spans));
     }
 
-    // Active standing rules (`S1:fire`, `S3:lock`) and active mind profile (`> Line`).
-    let rule_tags: Vec<String> = cockpit
-        .get("rules")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|r| {
-            let slot = r.get("slot").and_then(Value::as_i64)?;
-            let action = r
-                .pointer("/rule/action")
-                .or_else(|| r.get("action"))
-                .and_then(Value::as_str)?;
-            let short_act = if action == "hold_fire" {
-                "hold"
-            } else {
-                action
-            };
-            Some(format!("S{slot}:{short_act}"))
-        })
-        .collect();
+    // The active mind profile (`> Line`), then screen 0's rule summary.
     let active_profile = cockpit.get("mind").and_then(|m| {
         let active = usize::try_from(m.get("active")?.as_i64()?).ok()?;
         m.get("profiles")?.as_array()?.get(active)?.as_str()
     });
-    if active_profile.is_some() || !rule_tags.is_empty() {
-        let mut spans = Vec::new();
-        if let Some(prof) = active_profile {
-            spans.push(Span::styled(
-                format!("> {prof}"),
-                Style::default().fg(Color::Cyan),
-            ));
-            if !rule_tags.is_empty() {
-                spans.push(Span::raw("  "));
-            }
-        }
-        if !rule_tags.is_empty() {
-            spans.push(Span::styled(
-                format!("RULES {}", rule_tags.join(" ")),
-                Style::default().add_modifier(Modifier::DIM),
-            ));
-        }
-        lines.push(Line::from(spans));
+    if let Some(prof) = active_profile {
+        lines.push(Line::from(Span::styled(
+            format!("> {}", super::render::clean(prof)),
+            Style::default().fg(Color::Cyan),
+        )));
     }
+    lines.extend(rule_summary_lines(cockpit).into_iter().map(|row| {
+        Line::from(Span::styled(
+            row,
+            Style::default().add_modifier(Modifier::DIM),
+        ))
+    }));
     lines
 }
 
@@ -716,7 +704,8 @@ fn arrow(bearing_deg: f64, camera_mdeg: i64) -> &'static str {
 /// dark), so the colour never says friend or foe — the word does.
 #[must_use]
 pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'static>> {
-    let lock_id = cockpit.get("lock").and_then(Value::as_str);
+    // The observer rule (doc 16 §1): the lock is matched by its designator,
+    // as screen 0 and the web match it, never by a raw contact id.
     let lock_des = cockpit.get("lock_designator").and_then(Value::as_str);
     let mut contacts: Vec<&Value> = cockpit
         .get("contacts")
@@ -727,7 +716,7 @@ pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'
     let range = |c: &Value| c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0);
     contacts.sort_by(|a, b| range(a).total_cmp(&range(b)));
     if contacts.is_empty() {
-        return vec![dim("No contacts.")];
+        return vec![dim("(no contacts)")];
     }
     contacts
         .into_iter()
@@ -764,8 +753,7 @@ pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'
             if let Some(p) = best {
                 text.push_str(&format!(" {p:>2}%"));
             }
-            let is_locked = (lock_id.is_some() && c.get("id").and_then(Value::as_str) == lock_id)
-                || (lock_des.is_some() && Some(designator) == lock_des);
+            let is_locked = lock_des.is_some() && Some(designator) == lock_des;
             let row_style = if is_locked {
                 Style::default().fg(colour).add_modifier(Modifier::BOLD)
             } else {
@@ -840,14 +828,14 @@ mod tests {
     /// half-block rows, centred, each cell coloured by what is left of its
     /// part — the fixture's worn left track (6 of 24) red, its destroyed
     /// right track grey, its front facet (55 of 80) green until worn past a
-    /// third — then a row a section.
+    /// third — then each section in screen 0's words, laid out at the fields.
     #[test]
     fn the_doll_is_the_looks_grid_coloured_by_what_is_left() {
         let mut c = fixture();
         c["unit_type"] = "tacsim.unit.line_tank".into();
         let lines = armour_rows(&c, true, 99);
         let rows = texts(&lines);
-        assert_eq!(rows.len(), 8 + 5, "the doll and a row a section");
+        assert_eq!(rows.len(), 8 + 9, "the doll and the five sections' rows");
         let top = "\u{2580}";
         assert_eq!(
             rows[0],
@@ -869,8 +857,43 @@ mod tests {
         worn["sections"][1]["facets"][0]["armor"] = 40.into();
         let worn = armour_rows(&worn, true, 99);
         assert_eq!(cell_colours(&worn[0], 5).0, Some(Color::Yellow), "40 of 80");
-        assert_eq!(rows[8], "engine     intact  40/40");
-        assert_eq!(rows[10], "L track    intact  6/24");
+        // Screen 0's damage-pane words (`render_cockpit_damage_rows`), facets
+        // included, laid into the 26 columns at the fields: no word is cut
+        // (`destroyed` once printed as `destroy`).
+        assert_eq!(
+            rows[8..],
+            [
+                "engine  intact  40/40",
+                "hull  intact  60/60",
+                "  front 55/80  rear 30/30",
+                "left_track  intact  6/24",
+                "  left 4/24",
+                "right_track  destroyed",
+                "  0/24  right 0/24",
+                "turret  intact  30/30",
+                "  top 18/20",
+            ]
+        );
+        assert!(rows.iter().all(|r| r.chars().count() <= 26), "{rows:?}");
+        // Where a section's row fits the column, it is screen 0's row whole.
+        let short = serde_json::json!({ "sections": [{ "id": "hull", "condition": "intact",
+            "internals": 6, "internals_max": 9, "facets": [{ "id": "top", "armor": 1, "armor_max": 2 }] }] });
+        assert_eq!(
+            texts(&armour_rows(&short, true, 99)),
+            ["hull  intact  6/9  top 1/2"]
+        );
+        // Too many rows for the column: a section is its name and internals,
+        // several to a row, still uncut.
+        let packed = texts(&armour_rows(&c, true, 12));
+        assert_eq!(
+            packed[8..],
+            [
+                "engine 40/40 hull 60/60",
+                "left_track 6/24",
+                "right_track 0/24",
+                "turret 30/30",
+            ]
+        );
         let ascii = texts(&armour_rows(&c, false, 99));
         assert!(ascii.iter().all(|r| r.is_ascii()), "{ascii:?}");
     }
@@ -906,11 +929,12 @@ mod tests {
             cell_colours(&lines[0], 10).0,
             "the head and the torso touch, so their tones differ"
         );
-        // In the smoke's 13 rows the six sections pair up, so the torso
-        // shows.
+        // In the smoke's 13 rows the six sections pack to five rows, whole
+        // names, so the torso and every other section show.
         let fitted = texts(&armour_rows(&biped, true, 13));
-        assert_eq!(fitted.len(), 8 + 3);
-        assert!(fitted.iter().any(|r| r.contains("torso")), "{fitted:?}");
+        assert_eq!(fitted.len(), 8 + 5);
+        assert_eq!(fitted[8], "torso 100/100 head 100/100");
+        assert_eq!(fitted[12], "right_leg 100/100");
         let mut hauler = biped.clone();
         hauler["unit_type"] = "tacsim.unit.dray".into();
         assert_eq!(
@@ -920,31 +944,61 @@ mod tests {
         );
     }
 
+    /// Screen 0's words (`render_cockpit_status_rows`' heat row,
+    /// `render_cockpit_weapons_rows`' readiness, `rule_summary_lines`): `heat
+    /// 40/100` with the bar beside it, `ready` / `1 s`, `rules: S1 fire; MIND
+    /// RULES`. No reload bar: the frame carries no cycle length to scale one.
     #[test]
     fn the_weapons_show_heat_readiness_rounds_and_odds() {
         let c = fixture();
         assert_eq!(
             texts(&weapon_rows(&c, true)),
             [
-                "HEAT \u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 40/100",
-                "cannon      READY   14/20    62%",
-                "machine_gun 0.9s   380/500   21% \u{2588}\u{2588}\u{2588}\u{2591}",
-                "> Sniper  RULES S1:fire",
+                "heat 40/100  \u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}",
+                "cannon      ready   14/20    62%",
+                "machine_gun 1 s    380/500   21%",
+                "> Sniper",
+                "rules: S1 fire; MIND RULES",
             ]
         );
+        let mut hot = c.clone();
+        hot["heat"]["heat"] = 90.into();
+        hot["heat"]["overheated"] = true.into();
+        assert_eq!(
+            texts(&weapon_rows(&hot, true))[0],
+            "heat 90/100  OVERHEATED  \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}"
+        );
+        // No heat model, no heat row (screen 0 prints none); an empty gun
+        // reads its rounds, not a word of its own.
         let mut cold = c.clone();
         cold["heat"] = Value::Null;
         cold["weapons"][0]["rounds"] = 0.into();
         let rows = texts(&weapon_rows(&cold, true));
-        assert_eq!(rows[0], "HEAT - (no heat model)");
-        assert!(rows[1].starts_with("cannon      EMPTY"), "{rows:?}");
-        assert_eq!(rows[3], "> Sniper  RULES S1:fire");
+        assert_eq!(rows[0], "cannon      ready    0/20    62%");
+        assert_eq!(rows[3], "rules: S1 fire; MIND RULES");
+        // The rule summary is screen 0's: one per slot, sorted, bounded.
+        let mut ruled = c.clone();
+        ruled["rules"] = serde_json::json!([
+            { "slot": 3, "rule": { "action": "lock" } },
+            { "slot": 1, "rule": { "action": "hold_fire" } },
+            { "slot": 1, "rule": { "action": "fire" } },
+            { "slot": 9, "rule": { "action": "fire" } },
+        ]);
+        assert_eq!(
+            texts(&weapon_rows(&ruled, true)).last().unwrap(),
+            "rules: S1 hold S3 lock; MIND RULES"
+        );
 
         // Sub-pulse elapsed_ms counts down cycling weapons in 100ms steps.
-        let sub = texts(&weapon_rows_with_elapsed(&c, true, 450));
+        let mut slow = c.clone();
+        slow["weapons"][1]["ready_in_ms"] = 2_300.into();
         assert_eq!(
-            sub[2],
-            "machine_gun 0.5s   380/500   21% \u{2588}\u{2588}\u{2588}\u{2588}"
+            texts(&weapon_rows(&slow, true))[2],
+            "machine_gun 3 s    380/500   21%"
+        );
+        assert_eq!(
+            texts(&weapon_rows_with_elapsed(&slow, true, 450))[2],
+            "machine_gun 2 s    380/500   21%"
         );
     }
 
@@ -983,5 +1037,73 @@ mod tests {
         // A look of 90 to the right: BA now lies to the left.
         let swung = texts(&contact_rows(&c, 135_000, true));
         assert!(swung[2].starts_with('\u{2190}'), "{swung:?}");
+        // The observer rule: the lock is its designator, never a raw id. A
+        // `lock` naming RB's id marks nothing; without `lock_designator`
+        // nothing is marked at all.
+        let mut by_id = c.clone();
+        by_id["lock"] = "2222222222222222".into();
+        let rows = texts(&contact_rows(&by_id, 45_000, true));
+        assert!(
+            !rows[0].contains("LOCK") && rows[2].ends_with("LOCK"),
+            "{rows:?}"
+        );
+        if let Some(obj) = by_id.as_object_mut() {
+            obj.remove("lock_designator");
+        }
+        let rows = texts(&contact_rows(&by_id, 45_000, true));
+        assert!(rows.iter().all(|r| !r.contains("LOCK")), "{rows:?}");
+        let mut none = c.clone();
+        none["contacts"] = serde_json::json!([]);
+        assert_eq!(texts(&contact_rows(&none, 0, true)), ["(no contacts)"]);
+    }
+
+    /// The panel's empty state and its detachment order are screen 0's lines.
+    #[test]
+    fn the_panel_says_what_screen_0_says() {
+        let detachment = serde_json::json!({
+            "id": "7", "revision": "8", "term": "9", "leader_slot": 1,
+            "slots": [{ "slot": 1, "callsign": "RA", "pilot": "Aster", "controller": "player",
+                "order_prefill": "ORDER DT:7:8:9 1 " }],
+            "all_order_prefill": "ORDER DT:7:8:9 ALL ",
+            "my_order": { "sequence": "3", "from": "Aster", "objective": "hold", "response": null },
+            "wilco_command": "WILCO DT:7:8 3",
+            "negative_command": "NEGATIVE DT:7:8 3"
+        });
+        let mut c = fixture();
+        c["detachment"] = detachment;
+        let draw = |cockpit: Option<&Value>| {
+            let backend = ratatui::backend::TestBackend::new(160, 14);
+            let mut term = ratatui::Terminal::new(backend).expect("terminal");
+            let panel = Panel {
+                cockpit,
+                camera_mdeg: 0,
+                elapsed_ms: 0,
+                utf8: true,
+            };
+            term.draw(|f| {
+                draw_panel(f, f.area(), &panel, &|_, _| PaneRows::default(), &|_| {
+                    Vec::new()
+                });
+            })
+            .expect("draw");
+            let buf = term.backend().buffer().clone();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let text = draw(Some(&c));
+        assert!(text.contains("Order from Aster: hold"), "{text}");
+        assert!(text.contains("Response: not acknowledged"), "{text}");
+        assert!(
+            !text.contains("Reply:") && !text.contains("From:"),
+            "{text}"
+        );
+        let text = draw(None);
+        assert!(text.contains(NOT_IN_A_COCKPIT), "{text}");
     }
 }

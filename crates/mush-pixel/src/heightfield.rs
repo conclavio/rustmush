@@ -67,6 +67,13 @@ const NEAR: f32 = 0.25;
 const FIRST_STEP: f32 = 0.04;
 /// See [`FIRST_STEP`].
 const GROWTH: f32 = 1.015;
+/// The most times a column reads the ground again between two lines of the
+/// march, where the ground rises steeply between them (see [`draw_ground`]).
+const RUN_STEPS: usize = 8;
+/// The rise between two lines of the march, cells, past which a column reads
+/// the ground again in between: 30 cm on the arena's 10 m cells, more than a
+/// rolling slope climbs in one step and less than a bank or a cliff does.
+const RUN_RISE: f32 = 0.03;
 
 /// Ground with relief: the arena's cell grid ([`Map`]) and an elevation a
 /// cell, in centimetres above the region's datum.
@@ -294,18 +301,33 @@ impl ColourMap {
     /// The colour at a point (in cells) seen from `z` cells away, at fog
     /// `step` (of the raycaster's twelve).
     fn colour(&self, px: f32, py: f32, z: f32, step: usize) -> Rgb {
-        let level = if z < FINE_DETAIL_CELLS {
-            &self.fine
-        } else {
-            &self.coarse
-        };
         let fog = (step * BAKED_FOG / crate::raycast::FOG_STEPS).min(BAKED_FOG - 1);
-        level
+        self.level(z)
             .get(px, py)
             .and_then(|k| self.table.get(usize::from(k)))
             .and_then(|row| row.get(fog))
             .copied()
             .unwrap_or(self.horizon)
+    }
+
+    /// The level ground `z` cells away is drawn from.
+    fn level(&self, z: f32) -> &BakedLevel {
+        if z < FINE_DETAIL_CELLS {
+            &self.fine
+        } else {
+            &self.coarse
+        }
+    }
+
+    /// The one colour of the ground between two points (in cells) seen from
+    /// `z` cells away at fog `step`, when it has one: both ends read the same
+    /// colour and lie within a texel of each other, so nothing between them
+    /// is passed over but the sliver of a texel's corner.
+    fn plain(&self, a: (f32, f32), b: (f32, f32), z: f32, step: usize) -> Option<Rgb> {
+        let k = self.level(z).per_cell as f32;
+        let near = ((a.0 - b.0) * k).abs() < 1.0 && ((a.1 - b.1) * k).abs() < 1.0;
+        let rgb = self.colour(b.0, b.1, z, step);
+        (near && self.colour(a.0, a.1, z, step) == rgb).then_some(rgb)
     }
 
     /// Look up a specific `(kind_idx, level)` entry at fog `step` so 3D
@@ -759,6 +781,12 @@ fn draw_ground(frame: &mut Frame, terrain: &Terrain, view: &View, shades: &Shade
     // The distance each pixel was drawn at, for the sprites.
     let mut depth = vec![f32::INFINITY; w * h];
     let wf = w as f32;
+    // The row each column's ground projected to on the line before this one
+    // (unclamped, and whether or not it was hidden), `NAN` where there is
+    // none to span from: the first line, and a wall's raised top, whose face
+    // is its own colour from the ground up.
+    let mut before = vec![f32::NAN; w];
+    let mut z_before = NEAR;
 
     let mut z = NEAR;
     let mut dz = FIRST_STEP;
@@ -766,27 +794,88 @@ fn draw_ground(frame: &mut Frame, terrain: &Terrain, view: &View, shades: &Shade
         let (lx, ly) = (posx + (dirx - planex) * z, posy + (diry - planey) * z);
         let (sx, sy) = (2.0 * planex * z / wf, 2.0 * planey * z / wf);
         let step = fog_step(z * FOG_CELLS / VIEW_CELLS);
-        for (i, low) in ybuf.iter_mut().enumerate() {
+        for (i, (low, from)) in ybuf.iter_mut().zip(before.iter_mut()).enumerate() {
             let t = i as f32 + 0.5;
             let (px, py) = (lx + sx * t, ly + sy * t);
             let (ground, top) = terrain.surface(px, py);
             let y = horizon + (eye - top) * hf / z;
+            let raised = ground == Ground::Wall;
+            let from = std::mem::replace(from, if raised { f32::NAN } else { y });
             let start = y.max(0.0).ceil() as usize;
             if start >= *low {
                 continue;
             }
-            let px_rgb = match &terrain.baked {
-                Some(map) => map.colour(px, py, z, step),
-                None => shades.shade(base(ground, terrain.lit(px, py)), step),
-            };
-            for row in start..*low {
-                frame.put(i, row, px_rgb);
-                if let Some(d) = depth.get_mut(row * w + i) {
-                    *d = z;
+            match &terrain.baked {
+                // **A run of more than a row is textured along the ground it
+                // spans** (doc 21 cut G.7c). The rows between this line's
+                // sample and the last line's are the slope between the two,
+                // so each row reads the map where its own sight line meets
+                // that slope; and where the ground climbs steeply between the
+                // lines, the column reads the heights again in between, so a
+                // bank's foot and brow sit where they are and not on the
+                // nearest line. One colour a run drew a steep face as a wedge
+                // a depth slice, and the wedges crawled as the eye moved.
+                Some(map) if *low - start > 1 && !raised && from > y => {
+                    let ray = ((px - posx) / z, (py - posy) / z);
+                    let top_before = eye - (from - horizon) * z_before / hf;
+                    let steps = if (top - top_before).abs() > RUN_RISE {
+                        ((*low - start) / 2).clamp(1, RUN_STEPS)
+                    } else {
+                        1
+                    };
+                    let (mut za, mut ya) = (z_before, from);
+                    for s in 1..=steps {
+                        let (zb, yb) = if s == steps {
+                            (z, y)
+                        } else {
+                            let zb = z_before + (z - z_before) * s as f32 / steps as f32;
+                            let top = terrain.height(posx + ray.0 * zb, posy + ray.1 * zb);
+                            (zb, horizon + (eye - top) * hf / zb)
+                        };
+                        let first = (yb.max(0.0).ceil() as usize).min(*low);
+                        let on = |at: f32| (posx + ray.0 * at, posy + ray.1 * at);
+                        // Most runs are one colour end to end (the near
+                        // ground's steps are shorter than a texel).
+                        if let Some(rgb) = map.plain(on(za), on(zb), z, step) {
+                            for row in first..*low {
+                                frame.put(i, row, rgb);
+                            }
+                        } else {
+                            // `1/z` is linear in the row along a straight
+                            // segment of ground.
+                            let (ia, ib) = (1.0 / za, 1.0 / zb);
+                            let span = (ya - yb).max(f32::EPSILON);
+                            for row in first..*low {
+                                let k = ((ya - row as f32) / span).clamp(0.0, 1.0);
+                                let (x, y) = on(1.0 / (ia + (ib - ia) * k));
+                                frame.put(i, row, map.colour(x, y, z, step));
+                            }
+                        }
+                        for row in first..*low {
+                            if let Some(d) = depth.get_mut(row * w + i) {
+                                *d = z;
+                            }
+                        }
+                        *low = first;
+                        (za, ya) = (zb, yb);
+                    }
+                }
+                baked => {
+                    let px_rgb = match baked {
+                        Some(map) => map.colour(px, py, z, step),
+                        None => shades.shade(base(ground, terrain.lit(px, py)), step),
+                    };
+                    for row in start..*low {
+                        frame.put(i, row, px_rgb);
+                        if let Some(d) = depth.get_mut(row * w + i) {
+                            *d = z;
+                        }
+                    }
+                    *low = start;
                 }
             }
-            *low = start;
         }
+        z_before = z;
         z += dz;
         dz *= GROWTH;
     }
@@ -1645,6 +1734,41 @@ mod tests {
             t.elev_cm(0, 3),
             "outside: the nearest edge"
         );
+    }
+
+    /// A 7 m bank a cell wide, seen at a slant as the proving ground's Bluff
+    /// is from the west (doc 21 cut G.7c): its light bands run level along
+    /// the face, so a row of the picture crosses a band's edge a few times.
+    /// One colour a depth slice drew the face as a row of wedges, a tooth a
+    /// slice, and every row of the face crossed some forty of them (1,457
+    /// edges in this frame, 517 with the runs textured).
+    #[test]
+    fn a_steep_face_is_banded_along_its_length_not_toothed() {
+        let mut map = Map::new(96, 64, 1000);
+        for y in 0..64 {
+            for x in 0..96 {
+                map.set(x, y, Ground::Grass);
+            }
+        }
+        let mut t = Terrain::new(map);
+        for y in 0..64 {
+            for x in 40..96 {
+                t.set_elev_cm(x, y, 700);
+            }
+        }
+        t.bake(7);
+        let cam = Camera {
+            x_cm: 25_000,
+            y_cm: 30_000,
+            heading_mdeg: 73_000,
+        };
+        let (w, h) = (1200, 504);
+        let mut f = Frame::new(w, h);
+        render(&mut f, &t, &cam, Some(250), &[]);
+        let edges: usize = (0..h)
+            .map(|y| (1..w).filter(|&x| f.get(x, y) != f.get(x - 1, y)).count())
+            .sum();
+        assert!(edges <= 800, "the face is toothed: {edges} colour edges");
     }
 
     /// From the crater's floor the rim stands above the horizon all round;

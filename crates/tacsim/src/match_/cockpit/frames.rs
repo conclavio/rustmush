@@ -673,6 +673,9 @@ pub fn status_frame_held(
             "reverse_kph".into(),
             cms_to_kph(i32::try_from(frame.reverse_cms).unwrap_or(i32::MAX)).into(),
         );
+        // **Doc 21 cut G.4b**: the hull's turn rate as the motion step spends
+        // it, so a client draws a turn between pulses at the hull's own rate.
+        object.insert("turn_rate_mdeg_s".into(), frame.turn_rate_mdeg_s.into());
         object.insert("mode".into(), frame.mode.as_str().into());
         object.insert(
             "objective".into(),

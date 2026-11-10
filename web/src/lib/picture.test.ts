@@ -1,5 +1,5 @@
-// The cockpit's picture in the web client (doc 21 cut G.3c): the command, the
-// look's swing, the helm's lines and the keys — pure, so pinned here.
+// The cockpit's picture in the web client (doc 21 cut G.3c): the look's
+// swing, the keys, the lock order and the click maths — pure, so pinned here.
 
 //
 // Doc 21 cut G.12c: every key of §7.3's table the web binds, one assertion a
@@ -18,7 +18,6 @@ import {
   dockOrderToInputMask,
   gateLine,
   gateWord,
-  helmLine,
   lockOrder,
   LOOK_MDEG_PER_S,
   nextLock,
@@ -26,7 +25,6 @@ import {
   nextSpaceCamera,
   orderPrefill,
   pickCanvasContact,
-  pictureCommand,
   pictureKey,
   predictedOffsetCm,
   spacePictureKey,
@@ -37,6 +35,7 @@ import {
   stepZoomPermille,
   swingLook,
   wrapMdeg,
+  ZOOM_DEFAULT_BY_KIND,
 } from "./picture";
 import { FEED_SPACE_DOCKING, PixelModule } from "./pixel/wasm";
 import { PictureStore } from "./stores/picture.svelte";
@@ -50,30 +49,14 @@ function fixtureContacts(): CockpitContact[] {
   return decodeCockpitFrame(raw)!.contacts;
 }
 
-describe("the picture command", () => {
-  it("carries on/off, a wrapped look and the camera", () => {
-    expect(pictureCommand(true, 30_000)).toEqual({
-      t: "picture",
-      d: { on: true, look_mdeg: 30_000, kind: "cockpit" },
-    });
-    expect(pictureCommand(false, 0)).toEqual({
-      t: "picture",
-      d: { on: false, look_mdeg: 0, kind: "cockpit" },
-    });
-    expect(pictureCommand(true, 200_000).d).toEqual({ on: true, look_mdeg: -160_000, kind: "cockpit" });
-    // Doc 21 cut G.12c: the overhead is asked for by name.
-    expect(pictureCommand(true, 0, "overhead").d).toEqual({ on: true, look_mdeg: 0, kind: "overhead" });
-  });
-
+describe("the look", () => {
   it("wraps a look into -180..180 degrees", () => {
     expect(wrapMdeg(0)).toBe(0);
     expect(wrapMdeg(180_000)).toBe(-180_000);
     expect(wrapMdeg(-190_000)).toBe(170_000);
     expect(wrapMdeg(720_500)).toBe(500);
   });
-});
 
-describe("the look and the helm", () => {
   it("swings the look at 45 degrees a second, a second at most a step", () => {
     expect(LOOK_MDEG_PER_S).toBe(45_000);
     expect(swingLook(0, 1, 100)).toBe(4_500);
@@ -83,13 +66,6 @@ describe("the look and the helm", () => {
     expect(swingLook(1_000, 0, 100)).toBe(1_000);
   });
 
-  it("orders a heading thirty degrees ahead, or where the tank points to stop", () => {
-    expect(helmLine(90, 1)).toBe("HEADING 120 QUIET");
-    expect(helmLine(10, -1)).toBe("HEADING 340 QUIET");
-    expect(helmLine(350, 1)).toBe("HEADING 20 QUIET");
-    expect(helmLine(45, 0)).toBe("HEADING 45 QUIET");
-  });
-
   it("reads the keys the TUI's view reads", () => {
     expect(pictureKey("ArrowLeft")).toEqual({ kind: "turn", dir: -1 });
     expect(pictureKey("ArrowRight")).toEqual({ kind: "turn", dir: 1 });
@@ -97,7 +73,7 @@ describe("the look and the helm", () => {
     expect(pictureKey(".")).toEqual({ kind: "look", dir: 1 });
     expect(pictureKey("c")).toEqual({ kind: "centre" });
     expect(pictureKey(" ")).toEqual({ kind: "steady" });
-    expect(pictureKey("z")).toBeNull();
+    expect(pictureKey("j")).toBeNull();
   });
 });
 
@@ -161,11 +137,33 @@ describe("the cockpit's keys (doc 21 §7.3, cut G.12c)", () => {
     expect(orderPrefill(4)).toBe("ORDER 4 ");
   });
 
-  it("reads a letter in either case but t, whose capital is the previous lock", () => {
-    for (const k of ["a", "d", "w", "s", "x", "q", "e", "c", "v", "f", "g"]) {
-      expect(pictureKey(k.toUpperCase()), k).toEqual(pictureKey(k));
-    }
+  it("b is the glass, n the scan, z and P the startup, m EMCON", () => {
+    expect(pictureKey("b")).toEqual({ kind: "glass" });
+    expect(pictureKey("n")).toEqual({ kind: "scan" });
+    expect(pictureKey("z")).toEqual({ kind: "startup" });
+    expect(pictureKey("P")).toEqual({ kind: "startup" });
+    expect(pictureKey("m")).toEqual({ kind: "emcon" });
+  });
+
+  it("l and F arm or disarm the standing rules", () => {
+    expect(pictureKey("l")).toEqual({ kind: "autoTarget" });
+    expect(pictureKey("F")).toEqual({ kind: "autoFire" });
+  });
+
+  it("y and N answer the detachment", () => {
+    expect(pictureKey("y")).toEqual({ kind: "wilco" });
+    expect(pictureKey("N")).toEqual({ kind: "negative" });
+  });
+
+  it("reads a letter's case as part of the key, as the TUI does", () => {
+    // A capital that is its own key is a different one from its lower case.
     expect(pictureKey("T")).not.toEqual(pictureKey("t"));
+    expect(pictureKey("F")).not.toEqual(pictureKey("f"));
+    expect(pictureKey("N")).not.toEqual(pictureKey("n"));
+    // A capital with no binding of its own does nothing: it is no alias.
+    for (const k of ["A", "D", "W", "S", "X", "Q", "E", "C", "V", "G", "B", "Z", "M", "L", "Y", "p"]) {
+      expect(pictureKey(k), k).toBeNull();
+    }
   });
 });
 
@@ -202,7 +200,7 @@ describe("the weapons gate (doc 21 cut G.12c)", () => {
     expect(gateLine(false)).toBe("FIRE FREE");
     expect(gateLine(true)).toBe("FIRE HOLD");
     expect(gateLine(null)).toBe("FIRE HOLD");
-    expect(gateWord(false)).toBe("weapons hold");
+    expect(gateWord(false)).toBe("weapons HOLD");
     expect(gateWord(true)).toBe("weapons free");
     expect(gateWord(null)).toBe("weapons free");
   });
@@ -211,6 +209,20 @@ describe("the weapons gate (doc 21 cut G.12c)", () => {
 describe("the lock cycle (doc 21 cut G.12c)", () => {
   it("orders hostiles first, then unidentified, then the rest, nearest first in each", () => {
     expect(lockOrder(fixtureContacts())).toEqual(["BA", "X3", "X4", "RB"]);
+  });
+
+  it("breaks a tie in range by the designator, and leaves out a contact with none", () => {
+    const contacts = fixtureContacts();
+    const ba = contacts.find((c) => c.designator === "BA")!;
+    const rb = contacts.find((c) => c.designator === "RB")!;
+    const x3 = contacts.find((c) => c.designator === "X3")!;
+    const at = (designator: string, range_m: number): CockpitContact => ({ ...x3, designator, range_m });
+    // The frame's own order is no part of it: the same contacts either way round.
+    const one = [at("X9", 200), at("X2", 200), at("", 50), ba, rb];
+    const other = [rb, ba, at("", 50), at("X2", 200), at("X9", 200)];
+    expect(lockOrder(one)).toEqual(["BA", "X2", "X9", "RB"]);
+    expect(lockOrder(other)).toEqual(["BA", "X2", "X9", "RB"]);
+    expect(nextLock([at("", 50)], null, 1)).toBeNull();
   });
 
   it("walks forward with t and back with T, wrapping, from the current lock", () => {
@@ -234,19 +246,28 @@ describe("the lock cycle (doc 21 cut G.12c)", () => {
 });
 
 describe("the picture store", () => {
-  it("keeps frames only while the picture is on", () => {
+  it("opens each camera at its own zoom, the 2.5D one zoomed out", () => {
     const store = new PictureStore();
-    const png = new Uint8Array([0x89, 0x50]).buffer;
-    store.receive(png);
-    expect(store.frame).toBeNull();
-    store.on = true;
-    store.receive(png);
-    expect(store.frame).toBeInstanceOf(Blob);
-    expect(store.frame?.type).toBe("image/png");
-    expect(store.received).toBe(1);
+    expect(store.zoomByKind).toEqual({ cockpit: 1_000, overhead: 1_000, iso25d: 500 });
+    expect(store.spaceZoomPermille).toBe(1_000);
+    // One store's zoom is its own: the defaults are copied, never shared.
+    store.zoomByKind.overhead = 1_500;
+    expect(new PictureStore().zoomByKind.overhead).toBe(1_000);
+    expect(ZOOM_DEFAULT_BY_KIND.overhead).toBe(1_000);
+  });
+
+  it("keeps the look, the zoom and the ordered speed when the connection goes", () => {
+    const store = new PictureStore();
+    store.lookMdeg = 30_000;
+    store.zoomByKind.iso25d = 750;
+    store.throttle.bump(1, 0);
+    store.observeSpaceHolotank({ active: true });
+    expect(store.spaceMode).toBe("holotank");
     store.clear();
-    expect(store.frame).toBeNull();
-    expect(store.received).toBe(0);
+    expect(store.spaceMode).toBeNull();
+    expect(store.lookMdeg).toBe(30_000);
+    expect(store.zoomByKind.iso25d).toBe(750);
+    expect(store.throttle.ordered).toBe(6);
   });
 });
 
@@ -271,25 +292,66 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(predictedOffsetCm(1_000, 90_000, 5_000, 1_500)).toEqual({ dxCm: 1_500, dyCm: 0 });
   });
 
-  it("steps 2.5D zoom between 500 and 2000 permille and picks contacts or headings on tactical canvas", () => {
+  it("steps a camera's zoom inside its own range and resets to its own default", () => {
     expect(pictureKey("+")).toEqual({ kind: "zoom", dir: 1 });
     expect(pictureKey("-")).toEqual({ kind: "zoom", dir: -1 });
     expect(stepZoomPermille(1_000, 1)).toBe(1_250);
     expect(stepZoomPermille(2_000, 1)).toBe(2_000);
     expect(stepZoomPermille(500, -1)).toBe(500);
-    expect(stepZoomPermille(1_500, 0)).toBe(1_000);
+    // First person never zooms out past 1.0x.
+    expect(stepZoomPermille(1_000, -1, "cockpit")).toBe(1_000);
+    // The reset is the camera's own opening zoom, the TUI's `zoom_by_camera`.
+    expect(stepZoomPermille(1_500, 0, "cockpit")).toBe(1_000);
+    expect(stepZoomPermille(1_500, 0, "overhead")).toBe(1_000);
+    expect(stepZoomPermille(1_500, 0, "iso25d")).toBe(500);
+    expect(stepZoomPermille(1_500, 0)).toBe(500);
+  });
 
+  it("picks a contact where the renderer drew it, at either frame size", () => {
     const contacts = fixtureContacts();
-    // Friendly RB is at range 100m, bearing 270 deg (due west) -> in iso25d (1000 permille):
-    // dx_m = -100m -> sx = 320 - 100 * 2.3 = 90 -> normX = 90 / 640, sy = 240 -> normY = 0.5
-    expect(pickCanvasContact(contacts, "iso25d", 90 / 640, 240 / 480, 1_000)).toBe("RB");
-    expect(pickCanvasContact(contacts, "cockpit", 90 / 640, 240 / 480, 1_000)).toBeNull();
+    // Friendly RB is 100 m due west (bearing 270). The 2.5D camera at 640 wide
+    // and 1.0x draws 1.15 px a metre east: 115 px left of centre.
+    expect(pickCanvasContact(contacts, "iso25d", (320 - 115) / 640, 0.5, 1_000)).toBe("RB");
+    // At 0.5x it is half as far out, and the old spot is nobody's.
+    expect(pickCanvasContact(contacts, "iso25d", (320 - 57.5) / 640, 0.5, 500)).toBe("RB");
+    expect(pickCanvasContact(contacts, "iso25d", (320 - 230) / 640, 0.5, 500)).toBeNull();
+    // At 1280 wide the scale grows by the root of the width: 1.15 x sqrt(2).
+    const hd = 115 * Math.SQRT2;
+    expect(pickCanvasContact(contacts, "iso25d", (640 - hd) / 1280, 0.5, 1_000, 600, 0, 1280, 720)).toBe("RB");
+    // The overhead's scale is half the frame's short side over the reach
+    // (600 m of sight, 690 m of reach): 240/690 px a metre at 640x480...
+    expect(pickCanvasContact(contacts, "overhead", (320 - (100 * 240) / 690) / 640, 0.5, 1_000, 600)).toBe("RB");
+    // ...and 360/690 at 1280x720: the short side is the height, not the width.
+    expect(
+      pickCanvasContact(contacts, "overhead", (640 - (100 * 360) / 690) / 1280, 0.5, 1_000, 600, 0, 1280, 720),
+    ).toBe("RB");
+    // At 2.0x the reach halves: 360/345 px a metre, where half the width over
+    // the reach would land 81 px further out, on nobody.
+    expect(
+      pickCanvasContact(contacts, "overhead", (640 - (100 * 360) / 345) / 1280, 0.5, 2_000, 600, 0, 1280, 720),
+    ).toBe("RB");
+    expect(
+      pickCanvasContact(contacts, "overhead", (640 - (100 * 640) / 345) / 1280, 0.5, 2_000, 600, 0, 1280, 720),
+    ).toBeNull();
+    // First person looking due west: RB is dead ahead, at the frame's centre.
+    expect(pickCanvasContact(contacts, "cockpit", 0.5, 0.5, 1_000, 600, 270)).toBe("RB");
+    expect(pickCanvasContact(contacts, "cockpit", 0.5, 0.5, 1_000, 600, 270, 1280, 720)).toBe("RB");
+    expect(pickCanvasContact(contacts, "cockpit", 90 / 640, 0.5, 1_000)).toBeNull();
+  });
 
-    // Double-click heading: straight north of centre (0.5, 0.2) -> 0 deg; straight east (0.8, 0.5) -> 90 deg
+  it("reads a double click's heading from the frame's own shape", () => {
+    // Straight north of centre is 0 degrees, straight east 90.
     expect(canvasClickHeadingDeg("iso25d", 0.5, 0.2)).toBe(0);
     expect(canvasClickHeadingDeg("iso25d", 0.8, 0.5)).toBe(90);
     expect(canvasClickHeadingDeg("iso25d", 0.5, 0.5)).toBeNull();
     expect(canvasClickHeadingDeg("cockpit", 0.8, 0.5)).toBeNull();
+    // The overhead is square on the ground: 100 px east and 100 px north is
+    // north-east in a 1280x720 frame, which 640x480 arithmetic read as 037.
+    expect(canvasClickHeadingDeg("overhead", (640 + 100) / 1280, (360 - 100) / 720, 1280, 720)).toBe(45);
+    expect(canvasClickHeadingDeg("overhead", (320 + 100) / 640, (240 - 100) / 480)).toBe(45);
+    // The deadzone grows with the frame: 30 px is outside it at 640, inside at 1280.
+    expect(canvasClickHeadingDeg("overhead", (320 + 30) / 640, 0.5)).toBe(90);
+    expect(canvasClickHeadingDeg("overhead", (640 + 30) / 1280, 0.5, 1280, 720)).toBeNull();
   });
 
   it("cycles space cameras and maps non-colliding 6-DOF docking and space bridge keys (SF.18, D-35-16)", () => {
@@ -383,6 +445,17 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     });
     expect(spacePictureKey("w", "space_cockpit")).toBeNull();
     expect(spacePictureKey("g", "space_cockpit")).toBeNull();
+    // A letter's case is the TUI's: the holo-tank's and the canopy's are lower
+    // case only, the docking camera's read either.
+    for (const k of ["A", "D", "Z", "X", "C", "R", "V"]) {
+      expect(spacePictureKey(k, "holotank"), k).toBeNull();
+    }
+    for (const k of ["Q", "E", "Z", "X", "C", "R", "V"]) {
+      expect(spacePictureKey(k, "space_cockpit"), k).toBeNull();
+    }
+    expect(spacePictureKey("V", "docking")).toBeNull();
+    expect(spacePictureKey("W", "docking")).toEqual(spacePictureKey("w", "docking"));
+    expect(spacePictureKey("v", "docking")).toEqual({ kind: "spaceView" });
 
     // PictureStore space feed observers auto-select spaceMode.
     const store = new PictureStore();

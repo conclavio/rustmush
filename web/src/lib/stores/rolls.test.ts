@@ -31,12 +31,12 @@ describe("RollsStore", () => {
     expect(r.entries[1]?.outcome?.dice[0]?.face).toBe(8);
   });
 
-  it("caps the ring at 30 entries", () => {
+  it("caps the ring at the TUI's 100 entries", () => {
     const r = new RollsStore();
-    for (let i = 0; i < 35; i++) {
+    for (let i = 0; i < 105; i++) {
       r.push(rollData(6));
     }
-    expect(r.entries).toHaveLength(30);
+    expect(r.entries).toHaveLength(100);
   });
 
   it("a malformed push is dropped (returns null, list unchanged)", () => {

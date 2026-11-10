@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { GameApp } from "$lib/game.svelte";
-  import { actionControl } from "$lib/legal-action-control";
+  import { actionControl, actionNeedsTarget } from "$lib/legal-action-control";
   import LegalActionForm from "./LegalActionForm.svelte";
   import ActionTransactions from "./ActionTransactions.svelte";
 
@@ -32,6 +32,19 @@
         {#if control}
           <LegalActionForm {action} {control} requests={app.actionRequests}
             submit={values => app.submitLegalAction(action, values)} />
+        {:else if actionNeedsTarget(action)}
+        <!-- An aimed offer: no form holds it, so the button hands the verb to
+             the input line, as the TUI's `A` does, with the TUI's sentence. -->
+        <button
+          type="button"
+          class="action"
+          title={action.presentation.help}
+          onclick={() => app.focusComposer(`+act ${action.presentation.verb}`)}
+        >
+          <strong>{action.presentation.label}</strong>
+          {#if action.presentation.help}<span>{action.presentation.help}</span>{/if}
+          <span>This action needs a target; use +act.</span>
+        </button>
         {:else}
         <button
           type="button"

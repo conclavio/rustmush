@@ -1,5 +1,30 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.26 — 2026-11-09, the two clients agree.** A review of the terminal's cockpit against
+the web's found 54 differences; the owner ruled on four and asked for the bugs and the quick ones
+fixed. §7.3 now says what both do: all stop leaves a `HEADING` not yet reached alone, the first
+speed step is sent at once, and a capital letter is its own key on the web as on the terminal. The
+web picture opens at 1280x720 (the size that shows the 192 px sprites), keeps a zoom per camera and
+its look, speed and lock across a screen switch, and arms and disarms the standing rules by the
+slots the frame shows, as the terminal now does too (cut notes, "The two clients agree").
+
+**Draft 0.25 — 2026-11-09, G.7c: a steep face is textured along its slope.** The owner's report
+from dev1: the hill at marker F (the proving ground's Bluff) shows three greens in stripes that
+"continuously rotate" as the tank closes. Not the palette (the frame uses some fifty colours of its
+256): the heightfield painted each depth slice of its march in one colour, so a steep face seen at a
+slant was a row of wedges across its light bands, and the wedges are fixed to the eye, not the
+ground. A run of more than a row now reads the colour map along the ground it spans, and reads the
+heights again where the ground climbs steeply between two lines (cut notes, "G.7c").
+
+**Draft 0.24 — 2026-11-09, G.4b: the helm's turn is one swing.** The owner's report from dev1:
+turning with `a`/`d` "jerks and moves in wide swaths" and a wanted heading is hard to stop on. The
+TUI's helm is redrawn (cut notes, "G.4b"): the picture's heading is one continuous value, swung at
+the hull's turn rate from where it stood while the key is held and never restarted from a frame; the
+helm orders a few degrees ahead of the picture four times a second, where G.4 ordered a pulse and a
+half of turning ahead (45° at the alert tempo); letting go orders the heading the picture shows; a
+tap is one degree. The frame gains `turn_rate_mdeg_s`, so no client measures it. The web picture's
+helm (`web/src/lib/picture.ts`) is G.4's still.
+
 **Draft 0.23 — 2026-10-27, G.14: health gauges on the picture's contacts.** The owner's second ask
 after flying G.12 on dev2: the enemy units' status at a glance. §7.4 gains the gauge — three pips over
 each identified contact's sprite and beside its mark in the overhead, lit by the one word the frame
@@ -473,13 +498,15 @@ and the picture hides, and coming back to `0` brings it back with the helm, the 
 look as they were. `^G` stays for the other screens' pictures (the chart's, the doll's, the replay's)
 until each becomes its screen's own rendering the same way. The flight keys below are live only
 while screen `0` shows the picture; on every other screen the letters mean what that screen says
-(`w`, `s`, `e` and `d` are exits in nav mode on the scene). The web picture binds the same letters.
+(`w`, `s`, `e` and `d` are exits in nav mode on the scene). The web picture binds the same keys in
+the same case: a capital is its own key (`T` the previous lock, `F` the standing fire rule, `N` the
+detachment's negative), never a caps-lock spelling of the small letter.
 
 | Key | Does | Line sent |
 |---|---|---|
 | `a` / `d`, `←` / `→` | turn left / right — held (the turn runs while the key is down) where the terminal reports releases (the kitty keyboard protocol: the arrows under its flags 1+2, the letters once it has taken flag 8 too), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg> QUIET` |
 | `w` / `s` | speed up / slow down by one step: a tenth of the hull's top speed, at least 5 kph; through zero into reverse, down to the reverse ceiling; past either ceiling the step clamps. The HUD shows the ordered speed beside the frame's until they meet | `SPEED <kph> QUIET` |
-| `x` | all stop: speed zero and the turn stopped where the picture shows the tank | `SPEED 0 QUIET`, and the helm's stop |
+| `x` | all stop: speed zero and a held turn stopped where the picture shows the tank; a `HEADING` typed or ordered and not yet reached is left alone (the ruling of 2026-11-09, both clients) | `SPEED 0 QUIET`, and the helm's stop |
 | `q` / `e` (`,` / `.` kept) | the look swings left / right, toggled | none — a look is not an order |
 | `c` | centre the look on the tank's nose | none |
 | space | steady: the turn and the look stop (the speed stands) | the helm's stop |
@@ -522,7 +549,9 @@ where the protocol reports releases and toggled elsewhere: the view pushes `CSI 
 flag 8 in it, toggled until then (`W-G12-1`, closed the same day). `p` exists only on a terminal that shows
 pictures; under 120 columns there is no picture; help, the palette, the workshop and a prompt
 draw over the text cockpit and the picture returns when they close. The lock cycle does not skip
-wrecks. Speed orders coalesce 250 ms on the trailing edge; `x` sends at once. The gate binds only
+wrecks. The first speed step is sent at once and the steps inside 250 ms of an order coalesce, the
+last value going when the gap opens (the terminal's throttle as built and the ruling of 2026-11-09;
+the web's was a trailing window until then); `x` sends at once. The gate binds only
 while a pilot flies the hull (a mind that takes over is never silently held) and `FIRE ALL` names
 every weapon it skipped on its own refusal line, a typed `FIRE` past the bands now refused as out of
 reach, which it never was. The gate is carried state, so the snapshot format is 17.
@@ -534,9 +563,9 @@ ground north-up (the colour map; relief as shading where G.7b's heights are held
 the pilot's own tank centred with its heading, every contact the frame lists in its scope's colour
 with its heading where known, the lock ringed, the named spots lettered, the frame's range bands as
 faint rings, and the look as a wedge from the nose. It draws only what the frame says (D-21-14: the
-contacts the sim detected, nothing more), at the cockpit picture's own clock and size. The web's
-overhead is the gateway's frame over the socket (the `picture` command carries a `kind`), the browser
-render staying first-person only until the wasm module carries the scene.
+contacts the sim detected, nothing more), at the cockpit picture's own clock and size. The web
+draws all three cameras in the browser with `mush-pixel-wasm` (doc 28 P2) and no longer sends the
+gateway's `picture` command, which the gateway still accepts and nothing uses.
 
 **The inset — G.13 (2026-10-27).** The same scene drawn small over the first-person picture, so the
 pilot has the picture and the map at once; `v` keeps swapping to the full camera. As built, and
@@ -633,10 +662,10 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe`. **Landed 2026-10-22** at 20 Hz (D-21-3 amended), with the `CSI 16 t` cell size, the frame sized to the box, the resend after text and the wipe on close, and `@pixel/encoder` per connection | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal (as built: a decoder round trip in place of a reference encoder; the fixture shown in Windows Terminal through ConPTY; the live SSH smoke owed) |
 | **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash. **Split 2026-10-22:** **G.3a (landed)** the gateway half; **G.3c (landed)** the cockpit tab's canvas — the `picture` command, the per-connection feed cache, the frame clock, the binary PNG; **G.3c** the cockpit tab's canvas in the web client, after SM.10 | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
 | **G.3b the web render** | **Landed 2026-10-22** in three (G.3b.1 libm maths + the golden, G.3b.2 the module + the Node parity test + CI, G.3b.3 the browser draws it, the CSP and the type); the cockpit picture only (the chart and the replay keep the web's SVG and canvas; the heightfield waits on G.7b); `mush-pixel` to WebAssembly; the client renders from its own feeds; the socket frame as the fallback | M | G.3 | the fixture renders pixel-equal in the browser and the TUI; zero gateway CPU for a web viewer |
-| **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn. **Landed 2026-10-22**: `HEADING` orders a pulse and a half ahead, the heading predicted from the order and a measured turn rate, `,`/`.` a look, the protocol pushed only while the view is open | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
+| **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn. **Landed 2026-10-22**: `HEADING` orders a pulse and a half ahead, the heading predicted from the order and a measured turn rate, `,`/`.` a look, the protocol pushed only while the view is open. **G.4b (landed 2026-11-09)**: the TUI's helm orders a few degrees ahead of one continuous shown heading, a tap is one degree, the frame carries `turn_rate_mdeg_s` | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
 | **G.5 the scene model and the orbital view** | `scene` (§3.3) and its rasteriser; the first builder: `sky.chart` as a picture with the plan's legs, the ship's dot and light-lag rings; the minimap re-based on `scene`. **Landed 2026-10-22** in three: **G.5a** the scene and the pixel-equal minimap, **G.5b** the chart picture on the TUI's chart screen, **G.5c** the rings on the web's SVG (the web keeps its vector chart, the owner's default); the ship's dot is the viewer's port until the feed carries ships under way | L | G.1 | `+chart` draws the picture in every encoder; the minimap pixel-equal before and after |
 | **G.6 the doll and the fitting screen** | **G.6a landed 2026-10-23**: the armour doll as a page in the TUI (`^G` on the damage screen); the fitting half waits on a fitting feature; the armour doll as a standalone bucket-B picture with a legend; the fitting paper doll with hardpoints and arcs embedded in the sheet (bucket C) | M | G.5 | the fixture doll; the fitting screen on the TUI and the web |
-| **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5). **Split 2026-10-22:** **G.7a (landed)** the producer, tested on the proving ground's shipped relief; **G.7b (landed 2026-10-23)** `arena.map` carries elevations, the cockpit picture draws them (heightfield and colour map on by default, a 1.5 km view, the unit's own eye), the arena's relief reworked into the showcase (atlas version 3) | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame (G.7a: 2.45 ms on the owner's box over the proving ground; the VPS figure with G.7b's smoke) |
+| **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5). **Split 2026-10-22:** **G.7a (landed)** the producer, tested on the proving ground's shipped relief; **G.7b (landed 2026-10-23)** `arena.map` carries elevations, the cockpit picture draws them (heightfield and colour map on by default, a 1.5 km view, the unit's own eye), the arena's relief reworked into the showcase (atlas version 3); **G.7c (landed 2026-11-09)** a run of rows is textured along the ground it spans, so a steep face's light bands lie level and do not crawl | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame (G.7a: 2.45 ms on the owner's box over the proving ground; the VPS figure with G.7b's smoke) |
 | **G.8 debrief and replay** | the replay document (16b I.2) as a bucket-B picture with a scrubbable timeline. **Landed 2026-10-22** in the TUI (`^G` on a replay): the whole field over a timeline, played at 1x/4x/16x, stepped by keyframe and by ten seconds; the web keeps its own canvas and scrubber (it had both since 16b I.2); a live `@arena/watch` picture is not drawn yet | M | G.5 | `SIM REPLAY` draws the match; `,`/`.` scrub it |
 | **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store | two players see each other's pins |
 | **G.10 bells and sounds** | **Landed 2026-10-22** (the TUI; kitty gets BEL, the cut notes say why); the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …; 1–64 of `[A-Za-z0-9_-]`); BEL for every terminal; **w11term's OSC 440, wire version 1** — `ESC ] 440 ; 1 ; play ; <name> ST` and `ESC ] 440 ; 1 ; pack ; <pack_version> ST`, four fields, no options, no loop (w11term's `docs/game-client-protocol.md`; mintty's older `440;file` form is NOT this and mintty gets BEL) — only for a terminal whose `XTVERSION` reply names w11term; kitty's OSC 99 with its `s=` sound for kitty; the client plays serially at a 40 ms floor with a 16-deep queue and ≤5 s clips, so an alarm is the server re-sending its name on a cadence, debounced server-side at one sound a kind per two seconds; `@sounds on|off`; **`XTVERSION` joins the `@tui` probe, which first needs the TUI key parser to swallow DCS (`ESC P … ESC \`) the way it swallows APC** — today that reply would decode as F1 plus typed text (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm repeats while the frame says so and stops when it clears; the sound names are the notice kinds; a DCS reply never reaches the input line |

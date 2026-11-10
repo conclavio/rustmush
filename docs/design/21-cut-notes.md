@@ -804,3 +804,270 @@ needs the wasm build; it reads the same re-blessed hashes the wasm crate's nativ
 the web's vitest (`web/src/lib/cockpit.ts` ignores the new key and does not type it yet — the web
 cockpit tab's contacts list showing the word is a small follow-up). No live smoke on dev2 or
 w11term; the owner may want the pips' size and the `4s` clearance re-judged live. No deploy.
+
+## G.4b (2026-11-09): the helm's turn is one swing
+
+The owner's report after flying PR #517 on dev1 in w11term: "turning left/right is very janky on
+tui-kitty graphics via a/d, it jerks and moves in wide swaths and it's very difficult to actually
+turn the amount you want, like to get to 90". The compositor was not at fault; G.4's helm was, and
+the retained compositor's steady frame rate made it plain.
+
+**The cause, in three parts.**
+
+- **The picture restarted at every order and every frame.** G.4's prediction ran from the last
+  frame's heading, from the later of the frame's arrival and the last order's sending. A held turn
+  re-orders several times a pulse, and the release is an order too: each one put the picture back on
+  the last frame's heading and swept it out again.
+- **The order ran a pulse and a half ahead** (45° at the alert tempo, 120° at quiet), and the arena
+  resolves a `HEADING` at the pulse with the whole pulse of turning, whenever inside the pulse the
+  line arrived. A press late in a pulse moved the tank a pulse's worth at once, which the picture
+  then jumped to; a tap that straddled a pulse turned the tank up to thirty degrees.
+- **The release ordered a heading the picture had not reached**, the prediction being capped by the
+  frame it restarted from, so the tank came back, or carried on, by an amount the pilot could not
+  see beforehand.
+
+**What landed.**
+
+- **`tui::helm::Helm`, one shown heading.** The helm keeps the heading the picture shows and the
+  instant it was shown, and every event (a press, a release, an order, a frame) re-anchors it where
+  it stands: nothing moves the picture except time.
+  - **Held**, it swings from where it stood at the press: one degree over the first fifth of a
+    second (`TAP_MS`), then the hull's turn rate. The press orders that one degree. Every 250 ms the
+    helm orders the heading the picture will show 250 ms on, rounded to the degree: 7.5° ahead on
+    the stock tank, 1°–25° over the hulls. The frames of a turn in hand are not drawn; they bound
+    it, the picture running no further than a pulse and a half of turning (20°–150°) past the last
+    one.
+  - **Let go**, the helm orders the heading the picture shows, and the picture holds it while the
+    tank comes to it. A turn let go inside the first fifth of a second is the tap: one degree, the
+    one line its press sent.
+  - **Otherwise** the picture follows the frames, at the turn rate or inside a pulse, whichever is
+    faster, so a typed `HEADING`, a machine at the helm and a reconnect are drawn turning and not
+    stepped to.
+- **A turn the arena does not bear out is dropped**: a whole pulse held that left the tank no nearer
+  an order the arena certainly had (the one before the standing order), or no frame at all a second
+  past the pulse. The picture eases back to the frame. A hull the frame says cannot turn (`power`
+  off or starting, `immobile`, `wreck`) is not drawn turning; the order still goes, and the arena's
+  refusal says why.
+- **The frame carries `turn_rate_mdeg_s`** (`tacsim`: `arena::step::Frame`, its `same_as`, the
+  cockpit payload): `TrackedRules::turn_rate_mdeg_s`, the figure the motion step spends. G.4 could
+  not add it (the mining train held `tacsim`) and measured the rate from frames; with a lead of a
+  few degrees that measure can only ever find a hull slower than assumed, so it stays as the
+  fallback for a frame without the key (a replay, an old fixture). `FRAME_VERSION` stays 9: an added
+  key is not a version.
+- **The status line** names an order only once the key is up: a held turn's order is its running
+  lead, not a heading anybody chose.
+- **Help**: `help cockpit` says a tap is one degree.
+
+**What it does not change.** The arena resolves orders at the pulse, so the tank's own heading (and
+what every other seat sees) still steps a pulse at a time, and at the quiet tempo that is five
+seconds: the picture swings smoothly and the world follows up to five seconds later; a fast hull's
+picture stops at the 150° bound until the pulse lands. Whether a pilot's helm order should raise
+the tempo is doc 16's ruling to make, not this cut's. The web picture's helm
+(`web/src/lib/picture.ts`, `PictureView.svelte`) was G.4's still when this was written, with two
+of the three faults (the pulse's jump and a coarse tap, no backward snap); it is ported below,
+"G.4b on the web".
+
+**Goldens.** `web/src/lib/fixtures/cockpit/cockpit_frame.json` and `view_frame.json` re-blessed
+(`TACSIM_BLESS=1`, the one new key); `field_frame.json` given the key by hand.
+
+**Verified.** `cargo test -p mush-net-ssh --lib helm::tests` 15, nine of them new: against a model
+arena that resolves the standing order a pulse at a time with the whole pulse of turning
+(`a_held_turn_is_one_smooth_swing_whatever_the_pulse`: engaged, alert and quiet, the key down early
+and late in the pulse), a three-second hold is drawn in steps of 0°–1.5° a 50 ms paint, never
+backwards, still from the release on, and the tank comes to the heading the picture stopped at;
+a tap is one line and one degree; a slower hull is measured where the frame carries no rate; a
+refused turn, a silent arena and a hull that cannot turn; a turn that is not the helm's is followed.
+`--lib tui::` 293 (three tests that expected a second line from a turn stopped the instant it began
+now expect the turn stopped and at most one line), `--test tui_golden` 25; `cargo test -p tacsim
+--test domain_arena cockpit::` 192 (the fixtures re-blessed, `g12a`'s payload asserts the key);
+`mush-pixel --lib` 141; `mush-contract-tests` `client_verbs` 3, `help_commands` 4, and the
+`ci_policy` guards 24; `cargo check -p mush-bot -p mushd --tests`; fmt, clippy `-D warnings`
+(mush-net-ssh, tacsim, all targets) and rustdoc `-D warnings` clean. Not run here: the web's vitest
+(the decoder ignores the new key) and the broad suites, which are the PR's CI. **No live smoke**:
+the feel of it in w11term (the 200 ms tap window, the slow start, the 250 ms order gap) is the
+owner's to judge on dev1, and no deploy was made.
+
+## G.7c (2026-11-09): a steep face is textured along its slope
+
+The owner's report from dev1 (first person, kitty, 1200 by 504): "the hill at marker F on the
+default arena map does this 3 shades of green thing and stripes them as you get closer, so its
+continuously rotating the three shades which is visually distracting .. is this an artifact of only
+having 256 colors on the map?"
+
+**Not the palette.** Marker F is the Bluff (`SPOT_LETTERS` skips D), a flat top 7 m above the ground
+west of it, the drop one cell wide. Frames walked in on it along 073° use 28 to 61 colours. The
+three greens are the face's own light bands in the baked colour map: the dark foot (the hollow
+term), the mid slope, and the brow.
+
+**The cause.** The heightfield marches lines of constant depth away from the eye, and a column
+painted every row a line uncovered in the one colour of that line's sample. On level ground a line
+uncovers a row or two. On a steep face a line uncovers the whole height between it and the line
+before (a line every 2 m to 3 m at that range, a face rising 7 m in 10 m), so each depth slice was
+one colour from its foot to its top, and where the lines cross the face at a slant each slice was a
+wedge: a sawtooth across the three bands, a tooth a slice. The lines are fixed to the eye, so the
+teeth slid along the face as the tank moved.
+
+**What landed** (`mush_pixel::heightfield::draw_ground`, baked terrain only).
+
+- **A run of more than one row is textured along the ground it spans.** The march keeps each
+  column's projected row from the line before; the rows between that and this line's are the slope
+  between the two samples, and each row reads the colour map where it meets that slope (`1/z` is
+  linear in the row along a straight segment). A row reads at its top edge, the edge the run is cut
+  at: reading at the centre put half a row of error on every join, which showed as a one-pixel
+  notch along every band.
+- **Where the ground climbs more than 30 cm between two lines (`RUN_RISE`)** the column reads the
+  heights again in between, a read every two rows up to eight (`RUN_STEPS`), so a bank's foot and
+  brow are drawn where they are and not on the nearest line. Without it the foot of the Bluff was
+  scalloped, a scallop a slice.
+- **`ColourMap::plain`**: a segment whose ends read one colour within a texel of each other is
+  filled flat, which is most of the near ground.
+- **A wall keeps its one colour** from the ground up (its raised top is not a slope to span from),
+  as do unbaked terrain and a run of a single row.
+
+**What it does not change.** The bake, the bands themselves and the fog steps are as they were. The
+silhouette moves only where a steep rise holds a brow between two lines, which the reads in between
+now find. One pin moved: the Bluff cockpit frame hash that the contract test
+(`pixel_relief`) and the Studio preview (`web/src/lib/map-editor.test.ts`) hold in common,
+`bdce88aa2e6d6ece` to `b17d80ccdc7884e3`, the same from the native build and the web module. The foot of a bank still wavers by a pixel where a join falls on it.
+The web picture draws with the same producer and takes the change with its next module build.
+
+**Cost.** The Bluff walk, release, this machine, 1200 by 504: 6.1 ms to 6.7 ms a frame before, 7.3
+ms to 8.1 ms after.
+
+**Verified.** `cargo test -p mush-pixel` (lib 142, the goldens and the proving ground unchanged);
+`mush-contract-tests --test engine_contracts pixel_` 6; the web module rebuilt and vitest over
+`map-editor`, `pixel` and `picture` 54; `mush-net-ssh --lib tui::` 293 and `--test tui_golden` 25;
+the `ci_policy` guards 24; fmt, clippy `-D warnings` and rustdoc `-D warnings` clean;
+the new `a_steep_face_is_banded_along_its_length_not_toothed` counts 517 colour edges across a
+7 m bank seen at a slant and 1,457 with the change switched off. Before and after frames of the
+Bluff walk were compared by eye at twelve ranges from 690 m to 100 m. **No live smoke**: how it
+reads in motion in w11term is the owner's to judge on dev1, and no deploy was made.
+
+## G.4b on the web (2026-11-09): the browser's helm is the terminal's
+
+The owner, after G.4b on dev1 ("turning is much better now"): "take a look at the same things on
+the web side, does it have the same turning issue?" It had two of the three. The web picture
+already drew a predicted heading between frames, so a held turn never snapped backwards, but:
+
+- **The pulse's jump.** The prediction was re-based on every frame, and a frame carries a whole
+  pulse of turning. The old helm run against G.4b's model arena: a pulse landing inside a turn
+  moved the picture up to 15° in one 50 ms paint at the engaged tempo and 28.5° at alert, and a
+  three-second hold ended anywhere from 90° to 117° round by where in the pulse the key went down.
+- **The coarse tap.** A press under 170 ms ordered five degrees, and one late in the pulse swung
+  the picture out as far as 30° before it came back to the five.
+
+**What landed.** `web/src/lib/helm.ts` is `mush-net-ssh/src/tui/helm.rs` in TypeScript, rule for
+rule and constant for constant: one continuous shown heading that swings from the press, a tap of
+one degree, an order every 250 ms a few degrees ahead of the picture while the key is down, the
+release ordering the heading shown, the frame's `turn_rate_mdeg_s` (read from the raw keyframe;
+measured where a frame has none), the leash, and an order dropped when the arena refuses it or
+stays silent past its grace. `PictureView.svelte` draws `helm.predicted(now)` and nothing else, and
+runs the helm's 50 ms clock only while a turn or an order stands. `picture.ts` loses `helmLine`,
+`HELM_LEAD_DEG`, `HELM_REPEAT_MS`, `MIN_TAP_TURN_MDEG` and its own turn-rate default.
+
+**The web's own.** Three things the terminal's helm has no need of: `steer`, the heading tape's
+click and the map's double-click (an order to a named heading, the picture swinging to it at the
+hull's rate); `hold`, all stop's `HEADING` at the heading shown; and a feed with no `t_ms`, read
+by heading and followed as it comes, never judged for a rate.
+
+**Verified.** `helm.test.ts` 25: every case of the Rust helm's tests with the Rust figures against
+the same pulsed model arena (a three-second hold drawn in steps of 0° to 1.5° a paint, never
+backwards, whatever the tempo and the phase of the press; a tap one line and one degree; a refused
+turn, a silent arena, a hull that cannot turn, a turn that is not the helm's), and the web's own
+(`steer`, `hold`, the clockless feed, `helmFrame`). `PictureView.test.ts`' six turn tests re-pinned
+to the new lines (a press at 045 orders 044 or 046; a hold orders 035 then 028; a release orders
+the heading shown; a press let go at once is the one line) and `picture.test.ts`' `helmLine` case
+removed: vitest whole, 84 files and 919 tests; `svelte-check` 0 errors; `vite build`. **No live
+smoke**: no browser was driven against an arena, and no deploy was made.
+
+## The two clients agree (2026-11-09): the bugs, four rulings and the quick parity
+
+The owner asked for a review of the TUI and the web "for any other inconsistencies that we can
+clean up between the two platforms". It found 54; a dozen were bugs, most of the rest wording and
+caps, six wanted a ruling. The owner: "fix the bugs + quick parity, for the rulings .. all stop
+leaves heading alone, first speed step is sent at once, the shift letters are different (lowercase
+cycles forward, capital cycles backwards as an example), hd should be on by default, dont worry
+about the screen digits i need to completely re-work those".
+
+**The rulings, as built.**
+
+- **All stop leaves the heading alone.** The web's `x` sent `HEADING` at the heading shown, which
+  replaced a typed heading still being steered to. `Helm.hold` is gone: `x` is `SPEED 0 QUIET` and
+  a held turn let go, as on the terminal.
+- **The first speed step is sent at once.** `web/src/lib/helm.ts` gains `Throttle`, the second half
+  of `tui/helm.rs`: the first step goes out on the press, the steps inside 250 ms of an order
+  coalesce and the last value goes when the gap opens. Doc 21 §7.3 said trailing edge and is
+  corrected; the terminal always sent the first at once.
+- **A capital is its own key.** `pictureKey` no longer folds case: `t` next lock and `T` previous,
+  `f` the gate and `F` the standing fire rule, `n` scan and `N` the detachment's negative. The web
+  also gains the keys it lacked: `b` glass, `n` scan, `z`/`P` startup, `m` EMCON, `l` and `F` the
+  standing rules, `y`/`N` wilco and negative.
+- **HD by default.** The web picture opens at 1280x720, the size at which the 192 px first-person
+  sheet is drawn; the toggle still goes down to 640x480.
+- **The screen digits are not touched** (the owner is reworking them), and whether a committed
+  attempt blocks its action (the sixth question) was not ruled, so both clients keep what they did.
+
+**The web's bugs.**
+
+- The EMCON and auto-target buttons were placed by counting rows from the end of the status block,
+  so a rig line put them one row off. They are anchored on the `scope` row and the row after it.
+- The lock cycle kept contacts with no designator and could send a bare `LOCK `. They are left
+  out, and a tie in range is broken by the designator, as the terminal breaks it.
+- An ordered speed stayed up on a wreck or an immobile hull. The throttle closes it.
+- Dead reckoning was capped at a fixed 1.5 s, so at the quiet pulse the picture stopped and then
+  jumped. The cap is a pulse and a half of the frame's own tempo.
+- An aimed legal action was a dead button. It hands `+act <verb>` to the input line with the
+  terminal's sentence, "This action needs a target; use +act."
+- The 2.5D and overhead click-to-pick assumed a 640x480 frame and a scale of `2.0 * zoom`. They
+  take the frame's size and the engine's own scale (`sqrt(width / 640)` clamped, times the zoom).
+  Pinned by unit tests against the engine's figures; not clicked in a browser.
+
+**The web's parity.** A zoom per camera, the 2.5D one opening at half; the look, the zooms, the
+ordered speed and a lock asked for live in the picture store, so a screen switched away and back
+keeps them; two `f` presses inside a pulse are `FIRE HOLD` then `FIRE FREE`, not the same line
+twice; the look swings by elapsed time, not a step a timer tick; the standing rules are armed and
+disarmed by the frame's `rules` (`MIND RULE <slot> OFF` for a slot the frame shows, never a guessed
+one), on the picture and on the text cockpit both; the text cockpit's map takes the picture's
+palette and draws a contact that reads dead as a wreck; the scan chips show the band letter; the
+gate word is `weapons HOLD`; the attempts kept are 16 and the rolls 100, the terminal's figures;
+`setPicture` and the `picture` command are gone from the client (the page draws every camera
+itself). The gateway still accepts the command, and nothing sends it: a follow-up.
+
+**The terminal's bugs.**
+
+- `l` disarmed auto-target with a hard-coded `MIND RULE 1 OFF`, which could remove another rule.
+  The picture reads the frame's rules (`render::rule_slots`) and removes its own slots; with no
+  slot shown it sends nothing for the lock rule and `FIRE ALL OFF` for the fire rule.
+- A spoof lost its sender in the scrollback. It prints `[name] text`, as the web and line mode do
+  (the attribution ruling); an emit stays bare.
+- The channel tab's badge read the server's `unread`, whose cursor advances on delivery, so it was
+  almost always 0. It is counted in the client: a live line counts unless the channel screen is in
+  front, a replayed one never, and leaving the channel screen marks every channel read.
+- The picture's side panel cut words (`destroyed` as `destroy`). Its sections are screen 0's
+  damage-pane words laid into the column at the fields, never cut; its heat, readiness and rule
+  lines are screen 0's (`heat 40/100`, `ready` / `1 s`, `rules: S1 fire; MIND RULES`); the lock is
+  matched by its designator, never a raw contact id; the empty states are `(no contacts)` and
+  `Not in a cockpit.`
+- The mind library allowed 256 entries where the server allows 20.
+
+**The terminal's parity.** A receipt prints once, by its commit, on one line (`<summary>
+Transaction: <status>`); it re-asks the market's two pages once, never while an ask is out; the
+market keeps its page across leaving and re-entering; the scrollback ring is 5000, the web's; the
+detachment's order reads `Order from Aster: hold` / `Response: not acknowledged` on both screens.
+
+**Lost on purpose.** The side panel's four-cell reload bar and its tenths of a second: the bar was
+scaled against a three-second cycle the frame does not carry, and the countdown is now screen 0's
+whole seconds. An empty gun reads its rounds (`0/20`), not the word `EMPTY`.
+
+**Left as they are.** The terminal clears a channel's unread on leaving the channel screen, the
+web a channel at a time as its tab is opened. The terminal re-reads the rules' armed state on
+every new frame; the web only when what the frame shows changes, so an arming still in flight is
+not shown undone. The side panel is still its own layout (the review's "third format"); sounds,
+mail, the sheet and the generic views were not in this pass.
+
+**Verified.** `cargo test -p mush-net-ssh` whole (the library 374, `tui_golden` 25 with seventeen
+goldens re-blessed for the badge, `loopback` 40); clippy `--all-targets -D warnings` on
+`mush-net-ssh` and `tacsim`; rustdoc; the contract tests whole, whose client-verbs census named the
+two allowlist rows (`HEAT`, `RULES`) the side panel no longer prints, now removed. vitest whole, 84
+files and 939 tests; `svelte-check` 0 errors; `vite build`. **No live smoke**: neither client was
+driven against an arena, and no deploy was made.

@@ -145,7 +145,15 @@ pub fn patch_frame_bytes(out: &mut Vec<u8>, png: &[u8], image_id: u32, dst_x: u3
 /// Parameters for a retained Kitty placement (`a=p`).
 ///
 /// Re-sending the same `(image_id, placement_id)` moves and updates the
-/// existing placement in place without creating a duplicate.
+/// existing placement in place without creating a duplicate. Two rules the
+/// compositors live by:
+///
+/// - A placement id is scoped to its image: `(A, p)` and `(B, p)` are two
+///   placements, so a layer that switches image id (a contact crossing to
+///   another mip sheet) deletes `(A, p)` itself or leaves a ghost.
+/// - Re-transmitting an image under its id (`a=t`) does not refresh the
+///   placements already made from it (kitty drops them; wezterm-term keeps
+///   showing the old pixels), so every re-upload is followed by its `a=p`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placement {
     /// Stored terminal image ID (`i=`).

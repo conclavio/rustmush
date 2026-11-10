@@ -1775,37 +1775,28 @@ describe("the cockpit feeds", () => {
 
 });
 
-// Doc 21 cut G.12c: the picture's camera rides the `picture` command — the
-// overhead is the gateway's frame — and a reconnect asks for the same camera.
-describe("the picture's camera on the wire (doc 21 cut G.12c)", () => {
+// Doc 21 cut G.8: the picture is drawn in the page from the feeds, so the
+// gateway is asked for none: not when it goes up, not on a reconnect.
+describe("the picture asks the gateway for nothing (doc 21 cut G.8)", () => {
   const pictures = (ws: FakeSocket): unknown[] =>
     ws.sentJson().flatMap((f) => (f.t === "picture" ? [f.d] : []));
 
-  it("sends the camera with every ask, a change of camera alone included", () => {
+  it("keeps the camera, the look and the zoom over a reconnect, and sends no picture command", () => {
     const { app, ws } = boot();
-    app.setPicture(true, 0);
-    expect(pictures(ws)).toEqual([{ on: true, look_mdeg: 0, kind: "cockpit" }]);
-    // `v` sets the store's camera before the view asks again.
+    app.picture.on = true;
     app.picture.kind = "overhead";
-    app.setPicture(true, 0);
-    expect(pictures(ws).at(-1)).toEqual({ on: true, look_mdeg: 0, kind: "overhead" });
-    // The camera stands for a look asked for without one.
-    app.setPicture(true, 5_000);
-    expect(pictures(ws).at(-1)).toEqual({ on: true, look_mdeg: 5_000, kind: "overhead" });
-    // Nothing changed, nothing sent.
-    const n = pictures(ws).length;
-    app.setPicture(true, 5_000);
-    expect(pictures(ws)).toHaveLength(n);
-  });
-
-  it("asks for the same camera again after a reconnect", () => {
-    const { app, ws } = boot();
-    app.setPicture(true, 0, "overhead");
+    app.picture.lookMdeg = 5_000;
+    app.picture.zoomByKind.overhead = 1_500;
     ws.drop();
     vi.advanceTimersByTime(500);
     const next = openHello();
     expect(next).not.toBe(ws);
-    expect(pictures(next)).toEqual([{ on: true, look_mdeg: 0, kind: "overhead" }]);
+    expect(pictures(ws)).toEqual([]);
+    expect(pictures(next)).toEqual([]);
+    expect(app.picture.on).toBe(true);
+    expect(app.picture.kind).toBe("overhead");
+    expect(app.picture.lookMdeg).toBe(5_000);
+    expect(app.picture.zoomByKind).toEqual({ cockpit: 1_000, overhead: 1_500, iso25d: 500 });
   });
 });
 

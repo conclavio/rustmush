@@ -9,31 +9,46 @@
   // this view goes (the tab changes, the pilot leaves the seat). Whether the
   // viewer wants it is remembered in this browser alone.
   //
-  // Keys, while the picture has focus (click it): the arrows turn the tank
-  // (held) — `HEADING` orders, sent as the SSH TUI's view sends them, the one
-  // place the cockpit tab sends an order rather than prefilling one — `,` and
-  // `.` swing the look (again to stop), `c` centres it, space stops both.
+  // Keys, anywhere on the cockpit screen but in a text field: the arrows turn
+  // the tank (held) — `HEADING` orders, sent as the SSH TUI's view sends them,
+  // the one place the cockpit tab sends an order rather than prefilling one —
+  // `,` and `.` swing the look (again to stop), `c` centres it, space stops
+  // both.
   // Both are let go the moment their release could no longer be seen: the
   // frame losing focus, the window losing focus, the page going hidden (doc
   // 21a `X-02`: a tab switched away with an arrow down kept ordering
-  // `HEADING` every 700 ms, and the look kept swinging).
+  // `HEADING`, and the look kept swinging).
   //
-  // **The rest of the flight keys** (doc 21 §7.3, cut G.12c), the letters the
-  // TUI's screen 0 reads: `a`/`d` turn as the arrows do; `w`/`s` step the
-  // ordered speed (`SPEED`, a tenth of the frame's top speed a step, clamped
-  // to its ceilings, coalesced to one line a quarter second) and the header
-  // shows the ordered speed beside the frame's until they meet; `x` all stop;
-  // `q`/`e` swing the look as `,`/`.` do; `f` flips the weapons gate (`FIRE
-  // FREE` / `FIRE HOLD`, the header saying which); `g` a volley (`FIRE ALL`);
-  // `t`/`T` walk the lock through the frame's contacts (`LOCK`); `v` the
-  // overhead; `F1`–`F6` open the chat line with an `ORDER` ready — the one
-  // family here that prefills rather than sends, through the screen's own
-  // `prefill`. Every line goes through `app.helm`, as the turn's does.
+  // **The turn** (doc 21 cut G.4b) is `$lib/helm`'s, the TUI's helm in the
+  // browser: the picture shows one continuous heading that swings from the
+  // press (a tap is one degree), the helm orders a few degrees ahead of it
+  // every quarter second while the key is down, and a release orders the
+  // heading the picture shows. The frames, which step a pulse at a time, are
+  // never drawn raw.
   //
-  // **The overhead** (doc 21 §7.4; doc 28 P2): the cockpit's second camera,
-  // drawn client-side by the same wasm module (`KIND_OVERHEAD`) from the same
-  // `arena.cockpit` and `arena.map` keyframes; `v` swaps between first person
-  // and overhead.
+  // **The rest of the flight keys** (doc 21 §7.3, cut G.12c) are the TUI's
+  // screen 0, key for key and case for case (`$lib/picture`'s `pictureKey`): a
+  // capital is its own key, never an alias. `a`/`d` turn as the arrows do;
+  // `w`/`s` step the ordered speed (`SPEED`, a tenth of the frame's top speed
+  // a step, clamped to its ceilings; the first step goes at once and the rest
+  // no closer than a quarter second, `$lib/helm`'s `Throttle`) and the header
+  // shows the ordered speed beside the frame's until they meet; `x` all stop
+  // (`SPEED 0` and a held turn let go; a typed `HEADING` stands); `q`/`e`
+  // swing the look as `,`/`.` do; `f` flips the gate (`FIRE FREE` / `FIRE
+  // HOLD`, the header saying which); `g` a volley (`FIRE ALL`); `!` `@` `#`
+  // `$` one slot; `t` the next lock and `T` the one before (`LOCK`); `n`
+  // scans the lock; `b` the canopy glass; `z` or `P` `STARTUP`; `m` EMCON;
+  // `l` and `F` arm or disarm the standing lock and fire rules; `y` and `N`
+  // answer the detachment's order; `v` the next camera; `+`/`-` its zoom;
+  // `F1`–`F6` open the chat line with an `ORDER` ready — the one family here
+  // that prefills rather than sends, through the screen's own `prefill`.
+  // Every line goes through `app.helm`, as the turn's does.
+  //
+  // **The cameras** (doc 21 §7.4; doc 28 P2): first person, overhead and
+  // 2.5D, drawn client-side by the same wasm module from the same
+  // `arena.cockpit` and `arena.map` keyframes; `v` walks them. Each keeps its
+  // own zoom, and the zoom, the look and the ordered speed live in the store
+  // (`app.picture`), so the screen switched away and back keeps them.
   //
   // **Drawn here** (doc 21 cut G.3b; doc 28 P2): every web picture is drawn in
   // the browser by `mush-pixel-wasm` from the keyframes this connection
@@ -44,20 +59,14 @@
   import {
     DEFAULT_MAX_SPEED_KPH,
     DEFAULT_REVERSE_KPH,
-    DEFAULT_TURN_RATE_MDEG_S,
-    HELM_LEAD_DEG,
-    HELM_REPEAT_MS,
     LOCK_PENDING_MS,
     LOOK_STEP_MS,
-    MIN_TAP_TURN_MDEG,
     PICTURE_PREF_KEY,
-    SPEED_COALESCE_MS,
     ZOOM_DEFAULT_PERMILLE,
     arcMdeg,
     canvasClickHeadingDeg,
     gateLine,
     gateWord,
-    helmLine,
     nextLock,
     nextPictureKind,
     nextSpaceCamera,
@@ -65,15 +74,14 @@
     pictureKey,
     predictedOffsetCm,
     spacePictureKey,
-    speedLine,
     speedOutstanding,
     stepZoomPermille,
-    steppedSpeed,
     swingLook,
     wrap360Mdeg,
     wrapMdeg,
     dockOrderToInputMask,
   } from "$lib/picture";
+  import { HELM_TICK_MS, Helm, helmFrame } from "$lib/helm";
   import {
     FRAME_H,
     FRAME_H_HD,
@@ -109,10 +117,6 @@
   let canvas: HTMLCanvasElement | undefined = $state();
   /** The look's swing: `-1` left, `0` still, `1` right. */
   let lookTurn = $state<-1 | 0 | 1>(0);
-  /** The held turn: `-1` left, `0` none, `1` right. */
-  let turning = $state<-1 | 0 | 1>(0);
-  /** The 2.5D camera zoom in permille (`500..=2000`, `1000` = 100%). */
-  let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
   let submittedDockingSessionId = $state<string | null>(null);
 
   const PICTURE_WIDTH_KEY = "rustmush.pictureWidth";
@@ -122,7 +126,11 @@
   const MIN_PICTURE_W = 280;
   const MAX_PICTURE_W = 1280;
 
-  let hdMode = $state(storageGet(PICTURE_HD_KEY) === "on");
+  /** 1280x720 unless this browser was told otherwise. */
+  let hdMode = $state(storageGet(PICTURE_HD_KEY) !== "off");
+  /** The frame the renderer draws, pixels: what a click is measured in. */
+  const pixW = $derived(hdMode ? FRAME_W_HD : FRAME_W);
+  const pixH = $derived(hdMode ? FRAME_H_HD : FRAME_H);
 
   function toggleHd(): void {
     hdMode = !hdMode;
@@ -220,6 +228,27 @@
   /** Active space camera mode (`holotank`, `space_cockpit`, or `docking`, `SF.18`). */
   const spaceMode = $derived(app.picture.spaceMode);
   const hasSpaceFeeds = $derived(app.picture.hasSpaceFeeds || app.picture.spaceMode !== null);
+  /** The zoom of the camera that is up, permille: the store's, so each
+   * ground camera keeps its own (the TUI's `zoom_by_camera`) and the screen
+   * switched away and back keeps them all. */
+  const zoomPermille = $derived(
+    spaceMode !== null ? app.picture.spaceZoomPermille : app.picture.zoomByKind[viewKind],
+  );
+
+  /** One zoom step of the camera that is up; `0` is back to its own default. */
+  function zoomStep(dir: -1 | 0 | 1): void {
+    if (app.picture.spaceMode !== null) {
+      app.picture.spaceZoomPermille =
+        dir === 0
+          ? ZOOM_DEFAULT_PERMILLE
+          : stepZoomPermille(app.picture.spaceZoomPermille, dir, "iso25d");
+      local?.forget();
+      return;
+    }
+    const kind = app.picture.kind;
+    app.picture.zoomByKind[kind] = stepZoomPermille(app.picture.zoomByKind[kind], dir, kind);
+  }
+
   /** Effective zoom in permille (`1000..=2000` in first-person, `500..=2000` in overhead/2.5D). */
   const effectiveZoomPermille = $derived(
     viewKind === "cockpit" && spaceMode === null
@@ -239,113 +268,56 @@
     local = null;
   }
 
-  // The latest heading, for the helm's repeats and client-side hull prediction
-  // (matching `mush-net-ssh/src/tui/helm.rs`).
-  let heading = 0;
+  // The helm (doc 21 cut G.4b): the turn keys' orders and the heading the
+  // picture shows, the same rules as `mush-net-ssh/src/tui/helm.rs`.
+  const helm = new Helm();
+  /** The heading of the keyframe the picture is drawn from, millidegrees. */
   let frameHeadingMdeg = 0;
-  let baseHeadingMdeg = 0;
-  let baseAtMs = 0;
-  let orderedHeadingMdeg: number | null = null;
-  let orderedAtMs = 0;
-  let turnStartAtMs = 0;
-  let turnTapBaseMdeg = 0;
-  let turnRateMdegPerS = DEFAULT_TURN_RATE_MDEG_S;
-  let prevFrameTMs: number | null = null;
-  let prevFrameHeadingMdeg: number | null = null;
-  let frameArrivedAtMs = 0;
-  let livePulseStream = false;
+  /** The helm's clock, running while a turn or an order stands. */
+  let helmTimer: ReturnType<typeof setInterval> | null = null;
 
   function hullStuck(): boolean {
     if (frame === null) return false;
     return (frame.power !== "" && frame.power !== "online") || frame.wreck || frame.immobile;
   }
 
-  function predictedHeadingMdeg(now: number): number {
-    if (frame === null) return wrap360Mdeg(heading * 1_000);
-    if (hullStuck()) return frameHeadingMdeg;
-    if (orderedHeadingMdeg === null) return baseHeadingMdeg;
-    const elapsed = Math.max(0, Math.min(now - baseAtMs, 2_500));
-    const step = (turnRateMdegPerS * elapsed) / 1_000;
-    const d = arcMdeg(baseHeadingMdeg, orderedHeadingMdeg);
-    return wrap360Mdeg(baseHeadingMdeg + Math.sign(d) * Math.min(Math.abs(d), step));
+  /** The heading the picture shows at `now`, millidegrees. */
+  function shownHeadingMdeg(now: number): number {
+    return helm.predicted(now) ?? frameHeadingMdeg;
+  }
+
+  /** Send the lines the helm has waiting, and keep its clock running exactly
+   * while a turn or an order stands. */
+  function helmSync(): void {
+    for (const line of helm.takeOrders()) app.helm(line);
+    if (helm.busy) {
+      helmTimer ??= setInterval(() => {
+        helm.tick(Date.now());
+        helmSync();
+      }, HELM_TICK_MS);
+    } else if (helmTimer !== null) {
+      clearInterval(helmTimer);
+      helmTimer = null;
+    }
   }
 
   $effect(() => {
-    heading = headingDeg;
-    const rawCockpit = app.picture.cockpitData as { heading_mdeg?: unknown } | null;
-    const rawMdeg = wrap360Mdeg(
-      typeof rawCockpit?.heading_mdeg === "number" ? rawCockpit.heading_mdeg : headingDeg * 1_000,
-    );
-    if (frame === null) {
-      frameHeadingMdeg = rawMdeg;
-      baseHeadingMdeg = rawMdeg;
-      orderedHeadingMdeg = null;
-      prevFrameTMs = null;
-      prevFrameHeadingMdeg = null;
-      frameArrivedAtMs = 0;
-      livePulseStream = false;
-      return;
-    }
-    const f = frame;
+    const f = helmFrame(frame, app.picture.cockpitData, headingDeg);
     untrack(() => {
-      if (f.t_ms === prevFrameTMs && rawMdeg === prevFrameHeadingMdeg) return;
-      const now = Date.now();
-      const currentPred = predictedHeadingMdeg(now);
-      if (prevFrameTMs !== null && f.t_ms !== null) {
-        const pulseDt = f.t_ms - prevFrameTMs;
-        livePulseStream = pulseDt > 0 && pulseDt <= 10_000;
+      frameHeadingMdeg = f.headingMdeg;
+      helm.observe(f, Date.now());
+      helmSync();
+      // The throttle reads the same frame: an order reached is closed, and so
+      // is one on a hull that will never reach it.
+      if (frame !== null) {
+        throttle.observe({
+          speedKph: frame.speed_kph,
+          maxKph: frame.max_speed_kph,
+          reverseKph: frame.reverse_kph,
+          stuck: hullStuck(),
+        });
       }
-      frameArrivedAtMs = now;
-      if (
-        prevFrameTMs !== null &&
-        f.t_ms !== null &&
-        f.t_ms > prevFrameTMs &&
-        prevFrameHeadingMdeg !== null &&
-        orderedHeadingMdeg !== null
-      ) {
-        const dt = f.t_ms - prevFrameTMs;
-        const turned = Math.abs(arcMdeg(prevFrameHeadingMdeg, rawMdeg));
-        if (dt > 0 && turned > 0 && Math.abs(arcMdeg(rawMdeg, orderedHeadingMdeg)) > 1_000) {
-          turnRateMdegPerS = Math.min(180_000, Math.max(5_000, Math.round((turned * 1_000) / dt)));
-        }
-      }
-      frameHeadingMdeg = rawMdeg;
-      prevFrameTMs = f.t_ms;
-      prevFrameHeadingMdeg = rawMdeg;
-      if (hullStuck()) {
-        baseHeadingMdeg = rawMdeg;
-        baseAtMs = now;
-        orderedHeadingMdeg = null;
-        return;
-      }
-      if (orderedHeadingMdeg !== null) {
-        if (turning === 0 && Math.abs(arcMdeg(rawMdeg, orderedHeadingMdeg)) <= 1_000) {
-          baseHeadingMdeg = rawMdeg;
-          baseAtMs = now;
-          orderedHeadingMdeg = null;
-          return;
-        }
-        if (turning === 0 && now - orderedAtMs > 2_500) {
-          baseHeadingMdeg = rawMdeg;
-          baseAtMs = now;
-          orderedHeadingMdeg = null;
-          return;
-        }
-        const toOrderFromServer = arcMdeg(rawMdeg, orderedHeadingMdeg);
-        const toOrderFromPred = arcMdeg(currentPred, orderedHeadingMdeg);
-        const serverLagMdeg = arcMdeg(rawMdeg, currentPred);
-        if (
-          Math.sign(toOrderFromServer) === Math.sign(serverLagMdeg) &&
-          Math.abs(serverLagMdeg) <= 25_000 &&
-          Math.abs(toOrderFromPred) <= Math.abs(toOrderFromServer)
-        ) {
-          baseHeadingMdeg = currentPred;
-          baseAtMs = now;
-          return;
-        }
-      }
-      baseHeadingMdeg = rawMdeg;
-      baseAtMs = now;
+      speedSync();
     });
   });
 
@@ -354,18 +326,17 @@
     storageSet(PICTURE_PREF_KEY, wanted ? "on" : "off");
   }
 
-  // Keep the store's `on` and `lookMdeg` aligned with whether the picture is
-  // active, and reset them when the picture hides or the view is torn down.
+  // Keep the store's `on` aligned with whether the picture is active. The
+  // look is left where it is when the picture hides or the view is torn down:
+  // it is the viewer's own, as the TUI's is across its screens.
   $effect(() => {
     const on = active;
     untrack(() => {
       app.picture.on = on;
-      if (!on) app.picture.lookMdeg = 0;
     });
     return () =>
       untrack(() => {
         app.picture.on = false;
-        app.picture.lookMdeg = 0;
       });
   });
 
@@ -378,7 +349,11 @@
   // Also listen in the capture phase on `window` so flight keys work anywhere
   // on the cockpit screen without requiring the user to click inside `.frame`
   // first, matching the TUI's screen 0 behaviour.
-  $effect(() => () => release());
+  $effect(() => () => {
+    release();
+    if (helmTimer !== null) clearInterval(helmTimer);
+    helmTimer = null;
+  });
   $effect(() => {
     const onVisibility = (): void => {
       visible = document.visibilityState === "visible";
@@ -439,14 +414,13 @@
       last = t;
       try {
         const now = Date.now();
-        const predMdeg = predictedHeadingMdeg(now);
-        const hullOffsetMdeg = frame !== null ? arcMdeg(frameHeadingMdeg, predMdeg) : 0;
+        const predMdeg = shownHeadingMdeg(now);
+        const hullOffsetMdeg = arcMdeg(frameHeadingMdeg, predMdeg);
+        // The heading ordered, while the picture is more than a degree from
+        // it: a held turn's running lead as well as a released order.
+        const ordered = helm.ordered;
         const orderedMdeg =
-          frame !== null &&
-          orderedHeadingMdeg !== null &&
-          Math.abs(arcMdeg(predMdeg, orderedHeadingMdeg)) > 1_000
-            ? orderedHeadingMdeg
-            : null;
+          ordered !== null && Math.abs(arcMdeg(predMdeg, ordered)) > 1_000 ? ordered : null;
         const rawCockpit = app.picture.cockpitData as {
           speed_cms?: unknown;
           blocked?: unknown;
@@ -460,10 +434,10 @@
           !hullStuck() &&
           rawCockpit?.blocked !== true &&
           speedCms !== 0 &&
-          frameArrivedAtMs > 0 &&
-          (livePulseStream || orderedHeadingMdeg !== null || turning !== 0 || orderedKph !== null);
+          helm.frameAt > 0 &&
+          (helm.live || helm.busy || throttle.ordered !== null);
         const { dxCm, dyCm } = canDeadReckon
-          ? predictedOffsetCm(speedCms, predMdeg, now - frameArrivedAtMs)
+          ? predictedOffsetCm(speedCms, predMdeg, now - helm.frameAt, helm.reckonCapMs)
           : { dxCm: 0, dyCm: 0 };
         const targetW = hdMode ? FRAME_W_HD : FRAME_W;
         const targetH = hdMode ? FRAME_H_HD : FRAME_H;
@@ -520,74 +494,33 @@
     return () => cancelAnimationFrame(raf);
   });
 
-  // The look swings while `lookTurn` is set, sent again each step.
+  // The look swings while `lookTurn` is set, by the time that really passed
+  // since the last step: a timer the browser ran late swings no slower. A gap
+  // of more than a second (the page was suspended) counts as one second.
   $effect(() => {
     const dir = lookTurn;
     if (dir === 0) return;
+    let last = Date.now();
     const timer = setInterval(() => {
-      lookTo(swingLook(app.picture.lookMdeg, dir, LOOK_STEP_MS));
+      const now = Date.now();
+      lookTo(swingLook(app.picture.lookMdeg, dir, Math.min(1_000, Math.max(0, now - last))));
+      last = now;
     }, LOOK_STEP_MS);
     return () => clearInterval(timer);
   });
 
+  /** A turn key went down: the picture starts its swing and the helm orders
+   * the tap's one degree; the clock orders on ahead while the key is held. */
   function startTurn(dir: -1 | 1): void {
-    const now = Date.now();
-    if (frame !== null && !hullStuck()) {
-      const p = predictedHeadingMdeg(now);
-      turnStartAtMs = now;
-      turnTapBaseMdeg =
-        orderedHeadingMdeg !== null && Math.sign(arcMdeg(p, orderedHeadingMdeg)) === dir
-          ? orderedHeadingMdeg
-          : p;
-    }
-    turning = dir;
+    if (helm.turning === dir) return;
+    helm.start(dir, Date.now());
+    helmSync();
   }
 
-  // A held turn's order is extended while the key is down.
-  $effect(() => {
-    const dir = turning;
-    if (dir === 0) return;
-    const sendTurnOrder = (): void => {
-      const now = Date.now();
-      if (frame !== null && !hullStuck()) {
-        const p = predictedHeadingMdeg(now);
-        baseHeadingMdeg = p;
-        baseAtMs = now;
-        const deg = (((Math.round(p / 1_000 + dir * HELM_LEAD_DEG) % 360) + 360) % 360);
-        orderedHeadingMdeg = deg * 1_000;
-        orderedAtMs = now;
-        app.helm(helmLine(p / 1_000, dir));
-      } else {
-        app.helm(helmLine(heading, dir));
-      }
-    };
-    untrack(sendTurnOrder);
-    const timer = setInterval(sendTurnOrder, HELM_REPEAT_MS);
-    return () => clearInterval(timer);
-  });
-
+  /** The turn key came up: the helm orders the heading the picture shows. */
   function stopTurn(): void {
-    if (turning !== 0) {
-      const dir = turning;
-      turning = 0;
-      if (frame !== null && !hullStuck()) {
-        const now = Date.now();
-        const p = predictedHeadingMdeg(now);
-        const dt = now - turnStartAtMs;
-        const targetMdeg =
-          dt > 0 && dt < 170
-            ? wrap360Mdeg(turnTapBaseMdeg + dir * MIN_TAP_TURN_MDEG)
-            : p;
-        baseHeadingMdeg = p;
-        baseAtMs = now;
-        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
-        orderedHeadingMdeg = deg * 1_000;
-        orderedAtMs = now;
-        app.helm(helmLine(deg, 0));
-      } else {
-        app.helm(helmLine(heading, 0));
-      }
-    }
+    helm.stop(Date.now());
+    helmSync();
   }
 
   /** Let go of everything a key holds: the look's swing, and the held turn
@@ -599,10 +532,13 @@
 
   // -- the speed (doc 21 cut G.12c) ------------------------------------------
 
-  /** The speed the pilot last ordered, until the frame reaches it. */
-  let orderedKph = $state<number | null>(null);
-  /** The step waiting for the coalescing window to close, and its timer. */
-  let pendingKph: number | null = null;
+  /** The throttle (`$lib/helm`, the TUI's): the ordered speed and its
+   * pacing. The store's, so an order still outstanding survives this view. */
+  // svelte-ignore state_referenced_locally -- deliberate: one store for the view's life
+  const throttle = app.picture.throttle;
+  /** The throttle's ordered speed, mirrored for the header to read. */
+  let orderedKph = $state<number | null>(throttle.ordered);
+  /** The one timer that wakes the throttle when a waiting step falls due. */
   let speedTimer: ReturnType<typeof setTimeout> | null = null;
 
   const frameKph = $derived(frame?.speed_kph ?? 0);
@@ -610,62 +546,113 @@
   // The ceiling astern as a positive number, whichever sign a server sends.
   const reverseKph = $derived(Math.abs(frame?.reverse_kph ?? DEFAULT_REVERSE_KPH));
   /** The ordered speed while the frame has not reached it — what the header
-   * shows beside the frame's, and what the next step goes from. */
+   * shows beside the frame's. */
   const outstandingKph = $derived(speedOutstanding(orderedKph, frameKph) ? orderedKph : null);
 
-  // Reached: the order is forgotten, so a later drift of the frame's speed is
-  // not shown as an order the pilot gave.
-  $effect(() => {
-    if (orderedKph !== null && !speedOutstanding(orderedKph, frameKph)) orderedKph = null;
-  });
-
-  /** Send the step waiting in the window, if one is. */
-  function flushSpeed(): void {
-    if (speedTimer !== null) clearTimeout(speedTimer);
-    speedTimer = null;
-    if (pendingKph !== null) {
-      app.helm(speedLine(pendingKph));
-      pendingKph = null;
+  /** Send the lines the throttle has waiting, mirror its order, and wake it
+   * again when a step still waiting falls due. */
+  function speedSync(): void {
+    for (const line of throttle.takeOrders()) app.helm(line);
+    orderedKph = throttle.ordered;
+    const due = throttle.dueIn(Date.now());
+    if (due === null) {
+      if (speedTimer !== null) clearTimeout(speedTimer);
+      speedTimer = null;
+      return;
     }
+    speedTimer ??= setTimeout(
+      () => {
+        speedTimer = null;
+        throttle.tick(Date.now());
+        speedSync();
+      },
+      Math.max(1, due),
+    );
   }
 
-  /** One step `dir` from the outstanding order, else from the frame's speed;
-   * sent when the window closes, the last value winning. */
+  /** One step `dir` from the outstanding order, else from the frame's speed:
+   * the first goes at once, a run of them no closer than the gap. */
   function stepSpeed(dir: -1 | 1): void {
-    const from = speedOutstanding(orderedKph, frameKph) ? orderedKph : frameKph;
-    const next = steppedSpeed(from, dir, maxKph, reverseKph);
-    orderedKph = next;
-    pendingKph = next;
-    speedTimer ??= setTimeout(flushSpeed, SPEED_COALESCE_MS);
+    throttle.bump(dir, Date.now());
+    speedSync();
   }
 
-  /** All stop: `SPEED 0` at once (a step still waiting is dropped), and the
-   * helm's stop whether or not a key holds a turn — all stop cancels a typed
-   * `HEADING` as well as a held arrow. */
+  /** All stop: `SPEED 0` at once (a step still waiting is dropped) and a held
+   * turn let go, as the TUI's `x`. A `HEADING` typed or clicked stands. */
   function allStop(): void {
-    if (speedTimer !== null) clearTimeout(speedTimer);
-    speedTimer = null;
-    pendingKph = null;
-    orderedKph = 0;
-    app.helm(speedLine(0));
-    turning = 0;
-    if (frame !== null && !hullStuck()) {
-      const now = Date.now();
-      const p = predictedHeadingMdeg(now);
-      baseHeadingMdeg = p;
-      baseAtMs = now;
-      const deg = (((Math.round(p / 1_000) % 360) + 360) % 360);
-      orderedHeadingMdeg = deg * 1_000;
-      orderedAtMs = now;
-      app.helm(helmLine(deg, 0));
-    } else {
-      app.helm(helmLine(heading, 0));
-    }
+    const now = Date.now();
+    throttle.stop(now);
+    helm.stop(now);
+    speedSync();
+    helmSync();
   }
 
   /** A step still waiting when the view goes (the screen changed) is sent, not
    * lost: the speed stands across screens, only the turn and the look stop. */
-  $effect(() => () => flushSpeed());
+  $effect(() => () => {
+    throttle.flush(Date.now());
+    for (const line of throttle.takeOrders()) app.helm(line);
+    if (speedTimer !== null) clearTimeout(speedTimer);
+    speedTimer = null;
+  });
+
+  // -- what a key assumes until the next frame says --------------------------
+
+  /** The gate as the last `f` left it, standing in for the frame's until the
+   * next frame says: a second press before it sends the other verb, not the
+   * same one twice. The TUI's rule. */
+  let gateAssumed = $state<boolean | null>(null);
+  /** The pod's emission as the last `m` left it, the same way. */
+  let ecmAssumed: "on" | "off" | null = null;
+  /** The standing lock rule: whether it is armed, the slot the frame shows
+   * holding it, and whether the last frame showed one at all. */
+  let autoLockArmed = false;
+  let lockRuleSlot: number | null = null;
+  let frameShowsLockRule = false;
+  /** The slots the frame shows holding fire rules, and whether it showed any. */
+  let fireRuleSlots: number[] = [];
+  let frameShowsFireRule = false;
+
+  /** `l`: arm the standing lock rule, or remove the slot the frame shows
+   * holding it, by number and never a guessed one. An arming still in flight
+   * has no slot yet, so nothing is sent for it. */
+  function toggleAutoLock(): void {
+    if (autoLockArmed) {
+      autoLockArmed = false;
+      const slot = lockRuleSlot;
+      lockRuleSlot = null;
+      if (slot !== null) app.helm(`MIND RULE ${slot} OFF`);
+    } else {
+      autoLockArmed = true;
+      app.helm("LOCK nearest WHEN nolock");
+    }
+  }
+
+  /** `f`: the verb that flips what the gate says, and the flip assumed. */
+  function flipGate(): void {
+    const free = gateAssumed ?? frame?.weapons_free ?? null;
+    app.helm(gateLine(free));
+    gateAssumed = free === false;
+  }
+
+  /** `m`: EMCON, on a rig that carries the pod. */
+  function flipEmcon(): void {
+    const pod = ecmAssumed ?? frame?.ecm ?? null;
+    if (pod === null) return;
+    ecmAssumed = pod === "on" ? "off" : "on";
+    app.helm(`EMCON ${ecmAssumed}`);
+  }
+
+  /** `n`: scan what is locked, the lock just asked for standing in for the
+   * frame's as it does for `t`. */
+  function scanLock(): void {
+    const asked = app.picture.lockAsked;
+    const lock =
+      asked !== null && Date.now() - asked.at < LOCK_PENDING_MS
+        ? asked.designator
+        : (frame?.lock_designator ?? null);
+    if (lock !== null) app.helm(`SCAN ${lock}`);
+  }
 
   // -- weapons free auto-fire rule controls ----------------------------------
 
@@ -673,21 +660,45 @@
   let fireRuleOdds = $state(60);
   let fireRuleArmed = $state(false);
 
+  // A new frame: what the keys assumed gives way to what it says. The rules'
+  // buttons follow the frame when what it shows changes (a rule armed or
+  // removed from the terminal), and are otherwise left as the last press set
+  // them, so an arming still in flight is not shown as undone.
   $effect(() => {
     const f = frame;
-    if (!f) {
-      fireRuleArmed = false;
-      return;
-    }
-    if (fireRuleWeapon !== "ALL" && !f.weapons.some((w) => w.id === fireRuleWeapon)) {
-      fireRuleWeapon = "ALL";
-    }
+    untrack(() => {
+      gateAssumed = null;
+      ecmAssumed = null;
+      if (!f) {
+        fireRuleArmed = false;
+        autoLockArmed = false;
+        lockRuleSlot = null;
+        fireRuleSlots = [];
+        frameShowsLockRule = false;
+        frameShowsFireRule = false;
+        return;
+      }
+      lockRuleSlot = f.rules.find((r) => r.action === "lock")?.slot ?? null;
+      fireRuleSlots = f.rules.filter((r) => r.action === "fire").map((r) => r.slot);
+      if ((lockRuleSlot !== null) !== frameShowsLockRule) {
+        frameShowsLockRule = lockRuleSlot !== null;
+        autoLockArmed = frameShowsLockRule;
+      }
+      if (fireRuleSlots.length > 0 !== frameShowsFireRule) {
+        frameShowsFireRule = fireRuleSlots.length > 0;
+        fireRuleArmed = frameShowsFireRule;
+      }
+      if (fireRuleWeapon !== "ALL" && !f.weapons.some((w) => w.id === fireRuleWeapon)) {
+        fireRuleWeapon = "ALL";
+      }
+    });
   });
 
   function sendFireRule(): void {
     fireRuleArmed = true;
-    if (frame?.weapons_free === false) {
+    if ((gateAssumed ?? frame?.weapons_free) === false) {
       app.helm("FIRE FREE");
+      gateAssumed = true;
     }
     app.helm(`FIRE ${fireRuleWeapon} WHEN odds >= ${fireRuleOdds}`);
   }
@@ -705,10 +716,16 @@
     sendFireRule();
   }
 
+  /** The header's button and `F`: arm the rule, or remove the slots the frame
+   * shows holding fire rules; with none shown (an arming still in flight),
+   * the one disarm that reaches a rule not yet given a slot. */
   function toggleFireRule(): void {
     if (fireRuleArmed) {
       fireRuleArmed = false;
-      app.helm(`FIRE ${fireRuleWeapon} OFF`);
+      const slots = fireRuleSlots;
+      fireRuleSlots = [];
+      if (slots.length === 0) app.helm(`FIRE ${fireRuleWeapon} OFF`);
+      for (const slot of slots) app.helm(`MIND RULE ${slot} OFF`);
     } else {
       sendFireRule();
     }
@@ -730,10 +747,8 @@
   }
 
   function applyHudSpeed(normY: number): void {
-    const next = hudSpeedFromNormY(normY);
-    orderedKph = next;
-    pendingKph = next;
-    speedTimer ??= setTimeout(flushSpeed, SPEED_COALESCE_MS);
+    throttle.set(hudSpeedFromNormY(normY), Date.now());
+    speedSync();
   }
 
   function onCanvasPointerDown(ev: PointerEvent): void {
@@ -759,26 +774,27 @@
     if (!hudSpeedDragging) return;
     hudSpeedDragging = false;
     (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
-    flushSpeed();
+    // The bar let go: the speed it was left at goes now, not a gap later.
+    throttle.flush(Date.now());
+    speedSync();
   }
 
   // -- the lock cycle (doc 21 cut G.12c) -------------------------------------
 
-  /** The lock last asked for, until the frame shows it or it goes stale, so
-   * `t` pressed again before the next frame walks on rather than asking for
-   * the same contact twice. */
-  let lockAsked: { designator: string; at: number } | null = null;
+  // The lock last asked for (`app.picture.lockAsked`) stands in for the
+  // frame's until the frame shows it or it goes stale, so `t` pressed again
+  // before the next frame walks on rather than asking for the same contact
+  // twice.
 
   function cycleLock(dir: -1 | 1): void {
     if (frame === null) return;
     const now = Date.now();
+    const asked = app.picture.lockAsked;
     const current =
-      lockAsked !== null && now - lockAsked.at < LOCK_PENDING_MS
-        ? lockAsked.designator
-        : frame.lock_designator;
+      asked !== null && now - asked.at < LOCK_PENDING_MS ? asked.designator : frame.lock_designator;
     const designator = nextLock(frame.contacts, current, dir);
     if (designator === null) return;
-    lockAsked = { designator, at: now };
+    app.picture.lockAsked = { designator, at: now };
     app.helm(`LOCK ${designator}`);
   }
 
@@ -852,8 +868,7 @@
           local?.forget();
           break;
         case "zoom":
-          zoomPermille = stepZoomPermille(zoomPermille, skey.dir, "iso25d");
-          local?.forget();
+          zoomStep(skey.dir);
           break;
       }
       return;
@@ -898,7 +913,35 @@
         if (!ev.repeat) app.picture.kind = nextPictureKind(app.picture.kind);
         break;
       case "gate":
-        if (!ev.repeat) app.helm(gateLine(frame?.weapons_free ?? null));
+        if (!ev.repeat) flipGate();
+        break;
+      case "glass":
+        if (!ev.repeat) toggleGlass();
+        break;
+      case "scan":
+        if (!ev.repeat) scanLock();
+        break;
+      case "startup":
+        if (!ev.repeat) app.helm("STARTUP");
+        break;
+      case "emcon":
+        if (!ev.repeat) flipEmcon();
+        break;
+      case "autoTarget":
+        if (!ev.repeat) toggleAutoLock();
+        break;
+      case "autoFire":
+        if (!ev.repeat) toggleFireRule();
+        break;
+      case "wilco":
+        if (!ev.repeat && frame?.detachment?.wilco_command) {
+          app.helm(frame.detachment.wilco_command);
+        }
+        break;
+      case "negative":
+        if (!ev.repeat && frame?.detachment?.negative_command) {
+          app.helm(frame.detachment.negative_command);
+        }
         break;
       case "volley":
         if (!ev.repeat) app.helm("FIRE ALL");
@@ -913,7 +956,7 @@
         if (!ev.repeat) cycleLock(key.dir);
         break;
       case "zoom":
-        zoomPermille = stepZoomPermille(zoomPermille, key.dir, viewKind);
+        zoomStep(key.dir);
         break;
     }
   }
@@ -932,8 +975,7 @@
   function onCanvasWheel(ev: WheelEvent): void {
     if (!active) return;
     ev.preventDefault();
-    const dir = ev.deltaY < 0 ? 1 : -1;
-    zoomPermille = stepZoomPermille(zoomPermille, dir, viewKind);
+    zoomStep(ev.deltaY < 0 ? 1 : -1);
   }
 
   function onCanvasClick(ev: MouseEvent): void {
@@ -949,17 +991,10 @@
         coords.normY <= 0.15
       ) {
         const now = Date.now();
-        const camMdeg = wrap360Mdeg(predictedHeadingMdeg(now) + app.picture.lookMdeg);
+        const camMdeg = wrap360Mdeg(shownHeadingMdeg(now) + app.picture.lookMdeg);
         const rel = Math.max(-1, Math.min(1, (coords.normX - 0.5) / 0.3));
-        const targetMdeg = wrap360Mdeg(camMdeg + Math.round(rel * 30_000));
-        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
-        if (!hullStuck()) {
-          baseHeadingMdeg = predictedHeadingMdeg(now);
-          baseAtMs = now;
-          orderedHeadingMdeg = deg * 1_000;
-          orderedAtMs = now;
-        }
-        app.helm(helmLine(deg, 0));
+        helm.steer(camMdeg + Math.round(rel * 30_000), now);
+        helmSync();
         return;
       }
       if (coords.normX >= 0.88 && coords.normY >= 0.24 && coords.normY <= 0.78) {
@@ -968,7 +1003,7 @@
     }
     const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
     const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
-    const camDeg = (predictedHeadingMdeg(Date.now()) + app.picture.lookMdeg) / 1_000;
+    const camDeg = (shownHeadingMdeg(Date.now()) + app.picture.lookMdeg) / 1_000;
     const desig = pickCanvasContact(
       frame.contacts,
       viewKind,
@@ -977,9 +1012,11 @@
       effectiveZoomPermille,
       sightM,
       camDeg,
+      pixW,
+      pixH,
     );
     if (desig !== null) {
-      lockAsked = { designator: desig, at: Date.now() };
+      app.picture.lockAsked = { designator: desig, at: Date.now() };
       app.helm(`LOCK ${desig}`);
     }
   }
@@ -997,29 +1034,26 @@
           viewKind,
           coords.normX,
           coords.normY,
-          zoomPermille,
+          effectiveZoomPermille,
           sightM,
+          0,
+          pixW,
+          pixH,
         ) !== null
       ) {
         return;
       }
     }
-    const deg = canvasClickHeadingDeg(viewKind, coords.normX, coords.normY);
+    const deg = canvasClickHeadingDeg(viewKind, coords.normX, coords.normY, pixW, pixH);
     if (deg === null) return;
-    const now = Date.now();
-    if (frame !== null && !hullStuck()) {
-      baseHeadingMdeg = predictedHeadingMdeg(now);
-      baseAtMs = now;
-      orderedHeadingMdeg = deg * 1_000;
-      orderedAtMs = now;
-    }
-    app.helm(helmLine(deg, 0));
+    helm.steer(deg * 1_000, Date.now());
+    helmSync();
   }
 
   function onKeyUp(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
     const key = pictureKey(ev.key);
-    if (key?.kind === "turn" && key.dir === turning) {
+    if (key?.kind === "turn" && key.dir === helm.turning) {
       ev.preventDefault();
       stopTurn();
     }
@@ -1049,7 +1083,7 @@
               ? `FIRE ${fireRuleWeapon} OFF`
               : `FIRE ${fireRuleWeapon} WHEN odds >= ${fireRuleOdds}`}
             onclick={toggleFireRule}
-          >{gateWord(frame.weapons_free)}</button>
+          >{gateWord(gateAssumed ?? frame.weapons_free)}</button>
           {#if frame.weapons.length > 0}
             <select
               class="wf-select"
@@ -1099,20 +1133,20 @@
           type="button"
           class="toggle zoom-btn"
           title="Zoom out (-)"
-          onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, -1, viewKind))}>−</button
+          onclick={() => zoomStep(-1)}>−</button
         >
         <button
           type="button"
           class="toggle zoom-btn"
           title="Reset zoom"
-          onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 0, viewKind))}
+          onclick={() => zoomStep(0)}
           >{Math.round(effectiveZoomPermille / 10)}%</button
         >
         <button
           type="button"
           class="toggle zoom-btn"
           title="Zoom in (+)"
-          onclick={() => (zoomPermille = stepZoomPermille(zoomPermille, 1, viewKind))}>+</button
+          onclick={() => zoomStep(1)}>+</button
         >
       </span>
       <button
@@ -1210,8 +1244,8 @@
         </span>
       {/if}
       <span class="dim legend"
-        >{#if spaceMode === "docking"}WASD translate · Arrows pitch/yaw · Q E roll · R F closure · X dampeners · V view{:else if spaceMode === "holotank"}A D / , . orbit · C centre · + − zoom · V view{:else if spaceMode === "space_cockpit"}Q E / , . look · C centre · + − zoom · V view{:else}a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock ·
-        F1–F6 order{/if}</span
+        >{#if spaceMode === "docking"}WASD translate · Arrows pitch/yaw · Q E roll · R F closure · X dampeners · v view{:else if spaceMode === "holotank"}a d / , . orbit · z x c fire · r scan · + − zoom · v view{:else if spaceMode === "space_cockpit"}q e / , . look · z x c fire · r scan · + − zoom · v view{:else}a d turn · w s speed · x stop · q e look · c centre · v view · f free/hold · g volley · t T lock · n scan ·
+        b glass · z startup · m emcon · l auto-target · F auto-fire · y N answer · F1–F6 order{/if}</span
       >
     {/if}
     <button type="button" class="toggle" onclick={toggle}>

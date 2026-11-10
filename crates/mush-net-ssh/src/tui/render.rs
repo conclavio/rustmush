@@ -430,15 +430,16 @@ pub fn render_event(
                 serde_json::from_value::<ProjectedActionReceipt>(view.data().clone())
                 && receipt.view().is_ok_and(|expected| &expected == view)
             {
+                // One line, line mode's and the web's: the summary, then the
+                // transaction's status.
+                let summary = receipt
+                    .result()
+                    .map_or("Action committed.", |result| result.summary());
                 w.clock_gutter();
                 w.tagged(
                     "system",
-                    receipt
-                        .result()
-                        .map_or("Action committed.", |result| result.summary()),
+                    &format!("{summary} Transaction: {}", receipt.status()),
                 );
-                w.end_line();
-                w.tagged("system", &format!("Transaction: {}", receipt.status()));
                 w.end_line();
             }
         }
@@ -550,7 +551,18 @@ fn render_narrative(
             w.gutter(speaker(w));
             w.rich(text);
         }
-        NarrativeKind::Emit | NarrativeKind::Spoof => {
+        // A spoof only reaches a listener entitled to its source (the world
+        // task downgrades it to Emit for everyone else), so it keeps its
+        // sender, `[name] text`, as line mode and the web print it: player
+        // text never escapes its frame.
+        NarrativeKind::Spoof => {
+            w.clock_gutter();
+            w.plain("[");
+            w.tagged("player", name);
+            w.plain("] ");
+            w.rich(text);
+        }
+        NarrativeKind::Emit => {
             if is_roll_narration(text) {
                 let marker = if utf8 { "\u{2684} roll" } else { "roll" };
                 let style = w.style_for("roll");
@@ -1347,9 +1359,16 @@ pub fn render_scene_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 
 /// The `comsys.state` keyframe: one selectable row per channel (alias,
 /// name, unread badge) prefilling `<alias> `; the row key is the channel
-/// name the backlog pane and query use.
+/// name the backlog pane and query use. The badge is `unread(name)`, the
+/// client-side count (`PanelStore::unread_of`), never the keyframe's own
+/// `unread`, whose server cursor advances on live delivery.
 #[must_use]
-pub fn render_channels_rows(data: &Value, ctx: &RenderCtx<'_>, ic: bool) -> PaneRows {
+pub fn render_channels_rows(
+    data: &Value,
+    ctx: &RenderCtx<'_>,
+    ic: bool,
+    unread: &dyn Fn(&str) -> u64,
+) -> PaneRows {
     let channel_style = ctx.tag("channel");
     let empty = if ic {
         "(no IC channels)"
@@ -1364,9 +1383,10 @@ pub fn render_channels_rows(data: &Value, ctx: &RenderCtx<'_>, ic: bool) -> Pane
         if c.get("ic").and_then(Value::as_bool).unwrap_or(false) != ic {
             continue;
         }
-        let name = clean(c.get("name").and_then(Value::as_str).unwrap_or("?"));
+        let raw_name = c.get("name").and_then(Value::as_str).unwrap_or("?");
+        let unread = unread(raw_name);
+        let name = clean(raw_name);
         let alias = clean(c.get("alias").and_then(Value::as_str).unwrap_or(""));
-        let unread = c.get("unread").and_then(Value::as_u64).unwrap_or(0);
         let gagged = c.get("gagged").and_then(Value::as_bool).unwrap_or(false);
         let badge = if unread > 0 {
             format!(" {unread}")
@@ -3170,41 +3190,8 @@ pub fn render_cockpit_damage_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
     let width = ctx.pane.map(|(w, _)| usize::from(w));
     let mut rows = Vec::with_capacity(sections.len());
     for section in sections {
-        let head = format!(
-            "{}  {}  {}/{}",
-            clean(section.get("id").and_then(Value::as_str).unwrap_or("?")),
-            clean(
-                section
-                    .get("condition")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?")
-            ),
-            section
-                .get("internals")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-            section
-                .get("internals_max")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
-        );
-        let cells: Vec<String> = section
-            .get("facets")
-            .and_then(Value::as_array)
-            .map(|facets| {
-                facets
-                    .iter()
-                    .map(|facet| {
-                        format!(
-                            "{} {}/{}",
-                            clean(facet.get("id").and_then(Value::as_str).unwrap_or("?")),
-                            facet.get("armor").and_then(Value::as_i64).unwrap_or(0),
-                            facet.get("armor_max").and_then(Value::as_i64).unwrap_or(0),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let (head, cells) = section_words(section);
+        let head = head.join("  ");
         let Some(width) = width else {
             // No pane: the section's one row, its facets appended.
             let mut line = head;
@@ -3221,6 +3208,51 @@ pub fn render_cockpit_damage_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
         }
     }
     PaneRows { rows }
+}
+
+/// **One section's words as the damage pane prints them**: the head's three
+/// fields (`right_track`, `destroyed`, `0/24`), which the pane joins with two
+/// spaces, and a cell a facet (`right 0/24`). `pub(crate)` for the picture's
+/// side panel, which lays the same words out in its narrower column.
+pub(crate) fn section_words(section: &Value) -> ([String; 3], Vec<String>) {
+    let head = [
+        clean(section.get("id").and_then(Value::as_str).unwrap_or("?")),
+        clean(
+            section
+                .get("condition")
+                .and_then(Value::as_str)
+                .unwrap_or("?"),
+        ),
+        format!(
+            "{}/{}",
+            section
+                .get("internals")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            section
+                .get("internals_max")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        ),
+    ];
+    let cells: Vec<String> = section
+        .get("facets")
+        .and_then(Value::as_array)
+        .map(|facets| {
+            facets
+                .iter()
+                .map(|facet| {
+                    format!(
+                        "{} {}/{}",
+                        clean(facet.get("id").and_then(Value::as_str).unwrap_or("?")),
+                        facet.get("armor").and_then(Value::as_i64).unwrap_or(0),
+                        facet.get("armor_max").and_then(Value::as_i64).unwrap_or(0),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (head, cells)
 }
 
 /// A section's facet cells packed into rows of at most `width` characters (16b
@@ -3305,19 +3337,13 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
         return PaneRows { rows };
     }
     for weapon in weapons {
-        let ready = if weapon.get("ready").and_then(Value::as_bool) == Some(true) {
-            "ready".to_string()
-        } else {
-            format!(
-                "{} s",
-                weapon
-                    .get("ready_in_ms")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-                    .saturating_add(999)
-                    / 1_000
-            )
-        };
+        let ready = readiness_word(
+            weapon.get("ready").and_then(Value::as_bool) == Some(true),
+            weapon
+                .get("ready_in_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        );
         let chance = match weapon.get("percent").and_then(Value::as_u64) {
             Some(percent) => format!("  {percent}%"),
             None => String::new(),
@@ -3346,14 +3372,25 @@ pub fn render_cockpit_weapons_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRow
     PaneRows { rows }
 }
 
-/// The core's six slots, summarized at the 44-column floor. Match the web's
-/// `decodeRules` + `ruleSummaryLines`: accept known actions, one per valid
-/// slot, and always draw them in slot order. Arbitrary rule text is never
-/// copied into a summary row.
-fn rule_summary_lines(data: &Value) -> Vec<String> {
-    let Some(rules) = data.get("rules").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+/// **A weapon's readiness, the web's `weaponLines` word**: `ready`, or the
+/// whole seconds to its next shot rounded up (`1 s` for 900 ms). `pub(crate)`
+/// for the picture's side panel, which prints the same word.
+pub(crate) fn readiness_word(ready: bool, ready_in_ms: i64) -> String {
+    if ready {
+        "ready".to_string()
+    } else {
+        format!("{} s", ready_in_ms.max(0).saturating_add(999) / 1_000)
+    }
+}
+
+/// **The core's six rule slots as a cockpit frame's `rules` holds them**, one
+/// action word (`fire`, `hold`, `lock`) per valid slot, index 0 for slot 1:
+/// the web's `decodeRules` — known actions only, the first row of a repeated
+/// slot, slots 1 to 6. `None` when the frame carries no `rules` array (an
+/// older frame says nothing about them). `pub(crate)` for the picture's `l`
+/// and `F` keys, which disarm the slots the frame says are armed.
+pub(crate) fn rule_slots(data: &Value) -> Option<[Option<&'static str>; 6]> {
+    let rules = data.get("rules").and_then(Value::as_array)?;
     let mut slots = [None; 6];
     for row in rules {
         let Some(slot) = row.get("slot").and_then(Value::as_u64) else {
@@ -3376,6 +3413,18 @@ fn rule_summary_lines(data: &Value) -> Vec<String> {
             _ => None,
         };
     }
+    Some(slots)
+}
+
+/// The core's six slots, summarized at the 44-column floor. Match the web's
+/// `decodeRules` + `ruleSummaryLines`: accept known actions, one per valid
+/// slot, and always draw them in slot order. Arbitrary rule text is never
+/// copied into a summary row. `pub(crate)` for the picture's side panel,
+/// which prints the same rows.
+pub(crate) fn rule_summary_lines(data: &Value) -> Vec<String> {
+    let Some(slots) = rule_slots(data) else {
+        return Vec::new();
+    };
     let words: Vec<_> = slots
         .into_iter()
         .enumerate()
@@ -5405,6 +5454,29 @@ mod tests {
         assert!(sys[1].gutter.is_none(), "a continuation line has no gutter");
     }
 
+    /// A spoof keeps its sender, `[name] text`, as line mode prints it; an
+    /// emit stays bare.
+    #[test]
+    fn a_spoof_keeps_its_sender_and_an_emit_stays_bare() {
+        let theme = AnsiTheme::classic();
+        let spoof = OutputEvent::Narrative {
+            kind: NarrativeKind::Spoof,
+            actor: Some(ObjRef::new("#10", "Nick")),
+            text: RichText::plain("The lights flicker."),
+        };
+        let entries = render_event(&spoof, &caps(ColorDepth::Ansi16), &theme, 3661);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(gutter_text(&entries[0]), "01:01");
+        assert_eq!(body_text(&entries[0]), "[Nick] The lights flicker.");
+        let emit = OutputEvent::Narrative {
+            kind: NarrativeKind::Emit,
+            actor: Some(ObjRef::new("#10", "Nick")),
+            text: RichText::plain("The lights flicker."),
+        };
+        let entries = render_event(&emit, &caps(ColorDepth::Ansi16), &theme, 3661);
+        assert_eq!(body_text(&entries[0]), "The lights flicker.");
+    }
+
     #[test]
     fn room_renders_the_facts_and_channel_the_bracket() {
         let theme = AnsiTheme::classic();
@@ -5569,15 +5641,25 @@ mod tests {
             { "name": "Staff", "alias": "", "unread": 0, "gagged": true },
             { "name": "Radio", "alias": "rad", "unread": 0, "gagged": false, "ic": true },
         ]});
-        let rows = render_channels_rows(&chans, &ctx, false);
+        // The badge is the client-side count the caller passes, never the
+        // keyframe's own `unread` (Public's 3 here).
+        let unread = |name: &str| u64::from(name == "Staff") * 4;
+        let rows = render_channels_rows(&chans, &ctx, false, &unread);
         assert_eq!(rows.rows.len(), 2, "the OOC pane never lists an IC channel");
         assert_eq!(rows.rows[0].prefill.as_deref(), Some("pub "));
         assert_eq!(rows.rows[0].row_key.as_deref(), Some("Public"));
         assert_eq!(rows.rows[1].prefill.as_deref(), Some("Staff "));
-        let ic_rows = render_channels_rows(&chans, &ctx, true);
+        assert_eq!(line_text(&rows.rows[0].line).trim_end(), "pub    Public");
+        assert!(
+            line_text(&rows.rows[1].line).contains("Staff 4"),
+            "{:?}",
+            line_text(&rows.rows[1].line)
+        );
+        let ic_rows = render_channels_rows(&chans, &ctx, true, &unread);
         assert_eq!(ic_rows.rows.len(), 1, "the IC pane lists only IC channels");
         assert_eq!(ic_rows.rows[0].row_key.as_deref(), Some("Radio"));
-        let none = render_channels_rows(&serde_json::json!({ "channels": [] }), &ctx, true);
+        let none =
+            render_channels_rows(&serde_json::json!({ "channels": [] }), &ctx, true, &unread);
         assert_eq!(line_text(&none.rows[0].line), "(no IC channels)");
         let actions = serde_json::json!([{ "offer": "secret-token", "presentation": { "verb": "brace", "label": "Brace", "help": "Hold." } }]);
         let rows = render_actions_rows(&actions, &ctx);

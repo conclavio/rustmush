@@ -949,6 +949,7 @@
   "t_ms": 61250,
   "tempo": "engaged",
   "title": "Arena window",
+  "turn_rate_mdeg_s": 30000,
   "unit": 101,
   "unit_type": "tacsim.unit.line_tank",
   "units": [

@@ -29,6 +29,9 @@ pub const MAX_TUI_FEEDS: usize = 32;
 pub const ROLLS_RING: usize = 100;
 /// The most messages kept per channel.
 pub const BACKLOG_RING: usize = 200;
+/// The most channels the client-side unread counts track (a `comsys.state`
+/// keyframe or a live line naming one past it is not counted).
+pub const UNREAD_CHANNELS: usize = 64;
 /// The most `tactics.unit` journal rows the ring keeps (interface plan I8;
 /// the web client keeps the same number, so the two read alike).
 pub const JOURNAL_RING: usize = 200;
@@ -179,6 +182,14 @@ pub struct PanelStore {
     unit_journal: VecDeque<Value>,
     backlog: HashMap<String, VecDeque<ChanMsg>>,
     channel_epochs: HashMap<String, String>,
+    /// **Client-side channel unread** (the web's `seq - readSeq`): the
+    /// server's cursor advances on live delivery, so its `unread` is almost
+    /// always 0 for a connected session. A channel is seeded from the
+    /// server's figure the first time a keyframe lists it, then counts the
+    /// live lines delivered while the channel screen is not the one in front
+    /// of the reader; leaving that screen marks them read. Keyed by lowercased
+    /// name, at most [`UNREAD_CHANNELS`] channels.
+    unread: HashMap<String, u64>,
     /// **The cockpit's notices ring** (16b cut B.3, `B-64`), oldest first, at
     /// most [`COCKPIT_NOTICES`]: each seated frame's notices composed by
     /// [`super::render::notice_words`] from their fields, and — while a seated
@@ -428,11 +439,50 @@ impl PanelStore {
             .unwrap_or_default()
     }
 
+    /// The client-side unread count of `channel` (see `unread`).
+    #[must_use]
+    pub fn unread_of(&self, channel: &str) -> u64 {
+        self.unread
+            .get(&channel.to_lowercase())
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Every channel's client-side unread, summed: the channel tab's badge.
+    #[must_use]
+    pub fn total_unread(&self) -> u64 {
+        self.unread
+            .values()
+            .fold(0, |sum, n| sum.saturating_add(*n))
+    }
+
+    /// One live line delivered to `channel` while the reader is not looking
+    /// at the channel screen.
+    pub fn count_unread(&mut self, channel: &str) {
+        let key = channel.to_lowercase();
+        if let Some(n) = self.unread.get_mut(&key) {
+            *n = n.saturating_add(1);
+        } else if self.unread.len() < UNREAD_CHANNELS {
+            self.unread.insert(key, 1);
+        }
+    }
+
+    /// The reader has looked at the channel screen: every channel is read.
+    /// The channels stay tracked, so a re-hydrating keyframe does not seed
+    /// them again from the server's figure.
+    pub fn mark_channels_read(&mut self) {
+        for n in self.unread.values_mut() {
+            *n = 0;
+        }
+    }
+
     /// Ordered live frames and keyframes identify the current membership.
     pub fn channel_epoch(&mut self, channel: &str, epoch: Option<&str>) {
         let key = channel.to_lowercase();
         if self.channel_epochs.get(&key).map(String::as_str) != epoch {
             self.backlog.remove(&key);
+            // A new membership does not inherit the old one's count.
+            self.unread.remove(&key);
             if let Some(epoch) = epoch {
                 self.channel_epochs.insert(key, epoch.into());
             } else {
@@ -441,17 +491,19 @@ impl PanelStore {
         }
     }
 
-    /// Fold a live channel line into the backlog ring.
-    pub fn push_channel(&mut self, channel: &str, msg: ChanMsg) {
+    /// Fold a live channel line into the backlog ring. `false` when the ring
+    /// already held its `seq` (a resume replay), which is not a new line.
+    pub fn push_channel(&mut self, channel: &str, msg: ChanMsg) -> bool {
         let ring = self.backlog.entry(channel.to_lowercase()).or_default();
         if ring.iter().any(|m| m.seq == msg.seq) {
-            return;
+            return false;
         }
         ring.push_back(msg);
         ring.make_contiguous().sort_by_key(|m| m.seq);
         while ring.len() > BACKLOG_RING {
             ring.pop_front();
         }
+        true
     }
 
     /// Apply a panel frame.
@@ -494,9 +546,20 @@ impl PanelStore {
                         .collect();
                     self.backlog.retain(|name, _| names.contains(name));
                     self.channel_epochs.retain(|name, _| names.contains(name));
+                    self.unread.retain(|name, _| names.contains(name));
                     for c in channels {
                         if let Some(name) = c.get("name").and_then(Value::as_str) {
                             self.channel_epoch(name, c.get("epoch").and_then(Value::as_str));
+                            // First sight seeds from the server's cursor (what
+                            // arrived while this session was away); a channel
+                            // already tracked keeps its client-side count.
+                            let key = name.to_lowercase();
+                            if !self.unread.contains_key(&key)
+                                && self.unread.len() < UNREAD_CHANNELS
+                            {
+                                let server = c.get("unread").and_then(Value::as_u64).unwrap_or(0);
+                                self.unread.insert(key, server);
+                            }
                         }
                     }
                 }

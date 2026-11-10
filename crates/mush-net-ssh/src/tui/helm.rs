@@ -1,6 +1,5 @@
 //! **The camera on a leash** (doc 21 cut G.4, D-21-14): the pixel view's
-//! turn keys steer the tank, and the picture shows the tank's heading as the
-//! sim will have it, never one the sim has not granted.
+//! turn keys steer the tank, and the picture turns as the tank will.
 //!
 //! A turn is a **helm order** — a `HEADING <deg>` line, the verb and the
 //! authority a pilot types — so a seat without the helm, or a tank without
@@ -8,23 +7,38 @@
 //! word (doc 21 §7.3, 2026-10-27): the arena takes them without the
 //! `Steering to …` / `Making … kph.` acknowledgement a typed order gets,
 //! since the HUD shows the ordered heading and speed and a held key would
-//! otherwise fill the comms; refusals are still spoken. The sim resolves orders at its pulses (500,
-//! 1000 or 5000 ms by tempo), so between frames the view **predicts** the
-//! heading: from the last frame's, toward the order it sent, at the tank's
-//! turn rate, starting no earlier than the order went out and never past it.
-//! The next frame is the truth and replaces the prediction.
+//! otherwise fill the comms; refusals are still spoken.
 //!
-//! A held turn orders a heading one pulse's turn ahead of the predicted one
-//! and extends it as the tank closes on it; letting go orders the predicted
-//! heading, so the tank stops about where the picture showed it. The lead is
-//! kept to a pulse's worth so a release lands before the tank has turned much
-//! past what the pilot saw.
+//! The sim resolves orders at its pulses (500, 1000 or 5000 ms by tempo), and
+//! an order that arrives late in a pulse is still given the whole pulse of
+//! turning: a frame's heading moves in steps of up to a pulse's turn. The
+//! picture must not step with it (the owner, 2026-11-09: "it jerks and moves
+//! in wide swaths"). So the helm keeps **one continuous shown heading**
+//! ([`Helm::predicted`]), carried on from where it stands at every event and
+//! never restarted from a frame:
 //!
-//! **The turn rate is measured, not read**: no feed carries it (it is the
-//! unit definition's `turn_rate_mdeg_s`, 30°/s on the stock tank), so it
-//! starts at that and is re-measured from consecutive frames — only across
-//! a pulse in which the tank was still short of the order, since a turn that
-//! finished mid-pulse would read slow.
+//! - **held**, it swings from where it stood at the press: a slow first
+//!   [`TAP_MS`] so a tap is one degree, then the unit's turn rate. The press
+//!   orders that one degree, and every [`ORDER_GAP`] after it the helm orders
+//!   the heading the picture will show one gap on, so at each pulse the sim
+//!   lands on the picture or a few degrees ahead of it, and the frames of a
+//!   turn in hand are not drawn;
+//! - **released**, the helm orders the heading the picture shows and the
+//!   picture holds it. The sim brings the tank there at its next pulse, back
+//!   the few degrees of the lead if it had run ahead;
+//! - **otherwise** (a typed order, a machine at the helm) it follows the
+//!   frames at the turn rate, at most a pulse behind, in place of stepping.
+//!
+//! **The leash**: the picture never runs further ahead of the last frame than
+//! a pulse and a half of turning (and never so far that an order would be the
+//! long way round), a hull the frame says cannot turn is not drawn turning,
+//! and a turn the frames do not bear out — no helm, an order refused — is
+//! dropped a second past its pulse, the picture easing back to the frames.
+//!
+//! **The turn rate** is the frame's `turn_rate_mdeg_s` (the unit definition's,
+//! 20°/s to 90°/s across the shipped ground hulls). A frame without one — a
+//! replay, a fixture — leaves the stock tank's 30°/s, re-measured from
+//! consecutive frames across a pulse the tank spent short of its order.
 //!
 //! **The throttle and the lock cycle** (doc 21 cut G.12b) sit beside the
 //! helm: [`Throttle`] steps `SPEED` orders the same way, from a prediction the
@@ -35,17 +49,30 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-/// The rate assumed until a turn is measured: the stock tank's, 30°/s.
+/// The rate assumed until a frame carries one or a turn is measured: the
+/// stock tank's, 30°/s.
 pub const DEFAULT_TURN_RATE: i64 = 30_000;
-/// The measured rate is kept inside this band (millidegrees a second).
-const RATE_BAND: (i64, i64) = (5_000, 180_000);
-/// The least time between two orders while a turn is held, and between two
-/// `SPEED` orders while the speed keys are pressed (G.12b).
+/// The turn rate is kept inside this band (millidegrees a second).
+const RATE_BAND: (i64, i64) = (1_000, 360_000);
+/// The time between two orders while a turn is held, and the least between
+/// two `SPEED` orders while the speed keys are pressed (G.12b).
 pub const ORDER_GAP: Duration = Duration::from_millis(250);
-/// A held turn's lead is a pulse of turning, kept inside this band.
-const LEAD_BAND: (i64, i64) = (20_000, 120_000);
+/// A held turn's order runs ahead of the picture by what the picture will
+/// swing in one [`ORDER_GAP`], kept inside this band (millidegrees).
+const LEAD_BAND: (i64, i64) = (1_000, 25_000);
+/// The furthest the picture runs ahead of the last frame (millidegrees): a
+/// pulse and a half of turning inside this band. With [`LEAD_BAND`]'s top it
+/// keeps an order under a half turn from the tank, which turns on the short
+/// arc.
+const LEASH_BAND: (i64, i64) = (20_000, 150_000);
 /// A frame within this of the order has reached it (millidegrees).
 const REACHED: i64 = 1_000;
+/// The least a press turns the tank, and what a tap turns it: one degree.
+const TAP: i64 = 1_000;
+/// A press this short is a tap: the swing's slow start, milliseconds.
+pub const TAP_MS: i64 = 200;
+/// No prediction runs longer than this without an event, milliseconds.
+const RUN_CAP_MS: i64 = 600_000;
 
 /// One full turn, millidegrees.
 const FULL: i64 = 360_000;
@@ -68,6 +95,13 @@ fn tempo_ms(word: &str) -> Option<i64> {
     })
 }
 
+/// Whole milliseconds from `from` to `to`, zero when `to` is the earlier.
+fn ms_between(from: Instant, to: Instant) -> i64 {
+    i64::try_from(to.saturating_duration_since(from).as_millis())
+        .unwrap_or(RUN_CAP_MS)
+        .min(RUN_CAP_MS)
+}
+
 /// The last frame the helm saw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Seen {
@@ -79,6 +113,9 @@ struct Seen {
     speed_cms: i64,
     /// Whether the hull can physically make way (powered, unblocked, mobile).
     can_move: bool,
+    /// Whether the hull can turn at all (powered, mobile, not a wreck): the
+    /// arena refuses a `HEADING` otherwise.
+    can_turn: bool,
     /// When it arrived here.
     at: Instant,
 }
@@ -88,12 +125,24 @@ struct Seen {
 pub struct Helm {
     /// `-1` turning left, `0` not, `1` turning right.
     turning: i8,
-    /// The heading last ordered, and when.
+    /// The heading last ordered, and when it was first ordered.
     ordered: Option<(i64, Instant)>,
+    /// The order before the standing one, within the turn in hand: one the
+    /// arena has certainly had by the time a frame arrives.
+    prior: Option<i64>,
     seen: Option<Seen>,
+    /// The picture's heading at an instant. Every prediction runs on from
+    /// here, and every event (a frame, a press, a release, a dropped turn)
+    /// moves it to where the picture stood, so the picture never jumps.
+    shown: Option<(i64, Instant)>,
+    /// The picture's heading when the turn in hand began, and when.
+    turn_from: Option<(i64, Instant)>,
     /// True once consecutive arena pulses (`prev.t_ms < t_ms`) have been observed.
     live_stream: bool,
     rate: i64,
+    /// True once a frame has carried the unit's turn rate: nothing is
+    /// measured after.
+    rate_read: bool,
     tempo_ms: i64,
     /// `HEADING` lines waiting to be sent.
     orders: Vec<String>,
@@ -112,9 +161,13 @@ impl Helm {
         Helm {
             turning: 0,
             ordered: None,
+            prior: None,
             seen: None,
+            shown: None,
+            turn_from: None,
             live_stream: false,
             rate: DEFAULT_TURN_RATE,
+            rate_read: false,
             tempo_ms: 1_000,
             orders: Vec::new(),
         }
@@ -126,7 +179,9 @@ impl Helm {
         self.turning
     }
 
-    /// The heading last ordered and not yet reached, millidegrees.
+    /// The heading last ordered and not yet reached, millidegrees. While a
+    /// turn is held it is the running lead, a few degrees ahead of the
+    /// picture, and not a heading the pilot chose.
     #[must_use]
     pub fn ordered(&self) -> Option<i64> {
         self.ordered.map(|(o, _)| o)
@@ -138,13 +193,20 @@ impl Helm {
         self.rate
     }
 
-    /// Read the held cockpit frame: a new one (by its arena time) replaces
-    /// the prediction's base, and across a pulse the tank spent turning
-    /// toward an order it had not reached it measures the turn rate.
+    /// Read the held cockpit frame. A new one (by its arena time) is the
+    /// truth about the tank, and the picture carries on from where it stood:
+    /// a turn in hand keeps swinging, a released one keeps its heading, and
+    /// anything else is followed at the turn rate. The frame also gives the
+    /// turn rate (or lets it be measured), and a held turn it does not bear
+    /// out is dropped.
     pub fn observe(&mut self, cockpit: &Value, now: Instant) {
         let Some(t_ms) = cockpit.get("t_ms").and_then(Value::as_i64) else {
             return;
         };
+        let prev = self.seen;
+        if prev.is_some_and(|p| p.t_ms == t_ms) {
+            return;
+        }
         let heading = cockpit
             .get("heading_mdeg")
             .and_then(Value::as_i64)
@@ -161,13 +223,16 @@ impl Helm {
                     * 1_000
                     / 36
             });
-        let can_move = cockpit.get("blocked").and_then(Value::as_bool) != Some(true)
-            && cockpit.get("wreck").and_then(Value::as_bool) != Some(true)
+        let can_turn = cockpit.get("wreck").and_then(Value::as_bool) != Some(true)
             && cockpit.get("immobile").and_then(Value::as_bool) != Some(true)
             && !matches!(
                 cockpit.get("power").and_then(Value::as_str),
                 Some("off" | "starting")
             );
+        let can_move = can_turn && cockpit.get("blocked").and_then(Value::as_bool) != Some(true);
+        // Where the picture stands, by the old frame, rate and tempo: the
+        // new ones change where it goes from here, never where it is.
+        let stands = self.predicted(now);
         if let Some(ms) = cockpit
             .get("tempo")
             .and_then(Value::as_str)
@@ -175,27 +240,32 @@ impl Helm {
         {
             self.tempo_ms = ms;
         }
-        if let Some(prev) = self.seen {
-            if prev.t_ms == t_ms {
-                return;
-            }
+        if let Some(rate) = cockpit
+            .get("turn_rate_mdeg_s")
+            .and_then(Value::as_i64)
+            .filter(|rate| *rate > 0)
+        {
+            self.rate = rate.clamp(RATE_BAND.0, RATE_BAND.1);
+            self.rate_read = true;
+        }
+        let mut carried = None;
+        if let Some(prev) = prev {
             let dt = t_ms - prev.t_ms;
             self.live_stream = dt > 0 && dt <= 10_000;
-            let turned = arc(prev.heading, heading).abs();
-            if let Some((o, _)) = self.ordered
-                && dt > 0
-                && turned > 0
-                && arc(heading, o).abs() > REACHED
-            {
-                let measured = turned * 1_000 / dt;
-                self.rate = measured.clamp(RATE_BAND.0, RATE_BAND.1);
+            if dt > 0 {
+                carried = stands;
+                self.judge(prev, heading, dt, now);
             }
         }
+        // The first frame, and the first after the arena's clock went back
+        // (another match, a replay), is shown as it is.
+        self.shown = Some((carried.unwrap_or(heading), now));
         self.seen = Some(Seen {
             t_ms,
             heading,
             speed_cms,
             can_move,
+            can_turn,
             at: now,
         });
         if self.turning == 0
@@ -207,30 +277,79 @@ impl Helm {
         }
     }
 
-    /// The heading the tank has at `now` as far as the view can tell: the
-    /// last frame's, carried toward the order at the turn rate from when the
-    /// order went out (or the frame arrived, if later), for at most a pulse
-    /// and a half, never past the order. An order no frame has answered a
-    /// second past its pulse is taken as not taken (no helm, no power), and
-    /// the frame's heading stands. `None` before any frame.
+    /// What the frame after `prev` says of the helm's own order: `dt` arena
+    /// milliseconds on, the tank is at `heading`.
+    fn judge(&mut self, prev: Seen, heading: i64, dt: i64, now: Instant) {
+        if self.turning == 0 {
+            // A released order the tank is no longer closing on, a second
+            // past its pulse, was not taken.
+            if let Some((o, at)) = self.ordered
+                && now.saturating_duration_since(at) > self.grace()
+                && arc(heading, o).abs() >= arc(prev.heading, o).abs()
+            {
+                self.ordered = None;
+            }
+            return;
+        }
+        let dir = i64::from(self.turning);
+        // Only a pulse the turn was in hand for from end to end, and that
+        // left the tank short of an order the arena certainly had, says
+        // anything: the sim spent the whole of it turning, or would not turn.
+        let whole = self.turn_from.is_some_and(|(_, at)| at <= prev.at);
+        let short = self.prior.is_some_and(|o| dir * arc(heading, o) > REACHED);
+        if !(whole && short) {
+            return;
+        }
+        let turned = dir * arc(prev.heading, heading);
+        if turned <= 0 {
+            // Ordered ahead for a whole pulse and no nearer: refused, or a
+            // hull that cannot turn that way.
+            self.turning = 0;
+            self.turn_from = None;
+            self.ordered = None;
+            self.prior = None;
+        } else if !self.rate_read && dt <= self.tempo_ms + self.tempo_ms / 2 {
+            self.rate = (turned * 1_000 / dt).clamp(RATE_BAND.0, RATE_BAND.1);
+        }
+    }
+
+    /// The heading the picture shows at `now`: continuous in time, and
+    /// carried across every frame, press and release from where it stood.
+    /// A held turn swings on at the turn rate, no further ahead of the last
+    /// frame than the leash; a released one closes on the heading ordered at
+    /// the release and holds it; with no order of its own the picture follows
+    /// the last frame's heading, at the turn rate or in a pulse, whichever is
+    /// sooner. `None` before any frame.
     #[must_use]
     pub fn predicted(&self, now: Instant) -> Option<i64> {
         let seen = self.seen?;
-        let Some((o, at)) = self.ordered else {
-            return Some(seen.heading);
+        let (v0, t0) = self.shown.unwrap_or((seen.heading, seen.at));
+        let ms = ms_between(t0, now);
+        let v = if self.turning != 0
+            && let Some((_, from)) = self.turn_from
+        {
+            let dir = i64::from(self.turning);
+            let swung = if seen.can_turn {
+                self.swing(ms_between(from, now)) - self.swing(ms_between(from, t0))
+            } else {
+                0
+            };
+            let room = (self.leash() - dir * arc(seen.heading, v0)).max(0);
+            v0 + dir * swung.min(room)
+        } else if let Some((o, _)) = self.ordered {
+            let run = if seen.can_turn {
+                self.rate * ms / 1_000
+            } else {
+                0
+            };
+            let d = arc(v0, o);
+            v0 + d.signum() * d.abs().min(run)
+        } else {
+            let d = arc(v0, seen.heading);
+            let in_a_pulse = d.abs() * ms / self.tempo_ms.max(1);
+            v0 + d.signum() * d.abs().min((self.rate * ms / 1_000).max(in_a_pulse))
         };
-        let pulse = Duration::from_millis(u64::try_from(self.tempo_ms).unwrap_or(1_000));
-        if seen.at < at && now.saturating_duration_since(at) > pulse + Duration::from_secs(1) {
-            return Some(seen.heading);
-        }
-        let from = seen.at.max(at);
-        let elapsed = now
-            .saturating_duration_since(from)
-            .min(pulse + pulse / 2)
-            .as_millis();
-        let step = self.rate * i64::try_from(elapsed).unwrap_or(0) / 1_000;
-        let d = arc(seen.heading, o);
-        Some((seen.heading + d.signum() * d.abs().min(step)).rem_euclid(FULL))
+        Some(v.rem_euclid(FULL))
     }
 
     /// Dead-reckoned `(dx_cm, dy_cm)` position offset from the last observed
@@ -248,7 +367,7 @@ impl Helm {
         {
             return (0, 0);
         }
-        let pulse = Duration::from_millis(u64::try_from(self.tempo_ms).unwrap_or(1_000));
+        let pulse = self.pulse();
         let elapsed_ms = i64::try_from(
             now.saturating_duration_since(seen.at)
                 .min(pulse + pulse / 2)
@@ -266,48 +385,132 @@ impl Helm {
         (dx_cm, dy_cm)
     }
 
-    /// How far ahead a held turn orders: a pulse and a half of turning.
-    fn lead(&self) -> i64 {
-        (self.rate * (self.tempo_ms + self.tempo_ms / 2) / 1_000).clamp(LEAD_BAND.0, LEAD_BAND.1)
+    /// The sim's pulse at the frame's tempo.
+    fn pulse(&self) -> Duration {
+        Duration::from_millis(u64::try_from(self.tempo_ms).unwrap_or(1_000))
     }
 
+    /// How long an order may go unanswered: its pulse and a second.
+    fn grace(&self) -> Duration {
+        self.pulse() + Duration::from_secs(1)
+    }
+
+    /// How far a turn held for `ms` has swung the picture: [`TAP`] over the
+    /// first [`TAP_MS`] (or the turn rate, if that is slower), then the turn
+    /// rate. The slow start is what makes a tap one degree and no more.
+    fn swing(&self, ms: i64) -> i64 {
+        let slow = ms.clamp(0, TAP_MS);
+        let fast = (ms - slow).max(0);
+        (TAP * slow / TAP_MS).min(self.rate * slow / 1_000) + self.rate * fast / 1_000
+    }
+
+    /// How far ahead of the picture a turn held for `ms` orders: what the
+    /// picture swings in the next [`ORDER_GAP`], when the next order goes. A
+    /// few degrees (7.5° on the stock tank), so a pulse that resolves between
+    /// two orders leaves the tank that little ahead of the picture, and the
+    /// release brings it back no further.
+    fn lead(&self, ms: i64) -> i64 {
+        let gap = i64::try_from(ORDER_GAP.as_millis()).unwrap_or(250);
+        (self.swing(ms + gap) - self.swing(ms)).clamp(LEAD_BAND.0, LEAD_BAND.1)
+    }
+
+    /// The furthest the picture runs ahead of the last frame: a pulse and a
+    /// half of turning, inside [`LEASH_BAND`].
+    fn leash(&self) -> i64 {
+        (self.rate * (self.tempo_ms + self.tempo_ms / 2) / 1_000).clamp(LEASH_BAND.0, LEASH_BAND.1)
+    }
+
+    /// Order `heading`, to the whole degree — unless that degree is the
+    /// order already standing.
     fn order(&mut self, heading: i64, now: Instant) {
         let deg = (heading.rem_euclid(FULL) + 500) / 1_000 % 360;
+        if self.ordered() == Some(deg * 1_000) {
+            return;
+        }
         self.orders.push(format!("HEADING {deg} QUIET"));
         self.ordered = Some((deg * 1_000, now));
     }
 
-    /// Start turning the tank `dir` (`-1` left, `1` right). Nothing before a
-    /// frame has been seen: there is no heading to turn from.
+    /// Start turning the tank `dir` (`-1` left, `1` right), from the heading
+    /// the picture shows, and order the tap's one degree: let go at once and
+    /// that order stands. Nothing before a frame has been seen: there is no
+    /// heading to turn from.
     pub fn start(&mut self, dir: i8, now: Instant) {
+        let dir = dir.signum();
         let Some(p) = self.predicted(now) else {
             return;
         };
-        self.turning = dir.signum();
-        self.order(p + i64::from(self.turning) * self.lead(), now);
-    }
-
-    /// Stop turning: order the heading the picture shows, unless the tank
-    /// is already there.
-    pub fn stop(&mut self, now: Instant) {
-        self.turning = 0;
-        if let (Some(p), Some(o)) = (self.predicted(now), self.ordered())
-            && arc(p, o).abs() > REACHED
-        {
-            self.order(p, now);
+        if dir == 0 {
+            return;
         }
+        self.shown = Some((p, now));
+        self.turn_from = Some((p, now));
+        self.turning = dir;
+        self.order(p + i64::from(dir) * TAP, now);
+        self.prior = None;
     }
 
-    /// While a turn is held, extend the order before the tank reaches it.
-    pub fn tick(&mut self, now: Instant) {
+    /// Stop turning: order the heading the picture shows, which the picture
+    /// then holds. A press let go inside its first degree is a tap, and
+    /// turns the tank that one degree.
+    pub fn stop(&mut self, now: Instant) {
         if self.turning == 0 {
             return;
         }
-        let (Some(p), Some((o, at))) = (self.predicted(now), self.ordered) else {
+        let dir = i64::from(self.turning);
+        let stands = self.predicted(now);
+        self.turning = 0;
+        self.prior = None;
+        let from = self.turn_from.take();
+        let Some(p) = stands else {
             return;
         };
-        if arc(p, o).abs() < self.lead() / 2 && now.saturating_duration_since(at) >= ORDER_GAP {
-            self.order(p + i64::from(self.turning) * self.lead(), now);
+        self.shown = Some((p, now));
+        let from = from.map_or(p, |(heading, _)| heading);
+        let target = if dir * arc(from, p) < TAP {
+            from + dir * TAP
+        } else {
+            p
+        };
+        self.order(target, now);
+    }
+
+    /// While a turn is held, order on ahead of the picture every
+    /// [`ORDER_GAP`]. A turn or a released order no frame has spoken to for
+    /// a second past its pulse was not taken: it is dropped, and the picture
+    /// goes back to the frames.
+    pub fn tick(&mut self, now: Instant) {
+        let Some(seen) = self.seen else {
+            return;
+        };
+        let since = |at: Instant| now.saturating_duration_since(at);
+        let grace = self.grace();
+        let silent = since(seen.at) > grace;
+        if self.turning == 0 {
+            if silent && self.ordered.is_some_and(|(_, at)| since(at) > grace) {
+                self.shown = self.predicted(now).map(|p| (p, now));
+                self.ordered = None;
+            }
+            return;
+        }
+        let (Some(p), Some((_, from))) = (self.predicted(now), self.turn_from) else {
+            return;
+        };
+        if silent && since(from) > grace {
+            self.shown = Some((p, now));
+            self.turning = 0;
+            self.turn_from = None;
+            self.ordered = None;
+            self.prior = None;
+            return;
+        }
+        if self.ordered.is_none_or(|(_, at)| since(at) >= ORDER_GAP) {
+            let lead = self.lead(ms_between(from, now));
+            let was = self.ordered();
+            self.order(p + i64::from(self.turning) * lead, now);
+            if self.ordered() != was {
+                self.prior = was;
+            }
         }
     }
 
@@ -558,86 +761,378 @@ mod tests {
         assert_eq!(h.predicted(t0), None);
     }
 
-    /// A held turn orders a pulse and a half ahead, the picture turns at the
-    /// rate from when the order went out, and letting go orders where the
-    /// picture is.
+    /// A frame that carries the unit's turn rate, as the arena's do.
+    fn rated(t_ms: i64, heading_deg: i64, tempo: &str, rate: i64) -> Value {
+        serde_json::json!({
+            "t_ms": t_ms,
+            "heading_mdeg": heading_deg * 1_000,
+            "tempo": tempo,
+            "turn_rate_mdeg_s": rate,
+        })
+    }
+
+    /// The arena as the helm meets it: the standing order is resolved at the
+    /// pulse with the whole pulse of turning, whenever in the pulse it came,
+    /// on the short arc; and a frame goes out when the heading moved. Its
+    /// frames carry no turn rate, as a replay's do not.
+    struct Arena {
+        heading: i64,
+        order: Option<i64>,
+        rate: i64,
+        tempo: &'static str,
+        t_ms: i64,
+    }
+
+    impl Arena {
+        fn new(heading_deg: i64, rate: i64, tempo: &'static str) -> Arena {
+            Arena {
+                heading: heading_deg * 1_000,
+                order: None,
+                rate,
+                tempo,
+                t_ms: 1_000,
+            }
+        }
+
+        fn pulse_ms(&self) -> u64 {
+            tempo_ms(self.tempo)
+                .and_then(|ms| u64::try_from(ms).ok())
+                .unwrap_or(1_000)
+        }
+
+        fn frame(&self) -> Value {
+            serde_json::json!({
+                "t_ms": self.t_ms,
+                "heading_mdeg": self.heading,
+                "tempo": self.tempo,
+            })
+        }
+
+        /// One pulse: the frame it sends, if the heading moved.
+        fn pulse(&mut self) -> Option<Value> {
+            let pulse = tempo_ms(self.tempo).unwrap_or(1_000);
+            self.t_ms += pulse;
+            let before = self.heading;
+            if let Some(order) = self.order {
+                let d = arc(self.heading, order);
+                let step = d.abs().min(self.rate * pulse / 1_000);
+                self.heading = (self.heading + d.signum() * step).rem_euclid(FULL);
+            }
+            (self.heading != before).then(|| self.frame())
+        }
+
+        /// Take the helm's lines as the arena's command queue does.
+        fn take(&mut self, lines: Vec<String>) {
+            for line in lines {
+                let deg = line
+                    .strip_prefix("HEADING ")
+                    .and_then(|rest| rest.strip_suffix(" QUIET"))
+                    .and_then(|deg| deg.parse::<i64>().ok());
+                assert!(deg.is_some(), "not a quiet heading order: {line}");
+                self.order = deg.map(|deg| deg * 1_000);
+            }
+        }
+    }
+
+    /// Paint every 50 ms for `total` ms against the arena, the turn key down
+    /// at `press` and up at `release`: the heading the picture showed at each
+    /// paint, the first at 0 ms.
+    fn drive(
+        arena: &mut Arena,
+        h: &mut Helm,
+        t0: Instant,
+        press: u64,
+        release: u64,
+        total: u64,
+    ) -> Vec<i64> {
+        let mut shown = Vec::new();
+        for at in (0..=total).step_by(50) {
+            let now = t0 + ms(at);
+            if at > 0
+                && at.is_multiple_of(arena.pulse_ms())
+                && let Some(frame) = arena.pulse()
+            {
+                h.observe(&frame, now);
+            }
+            if at == press {
+                h.start(1, now);
+            }
+            if at == release {
+                h.stop(now);
+            }
+            h.tick(now);
+            arena.take(h.take_orders());
+            shown.push(h.predicted(now).unwrap_or(-1));
+        }
+        shown
+    }
+
+    /// A held turn swings the picture from where it stood at the press — a
+    /// slow first fifth of a second, then the turn rate — and letting go
+    /// orders the heading the picture shows, which it then holds.
     #[test]
-    fn a_turn_leads_by_a_pulse_and_a_release_orders_the_shown_heading() {
+    fn a_turn_swings_from_the_press_and_a_release_orders_the_shown_heading() {
         let t0 = Instant::now();
         let mut h = Helm::new();
         h.observe(&frame(10_000, 90, "alert"), t0);
         assert_eq!(h.predicted(t0), Some(90_000));
         h.start(1, t0 + ms(200));
-        // 30°/s for 1.5 s of 1000 ms pulses: 45° ahead.
-        assert_eq!(h.take_orders(), ["HEADING 135 QUIET"]);
+        // The press orders the tap's degree, not a pulse and a half of turn.
+        assert_eq!(h.take_orders(), ["HEADING 91 QUIET"]);
         assert_eq!(
             h.predicted(t0 + ms(200)),
             Some(90_000),
-            "moves from the order"
+            "moves from the press"
         );
-        assert_eq!(h.predicted(t0 + ms(700)), Some(105_000));
-        // Never past a pulse and a half without a frame (and never past
-        // the order).
-        assert_eq!(h.predicted(t0 + ms(1_700)), Some(135_000));
-        h.stop(t0 + ms(700));
-        assert_eq!(h.take_orders(), ["HEADING 105 QUIET"]);
+        assert_eq!(h.predicted(t0 + ms(400)), Some(91_000), "the slow start");
+        assert_eq!(h.predicted(t0 + ms(700)), Some(100_000), "then 30°/s");
+        // The first order of the hold: where the picture will be a gap on.
+        h.tick(t0 + ms(450));
+        assert_eq!(h.take_orders(), ["HEADING 100 QUIET"]);
+        h.stop(t0 + ms(800));
+        assert_eq!(h.take_orders(), ["HEADING 103 QUIET"]);
         assert_eq!(h.turning(), 0);
-        // A frame at the ordered heading closes the order.
-        h.observe(&frame(11_000, 105, "alert"), t0 + ms(1_000));
+        // A frame short of the order does not pull the picture back to it…
+        h.observe(&frame(11_000, 100, "alert"), t0 + ms(1_000));
+        assert_eq!(h.predicted(t0 + ms(1_000)), Some(103_000));
+        assert_eq!(h.predicted(t0 + ms(1_900)), Some(103_000));
+        assert_eq!(h.ordered(), Some(103_000));
+        // …and the frame at the ordered heading closes the order.
+        h.observe(&frame(12_000, 103, "alert"), t0 + ms(2_000));
         assert_eq!(h.ordered(), None);
-        assert_eq!(h.predicted(t0 + ms(3_000)), Some(105_000));
+        assert_eq!(h.predicted(t0 + ms(5_000)), Some(103_000));
     }
 
-    /// Frames across a pulse the tank spent turning measure the rate; one in
-    /// which it reached the order does not.
+    /// A tap is one degree and one line, however short the press, so a pilot
+    /// walks the last degrees to a heading a tap at a time.
     #[test]
-    fn the_turn_rate_is_measured_while_short_of_the_order() {
+    fn a_tap_turns_the_tank_one_degree() {
         let t0 = Instant::now();
         let mut h = Helm::new();
-        h.observe(&frame(1_000, 0, "engaged"), t0);
+        h.observe(&frame(1_000, 87, "alert"), t0);
+        h.start(1, t0 + ms(1_000));
+        h.stop(t0 + ms(1_030));
+        assert_eq!(h.take_orders(), ["HEADING 88 QUIET"], "one line a tap");
+        assert_eq!(h.predicted(t0 + ms(1_200)), Some(88_000));
+        // A slower tap is the same degree, and two taps are two degrees.
+        h.start(1, t0 + ms(2_000));
+        h.stop(t0 + ms(2_180));
+        assert_eq!(h.take_orders(), ["HEADING 89 QUIET"]);
+        assert_eq!(h.predicted(t0 + ms(2_400)), Some(89_000));
+        // Left, across north.
+        let mut h = Helm::new();
+        h.observe(&frame(1_000, 0, "quiet"), t0);
         h.start(-1, t0);
-        // A pulse and a half at 500 ms pulses: 22.5° ahead.
-        assert_eq!(h.take_orders(), ["HEADING 338 QUIET"]);
-        h.observe(&frame(1_500, 338, "engaged"), t0 + ms(500));
-        assert_eq!(h.rate(), DEFAULT_TURN_RATE, "reached it: no measure");
-        // Ordered on to 316; 18° in the next 500 ms pulse, still short of
-        // it: a faster chassis than assumed.
-        h.start(-1, t0 + ms(600));
-        assert_eq!(h.take_orders(), ["HEADING 316 QUIET"]);
-        h.observe(&frame(2_000, 320, "engaged"), t0 + ms(1_000));
-        assert_eq!(h.rate(), 36_000);
+        h.stop(t0 + ms(90));
+        assert_eq!(h.take_orders(), ["HEADING 359 QUIET"]);
+        assert_eq!(h.predicted(t0 + ms(400)), Some(359_000));
     }
 
-    /// An order the sim never answers (no helm, no power) stops being drawn
-    /// a second past its pulse.
+    /// While held, the helm orders every gap, and each order is the heading
+    /// the picture will show one gap on: the lead is a few degrees, not a
+    /// pulse and a half of turn.
     #[test]
-    fn an_unanswered_order_is_not_drawn_past_its_pulse() {
+    fn a_held_turn_orders_where_the_picture_will_be_a_gap_on() {
         let t0 = Instant::now();
         let mut h = Helm::new();
-        h.observe(&frame(1_000, 90, "engaged"), t0);
-        h.start(1, t0 + ms(10));
-        let _ = h.take_orders();
-        assert!(h.predicted(t0 + ms(400)).is_some_and(|p| p > 90_000));
-        assert_eq!(h.predicted(t0 + ms(1_600)), Some(90_000));
-    }
-
-    /// While held, the order is extended before the tank reaches it, no
-    /// sooner than the order gap.
-    #[test]
-    fn a_held_turn_is_extended_before_it_runs_out() {
-        let t0 = Instant::now();
-        let mut h = Helm::new();
-        h.observe(&frame(1_000, 0, "alert"), t0);
+        h.observe(&frame(1_000, 90, "alert"), t0);
         h.start(1, t0);
-        assert_eq!(h.take_orders(), ["HEADING 45 QUIET"]);
-        h.tick(t0 + ms(100));
-        assert!(h.take_orders().is_empty(), "far from the order");
-        // A frame at 30°: 15° short, under half the 45° lead.
-        h.observe(&frame(2_000, 30, "alert"), t0 + ms(1_000));
-        h.tick(t0 + ms(1_000));
-        assert_eq!(h.take_orders(), ["HEADING 75 QUIET"]);
-        h.tick(t0 + ms(1_100));
-        assert!(h.take_orders().is_empty(), "the gap holds");
+        assert_eq!(h.take_orders(), ["HEADING 91 QUIET"]);
+        let mut sent = 0;
+        for at in (50..=1_000).step_by(50) {
+            let now = t0 + ms(at);
+            h.tick(now);
+            let orders = h.take_orders();
+            if at.is_multiple_of(250) {
+                let ahead = h.predicted(now + ORDER_GAP).unwrap_or(-1);
+                let deg = (ahead + 500) / 1_000;
+                assert_eq!(orders, [format!("HEADING {deg} QUIET")], "at {at} ms");
+                assert!(arc(h.predicted(now).unwrap_or(-1), deg * 1_000) <= 8_000);
+                sent += 1;
+            } else {
+                assert!(orders.is_empty(), "the gap holds at {at} ms: {orders:?}");
+            }
+        }
+        assert_eq!(sent, 4);
+    }
+
+    /// The owner's report (2026-11-09): the picture "jerks and moves in wide
+    /// swaths". Against an arena that resolves orders a pulse at a time, at
+    /// every tempo and wherever in the pulse the key goes down, a three-second
+    /// hold is one swing: never back, never faster than the turn rate, still
+    /// from the release on, and the tank comes to the heading the picture
+    /// stopped at.
+    #[test]
+    fn a_held_turn_is_one_smooth_swing_whatever_the_pulse() {
+        for (tempo, press) in [
+            ("engaged", 150),
+            ("alert", 700),
+            ("alert", 950),
+            ("quiet", 700),
+            ("quiet", 4_800),
+        ] {
+            let release = press + 3_000;
+            let t0 = Instant::now();
+            let mut arena = Arena::new(90, 30_000, tempo);
+            let mut h = Helm::new();
+            h.observe(&arena.frame(), t0);
+            let shown = drive(&mut arena, &mut h, t0, press, release, release + 12_000);
+            // One degree in the slow start, then 2.8 s at 30°/s.
+            let target = 175_000;
+            for (at, pair) in (50_u64..).step_by(50).zip(shown.windows(2)) {
+                let step = arc(pair[0], pair[1]);
+                assert!(
+                    (0..=1_500).contains(&step),
+                    "{tempo}/{press}: {step} mdeg in the paint at {at} ms"
+                );
+                if at <= press {
+                    assert_eq!(pair[1], 90_000, "{tempo}/{press}: before the press");
+                }
+                if at >= release {
+                    assert_eq!(pair[1], target, "{tempo}/{press}: still at {at} ms");
+                }
+            }
+            assert_eq!(
+                arena.heading, target,
+                "{tempo}/{press}: the tank came to it"
+            );
+            assert_eq!(h.ordered(), None, "{tempo}/{press}");
+            assert_eq!(h.rate(), DEFAULT_TURN_RATE, "{tempo}/{press}: no measure");
+        }
+    }
+
+    /// The frame's `turn_rate_mdeg_s` is the unit's and the picture swings at
+    /// it; nothing a frame shows afterwards measures over it.
+    #[test]
+    fn the_frames_turn_rate_is_the_units() {
+        let t0 = Instant::now();
+        let mut h = Helm::new();
+        h.observe(&rated(1_000, 0, "alert", 60_000), t0);
+        assert_eq!(h.rate(), 60_000);
+        h.start(1, t0);
+        // One degree in the slow start, then half a second at 60°/s.
+        assert_eq!(h.predicted(t0 + ms(700)), Some(31_000));
+        for at in (50..=950).step_by(50) {
+            h.tick(t0 + ms(at));
+        }
+        // A whole pulse of turning that left the tank ten degrees on and
+        // short of its order: a measure, were the rate not the frame's.
+        h.observe(&rated(2_000, 10, "alert", 60_000), t0 + ms(1_000));
+        assert_eq!(h.turning(), 1);
+        assert_eq!(h.rate(), 60_000);
+    }
+
+    /// A frame without a rate (a replay, a fixture) leaves the stock 30°/s,
+    /// and a hull that turns slower is measured across the first whole pulse
+    /// it spends short of its order: the picture waits for it from there, and
+    /// the tank still comes to the heading the picture stopped at.
+    #[test]
+    fn a_slower_hull_is_measured_when_the_frame_carries_no_rate() {
+        let t0 = Instant::now();
+        let mut arena = Arena::new(90, 20_000, "alert");
+        let mut h = Helm::new();
+        h.observe(&arena.frame(), t0);
+        let shown = drive(&mut arena, &mut h, t0, 100, 2_500, 8_000);
+        assert_eq!(h.rate(), 20_000);
+        for pair in shown.windows(2) {
+            let step = arc(pair[0], pair[1]);
+            assert!((0..=1_500).contains(&step), "{pair:?}");
+        }
+        assert_eq!(arena.heading, 152_000);
+        assert_eq!(shown.last().copied(), Some(arena.heading));
+    }
+
+    /// A turn the frames do not bear out — a seat without the helm, an order
+    /// refused — is dropped, and the picture eases back to the frames.
+    #[test]
+    fn a_turn_the_frames_do_not_bear_out_is_dropped() {
+        // Frames come, and the tank is no nearer its order a whole pulse on.
+        let t0 = Instant::now();
+        let mut h = Helm::new();
+        h.observe(&frame(1_000, 90, "alert"), t0);
+        h.start(1, t0 + ms(100));
+        for at in (150..=2_000).step_by(50) {
+            let now = t0 + ms(at);
+            if at == 1_000 {
+                h.observe(&frame(2_000, 90, "alert"), now);
+                assert_eq!(h.turning(), 1, "the press came inside that pulse");
+            }
+            if at == 2_000 {
+                h.observe(&frame(3_000, 90, "alert"), now);
+            }
+            h.tick(now);
+        }
+        assert_eq!(h.turning(), 0);
+        assert_eq!(h.ordered(), None);
+        let _ = h.take_orders();
+        // The picture had run to the leash, a pulse and a half of turning,
+        // and goes back to the frame inside a pulse: no snap.
+        assert_eq!(h.predicted(t0 + ms(2_000)), Some(135_000));
+        assert_eq!(h.predicted(t0 + ms(2_500)), Some(112_500));
+        assert_eq!(h.predicted(t0 + ms(3_000)), Some(90_000));
+        h.tick(t0 + ms(3_000));
+        assert!(h.take_orders().is_empty(), "a dropped turn orders nothing");
+
+        // No frame at all: dropped a second past the pulse.
+        let mut h = Helm::new();
+        h.observe(&frame(1_000, 90, "alert"), t0);
+        h.start(1, t0 + ms(100));
+        for at in (150..=2_050).step_by(50) {
+            h.tick(t0 + ms(at));
+        }
+        assert_eq!(h.turning(), 1);
+        h.tick(t0 + ms(2_150));
+        assert_eq!(h.turning(), 0);
+        assert_eq!(h.ordered(), None);
+        assert_eq!(h.predicted(t0 + ms(2_150)), Some(135_000));
+        assert_eq!(h.predicted(t0 + ms(3_150)), Some(90_000));
+    }
+
+    /// A hull the frame says cannot turn — cold, starting, immobile, a wreck
+    /// — is not drawn turning. The order still goes: the arena's refusal is
+    /// what tells the pilot why.
+    #[test]
+    fn a_hull_that_cannot_turn_is_not_drawn_turning() {
+        for (key, value) in [
+            ("power", Value::from("off")),
+            ("power", Value::from("starting")),
+            ("immobile", Value::from(true)),
+            ("wreck", Value::from(true)),
+        ] {
+            let t0 = Instant::now();
+            let mut h = Helm::new();
+            let mut cockpit = frame(1_000, 90, "alert");
+            cockpit[key] = value;
+            h.observe(&cockpit, t0);
+            h.start(1, t0);
+            assert_eq!(h.take_orders(), ["HEADING 91 QUIET"], "{key}");
+            assert_eq!(h.predicted(t0 + ms(1_000)), Some(90_000), "{key}");
+            h.stop(t0 + ms(1_000));
+            assert_eq!(h.predicted(t0 + ms(1_500)), Some(90_000), "{key}");
+        }
+    }
+
+    /// A turn that is not the helm's own — a typed `HEADING`, a machine at
+    /// the helm — is followed at the turn rate, or inside a pulse when the
+    /// hull is faster than the helm knows, and never stepped to.
+    #[test]
+    fn a_turn_that_is_not_the_helms_is_followed_and_not_stepped() {
+        let t0 = Instant::now();
+        let mut h = Helm::new();
+        h.observe(&frame(1_000, 90, "alert"), t0);
+        h.observe(&frame(2_000, 120, "alert"), t0 + ms(1_000));
+        assert_eq!(h.predicted(t0 + ms(1_000)), Some(90_000), "no step");
+        assert_eq!(h.predicted(t0 + ms(1_500)), Some(105_000));
+        assert_eq!(h.predicted(t0 + ms(2_000)), Some(120_000));
+        assert_eq!(h.predicted(t0 + ms(9_000)), Some(120_000));
+        h.tick(t0 + ms(2_000));
+        assert!(h.take_orders().is_empty());
+        h.observe(&frame(3_000, 210, "alert"), t0 + ms(2_000));
+        assert_eq!(h.predicted(t0 + ms(2_500)), Some(165_000));
+        assert_eq!(h.predicted(t0 + ms(3_000)), Some(210_000));
+        // The arena's clock going back is another picture: shown as it is.
+        h.observe(&frame(500, 10, "alert"), t0 + ms(3_100));
+        assert_eq!(h.predicted(t0 + ms(3_100)), Some(10_000));
     }
 
     // ---- G.12b ---------------------------------------------------------------

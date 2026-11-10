@@ -23,7 +23,9 @@ use super::keys::Key;
 use crate::line::LineBuffer;
 
 const MAX_FORM_BYTES: usize = 4096;
-const MAX_LIBRARY: usize = 256;
+/// The server's own library bound, `mush_roll::model::MAX_MINDS`; this crate
+/// does not depend on `mush-roll`, so the figure is restated here.
+const MAX_LIBRARY: usize = 20;
 const MAX_FIELDS: usize = 64;
 const MAX_RULES: usize = 6;
 
@@ -2359,5 +2361,19 @@ mod tests {
         );
         assert_eq!(state.names, vec!["marked"]);
         assert!(state.removal_requested.is_empty());
+    }
+
+    #[test]
+    fn library_is_bounded_at_the_servers_twenty_minds() {
+        let mut state = MindWorkshop {
+            open: true,
+            ..MindWorkshop::default()
+        };
+        state.send(MindRequest::List {});
+        let (id, _) = state.take_invokes().pop().expect("list request");
+        let names: Vec<String> = (0..21).map(|n| format!("mind {n}")).collect();
+        state.accept(id, &InvokeResult::Mind(MindResponse::Library { names }));
+        assert_eq!(state.names.len(), 20);
+        assert!(state.message.contains("exceeds this client's bound"));
     }
 }
