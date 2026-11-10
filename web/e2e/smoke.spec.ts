@@ -236,7 +236,8 @@ test("a player plays in the browser", async ({ page }) => {
   await page.getByRole("button", { name: "Show the picture" }).click();
   const canvas = page.locator(".frame canvas");
   await expect(canvas).toBeVisible();
-  // Painted: a 640x480 frame with more than a handful of colours (sky,
+  // Painted: a 1280x720 frame, the size the picture opens at, with more
+  // than a handful of colours (sky,
   // ground, the hull, the readouts). A canvas the module never reached is
   // transparent black: one colour.
   await expect
@@ -253,7 +254,7 @@ test("a player plays in the browser", async ({ page }) => {
         }),
       { message: "the cockpit picture paints", timeout: 30_000 },
     )
-    .toEqual({ w: 640, colours: 9 });
+    .toEqual({ w: 1280, colours: 9 });
   // And it was the module that drew it: the page fetched the `.wasm` itself.
   expect(wasm).toContain(200);
 });
