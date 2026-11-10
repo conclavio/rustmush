@@ -16,7 +16,14 @@
   // Both are let go the moment their release could no longer be seen: the
   // frame losing focus, the window losing focus, the page going hidden (doc
   // 21a `X-02`: a tab switched away with an arrow down kept ordering
-  // `HEADING` every 700 ms, and the look kept swinging).
+  // `HEADING`, and the look kept swinging).
+  //
+  // **The turn** (doc 21 cut G.4b) is `$lib/helm`'s, the TUI's helm in the
+  // browser: the picture shows one continuous heading that swings from the
+  // press (a tap is one degree), the helm orders a few degrees ahead of it
+  // every quarter second while the key is down, and a release orders the
+  // heading the picture shows. The frames, which step a pulse at a time, are
+  // never drawn raw.
   //
   // **The rest of the flight keys** (doc 21 §7.3, cut G.12c), the letters the
   // TUI's screen 0 reads: `a`/`d` turn as the arrows do; `w`/`s` step the
@@ -44,12 +51,8 @@
   import {
     DEFAULT_MAX_SPEED_KPH,
     DEFAULT_REVERSE_KPH,
-    DEFAULT_TURN_RATE_MDEG_S,
-    HELM_LEAD_DEG,
-    HELM_REPEAT_MS,
     LOCK_PENDING_MS,
     LOOK_STEP_MS,
-    MIN_TAP_TURN_MDEG,
     PICTURE_PREF_KEY,
     SPEED_COALESCE_MS,
     ZOOM_DEFAULT_PERMILLE,
@@ -57,7 +60,6 @@
     canvasClickHeadingDeg,
     gateLine,
     gateWord,
-    helmLine,
     nextLock,
     nextPictureKind,
     nextSpaceCamera,
@@ -74,6 +76,7 @@
     wrapMdeg,
     dockOrderToInputMask,
   } from "$lib/picture";
+  import { HELM_TICK_MS, Helm, helmFrame } from "$lib/helm";
   import {
     FRAME_H,
     FRAME_H_HD,
@@ -109,8 +112,6 @@
   let canvas: HTMLCanvasElement | undefined = $state();
   /** The look's swing: `-1` left, `0` still, `1` right. */
   let lookTurn = $state<-1 | 0 | 1>(0);
-  /** The held turn: `-1` left, `0` none, `1` right. */
-  let turning = $state<-1 | 0 | 1>(0);
   /** The 2.5D camera zoom in permille (`500..=2000`, `1000` = 100%). */
   let zoomPermille = $state(ZOOM_DEFAULT_PERMILLE);
   let submittedDockingSessionId = $state<string | null>(null);
@@ -239,113 +240,45 @@
     local = null;
   }
 
-  // The latest heading, for the helm's repeats and client-side hull prediction
-  // (matching `mush-net-ssh/src/tui/helm.rs`).
-  let heading = 0;
+  // The helm (doc 21 cut G.4b): the turn keys' orders and the heading the
+  // picture shows, the same rules as `mush-net-ssh/src/tui/helm.rs`.
+  const helm = new Helm();
+  /** The heading of the keyframe the picture is drawn from, millidegrees. */
   let frameHeadingMdeg = 0;
-  let baseHeadingMdeg = 0;
-  let baseAtMs = 0;
-  let orderedHeadingMdeg: number | null = null;
-  let orderedAtMs = 0;
-  let turnStartAtMs = 0;
-  let turnTapBaseMdeg = 0;
-  let turnRateMdegPerS = DEFAULT_TURN_RATE_MDEG_S;
-  let prevFrameTMs: number | null = null;
-  let prevFrameHeadingMdeg: number | null = null;
-  let frameArrivedAtMs = 0;
-  let livePulseStream = false;
+  /** The helm's clock, running while a turn or an order stands. */
+  let helmTimer: ReturnType<typeof setInterval> | null = null;
 
   function hullStuck(): boolean {
     if (frame === null) return false;
     return (frame.power !== "" && frame.power !== "online") || frame.wreck || frame.immobile;
   }
 
-  function predictedHeadingMdeg(now: number): number {
-    if (frame === null) return wrap360Mdeg(heading * 1_000);
-    if (hullStuck()) return frameHeadingMdeg;
-    if (orderedHeadingMdeg === null) return baseHeadingMdeg;
-    const elapsed = Math.max(0, Math.min(now - baseAtMs, 2_500));
-    const step = (turnRateMdegPerS * elapsed) / 1_000;
-    const d = arcMdeg(baseHeadingMdeg, orderedHeadingMdeg);
-    return wrap360Mdeg(baseHeadingMdeg + Math.sign(d) * Math.min(Math.abs(d), step));
+  /** The heading the picture shows at `now`, millidegrees. */
+  function shownHeadingMdeg(now: number): number {
+    return helm.predicted(now) ?? frameHeadingMdeg;
+  }
+
+  /** Send the lines the helm has waiting, and keep its clock running exactly
+   * while a turn or an order stands. */
+  function helmSync(): void {
+    for (const line of helm.takeOrders()) app.helm(line);
+    if (helm.busy) {
+      helmTimer ??= setInterval(() => {
+        helm.tick(Date.now());
+        helmSync();
+      }, HELM_TICK_MS);
+    } else if (helmTimer !== null) {
+      clearInterval(helmTimer);
+      helmTimer = null;
+    }
   }
 
   $effect(() => {
-    heading = headingDeg;
-    const rawCockpit = app.picture.cockpitData as { heading_mdeg?: unknown } | null;
-    const rawMdeg = wrap360Mdeg(
-      typeof rawCockpit?.heading_mdeg === "number" ? rawCockpit.heading_mdeg : headingDeg * 1_000,
-    );
-    if (frame === null) {
-      frameHeadingMdeg = rawMdeg;
-      baseHeadingMdeg = rawMdeg;
-      orderedHeadingMdeg = null;
-      prevFrameTMs = null;
-      prevFrameHeadingMdeg = null;
-      frameArrivedAtMs = 0;
-      livePulseStream = false;
-      return;
-    }
-    const f = frame;
+    const f = helmFrame(frame, app.picture.cockpitData, headingDeg);
     untrack(() => {
-      if (f.t_ms === prevFrameTMs && rawMdeg === prevFrameHeadingMdeg) return;
-      const now = Date.now();
-      const currentPred = predictedHeadingMdeg(now);
-      if (prevFrameTMs !== null && f.t_ms !== null) {
-        const pulseDt = f.t_ms - prevFrameTMs;
-        livePulseStream = pulseDt > 0 && pulseDt <= 10_000;
-      }
-      frameArrivedAtMs = now;
-      if (
-        prevFrameTMs !== null &&
-        f.t_ms !== null &&
-        f.t_ms > prevFrameTMs &&
-        prevFrameHeadingMdeg !== null &&
-        orderedHeadingMdeg !== null
-      ) {
-        const dt = f.t_ms - prevFrameTMs;
-        const turned = Math.abs(arcMdeg(prevFrameHeadingMdeg, rawMdeg));
-        if (dt > 0 && turned > 0 && Math.abs(arcMdeg(rawMdeg, orderedHeadingMdeg)) > 1_000) {
-          turnRateMdegPerS = Math.min(180_000, Math.max(5_000, Math.round((turned * 1_000) / dt)));
-        }
-      }
-      frameHeadingMdeg = rawMdeg;
-      prevFrameTMs = f.t_ms;
-      prevFrameHeadingMdeg = rawMdeg;
-      if (hullStuck()) {
-        baseHeadingMdeg = rawMdeg;
-        baseAtMs = now;
-        orderedHeadingMdeg = null;
-        return;
-      }
-      if (orderedHeadingMdeg !== null) {
-        if (turning === 0 && Math.abs(arcMdeg(rawMdeg, orderedHeadingMdeg)) <= 1_000) {
-          baseHeadingMdeg = rawMdeg;
-          baseAtMs = now;
-          orderedHeadingMdeg = null;
-          return;
-        }
-        if (turning === 0 && now - orderedAtMs > 2_500) {
-          baseHeadingMdeg = rawMdeg;
-          baseAtMs = now;
-          orderedHeadingMdeg = null;
-          return;
-        }
-        const toOrderFromServer = arcMdeg(rawMdeg, orderedHeadingMdeg);
-        const toOrderFromPred = arcMdeg(currentPred, orderedHeadingMdeg);
-        const serverLagMdeg = arcMdeg(rawMdeg, currentPred);
-        if (
-          Math.sign(toOrderFromServer) === Math.sign(serverLagMdeg) &&
-          Math.abs(serverLagMdeg) <= 25_000 &&
-          Math.abs(toOrderFromPred) <= Math.abs(toOrderFromServer)
-        ) {
-          baseHeadingMdeg = currentPred;
-          baseAtMs = now;
-          return;
-        }
-      }
-      baseHeadingMdeg = rawMdeg;
-      baseAtMs = now;
+      frameHeadingMdeg = f.headingMdeg;
+      helm.observe(f, Date.now());
+      helmSync();
     });
   });
 
@@ -378,7 +311,11 @@
   // Also listen in the capture phase on `window` so flight keys work anywhere
   // on the cockpit screen without requiring the user to click inside `.frame`
   // first, matching the TUI's screen 0 behaviour.
-  $effect(() => () => release());
+  $effect(() => () => {
+    release();
+    if (helmTimer !== null) clearInterval(helmTimer);
+    helmTimer = null;
+  });
   $effect(() => {
     const onVisibility = (): void => {
       visible = document.visibilityState === "visible";
@@ -439,14 +376,13 @@
       last = t;
       try {
         const now = Date.now();
-        const predMdeg = predictedHeadingMdeg(now);
-        const hullOffsetMdeg = frame !== null ? arcMdeg(frameHeadingMdeg, predMdeg) : 0;
+        const predMdeg = shownHeadingMdeg(now);
+        const hullOffsetMdeg = arcMdeg(frameHeadingMdeg, predMdeg);
+        // The heading ordered, while the picture is more than a degree from
+        // it: a held turn's running lead as well as a released order.
+        const ordered = helm.ordered;
         const orderedMdeg =
-          frame !== null &&
-          orderedHeadingMdeg !== null &&
-          Math.abs(arcMdeg(predMdeg, orderedHeadingMdeg)) > 1_000
-            ? orderedHeadingMdeg
-            : null;
+          ordered !== null && Math.abs(arcMdeg(predMdeg, ordered)) > 1_000 ? ordered : null;
         const rawCockpit = app.picture.cockpitData as {
           speed_cms?: unknown;
           blocked?: unknown;
@@ -460,10 +396,10 @@
           !hullStuck() &&
           rawCockpit?.blocked !== true &&
           speedCms !== 0 &&
-          frameArrivedAtMs > 0 &&
-          (livePulseStream || orderedHeadingMdeg !== null || turning !== 0 || orderedKph !== null);
+          helm.frameAt > 0 &&
+          (helm.live || helm.busy || orderedKph !== null);
         const { dxCm, dyCm } = canDeadReckon
-          ? predictedOffsetCm(speedCms, predMdeg, now - frameArrivedAtMs)
+          ? predictedOffsetCm(speedCms, predMdeg, now - helm.frameAt)
           : { dxCm: 0, dyCm: 0 };
         const targetW = hdMode ? FRAME_W_HD : FRAME_W;
         const targetH = hdMode ? FRAME_H_HD : FRAME_H;
@@ -530,64 +466,18 @@
     return () => clearInterval(timer);
   });
 
+  /** A turn key went down: the picture starts its swing and the helm orders
+   * the tap's one degree; the clock orders on ahead while the key is held. */
   function startTurn(dir: -1 | 1): void {
-    const now = Date.now();
-    if (frame !== null && !hullStuck()) {
-      const p = predictedHeadingMdeg(now);
-      turnStartAtMs = now;
-      turnTapBaseMdeg =
-        orderedHeadingMdeg !== null && Math.sign(arcMdeg(p, orderedHeadingMdeg)) === dir
-          ? orderedHeadingMdeg
-          : p;
-    }
-    turning = dir;
+    if (helm.turning === dir) return;
+    helm.start(dir, Date.now());
+    helmSync();
   }
 
-  // A held turn's order is extended while the key is down.
-  $effect(() => {
-    const dir = turning;
-    if (dir === 0) return;
-    const sendTurnOrder = (): void => {
-      const now = Date.now();
-      if (frame !== null && !hullStuck()) {
-        const p = predictedHeadingMdeg(now);
-        baseHeadingMdeg = p;
-        baseAtMs = now;
-        const deg = (((Math.round(p / 1_000 + dir * HELM_LEAD_DEG) % 360) + 360) % 360);
-        orderedHeadingMdeg = deg * 1_000;
-        orderedAtMs = now;
-        app.helm(helmLine(p / 1_000, dir));
-      } else {
-        app.helm(helmLine(heading, dir));
-      }
-    };
-    untrack(sendTurnOrder);
-    const timer = setInterval(sendTurnOrder, HELM_REPEAT_MS);
-    return () => clearInterval(timer);
-  });
-
+  /** The turn key came up: the helm orders the heading the picture shows. */
   function stopTurn(): void {
-    if (turning !== 0) {
-      const dir = turning;
-      turning = 0;
-      if (frame !== null && !hullStuck()) {
-        const now = Date.now();
-        const p = predictedHeadingMdeg(now);
-        const dt = now - turnStartAtMs;
-        const targetMdeg =
-          dt > 0 && dt < 170
-            ? wrap360Mdeg(turnTapBaseMdeg + dir * MIN_TAP_TURN_MDEG)
-            : p;
-        baseHeadingMdeg = p;
-        baseAtMs = now;
-        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
-        orderedHeadingMdeg = deg * 1_000;
-        orderedAtMs = now;
-        app.helm(helmLine(deg, 0));
-      } else {
-        app.helm(helmLine(heading, 0));
-      }
-    }
+    helm.stop(Date.now());
+    helmSync();
   }
 
   /** Let go of everything a key holds: the look's swing, and the held turn
@@ -648,19 +538,8 @@
     pendingKph = null;
     orderedKph = 0;
     app.helm(speedLine(0));
-    turning = 0;
-    if (frame !== null && !hullStuck()) {
-      const now = Date.now();
-      const p = predictedHeadingMdeg(now);
-      baseHeadingMdeg = p;
-      baseAtMs = now;
-      const deg = (((Math.round(p / 1_000) % 360) + 360) % 360);
-      orderedHeadingMdeg = deg * 1_000;
-      orderedAtMs = now;
-      app.helm(helmLine(deg, 0));
-    } else {
-      app.helm(helmLine(heading, 0));
-    }
+    helm.hold(Date.now());
+    helmSync();
   }
 
   /** A step still waiting when the view goes (the screen changed) is sent, not
@@ -949,17 +828,10 @@
         coords.normY <= 0.15
       ) {
         const now = Date.now();
-        const camMdeg = wrap360Mdeg(predictedHeadingMdeg(now) + app.picture.lookMdeg);
+        const camMdeg = wrap360Mdeg(shownHeadingMdeg(now) + app.picture.lookMdeg);
         const rel = Math.max(-1, Math.min(1, (coords.normX - 0.5) / 0.3));
-        const targetMdeg = wrap360Mdeg(camMdeg + Math.round(rel * 30_000));
-        const deg = (((Math.round(targetMdeg / 1_000) % 360) + 360) % 360);
-        if (!hullStuck()) {
-          baseHeadingMdeg = predictedHeadingMdeg(now);
-          baseAtMs = now;
-          orderedHeadingMdeg = deg * 1_000;
-          orderedAtMs = now;
-        }
-        app.helm(helmLine(deg, 0));
+        helm.steer(camMdeg + Math.round(rel * 30_000), now);
+        helmSync();
         return;
       }
       if (coords.normX >= 0.88 && coords.normY >= 0.24 && coords.normY <= 0.78) {
@@ -968,7 +840,7 @@
     }
     const rawCockpit = app.picture.cockpitData as { sight_m?: unknown } | null;
     const sightM = typeof rawCockpit?.sight_m === "number" ? rawCockpit.sight_m : 600;
-    const camDeg = (predictedHeadingMdeg(Date.now()) + app.picture.lookMdeg) / 1_000;
+    const camDeg = (shownHeadingMdeg(Date.now()) + app.picture.lookMdeg) / 1_000;
     const desig = pickCanvasContact(
       frame.contacts,
       viewKind,
@@ -1006,20 +878,14 @@
     }
     const deg = canvasClickHeadingDeg(viewKind, coords.normX, coords.normY);
     if (deg === null) return;
-    const now = Date.now();
-    if (frame !== null && !hullStuck()) {
-      baseHeadingMdeg = predictedHeadingMdeg(now);
-      baseAtMs = now;
-      orderedHeadingMdeg = deg * 1_000;
-      orderedAtMs = now;
-    }
-    app.helm(helmLine(deg, 0));
+    helm.steer(deg * 1_000, Date.now());
+    helmSync();
   }
 
   function onKeyUp(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
     const key = pictureKey(ev.key);
-    if (key?.kind === "turn" && key.dir === turning) {
+    if (key?.kind === "turn" && key.dir === helm.turning) {
       ev.preventDefault();
       stopTurn();
     }

@@ -18,7 +18,6 @@ import {
   dockOrderToInputMask,
   gateLine,
   gateWord,
-  helmLine,
   lockOrder,
   LOOK_MDEG_PER_S,
   nextLock,
@@ -81,13 +80,6 @@ describe("the look and the helm", () => {
     expect(swingLook(178_000, 1, 100)).toBe(-177_500);
     expect(swingLook(0, 1, 5_000)).toBe(45_000);
     expect(swingLook(1_000, 0, 100)).toBe(1_000);
-  });
-
-  it("orders a heading thirty degrees ahead, or where the tank points to stop", () => {
-    expect(helmLine(90, 1)).toBe("HEADING 120 QUIET");
-    expect(helmLine(10, -1)).toBe("HEADING 340 QUIET");
-    expect(helmLine(350, 1)).toBe("HEADING 20 QUIET");
-    expect(helmLine(45, 0)).toBe("HEADING 45 QUIET");
   });
 
   it("reads the keys the TUI's view reads", () => {

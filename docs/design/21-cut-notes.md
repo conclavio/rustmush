@@ -863,7 +863,9 @@ what every other seat sees) still steps a pulse at a time, and at the quiet temp
 seconds: the picture swings smoothly and the world follows up to five seconds later; a fast hull's
 picture stops at the 150° bound until the pulse lands. Whether a pilot's helm order should raise
 the tempo is doc 16's ruling to make, not this cut's. The web picture's helm
-(`web/src/lib/picture.ts`, `PictureView.svelte`) is G.4's still and has the same three faults.
+(`web/src/lib/picture.ts`, `PictureView.svelte`) was G.4's still when this was written, with two
+of the three faults (the pulse's jump and a coarse tap, no backward snap); it is ported below,
+"G.4b on the web".
 
 **Goldens.** `web/src/lib/fixtures/cockpit/cockpit_frame.json` and `view_frame.json` re-blessed
 (`TACSIM_BLESS=1`, the one new key); `field_frame.json` given the key by hand.
@@ -940,3 +942,40 @@ the new `a_steep_face_is_banded_along_its_length_not_toothed` counts 517 colour 
 7 m bank seen at a slant and 1,457 with the change switched off. Before and after frames of the
 Bluff walk were compared by eye at twelve ranges from 690 m to 100 m. **No live smoke**: how it
 reads in motion in w11term is the owner's to judge on dev1, and no deploy was made.
+
+## G.4b on the web (2026-11-09): the browser's helm is the terminal's
+
+The owner, after G.4b on dev1 ("turning is much better now"): "take a look at the same things on
+the web side, does it have the same turning issue?" It had two of the three. The web picture
+already drew a predicted heading between frames, so a held turn never snapped backwards, but:
+
+- **The pulse's jump.** The prediction was re-based on every frame, and a frame carries a whole
+  pulse of turning. The old helm run against G.4b's model arena: a pulse landing inside a turn
+  moved the picture up to 15° in one 50 ms paint at the engaged tempo and 28.5° at alert, and a
+  three-second hold ended anywhere from 90° to 117° round by where in the pulse the key went down.
+- **The coarse tap.** A press under 170 ms ordered five degrees, and one late in the pulse swung
+  the picture out as far as 30° before it came back to the five.
+
+**What landed.** `web/src/lib/helm.ts` is `mush-net-ssh/src/tui/helm.rs` in TypeScript, rule for
+rule and constant for constant: one continuous shown heading that swings from the press, a tap of
+one degree, an order every 250 ms a few degrees ahead of the picture while the key is down, the
+release ordering the heading shown, the frame's `turn_rate_mdeg_s` (read from the raw keyframe;
+measured where a frame has none), the leash, and an order dropped when the arena refuses it or
+stays silent past its grace. `PictureView.svelte` draws `helm.predicted(now)` and nothing else, and
+runs the helm's 50 ms clock only while a turn or an order stands. `picture.ts` loses `helmLine`,
+`HELM_LEAD_DEG`, `HELM_REPEAT_MS`, `MIN_TAP_TURN_MDEG` and its own turn-rate default.
+
+**The web's own.** Three things the terminal's helm has no need of: `steer`, the heading tape's
+click and the map's double-click (an order to a named heading, the picture swinging to it at the
+hull's rate); `hold`, all stop's `HEADING` at the heading shown; and a feed with no `t_ms`, read
+by heading and followed as it comes, never judged for a rate.
+
+**Verified.** `helm.test.ts` 25: every case of the Rust helm's tests with the Rust figures against
+the same pulsed model arena (a three-second hold drawn in steps of 0° to 1.5° a paint, never
+backwards, whatever the tempo and the phase of the press; a tap one line and one degree; a refused
+turn, a silent arena, a hull that cannot turn, a turn that is not the helm's), and the web's own
+(`steer`, `hold`, the clockless feed, `helmFrame`). `PictureView.test.ts`' six turn tests re-pinned
+to the new lines (a press at 045 orders 044 or 046; a hold orders 035 then 028; a release orders
+the heading shown; a press let go at once is the one line) and `picture.test.ts`' `helmLine` case
+removed: vitest whole, 84 files and 919 tests; `svelte-check` 0 errors; `vite build`. **No live
+smoke**: no browser was driven against an arena, and no deploy was made.

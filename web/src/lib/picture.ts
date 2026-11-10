@@ -7,8 +7,8 @@
 // The look is the camera's offset from the tank's heading and is the
 // viewer's alone: it rides the `picture` command and the world never hears of
 // it. Turning the tank is a `HEADING` line like any typed order, which the
-// picture's arrow keys send exactly as the SSH TUI's do (G.4): the one place
-// the cockpit tab sends an order rather than prefilling one.
+// picture's arrow keys send exactly as the SSH TUI's do (G.4b, `./helm`): the
+// one place the cockpit tab sends an order rather than prefilling one.
 //
 // Doc 21 cut G.12c binds the rest of §7.3's flight keys, the same letters the
 // TUI's screen 0 reads: `a`/`d` turn as the arrows do, `w`/`s` step the
@@ -26,20 +26,6 @@ export const LOOK_MDEG_PER_S = 45_000;
 
 /** How often a swinging look is sent again, milliseconds (10 Hz). */
 export const LOOK_STEP_MS = 100;
-
-/** How far ahead of the tank a held turn orders its heading, degrees. A
- * pulse and a half at the stock tank's turn rate; the order is extended while
- * the key is held. */
-export const HELM_LEAD_DEG = 30;
-
-/** How often a held turn's order is extended, milliseconds. */
-export const HELM_REPEAT_MS = 700;
-
-/** Default hull turn rate in millidegrees per second (30°/s, matching TUI `Helm`). */
-export const DEFAULT_TURN_RATE_MDEG_S = 30_000;
-
-/** Minimum heading nudge for a quick real-time tap of `a`/`d`, millidegrees (5°). */
-export const MIN_TAP_TURN_MDEG = 5_000;
 
 /** One full turn in millidegrees. */
 export const FULL_MDEG = 360_000;
@@ -120,19 +106,6 @@ export function wrapMdeg(mdeg: number): number {
 /** The look after `ms` more of a swing in `dir` (`-1` left, `1` right). */
 export function swingLook(lookMdeg: number, dir: -1 | 0 | 1, ms: number): number {
   return wrapMdeg(lookMdeg + (dir * LOOK_MDEG_PER_S * Math.min(ms, 1_000)) / 1_000);
-}
-
-/**
- * The helm's order: `HEADING <deg>` for a turn `dir` from `headingDeg` —
- * [`HELM_LEAD_DEG`] ahead to the left (`-1`) or right (`1`), or the heading
- * itself (`0`), which stops a turn where the tank is pointing.
- */
-export function helmLine(headingDeg: number, dir: -1 | 0 | 1): string {
-  // `QUIET` (doc 21 §7.3, 2026-10-27): the arena takes a key's order without
-  // the `Steering to …°.` a typed one is acknowledged with — a held turn
-  // sends one every 700 ms and the header shows the ordered heading.
-  const deg = (((Math.round(headingDeg + dir * HELM_LEAD_DEG) % 360) + 360) % 360);
-  return `HEADING ${deg} QUIET`;
 }
 
 /** An `ORDER` prefill's addressee: every slot, or one of slots 2–6 (slot 1 is
@@ -293,8 +266,8 @@ export function speedOutstanding(ordered: number | null, frameKph: number): orde
   return ordered !== null && Math.abs(ordered - frameKph) > SPEED_REACHED_KPH;
 }
 
-/** The `SPEED` line. `QUIET`, as `helmLine`'s: a key's order is taken without
- * the `Making … kph.` a typed one is acknowledged with (doc 21 §7.3). */
+/** The `SPEED` line. `QUIET`, as the helm's `HEADING`: a key's order is taken
+ * without the `Making … kph.` a typed one is acknowledged with (doc 21 §7.3). */
 export function speedLine(kph: number): string {
   return `SPEED ${kph} QUIET`;
 }

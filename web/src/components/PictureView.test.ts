@@ -27,8 +27,8 @@ import PictureView from "./PictureView.svelte";
 import { onlyReaches } from "./reach";
 import { decodeCockpitFrame, type CockpitFrame } from "$lib/cockpit";
 import type { GameApp } from "$lib/game.svelte";
+import { ORDER_GAP_MS } from "$lib/helm";
 import {
-  HELM_REPEAT_MS,
   LOOK_STEP_MS,
   PICTURE_PREF_KEY,
   SPEED_COALESCE_MS,
@@ -89,8 +89,8 @@ vi.mock("$lib/pixel/local", async (importOriginal) => {
   };
 });
 
-/** The fixture tank's heading, so a turn is `HEADING 15` or `75`, and a stop
- * `HEADING 45`. */
+/** The fixture tank's heading, so a tap is `HEADING 44` or `46`, a held turn
+ * swings on from 45, and a stop where nothing turned is `HEADING 45`. */
 const HEADING = 45;
 
 function mount(cockpit: CockpitFrame | null = null): {
@@ -160,33 +160,44 @@ afterEach(() => {
 });
 
 describe("PictureView mounted: a held key is let go when its release cannot be seen", () => {
-  it("orders the turn while the arrow is down, and repeats it", async () => {
+  it("orders the turn while the arrow is down, a little ahead of the picture", async () => {
     const { picture, helm, frame } = mount();
     await tick();
     expect(picture.on).toBe(true);
     await fireEvent.keyDown(frame, { key: "ArrowLeft" });
-    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"]]);
-    vi.advanceTimersByTime(HELM_REPEAT_MS);
-    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"], ["HEADING 15 QUIET"]]);
+    // The press orders the tap's one degree (doc 21 cut G.4b)…
+    expect(helm.mock.calls).toEqual([["HEADING 44 QUIET"]]);
+    // …and every gap the heading the picture will show a gap on: 2.5° swung
+    // and 7.5° ahead, then 10° swung and 7.5° ahead.
+    vi.advanceTimersByTime(ORDER_GAP_MS);
+    expect(helm.mock.calls).toEqual([["HEADING 44 QUIET"], ["HEADING 35 QUIET"]]);
+    vi.advanceTimersByTime(ORDER_GAP_MS);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 28 QUIET"]);
+    // The release orders the heading the picture shows, ten degrees round.
     await fireEvent.keyUp(frame, { key: "ArrowLeft" });
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45 QUIET"]);
-    vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
-    expect(helm.mock.calls).toHaveLength(3);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 35 QUIET"]);
+    vi.advanceTimersByTime(ORDER_GAP_MS * 20);
+    expect(helm.mock.calls).toHaveLength(4);
   });
 
   it("stops the turn when the page goes hidden, and orders nothing more", async () => {
     const { picture, helm, frame } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "ArrowRight" });
-    expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"]]);
+    vi.advanceTimersByTime(ORDER_GAP_MS * 2);
+    expect(helm.mock.calls).toEqual([
+      ["HEADING 46 QUIET"],
+      ["HEADING 55 QUIET"],
+      ["HEADING 63 QUIET"],
+    ]);
     setVisibility("hidden");
     await tick();
-    expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"], ["HEADING 45 QUIET"]]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 55 QUIET"]);
     // The release of the arrow, out of sight, changes nothing; nor do the
-    // repeats that would have run.
-    vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
+    // orders the hold would have gone on to give.
+    vi.advanceTimersByTime(ORDER_GAP_MS * 20);
     await fireEvent.keyUp(frame, { key: "ArrowRight" });
-    expect(helm.mock.calls).toHaveLength(2);
+    expect(helm.mock.calls).toHaveLength(4);
     // The picture itself is off while hidden and on again after.
     expect(picture.on).toBe(false);
     setVisibility("visible");
@@ -198,22 +209,40 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     const { helm, frame } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "ArrowLeft" });
+    vi.advanceTimersByTime(ORDER_GAP_MS * 2);
     window.dispatchEvent(new Event("blur"));
     await tick();
-    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"], ["HEADING 45 QUIET"]]);
-    vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
-    expect(helm.mock.calls).toHaveLength(2);
+    expect(helm.mock.calls).toEqual([
+      ["HEADING 44 QUIET"],
+      ["HEADING 35 QUIET"],
+      ["HEADING 28 QUIET"],
+      ["HEADING 35 QUIET"],
+    ]);
+    vi.advanceTimersByTime(ORDER_GAP_MS * 20);
+    expect(helm.mock.calls).toHaveLength(4);
   });
 
   it("lets go when torn down mid-turn, as a blur would", async () => {
     const { helm, frame, unmount } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "ArrowLeft" });
-    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"]]);
+    vi.advanceTimersByTime(ORDER_GAP_MS);
+    expect(helm.mock.calls).toEqual([["HEADING 44 QUIET"], ["HEADING 35 QUIET"]]);
     unmount();
-    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"], ["HEADING 45 QUIET"]]);
-    vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
-    expect(helm.mock.calls).toHaveLength(2);
+    // 2.5° round when it went: the stop is the nearest whole degree.
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 43 QUIET"]);
+    // The helm's clock went with the view.
+    vi.advanceTimersByTime(ORDER_GAP_MS * 20);
+    expect(helm.mock.calls).toHaveLength(3);
+  });
+
+  it("turns one degree for a press let go at once, in the one line", async () => {
+    const { helm, frame } = mount();
+    await tick();
+    await fireEvent.keyDown(frame, { key: "ArrowRight" });
+    await fireEvent.keyUp(frame, { key: "ArrowRight" });
+    vi.advanceTimersByTime(ORDER_GAP_MS * 20);
+    expect(helm.mock.calls).toEqual([["HEADING 46 QUIET"]]);
   });
 
   it("stops the look's swing when the page goes hidden", async () => {
@@ -460,11 +489,14 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     const { helm, frame } = mount(fixtureFrame());
     await tick();
     await press(frame, "a");
-    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 44 QUIET"]]);
+    vi.advanceTimersByTime(ORDER_GAP_MS * 2);
     await fireEvent.keyUp(frame, { key: "a" });
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45 QUIET"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 35 QUIET"]);
+    // `d` back from where the picture stands: its tap's degree, then the hold.
     await press(frame, "d");
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 75 QUIET"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 36 QUIET"]);
+    vi.advanceTimersByTime(ORDER_GAP_MS * 2);
     await fireEvent.keyUp(frame, { key: "d" });
     expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45 QUIET"]);
   });
@@ -644,25 +676,26 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     await settle();
     await frameTime();
     await fireEvent.keyDown(frame, { key: "d" });
-    expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 46 QUIET"]]);
 
-    // After 500 ms at 30°/s, the 16 ms rAF tick at 462 ms rendered +13_860 mdeg hull offset,
-    // and releasing at 500 ms orders the predicted 60° heading (45° + 15°).
+    // The swing is a degree in its first 200 ms, then 30°/s: the 16 ms rAF tick at 462 ms
+    // rendered +8_860 mdeg of hull offset, with the hold's order of 250 ms (55°) on the tape,
+    // and releasing at 500 ms orders the heading the picture shows (45° + 10°).
     vi.advanceTimersByTime(500);
     await tick();
     expect(renderSpy).toHaveBeenLastCalledWith(
       640,
       480,
       expect.objectContaining({
-        offsetMdeg: 13_860,
-        hullOffsetMdeg: 13_860,
-        orderedMdeg: 75_000,
+        offsetMdeg: 8_860,
+        hullOffsetMdeg: 8_860,
+        orderedMdeg: 55_000,
       }),
     );
 
-    // Releasing the key orders the predicted 60° heading, not the stale 45° keyframe heading.
+    // Releasing the key orders the shown 55° heading, not the stale 45° keyframe heading.
     await fireEvent.keyUp(frame, { key: "d" });
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 60 QUIET"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 55 QUIET"]);
 
     // Clicking the HD resolution toggle switches rendering to 1280×720.
     const hdBtn = screen.getByLabelText("HD resolution toggle");
