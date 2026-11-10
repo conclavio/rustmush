@@ -28,8 +28,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use mush_ansi::AnsiTheme;
 use mush_proto::{
-    ClientCaps, ExitRef, InputMode, OutputEvent, PanelFrameKind, RequestKind, RequestOption,
-    RespondChoice, RichText, RoomView, WhoEntry,
+    ClientCaps, ExitRef, InputMode, OutputEvent, PanelFrameKind, ProjectedActionReceipt,
+    RequestKind, RequestOption, RespondChoice, RichText, RoomView, ViewEnvelope, WhoEntry,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -62,8 +62,11 @@ use super::screen::{
 };
 use crate::line::LineBuffer;
 
-/// Scrollback ring depth (entries, pre-wrap).
-pub const SCROLLBACK_CAP: usize = 1000;
+/// Scrollback ring depth (entries, pre-wrap; matches the web client).
+pub const SCROLLBACK_CAP: usize = 5000;
+/// The `resolution.outcome` commits remembered to print a receipt once
+/// (matches the web client).
+pub const SEEN_COMMITS: usize = 1024;
 /// Input history depth (matches the web client).
 pub const TUI_HISTORY: usize = 200;
 /// Seconds an NPC "thinking" pill lives without an end frame.
@@ -322,6 +325,11 @@ pub struct TuiApp {
     backlog_cursor: Option<u64>,
     /// Bounded identities of live or recalled narrative already rendered.
     narrative_seen: std::collections::BTreeSet<u64>,
+    /// The commits of the `resolution.outcome` receipts already printed, at
+    /// most [`SEEN_COMMITS`], oldest first in `commit_order` (the web's
+    /// `#seenActionCommits`): a replayed receipt prints once.
+    seen_commits: std::collections::HashSet<String>,
+    commit_order: VecDeque<String>,
     /// The server may hold older narrative below what has been prepended.
     backlog_more: bool,
     /// A page is in flight, and when it was asked for — an aging latch, not
@@ -761,6 +769,8 @@ impl TuiApp {
             cleared: 0,
             backlog_cursor: None,
             narrative_seen: std::collections::BTreeSet::new(),
+            seen_commits: std::collections::HashSet::new(),
+            commit_order: VecDeque::new(),
             backlog_more: true,
             backlog_pending: None,
             backlog_floored: false,
@@ -1030,7 +1040,7 @@ impl TuiApp {
             .find(|s| s.id == self.active)
             .is_some_and(|s| !self.screen_available(s));
         if gone && let Some(first) = self.screens.first().map(|s| s.id) {
-            self.active = first;
+            self.set_active(first);
             self.focus = 0;
         }
     }
@@ -1153,6 +1163,47 @@ impl TuiApp {
             .find(|s| s.id == self.active)
             .or_else(|| self.screens.first())
             .expect("at least one screen")
+    }
+
+    /// Whether the channel screen is the one in front of the reader: a live
+    /// channel line delivered then is read, not unread.
+    fn looking_at_channels(&self) -> bool {
+        self.screen().name == "chan"
+    }
+
+    /// Put screen `id` in front. Leaving the channel screen marks every
+    /// channel read (the client-side unread model, `PanelStore::unread_of`):
+    /// the reader has looked at it.
+    fn set_active(&mut self, id: ScreenId) {
+        if id != self.active && self.looking_at_channels() {
+            self.panels.mark_channels_read();
+        }
+        self.active = id;
+    }
+
+    /// Whether a `resolution.outcome` view is a receipt not printed yet,
+    /// remembering its commit if so (at most [`SEEN_COMMITS`], the oldest
+    /// forgotten first). A view that is no valid receipt prints nothing, so it
+    /// is not fresh either.
+    fn fresh_receipt(&mut self, view: &ViewEnvelope) -> bool {
+        let Ok(receipt) = serde_json::from_value::<ProjectedActionReceipt>(view.data().clone())
+        else {
+            return false;
+        };
+        if !receipt.view().is_ok_and(|expected| &expected == view) {
+            return false;
+        }
+        let commit = receipt.commit().to_string();
+        if !self.seen_commits.insert(commit.clone()) {
+            return false;
+        }
+        self.commit_order.push_back(commit);
+        while self.commit_order.len() > SEEN_COMMITS {
+            if let Some(retired) = self.commit_order.pop_front() {
+                self.seen_commits.remove(&retired);
+            }
+        }
+        true
     }
 
     fn pane_ui_mut(&mut self, pane: PaneId) -> &mut PaneUi {
@@ -1375,6 +1426,17 @@ impl TuiApp {
         }
         if screen.id == QUARRY_SCREEN {
             self.quarry_asks(&mut q);
+        }
+        // The market's `on_enter` names the first pages; the pages the desk
+        // is on go instead (the first ones until a page key moves it), so
+        // leaving the market and coming back keeps the page, as on the web.
+        if screen.id == MARKET_SCREEN {
+            let pages = self.market.page_queries();
+            for (name, args) in &mut q {
+                if let Some((_, remembered)) = pages.iter().find(|(n, _)| n == name) {
+                    args.clone_from(remembered);
+                }
+            }
         }
         q
     }
@@ -2003,7 +2065,7 @@ impl TuiApp {
         {
             return Vec::new();
         }
-        self.active = COCKPIT_SCREEN;
+        self.set_active(COCKPIT_SCREEN);
         self.focus = 0;
         self.help = false;
         self.screen_queries()
@@ -2032,6 +2094,15 @@ impl TuiApp {
     }
 
     pub fn apply_event(&mut self, event: &OutputEvent) -> Vec<(String, Value)> {
+        let queries = self.apply_event_inner(event);
+        // The market's page asks, wherever an event raised them (a hello's
+        // re-hydrate, a staged reply, a receipt's re-ask): out until their
+        // keyframes answer (`MarketDesk::asks_out`).
+        self.market.asked(&queries, self.now());
+        queries
+    }
+
+    fn apply_event_inner(&mut self, event: &OutputEvent) -> Vec<(String, Value)> {
         let now = self.now();
         let mut queries = Vec::new();
         // Whether this event answers one of the app's OWN queries (16b cut
@@ -2263,6 +2334,19 @@ impl TuiApp {
                 if view.view() != "resolution.outcome" {
                     return queries;
                 }
+                // A receipt prints once (the web's `#seenActionCommits`): a
+                // replayed one, by its commit, is nothing, so it never asks
+                // the market again either.
+                if !self.fresh_receipt(view) {
+                    return queries;
+                }
+                // 17g cut C3c, as the web does it: a committed action may have
+                // moved the market's pages. While the market is the screen,
+                // ask the two pages it is on ONCE more, never while an ask of
+                // them is already out.
+                if self.active == MARKET_SCREEN && !self.market.asks_out(now) {
+                    queries.extend(self.market.page_queries());
+                }
             }
             OutputEvent::Channel {
                 channel,
@@ -2282,7 +2366,7 @@ impl TuiApp {
                     _ => format!("{}: {plain}", actor.name),
                 };
                 self.panels.channel_epoch(channel, epoch.as_deref());
-                self.panels.push_channel(
+                let fresh = self.panels.push_channel(
                     channel,
                     ChanMsg {
                         seq: *seq,
@@ -2290,6 +2374,11 @@ impl TuiApp {
                         line,
                     },
                 );
+                // The client-side unread (the web's `seq - readSeq`): a new
+                // line counts unless the channel screen is in front.
+                if fresh && !self.looking_at_channels() {
+                    self.panels.count_unread(channel);
+                }
             }
             OutputEvent::Sys(text) => {
                 // **16b cut B.3** (the TUI half of 16b cut B.1's reply ring,
@@ -2757,7 +2846,13 @@ impl TuiApp {
     /// a turn first.
     pub fn handle_key(&mut self, key: Key, r: &mut InputResult) {
         let flying = self.mode == Mode::Nav;
+        let asked = r.queries.len();
         self.handle_key_inner(key, r);
+        // The market's page asks a key raised (entering the screen, `r`, a
+        // page key): out until their keyframes answer.
+        let now = self.now();
+        self.market
+            .asked(r.queries.get(asked..).unwrap_or(&[]), now);
         if flying
             && self.mode == Mode::Input
             && self.pixel.is_active()
@@ -3786,7 +3881,7 @@ impl TuiApp {
             return;
         }
         if self.active != id {
-            self.active = id;
+            self.set_active(id);
             self.focus = 0;
             self.help = false;
             // Entering the cockpit while its ground is dark asks for the map
@@ -3797,8 +3892,8 @@ impl TuiApp {
             let queries = self.screen_queries();
             let now = self.now();
             self.note_map_ask(&queries, now);
-            // 17g cut C3b: entering the market asks both first pages; the desk
-            // remembers which pages it is on.
+            // 17g cut C3b: entering the market asks the two pages the desk is on
+            // (`screen_queries`), and the desk notes them.
             self.market.note_asks(&queries);
             r.queries.extend(queries);
         }
@@ -4291,7 +4386,9 @@ impl TuiApp {
                 None => loading(),
             },
             PaneContent::Channels { ic } => match self.panels.get("comsys") {
-                Some(data) => render_channels_rows(data, &ctx, ic),
+                Some(data) => {
+                    render_channels_rows(data, &ctx, ic, &|name| self.panels.unread_of(name))
+                }
                 None => loading(),
             },
             PaneContent::Backlog => {
@@ -4806,18 +4903,14 @@ impl TuiApp {
     }
 
     fn draw_tabs(&self, frame: &mut Frame<'_>, area: Rect, now: i64) {
-        let comsys_unread: u64 = self
-            .panels
-            .get("comsys")
-            .and_then(|d| d.get("channels"))
-            .and_then(Value::as_array)
-            .map(|chans| {
-                chans
-                    .iter()
-                    .filter_map(|c| c.get("unread").and_then(Value::as_u64))
-                    .sum()
-            })
-            .unwrap_or(0);
+        // The client-side count (`PanelStore::unread_of`), not the server's
+        // `unread`, whose cursor advances on live delivery; nothing while the
+        // channel screen is in front, since the reader is looking at it.
+        let comsys_unread = if self.looking_at_channels() {
+            0
+        } else {
+            self.panels.total_unread()
+        };
         let tabs: Vec<(u8, &str, usize)> = self
             .available_screens()
             .map(|s| {
@@ -6145,6 +6238,70 @@ mod tests {
         for name in ["sheet", "mail", "chan", "chart", "quarry", "market"] {
             assert!(!tabs.contains(name), "{name} in {tabs:?}");
         }
+    }
+
+    /// The channel badge is client-side, as the web counts it: the server's
+    /// `unread` seeds a channel the first time a keyframe lists it (its
+    /// cursor advances on live delivery, so it is almost always 0 for a
+    /// connected session); after that the live lines delivered while the
+    /// channel screen is not in front count, a replayed one does not, and
+    /// looking at the channel screen clears them.
+    #[test]
+    fn the_channel_badge_counts_live_lines_until_the_channel_screen_is_looked_at() {
+        let line = |seq: u64| OutputEvent::Channel {
+            channel: SmolStr::new_static("Public"),
+            epoch: None,
+            seq,
+            actor: ObjRef::new("#9", "Zoe"),
+            title: None,
+            kind: NarrativeKind::Say,
+            text: RichText::plain("hello"),
+            ts: 0,
+        };
+        let tabs = |app: &mut TuiApp| {
+            let text = super::super::frame_text(app, 140, 34);
+            text.lines().next().unwrap().to_string()
+        };
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("comsys"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({ "channels": [
+                { "name": "Public", "alias": "pub", "unread": 1 },
+            ] }),
+        });
+        app.apply_event(&line(10));
+        app.apply_event(&line(11));
+        app.apply_event(&line(11));
+        let strip = tabs(&mut app);
+        assert!(strip.contains("4 chan 3"), "{strip:?}");
+        // A re-hydrating keyframe keeps the client-side count.
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("comsys"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({ "channels": [
+                { "name": "Public", "alias": "pub", "unread": 0 },
+            ] }),
+        });
+        assert_eq!(app.panels.unread_of("public"), 3);
+        // In front of the reader the badge is gone, the row still says which
+        // channel the lines landed on, and a line arriving now is read.
+        app.feed_input(b"4");
+        let strip = tabs(&mut app);
+        assert!(!strip.contains("chan 3"), "{strip:?}");
+        app.apply_event(&line(12));
+        assert_eq!(app.panels.unread_of("Public"), 3);
+        let text = super::super::frame_text(&mut app, 140, 34);
+        assert!(text.contains("Public 3"), "{text}");
+        // Leaving the screen marks it read.
+        app.feed_input(b"1");
+        assert_eq!(app.panels.total_unread(), 0);
+        let strip = tabs(&mut app);
+        assert!(strip.contains("4 chan "), "{strip:?}");
+        assert!(!strip.contains("4 chan 3"), "{strip:?}");
+        app.apply_event(&line(13));
+        let strip = tabs(&mut app);
+        assert!(strip.contains("4 chan 1"), "{strip:?}");
     }
 
     fn page_notice() -> OutputEvent {
@@ -10346,6 +10503,126 @@ mod tests {
             app.market.form_lines().map(|(title, _)| title).as_deref(),
             Some("Wait"),
             "the offer is open again"
+        );
+    }
+
+    /// A committed action's receipt (`resolution.outcome`), `commit` its
+    /// token: `Brace committed.` on the toy status id.
+    fn receipt(commit: &str) -> OutputEvent {
+        use mush_proto::{ActionStatusId, ProjectedActionResult};
+        let status =
+            ActionStatusId::new("k5:toy:brace:0000000000000007:01010101010101010101010101010101")
+                .expect("a status id");
+        let result = ProjectedActionResult::new("brace", "Brace committed.", serde_json::json!({}))
+            .expect("a result");
+        OutputEvent::View(
+            ProjectedActionReceipt::new(status, commit, Some(result))
+                .expect("a receipt")
+                .view()
+                .expect("its view"),
+        )
+    }
+
+    /// An empty `mind.holdings` keyframe of the owner section.
+    fn holdings_keyframe() -> OutputEvent {
+        OutputEvent::Panel {
+            feed: SmolStr::new_static("mind.holdings"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": { "id": "mind.holdings", "version": 1 },
+                "open": true, "notice": null, "section": "owner", "rows": [], "after": null
+            }),
+        }
+    }
+
+    /// The web's receipt rules (`#routeView`): a receipt is one line, line
+    /// mode's `{summary} Transaction: {status}`, printed once by its commit;
+    /// a fresh one re-asks the market's two pages while the market is the
+    /// screen, never while an ask of them is out, and a replayed one asks
+    /// nothing.
+    #[test]
+    fn a_receipt_prints_once_and_re_asks_the_market_once() {
+        let line = "Brace committed. Transaction: \
+                    k5:toy:brace:0000000000000007:01010101010101010101010101010101";
+        let bodies = |app: &TuiApp| -> Vec<String> {
+            app.scrollback
+                .iter()
+                .map(|e| e.body.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        let count = |app: &TuiApp| bodies(app).iter().filter(|b| *b == line).count();
+        let pages = |q: &[(String, Value)]| {
+            q.iter()
+                .filter(|(n, _)| n == MARKET_FEED || n == HOLDINGS_FEED)
+                .count()
+        };
+        let mut app = app();
+        // Off the market: printed, nothing asked.
+        let q = app.apply_event(&receipt("0101010101010101010101010101aaaa"));
+        assert_eq!(pages(&q), 0);
+        assert_eq!(count(&app), 1);
+        assert!(
+            !bodies(&app).iter().any(|b| b.starts_with("Transaction:")),
+            "one line, not two"
+        );
+        // On the market with its pages answered: a fresh receipt asks both.
+        let r = app.feed_input(b"\x1bm");
+        assert_eq!(pages(&r.queries), 2, "entering asks the pages");
+        assert_eq!(app.active_screen(), MARKET_SCREEN);
+        app.apply_event(&c3b_market());
+        app.apply_event(&holdings_keyframe());
+        let q = app.apply_event(&receipt("0202020202020202020202020202bbbb"));
+        assert_eq!(pages(&q), 2, "{q:?}");
+        // A second fresh receipt while those asks are out prints, asks nothing.
+        let q = app.apply_event(&receipt("0303030303030303030303030303cccc"));
+        assert_eq!(pages(&q), 0, "{q:?}");
+        assert_eq!(count(&app), 3);
+        // Answered, a replay of a receipt already printed is nothing at all.
+        app.apply_event(&c3b_market());
+        app.apply_event(&holdings_keyframe());
+        let q = app.apply_event(&receipt("0202020202020202020202020202bbbb"));
+        assert!(q.is_empty(), "{q:?}");
+        assert_eq!(count(&app), 3);
+    }
+
+    /// Leaving the market and coming back keeps the page it was on, as the
+    /// web's desk does; `[` still goes back to the first.
+    #[test]
+    fn re_entering_the_market_keeps_its_page() {
+        let mut app = app();
+        let _ = app.feed_input(b"\x1bm");
+        let mut paged = c3b_market();
+        if let OutputEvent::Panel { data, .. } = &mut paged {
+            data["after"] = "0a1b2c3d".into();
+        }
+        app.apply_event(&paged);
+        let r = app.feed_input(b"]");
+        assert_eq!(
+            r.queries,
+            [(
+                MARKET_FEED.to_string(),
+                serde_json::json!({ "after": "0a1b2c3d" })
+            )]
+        );
+        let _ = app.feed_input(b"1");
+        let r = app.feed_input(b"\x1bm");
+        let listings: Vec<_> = r.queries.iter().filter(|(n, _)| n == MARKET_FEED).collect();
+        assert_eq!(
+            listings,
+            [&(
+                MARKET_FEED.to_string(),
+                serde_json::json!({ "after": "0a1b2c3d" })
+            )],
+            "{:?}",
+            r.queries
+        );
+        let r = app.feed_input(b"[");
+        assert_eq!(
+            r.queries,
+            [(
+                MARKET_FEED.to_string(),
+                serde_json::json!({ "after": null })
+            )]
         );
     }
 

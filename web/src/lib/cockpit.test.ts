@@ -447,6 +447,23 @@ describe("doc 32 cut CF.0: relation and party", () => {
       // Not one of the five: the old rule's reading of class and friendly.
       ["hostile", "G", "hostile", "x"],
     ]);
+    // A contact that reads dead is a wreck to the canvas whatever its relation,
+    // and keeps its glyph; a frame that does not say (`null`) changes nothing.
+    const dead = row(
+      ["own", "hostile", "unknown"].map((relation, i) => ({
+        designator: `D${String.fromCharCode(65 + i)}`,
+        class: "g",
+        friendly: false,
+        relation,
+        party: "g",
+        reads_dead: true,
+      })),
+    ).map((c) => [contactKind(c), contactGlyph(c)]);
+    expect(dead).toEqual([
+      ["wreck", "+"],
+      ["wreck", "x"],
+      ["wreck", "?"],
+    ]);
     // A server before frame 9: no relation, no party.
     const old = row([
       { designator: "RB", class: "red", friendly: true },

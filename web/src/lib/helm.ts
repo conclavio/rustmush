@@ -32,8 +32,21 @@
 //
 // Everything is whole millidegrees and whole milliseconds, divided as the
 // TUI's integers are, so the same presses give the same lines on both.
+//
+// The throttle (`Throttle`, cut G.12b) is that file's second half, here as
+// there: `w` and `s` step the ordered speed, the first step sent at once
+// and the steps inside `SPEED_COALESCE_MS` of an order coalesced.
 
-import { arcMdeg, wrap360Mdeg } from "./picture";
+import {
+  DEFAULT_MAX_SPEED_KPH,
+  DEFAULT_REVERSE_KPH,
+  SPEED_COALESCE_MS,
+  SPEED_REACHED_KPH,
+  arcMdeg,
+  speedLine,
+  steppedSpeed,
+  wrap360Mdeg,
+} from "./picture";
 
 /** The rate assumed until a frame carries one or a turn is measured: the
  * stock tank's, 30°/s. */
@@ -189,6 +202,12 @@ export class Helm {
   /** When the last frame arrived, or `0` before any. */
   get frameAt(): number {
     return this.#seen?.at ?? 0;
+  }
+
+  /** The longest the picture carries the tank on from a frame, milliseconds:
+   * a pulse and a half, as the TUI's dead reckoning. */
+  get reckonCapMs(): number {
+    return this.#tempoMs + div(this.#tempoMs, 2);
   }
 
   /** Whether a turn or an order stands: the helm's clock (`tick`) is wanted. */
@@ -406,13 +425,6 @@ export class Helm {
     this.#order(headingMdeg, now, true);
   }
 
-  /** Hold the heading the picture shows (all stop): a held turn ends, and a
-   * heading ordered and not yet reached is ordered away. */
-  hold(now: number): void {
-    const stands = this.predicted(now);
-    if (stands !== null) this.steer(stands, now);
-  }
-
   /** While a turn is held, order on ahead of the picture every
    * `ORDER_GAP_MS`. A turn or a released order no frame has spoken to for a
    * second past its pulse was not taken: it is dropped, and the picture goes
@@ -450,6 +462,133 @@ export class Helm {
   }
 
   /** The `HEADING` lines to send, oldest first. */
+  takeOrders(): string[] {
+    const out = this.#orders;
+    this.#orders = [];
+    return out;
+  }
+}
+
+// -- the throttle (doc 21 section 7.3, cut G.12b) -------------------------------
+
+/** What the throttle reads of a cockpit frame. */
+export interface ThrottleFrame {
+  /** The frame's speed, kph (astern is negative). */
+  speedKph: number;
+  /** The ceiling ahead, or `null` on a frame that names none. */
+  maxKph: number | null;
+  /** The ceiling astern, either sign, or `null` on a frame that names none. */
+  reverseKph: number | null;
+  /** A wreck or an immobile hull: it will never reach an order. */
+  stuck: boolean;
+}
+
+/**
+ * The throttle: `mush-net-ssh/src/tui/helm.rs`'s `Throttle` in the browser.
+ * `w` and `s` step the ordered speed by a tenth of the hull's top speed (at
+ * least 5 kph), through zero into reverse and clamped at either ceiling, each
+ * step a `SPEED <kph> QUIET` line.
+ *
+ * A step is taken from the predicted speed: the last order while the frame
+ * has not reached it, else the frame's own. The first step is sent at once;
+ * steps inside `SPEED_COALESCE_MS` of an order coalesce, the last value going
+ * when the gap opens, so a key held down sends a few orders, not one a repeat.
+ */
+export class Throttle {
+  /** The speed last ordered and not yet reached, kph. */
+  #ordered: number | null = null;
+  /** A step taken inside the gap, waiting to go out. */
+  #pending: number | null = null;
+  /** When the last order went out. */
+  #sentAt: number | null = null;
+  /** The frame's speed, kph. */
+  #seen: number | null = null;
+  #max = DEFAULT_MAX_SPEED_KPH;
+  /** The ceiling astern, kph (positive). */
+  #reverse = DEFAULT_REVERSE_KPH;
+  #orders: string[] = [];
+
+  /** Read the held cockpit frame: its speed and its ceilings. An order the
+   * frame has reached is closed; so is any order on a hull that is a wreck or
+   * immobile, which will never reach it. */
+  observe(f: ThrottleFrame): void {
+    if (f.maxKph !== null) this.#max = Math.max(0, f.maxKph);
+    if (f.reverseKph !== null) this.#reverse = Math.abs(f.reverseKph);
+    this.#seen = f.speedKph;
+    if (
+      f.stuck ||
+      (this.#ordered !== null && Math.abs(this.#ordered - f.speedKph) <= SPEED_REACHED_KPH)
+    ) {
+      this.#ordered = null;
+    }
+  }
+
+  /** The speed ordered and not yet reached (a step still waiting counts), or
+   * `null`: what the header shows beside the frame's. */
+  get ordered(): number | null {
+    return this.#pending ?? this.#ordered;
+  }
+
+  /** The ceiling ahead, kph. */
+  get max(): number {
+    return this.#max;
+  }
+
+  /** The ceiling astern, kph (positive). */
+  get reverse(): number {
+    return this.#reverse;
+  }
+
+  /** The speed the next step is taken from. */
+  predicted(): number {
+    return this.ordered ?? this.#seen ?? 0;
+  }
+
+  /** One step `dir` from the predicted speed. */
+  bump(dir: -1 | 1, now: number): void {
+    this.#pending = steppedSpeed(this.predicted(), dir, this.#max, this.#reverse);
+    this.tick(now);
+  }
+
+  /** Order `kph` outright, clamped to the ceilings: the drag on the picture's
+   * speed bar, which the terminal has no pointer for. */
+  set(kph: number, now: number): void {
+    this.#pending = clamp(Math.round(kph), [-this.#reverse, this.#max]);
+    this.tick(now);
+  }
+
+  /** All stop: `SPEED 0` at once, whatever the gap. */
+  stop(now: number): void {
+    this.#pending = 0;
+    this.flush(now);
+  }
+
+  /** Send a step still waiting, whatever the gap: the view is going. */
+  flush(now: number): void {
+    this.#sentAt = null;
+    this.tick(now);
+  }
+
+  /** Send the waiting step once the gap since the last order has passed. */
+  tick(now: number): void {
+    const want = this.#pending;
+    if (want === null) return;
+    if (this.#sentAt !== null && msBetween(this.#sentAt, now) < SPEED_COALESCE_MS) return;
+    this.#pending = null;
+    this.#sentAt = now;
+    this.#ordered = want;
+    this.#orders.push(speedLine(want));
+  }
+
+  /** Milliseconds until a waiting step may go (`0` when it is due), or `null`
+   * with none waiting: when the view should run `tick` again. */
+  dueIn(now: number): number | null {
+    if (this.#pending === null) return null;
+    if (this.#sentAt === null) return 0;
+    return Math.max(0, SPEED_COALESCE_MS - msBetween(this.#sentAt, now));
+  }
+
+  /** The `SPEED` lines to send, oldest first. */
   takeOrders(): string[] {
     const out = this.#orders;
     this.#orders = [];

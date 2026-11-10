@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ActionRequestsStore } from "./action-requests.svelte";
+import { ActionRequestsStore, MAX_ATTEMPTS } from "./action-requests.svelte";
 import type { LegalActionResponse } from "../proto";
 import type { LegalAction } from "./actions.svelte";
 const reference = `k5:market:purchase:0000000000000000:${"a".repeat(32)}`;
@@ -23,12 +23,13 @@ describe("uncertain action custody in the controls", () => {
       }
     }
   });
-  it("retains unknown custody on timeout, caps64 entries and discards late replies after context reset", async () => {
+  it("retains unknown custody on timeout, caps the entries at the TUI's sixteen and discards late replies after context reset", async () => {
     const request = vi.fn().mockRejectedValue(new Error("No completion"));
     const store = new ActionRequestsStore(request);
-    for (let i = 1; i <= 65; i++) await store.submit(action(i), {});
-    expect(request).toHaveBeenCalledTimes(64);
-    expect(Object.keys(store.entries)).toHaveLength(64);
+    for (let i = 1; i <= MAX_ATTEMPTS + 1; i++) await store.submit(action(i), {});
+    expect(MAX_ATTEMPTS).toBe(16);
+    expect(request).toHaveBeenCalledTimes(MAX_ATTEMPTS);
+    expect(Object.keys(store.entries)).toHaveLength(MAX_ATTEMPTS);
     expect(store.notice).toContain("unresolved");
     let finish!: (value: LegalActionResponse) => void;
     const delayed = new ActionRequestsStore(() => new Promise(resolve => { finish = resolve; }));

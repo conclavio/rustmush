@@ -42,11 +42,9 @@ import { SKY_CHART_FEED } from "./chart";
 import { ChartStore } from "./stores/chart.svelte";
 import { PictureStore } from "./stores/picture.svelte";
 import {
-  pictureCommand,
   SPACE_COCKPIT_FEED,
   SPACE_DOCKING_FEED,
   SPACE_HOLOTANK_FEED,
-  type PictureKind,
 } from "./picture";
 import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
 import { QuarryStore } from "./stores/quarry.svelte";
@@ -358,14 +356,10 @@ export class GameApp {
       onStatus: (s) => {
         this.session.status = s;
         if (s !== "connected") this.#clearMinds();
-        // Doc 21 cut G.3c: the gateway's picture is per connection, so a
-        // reconnect asks for it again; while away, nothing is shown.
-        if (s === "connected" && this.picture.on) {
-          this.picture.sentKind = this.picture.kind;
-          this.client.send(pictureCommand(true, this.picture.lookMdeg, this.picture.kind));
-        } else if (s !== "connected") {
-          this.picture.clear();
-        }
+        // The picture is drawn here from the feeds (doc 21 cut G.8), so a
+        // reconnect asks the gateway for nothing; the space feeds the old
+        // connection carried go with it.
+        if (s !== "connected") this.picture.clear();
         if (s === "closed") {
           // A clean close never reconnects on its own: nothing will answer
           // the heal's asks, so it stops with the socket (16b cut B.2).
@@ -381,7 +375,6 @@ export class GameApp {
         // worth a line. The client is still retrying.
         this.#localNotice(reason);
       },
-      onBinary: (data) => this.picture.receive(data),
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
         // attach; fresh Room output follows and the hello-pass re-requested
@@ -2066,29 +2059,6 @@ export class GameApp {
   }
 
   // -- input --------------------------------------------------------------
-
-  /** Ask for the cockpit's picture, at a look, or stop it (doc 21 cut
-   * G.3c). The look changes by asking again; so (doc 21 cut G.12c) does the
-   * camera, `kind` — the store's own when not given, so a look asked for
-   * while the overhead is up stays the overhead.
-   *
-   * A camera not given is read, never written back: the picture's view stops
-   * the picture from an effect's teardown, where Svelte hands back the
-   * store's value from BEFORE the change that woke it, and writing that back
-   * undid the `v` that had just chosen the overhead. */
-  setPicture(on: boolean, lookMdeg: number, kind?: PictureKind): void {
-    if (kind !== undefined) this.picture.kind = kind;
-    const camera = this.picture.kind;
-    const changed =
-      on !== this.picture.on || lookMdeg !== this.picture.lookMdeg || camera !== this.picture.sentKind;
-    this.picture.on = on;
-    this.picture.lookMdeg = lookMdeg;
-    if (!on) this.picture.clear();
-    if (changed) {
-      this.picture.sentKind = camera;
-      this.client.send(pictureCommand(on, lookMdeg, camera));
-    }
-  }
 
   /** An order from the picture's keys (doc 21 cuts G.3c, G.12c): the
    * `HEADING` of a turn, and the `SPEED`, `FIRE` and `LOCK` lines of §7.3's

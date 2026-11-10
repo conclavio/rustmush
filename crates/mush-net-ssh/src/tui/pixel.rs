@@ -57,8 +57,9 @@
 //! same cockpit. The flight keys ([`PixelView::key`]) send the lines a pilot
 //! would type (`HEADING`, `SPEED`, `FIRE HOLD`/`FIRE FREE`, `FIRE ALL`,
 //! `LOCK`); the digits, the chat and mode keys and the palette pass to the
-//! app as on every screen. `v` swaps the first-person camera for the
-//! overhead ([`OverheadPicture`]), same clock and size. `^G` stays for the
+//! app as on every screen. `v` cycles the camera, first person to the
+//! overhead ([`OverheadPicture`]) to the 2.5D view ([`Iso25DPicture`]) and
+//! back, same clock and size. `^G` stays for the
 //! chart's, the doll's and the replay's pictures.
 
 use std::collections::VecDeque;
@@ -507,10 +508,19 @@ pub struct PixelView {
     glass: bool,
     /// The platform's ECM jamming pod state (`Some(true)` on, `Some(false)` off, `None` no pod).
     ecm: Option<bool>,
-    /// Standing auto-target rule (`LOCK nearest WHEN nolock`) armed by `l`.
+    /// Whether a lock rule stands (the auto-target `l` arms as `LOCK nearest
+    /// WHEN nolock`): the frame's `rules` when it carries them, read off a new
+    /// frame only, and `l`'s flip assumed until then — `weapons_free`'s idiom.
     auto_lock_armed: bool,
-    /// Standing auto-fire rule (`FIRE ALL WHEN odds >= 60`) armed by `F`.
+    /// Whether a fire rule stands (the auto-fire `F` arms as `FIRE ALL WHEN
+    /// odds >= 60`), by the same idiom.
     auto_fire_armed: bool,
+    /// The slot the held frame's `rules` shows holding the first lock rule:
+    /// what `l` removes, so it never removes another rule.
+    lock_rule_slot: Option<u8>,
+    /// The slots the held frame's `rules` shows holding fire rules, in slot
+    /// order: what `F` removes (a hold rule is not auto-fire, and stays).
+    fire_rule_slots: Vec<u8>,
     /// Weapon IDs in the held cockpit frame's slot order (`Shift+1`..`Shift+4`
     /// -> `!`, `@`, `#`, `$`).
     weapon_ids: Vec<String>,
@@ -609,6 +619,8 @@ impl PixelView {
             ecm: None,
             auto_lock_armed: false,
             auto_fire_armed: false,
+            lock_rule_slot: None,
+            fire_rule_slots: Vec::new(),
             weapon_ids: Vec::new(),
             frame_arrived_at: None,
             docking_session: None,
@@ -1015,9 +1027,10 @@ impl PixelView {
     }
 
     /// **Read the held cockpit frame** (G.12b): the helm's and the throttle's
-    /// truth, the lock cycle's contacts and lock, and the master gate — the
-    /// gate only off a new frame (by its arena time), so `f`'s flip stands
-    /// until the sim has answered it.
+    /// truth, the lock cycle's contacts and lock, and the master gate and the
+    /// standing lock and fire rules — those only off a new frame (by its arena
+    /// time), so `f`'s, `l`'s and `F`'s flips stand until the sim has answered
+    /// them.
     pub fn observe(&mut self, cockpit: &Value, now: Instant) {
         self.detachment = cockpit.get("detachment").map(super::detachment::decode);
         self.helm.observe(cockpit, now);
@@ -1055,6 +1068,20 @@ impl PixelView {
                 .get("weapons_free")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            // The standing rules, the same way: a frame without `rules` says
+            // nothing about them, so `l`'s and `F`'s flips stand.
+            if let Some(slots) = super::render::rule_slots(cockpit) {
+                let held = |want: &'static str| {
+                    (1u8..)
+                        .zip(slots)
+                        .filter(move |(_, action)| *action == Some(want))
+                        .map(|(slot, _)| slot)
+                };
+                self.lock_rule_slot = held("lock").next();
+                self.fire_rule_slots = held("fire").collect();
+                self.auto_lock_armed = self.lock_rule_slot.is_some();
+                self.auto_fire_armed = !self.fire_rule_slots.is_empty();
+            }
         }
     }
 
@@ -1310,10 +1337,17 @@ impl PixelView {
     /// - `w` / `s` step the **speed** ([`Throttle`]), `x` is all stop.
     /// - `q` / `e` (and `,` / `.`) swing the **look**, toggled; `c` recentres
     ///   it; space steadies the turn and the look (the speed stands).
-    /// - `v` swaps the camera: first person, overhead ([`CockpitCamera`]).
+    /// - `v` cycles the camera: first person, overhead, 2.5D
+    ///   ([`CockpitCamera`]).
     /// - `f` sends `FIRE HOLD` or `FIRE FREE` by the frame's `weapons_free`
-    ///   (missing reads free), `g` the volley `FIRE ALL`, `t` / `T` lock the
-    ///   next / previous contact ([`lock_order`]).
+    ///   (missing reads free), the flip assumed until the next frame says;
+    ///   `g` the volley `FIRE ALL`, `t` / `T` lock the next / previous
+    ///   contact ([`lock_order`]).
+    /// - `l` arms the auto-target rule (`LOCK nearest WHEN nolock`) or
+    ///   removes the slot the frame's `rules` shows holding a lock rule; `F`
+    ///   arms auto-fire (`FIRE ALL WHEN odds >= 60`, the gate freed first) or
+    ///   removes the frame's fire-rule slots. Whether either is armed is the
+    ///   frame's word, the press's flip assumed until the next frame says.
     /// - `F1` … `F6` prefill `ORDER ALL ` / `ORDER 2 ` … `ORDER 6 `.
     /// - `r` and `u` are the load experiment's switches, staff only.
     ///
@@ -1623,10 +1657,19 @@ impl PixelView {
                     self.ecm = Some(!on);
                 }
             }
+            // The standing rules: `l` and `F` remove the slots the frame shows
+            // holding them, by number, never a guessed slot. An arming still in
+            // flight (pressed again before a frame shows it) has no slot yet:
+            // `l` then sends nothing, and the next frame shows the rule armed
+            // for the next press; `F` sends `FIRE ALL OFF`, the one disarm
+            // that reaches an arming not yet given a slot.
             Key::Char('l') => {
                 if self.auto_lock_armed {
                     self.auto_lock_armed = false;
-                    self.orders.push("MIND RULE 1 OFF".to_string());
+                    // Taken: once sent, that slot is no longer the rule's.
+                    if let Some(slot) = self.lock_rule_slot.take() {
+                        self.orders.push(format!("MIND RULE {slot} OFF"));
+                    }
                 } else {
                     self.auto_lock_armed = true;
                     self.orders.push("LOCK nearest WHEN nolock".to_string());
@@ -1635,7 +1678,12 @@ impl PixelView {
             Key::Char('F') => {
                 if self.auto_fire_armed {
                     self.auto_fire_armed = false;
-                    self.orders.push("FIRE ALL OFF".to_string());
+                    if self.fire_rule_slots.is_empty() {
+                        self.orders.push("FIRE ALL OFF".to_string());
+                    }
+                    for slot in std::mem::take(&mut self.fire_rule_slots) {
+                        self.orders.push(format!("MIND RULE {slot} OFF"));
+                    }
                 } else {
                     self.auto_fire_armed = true;
                     if !self.weapons_free {
@@ -2159,7 +2207,7 @@ impl PixelView {
                 self.weapons_free,
             )
         } else {
-            "No cockpit frame held: take a seat in the arena.".to_string()
+            super::render::NOT_IN_A_COCKPIT.to_string()
         };
         (top, bottom)
     }
@@ -3301,6 +3349,73 @@ mod tests {
         assert_eq!(held.take_orders(), ["FIRE FREE"]);
     }
 
+    /// `l` and `F` read whether their rules stand off the frame's `rules`
+    /// (a new frame only, the press's flip assumed until then, as `f`), and
+    /// their `OFF` removes the slots the frame shows holding them: the lock
+    /// rule wherever it sits, never a guessed slot 1, and the fire rules
+    /// alone, leaving a hold rule standing. A frame without `rules` says
+    /// nothing, and the flips stand.
+    #[test]
+    fn standing_rules_follow_the_frame_and_remove_their_own_slots() {
+        let rules = |t_ms: i64, rows: Value| {
+            move |c: &mut Value| {
+                c["t_ms"] = t_ms.into();
+                c["rules"] = rows;
+            }
+        };
+        let rows = serde_json::json!([
+            { "slot": 1, "rule": { "action": "hold_fire" } },
+            { "slot": 2, "rule": { "action": "fire" } },
+            { "slot": 3, "rule": { "action": "lock" } },
+            { "slot": 4, "rule": { "action": "fire" } },
+            { "slot": 4, "rule": { "action": "lock" } },
+        ]);
+        let (mut v, cockpit, t0) = flying(rules(1_000, rows));
+        v.key(Key::Char('l'), t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(
+            v.take_orders(),
+            ["MIND RULE 3 OFF", "MIND RULE 2 OFF", "MIND RULE 4 OFF"]
+        );
+        // Pressed again inside the pulse: the flips stand, so both arm.
+        v.key(Key::Char('l'), t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(
+            v.take_orders(),
+            ["LOCK nearest WHEN nolock", "FIRE ALL WHEN odds >= 60"]
+        );
+        // And again before a frame shows the armings: `l` has no slot to
+        // name; `F`'s blanket `OFF` reaches the arming still in flight.
+        v.key(Key::Char('l'), t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(v.take_orders(), ["FIRE ALL OFF"]);
+        // The same frame again changes nothing; a new one is the truth.
+        v.observe(&cockpit, t0);
+        v.key(Key::Char('l'), t0);
+        assert_eq!(v.take_orders(), ["LOCK nearest WHEN nolock"]);
+        let mut next = cockpit.clone();
+        rules(
+            2_000,
+            serde_json::json!([{ "slot": 5, "rule": { "action": "lock" } }]),
+        )(&mut next);
+        v.observe(&next, t0);
+        v.key(Key::Char('l'), t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(
+            v.take_orders(),
+            ["MIND RULE 5 OFF", "FIRE ALL WHEN odds >= 60"]
+        );
+        // A frame without `rules` leaves the flips standing.
+        let mut bare = next.clone();
+        bare["t_ms"] = 3_000.into();
+        if let Some(frame) = bare.as_object_mut() {
+            frame.remove("rules");
+        }
+        v.observe(&bare, t0);
+        v.key(Key::Char('F'), t0);
+        assert_eq!(v.take_orders(), ["FIRE ALL OFF"]);
+    }
+
     /// **16c Q-PT1**: a range frame puts `RANGE` on the HUD's top line beside
     /// the gate; a skirmish's frame, or one without the key, does not.
     #[test]
@@ -3583,16 +3698,20 @@ mod tests {
         v.key(Key::Char('m'), t0);
         assert_eq!(v.take_orders(), ["EMCON off"]);
 
-        // `l` toggles auto-target rule; `F` toggles auto-fire rule.
+        // `l` toggles auto-target rule; `F` toggles auto-fire rule. The
+        // fixture's frame holds a fire rule in slot 1 and no lock rule, so
+        // `l` arms and `F` removes that slot; pressed again before a frame,
+        // `l` has no slot to name and `F` arms (the full matrix is
+        // `standing_rules_follow_the_frame_and_remove_their_own_slots`).
         v.key(Key::Char('l'), t0);
         v.key(Key::Char('F'), t0);
         assert_eq!(
             v.take_orders(),
-            ["LOCK nearest WHEN nolock", "FIRE ALL WHEN odds >= 60"]
+            ["LOCK nearest WHEN nolock", "MIND RULE 1 OFF"]
         );
         v.key(Key::Char('l'), t0);
         v.key(Key::Char('F'), t0);
-        assert_eq!(v.take_orders(), ["MIND RULE 1 OFF", "FIRE ALL OFF"]);
+        assert_eq!(v.take_orders(), ["FIRE ALL WHEN odds >= 60"]);
 
         // `y` and `N` send detachment WILCO and NEGATIVE directly.
         v.key(Key::Char('y'), t0);

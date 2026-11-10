@@ -120,6 +120,25 @@ impl Detachment {
             .map(|member| member.order_prefill.clone())
     }
 
+    /// The recipient's current order, the web's words: `Order from Aster:
+    /// hold` and `Response: not acknowledged` (or `WILCO` / `NEGATIVE`);
+    /// nothing without one. The picture's panel prints these above the roster.
+    pub fn order_lines(&self) -> Vec<String> {
+        let Some(order) = &self.my_order else {
+            return Vec::new();
+        };
+        vec![
+            format!("Order from {}: {}", order.from, order.objective),
+            format!(
+                "Response: {}",
+                order
+                    .response
+                    .as_ref()
+                    .map_or_else(|| "not acknowledged".into(), |r| r.to_uppercase())
+            ),
+        ]
+    }
+
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
             "Leader: {}",
@@ -141,16 +160,7 @@ impl Detachment {
                 }
             ));
         }
-        if let Some(order) = &self.my_order {
-            lines.push(format!("Order from {}: {}", order.from, order.objective));
-            lines.push(format!(
-                "Response: {}",
-                order
-                    .response
-                    .as_ref()
-                    .map_or_else(|| "not acknowledged".into(), |r| r.to_uppercase())
-            ));
-        }
+        lines.extend(self.order_lines());
         // SSH has a text composer: show exact commands and preserve its normal
         // explicit Enter submission, as the browser's prefill buttons do.
         lines.push(self.all_order_prefill.clone());

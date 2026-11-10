@@ -48,6 +48,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use serde_json::{Value, json};
 
 use super::keys::Key;
+use super::panels::RESYNC_LATCH_S;
 use super::screen::LocalAction;
 use crate::line::LineBuffer;
 
@@ -902,6 +903,11 @@ pub(super) struct MarketDesk {
     action_said: u64,
     /// The count of the form's own status kind when it opened.
     form_from: u64,
+    /// When the listings and the holdings page asks last went out (Unix
+    /// seconds), until their keyframes answer: an ask is out while it is
+    /// younger than [`RESYNC_LATCH_S`], so a refused one (no keyframe ever
+    /// comes) does not hold the market for good.
+    out: [Option<i64>; 2],
 }
 
 impl Default for MarketDesk {
@@ -930,6 +936,7 @@ impl MarketDesk {
             said: 0,
             action_said: 0,
             form_from: 0,
+            out: [None; 2],
         }
     }
 
@@ -1006,15 +1013,40 @@ impl MarketDesk {
     /// [`NO_PAGE`] from the same decoder).
     pub(super) fn apply_keyframe(&mut self, feed: &str, data: &Value) {
         match feed {
-            MARKET_FEED => self.market = decode_market(data),
+            MARKET_FEED => {
+                self.market = decode_market(data);
+                self.out[0] = None;
+            }
             HOLDINGS_FEED => {
                 self.holdings = decode_holdings(data);
                 if let Some(view) = &self.holdings {
                     self.section = view.section;
                 }
+                self.out[1] = None;
             }
             _ => {}
         }
+    }
+
+    /// These queries went out at `now`: the market's page asks among them are
+    /// out until their keyframes answer ([`Self::asks_out`]).
+    pub(super) fn asked(&mut self, queries: &[(String, Value)], now: i64) {
+        for (name, _) in queries {
+            match name.as_str() {
+                MARKET_FEED => self.out[0] = Some(now),
+                HOLDINGS_FEED => self.out[1] = Some(now),
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether a page ask is out (the web's `#marketAsksOut`): asked under
+    /// [`RESYNC_LATCH_S`] ago and not answered by its keyframe yet.
+    pub(super) fn asks_out(&self, now: i64) -> bool {
+        self.out
+            .iter()
+            .flatten()
+            .any(|at| (0..RESYNC_LATCH_S).contains(&now.saturating_sub(*at)))
     }
 
     /// The screen asked these queries itself (its `on_enter`, a hello's

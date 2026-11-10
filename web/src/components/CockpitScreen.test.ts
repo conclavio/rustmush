@@ -149,28 +149,23 @@ const COCKPIT_REACH = [
 ] as const;
 
 /** Mount the screen on a bare cockpit store; nothing fed yet. Doc 21 cut
- * G.3c: the picture above the map reaches for its own store and two spies,
- * `setPicture` (ask for it or stop it) and `helm` (its arrow keys' orders). */
+ * G.3c: the picture above the map reaches for its own store and one spy,
+ * `helm` (its keys' orders). */
 function mount(): {
   app: GameApp;
   cockpit: CockpitStore;
   focusComposer: ReturnType<typeof vi.fn>;
-  setPicture: ReturnType<typeof vi.fn>;
   unmount: () => void;
 } {
   const cockpit = new CockpitStore();
   const focusComposer = vi.fn();
   const picture = new PictureStore();
-  const setPicture = vi.fn((on: boolean, look: number) => {
-    picture.on = on;
-    picture.lookMdeg = look;
-  });
   const { app } = onlyReaches(
-    { cockpit, focusComposer, picture, setPicture, helm: vi.fn() } as unknown as GameApp,
+    { cockpit, focusComposer, picture, helm: vi.fn() } as unknown as GameApp,
     COCKPIT_REACH,
   );
   const { unmount } = render(CockpitScreen, { props: { app } });
-  return { app, cockpit, focusComposer, setPicture, unmount };
+  return { app, cockpit, focusComposer, unmount };
 }
 
 /** Mount and feed the fixture frame and its ground. */
@@ -285,9 +280,10 @@ describe("CockpitScreen mounted", () => {
     expect(bands).toEqual([
       ["engine", "green"],
       ["hull", "green"],
-      ["left_track", "yellow"],
-      ["right_track", "red"],
-      ["turret", "destroyed"],
+      // A word that is not green carries its band letter, as the TUI's row does.
+      ["left_track/y", "yellow"],
+      ["right_track/r", "red"],
+      ["turret/d", "destroyed"],
     ]);
   });
 
@@ -321,12 +317,13 @@ describe("CockpitScreen mounted", () => {
     const arcsThen = (next: string): Call[] =>
       fake.log.filter((c, i) => c.op === "arc" && fake.log[i + 1]?.op === next);
     const dots = arcsThen("fill");
-    expect(dots.map((c) => c.fillStyle)).toEqual(["#e05a5a", "#4fa86a", "#b9a23a", "#b9a23a"]);
+    // The picture's own palette: hostile, friend, unknown, unknown.
+    expect(dots.map((c) => c.fillStyle)).toEqual(["#e6463c", "#5a96f0", "#aaaaa2", "#aaaaa2"]);
     // `@` is a wedge: one `moveTo` and two `lineTo`s, filled in its own colour.
     expect(calls("moveTo")).toHaveLength(1);
     expect(calls("lineTo")).toHaveLength(2);
     const wedgeFill = fake.log.findIndex((c) => c.op === "closePath");
-    expect(fake.log[wedgeFill + 1]).toMatchObject({ op: "fill", fillStyle: "#f2c94c" });
+    expect(fake.log[wedgeFill + 1]).toMatchObject({ op: "fill", fillStyle: "#ffffff" });
     // The ring: stroked once, in its own colour, around BA.
     const strokes = calls("stroke");
     expect(strokes).toHaveLength(1);
@@ -604,18 +601,46 @@ describe("interactive cockpit controls", () => {
     expect(app.helm).toHaveBeenLastCalledWith("STARTUP");
   });
 
-  it("toggles auto-target with LOCK nearest WHEN nolock", async () => {
-    const { app } = await seated();
-    const btn = screen.getByRole("button", { name: "Auto-target" });
-    await fireEvent.click(btn);
-    expect(app.helm).toHaveBeenLastCalledWith("LOCK nearest WHEN nolock");
-    await fireEvent.click(btn);
-    expect(app.helm).toHaveBeenLastCalledWith("MIND RULE 1 OFF");
+  it("arms auto-target with LOCK nearest WHEN nolock, and disarms only a slot the frame shows", async () => {
+    const { app, cockpit } = await seated();
+    const helm = vi.mocked(app.helm);
+    const btn = (): HTMLElement => screen.getByRole("button", { name: "Auto-target" });
+    expect(btn().getAttribute("aria-pressed")).toBe("false");
+    await fireEvent.click(btn());
+    expect(helm).toHaveBeenLastCalledWith("LOCK nearest WHEN nolock");
+    // No frame has shown the rule's slot yet: the disarm names none, never a
+    // guessed one (slot 1 is the fixture's fire rule).
+    const sent = helm.mock.calls.length;
+    await fireEvent.click(btn());
+    expect(helm.mock.calls.length).toBe(sent);
+    expect(btn().getAttribute("aria-pressed")).toBe("false");
+
+    // A frame showing the rule: the button follows it, and removes that slot.
+    const lockRule = { slot: 3, rule: { action: "lock" }, text: "locks the nearest contact" };
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), rules: [lockRule] });
+    await tick();
+    expect(btn().getAttribute("aria-pressed")).toBe("true");
+    await fireEvent.click(btn());
+    expect(helm).toHaveBeenLastCalledWith("MIND RULE 3 OFF");
+
+    // Armed here, then removed from the terminal: the button follows the frame.
+    await fireEvent.click(btn());
+    expect(btn().getAttribute("aria-pressed")).toBe("true");
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), rules: [] });
+    await tick();
+    expect(btn().getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("sends FIRE ALL WHEN odds >= 60 from weapons free toggle and updates on weapon/odds change", async () => {
+  it("follows the frame's fire rule: removes its slot, then arms FIRE ALL WHEN odds >= 60 and re-sends on a change", async () => {
     const { app } = await seated();
     const toggle = screen.getByLabelText("weapons free toggle");
+    // The fixture's cannon holds a fire rule in slot 1: the button shows it
+    // armed, and its disarm removes that slot alone (`FIRE ALL OFF` would take
+    // a hold rule with it).
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    await fireEvent.click(toggle);
+    expect(app.helm).toHaveBeenLastCalledWith("MIND RULE 1 OFF");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
     await fireEvent.click(toggle);
     expect(app.helm).toHaveBeenLastCalledWith("FIRE ALL WHEN odds >= 60");
 
@@ -674,6 +699,19 @@ describe("interactive cockpit controls", () => {
     await tick();
     await fireEvent.click(screen.getByRole("button", { name: "EMCON" }));
     expect(app.helm).toHaveBeenLastCalledWith("EMCON off");
+
+    // A rig's line is one more status row under them: EMCON stays on the scope
+    // row and auto-target on the lock row, not on whichever rows come last.
+    const rowOf = (name: string): string =>
+      screen.getByRole("button", { name }).closest(".status-row")?.querySelector(".line")?.textContent ?? "";
+    expect(rowOf("EMCON")).toMatch(/^scope /);
+    expect(rowOf("Auto-target")).toMatch(/^(Lock |No lock)/);
+    cockpit.applyFrame({ ...json("cockpit_frame.json"), ecm: "on", rig: { line: "rig R1  boring" } });
+    await tick();
+    expect(document.querySelectorAll(".status-row .line").length).toBeGreaterThan(0);
+    expect([...document.querySelectorAll(".status-row .line")].at(-1)?.textContent).toBe("rig R1  boring");
+    expect(rowOf("EMCON")).toMatch(/^scope /);
+    expect(rowOf("Auto-target")).toMatch(/^(Lock |No lock)/);
   });
 
   it("highlights the locked contact row and drives to spots or double-clicked map cells", async () => {

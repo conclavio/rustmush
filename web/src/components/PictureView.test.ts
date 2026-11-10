@@ -2,10 +2,8 @@
 //
 // PictureView mounted (doc 21a `X-02`): what the arrow keys hold is let go
 // when their release can no longer be seen. The app is the picture's store
-// and the two spies the view may reach for (`setPicture`, `helm`); the
-// picture is drawn by the server here (jsdom cannot draw it), asked for the
-// moment the view mounts wanting it. Fake timers drive the helm's repeats
-// and the look's steps.
+// and the one spy the view may reach for (`helm`). Fake timers drive the
+// helm's repeats, the throttle's gap and the look's steps.
 //
 // And (doc 21a `X-04`) the picture drawn here, with the engine's module
 // faked — a frame that never changes — and animation frames as timers: a
@@ -95,27 +93,21 @@ const HEADING = 45;
 
 function mount(cockpit: CockpitFrame | null = null): {
   picture: PictureStore;
-  setPicture: ReturnType<typeof vi.fn>;
   helm: ReturnType<typeof vi.fn>;
   prefill: ReturnType<typeof vi.fn>;
   frame: HTMLElement;
   unmount: () => void;
 } {
   const picture = new PictureStore();
-  const setPicture = vi.fn((on: boolean, look: number, kind?: PictureKind) => {
-    picture.on = on;
-    picture.lookMdeg = look;
-    if (kind !== undefined) picture.kind = kind;
-  });
   const helm = vi.fn();
   const prefill = vi.fn();
   // Doc 21 cut G.3c: the picture reads its own store and orders through
-  // `helm`, the one send the cockpit tab makes; nothing else (no `submit`, no
-  // `setPicture`: the ask rides the store). Every mount enforces it. `chart`
+  // `helm`, the one send the cockpit tab makes; nothing else (no `submit`; the
+  // gateway is asked for no picture, doc 21 cut G.8). Every mount enforces it. `chart`
   // too, read-only: SF.18's space views draw the sky chart's frame behind
   // the ship, reached through a cast (`(app as { chart?… }).chart`) that the
   // source probe this replaces could not see (doc 43 cut TS.19).
-  const { app } = onlyReaches({ picture, setPicture, helm } as unknown as GameApp, [
+  const { app } = onlyReaches({ picture, helm } as unknown as GameApp, [
     "picture",
     "helm",
     "chart",
@@ -123,7 +115,7 @@ function mount(cockpit: CockpitFrame | null = null): {
   const { unmount } = render(PictureView, {
     props: { app, headingDeg: HEADING, frame: cockpit, prefill },
   });
-  return { picture, setPicture, helm, prefill, frame: screen.getByRole("application"), unmount };
+  return { picture, helm, prefill, frame: screen.getByRole("application"), unmount };
 }
 
 /** The committed fixture frame (BA locked; contacts BA hostile 450 m, RB
@@ -254,9 +246,10 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     expect(picture.lookMdeg).toBe(step);
     setVisibility("hidden");
     await tick();
-    expect(picture.lookMdeg).toBe(0);
+    // The swing stops; where the look stands is the viewer's own and is kept.
+    expect(picture.lookMdeg).toBe(step);
     vi.advanceTimersByTime(LOOK_STEP_MS * 5);
-    expect(picture.lookMdeg).toBe(0);
+    expect(picture.lookMdeg).toBe(step);
   });
 });
 
@@ -267,14 +260,14 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     return fireEvent.keyDown(el, { key, ...init });
   }
 
-  it("w from rest orders a tenth of the top speed once the window closes, and shows it", async () => {
+  it("w from rest orders a tenth of the top speed at once, and shows it", async () => {
     const { helm, frame } = mount(fixtureFrame({ max_speed_kph: 60, reverse_kph: 20 }));
     await tick();
     expect(await press(frame, "w")).toBe(false);
-    // Coalesced: nothing yet.
-    expect(helm).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(SPEED_COALESCE_MS);
+    // The first step waits for nothing (the TUI's throttle).
     expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"]]);
+    vi.advanceTimersByTime(SPEED_COALESCE_MS * 4);
+    expect(helm).toHaveBeenCalledTimes(1);
     await tick();
     expect(screen.getByLabelText("speed ordered").textContent).toBe("spd 0→6");
   });
@@ -312,36 +305,155 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     ]);
   });
 
-  it("two w presses inside the window send one line, the second value", async () => {
+  it("a held w sends its first step at once and the rest a gap apart, the last value", async () => {
     const { helm, frame } = mount(fixtureFrame({ max_speed_kph: 60, reverse_kph: 20 }));
     await tick();
     await press(frame, "w");
-    vi.advanceTimersByTime(SPEED_COALESCE_MS / 2);
+    expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"]]);
+    // Two more inside the gap: one line when it closes, carrying both.
+    vi.advanceTimersByTime(SPEED_COALESCE_MS / 5);
     await press(frame, "w", { repeat: true });
-    vi.advanceTimersByTime(SPEED_COALESCE_MS);
-    expect(helm.mock.calls).toEqual([["SPEED 12 QUIET"]]);
-    vi.advanceTimersByTime(SPEED_COALESCE_MS * 4);
+    vi.advanceTimersByTime(SPEED_COALESCE_MS / 5);
+    await press(frame, "w", { repeat: true });
     expect(helm).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(SPEED_COALESCE_MS);
+    expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"], ["SPEED 18 QUIET"]]);
+    vi.advanceTimersByTime(SPEED_COALESCE_MS * 4);
+    expect(helm).toHaveBeenCalledTimes(2);
   });
 
-  it("x orders SPEED 0 at once, drops a waiting step, and stops the helm", async () => {
+  it("x orders SPEED 0 at once, drops a waiting step, and leaves the heading alone", async () => {
     const { helm, frame } = mount(fixtureFrame({ speed_kph: 30, max_speed_kph: 60, reverse_kph: 20 }));
     await tick();
     await press(frame, "w");
+    await press(frame, "w", { repeat: true });
     await press(frame, "x");
-    expect(helm.mock.calls).toEqual([["SPEED 0 QUIET"], ["HEADING 45 QUIET"]]);
-    vi.advanceTimersByTime(SPEED_COALESCE_MS * 2);
+    // The second step was still waiting: it is dropped, and no HEADING is sent.
+    expect(helm.mock.calls).toEqual([["SPEED 36 QUIET"], ["SPEED 0 QUIET"]]);
+    vi.advanceTimersByTime(SPEED_COALESCE_MS * 4);
     expect(helm).toHaveBeenCalledTimes(2);
     await tick();
     expect(screen.getByLabelText("speed ordered").textContent).toBe("spd 30→0");
   });
 
-  it("f under hold orders FIRE FREE, and the header says hold", async () => {
+  it("x lets go a held turn where the picture stands", async () => {
+    const { helm, frame } = mount(fixtureFrame({ max_speed_kph: 60, reverse_kph: 20 }));
+    await tick();
+    await press(frame, "d");
+    vi.advanceTimersByTime(500);
+    await press(frame, "x");
+    expect(helm.mock.calls.at(-2)).toEqual(["SPEED 0 QUIET"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 55 QUIET"]);
+    const sent = helm.mock.calls.length;
+    // The turn is over: the key still down orders nothing more.
+    vi.advanceTimersByTime(ORDER_GAP_MS * 8);
+    expect(helm).toHaveBeenCalledTimes(sent);
+  });
+
+  it("a capital is its own key, never its lower case's alias", async () => {
+    const { helm, prefill, frame } = mount(fixtureFrame({ max_speed_kph: 60, reverse_kph: 20 }));
+    await tick();
+    for (const key of ["W", "S", "A", "D", "X", "G", "Q", "E", "C", "V"]) {
+      expect(await press(frame, key, { shiftKey: true }), key).toBe(true);
+    }
+    vi.advanceTimersByTime(SPEED_COALESCE_MS * 4);
+    expect(helm).not.toHaveBeenCalled();
+    expect(prefill).not.toHaveBeenCalled();
+  });
+
+  it("f under hold orders FIRE FREE, and the header says HOLD", async () => {
     const { helm, frame } = mount(fixtureFrame({ weapons_free: false }));
     await tick();
-    expect(screen.getByText("weapons hold")).toBeTruthy();
+    expect(screen.getByText("weapons HOLD")).toBeTruthy();
     await press(frame, "f");
     expect(helm.mock.calls).toEqual([["FIRE FREE"]]);
+    // The flip is assumed until the next frame: the header follows, and a
+    // second press sends the other verb, not the same one twice.
+    await tick();
+    expect(screen.getByText("weapons free")).toBeTruthy();
+    await press(frame, "f");
+    expect(helm.mock.calls).toEqual([["FIRE FREE"], ["FIRE HOLD"]]);
+  });
+
+  it("n scans the lock, z and P start up, m flips EMCON on a rig with the pod", async () => {
+    const { helm, frame } = mount(fixtureFrame({ ecm: "on" }));
+    await tick();
+    await press(frame, "n");
+    await press(frame, "z");
+    await press(frame, "P", { shiftKey: true });
+    await press(frame, "m");
+    await press(frame, "m");
+    expect(helm.mock.calls).toEqual([["SCAN BA"], ["STARTUP"], ["STARTUP"], ["EMCON off"], ["EMCON on"]]);
+  });
+
+  it("n scans the lock just asked for, and m is nothing without the pod", async () => {
+    const { helm, frame } = mount(fixtureFrame());
+    await tick();
+    await press(frame, "m");
+    expect(helm).not.toHaveBeenCalled();
+    await press(frame, "t");
+    await press(frame, "n");
+    expect(helm.mock.calls).toEqual([["LOCK X3"], ["SCAN X3"]]);
+  });
+
+  it("l arms the standing lock rule and removes the slot the frame shows, never a guessed one", async () => {
+    const bare = mount(fixtureFrame({ rules: [] }));
+    await tick();
+    await press(bare.frame, "l");
+    expect(bare.helm.mock.calls).toEqual([["LOCK nearest WHEN nolock"]]);
+    // No frame has shown the rule's slot yet: the disarm names none.
+    await press(bare.frame, "l");
+    expect(bare.helm).toHaveBeenCalledTimes(1);
+    bare.unmount();
+
+    const lockRule = { slot: 3, rule: { action: "lock" }, text: "locks the nearest contact" };
+    const held = mount(fixtureFrame({ rules: [lockRule] }));
+    await tick();
+    await press(held.frame, "l");
+    expect(held.helm.mock.calls).toEqual([["MIND RULE 3 OFF"]]);
+  });
+
+  it("F removes the fire slots the frame shows, and arms one under an open gate", async () => {
+    // The fixture's cannon holds a fire rule in slot 1.
+    const held = mount(fixtureFrame());
+    await tick();
+    await press(held.frame, "F", { shiftKey: true });
+    expect(held.helm.mock.calls).toEqual([["MIND RULE 1 OFF"]]);
+    held.unmount();
+
+    const bare = mount(fixtureFrame({ rules: [], weapons_free: false }));
+    await tick();
+    await press(bare.frame, "F", { shiftKey: true });
+    expect(bare.helm.mock.calls).toEqual([["FIRE FREE"], ["FIRE ALL WHEN odds >= 60"]]);
+    // Disarmed again before a frame gave it a slot: the one disarm that reaches it.
+    await press(bare.frame, "F", { shiftKey: true });
+    expect(bare.helm.mock.calls.at(-1)).toEqual(["FIRE ALL OFF"]);
+  });
+
+  it("y and N answer the detachment's order, and nothing without one", async () => {
+    const none = mount(fixtureFrame());
+    await tick();
+    await press(none.frame, "y");
+    await press(none.frame, "N", { shiftKey: true });
+    expect(none.helm).not.toHaveBeenCalled();
+    none.unmount();
+
+    const detachment = {
+      id: "7",
+      revision: "2",
+      term: "3",
+      leader_slot: 1,
+      slots: [{ slot: 1, callsign: "RA", pilot: "Aster", controller: "player", order_prefill: "ORDER DT:7:2:3 1 " }],
+      all_order_prefill: "ORDER DT:7:2:3 ALL ",
+      my_order: { sequence: "9", from: "Aster", objective: "hold", response: null },
+      wilco_command: "WILCO DT:7:2 9",
+      negative_command: "NEGATIVE DT:7:2 9",
+    };
+    const { helm, frame } = mount(fixtureFrame({ detachment }));
+    await tick();
+    await press(frame, "y");
+    await press(frame, "N", { shiftKey: true });
+    expect(helm.mock.calls).toEqual([["WILCO DT:7:2 9"], ["NEGATIVE DT:7:2 9"]]);
   });
 
   it("f with the key missing reads free and orders FIRE HOLD", async () => {
@@ -389,15 +501,24 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     expect(screen.getByTitle("Reset zoom").textContent).toBe("100%");
     await press(frame, "+");
     expect(screen.getByTitle("Reset zoom").textContent).toBe("125%");
-    // In overhead, zoom can step below 100%.
+    // Each camera keeps its own zoom: the overhead opens at 100% whatever
+    // first person was left at, and steps below it.
     picture.kind = "overhead";
     await tick();
-    await press(frame, "-");
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("100%");
     await press(frame, "-");
     expect(screen.getByTitle("Reset zoom").textContent).toBe("75%");
+    // The 2.5D camera opens zoomed out, and its reset is back to that.
+    picture.kind = "iso25d";
+    await tick();
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("50%");
+    await press(frame, "+");
+    await fireEvent.click(screen.getByTitle("Reset zoom"));
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("50%");
     picture.kind = "cockpit";
     await tick();
-    expect(screen.getByTitle("Reset zoom").textContent).toBe("100%");
+    expect(screen.getByTitle("Reset zoom").textContent).toBe("125%");
+    expect(picture.zoomByKind).toEqual({ cockpit: 1_250, overhead: 750, iso25d: 500 });
 
     // Clicking dead ahead on the first-person canvas locks contact BA (bearing 45°, camera 45°).
     const c = document.querySelector("canvas") as HTMLCanvasElement;
@@ -516,13 +637,12 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
   });
 
   it("v cycles across the three cockpit cameras locally (cockpit → overhead → iso25d → cockpit)", async () => {
-    const { picture, setPicture, frame } = mount(fixtureFrame());
+    const { picture, frame } = mount(fixtureFrame());
     await tick();
     await press(frame, "v");
     await tick();
     expect(picture.kind).toBe("overhead");
     expect(picture.on).toBe(true);
-    expect(setPicture).not.toHaveBeenCalled();
     await press(frame, "v");
     await tick();
     expect(picture.kind).toBe("iso25d");
@@ -535,7 +655,8 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     mount(fixtureFrame());
     await tick();
     expect(document.querySelector(".legend")?.textContent?.replace(/\s+/g, " ")).toBe(
-      "a d turn · w s speed · q e look · c centre · x stop · v view · f free/hold · g volley · t lock · F1–F6 order",
+      "a d turn · w s speed · x stop · q e look · c centre · v view · f free/hold · g volley · t T lock · n scan · " +
+        "b glass · z startup · m emcon · l auto-target · F auto-fire · y N answer · F1–F6 order",
     );
   });
 });
@@ -580,10 +701,8 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
   }
 
   it("paints the first frame, and the same frame again onto the canvas a hide and show makes", async () => {
-    const { setPicture, unmount } = mount();
+    const { unmount } = mount();
     await settle();
-    // Drawn here: the server is never asked.
-    expect(setPicture).not.toHaveBeenCalled();
     const first = document.querySelector("canvas");
     expect(first).not.toBeNull();
     expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
@@ -613,13 +732,12 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
 
   it("paints the overhead and 2.5D tactical cameras locally on v and first person again on v back", async () => {
     const setKind = vi.spyOn(fake.module, "setKind");
-    const { picture, setPicture, frame, unmount } = mount(fixtureFrame());
+    const { picture, frame, unmount } = mount(fixtureFrame());
     await settle();
     await frameTime();
     const c = document.querySelector("canvas") as HTMLCanvasElement;
     expect(paints.get(c)).toBe(1);
     expect(setKind).toHaveBeenLastCalledWith(KIND_COCKPIT);
-    expect(setPicture).not.toHaveBeenCalled();
 
     await fireEvent.keyDown(frame, { key: "v" });
     await settle();
@@ -628,7 +746,6 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(picture.on).toBe(true);
     expect(setKind).toHaveBeenLastCalledWith(KIND_OVERHEAD);
     expect(paints.get(c)).toBe(2);
-    expect(setPicture).not.toHaveBeenCalled();
 
     // Unchanged overhead: no extra paint.
     await frameTime();
@@ -642,7 +759,7 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(setKind).toHaveBeenLastCalledWith(KIND_ISO25D);
     expect(paints.get(c)).toBe(3);
 
-    // Back to first person: painted here again, the server still never asked.
+    // Back to first person: painted here again.
     await fireEvent.keyDown(frame, { key: "v" });
     await settle();
     await frameTime();
@@ -657,7 +774,6 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     await tick();
     // Key pressed on document.body (not .frame) still works and calls preventDefault.
     expect(await fireEvent.keyDown(document.body, { key: "w" })).toBe(false);
-    vi.advanceTimersByTime(SPEED_COALESCE_MS);
     expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"]]);
 
     // Typing inside an input/textarea is left to the text field (except F1–F6).
@@ -683,9 +799,10 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     // and releasing at 500 ms orders the heading the picture shows (45° + 10°).
     vi.advanceTimersByTime(500);
     await tick();
+    // The picture opens at 1280x720 unless this browser was told otherwise.
     expect(renderSpy).toHaveBeenLastCalledWith(
-      640,
-      480,
+      1280,
+      720,
       expect.objectContaining({
         offsetMdeg: 8_860,
         hullOffsetMdeg: 8_860,
@@ -697,18 +814,23 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     await fireEvent.keyUp(frame, { key: "d" });
     expect(helm.mock.calls.at(-1)).toEqual(["HEADING 55 QUIET"]);
 
-    // Clicking the HD resolution toggle switches rendering to 1280×720.
+    // Clicking the HD resolution toggle switches rendering to 640×480, and the
+    // choice is kept for the next visit.
     const hdBtn = screen.getByLabelText("HD resolution toggle");
-    expect(hdBtn.textContent).toBe("640p");
-    await fireEvent.click(hdBtn);
     expect(hdBtn.textContent).toBe("1280p");
+    await fireEvent.click(hdBtn);
+    expect(hdBtn.textContent).toBe("640p");
+    expect(localStorage.getItem("rustmush.pictureHd")).toBe("off");
     await frameTime();
     expect(renderSpy).toHaveBeenLastCalledWith(
-      1280,
-      720,
+      640,
+      480,
       expect.any(Object),
     );
     unmount();
+    mount(fixtureFrame());
+    await tick();
+    expect(screen.getByLabelText("HD resolution toggle").textContent).toBe("640p");
   });
 
   it("switches camera modes via header pills and orders HEADING on HUD compass tape click", async () => {

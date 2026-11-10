@@ -1,30 +1,35 @@
-// The cockpit's picture (doc 21 cut G.3c): whether this connection has asked
-// the gateway for it, at what look, and the last frame it sent — one PNG,
-// kept as the Blob it arrived as and drawn by `PictureView.svelte`.
+// The cockpit's picture (doc 21 cuts G.3c, G.8): whether it is up, the camera
+// and the look, the keyframes `PictureView.svelte` draws it from, and what the
+// pilot has set that a screen switched away and back must not lose (the zoom
+// of each camera, the ordered speed, a lock asked for and not yet shown).
 
-import type { PictureKind, SpaceCameraMode } from "../picture";
+import { Throttle } from "../helm";
+import { ZOOM_DEFAULT_BY_KIND, type PictureKind, type SpaceCameraMode } from "../picture";
 
 /** The picture's state for this connection. */
 export class PictureStore {
-  /** Whether the picture is asked for. */
+  /** Whether the picture is up and drawing. */
   on = $state(false);
-  /** The look sent with it, millidegrees. */
+  /** The look, millidegrees off the tank's heading: the viewer's alone, and
+   * kept while the picture is hidden, as the TUI keeps its own. */
   lookMdeg = $state(0);
-  /** Which camera is wanted (doc 21 cut G.12c): the first-person view, or the
-   * overhead — which only the gateway draws, so while it is chosen the
-   * picture is the server's whatever this browser could draw. Kept here, not
-   * in the view, so the screen switched away and back keeps it (doc 21 §7.3). */
+  /** Which camera is up (doc 21 cut G.12c): first person, overhead or 2.5D.
+   * Kept here, not in the view, so the screen switched away and back keeps
+   * it (doc 21 section 7.3). */
   kind = $state<PictureKind>("cockpit");
   /** Active space camera mode (`holotank`, `space_cockpit`, or `docking`, `SF.18`) when in space. */
   spaceMode = $state<SpaceCameraMode | null>(null);
-  /** The camera last sent to the gateway, so a change of camera alone is
-   * sent even when `kind` was set before the ask. */
-  sentKind: PictureKind = "cockpit";
-  /** The last frame, or `null` before one arrived or after the picture went
-   * off. */
-  frame = $state<Blob | null>(null);
-  /** Frames received since the picture last went on. */
-  received = $state(0);
+  /** The zoom of each ground camera, permille: the TUI's `zoom_by_camera`.
+   * Each camera keeps its own, and the 2.5D one opens zoomed out. */
+  zoomByKind = $state<Record<PictureKind, number>>({ ...ZOOM_DEFAULT_BY_KIND });
+  /** The space cameras' zoom, permille. */
+  spaceZoomPermille = $state(1_000);
+  /** The ordered speed and its coalescing (`../helm`'s `Throttle`): here so
+   * an order still outstanding survives the view's teardown. */
+  readonly throttle = new Throttle();
+  /** The lock last asked for, until a frame shows it or it goes stale: `t`
+   * walks on from it, not from the frame's lock a pulse behind. */
+  lockAsked: { designator: string; at: number } | null = null;
   /** **The keyframes the picture is drawn from in the browser** (doc 21
    * cut G.3b): this connection's latest `arena.cockpit` (none once it says
    * the seat went) and `arena.map`, as they arrived. Raw state: a keyframe is
@@ -128,18 +133,8 @@ export class PictureStore {
     }
   }
 
-  /** A binary message from the gateway: the next frame. Ignored while off (a
-   * frame already in flight when the picture went off). */
-  receive(data: Blob | ArrayBuffer): void {
-    if (!this.on) return;
-    this.frame = data instanceof ArrayBuffer ? new Blob([data], { type: "image/png" }) : data;
-    this.received += 1;
-  }
-
-  /** The picture went off, or the connection went: nothing is shown. */
+  /** The connection went: the space feeds it carried are gone with it. */
   clear(): void {
-    this.frame = null;
-    this.received = 0;
     this.spaceHolotankData = null;
     this.spaceCockpitData = null;
     this.spaceDockingData = null;

@@ -873,7 +873,7 @@ mod tests {
             "the seat on screen 0 draws the picture"
         );
         for word in [
-            "ARMOUR", "WEAPONS", "CONTACTS", "COMMS", "Vasquez", "ninety", "READY",
+            "ARMOUR", "WEAPONS", "CONTACTS", "COMMS", "Vasquez", "ninety", "ready",
         ] {
             assert!(screen.contains(word), "{word} under the picture");
         }

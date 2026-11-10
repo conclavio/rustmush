@@ -1215,16 +1215,15 @@ export function decodeArenaMap(data: unknown): ArenaMap | null {
 
 /** A contact's glyph, by the viewer's relation (doc 32 cut CF.0, Q-CF-12; the
  * server's `ContactRow::glyph`): `+` own or friend, `x` hostile, `?` neutral
- * or not yet classified. */
+ * or not yet classified. A contact that reads dead keeps its glyph. */
 export function contactGlyph(contact: CockpitContact): string {
-  const kind = contactKind(contact);
+  const kind = relationKind(contact);
   return kind === "friendly" ? "+" : kind === "hostile" ? "x" : "?";
 }
 
-/** The same fact as a kind, which is what the canvas colours by: the four
- * relation slots folded to three colours — own shares the friend's, neutral
+/** The four relation slots folded to three: own shares the friend's, neutral
  * the unknown's (Q-CF-12). */
-export function contactKind(contact: CockpitContact): MarkerKind {
+function relationKind(contact: CockpitContact): "friendly" | "hostile" | "unknown" {
   switch (contact.relation) {
     case "own":
     case "friend":
@@ -1234,6 +1233,13 @@ export function contactKind(contact: CockpitContact): MarkerKind {
     default:
       return "unknown";
   }
+}
+
+/** What the canvas colours a contact by: its relation, or `wreck` once it
+ * reads dead, whatever it was — the picture's rule (`mush-pixel`'s overlay),
+ * so the map and the picture never show one contact in two colours. */
+export function contactKind(contact: CockpitContact): MarkerKind {
+  return contact.reads_dead === true ? "wreck" : relationKind(contact);
 }
 
 /**

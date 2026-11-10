@@ -28,14 +28,6 @@ head = "ARMOUR"
 reason = "a cockpit label in a format string (\"ARMOUR {}\"), not a command"
 
 [[allow]]
-head = "HEAT"
-reason = "a cockpit label in a format string, not a command"
-
-[[allow]]
-head = "RULES"
-reason = "a cockpit text heading, not a command"
-
-[[allow]]
 head = "PIXEL"
 reason = "a picture label in a format string, not a command"
 

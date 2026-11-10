@@ -27,6 +27,9 @@ export function actionMessage(response: LegalActionResponse): string {
   }
 }
 
+/** How many attempts are kept: the TUI's `MAX_ATTEMPTS` (`tui/market.rs`). */
+export const MAX_ATTEMPTS = 16;
+
 /** Bounded connection-local attempts. Unresolved submissions are never evicted or replayed. */
 export class ActionRequestsStore {
   entries = $state<Record<string, ActionAttempt>>({});
@@ -41,7 +44,7 @@ export class ActionRequestsStore {
     let request: LegalActionRequest;
     try { request = submitSelf(control, values); }
     catch (error) { this.notice = error instanceof Error ? error.message : "Invalid action inputs."; return; }
-    if (!this.entries[action.offer] && Object.keys(this.entries).length >= 64) {
+    if (!this.entries[action.offer] && Object.keys(this.entries).length >= MAX_ATTEMPTS) {
       const retired = Object.keys(this.entries).find(key => {
         const entry = this.entries[key]!;
         return !entry.busy && (!entry.blocked || entry.response?.state === "committed");

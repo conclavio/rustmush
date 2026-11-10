@@ -8,6 +8,8 @@ import {
   Helm,
   type HelmFrame,
   ORDER_GAP_MS,
+  Throttle,
+  type ThrottleFrame,
   helmFrame,
 } from "./helm";
 import { FULL_MDEG, arcMdeg } from "./picture";
@@ -102,7 +104,7 @@ describe("the helm", () => {
   it("orders nothing without a frame: there is no heading to turn from", () => {
     const h = new Helm();
     h.start(1, T0);
-    h.hold(T0);
+    h.stop(T0);
     expect(h.takeOrders()).toEqual([]);
     expect(h.predicted(T0)).toBeNull();
     expect(h.busy).toBe(false);
@@ -355,19 +357,26 @@ describe("the helm", () => {
     expect(h.takeOrders()).toEqual(["HEADING 98 QUIET", "HEADING 60 QUIET"]);
   });
 
-  it("holds the heading shown on all stop, ordering a turn in hand away", () => {
+  it("leaves a heading ordered and not yet reached alone when no key holds a turn", () => {
+    // All stop is the throttle's; the helm's stop ends a held turn and nothing
+    // else, so a typed or a clicked `HEADING` stands (the TUI's rule).
     const h = new Helm();
     h.observe(frame(1_000, 45, "alert"), T0);
-    h.hold(T0 + 100);
-    expect(h.takeOrders()).toEqual(["HEADING 45 QUIET"]);
+    h.stop(T0 + 100);
+    expect(h.takeOrders()).toEqual([]);
     h.steer(100_000, T0 + 200);
-    h.hold(T0 + 1_200);
-    // A second at 30°/s toward 100 from 45.
-    expect(h.takeOrders()).toEqual(["HEADING 100 QUIET", "HEADING 75 QUIET"]);
-    expect(h.predicted(T0 + 5_000)).toBe(75_000);
-    // A released order no frame speaks to is dropped a second past its pulse.
-    h.tick(T0 + 3_300);
-    expect(h.busy).toBe(false);
+    h.stop(T0 + 1_200);
+    expect(h.takeOrders()).toEqual(["HEADING 100 QUIET"]);
+    expect(h.ordered).toBe(100_000);
+  });
+
+  it("carries the tank on from a frame for a pulse and a half at most", () => {
+    const h = new Helm();
+    expect(h.reckonCapMs).toBe(1_500);
+    h.observe(frame(1_000, 45, "engaged"), T0);
+    expect(h.reckonCapMs).toBe(750);
+    h.observe(frame(6_000, 45, "quiet"), T0 + 5_000);
+    expect(h.reckonCapMs).toBe(7_500);
   });
 });
 
@@ -403,5 +412,109 @@ describe("the helm's reading of the cockpit", () => {
     [{ power: "?" }, true],
   ])("reads whether the hull can turn: %o", (more, canTurn) => {
     expect(helmFrame({ ...decoded, ...more }, null, 0).canTurn).toBe(canTurn);
+  });
+});
+
+function seen(speedKph: number, more: Partial<ThrottleFrame> = {}): ThrottleFrame {
+  return { speedKph, maxKph: 60, reverseKph: 20, stuck: false, ...more };
+}
+
+describe("the throttle", () => {
+  it("sends the first step at once, and coalesces the steps inside the gap", () => {
+    const t = new Throttle();
+    t.observe(seen(0));
+    t.bump(1, T0);
+    expect(t.takeOrders()).toEqual(["SPEED 6 QUIET"]);
+    // Three more inside the gap: nothing goes, and the last value stands.
+    t.bump(1, T0 + 50);
+    t.bump(1, T0 + 100);
+    t.bump(1, T0 + 150);
+    expect(t.takeOrders()).toEqual([]);
+    expect(t.ordered).toBe(24);
+    expect(t.dueIn(T0 + 150)).toBe(100);
+    t.tick(T0 + 249);
+    expect(t.takeOrders()).toEqual([]);
+    t.tick(T0 + 250);
+    expect(t.takeOrders()).toEqual(["SPEED 24 QUIET"]);
+    expect(t.dueIn(T0 + 250)).toBeNull();
+  });
+
+  it("steps from the order while the frame has not reached it, else from the frame", () => {
+    const t = new Throttle();
+    t.observe(seen(30));
+    t.bump(1, T0);
+    expect(t.takeOrders()).toEqual(["SPEED 36 QUIET"]);
+    // The frame has not reached 36: the next step goes on from it.
+    t.observe(seen(32));
+    expect(t.ordered).toBe(36);
+    t.bump(1, T0 + 1_000);
+    expect(t.takeOrders()).toEqual(["SPEED 42 QUIET"]);
+    // Reached within a kph: the order closes, and the frame is the truth.
+    t.observe(seen(41));
+    expect(t.ordered).toBeNull();
+    t.bump(-1, T0 + 2_000);
+    expect(t.takeOrders()).toEqual(["SPEED 35 QUIET"]);
+  });
+
+  it("steps through zero into reverse and clamps at either ceiling", () => {
+    const t = new Throttle();
+    t.observe(seen(3));
+    t.bump(-1, T0);
+    t.bump(-1, T0 + 1_000);
+    t.bump(-1, T0 + 2_000);
+    t.bump(-1, T0 + 3_000);
+    t.bump(-1, T0 + 4_000);
+    expect(t.takeOrders()).toEqual([
+      "SPEED -3 QUIET",
+      "SPEED -9 QUIET",
+      "SPEED -15 QUIET",
+      "SPEED -20 QUIET",
+      "SPEED -20 QUIET",
+    ]);
+    // A frame that names its ceilings with either sign.
+    const u = new Throttle();
+    u.observe(seen(88, { maxKph: 90, reverseKph: -30 }));
+    expect([u.max, u.reverse]).toEqual([90, 30]);
+    u.bump(1, T0);
+    expect(u.takeOrders()).toEqual(["SPEED 90 QUIET"]);
+  });
+
+  it("stops at once, whatever the gap, dropping a step still waiting", () => {
+    const t = new Throttle();
+    t.observe(seen(30));
+    t.bump(1, T0);
+    t.bump(1, T0 + 10);
+    t.stop(T0 + 20);
+    expect(t.takeOrders()).toEqual(["SPEED 36 QUIET", "SPEED 0 QUIET"]);
+    expect(t.ordered).toBe(0);
+    expect(t.dueIn(T0 + 20)).toBeNull();
+  });
+
+  it("flushes a waiting step when the view goes", () => {
+    const t = new Throttle();
+    t.observe(seen(0));
+    t.bump(1, T0);
+    t.bump(1, T0 + 10);
+    t.flush(T0 + 20);
+    expect(t.takeOrders()).toEqual(["SPEED 6 QUIET", "SPEED 12 QUIET"]);
+  });
+
+  it("closes an order a wreck or an immobile hull will never reach", () => {
+    const t = new Throttle();
+    t.observe(seen(0));
+    t.bump(1, T0);
+    expect(t.ordered).toBe(6);
+    t.observe(seen(0, { stuck: true }));
+    expect(t.ordered).toBeNull();
+  });
+
+  it("orders a dragged speed outright, clamped to the ceilings", () => {
+    const t = new Throttle();
+    t.observe(seen(0));
+    t.set(45, T0);
+    t.set(200, T0 + 100);
+    t.tick(T0 + 250);
+    t.set(-99, T0 + 600);
+    expect(t.takeOrders()).toEqual(["SPEED 45 QUIET", "SPEED 60 QUIET", "SPEED -20 QUIET"]);
   });
 });

@@ -979,3 +979,95 @@ to the new lines (a press at 045 orders 044 or 046; a hold orders 035 then 028; 
 the heading shown; a press let go at once is the one line) and `picture.test.ts`' `helmLine` case
 removed: vitest whole, 84 files and 919 tests; `svelte-check` 0 errors; `vite build`. **No live
 smoke**: no browser was driven against an arena, and no deploy was made.
+
+## The two clients agree (2026-11-09): the bugs, four rulings and the quick parity
+
+The owner asked for a review of the TUI and the web "for any other inconsistencies that we can
+clean up between the two platforms". It found 54; a dozen were bugs, most of the rest wording and
+caps, six wanted a ruling. The owner: "fix the bugs + quick parity, for the rulings .. all stop
+leaves heading alone, first speed step is sent at once, the shift letters are different (lowercase
+cycles forward, capital cycles backwards as an example), hd should be on by default, dont worry
+about the screen digits i need to completely re-work those".
+
+**The rulings, as built.**
+
+- **All stop leaves the heading alone.** The web's `x` sent `HEADING` at the heading shown, which
+  replaced a typed heading still being steered to. `Helm.hold` is gone: `x` is `SPEED 0 QUIET` and
+  a held turn let go, as on the terminal.
+- **The first speed step is sent at once.** `web/src/lib/helm.ts` gains `Throttle`, the second half
+  of `tui/helm.rs`: the first step goes out on the press, the steps inside 250 ms of an order
+  coalesce and the last value goes when the gap opens. Doc 21 §7.3 said trailing edge and is
+  corrected; the terminal always sent the first at once.
+- **A capital is its own key.** `pictureKey` no longer folds case: `t` next lock and `T` previous,
+  `f` the gate and `F` the standing fire rule, `n` scan and `N` the detachment's negative. The web
+  also gains the keys it lacked: `b` glass, `n` scan, `z`/`P` startup, `m` EMCON, `l` and `F` the
+  standing rules, `y`/`N` wilco and negative.
+- **HD by default.** The web picture opens at 1280x720, the size at which the 192 px first-person
+  sheet is drawn; the toggle still goes down to 640x480.
+- **The screen digits are not touched** (the owner is reworking them), and whether a committed
+  attempt blocks its action (the sixth question) was not ruled, so both clients keep what they did.
+
+**The web's bugs.**
+
+- The EMCON and auto-target buttons were placed by counting rows from the end of the status block,
+  so a rig line put them one row off. They are anchored on the `scope` row and the row after it.
+- The lock cycle kept contacts with no designator and could send a bare `LOCK `. They are left
+  out, and a tie in range is broken by the designator, as the terminal breaks it.
+- An ordered speed stayed up on a wreck or an immobile hull. The throttle closes it.
+- Dead reckoning was capped at a fixed 1.5 s, so at the quiet pulse the picture stopped and then
+  jumped. The cap is a pulse and a half of the frame's own tempo.
+- An aimed legal action was a dead button. It hands `+act <verb>` to the input line with the
+  terminal's sentence, "This action needs a target; use +act."
+- The 2.5D and overhead click-to-pick assumed a 640x480 frame and a scale of `2.0 * zoom`. They
+  take the frame's size and the engine's own scale (`sqrt(width / 640)` clamped, times the zoom).
+  Pinned by unit tests against the engine's figures; not clicked in a browser.
+
+**The web's parity.** A zoom per camera, the 2.5D one opening at half; the look, the zooms, the
+ordered speed and a lock asked for live in the picture store, so a screen switched away and back
+keeps them; two `f` presses inside a pulse are `FIRE HOLD` then `FIRE FREE`, not the same line
+twice; the look swings by elapsed time, not a step a timer tick; the standing rules are armed and
+disarmed by the frame's `rules` (`MIND RULE <slot> OFF` for a slot the frame shows, never a guessed
+one), on the picture and on the text cockpit both; the text cockpit's map takes the picture's
+palette and draws a contact that reads dead as a wreck; the scan chips show the band letter; the
+gate word is `weapons HOLD`; the attempts kept are 16 and the rolls 100, the terminal's figures;
+`setPicture` and the `picture` command are gone from the client (the page draws every camera
+itself). The gateway still accepts the command, and nothing sends it: a follow-up.
+
+**The terminal's bugs.**
+
+- `l` disarmed auto-target with a hard-coded `MIND RULE 1 OFF`, which could remove another rule.
+  The picture reads the frame's rules (`render::rule_slots`) and removes its own slots; with no
+  slot shown it sends nothing for the lock rule and `FIRE ALL OFF` for the fire rule.
+- A spoof lost its sender in the scrollback. It prints `[name] text`, as the web and line mode do
+  (the attribution ruling); an emit stays bare.
+- The channel tab's badge read the server's `unread`, whose cursor advances on delivery, so it was
+  almost always 0. It is counted in the client: a live line counts unless the channel screen is in
+  front, a replayed one never, and leaving the channel screen marks every channel read.
+- The picture's side panel cut words (`destroyed` as `destroy`). Its sections are screen 0's
+  damage-pane words laid into the column at the fields, never cut; its heat, readiness and rule
+  lines are screen 0's (`heat 40/100`, `ready` / `1 s`, `rules: S1 fire; MIND RULES`); the lock is
+  matched by its designator, never a raw contact id; the empty states are `(no contacts)` and
+  `Not in a cockpit.`
+- The mind library allowed 256 entries where the server allows 20.
+
+**The terminal's parity.** A receipt prints once, by its commit, on one line (`<summary>
+Transaction: <status>`); it re-asks the market's two pages once, never while an ask is out; the
+market keeps its page across leaving and re-entering; the scrollback ring is 5000, the web's; the
+detachment's order reads `Order from Aster: hold` / `Response: not acknowledged` on both screens.
+
+**Lost on purpose.** The side panel's four-cell reload bar and its tenths of a second: the bar was
+scaled against a three-second cycle the frame does not carry, and the countdown is now screen 0's
+whole seconds. An empty gun reads its rounds (`0/20`), not the word `EMPTY`.
+
+**Left as they are.** The terminal clears a channel's unread on leaving the channel screen, the
+web a channel at a time as its tab is opened. The terminal re-reads the rules' armed state on
+every new frame; the web only when what the frame shows changes, so an arming still in flight is
+not shown undone. The side panel is still its own layout (the review's "third format"); sounds,
+mail, the sheet and the generic views were not in this pass.
+
+**Verified.** `cargo test -p mush-net-ssh` whole (the library 374, `tui_golden` 25 with seventeen
+goldens re-blessed for the badge, `loopback` 40); clippy `--all-targets -D warnings` on
+`mush-net-ssh` and `tacsim`; rustdoc; the contract tests whole, whose client-verbs census named the
+two allowlist rows (`HEAT`, `RULES`) the side panel no longer prints, now removed. vitest whole, 84
+files and 939 tests; `svelte-check` 0 errors; `vite build`. **No live smoke**: neither client was
+driven against an arena, and no deploy was made.

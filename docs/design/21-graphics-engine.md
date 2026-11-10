@@ -1,5 +1,13 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.26 — 2026-11-09, the two clients agree.** A review of the terminal's cockpit against
+the web's found 54 differences; the owner ruled on four and asked for the bugs and the quick ones
+fixed. §7.3 now says what both do: all stop leaves a `HEADING` not yet reached alone, the first
+speed step is sent at once, and a capital letter is its own key on the web as on the terminal. The
+web picture opens at 1280x720 (the size that shows the 192 px sprites), keeps a zoom per camera and
+its look, speed and lock across a screen switch, and arms and disarms the standing rules by the
+slots the frame shows, as the terminal now does too (cut notes, "The two clients agree").
+
 **Draft 0.25 — 2026-11-09, G.7c: a steep face is textured along its slope.** The owner's report
 from dev1: the hill at marker F (the proving ground's Bluff) shows three greens in stripes that
 "continuously rotate" as the tank closes. Not the palette (the frame uses some fifty colours of its
@@ -490,13 +498,15 @@ and the picture hides, and coming back to `0` brings it back with the helm, the 
 look as they were. `^G` stays for the other screens' pictures (the chart's, the doll's, the replay's)
 until each becomes its screen's own rendering the same way. The flight keys below are live only
 while screen `0` shows the picture; on every other screen the letters mean what that screen says
-(`w`, `s`, `e` and `d` are exits in nav mode on the scene). The web picture binds the same letters.
+(`w`, `s`, `e` and `d` are exits in nav mode on the scene). The web picture binds the same keys in
+the same case: a capital is its own key (`T` the previous lock, `F` the standing fire rule, `N` the
+detachment's negative), never a caps-lock spelling of the small letter.
 
 | Key | Does | Line sent |
 |---|---|---|
 | `a` / `d`, `←` / `→` | turn left / right — held (the turn runs while the key is down) where the terminal reports releases (the kitty keyboard protocol: the arrows under its flags 1+2, the letters once it has taken flag 8 too), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg> QUIET` |
 | `w` / `s` | speed up / slow down by one step: a tenth of the hull's top speed, at least 5 kph; through zero into reverse, down to the reverse ceiling; past either ceiling the step clamps. The HUD shows the ordered speed beside the frame's until they meet | `SPEED <kph> QUIET` |
-| `x` | all stop: speed zero and the turn stopped where the picture shows the tank | `SPEED 0 QUIET`, and the helm's stop |
+| `x` | all stop: speed zero and a held turn stopped where the picture shows the tank; a `HEADING` typed or ordered and not yet reached is left alone (the ruling of 2026-11-09, both clients) | `SPEED 0 QUIET`, and the helm's stop |
 | `q` / `e` (`,` / `.` kept) | the look swings left / right, toggled | none — a look is not an order |
 | `c` | centre the look on the tank's nose | none |
 | space | steady: the turn and the look stop (the speed stands) | the helm's stop |
@@ -539,7 +549,9 @@ where the protocol reports releases and toggled elsewhere: the view pushes `CSI 
 flag 8 in it, toggled until then (`W-G12-1`, closed the same day). `p` exists only on a terminal that shows
 pictures; under 120 columns there is no picture; help, the palette, the workshop and a prompt
 draw over the text cockpit and the picture returns when they close. The lock cycle does not skip
-wrecks. Speed orders coalesce 250 ms on the trailing edge; `x` sends at once. The gate binds only
+wrecks. The first speed step is sent at once and the steps inside 250 ms of an order coalesce, the
+last value going when the gap opens (the terminal's throttle as built and the ruling of 2026-11-09;
+the web's was a trailing window until then); `x` sends at once. The gate binds only
 while a pilot flies the hull (a mind that takes over is never silently held) and `FIRE ALL` names
 every weapon it skipped on its own refusal line, a typed `FIRE` past the bands now refused as out of
 reach, which it never was. The gate is carried state, so the snapshot format is 17.
@@ -551,9 +563,9 @@ ground north-up (the colour map; relief as shading where G.7b's heights are held
 the pilot's own tank centred with its heading, every contact the frame lists in its scope's colour
 with its heading where known, the lock ringed, the named spots lettered, the frame's range bands as
 faint rings, and the look as a wedge from the nose. It draws only what the frame says (D-21-14: the
-contacts the sim detected, nothing more), at the cockpit picture's own clock and size. The web's
-overhead is the gateway's frame over the socket (the `picture` command carries a `kind`), the browser
-render staying first-person only until the wasm module carries the scene.
+contacts the sim detected, nothing more), at the cockpit picture's own clock and size. The web
+draws all three cameras in the browser with `mush-pixel-wasm` (doc 28 P2) and no longer sends the
+gateway's `picture` command, which the gateway still accepts and nothing uses.
 
 **The inset — G.13 (2026-10-27).** The same scene drawn small over the first-person picture, so the
 pilot has the picture and the map at once; `v` keeps swapping to the full camera. As built, and

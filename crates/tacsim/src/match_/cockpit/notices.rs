@@ -1030,10 +1030,11 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
 /// wall time with it. The cockpit's `floored` answers both.
 ///
 /// It is the verbs' reading and never the panel's: the keyframe
-/// ([`status_frame_held`]) carries the frame's own figures, which the TUI and the
-/// web print as they stand until the next frame — neither counts down — so a
-/// `WEAPONSTATUS` line can read `ready` beside a re-pushed panel that still
-/// reads the frame's own seconds.
+/// ([`status_frame_held`]) carries the frame's own figures, which the TUI's
+/// weapons pane and the web print as they stand until the next frame (`ready`,
+/// or whole seconds such as `1 s`; only the TUI picture's side panel ages the
+/// seconds between pulses) — so a `WEAPONSTATUS` line can read `ready` beside a
+/// re-pushed panel that still reads the frame's own seconds.
 #[must_use]
 pub fn aged_weapons(held: &CockpitFrame, now: std::time::Instant, floored: bool) -> Vec<WeaponRow> {
     let rows = frame_weapons(&held.frame);

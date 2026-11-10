@@ -16,6 +16,14 @@ const bytes = (value: string): number => new TextEncoder().encode(value).length;
 const text = (value: unknown, max: number): value is string => typeof value === "string"
   && bytes(value) <= max && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
 
+/** An offer no form here can hold because it is aimed: it has targets, or a
+ * subject other than oneself. `+act` takes it (the TUI's `NEEDS_TARGET`). */
+export function actionNeedsTarget(action: LegalAction): boolean {
+  const raw = action.projected;
+  return (object(raw.subject) && raw.subject.kind !== "self_actor")
+    || (object(raw.targets) && raw.targets.kind !== "none");
+}
+
 /** Only the exact currently implemented self/no-target projection is interactive. */
 export function actionControl(action: LegalAction): ActionControl | null {
   const raw = action.projected;
