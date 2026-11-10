@@ -82,7 +82,8 @@ for look in "${LOOKS[@]}"; do
     fi
     if [ ! -d "$PROJ/${root%/}" ]; then
       echo "== importing $package"
-      unity "$PROJ/import_$look.log" -projectPath "$PROJ" -importPackage "$file"
+      "$UNITY" -batchmode -quit -logFile "$PROJ/import_$look.log" -projectPath "$PROJ" -importPackage "$file" || [ -d "$PROJ/${root%/}" ]
+      find "$PROJ/${root%/}" \( -name '*.cs' -o -name '*.cs.meta' \) -delete
     fi
   fi
   out="$PROJ/bake_out/$look"

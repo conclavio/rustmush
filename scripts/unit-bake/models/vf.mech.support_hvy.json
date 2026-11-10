@@ -1,0 +1,66 @@
+{
+  "model": "vf.mech.support_hvy",
+  "asset_version": "",
+  "asset_pack": "Sci-Fi Mechs and Weapons Pack (The Visual Forge)",
+  "package": "The Visual Forge/3D ModelsCharactersRobots/Sci-Fi Mechs and Weapons Pack.unitypackage",
+  "root": "Assets/Mech Pack/",
+  "albedo_id": true,
+  "albedo_mode": 2,
+  "prefab": "Prefabs/Mech3.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/RailgunL",
+      "mount": "HardpointLeftArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/RailgunR",
+      "mount": "HardpointRightArm",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/MissilePodL",
+      "mount": "HardpointLeftShoulder",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/MissilePodR",
+      "mount": "HardpointRightShoulder",
+      "parent": ""
+    }
+  ],
+  "still": {
+    "file": "models/Mech3@Mech3Stay.fbx",
+    "name": "Mech3Stay"
+  },
+  "moving": {
+    "file": "models/Mech3@Mech3Walk.fbx",
+    "name": "Mech3Walk"
+  },
+  "wreck": {
+    "file": "models/Mech3@Mech3Death.fbx",
+    "name": "Mech3Death"
+  },
+  "muzzles": [
+    {
+      "locator": "RailgunL/FirePos",
+      "weapon": "railgun_l"
+    },
+    {
+      "locator": "RailgunR/FirePos",
+      "weapon": "railgun_r"
+    },
+    {
+      "locator": "MissilePodL/FxMissilePodFire1",
+      "weapon": "missiles_l"
+    },
+    {
+      "locator": "MissilePodR/FxMissilePodFire1",
+      "weapon": "missiles_r"
+    }
+  ],
+  "size_cm": [
+    680,
+    1150
+  ]
+}
