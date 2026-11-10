@@ -773,7 +773,9 @@ While the picture is showing (the bottom line names the keys):
                  kitty, Ghostty, Windows Terminal 1.25 and later; the bottom
                  line reads `hold-turn` for the keys this works for, since a
                  few terminals report it for the arrows but not the letters);
-                 elsewhere press once to start and again to stop
+                 elsewhere press once to start and again to stop. A quick
+                 tap turns one degree: hold to swing, then tap the last few
+                 degrees onto the heading you want
   w, s           speed up or slow down a step (a tenth of your machine's top
                  speed, at least 5 kph), through zero into reverse, stopping
                  at either ceiling; the line over the picture shows

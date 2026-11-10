@@ -397,6 +397,7 @@ fn frame() -> Frame {
         weapons_free: true,
         max_speed_cms: 1_500,
         reverse_cms: 750,
+        turn_rate_mdeg_s: 30_000,
     }
 }
 

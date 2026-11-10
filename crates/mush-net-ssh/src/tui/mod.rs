@@ -597,11 +597,15 @@ mod tests {
         sess.feed_input(b"\x1b");
         assert!(sess.pixel_active(), "Esc closes nothing of the picture's");
         // `1`: screen 1, the picture hidden, the turn stopped with the key.
+        assert_eq!(sess.app.pixel_turning(), 1);
         let r = sess.feed_input(b"1");
         assert!(!sess.pixel_active());
         assert_eq!(sess.app.active_screen(), screen::ScreenId(1));
+        // The stop's order is the heading the picture shows, or no line at
+        // all where that is still the degree the press ordered.
+        assert_eq!(sess.app.pixel_turning(), 0, "the helm's stop");
         assert!(
-            r.submit.len() == 1 && r.submit[0].starts_with("HEADING "),
+            r.submit.len() <= 1 && r.submit.iter().all(|l| l.starts_with("HEADING ")),
             "the helm's stop: {:?}",
             r.submit
         );
@@ -882,10 +886,16 @@ mod tests {
         // Flying: `a` turns the tank.
         let r = sess.feed_input(b"a");
         assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
-        // Enter opens the chat line and stops the turn.
+        assert_eq!(sess.app.pixel_turning(), -1);
+        // Enter opens the chat line and stops the turn: a tap, whose one
+        // degree the press ordered, so the stop need add no line.
         let r = sess.feed_input(b"\r");
-        assert_eq!(r.submit.len(), 1, "the stop order: {:?}", r.submit);
-        assert!(r.submit[0].starts_with("HEADING "));
+        assert_eq!(sess.app.pixel_turning(), 0, "the turn stopped");
+        assert!(
+            r.submit.len() <= 1 && r.submit.iter().all(|l| l.starts_with("HEADING ")),
+            "the stop order: {:?}",
+            r.submit
+        );
         let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(screen.contains("send"), "the chat legend");
         // Typing never steers.

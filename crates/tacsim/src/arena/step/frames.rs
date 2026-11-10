@@ -295,6 +295,12 @@ pub struct Frame {
     /// G.12a): [`crate::arena::state::TrackedRules::reverse_ceiling_cms`], the
     /// other half of [`Frame::max_speed_cms`].
     pub reverse_cms: u32,
+    /// **The hull's turn rate, millidegrees a second** (doc 21 cut G.4b):
+    /// [`crate::arena::state::TrackedRules::turn_rate_mdeg_s`], the figure the
+    /// motion step turns the hull by — so a client that draws a turn between
+    /// pulses draws it at the hull's own rate, and need not measure it from
+    /// consecutive frames. A fit constant for the match.
+    pub turn_rate_mdeg_s: u32,
 }
 
 /// **The hull's sealed mind on the pilot's frame** (17b cut M5.4; doc 17 §12
@@ -680,6 +686,8 @@ impl Frame {
             && self.weapons_free == other.weapons_free
             && self.max_speed_cms == other.max_speed_cms
             && self.reverse_cms == other.reverse_cms
+            // **Doc 21 cut G.4b**: a constant of the fit, as the ceilings are.
+            && self.turn_rate_mdeg_s == other.turn_rate_mdeg_s
             // **16b cut F.2**: the damage surface is compared, so a round that
             // came off the armour sends a frame. It is the cheapest comparison on
             // this list after the integers — a handful of small structs per pilot
@@ -945,6 +953,8 @@ impl Arena {
             weapons_free: !unit.weapons_hold,
             max_speed_cms: unit.mobility.max_speed_cms,
             reverse_cms: unit.mobility.reverse_ceiling_cms(),
+            // **Doc 21 cut G.4b**: the rate the motion step turns the hull at.
+            turn_rate_mdeg_s: unit.mobility.turn_rate_mdeg_s,
         })
     }
 

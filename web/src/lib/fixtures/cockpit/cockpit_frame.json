@@ -715,6 +715,7 @@
   "speed_kph": 43,
   "t_ms": 61250,
   "tempo": "engaged",
+  "turn_rate_mdeg_s": 30000,
   "unit": 101,
   "unit_type": "tacsim.unit.line_tank",
   "weapons": [

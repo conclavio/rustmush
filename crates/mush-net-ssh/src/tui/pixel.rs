@@ -2067,11 +2067,12 @@ impl PixelView {
         let tank = self.helm.predicted(now).unwrap_or(heading);
         let camera = (tank + self.look_mdeg).rem_euclid(360_000) / 1_000;
         // An order the picture already shows reached is not news, even while
-        // the frame that confirms it is a pulse away.
+        // the frame that confirms it is a pulse away; and a held turn's order
+        // is its running lead, not a heading anybody chose.
         let ordered = self
             .helm
             .ordered()
-            .filter(|o| arc(tank, *o).abs() > 1_000)
+            .filter(|o| self.helm.turning() == 0 && arc(tank, *o).abs() > 1_000)
             .map(|o| format!(" → {:03}°", o / 1_000))
             .unwrap_or_default();
         let turning = match self.helm.turning() {
@@ -2712,8 +2713,8 @@ mod tests {
         assert!(v.is_active());
     }
 
-    /// The turn keys steer the tank (doc 21 cut G.4): a `HEADING` order a
-    /// pulse ahead, toggled where the terminal reports no releases; held
+    /// The turn keys steer the tank (doc 21 cut G.4): a `HEADING` order,
+    /// toggled where the terminal reports no releases; held
     /// (press, repeat, release) where the view pushed the kitty keyboard
     /// protocol, which it pops again on a hide. `a` / `d` are toggled until
     /// the terminal confirms flag 8 after the push (`W-G12-1`), held — press

@@ -804,3 +804,83 @@ needs the wasm build; it reads the same re-blessed hashes the wasm crate's nativ
 the web's vitest (`web/src/lib/cockpit.ts` ignores the new key and does not type it yet — the web
 cockpit tab's contacts list showing the word is a small follow-up). No live smoke on dev2 or
 w11term; the owner may want the pips' size and the `4s` clearance re-judged live. No deploy.
+
+## G.4b (2026-11-09): the helm's turn is one swing
+
+The owner's report after flying PR #517 on dev1 in w11term: "turning left/right is very janky on
+tui-kitty graphics via a/d, it jerks and moves in wide swaths and it's very difficult to actually
+turn the amount you want, like to get to 90". The compositor was not at fault; G.4's helm was, and
+the retained compositor's steady frame rate made it plain.
+
+**The cause, in three parts.**
+
+- **The picture restarted at every order and every frame.** G.4's prediction ran from the last
+  frame's heading, from the later of the frame's arrival and the last order's sending. A held turn
+  re-orders several times a pulse, and the release is an order too: each one put the picture back on
+  the last frame's heading and swept it out again.
+- **The order ran a pulse and a half ahead** (45° at the alert tempo, 120° at quiet), and the arena
+  resolves a `HEADING` at the pulse with the whole pulse of turning, whenever inside the pulse the
+  line arrived. A press late in a pulse moved the tank a pulse's worth at once, which the picture
+  then jumped to; a tap that straddled a pulse turned the tank up to thirty degrees.
+- **The release ordered a heading the picture had not reached**, the prediction being capped by the
+  frame it restarted from, so the tank came back, or carried on, by an amount the pilot could not
+  see beforehand.
+
+**What landed.**
+
+- **`tui::helm::Helm`, one shown heading.** The helm keeps the heading the picture shows and the
+  instant it was shown, and every event (a press, a release, an order, a frame) re-anchors it where
+  it stands: nothing moves the picture except time.
+  - **Held**, it swings from where it stood at the press: one degree over the first fifth of a
+    second (`TAP_MS`), then the hull's turn rate. The press orders that one degree. Every 250 ms the
+    helm orders the heading the picture will show 250 ms on, rounded to the degree: 7.5° ahead on
+    the stock tank, 1°–25° over the hulls. The frames of a turn in hand are not drawn; they bound
+    it, the picture running no further than a pulse and a half of turning (20°–150°) past the last
+    one.
+  - **Let go**, the helm orders the heading the picture shows, and the picture holds it while the
+    tank comes to it. A turn let go inside the first fifth of a second is the tap: one degree, the
+    one line its press sent.
+  - **Otherwise** the picture follows the frames, at the turn rate or inside a pulse, whichever is
+    faster, so a typed `HEADING`, a machine at the helm and a reconnect are drawn turning and not
+    stepped to.
+- **A turn the arena does not bear out is dropped**: a whole pulse held that left the tank no nearer
+  an order the arena certainly had (the one before the standing order), or no frame at all a second
+  past the pulse. The picture eases back to the frame. A hull the frame says cannot turn (`power`
+  off or starting, `immobile`, `wreck`) is not drawn turning; the order still goes, and the arena's
+  refusal says why.
+- **The frame carries `turn_rate_mdeg_s`** (`tacsim`: `arena::step::Frame`, its `same_as`, the
+  cockpit payload): `TrackedRules::turn_rate_mdeg_s`, the figure the motion step spends. G.4 could
+  not add it (the mining train held `tacsim`) and measured the rate from frames; with a lead of a
+  few degrees that measure can only ever find a hull slower than assumed, so it stays as the
+  fallback for a frame without the key (a replay, an old fixture). `FRAME_VERSION` stays 9: an added
+  key is not a version.
+- **The status line** names an order only once the key is up: a held turn's order is its running
+  lead, not a heading anybody chose.
+- **Help**: `help cockpit` says a tap is one degree.
+
+**What it does not change.** The arena resolves orders at the pulse, so the tank's own heading (and
+what every other seat sees) still steps a pulse at a time, and at the quiet tempo that is five
+seconds: the picture swings smoothly and the world follows up to five seconds later; a fast hull's
+picture stops at the 150° bound until the pulse lands. Whether a pilot's helm order should raise
+the tempo is doc 16's ruling to make, not this cut's. The web picture's helm
+(`web/src/lib/picture.ts`, `PictureView.svelte`) is G.4's still and has the same three faults.
+
+**Goldens.** `web/src/lib/fixtures/cockpit/cockpit_frame.json` and `view_frame.json` re-blessed
+(`TACSIM_BLESS=1`, the one new key); `field_frame.json` given the key by hand.
+
+**Verified.** `cargo test -p mush-net-ssh --lib helm::tests` 15, nine of them new: against a model
+arena that resolves the standing order a pulse at a time with the whole pulse of turning
+(`a_held_turn_is_one_smooth_swing_whatever_the_pulse`: engaged, alert and quiet, the key down early
+and late in the pulse), a three-second hold is drawn in steps of 0°–1.5° a 50 ms paint, never
+backwards, still from the release on, and the tank comes to the heading the picture stopped at;
+a tap is one line and one degree; a slower hull is measured where the frame carries no rate; a
+refused turn, a silent arena and a hull that cannot turn; a turn that is not the helm's is followed.
+`--lib tui::` 293 (three tests that expected a second line from a turn stopped the instant it began
+now expect the turn stopped and at most one line), `--test tui_golden` 25; `cargo test -p tacsim
+--test domain_arena cockpit::` 192 (the fixtures re-blessed, `g12a`'s payload asserts the key);
+`mush-pixel --lib` 141; `mush-contract-tests` `client_verbs` 3, `help_commands` 4, and the
+`ci_policy` guards 24; `cargo check -p mush-bot -p mushd --tests`; fmt, clippy `-D warnings`
+(mush-net-ssh, tacsim, all targets) and rustdoc `-D warnings` clean. Not run here: the web's vitest
+(the decoder ignores the new key) and the broad suites, which are the PR's CI. **No live smoke**:
+the feel of it in w11term (the 200 ms tap window, the slow start, the 250 ms order gap) is the
+owner's to judge on dev1, and no deploy was made.

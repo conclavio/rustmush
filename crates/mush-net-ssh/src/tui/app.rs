@@ -4672,8 +4672,15 @@ impl TuiApp {
         self.pixel.keyboard_pushed()
     }
 
+    /// Which way the view's helm is turning the tank: `-1`, `0`, `1`.
+    #[must_use]
+    pub fn pixel_turning(&self) -> i8 {
+        self.pixel.helm().turning()
+    }
+
     /// Leaving the TUI with the view open: stop a turn in progress and hand
-    /// back its order.
+    /// back its order, if the stop made one (a turn let go inside the tap's
+    /// fifth of a second stands on the degree its press ordered).
     pub fn pixel_leave_orders(&mut self) -> Vec<String> {
         self.pixel.stop_helm(Instant::now());
         self.pixel.take_orders()
@@ -9873,12 +9880,21 @@ mod tests {
     fn g12b_one_then_zero_returns_the_picture_and_p_toggles_it() {
         let mut app = flying_app(|_| {});
         app.feed_input(b"v");
-        app.feed_input(b"d");
+        let r = app.feed_input(b"d");
+        assert!(
+            r.submit.len() == 1 && r.submit[0].starts_with("HEADING "),
+            "{:?}",
+            r.submit
+        );
+        assert_eq!(app.pixel_turning(), 1);
         let r = app.feed_input(b"1");
         assert_eq!(app.active_screen(), ScreenId(1));
         assert!(!app.pixel_active());
+        // Stopped: and a turn that short is a tap, whose one degree the press
+        // ordered, so the stop need add no line.
+        assert_eq!(app.pixel_turning(), 0);
         assert!(
-            r.submit.len() == 1 && r.submit[0].starts_with("HEADING "),
+            r.submit.len() <= 1 && r.submit.iter().all(|l| l.starts_with("HEADING ")),
             "{:?}",
             r.submit
         );
