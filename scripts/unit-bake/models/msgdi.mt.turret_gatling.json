@@ -1,0 +1,25 @@
+{
+  "model": "msgdi.mt.turret_gatling",
+  "asset_version": "",
+  "asset_pack": "Modular Turrets Pack (MSGDI)",
+  "package": "MSGDI/3D ModelsPropsWeapons/Modular Turrets Pack.unitypackage",
+  "root": "Assets/ModularTurretsPack/",
+  "albedo_id": true,
+  "prefab": "Prefabs/ModularTurrets/ExampleTurret4MasterPrefab.prefab",
+  "enable": [
+    "Green"
+  ],
+  "disable": [
+    "Blue"
+  ],
+  "muzzles": [
+    {
+      "locator": "Green/Barrels (3)/Barrel4Animated",
+      "weapon": "gatling"
+    }
+  ],
+  "size_cm": [
+    476,
+    380
+  ]
+}

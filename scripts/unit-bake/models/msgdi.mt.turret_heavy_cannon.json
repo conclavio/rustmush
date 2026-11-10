@@ -1,0 +1,27 @@
+{
+  "model": "msgdi.mt.turret_heavy_cannon",
+  "asset_version": "",
+  "asset_pack": "Modular Turrets Pack (MSGDI)",
+  "package": "MSGDI/3D ModelsPropsWeapons/Modular Turrets Pack.unitypackage",
+  "root": "Assets/ModularTurretsPack/",
+  "albedo_id": true,
+  "prefab": "Prefabs/ModularTurrets/ExampleTurret3MasterPrefab.prefab",
+  "enable": [
+    "Green",
+    "Green/Barrels/Barrel1Animated"
+  ],
+  "disable": [
+    "Blue",
+    "Green/Barrels/Barrel5Animated"
+  ],
+  "muzzles": [
+    {
+      "locator": "Green/Barrels/Barrel1Animated",
+      "weapon": "heavy_cannon"
+    }
+  ],
+  "size_cm": [
+    500,
+    250
+  ]
+}
