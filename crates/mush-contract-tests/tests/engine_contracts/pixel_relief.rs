@@ -455,5 +455,5 @@ fn proving_ground_bluff_cockpit_frame_hash_is_pinned_to_the_studio_preview() {
     let mut frame = Frame::new(640, 480);
     assert!(pic.draw(&mut frame, &feeds, &Look::default()));
     let hash_hex = format!("{:016x}", frame.hash());
-    assert_eq!(hash_hex, "bdce88aa2e6d6ece");
+    assert_eq!(hash_hex, "b17d80ccdc7884e3");
 }

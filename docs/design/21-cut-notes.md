@@ -884,3 +884,59 @@ now expect the turn stopped and at most one line), `--test tui_golden` 25; `carg
 (the decoder ignores the new key) and the broad suites, which are the PR's CI. **No live smoke**:
 the feel of it in w11term (the 200 ms tap window, the slow start, the 250 ms order gap) is the
 owner's to judge on dev1, and no deploy was made.
+
+## G.7c (2026-11-09): a steep face is textured along its slope
+
+The owner's report from dev1 (first person, kitty, 1200 by 504): "the hill at marker F on the
+default arena map does this 3 shades of green thing and stripes them as you get closer, so its
+continuously rotating the three shades which is visually distracting .. is this an artifact of only
+having 256 colors on the map?"
+
+**Not the palette.** Marker F is the Bluff (`SPOT_LETTERS` skips D), a flat top 7 m above the ground
+west of it, the drop one cell wide. Frames walked in on it along 073° use 28 to 61 colours. The
+three greens are the face's own light bands in the baked colour map: the dark foot (the hollow
+term), the mid slope, and the brow.
+
+**The cause.** The heightfield marches lines of constant depth away from the eye, and a column
+painted every row a line uncovered in the one colour of that line's sample. On level ground a line
+uncovers a row or two. On a steep face a line uncovers the whole height between it and the line
+before (a line every 2 m to 3 m at that range, a face rising 7 m in 10 m), so each depth slice was
+one colour from its foot to its top, and where the lines cross the face at a slant each slice was a
+wedge: a sawtooth across the three bands, a tooth a slice. The lines are fixed to the eye, so the
+teeth slid along the face as the tank moved.
+
+**What landed** (`mush_pixel::heightfield::draw_ground`, baked terrain only).
+
+- **A run of more than one row is textured along the ground it spans.** The march keeps each
+  column's projected row from the line before; the rows between that and this line's are the slope
+  between the two samples, and each row reads the colour map where it meets that slope (`1/z` is
+  linear in the row along a straight segment). A row reads at its top edge, the edge the run is cut
+  at: reading at the centre put half a row of error on every join, which showed as a one-pixel
+  notch along every band.
+- **Where the ground climbs more than 30 cm between two lines (`RUN_RISE`)** the column reads the
+  heights again in between, a read every two rows up to eight (`RUN_STEPS`), so a bank's foot and
+  brow are drawn where they are and not on the nearest line. Without it the foot of the Bluff was
+  scalloped, a scallop a slice.
+- **`ColourMap::plain`**: a segment whose ends read one colour within a texel of each other is
+  filled flat, which is most of the near ground.
+- **A wall keeps its one colour** from the ground up (its raised top is not a slope to span from),
+  as do unbaked terrain and a run of a single row.
+
+**What it does not change.** The bake, the bands themselves and the fog steps are as they were. The
+silhouette moves only where a steep rise holds a brow between two lines, which the reads in between
+now find. One pin moved: the Bluff cockpit frame hash that the contract test
+(`pixel_relief`) and the Studio preview (`web/src/lib/map-editor.test.ts`) hold in common,
+`bdce88aa2e6d6ece` to `b17d80ccdc7884e3`, the same from the native build and the web module. The foot of a bank still wavers by a pixel where a join falls on it.
+The web picture draws with the same producer and takes the change with its next module build.
+
+**Cost.** The Bluff walk, release, this machine, 1200 by 504: 6.1 ms to 6.7 ms a frame before, 7.3
+ms to 8.1 ms after.
+
+**Verified.** `cargo test -p mush-pixel` (lib 142, the goldens and the proving ground unchanged);
+`mush-contract-tests --test engine_contracts pixel_` 6; the web module rebuilt and vitest over
+`map-editor`, `pixel` and `picture` 54; `mush-net-ssh --lib tui::` 293 and `--test tui_golden` 25;
+the `ci_policy` guards 24; fmt, clippy `-D warnings` and rustdoc `-D warnings` clean;
+the new `a_steep_face_is_banded_along_its_length_not_toothed` counts 517 colour edges across a
+7 m bank seen at a slant and 1,457 with the change switched off. Before and after frames of the
+Bluff walk were compared by eye at twelve ranges from 690 m to 100 m. **No live smoke**: how it
+reads in motion in w11term is the owner's to judge on dev1, and no deploy was made.

@@ -286,7 +286,7 @@ describe("map-editor WG.4 (ground.draft.v1 & parity with tacsim::ground)", () =>
     expect(modStudio.render(640, 480, { offsetMdeg: 0 }, KIND_COCKPIT)).toBe(true);
     const studioBluffHash = modStudio.hash();
     // Pinned across Rust (`crates/mush-contract-tests/tests/engine_contracts/pixel_relief.rs`) and Web
-    expect(studioBluffHash).toBe("bdce88aa2e6d6ece");
+    expect(studioBluffHash).toBe("b17d80ccdc7884e3");
 
     const modServer = new PixelModule(
       new WebAssembly.Instance(new WebAssembly.Module(wasmBytes), {}),
