@@ -1,6 +1,6 @@
 # 44. Minds, wired through the game — the remaining work, surveyed
 
-Draft 0.6, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
+Draft 0.7, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
 through SF.R31 and SF.R26b merged) by four read-only lanes, one each for player unit minds, ground
 combat, space flight, and the non-combat actors; the lead checked each lane's main claims in the
 tree. Anchors are file and function names; line numbers drift. Draft 0.1, the same day, was the
@@ -23,6 +23,9 @@ changed and MW.0 is merged with MW.22; MW.4, MW.6, MW.16 and MW.17 are built (PR
 #533, #535); MW.17 found that the NPC decision call cannot carry its NPC without a change to the
 decision lease (now MW.17b), and MW.24 was sized: it is a presence-free connection through the
 engine, the session manager and the gateway protocol, not an edit to the SSH server alone.
+**Draft 0.7, the same day: the owner accepted Q-44-39 to Q-44-48 at their defaults**, Q-44-39 at
+the default Draft 0.6 gave it. Every question in this document is ruled. Doc 44, MW.6, MW.8 and
+MW.17 are merged (PRs #530, #534, #531, #535).
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) used: it asks the
 owner questions, each with a proposed default, an alternative and a reason. "Provisional" marks a
@@ -419,7 +422,8 @@ Q-44-32 with a clarification each. Every other default is accepted as written. E
 carries its decision first, with the proposed text kept under it for the record. Draft 0.3 added
 Q-44-35 to Q-44-38 (§5.11), raised by the first review; the owner accepted all four at their
 defaults the same day (Draft 0.4). Draft 0.5 adds Q-44-39 to Q-44-48 (§5.12), raised by the
-second review; they are not ruled, and each default holds until they are. Two of them reopen a
+second review; the owner accepted all ten at their defaults the same day (Draft 0.7), Q-44-39
+at the default Draft 0.6 gave it. Two of them reopen a
 ruled answer: Q-44-42 withdraws half of Q-44-17, and Q-44-44 changes the order of Q-44-20's work.
 
 ### 5.1 Order and shape
@@ -725,7 +729,10 @@ ruled answer: Q-44-42 withdraws half of Q-44-17, and Q-44-44 changes the order o
 - **Why:** "never opens fire first" has to be true of the unit, and a player's own sealed mind
   takes the house default's place under the same ruling.
 
-### 5.12 Questions the second review raises (Draft 0.5; each default holds until ruled)
+### 5.12 Questions the second review raised (Draft 0.5)
+
+**Ruled 2026-11-11: all ten defaults accepted as written.** For Q-44-39 that is the default as
+Draft 0.6 changed it: MW.0 and MW.22 are built in order and merged together.
 
 **Q-44-39 — Licensed minds on a live server, and the title fence.**
 - **Proposed default (changed in Draft 0.6):** MW.0 and MW.22 are built in that order and merged
@@ -934,7 +941,7 @@ not write a space book directly (`arena_library.rs`); it goes through commands.
   rated line it needs, at every wipe.
 - **MW.7 waits on a design, not on code:** the field section MW.8's session writes into doc 27.
   If that section is late, MW.7's first act is to write it from the rulings.
-- **Q-44-39 to Q-44-48 are open.** Each unit is built on the default and says so in its cut note.
+- **Q-44-39 to Q-44-48 are ruled** (their defaults, 2026-11-11), and the units are built on them.
 - **The absent-player gate is one gate.** MW.7 builds it in the arena, where a field's intents are
   accepted; MW.8 and MW.9 must refuse the same things in space. Whichever lands second uses the
   first one's rule, not a copy of it.
