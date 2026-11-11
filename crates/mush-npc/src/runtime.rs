@@ -95,6 +95,106 @@ impl Default for NpcConfig {
     }
 }
 
+/// How many stimuli of a turn's batch [`LastDecision`] keeps.
+pub const LAST_DECISION_WOKE_MAX: usize = 8;
+
+/// How long a fallback's staff-facing reason may be in [`LastDecision`].
+pub const LAST_DECISION_REASON_MAX: usize = 160;
+
+/// **What a dialogue turn came to**, for the staff view (doc 44 cut MW.17).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecisionResult {
+    /// The call has not completed.
+    InFlight,
+    /// The model answered with these actions (their tool names, in order).
+    Model {
+        /// The actions' tool names.
+        actions: Vec<&'static str>,
+    },
+    /// The model answered and chose to do nothing.
+    ModelSilent,
+    /// The NPC spoke its profile's fallback line. `reason` is the staff-facing cause
+    /// (a provider error, a budget, the layer or the NPC disabled).
+    Fallback {
+        /// Why it degraded, capped at [`LAST_DECISION_REASON_MAX`].
+        reason: String,
+    },
+    /// The completion's payload did not decode; nothing was applied.
+    Unreadable,
+}
+
+/// **The last dialogue turn an NPC began** (doc 44 cut MW.17, Q-44-30): what woke it, how
+/// much the model was shown, and whether what it then did came from the model or from its
+/// profile's fallback line.
+///
+/// It holds kinds, ids and counts only: no prompt, no response and no stimulus text.
+/// Prompts are audited by hash and a short summary and are never stored in full
+/// (`docs/help/llm.md`), and this record keeps to that. It lives with the runtime, so it
+/// does not survive a restart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastDecision {
+    /// The turn's correlation id.
+    pub correlation: u64,
+    /// When the turn began (ms).
+    pub started_ms: i64,
+    /// The drained batch, first [`LAST_DECISION_WOKE_MAX`]: each stimulus's kind and whom
+    /// it was about.
+    pub woke: Vec<(&'static str, Option<ObjId>)>,
+    /// How many stimuli the batch held in all.
+    pub woke_total: usize,
+    /// Public authored facts shown to the model. Guarded and secret facts never cross the
+    /// async boundary (`TurnSnapshot::knowledge`).
+    pub public_facts: usize,
+    /// Long-term memories recalled into the prompt.
+    pub recalled: usize,
+    /// What it came to.
+    pub result: DecisionResult,
+}
+
+impl LastDecision {
+    /// The two staff lines `@agent/show` prints, `name` resolving an actor for a reader.
+    #[must_use]
+    pub fn lines(&self, name: impl Fn(ObjId) -> String) -> [String; 2] {
+        let mut woke: Vec<String> = self
+            .woke
+            .iter()
+            .map(|(kind, who)| match who {
+                Some(who) => format!("{kind} ({})", name(*who)),
+                None => (*kind).to_owned(),
+            })
+            .collect();
+        if self.woke_total > self.woke.len() {
+            woke.push(format!("{} more", self.woke_total - self.woke.len()));
+        }
+        let woke = if woke.is_empty() {
+            "nothing queued".to_owned()
+        } else {
+            woke.join(", ")
+        };
+        let shown = format!(
+            "  Last turn: woken by {woke}; shown {} public fact{} and {} recalled memor{}.",
+            self.public_facts,
+            if self.public_facts == 1 { "" } else { "s" },
+            self.recalled,
+            if self.recalled == 1 { "y" } else { "ies" },
+        );
+        let result = match &self.result {
+            DecisionResult::InFlight => "the call is in flight".to_owned(),
+            DecisionResult::Model { actions } => {
+                format!("the model answered: {}", actions.join(", "))
+            }
+            DecisionResult::ModelSilent => "the model answered and did nothing".to_owned(),
+            DecisionResult::Fallback { reason } => {
+                format!("the profile's fallback line, not the model ({reason})")
+            }
+            DecisionResult::Unreadable => {
+                "the completion did not decode and nothing was applied".to_owned()
+            }
+        };
+        [shown, format!("  Last turn result: {result}.")]
+    }
+}
+
 /// One NPC's live runtime state (design 03 §6.2). Cloneable — the whole host
 /// slot is cloned when a `World` snapshot is taken.
 #[derive(Clone, Debug, Default)]
@@ -135,6 +235,8 @@ pub struct NpcRuntime {
     pub conversation_focus: Option<ConversationFocus>,
     /// Stimuli refused or evicted to maintain the hard mailbox bounds.
     pub dropped_stimuli: u64,
+    /// The last dialogue turn this NPC began, for the staff view (doc 44 cut MW.17).
+    pub last_decision: Option<LastDecision>,
 }
 
 impl NpcRuntime {
@@ -402,7 +504,61 @@ impl NpcHostState {
         rt.dialogue_since_summary = true;
         rt.pending_since = None;
         rt.mailbox_bytes = 0;
-        std::mem::take(&mut rt.mailbox)
+        let batch = std::mem::take(&mut rt.mailbox);
+        // Doc 44 cut MW.17: the mailbox is drained here, so this is the one place that
+        // knows what woke the turn.
+        rt.last_decision = Some(LastDecision {
+            correlation,
+            started_ms: now_ms,
+            woke: batch
+                .iter()
+                .take(LAST_DECISION_WOKE_MAX)
+                .map(|stimulus| (stimulus.kind_name(), stimulus.subject()))
+                .collect(),
+            woke_total: batch.len(),
+            public_facts: 0,
+            recalled: 0,
+            result: DecisionResult::InFlight,
+        });
+        batch
+    }
+
+    /// Record how much the turn `correlation` showed the model (doc 44 cut MW.17). A
+    /// turn that is no longer the NPC's last is left alone.
+    pub fn note_decision_context(
+        &mut self,
+        npc: ObjId,
+        correlation: u64,
+        public_facts: usize,
+        recalled: usize,
+    ) {
+        if let Some(decision) = self
+            .runtimes
+            .get_mut(&npc)
+            .and_then(|rt| rt.last_decision.as_mut())
+            .filter(|decision| decision.correlation == correlation)
+        {
+            decision.public_facts = public_facts;
+            decision.recalled = recalled;
+        }
+    }
+
+    /// Record what the turn `correlation` came to (doc 44 cut MW.17). A completion for
+    /// any other turn changes nothing.
+    pub fn finish_decision(&mut self, npc: ObjId, correlation: u64, result: DecisionResult) {
+        if let Some(decision) = self
+            .runtimes
+            .get_mut(&npc)
+            .and_then(|rt| rt.last_decision.as_mut())
+            .filter(|decision| decision.correlation == correlation)
+        {
+            decision.result = match result {
+                DecisionResult::Fallback { reason } => DecisionResult::Fallback {
+                    reason: reason.chars().take(LAST_DECISION_REASON_MAX).collect(),
+                },
+                other => other,
+            };
+        }
     }
 
     /// Capture only references present in the finalized prompt for this call.
@@ -599,6 +755,87 @@ mod tests {
             text: text.into(),
             kind: SpeechKind::Say,
         }
+    }
+
+    /// Doc 44 cut MW.17: a turn records what woke it, what it was shown and what it came
+    /// to; a completion for another turn changes nothing; the staff lines carry kinds,
+    /// names and counts, and never a stimulus's text.
+    #[test]
+    fn mw17_the_last_decision_records_what_woke_a_turn_and_how_it_ended() {
+        let mut h = host();
+        let npc = ObjId(9);
+        assert!(h.runtime(npc).is_none_or(|rt| rt.last_decision.is_none()));
+
+        h.enqueue(npc, spoken(2, "a secret word"), 0);
+        h.enqueue(npc, Stimulus::PlayerArrived { who: ObjId(3) }, 0);
+        let batch = h.begin_turn(npc, 5, 41);
+        assert_eq!(batch.len(), 2);
+        let begun = h
+            .runtime(npc)
+            .and_then(|rt| rt.last_decision.clone())
+            .expect("a begun turn is recorded");
+        assert_eq!(begun.correlation, 41);
+        assert_eq!(
+            begun.woke,
+            vec![
+                ("spoken to", Some(ObjId(2))),
+                ("an arrival", Some(ObjId(3)))
+            ]
+        );
+        assert_eq!(begun.result, DecisionResult::InFlight);
+
+        h.note_decision_context(npc, 41, 4, 1);
+        // A completion for some other turn is not this turn's.
+        h.finish_decision(npc, 40, DecisionResult::Unreadable);
+        h.note_decision_context(npc, 40, 99, 99);
+        let still = h
+            .runtime(npc)
+            .and_then(|rt| rt.last_decision.clone())
+            .expect("still recorded");
+        assert_eq!(still.result, DecisionResult::InFlight);
+        assert_eq!((still.public_facts, still.recalled), (4, 1));
+
+        h.finish_decision(
+            npc,
+            41,
+            DecisionResult::Fallback {
+                reason: "x".repeat(LAST_DECISION_REASON_MAX * 2),
+            },
+        );
+        let ended = h
+            .runtime(npc)
+            .and_then(|rt| rt.last_decision.clone())
+            .expect("recorded");
+        let DecisionResult::Fallback { reason } = &ended.result else {
+            panic!("the turn fell back: {:?}", ended.result);
+        };
+        assert_eq!(reason.chars().count(), LAST_DECISION_REASON_MAX);
+
+        let [shown, result] = ended.lines(|who| format!("#{}", who.0));
+        assert_eq!(
+            shown,
+            "  Last turn: woken by spoken to (#2), an arrival (#3); shown 4 public facts and 1 recalled memory."
+        );
+        assert!(
+            result.starts_with("  Last turn result: the profile's fallback line, not the model ("),
+            "{result}"
+        );
+        assert!(!shown.contains("secret") && !result.contains("secret"));
+
+        // A long batch is named up to the cap and counted past it.
+        for n in 0..(LAST_DECISION_WOKE_MAX as u32 + 3) {
+            h.enqueue(npc, spoken(10 + n, "more"), 100);
+        }
+        h.finish_turn_if_correlation(npc, 41, 100);
+        let _ = h.begin_turn(npc, 200, 42);
+        let long = h
+            .runtime(npc)
+            .and_then(|rt| rt.last_decision.clone())
+            .expect("recorded");
+        assert_eq!(long.woke.len(), LAST_DECISION_WOKE_MAX);
+        let [shown, result] = long.lines(|who| format!("#{}", who.0));
+        assert!(shown.contains("3 more"), "{shown}");
+        assert_eq!(result, "  Last turn result: the call is in flight.");
     }
 
     #[test]

@@ -867,6 +867,70 @@ async fn budget_trip_degrades_to_fallback_line() {
     assert!(said_fallback, "the NPC degraded to its fallback line");
 }
 
+/// **Doc 44 cut MW.17 (Q-44-30)**: staff read why an NPC said what it said. `@agent/show`
+/// names what woke its last turn and whether the line came from the model or from the
+/// profile's fallback, and shows no stimulus or response text. A player below Builder is
+/// refused the verb.
+#[tokio::test]
+async fn mw17_staff_read_what_woke_a_turn_and_whether_the_model_or_the_fallback_spoke() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let show = format!("@agent/show #{}", npc.0);
+
+    let before = rig.staff(&show);
+    assert!(!before.contains("Last turn"), "no turn yet: {before}");
+
+    // A turn the model answers.
+    let (svc, mock) = service();
+    rig.run(alice, "say hello, Bartender, a quiet word");
+    rig.set_now(2);
+    let (_, corr, payload) = rig.one_turn().expect("turn");
+    let in_flight = rig.staff(&show);
+    assert!(
+        in_flight.contains("Last turn: woken by") && in_flight.contains("(Alice)"),
+        "{in_flight}"
+    );
+    assert!(in_flight.contains("the call is in flight"), "{in_flight}");
+    mock.push_response(tool_resp(vec![say_tool("What'll it be?")]));
+    let out = run_npc_turn_async(&svc, &payload).await;
+    let _ = rig.complete(npc, corr, &out).take();
+    let answered = rig.staff(&show);
+    assert!(
+        answered.contains("Last turn result: the model answered: say."),
+        "{answered}"
+    );
+    assert!(
+        !answered.contains("quiet word") && !answered.contains("What'll it be"),
+        "the view carries no stimulus or response text: {answered}"
+    );
+
+    // The next turn trips the budget: the fallback line, and the view says so.
+    rig.set_now(120);
+    rig.run(alice, "say another, Bartender");
+    rig.set_now(122);
+    let (_, corr, payload) = rig.one_turn().expect("a second turn");
+    let budget = BudgetConfig {
+        global: Some(BudgetLimit::tokens(1)),
+        ..BudgetConfig::default()
+    };
+    let (starved, _mock) = service_with_budget(budget);
+    let out = run_npc_turn_async(&starved, &payload).await;
+    assert!(out.contains("\"status\":\"degraded\""), "{out}");
+    let _ = rig.complete(npc, corr, &out).take();
+    let fell_back = rig.staff(&show);
+    assert!(
+        fell_back.contains("Last turn result: the profile's fallback line, not the model ("),
+        "{fell_back}"
+    );
+
+    // A player is not staff.
+    let refused = rig.actor_sys(alice, &show);
+    assert!(!refused.contains("Last turn"), "{refused}");
+}
+
 #[tokio::test]
 async fn memory_overflow_summarizes_and_persists() {
     let mut rig = Rig::new();

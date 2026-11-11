@@ -23,7 +23,7 @@ switches are Wizard+ (`@llm`).
   @agent/create <name>              Create an NPC agent here (Minor tier, enabled).
   @agent/set <npc>/<field>=<value>  Edit its profile (see fields below).
   @agent/sheet <npc>                Give it a pilot sheet so it can be checked.
-  @agent/show <npc>                 Show its profile + live runtime status.
+  @agent/show <npc>                 Show its profile, live runtime status and last turn.
   @agent <npc>                      Same as /show.
 
 Profile fields (`@agent/set <npc>/<field>=<value>`):
@@ -241,6 +241,16 @@ when that is not what you want. Examples:
 
 `@agent/show <npc>` reports a one-line summary of an NPC's world knowledge (how
 many entries at each tier, its tags, and which pools those tags resolve).
+
+It also reports the NPC's **last turn**, in two lines: what woke it (the kind of
+each thing it reacted to, and who it was about), how many public facts and
+recalled memories the model was shown, and what it came to: the model answered
+(with the actions it took), the model did nothing, the call is still in flight,
+or the NPC spoke its profile's **fallback line** because the model was not
+reached, with the reason. An NPC that answers with its fallback reads the same
+to players as one that answers from the model; this is where staff tell them
+apart. The view never shows the prompt, the reply or what was said to the NPC,
+and it is forgotten at a restart.
 
 ### Authoring shared lore pools (`@lore`)
 
