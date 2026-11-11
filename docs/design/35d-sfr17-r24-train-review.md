@@ -216,8 +216,9 @@ Reading 1 is cheap and leaves reading 2 open; reading 2 is the one that would be
 |---|---|
 | An in-flight debit lands, once, or what it paid for is undone | Built as `SF.R26b` for a planned passage: a receipt per landed burn, a resubmission by the tick, and a passage cut when its burn cannot land. The order is grant, then a debit that must land, not file, debit, grant; the owner accepted that order on 2026-11-11, and the cut note gives the reason |
 | `+helm/approach` and the dock's RCS | Still spend from the ledger first; their whole-tonne debits now come under the same receipt and resubmission |
-| `+helm/submit`, `/run`, `/dock`, `/tow` each ending in one submitted action | Not built |
-| The staged tape family: an audit trail, or deleted | Not decided |
+| `+helm/submit` and `/run` each ending in one submitted action | Built as `SF.R26c`: one `tacsim_space_customs` a ruling; its apply records the ruling and takes a seizure's ore; the tick levies the fine, advances the front and sets the verdict on the committed row |
+| `+helm/dock` and `/tow` each ending in one submitted action | Not built, and not movable alone (`SF.R26c`'s cut note): a berth is mush-sim's spatial parent, and space salvage custody is the space book's document (§6.3, the `SF.R28` row) |
+| The staged tape family: an audit trail, or deleted | An audit trail, kept (`SF.R26c`): `sfr21` reads it and its action also stages a drone launch's records |
 | An input typed while its actor has an action pending is not on the staged tape | Not built |
 
 The ruling also changes two lines of this document. §4's finding stands as a description, and is no longer a defect for the in-bubble verbs: they are orders to a running simulation. §10's second criterion is rewritten below.

@@ -1194,3 +1194,129 @@ with warnings denied.
 **Not pinned by a story.** The sequence floor; the `tracked` rule for an older queue; the port clamp keeping the
 queued debits; the ledger's reversal for a burn that pays for no passage; the drift of a free flight under autopilot
 (the story cuts a corridor journey).
+
+## SF.R26c — the customs ruling is one submitted action (doc 35d §9a; Q-35d-6 ruled)
+
+Doc 35d §9a's table left four verbs that "should each end in one submitted action": `+helm/submit`, `/run`, `/dock`
+and `/tow`. This cut reads each against the engine's action contract, builds the two that move soundly, and says what
+blocks the other two. It also settles the staged tape family. Paths are under `crates/tacsim/src/` unless given.
+
+**What each verb wrote in its handler, durable outside the bubble.**
+
+| Verb | Written by the handler before this cut |
+|---|---|
+| `/submit` | The fine: an E4 contract offered and twice accepted on the economy's store. The Customs Assertion front and its canon entry. A seizure: a `tacsim_port_burn` queued **after** clearance was granted. The picket's verdict and the corvette's relation (bubble). An audit row on the staged tape |
+| `/run` | The incident on the front and its canon entry. The verdict and the Hostile relation (bubble). An audit row |
+| `/dock`, port clamp | The berth (`mush_sim::dock_carrier_at_destination`). Unit custody check-in of the carrier and, when she was the last, of the NPC hulls (`custody::check_in_space_unit`); the domain's stand-down; crew hand-over; a tow's delivery (`deliver_active_tow_at_port`: custody check-in, placement, a black-box entry, a retrieval) and her own retrieval. The RCS spend goes through the ledger to `tacsim_port_burn` |
+| `/tow` | A `SalvageCustody` row in the space book's custody document. The salvage claim: a contract on the economy's store (`mush_economy::file_salvage_claim`), then `ClaimOrder::File` applied straight to that row, and IC mail to the audience. The tow record. `release` closes the claim's contract and removes the row |
+
+**Verdicts.**
+
+| Verb | Verdict | Why |
+|---|---|---|
+| `/submit` | **(b) moved, built** | The ruling is a fact a typed family can hold, a seizure's ore is inventory the action can debit in its own transaction, and the fine and the front can follow the committed row on the tick, as the Registry's mind fine does (`minds/registry_inspection/fine.rs`) |
+| `/run` | **(b) moved, built** | The same action with the finding `Ran`; the incident follows the committed row |
+| `/dock` | **(c) not movable without a larger change** | A berth is the hull's spatial parent in mush-sim (`JourneyBook`, `SpatialState`); unit custody is mush-tactics' store; the stand-down is mush-sim's. None is an action-state family, and no port verb takes a berth through an action: a lane arrival docks on the journey tick (`apply_arrival`). A row-then-tick clamp, in `+ship/undock`'s shape, would give the prepare nothing to check and the apply nothing to move, would put the hull back in the bubble between a consumed tape and her berth, and would change every story that clamps at a port. It becomes sound with a berth family at the port (two hulls contending for one collar is a check a prepare could make). The one thing the clamp spends, RCS reaction mass, already lands under `SF.R26b`'s receipt |
+| `/tow` | **(c) not movable without a larger change** | On the ground, custody rows live on the site record family and `+salvage/claim go` already ends in one submitted `tacsim_surface_tow` (`TowOrder::Claim`). A space row lives in the space book's custody document, so `surface::claim::submit` applies the order to the book directly (`apply_space_claim_order`, eight arms). A filing family beside that document would be a second home for one custody, with its own lifecycle through release, delivery, award and repair. The move that makes `/tow` one action is the custody row itself going into a typed family, which is doc 35d §6.3 and the `SF.R28` row ("space custody rows off the `freeport` ground site") |
+
+Neither (c) is counted as done: doc 35d §10's second criterion stays open for `/dock` and `/tow`.
+
+**Built.**
+
+- **`tacsim_space_customs`** (`space/customs.rs`, new): one provider, one family
+  `tacsim.space_customs_ruling` (`SpaceCustomsRulings`, a row a hull holding at most `MAX_CUSTOMS_RULINGS` = 16
+  landed `CustomsRuling`s), registered beside the bubble input (`port_tick.rs`). A ruling's finding is
+  `CustomsFinding::Cleared`, `Fined`, `Seized` or `Ran`.
+- **The handlers file and submit; they grant nothing.** `helm_submit` checks the seat, the bubble and the heave-to
+  as before, reads the manifest, and decides the finding: cleared; fined when the hull's principal can pay
+  (`picket::customs_fine_minor`, `customs_fine_payable`); otherwise seized. `helm_run` files `Ran`. Each calls
+  `customs::file_ruling`, which puts a `PendingCustomsRuling` on the space book (so it survives a restart) and
+  submits the action as the officer who typed the command. A second ruling on a hull while one is pending is
+  refused (`CUSTOMS_RULING_PENDING`).
+- **The apply.** The prepare takes the filed ruling from the offer (`project_offer` reads the book for the officer,
+  who must still be aboard), refuses a sequence the hull's row already holds ("that customs ruling has already
+  landed"), and writes the ruling. For a seizure it debits the `strategic_ore` from the hold through the delegated
+  inventory families **in the same transaction**, taking what the hold has free up to the tonnes asked and
+  recording what it took; a hold with none refuses the ruling.
+- **The tick acts on the committed row** (`customs::reconcile_customs_rulings`, in `space_tick` after
+  `reconcile_space_burns`). A landed ruling is applied once and leaves the book: the fine is levied
+  (`picket::levy_customs_fine_and_advance_front`), the front advanced (`record_customs_seizure`,
+  `record_ran_the_picket_incident`), and only then are the picket's verdict and the corvette's relation set in the
+  bubble. A fine that cannot be collected leaves the ship uncleared (`CUSTOMS_FINE_UNCOLLECTED`).
+- **A retry, not a guard.** A ruling with no row whose officer has nothing in flight is submitted again after
+  `CUSTOMS_RETRY_AFTER_TICKS` = 3, one ruling an officer a tick, and given up after `CUSTOMS_MAX_ATTEMPTS` = 3:
+  the crew hear `CUSTOMS_RULING_LAPSED` and the ship is as she was.
+- **The seizure left the burn.** `submit_seized_contraband_burn` and `seize_contraband_and_advance_front` are
+  deleted. `PendingSpaceBurn.seized_strategic_ore_t` and `SPACE_SEIZURE_LAPSED` stay so a queue written before
+  this cut still decodes and lands as it did.
+- **The staged tape family is the audit trail.** `tacsim.space_bubble_tape` is kept and said to be that in its
+  rustdoc and in the `+helm` allowlist note. It is not deleted: `sfr21_…` reads it, and its provider is also what
+  stages a drone launch's `RigRecord`s into `tacsim.excursion`. `/submit` and `/run` no longer write it; their own
+  row is their record, and an audit submission by the same officer would have turned the ruling away.
+
+**What a player sees.** `+helm/submit` answers with what the corvette found and that the ruling follows; the
+clearance, the fine or the seizure arrives on the next tick as the line it always was. `+helm/run` answers that the
+corvette is logging the run; the corvette turns on the ship a tick later. `docs/help/space.md` says so.
+
+**Tests.** New story `sfr26c_a_customs_ruling_is_one_submitted_action_and_settles_nothing_until_it_lands`
+(`crates/tacsim/tests/domain_world/voyage.rs`), non-GOD pilots through the registered handlers, three parts:
+
+- A, a fine: the command queues exactly one submission, the pilot's own `tacsim_space_customs`; before it lands
+  she is not cleared, her credit is whole and the front has not moved; landed, the row holds `Fined` and still
+  nothing is granted; the same submission landed again is refused by the row; the tick levies 1,000 cr, advances
+  the front once and clears her; a later copy has no offer and a later tick levies nothing more.
+- B, a seizure lost and retried: the submission is dropped; 51 t is still aboard and she is not cleared; a second
+  `/submit` and a `/run` are refused; the third tick submits the ruling again; as it lands the hold is empty,
+  before any tick; the tick clears her and advances the front.
+- C, a run that never lands: three resubmissions dropped, the crew are told, the corvette regards her as before
+  and the front has not moved; typed again and landed, the run turns the corvette Hostile and advances the front.
+
+Run against the code before the cut (a probe on the same setup, not committed): `/submit` with credit left her
+`ClearedAfterFine` with 1,000 cr gone and nothing submitted; the indigent `/submit` left her `ClearedAfterSeizure`
+with all 51 t aboard and a `tacsim_port_burn` queued; `/run` left her `RanThePicket` with nothing submitted. Each
+part's first assertions fail there.
+
+Existing stories land the ruling through a new helper, `customs_ruling` (the earlier queue is set aside, the
+ruling landed, the queue put back, one tick): `sfr6`, `sfr8`, `sfr9`, `sfr12`, `sfr18`, `sfr20`, `sfr23`, `sfr25`
+and the two-tug opening shared by `sfr19`, `rs8` and `cr6`. `sfr12` and `sfr18` no longer expect a seizure burn.
+The matter census (`sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`,
+`crates/tacsim/tests/domain_economy/mill.rs`) is re-blessed for one `.debit(` in `space/customs.rs`: the
+seizure's draw, which used to ride the burn's second debit. It is matter leaving the world, moved, not added.
+Local: `domain_world` 258 passed; `mush-contract-tests` 35 + 80 (8 ignored) + 76 passed; clippy clean on tacsim
+with warnings denied; rustdoc clean on tacsim.
+
+**Divergences.**
+
+- **A retry where the brief allowed a guard.** `+helm/submit` is not refused while its officer has another action
+  pending, as `+helm/autopilot` is. The ruling is filed and the tick submits it; clearance then comes three ticks
+  later, not one. A picket encounter is no place to be told to type it again.
+- **File, land, then grant, where `SF.R26b` grants first.** The owner accepted grant-then-debit for a passage on
+  2026-11-11. Customs takes the other order because doc 35d §6.7 found "clearance is granted before the
+  asynchronous seizure lands" and the `SF.R30` row asks for seizure before clearance; here the wait is one tick,
+  and eleven story lines changed, against thirty-eight for the autopilot. If the owner wants one order
+  everywhere, the handler can grant and the tick revoke a ruling that lapses; the action and its row stay as built.
+- **The heave-to is checked when the command is typed**, not again when the ruling lands: a prepare sees typed
+  families only.
+- **The row is the ruling, not the collection.** A `Fined` ruling whose fine could not be collected stays on the
+  row; the ship is not cleared and submits again for a new ruling.
+- **The seized quantity is what the hold had**, in whole tonnes, where the handler used to record the manifest's
+  kilograms.
+
+**Defaults worth a look** (each cheap to change now; the first is not once a store is kept): the family's id and
+row shape; the bound of 16 rulings a hull and 32 pending; the three ticks and three attempts, copied from the burn.
+
+**Not built.**
+
+- `+helm/dock` and `+helm/tow`, for the reasons above.
+- The fine's contract carries no idempotency key. The tick levies it and takes the ruling off the book in one
+  fire; whether a crash can land between those two writes was not traced.
+- A ruling still pending when the hull leaves the bubble is applied for its fine, its ore and its front, and sets
+  no verdict.
+- A ruling whose officer has left the hull has no offer, so it is tried three times and given up.
+- An input typed while its actor has an action pending is still applied and not on the audit trail, and
+  `+helm/approach` and the dock's RCS still spend from the ledger first (both as `SF.R26b` left them).
+- The audit trail's rows are still never deleted (doc 35d §6.1).
+
+**Not pinned by a story.** A restart with a ruling pending; a fine that cannot be collected; a clean clearance's
+row; a ruling that lands after the hull has left the bubble or after the picket has written her off as a runner;
+the bound of 32 pending; an officer who is not the captain.

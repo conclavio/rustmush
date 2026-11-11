@@ -4843,7 +4843,7 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         .available()
         .expect("amount")
         .minor();
-    let submit_out = run(&mut rig.tw, pilot, "+helm/submit");
+    let submit_out = customs_ruling(&mut rig, pilot, "+helm/submit");
     assert!(
         submit_out.contains("assessed 2000.00cr contraband fine")
             && submit_out.contains("4000 kg unlicensed `strategic_ore` detected")
@@ -5409,7 +5409,7 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
     let brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &brake_submits);
-    let submit_out = run(&mut rig.tw, pilot, "+helm/submit");
+    let submit_out = customs_ruling(&mut rig, pilot, "+helm/submit");
     assert!(
         submit_out.contains("customs clearance granted"),
         "expected customs inspection completion: {submit_out}"
@@ -5882,7 +5882,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
     );
 
     // Run the picket once (`+helm/run`), then verify a second `+helm/run` is refused (`picket.inspection_status` guard):
-    let run_1 = run(&mut rig2.tw, pilot2, "+helm/run");
+    let run_1 = customs_ruling(&mut rig2, pilot2, "+helm/run");
     assert!(
         run_1.contains("You refuse inspection and run the Republic Customs picket!"),
         "{run_1}"
@@ -6525,20 +6525,16 @@ fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thi
     let brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &brake_submits);
 
-    let submit_out = run(&mut rig.tw, pilot_miner, "+helm/submit");
+    // Doc 35 cut SF.R26c: the seizure is the ruling's own action; the ore leaves the hold as
+    // that action lands, and no separate burn is queued for it.
+    let submit_out = customs_ruling(&mut rig, pilot_miner, "+helm/submit");
     assert!(
         submit_out.contains("confiscated in lieu of fine")
             && submit_out.contains("customs clearance granted"),
         "indigent pilot must have contraband seized and be cleared: {submit_out}"
     );
-    let seizure_submits = drain(&mut rig.tw);
-    assert!(
-        !seizure_submits.is_empty(),
-        "contraband seizure must queue an authoritative tacsim_port_burn debit"
-    );
-    for s in &seizure_submits {
-        land(&mut rig, s).expect("contraband seizure burn lands");
-    }
+    let earlier_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &earlier_submits);
     assert_eq!(
         pool(&mut rig.tw, vault_miner, "strategic_ore"),
         0,
@@ -8648,7 +8644,7 @@ fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settl
     let escort_brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &escort_brake_submits);
 
-    let submit_escort_out = run(&mut rig.tw, pilot_escort, "+helm/submit");
+    let submit_escort_out = customs_ruling(&mut rig, pilot_escort, "+helm/submit");
     assert!(
         submit_escort_out.contains("0 kg `strategic_ore`, licensed/compliant")
             && submit_escort_out.contains("customs clearance granted"),
@@ -8709,16 +8705,14 @@ fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settl
     let miner_brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &miner_brake_submits);
 
-    let submit_miner_out = run(&mut rig.tw, pilot_miner, "+helm/submit");
+    let submit_miner_out = customs_ruling(&mut rig, pilot_miner, "+helm/submit");
     assert!(
         submit_miner_out.contains("confiscated in lieu of fine")
             && submit_miner_out.contains("customs clearance granted"),
         "smuggler submit must seize contraband and grant clearance: {submit_miner_out}"
     );
-    let seizure_submits = drain(&mut rig.tw);
-    for s in &seizure_submits {
-        land(&mut rig, s).expect("seizure burn lands");
-    }
+    let earlier_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &earlier_submits);
 
     // Step the bubble until the Raider disables the escort (`*Escort Hawk*`) into `SpaceBubbleBook::derelicts`
     // (`JourneyState::Failed`) and the Corvette disables the Raider so `*Salt Moth*` resumes (`Cruising`):
@@ -8956,7 +8950,7 @@ fn two_tugs_into_kirkwood(drive_down_b: bool) -> TwoTugs {
     let brake_submits = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &brake_submits);
     for &p in &flying {
-        let sub = run(&mut rig.tw, p, "+helm/submit");
+        let sub = customs_ruling(&mut rig, p, "+helm/submit");
         assert!(sub.contains("customs clearance granted"), "{sub}");
         let draws = drain(&mut rig.tw);
         land_quietly(&mut rig, &draws);
@@ -9874,12 +9868,12 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
 
     // 3. Submit both clean carriers to customs inspection (`+helm/submit`), then disable the Belt Raider
     //    so the Kirkwood picket bubble closes cleanly with zero derelicts on the NPC Corvette:
-    let sub_empty = run(&mut rig.tw, pilot_empty, "+helm/submit");
+    let sub_empty = customs_ruling(&mut rig, pilot_empty, "+helm/submit");
     assert!(
         sub_empty.contains("customs clearance granted"),
         "{sub_empty}"
     );
-    let sub_loaded = run(&mut rig.tw, pilot_loaded, "+helm/submit");
+    let sub_loaded = customs_ruling(&mut rig, pilot_loaded, "+helm/submit");
     assert!(
         sub_loaded.contains("customs clearance granted"),
         "{sub_loaded}"
@@ -11188,7 +11182,7 @@ fn sfr23_mining_and_sensing_remainders() {
     // 6b. Run `+helm/submit`: even though `pilot_1` staked `strategic_elements` on Block B,
     //     `hull_1` mined its `4 t` of `strategic_ore` from the UNLEASED Block C, so per-block
     //     `inspect_hull_manifest` detects `4,000 kg` of unlicensed `strategic_ore`!
-    let submit_out = run(&mut rig.tw, pilot_1, "+helm/submit");
+    let submit_out = customs_ruling(&mut rig, pilot_1, "+helm/submit");
     assert!(
         submit_out.contains("4000 kg unlicensed `strategic_ore`"),
         "per-block inspect_hull_manifest must detect unlicensed strategic_ore mined from Block C despite Block B claim: {submit_out}"
@@ -11645,7 +11639,7 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
     let brake = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &brake);
-    let submit = run(&mut rig.tw, pilot, "+helm/submit");
+    let submit = customs_ruling(&mut rig, pilot, "+helm/submit");
     assert!(
         submit.contains("unlicensed `strategic_ore`"),
         "customs finds the ore she carried round by the cluster: {submit}"
@@ -12356,6 +12350,449 @@ fn sfr26b_a_passage_debit_is_admitted_lands_once_and_an_unpaid_passage_is_cut() 
         engaged.contains("Autopilot engaged for Stickney Yards"),
         "{engaged}"
     );
+}
+
+fn is_customs(submit: &AuthoritativeSubmit) -> bool {
+    submit.action.key().id.as_str() == tacsim::space::CUSTOMS_ACTION
+}
+
+/// **Type a customs verb and see its ruling through** (doc 35 cut SF.R26c): `+helm/submit` and
+/// `+helm/run` each end in one submitted `tacsim_space_customs`, and the picket's verdict
+/// follows the landed ruling on the space tick. The submissions queued before the command are
+/// set aside (the engine holds one an actor, and would turn the ruling away behind them), the
+/// ruling's own is landed, the earlier ones go back on the queue as they were, and one space
+/// tick applies the ruling. Answers what `who` heard from the command and from that tick.
+fn customs_ruling(rig: &mut Rig, who: ObjId, line: &str) -> String {
+    let mut earlier = Vec::new();
+    while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+        earlier.push(submit);
+    }
+    let mut heard = run(&mut rig.tw, who, line);
+    let mut filed = Vec::new();
+    while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+        filed.push(submit);
+    }
+    for submit in filed {
+        if is_customs(&submit) {
+            land(rig, &submit).expect("the customs ruling lands");
+        } else {
+            earlier.push(submit);
+        }
+    }
+    for submit in earlier {
+        let _ = rig.tw.engine_mut().queue_authoritative_submit(submit);
+    }
+    let t = rig.tw.world().now().saturating_add(1);
+    rig.tw.set_now(t);
+    let events = rig.tw.fire_due(t.saturating_mul(1_000));
+    heard.push('\n');
+    heard.push_str(&said(&rig.tw, &events, who));
+    heard
+}
+
+/// A Dray-P with `ore_t` tonnes of unlicensed `strategic_ore` in her hold, flown from Ceres
+/// onto the lane's interdicted Kirkwood leg and hove to under the picket (`sfr12_…`'s
+/// opening, for one hull). Nothing of her pilot's is left queued.
+fn hove_to_at_the_picket(who: &str, ore_t: u64) -> (Rig, ObjId, ObjId, VaultId) {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, who, 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, vault, "propellant", 75, LotId(2_601));
+    seed_pool(&mut rig, vault, "provisions", 25, LotId(2_602));
+    if ore_t > 0 {
+        seed_pool(&mut rig, vault, "strategic_ore", ore_t, LotId(2_603));
+    }
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let leg1_due = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, leg1_due);
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(tacsim::space::PicketInspectionStatus::AwaitingHeaveTo),
+        "the picket's bubble opens on her"
+    );
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake);
+    (rig, pilot, hull, vault)
+}
+
+/// The picket's standing verdict on `hull`, while she is in its bubble.
+fn picket_status(tw: &TestWorld, hull: ObjId) -> Option<tacsim::space::PicketInspectionStatus> {
+    tw.world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()?
+        .active_for_hull(hull)?
+        .picket
+        .as_ref()
+        .map(|picket| picket.inspection_status_for(hull))
+}
+
+/// How the customs corvette's party regards `hull`'s, while she is in its bubble.
+fn corvette_regards(tw: &TestWorld, hull: ObjId) -> Option<tacsim::arena::party::Relation> {
+    let active = tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()?
+        .active_for_hull(hull)?;
+    Some(active.bubble.party_relation(
+        tacsim::space::CUSTOMS_CORVETTE_PARTY,
+        active.carrier_party_for(hull),
+    ))
+}
+
+/// Segments filled on the Customs Assertion front's clock; 0 before the front opens.
+fn customs_front_filled(tw: &TestWorld) -> u32 {
+    let Some(sim) = tw.world().module_state::<mush_faction::SimState>() else {
+        return 0;
+    };
+    sim.fronts
+        .values()
+        .find(|front| front.title == mush_faction::CUSTOMS_ASSERTION_TITLE)
+        .and_then(|front| sim.clocks.values().find(|clock| clock.front == front.id))
+        .map_or(0, |clock| u32::from(clock.filled))
+}
+
+/// The rulings filed on `hull` and not yet applied: sequence and resubmissions.
+fn filed_rulings(tw: &TestWorld, hull: ObjId) -> Vec<(u32, u8)> {
+    tw.world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .pending_customs_rulings
+        .iter()
+        .filter(|ruling| ruling.hull == hull)
+        .map(|ruling| (ruling.seq, ruling.attempts))
+        .collect()
+}
+
+/// The hull's row of landed rulings, as the landed submissions wrote it.
+fn landed_rulings(rig: &Rig, hull: ObjId) -> Vec<tacsim::space::CustomsRuling> {
+    rig.typed
+        .get(&(
+            SmolStr::new(tacsim::NS),
+            SmolStr::new(format!(
+                "action-state/v1/{}/{}",
+                tacsim::space::CUSTOMS_RULING_FAMILY,
+                hull.0
+            )),
+        ))
+        .map(|value| {
+            serde_json::from_value::<tacsim::space::SpaceCustomsRulings>(value["value"].clone())
+                .expect("a customs ruling row")
+                .landed
+        })
+        .unwrap_or_default()
+}
+
+/// **Doc 35 cut SF.R26c (doc 35d §9a, Q-35d-6 as ruled)** — `+helm/submit` and `+helm/run`
+/// each end in one submitted action, and nothing of theirs is durable until it lands. Each
+/// part fails on the code before the cut, where the handler fined, seized, cleared and
+/// recorded the incident itself.
+///
+/// A. **A fine.** A pilot with credit and unlicensed ore heaves to and submits. The command
+///    queues exactly one submission, `tacsim_space_customs`; until it lands she is not cleared,
+///    her credit is whole and the front has not moved. Landed, the ruling is on the hull's row
+///    and still nothing is granted; the next space tick levies the fine, advances the front
+///    and clears her. The same submission landed again is refused, before the tick by the
+///    row and after it for want of an offer, and levies nothing.
+/// B. **A seizure, lost and submitted again.** An indigent pilot submits; the submission is
+///    dropped, as a restart drops the engine's queue. The ore is still aboard and she is not
+///    cleared; a second `+helm/submit` and a `+helm/run` are refused while the ruling is
+///    pending. After [`tacsim::space::CUSTOMS_RETRY_AFTER_TICKS`] the tick submits the ruling
+///    again. As it lands the ore is out of the hold, in that one transaction, before any tick;
+///    the tick then advances the front and clears her.
+/// C. **A run that never lands settles nothing.** Every submission of a `+helm/run` is
+///    dropped. After [`tacsim::space::CUSTOMS_MAX_ATTEMPTS`] resubmissions the ruling is given
+///    up: the crew are told, the corvette is not hostile, no incident is on the front. Typed
+///    again and landed, the run turns the corvette on her and advances the front.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr26c_a_customs_ruling_is_one_submitted_action_and_settles_nothing_until_it_lands() {
+    use tacsim::arena::party::Relation;
+    use tacsim::space::{CustomsFinding, PicketInspectionStatus};
+    let retry_after = tacsim::space::CUSTOMS_RETRY_AFTER_TICKS;
+    let max_attempts = tacsim::space::CUSTOMS_MAX_ATTEMPTS;
+    let cleared = |status: Option<PicketInspectionStatus>| {
+        matches!(
+            status,
+            Some(
+                PicketInspectionStatus::Cleared
+                    | PicketInspectionStatus::ClearedAfterFine
+                    | PicketInspectionStatus::ClearedAfterSeizure
+            )
+        )
+    };
+
+    // --- A. A fine is one submitted action, levied when it has landed ----------------------
+    let (mut rig, pilot, hull, vault) = hove_to_at_the_picket("Payer", 2);
+    let credit_before = credit_of(&rig.tw, pilot);
+    let front_before = customs_front_filled(&rig.tw);
+    let filed = run(&mut rig.tw, pilot, "+helm/submit");
+    assert!(
+        filed.contains("2000 kg unlicensed `strategic_ore`")
+            && filed.contains("contraband fine of 1000.00cr is assessed")
+            && filed.contains("the ruling follows"),
+        "{filed}"
+    );
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(
+        submitted.len(),
+        1,
+        "+helm/submit ends in one submitted action: {submitted:?}"
+    );
+    assert!(is_customs(&submitted[0]), "{submitted:?}");
+    assert_eq!(submitted[0].actor, pilot, "and it is the officer's own");
+    assert!(
+        !cleared(picket_status(&rig.tw, hull)),
+        "the command grants no clearance"
+    );
+    assert_eq!(
+        credit_of(&rig.tw, pilot),
+        credit_before,
+        "the command moves no money"
+    );
+    assert_eq!(
+        customs_front_filled(&rig.tw),
+        front_before,
+        "the command advances no front"
+    );
+    assert_eq!(filed_rulings(&rig.tw, hull).len(), 1, "one ruling is filed");
+    assert!(landed_rulings(&rig, hull).is_empty(), "and none has landed");
+
+    land(&mut rig, &submitted[0]).expect("the ruling lands");
+    let landed = landed_rulings(&rig, hull);
+    assert_eq!(
+        landed.len(),
+        1,
+        "the ruling is on the hull's row: {landed:?}"
+    );
+    assert_eq!(
+        landed[0].finding,
+        CustomsFinding::Fined {
+            unlicensed_strategic_ore_kg: 2_000,
+            fine_minor: 100_000,
+        }
+    );
+    assert_eq!(landed[0].actor, pilot);
+    assert!(
+        !cleared(picket_status(&rig.tw, hull)) && credit_of(&rig.tw, pilot) == credit_before,
+        "a landed ruling is acted on by the tick, not before it"
+    );
+    let again = land(&mut rig, &submitted[0]).expect_err("a ruling lands once");
+    assert!(again.contains("already landed"), "{again}");
+    assert_eq!(landed_rulings(&rig, hull).len(), 1);
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        2,
+        "a fine leaves the ore aboard"
+    );
+
+    let (heard, after) = one_second(&mut rig, pilot);
+    assert!(
+        heard.contains("assessed 1000.00cr contraband fine")
+            && heard.contains("granted customs clearance"),
+        "{heard}"
+    );
+    assert!(
+        !after.iter().any(is_customs),
+        "a landed ruling is not submitted again"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterFine)
+    );
+    assert_eq!(corvette_regards(&rig.tw, hull), Some(Relation::Friend));
+    assert_eq!(
+        credit_before - credit_of(&rig.tw, pilot),
+        100_000,
+        "the fine is escrowed out of her credit"
+    );
+    assert_eq!(
+        customs_front_filled(&rig.tw),
+        front_before + 1,
+        "the front advances once"
+    );
+    assert!(
+        filed_rulings(&rig.tw, hull).is_empty(),
+        "an applied ruling leaves the book"
+    );
+    let late = land(&mut rig, &submitted[0]).expect_err("an applied ruling is off the book");
+    assert!(late.contains("not currently offered"), "{late}");
+    let _ = one_second(&mut rig, pilot);
+    assert_eq!(
+        credit_before - credit_of(&rig.tw, pilot),
+        100_000,
+        "nothing is levied twice"
+    );
+    assert_eq!(customs_front_filled(&rig.tw), front_before + 1);
+
+    // --- B. A seizure's ore leaves the hold as the ruling lands; a lost ruling is retried ---
+    let (mut rig, pilot, hull, vault) = hove_to_at_the_picket("Indigent", 51);
+    let front_before = customs_front_filled(&rig.tw);
+    let filed = run(&mut rig.tw, pilot, "+helm/submit");
+    assert!(
+        filed.contains("51000 kg unlicensed `strategic_ore`")
+            && filed.contains("51 t is to be confiscated"),
+        "{filed}"
+    );
+    let lost = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(lost.iter().filter(|s| is_customs(s)).count(), 1);
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        51,
+        "the ore is aboard until the ruling lands"
+    );
+    assert!(
+        !cleared(picket_status(&rig.tw, hull)),
+        "and she is not cleared with it aboard"
+    );
+    let twice = run(&mut rig.tw, pilot, "+helm/submit");
+    assert!(
+        twice.contains(tacsim::space::CUSTOMS_RULING_PENDING),
+        "{twice}"
+    );
+    let bolt = run(&mut rig.tw, pilot, "+helm/run");
+    assert!(
+        bolt.contains(tacsim::space::CUSTOMS_RULING_PENDING),
+        "{bolt}"
+    );
+    assert_eq!(
+        filed_rulings(&rig.tw, hull).len(),
+        1,
+        "a refused command files nothing"
+    );
+    let mut resubmitted = Vec::new();
+    for tick in 1..=retry_after {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        if tick < retry_after {
+            assert!(
+                !submitted.iter().any(is_customs),
+                "tick {tick}: the ruling waits"
+            );
+        } else {
+            resubmitted = submitted;
+        }
+    }
+    let again: Vec<&AuthoritativeSubmit> = resubmitted.iter().filter(|s| is_customs(s)).collect();
+    assert_eq!(again.len(), 1, "the tick submits the ruling again");
+    let seq = filed_rulings(&rig.tw, hull)[0].0;
+    assert_eq!(
+        filed_rulings(&rig.tw, hull),
+        vec![(seq, 1)],
+        "one resubmission"
+    );
+    land(&mut rig, again[0]).expect("the resubmitted ruling lands");
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        0,
+        "the ore left the hold in the ruling's own transaction"
+    );
+    assert_eq!(
+        landed_rulings(&rig, hull)[0].finding,
+        CustomsFinding::Seized {
+            unlicensed_strategic_ore_kg: 51_000,
+            seize_t: 51,
+            vault: vault.0,
+        }
+    );
+    assert!(
+        !cleared(picket_status(&rig.tw, hull)),
+        "clearance waits for the tick"
+    );
+    let (heard, _) = one_second(&mut rig, pilot);
+    assert!(
+        heard.contains("51 t confiscated in lieu of fine")
+            && heard.contains("customs clearance granted"),
+        "{heard}"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure)
+    );
+    assert_eq!(customs_front_filled(&rig.tw), front_before + 1);
+    for submit in lost.iter().filter(|s| is_customs(s)) {
+        let refused = land(&mut rig, submit).expect_err("the lost copy, landed late, is refused");
+        assert!(refused.contains("not currently offered"), "{refused}");
+    }
+
+    // --- C. A run that never lands settles nothing ------------------------------------------
+    let (mut rig, pilot, hull, _) = hove_to_at_the_picket("Bolter", 0);
+    let front_before = customs_front_filled(&rig.tw);
+    let regard_before = corvette_regards(&rig.tw, hull);
+    let filed = run(&mut rig.tw, pilot, "+helm/run");
+    assert!(filed.contains("is logging the run"), "{filed}");
+    let dropped = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(
+        dropped.len(),
+        1,
+        "+helm/run ends in one submitted action: {dropped:?}"
+    );
+    assert!(is_customs(&dropped[0]), "{dropped:?}");
+    assert_ne!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::RanThePicket),
+        "the command records no run"
+    );
+    assert_eq!(customs_front_filled(&rig.tw), front_before);
+    let mut resubmissions = 0;
+    let mut heard_lapse = false;
+    for _ in 0..(u32::from(retry_after) * (u32::from(max_attempts) + 2)) {
+        let (heard, submitted) = one_second(&mut rig, pilot);
+        resubmissions += submitted.iter().filter(|s| is_customs(s)).count();
+        if heard.contains(tacsim::space::CUSTOMS_RULING_LAPSED) {
+            heard_lapse = true;
+            break;
+        }
+    }
+    assert!(heard_lapse, "the crew hear the ruling was not recorded");
+    assert_eq!(
+        resubmissions,
+        usize::from(max_attempts),
+        "the tick tried the ruling that many times"
+    );
+    assert!(
+        filed_rulings(&rig.tw, hull).is_empty(),
+        "the ruling is given up"
+    );
+    assert_ne!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::RanThePicket)
+    );
+    assert_eq!(
+        corvette_regards(&rig.tw, hull),
+        regard_before,
+        "the corvette regards her as it did"
+    );
+    assert_eq!(
+        customs_front_filled(&rig.tw),
+        front_before,
+        "no incident is on the front"
+    );
+    assert!(landed_rulings(&rig, hull).is_empty());
+
+    let ran = customs_ruling(&mut rig, pilot, "+helm/run");
+    assert!(
+        ran.contains("You refuse inspection and run the Republic Customs picket!"),
+        "{ran}"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::RanThePicket)
+    );
+    assert_eq!(corvette_regards(&rig.tw, hull), Some(Relation::Hostile));
+    assert_eq!(customs_front_filled(&rig.tw), front_before + 1);
+    assert_eq!(landed_rulings(&rig, hull)[0].finding, CustomsFinding::Ran);
 }
 
 /// **Doc 35 cut SF.R30 (doc 35d §6.6, `D-35-17`)** — a world whose packs author no orbital
