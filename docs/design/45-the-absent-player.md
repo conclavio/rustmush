@@ -1,16 +1,17 @@
 # 45. The absent player — asynchronous attack and defence, surveyed
 
-Draft 0.2, 2026-11-11, docs only. Surveyed against the doc 44 branch (`claude/mind-work-survey-doc44`,
+Draft 0.3, 2026-11-11, docs only. Surveyed against the doc 44 branch (`claude/mind-work-survey-doc44`,
 PR #530, Draft 0.5), whose base is `origin/main` at `0d8f30211`. Anchors are file and function
 names; line numbers drift. Every code fact below was read in the tree for this survey; where a fact
 is carried from doc 44 without a fresh read, the row says so. Draft 0.1, the same day, was the
 survey. **Draft 0.2 records the owner's ruling of 2026-11-11: every default, Q-45-1 to Q-45-25, is
-accepted as written.** The plan and its units are cut from these rulings next (§7).
+accepted as written.** **Draft 0.3, the same day, cuts the units of work from the rulings (§7):**
+eleven units, `AP.1` to `AP.11`, and what each waits on in doc 44.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) and
 [doc 44](44-minds-wired-through-the-game.md) used: what exists, what is owed, and owner questions,
-each with a proposed default, an alternative and a reason. It is not a plan: it cuts no units of
-work. Its plan is cut after the rulings, as doc 44 §7 was. "Provisional" marks a number to be tuned
+each with a proposed default, an alternative and a reason. Its plan is cut after the rulings, as
+doc 44 §7 was, and is §7 here. "Provisional" marks a number to be tuned
 later under the 2026-10-24 rule. **(expensive to reverse)** marks an answer that would take a
 significant refactor of the codebase to undo, never stored data or a live box.
 
@@ -512,11 +513,66 @@ board"). No question was amended.
 - **Operations as a whole**: `mush-campaign` is surveyed here only for its notice; its formations,
   musters and bonds are doc 10b's.
 
-## 7. What follows a ruling
+## 7. Units of work (Draft 0.3)
 
-Once the owner rules, the plan is cut here as doc 44 §7 was, with acceptance through registered
-commands with a non-GOD actor, and with stories that each fail today. The stories the questions
-imply are, at the least: an unattended rig on a raided site does not fire first and goes home under
-`RETURN`; a rig on `GUARD` answers for its neighbour and not for a stranger's quarrel; a player
-logged off in a rig's seat is not admitted as its pilot; an absent defender reads, on login, what
-happened to each unit; and a ship and a rig of one player obey the same posture.
+Eleven units, `AP.1` to `AP.11`, cut from the rulings. "Waits on" is a unit that must be merged
+first; `MW.n` is a unit of [doc 44](44-minds-wired-through-the-game.md) §7. Every acceptance is
+through registered commands with a non-GOD actor, in a field with more than two parties where it
+is a field. The rule doc 44's reviews set holds here: **a unit that wires a posture is done only
+when changing the posture changes what the unit does**, and a wall-clock window is never waited
+out in a story (doc 44 §7, "Time in a story").
+
+### 7.1 The units
+
+| Unit | Rulings | What it is | Mostly in | Waits on | Done when |
+|---|---|---|---|---|---|
+| **AP.1** | Q-45-17, Q-45-15, Q-45-21 | **An absent defender is told.** A field's opening on a site is queued, at trip level, to every player with a unit or a carrier there, connected or not; its close queues what became of each of their units (home, holding, lost, captured, taken in tow). A loss, a capture and a claim also go by IC mail. An operation's notice is pushed to its eligible defenders the same way, by the campaign's own tick, with no new edge from `mush-campaign` to the field | `crates/tacsim/src/field/mod.rs` (`tell_site`), `field/close.rs`, `crates/tacsim/src/port_tick.rs` (`notify`), `crates/mush-campaign/src/` (the notice) | — | a player who was offline through a field reads, at login, that it opened and what became of each unit, and has mail for a loss; an eligible defender of a declared operation has the notice queued and by mail without typing `@op/show`; a player with nothing on the site is told nothing |
+| **AP.2** | Q-45-20 | **The void waits for an absent leader.** A friendly-fire void offered to a leader who is not connected runs from their reconnect, at most 28 IC days from the field's demotion; for a connected leader it is unchanged | `crates/tacsim/src/field/standing.rs` (`VOID_WINDOW_IC_S`) | — | a leader offline at the demotion is offered the void on login and may take it; 28 IC days later it is gone; a connected leader still has 600 IC seconds or their next command |
+| **AP.3** | Q-45-3, Q-45-4, Q-45-23 | **The posture record. (expensive to reverse)** Every unit carries one posture, `RETURN`, `GUARD` or `HOLD`, `RETURN` by default. It lives on the unit, not in a host, survives a restart and a change of host, and is one more field in the view every mind reads, the house default's and a sealed mind's alike. Adding it to the view moves the mind API's version (`MIND_ABI`, `api=`), so filed minds are conformed again by the Registry's existing path | the unit's record in `crates/mush-tactics` or the unit object, `crates/tacsim/src/arena/mind.rs` (`MindView`), `crates/tacsim/src/minds/api.rs` and `mod.rs` (`API_VERSION`), the doctrine library | MW.7 | a unit's posture reads back after a restart and after a field promotes and demotes around it; a mind's view carries it in a field; a script that reads it is conformed, and one sealed under the old version is conformed again, not refused for ever |
+| **AP.4** | Q-45-19 | **Setting a posture.** As an order is given: from the unit's seat, from aboard its carrier, or over the comms relay as an order to the unit, which jamming can stop. Never from an OOC room. The unit's status and its carrier's roster show it | `crates/tacsim/src/port/tv.rs` (the `+tv` verbs), `crates/tacsim/src/match_/cockpit/` (the seat's verb), `crates/tacsim/src/field/orders.rs` (the relay), `docs/help/` | AP.3 | each of the three ways sets it and the unit reports it; with the relay jammed the order does not arrive and the posture is unchanged; from an OOC room it is refused |
+| **AP.5** | Q-45-1, Q-45-2 | **Absent at admission.** Admission asks the connection as well as the seat, in Q-44-35's sense as Q-44-43 amended it. A unit whose seated character is not connected, or is incapacitated or captive, is admitted under its mind as an absent player's unit. The three delays are one rule: five minutes after the last such character's link drops, at once on a clean QUIT, and from the start at admission | `crates/tacsim/src/field/admit.rs` (`custody_unit`), `field/parties.rs` (`seated`) | MW.7 | a player logged off in a rig's seat is not admitted as its pilot: the rig moves under its mind and does not fire first; the same player, reconnecting while the field runs, is re-seated and their first command wins; a connected pilot is admitted as before |
+| **AP.6** | Q-45-7, Q-45-8, Q-45-9, Q-45-5, Q-45-6, Q-45-12, Q-45-16 | **The field's mind flies the posture.** `RETURN` is MW.7's way home. `HOLD` stays, holds fire, and returns fire only at a unit that has fired on this one. `GUARD` stays within a leash of where it was set (provisional: ten cells) and may also answer fire on another unit of the same player; it ends when the player returns, when the field demotes, or when the unit can no longer defend itself, which turns it to `RETURN`. The engine's absent-player gate (MW.7's) is widened by exactly that one case and by nothing a player leaves: never first, never at a party that is only marked or declared Hostile, never mining or trading. The pilot's condition slots are still cleared at the hand-over. Nothing an attacker reads changes | `crates/tacsim/src/arena/` (the gate MW.7 built, `stock_mind.rs`), `crates/tacsim/src/field/home.rs` | MW.7, AP.3 | in a field of three parties, a rig on `GUARD` returns fire on the unit that hit its owner's other rig and holds fire on a stranger's quarrel beside it; the same rig set to `HOLD` does not answer for its neighbour; set to `RETURN` it goes home; a party declared Hostile by stance is not fired on first under any posture; a `GUARD` unit that loses its last fire channel goes home; the presence picture an attacker reads is byte for byte what it was |
+| **AP.7** | Q-45-10, Q-45-11 | **Rigs on a plan, and carriers.** A rig on a fill plan flies its posture when a field opens around it: on `RETURN`, the default for an unarmed rig, it goes home and its plan ends with a trip-level note once it is aboard; on `HOLD` it stays and its plan resumes when the site demotes. A carrier on its pad is home: `RETURN` means stay; its mind never lifts, returns fire under the gate, and takes its rigs aboard as they reach the ramp | `crates/tacsim/src/surface/plan.rs`, `surface/tick.rs`, `crates/tacsim/src/field/carrier.rs`, `field/exit.rs` | AP.6 | an unattended rig on a raided site does not fire first, goes home under `RETURN`, and its operator reads the plan's end at login; the same rig on `HOLD` is still there at demotion and its plan runs on; a carrier with nobody aboard is still on its pad with its returned rigs in its bay |
+| **AP.8** | Q-45-13 | **A detachment whose leader is gone.** NPC crews are not flown for an absent player and the gate does not bind them. A standing order with no deadline stays. An `ENGAGE` or an `ADVANCE` the absent leader gave lapses when their absence passes the grace and no other leader takes over (the next active player, then the plan's NPC commander); the units then hold and defend under their doctrine | `crates/tacsim/src/field/orders.rs`, `crates/tacsim/src/detachment/live.rs` | MW.14a | NPC units under an absent leader's `ENGAGE` stop pressing after the grace and still return fire; with an NPC commander in the plan the commander's orders replace the lapsed one; a HOLD with no deadline is still held |
+| **AP.9** | Q-45-23, Q-45-24 | **Space reads the same posture.** `RETURN` is the filed-port return (built, MW.8). `HOLD` holds station and complies with customs. `GUARD` holds station and defends under AP.6's rule. A ship on an offline plan keeps her plan; if a bubble opens around her she flies her posture inside it and resumes the plan when she leaves. Stances stay out of space | `crates/tacsim/src/space/` (the backup mind and its view) | MW.9, AP.3, AP.6 | a ship and a rig of one player, both set to `HOLD`, both stay and both hold fire; the ship set to `GUARD` returns fire on the hull that hit her and not on one that hit a stranger; a ship on a plan, interdicted, complies under `HOLD` and is on her plan again after the bubble |
+| **AP.10** | Q-45-25 | **Postures in the simulator.** A player may set a posture on a simulator unit and watch its mind fly it. A dropped pilot's unit still goes to its sealed mind and fights (Q-44-19) | `crates/tacsim/src/match_/` (the lobby and the cockpit) | AP.3, AP.4, AP.6 | in a practice match a unit set to `GUARD` and left behaves as AP.6 has it; a pilot who drops mid-match is flown by their sealed mind as today |
+| **AP.11** | Q-45-18, Q-45-22, Q-45-14 | **The closing story** (§7's list, as one). One player leaves a rig on `GUARD` and a second rig on `RETURN` on a site, a ship on `HOLD`, and logs off in the first rig's seat. A raid lands with a third party on the ground. The player reconnects while the field runs | `crates/tacsim/tests/` | AP.1, AP.5, AP.6, AP.7, AP.9 | no unit of theirs fired first; the `RETURN` rig is aboard its carrier and the `GUARD` rig answered only for its owner's units; the player was not admitted as a pilot while away, is re-seated on return and their first command wins; at login they read what happened to each unit; the ship and the rigs obeyed the same words; a casualty's salvage window is the 48 IC days it was |
+
+**Not units, and where each lives:**
+
+- **Fights need no operation, and an attacker may start one at any time** (Q-45-14, Q-45-15): this
+  is what the tree does, and no code changes. The operation's notice is AP.1's push.
+- **Capture and salvage of an absent player's units** (Q-45-21, Q-45-22): unchanged by ruling;
+  AP.1 tells the player and AP.11 pins the window.
+- **Stances in space** (Q-45-24): deferred to doc 40 §4.6's seam.
+- **A standing defence for a holding with no unit on it** (Q-45-3's alternative): not ruled for.
+- **The backup minds, the commander, a player's own mind on a ship**: doc 44's MW.7, MW.8,
+  MW.14a, MW.14b and MW.13.
+- **Crime and enforcement** for an attack on an absent player, and **housing**: §6.
+
+### 7.2 What may start now
+
+AP.1 and AP.2 wait on nothing. Everything else waits on doc 44: AP.3 and AP.5 on MW.7 (the field
+backup mind, which builds the gate and the way back into a seat), AP.8 on MW.14a, AP.9 on MW.9.
+
+### 7.3 One writer a file
+
+| Chain | Units, in order | The shared files |
+|---|---|---|
+| **Notices** | AP.1, AP.2 | `field/mod.rs`, `field/close.rs`, `field/standing.rs`; no file shared with the others |
+| **Posture** | AP.3 → AP.4 → AP.6 → AP.7 → AP.10 | the unit's record, `MindView`, the arena's gate and stock mind; the same files MW.7 holds, so this chain is the field chain's next link |
+| **Admission** | AP.5 | `field/admit.rs`, `field/parties.rs`; after MW.7, beside the posture chain |
+| **Detachment** | AP.8 | `field/orders.rs`, `detachment/live.rs`; after MW.14a in doc 44's field chain |
+| **Space** | AP.9 | `space/`; after MW.9 in doc 44's space chain |
+| **Acceptance** | AP.11 | last |
+
+AP.3 moves the mind API's version. Anything that seals or rates a mind while it is in flight
+(doc 44's MW.13, MW.14b) should land on one side of it or the other, not across it.
+
+### 7.4 Waves
+
+- **Wave 0, now:** AP.1, AP.2.
+- **Wave 1, after MW.7:** AP.3, then AP.4; AP.5 beside them.
+- **Wave 2:** AP.6, then AP.7; AP.8 once MW.14a is merged.
+- **Wave 3:** AP.9 once MW.9 is merged; AP.10.
+- **Wave 4:** AP.11.
