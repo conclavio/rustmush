@@ -657,6 +657,28 @@ pub struct SpaceFreeFlightRecord {
 }
 
 impl SpaceFreeFlightRecord {
+    /// The prepaid reaction mass (tonnes) still unflown at `now_ic_s` (`SF.R25`, doc 35d §2 #5).
+    ///
+    /// A flight with an arrival deadline (`+ship/undock <cluster|body>`) burns its prepaid
+    /// passage as it flies, so the credit falls in proportion to the time left and is zero at
+    /// arrival. A hull that decoupled from a corridor coasts, and keeps the share
+    /// `+helm/decouple` prorated for it.
+    #[must_use]
+    pub fn prepaid_credit_t(&self, now_ic_s: i64) -> u64 {
+        let Some(arrival) = self.cluster_arrival_ic_s else {
+            return self.prepaid_unflown_t;
+        };
+        let total_s = arrival.saturating_sub(self.decoupled_at_ic_s);
+        if total_s <= 0 {
+            return 0;
+        }
+        let remaining_s = arrival.saturating_sub(now_ic_s).clamp(0, total_s);
+        let credit = u128::from(self.prepaid_unflown_t)
+            .saturating_mul(u128::from(remaining_s.unsigned_abs()))
+            / u128::from(total_s.unsigned_abs());
+        u64::try_from(credit).unwrap_or(self.prepaid_unflown_t)
+    }
+
     /// Advance the free-flight state by `dt_ic_s` IC seconds under solar gravity
     /// ($\vec{a}_{\odot} = -\mu_{\odot} \vec{r} / |\vec{r}|^3$) and any active timed burn
     /// (`35a` §5 #4, #5).
@@ -2574,11 +2596,23 @@ fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
         }
     }
     if let Some(port) = newly_expired_port {
-        let _ = super::commands::execute_linkdead_return_journey(ctx, hull, &port);
-        let line = format!(
-            "[SPACE] Linkdead grace window expired; hull holding ballistic life-support reserve with queued return plan to {}.",
-            port
-        );
+        // `SF.R25` (doc 35d §2 #2): the plan is a planned, debited passage or it is not flown.
+        let line = match super::commands::execute_linkdead_return_journey(ctx, hull, &port) {
+            Ok(Some(engaged)) => format!(
+                "[SPACE] Linkdead grace window expired; return plan engaged for {}: burn {} t reaction mass, {} crew-days, transit {} IC days.",
+                engaged.port_label,
+                engaged.burn_t,
+                engaged.crew_days,
+                crate::port::voyage::ic_days(engaged.total_s)
+            ),
+            Ok(None) => {
+                "[SPACE] Linkdead grace window expired; hull holding her course with the drive cut."
+                    .to_owned()
+            }
+            Err(refusal) => format!(
+                "[SPACE] Linkdead grace window expired; no return plan is within her reach ({refusal}); hull drifting on her life-support reserve."
+            ),
+        };
         crate::port::voyage::narrate_hull(ctx, hull, &line);
     }
 }
@@ -2721,6 +2755,37 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
         }
     }
 
+    // `SF.R25` (doc 35d §6.2): a tug that no longer exists holds no line, and a derelict that no
+    // longer exists has no record.
+    let (gone_tugs, gone_derelicts): (Vec<(ObjId, ObjId)>, std::collections::BTreeSet<ObjId>) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|b| {
+            let tugs = b
+                .active_tows
+                .iter()
+                .map(|(&tug, tow)| (tug, tow.derelict_hull))
+                .chain(b.clamped_derelicts.iter().map(|(&tug, &d)| (tug, d)))
+                .filter(|(tug, _)| ctx.w.get(*tug).is_none())
+                .collect();
+            let derelicts = b
+                .derelicts
+                .keys()
+                .copied()
+                .filter(|&h| ctx.w.get(h).is_none())
+                .collect();
+            (tugs, derelicts)
+        })
+        .unwrap_or_default();
+    for (tug, derelict) in gone_tugs {
+        let _ = super::commands::withdraw_undelivered_custody(ctx, tug, derelict);
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.active_tows.remove(&tug);
+            book.clamped_derelicts.remove(&tug);
+        }
+    }
+
+    let mut lapsed_derelicts: Vec<ObjId> = Vec::new();
     let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
     };
@@ -2752,10 +2817,20 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
     let towed_set: std::collections::BTreeSet<ObjId> =
         book.active_tows.values().map(|t| t.derelict_hull).collect();
     book.derelicts.retain(|&hull, d| {
-        clamped_set.contains(&hull)
-            || towed_set.contains(&hull)
-            || book.space_custody.contains_key(&hull)
-            || (d.epoch_open && d.life_support_remaining_s > 0)
+        let kept = !gone_derelicts.contains(&hull)
+            && (clamped_set.contains(&hull)
+                || towed_set.contains(&hull)
+                || book.space_custody.contains_key(&hull)
+                || (d.epoch_open && d.life_support_remaining_s > 0));
+        if !kept {
+            lapsed_derelicts.push(hull);
+        }
+        kept
+    });
+    // The title pinned at a clamp is copied onto the custody row; with neither a derelict record
+    // nor custody left it names nothing.
+    book.derelict_pins.retain(|hull, _| {
+        book.derelicts.contains_key(hull) || book.space_custody.contains_key(hull)
     });
 
     let active_bubble_hulls: std::collections::BTreeSet<ObjId> = book
@@ -2787,6 +2862,10 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
         handles
             .pending_burn_submit_actors
             .retain(|a| remaining_burn_actors.contains(a));
+    }
+    // An NPC hull whose derelict record has lapsed and that nothing holds is gone with it.
+    for hull in lapsed_derelicts {
+        destroy_unclaimed_npc_hull(ctx, hull);
     }
 }
 
@@ -3003,9 +3082,25 @@ pub(crate) fn resolve_nearest_port_base_obj(
         .filter(|host| w.get(*host).is_some() && *host != recoverer_hull)
 }
 
+/// Whether a carrier that is, or may yet be, in `domain`'s bubble still has its journey promoted
+/// there (`SF.R25`, doc 35d §6.2). A hull in free flight or at a cluster keeps a journey parked
+/// in `Promoted` and is in no bubble, so it never holds the domain's activation open.
+fn any_bubble_journey_promoted_in(w: &World, domain: DomainId) -> bool {
+    let book = w.module_state::<SpaceBubbleBook>();
+    w.module_state::<JourneyBook>().is_some_and(|jb| {
+        jb.journeys.iter().any(|(hull, j)| {
+            matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain)
+                && !book.is_some_and(|b| {
+                    b.free_flights.contains_key(hull) || b.cluster_sessions.contains_key(hull)
+                })
+        })
+    })
+}
+
 fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let wall_now_s = ctx.w.now();
     let mut detached_carriers: Vec<(ObjId, Option<SpaceShipState>)> = Vec::new();
+    let mut lapsed_clamps: Vec<ObjId> = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         let paused_hulls: std::collections::BTreeSet<ObjId> = book
             .docking_sessions
@@ -3013,12 +3108,15 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             .filter(|(_, s)| s.paused_from_world_tick)
             .map(|(&h, _)| h)
             .collect();
-        let clamped_hulls: std::collections::BTreeSet<ObjId> =
-            book.clamped_derelicts.keys().copied().collect();
+        let clamped_hulls: std::collections::BTreeSet<ObjId> = book
+            .clamped_derelicts
+            .keys()
+            .copied()
+            .filter(|tug| !book.active_tows.contains_key(tug))
+            .collect();
         for active in book.by_domain.values_mut() {
             for entry in active.carriers.values_mut() {
                 if entry.holding_for_salvage
-                    && !clamped_hulls.contains(&entry.hull)
                     && entry
                         .holding_for_salvage_until_wall_s
                         .is_some_and(|until| wall_now_s >= until)
@@ -3026,6 +3124,11 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     entry.holding_for_salvage = false;
                     entry.holding_for_salvage_until_wall_s = None;
                     entry.approaching_derelict = false;
+                    // `SF.R25` (doc 35d §3 #8): a collar clamped and never followed by a tow
+                    // lets go when the hold runs out, so it cannot keep the bubble open.
+                    if clamped_hulls.contains(&entry.hull) {
+                        lapsed_clamps.push(entry.hull);
+                    }
                 }
             }
             if !active.carriers.is_empty() {
@@ -3079,6 +3182,19 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     }
                 }
             }
+        }
+    }
+    for tug in lapsed_clamps {
+        let let_go = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .and_then(|book| book.clamped_derelicts.remove(&tug));
+        if let Some(derelict) = let_go {
+            let line = format!(
+                "[SALVAGE] No tow line followed the clamp; the collar lets go of derelict #{}.",
+                derelict.0
+            );
+            crate::port::voyage::narrate_hull(ctx, tug, &line);
         }
     }
     for (ch, cship) in detached_carriers {
@@ -3219,11 +3335,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             let line = "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.";
             crate::port::voyage::narrate_hull(ctx, *ch, line);
         }
-        let any_other_promoted = ctx.w.module_state::<JourneyBook>().is_some_and(|jb| {
-            jb.journeys
-                .values()
-                .any(|j| matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain))
-        });
+        let any_other_promoted = any_bubble_journey_promoted_in(ctx.w, domain);
         if !any_other_promoted {
             let _ = stand_down_domain(ctx, domain, now.clone());
         }
@@ -3451,11 +3563,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             let line = "[SPACE] Drive offline; hull adrift as an open-epoch derelict with 48 hours of life support.";
             crate::port::voyage::narrate_hull(ctx, hull, line);
         }
-        let any_other_promoted = ctx.w.module_state::<JourneyBook>().is_some_and(|jb| {
-            jb.journeys
-                .values()
-                .any(|j| matches!(j.state(), JourneyState::Promoted { domain: d } if *d == domain))
-        });
+        let any_other_promoted = any_bubble_journey_promoted_in(ctx.w, domain);
         if !any_other_promoted {
             let _ = stand_down_domain(ctx, domain, now.clone());
         }
@@ -3486,13 +3594,22 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     for active in book.by_domain.values_mut() {
         let hull = active.hull;
         active.bubble.outage_frozen = frozen;
-        if frozen
-            || active
-                .all_carrier_hulls()
-                .iter()
-                .any(|(ch, _, _, _)| paused_hulls.contains(ch))
-        {
+        if frozen {
+            // Frozen time is not owed back as one long step when the clock resumes (doc 35d §6.5).
+            if active.last_stepped_wall_s > 0 {
+                active.last_stepped_wall_s = wall_now_s;
+            }
             continue;
+        }
+        // `SF.R25` (doc 35d §2 #4, Q-35d-3's default): a docking session holds the docking hull
+        // alone, her drive cut; every other ship in the bubble keeps its clock.
+        for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+            let hold = paused_hulls.contains(&chull);
+            if let Some(ship) = active.bubble.ships.get_mut(&cship_id)
+                && ship.docking_hold != hold
+            {
+                ship.docking_hold = hold;
+            }
         }
         let cadence_ms = active.adaptive_step_wall_ms();
         let dt_wall_ms = if active.last_stepped_wall_s > 0 {

@@ -1621,6 +1621,17 @@ fn window_words(secs: i64) -> String {
     }
 }
 
+/// Whether `hull` is in a tug's custody in space and not yet docked at a port (`SF.R25`, doc
+/// 35d §2 #3): the custody a tow line gives, which a salvage award never settles on.
+fn adrift_in_space_custody(w: &World, hull: ObjId) -> bool {
+    w.module_state::<crate::space::tick::SpaceBubbleBook>()
+        .is_some_and(|book| book.space_custody.contains_key(&hull))
+        && !matches!(
+            crate::port::ship::berth_of(w, hull),
+            crate::port::ship::Berth::Docked { .. }
+        )
+}
+
 /// **Every custody record on every lane site's record** (plus any space derelict custody in
 /// [`crate::space::tick::SpaceBubbleBook::space_custody`], `SF.R19`), with its site.
 fn custody_rows(ctx: &Ctx<'_>) -> Vec<(CanonicalId, SalvageCustody)> {
@@ -3162,6 +3173,11 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             )
             && leased_or_chartered(ctx.w, row.hull)
         {
+            continue;
+        }
+        // Doc 35d §2 #3 (`SF.R25`): a derelict taken in tow in space is awarded only once a
+        // port has her. Until the tug docks her the claim stands pending, whatever the window.
+        if settlement == Settlement::Award && adrift_in_space_custody(ctx.w, row.hull) {
             continue;
         }
         let label = name(ctx.w, row.hull);

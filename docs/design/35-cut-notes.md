@@ -577,3 +577,71 @@ matched only the unqualified `module_state_mut::<SpaceBubbleBook>()` spelling (`
 **Test.** `sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_with_quarantine`.
 
 **Divergences.** None from the `35c` §9 `SF.R21` specification.
+
+## SF.R25 — hole close-out III (doc 35d §2, §3, §6.2)
+
+Built against [doc 35d](35d-sfr17-r24-train-review.md) §9's `SF.R25` row, with Q-35d-2, Q-35d-3 and Q-35d-4 at
+their defaults. Paths are under `crates/tacsim/src/`.
+
+- **Customs (35d §2 #1).** `engage_port_autopilot` (`space/commands.rs`) is the one port recouple; `+helm/autopilot
+  <port>` and the linkdead return both call it. It keeps the interdicted leg the journey carries, as before, and
+  otherwise asks `owed_interdicted_leg`: the first interdicted leg on the lane's route from the port the hull last
+  left (`Voyage.departed.from`) to the destination's venue, unless the hull has an entry in
+  `cleared_interdiction_legs` since that departure. A hull that left by `+ship/undock <cluster>` therefore meets the
+  picket on her way to a port across it.
+- **The prepaid burn (35d §2 #5).** `SpaceFreeFlightRecord::prepaid_credit_t(now)` (`space/tick.rs`) prorates
+  `prepaid_unflown_t` over the time left to `cluster_arrival_ic_s`; a record without an arrival instant (a
+  `+helm/decouple`) keeps its share. The three autopilot branches read the credit, not the field.
+- **The linkdead return (35d §2 #2, Q-35d-2).** `execute_linkdead_return_journey` tries the queued port and then every
+  open port nearest first (`return_ports_nearest_first`, by range in the lane's sky from the hull's Tier-1 position)
+  through `engage_port_autopilot`: the planner's passage, the tank and locker checks, the debit, the owed leg. A hull
+  that can afford none stays where she is; the grace-expiry line says which happened. `nearest_return_port_for_hull`
+  now reads the hull.
+- **A released tow (35d §2 #3, Q-35d-4).** `+helm/tow release` calls `withdraw_undelivered_custody`: when the tug holds
+  the derelict's space custody row and she is not docked, the claim's contract is closed through
+  `mush_economy::close_salvage_claim` and the row removed; a refusal from the registry keeps the line on. The claim
+  tick (`surface/claim.rs`, `adrift_in_space_custody`) awards a space custody row only once the derelict is docked.
+- **A docking session (35d §2 #4, Q-35d-3).** `SpaceShipState.docking_hold` (`space/bubble.rs`), set from the open
+  sessions on each bubble step, cuts the docking hull's drive as `crew_linkdead` does; the bubble is no longer skipped
+  while a carrier docks. The hostile gate refuses on an operational hostile to the hull's party whether or not she
+  has detected it, and names it only when she has (`DOCK_REFUSED_UNSECURED`).
+- **A hail (35d §2).** `+tac/hail` takes no `range_m=`. In a bubble it needs a detected contact and measures the range;
+  outside one, from free flight or a cluster, it needs an open port and measures the range in the lane's sky
+  (`hail_range_to_port_m`). `MAX_PENDING_HAILS_PER_HULL` = 4 in flight per hull.
+- **Leaks (35d §3 #8, §6.2).** The stand-down gate (`any_bubble_journey_promoted_in`) ignores the parked journey of a
+  hull in free flight or at a cluster. A clamp sets a hold of `SALVAGE_HOLD_TIMEOUT_WALL_S`; the hold no longer
+  exempts a clamped hull, and a clamp with no tow line is let go when it lapses. The per-tick prune drops the tow and
+  clamp of a tug that no longer exists (withdrawing its custody), a derelict record whose hull no longer exists, a
+  `derelict_pins` entry with neither a record nor custody behind it, and destroys an NPC hull whose derelict record
+  lapsed with nothing holding it. `+helm/dock derelict` resolves only a derelict in the hull's own bubble's domain or
+  the one she holds.
+- **The port clamp (35d §6.1).** `dock_carrier_at_destination` runs before the free-flight record and the bubble are
+  torn down, so a refused dock leaves the hull where she was.
+- **Tempo (35d §6.5, one line of `SF.R29`).** A frozen bubble advances `last_stepped_wall_s`, so frozen time is not
+  repaid as one long step.
+
+**Tests.** `sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_and_hail` (new; parts A–F).
+`sfr18_…` gains a fourth hull that decouples on the Kirkwood leg while the picket's domain is live, and still ends
+with the domain stood down. Changed because they asserted the old behaviour: `sfr9_…` (the under-fire dock was passing
+on the port-in-a-bubble refusal, the hostile being undetected), `sfr19_…` (a release now withdraws the claim and a
+re-tow files a new one), `sfr23_…` step 7b (a typed `range_m=` is refused in a bubble; a hail to the corvette arrives
+at once). Local: `cargo test -p tacsim --test domain_world` 255 passed; `cargo test -p mush-contract-tests` green;
+clippy `-D warnings` and rustdoc `-D warnings` on tacsim clean.
+
+**Divergences from 35d §9.**
+- No cooldown and no charge on abort: with the session holding one hull, an abort loop stops nobody else.
+- The session holds the docking hull, not "the pair": the derelict is already inert. The hull coasts; she is not
+  frozen in place.
+- The hostile gate is against the hull's own party's hostiles, not every hostile pair in the bubble.
+- The cluster departure still carries an arbitrary corridor route; only the recouple was changed.
+- The leg-end range gate is unchanged: a corridor journey has no position, and the terminal-braking model stands.
+- A flight engaged by `+helm/autopilot <cluster|body>` still records no prepaid credit, so a divert from it is charged
+  in full. Conservative; `SF.R26` can make the credit uniform.
+- Q-35d-2's retrieval job for a drifting hull is not built.
+
+**Not pinned by a story.** The award gate on an undelivered derelict (the release path removes the row first); the
+lapsed clamp; the destroyed-tug prune; the reordered port clamp; "nearest first" among several affordable ports.
+
+**Found while building, not fixed.** A hull that never recouples can cross to a port by `+helm/burn` in free flight
+and dock from there; free flight is never interdicted (`promote_due_interdictions` skips it). It is slow, and it is
+a way round the picket. Owed a ruling or a geometric interdiction rule in `SF.R26`.
