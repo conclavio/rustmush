@@ -6011,6 +6011,37 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
         "a tick fired 3 s late must advance the bubble by 3,000 ms (3 s)"
     );
 
+    // Doc 35 cut SF.R29 (doc 35d §6.5): a tick fired 45 s late steps the 30 s one fire may
+    // step. The other 15 s were a stall and are not simulated: the next tick, a second later,
+    // steps its own second, so a fight is never fast-forwarded past its crews.
+    let bubble_ms = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .active_for_hull(hull)
+            .expect("active bubble")
+            .bubble
+            .wall_elapsed_ms
+    };
+    let before_stall = bubble_ms(&rig);
+    let stalled = rig.tw.world().now() + 45;
+    rig.tw.set_now(stalled);
+    let _ = rig.tw.fire_due(stalled * 1_000);
+    let after_stall = bubble_ms(&rig);
+    assert_eq!(
+        after_stall - before_stall,
+        30_000,
+        "one fire steps at most 30 s"
+    );
+    rig.tw.set_now(stalled + 1);
+    let _ = rig.tw.fire_due((stalled + 1) * 1_000);
+    assert_eq!(
+        bubble_ms(&rig) - after_stall,
+        1_000,
+        "stalled time past the cap is not repaid on the next tick"
+    );
+
     // 2. Heave-to (`+helm/thrust 600 -1000 0 0` for 6s at 1 m/s², then `+helm/thrust 0`) and hold for 10
     //    minutes (`600` one-second fires) to verify persistence budget (`snapshots` and `tape` capped):
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
