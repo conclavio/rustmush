@@ -905,6 +905,113 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
     );
 }
 
+/// The space module-state types a story may read and never write (doc 35d §5, cut SF.R31).
+const SPACE_BOOKS: [&str; 4] = [
+    "SpaceBubbleBook",
+    "SpacePersistedState",
+    "BubbleInputHandles",
+    "SpaceCustodyBook",
+];
+
+/// The accessor the lint looks for, spelt in two halves so the state-slot census does not read
+/// this file as writing the books it names.
+const MODULE_STATE_MUT: &str = concat!("module_state", "_mut");
+
+/// Calls a space story may not make: they change bubble state, or solve a docking tape, off the
+/// command path (doc 35b §6, §8; doc 35c §6.1, §9).
+const SPACE_FORBIDDEN_CALLS: [&str; 4] = [
+    "clear_interdiction_bubble(",
+    "apply_bubble_command(",
+    "solve_docking_tape(",
+    "solve_hard_bounce_tape(",
+];
+
+/// What [`compact_code`] leaves where `&mut ` stood, so the keyword does not run into the type
+/// after it once the whitespace is gone.
+const MUT_BORROW: &str = "&mut|";
+
+/// `text` with `//` comments and every whitespace character removed, and the 1-based source
+/// line of each remaining byte. Scanning this form finds a call however rustfmt wrapped it.
+fn compact_code(text: &str) -> (String, Vec<usize>) {
+    let mut compact = String::new();
+    let mut lines = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let code = line
+            .split("//")
+            .next()
+            .unwrap_or("")
+            .replace("&mut ", MUT_BORROW);
+        for ch in code.chars().filter(|ch| !ch.is_whitespace()) {
+            compact.push(ch);
+            lines.extend(std::iter::repeat_n(idx + 1, ch.len_utf8()));
+        }
+    }
+    (compact, lines)
+}
+
+/// Every way `text` writes a space book or makes a forbidden space call, as `(line, what)`.
+///
+/// Doc 35d §5 listed what the line-by-line lint missed. This one reads the code with its
+/// whitespace removed, so it also catches:
+/// - a `module_state_mut::<…>` turbofish wrapped across lines;
+/// - a module alias (`sp::SpaceBubbleBook`), by the type's last path segment;
+/// - any type under a `space::` path;
+/// - a `module_state_mut()` whose type comes from an annotation (`&mut SpaceBubbleBook`);
+/// - a `use … as` or `type … =` alias of a space book.
+fn space_story_offences(text: &str) -> Vec<(usize, String)> {
+    let (compact, lines) = compact_code(text);
+    let line_at = |at: usize| lines.get(at).copied().unwrap_or(0);
+    let is_path = |ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == ':';
+    let mut found = Vec::new();
+
+    let turbofish = format!("{MODULE_STATE_MUT}::<");
+    let turbofish = turbofish.as_str();
+    for (at, _) in compact.match_indices(turbofish) {
+        let ty: String = compact[at + turbofish.len()..]
+            .chars()
+            .take_while(|ch| *ch != '>')
+            .collect();
+        // A turbofish names a type path. Anything else here is a string being put together.
+        let ty = ty.trim_end_matches(',');
+        if ty.is_empty() || !ty.chars().all(is_path) {
+            continue;
+        }
+        let last = ty.rsplit("::").next().unwrap_or("");
+        if SPACE_BOOKS.contains(&last) || ty.contains("space::") {
+            found.push((line_at(at), format!("module_state_mut::<{ty}>")));
+        }
+    }
+    for book in SPACE_BOOKS {
+        for (at, _) in compact.match_indices(book) {
+            // The text before the type's own path (`tacsim::space::` and the like).
+            let mut before = &compact[..at];
+            while let Some(qualified) = before.strip_suffix("::") {
+                before =
+                    qualified.trim_end_matches(|ch: char| ch.is_ascii_alphanumeric() || ch == '_');
+            }
+            let after = &compact[at + book.len()..];
+            let aliased = after
+                .strip_prefix("as")
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| ch.is_ascii_uppercase());
+            if before.ends_with(MUT_BORROW) {
+                found.push((line_at(at), format!("&mut {book}")));
+            } else if aliased {
+                found.push((line_at(at), format!("{book} aliased by `as`")));
+            } else if before.ends_with('=') && after.starts_with(';') {
+                found.push((line_at(at), format!("{book} aliased by `type`")));
+            }
+        }
+    }
+    for call in SPACE_FORBIDDEN_CALLS {
+        for (at, _) in compact.match_indices(call) {
+            found.push((line_at(at), call.to_owned()));
+        }
+    }
+    found.sort();
+    found
+}
+
 #[test]
 fn tacsim_integration_tests_never_mutate_space_bubble_book_directly() {
     let root = scan::repo_root();
@@ -912,38 +1019,149 @@ fn tacsim_integration_tests_never_mutate_space_bubble_book_directly() {
     let files = scan::rust_files(&tests_dir);
     assert!(!files.is_empty(), "expected tacsim integration test files");
 
-    let forbidden_patterns = [
-        concat!("module_state_mut::<", "SpaceBubbleBook"),
-        concat!("module_state_mut::<", "tacsim::space::SpaceBubbleBook"),
-        concat!("module_state_mut::<", "space::SpaceBubbleBook"),
-        concat!("module_state_mut::<", "SpacePersistedState"),
-        concat!("module_state_mut::<", "tacsim::space::"),
-        "SpaceBubbleBook as ",
-        "= tacsim::space::SpaceBubbleBook",
-        "= space::SpaceBubbleBook",
-        "clear_interdiction_bubble(",
-        "apply_bubble_command(",
-        "solve_docking_tape(",
-        "solve_hard_bounce_tape(",
-    ];
     let mut offences = Vec::new();
     for file in files {
         let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-        for (idx, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("");
-            for pat in forbidden_patterns {
-                if code.contains(pat) {
-                    let rel = file.strip_prefix(&root).unwrap_or(&file);
-                    offences.push(format!("{}:{} ({pat})", rel.display(), idx + 1));
-                }
-            }
+        let rel = file.strip_prefix(&root).unwrap_or(&file);
+        for (line, what) in space_story_offences(&text) {
+            offences.push(format!("{}:{line} ({what})", rel.display()));
         }
     }
     assert!(
         offences.is_empty(),
         "integration tests in crates/tacsim/tests/ must drive space state through player/admin \
          commands, client sessions, and tick hooks rather than mutating space books or calling \
-         server docking solvers directly (doc 35b §6, §8; doc 35c §6.1, §9):\n{}",
+         server docking solvers directly (doc 35b §6, §8; doc 35c §6.1, §9; doc 35d §5):\n{}",
         offences.join("\n")
     );
+}
+
+/// Doc 35 cut SF.R31 (doc 35d §5, §6.8): the docking session's auto-solver is behind
+/// mush-pixel's `autodock` feature, and nothing a player runs calls it. Both clients compile
+/// mush-pixel; a solver left in it is one edit away from a key binding.
+#[test]
+fn the_docking_auto_solver_is_in_no_shipped_client() {
+    let root = scan::repo_root();
+    let docking = fs::read_to_string(root.join("crates/mush-pixel/src/docking.rs"))
+        .expect("mush-pixel's docking.rs");
+    for name in ["fn next_guidance_input(", "fn play_to_clamp("] {
+        let at = docking
+            .find(name)
+            .unwrap_or_else(|| panic!("mush-pixel no longer defines `{name}`"));
+        let head = &docking[..at];
+        let attrs = &head[head.rfind("///").unwrap_or(0)..];
+        assert!(
+            attrs.contains("#[cfg(any(test, feature = \"autodock\"))]"),
+            "`{name}` must stay behind mush-pixel's `autodock` feature"
+        );
+    }
+    let mut callers = Vec::new();
+    for dir in ["crates", "web/src"] {
+        for file in scan::files(
+            &root.join(dir),
+            &["rs", "ts", "svelte"],
+            &["node_modules", "target"],
+        ) {
+            let rel = scan::relative(&root, &file);
+            if rel == "crates/mush-pixel/src/docking.rs"
+                || rel.starts_with("crates/mush-contract-tests/")
+                || rel.contains("/tests/")
+            {
+                continue;
+            }
+            let text = fs::read_to_string(&file).unwrap_or_default();
+            for (idx, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("play_to_clamp") || code.contains("next_guidance_input") {
+                    callers.push(format!("{rel}:{}", idx + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        callers.is_empty(),
+        "the docking auto-solver is for tests; these sources name it:\n{}",
+        callers.join("\n")
+    );
+}
+
+/// Doc 35 cut SF.R31: the lint above finds each form doc 35d §5 said it missed, and leaves a
+/// read alone.
+#[test]
+fn the_space_story_lint_finds_every_form_of_a_direct_write() {
+    // The fixtures spell the accessor `WRITE`, so the state-slot census, which reads this file
+    // too, does not take them for real writes.
+    let caught =
+        |code: &str| !space_story_offences(&code.replace("WRITE", MODULE_STATE_MUT)).is_empty();
+    for (form, code) in [
+        ("the plain turbofish", "w.WRITE::<SpaceBubbleBook>();"),
+        (
+            "the qualified turbofish",
+            "w.WRITE::<tacsim::space::SpaceBubbleBook>();",
+        ),
+        (
+            "a turbofish wrapped across lines",
+            "w.WRITE::<\n    tacsim::space::tick::SpaceBubbleBook,\n>();",
+        ),
+        (
+            "a module alias",
+            "use tacsim::space as sp;\nw.WRITE::<sp::SpaceBubbleBook>();",
+        ),
+        (
+            "another space book",
+            "w.WRITE::<tacsim::space::tick::BubbleInputHandles>();",
+        ),
+        (
+            "any type under a space path",
+            "w.WRITE::<tacsim::space::mining::Anything>();",
+        ),
+        (
+            "a type taken from an annotation",
+            "let book: &mut SpaceBubbleBook = w.WRITE().unwrap();",
+        ),
+        (
+            "a qualified annotation",
+            "let book: Option<&mut tacsim::space::SpaceBubbleBook> = w.WRITE();",
+        ),
+        ("a use alias", "use tacsim::space::SpaceBubbleBook as Book;"),
+        (
+            "a use alias in a group",
+            "use tacsim::space::{HullStatus, SpaceBubbleBook as Book};",
+        ),
+        (
+            "a type alias",
+            "type Book = tacsim::space::SpaceBubbleBook;",
+        ),
+        (
+            "a bubble command applied off the command path",
+            "tacsim::space::apply_bubble_command(w, hull, cmd);",
+        ),
+        (
+            "the server's tape solver",
+            "let tape = tacsim::space::solve_docking_tape(&challenge);",
+        ),
+    ] {
+        assert!(caught(code), "the lint missed {form}: {code}");
+    }
+    for (form, code) in [
+        (
+            "a read",
+            "w.module_state::<tacsim::space::SpaceBubbleBook>().unwrap();",
+        ),
+        ("a commented-out write", "// w.WRITE::<SpaceBubbleBook>();"),
+        (
+            "a write to a book that is not space's",
+            "w.WRITE::<mush_sim::AccountOracle>();",
+        ),
+        (
+            "a shared borrow in an annotation",
+            "let book: &SpaceBubbleBook = w.module_state().unwrap();",
+        ),
+        (
+            "a default book built for a comparison",
+            "let empty = SpaceBubbleBook::default();",
+        ),
+    ] {
+        assert!(!caught(code), "the lint flagged {form}: {code}");
+    }
 }

@@ -697,6 +697,9 @@ impl DockingClientSession {
 
     /// Compute the next 60 Hz control input toward the 5-gate clamp envelope using this hull's
     /// [`DockingClientRcsAuthority`] (`SF.R16`).
+    ///
+    /// Behind the `autodock` feature since doc 35 cut `SF.R31`: an auto-solver, for tests only.
+    #[cfg(any(test, feature = "autodock"))]
     #[must_use]
     pub fn next_guidance_input(&self) -> DockingClientInput {
         let mut input = DockingClientInput::default();
@@ -818,6 +821,9 @@ impl DockingClientSession {
     }
 
     /// Play the client 60 Hz docking session forward until `clamped()` is reached (up to 3,600 frames).
+    ///
+    /// Behind the `autodock` feature since doc 35 cut `SF.R31`: an auto-solver, for tests only.
+    #[cfg(any(test, feature = "autodock"))]
     pub fn play_to_clamp(&mut self) {
         while !self.clamped() && self.frames_stepped < MAX_DOCKING_CLIENT_TAPE_FRAMES {
             let input = self.next_guidance_input();

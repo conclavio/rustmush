@@ -1043,3 +1043,40 @@ planner; the docking pose from a seeded draw.
 
 **Not pinned by a story.** The refused seizure, and the spent record (a story would need a sale and a second,
 licensed load).
+
+## SF.R31 — acceptance that is harder to fake, a first part (doc 35d §5)
+
+A subset of doc 35d §9's `SF.R31` row: the lint and the auto-solver. The story rewrite, the recorded key tapes and
+the bot lane are not built (see below).
+
+- **The space-story lint reads past formatting and aliases.**
+  `tacsim_integration_tests_never_mutate_space_bubble_book_directly`
+  (`crates/mush-contract-tests/tests/engine_contracts/arena_library.rs`) now scans each test file with its comments
+  and whitespace removed (`space_story_offences`). Besides the forms it already matched it finds a
+  `module_state_mut::<…>` wrapped across lines, a module alias (by the type's last path segment), any type under a
+  `space::` path, the other space books (`SpacePersistedState`, `BubbleInputHandles`, `SpaceCustodyBook`), a
+  `module_state_mut()` typed by an `&mut` annotation, and a `use … as` or `type … =` alias of a space book.
+  `the_space_story_lint_finds_every_form_of_a_direct_write` feeds it thirteen such forms and five things it must
+  leave alone (a read, a comment, another module's book, a shared borrow, a default book).
+- **The docking auto-solver is in no shipped client.** `next_guidance_input` and `play_to_clamp`
+  (`crates/mush-pixel/src/docking.rs`) are behind mush-pixel's new `autodock` feature, which only tacsim's
+  `[dev-dependencies]` turns on; the TUI and the wasm build without it. `the_docking_auto_solver_is_in_no_shipped_client`
+  pins the gate and that no source outside the tests names either function, and the feature inventory
+  (`ci_policy/feature_matrix_inventory.rs`) carries the new feature.
+- **`sfr20_…` types its staff verb as staff.** It set the ROYALTY flag on a player by hand to run `@field/raiders`;
+  GOD runs it now.
+
+**Tests.** Local: `mush-contract-tests` 35 + 80 (8 ignored) + 76 passed; `domain_world` 256 passed; mush-pixel's
+own tests passed; `cargo check` of mush-pixel, mush-pixel-wasm and mush-net-ssh without the feature; clippy and
+rustdoc clean on tacsim, mush-pixel and the contract tests.
+
+**Not built from the row.**
+- Recorded key tapes from the TUI key path and from the web (Playwright) clamping on the server. Every space story
+  still docks with the auto-solver on a challenge read out of the book (doc 35d §5).
+- The lint does not pin `seed_pool` after departure, `world_mut()` edits, off-engine bubble copies (`sfr13_…`,
+  `sfr23_…`), the auto-solver in a story, or book reads used as inputs. Each needs the stories rewritten first.
+- The remaining fiat in `sfr1`–`sfr24` that doc 35c §5 and doc 35d §5 list.
+- A mush-bot space lane over SSH, and space on the nightly or the gate dispatch.
+- A measured tick cost with several bubbles beside a field.
+- The §6.9 output text (raw mm/s, `paused_from_world_tick=`, the `+tac` help line's wording, the lead pip).
+- A staff verb to inspect and release a quarantine.

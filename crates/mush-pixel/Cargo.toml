@@ -29,6 +29,13 @@ workspace = true
 # `mush-pixel-wasm`) draws into a canvas and leaves them out.
 default = ["encode"]
 encode = ["dep:flate2", "dep:sha2"]
+# Doc 35 cut SF.R31: the docking session's auto-solver (`next_guidance_input`,
+# `play_to_clamp`), which flies a session to the clamp with no pilot. The space stories use it
+# to stand in for a pilot's hands. Off by default; `tacsim`'s `[dev-dependencies]` edge is the
+# only thing in the tree that turns it on, and
+# `crates/mush-contract-tests/tests/ci_policy/feature_matrix_inventory.rs` pins that claim. No
+# shipped client (the TUI, the wasm) carries it.
+autodock = []
 
 [[example]]
 name = "fixture"
