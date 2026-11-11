@@ -485,7 +485,8 @@ pub struct TacsimRuleset {
 pub use minds::ic_sortie::{
     ClaimRead as IcClaimRead, CloseEvent as IcCloseEvent, IcHost, IcHostCompletion, IcHostTicket,
     IcRetainedExecution, IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
-    claim_closed as ic_claim_closed, claim_of as ic_claim_of, claim_seal as ic_claim_seal,
+    claim_closed as ic_claim_closed, claim_of as ic_claim_of,
+    claim_path_composed as ic_claim_path_composed, claim_seal as ic_claim_seal,
 };
 impl TacsimRuleset {
     /// Request the live unit-authority reader as Tacsim, when composition also

@@ -102,59 +102,45 @@ pub const MIND_SEATS_HELD: &str =
 /// **The holdings are not composed here** (a world with no Roll holdings seam).
 pub const MIND_UNAVAILABLE: &str = "Minds cannot be sealed aboard here.";
 
-/// **A licensed mind over a hull not titled to the operator** (doc 23 cut S.4b-1, D-23-22;
-/// Q-23-22, accepted): the Roll's reader admits a claim's Open only for a hull titled to the
-/// dispatcher (`TitleFence`: `title_owner == Object(actor)`, no scope), and a leased rig is
-/// titled to the lessor's organisation, so the launch is refused at `go` before any permit is
-/// minted. Lease authority is the Roll's own cut, S.4c. `{mark}` the rig, `{owner}` its title's
-/// holder as a player reads it.
-pub const MIND_UNTITLED: &str = "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you until the Roll admits a lease.";
+/// **A licensed mind over a hull the operator has no authority to fly it on** (doc 23 cut
+/// S.4b-1, D-23-22, as widened by cut S.4c, D-23-24; doc 44 MW.22): the Roll's reader admits a
+/// claim's Open for a hull titled to the dispatcher, leased to them by its titled owner, or
+/// titled to an organisation they act for (`mush_roll::commerce::ic_claims::hull_authority`).
+/// Any other hull is refused at `go`, before any permit is minted. `{mark}` the rig, `{owner}`
+/// its title's holder as a player reads it.
+pub const MIND_UNTITLED: &str = "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you, leased to you, or held by an organisation you act for.";
 
-/// **D-23-22's refusal, or `None`** (doc 23 cut S.4b-1): only where the claim path is composed
-/// ([`crate::minds::ic_sortie::claim_path_composed`]) — there a filed mind that flies opens a
-/// claim at `go` (D-23-21), and the claim's Open needs the title. Without the claim path the
-/// held mind is S.4a's dormant seal, no claim opens and no title is read: a leased or
-/// organisation-titled hull flies a filed mind as built (doc 17h M8g's stories). A draft opens
-/// no claim either way, and a licence fallen to the ROM flies no mind.
+/// **D-23-22's refusal, or `None`** (doc 23 cuts S.4b-1 and S.4c): only where the claim path is
+/// composed ([`crate::minds::ic_sortie::claim_path_composed`]), where a filed mind that flies
+/// opens a claim at `go` (D-23-21) and the claim's Open asks the hull's authority. **The rule is
+/// the Roll's own** (`hull_authority`), the one its admission reader captures, so the dispatch
+/// refuses exactly the hulls the Open would. A title nobody can fly under now (frozen, reported
+/// stolen, a frozen economy) is not refused here: the Open refuses it and the launch is
+/// cancelled by the claim's own sentence. Without the claim path the held mind is S.4a's
+/// dormant seal, no claim opens and no title is read. A draft opens no claim either way, and a
+/// licence fallen to the ROM flies no mind.
 pub(crate) fn untitled_refusal(
     world: &mush_core::World,
     actor: ObjId,
     tv: ObjId,
 ) -> Option<String> {
+    use mush_roll::commerce::ic_claims::{HullRefusal, hull_authority};
     if !crate::minds::ic_sortie::claim_path_composed(world) {
         return None;
     }
-    let titled = world
-        .module_state::<mush_economy::EconomyStore>()
-        .and_then(|economy| {
-            economy
-                .snapshot()
-                .asset(tv)
-                .map(|title| (title.title_owner.clone(), title.scope.is_none()))
-        });
-    match titled {
-        Some((owner, unscoped)) if titled_to(&owner, unscoped, actor) => None,
-        found => {
-            let owner = found.map_or_else(
-                || "nobody".to_owned(),
-                |(owner, _)| crate::port::claims::holder_name(world, &owner),
-            );
-            let mark = world
-                .get(tv)
-                .map_or_else(|| format!("#{}", tv.0), |row| row.name.to_string());
-            Some(
-                MIND_UNTITLED
-                    .replace("{mark}", &mark)
-                    .replace("{owner}", &owner),
-            )
-        }
-    }
-}
-
-/// **The Roll's title rule** (`TitleFence`'s two fields): the hull is titled to the actor
-/// themself, under no organisation's scope.
-pub(crate) fn titled_to(owner: &mush_org::PrincipalId, unscoped: bool, actor: ObjId) -> bool {
-    unscoped && *owner == mush_org::PrincipalId::Object(actor)
+    let owner = match hull_authority(world, tv, actor) {
+        Ok(_) | Err(HullRefusal::Unavailable) => return None,
+        Err(HullRefusal::Untitled) => "nobody".to_owned(),
+        Err(HullRefusal::Anothers { owner }) => crate::port::claims::holder_name(world, &owner),
+    };
+    let mark = world
+        .get(tv)
+        .map_or_else(|| format!("#{}", tv.0), |row| row.name.to_string());
+    Some(
+        MIND_UNTITLED
+            .replace("{mark}", &mark)
+            .replace("{owner}", &owner),
+    )
 }
 
 /// The `mind=` word: `filed:<n>` or a draft (`draft:<name>`, or a bare name).
@@ -487,8 +473,9 @@ pub(crate) fn dispatch(
     let world = ctx
         .world()
         .map_err(|_| refuse(MIND_UNAVAILABLE.to_owned()))?;
-    // Doc 23 cut S.4b-1 (D-23-22): a filed mind that will fly, over a hull not titled to the
-    // operator, where the claim path would open its claim. The word's own refusals stand first.
+    // Doc 23 cuts S.4b-1 and S.4c (D-23-22, D-23-24): a filed mind that will fly, over a hull
+    // the operator holds neither a title to, a lease of nor an office over, where the claim
+    // path would open its claim. The word's own refusals stand first.
     if !impounded
         && matches!(
             &resolved,

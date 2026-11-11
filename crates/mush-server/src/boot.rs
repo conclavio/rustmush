@@ -394,6 +394,11 @@ fn game_modules_with_optional_commerce(
             let layer = tacsim::TacsimRuleset::with_game_content(tacsim.clone(), tacsim.enabled)
                 .with_conduct_carrier()
                 .map_err(|e| e.to_string())?;
+            // Doc 44 MW.0: `prepare` is the whole launch composition, the IC mind claims of
+            // an Active launch included. Nothing is composed onto its result here, and the
+            // test rigs that stand a launch up call the same function and add nothing
+            // either (`crates/tacsim/tests/domain_field/m8_world.rs`, `factory`), so a
+            // story over them runs on this composition.
             tacsim::launch::LaunchComposition::prepare(&layer, deployment)
                 .map_err(|e| e.to_string())
         })

@@ -208,13 +208,21 @@ pub(super) fn local(
                 )?;
                 let birth =
                     super::super::audit::read(ctx, &f.operations, licence.operation.to_hex())?;
-                let historical_owner = match &open.charter_ownership {
-                    None => birth.requester,
+                // Doc 23 cut S.4c (Q-23-19's organisation path): a House charter is held by
+                // its organisation and no transfer can move it, so its claim was dispatched
+                // by a character acting for the House, whose grant was asked live at the
+                // dispatch (`owner_holdings::check_title`). As on the paid arm above (M8c
+                // S2), the claim records the dispatcher and not the grant, so this history
+                // check accepts any nonzero dispatcher for a House birth.
+                let dispatcher_fits = match &open.charter_ownership {
+                    None if birth.economic.house.is_some() => open.dispatcher.0 != 0,
+                    None => birth.requester == open.dispatcher,
                     Some(proof) => {
                         super::super::charter_transfer::history::historical(ctx, f, birth, proof)?
+                            == open.dispatcher
                     }
                 };
-                if historical_owner != open.dispatcher
+                if !dispatcher_fits
                     || birth.charter != open.charter
                     || birth.line != open.line
                     || term.window != open.window

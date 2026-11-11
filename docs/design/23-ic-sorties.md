@@ -7,7 +7,7 @@
 > destruction: accepted Q-H7/Q-H9 keep a recoverable unit's epoch open. The as-built epoch ledger
 > below is preserved; this note does not claim that code has changed.
 
-**Draft 0.11, 2026-11-03 — the owner accepted Q-23-21 and Q-23-22 at their defaults ("Accept all seven", one ruling over docs 23, 40, 41 and 42's open questions), so D-23-21 to D-23-23 stand as ruled and every question in §17 is answered: the Open commits before the launch with the rig in its bay and the claim is the reservation (D-23-13 as amended), a `mind=` word over a hull the pilot holds no title to is refused at `go` with lease authority as the Roll's S.4c, and the pending-launch protocol is D-23-23's five steps, doc 40's six-step shape kept under Q-23-21's record only; S.4b may start; S.0–S.4a as built (§14), S.4b open.** Draft 0.10, the same day: the round-2 outside review of §17 folded (nine items, every claim re-verified at `f146734e`): the claim now opens before the launch (D-23-21, amending D-23-13), a licensed mind flies only a titled hull in S.4b (D-23-22), the pending-launch protocol is one contract with doc 40 §4.4 (D-23-23), the cursor lives on `RigRecord`, `Opening.transition` carries the book's ordinal, the seam moves only by observing the committed row, the `abi` drop is `Execution::install`'s own, and the testimony producer reads the field's log. Draft 0.9, the same day: the owner accepted Q-23-7 to Q-23-20 at their defaults, so D-23-11 to D-23-20 stand as ruled and S.4b-T may start. Draft 0.8 added §17, written read-only at `c83c2eff` (`origin/main`) under doc 38 Q-38-21: D-23-11 to D-23-20 and Q-23-7 to Q-23-20, and the cut S.4b restated with the host moved from the drone phase to the IC field (§17.10). Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.12, 2026-11-11 — S.4c is designed and built (§18, D-23-24; doc 44 units MW.0 and MW.22, Q-44-39): a claim opens on a hull titled to its pilot, leased to them, or held by an organisation they act for, by one rule in the Roll that the dispatch also calls, and every Active launch now composes the claim path.** Draft 0.11, 2026-11-03 — the owner accepted Q-23-21 and Q-23-22 at their defaults ("Accept all seven", one ruling over docs 23, 40, 41 and 42's open questions), so D-23-21 to D-23-23 stand as ruled and every question in §17 is answered: the Open commits before the launch with the rig in its bay and the claim is the reservation (D-23-13 as amended), a `mind=` word over a hull the pilot holds no title to is refused at `go` with lease authority as the Roll's S.4c, and the pending-launch protocol is D-23-23's five steps, doc 40's six-step shape kept under Q-23-21's record only; S.4b may start; S.0–S.4a as built (§14), S.4b open.** Draft 0.10, the same day: the round-2 outside review of §17 folded (nine items, every claim re-verified at `f146734e`): the claim now opens before the launch (D-23-21, amending D-23-13), a licensed mind flies only a titled hull in S.4b (D-23-22), the pending-launch protocol is one contract with doc 40 §4.4 (D-23-23), the cursor lives on `RigRecord`, `Opening.transition` carries the book's ordinal, the seam moves only by observing the committed row, the `abi` drop is `Execution::install`'s own, and the testimony producer reads the field's log. Draft 0.9, the same day: the owner accepted Q-23-7 to Q-23-20 at their defaults, so D-23-11 to D-23-20 stand as ruled and S.4b-T may start. Draft 0.8 added §17, written read-only at `c83c2eff` (`origin/main`) under doc 38 Q-38-21: D-23-11 to D-23-20 and Q-23-7 to Q-23-20, and the cut S.4b restated with the host moved from the drone phase to the IC field (§17.10). Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -378,6 +378,9 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
     (D-UM-47), after M8, together with a custody design for moving anchors. *Draft 0.8: the custody
     design is §17, and §17.10 restates S.4b with the IC field as its host (D-23-20) and adds S.4b-T,
     the testimony producer; this bullet is superseded by it.*
+  - **S.4c** is lease and organisation authority in the title fence: who may open a claim on
+    a hull they hold no personal title to. *Designed and built 2026-11-11 with doc 44's MW.0 and
+    MW.22: §18.*
 - **S.5 — The M8 gate check (small).** §10's two tiers as dispatch-only CI stories, folded into
   doc 17h's cut M8g.
 
@@ -1179,7 +1182,8 @@ lease, lessor, lessee: actor, term_ends_ic }`, captured from a live `TvLease { s
 (a lease ending mid-claim is the lessor's repossession, which closes the epoch and the claim as a
 home does); the exclusion's hangar check is unchanged, since the lease names the bay. An org-held
 licence (Q-23-19) and a leased hull are the same shape of question and the same owner's cut.
-Q-23-22, accepted at its default.
+Q-23-22, accepted at its default. *S.4c is designed and built in §18 (D-23-24): the fence reads
+the economy's lease contract, not a `TvLease`, and admits an organisation's office as well.*
 
 ### 17.4 Physical custody while the hull moves — D-23-15
 
@@ -1571,7 +1575,7 @@ with S.4b, which mints the claim they read).*
 | D-23-19 | The testimony producer feeds `EarnedContacts` from the field log's own-sensor `Classified` lines as each chunk lands, authored by the admission pilot else the warrant principal, persisted per author; it is its own cut, S.4b-T | **accepted by the owner, 2026-11-03** (Q-23-16, Q-23-17); **restated in Draft 0.10** (round 2's 23-9: the field's log, not the hull's box; own-sensor provenance; the admission pilot) |
 | D-23-20 | S.4b's host is the IC field; the drone phase is no longer its gate; its acceptance runs at 256 and 512 with the bot per Q-38-29 | **accepted by the owner, 2026-11-03** (Q-23-18, Q-23-20) |
 | D-23-21 | The claim opens before the launch: `go` mints the `StartPermit` with the rig in its bay and queues the launch act behind the claim; the fire that observes the active row starts the ramp; the claim is the licence and compute reservation, counted with the inbox's pending Opens; an Open refused for good leaves `Refused` on the cursor, the launch cancelled, nothing out of the bay; a launch cancelled after its Open closes `PoweredDownInBase` | **accepted by the owner, 2026-11-03** (Q-23-21 at its default; proposed in Draft 0.10 from round 2's 23-1, 23-2, 23-5) |
-| D-23-22 | A `mind=` word over a hull not titled to the actor is refused at `go` with one sentence; S.4b's story runs over a bought-out rig; lease authority is the Roll's next cut, S.4c (`LeaseFence` from a live `TvLease`, audited like the title's revision) | **accepted by the owner, 2026-11-03** (Q-23-22 at its default; proposed in Draft 0.10 from round 2's 23-3) |
+| D-23-22 | A `mind=` word over a hull not titled to the actor is refused at `go` with one sentence; S.4b's story runs over a bought-out rig; lease authority is the Roll's next cut, S.4c (`LeaseFence` from a live `TvLease`, audited like the title's revision) | **accepted by the owner, 2026-11-03** (Q-23-22 at its default; proposed in Draft 0.10 from round 2's 23-3); **widened by D-23-24** (§18, 2026-11-11): a lease and an office admit as well |
 | D-23-23 | The pending-launch protocol, one contract with doc 40 §4.4: claim in the bay → ramp → field check-out and Join at the landing reading the cursor (`Open` installs, else the ROM) → a refused join back aboard with the claim untouched → a cancelled launch closes `PoweredDownInBase`; the field never opens, waits for or closes a claim; the shared story is a licensed reinforcement into a running field | **accepted by the owner, 2026-11-03** (with Q-23-21 at its default, the five-step shape; doc 40 Draft 0.3's six-step shape stays under Q-23-21's record; proposed in Draft 0.10 from round 2's 23-5, X-1) |
 
 ### 17.12 Questions for the owner
@@ -1721,3 +1725,103 @@ accepted at Q-23-8)**
   its own review, as Q-23-19 ruled for the org path; S.4b's story needs one titled rig, which the
   buyout already makes. The cost is real and is the owner's to weigh: the escort every player
   flies early is Occator's, so until S.4c a licensed mind flies only a bought-out hull.
+
+## 18. S.4c — whose hull: lease and organisation authority in the title fence
+
+**Written 2026-11-11, with the build (doc 44 units MW.0 and MW.22; Q-44-39, ruled).** D-23-22
+refused a licensed mind on any hull its pilot holds no personal title to, and named this cut as
+the one that would admit a lease. It could wait while no live server composed the claim path. Doc
+44's MW.0 composes it in every Active launch, and from that boot the refusal would take a filed
+mind from every chartered rig and every House hull, which fly one today as S.4a's dormant seal
+(doc 17h's M8f and M8g stories). So S.4c lands in the same change as the composition.
+
+### 18.1 The rule — D-23-24
+
+Two questions are asked at a claim's Open and they are separate. **Whose licence** is unchanged:
+the pilot's own, or an organisation's flown `org=` under the grant M8c built. **Whose hull** is
+this section.
+
+A claim's Open on a hull, dispatched by a character, is admitted when the hull's title is live
+and one of three holds, tried in this order:
+
+1. **Title.** The hull is titled to the character, under no organisation's scope. This is
+   D-23-22's rule, unchanged.
+2. **Lease.** The hull is titled to a lessor, the title carries that lessor's `Lease` claim, and
+   the contract that placed the claim is Active, lease-shaped, issued by the lessor, pledges this
+   hull as the lessor's collateral and names the character a party. That is the contract
+   `mush_economy::offer_lease` builds, so it covers Occator's rig lease (`port/tv.rs`) and has
+   the shape of the Trust's charter of a hull (`port/coop.rs`).
+3. **Office.** The hull is titled to an organisation and the character acts for it, on the
+   title's own scope, under a live `roll.holder.org` grant. This is the grant an organisation's
+   licence use already asks (doc 17h M8c B2; `org_holder`). Flying a hull moves no money, so the
+   grant is asked as a read (M8f's P2a ruling): a grant with a spending limit still flies.
+
+A live title is one the economy holds Active, not frozen and not reported stolen, on an object
+that exists, with the economy itself not frozen. Staff standing and an asset's assignment never
+stand in for any of the three, as they never stand in for title.
+
+A character with none of the three is refused. At `go` the sentence names the hull and the
+holder of its title: "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you,
+leased to you, or held by an organisation you act for." In the Roll the Open is refused.
+
+### 18.2 One rule, two readers
+
+The rule is one function in the Roll, `mush_roll::commerce::ic_claims::hull_authority`. The
+Roll's admission reader captures it in its title fence (`ic_claims/reader.rs`) and re-reads it
+whole at the fresh check, so a title that moved, a lease that ended or a grant that was revoked
+between the read and the commit is stale. The surface dispatch's refusal at `go`
+(`surface/dispatch.rs`, `untitled_refusal`) calls the same function. The dispatch cannot admit a
+hull the Open would refuse, or refuse one it would admit.
+
+The Roll reads the lease from the economy's own records and the office from the organisation
+store. It reads no TacSim record, so `TvLease` is not consulted, and Draft 0.10's sketch of a
+`LeaseFence` captured from a `TvLease` is replaced by this.
+
+### 18.3 The organisation's own licence — Q-23-19's path
+
+Q-23-19 left an organisation's licence to "the Roll's org admission path". The tree already
+carries most of it: the cursor keeps the `org=` the pilot launched with, the reader's paid arm
+projects an organisation's licence for any character acting for it (M8c F1), and the owner
+projection admits an organisation's charter title under the grant (M8c B2). Two places still
+assumed a personal owner, and S.4c changes both:
+
+- the reader's fence over an **owner licence's charter** required the dispatcher's personal
+  title. It now accepts the arm the owner projection proved: a character's charter by title, a
+  House's by the acting character's office. A charter is never leased;
+- the claim history's audit required an owner licence's dispatcher to be the charter's
+  historical owner. A House charter is held by its organisation and cannot be transferred, so
+  for a House birth the audit accepts any dispatcher, as the paid arm already does for an
+  organisation's licence (M8c S2): the live grant at the dispatch is the proof.
+
+### 18.4 What the claim records, and what ends it
+
+The claim row is unchanged. It keeps the hull's title revision at the Open, as before, and does
+not record which arm admitted the hull, as it does not record the grant an organisation's
+licence was flown under (M8c S2). Recording the arm would change the row's format, which
+`mush-core` mirrors field for field; that is a cut of its own if an inspection ever needs it.
+
+The Close reads no authority. A lease that ends or a grant that is taken back while the claim is
+open closes nothing by itself: the claim closes when the hull's epoch closes, by the four kinds,
+as D-23-11 has it. A charter's end repossesses the rigs in the carrier's bay, where no epoch is
+open; a rig repossessed where it lies on a site (`port/tv.rs`, `REPOSSESSED_LEFT`) was not
+traced for this cut, and what closes its epoch and claim is not changed by it.
+
+### 18.5 Taken as defaults
+
+- **A rig lease in forfeit still counts.** When a term runs out on an empty account Occator
+  captures the deposit and the lease record goes `Forfeit`, but the economy's contract is not
+  ended until the rig is returned, and the launch verb does not refuse the rig. The Roll reads
+  the contract, so a licensed mind still flies it. Refusing it would need a TacSim record in the
+  Roll's rule or a second rule at the dispatch.
+- **Hull cover is unchanged**: its reader still sells only over a hull titled to the dispatcher
+  (`coverage/reader.rs`). No production launch composes hull cover.
+- **A ship's charter is admitted by the rule but opens no claim**: D-23-12 stands, claims are for
+  rigs until a ship is cored.
+
+### 18.6 Decision
+
+| # | Decision | Status |
+|---|---|---|
+| D-23-24 | A claim's Open is admitted on a hull titled to the dispatcher, leased to them by its titled owner under a live lease contract, or titled to an organisation they act for under `roll.holder.org` on the title's scope; one function in the Roll decides it for the reader and for the refusal at `go`; an organisation's owner licence opens a claim through the same reader; the claim row does not record the arm | built with doc 44 MW.22 under Q-44-39 (ruled 2026-11-11); widens D-23-22 |
+
+*As built: [44-cut-notes.md](44-cut-notes.md), MW.0 and MW.22.*
