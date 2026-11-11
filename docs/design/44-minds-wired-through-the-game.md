@@ -1,15 +1,18 @@
 # 44. Minds, wired through the game — the remaining work, surveyed
 
-Draft 0.1, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
+Draft 0.2, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
 through SF.R31 and SF.R26b merged) by four read-only lanes, one each for player unit minds, ground
 combat, space flight, and the non-combat actors; the lead checked each lane's main claims in the
-tree. Anchors are file and function names; line numbers drift.
+tree. Anchors are file and function names; line numbers drift. Draft 0.1, the same day, was the
+survey. **Draft 0.2 records the owner's rulings of 2026-11-11 on every question:** Q-44-16 goes to
+its alternative, Q-44-29 is amended, Q-44-6 and Q-44-32 are accepted with a clarification each,
+and every other default is accepted as written. §4a lists what the amendments change, and §7 cuts
+the units of work from the rulings.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) used: it asks the
 owner questions, each with a proposed default, an alternative and a reason. "Provisional" marks a
 number to be tuned later under the 2026-10-24 rule. **(expensive to reverse)** marks an answer that
-would take a significant refactor of the codebase to undo, never stored data or a live box. The
-units of work are cut from the rulings, in §7.
+would take a significant refactor of the codebase to undo, never stored data or a live box.
 
 A **mind** here is whatever holds a unit's or an actor's controls when a player does not: a Rhai
 script run by `mush-mind`, the compiled Standard Doctrine, an LLM persona, or a compiled rule on a
@@ -214,7 +217,32 @@ native for that reason (doc 17d). No bot plays a mind's whole life, and no bot p
 
 **Questions.** Q-44-33, Q-44-34.
 
+## 4a. Consequences of the rulings
+
+- **The LLM is part of play (Q-44-6).** Play was never meant to run without it; `[llm].enabled =
+  false` exists so tests and CI spend no tokens. So on a play box a route that does not answer is a
+  fault to find at bring-up, not a mode the box may run in. §8's check is a gate for that reason.
+  *(The second sentence is the lead's reading of the clarification.)*
+- **No stopgap in the field (Q-44-16).** Until the field's backup mind lands, a linkdead player's
+  unit in an IC field still passes to the compiled doctrine and fires on hostile parties. The
+  field's backup mind (MW.7) is the fix and moves to the front of the field chain's design work.
+- **The storyteller role stays where it is (Q-44-29).** Nothing is deleted and nothing is
+  retargeted. `StAdjudicate`, `StInterpret` and the two routes stay in the tree and the template
+  with no caller. Doc 03 says so (MW.4); there is no code unit.
+- **House policy as a doctrine is deferred, not refused (Q-44-32).** The institutions stay compiled
+  for now. The owner expects house policy to become a Rhai doctrine at some point, so nothing built
+  in this programme should make that harder: MW.14's commander doctrine and MW.10's doctrine
+  lookup are written so a house doctrine can use the same store path later.
+- **One concept (Q-44-22).** Every unit always has a mind and presence decides who holds the
+  controls. MW.7, MW.8 and doc 45 are written on that: the backup mind is the house default mind,
+  not a link-loss feature, and doc 45 extends the same hand-over to the absent player.
+
 ## 5. Owner survey
+
+**Ruled 2026-11-11.** The owner chose the alternative for Q-44-16 (no stopgap; wait for the
+backup mind), amended Q-44-29 (nothing deleted, nothing retargeted), and accepted Q-44-6 and
+Q-44-32 with a clarification each. Every other default is accepted as written. Each of those four
+carries its decision first, with the proposed text kept under it for the record.
 
 ### 5.1 Order and shape
 
@@ -264,6 +292,8 @@ native for that reason (doc 17d). No bot plays a mind's whole life, and no bot p
   using them.
 
 **Q-44-6 — The LLM on the dev boxes.**
+- **Ruled 2026-11-11: the default, with a clarification.** Play was never intended to run without
+  the LLM. Turning it off exists so that tests and CI do not burn tokens.
 - **Proposed default:** both boxes keep `LLM_ENABLED=true`. The bring-up checks that the keys are
   present and that one route of each kind answers (an NPC replies, a fill squad deliberates), and
   records the result. Budgets stay at the template's.
@@ -329,6 +359,8 @@ native for that reason (doc 17d). No bot plays a mind's whole life, and no bot p
 ### 5.4 Link loss (C)
 
 **Q-44-16 — A stopgap in the field.**
+- **Ruled 2026-11-11: the alternative.** No stopgap. The backup minds are being built now, and the
+  field waits for its own.
 - **Proposed default:** now, ahead of the backup mind: a unit released because its player's link
   is down holds fire and returns fire only at a unit that has fired on it.
 - **Alternative:** wait for the backup mind.
@@ -433,6 +465,8 @@ native for that reason (doc 17d). No bot plays a mind's whole life, and no bot p
 ### 5.8 NPC characters and the LLM (G)
 
 **Q-44-29 — The storyteller role.**
+- **Ruled 2026-11-11, amended.** Delete nothing, and make no effort to retarget it now. It stays
+  disconnected for the time being.
 - **Proposed default:** delete the two variants and the two routes. The idea stays a note.
 - **Alternative:** retarget it to this game now.
 - **Why:** it is configuration for code that no longer exists.
@@ -453,6 +487,8 @@ native for that reason (doc 17d). No bot plays a mind's whole life, and no bot p
 ### 5.9 The world's institutions (H)
 
 **Q-44-32 — Authorable behaviour for ports, houses and procurement.**
+- **Ruled 2026-11-11: the default, as a deferral and not a decision.** House policy as a Rhai
+  doctrine is likely wanted at some point.
 - **Proposed default:** no. They stay compiled rules with authored numbers.
 - **Alternative:** house policy as a Rhai doctrine.
 - **Why:** each has one behaviour and one instance; a second house that must behave differently
@@ -477,34 +513,105 @@ native for that reason (doc 17d). No bot plays a mind's whole life, and no bot p
 
 | Document | Categories | Shape |
 |---|---|---|
-| **This document, §7** | A, D, G, H, I | cut lists, written from the rulings |
+| **This document, §7** | A, D, G, I | the units below; H has none (Q-44-32 deferred) |
 | **Docs 35 and 27** | C | the ruling's rules; the field cut beside the space one |
 | **Doc 45** | E | a survey in this form |
 | **Doc 35d §9's successor** | F | rows after SF.R31 |
 | **Docs 17g and 17h** | B | the defects and C4 appended to their lists |
 
-## 7. Units of work
+## 7. Units of work (Draft 0.2)
 
-Written after the rulings. Each unit will name its files, what it waits on, and its acceptance,
-in the form of doc 38 §9: what may start at once, what shares a file with what, and which question
-gates which unit.
+Twenty units, `MW.1` to `MW.20`, cut from the rulings. "Waits on" is a unit that must be merged
+first. Every acceptance is through registered commands with a non-GOD actor, and each story that
+waits out a real-time window does so at 24:1.
+
+### 7.1 The units
+
+| Unit | Category | What it is | Mostly in | Waits on | Done when |
+|---|---|---|---|---|---|
+| **MW.1** | A | The launch switch and the bring-up script (Q-44-4, Q-44-5), with a procurement policy for each House (Q-44-8) and the raid director on (Q-44-7) in the dev instances | `deploy/instance/` (`render.sh`, `instance.env.example`, `mushd.toml.tmpl`, a new bring-up script), `deploy/dev1`, `deploy/dev2`, `deploy/README.md` | — | a fresh store on a throwaway Redis goes boot, bring-up, boot and reports the House chain and the player market composed; rendering with the switch off gives today's file byte for byte |
+| **MW.2** | B | The two defects ruled to be fixed before the go-live (Q-44-14, Q-44-15): a withdrawn listing leaves the counter; a renewal that cannot land stops, and `+minds/renew` says why in the ruled words | `crates/mush-market` (`offers.rs`), the renewal service under `crates/tacsim/src/minds/` | — | a story withdraws a listing and the counter no longer offers it; a refused renewal is tried once and the holder reads the reason |
+| **MW.3** | A | The go-live on dev1 and dev2: §8, run with the owner | the boxes | MW.1, MW.2 | §8's eight steps recorded for each box |
+| **MW.4** | docs | The rulings written into their own documents: D-UM-56, Q-UM-12, Q-UM-14, Q-UM-18 (doc 17); paid Follow deferred, the renewal wording (17g); the heirloom and the House term (17h); the raid director on the dev boxes (doc 36); doc 03's "No code exists yet" replaced by what is live and by the storyteller role's state | `docs/design/` | — | each question reads "ruled 2026-11-11" where it was asked |
+| **MW.5** | B | Doc 17g's C4: 17f §9's stories 1, 2, 3, 5, 6 and 7 on the production composition, each with a restart | `crates/tacsim/tests/`, `crates/tacsim/src/minds/` | MW.1, MW.2 | the six stories pass and "C4 as built" is written in 17g |
+| **MW.6** | B | 17g's follow-ups: the recall notice drain that aborts on one bad holding; Registry pacing of 3 to 7 s a lease | `crates/tacsim/src/minds/registry*` | MW.2 | one bad holding no longer stops the drain; a measured lease time in the cut note |
+| **MW.7** | C | The field's backup mind: the house default doctrine for a unit whose player is gone. It goes to its party's home and boards; with no carrier on the site it holds at the site's edge on its side (Q-44-17). It never opens fire first. A stricter order the player left stays; an order to advance or attack lapses (Q-44-18). A reconnect takes the controls back at once. The simulator is unchanged (Q-44-19) | `crates/tacsim/src/arena_bridge.rs` (the release for an IC task), `crates/tacsim/src/field/`, the doctrine library | the design section MW.8's session writes for the field | a player's field unit, five minutes after its link drops with a hostile in view, has not fired, is aboard its carrier, and answers its player's first command on reconnect |
+| **MW.8** | C | The space backup mind. **In flight** (the session started 2026-11-11) | `crates/tacsim/src/space/` | — | as that session's brief has it |
+| **MW.9** | F | One applier from intents to bubble commands, used by every space actor, movement included; the two trace-string hooks removed; the interdictor's stand-down per carrier, on state (Q-44-24) | `crates/tacsim/src/space/picket.rs`, `tick.rs`, the three doctrine scripts | MW.8 | a doctrine edited to hold where it used to close makes its actor hold; an escort that heaves to does not clear the runner beside her; a Dray can heave to against the interdictor |
+| **MW.10** | F | A doctrine named by the pack's cast with its digest; an edit to the store's copy takes effect at the next bubble; staff replace one with the workshop's verbs (Q-44-25) | `crates/tacsim/src/minds/content.rs`, the cast in the pack, the seal sites in `space/` | MW.9 | a store-edited doctrine changes what the next picket does, in a story |
+| **MW.11** | F | The think's cost measured, then thinks taken off the world thread: the snapshot of step N, intents at N+1, one think a second an actor (Q-44-28) | `space/tick.rs` (the step), `space/picket.rs` (the think host) | MW.9 | the measured cost before and after in the cut note; a replay of a recorded bubble is identical |
+| **MW.12** | F | Drones as mind-driven sorties: a view of the rock and the hold, intents that move and work, the yield from what the drone did, the sortie record closed (Q-44-27) | `space/mining.rs`, the drone think in `space/picket.rs`, `drone_mining.rhai` | MW.9 | a drone whose mind is edited to stop short brings back less; the excursion book holds no drone after it lands |
+| **MW.13** | F | A player's own mind sealed on a ship: helm and sensors, the class from the hull's core (Q-44-26) | `space/` seal sites, `crates/tacsim/src/minds/sealed.rs`, the registry | MW.8, MW.9, MW.10 | a player seals a saved mind on her ship; with her link down it flies her to her filed port in place of the house default |
+| **MW.14** | D | The NPC commander: a Rhai commander doctrine, read from the store, issuing the roster orders a player leader can (Q-44-20) | `crates/tacsim/src/detachment/`, `field/orders.rs`, the doctrine library | — | a detachment launched with no player aboard advances, holds and withdraws on its commander's orders, the same way on replay |
+| **MW.15** | D | The field tests doc 36 still owes for SCREEN and SUPPORT | `crates/tacsim/tests/` | — | both orders pinned in a field |
+| **MW.16** | E | Doc 45: the survey of asynchronous attack and defence, on one concept (Q-44-22, Q-44-23) | `docs/design/` | — | the survey open for rulings |
+| **MW.17** | G | A staff verb that shows what an NPC knows, remembers and was last asked (Q-44-30) | `crates/mush-npc` | — | staff read it for a station NPC; a player is refused |
+| **MW.18** | G | The ambient timer scheduled: major NPCs, a player in the room, at most once in 30 real minutes each, under the budgets (Q-44-31) | `crates/mush-npc` | MW.17 | a major NPC speaks unprompted once in the window and not again; with no player in the room nothing is spent |
+| **MW.19** | I | The bot's minds lane on the nightly at 24:1 (Q-44-33): write, file, list, buy, fly in the simulator and on an IC sortie | `crates/mush-bot`, the nightly workflow | MW.1, MW.5 | green three nights running |
+| **MW.20** | I | Minds measured at size (Q-44-34): 100 units with every seat on a mind, in the simulator and in a field; eight bubbles in space | the fill harness, a space harness | MW.7, MW.11 | the figures in the cut note, with what misses |
+
+Not units: the storyteller role (Q-44-29), the institutions (Q-44-32), paid Follow (Q-44-11),
+sub-leaders and the squad layer in IC fields (Q-44-21). Each is deferred by its ruling.
+
+### 7.2 What may start now
+
+MW.1, MW.2, MW.4, MW.14, MW.15, MW.16 and MW.17 wait on nothing, and MW.8 is running. That is
+seven units across five chains (§7.3): the deploy, market, NPC and docs chains each start a
+session today, and the field chain takes MW.15 and then MW.14 in one.
+
+### 7.3 One writer a file
+
+| Chain | Units, in order | The shared files |
+|---|---|---|
+| **Deploy** | MW.1 → MW.3 | `deploy/` |
+| **Market** | MW.2 → MW.6 → MW.5 | `crates/tacsim/src/minds/` and `crates/mush-market` |
+| **Space** | MW.8 → MW.9 → MW.10 → MW.11 → MW.12 → MW.13 | `space/picket.rs` and `space/tick.rs`; every unit of the chain edits both |
+| **Field** | MW.15 → MW.14 → MW.7 | `field/orders.rs`, `detachment/`; MW.7 also holds `arena_bridge.rs` alone |
+| **NPC** | MW.17 → MW.18 | `crates/mush-npc/src/module.rs` |
+| **Docs** | MW.4, MW.16 | no shared file |
+| **Acceptance** | MW.19, MW.20 | last; they read what the others built |
+
+The space chain is one writer for its whole length. MW.8's session writes a mapping from intents
+to commands for the backup mind; MW.9 makes that mapping the one applier and moves the three older
+ones onto it, so MW.9 does not start until MW.8 has merged.
+
+### 7.4 The edges between chains
+
+- **MW.7 waits on a design, not on code:** the field section MW.8's session writes into doc 27.
+  If that section is late, MW.7's first act is to write it from Q-44-17 and Q-44-18.
+- **MW.13 needs the launch** for a filed licence to be sealed; with MW.1 unmerged it can still be
+  built and tested on a saved draft.
+- **MW.19 needs MW.1's bring-up** to stand a launch up in the bot's rig, and MW.5's stories to
+  have found what a story can find first.
+- **MW.3 is the owner's.** It also wants what is open against main merged first.
+- **Doc 45 (MW.16) may change MW.7 and MW.8** where its rulings widen the hand-over to an absent
+  player. Both are built for link loss alone; neither should assume link loss is the only door.
+
+### 7.5 Waves
+
+- **Wave 0, now:** MW.1, MW.2, MW.4, MW.14, MW.15, MW.16, MW.17; MW.8 already running.
+- **Wave 1:** MW.3 (after MW.1 and MW.2), MW.6, MW.7 (after the field section), MW.9 (after
+  MW.8), MW.18.
+- **Wave 2:** MW.5, MW.10, then MW.11 and MW.12.
+- **Wave 3:** MW.13, MW.19, MW.20.
 
 ## 8. The dev-box list (dev1 and dev2)
 
 Nothing here is done without the owner; a redeploy wipes the store.
 
-1. **Before the redeploy.** Merge what is open against main. Fix the withdrawn-listing and
-   renewal defects if Q-44-15 is ruled so.
-2. **The launch.** Write the bring-up script (Q-44-4); add the `MINDS_LAUNCH` switch to
-   `instance.env`, `instance.env.example` and `render.sh`; keep the template's `[tacsim.minds]`
-   block and its class tables in step.
+1. **Before the redeploy.** Merge what is open against main. MW.2 fixes the withdrawn-listing
+   and renewal defects first (Q-44-15 as ruled).
+2. **The launch.** MW.1: the bring-up script; the `MINDS_LAUNCH` switch in `instance.env`,
+   `instance.env.example` and `render.sh`; the template's `[tacsim.minds]` block and its class
+   tables kept in step.
 3. **Wipe and redeploy both boxes** at main. Boot without the launch; run the bring-up; boot with
    it. The boot must report the House chain and the player market composed.
 4. **Grants.** The Registry's operators hold `roll.registry.recall` and `roll.registry.revoke`
    (README step 9).
-5. **Procurement** (Q-44-8) and **the raid director** (Q-44-7), as ruled.
+5. **Procurement** (Q-44-8): each House has a policy at the template's defaults. **The raid
+   director** (Q-44-7): on.
 6. **The LLM** (Q-44-6): keys present; an NPC answers; a fill squad deliberates; the budgets read
-   back.
+   back. Play does not run without it, so a route that does not answer holds the box back.
 7. **A smoke by hand, on w11term, at each box:** `@mind/new`, `@mind/save`, `@mind/prove`;
    `SIM MIND` and a match; `@mind/publish`; `+minds` and a purchase; `+tv/<n> launch mind=filed:N`;
    a station NPC asked a question.
