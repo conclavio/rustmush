@@ -118,7 +118,69 @@ Not built.
 
 ## MW.15
 
-Not built.
+The story doc 36 owed for SCREEN and SUPPORT flown as delivered orders (doc 44 §7.1; doc 36 cut
+GC.0's "Not built"; Q-36-42). No engine code changed: the cut is a test rig and a story.
+
+**Built.**
+
+- **`roster_rig`** (`crates/tacsim/tests/support/field/roster_rig.rs`), the rig that flies a
+  detachment's roster into a field in tacsim's own world harness. `fly` is `mush-server`'s
+  `pair_field_fixture` on `driving_rig`'s composed world, every step the production command:
+  the hire at the Slack Line (`+sortie/crew`, `+sortie/hire`), a leased prospector a slot with
+  its operational loans (`+tv/lease go`, `+tv/<n>/permissions go`), the crew brought aboard
+  (`+sortie/board`), the voyage to the site, the sub-loan to each NPC
+  (`@unitgrant/issue … operate_crew parent=<loan>`), the leader's own boarding
+  (`+tv/<n> board`, `+focus`), the plan (`+sortie/draft`, `+sortie/accept`, `@station/handoff`,
+  `+sortie/ready`, `+sortie/activate`), each NPC's seat (`+sortie/seat`), the launch
+  (`+sortie/launch`) and the refresh until the field command names a leader.
+- Its parts are what MW.14a's story needs next: `Plan` takes any billets (a `Leader`, a `Hired`
+  crew member by name) and a `commander` by name; `commit` lands whatever a line queued on the
+  composed path whoever owns the action (tacsim's, Org's unit grants, Sim's helm hand-off, which
+  `driving_rig::drain` drops); `apply_due` lands a due scheduled action on the composed scheduled
+  path (Sim's `control_handoff_apply`, the lander doc 36 said such a story needs); `beat` is one
+  world second of both; `fence` and `reply` read the order prefill and a sent order's status off
+  `+sortie/orders`, as a player's client does.
+- **The story** (`crates/tacsim/tests/domain_field/field_mw15.rs`), at 256 on Ahuna Flank and at
+  512 on Urvara Reach. A captain leads a mining roster from rig 1 with Ilya Mendes hired into rig
+  2. A second captain's armed hull escorts and a third party's armed hull stands off it; the
+  escort's `+field/fire` promotes the site and three parties are admitted. Then, by the leader's
+  own `ORDER DT:… ` lines:
+  1. `2 SCREEN 90`: the order is delivered, stands on Mendes's own frame, the rig turns onto 90
+     degrees and the WILCO comes back. The leader drives four cells off and the screen stays on
+     its cell and its bearing;
+  2. `2 SUPPORT 1`: the rig leaves the cell it screened from, closes to its station on the
+     leader's rig, and answers WILCO;
+  3. `2 SCREEN 270`: the rig turns onto the new bearing, so the bearing it holds is the order's;
+  4. `2 SUPPORT 2` (its own slot): NEGATIVE, and the screen goes on standing.
+
+**Tests.** `field_mw15::mw15_a_rosters_screen_and_support_are_delivered_and_obeyed` and
+`…_at_512` in `domain_field`. Local, Windows: 85 s and 81 s, each passing alone. GC.0's two
+in-source gates are untouched.
+
+**Divergences.**
+
+- **One NPC flies both orders, in turn.** A Dray-P's bay holds two rigs, so a roster with a
+  player leader has one hired NPC (`fly` refuses a third billet). The row's "the screening unit"
+  and "the supporting unit" are the same rig under two successive orders, with the screen's hold
+  checked while the leader moves away and the supporter's close checked after it.
+- **"Keeps to its charge" is the doctrine's station, with the motor's tolerance.** The supporter
+  ends within `SUPPORT_STATION_CELLS` (5) of its own plot of the charge plus the kernel motor's
+  arrival tolerance; the story allows two cells for that.
+- **The escort and the intruder are fixture hulls with players seated** (CF.2's `armed_on` and
+  `seat`), not the content's raider on its doctrine, so nobody fires after the opening order and
+  the story does not hang on the field's dice. Three parties stand in the field; only the roster
+  is under test.
+- **The rigs are stood on their cells by a staff hand** after the launch, as every field story
+  places its units.
+
+**Not built.** A SUPPORT whose charge is another NPC's rig (it needs a third bay), and SCREEN or
+SUPPORT under fire with a Hostile in the screen's arc: the story is about delivery and obedience,
+not the stand the doctrine takes. A restart with an order standing.
+
+**Not pinned by a story.** The jammed and the damaged carrier relay holding these two orders back
+(FR.5's stories pin that for the orders they fly). A SUPPORT refused for a charge in another party
+or outside the field, which GC.0's in-source gate covers and this story covers only for the
+recipient's own slot.
 
 ## MW.16
 
