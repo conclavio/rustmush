@@ -1,6 +1,6 @@
 # 44. Minds, wired through the game — the remaining work, surveyed
 
-Draft 0.3, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
+Draft 0.4, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
 through SF.R31 and SF.R26b merged) by four read-only lanes, one each for player unit minds, ground
 combat, space flight, and the non-combat actors; the lead checked each lane's main claims in the
 tree. Anchors are file and function names; line numbers drift. Draft 0.1, the same day, was the
@@ -11,6 +11,8 @@ the units of work from the rulings. **Draft 0.3, the same day, answers the first
 (a comment on PR #530, read at `a7c9d2926`): its nine findings were each checked in the tree and
 all nine hold. It keeps the 34 rulings. What it changes is what each unit is done by; §4b lists
 the findings, §5.11 asks the four questions they raise, and §7 and §8 are rewritten to match.
+**Draft 0.4, the same day: the owner accepted Q-44-35 to Q-44-38 at their defaults**, so every
+question in this document is ruled.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) used: it asks the
 owner questions, each with a proposed default, an alternative and a reason. "Provisional" marks a
@@ -321,9 +323,9 @@ path; and the field's claim seal as the precedent for a mind on a ship.
 **Ruled 2026-11-11.** The owner chose the alternative for Q-44-16 (no stopgap; wait for the
 backup mind), amended Q-44-29 (nothing deleted, nothing retargeted), and accepted Q-44-6 and
 Q-44-32 with a clarification each. Every other default is accepted as written. Each of those four
-carries its decision first, with the proposed text kept under it for the record. Draft 0.3 adds
-Q-44-35 to Q-44-38 (§5.11), raised by the first review; they are not ruled, and each default holds
-until they are.
+carries its decision first, with the proposed text kept under it for the record. Draft 0.3 added
+Q-44-35 to Q-44-38 (§5.11), raised by the first review; the owner accepted all four at their
+defaults the same day (Draft 0.4).
 
 ### 5.1 Order and shape
 
@@ -590,7 +592,9 @@ until they are.
 - **Alternative:** hold out for 300.
 - **Why:** 100 is the stated target and nothing has been measured there with every seat on a mind.
 
-### 5.11 Questions the first review raises (Draft 0.3; each default holds until ruled)
+### 5.11 Questions the first review raised (Draft 0.3)
+
+**Ruled 2026-11-11: all four defaults accepted as written.**
 
 **Q-44-35 — Who keeps a hull crewed.**
 - **Proposed default:** the characters who hold a bridge station on the hull, and its captain
@@ -654,7 +658,7 @@ that thinks, traces and is overruled is the failure this document found.
 | **MW.4** | docs | The rulings written into their own documents: D-UM-56, Q-UM-12, Q-UM-14, Q-UM-18 (doc 17); paid Follow deferred, the renewal wording (17g); the heirloom and the House term (17h); the raid director on the dev boxes (doc 36); doc 03's "No code exists yet" replaced by what is live and by the storyteller role's state | `docs/design/` | — | each question reads "ruled 2026-11-11" where it was asked |
 | **MW.5** | B | Doc 17g's C4, all five of its items: 17f §9's stories 1, 2, 3, 5, 6 and 7 on the production composition, each with a restart; story 4 through the launch's governed hardware, with a refit and a restart; `cargo test -p mush-bot` green on every new sentence; the cross-host deterministic cases; Registry load beside live arenas, reported | `crates/tacsim/tests/`, `crates/tacsim/src/minds/`, `crates/mush-bot` | MW.1, MW.2 | all five items pass and "C4 as built" is written in 17g, with any item not built named there and why |
 | **MW.6** | B | 17g's follow-ups: the recall notice drain that aborts on one bad holding; Registry pacing of 3 to 7 s a lease | `crates/tacsim/src/minds/registry*` | MW.2 | one bad holding no longer stops the drain; a measured lease time in the cut note |
-| **MW.7** | C | The field's backup mind and the absent-player gate. The house default doctrine takes a unit whose pilot is gone to its party's home and boards; with no carrier on the site it holds at the site's edge on its side (Q-44-17). The engine refuses, for any mind flying for an absent player, the player's own sealed mind included, a fire intent at a unit that has not fired on this one, and any mining or trading (Q-44-38). A stricter order the player left stays; an order to advance or attack lapses (Q-44-18). A reconnect by the seated pilot takes the controls back at once and drops what the mind had pending (Q-44-37); a restart does not re-seat a pilot who is not connected. The simulator is unchanged (Q-44-19) | `crates/tacsim/src/arena_bridge.rs` (the release for an IC task), `crates/tacsim/src/arena/` (where an intent is accepted), `crates/tacsim/src/field/`, the doctrine library | the design section MW.8's session writes for the field; Q-44-35 to Q-44-38 | four stories, each failing today: the house mind, with a hostile in view, does not fire and boards its carrier; a filed mind written to fire first is refused the shot and still returns fire at a unit that hits it; a HOLD FIRE left by the pilot holds through an attack; a mind whose script faults falls to the house default and goes home. Then a restart while the mind holds the unit resumes the mind, and the pilot's first command on reconnect wins |
+| **MW.7** | C | The field's backup mind and the absent-player gate. The house default doctrine takes a unit whose pilot is gone to its party's home and boards; with no carrier on the site it holds at the site's edge on its side (Q-44-17). The engine refuses, for any mind flying for an absent player, the player's own sealed mind included, a fire intent at a unit that has not fired on this one, and any mining or trading (Q-44-38). A stricter order the player left stays; an order to advance or attack lapses (Q-44-18). A reconnect by the seated pilot takes the controls back at once and drops what the mind had pending (Q-44-37); a restart does not re-seat a pilot who is not connected. The simulator is unchanged (Q-44-19) | `crates/tacsim/src/arena_bridge.rs` (the release for an IC task), `crates/tacsim/src/arena/` (where an intent is accepted), `crates/tacsim/src/field/`, the doctrine library | the design section MW.8's session writes for the field | four stories, each failing today: the house mind, with a hostile in view, does not fire and boards its carrier; a filed mind written to fire first is refused the shot and still returns fire at a unit that hits it; a HOLD FIRE left by the pilot holds through an attack; a mind whose script faults falls to the house default and goes home. Then a restart while the mind holds the unit resumes the mind, and the pilot's first command on reconnect wins |
 | **MW.8** | C | The space backup mind. **In flight** (the session started 2026-11-11). The first review adds to what it is done by | `crates/tacsim/src/space/` | — | as that session's brief has it, and: a connected passenger neither holds the backup off nor takes the helm (Q-44-35); with two crew dropping four minutes apart the hull's window is five minutes from the second (Q-44-36); a restart while the mind holds the helm resumes it; a reconnect with a think in flight discards it (Q-44-37) |
 | **MW.9** | F | One applier from intents to bubble commands, used by every space actor, movement included; the two trace-string hooks removed; the interdictor's stand-down per carrier, on state (Q-44-24); and one view for every space mind, whose contact ids are numbered for each observer after detection | `crates/tacsim/src/space/picket.rs`, `tick.rs`, the three doctrine scripts | MW.8 | a doctrine changed to hold where it used to close makes its actor hold; an escort that heaves to does not clear the runner beside her; a Dray can heave to against the interdictor; adding a ship the observer cannot detect leaves a mind's view byte for byte the same |
 | **MW.10** | F | A doctrine named by the pack's cast with its digest (Q-44-25, as corrected in §4a): staff publish a new revision with the workshop's verbs and select it for an actor; the next bubble flies it | `crates/tacsim/src/minds/content.rs`, the cast in the pack, the seal sites in `space/` | MW.9 | staff publish revision B and select it; the next picket behaves as B; a bubble that was open, and a replay of an earlier one, behave as A; publishing other bytes under A's digest is refused |
@@ -712,8 +716,8 @@ market chain does not touch.
 - **MW.7 waits on a design, not on code:** the field section MW.8's session writes into doc 27.
   If that section is late, MW.7's first act is to write it from Q-44-17, Q-44-18 and Q-44-35 to
   Q-44-38.
-- **Q-44-35 to Q-44-38 gate MW.7, MW.8's added acceptance and MW.21.** Each is built on its
-  default until ruled.
+- **Q-44-35 to Q-44-38 are ruled** (their defaults), and MW.7, MW.8's added acceptance and MW.21
+  are built on them.
 - **The absent-player gate is one gate.** MW.7 builds it in the arena, where a field's intents are
   accepted; MW.8 and MW.9 must refuse the same things in space. Whichever lands second uses the
   first one's rule, not a copy of it.
