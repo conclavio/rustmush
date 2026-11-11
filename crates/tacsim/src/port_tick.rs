@@ -328,6 +328,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
     actions.push(crate::space::tick::action_descriptor(&outcome_refs)?);
+    // Doc 35 cut SF.R26c: the customs picket's ruling.
+    actions.push(crate::space::customs::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -637,6 +639,9 @@ fn register_providers(
     )?;
     // Doc 35 cut SF.R21: the space bubble's prepared input tape family and provider.
     crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs, &port_families)?;
+    // Doc 35 cut SF.R26c: the customs ruling's family and provider; a seizure debits through
+    // the delegated inventory families.
+    crate::space::customs::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -699,6 +704,8 @@ fn register_outcomes(
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
     outcomes.push(crate::space::tick::outcome_descriptor()?);
+    // Doc 35 cut SF.R26c: the customs picket's ruling.
+    outcomes.push(crate::space::customs::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }

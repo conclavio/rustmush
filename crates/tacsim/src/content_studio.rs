@@ -380,6 +380,18 @@ fn shipped_docs() -> Vec<DocSpec> {
             family: "component",
             bytes: crate::minds::content::drone_mining_manifest_json(),
         },
+        DocSpec {
+            id: "minds/linkdead_return.rhai",
+            repo_path: "minds/linkdead_return.rhai",
+            family: "component",
+            bytes: crate::minds::content::linkdead_return_source(),
+        },
+        DocSpec {
+            id: "minds/linkdead_return.json",
+            repo_path: "minds/linkdead_return.json",
+            family: "component",
+            bytes: crate::minds::content::linkdead_return_manifest_json(),
+        },
     ];
     // Station cast packs (52 station NPCs and 20 lore pools split from `atlas/neighborhood.*.json`, D-34-3).
     for (pack_id, bytes) in CAST_SOURCES {

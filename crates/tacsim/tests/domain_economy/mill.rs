@@ -2573,6 +2573,10 @@ fn sm12a_only_the_mill_restocks() {
 /// vendor's part rows too, each lot rooted in its own stock issue). **Doc 41's RS.9a follow-up**
 /// (the owner's ruling of 2026-11-06): a third `.debit(` in `surface/tow.rs`, the wrecked
 /// carrier's vent — her propellant pool debited to zero: matter leaving the world, never made.
+/// **Doc 35 cut SF.R26c**: `.debit(` once in `space/customs.rs`, the customs picket's seizure —
+/// unlicensed `strategic_ore` taken out of a hull's hold in the ruling's own transaction: matter
+/// leaving the world, never made. It is the draw that used to ride the burn's second debit
+/// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2603,6 +2607,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
+            ("tacsim/src/space/customs.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 3),
         ]
     );

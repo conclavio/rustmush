@@ -1116,6 +1116,143 @@ path is `SF.R25`'s, which its story pins for the nearest port only).
 **Noted.** At a high clock rate five real minutes are many IC days: at 3,600 a crew that drops its link at a
 cluster loses the cluster session to its idle timeout before the grace ends.
 
+## SF.R32 — the link-loss backup mind, the space half (doc 35 §11; Q-35d-2 as ruled)
+
+The owner ruled Q-35d-2 on 2026-11-11 for a mind-driven backup. The rulings cut (above) built the five-minute
+grace and the filed port; the return was still one passage decided once when the grace ended. This cut replaces
+it with a mind that has the helm from the end of the grace until a crew member is back or she docks. The rules
+are doc 35 §11 (`B-1` to `B-8`); the field half is planned there (§11.4) and not built. The same day the owner
+ruled doc 44's Q-44-35 to Q-44-38 (doc 44 was PR #530, not on main; this cut is its MW.8), and the cut follows
+them where it says so below. Paths are under `crates/tacsim/src/space/` unless given.
+
+### Built
+
+- **The seat (`backup.rs`, new).** `step_backup_minds` runs on the space tick after the grace windows. For each
+  hull whose grace has run out and who is outside a bubble: alongside, her record is removed; on a corridor, she
+  is left to her journey; in free flight or at a cluster, the mind thinks and the seat acts. `fly_in_bubble`
+  runs inside `step_active_bubbles`, before the bubble's step, for each such hull in a bubble;
+  `settle_bubble_backup` finishes it once the book is back in the world.
+- **What the mind may ask.** `speed(n)` above nought is the return; `hold()` is heave to, or hold; `emcon(on)`
+  is her posture. Every other intent is dropped in `read`, so no source can lock, fire or arm (`B-4`).
+- **The return.** `execute_linkdead_return_journey` (`commands.rs`), unchanged: the queued port, then every open
+  port nearest first, each through `engage_port_autopilot`. The seat asks `ctx.authoritative_pending` and
+  `authoritative_queue_full` for her captain first and waits a tick when either is true. A refusal of every
+  port starts a 60 s wait (`BACKUP_RETURN_RETRY_WALL_S`), shown to the mind as `v.motor.outcome ==
+  "no_route"`; the crew are told once that she holds for a tow.
+- **Customs.** On `hold()` in a bubble the seat commands `CommandBurnMmps2` against her velocity relative to
+  the picket's corvette (the interdictor where there is no picket), sized to bring her to rest over the step the
+  bubble is about to take, with `force_into_reserve`. Under `HEAVE_TO_REL_VEL_MMPS`, with customs hailing her,
+  `settle_bubble_backup` calls `submit_hull_to_customs` as her captain: `+helm/submit`'s body, lifted out of
+  the handler with no other change. Since `SF.R26c` that body files one submitted `tacsim_space_customs`, and
+  the space tick's `reconcile_customs_rulings` levies the fine and sets the picket's verdict; the seat does not
+  submit again while `ruling_pending`.
+- **The helm is live under the seat.** `fly_in_bubble` clears `crew_linkdead` on her ship each step and keeps
+  `pdc_auto`. Her crew's standing orders are not applied while the seat has her.
+- **Reconnect.** `handle_crew_revived_or_connected` removes the record as before, and now also cuts whatever
+  burn the seat had ordered.
+- **Who is crew (Q-44-35).** `helm_crew_aboard` (`commands.rs`): the holders of her bridge stations who are
+  aboard, and her captain (`helm_holder`) when aboard. The presence hooks and `build_carrier_ship_state` ask it;
+  they asked `all_aboard_crew_for_hull`, every player aboard. A passenger's lost link opens no window, their
+  live link holds none off, and their reconnect clears nothing.
+- **When the window starts (Q-44-36).** The record opens when the last crew member's link is lost.
+  `handle_crew_disconnected` no longer ends a window that exists: the space tick does, five minutes after it
+  opened. It used to end it the moment an earlier crew member's session ran out.
+- **Quitting.** With no record and no other crew member inside their own grace, `handle_crew_disconnected`
+  opens a record and ends its grace at once, so a crew that quits in space hands her over (Q-35-B1). With
+  another crew member still inside their grace it opens an ordinary five-minute window instead.
+- **The mind's source.** `content/minds/linkdead_return.rhai` and its manifest (role `backup`), compiled in and
+  installed with the other space doctrines. `think` (`backup.rs`) tries, in order, the seal on the hull
+  (`space_mind_seal_of`) when the store holds its source, the store's house default, and the compiled one; a
+  source that faults or does not run falls through to the next.
+- **The store pointer.** New document `tacsim:doctrine:{role}` (`crates/tacsim/src/store.rs`):
+  `{"sha256": …}`, naming a `tacsim:mindsrc:` source. `TacsimStore::house_doctrine(role)` answers only when
+  that source is readable. `house_doctrine_documents(role, source)` returns the two documents an operator
+  writes. The boot never writes the pointer.
+- **`space_mind_view` (`picket.rs`).** The view-building half of `run_space_rhai_think_with_seal`, split out so
+  the seat can set `held` before the think. The picket doctrines read the same view as before.
+- **State.** `SpaceLinkdeadState` gains `mind_memory`, `mind_last_trace`, `backup_act`,
+  `return_retry_at_wall_s` and `next_think_at_wall_s`, all `serde(default)`; `SPACE_STATE_FORMAT` is unchanged.
+- **Lines.** The link-loss line names the mind and the port. `BACKUP_TAKES_HELM` at the grace's end; one line
+  each for making for a port, heaving to, holding, holding for a tow, and docking.
+
+### Tests
+
+`sfr32_the_link_loss_backup_mind_flies_her_home_stops_for_customs_and_stands_down`
+(`crates/tacsim/tests/domain_world/voyage.rs`), non-GOD pilots through the registered handlers.
+
+- **A.** A Dray-P with 5 t of unlicensed ore files Stickney, decouples, and her link drops. Past the grace her
+  record is still there, the act is `MakingForPort`, the trace `BACKUP_MAKE_FOR_PORT`, and her journey is bound
+  for Stickney over the interdicted leg. The picket opens; three ticks later her thrust is not zero and her
+  relative speed has fallen. Before the cut she drifted with her drive cut.
+- **B.** Her pilot reconnects: with no tick between, the record is gone and the thrust is zero; the burn the
+  pilot then orders is unchanged a tick later. The link drops again inside the bubble; past the grace she is
+  braked to under the heave-to speed, customs fine her for 5,000 kg, and at no step is she `RanThePicket`.
+- **C.** A hull who filed Stickney and went back to Ceres Halo with too little in her tank is taken to Ceres.
+  A hull at Pallas who can afford no port is told once that she holds, burns nothing, the trace becomes
+  `BACKUP_HOLD_FOR_RETRIEVAL`, and the planner is asked again after the wait.
+- **D.** With `tacsim:doctrine:linkdead_return` naming a doctrine that only holds, a hull with a full tank at
+  Ceres Halo stays at her cluster with the trace `EDITED_HOLD`.
+
+`sfr32b_only_helm_crew_keep_her_crewed_the_window_runs_from_the_last_and_a_restart_resumes` (same file):
+
+- **A.** With a linked passenger aboard, the pilot's lost link opens the window (before, it did not). The
+  passenger's link dropping and coming back changes nothing, in the window or under the mind.
+- **B.** Gunner lost at t, pilot at t+240 s, gunner's session ended at t+300 s: the window is still open (before,
+  it ended there), still open at t+539 s, and the mind has the helm at t+541 s.
+- **C.** A hull the mind holds at Pallas has an equal record after a reboot, and past the wait the mind has
+  thought and asked the planner again.
+
+`sfr25` part C (the rulings cut's) passes unchanged: the destination order is the same code. `sfr25b` is changed
+by one step: its pilot's decouple is still committing on the tick the grace ends, so the seat waits, and the test
+now lands that submission and ticks once more before it reads the return journey. The one-shot engaged behind
+the pending submission and left the debit to `reconcile_space_burns`.
+
+### Divergences
+
+- **The seat waits for admission; the one-shot did not.** With her captain's earlier submission still in flight
+  the return is engaged a tick later, not behind it (`sfr25b`, above).
+- **Part C's destination was already true.** The nearest-affordable fallback is the rulings cut's
+  `execute_linkdead_return_journey`, so "takes Ceres" alone passes before this cut. What fails before it in
+  that part is the mind's own record (the act, the trace, the record kept until she docks) and the hold's
+  second half (the read refusal, the repeated ask).
+- **The stop for customs is the mind's, not the seat's (Q-35-B4).** The house default always asks it. A sealed
+  mind that never asks coasts with her drive cut and the picket's rules apply. Raised for the owner in doc 35
+  §11.3.
+- **A quit hands over at once (Q-35-B1).** The ruling speaks of a lost link. Taken as the default because a
+  hull left in space with nobody awake is the case it is for.
+- **"Defend itself" is point defence only (Q-35-B3, ruled as Q-44-38).** The rule allows fire at a unit that
+  has fired on her since the bubble opened. The bubble keeps no such record, so the seat drops every lock and
+  shot: stricter than the rule, never looser. The gate belongs in the engine, once, for field and space.
+- **No think is ever in flight (Q-44-37).** The seat thinks and acts inside one step of the tick, so a
+  reconnect has nothing of the mind's to discard but the burn, which it cuts.
+- **The brake goes into the return reserve.** A hull that keeps her reserve and coasts past 35 km has run the
+  picket; a hull short of reaction mass afterwards is a retrieval job.
+
+### Not built
+
+- The field half (doc 35 §11.4, `FB.1` to `FB.4`).
+- The retrieval job for a hull that holds (Q-35-B6): she holds and says so; no contract is posted.
+- Return fire, and the record of who fired on whom that it needs (Q-44-38).
+- A staff verb to set the house doctrine pointer; it is two store documents and a restart.
+- A handover at server restart for hulls whose crews were linked when it went down (Q-35-B8).
+- Anything the mind does after customs clear her while a hostile is still in the bubble (Q-35-B7).
+- A player-facing way to seal a mind on a ship's hull. The seat reads `tacsim:mind_seal` if it is there; only
+  NPC hulls and drones are sealed today.
+
+### Not pinned
+
+- A sealed mind on the hull taking the house default's place. The lookup order is three lines in `think`; no
+  story seals a player hull, because no verb does.
+- The fall-through from a mind that faults to the next source.
+- A quit, as against a lost link.
+- The seizure branch under the seat (the pilot in the story can pay the fine).
+- A hull released on docking: no story flies the return to its end.
+- An interdictor bubble with no customs picket.
+- A quit while another crew member is inside their own grace.
+- The mind's view. It reads the picket doctrines' view, whose contact ids are an index over every ship in the
+  bubble and so move when an unseen ship is there; the seat uses no contact id, and the shipped doctrine reads
+  none. It thinks on `MindPool::shared(1)`, as they do.
+
 ## SF.R26b — an in-flight debit lands once, or the passage is cut (doc 35d §9a; Q-35d-6 ruled)
 
 The owner ruled Q-35d-6 on 2026-11-11: in-bubble helm and tactical inputs are bubble orders on the bubble's own
@@ -1194,3 +1331,129 @@ with warnings denied.
 **Not pinned by a story.** The sequence floor; the `tracked` rule for an older queue; the port clamp keeping the
 queued debits; the ledger's reversal for a burn that pays for no passage; the drift of a free flight under autopilot
 (the story cuts a corridor journey).
+
+## SF.R26c — the customs ruling is one submitted action (doc 35d §9a; Q-35d-6 ruled)
+
+Doc 35d §9a's table left four verbs that "should each end in one submitted action": `+helm/submit`, `/run`, `/dock`
+and `/tow`. This cut reads each against the engine's action contract, builds the two that move soundly, and says what
+blocks the other two. It also settles the staged tape family. Paths are under `crates/tacsim/src/` unless given.
+
+**What each verb wrote in its handler, durable outside the bubble.**
+
+| Verb | Written by the handler before this cut |
+|---|---|
+| `/submit` | The fine: an E4 contract offered and twice accepted on the economy's store. The Customs Assertion front and its canon entry. A seizure: a `tacsim_port_burn` queued **after** clearance was granted. The picket's verdict and the corvette's relation (bubble). An audit row on the staged tape |
+| `/run` | The incident on the front and its canon entry. The verdict and the Hostile relation (bubble). An audit row |
+| `/dock`, port clamp | The berth (`mush_sim::dock_carrier_at_destination`). Unit custody check-in of the carrier and, when she was the last, of the NPC hulls (`custody::check_in_space_unit`); the domain's stand-down; crew hand-over; a tow's delivery (`deliver_active_tow_at_port`: custody check-in, placement, a black-box entry, a retrieval) and her own retrieval. The RCS spend goes through the ledger to `tacsim_port_burn` |
+| `/tow` | A `SalvageCustody` row in the space book's custody document. The salvage claim: a contract on the economy's store (`mush_economy::file_salvage_claim`), then `ClaimOrder::File` applied straight to that row, and IC mail to the audience. The tow record. `release` closes the claim's contract and removes the row |
+
+**Verdicts.**
+
+| Verb | Verdict | Why |
+|---|---|---|
+| `/submit` | **(b) moved, built** | The ruling is a fact a typed family can hold, a seizure's ore is inventory the action can debit in its own transaction, and the fine and the front can follow the committed row on the tick, as the Registry's mind fine does (`minds/registry_inspection/fine.rs`) |
+| `/run` | **(b) moved, built** | The same action with the finding `Ran`; the incident follows the committed row |
+| `/dock` | **(c) not movable without a larger change** | A berth is the hull's spatial parent in mush-sim (`JourneyBook`, `SpatialState`); unit custody is mush-tactics' store; the stand-down is mush-sim's. None is an action-state family, and no port verb takes a berth through an action: a lane arrival docks on the journey tick (`apply_arrival`). A row-then-tick clamp, in `+ship/undock`'s shape, would give the prepare nothing to check and the apply nothing to move, would put the hull back in the bubble between a consumed tape and her berth, and would change every story that clamps at a port. It becomes sound with a berth family at the port (two hulls contending for one collar is a check a prepare could make). The one thing the clamp spends, RCS reaction mass, already lands under `SF.R26b`'s receipt |
+| `/tow` | **(c) not movable without a larger change** | On the ground, custody rows live on the site record family and `+salvage/claim go` already ends in one submitted `tacsim_surface_tow` (`TowOrder::Claim`). A space row lives in the space book's custody document, so `surface::claim::submit` applies the order to the book directly (`apply_space_claim_order`, eight arms). A filing family beside that document would be a second home for one custody, with its own lifecycle through release, delivery, award and repair. The move that makes `/tow` one action is the custody row itself going into a typed family, which is doc 35d §6.3 and the `SF.R28` row ("space custody rows off the `freeport` ground site") |
+
+Neither (c) is counted as done: doc 35d §10's second criterion stays open for `/dock` and `/tow`.
+
+**Built.**
+
+- **`tacsim_space_customs`** (`space/customs.rs`, new): one provider, one family
+  `tacsim.space_customs_ruling` (`SpaceCustomsRulings`, a row a hull holding at most `MAX_CUSTOMS_RULINGS` = 16
+  landed `CustomsRuling`s), registered beside the bubble input (`port_tick.rs`). A ruling's finding is
+  `CustomsFinding::Cleared`, `Fined`, `Seized` or `Ran`.
+- **The handlers file and submit; they grant nothing.** `helm_submit` checks the seat, the bubble and the heave-to
+  as before, reads the manifest, and decides the finding: cleared; fined when the hull's principal can pay
+  (`picket::customs_fine_minor`, `customs_fine_payable`); otherwise seized. `helm_run` files `Ran`. Each calls
+  `customs::file_ruling`, which puts a `PendingCustomsRuling` on the space book (so it survives a restart) and
+  submits the action as the officer who typed the command. A second ruling on a hull while one is pending is
+  refused (`CUSTOMS_RULING_PENDING`).
+- **The apply.** The prepare takes the filed ruling from the offer (`project_offer` reads the book for the officer,
+  who must still be aboard), refuses a sequence the hull's row already holds ("that customs ruling has already
+  landed"), and writes the ruling. For a seizure it debits the `strategic_ore` from the hold through the delegated
+  inventory families **in the same transaction**, taking what the hold has free up to the tonnes asked and
+  recording what it took; a hold with none refuses the ruling.
+- **The tick acts on the committed row** (`customs::reconcile_customs_rulings`, in `space_tick` after
+  `reconcile_space_burns`). A landed ruling is applied once and leaves the book: the fine is levied
+  (`picket::levy_customs_fine_and_advance_front`), the front advanced (`record_customs_seizure`,
+  `record_ran_the_picket_incident`), and only then are the picket's verdict and the corvette's relation set in the
+  bubble. A fine that cannot be collected leaves the ship uncleared (`CUSTOMS_FINE_UNCOLLECTED`).
+- **A retry, not a guard.** A ruling with no row whose officer has nothing in flight is submitted again after
+  `CUSTOMS_RETRY_AFTER_TICKS` = 3, one ruling an officer a tick, and given up after `CUSTOMS_MAX_ATTEMPTS` = 3:
+  the crew hear `CUSTOMS_RULING_LAPSED` and the ship is as she was.
+- **The seizure left the burn.** `submit_seized_contraband_burn` and `seize_contraband_and_advance_front` are
+  deleted. `PendingSpaceBurn.seized_strategic_ore_t` and `SPACE_SEIZURE_LAPSED` stay so a queue written before
+  this cut still decodes and lands as it did.
+- **The staged tape family is the audit trail.** `tacsim.space_bubble_tape` is kept and said to be that in its
+  rustdoc and in the `+helm` allowlist note. It is not deleted: `sfr21_…` reads it, and its provider is also what
+  stages a drone launch's `RigRecord`s into `tacsim.excursion`. `/submit` and `/run` no longer write it; their own
+  row is their record, and an audit submission by the same officer would have turned the ruling away.
+
+**What a player sees.** `+helm/submit` answers with what the corvette found and that the ruling follows; the
+clearance, the fine or the seizure arrives on the next tick as the line it always was. `+helm/run` answers that the
+corvette is logging the run; the corvette turns on the ship a tick later. `docs/help/space.md` says so.
+
+**Tests.** New story `sfr26c_a_customs_ruling_is_one_submitted_action_and_settles_nothing_until_it_lands`
+(`crates/tacsim/tests/domain_world/voyage.rs`), non-GOD pilots through the registered handlers, three parts:
+
+- A, a fine: the command queues exactly one submission, the pilot's own `tacsim_space_customs`; before it lands
+  she is not cleared, her credit is whole and the front has not moved; landed, the row holds `Fined` and still
+  nothing is granted; the same submission landed again is refused by the row; the tick levies 1,000 cr, advances
+  the front once and clears her; a later copy has no offer and a later tick levies nothing more.
+- B, a seizure lost and retried: the submission is dropped; 51 t is still aboard and she is not cleared; a second
+  `/submit` and a `/run` are refused; the third tick submits the ruling again; as it lands the hold is empty,
+  before any tick; the tick clears her and advances the front.
+- C, a run that never lands: three resubmissions dropped, the crew are told, the corvette regards her as before
+  and the front has not moved; typed again and landed, the run turns the corvette Hostile and advances the front.
+
+Run against the code before the cut (a probe on the same setup, not committed): `/submit` with credit left her
+`ClearedAfterFine` with 1,000 cr gone and nothing submitted; the indigent `/submit` left her `ClearedAfterSeizure`
+with all 51 t aboard and a `tacsim_port_burn` queued; `/run` left her `RanThePicket` with nothing submitted. Each
+part's first assertions fail there.
+
+Existing stories land the ruling through a new helper, `customs_ruling` (the earlier queue is set aside, the
+ruling landed, the queue put back, one tick): `sfr6`, `sfr8`, `sfr9`, `sfr12`, `sfr18`, `sfr20`, `sfr23`, `sfr25`
+and the two-tug opening shared by `sfr19`, `rs8` and `cr6`. `sfr12` and `sfr18` no longer expect a seizure burn.
+The matter census (`sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`,
+`crates/tacsim/tests/domain_economy/mill.rs`) is re-blessed for one `.debit(` in `space/customs.rs`: the
+seizure's draw, which used to ride the burn's second debit. It is matter leaving the world, moved, not added.
+Local: `domain_world` 258 passed; `mush-contract-tests` 35 + 80 (8 ignored) + 76 passed; clippy clean on tacsim
+with warnings denied; rustdoc clean on tacsim.
+
+**Divergences.**
+
+- **A retry where the brief allowed a guard.** `+helm/submit` is not refused while its officer has another action
+  pending, as `+helm/autopilot` is. The ruling is filed and the tick submits it; clearance then comes three ticks
+  later, not one. A picket encounter is no place to be told to type it again.
+- **File, land, then grant, where `SF.R26b` grants first.** The owner accepted grant-then-debit for a passage on
+  2026-11-11. Customs takes the other order because doc 35d §6.7 found "clearance is granted before the
+  asynchronous seizure lands" and the `SF.R30` row asks for seizure before clearance; here the wait is one tick,
+  and eleven story lines changed, against thirty-eight for the autopilot. If the owner wants one order
+  everywhere, the handler can grant and the tick revoke a ruling that lapses; the action and its row stay as built.
+- **The heave-to is checked when the command is typed**, not again when the ruling lands: a prepare sees typed
+  families only.
+- **The row is the ruling, not the collection.** A `Fined` ruling whose fine could not be collected stays on the
+  row; the ship is not cleared and submits again for a new ruling.
+- **The seized quantity is what the hold had**, in whole tonnes, where the handler used to record the manifest's
+  kilograms.
+
+**Defaults worth a look** (each cheap to change now; the first is not once a store is kept): the family's id and
+row shape; the bound of 16 rulings a hull and 32 pending; the three ticks and three attempts, copied from the burn.
+
+**Not built.**
+
+- `+helm/dock` and `+helm/tow`, for the reasons above.
+- The fine's contract carries no idempotency key. The tick levies it and takes the ruling off the book in one
+  fire; whether a crash can land between those two writes was not traced.
+- A ruling still pending when the hull leaves the bubble is applied for its fine, its ore and its front, and sets
+  no verdict.
+- A ruling whose officer has left the hull has no offer, so it is tried three times and given up.
+- An input typed while its actor has an action pending is still applied and not on the audit trail, and
+  `+helm/approach` and the dock's RCS still spend from the ledger first (both as `SF.R26b` left them).
+- The audit trail's rows are still never deleted (doc 35d §6.1).
+
+**Not pinned by a story.** A restart with a ruling pending; a fine that cannot be collected; a clean clearance's
+row; a ruling that lands after the hull has left the bubble or after the picket has written her off as a runner;
+the bound of 32 pending; an officer who is not the captain.

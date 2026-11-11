@@ -412,6 +412,11 @@ orders_per_minute = 12
 # [tacsim.command], which refuses unknown keys.
 # launch_path = "/opt/rustmush/<instance>/data/launch.json"
 # odds_floor_permille = 100
+# (doc 44 cut MW.6, Q-44-41) the Registry's pulse, ms: the pace of every Registry lease,
+# so of a rating (about 1,070 leases). 1000 is production's real-time second, about
+# three hours a rating; a dev box that is wiped and brought up again may set it lower
+# (50 rates a mind in minutes). 10..60000.
+# registry_pulse_ms = 1000
 # (17b cut M4.3, doc 17 section 9) the class the AI fill (and every seated hull) is
 # sealed and admitted at: "0" (the drive ROM), "I", "II" or "III". The seal's class is
 # the least of the stock rating (I), the core and this, so above "I" it caps nothing
