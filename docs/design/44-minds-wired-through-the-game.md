@@ -19,7 +19,10 @@ several of the symbols and paths it cites do not exist. §4c is the list. It add
 questions, Q-44-39 to Q-44-48 (§5.12), which are open; each default holds until ruled. **Draft
 0.6, the same day, records what the first wave 0 work found:** MW.0 does not stand alone (its
 default would take from House and leased hulls what they do today), so Q-44-39's default is
-changed and MW.0 is merged with MW.22; MW.4, MW.6 and MW.16 are built (PRs #532, #534, #533).
+changed and MW.0 is merged with MW.22; MW.4, MW.6, MW.16 and MW.17 are built (PRs #532, #534,
+#533, #535); MW.17 found that the NPC decision call cannot carry its NPC without a change to the
+decision lease (now MW.17b), and MW.24 was sized: it is a presence-free connection through the
+engine, the session manager and the gateway protocol, not an edit to the SSH server alone.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) used: it asks the
 owner questions, each with a proposed default, an alternative and a reason. "Provisional" marks a
@@ -822,7 +825,7 @@ ruled answer: Q-44-42 withdraws half of Q-44-17, and Q-44-44 changes the order o
 
 ## 7. Units of work (Draft 0.5)
 
-Twenty-six units: `MW.0` to `MW.24`, with MW.14 in two parts. They are cut from the rulings and
+Twenty-seven units: `MW.0` to `MW.24`, with MW.14 and MW.17 each in two parts. They are cut from the rulings and
 tightened by two reviews. "Waits on" is a unit that must be merged first. Every acceptance is
 through registered commands with a non-GOD actor. **A unit that wires a mind is done only when
 changing the mind changes what happens in play**; a script that thinks, traces and is overruled is
@@ -856,14 +859,15 @@ an in-process rig for a timer (doc 43c, TS.10), and uses the Registry's pulse ke
 | **MW.14b** | D | The Rhai commander (Q-44-20, Q-44-44): a commander ABI with its own view and an order channel, D-UM-11 lifted for that class of mind, and MW.14a's rules written as its house doctrine | `crates/mush-mind`, `crates/tacsim/src/minds/`, the doctrine library | MW.14a; a design section and its ruling | changing the commander doctrine changes the orders a detachment gets |
 | **MW.15** | D | The field tests doc 36 still owes for SCREEN and SUPPORT | `crates/tacsim/tests/` | — | both orders pinned in a field |
 | **MW.16** | E | Doc 45: the survey of asynchronous attack and defence, on one concept (Q-44-22, Q-44-23). It takes up what the second review asked of that concept: an absent defender who is evacuated never defends a site | `docs/design/` | — | the survey open for rulings. Its plan and its cuts are doc 45's own, cut there after it is ruled, as §7 was here; this unit does not close the category |
-| **MW.17** | G | The last decision in the staff view (Q-44-30): a turn records which stimulus woke it; `@agent/show` gains that, the knowledge tiers the NPC was allowed, and whether its line came from the model or from the profile's fallback, within the audit's rule that a prompt is kept by hash and summary only. The NPC decision call carries its NPC, so the per-NPC budget and `@llm/kill` reach it | `crates/mush-npc` (`runtime.rs`, `module.rs`), `crates/mush-server/src/decision_llm.rs` | — | staff read, for a station NPC that has just spoken, the stimulus and "model" or "fallback"; with the provider cut the same view reads "fallback"; a player is refused; `@llm/kill` on an NPC stops its decisions |
+| **MW.17** | G | The last decision in the staff view (Q-44-30): a turn records which stimulus woke it; `@agent/show` gains that, how many public facts and memories the model was shown, and whether its line came from the model or from the profile's fallback, within the audit's rule that a prompt is kept by hash and summary only. **Built, PR #535** | `crates/mush-npc` (`runtime.rs`, `module.rs`) | — | staff read, for a station NPC that has just spoken, the stimulus and "model" or "fallback"; with the provider cut the same view reads "fallback"; a player is refused |
+| **MW.17b** | G | The NPC decision call carries its NPC, so the per-NPC budget and `@llm/kill` reach a decision. Split from MW.17 in Draft 0.6: the worker lease the call is handed (`mush_core::decision::DecisionWorkerLease`) is public-safe by design and names a controller and a decision, not an object, so an audit attribution has to be added to the lease itself | `crates/mush-core/src/decision.rs`, `crates/mush-server/src/decision_llm.rs`, `crates/mush-npc/src/decision.rs` | — | `@llm/kill` on an NPC stops its decisions as well as its dialogue; a decision is charged to its NPC's budget; nothing else about the world crosses the lease |
 | **MW.18** | G | The ambient timer scheduled (Q-44-31, Q-44-47): for the enabled major NPCs, when a player is present in Q-44-47's sense, at most one unprompted line a room in 30 real minutes, under the budgets | `crates/mush-npc`, the cast packs | MW.17 | on a paused clock: a major NPC speaks unprompted once in the window and no NPC in that room speaks again within it; with only a link-dead or a DARK character in the room nothing is spent; the audit shows the call |
 | **MW.19** | I | The bot's minds lane on the nightly (Q-44-33): the bot's lobby vocabulary takes `SIM MIND`, the bot gains the mind market's verbs, and the lane writes, files, lists, buys, and flies in the simulator and on an IC sortie | `crates/mush-bot` (`arena/lobby.rs`, a new lane), the nightly workflow | MW.1, MW.5, MW.6, MW.24 | green three nights running, at the Registry pace the rig sets |
 | **MW.20** | I | Minds measured at size (Q-44-34), as a measurement and not a gate: 100 units on the native doctrine, in the simulator and in a field; the same on Rhai seats, which is expected to miss (72 Rhai seats did not hold on Linux, the reason the fill is native); eight bubbles in space; the two together on one server; and what a full match's squads spend at the LLM (Q-44-48) | the fill harness, a space harness | MW.7, MW.11 | the figures in the cut note, with what misses, for each alone and for both at once |
 | **MW.21** | I | The completion story, with two accounts (first review, finding 9). One player writes, files and lists a mind. The other buys it, fits it to a governed hull and takes her out. In a bubble, with the link down, the mind makes a choice the house default would not, keeps to the absent-player limits, and spends only the ship's own stores. The server restarts while it holds the helm. The player reconnects with its next action pending | `crates/tacsim/tests/` | MW.5, MW.7, MW.8, MW.13 | the player's first command wins; the mind's pending action never lands; the claim closes exactly once when she docks |
 | **MW.22** | B | S.4c: lease and organisation authority in the title fence (Q-44-39), in the Roll and at the dispatch | `crates/mush-roll/src/commerce/ic_claims/reader.rs`, `crates/tacsim/src/surface/dispatch.rs` | MW.0 | a chartered pilot launches a filed mind on her leased rig; a House's licence flies on a House-titled hull; a pilot with neither a title, a lease nor an office is still refused |
 | **MW.23** | B | The Class III end-user entitlement issued by a launch route (Q-44-40) | `crates/tacsim/src/launch.rs`, `crates/mush-economy/src/core_integration/` | MW.0 | in a launch world, with no staff minting, a Class III core is integrated and delivered |
-| **MW.24** | C | SSH `mind push`, `pull` and `check` without a presence: the exec neither logs the character in nor drops it as a lost link, and a doorway drain writes nothing into its output | `crates/mush-net-ssh/src/server.rs`, `crates/mush-gateway/src/bridge_common.rs`, `crates/mush-sshdoorway/src/server.rs` | — | an offline player's `mind push` leaves no link-dead character in the room; one typed four minutes into a link loss neither restarts the window nor takes the controls; `mind pull` during a drain gives the script's bytes and nothing else |
+| **MW.24** | C | SSH `mind push`, `pull` and `check` without a presence: the exec neither logs the character in nor drops it as a lost link, and a doorway drain writes nothing into its output. Sized in Draft 0.6: the exec runs an invoke as the character over a connection the engine has to know, so it needs a connection that carries output and an invoke and is invisible to presence: no `Connected`, `Linkdead` or `Disconnected` hook, not counted as a live connection, no session state change. That is a flag from the SSH hook through the gateway bridge and the IPC message (a version bump) to `Engine::conn_up` and `conn_down` and the session manager | `crates/mush-net-ssh/src/server.rs`, `crates/mush-gateway/src/bridge_common.rs`, `crates/mush-ipc`, `crates/mush-session/src/manager.rs`, `crates/mush-core/src/engine.rs` (`conn_up`, `conn_down`), `crates/mush-sshdoorway/src/server.rs` | — | an offline player's `mind push` leaves no link-dead character in the room; one typed four minutes into a link loss neither restarts the window nor takes the controls; `mind pull` during a drain gives the script's bytes and nothing else |
 
 **Not units, and where each lives:**
 
@@ -886,9 +890,10 @@ an in-process rig for a timer (doc 43c, TS.10), and uses the Registry's pulse ke
 
 ### 7.2 What may start now
 
-MW.0, MW.14a, MW.15, MW.17 and MW.24 wait on nothing, and MW.8 is running. MW.1's script can be
+MW.0, MW.14a, MW.15 and MW.24 wait on nothing, and MW.8 is running. MW.1's script can be
 written at once; only its purchase check waits on MW.6, which is built (PR #534). MW.2 follows
-MW.6 in the market chain and may start from its branch. MW.4 and MW.16 are built.
+MW.6 in the market chain and may start from its branch. MW.4, MW.16 and MW.17 are built; MW.17b
+and MW.18 may start from MW.17's branch.
 
 ### 7.3 One writer a file
 
@@ -899,7 +904,7 @@ MW.6 in the market chain and may start from its branch. MW.4 and MW.16 are built
 | **Market** | MW.6 → MW.2 → MW.5 | the Roll's `commerce/` (notices, withdrawal, renewal) and `crates/mush-market` |
 | **Space** | MW.8 → MW.9 → MW.10 → MW.11 → MW.12 → MW.13 | `space/picket.rs` and `space/tick.rs`; every unit of the chain edits both |
 | **Field** | MW.15 → MW.14a → MW.7, then MW.14b | `field/orders.rs`, `detachment/`; MW.7 also holds `arena_bridge.rs` and the arena's intent gate alone |
-| **NPC** | MW.17 → MW.18 | `crates/mush-npc/src/module.rs` |
+| **NPC** | MW.17 → MW.17b → MW.18 | `crates/mush-npc/src/module.rs`; MW.17b also edits the decision lease in `mush-core` |
 | **SSH** | MW.24 | `crates/mush-net-ssh`, `crates/mush-gateway`, `crates/mush-sshdoorway` |
 | **Docs** | MW.4, MW.16 | no shared file |
 | **Acceptance** | MW.19, MW.20, then MW.21 | last; they read what the others built |
@@ -945,8 +950,9 @@ not write a space book directly (`arena_library.rs`); it goes through commands.
 
 ### 7.5 Waves
 
-- **Wave 0, now:** MW.0 then MW.22 (one session, one merge), MW.1, MW.15 then MW.14a, MW.17,
-  MW.24; MW.8 already running. Built and open: MW.4 (PR #532), MW.6 (PR #534), MW.16 (PR #533).
+- **Wave 0, now:** MW.0 then MW.22 (one session, one merge), MW.1, MW.15 then MW.14a, MW.24,
+  MW.2 (from MW.6's branch); MW.8 already running. Built and open: MW.4 (PR #532), MW.6 (PR
+  #534), MW.16 (PR #533), MW.17 (PR #535). MW.17b and MW.18 follow MW.17 in the NPC chain.
 - **Wave 1:** MW.2 (after MW.6), MW.7 (after MW.0 with MW.22, and the field section), MW.9
   (after MW.8), MW.18.
 - **Wave 2:** MW.3 (after MW.0, MW.1, MW.2 and MW.6), MW.23, MW.10, then MW.11 and MW.12.
