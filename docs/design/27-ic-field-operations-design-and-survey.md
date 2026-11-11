@@ -619,6 +619,23 @@ with real, embarked human-NPC leadership.
   `FB.1` to `FB.4`, on the withdraw path a raider line already uses (`field/raiders.rs`
   `order_home`, `field/home.rs` `ask_out`, `field/exit.rs` `on_withdrawn`). Doc 27a's
   `resolve_link_loss_posture` was never built and is superseded by it. Not built in the field.
+- **Ruled 2026-11-11 (doc 44 Q-44-35 to Q-44-38, the four defaults accepted as written)**, on
+  the amendment above. Not built.
+  - *Who keeps a unit crewed (Q-44-35):* the characters who hold a bridge station on the hull, and
+    its captain (the charter or title holder) when aboard. A passenger does not: their link
+    neither holds the backup mind off nor takes the controls back. In the field it is the seated
+    pilot.
+  - *When the five minutes start (Q-44-36):* when the last character of Q-44-35 loses their link.
+    An earlier crew member's own disconnect, when their grace ends, does not shorten it.
+  - *What a hand-back cancels (Q-44-37):* everything the mind had not yet done. A think in flight
+    is discarded, an intent not yet applied is dropped, and the player's first command is the next
+    thing the hull does. What the mind already did stands: a passage it engaged and paid for
+    continues until the player changes it. A restart while the mind holds the controls resumes
+    the mind, and a seated player who is not connected is not re-seated.
+  - *What "defends itself" means (Q-44-38):* a mind flying for an absent player may fire only at a
+    unit that has fired on this unit since the field or the bubble opened. A leader's hostile mark,
+    or fire on a friend, is not enough. The engine refuses any other fire intent, whoever's script
+    asked for it, and the same gate refuses mining and trading.
 - **Alternative:** retain the last physical controls or a bounded stop posture without activating
   an AI fallback, unless the human explicitly arranged a handoff before disconnecting.
 - **Why:** preserves persistent stakes without equating a replaceable cockpit with deleting a

@@ -312,6 +312,10 @@ Line mode stays first-class, so this cut can follow C2's ship.
 The existing four CI stories become a subset. Update the 17b M7 row, 17f's status
 and doc 17 §22.
 
+Ruled 2026-11-11 (doc 44 Q-44-15): C4's stories are a cut of doc 44's programme and do not gate
+the dev boxes. The withdrawn-listing and renewal defects (§7, C2 as built) are fixed before the
+bring-up runs.
+
 ## 4. Deferred: each needs a recorded ruling
 
 - **House owner attestation.** C0's runway; also an M8 prerequisite. Build it before
@@ -323,6 +327,7 @@ and doc 17 §22.
   (`personal_paid_holdings.rs:248-249`). This was parked in Codex's log along with
   the original-major producer, the House and dependent major variants, and scoped
   House author updates and source access.
+  Ruled 2026-11-11 (doc 44 Q-44-11): defer (§5, item 4).
 - **IC claims and hull cover in live play.** These need an IC region host that doesn't
   exist (17f §10). They stay composed in tests, named as the conditional
   integration, and are not presented as a passed live story.
@@ -341,8 +346,15 @@ and doc 17 §22.
    - the filing fee and levy, venue share and royalty cap
    - the resale and pending-charter service actor and offer windows
    - who the Registry operators are
+
+   Ruled 2026-11-11 (doc 44 Q-44-5), for the dev boxes: fees, the levy, the venue share, the
+   royalty cap and the offer windows stay at the written numbers (provisional); the Registry's
+   operators and the clerk are staff characters the bring-up script creates.
 4. **Paid Follow.** Defer, as the parked list has it?
+   Ruled 2026-11-11 (doc 44 Q-44-11): defer.
 5. **Still owed from 17f:** D-UM-56, and confirmation of Q-UM-18's written default.
+   Ruled 2026-11-11 (doc 44 Q-44-9 and Q-44-10): D-UM-56 is accepted as written on 2026-10-04,
+   and Q-UM-18 is ruled at its written default (doc 17 §21).
 6. **Merge order.** Recommended: merge PR #5 once its dispatched gates and CodeQL are
    settled, then build C0–C4 on `main`. The other order means a second long-lived
    branch while `main` moves hourly, and this line has already been re-merged five
@@ -2363,6 +2375,9 @@ gone from the tree.
     holder's `+minds/renew` only ever answers "Renewal is unavailable or has changed." The
     service should stop on a lasting refusal, and the holder's line should say why; the
     wording is the owner's to approve.
+    Ruled 2026-11-11 (doc 44 Q-44-14): the service stops at the first lasting refusal, and
+    `+minds/renew` answers "This licence cannot be renewed: <the Registry's reason>. Nothing
+    further will be tried." Doc 44 Q-44-15 has it fixed before the dev boxes' bring-up.
   - No clerk settlement could land through the server** (found by the command story's fourth and
     fifth runs of part 3, dispatches 40667921671 and 40694980205, 2026-10-28; fixed on its own
     branch after PR #58). The six clerk services (Roll's pending charters, paid resale, facts and
