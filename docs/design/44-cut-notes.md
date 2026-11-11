@@ -218,7 +218,151 @@ Not built.
 
 ## MW.24
 
-Not built.
+SSH `mind push`, `mind pull` and `mind check` without a presence (doc 44 §7.1; §4c row 23;
+Q-44-35 to Q-44-37, whose hand-back at reconnect is why this had to land first, §7.4).
+
+**Built.** A **bare connection**: one bound to a character so that an invoke on it runs as them
+and its reply reaches it, and nothing else. It is carried end to end as its own pair of
+messages, not as a flag on `ConnUp` (see Divergences).
+
+- **The engine** (`crates/mush-core/src/engine.rs`). `Inbound::BareUp { conn, actor }` and
+  `Inbound::BareDown { conn, actor }`. `bare_up` binds the connection in the world
+  (`World::bind_connection`, the one thing `handle_invoke` checks) and records it in the engine's
+  connection map with `ConnInfo::bare`. It does not touch `conn_count`, `set_live_conns`,
+  `set_connected` or `session_start`, announces nothing, and fires no hook and no world event;
+  `bare_down` undoes exactly that. So `World::is_connected`, `has_live_conns`, `connected()`,
+  `Engine::connections_of` and `WHO` cannot see one. `Engine::actor_of` does answer for it,
+  which is what the gateway's readiness probe asks. A `BareDown` for a connection that is not
+  bare is ignored, and a `BareUp` on a live connection's id is ignored, so a stray frame cannot
+  take a player's real connection down or over. `conn_down` on a bare connection is silent
+  (a link that ends takes everything it owned down as `Lost`), and `session_gone` leaves a bare
+  connection bound, so an exec that outlives its player's grace still gets its reply.
+- **The wire** (`crates/mush-ipc`). `WireInbound::BareUp` and `BareDown`, mirrored field for
+  field. Two new `ToServer` arms, so **`IPC_VERSION` 13 → 14**, the first bump inside doc 33's
+  window: the golden set `tests/golden/v14/` is recorded (34 `ToServer`, 43 `ToGateway` frames;
+  the two new samples are last among the `Inbound` ones, so every older frame keeps its number)
+  and the v13 set still decodes. Nothing is gated toward the gateway (no `ToGateway` frame
+  changed). **Deploy order is the window's: the server first.** A 14 server serves a 13 gateway,
+  which never sends either frame and attaches its exec in full as before; a 14 gateway refuses
+  a 13 server. 12 leaves the window, so a gateway that sends no `Hello` is now refused.
+- **The server** (`crates/mush-server`). The two frames are classed with the lifecycle
+  messages in `world_task/mode.rs` (`ConnectionHooks`, held in the lifecycle slot behind a
+  pending commit, allowed in an outage countdown), so they keep `ConnUp`'s ordering against a
+  commit and against the invoke behind them. `LinkRegistry::claim_bare` (`links.rs`): the link
+  owns the connection for routing and a duplicate id is refused as for any other, but the claim
+  does not clear a `SessionGone` the link owes for that actor, and a link that ends with a bare
+  connection up does not reap its actor on that account.
+- **The session manager** (`crates/mush-session/src/manager.rs`). `attach_bare`,
+  `detach_bare`, `bare_conns`, `character_of_conn`. A bare connection lives in its own map:
+  no session is made, joined or revived, the link-dead epoch is not read or written, the
+  link-dead observer is not called, and it receives nothing addressed to the character, a
+  session or everyone. `send_to_conn`, `conn_handle` and the flood bucket work on it by id.
+- **The gateway** (`crates/mush-gateway`). `GameBridge::enter_bare`: `attach_bare`, a
+  `BareUp`, then the same exact readiness probe a login makes (`ServiceReq::ConnectionReady`);
+  a refusal sends a `BareDown` and undoes the attach. `GameBridge::disconnected` ends a bare
+  connection with a `BareDown` and nothing else: no `ConnDown`, no reaper. `SshBridge::connect_exec`
+  makes the same ownership check as `connect_character` and then `enter_bare`; the exec is
+  still watched by a gateway drain (doc 33 §4.6). After a server restart `resync_boundary`
+  sends a `BareUp` for each bare connection behind the roster and ahead of the barrier, so the
+  invoke the gateway replays from input custody finds its binding and an exec caught by a
+  restart completes, as it did when it was an ordinary connection. `ReAnnounce` itself is
+  unchanged, and a bare connection is never in it.
+- **The SSH transport** (`crates/mush-net-ssh`). `SshHooks::connect_exec`, called by
+  `start_mind_exec` in place of `connect_character`. Who may run the exec is untouched: verified
+  public key, an owned character.
+- **The doorway** (`crates/mush-sshdoorway/src/server.rs`). The pump writes an injected line
+  only into a channel whose client asked for a shell (`PumpCtx::shell`, set by `shell_request`
+  before it relays, and at once for the menu's channel). Until then the lines wait in the
+  queue; in an exec or a subsystem they are never written. The session is still closed at the
+  drain's deadline.
+
+**Tests.** All run on Windows and Linux unless marked.
+
+- `mush-core`: `a_bare_connection_is_never_presence` and
+  `a_bare_frame_never_touches_a_live_connection` (`tests/module_api.rs`; the toy module now
+  records the `revived` and `linkdead` hooks as well): offline, link-dead, grace expiring under
+  a bare connection, a `Lost` teardown, and the six hook and event lists compared before and
+  after. `engine::typed_invoke_tests::an_invoke_runs_over_a_bare_connection`.
+- `mush-session` (`tests/session.rs`): `a_bare_connection_has_no_session_and_leaves_none`,
+  `a_bare_connection_does_not_touch_a_linkdead_window` (four minutes in; the expiry instant is
+  compared), `a_bare_connection_beside_a_live_session`.
+- `mush-ipc`: the round trip and conversion cases gain both frames; the golden suite; the
+  version pins moved to 14. `window::tests::a_frame_newer_than_the_link_is_withheld` is now
+  written against the window instead of the numbers 12 and 13.
+- `mush-server`: `links::tests::a_bare_claim_routes_and_owes_no_reaping`;
+  `admit_gateway_pins_the_window_and_the_marker` now pins that a gateway with no `Hello` is
+  refused. `tests/split_boundary/ipc_window.rs` is rewritten for the window as it now stands:
+  a gateway one step behind is served in full, one at the server's version is served, one with
+  no `Hello` and one a step ahead are refused.
+- `mush-gateway`: `ssh_bridge::exec_tests` (four, against a link that records every frame):
+  an offline exec sends `BareUp`, the invoke and `BareDown` and never `ConnUp`, `ConnDown` or
+  `SessionGone`; an exec four minutes into a link loss leaves the expiry instant where it was;
+  a server that does not bind it refuses and undoes it; a character the account does not own
+  is refused before anything is sent. `resync_orders_full_roster_before_readiness_barrier`
+  gains the bare connection's `BareUp` between the roster and the barrier.
+- `mushd`: `mw24_a_mind_exec_is_never_presence` (`tests/world_journeys/ssh_e2e.rs`), over real
+  SSH on the all-in-one server with a second player watching the room: an offline player's
+  `mind pull` answers as them, nobody is told anything and `WHO` has no row; a connected
+  player's own exec works; an exec halfway through a real link loss is announced as nothing,
+  and the character is disconnected when the original grace ends, less than one grace after
+  the exec.
+- `mush-sshdoorway`: `a_drain_warns_a_shell_and_writes_nothing_into_an_exec`
+  (`tests/e2e.rs`): a spliced shell reads the warning while a `mind pull` through the same
+  doorway gets its one result line and no other byte.
+- The existing SSH mind stories are unchanged and are the "still works" half:
+  `mush-net-ssh` `tests/loopback.rs` (`mind_exec_*`) and `mush-bot`
+  `arena_mind_author_story.rs`.
+
+**Divergences.**
+
+- **Two messages, not a flag on `ConnUp`.** The row says "a flag from the SSH hook through the
+  gateway bridge and the IPC message to `Engine::conn_up` and `conn_down`". A field on
+  `Inbound::ConnUp` would have edited about 110 sites that build one, in fifty files, most of
+  them other chains' tests, for a connection that shares none of `ConnUp`'s behaviour. As its
+  own variant every exhaustive match had to choose what a bare connection is, which is where
+  the server's classes and the link registry's rule came from. **Costly to undo** only in the
+  sense that it is now wire vocabulary (version 14).
+- **A bare connection takes no slot of the split gateway's lifecycle ledger**
+  (`LifecycleCustody`). That ledger counts sessions and the `SessionGone` each may owe, and
+  reserving in it converts a link-dead player's owed `SessionGone` into the new connection,
+  which is the bug this unit removes. A bare connection is bounded by the SSH accept gates and
+  by public-key authentication instead.
+- **`SshHooks::connect_exec` has a default** that attaches in full, so the test doubles of four
+  crates keep compiling and keep their old behaviour. The gateway is the one production
+  implementer and overrides it.
+- **A subsystem channel through the doorway gets no banner either.** The rule is "only a
+  shell", which is wider than "not an exec" by that one case.
+- **Bare frames are refused by a world mode that refuses connections** (booting, recovering,
+  integrity-frozen): the exec is then refused at the readiness probe with "Character
+  attachment was refused.", as it was before.
+- **An exec no longer holds its character connected, so it no longer shields them.** The
+  workshop cancels a character's authoring jobs when they go link-dead or disconnect
+  (`WorkshopCommands::linkdead`). While the exec was a live connection, a player whose shell
+  dropped during their own `mind check` was not link-dead until the exec ended; now they are
+  at once, and that check is cancelled with their other jobs. In the other direction, the end
+  of an offline player's exec used to fire that hook and now fires nothing: a job the client
+  abandoned runs to its own bound and its result is dropped by the connection lease
+  (`structured.rs`), which is what already happened for a player connected elsewhere.
+
+**Not built.**
+
+- A story on the split pair (gateway and server as two processes) for the exec, and one for an
+  exec caught by a server restart. The resync order is pinned by a unit test; the replayed
+  invoke reaching its binding on a fresh server is not run anywhere.
+- A story that a ship or a field unit held by a backup mind stays held through an exec. It is
+  true by construction (the space seat and the arena bridge act on the `connected`, `revived`
+  and `linkdead` hooks and on `has_live_conns`, and none of those moves), and the engine test
+  pins exactly those; no tacsim story flies it.
+- The exec's refusal still reads "Character attachment was refused." whatever the reason (a
+  restart gap, a busy world).
+- A second shell channel opened after an exec on the same doorway connection gets no drain
+  warning (the inject queue belongs to the first channel). The connection is still closed at
+  the deadline.
+
+**Not pinned by a story.** `BareUp` and `BareDown` behind a pending commit (the lifecycle
+slot); a duplicate bare id across two gateway generations; a gateway drain's deadline closing
+an exec in flight; a link's end with a bare connection up, end to end (the registry half and
+the engine half are each pinned).
 
 ## MW.17b
 

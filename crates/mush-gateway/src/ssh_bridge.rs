@@ -227,6 +227,35 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         Ok(())
     }
 
+    /// Bind an authenticated connection to a character for one exec request
+    /// (doc 44 unit MW.24): the same ownership check as
+    /// [`connect_character`](Self::connect_character), then a **bare
+    /// connection** ([`GameBridge::enter_bare`]) in place of the attach. The
+    /// character is not logged in by it: nobody is told they connected, no
+    /// session is made or revived, and when it ends nothing goes link-dead.
+    pub async fn connect_exec(
+        &self,
+        conn: NewConn,
+        account: &str,
+        character: u64,
+    ) -> Result<(), ConnectErr> {
+        let actor = ObjId(u32::try_from(character).map_err(|_| ConnectErr::NotYourCharacter)?);
+        let characters = self.core.accounts.characters(account).await;
+        if !characters.iter().any(|c| c.id == actor) {
+            return Err(ConnectErr::NotYourCharacter);
+        }
+        let conn_id = conn.id;
+        // An exec's pump reads plain events and nothing else, so its sink is
+        // the plain one whatever the transport offered.
+        let handle = ConnectionHandle::new(conn_id, conn.addr, conn.caps, conn.tx);
+        self.core.enter_bare(handle, actor).await?;
+        // Doc 33 §4.6: a drain waits for an exec in flight like any other
+        // connection, and closes it at the deadline by the `Disconnect` its
+        // pump ends on.
+        self.core.watch_connection(conn_id, CloseWay::Disconnect);
+        Ok(())
+    }
+
     /// One input line from an attached connection.
     pub async fn line(&self, conn: ConnId, line: &str) -> LineOutcome {
         self.core.line(conn, line).await
@@ -389,6 +418,26 @@ mod net {
             };
             Box::pin(async move {
                 self.connect_character(conn, account, character)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        }
+
+        fn connect_exec<'a>(
+            &'a self,
+            conn: net_ssh::NewConn,
+            account: &'a str,
+            character: u64,
+        ) -> BoxFuture<'a, Result<(), String>> {
+            let conn = NewConn {
+                id: ConnId(conn.id),
+                addr: conn.addr,
+                caps: conn.caps,
+                tx: conn.tx,
+                stamped_tx: conn.stamped_tx,
+            };
+            Box::pin(async move {
+                self.connect_exec(conn, account, character)
                     .await
                     .map_err(|e| e.to_string())
             })
@@ -724,4 +773,238 @@ pub async fn start_listener_on<A: AuthBackend + 'static>(
         trusted_loop: None,
         stopped: std::sync::atomic::AtomicBool::new(false),
     })
+}
+
+/// Doc 44 unit MW.24: the SSH `mind` exec's connection as the gateway makes
+/// it, against a link that records every frame the bridge sends the server.
+#[cfg(test)]
+mod exec_tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use futures::future::BoxFuture;
+    use mush_ipc::{GatewayLink, ServiceReq, ServiceResp, ToServer, WireInbound};
+    use mush_proto::{ClientKind, ColorDepth};
+    use mush_session::{CharKey, DetachOutcome, DetachReason};
+
+    use super::*;
+    use crate::bridge_common::ConnectErr;
+
+    const PILOT: ObjId = ObjId(7);
+
+    struct OnePilot;
+
+    impl AuthBackend for OnePilot {
+        async fn verify(&self, _account: &str, _password: &str) -> AuthOutcome {
+            AuthOutcome::BadCredentials
+        }
+
+        async fn characters(&self, _account: &str) -> Vec<crate::accounts::CharSummary> {
+            vec![crate::accounts::CharSummary {
+                id: PILOT,
+                name: "Pilot".to_string(),
+            }]
+        }
+
+        async fn create(
+            &self,
+            _account: &str,
+            _password: &str,
+            _char_name: &str,
+        ) -> Result<crate::accounts::CharSummary, CreateErr> {
+            Err(CreateErr::Io("unused test backend".to_string()))
+        }
+
+        async fn create_character(
+            &self,
+            _account: &str,
+            _char_name: &str,
+        ) -> Result<crate::accounts::CharSummary, CreateErr> {
+            Err(CreateErr::Io("unused test backend".to_string()))
+        }
+    }
+
+    /// What the server was sent, and whether it says the connection is bound.
+    struct Seen {
+        frames: Mutex<Vec<ToServer>>,
+        binds: AtomicBool,
+    }
+
+    struct Recording(Arc<Seen>);
+
+    impl GatewayLink for Recording {
+        fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
+            self.0.frames.lock().unwrap().push(msg);
+            Box::pin(async { true })
+        }
+
+        fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+            let resp = match req {
+                ServiceReq::ConnectionReady { .. } => Some(ServiceResp::ConnectionReady(
+                    self.0.binds.load(Ordering::SeqCst),
+                )),
+                _ => None,
+            };
+            Box::pin(async move { resp })
+        }
+    }
+
+    type Rig = (SshBridge<OnePilot>, Arc<SessionManager>, Arc<Seen>);
+
+    fn rig(binds: bool) -> Rig {
+        let sessions = Arc::new(SessionManager::new());
+        let seen = Arc::new(Seen {
+            frames: Mutex::new(Vec::new()),
+            binds: AtomicBool::new(binds),
+        });
+        let bridge = SshBridge::new(
+            Arc::new(OnePilot),
+            Arc::clone(&sessions),
+            Recording(Arc::clone(&seen)),
+            Arc::new(IpGuard::new()),
+        );
+        (bridge, sessions, seen)
+    }
+
+    fn exec_caps() -> ClientCaps {
+        ClientCaps {
+            kind: ClientKind::Ssh,
+            color: ColorDepth::Ansi256,
+            width: 120,
+            height: 40,
+            utf8: true,
+            structured: true,
+        }
+    }
+
+    fn exec_conn(id: u64) -> (NewConn, mpsc::Receiver<Arc<OutputEvent>>) {
+        let (tx, rx) = mpsc::channel(8);
+        let conn = NewConn {
+            id: ConnId(id),
+            addr: "127.0.0.1".parse().unwrap(),
+            caps: exec_caps(),
+            tx,
+            stamped_tx: None,
+        };
+        (conn, rx)
+    }
+
+    fn frames(seen: &Seen) -> Vec<ToServer> {
+        seen.frames.lock().unwrap().clone()
+    }
+
+    fn bare_up(conn: u64) -> ToServer {
+        ToServer::Inbound(WireInbound::BareUp { conn, actor: PILOT })
+    }
+
+    fn bare_down(conn: u64) -> ToServer {
+        ToServer::Inbound(WireInbound::BareDown { conn, actor: PILOT })
+    }
+
+    /// The exec of a player who is offline: the server is sent a `BareUp`,
+    /// the invoke and a `BareDown`, never a `ConnUp`, a `ConnDown` or a
+    /// `SessionGone`; the gateway makes no session for it and leaves none
+    /// link-dead behind it.
+    #[tokio::test]
+    async fn an_offline_exec_is_bound_and_never_logged_in() {
+        let (bridge, sessions, seen) = rig(true);
+        let (conn, _rx) = exec_conn(5);
+        bridge
+            .connect_exec(conn, "acct", u64::from(PILOT.0))
+            .await
+            .expect("the exec is bound");
+        assert_eq!(frames(&seen), vec![bare_up(5)]);
+        assert_eq!(bridge.core.actor_of(ConnId(5)), Some(PILOT));
+        assert_eq!(sessions.session_count(), 0, "no session was made");
+        assert!(sessions.who().is_empty(), "WHO has no row for the exec");
+
+        // The one request runs as the character, over that connection.
+        let request = mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::List {});
+        bridge.core.invoke(5, 1, request.clone()).await;
+        assert_eq!(
+            frames(&seen).last(),
+            Some(&ToServer::Inbound(WireInbound::Invoke {
+                conn: 5,
+                actor: PILOT,
+                id: 1,
+                request,
+            }))
+        );
+
+        bridge.disconnected(ConnId(5)).await;
+        assert_eq!(frames(&seen).last(), Some(&bare_down(5)));
+        assert_eq!(frames(&seen).len(), 3, "{:?}", frames(&seen));
+        assert_eq!(sessions.session_count(), 0, "nobody is left link-dead");
+        assert_eq!(sessions.next_linkdead_expiry(), None);
+        assert_eq!(bridge.core.actor_of(ConnId(5)), None);
+        // A second teardown (the pump and the dropped handler both fire) is
+        // nothing at all.
+        bridge.disconnected(ConnId(5)).await;
+        assert_eq!(frames(&seen).len(), 3);
+    }
+
+    /// An exec typed four minutes into a link loss: the session stays
+    /// link-dead and its window keeps its start through the whole life of the
+    /// exec, and the server is told of no connection and no loss.
+    #[tokio::test]
+    async fn an_exec_during_a_link_loss_leaves_the_window_alone() {
+        let (bridge, sessions, seen) = rig(true);
+        let lost_at = Instant::now() - Duration::from_secs(240);
+        let (tx, _rx) = mpsc::channel(8);
+        let live = ConnectionHandle::new(ConnId(1), "127.0.0.1".parse().unwrap(), exec_caps(), tx);
+        let (sess, _) = sessions.attach(live, CharKey(u64::from(PILOT.0)), "acct".to_string());
+        assert!(matches!(
+            sessions.detach_at(ConnId(1), DetachReason::Lost, lost_at),
+            Some(DetachOutcome::Linkdead { .. })
+        ));
+        let expiry = sessions.next_linkdead_expiry();
+        assert_eq!(expiry, Some(lost_at + Duration::from_secs(300)));
+
+        let (conn, _rx) = exec_conn(5);
+        bridge
+            .connect_exec(conn, "acct", u64::from(PILOT.0))
+            .await
+            .expect("the exec is bound");
+        assert!(sessions.is_linkdead(sess), "the exec revives nobody");
+        assert_eq!(sessions.next_linkdead_expiry(), expiry);
+        bridge.disconnected(ConnId(5)).await;
+        assert!(sessions.is_linkdead(sess));
+        assert_eq!(
+            sessions.next_linkdead_expiry(),
+            expiry,
+            "and its end does not start the five minutes again"
+        );
+        assert_eq!(frames(&seen), vec![bare_up(5), bare_down(5)]);
+    }
+
+    /// A server that does not bind the connection (a world mode that takes
+    /// none, an id another gateway holds) refuses the exec, and the gateway
+    /// undoes what it did.
+    #[tokio::test]
+    async fn an_exec_the_server_does_not_bind_is_refused_and_undone() {
+        let (bridge, sessions, seen) = rig(false);
+        let (conn, _rx) = exec_conn(5);
+        assert_eq!(
+            bridge.connect_exec(conn, "acct", u64::from(PILOT.0)).await,
+            Err(ConnectErr::NotAdmitted)
+        );
+        assert_eq!(frames(&seen), vec![bare_up(5), bare_down(5)]);
+        assert!(sessions.conn_handle(ConnId(5)).is_none());
+        assert!(sessions.bare_conns().is_empty());
+    }
+
+    /// The ownership check is the one `connect_character` makes: a character
+    /// the account does not own is refused before anything is bound or sent.
+    #[tokio::test]
+    async fn an_exec_as_a_character_the_account_does_not_own_is_refused() {
+        let (bridge, sessions, seen) = rig(true);
+        let (conn, _rx) = exec_conn(5);
+        assert_eq!(
+            bridge.connect_exec(conn, "acct", 99).await,
+            Err(ConnectErr::NotYourCharacter)
+        );
+        assert!(frames(&seen).is_empty());
+        assert!(sessions.bare_conns().is_empty());
+    }
 }

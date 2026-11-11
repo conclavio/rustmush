@@ -135,9 +135,45 @@ fn signing_key(pem: &str) -> russh::keys::PrivateKeyWithHashAlg {
 /// need — the stage-2 pubkey journey drives no server commands, so it uses the
 /// leaner `spawn`.
 async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool) -> SocketAddr {
+    boot_duo_server_with(dir, seed_key, with_staff, Duration::from_secs(120), false).await
+}
+
+/// The `mind` invoke family as the exec story needs it (doc 44 unit MW.24):
+/// every request is answered with a library of one name, the name of the
+/// character the invoke ran as. No workshop behind it; the story is about the
+/// connection, and the answer says whose it was.
+struct WhoRanIt;
+
+impl mush_core::module::InvokeHandler for WhoRanIt {
+    fn invoke(
+        &self,
+        ctx: &mut mush_core::Ctx<'_>,
+        _conn: u64,
+        _id: u64,
+        _request: &mush_proto::InvokeRequest,
+    ) -> mush_proto::InvokeResult {
+        let name = ctx
+            .w
+            .get(ctx.actor)
+            .map(|actor| actor.name.to_string())
+            .unwrap_or_default();
+        mush_proto::InvokeResult::Mind(mush_proto::MindResponse::Library { names: vec![name] })
+    }
+}
+
+/// [`boot_duo_server`] with the session layer's link-dead grace chosen by the
+/// caller and, with `mind_family`, the `mind` invoke family answered by
+/// [`WhoRanIt`].
+async fn boot_duo_server_with(
+    dir: &std::path::Path,
+    seed_key: bool,
+    with_staff: bool,
+    linkdead_grace: Duration,
+    mind_family: bool,
+) -> SocketAddr {
     std::fs::create_dir_all(dir).unwrap();
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
-        linkdead_grace: Duration::from_secs(120),
+        linkdead_grace,
         ..SessionConfig::default()
     }));
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
@@ -150,6 +186,11 @@ async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool
     let mut registry = mushd::world_task::base_registry();
     if with_staff {
         mushd::staff::register_server_commands(&mut registry, &staff).unwrap();
+    }
+    if mind_family {
+        mush_core::module::Registrar::new(&mut registry, "mw24-story")
+            .invoke_handler("mind", Arc::new(WhoRanIt))
+            .expect("the mind family registers");
     }
     let mut engine = mush_core::Engine::new(world, registry);
     let nick = engine
@@ -803,6 +844,205 @@ async fn m1_exit_criterion_full_journey() {
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
     let _ = bob2_handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- doc 44 unit MW.24: the `mind` exec is never presence ------------------
+
+/// `ssh -i key <user>@game mind pull`, with its one request on stdin: the
+/// names in the library answer and the exit status.
+async fn mind_pull(addr: SocketAddr, user: &str) -> (Vec<String>, u32) {
+    let mut client =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("connect");
+    assert!(
+        client
+            .authenticate_publickey(user, signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success(),
+        "the exec is public-key only, and the key is registered"
+    );
+    let mut channel = client.channel_open_session().await.expect("open channel");
+    channel
+        .exec(true, b"mind pull".to_vec())
+        .await
+        .expect("exec");
+    let request = serde_json::to_vec(&mush_proto::MindRequest::Read {
+        name: "mine".into(),
+        revision: None,
+    })
+    .expect("request json");
+    channel.data(&request[..]).await.expect("stdin");
+    channel.eof().await.expect("stdin eof");
+    let (bytes, status) = tokio::time::timeout(STEP_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        let mut status = None;
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => bytes.extend_from_slice(&data),
+                ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        (bytes, status.expect("the exec ends with an exit status"))
+    })
+    .await
+    .expect("the exec ends");
+    let _ = client
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+    let lines: Vec<&[u8]> = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one result line and nothing else: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let result: mush_proto::InvokeResult =
+        serde_json::from_slice(lines[0]).expect("typed JSON, no room or ANSI output");
+    let mush_proto::InvokeResult::Mind(mush_proto::MindResponse::Library { names }) = result else {
+        panic!("a library answer, got {result:?}");
+    };
+    (names, status)
+}
+
+/// Doc 44 unit MW.24, end to end over real SSH on the all-in-one server: the
+/// `mind` exec runs its one request as the character and is never presence.
+///
+/// - **Offline.** Nick is not connected. His `mind pull` answers as Nick and
+///   exits 0; Ada, standing in his room, is told nothing, and `WHO` has no row
+///   for him afterwards (before this unit he stood link-dead in the room for
+///   the whole grace).
+/// - **Connected.** Ada's own `mind pull`, with her shell open, answers as
+///   Ada.
+/// - **Mid link loss.** Nick logs in and drops his transport. Halfway
+///   through his grace he runs `mind pull`: it answers as Nick, Ada sees no
+///   "has reconnected." and no second "has gone link-dead.", and Nick is
+///   disconnected when his ORIGINAL grace runs out, less than a full grace
+///   after the exec ended (before this unit the exec revived him and its end
+///   started the grace again).
+#[tokio::test(flavor = "multi_thread")]
+async fn mw24_a_mind_exec_is_never_presence() {
+    let dir = scratch_dir("mind-exec");
+    let grace = Duration::from_secs(8);
+    let addr = boot_duo_server_with(&dir, true, false, grace, true).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // Ada watches the room for the whole story.
+    let mut ada_handle = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        ada_handle
+            .authenticate_publickey("duo+Ada", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut ada = shell_term(&ada_handle).await;
+    ada.expect("Connected as Ada (account duo, 1 connection).")
+        .await;
+    ada.expect("Limbo #0").await;
+
+    // --- Offline: the exec runs as Nick and nobody sees Nick. -------------
+    let offline = ada.mark();
+    let (names, status) = mind_pull(addr, "duo+Nick").await;
+    assert_eq!(names, vec!["Nick".to_string()], "the invoke ran as Nick");
+    assert_eq!(status, 0);
+    // The exec's teardown reaches the world after its client saw the close.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ada.send_line("WHO").await;
+    ada.send_line("say checked the offline exec").await;
+    ada.expect_after(offline, "You say, \"checked the offline exec\"")
+        .await;
+    let seen = strip_ansi(&ada.seen[offline..]);
+    assert!(seen.contains("Ada"), "WHO answered: {seen}");
+    assert!(
+        !seen.contains("Nick"),
+        "no announcement names Nick and WHO has no row for him: {seen}"
+    );
+
+    // --- Connected: a player's own exec beside their shell. ---------------
+    let (names, status) = mind_pull(addr, "duo+Ada").await;
+    assert_eq!(names, vec!["Ada".to_string()]);
+    assert_eq!(status, 0);
+
+    // --- Mid link loss: the grace keeps its start. ------------------------
+    let arrives = ada.mark();
+    let mut nick_handle = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        nick_handle
+            .authenticate_publickey("duo+Nick", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut nick = shell_term(&nick_handle).await;
+    nick.expect("Connected as Nick (account duo, 1 connection).")
+        .await;
+    ada.expect_after(arrives, "Nick has connected.").await;
+    let drops = ada.mark();
+    let _ = nick_handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+    drop(nick);
+    drop(nick_handle);
+    ada.expect_after(drops, "Nick has gone link-dead.").await;
+    let lost_at = std::time::Instant::now();
+    let after_loss = ada.mark();
+
+    // Halfway through the grace, the exec.
+    tokio::time::sleep(grace / 2).await;
+    let (names, status) = mind_pull(addr, "duo+Nick").await;
+    assert_eq!(names, vec!["Nick".to_string()]);
+    assert_eq!(status, 0);
+    let exec_done_at = std::time::Instant::now();
+
+    // Still link-dead to the room: WHO lists him, and nothing was announced.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ada.send_line("WHO").await;
+    ada.send_line("say checked the exec in the gap").await;
+    ada.expect_after(after_loss, "You say, \"checked the exec in the gap\"")
+        .await;
+    let seen = strip_ansi(&ada.seen[after_loss..]);
+    assert!(seen.contains("Nick"), "WHO still lists him: {seen}");
+    assert!(
+        !seen.contains("Nick has"),
+        "the exec is announced as nothing: {seen}"
+    );
+
+    // The grace that started at the loss is the one that ends him.
+    ada.expect_after(after_loss, "Nick has disconnected.").await;
+    let gone_at = std::time::Instant::now();
+    let seen = strip_ansi(&ada.seen[after_loss..]);
+    assert!(
+        !seen.contains("Nick has reconnected.") && !seen.contains("Nick has gone link-dead."),
+        "no revival and no second loss between the real loss and its expiry: {seen}"
+    );
+    assert!(
+        gone_at.duration_since(exec_done_at) < grace,
+        "the exec's end did not start the grace again: gone {:?} after the exec, {:?} after \
+         the loss, grace {grace:?}",
+        gone_at.duration_since(exec_done_at),
+        gone_at.duration_since(lost_at),
+    );
+    assert!(
+        gone_at.duration_since(lost_at) + Duration::from_secs(1) >= grace,
+        "and nothing cut it short: gone {:?} after the loss",
+        gone_at.duration_since(lost_at)
+    );
+
+    let _ = ada_handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
     let _ = std::fs::remove_dir_all(&dir);

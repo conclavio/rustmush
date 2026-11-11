@@ -475,9 +475,16 @@ pub(super) fn classify_inbound(msg: &Inbound) -> IngressClass {
         // A composing hint reads the world (the actor, their room) and
         // mutates nothing; it is admitted wherever a read is.
         Inbound::Query { .. } | Inbound::Composing { .. } => IngressClass::WorldRead,
-        Inbound::ConnUp { .. } | Inbound::ConnDown { .. } | Inbound::SessionGone { .. } => {
-            IngressClass::ConnectionHooks
-        }
+        // A bare connection's two frames (doc 44 unit MW.24) fire no hook, but
+        // they are lifecycle all the same and are classed with it on purpose:
+        // they keep `ConnUp`'s ordering against a pending commit (the slot
+        // below) and against the invoke that follows, and a world that takes
+        // no connection takes no bare one either.
+        Inbound::ConnUp { .. }
+        | Inbound::ConnDown { .. }
+        | Inbound::SessionGone { .. }
+        | Inbound::BareUp { .. }
+        | Inbound::BareDown { .. } => IngressClass::ConnectionHooks,
         // A client's answer to a server-initiated request (interface plan
         // I10) resumes the opening module's logic, which may mutate; it is
         // admitted only where a write is, exactly like async re-entry, so a
@@ -534,6 +541,8 @@ pub(super) fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
             Inbound::ConnUp { .. }
                 | Inbound::ConnDown { .. }
                 | Inbound::SessionGone { .. }
+                | Inbound::BareUp { .. }
+                | Inbound::BareDown { .. }
                 | Inbound::Apply(_)
         )
     )
@@ -737,6 +746,8 @@ pub(super) fn admit_outage_countdown_msg(world: &World, msg: &WorldMsg) -> Admis
             Inbound::ConnUp { .. }
             | Inbound::ConnDown { .. }
             | Inbound::SessionGone { .. }
+            | Inbound::BareUp { .. }
+            | Inbound::BareDown { .. }
             | Inbound::Query { .. }
             | Inbound::Composing { .. }
             | Inbound::Control(_),
@@ -905,6 +916,13 @@ pub(super) fn refuse_world_msg(
         WorldMsg::Inbound(Inbound::ConnDown { actor, .. })
         | WorldMsg::Inbound(Inbound::SessionGone { actor }) => {
             tracing::warn!(%actor, ?reason, "connection hook suppressed by world mode");
+        }
+        // A refused bare connection is told nothing here: nobody is logged in
+        // on it to read a line. The gateway's readiness probe finds no binding
+        // and refuses the exec, which is what its caller is shown.
+        WorldMsg::Inbound(Inbound::BareUp { conn, actor })
+        | WorldMsg::Inbound(Inbound::BareDown { conn, actor }) => {
+            tracing::warn!(conn, %actor, ?reason, "bare connection frame suppressed by world mode");
         }
         // A presence hint is best-effort by contract: dropping it costs
         // nothing (the clients expire their pills on a timer).

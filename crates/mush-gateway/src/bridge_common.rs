@@ -476,12 +476,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         BarrierEnd::Failed
     }
 
-    /// The actor a connection is playing, if attached.
+    /// The actor a connection is playing, if attached; for a bare connection
+    /// ([`enter_bare`](GameBridge::enter_bare)), the actor it is bound to.
     pub fn actor_of(&self, conn: ConnId) -> Option<ObjId> {
-        self.sessions
-            .session_of_conn(conn)
-            .and_then(|s| self.sessions.character_of(s))
-            .map(char_key_obj)
+        self.sessions.character_of_conn(conn).map(char_key_obj)
     }
 
     /// Route a client's answer to a server-initiated request (interface plan
@@ -1137,6 +1135,85 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         Ok(EnterOutcome { sess, resume_from })
     }
 
+    /// Bind an already-authenticated, already-authorized connection to a
+    /// character as a **bare connection** (doc 44 unit MW.24): it can make an
+    /// [`invoke`](GameBridge::invoke) as the character and is sent the reply,
+    /// and it is not presence. Nothing of [`enter_game`](GameBridge::enter_game)
+    /// happens: no session is made, joined or revived, so a player who is
+    /// offline stays offline and one whose link is down keeps their grace
+    /// where it was; the world is sent a `BareUp`, which announces nothing and
+    /// fires no hook; there is no `SessionInfo` and no attach look.
+    /// [`disconnected`](GameBridge::disconnected) ends it with a `BareDown`
+    /// and leaves nothing link-dead.
+    ///
+    /// The caller has verified the character belongs to the account, as for
+    /// `enter_game`. The SSH `mind` exec is the one caller.
+    ///
+    /// It takes no slot of the split gateway's lifecycle ledger: that ledger
+    /// counts live sessions and the `SessionGone` each may come to owe, and
+    /// reserving in it would turn a link-dead player's owed `SessionGone`
+    /// into this connection. Its bound is the transport's own (the per-address
+    /// connection cap, behind public-key authentication).
+    pub async fn enter_bare(
+        &self,
+        handle: ConnectionHandle,
+        actor: ObjId,
+    ) -> Result<(), ConnectErr> {
+        let conn = handle.id;
+        if !self.sessions.attach_bare(handle, char_key(actor)) {
+            return Err(ConnectErr::NotAdmitted);
+        }
+        if !self
+            .link
+            .to_server(ToServer::Inbound(WireInbound::BareUp {
+                conn: conn.0,
+                actor,
+            }))
+            .await
+        {
+            self.sessions.detach_bare(conn);
+            return Err(self.gone());
+        }
+        // No delivery barrier: a `BareUp` runs no hook and commits nothing, so
+        // there is no durable outcome to fence. The probe rides the same
+        // ordered path behind it, and its exact answer is still required: a
+        // world mode that takes no connection takes no bare one, and a
+        // connection id another gateway holds is refused by the server.
+        if !matches!(
+            self.link
+                .request(ServiceReq::ConnectionReady {
+                    conn: conn.0,
+                    actor,
+                })
+                .await,
+            Some(ServiceResp::ConnectionReady(true))
+        ) {
+            self.leave_bare(conn, actor).await;
+            return Err(self.not_admitted());
+        }
+        tracing::info!(conn = conn.0, %actor, "bare connection bound");
+        Ok(())
+    }
+
+    /// End a bare connection: forget it locally and tell the world. Nothing
+    /// goes link-dead and no reaper is armed.
+    async fn leave_bare(&self, conn: ConnId, actor: ObjId) {
+        self.sessions.detach_bare(conn);
+        self.forget_view_sequences(conn);
+        drop(locked(&self.live, "live connections").remove(&conn));
+        if !self
+            .link
+            .to_server(ToServer::Inbound(WireInbound::BareDown {
+                conn: conn.0,
+                actor,
+            }))
+            .await
+        {
+            // No boundary: the server that held the binding is gone with it.
+            tracing::debug!(conn = conn.0, %actor, "bare connection ended in a restart gap");
+        }
+    }
+
     /// One input line from an attached connection.
     pub async fn line(&self, conn: ConnId, line: &str) -> LineOutcome {
         self.line_framed(conn, line, true).await
@@ -1482,6 +1559,15 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// released by the transport's own accept/drop accounting, not here.)
     pub async fn disconnected(&self, conn: ConnId) {
         let actor = self.actor_of(conn);
+        // A bare connection (doc 44 unit MW.24) has no session to detach: its
+        // end is a `BareDown` and nothing else.
+        if let Some(actor) = actor
+            && self.sessions.session_of_conn(conn).is_none()
+            && self.sessions.conn_handle(conn).is_some()
+        {
+            self.leave_bare(conn, actor).await;
+            return;
+        }
         let outcome = self.sessions.detach(conn, DetachReason::Lost);
         self.forget_view_sequences(conn);
         // Doc 33 §4.6: no longer one of the generation's live connections.
