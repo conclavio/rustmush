@@ -926,6 +926,14 @@ pub struct SpaceBubbleBook {
     /// Monotonic sequence allocator for [`Self::pending_space_burns`].
     #[serde(default)]
     pub next_space_burn_seq: u32,
+    /// Customs rulings filed by `+helm/submit` and `+helm/run` and not yet applied (doc 35
+    /// cut SF.R26c): each is one submitted `tacsim_space_customs`, settled by
+    /// `reconcile_customs_rulings` in [`super::customs`].
+    #[serde(default)]
+    pub pending_customs_rulings: Vec<super::customs::PendingCustomsRuling>,
+    /// Monotonic sequence allocator for [`Self::pending_customs_rulings`].
+    #[serde(default)]
+    pub next_customs_ruling_seq: u32,
     /// Laid-up orbital cluster sites keyed by authored cluster [`mush_core::CanonicalId`] (`SF.R5`, `SF.R22`, `D-35-13`, `D-35-17`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub cluster_sites: BTreeMap<mush_core::CanonicalId, super::mining::ClusterSiteState>,
@@ -2054,6 +2062,12 @@ pub const BUBBLE_INPUT_ACTION: &str = "tacsim_space_bubble_input";
 pub const BUBBLE_INPUT_OUTCOME: &str = "tacsim_space_bubble_input_outcome";
 
 /// Typed state family id for staged bubble input tapes (`SF.R21`, `35b` §3b).
+///
+/// Doc 35 cut SF.R26c (doc 35d §9a, Q-35d-6 as ruled): this family is an **audit trail**. An
+/// in-bubble input is an order on the bubble's own tape, applied by the handler through
+/// [`apply_bubble_command`]; the row here records that it was typed, by whom and when, and
+/// nothing reads it back into the bubble. `+helm/submit` and `+helm/run` no longer write it:
+/// each is one `tacsim_space_customs`, whose own row is its record ([`super::customs`]).
 pub const BUBBLE_TAPE_FAMILY: &str = "tacsim.space_bubble_tape";
 
 /// Staged authoritative bubble-input ledger for a hull in `tacsim.space_bubble_tape` (`SF.R21`, `35b` §3b).
@@ -2193,6 +2207,11 @@ pub(crate) fn register_bubble_input(
 }
 
 /// Queue a [`PendingBubbleInput`] and submit [`BUBBLE_INPUT_ACTION`] via `Ctx::submit_authoritative` (`SF.R21`, `35b` §3b).
+///
+/// The submission is the input's audit row ([`BUBBLE_TAPE_FAMILY`]); the input itself has
+/// already been applied. It is skipped when the actor already has an action pending. A queued
+/// audit row still holds the actor's one slot until it is driven, so a submission that moves
+/// goods or money has its own retry (the burn's receipt, the customs ruling's row).
 pub fn submit_bubble_input(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
@@ -2834,6 +2853,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     step_delivered_tows_at_port(ctx, &now);
     crate::surface::claim::tick(ctx);
     reconcile_space_burns(ctx);
+    super::customs::reconcile_customs_rulings(ctx);
     prune_space_book_collections(ctx);
     persist_space_state(ctx);
 }

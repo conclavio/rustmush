@@ -1891,38 +1891,63 @@ pub fn resolve_registry_principal_and_account(
     Some((org_id, PrincipalId::Organization(org_id), account_id))
 }
 
-/// Assess a real `mush-economy` Public E4 contract fine from `pilot`'s credit account into
-/// `freeport_registry`'s account and advance the [`mush_faction::CUSTOMS_ASSERTION_TITLE`]
-/// campaign front (`D-35-11`, `SF.R6`).
+/// The contraband fine for `unlicensed_strategic_ore_kg`, in minor credit units (`D-35-11`):
+/// [`CUSTOMS_FINE_MAJOR_PER_TONNE`] a tonne begun, never under [`CUSTOMS_FINE_MIN_MAJOR`].
+/// `None` when the amount overflows the credit scale.
+#[must_use]
+pub fn customs_fine_minor(w: &World, unlicensed_strategic_ore_kg: u64) -> Option<i64> {
+    let tonnes = unlicensed_strategic_ore_kg.div_ceil(1_000).max(1);
+    let fine_major = tonnes
+        .saturating_mul(u64::try_from(CUSTOMS_FINE_MAJOR_PER_TONNE).unwrap_or(500))
+        .max(u64::try_from(CUSTOMS_FINE_MIN_MAJOR).unwrap_or(1_000));
+    minor_of(fine_major, credit_scale(w))
+}
+
+/// Whether `pilot` can pay a customs fine of `fine_minor` now, and the Registry can take it
+/// (doc 35 cut SF.R26c): read by `+helm/submit` to choose between a fine and a seizure, and
+/// again by the levy.
+///
+/// # Errors
+///
+/// The pilot holds no credit account or too little credit, or the Registry has no live
+/// account.
+pub fn customs_fine_payable(w: &World, pilot: ObjId, fine_minor: i64) -> Result<(), String> {
+    let credit = crate::port::credit::own_account(w, pilot)
+        .ok_or_else(|| "pilot holds no credit account for customs fine".to_owned())?;
+    let available = credit.available().map_or(0, Amount::minor);
+    if available < fine_minor {
+        return Err(format!(
+            "insufficient credit for customs fine (requires {fine_minor} minor units, available {available})"
+        ));
+    }
+    resolve_registry_principal_and_account(w)
+        .map(|_| ())
+        .ok_or_else(|| "Freeport Registry account unavailable".to_owned())
+}
+
+/// Levy a customs fine of `fine_minor` as a real `mush-economy` Public E4 contract from
+/// `pilot`'s credit account into `freeport_registry`'s account, and advance the
+/// [`mush_faction::CUSTOMS_ASSERTION_TITLE`] campaign front (`D-35-11`, `SF.R6`).
+///
+/// Doc 35 cut SF.R26c: called by the space tick for a ruling that has landed
+/// ([`super::customs`]), never by `+helm/submit` itself. The economy's contracts are not an
+/// action-state family, so the ruling's action cannot write one.
 ///
 /// # Errors
 ///
 /// Returns an error string if the pilot lacks a credit account or sufficient funds, or if
-/// contract activation fails.
-pub fn assess_customs_fine_and_advance_front(
+/// contract activation fails. Nothing is left offered on an error.
+pub fn levy_customs_fine_and_advance_front(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
     hull: ObjId,
     unlicensed_strategic_ore_kg: u64,
-) -> Result<(ContractId, i64, Option<FrontId>), String> {
-    let tonnes = unlicensed_strategic_ore_kg.div_ceil(1_000).max(1);
-    let fine_major_u64 = tonnes
-        .saturating_mul(u64::try_from(CUSTOMS_FINE_MAJOR_PER_TONNE).unwrap_or(500))
-        .max(u64::try_from(CUSTOMS_FINE_MIN_MAJOR).unwrap_or(1_000));
-    let fine_minor = minor_of(fine_major_u64, credit_scale(ctx.w))
-        .ok_or_else(|| "customs fine overflows credit scale".to_owned())?;
-
-    let credit = crate::port::credit::own_account(ctx.w, pilot)
+    fine_minor: i64,
+) -> Result<(ContractId, Option<FrontId>), String> {
+    customs_fine_payable(ctx.w, pilot, fine_minor)?;
+    let pilot_account = crate::port::credit::own_account(ctx.w, pilot)
+        .map(|credit| credit.id)
         .ok_or_else(|| "pilot holds no credit account for customs fine".to_owned())?;
-    let pilot_account = credit.id;
-    let available = credit.available().map_or(0, Amount::minor);
-    if available < fine_minor {
-        return Err(format!(
-            "insufficient credit for customs fine (requires {} minor units, available {})",
-            fine_minor, available
-        ));
-    }
-
     let (registry_org, registry_principal, registry_account) =
         resolve_registry_principal_and_account(ctx.w)
             .ok_or_else(|| "Freeport Registry account unavailable".to_owned())?;
@@ -1994,34 +2019,23 @@ pub fn assess_customs_fine_and_advance_front(
 
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
-    Ok((contract_id, fine_minor, front_id))
+    Ok((contract_id, front_id))
 }
 
-/// Seize unlicensed `strategic_ore` from `hull`'s hold vault when `pilot` cannot pay the customs
-/// fine, and advance [`mush_faction::CUSTOMS_ASSERTION_TITLE`] (`SF.R12`, `35b` §5 #3).
+/// Record that unlicensed `strategic_ore` was seized from `hull` in lieu of a fine `pilot`
+/// could not pay, and advance [`mush_faction::CUSTOMS_ASSERTION_TITLE`] (`SF.R12`, `35b` §5
+/// #3).
 ///
-/// # Errors
-///
-/// The seizure could not be submitted: the hull has no hold vault, or the burn action refused
-/// it. Nothing is recorded and the caller grants no clearance (`SF.R30`, doc 35d §6.7); the
-/// ore used to stay aboard a ship that was cleared all the same.
-pub fn seize_contraband_and_advance_front(
+/// Doc 35 cut SF.R26c: the ore itself leaves the hold in the ruling's own action
+/// ([`super::customs`]); this is the incident, recorded by the space tick once that action
+/// has landed. `seized_strategic_ore_kg` is what the action took.
+pub fn record_customs_seizure(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
     hull: ObjId,
-    unlicensed_strategic_ore_kg: u64,
-) -> Result<Option<FrontId>, mush_core::CmdError> {
-    let seize_t = u32::try_from(unlicensed_strategic_ore_kg.div_ceil(1_000).max(1)).unwrap_or(1);
-    let hold_vault = crate::port::ship::hull_view(ctx.w, hull)
-        .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
-        .ok_or_else(|| mush_core::CmdError::msg("the hull has no hold to seize from"))?;
-    if super::commands::submit_seized_contraband_burn(ctx, hull, hold_vault.0, seize_t)?.is_none() {
-        return Err(mush_core::CmdError::msg("the seizure was not taken up"));
-    }
-
-    let Some((registry_org, _, _)) = resolve_registry_principal_and_account(ctx.w) else {
-        return Ok(None);
-    };
+    seized_strategic_ore_kg: u64,
+) -> Option<FrontId> {
+    let (registry_org, _, _) = resolve_registry_principal_and_account(ctx.w)?;
     let saved_actor = ctx.actor;
     ctx.actor = pilot;
     let front_id = mush_faction::record_customs_assertion(
@@ -2031,7 +2045,7 @@ pub fn seize_contraband_and_advance_front(
             kind: "space.customs_seizure".into(),
             summary: format!(
                 "Republic Customs Corvette seized {} kg unlicensed strategic_ore from hull #{} at the Kirkwood picket in lieu of unpaid fine; {} advances.",
-                unlicensed_strategic_ore_kg,
+                seized_strategic_ore_kg,
                 hull.0,
                 mush_faction::CUSTOMS_ASSERTION_TITLE,
             ),
@@ -2042,14 +2056,14 @@ pub fn seize_contraband_and_advance_front(
             detail: json!({
                 "hull": hull.0,
                 "pilot": pilot.0,
-                "seized_strategic_ore_kg": unlicensed_strategic_ore_kg,
+                "seized_strategic_ore_kg": seized_strategic_ore_kg,
             }),
         },
     )
     .ok();
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
-    Ok(front_id)
+    front_id
 }
 
 /// Record a picket-running incident (`RanThePicket`), escalating the Republic Customs Corvette
