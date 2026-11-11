@@ -2852,6 +2852,10 @@ pub const PASSAGE_CUT_UNPAID: &str = "[SPACE] The passage's reaction mass could 
 pub const SPACE_BURN_LAPSED: &str =
     "[SPACE] A burn of {burn_t} t could not be drawn from the tank; the debit is withdrawn.";
 
+/// The hull's line when a customs seizure's draw is given up; `{seized_t}` is its tonnes.
+pub const SPACE_SEIZURE_LAPSED: &str =
+    "[SPACE] The seizure of {seized_t} t could not be drawn from the hold; it is withdrawn.";
+
 /// Settle the in-flight burn queue against the receipts (doc 35 cut SF.R26b, doc 35d §9a).
 ///
 /// A burn with a receipt has landed and leaves the queue. A burn with no receipt whose actor
@@ -2949,6 +2953,8 @@ fn reconcile_space_burns(ctx: &mut Ctx<'_>) {
         );
         let line = if burn.passage && super::commands::cut_unpaid_passage(ctx, burn.hull) {
             PASSAGE_CUT_UNPAID.to_owned()
+        } else if burn.seized_strategic_ore_t > 0 {
+            SPACE_SEIZURE_LAPSED.replace("{seized_t}", &burn.seized_strategic_ore_t.to_string())
         } else {
             SPACE_BURN_LAPSED.replace("{burn_t}", &burn.burn_t.to_string())
         };
