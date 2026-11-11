@@ -609,6 +609,12 @@ with real, embarked human-NPC leadership.
   4. Base is the party's home, the cell at its carrier's ramp (`field/home.rs`). With no ramp in
      reach it holds and is a retrieval job (Q-38-6, Q-38-18).
   5. A reconnecting player has the controls back on that step.
+  The same day's Q-44-35 to Q-44-38 (doc 44) add: crew are the seated pilot (in space, the
+  bridge-station holders and the captain); the five minutes run from the last of them to drop;
+  a hand-back cancels what the mind had not yet done and a restart resumes the mind; the mind
+  fires only at a unit that has fired on it, by an engine gate no script can pass.
+  Today a released field unit goes to the compiled combat doctrine (`arena_bridge.rs`), which
+  the ruling forbids.
   The space half is built (doc 35 cut `SF.R32`). The field half is planned in doc 35 §11.4 as
   `FB.1` to `FB.4`, on the withdraw path a raider line already uses (`field/raiders.rs`
   `order_home`, `field/home.rs` `ask_out`, `field/exit.rs` `on_withdrawn`). Doc 27a's

@@ -284,6 +284,30 @@ pub fn hull_aboard_for_actor(w: &World, actor: ObjId) -> Option<ObjId> {
     None
 }
 
+/// The characters who keep `hull` crewed (doc 44 Q-44-35, ruled 2026-11-11): everyone aboard
+/// who holds one of her bridge stations, and her captain when aboard. A passenger is not one:
+/// their link neither holds the backup mind off nor takes the helm back from it.
+#[must_use]
+pub fn helm_crew_aboard(w: &World, hull: ObjId) -> Vec<ObjId> {
+    let mut crew = std::collections::BTreeSet::new();
+    if let Some(assignments) = w
+        .module_state::<SpatialState>()
+        .and_then(|sim| sim.assignments.get(&hull))
+    {
+        for seat in assignments.seats.values() {
+            if hull_aboard_for_actor(w, seat.actor) == Some(hull) {
+                crew.insert(seat.actor);
+            }
+        }
+    }
+    if let Some(captain) = crate::port::coop::helm_holder(w, hull)
+        && hull_aboard_for_actor(w, captain) == Some(hull)
+    {
+        crew.insert(captain);
+    }
+    crew.into_iter().collect()
+}
+
 /// Return all crew members (`ObjKind::Player` or seated bridge crew) currently aboard `hull` (`SF.R13`).
 #[must_use]
 pub fn all_aboard_crew_for_hull(w: &World, hull: ObjId) -> Vec<ObjId> {

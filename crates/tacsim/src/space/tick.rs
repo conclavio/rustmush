@@ -2653,14 +2653,31 @@ impl mush_core::EventHook for SpacePresenceHook {
     }
 }
 
+/// Whether any of `hull`'s helm crew (doc 44 Q-44-35) but `excluding` has a live link.
 fn any_other_live_crew_aboard(w: &World, hull: ObjId, excluding: ObjId) -> bool {
-    super::commands::all_aboard_crew_for_hull(w, hull)
+    super::commands::helm_crew_aboard(w, hull)
         .into_iter()
         .any(|c| c != excluding && w.is_connected(c) && w.has_live_conns(c))
 }
 
+/// Whether any of `hull`'s helm crew but `excluding` is inside their own linkdead grace: the
+/// link is lost and the server has not yet disconnected them.
+fn any_other_crew_linkdead_aboard(w: &World, hull: ObjId, excluding: ObjId) -> bool {
+    super::commands::helm_crew_aboard(w, hull)
+        .into_iter()
+        .any(|c| c != excluding && w.is_connected(c) && !w.has_live_conns(c))
+}
+
+/// The hull `player` helps to crew, if any (doc 44 Q-44-35): a passenger crews none.
+fn hull_crewed_by(w: &World, player: ObjId) -> Option<ObjId> {
+    let hull = super::commands::hull_aboard_for_actor(w, player)?;
+    super::commands::helm_crew_aboard(w, hull)
+        .contains(&player)
+        .then_some(hull)
+}
+
 fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
-    let Some(hull) = super::commands::hull_aboard_for_actor(ctx.w, player) else {
+    let Some(hull) = hull_crewed_by(ctx.w, player) else {
         return;
     };
     if any_other_live_crew_aboard(ctx.w, hull, player) {
@@ -2740,10 +2757,25 @@ fn begin_linkdead_for_hull(ctx: &mut Ctx<'_>, hull: ObjId, announce_grace: bool)
 }
 
 fn handle_crew_disconnected(ctx: &mut Ctx<'_>, player: ObjId) {
-    let Some(hull) = super::commands::hull_aboard_for_actor(ctx.w, player) else {
+    let Some(hull) = hull_crewed_by(ctx.w, player) else {
         return;
     };
     if any_other_live_crew_aboard(ctx.w, hull, player) {
+        return;
+    }
+    // Doc 44 Q-44-36: the five minutes run from the last crew member's loss, and an earlier
+    // one's own disconnect does not shorten them. A hull with a record is left to its window
+    // (the space tick ends it); so is one whose other crew are still inside their own grace,
+    // for whom a window opens here.
+    if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|book| book.linkdead_hulls.contains_key(&hull))
+    {
+        return;
+    }
+    if any_other_crew_linkdead_aboard(ctx.w, hull, player) {
+        begin_linkdead_for_hull(ctx, hull, true);
         return;
     }
     // A crew that leaves without a lost link (doc 35 §11 `B-1`) hands her over at once.
@@ -2785,6 +2817,11 @@ fn handle_crew_revived_or_connected(ctx: &mut Ctx<'_>, player: ObjId) {
     let Some(hull) = super::commands::hull_aboard_for_actor(ctx.w, player) else {
         return;
     };
+    // Doc 44 Q-44-35: a passenger's link takes no helm back; they get their panels.
+    if hull_crewed_by(ctx.w, player).is_none() {
+        super::commands::push_space_panels(ctx, hull);
+        return;
+    }
     let mut restored = false;
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         if book.linkdead_hulls.remove(&hull).is_some() {
@@ -5200,7 +5237,7 @@ fn build_carrier_ship_state(
         .w
         .module_state::<SpaceBubbleBook>()
         .is_some_and(|b| b.linkdead_hulls.contains_key(&hull))
-        || (!super::commands::all_aboard_crew_for_hull(ctx.w, hull).is_empty()
+        || (!super::commands::helm_crew_aboard(ctx.w, hull).is_empty()
             && !any_other_live_crew_aboard(ctx.w, hull, ObjId(0)));
     if is_linkdead {
         ship.crew_linkdead = true;

@@ -13238,6 +13238,161 @@ fn sfr32_the_link_loss_backup_mind_flies_her_home_stops_for_customs_and_stands_d
     );
 }
 
+/// End `who`'s linkdead session, as the session manager does when its own grace runs out
+/// (`Inbound::SessionGone`): the presence hook reads the player disconnected.
+fn end_session(rig: &mut Rig, who: ObjId) {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::SessionGone { actor: who },
+        &mut out,
+        &mut fx,
+    );
+}
+
+/// Fire everything due at the real second `at`, and land what the tick submitted.
+fn fire_at(rig: &mut Rig, at: i64) {
+    rig.tw.set_now(at);
+    let _ = rig.tw.fire_due(at.saturating_mul(1_000));
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &submitted);
+}
+
+/// **Doc 35 §11 with doc 44's Q-44-35 to Q-44-37 (ruled 2026-11-11)** — who keeps a hull crewed,
+/// when the five minutes start, and what a restart does. Each part fails on the code before.
+///
+/// A. **A passenger does neither.** With a linked passenger aboard, the pilot's lost link still
+///    opens the hull's window; every player aboard used to count. The passenger's own link
+///    dropping and coming back changes nothing, inside the window or once the mind has the helm.
+/// B. **The window runs from the last crew member's loss.** The gunner drops; four minutes later
+///    the pilot drops. When the gunner's own session ends a minute after that, the hull's window
+///    is not ended with it, as it used to be: the mind takes the helm five minutes after the
+///    pilot's loss and not a second before.
+/// C. **A restart resumes the mind.** A hull the mind is holding at Pallas has the same record
+///    after a reboot, and past the wait the mind has asked the planner again.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr32b_only_helm_crew_keep_her_crewed_the_window_runs_from_the_last_and_a_restart_resumes() {
+    use tacsim::space::BackupAct;
+    let grace = tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S;
+
+    // --- A. A passenger does neither ---------------------------------------------------------
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Owner", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let passenger = rig.tw.spawn_player("Fare");
+    let aboard = rig
+        .tw
+        .world()
+        .get(pilot)
+        .and_then(|o| o.location)
+        .expect("the pilot's room aboard");
+    teleport(&mut rig.tw, passenger, aboard);
+    let crew = tacsim::space::commands::helm_crew_aboard(rig.tw.world(), hull);
+    assert_eq!(
+        crew,
+        vec![pilot],
+        "her captain crews her; the passenger does not"
+    );
+    drop_link(&mut rig, pilot);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| !ld.backup_has_helm()),
+        "a linked passenger does not keep her crewed: the window opens on her captain's loss"
+    );
+    let fare_conns = drop_link(&mut rig, passenger);
+    raise_link(&mut rig, passenger, fare_conns[0]);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some(),
+        "a passenger's link coming back does not close the window"
+    );
+    wait_out_the_grace(&mut rig);
+    let held = linkdead_of(&rig.tw, hull).expect("her record");
+    assert!(held.backup_has_helm());
+    assert_eq!(held.backup_act, BackupAct::MakingForPort);
+    let fare_conns = drop_link(&mut rig, passenger);
+    raise_link(&mut rig, passenger, fare_conns[0]);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| ld.backup_has_helm()),
+        "nor does it take the helm back from the mind"
+    );
+
+    // --- B. The window runs from the last crew member's loss --------------------------------
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Skipper", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let gunner = rig.tw.spawn_player("Gunner");
+    let aboard = rig
+        .tw
+        .world()
+        .get(pilot)
+        .and_then(|o| o.location)
+        .expect("the pilot's room aboard");
+    teleport(&mut rig.tw, gunner, aboard);
+    let _ = run(&mut rig.tw, pilot, "+helm/station command=Skipper");
+    let seated = run(&mut rig.tw, pilot, "+helm/station tactical=Gunner");
+    assert!(seated.contains("Gunner now holds `tactical`"), "{seated}");
+    set_rate(&mut rig.tw, 24);
+    let gunner_lost = rig.tw.world().now();
+    drop_link(&mut rig, gunner);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_none(),
+        "with her pilot linked she is crewed"
+    );
+    let pilot_lost = gunner_lost + 240;
+    fire_at(&mut rig, pilot_lost);
+    drop_link(&mut rig, pilot);
+    assert_eq!(
+        linkdead_of(&rig.tw, hull).map(|ld| ld.grace_started_wall_s),
+        Some(pilot_lost),
+        "the window opens when the last of her crew is lost"
+    );
+    // The gunner's own five minutes are up a minute later, and the session manager ends them.
+    fire_at(&mut rig, gunner_lost + grace);
+    end_session(&mut rig, gunner);
+    fire_at(&mut rig, gunner_lost + grace + 1);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| !ld.backup_has_helm()),
+        "the gunner's disconnect does not end the hull's window a minute after her pilot dropped"
+    );
+    fire_at(&mut rig, pilot_lost + grace - 1);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| !ld.backup_has_helm()),
+        "a second short of five minutes from the pilot's loss, the mind has not taken her"
+    );
+    fire_at(&mut rig, pilot_lost + grace + 1);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| ld.backup_has_helm()),
+        "five minutes from the pilot's loss the mind has the helm"
+    );
+
+    // --- C. A restart resumes the mind -------------------------------------------------------
+    let (mut rig, pilot, hull) = prospector_bound_for("pallas_inclined_belt", "Marooned", 52, 0);
+    arrive_at_cluster(&mut rig, hull);
+    drop_link(&mut rig, pilot);
+    set_rate(&mut rig.tw, 24);
+    let handed = rig.tw.world().now() + grace + 10;
+    fire_at(&mut rig, handed);
+    let before = linkdead_of(&rig.tw, hull).expect("her record");
+    assert!(before.backup_has_helm());
+    assert_eq!(before.backup_act, BackupAct::HoldingForRetrieval);
+    let mut rig = reboot_with(rig, Roster::default());
+    let after = linkdead_of(&rig.tw, hull).expect("her record survives the restart");
+    assert_eq!(after, before, "the mind's record is read back as it was");
+    for _ in 0..(tacsim::space::BACKUP_RETURN_RETRY_WALL_S + 5) {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        assert_eq!(burns_in(&submitted), 0, "a hull that holds burns nothing");
+    }
+    let later = linkdead_of(&rig.tw, hull).expect("her record");
+    assert!(later.backup_has_helm(), "the mind still has her");
+    assert_eq!(
+        later.mind_last_trace.as_deref(),
+        Some("BACKUP_HOLD_FOR_RETRIEVAL"),
+        "and has thought since the restart"
+    );
+    assert!(
+        later.return_retry_at_wall_s > before.return_retry_at_wall_s,
+        "past the wait it asked the planner again"
+    );
+}
+
 /// **Doc 35 cut SF.R30 (doc 35d §6.6, `D-35-17`)** — a world whose packs author no orbital
 /// clusters has none: the lookup no longer falls back to the lane compiled into the binary. The
 /// shipped picket cast parses (a cast that did not would now be logged, and the built-in cast
