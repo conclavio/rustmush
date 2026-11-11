@@ -67,6 +67,11 @@ PR each:
 - **Q-42b-12's casualty row.** It comes from the close (`keep_yielded`), not from
   `left_condition`, because an exit never writes the site record (cut notes, SU.3). This is a
   departure, not an open question.
+- **A yielded hull keeps firing while it waits on a busy exit** (found 2026-11-11 by doc 44's
+  second review, §4c row 22; owed, not built). `raiders::stand_down` marks the hull `yielded`,
+  clears its `carrier` and `withdraw` marks and asks the no-ramp exit; it sets no hold-fire, unlike
+  `order_home`'s WITHDRAW. When the field refuses the exit (busy), the hull stays among the field's
+  units and is asked again at the next pass, and no fire gate reads `yielded` meanwhile.
 
 **§5's amendments, where each landed:**
 

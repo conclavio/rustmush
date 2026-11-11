@@ -832,6 +832,8 @@ The cut is `ac1d43a6` with fix round 1.
 
 **Not decided:** the Class III entitlement still applies to a heirloom in the back room. Whether to
 exempt it is the owner's call.
+Ruled 2026-11-11 (doc 44 Q-44-12): no exemption; a heirloom in the back room is under the
+entitlement like any other.
 
 ### M8d2 — seizure and forfeit (PR #112, merged 2026-10-29 as `05ad88db`)
 
@@ -934,6 +936,7 @@ Added at the owner's word.
 - **A limited grant attests.** The House arm's title and ownership reads ask a read (M8f H7), so a
   curator holding `limit=1` attests through the verb.
 - **The 365-day term stays.** Shortening it to 90 is the owner's call.
+  Ruled 2026-11-11 (doc 44 Q-44-13): keep 365 IC days (provisional).
 
 This closes **17g §4's first deferral**.
 

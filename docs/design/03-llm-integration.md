@@ -1,7 +1,7 @@
 # rustmush — LLM Integration Layer: Architecture & Design
 
 **Area:** Native multi-provider LLM layer — provider abstraction, config/budgets, worldbuilding pipeline, NPC agents, safety, async integration.
-**Status:** Design (planning phase). No code exists yet.
+**Status:** Design (planning phase). Updated 2026-11-11 (doc 44 §4 G, MW.4): the layer is built as `mush-llm`. The `LlmFeature` roles with callers in the tree are world generation (`WorldgenRoom`, `WorldgenBrief`, `WorldgenPlan`), ambience, content assist, NPC dialogue at three tiers (major, minor, extra), NPC decision, NPC summarise, and the simulator's squad deliberation (`TacsimDeliberate`). The storyteller role (`StAdjudicate`, `StInterpret`, and the routes `st_adjudicate` and `st_interpret` in `deploy/instance/mushd.toml.tmpl`) has no caller; the code that used it went with the loadable rulesets. Ruled 2026-11-11 (doc 44 Q-44-29): delete nothing, and make no effort to retarget it now; it stays disconnected for the time being. Ruled 2026-11-11 (doc 44 Q-44-6): play was never intended to run without the LLM; turning it off (`[llm].enabled = false`) exists so that tests and CI do not burn tokens.
 **Assumed sibling components** (defined in other area docs, referenced here by interface only): a single-writer game world with an event/command queue (`world` crate), an object/attribute store backed by SQLite or similar, a game-system plugin trait (`ruleset` crate), and the SSH/WebSocket session layer that can receive structured events.
 
 ---
