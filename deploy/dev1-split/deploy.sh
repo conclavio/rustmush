@@ -17,6 +17,10 @@
 # Idempotent: safe to re-run for a redeploy. Knobs (environment, or --force):
 #   SERVER_RESTART=1  restart the server unit even if its binary is unchanged
 #   GATEWAY_SWAP=1    swap the gateway generation even if its binary is unchanged
+#   SERVER_HOLD=1     do not START a server unit that is not running (a running
+#                     one is restarted as usual): the step between a wipe and
+#                     deploy/instance/launch-bringup.py, which starts the world
+#                     itself once the named launch is Active (doc 44 cut MW.1)
 #   FORCE=1 / --force finish a still-draining generation now (SIGTERM, one 30 s
 #                     warning) where the deploy would otherwise refuse: a swap
 #                     while the idle generation still drains, or a server deploy
@@ -269,6 +273,13 @@ if systemctl is-active --quiet dev1mush-server.service; then
   else
     echo "server binary unchanged — dev1mush-server is left running (SERVER_RESTART=1 restarts it anyway)"
   fi
+elif [ "${SERVER_HOLD:-0}" = "1" ]; then
+  # Doc 44 cut MW.1: a wiped box that is about to take the named launch. The
+  # world stays down, so nobody can log in or register on a store that is
+  # still being brought up; the gateway below starts and holds the front door.
+  echo "SERVER_HOLD=1 — dev1mush-server is installed and enabled but NOT started."
+  echo "Bring the launch up, which starts it when the Active boot is ready:"
+  echo "  python3 $INSTANCE_DIR/launch-bringup.py $ROOT/instance.env"
 else
   # A unit that exhausted its start limit (Q-33-5: 5 starts in 60 s) stays
   # failed until this is cleared; a fresh deploy is the moment to clear it.

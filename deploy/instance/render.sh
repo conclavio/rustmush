@@ -27,6 +27,10 @@
 # satisfy every binary named, and only then is it moved into place from
 # `<out>.new`. A redeploy whose instance.env has gone wrong therefore leaves the
 # live config alone.
+#
+# Two instance.env keys are not tokens: MINDS_LAUNCH and REGISTRY_PULSE_MS
+# decide whether lines of the template's commented `[tacsim.minds]` block are
+# rendered live (doc 44 cut MW.1; the rule is beside the code below).
 
 set -euo pipefail
 
@@ -50,7 +54,7 @@ done
 
 STAGED="$OUT.new"
 SED_SCRIPT="$STAGED.sed"
-trap 'rm -f "$SED_SCRIPT"' EXIT
+trap 'rm -f "$SED_SCRIPT" "$STAGED.minds"' EXIT
 
 # The loop READS instance.env; it never sources it. A value there is a sed
 # replacement, not a shell word, so `INSTANCE_TITLE=rustmush dev1 (TacSim)` is a
@@ -62,6 +66,102 @@ while IFS='=' read -r k v; do
 done <"$ENV_FILE" >"$SED_SCRIPT"
 
 sed -f "$SED_SCRIPT" "$TEMPLATE" >"$STAGED"
+
+# Doc 44 cut MW.1: the two keys this script reads for ITSELF. Neither is a
+# `__TOKEN__`, because what each one decides is whether a line of the
+# template's commented `[tacsim.minds]` block is live at all, and a token can
+# only fill a line that is already there.
+#
+#   MINDS_LAUNCH       `on` or `off` (empty is off; anything else is refused).
+#                      On, AND with the box's launch document at
+#                      <DATA_DIR>/launch.json, the `launch_path` line is
+#                      rendered live, naming that file. On with no document,
+#                      or off, the line stays the template's comment.
+#   REGISTRY_PULSE_MS  empty, or a number: the `registry_pulse_ms` line
+#                      rendered live with it (a dev box sets 50, Q-44-41).
+#
+# Why the document must exist first: a live `launch_path` whose file is
+# missing refuses `--check-config`, `--bootstrap-staff` and the boot, and the
+# document names ids that only a booted world has printed. So a deploy onto a
+# fresh or wiped store renders the line commented whatever the switch says,
+# deploy/instance/launch-bringup.py writes the document and renders again, and
+# scripts/reset-instance.sh takes the line out again when it wipes the data
+# directory the document lives in. An empty path is never written: there is no
+# value of either key that renders `launch_path = ""`.
+#
+# With MINDS_LAUNCH off and REGISTRY_PULSE_MS empty nothing below touches the
+# staged file: it is the plain substitution, byte for byte.
+env_value() {
+  local wanted="$1" key value
+  while IFS='=' read -r key value; do
+    case "$key" in '' | '#'*) continue ;; esac
+    if [ "$key" = "$wanted" ]; then
+      # Leading spaces and the CR a Windows-edited instance.env leaves on the
+      # line: harmless inside a sed replacement, wrong in a comparison.
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done <"$ENV_FILE"
+  return 0
+}
+
+# Make the ONE line matching `$1` (a basic regular expression, anchored by the
+# caller) read `$2`. Exactly one line must match: a template whose minds block
+# was reworded is a refusal here, not a silently commented launch.
+uncomment_line() {
+  local pattern="$1" replacement="$2" count
+  count="$(grep -c -- "$pattern" "$STAGED" || true)"
+  if [ "$count" != 1 ]; then
+    echo "$0: $TEMPLATE has $count lines matching '$pattern', expected 1; $OUT is untouched" >&2
+    rm -f "$STAGED"
+    exit 1
+  fi
+  sed "s|$pattern|$replacement|" "$STAGED" >"$STAGED.minds"
+  mv "$STAGED.minds" "$STAGED"
+}
+
+minds_launch="$(env_value MINDS_LAUNCH)"
+registry_pulse="$(env_value REGISTRY_PULSE_MS)"
+launch_live=0
+case "$minds_launch" in
+'' | off) ;;
+on)
+  data_dir="$(env_value DATA_DIR)"
+  if [ -z "$data_dir" ]; then
+    echo "$0: MINDS_LAUNCH=on needs DATA_DIR in $ENV_FILE (the launch document is <DATA_DIR>/launch.json)" >&2
+    rm -f "$STAGED"
+    exit 1
+  fi
+  if [ -f "$data_dir/launch.json" ]; then
+    launch_live=1
+  else
+    echo "$0: MINDS_LAUNCH=on, but $data_dir/launch.json does not exist yet: launch_path stays commented (deploy/instance/launch-bringup.py writes it)" >&2
+  fi
+  ;;
+*)
+  echo "$0: MINDS_LAUNCH must be 'on' or 'off' in $ENV_FILE, got '$minds_launch'" >&2
+  rm -f "$STAGED"
+  exit 1
+  ;;
+esac
+case "$registry_pulse" in
+*[!0-9]*)
+  echo "$0: REGISTRY_PULSE_MS must be empty or a number of milliseconds in $ENV_FILE, got '$registry_pulse'" >&2
+  rm -f "$STAGED"
+  exit 1
+  ;;
+esac
+if [ "$launch_live" = 1 ] || [ -n "$registry_pulse" ]; then
+  uncomment_line '^# \[tacsim\.minds\]$' '[tacsim.minds]'
+fi
+if [ "$launch_live" = 1 ]; then
+  uncomment_line '^# launch_path = .*$' "launch_path = \"$data_dir/launch.json\""
+fi
+if [ -n "$registry_pulse" ]; then
+  uncomment_line '^# registry_pulse_ms = .*$' "registry_pulse_ms = $registry_pulse"
+fi
 
 # deploy/README.md's completeness check: a token left in a LIVE (non-comment)
 # line means a key with no line in instance.env, and the config it would install
