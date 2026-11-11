@@ -670,3 +670,44 @@ and the dock's RCS; one submitted action each for `+helm/submit`, `/run`, `/dock
 staged tape family as an audit trail or delete it. Under the other reading: the family-backed bubble. Also still as
 doc 35d §4 found them: an input typed while the actor has an action pending is applied and not recorded on the staged
 tape, and `+mine/drones` in that state adds the drones without staging their `RigRecord`s.
+
+## SF.R27 — the store budget, a first part (doc 35d §6.1)
+
+A subset of doc 35d §9's `SF.R27` row: the steady-state writes and the unbounded or unsafe collections that could be
+fixed without the dirty-flag rewrite, which waits on Q-35d-6. Paths are under `crates/tacsim/src/space/`.
+
+- **A cluster session is its own document.** `tacsim:space:cluster:{hull}` (`SPACE_CLUSTER_PREFIX`,
+  `space_cluster_key`, `PersistedClusterDoc`, `tick.rs`), written and deleted by `persist_space_state` as a flight
+  record is, read by `load_space_kv_entry` with the identity rule and per-hull quarantine, and cleared from the
+  auxiliary copy by `without_per_entity_maps`. A hull at a cluster drifts every tick; before this each tick rewrote
+  the whole `tacsim:space:state` document, salvage book and standing orders included. An auxiliary document written
+  before this cut still carries its sessions and is read as before.
+- **A derelict's window is stepped by the minute.** `SpaceDerelictRecord.life_support_checked_wall_s` and
+  `DERELICT_WINDOW_STEP_WALL_S` = 60: `step_derelict_records` subtracts real elapsed seconds a whole step at a time,
+  so the record is written once a minute, not once a second, a stalled tick or a restart loses nothing, and frozen
+  time is not counted. Before this it fell by one a tick, whatever time had passed.
+- **A mining session that did not move keeps its stamp** (`mining.rs`), so a matched or stationary hull writes
+  nothing.
+- **The ledger cap** (`MAX_PROPELLANT_LEDGERS` = 64) takes only a ledger with no unlanded and no part-tonne debit
+  whose hull is in no bubble, flight or cluster session; with none such it takes nothing. Before this it took the
+  lowest hull id, live or not.
+- **A tenure order lapses** after `CLUSTER_TENURE_ORDER_TTL_IC_S` (one IC day); `cluster_tenure_orders` was never
+  pruned.
+- **A quarantined domain takes no new bubble** (`promote_due_interdictions`): the interdiction is skipped and
+  logged, so nothing is written over the quarantined `tacsim:space:bubble:{domain}` document.
+
+**Tests.** `sfr21_…` counts the derelict key's writes: none across ten one-second ticks, one on the tick that
+completes the minute, the window sixty seconds or more shorter. `sfr25_…` part F counts `tacsim:space:state` writes
+over five ticks of a hull drifting at her cluster (none), then restarts and reads her session back from its own key.
+`sfr8_…` now flies its second leg at the cruise rate: flown whole at rate 1 it is eleven real days, and the raider's
+48 hours of life support rightly ran out. Local: `domain_world` 255 passed, contract tests green, clippy and rustdoc
+clean on tacsim.
+
+**Not built from the row.** No dirty flags: `persist_space_state` still clones and compares the whole book on every
+tick and command. The bubble document is still rewritten every combat second. The auxiliary document still carries
+the salvage book, the standing-order book, hails, tows, clamps and pins. `deny_unknown_fields` is still on the
+envelopes only. The black-box and `pending_space_burns` caps still evict oldest-first. The staged tape family is
+never deleted. A bad auxiliary or custody document still holds the whole space state.
+
+**Not pinned by a story.** The ledger cap's rule, the tenure order's lapse, the quarantined domain's skipped
+interdiction.

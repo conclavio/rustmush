@@ -535,6 +535,17 @@ impl CompletedInterdictionBubble {
     }
 }
 
+/// How often a derelict record's life-support window is stepped, in wall seconds (`SF.R27`).
+pub const DERELICT_WINDOW_STEP_WALL_S: i64 = 60;
+
+/// How long a `+mine/stake` or `+mine/contest` order stays on file waiting for its claim action,
+/// in IC seconds (`SF.R27`): one IC day.
+pub const CLUSTER_TENURE_ORDER_TTL_IC_S: i64 = 86_400;
+
+/// The most propellant ledgers the book keeps for hulls that owe nothing and are not flying
+/// (`SF.R10`; the cap never takes a ledger with a debit outstanding since `SF.R27`).
+pub const MAX_PROPELLANT_LEDGERS: usize = 64;
+
 /// Open-epoch derelict hull record persisted when a ship's drive or hull is disabled
 /// in a space bubble (`SF.R2`, `D-35-12`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -551,6 +562,12 @@ pub struct SpaceDerelictRecord {
     /// Remaining life-support window in real seconds (`172,800 s` at disablement). The salvage
     /// contest has no clock here: it runs on the claim's one window (doc 41 RS.8, Q-36-46).
     pub life_support_remaining_s: u32,
+    /// The wall second `life_support_remaining_s` was last stepped at; `0` before its first step
+    /// (`SF.R27`, doc 35d §6.1). The window is stepped a whole
+    /// [`DERELICT_WINDOW_STEP_WALL_S`] at a time from real elapsed seconds, so the record is
+    /// written once a step, not once a tick, and a restart or a stalled tick loses nothing.
+    #[serde(default)]
+    pub life_support_checked_wall_s: i64,
     /// Post-combat `TacticalUnit` assessment (`Immobile`, `Disabled`, `Wreck`), if bound.
     pub assessment: Option<FieldUnitAssessment>,
     /// Active 48 real-hour Registry salvage claim status in [`SalvageClaimBook`].
@@ -972,13 +989,15 @@ pub struct SpaceBubbleBook {
 }
 
 impl SpaceBubbleBook {
-    /// Return a copy of `self` with the five per-entity maps (`by_domain`, `free_flights`,
-    /// `derelicts`, `docking_sessions`, `propellant_ledgers`) cleared, for auxiliary store diffing (`SF.R21`).
+    /// Return a copy of `self` with the per-entity maps (`by_domain`, `free_flights`,
+    /// `cluster_sessions`, `derelicts`, `docking_sessions`, `propellant_ledgers`) cleared, for
+    /// auxiliary store diffing (`SF.R21`; `cluster_sessions` since `SF.R27`).
     #[must_use]
     pub fn without_per_entity_maps(&self) -> Self {
         let mut aux = self.clone();
         aux.by_domain.clear();
         aux.free_flights.clear();
+        aux.cluster_sessions.clear();
         aux.derelicts.clear();
         aux.docking_sessions.clear();
         aux.propellant_ledgers.clear();
@@ -1227,6 +1246,11 @@ pub const SPACE_BUBBLE_PREFIX: &str = "tacsim:space:bubble:";
 /// Per-hull free-flight store key prefix (`tacsim:space:flight:{hull}`, `SF.R21`, `35c` §6.2).
 pub const SPACE_FLIGHT_PREFIX: &str = "tacsim:space:flight:";
 
+/// Per-hull orbital cluster session store key prefix (`tacsim:space:cluster:{hull}`, `SF.R27`,
+/// doc 35d §6.1): a hull at a cluster drifts every tick, and writes her own small document for
+/// it, not the shared one.
+pub const SPACE_CLUSTER_PREFIX: &str = "tacsim:space:cluster:";
+
 /// Per-hull derelict store key prefix (`tacsim:space:derelict:{hull}`, `SF.R21`, `35c` §6.2).
 pub const SPACE_DERELICT_PREFIX: &str = "tacsim:space:derelict:";
 
@@ -1252,6 +1276,12 @@ pub fn space_bubble_key(domain: DomainId) -> String {
 #[must_use]
 pub fn space_flight_key(hull: ObjId) -> String {
     format!("{SPACE_FLIGHT_PREFIX}{}", hull.0)
+}
+
+/// Format the per-hull store key for an orbital cluster session (`tacsim:space:cluster:{hull}`).
+#[must_use]
+pub fn space_cluster_key(hull: ObjId) -> String {
+    format!("{SPACE_CLUSTER_PREFIX}{}", hull.0)
 }
 
 /// Format the per-hull store key for a derelict record (`tacsim:space:derelict:{hull}`).
@@ -1314,6 +1344,18 @@ pub struct PersistedFlightDoc {
     pub hull: ObjId,
     /// Persisted [`SpaceFreeFlightRecord`].
     pub flight: SpaceFreeFlightRecord,
+}
+
+/// Per-hull orbital cluster session store document (`tacsim:space:cluster:{hull}`, `SF.R27`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedClusterDoc {
+    /// Schema format version ([`SPACE_STATE_FORMAT`]).
+    pub format: u16,
+    /// Hull identity matching the key suffix.
+    pub hull: ObjId,
+    /// Persisted [`super::mining::ActiveClusterMiningSession`].
+    pub session: super::mining::ActiveClusterMiningSession,
 }
 
 /// Per-hull derelict store document (`tacsim:space:derelict:{hull}`, `SF.R21`, `35c` §6.2).
@@ -1406,6 +1448,9 @@ pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_jso
                 for (h, f) in state.book.free_flights {
                     merged_book.free_flights.insert(h, f);
                 }
+                for (h, c) in state.book.cluster_sessions {
+                    merged_book.cluster_sessions.insert(h, c);
+                }
                 for (h, d) in state.book.derelicts {
                     merged_book.derelicts.insert(h, d);
                 }
@@ -1458,6 +1503,26 @@ pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_jso
                     && doc.rows.len() <= super::custody::MAX_SPACE_CUSTODY =>
             {
                 state.book.space_custody.restore(dom, doc.rows);
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(hull_str) = key.strip_prefix(SPACE_CLUSTER_PREFIX) {
+        match (
+            hull_str.parse::<u32>().ok().map(ObjId),
+            serde_json::from_value::<PersistedClusterDoc>(value.clone()),
+        ) {
+            (Some(hull), Ok(doc))
+                if doc.format == SPACE_STATE_FORMAT
+                    && doc.hull == hull
+                    && doc.session.hull == hull =>
+            {
+                state.book.cluster_sessions.insert(hull, doc.session);
+                true
+            }
+            (Some(hull), _) => {
+                state.book.quarantined_hulls.insert(hull);
+                tracing::warn!(%key, hull = hull.0, "tacsim: space cluster session document is unreadable; hull quarantined");
                 true
             }
             _ => false,
@@ -1654,6 +1719,42 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
                     ctx.out,
                     ModuleWrite::Del {
                         key: SmolStr::new(space_flight_key(hull)),
+                    },
+                );
+            }
+        }
+    }
+
+    // 2b. Per-hull orbital cluster sessions (`tacsim:space:cluster:{hull}`, `SF.R27`).
+    for (&hull, session) in &snapshot.book.cluster_sessions {
+        if prev
+            .as_ref()
+            .and_then(|p| p.book.cluster_sessions.get(&hull))
+            != Some(session)
+        {
+            let doc = PersistedClusterDoc {
+                format: SPACE_STATE_FORMAT,
+                hull,
+                session: session.clone(),
+            };
+            if let Ok(value) = serde_json::to_value(&doc) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new(space_cluster_key(hull)),
+                        value,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(p) = &prev {
+        for &hull in p.book.cluster_sessions.keys() {
+            if !snapshot.book.cluster_sessions.contains_key(&hull) {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::Del {
+                        key: SmolStr::new(space_cluster_key(hull)),
                     },
                 );
             }
@@ -2729,6 +2830,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
 }
 
 fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
+    let ic_now_s = ctx.w.world_ic_now().at;
     let active_journey_hulls: std::collections::BTreeSet<ObjId> = ctx
         .w
         .module_state::<JourneyBook>()
@@ -2853,12 +2955,29 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
 
     book.propellant_ledgers
         .retain(|hull, _| existing_hulls.contains(hull));
-    while book.propellant_ledgers.len() > 64 {
-        let Some(&oldest) = book.propellant_ledgers.keys().next() else {
+    // `SF.R27` (doc 35d §6.1): the cap takes only a ledger that owes nothing and whose hull is
+    // not flying. A ledger with an unlanded or a part-tonne debit is the hull's tank; dropping
+    // it would hand the propellant back.
+    while book.propellant_ledgers.len() > MAX_PROPELLANT_LEDGERS {
+        let settled = book
+            .propellant_ledgers
+            .iter()
+            .find(|(hull, ledger)| {
+                ledger.unlanded_burn_t == 0
+                    && ledger.fractional_burned_kg == 0
+                    && !active_bubble_hulls.contains(*hull)
+                    && !book.free_flights.contains_key(*hull)
+                    && !book.cluster_sessions.contains_key(*hull)
+            })
+            .map(|(&hull, _)| hull);
+        let Some(settled) = settled else {
             break;
         };
-        book.propellant_ledgers.remove(&oldest);
+        book.propellant_ledgers.remove(&settled);
     }
+    // A tenure order is on file only until its claim action lands or is refused.
+    book.cluster_tenure_orders
+        .retain(|_, order| ic_now_s.saturating_sub(order.made_ic) <= CLUSTER_TENURE_ORDER_TTL_IC_S);
     while book.completed.len() > MAX_COMPLETED_BUBBLES {
         let Some(&oldest) = book.completed.keys().next() else {
             break;
@@ -3014,20 +3133,38 @@ fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 }
 
 fn step_derelict_records(ctx: &mut Ctx<'_>) {
+    let wall_now_s = ctx.w.now();
     if ctx.w.world_timeline().is_frozen() {
+        // Frozen time is not counted against the window: the next step starts from the thaw.
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            for derelict in book.derelicts.values_mut() {
+                if derelict.life_support_checked_wall_s > 0 {
+                    derelict.life_support_checked_wall_s = wall_now_s;
+                }
+            }
+        }
         return;
     }
     let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
     };
-    let step_s = u32::try_from(SPACE_TICK_PERIOD.as_secs())
-        .unwrap_or(1)
-        .max(1);
+    // `SF.R27` (doc 35d §6.1): the window falls by real elapsed seconds, a whole step at a time.
     for derelict in book.derelicts.values_mut() {
-        if derelict.epoch_open {
-            derelict.life_support_remaining_s =
-                derelict.life_support_remaining_s.saturating_sub(step_s);
+        if !derelict.epoch_open {
+            continue;
         }
+        if derelict.life_support_checked_wall_s <= 0 {
+            derelict.life_support_checked_wall_s = wall_now_s;
+            continue;
+        }
+        let elapsed_s = wall_now_s.saturating_sub(derelict.life_support_checked_wall_s);
+        if elapsed_s < DERELICT_WINDOW_STEP_WALL_S {
+            continue;
+        }
+        derelict.life_support_remaining_s = derelict
+            .life_support_remaining_s
+            .saturating_sub(u32::try_from(elapsed_s).unwrap_or(u32::MAX));
+        derelict.life_support_checked_wall_s = wall_now_s;
     }
 }
 
@@ -3322,6 +3459,7 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
+                        life_support_checked_wall_s: 0,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3430,6 +3568,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
+                        life_support_checked_wall_s: 0,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3526,6 +3665,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
+                        life_support_checked_wall_s: 0,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -3559,6 +3699,7 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         disabled_at_ic_s: now.at,
                         epoch_open,
                         life_support_remaining_s,
+                        life_support_checked_wall_s: 0,
                         assessment,
                         salvage_title_status: existing_status,
                     },
@@ -4364,6 +4505,21 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     });
 
     for (hull, domain, cursor, dep_at) in to_promote {
+        // `SF.R27` (doc 35d §6.1): a domain whose bubble document is quarantined takes no new
+        // bubble, so nothing is written over the document staff have yet to read. The carrier
+        // flies on.
+        if ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .is_some_and(|b| b.quarantined_bubbles.contains(&domain))
+        {
+            tracing::warn!(
+                hull = hull.0,
+                domain = domain.0,
+                "tacsim: an interdiction was not opened; the domain's bubble document is quarantined"
+            );
+            continue;
+        }
         if !promote_carrier_journey(ctx, hull, domain, now) {
             continue;
         }
