@@ -3736,12 +3736,19 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let mut ran_picket_hulls = Vec::new();
     let standing_orders = mush_sim::tick::standing_orders_snapshot(ctx.w);
 
-    let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+    let Some(slot) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
     };
-    if book.by_domain.is_empty() {
+    if slot.by_domain.is_empty() {
         return;
     }
+    // `SF.R29` (doc 35d §6.6, `D-35-17`): the book is lifted out of the world for the step so
+    // the store can be read beside it. The doctrines then resolve a mind's source from the
+    // store first, as every other sealed mind does; they were handed no store, so only the
+    // compiled-in sources ever ran. Nothing in the loop returns early; the book goes back below.
+    let mut lifted = std::mem::take(slot);
+    let store = ctx.w.module_state::<TacsimStore>();
+    let book = &mut lifted;
 
     let paused_hulls: std::collections::BTreeSet<ObjId> = book
         .docking_sessions
@@ -3771,13 +3778,19 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             }
         }
         let cadence_ms = active.adaptive_step_wall_ms();
+        // One fire steps the wall time since the last, up to `MAX_BUBBLE_TICK_STEP_MS`. Time
+        // past that is a stall and is not simulated (`SF.R29`, doc 35d §6.5: carrying it over
+        // would fast-forward a fight the crews could not answer). A clock that steps back
+        // re-anchors the bubble; it used to hold it still until the clock caught up.
         let dt_wall_ms = if active.last_stepped_wall_s > 0 {
-            if wall_now_s <= active.last_stepped_wall_s {
+            if wall_now_s < active.last_stepped_wall_s {
+                active.last_stepped_wall_s = wall_now_s;
                 continue;
             }
             let elapsed_wall_s = wall_now_s - active.last_stepped_wall_s;
-            if cadence_ms == CRUISE_STEP_WALL_MS
-                && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS)
+            if elapsed_wall_s == 0
+                || (cadence_ms == CRUISE_STEP_WALL_MS
+                    && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS))
             {
                 continue;
             }
@@ -3849,12 +3862,13 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         );
         let carrier_picket_entries = active.carrier_picket_entries();
         if let Some(picket) = active.picket.as_mut() {
-            let picket_events = super::picket::step_kirkwood_picket_for_carriers(
+            let picket_events = super::picket::step_kirkwood_picket_for_carriers_with_store(
                 &mut active.bubble,
                 &mut active.tape,
                 picket,
                 &active.carrier_ship_id,
                 &carrier_picket_entries,
+                store,
             );
             events.extend(picket_events);
             for (chull, _, _) in &carrier_picket_entries {
@@ -3876,6 +3890,7 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 &mut active.interdictor_think_seq,
                 &mut active.interdictor_memory,
                 &mut active.cleared,
+                store,
             );
             events.extend(picket_events);
         }
@@ -3914,6 +3929,9 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 interdictor_state,
             ));
         }
+    }
+    if let Some(slot) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        *slot = lifted;
     }
 
     let burned_hulls: Vec<ObjId> = ctx
@@ -4215,6 +4233,7 @@ fn step_interdictor_picket(
     think_seq: &mut u64,
     memory: &mut Vec<u8>,
     cleared: &mut bool,
+    store: Option<&TacsimStore>,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
     use crate::arena::{IntentKind, MotorGoal};
 
@@ -4247,7 +4266,7 @@ fn step_interdictor_picket(
         interdictor_hull,
         interdictor_seal,
         crate::minds::content::interdictor_patrol_digest().0,
-        None,
+        store,
         *think_seq,
         memory,
     ) else {

@@ -980,3 +980,35 @@ components; `ceil` on `max_accel_mps2` for NPC ships and the interdictor's fixed
 reused per domain with one title each; space custody rows off the `freeport` ground site.
 
 **Not pinned by a story.** The refused check-out and the carrier it releases.
+
+## SF.R29 — tempo and the doctrines' sources, a first part (doc 35d §6.5, §6.6)
+
+A subset of doc 35d §9's `SF.R29` row, and one place where building it changed the plan. Paths are under
+`crates/tacsim/src/space/`.
+
+- **The doctrines read the store.** `step_active_bubbles` (`tick.rs`) lifts the `SpaceBubbleBook` out of the world
+  for the step and puts it back after, so the `TacsimStore` can be borrowed beside it. The picket
+  (`step_kirkwood_picket_for_carriers_with_store`) and the interdictor (`step_interdictor_picket`) now pass that
+  store down to `run_sealed_mind_on_pool`, where `crate::minds::content::source_lookup` tries the store's
+  `mind_source` before the compiled-in sources. Both were passing `None`, so a doctrine sealed to a digest the binary
+  does not carry never ran (doc 35d §6.6, `D-35-17`).
+- **A clock that steps back re-anchors the bubble.** `last_stepped_wall_s` is set to the new time and the bubble
+  steps again on the next tick. It used to wait, stepping nothing, until the wall clock passed the old value.
+
+**The cap stays, on purpose.** Doc 35d §6.5 called the time a fire cannot step "lost" and §9 asked for it to be
+carried over ("a 45 s stall advances 45 s"). Built that way, a stall was repaid as thirty seconds of bubble a tick
+until the debt cleared: a fight fast-forwarded past crews who had no chance to act in it, and `sfr6_…`'s torpedo
+exchange resolved before its pilot's next command. That is worse than the drop. One fire still steps
+`min(elapsed, MAX_BUBBLE_TICK_STEP_MS)` and the rest of a stall is not simulated, as an outage is not. Doc 35d's
+"true catch-up" is withdrawn.
+
+**Test.** `sfr10_…` fires a tick 45 s late and requires 30,000 ms of bubble, then a tick a second later and requires
+1,000 ms: stalled time past the cap is not repaid.
+
+**Not built from the row.** A sub-second cadence while ordnance flies (the Registrar tick is still one second, so the
+500 ms cadence is unreachable); a monotonic time source; `[tacsim].space_pulse_ms` (still parsed and inert); the
+derelict approach on the tape; a think cadence off the world thread (each think is still a synchronous wait, every
+tick, for every doctrine ship); the interdictor steering by its intents and standing down per carrier on state.
+
+**Not pinned by a story.** The store-sourced doctrine (a story would need a doctrine sealed to a store-only source)
+and the backwards clock (the test world's tick does not fire for a time earlier than its last).
