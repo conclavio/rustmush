@@ -23,7 +23,22 @@ Not built.
 
 ## MW.4
 
-Not built.
+Docs only (2026-11-11). Each ruling is written where its question was first asked, as "Ruled
+2026-11-11 (doc 44 Q-44-n)"; no question was deleted and no surrounding text rewritten.
+
+- `17-unit-minds.md`: D-UM-56 (Q-44-9); Q-UM-12, Q-UM-14, Q-UM-18 (Q-44-10).
+- `17g-m7-completion-plan.md`: §3 C4 (Q-44-15); §4's paid Follow and §5 item 4 (Q-44-11); §5
+  item 3 (Q-44-5); §5 item 5 (Q-44-9, Q-44-10); §7's renewal-retry finding (Q-44-14).
+- `17h-m8-contraband-procurement-plan.md`: the heirloom (Q-44-12); the House term (Q-44-13).
+- `36-ground-combat-after-the-field.md`: Q-36-41 (Q-44-7); Q-36-43 (Q-44-21).
+- `03-llm-integration.md`: the status line, from `LlmFeature` and its callers (§4 G), with Q-44-29
+  and Q-44-6.
+- `27-ic-field-operations-design-and-survey.md`: Q-H5 (Q-44-35 to Q-44-38).
+- `42b-surrender.md`: the yielded hull that keeps firing on a busy exit (§4c row 22), checked in
+  `field/raiders.rs`.
+- `23-ic-sorties.md`: §14 S.2's owed list, a wrecked ship's epoch (§4c row 26), checked in
+  `port/epoch.rs`.
+- `README.md`: the 17g row.
 
 ## MW.5
 
@@ -122,7 +137,9 @@ Not built.
 
 ## MW.16
 
-Not built.
+Surveyed as [doc 45](45-the-absent-player.md): every way a player can be absent while something of theirs is exposed, what the game does and what an attacker can do today, checked in the tree.
+Twenty-five owner questions, Q-45-1 to Q-45-25, open at their defaults; no units of work until they are ruled.
+PR #533.
 
 ## MW.17
 

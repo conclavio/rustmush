@@ -600,6 +600,8 @@ data or the kernel's hashes.
   `@field/raiders/mark` verb.
 - **Why:** the multi-party field needs someone to be hostile without staff present. The pieces it
   needs (arrival, departure, doctrine) are being built in this phase anyway.
+- Ruled 2026-11-11 (doc 44 Q-44-7): the raid director is on, on both dev boxes (dev1 and dev2), at
+  this document's defaults.
 
 **Q-36-42 — SCREEN and SUPPORT on open ground.**
 - **Proposed default:** keep NEGATIVE on open ground, and document that both bind once a field
@@ -614,6 +616,8 @@ data or the kernel's hashes.
   Q-36-10's shared membership.
 - **Alternative:** one level of attachments per roster, for the 12v12 target.
 - **Why:** doc 26 deferred it until play shows the need. The cap is still 24.
+- Ruled 2026-11-11 (doc 44 Q-44-21): sub-leaders and the squad layer in IC fields both stay
+  deferred (Q-36-43 as ruled).
 
 ### H. Minds and crew
 
