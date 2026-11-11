@@ -364,10 +364,11 @@ impl DetachmentRoster {
     /// Apply a complete host snapshot atomically. During linkdead grace the
     /// current healthy leader remains eligible; expired grace triggers succession.
     /// With no player to lead, the nominated NPC commander leads; while that
-    /// commander cannot command (its unit lost or disabled, its controls gone)
-    /// the first other healthy, authorized NPC in slot order leads in its place,
-    /// and the commander leads again once it can. A roster that nominated no
-    /// commander never elects an NPC.
+    /// commander's own unit is lost or disabled the first other healthy,
+    /// authorized NPC in slot order leads in its place, and the commander leads
+    /// again once its unit is not. A commander absent for any other reason is
+    /// not succeeded, and a roster that nominated no commander never elects an
+    /// NPC.
     /// A returning slot must stay connected through its hysteresis before it can
     /// retake command. An initial healthy roster takes command immediately.
     /// Hosts call this at grace/hysteresis deadlines and before order admission
@@ -469,9 +470,9 @@ impl DetachmentRoster {
                     });
                 }
                 Controller::Npc { character } if self.npc_commander == Some(character) => {
-                    if !connected {
+                    if fact.unit_disabled {
                         commander_down = true;
-                    } else if fact.command_authorized {
+                    } else if connected && fact.command_authorized {
                         commander = Some(Leader {
                             slot: member.slot,
                             character,
@@ -495,10 +496,10 @@ impl DetachmentRoster {
             }
         }
         // The nominated commander's successor (doc 44 unit MW.14a, Q-44-44): the first other
-        // NPC in slot order that is healthy and authorized, and only while the commander cannot
-        // command at all (its hull lost or disabled, its controls gone). A commander who is
-        // healthy and merely lacks the mission's command right is not passed over: a missing
-        // grant refuses commands, it does not elect somebody else.
+        // NPC in slot order that is healthy and authorized, and only while the commander's own
+        // unit is lost or disabled. A commander who is merely absent (still aboard in ramp
+        // transit, out of its seat) or who lacks the mission's command right is not passed
+        // over: the roster then has no NPC leader, as before this rule.
         let npc = commander.or(if commander_down { successor } else { None });
         let next = player.or(npc);
         let change = if self.leader != next {
@@ -1008,9 +1009,10 @@ mod tests {
     }
 
     /// **Doc 44 unit MW.14a (Q-44-44): the nominated commander's successor.** While the
-    /// commander cannot command, the first other healthy and authorized NPC in slot order leads
-    /// under a new term; the commander leads again once it can; a commander who only lacks the
-    /// command right is not passed over; and the saved roster restores with a successor leading.
+    /// commander's unit is lost or disabled, the first other healthy and authorized NPC in slot
+    /// order leads under a new term; the commander leads again once its unit is not; a commander
+    /// who is only absent, or only lacks the command right, is not passed over; and the saved
+    /// roster restores with a successor leading.
     #[test]
     fn mw14a_the_next_npc_in_slot_order_succeeds_a_commander_who_cannot_command() -> TestResult {
         let mut roster = npc_roster()?;
@@ -1066,6 +1068,17 @@ mod tests {
         change(&mut facts, 2, |fact| fact.command_authorized = false);
         roster.reconcile(5, &facts)?;
         check_eq!(roster.leader(), None);
+        // Nor is one who is only absent: out of its seat, its unit whole.
+        change(&mut facts, 2, |fact| {
+            fact.command_authorized = true;
+            fact.controls_unit = false;
+        });
+        roster.reconcile(6, &facts)?;
+        check_eq!(
+            roster.leader(),
+            None,
+            "an absent commander is not succeeded"
+        );
         Ok(())
     }
 

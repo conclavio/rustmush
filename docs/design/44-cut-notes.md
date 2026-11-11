@@ -143,13 +143,16 @@ with no LLM and no change to the mind ABI.
 - **A lost hull stops leading at once** (`sortie/field.rs`, `reconcile`): the roster's command
   facts read `lost` beside the world's unit record, which is checked out and stale while a field
   runs. Before this a commander destroyed in a field stayed the roster's leader until the
-  field's close, and the kernel refused every order it gave (`NoCommander`).
+  field's close, and the kernel refused every order it gave (`NoCommander`). The fact is the
+  roster's, so it holds for a player leader too: a player whose hull is destroyed in a field
+  stops leading, and the next eligible player or the NPC commander leads.
 - **The successor** (`crates/mush-tactics/src/detachment/roster.rs`, `reconcile`, and
-  `roster/checkpoint.rs`, `restore`): while the nominated commander cannot command, the first
-  other NPC in slot order that is healthy and authorized leads under a new term, and the
-  commander leads again once it can. A healthy commander who only lacks the command right is not
-  passed over; a roster that nominated no commander never elects an NPC; an active player
-  outranks both.
+  `roster/checkpoint.rs`, `restore`): while the nominated commander's own unit is lost or
+  disabled, the first other NPC in slot order that is healthy and authorized leads under a new
+  term, and the commander leads again once its unit is not. A commander who is only absent
+  (still aboard in ramp transit, out of its seat) or only lacks the command right is not passed
+  over; a roster that nominated no commander never elects an NPC; an active player outranks
+  both.
 - **Yielding to a returning player** needed no code: the roster's own rule (doc 27 Q-D4, the
   return hysteresis) makes the player the leader, `step` finds the NPC is not, and what the NPC
   had in flight under its term is discarded by the poll as any deposed leader's is.
@@ -195,8 +198,10 @@ posture (`detachment::commander`); each posture as the roster order a player typ
   after the commander's slot. Its contract scope is not checked: Mendes, hired as a subordinate
   operator, succeeds Okonkwo. That amends doc 27 Q-F1's "explicitly assigned" for the one case
   of a commander who cannot command, as Q-44-44 ruled.
-- **Succession is on "cannot command", not only on a lost hull**: a disabled unit or lost
-  controls pass the lead as well, and it comes back when the commander can command again.
+- **Succession is on the commander's unit, lost or disabled**, and nothing else. A commander
+  who is absent for another reason is not succeeded and the roster has no NPC leader, as before;
+  otherwise the successor would lead for the seconds the commander spends on the ramp at every
+  launch. The lead comes back when the commander's unit is whole again.
 - **One order a slot, never `ALL`.** An `ALL` is refused whole when any slot is unavailable, and
   a principal acts once a fire, so a posture reaches `n` hulls over `n` world seconds.
 - **Only inside a running field.** On open ground an NPC leader gives nothing, and the surface

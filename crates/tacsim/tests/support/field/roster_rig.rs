@@ -19,6 +19,13 @@
 //! 6. each NPC is seated (`+sortie/seat`), the roster launched (`+sortie/launch`) and the field
 //!    command refreshed (`+sortie/refresh`) until it names a leader.
 //!
+//! **A roster of two hired NPCs** (doc 44 unit MW.14a) takes the steps in another order, because
+//! a Dray-P berths two and the organiser must be aboard to seat and launch: the organiser boards
+//! and takes rig 1's cab, which holds no berth; both crew come aboard; the plan is made and both
+//! are seated at Ceres, the organiser stepping out of the cab between the two seats; then the
+//! hull sails and launches ([`fly`], `embark_two`). An NPC commander's mission-role grants are
+//! issued from the lines `+sortie/command-grants` prints, under the organiser's own command loan.
+//!
 //! Every submission is landed on the world task's composed path, whoever owns its action
 //! (tacsim's, Org's unit grants, Sim's helm hand-off), and the scheduled `control_handoff_apply`
 //! on the composed scheduled path ([`apply_due`]), as production's coordinator lands them.

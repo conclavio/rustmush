@@ -291,7 +291,7 @@ orders on the same transport yours use: ADVANCE to a work point six cells out fr
 the carrier's ramp while nothing Hostile is in the commander's own sight, HOLD
 while something is, and WITHDRAW once the roster has lost a unit. Each order goes
 to one slot at a time and can be delayed or stopped by interference like any
-other. If the commander's own unit is destroyed or disabled, the next hired NPC
+other. If the commander's own unit is destroyed or disabled, the first other hired NPC
 in slot order leads in its place under a new term; the role grants from
 `+sortie/command-grants` follow whoever leads. A player who becomes active again
 takes the lead back after the usual settling, and the NPC gives no further order.
