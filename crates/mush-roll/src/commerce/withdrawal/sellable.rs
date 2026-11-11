@@ -23,8 +23,8 @@
 //! root, rating or royalty, so a `Yes` here is not a promise that a quote
 //! lands (a quote still runs the whole of the sale reader), and a row it
 //! cannot read is `Unproved`, which the market treats as unsellable. What it
-//! costs is fixed and small ([`SELLABLE_ROWS_ORIGINAL`], [`SELLABLE_ROWS_DERIVED`]
-//! rows a listing, in at most [`SELLABLE_READS`] batched reads a call), because
+//! costs is fixed and small (`SELLABLE_ROWS_ORIGINAL`, `SELLABLE_ROWS_DERIVED`
+//! rows a listing, in at most `SELLABLE_READS` batched reads a call), because
 //! it runs inside the market's own bounded read, on that read's budget.
 //!
 //! **Whose read.** The Roll owns it: the rows are the Roll's, read through the

@@ -1448,8 +1448,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     let stopped = "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried.";
     let renewals_before = renewals(w, sealed).await?;
     settle(w, cy).await?;
-    let refused =
-        private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == stopped).await?;
+    let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == stopped).await?;
     check_eq!(refused, vec![stopped.to_owned()], "{refused:?}");
     check_eq!(
         renewals(w, sealed).await?,
@@ -1624,8 +1623,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // across it, and the holder is told why, with nothing submitted.
     let recalled = "This licence cannot be renewed: the Registry recalled this mind. Nothing further will be tried.";
     settle(w, cy).await?;
-    let refused =
-        private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == recalled).await?;
+    let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == recalled).await?;
     check_eq!(refused, vec![recalled.to_owned()], "{refused:?}");
     check_eq!(
         renewals(w, sealed).await?,
