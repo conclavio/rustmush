@@ -242,8 +242,6 @@ unit.
 **Ruled 2026-11-11: all 25 defaults accepted as written** ("accepted as default across the
 board"). No question was amended.
 
-None of these is ruled. Each default holds only as a proposal.
-
 ### 5.1 Presence (A)
 
 **Q-45-1 — When a unit is "absent".**
