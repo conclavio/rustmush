@@ -420,6 +420,12 @@ with real, embarked human-NPC leadership.
   Without either an active player or that commander there is no leader; units continue their
   last orders or act through available doctrine. Returning active players resume priority.
   "Death" here is combat unavailability, not player permadeath (Q-H12).
+  **Amended 2026-11-11 by doc 44 Q-44-44 (built as MW.14a):** while the assigned NPC commander
+  cannot command (its unit destroyed or disabled, its controls gone), the first other hired NPC
+  of the same accepted roster, in slot order, who is available and authorized leads in its
+  place under a new term, and the commander leads again once it can. A commander who is
+  available and only lacks the command right is not passed over, and a roster that assigned no
+  NPC commander is still never led by an NPC. Players keep priority over both.
   The implementation predicate is a connected, capable player controlling their non-disabled
   assigned unit in the active detachment; keyboard inactivity alone is not disconnect. Reconnect
   does not override continuing incapacity/disablement. Version the leadership term separately

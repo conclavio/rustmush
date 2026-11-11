@@ -79,10 +79,12 @@ impl DetachmentRoster {
                     Controller::Player { character } => {
                         leader.kind == LeaderKind::Player && character == leader.character
                     }
+                    // The nominated commander, or its successor (doc 44 unit MW.14a): any
+                    // NPC member of a roster that nominated a commander.
                     Controller::Npc { character } => {
                         leader.kind == LeaderKind::Npc
                             && character == leader.character
-                            && saved.npc_commander == Some(character)
+                            && saved.npc_commander.is_some()
                     }
                     Controller::Automated => false,
                 })

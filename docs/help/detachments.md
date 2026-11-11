@@ -285,6 +285,19 @@ An unavailable roster has no leader. Session grace comes from the session owner;
 returning players settle briefly before reclaiming priority. A restart retains
 the command term and reconnect timers, then rechecks current sessions and control.
 
+An NPC who leads commands. Inside a running field, with no player leading, the
+plan's NPC commander gives the roster one posture at a time, as ordinary roster
+orders on the same transport yours use: ADVANCE to a work point six cells out from
+the carrier's ramp while nothing Hostile is in the commander's own sight, HOLD
+while something is, and WITHDRAW once the roster has lost a unit. Each order goes
+to one slot at a time and can be delayed or stopped by interference like any
+other. If the commander's own unit is destroyed or disabled, the next hired NPC
+in slot order leads in its place under a new term; the role grants from
+`+sortie/command-grants` follow whoever leads. A player who becomes active again
+takes the lead back after the usual settling, and the NPC gives no further order.
+A roster with no nominated commander is never led by an NPC. On open ground an
+NPC leader gives no orders.
+
 `/field` is the saved operation record, not a live casualty or position report.
 The flight tick refreshes changed leadership; `/refresh` requests the same durable
 check explicitly. Neither command issues an order or moves a unit. These records

@@ -363,6 +363,11 @@ impl DetachmentRoster {
 
     /// Apply a complete host snapshot atomically. During linkdead grace the
     /// current healthy leader remains eligible; expired grace triggers succession.
+    /// With no player to lead, the nominated NPC commander leads; while that
+    /// commander cannot command (its unit lost or disabled, its controls gone)
+    /// the first other healthy, authorized NPC in slot order leads in its place,
+    /// and the commander leads again once it can. A roster that nominated no
+    /// commander never elects an NPC.
     /// A returning slot must stay connected through its hysteresis before it can
     /// retake command. An initial healthy roster takes command immediately.
     /// Hosts call this at grace/hysteresis deadlines and before order admission
@@ -392,7 +397,9 @@ impl DetachmentRoster {
         let mut authority = BTreeMap::new();
         let mut next_reconciliation_at_ms = None;
         let mut player = None;
-        let mut npc = None;
+        let mut commander = None;
+        let mut commander_down = false;
+        let mut successor = None;
         for member in &self.members {
             let Some(fact) = by_slot.get(&member.slot).copied() else {
                 return Err(RosterError::MissingFacts);
@@ -461,12 +468,24 @@ impl DetachmentRoster {
                         kind: LeaderKind::Player,
                     });
                 }
+                Controller::Npc { character } if self.npc_commander == Some(character) => {
+                    if !connected {
+                        commander_down = true;
+                    } else if fact.command_authorized {
+                        commander = Some(Leader {
+                            slot: member.slot,
+                            character,
+                            kind: LeaderKind::Npc,
+                        });
+                    }
+                }
                 Controller::Npc { character }
-                    if self.npc_commander == Some(character)
+                    if self.npc_commander.is_some()
+                        && successor.is_none()
                         && connected
                         && fact.command_authorized =>
                 {
-                    npc = Some(Leader {
+                    successor = Some(Leader {
                         slot: member.slot,
                         character,
                         kind: LeaderKind::Npc,
@@ -475,6 +494,12 @@ impl DetachmentRoster {
                 _ => {}
             }
         }
+        // The nominated commander's successor (doc 44 unit MW.14a, Q-44-44): the first other
+        // NPC in slot order that is healthy and authorized, and only while the commander cannot
+        // command at all (its hull lost or disabled, its controls gone). A commander who is
+        // healthy and merely lacks the mission's command right is not passed over: a missing
+        // grant refuses commands, it does not elect somebody else.
+        let npc = commander.or(if commander_down { successor } else { None });
         let next = player.or(npc);
         let change = if self.leader != next {
             Some(LeadershipChange {
@@ -949,6 +974,165 @@ mod tests {
         );
         check!(serde_json::from_str::<Slot>("0").is_err());
         check_eq!(serde_json::from_str::<Slot>("6")?, Slot::new(6)?);
+        Ok(())
+    }
+
+    /// A roster of three hired NPCs, the commander in slot 2 and nobody else.
+    fn npc_roster() -> Result<DetachmentRoster, RosterError> {
+        DetachmentRoster::new(
+            DetachmentId(8),
+            1,
+            vec![
+                member(
+                    1,
+                    Controller::Npc {
+                        character: ObjId(10),
+                    },
+                )?,
+                member(
+                    2,
+                    Controller::Npc {
+                        character: ObjId(20),
+                    },
+                )?,
+                member(
+                    3,
+                    Controller::Npc {
+                        character: ObjId(30),
+                    },
+                )?,
+            ],
+            Some(ObjId(20)),
+            LeadershipPolicy::default(),
+        )
+    }
+
+    /// **Doc 44 unit MW.14a (Q-44-44): the nominated commander's successor.** While the
+    /// commander cannot command, the first other healthy and authorized NPC in slot order leads
+    /// under a new term; the commander leads again once it can; a commander who only lacks the
+    /// command right is not passed over; and the saved roster restores with a successor leading.
+    #[test]
+    fn mw14a_the_next_npc_in_slot_order_succeeds_a_commander_who_cannot_command() -> TestResult {
+        let mut roster = npc_roster()?;
+        let mut facts = facts(&roster);
+        roster.reconcile(0, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(20)),
+            "the nominated commander leads"
+        );
+        check_eq!(roster.term(), 1);
+        // Its hull is lost: the first other NPC in slot order.
+        change(&mut facts, 2, |fact| fact.unit_disabled = true);
+        roster.reconcile(1, &facts)?;
+        let successor = roster.leader().ok_or("a successor")?;
+        check_eq!(
+            (successor.character, successor.kind, successor.slot.get()),
+            (ObjId(10), LeaderKind::Npc, 1)
+        );
+        check_eq!(roster.term(), 2);
+        check!(roster.validate_command_at(ObjId(10), 1, 2, 1).is_ok());
+        check_eq!(
+            roster.validate_command_at(ObjId(20), 1, 2, 1),
+            Err(RosterError::NotLeader),
+            "the lost commander's orders are refused"
+        );
+        // The saved roster restores with the successor leading.
+        let restored = DetachmentRoster::restore(&roster.checkpoint())?;
+        check_eq!(restored.leader(), roster.leader());
+        // The first successor is lost too: the next in slot order.
+        change(&mut facts, 1, |fact| fact.unit_disabled = true);
+        roster.reconcile(2, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(30))
+        );
+        // A successor without the command right is passed over for one who holds it.
+        change(&mut facts, 1, |fact| fact.unit_disabled = false);
+        change(&mut facts, 1, |fact| fact.command_authorized = false);
+        roster.reconcile(3, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(30))
+        );
+        // The commander can command again: it leads.
+        change(&mut facts, 2, |fact| fact.unit_disabled = false);
+        roster.reconcile(4, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(20))
+        );
+        // A healthy commander who lacks the right is not passed over: nobody leads.
+        change(&mut facts, 2, |fact| fact.command_authorized = false);
+        roster.reconcile(5, &facts)?;
+        check_eq!(roster.leader(), None);
+        Ok(())
+    }
+
+    /// **Doc 44 unit MW.14a**: a roster that nominated no commander never elects an NPC, and a
+    /// player who is active outranks every NPC, successor or not (doc 27 Q-D4, FO-15).
+    #[test]
+    fn mw14a_no_nomination_no_npc_leader_and_a_player_outranks_a_successor() -> TestResult {
+        let members = |commander| {
+            DetachmentRoster::new(
+                DetachmentId(9),
+                1,
+                vec![
+                    member(
+                        1,
+                        Controller::Npc {
+                            character: ObjId(10),
+                        },
+                    )?,
+                    member(
+                        2,
+                        Controller::Npc {
+                            character: ObjId(20),
+                        },
+                    )?,
+                    member(
+                        3,
+                        Controller::Player {
+                            character: ObjId(30),
+                        },
+                    )?,
+                ],
+                commander,
+                LeadershipPolicy::default(),
+            )
+        };
+        let mut unled = members(None)?;
+        let mut facts = facts(&unled);
+        change(&mut facts, 3, |fact| {
+            fact.connection = Connection::Disconnected;
+        });
+        unled.reconcile(0, &facts)?;
+        check_eq!(unled.leader(), None, "nobody was nominated");
+
+        let mut roster = members(Some(ObjId(20)))?;
+        change(&mut facts, 2, |fact| fact.unit_disabled = true);
+        roster.reconcile(0, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(10)),
+            "the successor leads while no player is active"
+        );
+        // The player returns and settles: the lead is theirs.
+        change(&mut facts, 3, |fact| {
+            fact.connection = Connection::Connected;
+        });
+        roster.reconcile(1, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(10)),
+            "a returning player settles first"
+        );
+        roster.reconcile(1 + LeadershipPolicy::default().return_hysteresis_ms, &facts)?;
+        let leader = roster.leader().ok_or("a leader")?;
+        check_eq!(
+            (leader.character, leader.kind),
+            (ObjId(30), LeaderKind::Player)
+        );
         Ok(())
     }
 

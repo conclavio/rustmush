@@ -110,7 +110,133 @@ Not built.
 
 ## MW.14a
 
-Not built.
+The compiled NPC commander (doc 44 §7.1, §4 D, §4c rows 14 and 15; Q-44-20, Q-44-44; doc 27
+FO-15, Q-D4, Q-F1). Built on Q-44-44's default: a host-side issuer, compiled and deterministic,
+with no LLM and no change to the mind ABI.
+
+**Built.**
+
+- **The rule, in one file** (`crates/tacsim/src/detachment/commander.rs`). `View` is all a
+  commander decides on: what its own frame holds (`Sight`: the live contacts its party's book
+  holds Hostile), the state of its roster (`Strength`: hulls, and those lost in this field) and
+  the detachment's work point. `decide` is the whole rule, first match wins: **withdraw** once
+  the roster has lost a hull (`WITHDRAW_AT_LOSSES`, 1), **hold** while a Hostile is in sight,
+  **advance** to the work point otherwise. `Posture` is what it may ask for. The types are plain
+  data in and plain data out, with no handle on the world, the clock or the dice, which is the
+  shape MW.14b's doctrine and a House's policy doctrine (Q-44-32) take.
+- **The issuer** (`crates/tacsim/src/detachment/sortie/commander.rs`, called from the NPC walk
+  in `sortie/npc.rs`). When a roster's field command names an NPC its leader and that NPC's unit
+  stands in a running field, `step` builds the view, takes the posture and gives it as a roster
+  order to the first hull that does not yet have it. It goes through a player leader's delivery
+  and nothing beside it: submitted as the NPC, fenced by the roster's revision and term
+  (`field_orders::Act::Issue`); Org's mission rights read for the NPC over each unit; a
+  `mush_propagation` envelope to the recipient, which interference holds; the recipient's own
+  executor and the kernel's own checks (`field/orders.rs`, `arena/detachment.rs`, both
+  unchanged). The order book is the commander's only memory, so a restart derives the same next
+  order.
+- **What the commander sees** (`crates/tacsim/src/field/orders.rs`): `sight` reads the Hostile
+  contacts off the last frame the NPC's own seat was sent; `lost` says a unit is lost in its
+  field when its operator's own frame shows a wreck or the field's kernel has named it
+  destroyed.
+- **A lost hull stops leading at once** (`sortie/field.rs`, `reconcile`): the roster's command
+  facts read `lost` beside the world's unit record, which is checked out and stale while a field
+  runs. Before this a commander destroyed in a field stayed the roster's leader until the
+  field's close, and the kernel refused every order it gave (`NoCommander`).
+- **The successor** (`crates/mush-tactics/src/detachment/roster.rs`, `reconcile`, and
+  `roster/checkpoint.rs`, `restore`): while the nominated commander cannot command, the first
+  other NPC in slot order that is healthy and authorized leads under a new term, and the
+  commander leads again once it can. A healthy commander who only lacks the command right is not
+  passed over; a roster that nominated no commander never elects an NPC; an active player
+  outranks both.
+- **Yielding to a returning player** needed no code: the roster's own rule (doc 27 Q-D4, the
+  return hysteresis) makes the player the leader, `step` finds the NPC is not, and what the NPC
+  had in flight under its term is discarded by the poll as any deposed leader's is.
+- `docs/help/detachments.md` says what an NPC leader does. Doc 27's Q-D4 carries the successor
+  as an amendment.
+- **`roster_rig`** grew what the stories needed: `fly` takes a roster of two hired NPCs
+  (below); `grant_command` issues the mission-role grants `+sortie/command-grants` prints, each
+  under the organiser's own command loan; `orders_of` reads the roster's order book.
+
+**Tests.** In-source: the rule's three arms and their order, and the same view giving the same
+posture (`detachment::commander`); each posture as the roster order a player types
+(`detachment::sortie::commander`); the successor, its restore, and a player outranking it
+(`mush_tactics::detachment::roster`, two tests). Stories in `domain_field`
+(`crates/tacsim/tests/domain_field/field_mw14a.rs`), each passing alone on Windows:
+
+- `mw14a_an_npc_led_detachment_advances_holds_and_withdraws` (74 s) and `…_at_512` (65 s). A
+  captain hires Sana Okonkwo and Ilya Mendes, names Okonkwo the commander and launches both
+  from aboard the carrier; no player is in the roster's units. An escort and an intruder stand
+  on the ground and the escort's fire order promotes the site. With nobody typing an order:
+  Okonkwo orders both hulls to the work point and both drive for it; staff jam the roster's
+  comms and the intruder fires on the roster's carrier, so her HOLD is admitted and sent and
+  does not arrive, and both hulls keep their ADVANCE; the jam is cleared and both hulls stand;
+  the intruder destroys Okonkwo's rig, and Mendes leads under a new term, orders the withdrawal
+  from his own unit and drives for the ramp.
+- `mw14a_a_returning_player_takes_the_lead` (27 s). A captain leads from rig 1 with Okonkwo,
+  the plan's commander, in rig 2. While the captain leads she gives no order. The captain's
+  session ends: she leads and orders the advance, to her own hull only. The captain returns:
+  after the hysteresis the lead is theirs, their `ORDER DT:… 2 HOLD` is delivered and obeyed,
+  and she gives no order under their term.
+- `mw14a_the_same_run_gives_the_same_orders_twice` (57 s). The script to the HOLD on two fresh
+  worlds delivers the same orders, with the same sequences, from the same slot.
+
+**Divergences and defaults.** None needs a refactor to undo; each is one function or one filter.
+
+- **The work point is a default.** A plan names no objective, so the commander advances to the
+  site cell `WORK_POINT_CELLS` (6) out from the flight's ramp, straight away from the pad. A real
+  objective is a field on the plan, which is a plan-format change and was not made.
+- **An NPC-led roster holds only when it is fired on.** Only a roster's current leader may mark
+  a party Hostile (`field/parties.rs`, `current_leader`), and an NPC marks nobody, so its book
+  holds a party Hostile once that party's fire arrives on the roster or on a friend. The story's
+  intruder fires on the roster's carrier for that.
+- **"The next NPC in the roster's order"** is the first other NPC by slot number, not the next
+  after the commander's slot. Its contract scope is not checked: Mendes, hired as a subordinate
+  operator, succeeds Okonkwo. That amends doc 27 Q-F1's "explicitly assigned" for the one case
+  of a commander who cannot command, as Q-44-44 ruled.
+- **Succession is on "cannot command", not only on a lost hull**: a disabled unit or lost
+  controls pass the lead as well, and it comes back when the commander can command again.
+- **One order a slot, never `ALL`.** An `ALL` is refused whole when any slot is unavailable, and
+  a principal acts once a fire, so a posture reaches `n` hulls over `n` world seconds.
+- **Only inside a running field.** On open ground an NPC leader gives nothing, and the surface
+  executor goes on running whatever was delivered.
+- **The link loss in the returning-player story is the session's facts set by hand**
+  (`set_connected`, `set_live_conns`), as `mush-server`'s leadership story sets them. What the
+  field does with an absent pilot's hull is MW.7's and is not exercised.
+- **The jam is staff's** (`@prop/jam <place>=4` at the crew's place). No player-held jammer
+  reaches the IC transport.
+- **The stories run at 1:1**, the field rigs' rate, as every field story does. The one IC window
+  in them is the roster's three-IC-second return hysteresis, waited out in full; at 24:1 it is
+  an eighth of a second.
+- **A Dray-P berths two, and the acceptance needs three people aboard.** The organiser and two
+  hired NPCs fit only because a person in a rig's cab holds no berth: the organiser boards,
+  takes rig 1's cab, the crew board, the plan is drafted and activated, slot 2's NPC is seated,
+  the organiser steps out (`+tv/1 leave`) and slot 1's NPC is seated, all at Ceres before the
+  hull sails. Every step is a player's command, and `roster_rig::fly` pins the sequence. **For
+  the owner:** no help page says so, and if a cab should count against the berths then no
+  shipped hull can fly a two-NPC detachment with its organiser aboard.
+- **A lessee's mission-role grant needs its parent.** `+sortie/command-grants` prints a draft
+  with `"parent": null`, which Org refuses from a lessee; the rig adds the lessee's own command
+  loan. The help page already says a lender supplies its parent, and the printed line does not.
+
+**Not built.**
+
+- MW.14b, the Rhai commander.
+- **The organiser cannot read what their NPC commander ordered.** `+sortie/orders` shows the
+  reader's own outbox and an NPC's orders are in nobody's but its own, so the stories read the
+  roster's order book as typed state.
+- Any posture but the three: the commander gives no ENGAGE, SCREEN, SUPPORT or MINE, holds no
+  fire, and marks no party.
+- Damping. A Hostile that drifts in and out of the commander's sight flips the posture between
+  HOLD and ADVANCE as often as once a world second.
+- A commander's orders on open ground, and a plan objective.
+- A second order to a hull that answered NEGATIVE: the delivered order is the posture, so it is
+  not sent again.
+
+**Not pinned by a story.** A restart with an NPC leading. The commander taking the lead back
+from its successor (the roster's unit test has it). The ADVANCE returning once the Hostile is out
+of sight. The withdrawing rig boarding its carrier (the story ends with it driving for the ramp).
+A successor refused for want of the command right (unit test only). The commander's own orders
+answered NEGATIVE.
 
 ## MW.14b
 

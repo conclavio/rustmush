@@ -34,8 +34,9 @@ use serde_json::json;
 use tacsim::detachment::sortie::{Flight, FlightKey, OperationId, OperationRecord, Phase};
 
 use crate::driving_rig::{
-    HullRow, Rig, at_counter, fold_module_ops_into, keep, land_composed, next_token,
-    on_pad_with_at, run, support, teleport, typed,
+    HullRow, Rig, at_counter, board, file_and_launch, fold_module_ops_into, keep, land_composed,
+    load, next_token, on_pad_with_at, open_site, prospector, rigs_of, run, support, teleport,
+    to_ic, typed, warm,
 };
 use crate::grounds_rig::Ground;
 
@@ -376,12 +377,17 @@ fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) {
     let _ = commit(rig, who, &accept);
 }
 
-/// **The operational loan `organiser` holds over `unit`'s crew station** (the lessor's
-/// `OperateCrew` loan `+tv/<n>/permissions go` recorded), which a sub-loan to an NPC names as
-/// its parent.
-fn crew_loan(rig: &mut Rig, organiser: ObjId, unit: ObjId) -> u64 {
+/// **The operational loan of `capability` that `organiser` holds over `unit`** (the lessor's
+/// loan `+tv/<n>/permissions go` recorded), which a grant the organiser passes on names as its
+/// parent: a lessee is no owner, so every grant of theirs stands under Occator's.
+fn loan(
+    rig: &mut Rig,
+    organiser: ObjId,
+    unit: ObjId,
+    capability: mush_org::unit_authority::UnitCapability,
+) -> u64 {
     use mush_org::unit_authority::{
-        UnitCapability, UnitGrantStatus, UnitGrantee, UnitScope, runtime::UnitAuthorityHandles,
+        UnitGrantStatus, UnitGrantee, UnitScope, runtime::UnitAuthorityHandles,
     };
     let registry = rig
         .tw
@@ -395,7 +401,7 @@ fn crew_loan(rig: &mut Rig, organiser: ObjId, unit: ObjId) -> u64 {
         .grants
         .values()
         .find(|grant| {
-            grant.capability == UnitCapability::OperateCrew
+            grant.capability == capability
                 && grant.status == UnitGrantStatus::Active
                 && grant.grantee == UnitGrantee::Character(organiser)
                 && matches!(&grant.scope, UnitScope::Units { units } if units.contains(&unit))
@@ -403,10 +409,117 @@ fn crew_loan(rig: &mut Rig, organiser: ObjId, unit: ObjId) -> u64 {
         .map(|grant| grant.id.0)
         .unwrap_or_else(|| {
             panic!(
-                "#{} holds an operate loan over #{}: {:?}",
+                "#{} holds a {capability:?} loan over #{}: {:?}",
                 organiser.0, unit.0, grants.grants
             )
         })
+}
+
+/// The organiser's `OperateCrew` loan over `unit`, a sub-loan to an NPC's parent.
+fn crew_loan(rig: &mut Rig, organiser: ObjId, unit: ObjId) -> u64 {
+    loan(
+        rig,
+        organiser,
+        unit,
+        mush_org::unit_authority::UnitCapability::OperateCrew,
+    )
+}
+
+/// **Issue the mission-role grants `+sortie/command-grants` prints** (doc 27 Q-F2), as the
+/// organiser: one `@unitgrant/json` line a unit, each under the organiser's own command loan
+/// over that unit (the printed draft names no parent, which is an owner's grant; a lessee
+/// passes on Occator's loan), each landed; how many.
+fn grant_command(rig: &mut Rig, organiser: ObjId) -> usize {
+    let report = run(&mut rig.tw, organiser, "+sortie/command-grants 1:1");
+    let drafts: Vec<serde_json::Value> = report
+        .lines()
+        .filter_map(|line| {
+            line.find("@unitgrant/json ")
+                .map(|at| &line[at + "@unitgrant/json ".len()..])
+        })
+        .map(|draft| serde_json::from_str(draft).expect("a printed grant draft is JSON"))
+        .collect();
+    assert!(
+        !drafts.is_empty(),
+        "the role prefills are printed: {report}"
+    );
+    for mut draft in drafts.clone() {
+        let unit = draft["scope"]["Units"]["units"][0]
+            .as_u64()
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId)
+            .expect("the draft names its unit");
+        let parent = loan(
+            rig,
+            organiser,
+            unit,
+            mush_org::unit_authority::UnitCapability::CommandAssignedAi,
+        );
+        draft["parent"] = json!({ "UnitGrant": { "id": parent } });
+        let _ = commit(rig, organiser, &format!("@unitgrant/json {draft}"));
+    }
+    drafts.len()
+}
+
+/// **One slot's order as the roster's book holds it** ([`orders_of`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Held {
+    /// The slot.
+    pub(crate) slot: u16,
+    /// The order's sequence in the roster's book.
+    pub(crate) sequence: u64,
+    /// Who issued it, and from which unit.
+    pub(crate) issuer: ObjId,
+    /// The issuer's unit when it was admitted.
+    pub(crate) issuer_unit: ObjId,
+    /// The objective, or `None` for a cancellation.
+    pub(crate) objective: Option<tacsim::detachment::sortie::FieldObjective>,
+    /// Whether it has been delivered (else it is still in flight on the transport).
+    pub(crate) delivered: bool,
+}
+
+/// **The roster's order book, a row a slot and state**: each slot's delivered order and its
+/// order in flight, in slot order. A typed read of the operation record: an NPC's orders are in
+/// nobody's `+sortie/orders` but its own.
+pub(crate) fn orders_of(rig: &mut Rig, id: OperationId) -> Vec<Held> {
+    use mush_tactics::detachment::{Directive, OrderBook, OrderEnvelope};
+    use tacsim::detachment::sortie::FieldPayload;
+    let Some(record) = operation(rig, id) else {
+        return Vec::new();
+    };
+    let (Some(saved), Some(orders)) = (record.command.as_deref(), record.orders.as_deref()) else {
+        return Vec::new();
+    };
+    let roster = DetachmentRoster::restore(saved).expect("the saved roster restores");
+    let book = OrderBook::restore(&orders.book, &roster).expect("the order book restores");
+    let row = |order: &OrderEnvelope<FieldPayload>, delivered: bool| Held {
+        slot: order.recipient.slot.get(),
+        sequence: order.sequence,
+        issuer: order.issuer,
+        issuer_unit: order.issuer_unit,
+        objective: match &order.directive {
+            Directive::Objective(payload) => Some(payload.objective.clone()),
+            Directive::Cancel => None,
+        },
+        delivered,
+    };
+    let mut out = Vec::new();
+    for member in roster.members() {
+        if let Some(delivered) = book.delivered(member.slot) {
+            out.push(row(&delivered.order, true));
+        }
+        if let Some(pending) = book.pending(member.slot) {
+            out.push(row(pending, false));
+        }
+    }
+    out
+}
+
+/// The order delivered to `slot`, when one stands in the book.
+pub(crate) fn delivered_to(rig: &mut Rig, id: OperationId, slot: u16) -> Option<Held> {
+    orders_of(rig, id)
+        .into_iter()
+        .find(|held| held.slot == slot && held.delivered)
 }
 
 /// **Fly `plan`'s roster onto `at`'s ground** (this module's head): the roster, every unit
@@ -414,7 +527,11 @@ fn crew_loan(rig: &mut Rig, organiser: ObjId, unit: ObjId) -> u64 {
 ///
 /// `at_ceres` runs at Occator's counter after the leases are signed and before the hull sails
 /// (a story's own extra lease or purchase).
-#[allow(clippy::too_many_lines)] // one journey, in order
+///
+/// **A Dray-P berths two.** A roster with a player leader carries the leader and one hired NPC,
+/// and its plan is made on the site's pad. A roster of two hired NPCs with its organiser aboard
+/// is three people, so the organiser waits in a rig's cab while the crew come aboard
+/// ([`embark_two`]): the plan is made and both NPCs are seated at Ceres, before the hull sails.
 pub(crate) fn fly(
     rig: &mut Rig,
     at: &Ground,
@@ -436,119 +553,92 @@ pub(crate) fn fly(
     );
     let slots = plan.billets.len();
     assert!((1..=2).contains(&slots), "a Dray-P's bay holds two rigs");
+    let crewed = hired.iter().flatten().count() == 2;
 
-    // (1) At Ceres: the crew hired, the rigs leased with their loans, the crew aboard.
-    let (organiser, row, units) = on_pad_with_at(rig, plan.who, at.site(), |rig, organiser| {
-        let _ = rig.tw.connect(organiser);
-        for npc in hired.iter().flatten() {
-            hire(rig, organiser, *npc);
-        }
-        at_counter(rig, organiser);
-        for n in 1..=slots {
-            let leased = run(&mut rig.tw, organiser, "+tv/lease go");
-            assert!(
-                leased.contains("Occator Water & Propellant leases you "),
-                "rig {n} is leased: {leased}"
+    let (organiser, row, units) = if crewed {
+        // Everything but the launch at Ceres, the organiser in a cab while the crew board.
+        let (organiser, row) = prospector(rig, plan.who.0, plan.who.1, plan.who.2);
+        ashore(rig, organiser, &hired, slots, at_ceres);
+        load(
+            rig,
+            &row,
+            20,
+            20,
+            9_100 + u64::try_from(plan.who.1).unwrap_or(0) * 10,
+        );
+        board(rig, organiser);
+        let units = rigs_of(&rig.tw, organiser);
+        assert_eq!(units.len(), slots, "one leased rig a slot");
+        embark_two(rig, organiser, &hired);
+        planned(rig, organiser, ObjId(row.hull), &units, plan, &hired, None);
+        // The second slot's NPC takes its cab and frees a berth; the organiser steps out of
+        // rig 1 into it; the first slot's NPC takes rig 1's cab.
+        seat(rig, organiser, 2);
+        let left = run(&mut rig.tw, organiser, "+tv/1 leave");
+        assert!(
+            !left.contains("Usage") && cab_of(rig, organiser).is_none(),
+            "the organiser steps out of rig 1 into the carrier: {left}"
+        );
+        seat(rig, organiser, 1);
+        let out = run(&mut rig.tw, organiser, "+tv/bay out");
+        assert!(!out.contains("Usage"), "{out}");
+        // The voyage, as `driving_rig::on_pad_loaded_at` sails it.
+        let hull = ObjId(row.hull);
+        open_site(rig, at.entry);
+        let ticket = file_and_launch(rig, organiser, hull, &format!("+ship/undock {}", at.venue));
+        let _ = to_ic(rig, ticket.plan.depart_ic + ticket.plan.total_s);
+        assert!(
+            matches!(
+                tacsim::port::ship::berth_of(rig.tw.world(), hull),
+                tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == at.entry
+            ),
+            "the hull is settled on {}'s pad",
+            at.entry
+        );
+        warm(rig);
+        (organiser, row, units)
+    } else {
+        // (1) At Ceres: the crew hired, the rigs leased with their loans, the crew aboard.
+        let (organiser, row, units) = on_pad_with_at(rig, plan.who, at.site(), |rig, organiser| {
+            ashore(rig, organiser, &hired, slots, at_ceres);
+            for npc in hired.iter().flatten() {
+                let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
+                assert!(aboard.contains("has come aboard"), "{aboard}");
+            }
+        });
+        assert_eq!(units.len(), slots, "one leased rig a slot");
+        // (4) A player leader boards their own rig in the bay and takes its console.
+        let own = plan
+            .billets
+            .iter()
+            .position(|billet| *billet == Billet::Leader);
+        if let Some(index) = own {
+            into_cab(rig, organiser, index + 1);
+            let focus = run(
+                &mut rig.tw,
+                organiser,
+                &format!("+focus #{}/pilot", units[index].0),
             );
-            let (loan, landed) = commit_counted(rig, organiser, &format!("+tv/{n}/permissions go"));
-            assert!(
-                landed > 0,
-                "rig {n}'s operational loans are recorded: {loan}"
-            );
+            assert!(!focus.contains("Usage"), "{focus}");
         }
-        at_ceres(rig, organiser);
-        for npc in hired.iter().flatten() {
-            let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
-            assert!(aboard.contains("has come aboard"), "{aboard}");
+        planned(rig, organiser, ObjId(row.hull), &units, plan, &hired, own);
+        // (6) Each NPC seated.
+        for (index, npc) in hired.iter().enumerate() {
+            if npc.is_some() {
+                seat(rig, organiser, index + 1);
+            }
         }
-    });
-    assert_eq!(units.len(), slots, "one leased rig a slot");
+        (organiser, row, units)
+    };
     let carrier = ObjId(row.hull);
     let crew: Vec<ObjId> = hired.iter().map(|npc| npc.unwrap_or(organiser)).collect();
-
-    // (3) Each NPC is lent its rig under the organiser's own operational loan.
-    for (unit, npc) in units.iter().zip(&hired) {
-        if let Some(npc) = npc {
-            let loan = crew_loan(rig, organiser, *unit);
-            let _ = commit(
-                rig,
-                organiser,
-                &format!(
-                    "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
-                    unit.0, npc.0
-                ),
-            );
-        }
-    }
-
-    // (4) A player leader boards their own rig in the bay and takes its console.
-    let own = plan
-        .billets
-        .iter()
-        .position(|billet| *billet == Billet::Leader);
-    if let Some(index) = own {
-        for step in ["inner", "hold"] {
-            let _ = run(&mut rig.tw, organiser, step);
-        }
-        let bay = run(&mut rig.tw, organiser, "+tv/bay in");
-        assert!(bay.contains("entered vehicle bay"), "{bay}");
-        let boarded = run(&mut rig.tw, organiser, &format!("+tv/{} board", index + 1));
-        assert!(boarded.contains("You are at rig"), "{boarded}");
-        let focus = run(
-            &mut rig.tw,
-            organiser,
-            &format!("+focus #{}/pilot", units[index].0),
-        );
-        assert!(!focus.contains("Usage"), "{focus}");
-    }
-
-    // (5) The plan: drafted, accepted and made ready by its player, activated.
-    let payload = json!({
-        "carrier": carrier.0,
-        "slots": plan.billets.iter().enumerate().map(|(index, billet)| json!({
-            "slot": index + 1,
-            "unit": units[index].0,
-            "controller": {
-                "kind": if *billet == Billet::Leader { "player" } else { "npc" },
-                "character": crew[index].0,
-            },
-            "role": "scout",
-            "mind": null,
-        })).collect::<Vec<_>>(),
-        "npc_commander": commander.map(|npc| npc.0),
-        "financial_terms": null,
-    });
-    let drafted = commit(rig, organiser, &format!("+sortie/draft {payload}"));
-    let selected = draft(rig, organiser, 1);
-    if let Some(index) = own {
-        let _ = commit(rig, organiser, &declaration("accept", &selected));
-        let _ = commit(
-            rig,
-            organiser,
-            &format!("@station/handoff #{}/pilot", units[index].0),
-        );
-        handoff(rig);
-        let _ = commit(rig, organiser, &declaration("ready", &selected));
-    }
-    let activated = commit(
-        rig,
-        organiser,
-        &format!("+sortie/activate 1:1={}", plan.duty),
-    );
     let operation = OperationId {
         organizer: organiser,
         draft: PlanId(1),
         activation: 1,
     };
 
-    // (6) Each NPC seated, the roster launched, the field command refreshed.
-    for (index, npc) in hired.iter().enumerate() {
-        if npc.is_some() {
-            let seated = commit(rig, organiser, &format!("+sortie/seat 1:1={}", index + 1));
-            assert!(seated.contains("console"), "{seated}");
-            handoff(rig);
-        }
-    }
+    // The roster launched, and the field command refreshed.
     let launched = commit(rig, organiser, "+sortie/launch 1:1=all");
     let mut refused = Vec::new();
     // The ramp transit is IC time: the clock is taken to the last flight's due instant, as
@@ -582,8 +672,7 @@ pub(crate) fn fly(
         assert_eq!(
             phase,
             Some(Phase::Field),
-            "#{} stands on the ground: draft {drafted} / activation {activated} / launch \
-             {launched} / refused {refused:?}",
+            "#{} stands on the ground: launch {launched} / refused {refused:?}",
             unit.0
         );
     }
@@ -610,4 +699,147 @@ pub(crate) fn fly(
         field_roster(rig, operation).map(|roster| roster.checkpoint())
     );
     flown
+}
+
+/// **The organiser's business ashore at Ceres**: each crew member hired in the Slack Line, a
+/// prospector leased a slot with its operational loans, and the story's own errand.
+fn ashore(
+    rig: &mut Rig,
+    organiser: ObjId,
+    hired: &[Option<ObjId>],
+    slots: usize,
+    at_ceres: impl FnOnce(&mut Rig, ObjId),
+) {
+    let _ = rig.tw.connect(organiser);
+    for npc in hired.iter().flatten() {
+        hire(rig, organiser, *npc);
+    }
+    at_counter(rig, organiser);
+    for n in 1..=slots {
+        let leased = run(&mut rig.tw, organiser, "+tv/lease go");
+        assert!(
+            leased.contains("Occator Water & Propellant leases you "),
+            "rig {n} is leased: {leased}"
+        );
+        let (loan, landed) = commit_counted(rig, organiser, &format!("+tv/{n}/permissions go"));
+        assert!(
+            landed > 0,
+            "rig {n}'s operational loans are recorded: {loan}"
+        );
+    }
+    at_ceres(rig, organiser);
+}
+
+/// The rig cab `who` sits in, when they sit in one.
+fn cab_of(rig: &Rig, who: ObjId) -> Option<ObjId> {
+    let room = rig.tw.world().get(who).and_then(|object| object.location)?;
+    rigs_of(&rig.tw, who).into_iter().find(|tv| {
+        tacsim::port::vehicle::rig_row(rig.tw.world(), *tv).is_some_and(|(_, row)| {
+            row.rooms
+                .get(&crate::driving_rig::cid("cab"))
+                .is_some_and(|cab| ObjId(*cab) == room)
+        })
+    })
+}
+
+/// **From the airlock into rig `n`'s cab**: the hold, the bay, the rig's helm billet.
+fn into_cab(rig: &mut Rig, organiser: ObjId, n: usize) {
+    for step in ["inner", "hold"] {
+        let _ = run(&mut rig.tw, organiser, step);
+    }
+    let bay = run(&mut rig.tw, organiser, "+tv/bay in");
+    assert!(bay.contains("entered vehicle bay"), "{bay}");
+    let boarded = run(&mut rig.tw, organiser, &format!("+tv/{n} board"));
+    assert!(boarded.contains("You are at rig"), "{boarded}");
+}
+
+/// **Two hired crew aboard a hull that berths two, with its organiser** (this module's head):
+/// the organiser, aboard through the lock, goes down to the bay and takes rig 1's cab, which
+/// gives their berth back; then both crew come aboard under their contracts.
+fn embark_two(rig: &mut Rig, organiser: ObjId, hired: &[Option<ObjId>]) {
+    into_cab(rig, organiser, 1);
+    for npc in hired.iter().flatten() {
+        let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
+        assert!(
+            aboard.contains("has come aboard"),
+            "#{} comes aboard while the organiser sits in a cab: {aboard}",
+            npc.0
+        );
+    }
+}
+
+/// **Seat slot `n`'s NPC at its rig's console** (`+sortie/seat`), its helm hand-off applied.
+fn seat(rig: &mut Rig, organiser: ObjId, n: usize) {
+    let seated = commit(rig, organiser, &format!("+sortie/seat 1:1={n}"));
+    assert!(seated.contains("console"), "{seated}");
+    handoff(rig);
+}
+
+/// **The plan, from the sub-loans to the activation**: each NPC lent its rig under the
+/// organiser's own operational loan, the plan drafted, accepted and made ready by its player
+/// (`own`, the leader's billet), activated, and an NPC commander's mission-role grants issued.
+fn planned(
+    rig: &mut Rig,
+    organiser: ObjId,
+    carrier: ObjId,
+    units: &[ObjId],
+    plan: &Plan,
+    hired: &[Option<ObjId>],
+    own: Option<usize>,
+) {
+    // (3) Each NPC is lent its rig under the organiser's own operational loan.
+    for (unit, npc) in units.iter().zip(hired) {
+        if let Some(npc) = npc {
+            let loan = crew_loan(rig, organiser, *unit);
+            let _ = commit(
+                rig,
+                organiser,
+                &format!(
+                    "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
+                    unit.0, npc.0
+                ),
+            );
+        }
+    }
+    // (5) The plan: drafted, accepted and made ready by its player, activated.
+    let commander = plan.commander.map(|name| npc_named(rig, name));
+    let payload = json!({
+        "carrier": carrier.0,
+        "slots": plan.billets.iter().enumerate().map(|(index, billet)| json!({
+            "slot": index + 1,
+            "unit": units[index].0,
+            "controller": {
+                "kind": if *billet == Billet::Leader { "player" } else { "npc" },
+                "character": hired[index].unwrap_or(organiser).0,
+            },
+            "role": "scout",
+            "mind": null,
+        })).collect::<Vec<_>>(),
+        "npc_commander": commander.map(|npc| npc.0),
+        "financial_terms": null,
+    });
+    let _ = commit(rig, organiser, &format!("+sortie/draft {payload}"));
+    let selected = draft(rig, organiser, 1);
+    if let Some(index) = own {
+        let _ = commit(rig, organiser, &declaration("accept", &selected));
+        let _ = commit(
+            rig,
+            organiser,
+            &format!("@station/handoff #{}/pilot", units[index].0),
+        );
+        handoff(rig);
+        let _ = commit(rig, organiser, &declaration("ready", &selected));
+    }
+    let _ = commit(
+        rig,
+        organiser,
+        &format!("+sortie/activate 1:1={}", plan.duty),
+    );
+    // An NPC commander leads under each unit's mission-role grant (doc 27 Q-F2), which the
+    // organiser issues from the lines `+sortie/command-grants` prints once the roster is
+    // accepted. The role follows the roster's current leader, so a successor holds it too.
+    if commander.is_some() {
+        let granted = grant_command(rig, organiser);
+        assert_eq!(granted, units.len(), "one mission-role grant a unit");
+    }
 }
