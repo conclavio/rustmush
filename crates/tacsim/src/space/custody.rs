@@ -614,10 +614,8 @@ pub fn space_ship_from_tactical_unit_with_spec(
         }
     }
     if any_slow {
+        // `SF.R28`: Slow alone, as in `SpaceShipState::apply_damage`.
         ship.slow_pct = next_slow_pct;
-        if !ship.crits.contains(&SubsystemCrit::DriveDegraded) {
-            ship.crits.push(SubsystemCrit::DriveDegraded);
-        }
     }
 
     // Read hull `heat` and `heat_sink` cells (`D-35-1`, `SF.R15`, `SF.R20`).

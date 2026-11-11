@@ -933,3 +933,50 @@ never deleted. A bad auxiliary or custody document still holds the whole space s
 
 **Not pinned by a story.** The ledger cap's rule, the tenure order's lapse, the quarantined domain's skipped
 interdiction.
+
+## SF.R28 — hull fidelity and the tow line, a first part (doc 35d §6.3, §6.4)
+
+A subset of doc 35d §9's `SF.R28` row: the verified drive bugs and the tow's missing physics. The damage table and
+the authored components wait (see below). Paths are under `crates/tacsim/src/space/`.
+
+- **Slow is read the right way round at bubble entry.** `build_carrier_ship_state` (`tick.rs`) multiplied the hull's
+  acceleration by `100 − slow_pct`; `slow_pct` is the surviving share, as `recompute_drive_accel` reads it. A hull
+  that checked in at Slow 75 entered her next bubble at 25 %. The line now calls
+  `SpaceShipState::slowed_accel_mmps2` (`bubble.rs`).
+- **A Slow no longer also raises `DriveDegraded`** (`SpaceShipState::apply_damage`, and the check-out in
+  `custody.rs`), which halved the drive a second time in both burn paths.
+- **`+helm/burn` flies at the drive's true rating.** The rating for the hull's mass is taken in mm/s²; a burn asked
+  above it is flown at it, and the line says so. It was rounded up to a whole m/s², so a Dray rated about 0.76 m/s²
+  burned at 1, and a burn above the rounded figure was refused.
+- **A derelict on the line is mass.** `towed_mass_kg` (`commands.rs`) adds the towed hull's dry mass to the payload
+  the autopilot planners (port, cluster and body), `+helm/burn`'s rating and burn, and the carrier's bubble ship are
+  computed from; `shift_bubble_tow_payload` changes the tug's bubble ship the moment the line locks or lets go.
+- **The base a delivery closes at** (`resolve_nearest_port_base_obj`, `tick.rs`) is the port the tug is docked at; it
+  was the lane's first port whichever port she docked at.
+- **A unit that will not check out gets no bubble.** `build_carrier_ship_state` no longer falls back to an
+  uncustodied copy of the unit, whose damage a check-in then dropped. `release_uninterdicted_carrier` resumes the
+  journey and marks the leg cleared, at both call sites; before this the join path left a refused carrier parked in
+  `Promoted`.
+
+**Tests.** `sfr25_…` part D reads the tug's acceleration before the tow, with the derelict on the line (lower) and
+after the release (as before). `sfr19_…` requires the black box's `EpochClosedInBay` base to be Stickney's host.
+`sfr20_…` checks `slowed_accel_mmps2` against the Slow it has just taken. `sfr4_…`, `sfr9_…` and `sfr11_…` change
+where they pinned the rounded rating: the burns now fly at the hull's rating and say so, and `sfr11_…`, whose
+"burn above the rating is refused" was the rounding itself, orders day-long away burns until one would eat the
+reserve. Local: `domain_world` 255 passed, clippy clean on tacsim.
+
+**Divergences and limits.**
+- Removing the `DriveDegraded` push changes little in play yet: a hit that takes a section to zero internals also
+  crosses the hard 30-internal threshold that raises the same crit (doc 35d §6.4). The thresholds go with the
+  authored components, which are not built.
+- The tow's mass reaches the planners and the bubble ship, not a corridor journey already under way: a tug that
+  resumes her leg with a derelict on the line flies the plan she filed. The return-reserve estimate
+  (`compute_hull_return_reserve`) does not count the tow either.
+- The derelict's own position still does not follow the tug; she is placed at the port when the tug docks.
+- No load act and no bay or cradle capacity check beyond twice the tug's dry mass.
+
+**Not built from the row.** Section choice through the arena's `choose_section`; PDC and sensor losses as authored
+components; `ceil` on `max_accel_mps2` for NPC ships and the interdictor's fixed burn; a raider unit file; NPC hulls
+reused per domain with one title each; space custody rows off the `freeport` ground site.
+
+**Not pinned by a story.** The refused check-out and the carrier it releases.

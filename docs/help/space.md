@@ -39,7 +39,7 @@ Assign or claim a bridge station before issuing flight or tactical orders:
 - `+helm/heading <yaw_deg>[,<pitch_deg>]` sets nose attitude in degrees (`yaw_deg` `0..360`, optional `pitch_deg` `-90..90`) and writes `StandingOrder::Heading`.
 - `+helm/roll <roll_deg>` sets bank angle in degrees (`-180..180`) to rotate fresh armour facets toward incoming fire.
 - `+helm/thrust <permille>[,<x>,<y>,<z>] [force]` sets main-drive throttle in permille (`0..1000`), with an optional 3D direction vector and `force` to override the return-reserve warning, and writes `StandingOrder::Thrust`.
-- `+helm/burn <ax>,<ay>,<az> [<s_ic>] [force]` executes a timed reaction-mass burn in m/s² (`-100..100` per axis, capped by the hull drive's rated acceleration) for `<s_ic>` IC seconds (`1..86400`, default `60`) against `stow.propellant`. Pass `force` to burn into the return reserve.
+- `+helm/burn <ax>,<ay>,<az> [<s_ic>] [force]` executes a timed reaction-mass burn in m/s² (`-100..100` per axis; a burn asked above the drive's rating for the ship's mass flies at that rating, which is under 1 m/s² for a laden Dray, and a derelict on your tow line counts as mass) for `<s_ic>` IC seconds (`1..86400`, default `60`) against `stow.propellant`. Pass `force` to burn into the return reserve.
 - `+helm/guidance <attitude_deg|mode>` sets a guidance yaw (`0..359`) or flight-computer mode (`manual`, `prograde`, `retrograde`, `radial_in`, `radial_out`, `normal`, `anti_normal`, `intercept`, `match`).
 - `+helm/decouple` decouples the ship from a corridor transit leg into 3D heliocentric free flight.
 - `+helm/emcon <ghost|passive|standard|combat>` sets emissions posture (`silent`, `nominal`, and `full` are accepted aliases) and writes `StandingOrder::Posture`.
