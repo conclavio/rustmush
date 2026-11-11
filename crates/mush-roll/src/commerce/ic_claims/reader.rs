@@ -315,13 +315,19 @@ impl OwnerReadService for IcAdmissionReader {
                     request.licence,
                     &self.expected,
                 )
-                .map_err(refusal)?;
+                .map_err(|e| {
+                    tracing::debug!(target: "ic_claim", error = ?e, "roll: IC admission: the owner projection");
+                    refusal(e)
+                })?;
                 super::super::charter_pending::current::require_clear(
                     ctx,
                     &self.families,
                     holding.charter(),
                 )
-                .map_err(|_| OwnerReadError::Refused)?;
+                .map_err(|_| {
+                    tracing::debug!(target: "ic_claim", "roll: IC admission: a pending charter transfer");
+                    OwnerReadError::Refused
+                })?;
                 // Doc 23 cut S.4c (Q-23-19's organisation path): the charter is the holder's
                 // own, a character's by title or an organisation's by the acting character's
                 // office, the arm the owner projection above already proved.
@@ -331,10 +337,14 @@ impl OwnerReadService for IcAdmissionReader {
                     ctx.actor(),
                     Fenced::Charter,
                 )
-                .map_err(|_| OwnerReadError::Integrity)?;
+                .map_err(|e| {
+                    tracing::debug!(target: "ic_claim", error = ?e, "roll: IC admission: the charter's title fence");
+                    OwnerReadError::Integrity
+                })?;
                 if charter.revision != holding.title_revision()
                     || !charter.held_as(holding.holder())
                 {
+                    tracing::debug!(target: "ic_claim", fence = ?charter, holder = ?holding.holder(), "roll: IC admission: the charter's fence is not the holding's");
                     return Err(OwnerReadError::Integrity);
                 }
                 // Use the selected current qualification already proved by

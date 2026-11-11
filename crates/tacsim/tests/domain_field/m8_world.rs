@@ -1259,6 +1259,11 @@ pub(crate) fn recover(world: &mut M8World) {
 #[ignore = "M8 combined-world story: three genuine Registry ratings; the CI dispatch runs it"]
 async fn m8g_story_tier2_held_minds_seal_aboard() {
     use tacsim::minds::licence_state::SealLicenceState;
+    // The claim owners' refusal reasons, which the player never hears (`ic_claim` at debug).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
     let mut world = m8_world();
     let listed = rate_and_list(&mut world).await;
     let (coprates, owner_licence, listing) = listed[0].clone();
@@ -1530,7 +1535,7 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
         tracing_subscriber::fmt()
             .with_ansi(false)
             .with_env_filter(tracing_subscriber::EnvFilter::new(
-                "tacsim::procurement=info",
+                "tacsim::procurement=info,ic_claim=debug",
             ))
             .with_writer(std::io::stderr)
             .finish(),
@@ -2752,12 +2757,25 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         );
     }
     let pin = |n: usize| format!("+tv/{n} launch mind=filed:{} go", paid.get());
+    // A refused `go` files nothing: the rig is in its bay, the book holds no claim on it and
+    // its cursor owes no Open. (A rig home from an earlier claim keeps that claim's spent
+    // cursor until its next `go` replaces it.)
     let nothing_filed = |world: &mut M8World, rig_tv: ObjId| {
+        use tacsim::surface::excursion::ClaimCursor;
         assert!(crate::excursions::in_bay(&world.rig.tw, rig_tv, &world.row));
+        assert_eq!(
+            tacsim::ic_claim_of(world.rig.tw.world(), rig_tv),
+            tacsim::IcClaimRead::None,
+            "no claim on the rig"
+        );
+        let record = crate::excursions::record_of(&mut world.rig.tw, rig_tv);
         assert!(
-            crate::excursions::record_of(&mut world.rig.tw, rig_tv)
-                .is_none_or(|record| record.claim.as_deref().is_none_or(|c| !c.is_live())),
-            "nothing filed"
+            record.as_ref().is_none_or(|record| {
+                !matches!(record.claim.as_deref(), Some(ClaimCursor::Opening { .. }))
+                    && record.act.is_none()
+            }),
+            "nothing filed: {:?}",
+            record.map(|record| record.claim)
         );
     };
 
