@@ -110,6 +110,8 @@ test-dormancy-floor = []
 
 [dev-dependencies]
 mush-testkit.workspace = true
+# Doc 35 cut SF.R31: the docking auto-solver, for the space stories' stand-in pilot.
+mush-pixel = { workspace = true, features = ["autodock"] }
 mush-proto.workspace = true
 # 17g cut C3a: `minds::market_commands::tests`' panel projection test asks the
 # workspace's own projection lens (`assert_projection_text_clean`), as the

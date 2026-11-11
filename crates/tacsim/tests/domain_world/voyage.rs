@@ -9928,16 +9928,11 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
     );
     let _ = live_things_before;
 
-    let staff_actor = pilot(&mut rig, "StaffJudge", 3);
-    rig.tw
-        .world_mut()
-        .get_mut(staff_actor)
-        .expect("staff_actor")
-        .flags
-        .insert(mush_core::Flags::ROYALTY);
+    // Doc 35 cut SF.R31: the staff verb is typed by staff. The story used to set the ROYALTY
+    // flag on a player by hand to type it.
     let raiders_out = run(
         &mut rig.tw,
-        staff_actor,
+        GOD,
         "@field/raiders tacsim.raider.ahuna_skulks",
     );
     assert!(

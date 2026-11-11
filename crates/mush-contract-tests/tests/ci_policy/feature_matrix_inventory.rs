@@ -216,6 +216,16 @@ const ALLOWED: &[Allowed] = &[
         dev_dep_activated: true,
     },
     Allowed {
+        package: "mush-pixel",
+        feature: "autodock",
+        reason: "doc 35 cut SF.R31: the docking session's auto-solver \
+                 (`next_guidance_input`, `play_to_clamp`), the space stories' stand-in for a \
+                 pilot's hands. Turned on by `tacsim`'s `[dev-dependencies]` edge alone, so \
+                 `cargo test --workspace` unifies it on and compiles it; no shipped client \
+                 carries it",
+        dev_dep_activated: true,
+    },
+    Allowed {
         package: "tacsim",
         feature: "test-ledger-floor",
         reason: "doc 40 cut FR.7c: `tacsim::store::lower_ledger_floor_for_test`, the black box \
@@ -247,6 +257,7 @@ const CENSUS: &[&str] = &[
     "mush-llm/mock",
     "mush-llm/openai",
     "mush-net-web/tls",
+    "mush-pixel/autodock",
     "mush-pixel/encode",
     "mush-proto/ts",
     "mush-server/fault-injection",
@@ -323,8 +334,8 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (17, 11),
-        "17 toggleable features across 11 crates, including the opt-in testkit Store driver and tacsim's test ledger and dormancy floors: {declared:?}"
+        (18, 11),
+        "18 toggleable features across 11 crates, including the opt-in testkit Store driver, tacsim's test ledger and dormancy floors and mush-pixel's docking auto-solver: {declared:?}"
     );
 }
 
