@@ -4431,6 +4431,10 @@ fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// `+helm/submit`'s refusal when customs could not take the contraband off the ship (`SF.R30`).
+pub const CUSTOMS_SEIZURE_HELD: &str =
+    "Republic Customs cannot take the unlicensed ore off you here, and you are not cleared";
+
 fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
     let now_ic = ctx.w.world_ic_now().at;
@@ -4492,6 +4496,14 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     let customs_principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, ctx.actor);
     let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(customs_principal), now_ic);
+    // `SF.R30` (doc 35d §6.7): a hold with no strategic ore left in it has nothing to trace to
+    // a block. The record of the blocks she mined goes, so ore sold long ago cannot mark a
+    // later, licensed load.
+    if manifest.strategic_ore_kg == 0
+        && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+    {
+        book.mined_strategic_blocks.remove(&hull);
+    }
 
     if manifest.unlicensed_strategic_ore_kg > 0 {
         match super::picket::assess_customs_fine_and_advance_front(
@@ -4544,12 +4556,21 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 // Indigent pilot cannot cover the fine (`35b` §5 #14, `SF.R12`): confiscate the
                 // unlicensed `strategic_ore` from the hull's `stow.ore` hold, record the incident
                 // on `CUSTOMS_ASSERTION_TITLE`, and clear the ship (`ClearedAfterSeizure`)!
-                let front_id = super::picket::seize_contraband_and_advance_front(
+                // `SF.R30` (doc 35d §6.7): no seizure, no clearance. The ship stays under
+                // inspection and the pilot is told why.
+                let front_id = match super::picket::seize_contraband_and_advance_front(
                     ctx,
                     customs_principal,
                     hull,
                     manifest.unlicensed_strategic_ore_kg,
-                );
+                ) {
+                    Ok(front_id) => front_id,
+                    Err(refusal) => {
+                        return Err(CmdError::msg(format!(
+                            "{CUSTOMS_SEIZURE_HELD} ({refusal})."
+                        )));
+                    }
+                };
                 let front_raw = front_id.map(|f| f.0);
 
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {

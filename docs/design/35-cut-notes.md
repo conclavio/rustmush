@@ -1012,3 +1012,34 @@ tick, for every doctrine ship); the interdictor steering by its intents and stan
 
 **Not pinned by a story.** The store-sourced doctrine (a story would need a doctrine sealed to a store-only source)
 and the backwards clock (the test world's tick does not fire for a time earlier than its last).
+
+## SF.R30 — authoring and customs remainders, a first part (doc 35d §6.6, §6.7)
+
+A subset of doc 35d §9's `SF.R30` row: the small, verified items. Paths are under `crates/tacsim/src/space/`.
+
+- **A world with no authored clusters has none.** `all_orbital_clusters` (`mining.rs`) no longer falls back to the
+  lane compiled into the binary when no loaded pack authors a cluster. The fallback re-verified and re-parsed that
+  lane on every call, which is once a hull a tick, and meant a world could not author its clusters away.
+- **No seizure, no clearance.** `seize_contraband_and_advance_front` (`picket.rs`) returns an error when the hull has
+  no hold vault or the seizure's burn was not submitted, and `+helm/submit` then refuses with
+  `CUSTOMS_SEIZURE_HELD`, leaving the ship under inspection. The result used to be discarded and the ship cleared
+  with the ore aboard.
+- **A spent record of mined blocks goes.** `+helm/submit` drops the hull's `mined_strategic_blocks` when her hold
+  has no `strategic_ore` in it. The record was cleared only by a seizure, so ore sold long before could mark a
+  later, licensed load as unlicensed.
+- **A picket cast that does not parse is logged** (`PICKET_CAST`); the built-in cast is flown, as before, but no
+  longer silently.
+
+**Test.** `sfr30_a_world_with_no_authored_clusters_has_none`. Local: `domain_world` 256 passed, clippy clean on
+tacsim.
+
+**Not built from the row.** Clusters as doc 20 §17 field-kind orbital sites on their own bodies, with a load
+failure refusing boot (they are still a list on a lane location, all four on `kirkwood_depot`, and the lookup still
+walks every loaded pack on each call); the picket cast in the pack with a digest; drones as real excursion sorties
+whose intents decide the yield and whose records close; clerks laid up by the site opener and not as GOD; rates on
+doc 20's rig numbers; `strategic_ore` per block for ore that was bought or transferred; clearance only once the
+seizure has landed, not when it is submitted; the canopy from `Sky` inside a bubble; the cluster flight through the
+planner; the docking pose from a seeded draw.
+
+**Not pinned by a story.** The refused seizure, and the spent record (a story would need a sale and a second,
+licensed load).

@@ -12055,3 +12055,20 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         "and survives the restart as it was"
     );
 }
+
+/// **Doc 35 cut SF.R30 (doc 35d §6.6, `D-35-17`)** — a world whose packs author no orbital
+/// clusters has none: the lookup no longer falls back to the lane compiled into the binary. The
+/// shipped picket cast parses (a cast that did not would now be logged, and the built-in cast
+/// flown).
+#[test]
+fn sfr30_a_world_with_no_authored_clusters_has_none() {
+    let tw = TestWorld::new();
+    assert!(
+        tacsim::space::all_orbital_clusters(tw.world()).is_empty(),
+        "no pack, no clusters"
+    );
+    assert!(
+        tacsim::space::picket_cast_book().is_some(),
+        "content/space/picket_cast.json parses"
+    );
+}

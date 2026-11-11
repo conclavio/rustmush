@@ -1999,20 +1999,29 @@ pub fn assess_customs_fine_and_advance_front(
 
 /// Seize unlicensed `strategic_ore` from `hull`'s hold vault when `pilot` cannot pay the customs
 /// fine, and advance [`mush_faction::CUSTOMS_ASSERTION_TITLE`] (`SF.R12`, `35b` §5 #3).
+///
+/// # Errors
+///
+/// The seizure could not be submitted: the hull has no hold vault, or the burn action refused
+/// it. Nothing is recorded and the caller grants no clearance (`SF.R30`, doc 35d §6.7); the
+/// ore used to stay aboard a ship that was cleared all the same.
 pub fn seize_contraband_and_advance_front(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
     hull: ObjId,
     unlicensed_strategic_ore_kg: u64,
-) -> Option<FrontId> {
+) -> Result<Option<FrontId>, mush_core::CmdError> {
     let seize_t = u32::try_from(unlicensed_strategic_ore_kg.div_ceil(1_000).max(1)).unwrap_or(1);
-    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull)
-        && let Some(hold_vault) = crate::port::ship::hold_vault(ctx.w, &view)
-    {
-        let _ = super::commands::submit_seized_contraband_burn(ctx, hull, hold_vault.0, seize_t);
+    let hold_vault = crate::port::ship::hull_view(ctx.w, hull)
+        .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
+        .ok_or_else(|| mush_core::CmdError::msg("the hull has no hold to seize from"))?;
+    if super::commands::submit_seized_contraband_burn(ctx, hull, hold_vault.0, seize_t)?.is_none() {
+        return Err(mush_core::CmdError::msg("the seizure was not taken up"));
     }
 
-    let (registry_org, _, _) = resolve_registry_principal_and_account(ctx.w)?;
+    let Some((registry_org, _, _)) = resolve_registry_principal_and_account(ctx.w) else {
+        return Ok(None);
+    };
     let saved_actor = ctx.actor;
     ctx.actor = pilot;
     let front_id = mush_faction::record_customs_assertion(
@@ -2040,7 +2049,7 @@ pub fn seize_contraband_and_advance_front(
     .ok();
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
-    front_id
+    Ok(front_id)
 }
 
 /// Record a picket-running incident (`RanThePicket`), escalating the Republic Customs Corvette
@@ -2102,8 +2111,18 @@ pub struct PicketCastBook {
 
 const PICKET_CAST_JSON: &str = include_str!("../../content/space/picket_cast.json");
 
-static PICKET_CAST: std::sync::LazyLock<Option<PicketCastBook>> =
-    std::sync::LazyLock::new(|| serde_json::from_str(PICKET_CAST_JSON).ok());
+static PICKET_CAST: std::sync::LazyLock<Option<PicketCastBook>> = std::sync::LazyLock::new(|| {
+    // `SF.R30` (doc 35d §6.6): a cast file that does not parse is said aloud; the picket then
+    // flies the built-in cast, and the log says why.
+    serde_json::from_str(PICKET_CAST_JSON)
+        .map_err(|error| {
+            tracing::error!(
+                %error,
+                "tacsim: content/space/picket_cast.json does not parse; the built-in picket cast is used"
+            );
+        })
+        .ok()
+});
 
 /// Return the authored [`PicketCastBook`] loaded from `content/space/picket_cast.json` (`SF.R22`, `D-35-17`).
 #[must_use]
