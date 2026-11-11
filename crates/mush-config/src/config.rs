@@ -125,6 +125,7 @@
 //! | `[tacsim.field].launch_cycle_s` | `60` | **Doc 40 cut FR.3** (Q-40-19, provisional): wall-clock seconds between two hulls one carrier puts down into a running field; a second launch inside the cycle is refused with the seconds left; `10` to `600` |
 //! | `[tacsim.minds].fill_class` | `"I"` | Default AI fill class cap when its lead has selected none; pilot minds use `max_class` independently, and every seal also respects its rating and chassis core |
 //! | `[tacsim.minds].max_class` | `"III"` | Operator maximum for pilot and AI fill minds; `0`, `I`, `II` or `III` |
+//! | `[tacsim.minds].registry_pulse_ms` | `1000` | **Doc 44 cut MW.6** (Q-44-41): the Registry's pulse, ms, the pace of every Registry lease and so of a rating (about 1,070 leases, three hours at the default, which is production's real-time second); a dev box or a rig may set it lower; `10` to `60000` |
 //! | `[tacsim.minds].odds_floor_permille` | `100` | **17b cut M1b.1** (doc 17 §5, D-UM-17 as amended): the Compact floor, per mille — the least chance to hit a condition slot may name; captured into each arena at check-out, so a reload never reaches a running match; `10` to `950` in steps of `10` (17b cut M3.3 widened it from `100`: the seal refuses a card under the floor, so a floor above `100` refuses every Line-carded check-out; 17b cut M5.1 lets a principal choose a lawful preset with `SIM MIND`, sealed from 17b cut M5.2) |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.0` | the ceiling on a target's signature factor, which also scales the candidate cull; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism); **at least 1.0** (16b cut M.4: below it the cull is shorter than the range test), and 1.0 is exact because no shipped signature row exceeds 1.0 |
@@ -1795,13 +1796,16 @@ pub struct TacsimMindsCfg {
     /// Explicit bounded named-launch deployment JSON. Absent keeps all launch
     /// owners and content publication routes disabled.
     pub launch_path: Option<String>,
-    /// **Not a file key.** The proving service's maintenance pulse,
-    /// milliseconds (`tacsim::config::MindsConfig::bulk_maintenance_ms`):
-    /// the pace of a Registry lease, so of a genuine rating. A deployment
-    /// runs at the stock second whatever its file says (`serde(skip)`); only
-    /// code sets it, the mush-server acceptance stories' harness, where
-    /// `MIND_PULSE_MS` reaches it.
-    #[serde(skip)]
+    /// **`registry_pulse_ms`** (doc 44 cut MW.6, Q-44-41): the proving
+    /// service's maintenance pulse, milliseconds
+    /// (`tacsim::config::MindsConfig::bulk_maintenance_ms`): the pace of a
+    /// Registry lease, so of a genuine rating, which is about 1,070 leases.
+    /// 1,000 by default, production's second, at which a rating is about
+    /// three hours (doc 43c: the Registry runs in real time by decision). A
+    /// dev box or a rig may set it lower so a rating takes minutes; the
+    /// mush-server acceptance stories' harness sets it in code
+    /// (`MIND_PULSE_MS`). 10 to 60,000, checked with the rest of the block.
+    #[serde(rename = "registry_pulse_ms")]
     pub bulk_maintenance_ms: u64,
     /// Independent proving worker threads; 1–8, separate from live minds.
     pub proving_workers: usize,
@@ -3939,6 +3943,16 @@ cap_permile = 400"
         let text = "[tacsim.minds]\nodds_floor = 50\n";
         let refused = toml::from_str::<Config>(text).expect_err(text).to_string();
         assert!(refused.contains("odds_floor"), "{refused}");
+        assert!(refused.contains("unknown field"), "{refused}");
+
+        // Doc 44 cut MW.6 (Q-44-41): the Registry's pulse is a file key under its own
+        // name; absent it is production's second, and the field's Rust name is no key.
+        assert_eq!(absent.tacsim.minds.bulk_maintenance_ms, 1_000);
+        let paced: Config =
+            toml::from_str("[tacsim.minds]\nregistry_pulse_ms = 50\n").expect("the pulse parses");
+        assert_eq!(paced.tacsim.minds.bulk_maintenance_ms, 50);
+        let text = "[tacsim.minds]\nbulk_maintenance_ms = 50\n";
+        let refused = toml::from_str::<Config>(text).expect_err(text).to_string();
         assert!(refused.contains("unknown field"), "{refused}");
     }
 

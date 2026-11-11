@@ -46,7 +46,7 @@ use super::tick::{
     apply_bubble_command,
 };
 use super::weapons::LaserMode;
-use crate::arena::party::{Mark, Relation};
+use crate::arena::party::Relation;
 
 /// The helm command verb (`+helm`).
 pub const HELM_VERB: &str = "+helm";
@@ -282,6 +282,30 @@ pub fn hull_aboard_for_actor(w: &World, actor: ObjId) -> Option<ObjId> {
         return Some(host);
     }
     None
+}
+
+/// The characters who keep `hull` crewed (doc 44 Q-44-35, ruled 2026-11-11): everyone aboard
+/// who holds one of her bridge stations, and her captain when aboard. A passenger is not one:
+/// their link neither holds the backup mind off nor takes the helm back from it.
+#[must_use]
+pub fn helm_crew_aboard(w: &World, hull: ObjId) -> Vec<ObjId> {
+    let mut crew = std::collections::BTreeSet::new();
+    if let Some(assignments) = w
+        .module_state::<SpatialState>()
+        .and_then(|sim| sim.assignments.get(&hull))
+    {
+        for seat in assignments.seats.values() {
+            if hull_aboard_for_actor(w, seat.actor) == Some(hull) {
+                crew.insert(seat.actor);
+            }
+        }
+    }
+    if let Some(captain) = crate::port::coop::helm_holder(w, hull)
+        && hull_aboard_for_actor(w, captain) == Some(hull)
+    {
+        crew.insert(captain);
+    }
+    crew.into_iter().collect()
 }
 
 /// Return all crew members (`ObjKind::Player` or seated bridge crew) currently aboard `hull` (`SF.R13`).
@@ -2103,7 +2127,7 @@ pub(crate) fn execute_linkdead_return_journey(
         .unwrap_or_else(|| CmdError::msg("No open port available for linkdead return plan.")))
 }
 
-fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
+pub(crate) fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
     if fallback_actor != ObjId(1) && hull_aboard_for_actor(w, fallback_actor) == Some(hull) {
         return fallback_actor;
     }
@@ -2351,18 +2375,6 @@ fn submit_passage_burn(
         return Ok(None);
     }
     queue_space_burn(ctx, hull, vault, (burn_t, crew_days, 0), true).map(Some)
-}
-
-pub(crate) fn submit_seized_contraband_burn(
-    ctx: &mut Ctx<'_>,
-    hull: ObjId,
-    vault: u64,
-    seized_strategic_ore_t: u32,
-) -> Result<Option<u32>, CmdError> {
-    if seized_strategic_ore_t == 0 {
-        return Ok(None);
-    }
-    queue_space_burn(ctx, hull, vault, (0, 0, seized_strategic_ore_t), false).map(Some)
 }
 
 /// Cut the passage `hull` is flying because its burn could not be drawn from her tank (doc 35
@@ -4580,6 +4592,17 @@ pub const CUSTOMS_SEIZURE_HELD: &str =
 
 fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    submit_hull_to_customs(ctx, hull)
+}
+
+/// Submit `hull` to the customs picket that is hailing her, as `ctx.actor`: `+helm/submit`'s
+/// whole ruling, which the link-loss backup seat asks for as well (doc 35 §11 `B-5`).
+///
+/// # Errors
+///
+/// No picket is hailing her, she is cleared or has run already, she is not hove to, or the
+/// seizure could not be taken.
+pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
 
     let (corvette_ship_id, carrier_ship_id, rel_speed_mmps, status) = {
@@ -4637,6 +4660,12 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
 
+    // Doc 35 cut SF.R26c (doc 35d §9a): one ruling at a time. An earlier ruling on this ship
+    // is still on its way to the store, and the picket's verdict follows it.
+    if super::customs::ruling_pending(ctx.w, hull) {
+        return Err(CmdError::msg(super::customs::CUSTOMS_RULING_PENDING));
+    }
+
     let customs_principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, ctx.actor);
     let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(customs_principal), now_ic);
     // `SF.R30` (doc 35d §6.7): a hold with no strategic ore left in it has nothing to trace to
@@ -4648,154 +4677,92 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         book.mined_strategic_blocks.remove(&hull);
     }
 
-    if manifest.unlicensed_strategic_ore_kg > 0 {
-        match super::picket::assess_customs_fine_and_advance_front(
-            ctx,
-            customs_principal,
-            hull,
-            manifest.unlicensed_strategic_ore_kg,
-        ) {
-            Ok((contract_id, fine_minor, front_id)) => {
-                let front_raw = front_id.map(|f| f.0);
-
-                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-                    && let Some(active) = book.active_for_hull_mut(hull)
-                {
-                    let carrier_party = active.carrier_party_for(hull);
-                    active.bubble.set_party_relation(
-                        super::picket::CUSTOMS_CORVETTE_PARTY,
-                        carrier_party,
-                        Some(Mark::Friendly),
-                    );
-                    if let Some(picket) = active.picket.as_mut() {
-                        picket.set_inspection_status_for(
-                            hull,
-                            super::picket::PicketInspectionStatus::ClearedAfterFine,
-                        );
-                        picket.set_inspection_outcome_for(
-                            hull,
-                            super::picket::PicketInspectionOutcome::Fined {
-                                contract_id: contract_id.0,
-                                fine_minor,
-                                unlicensed_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
-                                front_id: front_raw,
-                            },
-                        );
-                    }
-                }
-
-                let fine_str = crate::port::coop::money_minor(ctx, fine_minor);
-                let line = format!(
-                    "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest: {} kg unlicensed `strategic_ore` detected; assessed {fine_str} contraband fine (Ledger contract #{}, campaign front `{}` #{}) and granted customs clearance.",
-                    manifest.unlicensed_strategic_ore_kg,
-                    contract_id.0,
-                    mush_faction::CUSTOMS_ASSERTION_TITLE,
-                    front_raw.unwrap_or(0)
-                );
-                crate::port::voyage::narrate_hull(ctx, hull, &line);
-                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
-            }
-            Err(_) => {
-                // Indigent pilot cannot cover the fine (`35b` §5 #14, `SF.R12`): confiscate the
-                // unlicensed `strategic_ore` from the hull's `stow.ore` hold, record the incident
-                // on `CUSTOMS_ASSERTION_TITLE`, and clear the ship (`ClearedAfterSeizure`)!
-                // `SF.R30` (doc 35d §6.7): no seizure, no clearance. The ship stays under
-                // inspection and the pilot is told why.
-                let front_id = match super::picket::seize_contraband_and_advance_front(
-                    ctx,
-                    customs_principal,
-                    hull,
-                    manifest.unlicensed_strategic_ore_kg,
-                ) {
-                    Ok(front_id) => front_id,
-                    Err(refusal) => {
-                        return Err(CmdError::msg(format!(
-                            "{CUSTOMS_SEIZURE_HELD} ({refusal})."
-                        )));
-                    }
-                };
-                let front_raw = front_id.map(|f| f.0);
-
-                if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-                    book.mined_strategic_blocks.remove(&hull);
-                    if let Some(active) = book.active_for_hull_mut(hull) {
-                        let carrier_party = active.carrier_party_for(hull);
-                        active.bubble.set_party_relation(
-                            super::picket::CUSTOMS_CORVETTE_PARTY,
-                            carrier_party,
-                            Some(Mark::Friendly),
-                        );
-                        if let Some(picket) = active.picket.as_mut() {
-                            picket.set_inspection_status_for(
-                                hull,
-                                super::picket::PicketInspectionStatus::ClearedAfterSeizure,
-                            );
-                            picket.set_inspection_outcome_for(
-                                hull,
-                                super::picket::PicketInspectionOutcome::ContrabandSeized {
-                                    seized_strategic_ore_kg: manifest.unlicensed_strategic_ore_kg,
-                                    front_id: front_raw,
-                                },
-                            );
-                        }
-                    }
-                }
-
-                let line = format!(
-                    "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest: {} kg unlicensed `strategic_ore` confiscated in lieu of fine (insufficient credit; campaign front `{}` #{}) and customs clearance granted.",
-                    manifest.unlicensed_strategic_ore_kg,
-                    mush_faction::CUSTOMS_ASSERTION_TITLE,
-                    front_raw.unwrap_or(0)
-                );
-                crate::port::voyage::narrate_hull(ctx, hull, &line);
-                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
-            }
-        }
+    // What customs found, and what it will do about it. The handler grants nothing: the
+    // finding is filed and submitted as one `tacsim_space_customs`, whose apply records the
+    // ruling (and takes a seizure's ore from the hold in the same transaction); the space tick
+    // levies the fine, advances the front and clears the ship on the committed row.
+    let unlicensed_kg = manifest.unlicensed_strategic_ore_kg;
+    let (finding, found) = if unlicensed_kg == 0 {
+        (
+            super::customs::CustomsFinding::Cleared {
+                strategic_ore_kg: manifest.strategic_ore_kg,
+            },
+            format!(
+                "{} kg `strategic_ore`, licensed/compliant",
+                manifest.strategic_ore_kg
+            ),
+        )
     } else {
-        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.active_for_hull_mut(hull)
-        {
-            let carrier_party = active.carrier_party_for(hull);
-            active.bubble.set_party_relation(
-                super::picket::CUSTOMS_CORVETTE_PARTY,
-                carrier_party,
-                Some(Mark::Friendly),
-            );
-            if let Some(picket) = active.picket.as_mut() {
-                picket.set_inspection_status_for(
-                    hull,
-                    super::picket::PicketInspectionStatus::Cleared,
-                );
-                picket.set_inspection_outcome_for(
-                    hull,
-                    super::picket::PicketInspectionOutcome::Cleared {
-                        strategic_ore_kg: manifest.strategic_ore_kg,
-                    },
-                );
-            }
+        let payable = super::picket::customs_fine_minor(ctx.w, unlicensed_kg).filter(|fine| {
+            super::picket::customs_fine_payable(ctx.w, customs_principal, *fine).is_ok()
+        });
+        if let Some(fine_minor) = payable {
+            let fine = crate::port::coop::money_minor(ctx, fine_minor);
+            (
+                super::customs::CustomsFinding::Fined {
+                    unlicensed_strategic_ore_kg: unlicensed_kg,
+                    fine_minor,
+                },
+                format!(
+                    "{unlicensed_kg} kg unlicensed `strategic_ore`; a contraband fine of {fine} is assessed"
+                ),
+            )
+        } else {
+            // An indigent principal cannot cover the fine (`35b` §5 #14, `SF.R12`): the
+            // unlicensed ore is confiscated instead. `SF.R30` (doc 35d §6.7): no seizure, no
+            // clearance.
+            let hold_vault = crate::port::ship::hull_view(ctx.w, hull)
+                .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
+                .ok_or_else(|| {
+                    CmdError::msg(format!(
+                        "{CUSTOMS_SEIZURE_HELD} (the hull has no hold to seize from)."
+                    ))
+                })?;
+            let seize_t = u32::try_from(unlicensed_kg.div_ceil(1_000).max(1)).unwrap_or(1);
+            (
+                super::customs::CustomsFinding::Seized {
+                    unlicensed_strategic_ore_kg: unlicensed_kg,
+                    seize_t,
+                    vault: hold_vault.0,
+                },
+                format!(
+                    "{unlicensed_kg} kg unlicensed `strategic_ore`; no credit covers the fine, so {seize_t} t is to be confiscated"
+                ),
+            )
         }
+    };
+    super::customs::file_ruling(
+        ctx,
+        hull,
+        customs_principal,
+        finding,
+        (corvette_ship_id.clone(), carrier_ship_id.clone()),
+    )?;
 
-        let line = format!(
-            "[PICKET] Republic Customs Corvette `{corvette_ship_id}` inspected `{carrier_ship_id}` manifest ({} kg `strategic_ore`, licensed/compliant): customs clearance granted.",
-            manifest.strategic_ore_kg
-        );
-        crate::port::voyage::narrate_hull(ctx, hull, &line);
-        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
-    }
-
-    let _ = super::tick::submit_bubble_input(ctx, hull, "submit", None);
+    let line = format!(
+        "[PICKET] Republic Customs Corvette `{corvette_ship_id}` is inspecting `{carrier_ship_id}` manifest ({found}). Hold your heave-to: the ruling follows once it is recorded."
+    );
+    crate::port::voyage::narrate_hull(ctx, hull, &line);
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
     push_space_panels(ctx, hull);
     Ok(())
 }
 
 fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
-    let status = ctx
+    let (status, corvette_ship_id, carrier_ship_id) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.active_for_hull(hull))
-        .and_then(|a| a.picket.as_ref())
-        .map(|p| p.inspection_status_for(hull))
+        .and_then(|a| {
+            a.picket.as_ref().map(|p| {
+                (
+                    p.inspection_status_for(hull),
+                    p.corvette_ship_id.clone(),
+                    a.carrier_ship_id_for(hull).to_owned(),
+                )
+            })
+        })
         .ok_or_else(|| CmdError::msg("No customs picket is hailing this ship."))?;
     if matches!(
         status,
@@ -4813,39 +4780,23 @@ fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
 
+    // Doc 35 cut SF.R26c (doc 35d §9a): the run is filed and submitted as one
+    // `tacsim_space_customs`. The incident on the front, and the corvette turning on the ship,
+    // follow the committed row on the space tick.
     let customs_principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, ctx.actor);
-    let front_id =
-        super::picket::record_ran_the_picket_incident(ctx, customs_principal, hull).map(|f| f.0);
-
-    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-        && let Some(active) = book.active_for_hull_mut(hull)
-    {
-        let carrier_party = active.carrier_party_for(hull);
-        active.bubble.set_party_relation(
-            super::picket::CUSTOMS_CORVETTE_PARTY,
-            carrier_party,
-            Some(Mark::Hostile),
-        );
-        if let Some(picket) = active.picket.as_mut() {
-            picket.set_inspection_status_for(
-                hull,
-                super::picket::PicketInspectionStatus::RanThePicket,
-            );
-            picket.set_inspection_outcome_for(
-                hull,
-                super::picket::PicketInspectionOutcome::RanThePicket { front_id },
-            );
-        }
-    }
+    super::customs::file_ruling(
+        ctx,
+        hull,
+        customs_principal,
+        super::customs::CustomsFinding::Ran,
+        (corvette_ship_id.clone(), carrier_ship_id),
+    )?;
 
     let line = format!(
-        "[PICKET] You refuse inspection and run the Republic Customs picket! Corvette transitions to Hostile; campaign front `{}` #{} advanced.",
-        mush_faction::CUSTOMS_ASSERTION_TITLE,
-        front_id.unwrap_or(0)
+        "[PICKET] You refuse inspection. Republic Customs Corvette `{corvette_ship_id}` is logging the run."
     );
     crate::port::voyage::narrate_hull(ctx, hull, &line);
     ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
-    let _ = super::tick::submit_bubble_input(ctx, hull, "run", None);
     push_space_panels(ctx, hull);
     Ok(())
 }

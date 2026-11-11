@@ -2223,6 +2223,20 @@ mod tests {
                 "[tacsim.minds].cpu_lens_ms",
                 "0",
             ),
+            // Doc 44 cut MW.6 (Q-44-41): the Registry's pulse is 10 to 60,000 ms,
+            // by name.
+            (
+                "[tacsim.minds]",
+                "registry_pulse_ms = 5\n",
+                "[tacsim.minds].registry_pulse_ms",
+                "5",
+            ),
+            (
+                "[tacsim.minds]",
+                "registry_pulse_ms = 60001\n",
+                "[tacsim.minds].registry_pulse_ms",
+                "60001",
+            ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));
             let error = tacsim_config(&cfg)
@@ -2236,6 +2250,13 @@ mod tests {
         // And nothing valid is refused: the shipped defaults map and pass, and so
         // do both ends of the unattended key's own band (16b cut D.3).
         assert!(tacsim_config(&TacsimCfg::default()).is_ok());
+        // Doc 44 cut MW.6: the file's pulse reaches the layer's config, which the bulk
+        // model reads as its maintenance pulse; an absent key is production's second.
+        let paced = tacsim_config(&tacsim_cfg("[tacsim.minds]\nregistry_pulse_ms = 50\n"))
+            .expect("a dev box's pulse maps");
+        assert_eq!(paced.minds.bulk_maintenance_ms, 50);
+        let stock = tacsim_config(&TacsimCfg::default()).expect("the defaults map");
+        assert_eq!(stock.minds.bulk_maintenance_ms, 1_000);
         for body in ["unattended_ms = 0\n", "unattended_ms = 10000\n"] {
             let cfg = tacsim_cfg(&format!("[tacsim.match]\n{body}"));
             assert!(
