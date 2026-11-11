@@ -1,6 +1,6 @@
 # 44. Minds, wired through the game — the remaining work, surveyed
 
-Draft 0.5, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
+Draft 0.6, 2026-11-11, docs only. Surveyed against `origin/main` at `8c8ebc184` (the space train
 through SF.R31 and SF.R26b merged) by four read-only lanes, one each for player unit minds, ground
 combat, space flight, and the non-combat actors; the lead checked each lane's main claims in the
 tree. Anchors are file and function names; line numbers drift. Draft 0.1, the same day, was the
@@ -16,7 +16,10 @@ the findings, §5.11 asks the four questions they raise, and §7 and §8 are rew
 `95764abb5`). Five read-only lanes checked its claims one by one: most hold, six are refuted, and
 several of the symbols and paths it cites do not exist. §4c is the list. It adds four units
 (MW.0, MW.22, MW.23, MW.24), splits MW.14, moves MW.6 ahead of the go-live, and raises ten
-questions, Q-44-39 to Q-44-48 (§5.12), which are open; each default holds until ruled.
+questions, Q-44-39 to Q-44-48 (§5.12), which are open; each default holds until ruled. **Draft
+0.6, the same day, records what the first wave 0 work found:** MW.0 does not stand alone (its
+default would take from House and leased hulls what they do today), so Q-44-39's default is
+changed and MW.0 is merged with MW.22; MW.4, MW.6 and MW.16 are built (PRs #532, #534, #533).
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) used: it asks the
 owner questions, each with a proposed default, an alternative and a reason. "Provisional" marks a
@@ -721,13 +724,22 @@ ruled answer: Q-44-42 withdraws half of Q-44-17, and Q-44-44 changes the order o
 ### 5.12 Questions the second review raises (Draft 0.5; each default holds until ruled)
 
 **Q-44-39 — Licensed minds on a live server, and the title fence.**
-- **Proposed default:** compose the claim path in the production boot now (MW.0), and build S.4c,
-  lease and organisation authority in the fence, straight after it (MW.22). Between the two, a
-  filed mind flies only on a hull its pilot holds personal title to.
-- **Alternative:** hold MW.0 until S.4c is built and land them together.
+- **Proposed default (changed in Draft 0.6):** MW.0 and MW.22 are built in that order and merged
+  together. The claim path is composed in the production boot only with S.4c, lease and
+  organisation authority in the fence, beside it.
+- **Alternative (Draft 0.5's default):** compose the claim path now, and S.4c straight after;
+  between the two a filed mind flies only on a hull its pilot holds personal title to.
 - **Why:** the personal-title path is built and tested and nothing on a live server uses it. But
   a starter flies a chartered hull and a House flies its own, so MW.22 is not optional before
   players or before procurement means anything in a field.
+- **Why the default changed.** Starting MW.0 showed that the alternative takes something away.
+  With no claim path, `untitled_refusal` (`surface/dispatch.rs`) reads no title, and a leased
+  or House-titled hull launches a filed mind as S.4a's dormant seal: the seal is written to the
+  black box, which is what doc 17h's inspection, contraband and procurement stories read
+  (M8f, M8g). With the claim path composed and no S.4c, the same launch is refused
+  (`MIND_UNTITLED`, D-23-22). So on a live server every House hull and every chartered rig
+  would lose its filed mind until MW.22 landed. The test rigs that prove M8f and M8g compose
+  no claim path for the same reason.
 
 **Q-44-40 — The Class III entitlement in a launch world.**
 - **Proposed default:** the launch composes a route that issues it (MW.23). C4's story 4 and the
@@ -826,7 +838,7 @@ an in-process rig for a timer (doc 43c, TS.10), and uses the Registry's pulse ke
 
 | Unit | Category | What it is | Mostly in | Waits on | Done when |
 |---|---|---|---|---|---|
-| **MW.0** | A | Licensed minds composed on a live server (Q-44-39): the production boot's launch composes the claim path the test rigs compose | `crates/mush-server/src/boot.rs` (`compose_launch`), `crates/tacsim/src/launch.rs` | — | on the production composition, not a rig's own: a filed mind launched on a rig its pilot holds title to opens a claim and is admitted to a field under its own seal; a one-seat licence refuses a second sortie while the first is out; a launch while that licence's resale is pending is refused; a leased rig and a House-titled hull are refused by name |
+| **MW.0** | A | Licensed minds composed on a live server (Q-44-39): the production boot's launch composes the claim path the test rigs compose. **Merged only together with MW.22** (Draft 0.6): alone it would refuse a filed mind on every leased and House-titled hull, which launch one today as a dormant seal | `crates/mush-server/src/boot.rs` (`compose_launch`), `crates/tacsim/src/launch.rs` | — (merges with MW.22) | on the production composition, not a rig's own: a filed mind launched on a rig its pilot holds title to opens a claim and is admitted to a field under its own seal; a one-seat licence refuses a second sortie while the first is out; a launch while that licence's resale is pending is refused; a leased rig and a House-titled hull are refused by name |
 | **MW.1** | A | The launch switch and the bring-up script (Q-44-4, Q-44-5), walking the runbook's whole sequence; `launch_path` kept out of the rendered file until the box's `launch.json` exists, and taken out again before a reset; the script says how its in-game steps are typed as #1 and how players are kept off until the Active boot; a procurement policy for each House with what a purchase needs (Q-44-8); an ungoverning shop named in the dev launch; the raid director on (Q-44-7); the Registry's pulse set for a dev box (Q-44-41); the `content_assist` route added to the template and the example | `deploy/instance/` (`render.sh`, `instance.env.example`, `mushd.toml.tmpl`, `launch.json.example`, a new bring-up script), `deploy/dev1`, `deploy/dev2`, `deploy/README.md`, `mushd.toml.example` | MW.6 for the purchase check | on a throwaway Redis the script takes a fresh store through boot, the identities, the Initialize boot, all seven grants, the four initialize actions and the Active restart, and `@mind/launch` names every operator `ready`; the same run interrupted once and started again ends the same way; no player can log in before the Active boot; a reset and a second bring-up work; a House with three titled hulls, a funded treasury and a rated listing buys a licence by its own agent; rendering with the switch off gives today's file byte for byte |
 | **MW.2** | B | The two defects ruled to be fixed before the go-live (Q-44-14, Q-44-15), in the crates they live in. A listing that can no longer be sold leaves the counter and the House agent's list: a read the Roll owns says whether a listing is withdrawn, recalled, lapsed with its seller's or its parent's licence, or moved with its charter, and both the counter and `ProcurementListings` ask it. A renewal that can never land stops: the Roll's renewal readers leave out terminal entitlements, both renewal services tell a lasting refusal from a passing one, and `+minds/renew` says why in the ruled words | `crates/mush-roll/src/commerce/` (`withdrawal/`, `renewal/reader.rs`, `house_renewal/reader.rs`), `crates/mush-market/src/` (`mind_commands.rs`, `mind_commands/procurement.rs`, `mind_renewal/service.rs`, `mind_house_renewal/service.rs`) | MW.6 | the two stories that assert a withdrawn listing stays visible (`player_market_story.rs`, `player_market_typed.rs`) are rewritten and pass; a recalled listing is gone as well; the House agent does not ask for a dead listing again; a recalled licence is tried once and not again after a restart; a derivative waiting on its parent's renewal is still retried |
 | **MW.3** | A | The go-live on dev1 and dev2: §8, run with the owner | the boxes | MW.0, MW.1, MW.2, MW.6 | §8's steps recorded for each box, the provider audit and the House's purchase among them |
@@ -874,9 +886,9 @@ an in-process rig for a timer (doc 43c, TS.10), and uses the Registry's pulse ke
 
 ### 7.2 What may start now
 
-MW.0, MW.4, MW.6, MW.14a, MW.15, MW.16, MW.17 and MW.24 wait on nothing, and MW.8 is running.
-MW.1's script can be written at once; only its purchase check waits on MW.6. That is nine units
-across seven chains (§7.3).
+MW.0, MW.14a, MW.15, MW.17 and MW.24 wait on nothing, and MW.8 is running. MW.1's script can be
+written at once; only its purchase check waits on MW.6, which is built (PR #534). MW.2 follows
+MW.6 in the market chain and may start from its branch. MW.4 and MW.16 are built.
 
 ### 7.3 One writer a file
 
@@ -909,6 +921,9 @@ not write a space book directly (`arena_library.rs`); it goes through commands.
 
 - **MW.0 is under three other chains.** A filed mind in a field (MW.7's second story), C4 (MW.5)
   and a mind on a ship (MW.13) each need the claim path composed.
+- **MW.0 and MW.22 are one merge.** They are two units because they are two changes, built in
+  order by one session; neither reaches main without the other (Q-44-39). Where a row above
+  waits on MW.0, it waits on that merge.
 - **MW.6 is under the go-live.** Without the pulse key a dev box waits about three hours for each
   rated line it needs, at every wipe.
 - **MW.7 waits on a design, not on code:** the field section MW.8's session writes into doc 27.
@@ -930,10 +945,10 @@ not write a space book directly (`arena_library.rs`); it goes through commands.
 
 ### 7.5 Waves
 
-- **Wave 0, now:** MW.0, MW.1, MW.4, MW.6, MW.15 then MW.14a, MW.16, MW.17, MW.24; MW.8 already
-  running.
-- **Wave 1:** MW.2 (after MW.6), MW.22 (after MW.0), MW.7 (after MW.0 and the field section),
-  MW.9 (after MW.8), MW.18.
+- **Wave 0, now:** MW.0 then MW.22 (one session, one merge), MW.1, MW.15 then MW.14a, MW.17,
+  MW.24; MW.8 already running. Built and open: MW.4 (PR #532), MW.6 (PR #534), MW.16 (PR #533).
+- **Wave 1:** MW.2 (after MW.6), MW.7 (after MW.0 with MW.22, and the field section), MW.9
+  (after MW.8), MW.18.
 - **Wave 2:** MW.3 (after MW.0, MW.1, MW.2 and MW.6), MW.23, MW.10, then MW.11 and MW.12.
 - **Wave 3:** MW.5, MW.13, MW.19, MW.20; MW.14b once it is designed and ruled.
 - **Wave 4:** MW.21.
