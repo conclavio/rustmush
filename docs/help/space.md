@@ -53,7 +53,7 @@ Assign or claim a bridge station before issuing flight or tactical orders:
 +helm/submit
 +helm/run
 +helm/dock [<port|derelict> | tape <session_id> <rle> | abort]
-+helm/tow [<derelict_id>]
++helm/tow [<derelict_id> | release]
 ```
 
 - `+helm/autopilot <port|cluster_id>` plans and flies a passage from live `(pos, vel)` to an open port, an orbital asteroid cluster (`ceres_halo`, `kirkwood_gap_3_1`, `pallas_inclined_belt`, `saturn_b_ring_edge`), or an outer-system body (`ceres`, `jupiter`, `saturn`, `titan`, `enceladus`, `uranus`, `neptune`, `triton`).
@@ -61,7 +61,10 @@ Assign or claim a bridge station before issuing flight or tactical orders:
 - `+helm/match <rock>` locks an RCS velocity match (`|Δv| < 5 m/s` within `2,000 m`) with rock `A`, `B`, or `C`.
 - `+helm/submit` heaves to and submits the hull's cargo manifest to a customs picket inspection; `+helm/run` refuses inspection and runs the picket.
 - `+helm/dock [<port|derelict> | tape <session_id> <rle> | abort]` initiates a 60 fps 6-DOF docking approach (`space.docking`) against an open port at leg end or a disabled derelict within `500 m`, submits a recorded `<rle>` input tape for `<session_id>`, or aborts an open docking session.
-- `+helm/tow [<derelict_id>]` attaches a salvage tow line to a derelict after a verified hard-dock clamp.
+- `+helm/tow [<derelict_id>]` attaches a salvage tow line to a derelict after a verified hard-dock clamp, and files your salvage claim on her when someone answers for her title. A clamp with no tow line lets go after a minute.
+- `+helm/tow release` lets the derelict go. If she has not been brought into a port, your custody of her ends and the salvage claim on her is withdrawn; a claim is only ever awarded on a derelict a port has.
+- An open docking session cuts your own main drive and leaves you coasting; every other ship in the bubble keeps flying. `+helm/dock` is refused while a hostile contact is operational in the bubble, whether or not your sensors hold it.
+- If every crew member aboard loses their link, the drive is cut for a two-minute grace. Past it, a ship in free flight or at a cluster flies the autopilot's own passage to the nearest open port she can afford, paid from her tank and locker like any other; a ship that can afford none drifts where she is.
 
 ---
 
@@ -82,6 +85,7 @@ Vacuum detection resolves through light-lagged infrared propagation, comparing t
 - `+tac/status` (or bare `+tac`) shows tactical mounts, active locks, and sensor status.
 - `+tac/scan` runs a passive/active infrared sensor pass with light-lag across the active space bubble.
 - `+tac/lock <contact|off>` acquires or clears a fire-control lock on a detected contact.
+- `+tac/hail <contact|port>[=<message>]` sends a radio hail from any bridge station. In a bubble it goes to a contact on your scope; from free flight or a cluster it goes to an open port. The range is measured, and a hail to a distant port arrives after the light has crossed (minutes between Ceres and Mars). At most four of your hails are in flight at once.
 
 ### Space Ordnance Triad and Point Defence
 

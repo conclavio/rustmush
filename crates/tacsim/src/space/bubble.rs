@@ -444,6 +444,11 @@ pub struct SpaceShipState {
     /// Whether all crew are currently linkdead (`D-35-7` ballistic safety rule).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub crew_linkdead: bool,
+    /// Whether the hull is flying a docking session (`SF.R25`, doc 35d §2 #4): her main drive is
+    /// cut and she coasts while the rest of the bubble keeps its clock. Set from the open
+    /// sessions on every bubble step, never by a command.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub docking_hold: bool,
     pub emcon: EmconPosture,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked_target_id: Option<String>,
@@ -568,6 +573,7 @@ impl SpaceShipState {
             cooling_rate_permille_s: 30,
             pdc_auto: true,
             crew_linkdead: false,
+            docking_hold: false,
             emcon: EmconPosture::Standard,
             locked_target_id: None,
             hit_radius_m: 5,
@@ -2178,7 +2184,7 @@ impl LocalSpaceBubble {
 
         // 1. Step ship kinematics, propellant debit (`D-35-6`), linkdead cut (`D-35-7`), and cooling
         for ship in self.ships.values_mut() {
-            if ship.crew_linkdead || ship.status != HullStatus::Operational {
+            if ship.crew_linkdead || ship.docking_hold || ship.status != HullStatus::Operational {
                 ship.thrust_mps2 = [0, 0, 0];
                 ship.thrust_mmps2 = [0, 0, 0];
             }

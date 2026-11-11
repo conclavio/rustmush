@@ -94,7 +94,7 @@ pub const HELM_HELP: &str = "\
 +helm/run                             Refuse customs inspection and run the picket (`D-35-11`).
 +helm/dock [<port|derelict> | tape <session_id> <rle> | abort]
                                       Initiate, step, or verify a 60 fps 6-DOF docking approach (`D-35-14`).
-+helm/tow [<derelict_id>]             Attach a salvage tow line to a hard-docked derelict (`D-35-12`).";
++helm/tow [<derelict_id> | release]   Attach a salvage tow line to a hard-docked derelict, or let her go (`D-35-12`).";
 
 /// The asteroid field mining command verb (`+mine`, `SF.R5`, `D-35-13`).
 pub const MINE_VERB: &str = "+mine";
@@ -131,7 +131,7 @@ pub const TAC_HELP: &str = "\
 +tac/torp [<contact>[=<count>]]       Launch torpedo salvo (default 1) at a detected hostile contact.
 +tac/railgun [<contact>]              Fire spinal/turret railguns at a detected hostile contact.
 +tac/pdc <auto|manual|point|offense>  Configure point-defence autocannons or dual-mode laser mounts.
-+tac/hail <target>[=<message>]        Transmit a light-lagged radio hail (`d / c`, `D-35-10`).";
++tac/hail <contact|port>[=<message>]  Hail a detected contact, or an open port from free flight (`d / c`, `D-35-10`).";
 
 /// Feed identifier for the 3D holotank tactical display (`SF.2`, `SF.7`).
 pub const HOLOTANK_FEED: &str = "space.holotank";
@@ -1933,101 +1933,110 @@ pub(crate) fn compute_carrier_bubble_return_reserve_dv(
     Some(reserve_dv)
 }
 
-/// Resolve the nearest open port place ID for `hull`'s linkdead return plan (`SF.R13`, `D-35-7`).
+/// Where `hull` is while she is outside a bubble: her free-flight position, else her cluster's
+/// anchor body's (`SF.R25`).
+fn tier1_position_km(
+    w: &World,
+    hull: ObjId,
+    sky: &crate::sky::Sky,
+    now_ic_s: i64,
+) -> Option<[i64; 3]> {
+    let book = w.module_state::<SpaceBubbleBook>()?;
+    if let Some(ff) = book.free_flight_for_hull(hull) {
+        return Some(ff.pos_km);
+    }
+    let session = book.cluster_sessions.get(&hull)?;
+    let anchor = super::mining::cluster_by_id(w, &session.cluster)?.anchor_body;
+    sky.position_km(&anchor, now_ic_s).map(|p| [p.x, p.y, p.z])
+}
+
+/// The open ports, nearest `hull` first (`SF.R25`, doc 35d §2 #2). A port whose position the
+/// sky cannot give sorts last; with no position for the hull the lane's order stands.
+fn return_ports_nearest_first(w: &World, hull: ObjId) -> Vec<OpenPort> {
+    let mut ports = open_port_places(w);
+    let sky_and_pack = w
+        .module_state::<crate::TacsimStore>()
+        .zip(mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK).ok())
+        .and_then(|(store, lane)| store.applied_in(w, &lane))
+        .and_then(|version| crate::port::voyage::lane_sky_of(w, version).ok());
+    let Some((sky, pack)) = sky_and_pack else {
+        return ports;
+    };
+    let now_ic_s = w.world_ic_now().at;
+    let Some(here) = tier1_position_km(w, hull, &sky, now_ic_s) else {
+        return ports;
+    };
+    let range_km = |place: &mush_core::CanonicalId| -> i128 {
+        crate::port::passage::body_or_place_of(&sky, pack, place)
+            .ok()
+            .and_then(|body| sky.position_km(&body, now_ic_s))
+            .map_or(i128::MAX, |p| {
+                let d = [
+                    i128::from(p.x) - i128::from(here[0]),
+                    i128::from(p.y) - i128::from(here[1]),
+                    i128::from(p.z) - i128::from(here[2]),
+                ];
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+            })
+    };
+    ports.sort_by_cached_key(|(place, _, _, _)| range_km(place));
+    ports
+}
+
+/// The nearest open port's place id for `hull`'s linkdead return plan (`SF.R13`, `D-35-7`;
+/// nearest by range since `SF.R25`).
 #[must_use]
-pub(crate) fn nearest_return_port_for_hull(w: &World, _hull: ObjId) -> Option<String> {
-    open_port_places(w)
+pub(crate) fn nearest_return_port_for_hull(w: &World, hull: ObjId) -> Option<String> {
+    return_ports_nearest_first(w, hull)
         .into_iter()
         .next()
         .map(|(pid, _, _, _)| pid.as_str().to_owned())
 }
 
-/// Execute `hull`'s queued linkdead return plan once its grace window expires (`SF.R23`, `D-35-7`):
-/// recouples a hull in `free_flights` or `cluster_sessions` (when not inside an active bubble)
-/// onto a `CarrierJourney` toward `port_word`.
+/// Run `hull`'s queued linkdead return plan once its grace window expires (`SF.R23`, `D-35-7`):
+/// a hull in free flight or at a cluster, outside any bubble, engages the same port autopilot a
+/// pilot would type, toward `port_word` first and then each other open port, nearest first.
+///
+/// Since `SF.R25` (doc 35d §2 #2) the plan is the planner's own passage, with its tank and
+/// locker checks and its debit. `Ok(None)` is a hull the plan does not cover (in a bubble, on a
+/// corridor); `Err` is a hull no port's passage is within reach of, who drifts on her reserve.
+///
+/// # Errors
+///
+/// No open port, or every port's passage refused (the nearest port's refusal is returned).
 pub(crate) fn execute_linkdead_return_journey(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
     port_word: &str,
-) -> Result<(), CmdError> {
+) -> Result<Option<PortAutopilot>, CmdError> {
     let in_tier1 = ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
         b.active_for_hull(hull).is_none()
             && (b.free_flights.contains_key(&hull) || b.cluster_sessions.contains_key(&hull))
     });
     if !in_tier1 {
-        return Ok(());
+        return Ok(None);
     }
     let lower = port_word.to_ascii_lowercase();
-    let open_ports = open_port_places(ctx.w);
-    let matched = open_ports
-        .iter()
-        .find(|(place_id, label, _, def)| {
-            place_id.as_str().eq_ignore_ascii_case(&lower)
-                || def.venue.as_str().eq_ignore_ascii_case(&lower)
-                || label.to_ascii_lowercase().contains(&lower)
-        })
-        .or_else(|| open_ports.first())
-        .cloned()
-        .ok_or_else(|| CmdError::msg("No open port available for linkdead return plan."))?;
-    let (target_place, _, dest_host, dest_def) = matched;
-    let dest_domain = ctx
-        .w
-        .module_state::<SpatialState>()
-        .and_then(|s| s.domain_of_host(dest_host))
-        .map(|d| d.id)
-        .ok_or_else(|| CmdError::msg("Destination port has no active domain."))?;
-    let pose_val = mush_sim::passive_rules_value(serde_json::json!({}))
-        .map_err(|e| CmdError::msg(e.to_string()))?;
-    let dest_parent = mush_sim::SpatialParent::Direct {
-        domain: dest_domain,
-        pose: mush_sim::Pose::passive(pose_val),
-    };
-    let origin_host = open_ports
-        .iter()
-        .map(|(_, _, host, _)| *host)
-        .find(|&h| h != dest_host)
-        .unwrap_or(hull);
-    let leg_secs = 3_600_u32;
-    let leg_def =
-        mush_sim::LegDef::new(dest_host, leg_secs).map_err(|e| CmdError::msg(e.to_string()))?;
-    let drive_class =
-        mush_core::CanonicalId::new("fusion_torch").map_err(|e| CmdError::msg(e.to_string()))?;
-    let route_id = mush_core::CanonicalId::new(format!("return_{}", target_place.as_str()))
-        .unwrap_or(target_place);
-    let route_def = mush_sim::RouteDef::new(
-        route_id,
-        (origin_host, dest_host),
-        vec![leg_def],
-        drive_class,
-        1,
-    )
-    .map_err(|e| CmdError::msg(e.to_string()))?;
-    let now = ctx.w.world_ic_now();
-    if mush_sim::pose_of(ctx.w, hull).is_some() {
-        let _ = mush_sim::move_carrier_subtree(ctx, hull, None);
+    let mut ports = return_ports_nearest_first(ctx.w, hull);
+    if let Some(queued) = ports.iter().position(|(place_id, label, _, def)| {
+        place_id.as_str().eq_ignore_ascii_case(&lower)
+            || def.venue.as_str().eq_ignore_ascii_case(&lower)
+            || label.to_ascii_lowercase().contains(&lower)
+    }) {
+        let port = ports.remove(queued);
+        ports.insert(0, port);
     }
-    mush_sim::recouple_carrier_journey(ctx, hull, route_def, dest_parent, vec![leg_secs], &now)
-        .map_err(|e| CmdError::msg(e.to_string()))?;
-    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-        book.free_flights.remove(&hull);
-        book.cluster_sessions.remove(&hull);
-    }
-    if let Some(mut voyage) =
-        ctx.w
-            .module_state::<crate::store::TacsimStore>()
-            .and_then(|s| match s.voyage_state(hull) {
-                crate::port::voyage::VoyageState::Present(v) => Some(v.clone()),
-                crate::port::voyage::VoyageState::Absent
-                | crate::port::voyage::VoyageState::Unreadable => None,
-            })
-    {
-        if let Some(dep) = &mut voyage.departed {
-            dep.to_venue = dest_def.venue;
-            dep.depart_ic = now.at;
+    let mut first_refusal = None;
+    for port in ports {
+        match engage_port_autopilot(ctx, hull, port) {
+            Ok(engaged) => return Ok(Some(engaged)),
+            Err(refusal) => {
+                first_refusal.get_or_insert(refusal);
+            }
         }
-        crate::store::put_voyage(ctx, &voyage);
     }
-    Ok(())
+    Err(first_refusal
+        .unwrap_or_else(|| CmdError::msg("No open port available for linkdead return plan.")))
 }
 
 fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
@@ -2818,7 +2827,12 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.free_flight_for_hull(hull).cloned())
         {
-            (ff.pos_km, ff.vel_mps, ff.origin_place, ff.prepaid_unflown_t)
+            (
+                ff.pos_km,
+                ff.vel_mps,
+                ff.origin_place.clone(),
+                ff.prepaid_credit_t(now.at),
+            )
         } else if let Some(cs) = ctx
             .w
             .module_state::<SpaceBubbleBook>()
@@ -2967,7 +2981,12 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .module_state::<SpaceBubbleBook>()
             .and_then(|b| b.free_flight_for_hull(hull).cloned())
         {
-            (ff.pos_km, ff.vel_mps, ff.origin_place, ff.prepaid_unflown_t)
+            (
+                ff.pos_km,
+                ff.vel_mps,
+                ff.origin_place.clone(),
+                ff.prepaid_credit_t(now.at),
+            )
         } else if let Some(cs) = ctx
             .w
             .module_state::<SpaceBubbleBook>()
@@ -3118,18 +3137,120 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
 
-    let (target_place, port_label, dest_host, dest_def) = matched_port.ok_or_else(|| {
+    let port = matched_port.ok_or_else(|| {
         CmdError::msg(format!(
             "Unknown or closed autopilot destination: `{port_word}`."
         ))
     })?;
+    let engaged = engage_port_autopilot(ctx, hull, port)?;
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Autopilot engaged for {} (`{}`): burn {} t reaction mass, {} crew-days, transit {}s ({} IC days).",
+            engaged.port_label,
+            engaged.target_place,
+            engaged.burn_t,
+            engaged.crew_days,
+            engaged.total_s,
+            crate::port::voyage::ic_days(engaged.total_s)
+        ),
+    );
+    Ok(())
+}
 
+/// An open port as [`open_port_places`] lists it: place id, label, domain host and definition.
+type OpenPort = (
+    mush_core::CanonicalId,
+    String,
+    ObjId,
+    crate::port::def::PortDef,
+);
+
+/// What [`engage_port_autopilot`] engaged, for the caller's line.
+pub(crate) struct PortAutopilot {
+    /// The port's label.
+    pub port_label: String,
+    /// The port's place id.
+    pub target_place: mush_core::CanonicalId,
+    /// The plan's whole burn, tonnes.
+    pub burn_t: u64,
+    /// The plan's crew-days.
+    pub crew_days: u32,
+    /// The plan's transit, IC seconds.
+    pub total_s: i64,
+}
+
+/// The first interdicted leg the lane lays between the port `hull` last left and `dest_venue`,
+/// when the hull has cleared no interdiction since that departure (`SF.R25`, doc 35d §2 #1).
+///
+/// A hull that left by `+ship/undock <cluster|body>` flies under a corridor route that only
+/// stands in for its passage, so the leg a recouple owes is read from where the hull came from
+/// and where it is going, never from the journey it happens to carry.
+fn owed_interdicted_leg(
+    w: &World,
+    hull: ObjId,
+    dest_venue: &mush_core::CanonicalId,
+    dest_host: ObjId,
+) -> Option<mush_sim::LegDef> {
+    let store = w.module_state::<crate::store::TacsimStore>()?;
+    let from = match store.voyage_state(hull) {
+        crate::port::voyage::VoyageState::Present(voyage) => voyage.departed.as_ref()?.from.clone(),
+        crate::port::voyage::VoyageState::Absent | crate::port::voyage::VoyageState::Unreadable => {
+            return None;
+        }
+    };
+    if w.module_state::<SpaceBubbleBook>().is_some_and(|book| {
+        book.cleared_interdiction_legs
+            .iter()
+            .any(|&(cleared, _)| cleared == hull)
+    }) {
+        return None;
+    }
+    let (def, _) = crate::port::voyage::lane_ports(w)
+        .into_iter()
+        .find(|(_, map)| map.is_some_and(|map| map.entry == from))?;
+    def.routes
+        .get(dest_venue)?
+        .iter()
+        .filter_map(|id| store.route_in_world(w, id))
+        .find_map(|route| {
+            route
+                .legs()
+                .iter()
+                .copied()
+                .find(|leg| leg.is_interdicted() && leg.to() != dest_host)
+        })
+}
+
+/// Recouple `hull`, in free flight or at an orbital cluster, onto a carrier journey to `port`:
+/// the planner's passage from where she is, the tank and locker checks, the debit, and any
+/// interdicted leg she still owes (`SF.R4`, `SF.R25`). `+helm/autopilot <port>` and the linkdead
+/// return plan both come here, so neither is a way round the other's checks.
+///
+/// # Errors
+///
+/// The hull is in neither state, the planner refuses, or the tank or locker is short.
+pub(crate) fn engage_port_autopilot(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    port: OpenPort,
+) -> Result<PortAutopilot, CmdError> {
+    let now = ctx.w.world_ic_now();
+    let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+    let (sky, pack) = crate::port::voyage::lane_sky_of(ctx.w, basis.version)
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000));
+    let effective_payload = non_prop_payload.saturating_add(live_kg);
+    let (target_place, port_label, dest_host, dest_def) = port;
     let (start_pos_km, start_vel_mps, prepaid_unflown_t) = if let Some(ff) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.free_flight_for_hull(hull).cloned())
     {
-        (ff.pos_km, ff.vel_mps, ff.prepaid_unflown_t)
+        (ff.pos_km, ff.vel_mps, ff.prepaid_credit_t(now.at))
     } else if let Some(cs) = ctx
         .w
         .module_state::<SpaceBubbleBook>()
@@ -3252,20 +3373,26 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .unwrap_or(hull);
     let total_leg_secs = u32::try_from(plan.total_s.max(1)).unwrap_or(3_600);
 
-    // Preserve any uncrossed interdicted leg from the journey the hull decoupled from (`35b` §5 #13):
-    let (route_legs, leg_times) = if let Some(j) = &existing_journey
-        && let Some(first_leg) = j
-            .route()
-            .legs()
-            .get(usize::try_from(j.cursor()).unwrap_or(0))
-        && first_leg.is_interdicted()
-        && first_leg.to() != dest_host
-    {
+    // Preserve any uncrossed interdicted leg: the one on the journey the hull decoupled from
+    // (`35b` §5 #13), else the one the lane lays between the port she left and this one
+    // (`SF.R25`, doc 35d §2 #1).
+    let carried_leg = existing_journey
+        .as_ref()
+        .and_then(|j| {
+            j.route()
+                .legs()
+                .get(usize::try_from(j.cursor()).unwrap_or(0))
+                .copied()
+        })
+        .filter(|leg| leg.is_interdicted() && leg.to() != dest_host);
+    let owed_leg =
+        carried_leg.or_else(|| owed_interdicted_leg(ctx.w, hull, &dest_def.venue, dest_host));
+    let (route_legs, leg_times) = if let Some(first_leg) = owed_leg {
         let leg1_s = (total_leg_secs / 2).max(1);
         let leg2_s = total_leg_secs.saturating_sub(leg1_s).max(1);
         let leg2 =
             mush_sim::LegDef::new(dest_host, leg2_s).map_err(|e| CmdError::msg(e.to_string()))?;
-        (vec![*first_leg, leg2], vec![leg1_s, leg2_s])
+        (vec![first_leg, leg2], vec![leg1_s, leg2_s])
     } else {
         let leg_def = mush_sim::LegDef::new(dest_host, total_leg_secs)
             .map_err(|e| CmdError::msg(e.to_string()))?;
@@ -3312,18 +3439,13 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         crate::store::put_voyage(ctx, &voyage);
     }
 
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "tacsim.space",
-        format!(
-            "Autopilot engaged for {port_label} (`{target_place}`): burn {} t reaction mass, {} crew-days, transit {}s ({} IC days).",
-            plan.burn_t,
-            plan.crew_days,
-            plan.total_s,
-            crate::port::voyage::ic_days(plan.total_s)
-        ),
-    );
-    Ok(())
+    Ok(PortAutopilot {
+        port_label,
+        target_place,
+        burn_t: plan.burn_t,
+        crew_days: plan.crew_days,
+        total_s: plan.total_s,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3516,72 +3638,91 @@ fn tac_scan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The most light-lagged hails one hull may have in flight (`SF.R25`, doc 35d §2).
+pub const MAX_PENDING_HAILS_PER_HULL: usize = 4;
+
+/// `+tac/hail`'s refusal when the hull already has [`MAX_PENDING_HAILS_PER_HULL`] hails in flight.
+pub const HAIL_CHANNEL_BUSY: &str =
+    "The channel is busy: wait for your earlier hails to arrive before sending another.";
+
+/// `+tac/hail`'s refusal when the word names nothing the hull can raise (`SF.R25`).
+pub const HAIL_NO_CONTACT: &str =
+    "No such contact to hail: name a contact on your scope, or an open port from free flight.";
+
 fn tac_hail(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, None)?;
     let raw = ctx.args.raw().trim().to_owned();
     if raw.is_empty() {
-        return Err(CmdError::msg(
-            "Usage: +tac/hail <target>[=<message>] [range_m=<distance_m>]",
-        ));
+        return Err(CmdError::msg("Usage: +tac/hail <target>[=<message>]"));
     }
-    let mut explicit_range_m: Option<i64> = None;
-    let mut cleaned_tokens = Vec::new();
-    for tok in raw.split_whitespace() {
-        if let Some(rest) = tok.strip_prefix("range_m=")
-            && let Ok(val) = rest.parse::<i64>()
-        {
-            explicit_range_m = Some(val.max(0));
-        } else {
-            cleaned_tokens.push(tok);
-        }
-    }
-    let cleaned = cleaned_tokens.join(" ");
-    let (target_tok, message) = match cleaned.split_once('=') {
+    let (target_tok, message) = match raw.split_once('=') {
         Some((t, m)) => (t.trim(), m.trim()),
         None => (
-            cleaned.trim(),
+            raw.as_str(),
             "Requesting transponder verification and vector check.",
         ),
     };
     let sender_label = display_name(ctx.w, hull);
-    let mut dest_hull = hull;
-    let mut distance_m = explicit_range_m.unwrap_or(super::picket::CORVETTE_STANDOFF_M);
-
-    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>()
-        && let Some(active) = book.active_for_hull(hull)
-    {
-        let own_ship_id = active.carrier_ship_id_for(hull);
-        if let Some(own_ship) = active.bubble.ships.get(own_ship_id) {
-            let lower = target_tok.to_ascii_lowercase();
-            let parsed_obj = target_tok
-                .strip_prefix('#')
-                .or_else(|| target_tok.strip_prefix("ship."))
-                .and_then(|s| s.parse::<u32>().ok())
-                .map(ObjId);
-            for (ship_id, ship) in &active.bubble.ships {
-                if ship_id == own_ship_id {
-                    continue;
-                }
-                if !is_bubble_ship_detected(own_ship, ship, active.bubble.ic_timestamp_s) {
-                    continue;
-                }
-                let chull = active
-                    .hull_for_ship_id(ship_id)
-                    .unwrap_or(active.interdictor_hull);
-                if ship_id.eq_ignore_ascii_case(target_tok)
-                    || ship.callsign.to_ascii_lowercase().contains(&lower)
-                    || parsed_obj == Some(chull)
-                {
-                    if explicit_range_m.is_none() {
-                        distance_m = super::picket::distance_3d_m(own_ship.pos_m, ship.pos_m);
+    let lower = target_tok.to_ascii_lowercase();
+    // `SF.R25` (doc 35d §2): the range is measured, never typed. In a bubble the hail goes to a
+    // detected contact; outside one, from free flight or a cluster, to an open port.
+    let in_bubble = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.active_for_hull(hull).is_some());
+    let mut found: Option<(ObjId, i64)> = None;
+    if in_bubble {
+        if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>()
+            && let Some(active) = book.active_for_hull(hull)
+        {
+            let own_ship_id = active.carrier_ship_id_for(hull);
+            if let Some(own_ship) = active.bubble.ships.get(own_ship_id) {
+                let parsed_obj = target_tok
+                    .strip_prefix('#')
+                    .or_else(|| target_tok.strip_prefix("ship."))
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .map(ObjId);
+                for (ship_id, ship) in &active.bubble.ships {
+                    if ship_id == own_ship_id
+                        || !is_bubble_ship_detected(own_ship, ship, active.bubble.ic_timestamp_s)
+                    {
+                        continue;
                     }
-                    if active.carriers.contains_key(&chull) {
-                        dest_hull = chull;
+                    let chull = active
+                        .hull_for_ship_id(ship_id)
+                        .unwrap_or(active.interdictor_hull);
+                    if ship_id.eq_ignore_ascii_case(target_tok)
+                        || ship.callsign.to_ascii_lowercase().contains(&lower)
+                        || parsed_obj == Some(chull)
+                    {
+                        let dest = if active.carriers.contains_key(&chull) {
+                            chull
+                        } else {
+                            hull
+                        };
+                        found = Some((
+                            dest,
+                            super::picket::distance_3d_m(own_ship.pos_m, ship.pos_m),
+                        ));
+                        break;
                     }
-                    break;
                 }
             }
         }
+    } else {
+        found = hail_range_to_port_m(ctx.w, hull, &lower).map(|range_m| (hull, range_m));
+    }
+    let Some((dest_hull, distance_m)) = found else {
+        return Err(CmdError::msg(HAIL_NO_CONTACT));
+    };
+    if ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.pending_light_lag_hails
+            .iter()
+            .filter(|h| h.hull == dest_hull)
+            .count()
+            >= MAX_PENDING_HAILS_PER_HULL
+    }) {
+        return Err(CmdError::msg(HAIL_CHANNEL_BUSY));
     }
 
     let (lag_s, lag_ms) = super::picket::queue_or_deliver_light_lagged_hail(
@@ -3607,6 +3748,33 @@ fn tac_hail(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ),
     );
     Ok(())
+}
+
+/// The range in metres from `hull`, in free flight or at a cluster, to the open port `word`
+/// names (`SF.R25`): the two bodies' positions in the lane's sky, so the light lag is the real one.
+fn hail_range_to_port_m(w: &World, hull: ObjId, word: &str) -> Option<i64> {
+    let (place, _, _, _) = open_port_places(w)
+        .into_iter()
+        .find(|(place_id, label, _, def)| {
+            place_id.as_str().eq_ignore_ascii_case(word)
+                || def.venue.as_str().eq_ignore_ascii_case(word)
+                || label.to_ascii_lowercase().starts_with(word)
+        })?;
+    let store = w.module_state::<crate::TacsimStore>()?;
+    let lane = mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK).ok()?;
+    let version = store.applied_in(w, &lane)?;
+    let (sky, pack) = crate::port::voyage::lane_sky_of(w, version).ok()?;
+    let now_ic_s = w.world_ic_now().at;
+    let here = tier1_position_km(w, hull, &sky, now_ic_s)?;
+    let body = crate::port::passage::body_or_place_of(&sky, pack, &place).ok()?;
+    let there = sky.position_km(&body, now_ic_s)?;
+    let d = [
+        i128::from(there.x) - i128::from(here[0]),
+        i128::from(there.y) - i128::from(here[1]),
+        i128::from(there.z) - i128::from(here[2]),
+    ];
+    let range_km = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).isqrt();
+    i64::try_from(range_km.saturating_mul(1_000)).ok()
 }
 
 fn resolve_detected_contact(
@@ -4644,7 +4812,20 @@ fn resolve_docking_target(
             .or_else(|| trimmed.strip_prefix("ship."))
             .and_then(|s| s.parse::<u32>().ok())
             .map(ObjId);
-        for &derelict_hull in book.derelicts.keys() {
+        // `SF.R25` (doc 35d §6.2): only a derelict this hull can reach is a target: one in her
+        // own bubble's domain, or the one she already holds by clamp or tow.
+        let own_domain = book.active_for_hull(hull).map(|a| a.domain);
+        let held = book
+            .clamped_derelicts
+            .get(&hull)
+            .copied()
+            .or_else(|| book.active_tows.get(&hull).map(|t| t.derelict_hull));
+        for (&derelict_hull, record) in &book.derelicts {
+            if ctx.w.get(derelict_hull).is_none()
+                || (Some(record.domain) != own_domain && Some(derelict_hull) != held)
+            {
+                continue;
+            }
             let dname = display_name(ctx.w, derelict_hull);
             if trimmed.eq_ignore_ascii_case("derelict")
                 || parsed_obj == Some(derelict_hull)
@@ -4720,6 +4901,11 @@ fn resolve_port_destination_parent(
     )))
 }
 
+/// `+helm/dock`'s refusal when a hostile the hull has not detected is operational in her bubble
+/// (`SF.R25`): the bubble is not secure, and the contact is not named.
+pub const DOCK_REFUSED_UNSECURED: &str =
+    "Cannot initiate collar docking: traffic control reports the tactical bubble is not secure.";
+
 fn validate_docking_initiation_gates(
     w: &World,
     hull: ObjId,
@@ -4738,23 +4924,29 @@ fn validate_docking_initiation_gates(
         let own_ship_id = active.carrier_ship_id_for(hull);
         let own_ship = active.bubble.ships.get(own_ship_id);
         let own_party = active.carrier_party_for(hull);
+        // `SF.R25` (doc 35d §2): an operational hostile refuses the dock whether or not the hull
+        // has detected it; only a detected one is named.
+        let mut unseen_hostile = false;
         for (ship_id, ship) in &active.bubble.ships {
-            if ship_id == own_ship_id {
+            if ship_id == own_ship_id
+                || ship.status != HullStatus::Operational
+                || active.bubble.party_relation(ship.party, own_party) != Relation::Hostile
+            {
                 continue;
             }
             if own_ship
                 .is_some_and(|o| !is_bubble_ship_detected(o, ship, active.bubble.ic_timestamp_s))
             {
+                unseen_hostile = true;
                 continue;
             }
-            if ship.status == HullStatus::Operational
-                && active.bubble.party_relation(ship.party, own_party) == Relation::Hostile
-            {
-                return Err(CmdError::msg(format!(
-                    "Cannot initiate collar docking while hostile contact `{}` is still operational in the tactical bubble.",
-                    ship.callsign
-                )));
-            }
+            return Err(CmdError::msg(format!(
+                "Cannot initiate collar docking while hostile contact `{}` is still operational in the tactical bubble.",
+                ship.callsign
+            )));
+        }
+        if unseen_hostile {
+            return Err(CmdError::msg(DOCK_REFUSED_UNSECURED));
         }
     }
 
@@ -5187,6 +5379,10 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     } => {
                         let (dest_parent, _) =
                             resolve_port_destination_parent(ctx.w, hull, port_id)?;
+                        // `SF.R25` (doc 35d §6.1): the dock is taken before anything is torn
+                        // down, so a refused dock leaves the hull where she was.
+                        mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
+                            .map_err(CmdError::msg)?;
                         let (removed_bubble, was_last) =
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.free_flights.remove(&hull);
@@ -5272,8 +5468,6 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                     mush_sim::stand_down_domain(ctx, active.domain, now.clone());
                             }
                         }
-                        mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
-                            .map_err(CmdError::msg)?;
                         // Doc 42 cut CR.6 (Q-42-6's one hook): captives first, then the hull's.
                         crate::field::crew::hand_over(ctx, hull);
                         super::tick::deliver_active_tow_at_port(ctx, hull, &now);
@@ -5308,9 +5502,23 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         // Doc 41 cut RS.8 (Q-36-46): the pin names the derelict's real title
                         // and the bubble's witnesses.
                         let pin = super::custody::pin_at_clamp(ctx, derelict_hull, hull, now.at);
+                        // `SF.R25` (doc 35d §3 #8): the clamp holds the carrier in the
+                        // bubble for one hold window; a tow line ends the hold, and so does
+                        // the window running out.
+                        let hold_until_wall_s = ctx
+                            .w
+                            .now()
+                            .saturating_add(super::tick::SALVAGE_HOLD_TIMEOUT_WALL_S);
                         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                             book.clamped_derelicts.insert(hull, derelict_hull);
                             book.derelict_pins.insert(derelict_hull, pin);
+                            if let Some(active) = book.active_for_hull_mut(hull) {
+                                active.set_holding_for_salvage_for_with_deadline(
+                                    hull,
+                                    true,
+                                    Some(hold_until_wall_s),
+                                );
+                            }
                         }
                         // Doc 42 cut CR.6 (Q-42-24): a hard-dock on a derelict with crew takes
                         // them, captive unless the tug is a friend's.
@@ -5457,25 +5665,97 @@ fn canonical_hull_dry_mass_t(w: &World, hull: ObjId, default_t: u32) -> u32 {
 /// RS.8).
 pub const TOW_FOR_RETRIEVAL: &str = "You hold her retrieval: she is towed for the job, not as salvage, until you dock her at the job's port.";
 
+/// `+helm/tow release`'s addendum when the release withdrew a filed salvage claim (`SF.R25`).
+pub const TOW_RELEASE_WITHDRAWS: &str = " She was not brought in, so your custody of her ends and the salvage claim on her is withdrawn.";
+
+/// End `tug`'s salvage custody of `derelict` when she is let go before a port has her
+/// (`SF.R25`, doc 35d §2 #3; Q-35d-4's default): the claim's contract is closed through the
+/// economy's own cancellation and the custody row goes, so the claim tick has nothing left to
+/// award. A derelict already docked keeps her row: she was delivered, and the claim runs its
+/// window. Answers whether a filed claim was withdrawn.
+///
+/// # Errors
+///
+/// The registry would not close the claim; the line stays on.
+pub(crate) fn withdraw_undelivered_custody(
+    ctx: &mut Ctx<'_>,
+    tug: ObjId,
+    derelict: ObjId,
+) -> Result<bool, CmdError> {
+    let Some(row) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.space_custody.get(&derelict).cloned())
+    else {
+        return Ok(false);
+    };
+    if row.carrier != tug
+        || matches!(
+            crate::port::ship::berth_of(ctx.w, derelict),
+            crate::port::ship::Berth::Docked { .. }
+        )
+    {
+        return Ok(false);
+    }
+    let filed = match row.claim {
+        crate::surface::salvage::ClaimSeam::Owed => false,
+        crate::surface::salvage::ClaimSeam::Filed { contract } => {
+            match mush_economy::close_salvage_claim(
+                ctx,
+                mush_economy::ContractId(contract),
+                row.holder,
+                row.hull,
+            ) {
+                Ok(true) => true,
+                Ok(false) => {
+                    return Err(CmdError::msg(
+                        "The registry has not closed her salvage claim yet; release her again shortly.",
+                    ));
+                }
+                Err(error) => {
+                    return Err(CmdError::msg(format!(
+                        "The registry will not withdraw her salvage claim: {error}."
+                    )));
+                }
+            }
+        }
+    };
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        let _ = book.space_custody.remove(&derelict);
+    }
+    Ok(filed)
+}
+
 fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
     let raw = ctx.args.raw().trim().to_owned();
     let now = ctx.w.world_ic_now();
 
     if ctx.switches.has("release") || raw.eq_ignore_ascii_case("release") {
-        let released = ctx
+        let target = ctx
             .w
-            .module_state_mut::<SpaceBubbleBook>()
+            .module_state::<SpaceBubbleBook>()
             .and_then(|b| {
-                let tow = b.active_tows.remove(&hull).map(|t| t.derelict_hull);
-                let clamp = b.clamped_derelicts.remove(&hull);
-                tow.or(clamp)
+                b.active_tows
+                    .get(&hull)
+                    .map(|t| t.derelict_hull)
+                    .or_else(|| b.clamped_derelicts.get(&hull).copied())
             })
             .ok_or_else(|| CmdError::msg("No active tow line or collar clamp to release."))?;
-        let line = format!(
+        // `SF.R25` (doc 35d §2 #3): a derelict let go before she is brought in is no longer in
+        // the tug's custody, and the claim filed on that custody is withdrawn with it.
+        let withdrawn = withdraw_undelivered_custody(ctx, hull, target)?;
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+            book.active_tows.remove(&hull);
+            book.clamped_derelicts.remove(&hull);
+        }
+        let mut line = format!(
             "[SALVAGE] Tow line and collar clamp released from derelict #{}.",
-            released.0
+            target.0
         );
+        if withdrawn {
+            line.push_str(TOW_RELEASE_WITHDRAWS);
+        }
         crate::port::voyage::narrate_hull(ctx, hull, &line);
         ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
         push_space_panels(ctx, hull);
