@@ -86,8 +86,18 @@ struct Runtime {
     paid_first: bool,
     seen: BTreeSet<Notice>,
     fifo: VecDeque<Notice>,
+    /// Inventory keys of holdings the drain skipped (doc 44 cut MW.6), so a bad holding is
+    /// logged once and not on every pass. Bounded like `seen`.
+    skipped: BTreeSet<String>,
 }
 impl Runtime {
+    /// Whether `key` is newly skipped: the caller logs only then.
+    fn note_skipped(&mut self, key: &str) -> bool {
+        if self.skipped.len() >= REMEMBERED {
+            self.skipped.clear();
+        }
+        self.skipped.insert(key.to_owned())
+    }
     fn remember(&mut self, n: Notice) {
         if self.seen.insert(n) {
             self.fifo.push_back(n);
@@ -247,6 +257,16 @@ struct Page {
     rows: Vec<(String, LicenceId, Option<ObjId>)>,
     more: bool,
 }
+/// **Whether an error is one holding's own** (doc 44 cut MW.6): its history is missing,
+/// disagrees or is invalid. The drain skips such a holding, emits nothing for it and moves
+/// its cursor past it. Anything else (the inventory unavailable, an audit stale, capacity
+/// exceeded) is the drain's, and stops it where it is to be tried again.
+fn one_holding(error: &PublicationError) -> bool {
+    matches!(
+        error,
+        PublicationError::Missing | PublicationError::Mismatch | PublicationError::Invalid
+    )
+}
 fn page(
     ctx: &Ctx<'_>,
     s: &Service,
@@ -266,7 +286,13 @@ fn page(
             let mut rows = Vec::with_capacity(p.entries().len());
             for entry in p.entries() {
                 let row = entry.value();
-                row.validate()?;
+                // MW.6: a row that does not validate is one bad holding, not a failed page.
+                // It is carried with no recipient, so nothing is emitted and the cursor
+                // passes it.
+                if row.validate().is_err() {
+                    rows.push((entry.encoded_key().to_string(), row.id, None));
+                    continue;
+                }
                 let actor =
                     snapshot
                         .asset(row.charter.object())
@@ -292,12 +318,11 @@ fn page(
             let mut rows = Vec::with_capacity(p.entries().len());
             for entry in p.entries() {
                 let row = entry.value();
-                row.validate()?;
-                rows.push((
-                    entry.encoded_key().to_string(),
-                    row.id(),
-                    Some(row.holder().acting_character()),
-                ));
+                let recipient = row
+                    .validate()
+                    .is_ok()
+                    .then(|| row.holder().acting_character());
+                rows.push((entry.encoded_key().to_string(), row.id(), recipient));
             }
             Ok(Page {
                 rows,
@@ -333,12 +358,24 @@ fn tick(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), PublicationError> {
                 break;
             }
             if let Some(actor) = actor.filter(|a| ctx.w.is_connected(*a) && live(ctx.w, *a)) {
-                // A no-longer-held title is not a recipient. Corrupt actual
-                // history fails this drain before any private output is emitted.
+                // A no-longer-held title is not a recipient. A holding whose own
+                // history is corrupt gets no private output (doc 44 cut MW.6): it is
+                // skipped and the cursor passes it, so it no longer stops every notice
+                // behind it. An error that is the inventory's still stops the drain
+                // before anything is emitted.
                 proofs += 1;
                 match own(ctx, s, actor, licence) {
                     Ok(Some(n)) if !runtime.seen.contains(&n) => notices.push(n),
                     Ok(_) => {}
+                    Err(e) if one_holding(&e) => {
+                        if runtime.note_skipped(&key) {
+                            tracing::warn!(
+                                licence = %licence.key(),
+                                error = %e,
+                                "roll: a recall notice skips a holding whose history does not read"
+                            );
+                        }
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -389,6 +426,35 @@ pub(crate) fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Doc 44 cut MW.6: which errors skip one holding and which stop the drain, and the
+    /// skipped keys are logged once and stay bounded.
+    #[test]
+    fn a_bad_holding_is_skipped_and_an_unavailable_inventory_is_not() {
+        for error in [
+            PublicationError::Missing,
+            PublicationError::Mismatch,
+            PublicationError::Invalid,
+        ] {
+            assert!(one_holding(&error), "{error} is one holding's own");
+        }
+        for error in [
+            PublicationError::Unavailable,
+            PublicationError::Capacity,
+            PublicationError::Stale,
+        ] {
+            assert!(!one_holding(&error), "{error} stops the drain");
+        }
+        let mut runtime = Runtime::default();
+        assert!(runtime.note_skipped("a"), "the first skip is logged");
+        assert!(
+            !runtime.note_skipped("a"),
+            "the same holding is not logged again"
+        );
+        for n in 0..(REMEMBERED * 2) {
+            let _ = runtime.note_skipped(&format!("k{n}"));
+            assert!(runtime.skipped.len() <= REMEMBERED);
+        }
+    }
     #[test]
     fn recall_session_notice_memory_is_bounded_and_duplicate_identity_is_exact() {
         let mut runtime = Runtime::default();

@@ -747,10 +747,12 @@ impl Default for CommandConfig {
 pub struct MindsConfig {
     /// The `mind-bulk-maintenance` pulse, milliseconds (the bulk model's
     /// `BulkConfig::maintenance_ms`): the pace of every Registry lease, so of
-    /// a genuine rating. **Not a
-    /// file key** (`serde(skip)`): production runs at the second, and only
-    /// code sets it, the mush-server acceptance stories' harness, so a
-    /// certificate takes minutes there rather than three hours.
+    /// a genuine rating. The host's file key is `[tacsim.minds].registry_pulse_ms`
+    /// (doc 44 cut MW.6; `mush_config::TacsimMindsCfg`), mapped onto this field by
+    /// `mush_server::config_ext`; this struct itself still skips it (`serde(skip)`).
+    /// Production runs at the second; a dev box, a rig and the mush-server
+    /// acceptance stories' harness set it lower, so a certificate takes minutes
+    /// there rather than three hours.
     #[serde(skip, default = "default_bulk_maintenance_ms")]
     pub bulk_maintenance_ms: u64,
     /// Bounded private proving/bench resource limit (17d M6.6/M6.7).
@@ -1042,6 +1044,14 @@ impl MindsConfig {
         if !(10..=950).contains(&floor) || !floor.is_multiple_of(10) {
             return Err(format!(
                 "[tacsim.minds].odds_floor_permille must be 10 to 950 in steps of 10 (it is {floor})"
+            ));
+        }
+        // Doc 44 cut MW.6 (Q-44-41): the Registry's pulse is a file key, so it refuses by
+        // name; the bounds are the bulk model's own (`BulkConfig::validate`).
+        if !(10..=60_000).contains(&self.bulk_maintenance_ms) {
+            return Err(format!(
+                "[tacsim.minds].registry_pulse_ms must be 10 to 60000 (it is {})",
+                self.bulk_maintenance_ms
             ));
         }
         self.bulk()
