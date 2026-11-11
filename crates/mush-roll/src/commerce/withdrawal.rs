@@ -2,6 +2,8 @@
 pub(crate) mod audit;
 mod provider;
 pub(crate) mod records;
+/// Doc 44 MW.2: whether a listing the market froze can still be sold.
+pub(crate) mod sellable;
 #[cfg(test)]
 mod tests;
 
