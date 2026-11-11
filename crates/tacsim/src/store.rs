@@ -8,6 +8,7 @@
 //! | `tacsim:pin:{subject}` | pin | **skipped loudly**. A lost pin does **not** float its subject onto a newer version: resolution refuses, naming the pack, because §3.1 invariant (i)'s whole point is that a published contract's assumptions never shift underneath it |
 //! | `tacsim:tutorial:{account}` | per-account | **skipped loudly**; that account reads its hints again (16b cut AH.1: `crate::match_::tutorial`) |
 //! | `tacsim:mindsrc:{sha256}` | immutable source | **skipped loudly** when its `sha256` disagrees with its key or its bytes do not hash to it (17b cut M3.3; doc 17 §13). The **key still counts**: the boot never rewrites a document under a key it holds, so a tampered stock source stays unreadable rather than silently replaced, and a scripted seal naming it refuses its resume by name (`crate::match_::resume`) |
+//! | `tacsim:doctrine:{role}` | pointer | **skipped loudly**; the role flies the doctrine compiled into the binary (doc 35 §11 `B-3`: the link-loss backup mind's house default). Written by an operator, never by the boot |
 //! | `tacsim:port:{pack}/{entry}` | applier map (doc 18 cut IC3) | **skipped loudly, and the key still bars re-creation**: the entry's next apply refuses before any write, naming the key, and `@tacsim/port status` reports the map unreadable; repair is a staff act on the document (doc 18 §4.7) |
 //! | `tacsim:notice:{obj}` | per-character queue (doc 18 cut IC5: `crate::port_tick`'s reconnect notices) | **dropped loudly** for that character; the key bars nothing, and the next notice rewrites it |
 //! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
@@ -104,6 +105,18 @@ pub fn seed_key(pack: &CanonicalId, version: u32) -> SmolStr {
 #[must_use]
 pub fn pin_key(subject: &CanonicalId) -> SmolStr {
     SmolStr::new(format!("tacsim:pin:{subject}"))
+}
+
+/// The prefix of every house doctrine pointer's document (doc 35 §11 `B-3`).
+pub(crate) const DOCTRINE_PREFIX: &str = "tacsim:doctrine:";
+
+/// **`tacsim:doctrine:<role>`** (doc 35 §11 `B-3`): the key the house doctrine of `role` is
+/// named under. The document names a stored source by its digest (`{"sha256": "<64 hex>"}`,
+/// a `tacsim:mindsrc:` key's tail), so editing a house doctrine is two writes: the new source
+/// under its own digest, then this pointer.
+#[must_use]
+pub fn doctrine_key(role: &str) -> SmolStr {
+    SmolStr::new(format!("{DOCTRINE_PREFIX}{role}"))
 }
 
 /// The prefix of every sealed mind source's document (17b cut M3.3).
@@ -274,6 +287,9 @@ pub struct TacsimStore {
     /// rule this loader applies to packs and seeds): [`put_mind_source`] never
     /// writes under one of them, so an immutable document is never rewritten.
     pub(crate) mind_source_keys: BTreeSet<[u8; 32]>,
+    /// **Doc 35 §11 `B-3`** — `tacsim:doctrine:{role}`: the stored source each house doctrine
+    /// role flies, by digest. A role with no pointer flies the doctrine compiled in.
+    pub(crate) house_doctrines: BTreeMap<SmolStr, [u8; 32]>,
     /// **Doc 18 cut IC3** — `tacsim:port:{pack}/{entry}`: what each port
     /// entry's applier made ([`crate::port::PortMap`]), keyed `(pack, entry)`.
     /// Persisted, like the arena rosters, because which org and which
@@ -996,6 +1012,16 @@ impl TacsimStore {
     #[must_use]
     pub fn mind_source(&self, digest: &[u8; 32]) -> Option<&str> {
         self.mind_sources.get(digest).map(String::as_str)
+    }
+
+    /// **The stored source the house doctrine of `role` names** (doc 35 §11 `B-3`), when the
+    /// world holds a pointer for it and the source it names is readable.
+    #[must_use]
+    pub fn house_doctrine(&self, role: &str) -> Option<[u8; 32]> {
+        self.house_doctrines
+            .get(role)
+            .copied()
+            .filter(|digest| self.mind_sources.contains_key(digest))
     }
 
     /// **Whether this world holds the sealed source under `digest`**, readable
@@ -2702,6 +2728,22 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             };
             store.mind_source_keys.insert(digest);
             load_mind_source(&mut store, key, rest, digest, value);
+        } else if let Some(role) = key.strip_prefix(DOCTRINE_PREFIX) {
+            // Doc 35 §11 `B-3`. A pointer that will not read is skipped loudly and bars
+            // nothing: the role flies the doctrine compiled in.
+            let digest = value
+                .as_object()
+                .filter(|record| record.len() == 1)
+                .and_then(|record| record.get("sha256")?.as_str())
+                .and_then(crate::arena::digest_from_text);
+            match digest {
+                Some(digest) if !role.is_empty() => {
+                    store.house_doctrines.insert(SmolStr::new(role), digest);
+                }
+                _ => {
+                    tracing::warn!(%key, "tacsim: a house doctrine pointer did not parse; skipped")
+                }
+            }
         } else if let Some(rest) = key.strip_prefix(crate::port::PORT_MAP_PREFIX) {
             // Doc 18 cut IC3. The claim is the KEY's (the R8 rule): a map that
             // will not read still bars re-creating what its port made.

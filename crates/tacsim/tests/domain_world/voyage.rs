@@ -11472,12 +11472,12 @@ fn sfr24_one_docking_kinematics_and_ephemeris_canopy() {
 
 /// Drop every connection `who` holds, uncleanly (`Inbound::ConnDown`, `DisconnectKind::Lost`), so
 /// the presence hook reads the player linkdead.
-fn drop_link(rig: &mut Rig, who: ObjId) {
+fn drop_link(rig: &mut Rig, who: ObjId) -> Vec<u64> {
     let conns: Vec<u64> = (1..=64)
         .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(who))
         .collect();
     assert!(!conns.is_empty(), "{who} holds a connection");
-    for conn in conns {
+    for &conn in &conns {
         let mut out = mush_core::Outbox::new();
         let mut fx = mush_core::Effects::new();
         rig.tw.engine_mut().step(
@@ -11490,12 +11490,40 @@ fn drop_link(rig: &mut Rig, who: ObjId) {
             &mut fx,
         );
     }
+    conns
+}
+
+/// Bring `who` back on `conn` from linkdead (`Inbound::ConnUp`), so the presence hook reads the
+/// player connected again.
+fn raise_link(rig: &mut Rig, who: ObjId, conn: u64) {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnUp {
+            conn,
+            actor: who,
+            caps_structured: true,
+            from_linkdead: true,
+        },
+        &mut out,
+        &mut fx,
+    );
 }
 
 /// A Dray-P chartered at Ceres, loaded with `tank` tonnes and 90 crew-days, her pilot aboard, at
 /// the 3,600 rate; then `+ship/undock <cluster> throttle=500`, burned and launched.
 fn prospector_bound_for(cluster: &str, who: &str, tank: u64, ore_t: u64) -> (Rig, ObjId, ObjId) {
-    let mut rig = stocked_with(Roster::default());
+    prospector_bound_for_in(stocked_with(Roster::default()), cluster, who, tank, ore_t)
+}
+
+/// [`prospector_bound_for`] in a world already booted.
+fn prospector_bound_for_in(
+    mut rig: Rig,
+    cluster: &str,
+    who: &str,
+    tank: u64,
+    ore_t: u64,
+) -> (Rig, ObjId, ObjId) {
     let (pilot, row) = chartered(&mut rig, who, 1);
     let hull = ObjId(row.hull);
     let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
@@ -12118,7 +12146,19 @@ fn sfr25b_a_linkdead_hull_makes_for_the_port_she_filed_after_five_minutes() {
     let past = dropped_at.saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 1);
     rig.tw.set_now(past);
     let _ = rig.tw.fire_due(past.saturating_mul(1_000));
-    let home_burn = drain_space_and_industry(&mut rig.tw);
+    // Since `SF.R32` the backup seat asks whether her captain's earlier action is still
+    // committing before it engages a passage. The decouple's own submission is, on this tick,
+    // so the seat waits; once it has landed the next tick engages the return.
+    assert!(
+        matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "with her captain's decouple still committing, no passage is engaged behind it"
+    );
+    let decouple_debit = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &decouple_debit);
+    let (_, home_burn) = one_second(&mut rig, pilot);
     land_quietly(&mut rig, &home_burn);
     let home = journey(&rig.tw, hull).expect("the return journey");
     assert!(
@@ -12793,6 +12833,409 @@ fn sfr26c_a_customs_ruling_is_one_submitted_action_and_settles_nothing_until_it_
     assert_eq!(corvette_regards(&rig.tw, hull), Some(Relation::Hostile));
     assert_eq!(customs_front_filled(&rig.tw), front_before + 1);
     assert_eq!(landed_rulings(&rig, hull)[0].finding, CustomsFinding::Ran);
+}
+
+/// The linkdead record of `hull`, cloned.
+fn linkdead_of(tw: &TestWorld, hull: ObjId) -> Option<tacsim::space::SpaceLinkdeadState> {
+    tw.world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .linkdead_state(hull)
+        .cloned()
+}
+
+/// Wait the linkdead grace out at a play rate (at 3,600 the five minutes are thirteen IC days),
+/// land what the tick submitted, and return to the 3,600 rate.
+fn wait_out_the_grace(rig: &mut Rig) {
+    set_rate(&mut rig.tw, 24);
+    let past = rig
+        .tw
+        .world()
+        .now()
+        .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
+    rig.tw.set_now(past);
+    let _ = rig.tw.fire_due(past.saturating_mul(1_000));
+    set_rate(&mut rig.tw, 3_600);
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &submitted);
+}
+
+/// `hull`'s ship in her bubble: her thrust, her speed relative to the customs corvette, and the
+/// picket's status and ruling for her.
+fn at_the_picket(
+    tw: &TestWorld,
+    hull: ObjId,
+) -> (
+    [i64; 3],
+    i64,
+    tacsim::space::PicketInspectionStatus,
+    Option<tacsim::space::PicketInspectionOutcome>,
+) {
+    let book = tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let active = book.active_for_hull(hull).expect("her bubble");
+    let picket = active.picket.as_ref().expect("the Kirkwood picket");
+    let ship = &active.bubble.ships[active.carrier_ship_id_for(hull)];
+    let corvette = &active.bubble.ships[&picket.corvette_ship_id];
+    (
+        ship.thrust_mmps2,
+        tacsim::space::relative_speed_3d_mmps(ship.vel_mmps, corvette.vel_mmps),
+        picket.inspection_status_for(hull),
+        picket.inspection_outcome_for(hull).cloned(),
+    )
+}
+
+/// A house doctrine that never makes for port: it holds, whatever it reads.
+const HOLDING_DOCTRINE: &str = "// Holding Doctrine: a house backup mind edited to stay put\n// name: Holding Doctrine; role: backup; api: 7; stock: 3; rated: class I (1,500 ops a think)\nfn think(v, c) {\n    hold();\n    trace(\"EDITED_HOLD\");\n}\n";
+
+/// **Doc 35 §11 (Q-35d-2 as ruled on 2026-11-11)** — the link-loss backup mind. Past the five
+/// minutes a mind has the helm until a crew member comes back or she docks. Each part fails on
+/// the code before the cut.
+///
+/// A. **She stops for customs.** A Dray-P with unlicensed `strategic_ore` files for Stickney,
+///    decouples, and her pilot's link drops. The mind engages the return to the port she filed,
+///    and the Kirkwood picket opens on her. She brakes; the code before left her drive cut.
+/// B. **A crew member takes the helm back at once.** While she brakes her pilot reconnects: on
+///    that step, before any tick, the record is gone and the mind's burn is cut. The burn the
+///    pilot orders is still hers a tick later. The link drops again, inside the bubble; past the
+///    grace the mind brakes her to rest and submits her, and customs find the ore and fine her.
+///    She is never recorded as having run the picket.
+/// C. **Out of reach, the nearest she can afford; none in reach, she holds.** A hull who filed
+///    Stickney and went back to Ceres Halo has too little in her tank for Stickney: the mind
+///    takes her to Ceres, the nearest. A hull who reached Pallas on the last of her tank can
+///    afford no port: the mind holds her, says so once, and asks the planner again only after
+///    [`tacsim::space::BACKUP_RETURN_RETRY_WALL_S`].
+/// D. **The house default is read from the store.** With the store's `tacsim:doctrine:` pointer
+///    naming a doctrine that holds, a hull with a full tank at Ceres Halo stays where she is.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr32_the_link_loss_backup_mind_flies_her_home_stops_for_customs_and_stands_down() {
+    use tacsim::space::{BackupAct, PicketInspectionOutcome, PicketInspectionStatus};
+
+    // --- A. She stops for customs ----------------------------------------------------------
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Sleeper", 75, 5);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto.contains("Autopilot engaged for Stickney Yards"),
+        "{auto}"
+    );
+    let filed_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &filed_burn);
+    let six_hours_on = ic_now(&rig.tw) + 21_600;
+    let _ = to_ic(&mut rig, six_hours_on);
+    let decoupled = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        decoupled.contains("Decoupled from corridor leg"),
+        "{decoupled}"
+    );
+    let decouple_debits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &decouple_debits);
+
+    let conns = drop_link(&mut rig, pilot);
+    let dropped = linkdead_of(&rig.tw, hull).expect("her linkdead record");
+    assert_eq!(
+        dropped.queued_return_port.as_deref(),
+        Some("stickney_yards")
+    );
+    assert!(!dropped.backup_has_helm(), "the grace comes first");
+    wait_out_the_grace(&mut rig);
+    let held = linkdead_of(&rig.tw, hull).expect("the mind keeps her record until she docks");
+    assert!(
+        held.backup_has_helm(),
+        "past the grace the mind has the helm"
+    );
+    assert_eq!(held.backup_act, BackupAct::MakingForPort);
+    assert_eq!(
+        held.mind_last_trace.as_deref(),
+        Some("BACKUP_MAKE_FOR_PORT"),
+        "the house default asked for the return"
+    );
+    let home = journey(&rig.tw, hull).expect("the return journey");
+    assert_eq!(
+        home.route().endpoints().1,
+        ObjId(
+            port_map(&rig.tw, "stickney_port")
+                .host
+                .expect("Stickney's host")
+        ),
+        "bound for the port she filed"
+    );
+    assert!(
+        home.route().legs()[0].is_interdicted(),
+        "and her way there crosses the Kirkwood picket"
+    );
+    let leg1_due = home.leg_due_at(0).expect("the first leg's end");
+    let _ = to_ic(&mut rig, leg1_due);
+    let (_, speed_on_entry, status, _) = at_the_picket(&rig.tw, hull);
+    assert_eq!(status, PicketInspectionStatus::AwaitingHeaveTo);
+    assert!(
+        speed_on_entry >= tacsim::space::HEAVE_TO_REL_VEL_MMPS,
+        "she comes in too fast to be inspected ({speed_on_entry} mm/s)"
+    );
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
+    let (braking, speed_braking, _, _) = at_the_picket(&rig.tw, hull);
+    assert_ne!(
+        braking,
+        [0, 0, 0],
+        "the mind brakes her against the corvette; a linkdead hull used to drift with her drive cut"
+    );
+    assert!(
+        speed_braking < speed_on_entry,
+        "she is slowing ({speed_on_entry} mm/s, then {speed_braking} mm/s)"
+    );
+    assert_eq!(
+        linkdead_of(&rig.tw, hull).map(|ld| ld.backup_act),
+        Some(BackupAct::HeavingTo)
+    );
+
+    // --- B. A crew member takes the helm back at once ----------------------------------------
+    raise_link(&mut rig, pilot, conns[0]);
+    assert!(
+        linkdead_of(&rig.tw, hull).is_none(),
+        "the mind stands down on the step the link comes back"
+    );
+    let (cut, _, _, _) = at_the_picket(&rig.tw, hull);
+    assert_eq!(cut, [0, 0, 0], "and the burn it had ordered is cut with it");
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let (ordered, _, _, _) = at_the_picket(&rig.tw, hull);
+    assert_ne!(ordered, [0, 0, 0], "the helm answers her pilot");
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
+    let (still, _, _, _) = at_the_picket(&rig.tw, hull);
+    assert_eq!(
+        still, ordered,
+        "a tick later the burn is still the one her pilot ordered"
+    );
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let pilot_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &pilot_burn);
+
+    // The link drops again, inside the bubble this time.
+    drop_link(&mut rig, pilot);
+    for _ in 0..3 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    let (adrift, _, _, _) = at_the_picket(&rig.tw, hull);
+    assert_eq!(adrift, [0, 0, 0], "inside the grace her drive is cut");
+    let past = rig
+        .tw
+        .world()
+        .now()
+        .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S);
+    rig.tw.set_now(past);
+    let _ = rig.tw.fire_due(past.saturating_mul(1_000));
+    let handed = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &handed);
+    let mut ruling = None;
+    for _ in 0..240 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+        let (_, _, status, outcome) = at_the_picket(&rig.tw, hull);
+        assert_ne!(
+            status,
+            PicketInspectionStatus::RanThePicket,
+            "she never runs the picket"
+        );
+        if outcome.is_some() {
+            ruling = outcome;
+            break;
+        }
+    }
+    let (_, speed_hove_to, status, _) = at_the_picket(&rig.tw, hull);
+    assert!(
+        speed_hove_to < tacsim::space::HEAVE_TO_REL_VEL_MMPS,
+        "she is hove to ({speed_hove_to} mm/s)"
+    );
+    assert!(
+        matches!(
+            ruling,
+            Some(PicketInspectionOutcome::Fined {
+                unlicensed_strategic_ore_kg: 5_000,
+                ..
+            })
+        ),
+        "customs inspect her and find the ore: {ruling:?}"
+    );
+    assert_eq!(status, PicketInspectionStatus::ClearedAfterFine);
+    assert_eq!(
+        linkdead_of(&rig.tw, hull).map(|ld| ld.backup_act),
+        Some(BackupAct::Inspected)
+    );
+
+    // --- C. Out of reach, the nearest she can afford; none in reach, she holds ---------------
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Shortfall", 40, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto.contains("Autopilot engaged for Stickney Yards"),
+        "{auto}"
+    );
+    let to_stickney_t = tonnes_after(&auto, "burn");
+    let filed_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &filed_burn);
+    let six_hours_on = ic_now(&rig.tw) + 21_600;
+    let _ = to_ic(&mut rig, six_hours_on);
+    let decoupled = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        decoupled.contains("Decoupled from corridor leg"),
+        "{decoupled}"
+    );
+    let back = run(&mut rig.tw, pilot, "+helm/autopilot ceres_halo");
+    assert!(back.contains("Autopilot engaged for"), "{back}");
+    let back_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &back_burn);
+    arrive_at_cluster(&mut rig, hull);
+    let row_hold = tacsim::port::live_charter(rig.tw.world(), pilot).expect("her charter");
+    let vault = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == row_hold.hull.0)
+        .map(|r| hold_vault(&rig.tw, &r))
+        .expect("her hold");
+    let tank = pool(&mut rig.tw, vault, "propellant");
+    assert!(
+        tank < to_stickney_t,
+        "the precondition: her tank ({tank} t) no longer reaches Stickney ({to_stickney_t} t)"
+    );
+    drop_link(&mut rig, pilot);
+    assert_eq!(
+        linkdead_of(&rig.tw, hull)
+            .and_then(|ld| ld.queued_return_port)
+            .as_deref(),
+        Some("stickney_yards"),
+        "the port she filed is asked first"
+    );
+    wait_out_the_grace(&mut rig);
+    let home = journey(&rig.tw, hull).expect("the return journey");
+    assert!(
+        matches!(home.state(), mush_sim::JourneyState::Cruising),
+        "the return is under way: {:?}",
+        home.state()
+    );
+    assert_eq!(
+        home.route().endpoints().1,
+        ObjId(port_map(&rig.tw, "ceres_port").host.expect("Ceres' host")),
+        "Stickney is out of her reach, so the mind takes her to the nearest port she can afford"
+    );
+    let held = linkdead_of(&rig.tw, hull).expect("the mind keeps her record until she docks");
+    assert_eq!(held.backup_act, BackupAct::MakingForPort);
+    assert_eq!(
+        held.mind_last_trace.as_deref(),
+        Some("BACKUP_MAKE_FOR_PORT")
+    );
+
+    // No port in reach: she holds, and is told so once.
+    let (mut rig, pilot, hull) = prospector_bound_for("pallas_inclined_belt", "Stranded", 52, 0);
+    arrive_at_cluster(&mut rig, hull);
+    drop_link(&mut rig, pilot);
+    set_rate(&mut rig.tw, 24);
+    let past = rig
+        .tw
+        .world()
+        .now()
+        .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
+    rig.tw.set_now(past);
+    let handover = rig.tw.fire_due(past.saturating_mul(1_000));
+    let heard = said(&rig.tw, &handover, pilot);
+    assert!(heard.contains(tacsim::space::BACKUP_TAKES_HELM), "{heard}");
+    assert_eq!(
+        heard
+            .matches("she holds on her life-support reserve")
+            .count(),
+        1,
+        "{heard}"
+    );
+    let stranded = linkdead_of(&rig.tw, hull).expect("her record");
+    assert_eq!(stranded.backup_act, BackupAct::HoldingForRetrieval);
+    assert!(
+        stranded.return_retry_at_wall_s > past,
+        "the planner is not asked again before the wait is out"
+    );
+    let mut heard_again = String::new();
+    for _ in 0..(tacsim::space::BACKUP_RETURN_RETRY_WALL_S + 5) {
+        let (heard, submitted) = one_second(&mut rig, pilot);
+        heard_again.push_str(&heard);
+        assert_eq!(burns_in(&submitted), 0, "a hull that holds burns nothing");
+    }
+    assert!(
+        !heard_again.contains("Backup mind"),
+        "the hold is said once: {heard_again}"
+    );
+    let stranded_later = linkdead_of(&rig.tw, hull).expect("her record");
+    assert_eq!(
+        stranded_later.mind_last_trace.as_deref(),
+        Some("BACKUP_HOLD_FOR_RETRIEVAL"),
+        "the house default reads the refusal and holds"
+    );
+    assert!(
+        stranded_later.return_retry_at_wall_s > stranded.return_retry_at_wall_s,
+        "past the wait the seat asked the planner again"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .cluster_sessions
+            .contains_key(&hull),
+        "and she is still at her cluster"
+    );
+
+    // --- D. The house default is read from the store ----------------------------------------
+    let rig = reboot_editing(
+        stocked_with(Roster::default()),
+        Roster::default(),
+        |folded| {
+            let documents = tacsim::space::house_doctrine_documents(
+                tacsim::minds::content::LINKDEAD_RETURN_ROLE,
+                HOLDING_DOCTRINE,
+            );
+            folded
+                .entry(SmolStr::new(tacsim::NS))
+                .or_default()
+                .kv
+                .extend(documents);
+        },
+    );
+    assert!(
+        store(&rig.tw)
+            .house_doctrine(tacsim::minds::content::LINKDEAD_RETURN_ROLE)
+            .is_some(),
+        "the boot reads the pointer and the source it names"
+    );
+    let (mut rig, pilot, hull) = prospector_bound_for_in(rig, "ceres_halo", "Keeper", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    drop_link(&mut rig, pilot);
+    wait_out_the_grace(&mut rig);
+    let kept = linkdead_of(&rig.tw, hull).expect("her record");
+    assert!(kept.backup_has_helm());
+    assert_eq!(
+        kept.mind_last_trace.as_deref(),
+        Some("EDITED_HOLD"),
+        "the doctrine the store names is the one that thinks"
+    );
+    assert_eq!(kept.backup_act, BackupAct::Holding);
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .cluster_sessions
+            .contains_key(&hull),
+        "a hull the shipped default would have flown to Ceres stays at her cluster"
+    );
+    assert!(
+        matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "and is put on no journey"
+    );
 }
 
 /// **Doc 35 cut SF.R30 (doc 35d §6.6, `D-35-17`)** — a world whose packs author no orbital

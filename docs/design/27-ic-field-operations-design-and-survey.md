@@ -600,6 +600,19 @@ with real, embarked human-NPC leadership.
   pay from the unit's own stores and defend itself; it never opens fire first. A player who
   reconnects takes the controls back at once. This replaces P-2's no-mind default (hold, no fire,
   no motion). Not built.
+- **As rules (2026-11-11; the whole of it is doc 35 §11, which this entry follows):**
+  1. Handover after five minutes with no crew member linked; at once when the crew quit.
+  2. The mind is, in order: the one the player sealed on the unit; the house default the store
+     names; the house default compiled in.
+  3. It may drive to base, pay from the unit's own stores, hold, and answer a hostile that has
+     already hit it. It never opens fire first, mines or trades.
+  4. Base is the party's home, the cell at its carrier's ramp (`field/home.rs`). With no ramp in
+     reach it holds and is a retrieval job (Q-38-6, Q-38-18).
+  5. A reconnecting player has the controls back on that step.
+  The space half is built (doc 35 cut `SF.R32`). The field half is planned in doc 35 §11.4 as
+  `FB.1` to `FB.4`, on the withdraw path a raider line already uses (`field/raiders.rs`
+  `order_home`, `field/home.rs` `ask_out`, `field/exit.rs` `on_withdrawn`). Doc 27a's
+  `resolve_link_loss_posture` was never built and is superseded by it. Not built in the field.
 - **Alternative:** retain the last physical controls or a bounded stop posture without activating
   an AI fallback, unless the human explicitly arranged a handoff before disconnecting.
 - **Why:** preserves persistent stakes without equating a replaceable cockpit with deleting a
@@ -1099,7 +1112,7 @@ threshold and the countdown knob (Q-R4).
 | Pin | Where | Rule |
 |---|---|---|
 | P-1 | Q-D4, DT.1 | "Disconnect" is the linkdead grace running out (`[game].linkdead_grace_s`), not the line drop; an earlier slot resumes command after a short hysteresis, not on the instant of reconnect, so a flapping link does not churn leadership terms and Q-D8 order validity |
-| P-2 | Q-H5, H1-B | A hull with no sealed mind holds its last safe posture on link loss: no fire, no motion; the handover delay follows `[tacsim.match].reclaim_min_ms`'s shape |
+| P-2 | Q-H5, H1-B | A hull with no sealed mind holds its last safe posture on link loss: no fire, no motion; the handover delay follows `[tacsim.match].reclaim_min_ms`'s shape. **Superseded 2026-11-11** (Q-H5's amendment, doc 35 §11): every unit carries a house default backup mind, the delay is the five-minute linkdead grace, and the unit is taken to base |
 | P-3 | Q-H9, H2-B | A non-owner's hangar closes the epoch (`RecoveredToBase`, doc 23 D-23-1); the brief states who may read the black box after such a close, under Q-H6/Q-S4 evidence rules |
 | P-4 | Q-H11, W-clock | The freeze is new clock machinery covering every `world_ic_now` reader and every real-time deadline (Q-F3's pattern audited across the economy), never a zero rate or a paused H1 loop |
 | P-5 | Q-F4, H1-B | NPC extraction starts on the stranded character's request, refused only while a friendly rescue is physically under way within a published bound; no timeout extracts an unwilling pilot guarding the wreck |

@@ -875,6 +875,33 @@ pub struct SpaceLinkdeadState {
     pub grace_expired: bool,
     /// The port queued for the return plan (`D-35-7`): the one she filed for, since Q-35d-2.
     pub queued_return_port: Option<String>,
+    /// The backup mind's Rhai memory (doc 35 §11 `B-3`), rewritten when a think changes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mind_memory: Vec<u8>,
+    /// The last word the backup mind traced (doc 35 §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mind_last_trace: Option<String>,
+    /// What the backup seat last did for her (doc 35 §11); the crew hear each change once.
+    #[serde(default)]
+    pub backup_act: super::backup::BackupAct,
+    /// Real wall epoch second before which the seat does not ask the planner for a passage
+    /// again, after every open port was refused (doc 35 §11 `B-6`).
+    #[serde(default)]
+    pub return_retry_at_wall_s: i64,
+    /// Real wall epoch second before which the seat does not think again for a hull that
+    /// holds outside a bubble (doc 35 §11 `B-2`): a hull that waits weeks for a tow is thought
+    /// for a few times a minute, not every second.
+    #[serde(default)]
+    pub next_think_at_wall_s: i64,
+}
+
+impl SpaceLinkdeadState {
+    /// Whether the backup mind has the helm: the grace has run out and no crew member has
+    /// come back (doc 35 §11 `B-1`).
+    #[must_use]
+    pub const fn backup_has_helm(&self) -> bool {
+        self.grace_expired
+    }
 }
 
 /// Pending bubble input queued by a `+tac/*` or `+helm/*` switch for `BubbleInputProvider` (`SF.R21`, `35b` §3b).
@@ -2639,6 +2666,19 @@ fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
     if any_other_live_crew_aboard(ctx.w, hull, player) {
         return;
     }
+    begin_linkdead_for_hull(ctx, hull, true);
+}
+
+/// Cut `hull`'s drive and open her linkdead record (`D-35-7`): the grace starts now, and the
+/// crew are told so when `announce_grace`. A hull that has a record already is left as she is.
+fn begin_linkdead_for_hull(ctx: &mut Ctx<'_>, hull: ObjId, announce_grace: bool) {
+    if ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|book| book.linkdead_hulls.contains_key(&hull))
+    {
+        return;
+    }
     let ic_now_s = ctx.w.world_ic_now().at;
     let wall_now_s = ctx.w.now();
     let queued_return_port = super::commands::return_port_for_hull(ctx.w, hull)
@@ -2679,15 +2719,20 @@ fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
                     pdc_held: true,
                     grace_expired: false,
                     queued_return_port: queued_return_port.clone(),
+                    mind_memory: Vec::new(),
+                    mind_last_trace: None,
+                    backup_act: super::backup::BackupAct::Standby,
+                    return_retry_at_wall_s: 0,
+                    next_think_at_wall_s: 0,
                 },
             );
             affected = true;
         }
     }
-    if affected {
+    if affected && announce_grace {
         let port_label = queued_return_port.as_deref().unwrap_or("nearest port");
         let line = format!(
-            "[SPACE] Bridge crew linkdead; main drive cut to ballistic drift, point-defense held AUTO for {}s grace window, return plan queued for {}.",
+            "[SPACE] Bridge crew linkdead; main drive cut to ballistic drift, point-defense held AUTO. In {}s the backup mind takes the helm, bound for {}.",
             SPACE_LINKDEAD_GRACE_WALL_S, port_label
         );
         crate::port::voyage::narrate_hull(ctx, hull, &line);
@@ -2701,19 +2746,26 @@ fn handle_crew_disconnected(ctx: &mut Ctx<'_>, player: ObjId) {
     if any_other_live_crew_aboard(ctx.w, hull, player) {
         return;
     }
+    // A crew that leaves without a lost link (doc 35 §11 `B-1`) hands her over at once.
+    begin_linkdead_for_hull(ctx, hull, false);
     expire_linkdead_grace_for_hull(ctx, hull);
 }
 
+/// End `hull`'s grace: the backup mind has the helm from here until a crew member comes back
+/// or she docks (doc 35 §11 `B-1`). The seat flies her from the next space tick
+/// ([`super::backup::step_backup_minds`] outside a bubble, [`super::backup::fly_in_bubble`]
+/// inside one); nothing is engaged here, so the return is no longer one passage decided once.
 fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
-    let mut newly_expired_port: Option<String> = None;
+    let mut handed_over = false;
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-        if let Some(active) = book.active_for_hull_mut(hull) {
-            let ship_id = active.carrier_ship_id_for(hull).to_owned();
-            if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
-                ship.crew_linkdead = true;
-                ship.thrust_mps2 = [0, 0, 0];
-            }
+        let Some(state) = book.linkdead_hulls.get_mut(&hull) else {
+            return;
+        };
+        if state.grace_expired {
+            return;
         }
+        state.grace_expired = true;
+        handed_over = true;
         if let Some(ff) = book.free_flights.get_mut(&hull) {
             ff.thrust_mmps2 = [0, 0, 0];
             ff.burn_remaining_ic_s = None;
@@ -2723,37 +2775,9 @@ fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
             cs.approaching_rock = None;
             cs.ship_vel_mmps = [0, 0, 0];
         }
-        if let Some(state) = book.linkdead_hulls.get_mut(&hull)
-            && !state.grace_expired
-        {
-            state.grace_expired = true;
-            newly_expired_port = Some(
-                state
-                    .queued_return_port
-                    .clone()
-                    .unwrap_or_else(|| "ceres".to_owned()),
-            );
-        }
     }
-    if let Some(port) = newly_expired_port {
-        // `SF.R25` (doc 35d §2 #2): the plan is a planned, debited passage or it is not flown.
-        let line = match super::commands::execute_linkdead_return_journey(ctx, hull, &port) {
-            Ok(Some(engaged)) => format!(
-                "[SPACE] Linkdead grace window expired; return plan engaged for {}: burn {} t reaction mass, {} crew-days, transit {} IC days.",
-                engaged.port_label,
-                engaged.burn_t,
-                engaged.crew_days,
-                crate::port::voyage::ic_days(engaged.total_s)
-            ),
-            Ok(None) => {
-                "[SPACE] Linkdead grace window expired; hull holding her course with the drive cut."
-                    .to_owned()
-            }
-            Err(refusal) => format!(
-                "[SPACE] Linkdead grace window expired; no return plan is within her reach ({refusal}); hull drifting on her life-support reserve."
-            ),
-        };
-        crate::port::voyage::narrate_hull(ctx, hull, &line);
+    if handed_over {
+        crate::port::voyage::narrate_hull(ctx, hull, super::backup::BACKUP_TAKES_HELM);
     }
 }
 
@@ -2768,11 +2792,17 @@ fn handle_crew_revived_or_connected(ctx: &mut Ctx<'_>, player: ObjId) {
         }
         if let Some(active) = book.active_for_hull_mut(hull) {
             let ship_id = active.carrier_ship_id_for(hull).to_owned();
-            if let Some(ship) = active.bubble.ships.get_mut(&ship_id)
-                && ship.crew_linkdead
-            {
-                ship.crew_linkdead = false;
-                restored = true;
+            if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
+                if ship.crew_linkdead {
+                    ship.crew_linkdead = false;
+                    restored = true;
+                }
+                // Doc 35 §11 `B-7`: the backup mind stands down on the instant, and whatever
+                // burn it had ordered is cut with it; the helm is the crew's.
+                if restored {
+                    ship.thrust_mps2 = [0, 0, 0];
+                    ship.thrust_mmps2 = [0, 0, 0];
+                }
             }
         }
     }
@@ -2781,7 +2811,7 @@ fn handle_crew_revived_or_connected(ctx: &mut Ctx<'_>, player: ObjId) {
         crate::port::voyage::narrate_hull(
             ctx,
             hull,
-            "[SPACE] Bridge link restored; manual helm and tactical authority resumed.",
+            "[SPACE] Bridge link restored; the backup mind stands down; manual helm and tactical authority resumed.",
         );
     }
 }
@@ -2844,6 +2874,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     let now = ctx.w.world_ic_now();
     step_linkdead_grace_windows(ctx);
+    super::backup::step_backup_minds(ctx);
     super::picket::step_pending_light_lag_hails(ctx);
     expire_stale_docking_sessions(ctx, &now);
     step_derelict_records(ctx);
@@ -3910,6 +3941,10 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let mut lifted = std::mem::take(slot);
     let store = ctx.w.module_state::<TacsimStore>();
     let book = &mut lifted;
+    // Doc 35 §11: the hulls a backup mind has. Their records leave the book for the loop, so
+    // the seat can write its memory while the bubbles are borrowed.
+    let mut linkdead_hulls = std::mem::take(&mut book.linkdead_hulls);
+    let mut backup_flown: Vec<(ObjId, super::backup::BubbleBackup)> = Vec::new();
 
     let paused_hulls: std::collections::BTreeSet<ObjId> = book
         .docking_sessions
@@ -3963,6 +3998,16 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         };
         active.last_stepped_wall_s = wall_now_s;
         for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+            if let Some(state) = linkdead_hulls
+                .get_mut(&chull)
+                .filter(|state| state.backup_has_helm())
+            {
+                let flown = super::backup::fly_in_bubble(
+                    ctx.w, active, chull, &cship_id, state, dt_wall_ms,
+                );
+                backup_flown.push((chull, flown));
+                continue;
+            }
             let is_linkdead = active
                 .bubble
                 .ships
@@ -4091,8 +4136,12 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             ));
         }
     }
+    lifted.linkdead_hulls = linkdead_hulls;
     if let Some(slot) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         *slot = lifted;
+    }
+    for (hull, flown) in backup_flown {
+        super::backup::settle_bubble_backup(ctx, hull, flown);
     }
 
     let burned_hulls: Vec<ObjId> = ctx

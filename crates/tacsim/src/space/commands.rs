@@ -2103,7 +2103,7 @@ pub(crate) fn execute_linkdead_return_journey(
         .unwrap_or_else(|| CmdError::msg("No open port available for linkdead return plan.")))
 }
 
-fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
+pub(crate) fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
     if fallback_actor != ObjId(1) && hull_aboard_for_actor(w, fallback_actor) == Some(hull) {
         return fallback_actor;
     }
@@ -4568,6 +4568,17 @@ pub const CUSTOMS_SEIZURE_HELD: &str =
 
 fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    submit_hull_to_customs(ctx, hull)
+}
+
+/// Submit `hull` to the customs picket that is hailing her, as `ctx.actor`: `+helm/submit`'s
+/// whole ruling, which the link-loss backup seat asks for as well (doc 35 §11 `B-5`).
+///
+/// # Errors
+///
+/// No picket is hailing her, she is cleared or has run already, she is not hove to, or the
+/// seizure could not be taken.
+pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
 
     let (corvette_ship_id, carrier_ship_id, rel_speed_mmps, status) = {
