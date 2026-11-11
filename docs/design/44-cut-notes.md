@@ -133,7 +133,9 @@ with no LLM and no change to the mind ABI.
   `mush_propagation` envelope to the recipient, which interference holds; the recipient's own
   executor and the kernel's own checks (`field/orders.rs`, `arena/detachment.rs`, both
   unchanged). The order book is the commander's only memory, so a restart derives the same next
-  order.
+  order. The one thing kept in RAM is scheduling: an order just submitted to a slot is not
+  submitted again for `RESEND_AFTER_S` (60 IC seconds), so one refused at its final take is
+  retried at that pace and the commander's own hull flies its order meanwhile.
 - **What the commander sees** (`crates/tacsim/src/field/orders.rs`): `sight` reads the Hostile
   contacts off the last frame the NPC's own seat was sent; `lost` says a unit is lost in its
   field when its operator's own frame shows a wreck or the field's kernel has named it

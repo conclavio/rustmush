@@ -21,8 +21,11 @@
 //! **One order a visit.** A principal acts once a fire ([`crate::port_tick::Fire`]), so a
 //! posture reaches a roster of `n` hulls over `n` fires, slot by slot in the roster's order, the
 //! commander's own slot among them. The order book is the commander's only memory: a hull whose
-//! pending or delivered order already is the posture is not ordered again, so nothing is kept in
-//! RAM and a restart re-derives the same next order.
+//! pending or delivered order already is the posture is not ordered again, so a restart
+//! re-derives the same next order. The one thing kept in RAM is scheduling ([`Sent`]): an order
+//! just submitted to a slot is not submitted again for [`RESEND_AFTER_S`], so one refused at its
+//! final take is retried at that pace and not every fire, and the commander's own hull goes on
+//! flying its order meanwhile.
 //!
 //! **It yields without being told to.** A returning player who is eligible takes the lead by the
 //! roster's own rule (doc 27 Q-D4, FO-15; the return hysteresis); the NPC is then not the leader,
@@ -31,6 +34,8 @@
 //!
 //! **Only inside a running field** (doc 44 §4 D). On open ground the surface executor runs a
 //! hired NPC's delivered orders as surface acts, and nothing here orders one.
+
+use std::collections::BTreeMap;
 
 use mush_core::{Ctx, ObjId};
 use mush_tactics::detachment::{
@@ -41,6 +46,16 @@ use super::field_orders::{self, Act, FieldObjective, FieldPayload};
 use super::{Flight, OperationRecord, SortieHandles, runtime};
 use crate::detachment::commander::{Posture, Strength, View, WORK_POINT_CELLS, decide};
 use crate::port_tick::{Fire, Step};
+
+/// **How long the commander waits before sending a slot the same order again**, IC seconds: the
+/// reply walk's own pace ([`super::npc`]). An order that was admitted is in the book and is not
+/// owed at all; this bounds only one that was submitted and never landed.
+pub const RESEND_AFTER_S: i64 = 60;
+
+/// **What a commander last sent each slot** (RAM, the NPC walk's): the commander's unit and the
+/// slot → the order and the IC second before which it is not sent again. Scheduling only: it
+/// admits nothing, and a restart forgets it.
+pub(super) type Sent = BTreeMap<(ObjId, u16), (Directive<FieldPayload>, i64)>;
 
 /// **The posture as the roster order a player leader would type** (`ADVANCE x,y`, `HOLD`,
 /// `WITHDRAW`), holding no fire.
@@ -150,10 +165,8 @@ fn owes(
 pub(super) fn step(
     ctx: &mut Ctx<'_>,
     fire: &mut Fire,
-    h: &SortieHandles,
-    op: &OperationRecord,
-    roster: &DetachmentRoster,
-    flight: &Flight,
+    sent: &mut Sent,
+    (h, op, roster, flight): (&SortieHandles, &OperationRecord, &DetachmentRoster, &Flight),
     (unit, actor): (ObjId, ObjId),
 ) -> Option<Step> {
     let leader = roster.leader()?;
@@ -166,14 +179,20 @@ pub(super) fn step(
         Some(orders) => OrderBook::restore(&orders.book, roster).ok()?,
         None => OrderBook::new(roster.id()),
     };
+    let now = ctx.w.world_ic_now().at;
     let owing: Vec<&Member> = roster
         .members()
         .iter()
         .filter(|member| owes(ctx, &site, roster, &book, actor, member, &wanted))
+        .filter(|member| {
+            sent.get(&(unit, member.slot.get()))
+                .is_none_or(|(order, until)| *order != wanted || *until <= now)
+        })
         .collect();
     let first = owing.first()?.slot;
     let (revision, term) = (roster.revision(), roster.term());
-    Some(super::npc::dispatch(ctx, fire, unit, actor, |ctx| {
+    let mut chosen = None;
+    let step = super::npc::dispatch(ctx, fire, unit, actor, |ctx| {
         let mut request = field_orders::request(
             ctx,
             h,
@@ -199,11 +218,27 @@ pub(super) fn step(
             })
             .map(|member| member.slot)
             .ok_or_else(|| "The commander holds no command right over an owing unit.".to_owned())?;
+        chosen = Some(slot);
         if let Act::Issue { target, .. } = &mut request.act {
             *target = OrderTarget::Slot(slot);
         }
         runtime::submit(ctx, runtime::Command::Message(Box::new(request)))
-    }))
+    });
+    // The slot it sent to is left alone for a while; when it could send to none, so is every
+    // slot it owed, and its own hull flies its order meanwhile.
+    let until = now.saturating_add(RESEND_AFTER_S);
+    match (chosen, step) {
+        (Some(slot), _) => {
+            sent.insert((unit, slot.get()), (wanted, until));
+        }
+        (None, Step::Refused) => {
+            for member in &owing {
+                sent.insert((unit, member.slot.get()), (wanted.clone(), until));
+            }
+        }
+        (None, _) => {}
+    }
+    Some(step)
 }
 
 #[cfg(test)]
