@@ -1116,6 +1116,143 @@ path is `SF.R25`'s, which its story pins for the nearest port only).
 **Noted.** At a high clock rate five real minutes are many IC days: at 3,600 a crew that drops its link at a
 cluster loses the cluster session to its idle timeout before the grace ends.
 
+## SF.R32 — the link-loss backup mind, the space half (doc 35 §11; Q-35d-2 as ruled)
+
+The owner ruled Q-35d-2 on 2026-11-11 for a mind-driven backup. The rulings cut (above) built the five-minute
+grace and the filed port; the return was still one passage decided once when the grace ended. This cut replaces
+it with a mind that has the helm from the end of the grace until a crew member is back or she docks. The rules
+are doc 35 §11 (`B-1` to `B-8`); the field half is planned there (§11.4) and not built. The same day the owner
+ruled doc 44's Q-44-35 to Q-44-38 (doc 44 was PR #530, not on main; this cut is its MW.8), and the cut follows
+them where it says so below. Paths are under `crates/tacsim/src/space/` unless given.
+
+### Built
+
+- **The seat (`backup.rs`, new).** `step_backup_minds` runs on the space tick after the grace windows. For each
+  hull whose grace has run out and who is outside a bubble: alongside, her record is removed; on a corridor, she
+  is left to her journey; in free flight or at a cluster, the mind thinks and the seat acts. `fly_in_bubble`
+  runs inside `step_active_bubbles`, before the bubble's step, for each such hull in a bubble;
+  `settle_bubble_backup` finishes it once the book is back in the world.
+- **What the mind may ask.** `speed(n)` above nought is the return; `hold()` is heave to, or hold; `emcon(on)`
+  is her posture. Every other intent is dropped in `read`, so no source can lock, fire or arm (`B-4`).
+- **The return.** `execute_linkdead_return_journey` (`commands.rs`), unchanged: the queued port, then every open
+  port nearest first, each through `engage_port_autopilot`. The seat asks `ctx.authoritative_pending` and
+  `authoritative_queue_full` for her captain first and waits a tick when either is true. A refusal of every
+  port starts a 60 s wait (`BACKUP_RETURN_RETRY_WALL_S`), shown to the mind as `v.motor.outcome ==
+  "no_route"`; the crew are told once that she holds for a tow.
+- **Customs.** On `hold()` in a bubble the seat commands `CommandBurnMmps2` against her velocity relative to
+  the picket's corvette (the interdictor where there is no picket), sized to bring her to rest over the step the
+  bubble is about to take, with `force_into_reserve`. Under `HEAVE_TO_REL_VEL_MMPS`, with customs hailing her,
+  `settle_bubble_backup` calls `submit_hull_to_customs` as her captain: `+helm/submit`'s body, lifted out of
+  the handler with no other change. Since `SF.R26c` that body files one submitted `tacsim_space_customs`, and
+  the space tick's `reconcile_customs_rulings` levies the fine and sets the picket's verdict; the seat does not
+  submit again while `ruling_pending`.
+- **The helm is live under the seat.** `fly_in_bubble` clears `crew_linkdead` on her ship each step and keeps
+  `pdc_auto`. Her crew's standing orders are not applied while the seat has her.
+- **Reconnect.** `handle_crew_revived_or_connected` removes the record as before, and now also cuts whatever
+  burn the seat had ordered.
+- **Who is crew (Q-44-35).** `helm_crew_aboard` (`commands.rs`): the holders of her bridge stations who are
+  aboard, and her captain (`helm_holder`) when aboard. The presence hooks and `build_carrier_ship_state` ask it;
+  they asked `all_aboard_crew_for_hull`, every player aboard. A passenger's lost link opens no window, their
+  live link holds none off, and their reconnect clears nothing.
+- **When the window starts (Q-44-36).** The record opens when the last crew member's link is lost.
+  `handle_crew_disconnected` no longer ends a window that exists: the space tick does, five minutes after it
+  opened. It used to end it the moment an earlier crew member's session ran out.
+- **Quitting.** With no record and no other crew member inside their own grace, `handle_crew_disconnected`
+  opens a record and ends its grace at once, so a crew that quits in space hands her over (Q-35-B1). With
+  another crew member still inside their grace it opens an ordinary five-minute window instead.
+- **The mind's source.** `content/minds/linkdead_return.rhai` and its manifest (role `backup`), compiled in and
+  installed with the other space doctrines. `think` (`backup.rs`) tries, in order, the seal on the hull
+  (`space_mind_seal_of`) when the store holds its source, the store's house default, and the compiled one; a
+  source that faults or does not run falls through to the next.
+- **The store pointer.** New document `tacsim:doctrine:{role}` (`crates/tacsim/src/store.rs`):
+  `{"sha256": …}`, naming a `tacsim:mindsrc:` source. `TacsimStore::house_doctrine(role)` answers only when
+  that source is readable. `house_doctrine_documents(role, source)` returns the two documents an operator
+  writes. The boot never writes the pointer.
+- **`space_mind_view` (`picket.rs`).** The view-building half of `run_space_rhai_think_with_seal`, split out so
+  the seat can set `held` before the think. The picket doctrines read the same view as before.
+- **State.** `SpaceLinkdeadState` gains `mind_memory`, `mind_last_trace`, `backup_act`,
+  `return_retry_at_wall_s` and `next_think_at_wall_s`, all `serde(default)`; `SPACE_STATE_FORMAT` is unchanged.
+- **Lines.** The link-loss line names the mind and the port. `BACKUP_TAKES_HELM` at the grace's end; one line
+  each for making for a port, heaving to, holding, holding for a tow, and docking.
+
+### Tests
+
+`sfr32_the_link_loss_backup_mind_flies_her_home_stops_for_customs_and_stands_down`
+(`crates/tacsim/tests/domain_world/voyage.rs`), non-GOD pilots through the registered handlers.
+
+- **A.** A Dray-P with 5 t of unlicensed ore files Stickney, decouples, and her link drops. Past the grace her
+  record is still there, the act is `MakingForPort`, the trace `BACKUP_MAKE_FOR_PORT`, and her journey is bound
+  for Stickney over the interdicted leg. The picket opens; three ticks later her thrust is not zero and her
+  relative speed has fallen. Before the cut she drifted with her drive cut.
+- **B.** Her pilot reconnects: with no tick between, the record is gone and the thrust is zero; the burn the
+  pilot then orders is unchanged a tick later. The link drops again inside the bubble; past the grace she is
+  braked to under the heave-to speed, customs fine her for 5,000 kg, and at no step is she `RanThePicket`.
+- **C.** A hull who filed Stickney and went back to Ceres Halo with too little in her tank is taken to Ceres.
+  A hull at Pallas who can afford no port is told once that she holds, burns nothing, the trace becomes
+  `BACKUP_HOLD_FOR_RETRIEVAL`, and the planner is asked again after the wait.
+- **D.** With `tacsim:doctrine:linkdead_return` naming a doctrine that only holds, a hull with a full tank at
+  Ceres Halo stays at her cluster with the trace `EDITED_HOLD`.
+
+`sfr32b_only_helm_crew_keep_her_crewed_the_window_runs_from_the_last_and_a_restart_resumes` (same file):
+
+- **A.** With a linked passenger aboard, the pilot's lost link opens the window (before, it did not). The
+  passenger's link dropping and coming back changes nothing, in the window or under the mind.
+- **B.** Gunner lost at t, pilot at t+240 s, gunner's session ended at t+300 s: the window is still open (before,
+  it ended there), still open at t+539 s, and the mind has the helm at t+541 s.
+- **C.** A hull the mind holds at Pallas has an equal record after a reboot, and past the wait the mind has
+  thought and asked the planner again.
+
+`sfr25` part C (the rulings cut's) passes unchanged: the destination order is the same code. `sfr25b` is changed
+by one step: its pilot's decouple is still committing on the tick the grace ends, so the seat waits, and the test
+now lands that submission and ticks once more before it reads the return journey. The one-shot engaged behind
+the pending submission and left the debit to `reconcile_space_burns`.
+
+### Divergences
+
+- **The seat waits for admission; the one-shot did not.** With her captain's earlier submission still in flight
+  the return is engaged a tick later, not behind it (`sfr25b`, above).
+- **Part C's destination was already true.** The nearest-affordable fallback is the rulings cut's
+  `execute_linkdead_return_journey`, so "takes Ceres" alone passes before this cut. What fails before it in
+  that part is the mind's own record (the act, the trace, the record kept until she docks) and the hold's
+  second half (the read refusal, the repeated ask).
+- **The stop for customs is the mind's, not the seat's (Q-35-B4).** The house default always asks it. A sealed
+  mind that never asks coasts with her drive cut and the picket's rules apply. Raised for the owner in doc 35
+  §11.3.
+- **A quit hands over at once (Q-35-B1).** The ruling speaks of a lost link. Taken as the default because a
+  hull left in space with nobody awake is the case it is for.
+- **"Defend itself" is point defence only (Q-35-B3, ruled as Q-44-38).** The rule allows fire at a unit that
+  has fired on her since the bubble opened. The bubble keeps no such record, so the seat drops every lock and
+  shot: stricter than the rule, never looser. The gate belongs in the engine, once, for field and space.
+- **No think is ever in flight (Q-44-37).** The seat thinks and acts inside one step of the tick, so a
+  reconnect has nothing of the mind's to discard but the burn, which it cuts.
+- **The brake goes into the return reserve.** A hull that keeps her reserve and coasts past 35 km has run the
+  picket; a hull short of reaction mass afterwards is a retrieval job.
+
+### Not built
+
+- The field half (doc 35 §11.4, `FB.1` to `FB.4`).
+- The retrieval job for a hull that holds (Q-35-B6): she holds and says so; no contract is posted.
+- Return fire, and the record of who fired on whom that it needs (Q-44-38).
+- A staff verb to set the house doctrine pointer; it is two store documents and a restart.
+- A handover at server restart for hulls whose crews were linked when it went down (Q-35-B8).
+- Anything the mind does after customs clear her while a hostile is still in the bubble (Q-35-B7).
+- A player-facing way to seal a mind on a ship's hull. The seat reads `tacsim:mind_seal` if it is there; only
+  NPC hulls and drones are sealed today.
+
+### Not pinned
+
+- A sealed mind on the hull taking the house default's place. The lookup order is three lines in `think`; no
+  story seals a player hull, because no verb does.
+- The fall-through from a mind that faults to the next source.
+- A quit, as against a lost link.
+- The seizure branch under the seat (the pilot in the story can pay the fine).
+- A hull released on docking: no story flies the return to its end.
+- An interdictor bubble with no customs picket.
+- A quit while another crew member is inside their own grace.
+- The mind's view. It reads the picket doctrines' view, whose contact ids are an index over every ship in the
+  bubble and so move when an unseen ship is there; the seat uses no contact id, and the shipped doctrine reads
+  none. It thinks on `MindPool::shared(1)`, as they do.
+
 ## SF.R26b — an in-flight debit lands once, or the passage is cut (doc 35d §9a; Q-35d-6 ruled)
 
 The owner ruled Q-35d-6 on 2026-11-11: in-bubble helm and tactical inputs are bubble orders on the bubble's own

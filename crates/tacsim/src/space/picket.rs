@@ -1031,6 +1031,29 @@ pub fn run_space_rhai_think_with_seal(
     think_seq: u64,
     memory: &[u8],
 ) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
+    let (view, contact_map) = space_mind_view(bubble, ship_id, unit_obj)?;
+    let t_ms = view.t_ms;
+    let result = run_sealed_mind_on_pool(
+        unit_obj,
+        seal,
+        default_digest,
+        store,
+        think_seq,
+        t_ms,
+        Arc::new(view),
+        memory,
+    )?;
+    Some((result, contact_map))
+}
+
+/// The propagation-gated [`MindView`] `ship_id` reads inside `bubble`, and the ship each of its
+/// contact rows names: what [`run_space_rhai_think_with_seal`] hands a doctrine, and what the
+/// link-loss backup seat adds its own situation to (doc 35 §11).
+pub(crate) fn space_mind_view(
+    bubble: &LocalSpaceBubble,
+    ship_id: &str,
+    unit_obj: ObjId,
+) -> Option<(MindView, BTreeMap<ContactId, String>)> {
     let observer = bubble.ships.get(ship_id)?;
 
     let mut contact_map = BTreeMap::new();
@@ -1145,7 +1168,7 @@ pub fn run_space_rhai_think_with_seal(
     }
 
     let t_ms = i64::try_from(bubble.wall_elapsed_ms).unwrap_or(i64::MAX);
-    let view = Arc::new(MindView {
+    let view = MindView {
         unit: unit_obj.0,
         callsign: Designator::Unit {
             party: observer.party,
@@ -1191,19 +1214,8 @@ pub fn run_space_rhai_think_with_seal(
         contacts,
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
-    });
-
-    let result = run_sealed_mind_on_pool(
-        unit_obj,
-        seal,
-        default_digest,
-        store,
-        think_seq,
-        t_ms,
-        view,
-        memory,
-    )?;
-    Some((result, contact_map))
+    };
+    Some((view, contact_map))
 }
 
 /// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).

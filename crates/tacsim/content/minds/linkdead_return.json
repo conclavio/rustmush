@@ -1,0 +1,8 @@
+{
+  "name": "Link-Loss Return Doctrine",
+  "role": "backup",
+  "api": 7,
+  "stock": 3,
+  "rated_class": "I",
+  "ops_ceiling": 1500
+}

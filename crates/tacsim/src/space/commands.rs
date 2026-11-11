@@ -284,6 +284,30 @@ pub fn hull_aboard_for_actor(w: &World, actor: ObjId) -> Option<ObjId> {
     None
 }
 
+/// The characters who keep `hull` crewed (doc 44 Q-44-35, ruled 2026-11-11): everyone aboard
+/// who holds one of her bridge stations, and her captain when aboard. A passenger is not one:
+/// their link neither holds the backup mind off nor takes the helm back from it.
+#[must_use]
+pub fn helm_crew_aboard(w: &World, hull: ObjId) -> Vec<ObjId> {
+    let mut crew = std::collections::BTreeSet::new();
+    if let Some(assignments) = w
+        .module_state::<SpatialState>()
+        .and_then(|sim| sim.assignments.get(&hull))
+    {
+        for seat in assignments.seats.values() {
+            if hull_aboard_for_actor(w, seat.actor) == Some(hull) {
+                crew.insert(seat.actor);
+            }
+        }
+    }
+    if let Some(captain) = crate::port::coop::helm_holder(w, hull)
+        && hull_aboard_for_actor(w, captain) == Some(hull)
+    {
+        crew.insert(captain);
+    }
+    crew.into_iter().collect()
+}
+
 /// Return all crew members (`ObjKind::Player` or seated bridge crew) currently aboard `hull` (`SF.R13`).
 #[must_use]
 pub fn all_aboard_crew_for_hull(w: &World, hull: ObjId) -> Vec<ObjId> {
@@ -2103,7 +2127,7 @@ pub(crate) fn execute_linkdead_return_journey(
         .unwrap_or_else(|| CmdError::msg("No open port available for linkdead return plan.")))
 }
 
-fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
+pub(crate) fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor: ObjId) -> ObjId {
     if fallback_actor != ObjId(1) && hull_aboard_for_actor(w, fallback_actor) == Some(hull) {
         return fallback_actor;
     }
@@ -4568,6 +4592,17 @@ pub const CUSTOMS_SEIZURE_HELD: &str =
 
 fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
+    submit_hull_to_customs(ctx, hull)
+}
+
+/// Submit `hull` to the customs picket that is hailing her, as `ctx.actor`: `+helm/submit`'s
+/// whole ruling, which the link-loss backup seat asks for as well (doc 35 §11 `B-5`).
+///
+/// # Errors
+///
+/// No picket is hailing her, she is cleared or has run already, she is not hove to, or the
+/// seizure could not be taken.
+pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
 
     let (corvette_ship_id, carrier_ship_id, rel_speed_mmps, status) = {

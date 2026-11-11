@@ -132,12 +132,38 @@ pub fn drone_mining_digest() -> Digest {
     *DIGEST
 }
 
-/// Install the four shipped space/mining doctrine sources into `TacsimStore` (`SF.R14`, `D-35-17`).
+/// The house doctrine role of the link-loss backup mind (doc 35 §11 `B-3`): the tail of its
+/// `tacsim:doctrine:` pointer key.
+pub const LINKDEAD_RETURN_ROLE: &str = "linkdead_return";
+
+/// **Link-Loss Return Doctrine's source** (`content/minds/linkdead_return.rhai`, doc 35 §11).
+#[must_use]
+pub const fn linkdead_return_source() -> &'static str {
+    include_str!("../../content/minds/linkdead_return.rhai")
+}
+
+/// **Link-Loss Return Doctrine's manifest** (`content/minds/linkdead_return.json`, doc 35 §11).
+#[must_use]
+pub const fn linkdead_return_manifest_json() -> &'static str {
+    include_str!("../../content/minds/linkdead_return.json")
+}
+
+/// **Link-Loss Return Doctrine's SHA-256 digest** (doc 35 §11).
+#[must_use]
+pub fn linkdead_return_digest() -> Digest {
+    static DIGEST: std::sync::LazyLock<Digest> = std::sync::LazyLock::new(|| {
+        Digest(Sha256::digest(linkdead_return_source().as_bytes()).into())
+    });
+    *DIGEST
+}
+
+/// Install the five shipped space/mining doctrine sources into `TacsimStore` (`SF.R14`, `D-35-17`).
 pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore) {
     let _ = crate::store::install_mind_source(store, kirkwood_picket_source());
     let _ = crate::store::install_mind_source(store, belt_raider_source());
     let _ = crate::store::install_mind_source(store, interdictor_patrol_source());
     let _ = crate::store::install_mind_source(store, drone_mining_source());
+    let _ = crate::store::install_mind_source(store, linkdead_return_source());
 }
 
 /// **The SHA-256 of [`STANDARD_RHAI`]'s bytes**, 64 lowercase characters
@@ -213,6 +239,9 @@ pub fn source_lookup<'s>(
     }
     if *sha256 == drone_mining_digest().0 {
         return Some(drone_mining_source());
+    }
+    if *sha256 == linkdead_return_digest().0 {
+        return Some(linkdead_return_source());
     }
     None
 }

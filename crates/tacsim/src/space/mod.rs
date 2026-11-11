@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod backup;
 pub mod bubble;
 pub mod commands;
 pub mod custody;
@@ -20,6 +21,9 @@ pub mod picket;
 pub mod tick;
 pub mod weapons;
 
+pub use backup::{
+    BACKUP_RETURN_RETRY_WALL_S, BACKUP_TAKES_HELM, BackupAct, house_doctrine_documents,
+};
 pub use bubble::{
     BubbleId, BubbleInputCommand, BubbleInputEntry, BubbleInputTape, BubbleSnapshot,
     BubbleStepReport, CanopyBodyProjection, DERELICT_LIFE_SUPPORT_S, EmconPosture, FacetBand,
