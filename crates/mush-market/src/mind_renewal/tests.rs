@@ -1031,3 +1031,39 @@ fn house_front_words(term_end: i64) -> TestResult {
 
 #[path = "provider_tests.rs"]
 mod provider_tests;
+
+/// Doc 44 MW.2 (Q-44-14, ruled 2026-11-11): a lasting refusal is answered in
+/// the owner's words, with the Registry's reason, for each cause the Roll
+/// calls lasting (`RenewalStop`); the House service answers with the same
+/// type and the same words. Every other refusal keeps the service's uniform
+/// line and is retried: nothing passing has a `RenewalStop`.
+#[test]
+fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
+    use super::player::{RENEW_STOPPED, renew_stopped, stop_reason};
+    use mush_roll::commerce::renewal::reader::RenewalStop;
+    check_eq!(
+        RENEW_STOPPED,
+        "This licence cannot be renewed: {reason}. Nothing further will be tried."
+    );
+    for (stop, reason) in [
+        (RenewalStop::Recalled, "the Registry recalled this mind"),
+        (RenewalStop::Withdrawn, "its author withdrew this mind"),
+        (RenewalStop::OwnCharter, "you now own this mind's charter"),
+    ] {
+        check_eq!(stop_reason(stop), reason);
+        check_eq!(
+            renew_stopped(stop),
+            format!("This licence cannot be renewed: {reason}. Nothing further will be tried.")
+        );
+        // The match below is exhaustive: a new lasting cause needs its words.
+        match stop {
+            RenewalStop::Recalled | RenewalStop::Withdrawn | RenewalStop::OwnCharter => {}
+        }
+    }
+    let house: mush_roll::commerce::house_renewal::reader::RenewalStop = RenewalStop::Withdrawn;
+    check_eq!(
+        renew_stopped(house),
+        "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried."
+    );
+    Ok(())
+}

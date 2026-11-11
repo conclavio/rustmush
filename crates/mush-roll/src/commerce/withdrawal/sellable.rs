@@ -128,7 +128,10 @@ impl Sellable {
 /// The title half, pure: the charter's current title is the seller's own, at
 /// the revision the listing froze (the same test `EntitlementSaleFacts::
 /// check_fresh` makes at a listing's commit).
-pub(crate) fn title_verdict(s: &ListedSubject, title: Option<&EconomicAsset>) -> Option<Unsellable> {
+pub(crate) fn title_verdict(
+    s: &ListedSubject,
+    title: Option<&EconomicAsset>,
+) -> Option<Unsellable> {
     let moved = title.is_none_or(|t| {
         t.object != s.charter.object()
             || t.revision != s.title_revision
@@ -357,7 +360,11 @@ pub(crate) fn check(
     };
 
     // The seller's own rows.
-    let status = fetch(ctx, &f.status, &keys(&verdicts, false, &|_, s| Some(s.filed.key())))?;
+    let status = fetch(
+        ctx,
+        &f.status,
+        &keys(&verdicts, false, &|_, s| Some(s.filed.key())),
+    )?;
     let licences = fetch(
         ctx,
         &f.licences,
@@ -479,10 +486,14 @@ pub(crate) fn check(
     let replacements = fetch(
         ctx,
         &f.owner_qualification_operations,
-        &keys(&verdicts, true, &|i, _| match choices.get(i).copied().flatten() {
-            Some(ParentChoice::Replacement(operation)) => Some(operation.to_hex()),
-            _ => None,
-        }),
+        &keys(
+            &verdicts,
+            true,
+            &|i, _| match choices.get(i).copied().flatten() {
+                Some(ParentChoice::Replacement(operation)) => Some(operation.to_hex()),
+                _ => None,
+            },
+        ),
     )?;
     let selected: Vec<Option<LicenceId>> = subjects
         .iter()
@@ -777,7 +788,12 @@ mod tests {
         // A replacement wins for anyone.
         for requester in [SELLER, ObjId(8)] {
             check_eq!(
-                parent_choice(&s, Some(requester), Some((source, bound)), Some(replacement)),
+                parent_choice(
+                    &s,
+                    Some(requester),
+                    Some((source, bound)),
+                    Some(replacement)
+                ),
                 Ok(ParentChoice::Replacement(replacement))
             );
         }

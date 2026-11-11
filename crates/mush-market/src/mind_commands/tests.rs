@@ -1625,7 +1625,10 @@ fn a_listing_the_roll_calls_unsellable_leaves_the_counter_and_the_agents_list() 
     };
 
     // While the Roll answers yes for both, both are on the counter.
-    check_eq!(listed(MarketCommandRequest::listings(None))?, vec![dead, live]);
+    check_eq!(
+        listed(MarketCommandRequest::listings(None))?,
+        vec![dead, live]
+    );
     check_eq!(
         memory.take_asked(),
         vec![2],
@@ -1768,7 +1771,11 @@ fn a_run_of_unsellable_listings_never_overspends_the_read_and_never_hides_what_f
         }
     }
     check!(reads > 1, "the family does not fit one read's allowance");
-    check_eq!(found, vec![live], "the live listing behind the run is reached");
+    check_eq!(
+        found,
+        vec![live],
+        "the live listing behind the run is reached"
+    );
     Ok(())
 }
 

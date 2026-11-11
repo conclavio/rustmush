@@ -2,6 +2,9 @@
 //! current issuer/Registry/immediate-parent rights are separately re-resolved.
 //! Existing paid use/source never calls this fresh-issuance reader.
 
+/// Doc 44 MW.2 (Q-44-14): the lasting refusals are the personal reader's own
+/// type; a House licence is stopped by its revision's recall or withdrawal.
+pub use super::super::renewal::reader::RenewalStop;
 use super::super::{Holder, org_holder};
 use super::super::{
     LicenceId, WorldIcSeconds,
@@ -108,8 +111,17 @@ pub struct RenewalInventoryEntry {
     attempted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     holder_generation: Option<u64>,
+    /// Doc 44 MW.2 (Q-44-14): set when this licence cannot be renewed as the
+    /// Roll's rows stand. `Status` answers it (the holder is told why);
+    /// `Inventory` leaves such a licence out (the service never tries it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<RenewalStop>,
 }
 impl RenewalInventoryEntry {
+    /// Why this licence cannot be renewed, when it cannot ([`RenewalStop`]).
+    pub const fn stop(&self) -> Option<RenewalStop> {
+        self.stop
+    }
     pub const fn licence(&self) -> LicenceId {
         self.licence
     }
@@ -481,7 +493,12 @@ impl RenewalReader {
             {
                 continue;
             }
-            if let Some(item) = self.inventory_entry(roll, ctx, licence)? {
+            // Doc 44 MW.2: a licence that can never be renewed is no work
+            // for the service; it is left out here, at every scan and after
+            // every restart, because the verdict is the Roll's rows' own.
+            if let Some(item) = self.inventory_entry(roll, ctx, licence)?
+                && item.stop.is_none()
+            {
                 entries.push(item);
             }
         }
@@ -544,6 +561,9 @@ impl RenewalReader {
             last_operation,
             attempted,
             holder_generation: licence.ownership().map(|b| b.generation),
+            // A House sells its own catalogue from its treasury: the holder
+            // is never the charter's seller, so only the revision stops it.
+            stop: RenewalStop::read(ctx, &self.families, term.policy(), false)?,
         }))
     }
 }
