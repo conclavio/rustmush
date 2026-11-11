@@ -370,18 +370,9 @@ pub fn all_orbital_clusters(w: &mush_core::World) -> Vec<ResolvedOrbitalCluster>
             }
         }
     }
-    if map.is_empty()
-        && let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON)
-    {
-        for entry in pack.entries().values() {
-            let crate::pack::PackEntry::Location(loc) = entry else {
-                continue;
-            };
-            for cdef in &loc.clusters {
-                map.insert(cdef.id.clone(), ResolvedOrbitalCluster::from_def(cdef));
-            }
-        }
-    }
+    // `SF.R30` (doc 35d §6.6, `D-35-17`): a world whose packs author no clusters has none. This
+    // used to fall back to the lane compiled into the binary, re-verifying and re-parsing it on
+    // every call (once a hull a tick), so a world could not author its clusters away.
     map.into_values().collect()
 }
 
