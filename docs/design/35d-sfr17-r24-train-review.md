@@ -193,6 +193,22 @@ Order: Docs and `SF.R25` at once (independent, and `SF.R25` is the only one that
 - **Q-35d-3, what a docking session pauses.** Default: the docking hull and its target only; the rest of the bubble keeps its clock.
 - **Q-35d-4, releasing a tow.** Default: release withdraws the claim. Alternative: the claim stands while any tug of the same party holds the line.
 - **Q-35d-5, the lead pip** (carried from 35c §6.11): keep or drop under the no-targeting-maths rule.
+- **Q-35d-6, what `SF.R26` can be** (added while building `SF.R25`; see §9a). Default: in-bubble helm and tactical inputs are bubble orders on the bubble's own tape, as the ground arena's orders are; `SF.R26` is the Tier-1 debit-before-grant and nothing larger.
+
+### 9a. `SF.R26`, re-scoped against the engine's action contract
+
+§4 and the `SF.R26` row above ask for the state change of every bubble verb to move into a prepared action's apply, with a prepare that re-reads seat, aboard and detection in the world. Read against `mush_core`'s provider trait, that is not what the engine offers:
+
+- `prepare_authoritative(invocation, txn)` sees the typed state families through `ActionTxn` and nothing else. The world is read once, by `project_offer(action, query, engine)`, which fixes server-side facts into the offer. A prepare therefore re-checks **family** state; world facts are as fresh as the offer.
+- The bubble is module state in RAM (`SpaceBubbleBook`), written to the store as documents. An action cannot write it. The pattern the port uses is "the action commits a family row, a tick reads the row and acts" (`tacsim_port_burn`'s ticket, then `launch_step`).
+- The ground arena does not take combat orders through prepared actions at all; they go to the arena's own input queue and are recorded on its tape.
+
+So there are two honest readings of 35b §3b for space, and they differ by a rewrite:
+
+1. **Bubble orders (the default).** `+helm/heading|thrust|emcon|roll|guidance` and `+tac/lock|beam|torp|railgun|pdc` are orders to a running simulation. They are validated in the handler, applied through the one `apply_bubble_command` path, recorded on the bubble's replay tape and persisted on the command's batch, which is what the tree does. Under this reading the label is right for them, and what is still owed is narrow: the verbs that grant something before a debit lands (`+helm/autopilot`, `+helm/approach`, the dock's RCS) should file, debit, then grant, as `+ship/undock` does; and `+helm/submit|run|dock|tow`, which write the fine, the front, the berth and the custody row in the handler, should each end in one submitted action. The staged tape family is then an audit trail, and is either kept as that or deleted.
+2. **Family-backed bubble.** The bubble's state moves into typed families, the verbs submit, a tick applies committed inputs. Every in-bubble command gains up to a tick of latency, and every space story has to land its submissions. This is a re-architecture of `space/tick.rs` and `space/bubble.rs`, not a cut.
+
+Reading 1 is cheap and leaves reading 2 open; reading 2 is the one that would be expensive to back out of. `SF.R26` as built takes reading 1 and does only what holds under both: the input sequence no longer restarts with the server. Everything else in the row waits on the ruling.
 
 ---
 

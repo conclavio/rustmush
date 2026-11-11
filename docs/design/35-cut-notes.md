@@ -642,6 +642,31 @@ clippy `-D warnings` and rustdoc `-D warnings` on tacsim clean.
 **Not pinned by a story.** The award gate on an undelivered derelict (the release path removes the row first); the
 lapsed clamp; the destroyed-tug prune; the reordered port clamp; "nearest first" among several affordable ports.
 
-**Found while building, not fixed.** A hull that never recouples can cross to a port by `+helm/burn` in free flight
-and dock from there; free flight is never interdicted (`promote_due_interdictions` skips it). It is slow, and it is
-a way round the picket. Owed a ruling or a geometric interdiction rule in `SF.R26`.
+**Checked while building, not a hole.** Free flight is never interdicted (`promote_due_interdictions` skips it), so
+a hull that never recouples might seem able to cross to a port under `+helm/burn` and dock from there. She cannot:
+the free-flight branch of the dock gate (`validate_docking_initiation_gates`) takes only a hull whose flight record's
+`target_place` is that port, and the only way to hold such a record is to decouple on the corridor leg into the port,
+which lies past the interdicted leg.
+
+## SF.R26 — the bubble input contract, re-scoped (doc 35d §9a, Q-35d-6)
+
+Doc 35d §9's `SF.R26` row asked for every bubble verb's state change to move into a prepared action's apply. Read
+against `mush_core`'s provider trait that is not a cut: `prepare_authoritative` sees typed families only, the bubble
+is module state in RAM, and the ground arena takes its orders through its own queue. Doc 35d §9a sets out the two
+readings and asks the owner which (Q-35d-6); the default is that in-bubble helm and tactical inputs are bubble orders
+on the bubble's own tape.
+
+Built, because it holds under either reading:
+
+- `submit_bubble_input_with_drones` (`crates/tacsim/src/space/tick.rs`) floors `next_bubble_input_seq` on the wall
+  clock (seconds × 1,000), so a sequence, and the idempotency key `tacsim.space.input/{hull}/{seq}/{switch}` built from
+  it, never repeats one issued before a restart. Before this the allocator restarted at 1 with the server.
+
+**Test.** `sfr21_…` reads the sequence and key of an input before its reboot and of one after, and requires the later
+one to be greater and the keys to differ.
+
+**Not built, waiting on Q-35d-6.** Under the default: file, debit, then grant for `+helm/autopilot`, `+helm/approach`
+and the dock's RCS; one submitted action each for `+helm/submit`, `/run`, `/dock` and `/tow`; a decision to keep the
+staged tape family as an audit trail or delete it. Under the other reading: the family-backed bubble. Also still as
+doc 35d §4 found them: an input typed while the actor has an action pending is applied and not recorded on the staged
+tape, and `+mine/drones` in that state adds the drones without staging their `RigRecord`s.

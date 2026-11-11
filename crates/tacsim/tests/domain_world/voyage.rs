@@ -10026,6 +10026,17 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
             .any(|s| s.action.key().id.as_str() == tacsim::space::BUBBLE_INPUT_ACTION),
         "+helm/heading must submit prepared `tacsim_space_bubble_input`: {heading_submits:?}"
     );
+    let input_of = |submits: &[AuthoritativeSubmit]| -> (u64, String) {
+        let submit = submits
+            .iter()
+            .find(|s| s.action.key().id.as_str() == tacsim::space::BUBBLE_INPUT_ACTION)
+            .expect("a bubble input");
+        (
+            submit.parameters["seq"].as_u64().expect("its seq"),
+            submit.key.as_str().to_owned(),
+        )
+    };
+    let (seq_before_reboot, key_before_reboot) = input_of(&heading_submits);
     land_all(&mut rig, &heading_submits);
     assert!(
         rig.typed.contains_key(&(
@@ -10207,6 +10218,18 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
             .contains_key(&hull),
         "OutOfGate session closure must survive reboot"
     );
+    // Doc 35 cut SF.R26: the input sequence is not restarted by the reboot, so an input typed
+    // after it carries a later sequence and a key no earlier input used.
+    let roll_out = run(&mut rig.tw, pilot_actor, "+helm/roll 10");
+    assert!(roll_out.contains("roll"), "{roll_out}");
+    let roll_submits = drain(&mut rig.tw);
+    let (seq_after_reboot, key_after_reboot) = input_of(&roll_submits);
+    assert!(
+        seq_after_reboot > seq_before_reboot,
+        "a bubble input after a restart continues the sequence          ({seq_before_reboot} then {seq_after_reboot})"
+    );
+    assert_ne!(key_after_reboot, key_before_reboot);
+    land_all(&mut rig, &roll_submits);
 
     // 4. Close the bubble on tick (past the 120s salvage hold timeout) so the disabled interdictor
     //    becomes a `SpaceDerelictRecord` at `tacsim:space:derelict:{derelict_hull}` and standing
