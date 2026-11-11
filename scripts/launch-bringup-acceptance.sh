@@ -176,9 +176,12 @@ render
 if grep -q '^launch_path' "$inst/mushd.toml"; then
   echo "acceptance: a fresh store's render carries a live launch_path" >&2; exit 1
 fi
+# BRINGUP_ARGS: extra bring-up arguments for every run (for example
+# `--seed-line standard`), split on spaces.
+read -r -a extra <<< "${BRINGUP_ARGS:-}"
 bringup() {
   python3 "$deploy_dir/launch-bringup.py" "$inst/instance.env" --bin-dir "$bin" \
-    --password-file "$work/staff-password" "$@"
+    --password-file "$work/staff-password" "${extra[@]}" "$@"
 }
 
 # --- the public front door, up for the whole run (the deploy's SERVER_HOLD shape).
@@ -250,7 +253,7 @@ prober first &
 prober_pid=$!
 status=0
 timeout -s INT "$interrupt_s" python3 "$deploy_dir/launch-bringup.py" "$inst/instance.env" \
-  --bin-dir "$bin" --password-file "$work/staff-password" --no-llm-check \
+  --bin-dir "$bin" --password-file "$work/staff-password" "${extra[@]}" --no-llm-check \
   > "$work/bringup-interrupted.log" 2>&1 || status=$?
 rm -f "$work/probing"; wait "$prober_pid" || true
 tail -5 "$work/bringup-interrupted.log"

@@ -243,9 +243,21 @@ class Session:
                            f"the reply so far:\n{self.text()[-800:]}")
             self.pump(0.2)
 
-    def type(self, line, shown=None):
-        """Type one line. `shown` is what the transcript records in its place:
-        a line that carries a password is never written down."""
+    def type(self, line):
+        """Type one line, and record it in the transcript."""
+        self.ready()
+        self.box.transcript(self.who, ">", line.encode())
+        os.write(self.master, line.encode("utf-8") + b"\r")
+
+    def type_unrecorded(self, line, shown):
+        """Type a line that carries a password. The transcript gets `shown`,
+        never the line: the line goes to the terminal and nowhere else."""
+        self.ready()
+        self.box.transcript(self.who, ">", shown.encode())
+        os.write(self.master, line.encode("utf-8") + b"\r")
+
+    def ready(self):
+        """What is owed before any line is typed."""
         # The gateway's flood bucket: ten lines a second sustained, thirty in a
         # burst, for #1 as for anybody. Stay under it.
         pause = self.typed_at + 0.15 - time.monotonic()
@@ -263,12 +275,10 @@ class Session:
             self.bracketed = self.raw.count(mark) + 1
         self.typed_at = time.monotonic()
         self.pos = len(self.raw)
-        self.box.transcript(self.who, ">", (shown or line).encode())
-        os.write(self.master, line.encode("utf-8") + b"\r")
 
     def connect(self, account, password, create=False):
         verb = "create" if create else "connect"
-        self.type(f"{verb} {account} {password}", shown=f"{verb} {account} [password]")
+        self.type_unrecorded(f"{verb} {account} {password}", f"{verb} {account} [password]")
         found = self.wait(r"Connected as |already taken|does not exist, or the password is wrong"
                           r"|too weak|Characters on |has no characters yet|banned", 60)
         if "Characters on" in found.group(0):
@@ -994,7 +1004,10 @@ def seed_listing(box, staff, document):
     Registry rate it, files it personally and lists it at the counter. A House
     buys only a line whose rating scored above nothing, which the named sources
     do. Returns the listing's row."""
-    key, _, source, selector = next(h for h in HOUSES if h[0] == box.args.seed_line)
+    if box.args.seed_line == "standard":
+        source, selector = "Seedline", None
+    else:
+        _, _, source, selector = next(h for h in HOUSES if h[0] == box.args.seed_line)
     counter = document["venue"]["room"]
     staff.s.type(f"@teleport #{counter}")
     time.sleep(1)
@@ -1015,7 +1028,10 @@ def seed_listing(box, staff, document):
     mine = staff.account(("obj", 1), None, f"@account/open #1={CREDIT}")
     staff.fund(staff.system_account("launch.faucet"), mine, 2 * FILING_FEE_MINOR)
     if source.lower() not in [name.strip().lower() for name in staff.s.ask("@mind/list").split(",")]:
-        staff.s.do(f"@mind/launch {selector}={source}", r"Launch draft imported\.")
+        if selector:
+            staff.s.do(f"@mind/launch {selector}={source}", r"Launch draft imported\.")
+        else:
+            staff.s.do(f"@mind/new {source} FROM Standard", r"Mind draft created\.")
     info = staff.s.ask(f"@mind/info {source}")
     revision = re.search(r"revision (\d+);", info)
     if not revision:
@@ -1026,53 +1042,86 @@ def seed_listing(box, staff, document):
     def filed():
         return row_naming(staff.s.ask("+minds/holdings"), r"^\s+filed (\d+)\s+owner\s.*$")
 
-    if not filed():
-        # The first @mind/file reserves the charter; the second, once the
-        # Registry has rated the revision, files it.
+    # `@mind/file` reserves the charter the first time it is typed with none
+    # open, refuses a revision the Registry has not rated, and files it once it
+    # has. Each answer says which step is owed; the filing is done when
+    # `+minds/holdings` shows the owner's row, whatever else scrolled past
+    # (the rating's own steps answer `Queued.` and `Done.` in this session).
+    rated = False
+    end = time.monotonic() + 900
+    while not filed():
+        if time.monotonic() >= end:
+            raise Stop(f"{reference} is not filed: +minds/holdings shows no owner row for {charter}")
         answer = staff.s.do(f"@mind/file {reference}={charter}",
-                            r"Reserving a charter|has no finished Registry rating|Filing .* as ").group(0)
-        if "Reserving" in answer:
-            staff.s.wait(r"^Done\.$|did not go through", 120, "the charter reservation")
-            answer = staff.s.do(f"@mind/file {reference}={charter}",
-                                r"has no finished Registry rating|Filing .* as ").group(0)
+                            r"Reserving a charter|has no finished Registry rating|Filing .* as "
+                            r"|still being recorded|did not go through").group(0)
         if "no finished" in answer:
+            if rated:
+                raise Stop(f"the Registry finished its work on {reference} and left no rating to "
+                           f"file with: {staff.s.text()[-300:]}")
             # A job that has just finished is still held for a pulse: only
             # that refusal is typed again.
-            end = time.monotonic() + 180
+            patience = time.monotonic() + 180
             while True:
-                answer = staff.s.do(f"@mind/rate {reference}",
-                                    r"Registry preparation queued\.|already working|unavailable").group(0)
-                if "unavailable" not in answer:
+                taken = staff.s.do(f"@mind/rate {reference}",
+                                   r"Registry preparation queued\.|already working|unavailable").group(0)
+                if "unavailable" not in taken:
                     break
-                if time.monotonic() >= end:
+                if time.monotonic() >= patience:
                     raise Stop(f"the Registry would not take {reference}: {staff.s.text()[-300:]}")
                 time.sleep(3)
             started = time.monotonic()
-            say(f"the Registry is rating {reference}; at REGISTRY_PULSE_MS="
-                f"{box.env.get('REGISTRY_PULSE_MS') or 1000} this takes "
-                f"{'minutes' if (box.env.get('REGISTRY_PULSE_MS') or '1000') != '1000' else 'about three hours'}")
+            pulse = box.env.get("REGISTRY_PULSE_MS") or "1000"
+            say(f"the Registry is rating {reference} at registry_pulse_ms = {pulse}")
             staff.s.wait(r"Registry work finished\.|Registry preparation refused|was not admitted",
                          box.args.rating_timeout, "the end of the rating")
             box.timings["rating (queued to finished)"] = round(time.monotonic() - started, 1)
             say(f"the rating took {box.timings['rating (queued to finished)']}s")
-            staff.s.do(f"@mind/file {reference}={charter}", r"Filing .* as ")
-        staff.s.wait(r"^Done\.$|did not go through", 120, "the filing")
+            rated = True
+            end = time.monotonic() + 900
+        time.sleep(3)
     number = filed()
-    if not number:
-        raise Stop(f"{reference} is not filed: +minds/holdings shows no owner row for {charter}")
-    staff.s.do(f"@mind/publish {number.group(1)} form=sealed", r"Listing filed mind \d+ here as sealed")
-    staff.s.wait(r"^Done\.$|did not go through", 120, "the listing")
+    staff.s.do(f"@mind/publish {number.group(1)} form=sealed",
+               r"Listing filed mind \d+ here as sealed|still being recorded")
+    end = time.monotonic() + 180
     row = listed()
-    if not row:
-        raise Stop(f"{charter} is filed as {number.group(1)} and not listed: +minds does not show it")
+    while not row:
+        if time.monotonic() >= end:
+            raise Stop(f"{charter} is filed as {number.group(1)} and not listed: +minds does not show it")
+        time.sleep(3)
+        row = listed()
     say(f"listed on the player market: {row.group(0).strip()}")
     return row.group(0).strip()
 
 
-def pool_hulls(staff, trust):
+def programme_hull_names(box):
+    """The names the lane packs give the programme ports' hulls, read from the
+    tree: the Trust holds titles to other things than hulls, and only a port
+    map's hull counts toward a House's cap."""
+    names, lane = set(), os.path.join(box.repo, "crates", "tacsim", "content", "lane")
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "hull_names" and isinstance(value, list):
+                    names.update(value)
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for file in sorted(os.listdir(lane)) if os.path.isdir(lane) else []:
+        if file.endswith(".json"):
+            with open(os.path.join(lane, file), encoding="utf-8") as handle:
+                walk(json.load(handle))
+    return names
+
+
+def pool_hulls(box, staff, trust):
     rows = re.findall(r"^#(\d+) (.+?) — org:.* \(#(\d+)\) \[Active\]\s*$",
                       staff.s.ask(f"@asset/list owner=org:{trust}"), re.M)
-    return [(int(obj), name) for obj, name, owner in rows if int(owner) == trust]
+    names = programme_hull_names(box)
+    return [(int(obj), name) for obj, name, owner in rows if int(owner) == trust and name in names]
 
 
 def lend_hulls(box, staff, document):
@@ -1099,7 +1148,7 @@ def lend_hulls(box, staff, document):
     org = document["houses"][house[0]]["organization"]
     root = next(p["scope"] for p in document["procurement"] if p["org"] == org)
     lent = []
-    for obj, name in pool_hulls(staff, trust):
+    for obj, name in pool_hulls(box, staff, trust):
         shown = staff.s.ask(f"@asset/show #{obj}")
         scope = re.search(r"^  scope #(\d+)$", shown, re.M)
         if re.search(r"^  encumbrances: 0$", shown, re.M) and scope:
@@ -1399,8 +1448,10 @@ def main():
     parser.add_argument("--bin-dir", help="where the binaries are (<BUILD_DIR>/target/release)")
     parser.add_argument("--private-port", type=int,
                         help="the loopback SSH port of the private gateway (SSH_PORT + 20000)")
-    parser.add_argument("--seed-line", default="meridiani", choices=[h[0] for h in HOUSES],
-                        help="the named source #1 rates and lists on the player market")
+    parser.add_argument("--seed-line", default="meridiani",
+                        choices=[h[0] for h in HOUSES] + ["standard"],
+                        help="what #1 rates and lists on the player market: a named House source, "
+                             "or `standard`, a copy of Standard Doctrine named Seedline")
     parser.add_argument("--purchase-house", default="meridiani", choices=[h[0] for h in HOUSES],
                         help="the House whose purchase is waited for")
     parser.add_argument("--house-hulls", type=int, default=3,
