@@ -2122,9 +2122,18 @@ fn submit_bubble_input_with_drones(
 ) -> Option<u64> {
     let at_ic = ctx.w.world_ic_now().at;
     let actor = ctx.actor;
+    let seq_floor = u64::try_from(ctx.w.now())
+        .unwrap_or(0)
+        .saturating_mul(1_000);
     let (seq, can_submit, action) = {
         let handles = ctx.w.module_state_mut::<BubbleInputHandles>()?;
-        handles.next_bubble_input_seq = handles.next_bubble_input_seq.saturating_add(1);
+        // `SF.R26` (doc 35d §4): the allocator is RAM, so it restarts with the server. Flooring
+        // it on the wall clock keeps a sequence, and the idempotency key built from it, from
+        // repeating one issued before a restart.
+        handles.next_bubble_input_seq = handles
+            .next_bubble_input_seq
+            .max(seq_floor)
+            .saturating_add(1);
         let seq = handles.next_bubble_input_seq;
         handles.pending_bubble_inputs.push(PendingBubbleInput {
             seq,
