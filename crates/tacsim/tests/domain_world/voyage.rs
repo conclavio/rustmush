@@ -5530,6 +5530,10 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
     //    debiting `HullPropellantLedger`, and initiate a paused 6-DOF docking session (`+helm/dock stickney`):
     let j_resumed = journey(&rig.tw, hull).expect("resumed journey on leg 2");
     let expected_arrival = j_resumed.departed().at + total_secs;
+    // Doc 35 cut SF.R27: a derelict's life-support window now falls by real elapsed seconds, so
+    // the leg is flown at the cruise rate and only its last two IC hours at rate 1 (flown whole
+    // at rate 1 it is eleven real days, and the raider's 48 hours would rightly have run out).
+    let _ = to_ic(&mut rig, expected_arrival - 7_200);
     set_rate(&mut rig.tw, 1);
     let _ = to_ic(&mut rig, expected_arrival - 10);
 
@@ -10300,6 +10304,53 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
     );
     fold_module_ops_into(&mut rig.store, tick_ops);
 
+    // Doc 35 cut SF.R27 (doc 35d §6.1): the derelict's window is stepped a whole minute at a
+    // time from real elapsed seconds. Ten one-second ticks write her record not once; the tick
+    // that completes the minute writes it once, a minute shorter.
+    let remaining_of = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .derelicts[&derelict_hull]
+            .life_support_remaining_s
+    };
+    let derelict_writes = |ops: &[mush_core::ModuleOp]| {
+        ops.iter()
+            .filter(|op| op.ns.as_str() == tacsim::NS)
+            .filter(|op| matches!(&op.op, ModuleWrite::JsonSet { key, .. } if *key == derelict_key))
+            .count()
+    };
+    let remaining_before = remaining_of(&rig);
+    let mut quiet_writes = 0;
+    for _ in 0..10 {
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let _ = rig.tw.fire_due(next_real * 1_000);
+        let ops = rig.tw.take_module_ops();
+        quiet_writes += derelict_writes(&ops);
+        fold_module_ops_into(&mut rig.store, ops);
+    }
+    assert_eq!(
+        quiet_writes, 0,
+        "a derelict's record is not rewritten on every tick of her window"
+    );
+    assert_eq!(remaining_of(&rig), remaining_before);
+    let next_real = rig.tw.world().now() + tacsim::space::tick::DERELICT_WINDOW_STEP_WALL_S;
+    rig.tw.set_now(next_real);
+    let _ = rig.tw.fire_due(next_real * 1_000);
+    let ops = rig.tw.take_module_ops();
+    assert_eq!(
+        derelict_writes(&ops),
+        1,
+        "the tick that completes a minute writes her record once"
+    );
+    fold_module_ops_into(&mut rig.store, ops);
+    assert!(
+        remaining_before - remaining_of(&rig) >= 60,
+        "and the window is a minute or more shorter, by real elapsed seconds"
+    );
+
     // 6. Fail-closed per-entity quarantine (`#[serde(deny_unknown_fields)]`):
     //    Inject an unknown field into `tacsim:space:flight:{hull}` and reboot; verify `hull` is
     //    quarantined (`quarantined_hulls.contains(&hull)`), `derelict_hull` still loads cleanly,
@@ -11793,6 +11844,36 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
     let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Caller", 75, 0);
     arrive_at_cluster(&mut rig, hull);
     set_rate(&mut rig.tw, 1);
+
+    // Doc 35 cut SF.R27 (doc 35d §6.1): a hull sitting idle at her cluster does not rewrite the
+    // shared `tacsim:space:state` document on every tick.
+    for _ in 0..2 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let settled = rig.tw.take_module_ops();
+    fold_module_ops_into(&mut rig.store, settled);
+    let mut idle_state_writes = 0;
+    for _ in 0..5 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        let ops = rig.tw.take_module_ops();
+        idle_state_writes += ops
+            .iter()
+            .filter(|op| op.ns.as_str() == tacsim::NS)
+            .filter(|op| {
+                matches!(&op.op, ModuleWrite::JsonSet { key, .. }
+                    if key.as_str() == tacsim::space::SPACE_STATE_KEY)
+            })
+            .count();
+        fold_module_ops_into(&mut rig.store, ops);
+    }
+    assert_eq!(
+        idle_state_writes, 0,
+        "an idle cluster session writes nothing to the shared space document"
+    );
     let hail = run(
         &mut rig.tw,
         pilot,
@@ -11844,5 +11925,33 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
             .pending_light_lag_hails
             .is_empty(),
         "and the queue is empty"
+    );
+
+    // Doc 35 cut SF.R27: her cluster session is her own document, and a restart reads it back.
+    let session_before = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .unwrap()
+        .cluster_sessions[&hull]
+        .clone();
+    let rig = reboot_with(rig, Roster::default());
+    let cluster_key = tacsim::space::space_cluster_key(hull);
+    assert!(
+        rig.store[tacsim::NS]
+            .kv
+            .iter()
+            .any(|(key, _)| key.as_str() == cluster_key),
+        "the session is stored at `{cluster_key}`"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap()
+            .cluster_sessions
+            .get(&hull),
+        Some(&session_before),
+        "and survives the restart as it was"
     );
 }

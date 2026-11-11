@@ -1752,15 +1752,26 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
             && let Some(session) = book.cluster_sessions.get_mut(&hull)
         {
-            session.ship_pos_m = next_pos;
-            session.ship_vel_mmps = next_vel;
-            if reached_approach_standoff {
-                session.approaching_rock = None;
+            // `SF.R27` (doc 35d §6.1): a session in which nothing moved keeps its stamp, so an
+            // idle hull at a cluster does not rewrite the shared document every tick. The
+            // drift step caps its interval, so a stale stamp costs nothing when she moves again.
+            let moved = session.ship_pos_m != next_pos
+                || session.ship_vel_mmps != next_vel
+                || reached_approach_standoff
+                || session.active_laser != remaining_laser
+                || session.active_drones != remaining_drones
+                || session.last_activity_ic_s != last_act;
+            if moved {
+                session.ship_pos_m = next_pos;
+                session.ship_vel_mmps = next_vel;
+                if reached_approach_standoff {
+                    session.approaching_rock = None;
+                }
+                session.active_laser = remaining_laser;
+                session.active_drones = remaining_drones;
+                session.last_ic_s = now.at;
+                session.last_activity_ic_s = last_act;
             }
-            session.active_laser = remaining_laser;
-            session.active_drones = remaining_drones;
-            session.last_ic_s = now.at;
-            session.last_activity_ic_s = last_act;
         }
         super::commands::push_space_panels(ctx, hull);
     }

@@ -5884,6 +5884,7 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         disabled_at_ic_s: now.at,
                         epoch_open: true,
                         life_support_remaining_s: super::bubble::DERELICT_LIFE_SUPPORT_S,
+                        life_support_checked_wall_s: 0,
                         assessment: None,
                         salvage_title_status: None,
                     },
