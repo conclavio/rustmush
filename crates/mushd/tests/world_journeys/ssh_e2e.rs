@@ -961,7 +961,7 @@ async fn mw24_a_mind_exec_is_never_presence() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     ada.send_line("WHO").await;
     ada.send_line("say checked the offline exec").await;
-    ada.expect_after(offline, "You say, \"checked the offline exec\"")
+    ada.expect_after(offline, "Ada says, \"checked the offline exec\"")
         .await;
     let seen = strip_ansi(&ada.seen[offline..]);
     assert!(seen.contains("Ada"), "WHO answered: {seen}");
@@ -1012,7 +1012,7 @@ async fn mw24_a_mind_exec_is_never_presence() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     ada.send_line("WHO").await;
     ada.send_line("say checked the exec in the gap").await;
-    ada.expect_after(after_loss, "You say, \"checked the exec in the gap\"")
+    ada.expect_after(after_loss, "Ada says, \"checked the exec in the gap\"")
         .await;
     let seen = strip_ansi(&ada.seen[after_loss..]);
     assert!(seen.contains("Nick"), "WHO still lists him: {seen}");

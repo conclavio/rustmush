@@ -186,7 +186,7 @@ pub trait SshHooks: Send + Sync {
     ) -> BoxFuture<'a, Result<(), String>>;
 
     /// Bind `conn` to `character` under `account` for one exec request, the
-    /// `mind push|pull|check` of [`crate::mind_exec`] (doc 44 unit MW.24),
+    /// `mind push|pull|check` of this crate's `mind_exec` (doc 44 unit MW.24),
     /// **without logging the character in**. The binary gives the connection
     /// what the exec needs and no more: an [`invoke`](Self::invoke) on it runs
     /// as the character and its result comes back on `conn.tx`. The character
