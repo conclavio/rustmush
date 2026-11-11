@@ -235,7 +235,7 @@ impl GameModule for NpcModule {
                        remove entries. See also @lore for the shared pools.\n\
                        @agent/relationship <npc>/<character> -- inspect personal familiarity, trust, disposition and receipts.\n\
                        @agent/relationship <npc>/<character>=trust:<delta>; disposition:<delta>; cause:<receipt>; reason:<reason> -- adjudicate a sourced change; cause and reason required.\n\
-                       @agent/show <npc> (or bare @agent <npc>) -- profile + runtime status.\n\
+                       @agent/show <npc> (or bare @agent <npc>) -- profile + runtime status, and its last turn: what woke it, how much it was shown, and whether the model or its fallback line answered (never the prompt or the reply).\n\
                        @agent/enable <npc> / @agent/disable <npc> -- wake or park the agent.\n\
                        @agent/poke <npc>=<note> -- prod the agent with an out-of-band note.\n\
                        Informant loop: set principal/loyal/watch (above) to have an NPC file \
@@ -1433,6 +1433,7 @@ impl NpcTick {
         );
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
             h.capture_memory_references(npc, correlation, &snap.recalled);
+            h.note_decision_context(npc, correlation, snap.knowledge.len(), snap.recalled.len());
         }
         if defer_turn(ctx, npc, correlation, &snap) {
             emit_thinking(ctx, npc, room);
@@ -1543,9 +1544,37 @@ impl AsyncCompletion for NpcCompletion {
             Ok(o) => o,
             Err(e) => {
                 tracing::error!(correlation, error = %e, "npc: bad completion payload");
+                if let Some(h) = ctx.state_mut::<NpcHostState>() {
+                    h.finish_decision(npc, correlation, crate::runtime::DecisionResult::Unreadable);
+                }
                 return;
             }
         };
+        // Doc 44 cut MW.17: what the turn came to, for `@agent/show`. Recorded before the
+        // world is re-validated, so a turn whose NPC has since moved still reads true.
+        let came_to = match &outcome {
+            TurnOutcome::Ok { actions, .. } if actions.is_empty() => {
+                Some(crate::runtime::DecisionResult::ModelSilent)
+            }
+            TurnOutcome::Ok { actions, .. } => Some(crate::runtime::DecisionResult::Model {
+                actions: actions
+                    .iter()
+                    .map(|applied| applied.action.tool_name())
+                    .collect(),
+            }),
+            TurnOutcome::Nothing { .. } => Some(crate::runtime::DecisionResult::ModelSilent),
+            TurnOutcome::Degraded { reason, .. } => {
+                Some(crate::runtime::DecisionResult::Fallback {
+                    reason: reason.clone(),
+                })
+            }
+            TurnOutcome::Summary { .. } | TurnOutcome::SummaryFailed { .. } => None,
+        };
+        if let Some(result) = came_to
+            && let Some(h) = ctx.state_mut::<NpcHostState>()
+        {
+            h.finish_decision(npc, correlation, result);
+        }
         // Re-validate against current state.
         if ctx.w.get(npc).is_none_or(|o| o.kind != ObjKind::Npc) {
             return;
@@ -2422,6 +2451,17 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
         })
         .unwrap_or_else(|| "  Runtime: no activity yet.".to_string());
     ctx.out.info(ctx.actor, status);
+    // Doc 44 cut MW.17 (Q-44-30): why it last said what it said. Kinds, names and counts
+    // only; no prompt and no response text.
+    let last = ctx
+        .state::<NpcHostState>()
+        .and_then(|h| h.runtime(npc))
+        .and_then(|rt| rt.last_decision.clone());
+    if let Some(last) = last {
+        for line in last.lines(|who| display_name(ctx.w, who)) {
+            ctx.out.info(ctx.actor, line);
+        }
+    }
     // Persisted memory (survives reboots): the rolling summary attribute + the
     // count of durable, subject-keyed memories reloaded into the long-term store.
     let summary = read_summary(ctx.w, npc);

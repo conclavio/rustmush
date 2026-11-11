@@ -90,6 +90,21 @@ impl Stimulus {
         }
     }
 
+    /// A short staff-facing word for this stimulus's kind (doc 44 cut MW.17): what
+    /// `@agent/show` prints for what woke a turn. Never the stimulus's text.
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Stimulus::SpokenTo { .. } => "spoken to",
+            Stimulus::HeardInRoom { .. } => "overheard",
+            Stimulus::PlayerArrived { .. } => "an arrival",
+            Stimulus::PlayerLeft { .. } => "a departure",
+            Stimulus::AmbientTimer => "the ambient timer",
+            Stimulus::GameEvent { .. } => "a game event",
+            Stimulus::StaffPoke { .. } => "a staff poke",
+        }
+    }
+
     /// Whether this stimulus is a direct address (shortens cooldown; never
     /// dropped as stale).
     #[must_use]
