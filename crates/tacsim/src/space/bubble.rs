@@ -2739,12 +2739,6 @@ impl LocalSpaceBubble {
         };
         let (yaw_deg, pitch_deg, roll_deg) = obs.attitude_deg;
         let (prograde_b, prograde_p) = vector_to_bearing_pitch(obs.vel_mmps);
-        let muz_mps = obs
-            .railguns
-            .first()
-            .map(|r| r.muzzle_vel_mps)
-            .unwrap_or(20_000);
-
         let mut contacts = Vec::new();
         for ship in self.ships.values() {
             if ship.id == observer_ship_id
@@ -2758,14 +2752,9 @@ impl LocalSpaceBubble {
                 ship.pos_m[2] - obs.pos_m[2],
             ];
             let (bearing_deg, pitch_c) = vector_to_bearing_pitch(rel_pos);
+            // Q-35d-5 (ruled 2026-11-11): the feed carries where a contact is, never where a
+            // shot at her would be aimed.
             let locked = obs.locked_target_id.as_deref() == Some(ship.id.as_str());
-            let (lead_pos, _) =
-                compute_railgun_lead(obs.pos_m, obs.vel_mmps, ship.pos_m, ship.vel_mmps, muz_mps);
-            let (lead_b, lead_p) = vector_to_bearing_pitch([
-                lead_pos[0] - obs.pos_m[0],
-                lead_pos[1] - obs.pos_m[1],
-                lead_pos[2] - obs.pos_m[2],
-            ]);
 
             contacts.push(json!({
                 "id": ship.id,
@@ -2781,8 +2770,6 @@ impl LocalSpaceBubble {
                 "burning": ship.is_burning(),
                 "bearing_deg": bearing_deg,
                 "pitch_deg": pitch_c,
-                "lead_bearing_deg": lead_b,
-                "lead_pitch_deg": lead_p,
             }));
         }
 

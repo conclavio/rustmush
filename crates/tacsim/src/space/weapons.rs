@@ -14,8 +14,8 @@
 //! - **Railguns (`RailgunMount`)**: $10\text{–}250\text{ km}$ range, unguided tungsten slug at
 //!   $v_{\text{muz}} = 15\text{–}20\text{ km/s}$ + $\mathbf{v}_{\text{ship}}$ ($1.0\text{–}15\text{ s}$
 //!   wall-time time-of-flight). **Cannot be intercepted by PDCs or lasers.** Countered by
-//!   executing a **lateral jinking burn** during time-of-flight outside the shooter's predicted
-//!   lead pip.
+//!   executing a **lateral jinking burn** during time-of-flight, off the shooter's predicted
+//!   lead.
 //! - **Point-Defense Cannons (`PdcMount`)**: $0\text{–}15\text{ km}$ rotary burst envelope;
 //!   automatically engages incoming hostile torpedoes when `pdc_auto` is toggled on (`Q-35-4`).
 

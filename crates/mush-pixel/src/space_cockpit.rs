@@ -4,7 +4,7 @@
 //! (`space.cockpit` feed): deterministic 3D starfield rotated by ship attitude
 //! `(yaw, pitch, roll)`, analytical raycast planets, moons, and rings via
 //! [`crate::planet_shader`], prograde (`⊕`) and retrograde (`⊗`) velocity
-//! reticles, target lock box with 3D railgun lead pip, bridge canopy struts and
+//! reticles, target lock box, bridge canopy struts and
 //! cowling gauges, and a top-left mini 3D Holo-Tank inset.
 
 use std::time::Duration;
@@ -16,8 +16,8 @@ use crate::frame::Rgb;
 use crate::holotank::{SPACE_HOLOTANK_FEED, draw_holotank_inset};
 use crate::math::Det as _;
 use crate::overlay::{
-    BAD, BORDER, DIM, FRIEND, GOOD, HOSTILE, LOCK, ORE, PANEL, TEXT, WARN, YOU, draw_card,
-    fill_rect, line, outline_rect, ramp, scale_for, text,
+    BAD, BORDER, DIM, FRIEND, GOOD, HOSTILE, LOCK, ORE, PANEL, TEXT, WARN, draw_card, fill_rect,
+    line, outline_rect, ramp, scale_for, text,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::planet_shader::{CelestialBodyDraw, PlanetStyle, draw_celestial_body};
@@ -283,7 +283,7 @@ pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds,
         }
     }
 
-    // 3. Space contacts (ships, asteroids, torpedoes, railgun lead pips)
+    // 3. Space contacts (ships, asteroids, torpedoes)
     if let Some(contacts) = cockpit.get("contacts").and_then(Value::as_array) {
         for c in contacts {
             let (Some(bearing), Some(pitch)) = (num(c.get("bearing_deg")), num(c.get("pitch_deg")))
@@ -387,18 +387,6 @@ pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds,
             }
             if let Some(tti) = c.get("tti_s").and_then(Value::as_i64) {
                 let _ = text(frame, cx + 7 * s, cy + 5 * s, &format!("T-{tti}S"), BAD, sc);
-            }
-
-            // 3D Railgun Lead Pip for the locked target
-            if locked
-                && let (Some(lb), Some(lp)) =
-                    (num(c.get("lead_bearing_deg")), num(c.get("lead_pitch_deg")))
-                && let Some((lx, ly)) =
-                    project_canopy((w, h), (lb, lp), (cam_yaw, cam_pitch, cam_roll), fov_deg)
-            {
-                line(frame, cx, cy, lx, ly, LOCK);
-                outline_rect(frame, lx - 4 * s, ly - 4 * s, 9 * s, 9 * s, LOCK);
-                fill_rect(frame, lx, ly, s, s, YOU);
             }
         }
     }
@@ -656,9 +644,7 @@ mod tests {
                         "locked": true,
                         "burning": true,
                         "bearing_deg": 35.0,
-                        "pitch_deg": 8.0,
-                        "lead_bearing_deg": 38.0,
-                        "lead_pitch_deg": 9.0
+                        "pitch_deg": 8.0
                     }
                 ]
             }),

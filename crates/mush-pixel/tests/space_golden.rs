@@ -76,9 +76,7 @@ fn neptune_cockpit_feed() -> HashMap<String, Value> {
                     "pitch_deg": 1.0,
                     "distance_km": 4.2,
                     "locked": true,
-                    "burning": false,
-                    "lead_bearing_deg": 3.2,
-                    "lead_pitch_deg": 0.8
+                    "burning": false
                 },
                 {
                     "id": "kestrel.1",

@@ -2016,14 +2016,45 @@ fn return_ports_nearest_first(w: &World, hull: ObjId) -> Vec<OpenPort> {
     ports
 }
 
-/// The nearest open port's place id for `hull`'s linkdead return plan (`SF.R13`, `D-35-7`;
-/// nearest by range since `SF.R25`).
+/// The port `hull`'s linkdead return plan makes for first (Q-35d-2, ruled 2026-11-11): the
+/// port she filed as her destination; when she filed no port (she left for a cluster or a
+/// body), the port she left; with neither on file, the nearest open port.
+/// [`execute_linkdead_return_journey`] falls back from it to the nearest port she can afford.
 #[must_use]
-pub(crate) fn nearest_return_port_for_hull(w: &World, hull: ObjId) -> Option<String> {
-    return_ports_nearest_first(w, hull)
+pub(crate) fn return_port_for_hull(w: &World, hull: ObjId) -> Option<String> {
+    let ports = return_ports_nearest_first(w, hull);
+    let departed = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| match store.voyage_state(hull) {
+            crate::port::voyage::VoyageState::Present(voyage) => voyage
+                .departed
+                .as_ref()
+                .map(|dep| (dep.to_venue.clone(), dep.from.clone())),
+            crate::port::voyage::VoyageState::Absent
+            | crate::port::voyage::VoyageState::Unreadable => None,
+        });
+    if let Some((to_venue, from)) = departed {
+        let place_of = |venue: &mush_core::CanonicalId| {
+            ports
+                .iter()
+                .find(|(_, _, _, def)| &def.venue == venue)
+                .map(|(place, _, _, _)| place.as_str().to_owned())
+        };
+        if let Some(filed) = place_of(&to_venue) {
+            return Some(filed);
+        }
+        let left = crate::port::voyage::lane_ports(w)
+            .into_iter()
+            .find(|(_, map)| map.is_some_and(|map| map.entry == from))
+            .map(|(def, _)| def.venue.clone());
+        if let Some(left) = left.as_ref().and_then(place_of) {
+            return Some(left);
+        }
+    }
+    ports
         .into_iter()
         .next()
-        .map(|(pid, _, _, _)| pid.as_str().to_owned())
+        .map(|(place, _, _, _)| place.as_str().to_owned())
 }
 
 /// Run `hull`'s queued linkdead return plan once its grace window expires (`SF.R23`, `D-35-7`):
