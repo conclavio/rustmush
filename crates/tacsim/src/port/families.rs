@@ -504,6 +504,9 @@ pub struct PortFamilies {
     pub port_stock: StateFamilyHandle<StockIssueId, StockReceipt>,
     /// `tacsim.ticket`.
     pub tickets: StateFamilyHandle<TicketId, Ticket>,
+    /// **`tacsim.space_burn_receipt`** (doc 35 cut SF.R26b): one row per hull, the in-flight
+    /// burns that have landed.
+    pub space_burn_receipts: StateFamilyHandle<ObjId, crate::port::burn::SpaceBurnReceipts>,
     /// **`tacsim.excursion`** (doc 20 cut SM.3b; §8): one rig record per terrain vehicle.
     pub excursions:
         StateFamilyHandle<crate::surface::excursion::RigKey, crate::surface::excursion::RigRecord>,
@@ -668,6 +671,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         |value: &Ticket| value.check(),
         |value: &Ticket| serde_json::to_value(value).map_err(|e| e.to_string()),
     )?;
+    // Doc 35 cut SF.R26b (doc 35d §9a): the in-flight burns' receipts.
+    let space_burn_receipts = reg
+        .state_family::<ObjId, crate::port::burn::SpaceBurnReceipts, _, _, _, _>(
+            family_descriptor(
+                crate::port::burn::SPACE_BURN_RECEIPT_FAMILY,
+                "tacsim.space_burn_receipt_key.v1",
+                "tacsim.space_burn_receipt",
+            )?,
+            |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::port::burn::SpaceBurnReceipts| value.check(),
+            |value: &crate::port::burn::SpaceBurnReceipts| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
     // Doc 20 cut SM.3b (§8, D-20-11): the rigs' excursion records.
     let excursions = reg.state_family::<
         crate::surface::excursion::RigKey,
@@ -923,6 +941,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         relay_fabrications,
         port_stock,
         tickets,
+        space_burn_receipts,
         excursions,
         charts,
         surveys,

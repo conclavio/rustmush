@@ -193,7 +193,7 @@ Order: Docs and `SF.R25` at once (independent, and `SF.R25` is the only one that
 - **Q-35d-3, what a docking session pauses.** Default: the docking hull and its target only; the rest of the bubble keeps its clock.
 - **Q-35d-4, releasing a tow.** Default: release withdraws the claim. Alternative: the claim stands while any tug of the same party holds the line.
 - **Q-35d-5, the lead pip** (carried from 35c §6.11): keep or drop under the no-targeting-maths rule.
-- **Q-35d-6, what `SF.R26` can be** (added while building `SF.R25`; see §9a). Default: in-bubble helm and tactical inputs are bubble orders on the bubble's own tape, as the ground arena's orders are; `SF.R26` is the Tier-1 debit-before-grant and nothing larger.
+- **Q-35d-6, what `SF.R26` can be** (added while building `SF.R25`; see §9a). **Ruled 2026-11-11: bubble orders.** In-bubble helm and tactical inputs are orders on the bubble's own tape, as the ground arena's orders are; `SF.R26` is the Tier-1 debit and the four verbs that should each end in one submitted action, and nothing larger. The family-backed bubble is not built.
 
 ### 9a. `SF.R26`, re-scoped against the engine's action contract
 
@@ -210,12 +210,24 @@ So there are two honest readings of 35b §3b for space, and they differ by a rew
 
 Reading 1 is cheap and leaves reading 2 open; reading 2 is the one that would be expensive to back out of. `SF.R26` as built takes reading 1 and does only what holds under both: the input sequence no longer restarts with the server. Everything else in the row waits on the ruling.
 
+**Ruled 2026-11-11 (Q-35d-6): reading 1.** What it leaves of the row, and where each piece stands:
+
+| Piece | State |
+|---|---|
+| An in-flight debit lands, once, or what it paid for is undone | Built as `SF.R26b` for a planned passage: a receipt per landed burn, a resubmission by the tick, and a passage cut when its burn cannot land. The order is grant, then a debit that must land, not file, debit, grant; the owner accepted that order on 2026-11-11, and the cut note gives the reason |
+| `+helm/approach` and the dock's RCS | Still spend from the ledger first; their whole-tonne debits now come under the same receipt and resubmission |
+| `+helm/submit`, `/run`, `/dock`, `/tow` each ending in one submitted action | Not built |
+| The staged tape family: an audit trail, or deleted | Not decided |
+| An input typed while its actor has an action pending is not on the staged tape | Not built |
+
+The ruling also changes two lines of this document. §4's finding stands as a description, and is no longer a defect for the in-bubble verbs: they are orders to a running simulation. §10's second criterion is rewritten below.
+
 ---
 
 ## 10. Production-ready means
 
 1. No open P0, and §2's five each pinned by a story that fails on the old code.
-2. Every space verb that changes state is a prepared action; `persist_space_state` is gone.
+2. Every Tier-1 verb that moves money, goods, title or a berth ends in one submitted action; every in-flight debit lands or what it paid for is undone; in-bubble orders go through the one `apply_bubble_command` path onto the bubble's tape (Q-35d-6 as ruled). The store's writes are criterion 3's.
 3. No unbounded document and no steady-state per-second write; a measured tick cost.
 4. No space story uses an auto-solver, a mint after departure, a hand-set flag or a direct library call for a thing the acceptance names; the lint enforces it.
 5. A bot plays the picket and a mining run over SSH on the nightly, and a person has docked by hand on the TUI and in the browser.

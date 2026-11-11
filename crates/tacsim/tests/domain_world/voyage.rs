@@ -5749,6 +5749,10 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
 
     // Recouple via `+helm/autopilot stickney` (preserving the interdicted Kirkwood leg!) and cross into the bubble:
     set_rate(&mut rig.tw, 3_600);
+    // `SF.R26b`: the timed burn's debit is still queued, and the engine holds one submission
+    // an actor; the passage's debit is admitted only behind a landed one.
+    let burn_debit = drain(&mut rig.tw);
+    land_quietly(&mut rig, &burn_debit);
     let auto_out = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
     assert!(
         auto_out.contains("Autopilot engaged for Stickney Yards"),
@@ -7242,6 +7246,9 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
     assert!(lic2.contains("Freeport Registry"), "{lic2}");
     let dec2 = run(&mut rig2.tw, pilot2, "+helm/decouple");
     assert!(dec2.contains("Decoupled"), "{dec2}");
+    // `SF.R26b`: the licence's purchase lands before the passage's debit is submitted.
+    let licence_buy = drain_space_and_industry(&mut rig2.tw);
+    land_quietly(&mut rig2, &licence_buy);
     let auto_halo = run(&mut rig2.tw, pilot2, "+helm/autopilot ceres_halo");
     assert!(auto_halo.contains("Ceres Halo"), "{auto_halo}");
     let halo_burn = drain_space_and_industry(&mut rig2.tw);
@@ -12048,6 +12055,221 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
             .get(&hull),
         Some(&session_before),
         "and survives the restart as it was"
+    );
+}
+
+/// The hull's queued in-flight burns: sequence, vault, tonnes, resubmissions, passage.
+fn queued_burns(tw: &TestWorld, hull: ObjId) -> Vec<(u32, u64, u64, u8, bool)> {
+    tw.world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .pending_space_burns
+        .iter()
+        .filter(|burn| burn.hull == hull)
+        .map(|burn| {
+            (
+                burn.seq,
+                burn.vault,
+                burn.burn_t,
+                burn.attempts,
+                burn.passage,
+            )
+        })
+        .collect()
+}
+
+fn is_burn(submit: &AuthoritativeSubmit) -> bool {
+    submit.action.key().id.as_str().contains("port_burn")
+}
+
+fn burns_in(queued: &[AuthoritativeSubmit]) -> usize {
+    queued.iter().filter(|submit| is_burn(submit)).count()
+}
+
+/// One space tick a real second on: what `who` heard, and what was submitted.
+fn one_second(rig: &mut Rig, who: ObjId) -> (String, Vec<AuthoritativeSubmit>) {
+    let t = rig.tw.world().now().saturating_add(1);
+    rig.tw.set_now(t);
+    let events = rig.tw.fire_due(t.saturating_mul(1_000));
+    let heard = said(&rig.tw, &events, who);
+    (heard, drain_space_and_industry(&mut rig.tw))
+}
+
+/// **Doc 35 cut SF.R26b (doc 35d §9a, Q-35d-6 as ruled)** — a planned passage is flown on a
+/// debit that lands, once. Each part fails on the code before the cut.
+///
+/// A. **A lost debit is submitted again and lands once.** The handler's submission is dropped,
+///    as a restart drops the engine's queue. After [`tacsim::space::SPACE_BURN_RETRY_AFTER_TICKS`]
+///    the tick submits it again; it lands, the tank is down by the passage's burn, and the
+///    receipt takes the burn off the queue. The dropped copy, landed late, is refused.
+/// B. **An unpaid passage is cut.** Every submission of the debit is dropped. After
+///    [`tacsim::space::SPACE_BURN_MAX_ATTEMPTS`] resubmissions the burn is given up: the crew
+///    hear the drive cut, the hull is in free flight with no credit, the ledger no longer
+///    counts the burn, and the tank was never touched.
+/// C. **The debit is admitted.** Adrift, her pilot burns; with that burn's debit still queued,
+///    `+helm/autopilot stickney` is refused and nothing more is queued: the engine holds one
+///    submission an actor, and the passage's debit would have been turned away behind it.
+///    Once the burn's debit has landed the same command engages.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sfr26b_a_passage_debit_is_admitted_lands_once_and_an_unpaid_passage_is_cut() {
+    let retry_after = tacsim::space::SPACE_BURN_RETRY_AFTER_TICKS;
+    let max_attempts = tacsim::space::SPACE_BURN_MAX_ATTEMPTS;
+
+    // --- A. A lost debit is submitted again and lands once ---------------------------------
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Payer", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto.contains("Autopilot engaged for Stickney Yards"),
+        "{auto}"
+    );
+    let burn_t = tonnes_after(&auto, "burn");
+    assert!(burn_t > 0, "{auto}");
+    let queued = queued_burns(&rig.tw, hull);
+    assert_eq!(queued.len(), 1, "one debit is queued: {queued:?}");
+    let (_, vault, queued_t, _, passage) = queued[0];
+    assert_eq!(queued_t, burn_t);
+    assert!(passage, "the debit pays for a passage");
+    let tank_before = pool(&mut rig.tw, VaultId(vault), "propellant");
+    let lost = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(burns_in(&lost), 1, "the handler submitted the debit");
+    let mut resubmitted = Vec::new();
+    for tick in 1..=retry_after {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        if tick < retry_after {
+            assert_eq!(burns_in(&submitted), 0, "tick {tick}: the debit waits");
+        } else {
+            resubmitted = submitted;
+        }
+    }
+    assert_eq!(
+        burns_in(&resubmitted),
+        1,
+        "the tick submits the debit again"
+    );
+    assert_eq!(queued_burns(&rig.tw, hull)[0].3, 1, "one resubmission");
+    for submit in &resubmitted {
+        if is_burn(submit) {
+            land(&mut rig, submit).expect("the resubmitted debit lands");
+        } else {
+            let _ = land(&mut rig, submit);
+        }
+    }
+    assert_eq!(
+        pool(&mut rig.tw, VaultId(vault), "propellant"),
+        tank_before - burn_t,
+        "the tank is down by the passage's burn"
+    );
+    for submit in &lost {
+        if is_burn(submit) {
+            let refused = land(&mut rig, submit).expect_err("a landed burn lands once");
+            assert!(refused.contains("already landed"), "{refused}");
+        }
+    }
+    assert_eq!(
+        pool(&mut rig.tw, VaultId(vault), "propellant"),
+        tank_before - burn_t,
+        "the late copy drew nothing"
+    );
+    let (_, after) = one_second(&mut rig, pilot);
+    assert_eq!(burns_in(&after), 0, "a landed burn is not submitted again");
+    assert!(
+        queued_burns(&rig.tw, hull).is_empty(),
+        "the receipt takes the burn off the queue"
+    );
+    assert!(
+        journey(&rig.tw, hull).is_some(),
+        "the paid passage is under way"
+    );
+
+    // --- B. An unpaid passage is cut -------------------------------------------------------
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Drifter", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto.contains("Autopilot engaged for Stickney Yards"),
+        "{auto}"
+    );
+    let (_, vault, _, _, _) = queued_burns(&rig.tw, hull)[0];
+    let tank_before = pool(&mut rig.tw, VaultId(vault), "propellant");
+    let dropped = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(burns_in(&dropped), 1);
+    let mut resubmissions = 0;
+    let mut heard_cut = false;
+    for _ in 0..(u32::from(retry_after) * (u32::from(max_attempts) + 2)) {
+        let (heard, submitted) = one_second(&mut rig, pilot);
+        resubmissions += burns_in(&submitted);
+        if heard.contains(tacsim::space::PASSAGE_CUT_UNPAID) {
+            heard_cut = true;
+            break;
+        }
+    }
+    assert!(heard_cut, "the crew hear the drive cut");
+    assert_eq!(
+        resubmissions,
+        usize::from(max_attempts),
+        "the tick tried the debit that many times"
+    );
+    assert!(
+        queued_burns(&rig.tw, hull).is_empty(),
+        "the burn is given up"
+    );
+    assert_eq!(
+        pool(&mut rig.tw, VaultId(vault), "propellant"),
+        tank_before,
+        "nothing was drawn"
+    );
+    let book = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let flight = book
+        .free_flights
+        .get(&hull)
+        .expect("the cut passage leaves her in free flight");
+    assert_eq!(flight.prepaid_unflown_t, 0, "no credit for an unpaid burn");
+    assert_eq!(
+        book.propellant_ledger(hull)
+            .map_or(0, |ledger| ledger.unlanded_burn_t),
+        0,
+        "the ledger no longer counts the burn against the tank"
+    );
+
+    // --- C. The debit is admitted ----------------------------------------------------------
+    let burned = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 10 force");
+    assert_eq!(
+        queued_burns(&rig.tw, hull).len(),
+        1,
+        "the burn's first kilogram queues a tonne's debit: {burned}"
+    );
+    let busy = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        busy.contains(tacsim::space::commands::PASSAGE_DEBIT_BUSY),
+        "{busy}"
+    );
+    assert_eq!(
+        queued_burns(&rig.tw, hull).len(),
+        1,
+        "a refused passage queues no debit"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .free_flights
+            .contains_key(&hull),
+        "a refused passage leaves her adrift"
+    );
+    let burn_debit = drain_space_and_industry(&mut rig.tw);
+    assert_eq!(burns_in(&burn_debit), 1);
+    land_all(&mut rig, &burn_debit);
+    let engaged = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        engaged.contains("Autopilot engaged for Stickney Yards"),
+        "{engaged}"
     );
 }
 

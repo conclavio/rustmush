@@ -887,7 +887,7 @@ Built, because it holds under either reading:
 **Test.** `sfr21_…` reads the sequence and key of an input before its reboot and of one after, and requires the later
 one to be greater and the keys to differ.
 
-**Not built, waiting on Q-35d-6.** Under the default: file, debit, then grant for `+helm/autopilot`, `+helm/approach`
+**Not built in this part** (Q-35d-6 was ruled on 2026-11-11 for the default; `SF.R26b` below builds the passage's debit). Under the default: file, debit, then grant for `+helm/autopilot`, `+helm/approach`
 and the dock's RCS; one submitted action each for `+helm/submit`, `/run`, `/dock` and `/tow`; a decision to keep the
 staged tape family as an audit trail or delete it. Under the other reading: the family-backed bubble. Also still as
 doc 35d §4 found them: an input typed while the actor has an action pending is applied and not recorded on the staged
@@ -896,7 +896,7 @@ tape, and `+mine/drones` in that state adds the drones without staging their `Ri
 ## SF.R27 — the store budget, a first part (doc 35d §6.1)
 
 A subset of doc 35d §9's `SF.R27` row: the steady-state writes and the unbounded or unsafe collections that could be
-fixed without the dirty-flag rewrite, which waits on Q-35d-6. Paths are under `crates/tacsim/src/space/`.
+fixed without the dirty-flag rewrite, which is still owed. Paths are under `crates/tacsim/src/space/`.
 
 - **A cluster session is its own document.** `tacsim:space:cluster:{hull}` (`SPACE_CLUSTER_PREFIX`,
   `space_cluster_key`, `PersistedClusterDoc`, `tick.rs`), written and deleted by `persist_space_state` as a flight
@@ -1080,3 +1080,82 @@ rustdoc clean on tacsim, mush-pixel and the contract tests.
 - A measured tick cost with several bubbles beside a field.
 - The §6.9 output text (raw mm/s, `paused_from_world_tick=`, the `+tac` help line's wording, the lead pip).
 - A staff verb to inspect and release a quarantine.
+
+## SF.R26b — an in-flight debit lands once, or the passage is cut (doc 35d §9a; Q-35d-6 ruled)
+
+The owner ruled Q-35d-6 on 2026-11-11: in-bubble helm and tactical inputs are bubble orders on the bubble's own
+tape. That leaves of `SF.R26` the Tier-1 debit and four verbs that should each end in one submitted action. This cut
+builds the debit. Paths are under `crates/tacsim/src/` unless given.
+
+**What was wrong.** An in-flight debit (`PendingSpaceBurn`) was queued on the space book and submitted as
+`tacsim_port_burn` by the handler, after the handler had already granted what it paid for. Nothing tied the two:
+
+- The engine holds one queued submission an actor (`Engine::queue_authoritative_submit`). A debit submitted behind
+  another of the same actor was turned away, and nothing submitted it again. Two commands in one packet were
+  enough: the second one's passage was flown and never paid for.
+- A restart empties the engine's queue; the grant is in the store and the debit was not.
+- The queue entry left on an inference from the tank's level, a burn with crew-days never left at all, and the port
+  clamp deleted the hull's queued debits unlanded (`helm_dock`).
+
+**Built.**
+
+- **A receipt per landed burn.** A new typed family, `tacsim.space_burn_receipt` (`SPACE_BURN_RECEIPT_FAMILY`,
+  `SpaceBurnReceipts`, `port/burn.rs`; registered in `port/families.rs`), one row a hull holding the sequences of
+  her landed burns, at most `MAX_SPACE_BURN_RECEIPTS` = 32. `BurnProvider`'s prepare writes the row in the same
+  transaction as the debit and refuses a sequence the row already holds ("that space burn has already landed").
+- **The tick settles the queue against the receipts** (`reconcile_space_burns`, `space/tick.rs`, in `space_tick`).
+  A burn with a receipt leaves the queue. A burn with none, whose actor has nothing in flight and with no commit
+  pending, waits `SPACE_BURN_RETRY_AFTER_TICKS` = 3 and is submitted again (`submit_queued_space_burn`,
+  `space/commands.rs`), one burn an actor a tick, oldest first, each resubmission under its own idempotency key.
+  After `SPACE_BURN_MAX_ATTEMPTS` = 3 the burn is given up: the ledger stops counting it against the tank and the
+  crew are told.
+- **An unpaid passage is cut** (`cut_unpaid_passage`). The three forms of `+helm/autopilot` and the linkdead return
+  queue their debit as a passage's (`submit_passage_burn`, `PendingSpaceBurn.passage`). When such a burn is given
+  up, a hull on a corridor journey is decoupled where she is with no prepaid credit
+  (`decouple_carrier_into_free_flight`, split out of `helm_decouple`), and a free flight under autopilot loses its
+  arrival and drifts. The crew hear `PASSAGE_CUT_UNPAID`.
+- **The passage's debit is admitted.** `+helm/autopilot` is refused with `PASSAGE_DEBIT_BUSY` while the hull's
+  captain has an action pending or the engine's queue is full, before anything is planned or filed.
+- **The port clamp forgives nothing.** `helm_dock` no longer deletes the hull's queued debits; they land at the
+  berth.
+- **A sequence is never handed out twice.** `alloc_space_burn_seq_above` floors the allocator on the highest
+  sequence the hull's receipt row holds, so a store that lost its last write cannot issue a sequence that would
+  read as landed.
+- **A queue written before this cut** is left to the older rule: its entries carry `tracked: false` and the tick
+  never submits them again, so a burn that had landed with no receipt is not drawn twice.
+
+**Tests.** New story `sfr26b_a_passage_debit_is_admitted_lands_once_and_an_unpaid_passage_is_cut`
+(`crates/tacsim/tests/domain_world/voyage.rs`), three parts: a dropped debit is submitted again on the third tick,
+lands, takes 43 t from the tank, and the dropped copy landed late is refused; a debit dropped every time is tried
+three times, then the crew hear the drive cut, the hull is in free flight with no credit and the tank is untouched;
+adrift, a `+helm/burn` with its debit still queued refuses `+helm/autopilot`, which engages once that debit has
+landed. `sfr9_…` and `sfr14_…` change: each typed its autopilot with an earlier submission of the pilot still
+queued, so each had been flying a passage whose debit was turned away; they land the earlier submission first.
+Local: `domain_world` 257 passed; `mush-contract-tests` 35 + 80 (8 ignored) + 76 passed; clippy clean on tacsim
+with warnings denied.
+
+**Divergences.**
+
+- **Grant, then a debit that must land; not file, debit, grant. Accepted by the owner on 2026-11-11 ("keep as
+  built").** Doc 35d §9a's reading 1 asked for the order
+  `+ship/undock` uses. Deferring the grant puts a tick between every autopilot command and its passage and changes
+  each of the 38 places a story types `+helm/autopilot`. The receipt is the piece a deferred grant needs as well,
+  so the order can still be turned round. As built, a passage whose debit never lands is flown for about twelve
+  ticks before it is cut, out of a passage of days.
+- **No new provider.** The receipt rides `tacsim_port_burn`; the queue is still the space book's.
+
+**Not built.**
+
+- `+helm/submit`, `/run`, `/dock` and `/tow` each ending in one submitted action.
+- `+helm/approach` and the dock's RCS still spend from the ledger before any debit lands. Their whole-tonne debits
+  are now resubmitted like any other; a dock whose RCS spend exceeds the tank is still clamped to the tank.
+- The staged tape family is neither made the audit trail in name nor deleted, and an input typed while its actor has
+  an action pending is still applied and not staged.
+- A seizure whose burn is given up leaves the clearance it was granted with.
+- A passage burn given up while the hull is inside a bubble or at a berth cuts nothing.
+- The queue's cap of sixteen still drops the oldest entry.
+- A burn whose captain has left the hull has no offer, so it is tried three times and given up.
+
+**Not pinned by a story.** The sequence floor; the `tracked` rule for an older queue; the port clamp keeping the
+queued debits; the ledger's reversal for a burn that pays for no passage; the drift of a free flight under autopilot
+(the story cuts a corridor journey).
