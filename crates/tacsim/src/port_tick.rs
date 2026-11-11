@@ -1090,6 +1090,7 @@ fn register_burn(
             action: action.clone(),
             outcome,
             tickets: families.tickets.clone(),
+            space_receipts: families.space_burn_receipts.clone(),
             inventory: inventory.clone(),
             table,
         },

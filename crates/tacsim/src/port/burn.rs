@@ -213,8 +213,77 @@ pub(crate) struct BurnProvider {
     pub action: DefinitionRef,
     pub outcome: DefinitionRef,
     pub tickets: StateFamilyHandle<TicketId, Ticket>,
+    /// `tacsim.space_burn_receipt` (doc 35 cut SF.R26b): which in-flight burns have landed.
+    pub space_receipts: StateFamilyHandle<ObjId, SpaceBurnReceipts>,
     pub inventory: InventoryFamilies,
     pub table: BurnTable,
+}
+
+/// Typed state family id for the in-flight burn receipts (doc 35 cut SF.R26b, doc 35d §9a).
+pub const SPACE_BURN_RECEIPT_FAMILY: &str = "tacsim.space_burn_receipt";
+
+/// How many landed sequences a hull's receipt row keeps. The burn queue holds sixteen, so a
+/// sequence older than the lowest of these is long gone from it.
+pub const MAX_SPACE_BURN_RECEIPTS: usize = 32;
+
+/// **Doc 35 cut SF.R26b (doc 35d §9a)** — the in-flight burns of one hull that have landed.
+///
+/// Written by `tacsim_port_burn`'s prepare in the same transaction as the debit, so a receipt
+/// and a drawn-down tank are one fact. The space tick reads it to take a landed burn off the
+/// queue, and the prepare reads it to refuse a burn that has already landed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpaceBurnReceipts {
+    /// The hull whose tank was drawn down; the row's key.
+    pub hull: ObjId,
+    /// Landed burn sequences, ascending, at most [`MAX_SPACE_BURN_RECEIPTS`].
+    pub landed: Vec<u32>,
+}
+
+impl SpaceBurnReceipts {
+    /// The record invariants of `tacsim.space_burn_receipt`.
+    ///
+    /// # Errors
+    ///
+    /// The row names no hull, holds too many sequences, or holds them out of order.
+    pub fn check(&self) -> Result<(), String> {
+        if self.hull.0 == 0 {
+            return Err("a space burn receipt names its hull".to_owned());
+        }
+        if self.landed.len() > MAX_SPACE_BURN_RECEIPTS {
+            return Err("a space burn receipt holds a bounded number of sequences".to_owned());
+        }
+        if !self.landed.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err("a space burn receipt holds its sequences ascending".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Whether the burn `seq` has landed. A sequence below the lowest one a full row keeps
+    /// has been dropped from it, and counts as landed.
+    #[must_use]
+    pub fn has_landed(&self, seq: u32) -> bool {
+        self.landed.binary_search(&seq).is_ok()
+            || (self.landed.len() >= MAX_SPACE_BURN_RECEIPTS
+                && self.landed.first().is_some_and(|&lowest| seq < lowest))
+    }
+
+    /// The highest landed sequence, 0 when none has.
+    #[must_use]
+    pub fn high_water(&self) -> u32 {
+        self.landed.last().copied().unwrap_or(0)
+    }
+
+    /// Record `seq` as landed, dropping the lowest sequence when the row is full.
+    pub fn record(&mut self, seq: u32) {
+        if let Err(at) = self.landed.binary_search(&seq) {
+            self.landed.insert(at, seq);
+        }
+        if self.landed.len() > MAX_SPACE_BURN_RECEIPTS {
+            let excess = self.landed.len() - MAX_SPACE_BURN_RECEIPTS;
+            self.landed.drain(0..excess);
+        }
+    }
 }
 
 /// The fixed `voyage` parameter: the hull and its pending voyage, exactly as the
@@ -247,6 +316,21 @@ pub struct PendingSpaceBurn {
     /// Whole tonnes of unlicensed `strategic_ore` seized at a customs picket (`SF.R12`, `D-35-11`).
     #[serde(default)]
     pub seized_strategic_ore_t: u32,
+    /// Whether this burn pays for a planned passage (`+helm/autopilot`, the linkdead return).
+    /// A passage whose burn cannot land is cut (doc 35 cut SF.R26b).
+    #[serde(default)]
+    pub passage: bool,
+    /// How many times the space tick has submitted this burn again (doc 35 cut SF.R26b).
+    #[serde(default)]
+    pub attempts: u8,
+    /// Consecutive ticks on which the burn had neither landed nor been in flight.
+    #[serde(default)]
+    pub idle_ticks: u8,
+    /// Whether the burn was queued under the receipt rule (doc 35 cut SF.R26b). A burn read
+    /// from a store written before that cut has no receipt to wait for; the tick leaves it to
+    /// the older rule and never submits it again.
+    #[serde(default)]
+    pub tracked: bool,
 }
 
 fn invalid() -> mush_core::ActionError {
@@ -491,6 +575,24 @@ impl ActionProvider for BurnProvider {
                     "the goods table names no propellant or no provisions",
                 ));
             };
+            // Doc 35 cut SF.R26b: the receipt is the replay guard. The tick submits a burn
+            // again when it has no receipt and nothing is in flight; a burn that did land is
+            // refused here, whatever became of its idempotency key.
+            let prior = txn
+                .get(&self.space_receipts, &pending.hull)
+                .map_err(|_| {
+                    port_error(
+                        ActionErrorCode::Integrity,
+                        "the space burn receipts are unavailable",
+                    )
+                })?
+                .cloned();
+            if prior.as_ref().is_some_and(|row| row.has_landed(seq)) {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "that space burn has already landed",
+                ));
+            }
             let vault = VaultId(pending.vault);
             let unreadable =
                 |_: PlanError| port_error(ActionErrorCode::Integrity, "the hold cannot be read");
@@ -536,6 +638,22 @@ impl ActionProvider for BurnProvider {
                     crew,
                 )?;
             }
+            let mut receipts = prior.clone().unwrap_or(SpaceBurnReceipts {
+                hull: pending.hull,
+                landed: Vec::new(),
+            });
+            receipts.record(seq);
+            let staged = if prior.is_some() {
+                txn.replace(&self.space_receipts, &pending.hull, receipts)
+            } else {
+                txn.insert(&self.space_receipts, &pending.hull, receipts)
+            };
+            staged.map_err(|_| {
+                port_error(
+                    ActionErrorCode::Integrity,
+                    "the space burn receipt did not stage",
+                )
+            })?;
             let outcome_fields = json!({
                 "actor": actor.0,
                 "burn_t": pending.burn_t,

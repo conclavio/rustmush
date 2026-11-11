@@ -64,6 +64,7 @@ Assign or claim a bridge station before issuing flight or tactical orders:
 - `+helm/tow [<derelict_id>]` attaches a salvage tow line to a derelict after a verified hard-dock clamp, and files your salvage claim on her when someone answers for her title. A clamp with no tow line lets go after a minute.
 - `+helm/tow release` lets the derelict go. If she has not been brought into a port, your custody of her ends and the salvage claim on her is withdrawn; a claim is only ever awarded on a derelict a port has.
 - An open docking session cuts your own main drive and leaves you coasting; every other ship in the bubble keeps flying. `+helm/dock` is refused while a hostile contact is operational in the bubble, whether or not your sensors hold it.
+- A passage's reaction mass and provisions are drawn from the hold when it is engaged. `+helm/autopilot` is refused while an earlier action of the captain's is still committing; type it again. If the draw cannot be made, the drive is cut and the ship drifts where she is.
 - If every crew member aboard loses their link, the drive is cut for a two-minute grace. Past it, a ship in free flight or at a cluster flies the autopilot's own passage to the nearest open port she can afford, paid from her tank and locker like any other; a ship that can afford none drifts where she is.
 
 ---

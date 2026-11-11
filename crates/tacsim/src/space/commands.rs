@@ -2160,28 +2160,60 @@ pub(crate) fn sync_bubble_propellant_to_ledger(ctx: &mut Ctx<'_>, hull: ObjId) {
     let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0);
 }
 
-fn submit_space_burn_if_needed(
+/// `+helm/autopilot`'s refusal when the passage's debit could not be admitted (doc 35 cut
+/// SF.R26b).
+pub const PASSAGE_DEBIT_BUSY: &str = "An earlier action of the hull's captain is still committing, so the passage's reaction mass could not be drawn. Nothing is filed; try again.";
+
+/// A hull's burn receipts, read outside an action (doc 35 cut SF.R26b).
+///
+/// # Errors
+///
+/// The receipts family is unwired or does not read.
+pub(crate) fn space_burn_receipts_of(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+) -> Result<Option<crate::port::burn::SpaceBurnReceipts>, ()> {
+    let handles = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .ok_or(())?;
+    ctx.action_state(&handles.families.space_burn_receipts, &hull)
+        .map(|row| row.cloned())
+        .map_err(|_| ())
+}
+
+/// Queue one in-flight debit against `hull`'s hold and submit it (`SF.R4`, `D-35-6`).
+///
+/// Doc 35 cut SF.R26b: the queue entry stays until the burn's receipt is on file; the space
+/// tick submits it again if the submission is turned away, and gives it up after
+/// [`super::tick::SPACE_BURN_MAX_ATTEMPTS`].
+fn queue_space_burn(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
     vault: u64,
-    burn_t: u64,
-    crew_days: u32,
-) -> Result<Option<u32>, CmdError> {
-    if burn_t == 0 && crew_days == 0 {
-        return Ok(None);
-    }
+    (burn_t, crew_days, seized_strategic_ore_t): (u64, u32, u32),
+    passage: bool,
+) -> Result<u32, CmdError> {
     let burn_actor = resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
-    let burn_handle = ctx
+    if ctx
         .w
         .module_state::<crate::port::families::PortHandles>()
         .and_then(|h| h.burn.clone())
-        .ok_or_else(|| CmdError::msg("The port burn action is not wired."))?;
+        .is_none()
+    {
+        return Err(CmdError::msg("The port burn action is not wired."));
+    }
+    // A sequence the receipt row already holds would read as landed.
+    let landed_high = space_burn_receipts_of(ctx, hull)
+        .ok()
+        .flatten()
+        .map_or(0, |row| row.high_water());
     let seq = {
         let book = ctx
             .w
             .module_state_mut::<SpaceBubbleBook>()
             .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
-        let seq = book.alloc_space_burn_seq();
+        let seq = book.alloc_space_burn_seq_above(landed_high);
         book.pending_space_burns
             .push(crate::port::burn::PendingSpaceBurn {
                 seq,
@@ -2190,19 +2222,55 @@ fn submit_space_burn_if_needed(
                 vault,
                 burn_t,
                 crew_days,
-                seized_strategic_ore_t: 0,
+                seized_strategic_ore_t,
+                passage,
+                attempts: 0,
+                idle_ticks: 0,
+                tracked: true,
             });
         seq
     };
     if let Some(handles) = ctx.w.module_state_mut::<super::tick::BubbleInputHandles>() {
         handles.pending_burn_submit_actors.insert(burn_actor);
     }
-    let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
-        "{}{}/space_burn/{seq}",
-        crate::port::burn::BURN_KEY_PREFIX,
-        hull.0
-    ))
-    .map_err(|_| CmdError::msg("Failed to form space burn idempotency key."))?;
+    submit_queued_space_burn(ctx, hull, seq, 0, burn_actor)?;
+    Ok(seq)
+}
+
+/// Submit the queued burn `seq` of `hull` as `burn_actor`. `attempt` is 0 for the handler's
+/// own submission and counts the tick's resubmissions, each under its own idempotency key;
+/// the receipt, not the key, is what keeps a burn from landing twice.
+///
+/// # Errors
+///
+/// The burn action is unwired or the key does not form.
+pub(crate) fn submit_queued_space_burn(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    seq: u32,
+    attempt: u8,
+    burn_actor: ObjId,
+) -> Result<(), CmdError> {
+    let burn_handle = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|h| h.burn.clone())
+        .ok_or_else(|| CmdError::msg("The port burn action is not wired."))?;
+    let key_text = if attempt == 0 {
+        format!(
+            "{}{}/space_burn/{seq}",
+            crate::port::burn::BURN_KEY_PREFIX,
+            hull.0
+        )
+    } else {
+        format!(
+            "{}{}/space_burn/{seq}/retry{attempt}",
+            crate::port::burn::BURN_KEY_PREFIX,
+            hull.0
+        )
+    };
+    let key = mush_core::IdempotencyKeyText::parse_canonical(key_text)
+        .map_err(|_| CmdError::msg("Failed to form space burn idempotency key."))?;
     if ctx.actor == burn_actor {
         ctx.submit_authoritative(
             burn_handle,
@@ -2223,7 +2291,35 @@ fn submit_space_burn_if_needed(
             );
         });
     }
-    Ok(Some(seq))
+    Ok(())
+}
+
+fn submit_space_burn_if_needed(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    vault: u64,
+    burn_t: u64,
+    crew_days: u32,
+) -> Result<Option<u32>, CmdError> {
+    if burn_t == 0 && crew_days == 0 {
+        return Ok(None);
+    }
+    queue_space_burn(ctx, hull, vault, (burn_t, crew_days, 0), false).map(Some)
+}
+
+/// The debit of a planned passage (`+helm/autopilot`, the linkdead return). A passage whose
+/// debit cannot land is cut by the space tick (doc 35 cut SF.R26b).
+fn submit_passage_burn(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    vault: u64,
+    burn_t: u64,
+    crew_days: u32,
+) -> Result<Option<u32>, CmdError> {
+    if burn_t == 0 && crew_days == 0 {
+        return Ok(None);
+    }
+    queue_space_burn(ctx, hull, vault, (burn_t, crew_days, 0), true).map(Some)
 }
 
 pub(crate) fn submit_seized_contraband_burn(
@@ -2235,60 +2331,39 @@ pub(crate) fn submit_seized_contraband_burn(
     if seized_strategic_ore_t == 0 {
         return Ok(None);
     }
-    let burn_actor = resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
-    let burn_handle = ctx
-        .w
-        .module_state::<crate::port::families::PortHandles>()
-        .and_then(|h| h.burn.clone())
-        .ok_or_else(|| CmdError::msg("The port burn action is not wired."))?;
-    let seq = {
-        let book = ctx
-            .w
-            .module_state_mut::<SpaceBubbleBook>()
-            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
-        let seq = book.alloc_space_burn_seq();
-        book.pending_space_burns
-            .push(crate::port::burn::PendingSpaceBurn {
-                seq,
-                hull,
-                actor: burn_actor,
-                vault,
-                burn_t: 0,
-                crew_days: 0,
-                seized_strategic_ore_t,
-            });
-        seq
-    };
-    if let Some(handles) = ctx.w.module_state_mut::<super::tick::BubbleInputHandles>() {
-        handles.pending_burn_submit_actors.insert(burn_actor);
+    queue_space_burn(ctx, hull, vault, (0, 0, seized_strategic_ore_t), false).map(Some)
+}
+
+/// Cut the passage `hull` is flying because its burn could not be drawn from her tank (doc 35
+/// cut SF.R26b). A free flight under autopilot loses its arrival and drifts; a hull on a
+/// corridor journey is decoupled where she is, with no credit for a burn she did not pay.
+/// A hull inside a bubble or at a berth is left as she is. Returns whether anything was cut.
+pub(crate) fn cut_unpaid_passage(ctx: &mut Ctx<'_>, hull: ObjId) -> bool {
+    {
+        let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+            return false;
+        };
+        if book.active_for_hull(hull).is_some() {
+            return false;
+        }
+        if let Some(flight) = book.free_flights.get_mut(&hull) {
+            if flight.cluster_arrival_ic_s.is_none() {
+                return false;
+            }
+            flight.cluster_arrival_ic_s = None;
+            flight.guidance = FreeFlightGuidanceMode::Manual;
+            flight.thrust_mmps2 = [0, 0, 0];
+            flight.burn_remaining_ic_s = None;
+            return true;
+        }
     }
-    let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
-        "{}{}/space_burn/{seq}",
-        crate::port::burn::BURN_KEY_PREFIX,
-        hull.0
-    ))
-    .map_err(|_| CmdError::msg("Failed to form space burn idempotency key."))?;
-    if ctx.actor == burn_actor {
-        ctx.submit_authoritative(
-            burn_handle,
-            mush_core::PerceivedRef::SelfActor,
-            Vec::new(),
-            serde_json::json!({ "seq": seq.to_string() }),
-            key,
-        );
-    } else {
-        let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
-        let _ = fire.as_principal(ctx, burn_actor, burn_actor, |ctx| {
-            ctx.submit_authoritative(
-                burn_handle,
-                mush_core::PerceivedRef::SelfActor,
-                Vec::new(),
-                serde_json::json!({ "seq": seq.to_string() }),
-                key,
-            );
-        });
+    if matches!(
+        crate::port::ship::berth_of(ctx.w, hull),
+        crate::port::ship::Berth::Docked { .. }
+    ) {
+        return false;
     }
-    Ok(Some(seq))
+    decouple_carrier_into_free_flight(ctx, hull, false).is_ok()
 }
 
 fn ensure_hull_can_maneuver(w: &World, hull: ObjId) -> Result<(), CmdError> {
@@ -2356,6 +2431,41 @@ fn helm_decouple(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Ship is already decoupled in free flight."));
     }
 
+    let (origin_place, target_place, pos_km, vel_mps) =
+        decouple_carrier_into_free_flight(ctx, hull, true)?;
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Decoupled from corridor leg `{origin_place} -> {target_place}` into 3D heliocentric free flight at pos=({}, {}, {}) km, vel=({}, {}, {}) m/s.",
+            pos_km[0], pos_km[1], pos_km[2], vel_mps[0], vel_mps[1], vel_mps[2]
+        ),
+    );
+    Ok(())
+}
+
+/// Take `hull` off the corridor journey she is under way on and put her in free flight at the
+/// point of the leg she has reached: origin place, target place, position (km) and velocity
+/// (m/s). `keep_prepaid` credits the unflown share of the route's burn, which `+helm/decouple`
+/// does and a passage cut for an unpaid burn does not (doc 35 cut SF.R26b).
+///
+/// # Errors
+///
+/// The hull is on no journey under way, or her basis or the lane's sky does not read.
+#[allow(clippy::type_complexity)]
+fn decouple_carrier_into_free_flight(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    keep_prepaid: bool,
+) -> Result<
+    (
+        mush_core::CanonicalId,
+        mush_core::CanonicalId,
+        [i64; 3],
+        [i64; 3],
+    ),
+    CmdError,
+> {
     let journey = ctx
         .w
         .module_state::<JourneyBook>()
@@ -2482,8 +2592,12 @@ fn helm_decouple(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .map(|p| p.burn_t)
         })
         .unwrap_or_else(|| journey.route().propellant().max(1));
-    let prepaid_unflown_t = ((u128::from(route_burn_t) * u128::from(total_remaining_s as u64))
-        / u128::from(total_journey_s as u64)) as u64;
+    let prepaid_unflown_t = if keep_prepaid {
+        ((u128::from(route_burn_t) * u128::from(total_remaining_s as u64))
+            / u128::from(total_journey_s as u64)) as u64
+    } else {
+        0
+    };
 
     let domain = ctx
         .w
@@ -2513,16 +2627,7 @@ fn helm_decouple(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         book.free_flights.insert(hull, record);
     }
-
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "tacsim.space",
-        format!(
-            "Decoupled from corridor leg `{origin_place} -> {target_place}` into 3D heliocentric free flight at pos=({}, {}, {}) km, vel=({}, {}, {}) m/s.",
-            pos_km[0], pos_km[1], pos_km[2], vel_mps[0], vel_mps[1], vel_mps[2]
-        ),
-    );
-    Ok(())
+    Ok((origin_place, target_place, pos_km, vel_mps))
 }
 
 fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2847,6 +2952,13 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "Cannot engage autopilot while in an active interdiction bubble.",
         ));
     }
+    // Doc 35 cut SF.R26b (doc 35d §9a): the passage's debit must be admitted. The engine
+    // holds one submission an actor, and a burn submitted behind another is turned away; a
+    // passage engaged on such a burn would be flown for nothing.
+    let payer = resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
+    if ctx.authoritative_pending(payer) || ctx.authoritative_queue_full() {
+        return Err(CmdError::msg(PASSAGE_DEBIT_BUSY));
+    }
 
     let now = ctx.w.world_ic_now();
     let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
@@ -3002,7 +3114,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             book.propellant_ledger_mut(hull)
                 .record_passage_burn_t(basis.tank, burn_t);
         }
-        let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, burn_t, plan.crew_days)?;
+        let _ = submit_passage_burn(ctx, hull, basis.vault.0, burn_t, plan.crew_days)?;
 
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -3168,7 +3280,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             book.propellant_ledger_mut(hull)
                 .record_passage_burn_t(basis.tank, burn_t);
         }
-        let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, burn_t, crew_days)?;
+        let _ = submit_passage_burn(ctx, hull, basis.vault.0, burn_t, crew_days)?;
 
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -3471,7 +3583,7 @@ pub(crate) fn engage_port_autopilot(
         book.propellant_ledger_mut(hull)
             .record_passage_burn_t(basis.tank, charge_burn_t);
     }
-    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, charge_burn_t, plan.crew_days)?;
+    let _ = submit_passage_burn(ctx, hull, basis.vault.0, charge_burn_t, plan.crew_days)?;
 
     if let Some(mut voyage) =
         ctx.w
@@ -5533,7 +5645,6 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                         &active, now.at,
                                     ),
                                 );
-                                book.pending_space_burns.retain(|b| b.hull != hull);
                             }
                             if was_last {
                                 let _ =

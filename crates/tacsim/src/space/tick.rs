@@ -1113,7 +1113,15 @@ impl SpaceBubbleBook {
 
     /// Allocate the next monotonic sequence number for a [`crate::port::burn::PendingSpaceBurn`].
     pub fn alloc_space_burn_seq(&mut self) -> u32 {
-        self.next_space_burn_seq = self.next_space_burn_seq.saturating_add(1);
+        self.alloc_space_burn_seq_above(0)
+    }
+
+    /// [`Self::alloc_space_burn_seq`], never at or below `landed_high`, the highest sequence
+    /// the hull's receipt row holds (doc 35 cut SF.R26b). The allocator is written with the
+    /// book; a store that lost its last write must not hand out a sequence that has landed.
+    pub fn alloc_space_burn_seq_above(&mut self, landed_high: u32) -> u32 {
+        let floor = landed_high.saturating_sub(1_000_000);
+        self.next_space_burn_seq = self.next_space_burn_seq.max(floor).saturating_add(1);
         1_000_000_u32.saturating_add(self.next_space_burn_seq)
     }
 
@@ -2825,8 +2833,127 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     promote_due_interdictions(ctx, &now);
     step_delivered_tows_at_port(ctx, &now);
     crate::surface::claim::tick(ctx);
+    reconcile_space_burns(ctx);
     prune_space_book_collections(ctx);
     persist_space_state(ctx);
+}
+
+/// Ticks a queued burn may sit with no receipt and nothing in flight before the tick submits
+/// it again (doc 35 cut SF.R26b).
+pub const SPACE_BURN_RETRY_AFTER_TICKS: u8 = 3;
+
+/// Times the tick submits a queued burn again before it gives the burn up.
+pub const SPACE_BURN_MAX_ATTEMPTS: u8 = 3;
+
+/// The hull's line when a passage is cut for a burn that could not be drawn.
+pub const PASSAGE_CUT_UNPAID: &str = "[SPACE] The passage's reaction mass could not be drawn from the tank; the drive is cut and she drifts.";
+
+/// The hull's line when a burn that pays for no passage is given up; `{burn_t}` is its tonnes.
+pub const SPACE_BURN_LAPSED: &str =
+    "[SPACE] A burn of {burn_t} t could not be drawn from the tank; the debit is withdrawn.";
+
+/// Settle the in-flight burn queue against the receipts (doc 35 cut SF.R26b, doc 35d §9a).
+///
+/// A burn with a receipt has landed and leaves the queue. A burn with no receipt whose actor
+/// has nothing in flight was turned away (the engine holds one submission an actor, and a
+/// restart empties its queue): after [`SPACE_BURN_RETRY_AFTER_TICKS`] the tick submits it
+/// again, one burn an actor a tick, oldest first. After [`SPACE_BURN_MAX_ATTEMPTS`] the burn
+/// is given up: the ledger stops counting it against the tank, and the passage it paid for is
+/// cut ([`super::commands::cut_unpaid_passage`]).
+fn reconcile_space_burns(ctx: &mut Ctx<'_>) {
+    use crate::port::burn::PendingSpaceBurn;
+    let queued: Vec<PendingSpaceBurn> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|book| {
+            book.pending_space_burns
+                .iter()
+                .filter(|burn| burn.tracked)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if queued.is_empty() {
+        return;
+    }
+    let commit_pending = ctx.authoritative_commit_pending();
+    let mut landed = std::collections::BTreeSet::new();
+    let mut waited = std::collections::BTreeSet::new();
+    let mut retried: Vec<PendingSpaceBurn> = Vec::new();
+    let mut lapsed: Vec<PendingSpaceBurn> = Vec::new();
+    let mut visited = std::collections::BTreeSet::new();
+    for burn in &queued {
+        // An unreadable row holds the burn where it is.
+        let Ok(row) = super::commands::space_burn_receipts_of(ctx, burn.hull) else {
+            continue;
+        };
+        if row.is_some_and(|row| row.has_landed(burn.seq)) {
+            landed.insert((burn.hull, burn.seq));
+            continue;
+        }
+        if commit_pending || ctx.authoritative_pending(burn.actor) || !visited.insert(burn.actor) {
+            continue;
+        }
+        if burn.idle_ticks.saturating_add(1) < SPACE_BURN_RETRY_AFTER_TICKS {
+            waited.insert((burn.hull, burn.seq));
+        } else if burn.attempts >= SPACE_BURN_MAX_ATTEMPTS {
+            lapsed.push(burn.clone());
+        } else {
+            retried.push(burn.clone());
+        }
+    }
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.pending_space_burns.retain(|burn| {
+            !landed.contains(&(burn.hull, burn.seq))
+                && !lapsed
+                    .iter()
+                    .any(|gone| gone.hull == burn.hull && gone.seq == burn.seq)
+        });
+        for burn in &mut book.pending_space_burns {
+            if waited.contains(&(burn.hull, burn.seq)) {
+                burn.idle_ticks = burn.idle_ticks.saturating_add(1);
+            } else if retried
+                .iter()
+                .any(|again| again.hull == burn.hull && again.seq == burn.seq)
+            {
+                burn.attempts = burn.attempts.saturating_add(1);
+                burn.idle_ticks = 0;
+            }
+        }
+        for gone in &lapsed {
+            let ledger = book.propellant_ledger_mut(gone.hull);
+            ledger.unlanded_burn_t = ledger.unlanded_burn_t.saturating_sub(gone.burn_t);
+            ledger.total_burned_kg = ledger
+                .total_burned_kg
+                .saturating_sub(gone.burn_t.saturating_mul(1_000));
+        }
+    }
+    for burn in retried {
+        let _ = super::commands::submit_queued_space_burn(
+            ctx,
+            burn.hull,
+            burn.seq,
+            burn.attempts.saturating_add(1),
+            burn.actor,
+        );
+    }
+    for burn in lapsed {
+        tracing::warn!(
+            hull = burn.hull.0,
+            seq = burn.seq,
+            burn_t = burn.burn_t,
+            crew_days = burn.crew_days,
+            seized_t = burn.seized_strategic_ore_t,
+            passage = burn.passage,
+            "tacsim: a queued space burn never landed and is given up"
+        );
+        let line = if burn.passage && super::commands::cut_unpaid_passage(ctx, burn.hull) {
+            PASSAGE_CUT_UNPAID.to_owned()
+        } else {
+            SPACE_BURN_LAPSED.replace("{burn_t}", &burn.burn_t.to_string())
+        };
+        crate::port::voyage::narrate_hull(ctx, burn.hull, &line);
+    }
 }
 
 fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
@@ -2914,8 +3041,13 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
         }
     }
     if !landed_hulls.is_empty() {
+        // `SF.R26b`: a burn queued under the receipt rule leaves on its receipt
+        // (`reconcile_space_burns`); this older inference speaks only for one that was not.
         book.pending_space_burns.retain(|b| {
-            !(landed_hulls.contains(&b.hull) && b.seized_strategic_ore_t == 0 && b.crew_days == 0)
+            b.tracked
+                || !(landed_hulls.contains(&b.hull)
+                    && b.seized_strategic_ore_t == 0
+                    && b.crew_days == 0)
         });
     }
     if book.pending_space_burns.len() > 16 {
