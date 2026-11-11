@@ -1,9 +1,11 @@
 # 45. The absent player — asynchronous attack and defence, surveyed
 
-Draft 0.1, 2026-11-11, docs only. Surveyed against the doc 44 branch (`claude/mind-work-survey-doc44`,
+Draft 0.2, 2026-11-11, docs only. Surveyed against the doc 44 branch (`claude/mind-work-survey-doc44`,
 PR #530, Draft 0.5), whose base is `origin/main` at `0d8f30211`. Anchors are file and function
 names; line numbers drift. Every code fact below was read in the tree for this survey; where a fact
-is carried from doc 44 without a fresh read, the row says so.
+is carried from doc 44 without a fresh read, the row says so. Draft 0.1, the same day, was the
+survey. **Draft 0.2 records the owner's ruling of 2026-11-11: every default, Q-45-1 to Q-45-25, is
+accepted as written.** The plan and its units are cut from these rulings next (§7).
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) and
 [doc 44](44-minds-wired-through-the-game.md) used: what exists, what is owed, and owner questions,
@@ -236,6 +238,9 @@ unit.
 - **Doc 27a's `resolve_link_loss_posture`**, which doc 44 also records as absent.
 
 ## 5. Owner survey
+
+**Ruled 2026-11-11: all 25 defaults accepted as written** ("accepted as default across the
+board"). No question was amended.
 
 None of these is ruled. Each default holds only as a proposal.
 
