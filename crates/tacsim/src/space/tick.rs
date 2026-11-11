@@ -854,8 +854,11 @@ impl HullPropellantLedger {
     }
 }
 
-/// Linkdead grace window in real wall seconds (`2 minutes`) before queued return-plan activation (`SF.R13`, `D-35-7`).
-pub const SPACE_LINKDEAD_GRACE_WALL_S: i64 = 120;
+/// Linkdead grace window in real wall seconds before the queued return plan runs (`SF.R13`,
+/// `D-35-7`). Five minutes, as in the field (Q-35d-2, ruled 2026-11-11): a crew whose machine
+/// restarted is back inside it. The server's own `[game].linkdead_grace_s` (300 by default)
+/// ends the window as well, by disconnecting the character.
+pub const SPACE_LINKDEAD_GRACE_WALL_S: i64 = 300;
 
 /// Linkdead grace-window and queued return-plan state for a carrier hull (`SF.R13`, `D-35-7`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -870,7 +873,7 @@ pub struct SpaceLinkdeadState {
     pub pdc_held: bool,
     /// Whether the linkdead grace window has expired into full disconnect (`D-35-7`).
     pub grace_expired: bool,
-    /// Nearest open port queued for the return plan (`D-35-7`).
+    /// The port queued for the return plan (`D-35-7`): the one she filed for, since Q-35d-2.
     pub queued_return_port: Option<String>,
 }
 
@@ -2619,7 +2622,7 @@ fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
     }
     let ic_now_s = ctx.w.world_ic_now().at;
     let wall_now_s = ctx.w.now();
-    let queued_return_port = super::commands::nearest_return_port_for_hull(ctx.w, hull)
+    let queued_return_port = super::commands::return_port_for_hull(ctx.w, hull)
         .or_else(|| Some("ceres_freeport".to_owned()));
     let has_journey = ctx
         .w

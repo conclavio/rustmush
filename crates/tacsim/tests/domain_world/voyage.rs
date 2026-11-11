@@ -10933,7 +10933,7 @@ fn sfr23_mining_and_sensing_remainders() {
 
     // 5. Disconnect `pilot_2` (`Inbound::ConnDown` with `DisconnectKind::Lost`) while `hull_2` is in
     //    `kirkwood_gap_3_1` and verify `execute_linkdead_return_journey` launches `hull_2` back to
-    //    Ceres Freeport once the 120s linkdead grace window expires:
+    //    Ceres Freeport once the linkdead grace window expires:
     let pilot_2_conns: Vec<u64> = (1..=64)
         .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(pilot_2))
         .collect();
@@ -10960,6 +10960,10 @@ fn sfr23_mining_and_sensing_remainders() {
             .is_some_and(|ld| !ld.grace_expired && ld.queued_return_port.is_some()),
         "cluster-session hull must enter linkdead_hulls when its crew loses connection"
     );
+    // The five minutes are waited out at a play rate: at the story's 3,600 they are thirteen IC
+    // days, past the idle timeout of every cluster session in the scene.
+    let story_rate = world_rate(&rig.tw);
+    set_rate(&mut rig.tw, 24);
     let t_ld_exp = rig
         .tw
         .world()
@@ -10967,6 +10971,7 @@ fn sfr23_mining_and_sensing_remainders() {
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(t_ld_exp);
     let _ = rig.tw.fire_due(t_ld_exp.saturating_mul(1_000));
+    set_rate(&mut rig.tw, story_rate);
     assert!(
         !rig.tw
             .world()
@@ -11686,6 +11691,8 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         .expect("her hold");
     let tank_before = pool(&mut rig.tw, vault, "propellant");
     drop_link(&mut rig, pilot);
+    // Waited out at a play rate: at 3,600 the five minutes outlast the session's idle timeout.
+    set_rate(&mut rig.tw, 24);
     let past_grace = rig
         .tw
         .world()
@@ -11693,6 +11700,7 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(past_grace);
     let _ = rig.tw.fire_due(past_grace.saturating_mul(1_000));
+    set_rate(&mut rig.tw, 3_600);
     let stray = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &stray);
     assert!(
@@ -11717,7 +11725,7 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         "and burns nothing"
     );
 
-    // A hull at Ceres Halo with a full tank flies the planner's passage to the nearest port.
+    // A hull at Ceres Halo with a full tank flies the planner's passage to the port she left.
     let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Sleeper", 75, 0);
     arrive_at_cluster(&mut rig, hull);
     drop_link(&mut rig, pilot);
@@ -11730,8 +11738,9 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
             .and_then(|ld| ld.queued_return_port.clone())
             .as_deref(),
         Some("ceres_freeport"),
-        "the queued return port is the port she is beside"
+        "she filed for a cluster, so the queued return port is the port she left"
     );
+    set_rate(&mut rig.tw, 24);
     let past_grace = rig
         .tw
         .world()
@@ -11739,6 +11748,7 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(past_grace);
     let _ = rig.tw.fire_due(past_grace.saturating_mul(1_000));
+    set_rate(&mut rig.tw, 3_600);
     let home_burn = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &home_burn);
     let home = journey(&rig.tw, hull).expect("the return journey");
@@ -12055,6 +12065,81 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
             .get(&hull),
         Some(&session_before),
         "and survives the restart as it was"
+    );
+}
+
+/// **Q-35d-2 as ruled on 2026-11-11** — a hull whose crew lose their link makes for the port she
+/// filed, after five minutes. A Dray files Ceres to Stickney, decouples six IC hours out, and
+/// her pilot's link drops: the queued return port is Stickney, the port she filed, though Ceres
+/// is far nearer. A second before the five minutes are up she is still adrift; past them her
+/// return plan is a journey bound for Stickney.
+#[test]
+fn sfr25b_a_linkdead_hull_makes_for_the_port_she_filed_after_five_minutes() {
+    assert_eq!(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S, 300);
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Homer", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault, "propellant", 50, LotId(2_611));
+    seed_pool(&mut rig, vault, "provisions", 60, LotId(2_612));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, pending.plan.depart_ic + 21_600);
+    let decoupled = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(
+        decoupled.contains("Decoupled from corridor leg"),
+        "{decoupled}"
+    );
+
+    drop_link(&mut rig, pilot);
+    let queued = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .linkdead_state(hull)
+        .and_then(|ld| ld.queued_return_port.clone());
+    assert_eq!(
+        queued.as_deref(),
+        Some("stickney_yards"),
+        "the queued return port is the one she filed, not the nearest"
+    );
+
+    let dropped_at = rig.tw.world().now();
+    let before = dropped_at.saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S - 1);
+    rig.tw.set_now(before);
+    let _ = rig.tw.fire_due(before.saturating_mul(1_000));
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .free_flights
+            .contains_key(&hull),
+        "inside the five minutes she is still adrift"
+    );
+
+    let past = dropped_at.saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 1);
+    rig.tw.set_now(past);
+    let _ = rig.tw.fire_due(past.saturating_mul(1_000));
+    let home_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &home_burn);
+    let home = journey(&rig.tw, hull).expect("the return journey");
+    assert!(
+        matches!(home.state(), mush_sim::JourneyState::Cruising),
+        "the return plan is under way: {:?}",
+        home.state()
+    );
+    assert_eq!(
+        home.route().endpoints().1,
+        ObjId(
+            port_map(&rig.tw, "stickney_port")
+                .host
+                .expect("Stickney's host")
+        ),
+        "bound for the port she filed"
     );
 }
 

@@ -1081,6 +1081,41 @@ rustdoc clean on tacsim, mush-pixel and the contract tests.
 - The §6.9 output text (raw mm/s, `paused_from_world_tick=`, the `+tac` help line's wording, the lead pip).
 - A staff verb to inspect and release a quarantine.
 
+## Rulings of 2026-11-11 — the lead pip, the linkdead grace and the return port (Q-35d-2, Q-35d-5)
+
+The owner ruled the last of doc 35d's questions on 2026-11-11. Q-35d-1, 3 and 4 were accepted at the defaults
+`SF.R25` built, and Q-35d-6 is `SF.R26b`'s. This section is what the other two changed. Paths are under
+`crates/tacsim/src/space/` unless given.
+
+- **The lead pip is dropped (Q-35d-5).** `cockpit_feed` (`bubble.rs`) no longer sends `lead_bearing_deg` and
+  `lead_pitch_deg`, and no longer runs the lead calculation for every contact on every feed. The canopy
+  (`crates/mush-pixel/src/space_cockpit.rs`) no longer draws the pip; the lock box and the time-to-impact readout
+  stay. The bridge golden is re-blessed (`crates/mush-pixel/tests/golden/space_hashes.json`).
+- **The linkdead grace is five minutes (Q-35d-2).** `SPACE_LINKDEAD_GRACE_WALL_S` is 300, as in the field. The
+  server's `[game].linkdead_grace_s` (300 by default) ends the window too, by disconnecting the character.
+- **The return plan makes for the port she filed (Q-35d-2).** `return_port_for_hull` (`commands.rs`) queues the
+  port of the voyage's filed destination; when that is a cluster or a body, the port she left; with no voyage on
+  file, the nearest. `execute_linkdead_return_journey` is unchanged: the queued port first, then every open port
+  nearest first, each through the planner with its tank and locker checks. `nearest_return_port_for_hull` is
+  deleted.
+
+**Tests.** New story `sfr25b_a_linkdead_hull_makes_for_the_port_she_filed_after_five_minutes`: a Dray files
+Ceres to Stickney, decouples six IC hours out and drops her link; the queued port is `stickney_yards`, a second
+short of five minutes she is still adrift, and past them she is on a journey bound for Stickney. `sfr23_…` and
+`sfr25_…` wait the grace out at rate 24: at their 3,600 five minutes are thirteen IC days, past
+`CLUSTER_SESSION_IDLE_TIMEOUT_IC_SECS`, and the cluster sessions they then read were gone. Local: the 28 `sfr`
+stories and mush-pixel's tests passed.
+
+**Not built.** The backup mind Q-35d-2 rules for, on either track: the return is still the planner's one passage,
+decided once at the end of the grace, and nothing flies the hull through a bubble or reacts on the way. The field's
+return to base. The retrieval job for a hull that holds.
+
+**Not pinned by a story.** The fallback from an unaffordable filed port to the nearest affordable one (the code
+path is `SF.R25`'s, which its story pins for the nearest port only).
+
+**Noted.** At a high clock rate five real minutes are many IC days: at 3,600 a crew that drops its link at a
+cluster loses the cluster session to its idle timeout before the grace ends.
+
 ## SF.R26b — an in-flight debit lands once, or the passage is cut (doc 35d §9a; Q-35d-6 ruled)
 
 The owner ruled Q-35d-6 on 2026-11-11: in-bubble helm and tactical inputs are bubble orders on the bubble's own

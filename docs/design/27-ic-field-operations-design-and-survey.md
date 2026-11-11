@@ -594,6 +594,12 @@ with real, embarked human-NPC leadership.
   the tree until M8e/S.4a), so "actually available sealed fallback" is usually nothing. The
   no-mind default is the alternative below: hold the last safe posture, no fire, no motion. The
   handover delay reuses `[tacsim.match].reclaim_min_ms`'s shape rather than a new knob.
+- **Amended 2026-11-11 (doc 35d Q-35d-2, ruled for field and space together):** after the five
+  minutes of the linkdead grace a unit passes to a backup mind that tries to return it to base. The
+  mind is a house default every unit carries; a mind the player sealed takes its place. It may move,
+  pay from the unit's own stores and defend itself; it never opens fire first. A player who
+  reconnects takes the controls back at once. This replaces P-2's no-mind default (hold, no fire,
+  no motion). Not built.
 - **Alternative:** retain the last physical controls or a bounded stop posture without activating
   an AI fallback, unless the human explicitly arranged a handoff before disconnecting.
 - **Why:** preserves persistent stakes without equating a replaceable cockpit with deleting a
