@@ -30,7 +30,8 @@ three boots: `mush-server` on a private IPC socket, and a private
 to that port and types `connect <staff account> <password>` at the welcome
 screen; the staff account is the one `--bootstrap-staff` linked to God #1 (the
 script bootstraps it on a store with no account). Every line it types and every
-reply is kept in <DATA_DIR>/bringup/transcript.log, passwords removed.
+reply is kept in <DATA_DIR>/bringup/transcript.log; a line that carries a
+password is recorded without it (the front door does not echo).
 
 HOW PLAYERS ARE KEPT OFF UNTIL THE ACTIVE BOOT. The instance's unit (the world)
 is stopped before the first boot and started only after the Active boot has
@@ -47,9 +48,12 @@ world and from launch.json, never assumed: every identity is looked up by name
 before it is made, a grant is made only when `@org/show` does not list it, an
 account is funded only up to its figure, and the phase is the document's own
 (absent, `initialize`, `active`). The only thing the script keeps for itself is
-<DATA_DIR>/bringup/state.json: the passwords it generated for the service
-logins, which are never played. It lives in the data directory, so a reset
-removes it with the world it belonged to.
+<DATA_DIR>/bringup/state.json: the hulls it has lent a House, so that a run
+which stops in between hands back what it took. It lives in the data
+directory, so a reset removes it with the world it belonged to. No password is
+kept: each service login (the stock agent, the clerk, the Registry operator,
+the three House agents) gets a random one that is thrown away, since nobody
+plays them, and #1 sets one with `@newpassword` on the day somebody must.
 
 Usage:
   sudo python3 deploy/instance/launch-bringup.py <instance.env> [options]
@@ -87,11 +91,14 @@ HOUSES = [
     ("tycho", "Tycho", "Safe Conduct", "safe_conduct"),
 ]
 REGISTRY_GRANTS = ["recall", "revoke", "inspect", "fine", "claims", "seize", "forfeit"]
+# The Roll's action is typed LAST. Once it has landed the world boots only
+# Active (the Initialize boot's preflight wants untouched commerce records), so
+# a run that stopped after it could not come back for the other three.
 INITIALIZE_ACTIONS = [
-    "roll-initialize-commerce",
     "initialize-core-die-stock",
     "initialize-core-factory",
     "initialize-core-refit",
+    "roll-initialize-commerce",
 ]
 CREDIT = "tacsim.credit"
 FILING_FEE_MINOR = 10_000  # doc 17: 100cr, the launch's content constant
@@ -106,6 +113,9 @@ MARKET_TERMS = {
     "charter_settle_ic_seconds": 259200,
 }
 TRUST = "Co-op First Captain Trust"
+# Replies that mean "not now", to a line that was not run.
+TRANSIENT = (r"You're doing that too fast\.|post-outage recovery countdown"
+             r"|still starting; please try again|please retry in a moment")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\x1b[=>]")
 
 
@@ -180,6 +190,8 @@ class Session:
         self.box, self.who = box, who
         self.raw = b""
         self.pos = 0
+        self.typed_at = 0.0
+        self.bracketed = 0
         self.suffix = None
         master, slave = pty.openpty()
         settings = termios.tcgetattr(slave)
@@ -200,7 +212,7 @@ class Session:
             stdin=slave, stdout=slave, stderr=slave, preexec_fn=tty, close_fds=True)
         os.close(slave)
         self.master = master
-        self.wait(r"(?i)connect", 60, "the welcome screen")
+        self.wait(r"(?i)connect <account>", 60, "the welcome screen")
 
     def text(self):
         clean = ANSI.sub("", self.raw[self.pos:].decode("utf-8", "replace"))
@@ -231,14 +243,32 @@ class Session:
                            f"the reply so far:\n{self.text()[-800:]}")
             self.pump(0.2)
 
-    def type(self, line):
+    def type(self, line, shown=None):
+        """Type one line. `shown` is what the transcript records in its place:
+        a line that carries a password is never written down."""
+        # The gateway's flood bucket: ten lines a second sustained, thirty in a
+        # burst, for #1 as for anybody. Stay under it.
+        pause = self.typed_at + 0.15 - time.monotonic()
+        if pause > 0:
+            time.sleep(pause)
+        # Every line typed after the bracket is set is answered with it, even
+        # one that prints nothing else. Read the brackets of the lines already
+        # typed before typing the next, so that what is read as this line's
+        # reply never starts with the end of the last one.
+        if self.suffix:
+            mark = self.suffix.encode()
+            end = time.monotonic() + 20
+            while self.raw.count(mark) < self.bracketed and time.monotonic() < end:
+                self.pump(0.2)
+            self.bracketed = self.raw.count(mark) + 1
+        self.typed_at = time.monotonic()
         self.pos = len(self.raw)
-        self.box.transcript(self.who, ">", line.encode())
+        self.box.transcript(self.who, ">", (shown or line).encode())
         os.write(self.master, line.encode("utf-8") + b"\r")
 
     def connect(self, account, password, create=False):
-        self.box.secret(password)
-        self.type(f"{'create' if create else 'connect'} {account} {password}")
+        verb = "create" if create else "connect"
+        self.type(f"{verb} {account} {password}", shown=f"{verb} {account} [password]")
         found = self.wait(r"Connected as |already taken|does not exist, or the password is wrong"
                           r"|too weak|Characters on |has no characters yet|banned", 60)
         if "Characters on" in found.group(0):
@@ -252,23 +282,55 @@ class Session:
         self.wait(rf"^{self.suffix}$", 30, "the reply bracket")
         return None
 
+    def answered(self, line, pattern, timeout, what):
+        """Type `line` and wait for `pattern`. A line the world turned away
+        without running it is typed again: the gateway's flood bucket, a world
+        still starting or committing, and the post-outage recovery countdown,
+        which a boot more than `[game].outage_freeze_threshold_s` (30 s) after
+        the store's last clock checkpoint runs for five minutes with every
+        world action paused."""
+        end = time.monotonic() + 420
+        told = False
+        while True:
+            self.type(line)
+            found = self.wait(rf"{pattern}|(?P<later>{TRANSIENT})", timeout, what)
+            later = found.groupdict().get("later")
+            if not later:
+                return found
+            if time.monotonic() >= end:
+                raise Stop(f"{self.who}: {line!r} was turned away for seven minutes: {later}")
+            if "countdown" in later and not told:
+                told = True
+                say("the world is in its post-outage recovery countdown (it booted more than 30 s "
+                    "after the store's last clock checkpoint): waiting it out, five minutes at most")
+            time.sleep(10 if "countdown" in later else 3)
+
     def ask(self, line, timeout=60):
         """A read: the whole reply, which the reply bracket ends."""
-        self.type(line)
-        self.wait(rf"^{self.suffix}$", timeout, f"the end of the reply to {line!r}")
+        self.answered(line, rf"^{self.suffix}$", timeout, f"the end of the reply to {line!r}")
         return self.text().split(self.suffix)[0]
 
     def do(self, line, expect, timeout=60):
         """A write: wait for `expect`, which names every reply that is an
         answer; anything else runs out the clock and is shown."""
-        self.type(line)
-        found = self.wait(expect, timeout, f"answer to {line!r}")
+        found = self.answered(line, expect, timeout, f"answer to {line!r}")
         # Keep in step with the bracket where the line has one (a reply held
         # for its durable write, and a gateway line, may come without it).
         end = time.monotonic() + 2
         while self.suffix not in self.text() and time.monotonic() < end:
             self.pump(0.1)
         return found
+
+    def settle(self, quiet=1.0, limit=15):
+        """Read until nothing has arrived for `quiet` seconds: the end of a
+        reply that carries no bracket (a line the gateway answers itself)."""
+        end = time.monotonic() + limit
+        while time.monotonic() < end:
+            before = len(self.raw)
+            self.pump(quiet)
+            if len(self.raw) == before:
+                break
+        return self.text()
 
     def close(self):
         try:
@@ -313,7 +375,6 @@ class Box:
         self.work = os.path.join(self.data, "bringup")
         self.document = os.path.join(self.data, "launch.json")
         self.state_file = os.path.join(self.work, "state.json")
-        self.secrets = []
         self.children = []
         self.ssh_endpoint = None
         self.unit = None
@@ -337,8 +398,6 @@ class Box:
         if os.path.isfile(self.state_file):
             with open(self.state_file, encoding="utf-8") as handle:
                 self.state = json.load(handle)
-        for password in self.state.get("logins", {}).values():
-            self.secret(password)
         self.log = open(os.path.join(self.work, "transcript.log"), "ab")
         os.chmod(self.log.name, 0o600)
 
@@ -377,15 +436,9 @@ class Box:
         return bool(self.unit) and subprocess.run(
             ["systemctl", "is-active", "--quiet", self.unit]).returncode == 0
 
-    # ---- what is kept: the transcript and the service logins' passwords
-
-    def secret(self, value):
-        if value and value not in self.secrets:
-            self.secrets.append(value)
+    # ---- what is kept: the transcript, and the hulls lent to a House
 
     def transcript(self, who, way, data):
-        for value in self.secrets:
-            data = data.replace(value.encode(), b"[password]")
         stamp = time.strftime("%H:%M:%S").encode()
         self.log.write(b"%s %s %s %s\n" % (stamp, who.encode(), way.encode(), data))
         self.log.flush()
@@ -396,14 +449,6 @@ class Box:
             json.dump(self.state, handle, indent=2)
         os.chmod(staged, 0o600)
         os.replace(staged, self.state_file)
-
-    def login_password(self, login):
-        logins = self.state.setdefault("logins", {})
-        if login not in logins:
-            logins[login] = secrets.token_urlsafe(18)
-            self.save_state()
-        self.secret(logins[login])
-        return logins[login]
 
     # ---- the launch document
 
@@ -711,29 +756,23 @@ class Staff:
         self.s.do(f"@asset/title #{thing}=org:{org_name} scope={scope}",
                   r"Title recorded \(transaction #\d+\)|is already titled")
 
-    def character(self, login, name, first=False):
-        """The character `name` on the service login `login`, which is made at
-        the welcome screen with a password this script generates and keeps."""
+    def character(self, name):
+        """The service character `name`: the one character of a login of the
+        same name, made at the welcome screen with `create`. The login's
+        password is random and is kept nowhere. Nobody plays these logins; on
+        the day somebody must (the Registry operator, to recall a revision),
+        #1 sets one with `@newpassword <name>=<password>`."""
         found = self.find(name)
         if found is not None:
             return found
-        password = self.box.login_password(login)
-        other = Session(self.box, login)
+        other = Session(self.box, name)
         try:
-            refusal = other.connect(login, password, create=True)
-            if refusal and "already taken" in refusal:
-                refusal = other.connect(login, password)
-            if refusal:
-                raise Stop(f"cannot use the service login {login}: {refusal}. Its password is "
-                           f"this script's, kept in {self.box.state_file}; without it the login "
-                           "cannot be finished, and the store wants a reset")
-            if not first:
-                other.do(f"@newchar {name}", rf"@newchar: created {name} \(#\d+\)|already taken", 120)
+            refusal = other.connect(name, secrets.token_urlsafe(24), create=True)
         finally:
             other.close()
         found = self.find(name)
-        if found is None:
-            raise Stop(f"the character {name} was not made on the login {login}")
+        if refusal or found is None:
+            raise Stop(f"cannot make the service login {name}: {refusal or 'no such character after create'}")
         return found
 
     def close(self):
@@ -754,14 +793,12 @@ def identities(box, staff):
     registry_account = staff.system_account("launch.registry")
     venue_account = staff.system_account("launch.venue")
     faucet = staff.system_account("launch.faucet")
-    box.state["faucet"] = faucet
-    box.save_state()
 
-    # The service logins. LaunchAgent is the second origin agent and the login
-    # the clerk and the operator hang off, so neither is on #1's.
-    agent = staff.character("LaunchAgent", "LaunchAgent", first=True)
-    clerk = staff.character("LaunchAgent", "MarketClerk")
-    operator = staff.character("LaunchAgent", "RegistryOperator")
+    # The service logins: the second origin agent, the clerk and the Registry
+    # operator, each on a login of its own, so none is on #1's.
+    agent = staff.character("LaunchAgent")
+    clerk = staff.character("MarketClerk")
+    operator = staff.character("RegistryOperator")
 
     houses, procurement = {}, []
     counter = staff.room("Named launch counter")
@@ -779,7 +816,7 @@ def identities(box, staff):
         # licences on the root scope up to the month's budget and attesting on
         # the House's scope; the root-scope treasury holds a month's budget.
         budget = box.args.procurement_budget
-        buyer = staff.character(f"{name}Agent", f"{name}Agent", first=True)
+        buyer = staff.character(f"{name}Agent")
         staff.s.do(f"@faction/add Republic=#{buyer}/level:1", r"Added .* to Republic|Already a member")
         staff.s.do(f"@teleport #{buyer}=#{counter}", r"Teleported\.")
         staff.grant(buyer, org, name, "roll.holder.org", limit=budget)
@@ -862,27 +899,37 @@ def registry_grants(staff, document):
 
 
 def initialize(staff):
-    """The four initialize actions. An action that has landed is no longer
-    offered (the three industry ones) or is refused when typed again (the
-    Roll's), and that is how each is known to be done."""
+    """The four initialize actions, each typed while it is offered.
+
+    A landed action answers `Action accepted.` and then `Action committed.`.
+    The three industry actions are withdrawn once they have landed. The Roll's
+    stays offered and is refused when typed again (`That input was rejected by
+    the server.`: its provider wants empty commerce storage), so on a second
+    run that refusal is how it is known to be done. The Active boot is the
+    judge either way: it refuses a world whose commerce was never initialized.
+    """
     for verb in INITIALIZE_ACTIONS:
         end = time.monotonic() + 180
         while True:
-            offered = re.search(rf"^\s+\+act {re.escape(verb)} ", staff.s.ask("+actions"), re.M)
-            if not offered:
+            # `+actions` and `+act` are the gateway's own lines.
+            staff.s.type("+actions")
+            staff.s.wait(r"Available actions:|No actions are available\.", 60)
+            if not re.search(rf"^\s+\+act {re.escape(verb)} ", staff.s.settle(), re.M):
+                say(f"initialize action already landed: {verb}")
                 break
             staff.s.type(f"+act {verb} with {{}}")
-            try:
-                answer = staff.s.wait(r"Action committed\.|Action accepted\.|no longer available"
-                                      r"|game is busy|game is unavailable", 20).group(0)
-            except Stop:
-                answer = "accepted"  # the split answers an accepted action with nothing
-            if "no longer available" in answer:
+            answer = staff.s.wait(r"Action committed\.|rejected by the server|no longer available"
+                                  r"|game is busy|game is unavailable|doing that too fast",
+                                  120, f"the answer to +act {verb}").group(0)
+            if "committed" in answer:
+                say(f"initialize action landed: {verb}")
+                break
+            if "rejected" in answer or "no longer" in answer:
+                say(f"initialize action already landed: {verb} (typed again, it is refused)")
                 break
             if time.monotonic() >= end:
-                raise Stop(f"+act {verb} is still offered after 180s; the last answer: {answer}")
-            time.sleep(2)
-        say(f"initialize action landed: {verb}")
+                raise Stop(f"+act {verb} did not land in 180s; the last answer: {answer}")
+            time.sleep(3)
 
 
 # --- phase 3: the Active boot --------------------------------------------------
@@ -953,16 +1000,21 @@ def seed_listing(box, staff, document):
     time.sleep(1)
     charter = f"{source} Market"
 
+    def row_naming(text, pattern):
+        for found in re.finditer(pattern, text, re.M):
+            if source.lower() in found.group(0).lower():
+                return found
+        return None
+
     def listed():
-        rows = staff.s.ask("+minds")
-        return re.search(rf"^\s+(\S{{8}})\s+{re.escape(charter.lower())}\s.*$", rows, re.M | re.I)
+        return row_naming(staff.s.ask("+minds"), r"^\s+(\S{8})\s\s.*$")
 
     row = listed()
     if row:
         return row.group(0).strip()
     mine = staff.account(("obj", 1), None, f"@account/open #1={CREDIT}")
-    staff.fund(box.state["faucet"], mine, 2 * FILING_FEE_MINOR)
-    if source not in [name.strip() for name in staff.s.ask("@mind/list").split(",")]:
+    staff.fund(staff.system_account("launch.faucet"), mine, 2 * FILING_FEE_MINOR)
+    if source.lower() not in [name.strip().lower() for name in staff.s.ask("@mind/list").split(",")]:
         staff.s.do(f"@mind/launch {selector}={source}", r"Launch draft imported\.")
     info = staff.s.ask(f"@mind/info {source}")
     revision = re.search(r"revision (\d+);", info)
@@ -972,8 +1024,7 @@ def seed_listing(box, staff, document):
     reference = f"{source}@{revision.group(1)}"
 
     def filed():
-        rows = staff.s.ask("+minds/holdings")
-        return re.search(rf"^\s+filed (\d+)\s+owner\s+{re.escape(charter.lower())}\s", rows, re.M | re.I)
+        return row_naming(staff.s.ask("+minds/holdings"), r"^\s+filed (\d+)\s+owner\s.*$")
 
     if not filed():
         # The first @mind/file reserves the charter; the second, once the
@@ -985,8 +1036,18 @@ def seed_listing(box, staff, document):
             answer = staff.s.do(f"@mind/file {reference}={charter}",
                                 r"has no finished Registry rating|Filing .* as ").group(0)
         if "no finished" in answer:
+            # A job that has just finished is still held for a pulse: only
+            # that refusal is typed again.
+            end = time.monotonic() + 180
+            while True:
+                answer = staff.s.do(f"@mind/rate {reference}",
+                                    r"Registry preparation queued\.|already working|unavailable").group(0)
+                if "unavailable" not in answer:
+                    break
+                if time.monotonic() >= end:
+                    raise Stop(f"the Registry would not take {reference}: {staff.s.text()[-300:]}")
+                time.sleep(3)
             started = time.monotonic()
-            staff.s.do(f"@mind/rate {reference}", r"Registry preparation queued\.|already working")
             say(f"the Registry is rating {reference}; at REGISTRY_PULSE_MS="
                 f"{box.env.get('REGISTRY_PULSE_MS') or 1000} this takes "
                 f"{'minutes' if (box.env.get('REGISTRY_PULSE_MS') or '1000') != '1000' else 'about three hours'}")
@@ -1076,7 +1137,7 @@ def purchases(box, org):
     port = box.env["REDIS_PORT"]
     scan = subprocess.run(
         ["redis-cli", "-h", "127.0.0.1", "-p", port, "--scan", "--pattern",
-         f"mod:tacsim:action-state/v1/tacsim.procurement_ledger/{org:020d}/*"],
+         "mod:tacsim:action-state/v1/tacsim.procurement_ledger/*"],
         capture_output=True, text=True)
     if scan.returncode != 0:
         raise Stop(f"redis-cli cannot read the procurement ledger on 127.0.0.1:{port}: {scan.stderr}")
@@ -1087,7 +1148,7 @@ def purchases(box, org):
         if got:
             value = json.loads(got)
             rows.append(value.get("value", value))
-    return [row for row in rows if row.get("phase") == "granted"]
+    return [row for row in rows if row.get("org") == org and row.get("phase") == "granted"]
 
 
 def await_purchase(box, staff, document):
@@ -1253,14 +1314,25 @@ def bring_up(box, password):
     if not box.launch_is_live():
         raise Stop(f"{box.document} exists and the render left launch_path commented")
     if document["mode"] == "initialize":
-        box.start_private("Initialize")
-        staff = Staff(box, args.staff, password)
         try:
-            registry_grants(staff, document)
-            initialize(staff)
-        finally:
-            staff.close()
-        box.stop_private()
+            box.start_private("Initialize")
+        except Stop as stop:
+            # A run that stopped between the last initialize action and the
+            # document's edit: the Roll's records exist, which only its own
+            # action writes, and it is typed after the other three.
+            if "commerce initialization preflight" not in str(stop):
+                raise
+            say("the Initialize boot is refused because commerce is already initialized: "
+                "all four actions landed in an earlier run")
+            box.stop_private()
+        else:
+            staff = Staff(box, args.staff, password)
+            try:
+                registry_grants(staff, document)
+                initialize(staff)
+            finally:
+                staff.close()
+            box.stop_private()
         document["mode"] = "active"
         box.write_document(document)
         say(f"set {box.document} to mode active")
@@ -1358,7 +1430,6 @@ def main():
         password = staff_password(args)
         if not 4 <= len(password.encode()) <= 128:
             raise Stop("the staff password must be 4 to 128 bytes")
-        box.secret(password)
         if args.llm_check:
             checks_on_the_unit(box, password)
             return 0
