@@ -214,7 +214,7 @@ Reading 1 is cheap and leaves reading 2 open; reading 2 is the one that would be
 
 | Piece | State |
 |---|---|
-| An in-flight debit lands, once, or what it paid for is undone | Built as `SF.R26b` for a planned passage: a receipt per landed burn, a resubmission by the tick, and a passage cut when its burn cannot land. The order is grant, then a debit that must land; see the cut note for why it is not file, debit, grant |
+| An in-flight debit lands, once, or what it paid for is undone | Built as `SF.R26b` for a planned passage: a receipt per landed burn, a resubmission by the tick, and a passage cut when its burn cannot land. The order is grant, then a debit that must land, not file, debit, grant; the owner accepted that order on 2026-11-11, and the cut note gives the reason |
 | `+helm/approach` and the dock's RCS | Still spend from the ledger first; their whole-tonne debits now come under the same receipt and resubmission |
 | `+helm/submit`, `/run`, `/dock`, `/tow` each ending in one submitted action | Not built |
 | The staged tape family: an audit trail, or deleted | Not decided |

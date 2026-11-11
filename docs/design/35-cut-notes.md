@@ -1136,7 +1136,8 @@ with warnings denied.
 
 **Divergences.**
 
-- **Grant, then a debit that must land; not file, debit, grant.** Doc 35d §9a's reading 1 asked for the order
+- **Grant, then a debit that must land; not file, debit, grant. Accepted by the owner on 2026-11-11 ("keep as
+  built").** Doc 35d §9a's reading 1 asked for the order
   `+ship/undock` uses. Deferring the grant puts a tick between every autopilot command and its passage and changes
   each of the 38 places a story types `+helm/autopilot`. The receipt is the piece a deferred grant needs as well,
   so the order can still be turned round. As built, a passage whose debit never lands is flown for about twelve
