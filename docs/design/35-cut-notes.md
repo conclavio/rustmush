@@ -1244,6 +1244,9 @@ part's first assertions fail there.
 Existing stories land the ruling through a new helper, `customs_ruling` (the earlier queue is set aside, the
 ruling landed, the queue put back, one tick): `sfr6`, `sfr8`, `sfr9`, `sfr12`, `sfr18`, `sfr20`, `sfr23`, `sfr25`
 and the two-tug opening shared by `sfr19`, `rs8` and `cr6`. `sfr12` and `sfr18` no longer expect a seizure burn.
+The matter census (`sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`,
+`crates/tacsim/tests/domain_economy/mill.rs`) is re-blessed for one `.debit(` in `space/customs.rs`: the
+seizure's draw, which used to ride the burn's second debit. It is matter leaving the world, moved, not added.
 Local: `domain_world` 258 passed; `mush-contract-tests` 35 + 80 (8 ignored) + 76 passed; clippy clean on tacsim
 with warnings denied; rustdoc clean on tacsim.
 
