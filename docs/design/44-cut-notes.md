@@ -137,7 +137,9 @@ Not built.
 
 ## MW.16
 
-Not built.
+Surveyed as [doc 45](45-the-absent-player.md): every way a player can be absent while something of theirs is exposed, what the game does and what an attacker can do today, checked in the tree.
+Twenty-five owner questions, Q-45-1 to Q-45-25, open at their defaults; no units of work until they are ruled.
+PR #533.
 
 ## MW.17
 
