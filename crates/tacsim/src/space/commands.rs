@@ -1774,6 +1774,39 @@ fn helm_guidance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // Free-flight decoupling, live propellant burns, and passage planner (`SF.R4`)
 // ---------------------------------------------------------------------------
 
+/// The dry mass, in kilograms, of the derelict `hull` has on her tow line; `0` with none
+/// (`SF.R28`, doc 35d §2, §6.3). A tug's planner, her timed burn and her bubble ship all count it
+/// as payload: a towed hull is slower and burns more.
+#[must_use]
+pub(crate) fn towed_mass_kg(w: &World, hull: ObjId) -> u64 {
+    w.module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.active_tows.get(&hull))
+        .map_or(0, |tow| {
+            u64::from(tow.derelict_dry_mass_t).saturating_mul(1_000)
+        })
+}
+
+/// Put `towed_kg` on, or take it off, the payload of `hull`'s ship in her bubble, and recompute
+/// her drive for it (`SF.R28`): the tug feels the line the moment it locks or lets go. A hull in
+/// no bubble has no ship to change; her planner reads [`towed_mass_kg`].
+fn shift_bubble_tow_payload(w: &mut World, hull: ObjId, towed_kg: u64, on: bool) {
+    let Some(active) = w
+        .module_state_mut::<SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull_mut(hull))
+    else {
+        return;
+    };
+    let ship_id = active.carrier_ship_id_for(hull).to_owned();
+    if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
+        ship.non_prop_payload_kg = if on {
+            ship.non_prop_payload_kg.saturating_add(towed_kg)
+        } else {
+            ship.non_prop_payload_kg.saturating_sub(towed_kg)
+        };
+        ship.recompute_drive_kinematics();
+    }
+}
+
 fn live_hull_basis_and_propellant_kg(
     ctx: &Ctx<'_>,
     hull: ObjId,
@@ -2555,34 +2588,36 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     let accel_sq =
         i128::from(ax_mps2).pow(2) + i128::from(ay_mps2).pow(2) + i128::from(az_mps2).pow(2);
-    let accel_mag_mps2 = libm::sqrt(accel_sq as f64);
-    let dv_mps = (accel_mag_mps2 * (dur_ic_s as f64)).round() as u32;
+    let asked_mag_mps2 = libm::sqrt(accel_sq as f64);
 
     let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
     let non_prop_payload = basis
         .payload
-        .saturating_sub(basis.tank.saturating_mul(1_000));
+        .saturating_sub(basis.tank.saturating_mul(1_000))
+        .saturating_add(towed_mass_kg(ctx.w, hull));
     let effective_payload = non_prop_payload.saturating_add(live_kg);
-    let rated_accel_mps2 = crate::port::passage::flip_accel_mps2(
+    // `SF.R28` (doc 35d §6.4): the burn flies at the drive's rating for her mass, in mm/s², when
+    // more is asked. The rating used to be rounded up to a whole m/s², which let a hull rated
+    // under 1 m/s² burn at twice it.
+    let rated_mmps2 = crate::port::passage::flip_accel_mps2(
         &basis.spec.drive,
         basis.spec.dry_kg,
         effective_payload,
     )
-    .map_or(1, |a| (a.ceil() as i64).max(1));
-    let rated_u64 = rated_accel_mps2 as u64;
-    if ax_mps2.unsigned_abs() > rated_u64
-        || ay_mps2.unsigned_abs() > rated_u64
-        || az_mps2.unsigned_abs() > rated_u64
-        || accel_mag_mps2 > (rated_accel_mps2 as f64) + 1e-6
-    {
-        let rated_mg = match basis.spec.drive.law {
-            crate::definitions::logistics::DriveLaw::Flip { accel_mg, .. } => accel_mg,
-            crate::definitions::logistics::DriveLaw::Coast { .. } => 0,
-        };
-        return Err(CmdError::msg(format!(
-            "Burn acceleration exceeds the hull drive's rated flip acceleration of {rated_accel_mps2} m/s² ({rated_mg} mg)."
-        )));
-    }
+    .map_or(1, |a| ((a * 1_000.0).round() as i64).max(1));
+    let asked_mmps2 = [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000];
+    let asked_mag_mmps2 = (asked_mag_mps2 * 1_000.0).round() as i64;
+    let flown_mmps2 = if asked_mag_mmps2 > rated_mmps2 && asked_mag_mmps2 > 0 {
+        asked_mmps2.map(|a| {
+            i64::try_from(i128::from(a) * i128::from(rated_mmps2) / i128::from(asked_mag_mmps2))
+                .unwrap_or(0)
+        })
+    } else {
+        asked_mmps2
+    };
+    let flown_mag_mmps2 = asked_mag_mmps2.min(rated_mmps2);
+    let dv_mps = u32::try_from((i128::from(flown_mag_mmps2) * i128::from(dur_ic_s) + 500) / 1_000)
+        .unwrap_or(u32::MAX);
     let burn_kg = crate::port::passage::burn_kg_for_dv(
         &basis.spec.drive,
         basis.spec.dry_kg,
@@ -2600,7 +2635,7 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now_ic = ctx.w.world_ic_now().at;
     let remaining_after_burn_kg = live_kg.saturating_sub(burn_kg);
     let mut post_ff = ff.clone();
-    post_ff.thrust_mmps2 = [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000];
+    post_ff.thrust_mmps2 = flown_mmps2;
     post_ff.burn_remaining_ic_s = Some(dur_ic_s);
     post_ff.step_ic_s(i64::from(dur_ic_s), None);
     let post_burn_ic = now_ic.saturating_add(i64::from(dur_ic_s));
@@ -2628,7 +2663,7 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let ledger = book.propellant_ledger_mut(hull);
         let tonnes = ledger.record_burn_kg(basis.tank, burn_kg);
         if let Some(rec) = book.free_flight_for_hull_mut(hull) {
-            rec.thrust_mmps2 = [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000];
+            rec.thrust_mmps2 = flown_mmps2;
             rec.burn_remaining_ic_s = Some(dur_ic_s);
         }
         tonnes
@@ -2637,7 +2672,9 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0)?;
 
     let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
-    let throttle_scalar = ((accel_mag_mps2 * 200.0).round() as i32).clamp(0, MAX_ORDER_SCALAR);
+    let throttle_scalar = i32::try_from(flown_mag_mmps2 / 5)
+        .unwrap_or(MAX_ORDER_SCALAR)
+        .clamp(0, MAX_ORDER_SCALAR);
     let order = record_hull_standing_order(
         ctx.w,
         hull,
@@ -2656,9 +2693,20 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.actor,
         "tacsim.space",
         format!(
-            "Timed burn engaged: ({ax_mps2}, {ay_mps2}, {az_mps2}) m/s² for {dur_ic_s}s (Δv={dv_mps} m/s, burned {burn_kg} kg, {after_kg} kg remaining; standing order `{}` rev {}).",
+            "Timed burn engaged: ({:.3}, {:.3}, {:.3}) m/s² for {dur_ic_s}s (Δv={dv_mps} m/s, burned {burn_kg} kg, {after_kg} kg remaining; standing order `{}` rev {}).{}",
+            flown_mmps2[0] as f64 / 1_000.0,
+            flown_mmps2[1] as f64 / 1_000.0,
+            flown_mmps2[2] as f64 / 1_000.0,
             order.channel().token(),
-            order.revision()
+            order.revision(),
+            if flown_mag_mmps2 < asked_mag_mmps2 {
+                format!(
+                    " The drive is rated {:.3} m/s² at this mass; the burn flies at that.",
+                    rated_mmps2 as f64 / 1_000.0
+                )
+            } else {
+                String::new()
+            }
         ),
     );
     Ok(())
@@ -2806,7 +2854,8 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map_err(|e| CmdError::msg(e.to_string()))?;
     let non_prop_payload = basis
         .payload
-        .saturating_sub(basis.tank.saturating_mul(1_000));
+        .saturating_sub(basis.tank.saturating_mul(1_000))
+        .saturating_add(towed_mass_kg(ctx.w, hull));
     let effective_payload = non_prop_payload.saturating_add(live_kg);
 
     // Check if the destination token explicitly names an orbital mining cluster (`ceres_halo`,
@@ -3242,7 +3291,8 @@ pub(crate) fn engage_port_autopilot(
         .map_err(|e| CmdError::msg(e.to_string()))?;
     let non_prop_payload = basis
         .payload
-        .saturating_sub(basis.tank.saturating_mul(1_000));
+        .saturating_sub(basis.tank.saturating_mul(1_000))
+        .saturating_add(towed_mass_kg(ctx.w, hull));
     let effective_payload = non_prop_payload.saturating_add(live_kg);
     let (target_place, port_label, dest_host, dest_def) = port;
     let (start_pos_km, start_vel_mps, prepaid_unflown_t) = if let Some(ff) = ctx
@@ -4066,7 +4116,8 @@ pub(crate) fn debit_hull_propellant_for_dv(
     let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
     let non_prop_payload = basis
         .payload
-        .saturating_sub(basis.tank.saturating_mul(1_000));
+        .saturating_sub(basis.tank.saturating_mul(1_000))
+        .saturating_add(towed_mass_kg(ctx.w, hull));
     let effective_payload = non_prop_payload.saturating_add(live_kg);
     let dv_u32 = u32::try_from(dv_mps).unwrap_or(u32::MAX);
     let burn_kg = crate::port::passage::burn_kg_for_dv(
@@ -5745,10 +5796,12 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // `SF.R25` (doc 35d §2 #3): a derelict let go before she is brought in is no longer in
         // the tug's custody, and the claim filed on that custody is withdrawn with it.
         let withdrawn = withdraw_undelivered_custody(ctx, hull, target)?;
+        let let_go_kg = towed_mass_kg(ctx.w, hull);
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.active_tows.remove(&hull);
             book.clamped_derelicts.remove(&hull);
         }
+        shift_bubble_tow_payload(ctx.w, hull, let_go_kg, false);
         let mut line = format!(
             "[SALVAGE] Tow line and collar clamp released from derelict #{}.",
             target.0
@@ -5909,12 +5962,21 @@ fn helm_tow(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tug_dry_mass_t,
         derelict_dry_mass_t,
     };
+    let already_towing = towed_mass_kg(ctx.w, hull) > 0;
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         book.active_tows.insert(hull, tow_record);
         if let Some(active) = book.active_for_hull_mut(hull) {
             active.set_approaching_derelict_for(hull, false);
             active.set_holding_for_salvage_for(hull, false);
         }
+    }
+    if !already_towing {
+        shift_bubble_tow_payload(
+            ctx.w,
+            hull,
+            u64::from(derelict_dry_mass_t).saturating_mul(1_000),
+            true,
+        );
     }
 
     let unfiled = !held

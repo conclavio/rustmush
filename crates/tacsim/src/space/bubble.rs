@@ -647,6 +647,15 @@ impl SpaceShipState {
         self.max_accel_mps2 = (accel_mps2.ceil() as i64).max(1);
     }
 
+    /// A drive's acceleration in mm/s² with `slow_pct` of it surviving (`SF.R28`, doc 35d §6.4):
+    /// `slow_pct` is the share left, `100` an unhurt drive, as [`Self::recompute_drive_accel`]
+    /// reads it. Never below 1 mm/s².
+    #[must_use]
+    pub fn slowed_accel_mmps2(full_mmps2: i64, slow_pct: u8) -> i64 {
+        let surviving = i64::from(slow_pct.clamp(1, 100));
+        (full_mmps2.saturating_mul(surviving) / 100).max(1)
+    }
+
     /// Recompute both mass-adjusted drive acceleration ([`Self::recompute_drive_accel`]) and
     /// rocket-equation [`Self::delta_v_mps`] from the hull's `UnitSpec` drive law (`SF.R20`).
     pub fn recompute_drive_kinematics(&mut self) {
@@ -982,11 +991,11 @@ impl SpaceShipState {
             }
         }
         if any_slow {
+            // `SF.R28` (doc 35d §6.4): Slow is the consequence, taken as the kernel takes it (the
+            // least surviving share). It no longer also raises `DriveDegraded`, which halved the
+            // drive a second time on every Slow.
             self.slow_pct = next_slow_pct;
             self.recompute_drive_accel();
-            if !self.crits.contains(&SubsystemCrit::DriveDegraded) {
-                self.crits.push(SubsystemCrit::DriveDegraded);
-            }
         }
         if disable_ship && self.status == HullStatus::Operational {
             self.status = HullStatus::DisabledDerelict {

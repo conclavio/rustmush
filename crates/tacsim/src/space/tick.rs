@@ -3207,13 +3207,22 @@ pub(crate) fn resolve_hull_prior_owner(
 }
 
 /// **The port base a delivery closes the black box at** (`SF.R19`; doc 41 cut RS.8): the host of
-/// the first lane port, else the domain's host; `None` when neither is a real object.
+/// the port the recovering hull is docked at (`SF.R28`, doc 35d §6.3), else the host of the first
+/// lane port, else the domain's host; `None` when none is a real object.
 #[must_use]
 pub(crate) fn resolve_nearest_port_base_obj(
     w: &World,
     domain: DomainId,
     recoverer_hull: ObjId,
 ) -> Option<ObjId> {
+    if let crate::port::ship::Berth::Docked { map, .. } =
+        crate::port::ship::berth_of(w, recoverer_hull)
+        && let Some(host) = map.host.map(ObjId)
+        && w.get(host).is_some()
+        && host != recoverer_hull
+    {
+        return Some(host);
+    }
     for (_, map) in crate::port::voyage::lane_ports(w) {
         if let Some(host_raw) = map.and_then(|m| m.host) {
             let host = ObjId(host_raw);
@@ -4546,6 +4555,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 &carrier_ship_id,
                 carrier_party,
             ) else {
+                release_uninterdicted_carrier(ctx, hull, cursor, now);
                 continue;
             };
             let initial_prop_kg = carrier_ship.propellant_kg;
@@ -4616,6 +4626,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
 
         let Some(active) = build_interdiction_bubble(ctx, hull, domain, cursor, dep_at, now.at)
         else {
+            release_uninterdicted_carrier(ctx, hull, cursor, now);
             continue;
         };
         let is_kirkwood_picket = active.picket.is_some();
@@ -4663,6 +4674,22 @@ fn interdicted_domain_for_journey(w: &World, journey: &CarrierJourney) -> Option
             !act.is_queued() && matches!(act.trigger(), PromotionTrigger::Interception)
         });
     active_interception.then_some(domain)
+}
+
+/// Let a carrier whose bubble could not be built fly on (`SF.R28`, doc 35d §6.3): her journey,
+/// promoted for the bubble, is resumed and the leg marked cleared, so she is neither left parked
+/// in `Promoted` nor promoted again on the next tick.
+fn release_uninterdicted_carrier(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, now: &ClockStamp) {
+    let _ = resume_carrier_journey(ctx, hull, now);
+    let cursor_now = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .and_then(|jb| jb.get(hull))
+        .map_or(cursor, CarrierJourney::cursor);
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.cleared_interdiction_legs.insert((hull, cursor));
+        book.cleared_interdiction_legs.insert((hull, cursor_now));
+    }
 }
 
 fn build_interdiction_bubble(
@@ -4855,17 +4882,15 @@ fn build_carrier_ship_state(
             [25_000, 0, 0],
         ) {
             Some(ship)
-        } else if let Some(unit) = mush_tactics::module::unit_of(ctx.w, hull) {
-            space_ship_from_tactical_unit(
-                unit,
-                carrier_ship_id,
-                callsign,
-                party,
-                [0, 0, 0],
-                [25_000, 0, 0],
-            )
-            .ok()
         } else {
+            // `SF.R28` (doc 35d §6.3): a unit that will not check out is deployed somewhere
+            // else. She gets no bubble; a copy flown without custody could take damage that is
+            // never written back. The caller lets the carrier fly on.
+            tracing::warn!(
+                hull = hull.0,
+                site = site_id,
+                "tacsim: a carrier's unit would not check out into the bubble; no bubble opened for her"
+            );
             None
         }
     } else {
@@ -4896,9 +4921,11 @@ fn build_carrier_ship_state(
                     || basis.tank.saturating_mul(1_000),
                     |l| l.effective_live_kg(basis.tank),
                 );
+            // `SF.R28` (doc 35d §2, §6.3): a derelict on the tow line is mass the drive pushes.
             let non_prop_payload = basis
                 .payload
-                .saturating_sub(basis.tank.saturating_mul(1_000));
+                .saturating_sub(basis.tank.saturating_mul(1_000))
+                .saturating_add(super::commands::towed_mass_kg(ctx.w, hull));
             let effective_payload = non_prop_payload.saturating_add(live_kg);
             ship.non_prop_payload_kg = non_prop_payload;
             ship.propellant_kg =
@@ -4910,13 +4937,10 @@ fn build_carrier_ship_state(
                 effective_payload,
             ) {
                 ship.max_accel_mmps2 = ((accel * 1_000.0).round() as i64).max(1);
-                if ship.slow_pct > 0 && ship.slow_pct < 100 {
-                    ship.max_accel_mmps2 = (ship
-                        .max_accel_mmps2
-                        .saturating_mul(i64::from(100_u8.saturating_sub(ship.slow_pct)))
-                        / 100)
-                        .max(1);
-                }
+                // `SF.R28` (doc 35d §6.4): `slow_pct` is the surviving share. This line read it
+                // as the share lost, so a hull at Slow 75 entered her next bubble at 25 %.
+                ship.max_accel_mmps2 =
+                    SpaceShipState::slowed_accel_mmps2(ship.max_accel_mmps2, ship.slow_pct);
                 ship.max_accel_mps2 = ship
                     .max_accel_mmps2
                     .saturating_add(999)

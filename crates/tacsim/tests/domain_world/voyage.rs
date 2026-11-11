@@ -4060,10 +4060,13 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         "guidance output: {guid_out}"
     );
 
-    // 2. Execute a timed burn at rated acceleration: `+helm/burn 1,0,0 400` (`1 m/s²` for `400 s` = `400 m/s` Δv).
+    // 2. Execute a timed burn: `+helm/burn 1,0,0 400`. Doc 35 cut SF.R28: a Dray is rated under
+    //    1 m/s² at this mass, so the burn flies at her rating for the 400 s and says so.
     let burn_out = run(&mut rig.tw, pilot_actor, "+helm/burn 1,0,0 400");
     assert!(
-        burn_out.contains("Timed burn engaged: (1, 0, 0) m/s² for 400s (Δv=400 m/s"),
+        burn_out.contains("Timed burn engaged: (0.")
+            && burn_out.contains("m/s² for 400s")
+            && burn_out.contains("the burn flies at that"),
         "burn output: {burn_out}"
     );
     let burn_submits = drain(&mut rig.tw);
@@ -5698,7 +5701,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
     );
     let burn_1s = run(&mut rig.tw, pilot, "+helm/burn 1,0,0 1 force");
     assert!(
-        burn_1s.contains("Timed burn engaged: (1, 0, 0) m/s² for 1s"),
+        burn_1s.contains("Timed burn engaged: (0.") && burn_1s.contains("m/s² for 1s"),
         "1s burn output: {burn_1s}"
     );
     // Advance exactly 1 wall second at rate 1 (`dt_ic_s == 1 == burn_remaining_ic_s`):
@@ -6255,16 +6258,32 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
     let dec_out = run(&mut rig.tw, pilot, "+helm/decouple");
     assert!(dec_out.contains("Decoupled from corridor leg"), "{dec_out}");
 
-    // 4. Verify `+helm/burn` rejects accelerations above the hull's rated drive acceleration (`1 m/s²`):
+    // 4. Doc 35 cut SF.R28: a `+helm/burn` asked above the drive's rating flies at the rating,
+    //    in mm/s² for the hull's mass (under 1 m/s² for a Dray; the rating was once rounded up to
+    //    a whole m/s², which let her burn at twice it):
     let over_rated = run(&mut rig.tw, pilot, "+helm/burn 2,0,0 10");
     assert!(
-        over_rated.contains("exceeds the hull drive's rated flip acceleration of 1 m/s²"),
-        "burn above rated drive acceleration refused: {over_rated}"
+        over_rated.contains("Timed burn engaged: (0.")
+            && over_rated.contains("The drive is rated 0.")
+            && over_rated.contains("the burn flies at that"),
+        "a burn above the drive's rating flies at the rating: {over_rated}"
     );
 
     // And verify a burn away from the nearest port evaluates `RETURN_RESERVE` at the post-burn `(pos, vel)`
     // and warns before exhausting return propellant:
-    let warn_away = run(&mut rig.tw, pilot, "+helm/burn -1,0,0 86400");
+    // Doc 35 cut SF.R28: at her true rating one day's burn leaves the reserve whole, so she
+    // orders day-long burns away until one would eat into it; that one is refused with the
+    // warning. (Each order replaces the last timed burn; no time passes between them.)
+    let mut warn_away = String::new();
+    for _ in 0..8 {
+        warn_away = run(&mut rig.tw, pilot, "+helm/burn -1,0,0 86400");
+        if warn_away.contains("RETURN_RESERVE warning") {
+            break;
+        }
+        for s in drain(&mut rig.tw) {
+            land(&mut rig, &s).expect("the away burn lands");
+        }
+    }
     assert!(
         warn_away.contains("RETURN_RESERVE warning"),
         "burn away from port triggers post-burn RETURN_RESERVE warning: {warn_away}"
@@ -9305,6 +9324,27 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
             )),
         "port delivery must append EpochClosedInBay to the derelict's black box"
     );
+    // Doc 35 cut SF.R28 (doc 35d §6.3): the base the epoch closed at is the port she was
+    // brought into, Stickney, not the lane's first port.
+    let stickney_host = ObjId(
+        port_map(&rig.tw, "stickney_port")
+            .host
+            .expect("Stickney's host"),
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::field_ops::SalvageClaimBook>()
+            .unwrap()
+            .black_box_tape_for_hull(raider_hull)
+            .iter()
+            .any(|e| matches!(
+                e,
+                tacsim::field_ops::BlackBoxFlightEntry::EpochClosedInBay { base, .. }
+                    if *base == stickney_host
+            )),
+        "the delivery's base is the port the tug docked at"
+    );
 
     // `+salvage`, `/inspect`, `/report` and `/contest` work on the space custody.
     let salvage_list = run(&mut rig.tw, pilot_a, "+salvage");
@@ -9970,6 +10010,14 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
         (slow_test_ship.slow_pct, slow_test_ship.rated_accel_mg),
         (slow_after_first, accel_after_first),
         "Slow consequence must take min(current_slow_pct, 75) via arena::damage::apply_slow_consequence without compounding"
+    );
+    // Doc 35 cut SF.R28 (doc 35d §6.4): a hull with a Slow keeps the surviving share of her
+    // drive at her next bubble; the entry read it as the share lost.
+    assert!(slow_after_first < 100, "the Hold hit left a Slow");
+    assert_eq!(
+        tacsim::space::SpaceShipState::slowed_accel_mmps2(1_000, slow_after_first),
+        10 * i64::from(slow_after_first),
+        "the bubble entry keeps slow_pct of the drive, not 100 - slow_pct"
     );
 }
 
@@ -11693,10 +11741,26 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         clamp.contains("collar seal confirmed on derelict Belt Raider"),
         "{clamp}"
     );
+    // Doc 35 cut SF.R28 (doc 35d §2, §6.3): a derelict on the line is mass the tug's drive pushes.
+    let tug_accel = |rig: &Rig| {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .unwrap();
+        let active = book.active_for_hull(hull_a).expect("the tug's bubble");
+        active.bubble.ships[active.carrier_ship_id_for(hull_a)].max_accel_mmps2
+    };
+    let accel_free = tug_accel(&rig);
     let tow = run(&mut rig.tw, pilot_a, "+helm/tow");
     assert!(
         tow.contains("You file a salvage claim on the Belt Raider"),
         "{tow}"
+    );
+    let accel_towing = tug_accel(&rig);
+    assert!(
+        accel_towing < accel_free,
+        "the tug is slower with the derelict on her line ({accel_free} then {accel_towing} mm/s²)"
     );
     let (contract, deadline_real_s) = {
         let book = rig
@@ -11721,6 +11785,11 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
     assert!(
         release.contains(tacsim::space::commands::TOW_RELEASE_WITHDRAWS.trim()),
         "{release}"
+    );
+    assert_eq!(
+        tug_accel(&rig),
+        accel_free,
+        "and gets her acceleration back when she lets go"
     );
 
     // --- E. A docking session holds the docking hull, not the bubble ------------------------
