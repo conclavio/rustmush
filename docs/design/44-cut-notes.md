@@ -81,10 +81,6 @@ Not built.
 
 Not built.
 
-## MW.17b
-
-Not built.
-
 ## MW.18
 
 Not built.
@@ -110,5 +106,9 @@ Not built.
 Not built.
 
 ## MW.24
+
+Not built.
+
+## MW.17b
 
 Not built.
