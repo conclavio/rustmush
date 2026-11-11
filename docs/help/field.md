@@ -118,6 +118,14 @@ party fired on a standing Friend is offered the void: `+field/void` within ten
 IC minutes, or before the leader's next command, drops that change. Fire on
 anyone else stands.
 
+A leader who is not connected when the field settles does not lose the offer.
+It waits for them: at their next login they read "While you were away your
+party's fire on a friend cost standing: 1 change(s) wait on you. +field/void
+cancels them, until your next command or ten IC minutes." The ten IC minutes
+run from that login. Let it pass and log in again, and it is offered again.
+28 IC days after the field settled it is gone, taken or not. Standing itself
+moves the same whether or not the leader was there.
+
 Relations decide what a hired pilot's doctrine targets and how your cockpit shows a
 contact. They never stop a shot: you can fire on anyone you hold a lock on. A
 lock on a Friend reads `(FRIENDLY)`.

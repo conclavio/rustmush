@@ -55,6 +55,8 @@ mod escort_lease;
 mod excursions;
 #[path = "domain_field/field_ap1.rs"]
 mod field_ap1;
+#[path = "domain_field/field_ap2.rs"]
+mod field_ap2;
 #[path = "domain_field/field_boarding.rs"]
 mod field_boarding;
 #[path = "domain_field/field_carrier.rs"]

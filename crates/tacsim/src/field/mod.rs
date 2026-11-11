@@ -339,6 +339,13 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Doc 40 cut FR.5 (Q-40-5): the orders a damaged carrier relay holds back.
     reg.state(orders::RelayLate::default());
     reg.state(home::Asked::default());
+    // Doc 45 cut AP.2 (Q-45-20): a friendly-fire void offered to a leader who was away runs from
+    // their return.
+    reg.state(standing::Returned::default());
+    reg.hook(
+        mush_core::HookPoint::Connected,
+        Arc::new(standing::LeaderReturns),
+    );
     // Doc 23 cut S.4b-T (D-23-19): the earned-contacts index this host feeds and the quirk
     // claim reads.
     reg.state(crate::minds::earned_contacts::EarnedContacts::default());
