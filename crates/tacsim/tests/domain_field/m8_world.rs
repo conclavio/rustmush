@@ -2722,11 +2722,12 @@ fn claimed_recover(world: &mut M8World, n: usize, open: mush_core::CommitToken) 
 ///    it (the book's row closed, no active claim);
 /// 5. **a hull the pilot has no authority over**: staff title the first rig to the Meridiani
 ///    House. The pilot, granted to fly the Coprates House's licence, holds no office with
-///    Meridiani: the `go` is refused by name, with the hull's and the House's, nothing filed;
+///    Meridiani: the `go` is refused by D-23-22's sentence, naming the rig, nothing filed;
 /// 6. **a House's licence on a House's hull**: staff title the second rig to the Coprates
 ///    House. The pilot's `go` under the House's owner licence (`org=Coprates`) opens the claim
 ///    in the bay and launches; the open line names the House the holder with the pilot acting;
-///    the recover closes it, and a plain launch afterwards is not held by the spent cursor.
+///    the server restarts with that claim open and the claim history's audit admits it; the
+///    recover closes it, and a plain launch afterwards is not held by the spent cursor.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
 #[allow(clippy::too_many_lines)]
@@ -2854,15 +2855,12 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
     }
     let refused = crate::ic_sortie_surface::start_refusal(&mut world.rig, pilot, &pin(2))
         .expect("the second rig is refused while the Pin changes hands");
-    assert!(
-        refused.contains(
-            &tacsim::surface::dispatch::MIND_PENDING
-                .replace("{mind}", coprates.source_name.as_str())
-        ),
-        "{refused}"
-    );
+    // The pending sentence, after the mind's name (the licence's own, whatever the counter
+    // calls the line).
+    let pending = tacsim::surface::dispatch::MIND_PENDING.replace("{mind}", "");
+    assert!(refused.contains(pending.as_str()), "{refused}");
     nothing_filed(&mut world, second);
-    eprintln!("M8G_STORY phase=s4c.pending event=complete");
+    eprintln!("M8G_STORY phase=s4c.pending event=complete: {refused}");
 
     // 4. Home: the epoch closes and the claim's Close lands.
     claimed_recover(&mut world, 1, open);
@@ -2890,15 +2888,12 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
     let mark = world.rig.tw.world().get(tv).expect("the rig").name.clone();
     let refused = crate::ic_sortie_surface::start_refusal(&mut world.rig, pilot, &house(1))
         .expect("a hull with no title, lease or office is refused");
-    assert!(
-        refused.contains(&format!("{mark} is "))
-            && refused.contains("Meridiani")
-            && refused.contains(
-                "a licensed mind flies a hull titled to you, leased to you, or held by an \
-                 organisation you act for"
-            ),
-        "{refused}"
-    );
+    // The sentence names the rig and its title's holder as a player reads one: a House is no
+    // lane organisation, so it is "an organization" (`port::claims::holder_name`).
+    let sentence = tacsim::surface::dispatch::MIND_UNTITLED
+        .replace("{mark}", mark.as_str())
+        .replace("{owner}", "an organization");
+    assert!(refused.contains(sentence.as_str()), "{refused}");
     nothing_filed(&mut world, tv);
     eprintln!("M8G_STORY phase=s4c.refused event=complete");
 
@@ -2929,6 +2924,18 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         facts.seal_digest,
         tacsim::surface::black_box::SealFacts::of(&seal, SealLicenceState::Active).seal_digest,
         "one seal: the claim's"
+    );
+    // A restart with the House's claim open: the claim history's audit admits a House
+    // charter's claim dispatched by a character acting for the House (the audit runs at boot),
+    // and the claim is still the rig's.
+    let mut world = world.reboot();
+    assert_eq!(
+        tacsim::ic_claim_of(world.rig.tw.world(), second),
+        tacsim::IcClaimRead::Active {
+            open,
+            dispatcher: pilot,
+        },
+        "the House's claim survives a restart"
     );
     claimed_recover(&mut world, 2, open);
     let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/2 launch go");

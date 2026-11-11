@@ -1762,7 +1762,10 @@ stand in for any of the three, as they never stand in for title.
 
 A character with none of the three is refused. At `go` the sentence names the hull and the
 holder of its title: "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you,
-leased to you, or held by an organisation you act for." In the Roll the Open is refused.
+leased to you, or held by an organisation you act for." The holder is named as the port's
+other sentences name one (`port::claims::holder_name`): a character by name, an organisation
+the lane authors by its name, any other organisation as "an organization". In the Roll the
+Open is refused.
 
 ### 18.2 One rule, two readers
 

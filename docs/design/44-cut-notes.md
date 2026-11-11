@@ -36,7 +36,12 @@ with MW.22 below as one change: the owner ruled that neither reaches main withou
 
 **Tests.** Fast, on the production composition (`domain_field::m8_world`):
 `m8g_the_combined_world_boots_active` now asserts the claim path is composed, and every M8
-world asserts, at its own `Initialize` boot, that none is composed there. The acceptance stories are `#[ignore]`d (each takes a genuine Registry rating) and run on
+world asserts, at its own `Initialize` boot, that none is composed there. **The server's own
+boot shows it too**: `mush-server`'s player-market tests boot the server's module list from a
+launch document (`game_modules` with `[tacsim.minds].launch_path`), and their pinned count of
+read services and grants rose from 41/44 to 42/45, which is the claim path's admission reader
+and TacSim's grant to it (`player_market_commands.rs`, `player_market_typed.rs`; the same pin
+in `tacsim`'s `hardware::flow::launch` rose from 40/43 to 41/44; the caps are 64/64). The acceptance stories are `#[ignore]`d (each takes a genuine Registry rating) and run on
 the CI dispatch: `s4b3_a_licensed_mind_flies_a_field_at_256` and `_at_512` (a filed mind on a
 rig its pilot holds title to opens a claim, is admitted to a field under its own seal and card,
 and the one seat refuses the second rig), and
@@ -62,10 +67,10 @@ step 3 is the launch refused while the licence's resale is pending). Results are
   claim's own seal, mind and card and not the ROM's, with no drop and no fault. No story flies
   two different filed minds on one rig and compares what it did; MW.7's filed-mind story is the
   first that flies a mind written to behave differently.
-- **A boot of `mushd` itself with an Active `launch_path`.** `check_config` prepares the launch
-  composition from a document (`split_boundary::boot_parity`), and the M8 world boots what
-  `prepare` returns, but no test boots the server binary's own module list over an Active
-  launch and launches a rig. MW.1's bring-up is where that is first done.
+- **A rig launched on a world the server binary booted.** `mush-server`'s tests boot its own
+  module list over an Active launch and count the claim path's reader, and the M8 world flies
+  rigs on what `prepare` returns, but no one test does both. MW.1's bring-up is where a rig is
+  first launched on a box.
 - **A definition-set change at deploy.** The claim path adds its owners' definitions to an
   Active launch's manifest, so a store written by an earlier build does not boot under this
   one. The dev boxes are wiped at every step; nothing migrates.
@@ -301,9 +306,10 @@ dispatch (doc 44 §7.1, Q-44-39; second review, §4c row 2). The design note is 
   leased rig, the claim opening in the bay and the open line carrying the claim's seal; (2) the
   one seat refuses the second leased rig; (3) with the Pin's resale accepted while that claim
   is open, the second rig is refused by the pending sentence; (4) the recover lands the Close;
-  (5) on a rig titled to a House she holds no office with, she is refused by name; (6) on a rig
-  titled to the Coprates House she flies the House's own owner licence, the House the holder
-  and she the acting principal, and it closes at home.
+  (5) on a rig titled to a House she holds no office with, she is refused by the sentence,
+  naming the rig; (6) on a rig titled to the Coprates House she flies the House's own owner
+  licence, the House the holder and she the acting principal, the server restarts with that
+  claim open, and it closes at home.
 - Doc 17h's stories with the claim path composed, on the CI dispatch:
   `m8g_story_tier2_held_minds_seal_aboard`,
   `m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap` and
@@ -324,6 +330,11 @@ RESULTS_PLACEHOLDER
 - **The fence is asked as a read.** `roll.holder.org` is amount-bearing; flying a hull moves no
   money, so a grant with a spending limit admits (M8f's P2a ruling). An organisation's licence
   itself is still asked the way M8c built it.
+- **A House is "an organization" in the refusal.** The sentence names the title's holder with
+  the port's own helper (`port::claims::holder_name`), which names a character and a lane
+  organisation (Occator) and calls any other organisation "an organization". So a pilot refused
+  on a House's hull reads "OWP-TV-01 is an organization's hull; ...": the rig is named, the
+  House is not. Naming it means deciding which organisations a player may be told the name of.
 
 **Defaults that would be a significant change to undo.**
 
