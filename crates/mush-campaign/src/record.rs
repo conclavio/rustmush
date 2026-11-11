@@ -702,6 +702,10 @@ pub struct OperationRuntime {
     /// never freezes the lane, so one operation's wall of refusals cannot starve
     /// another's fan-out (08c §5.2 B4's shape).
     pub attempts: BTreeMap<SmolStr, u32>,
+    /// **Whether the notice has been pushed to the eligible defenders** (doc 45 cut AP.1;
+    /// [`crate::notice`]). Set once, by the tick, in the batch that makes the push, so a
+    /// restart never tells a defender twice.
+    pub noticed: bool,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -755,6 +759,7 @@ impl OperationRuntime {
             paused: None,
             abandoned: false,
             attempts: BTreeMap::new(),
+            noticed: false,
             revision: 1,
         }
     }
@@ -885,6 +890,8 @@ struct OperationRuntimeWire {
     abandoned: bool,
     #[serde(default)]
     attempts: BTreeMap<SmolStr, u32>,
+    #[serde(default)]
+    noticed: bool,
     revision: u64,
 }
 
@@ -947,6 +954,7 @@ impl TryFrom<OperationRuntimeWire> for OperationRuntime {
             paused: w.paused,
             abandoned: w.abandoned,
             attempts: w.attempts,
+            noticed: w.noticed,
             revision: w.revision,
         };
         runtime.check()?;
@@ -990,6 +998,7 @@ impl From<OperationRuntime> for OperationRuntimeWire {
             paused: r.paused.clone(),
             abandoned: r.abandoned,
             attempts: r.attempts.clone(),
+            noticed: r.noticed,
             revision: r.revision,
         }
     }

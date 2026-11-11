@@ -1570,23 +1570,42 @@ fn tell(ctx: &mut Ctx<'_>, site: &CanonicalId, to: &[ObjId], subject: &str, body
     if to.is_empty() {
         return;
     }
-    let mail = ctx
-        .w
-        .module_state::<ClaimMail>()
-        .and_then(|slot| slot.0.clone());
-    if let Some(mail) = mail {
-        let from = clerk_of(ctx.w, site).unwrap_or(ctx.actor);
-        // One letter each (doc 41 Q-41-28): a house agent the post refuses never costs the
-        // others theirs.
-        for who in to {
-            if let Err(error) = mail(ctx, from, std::slice::from_ref(who), subject, body) {
-                tracing::warn!(%error, to = who.0, "tacsim: a salvage claim's notice was not mailed");
-            }
-        }
+    // One letter each (doc 41 Q-41-28): a house agent the post refuses never costs the
+    // others theirs.
+    for who in to {
+        let _ = letter(ctx, site, *who, subject, body);
     }
     for who in to {
         ctx.out
             .sys_to_actor(*who, "tacsim.salvage", body.to_owned());
+    }
+}
+
+/// **One letter to `who` under the site's name** (Q-36-25; doc 45 cut AP.1): the IC mail half of
+/// a notice, through the hook the server installs ([`install_claim_mail`]), from the site's clerk
+/// (else the actor). `false` on a world without mail and for a letter the post refused, which is
+/// logged; the caller's own line still tells them.
+pub(crate) fn letter(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    who: ObjId,
+    subject: &str,
+    body: &str,
+) -> bool {
+    let Some(mail) = ctx
+        .w
+        .module_state::<ClaimMail>()
+        .and_then(|slot| slot.0.clone())
+    else {
+        return false;
+    };
+    let from = clerk_of(ctx.w, site).unwrap_or(ctx.actor);
+    match mail(ctx, from, std::slice::from_ref(&who), subject, body) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, to = who.0, "tacsim: a site's letter was not mailed");
+            false
+        }
     }
 }
 

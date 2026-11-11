@@ -16,6 +16,7 @@
 )]
 
 pub mod campaign_formations;
+pub mod campaign_notice;
 pub mod mail_transport;
 
 use std::sync::Arc;
@@ -427,7 +428,9 @@ fn compose_server_modules<E>(
                     self::campaign_formations::TacsimFormationAuthority,
                 ))
                 .with_seat_audit(Arc::new(self::seat_audit::SeatAuditLog::new()))
-                .with_recovery(recovery),
+                .with_recovery(recovery)
+                // Doc 45 cut AP.1: an operation's notice, queued and mailed.
+                .with_defender_notice(self::campaign_notice::defender_notice()),
         ),
         Box::new(mush_mail::MailModule.with_transport(Arc::new(mail_transport::MailTransport))),
         Box::new(mush_jobs::JobsModule::new()),

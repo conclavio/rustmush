@@ -57,6 +57,7 @@ pub mod commands;
 pub mod facts;
 pub mod formation;
 pub mod ids;
+pub mod notice;
 pub mod record;
 pub mod recovery;
 pub mod recoverycmd;
@@ -84,6 +85,9 @@ pub use formation::{
     MAX_FORMATIONS_PER_OPERATION, Qualification, RoleSpec, Strictness,
 };
 pub use ids::{FormationId, OperationId, formation_key, operation_key};
+pub use notice::{
+    DEFENDER_NOTICE, DEFENDER_SUBJECT, DefenderLetter, DefenderNotice, DefenderNoticeFn,
+};
 pub use record::{
     AudienceSpec, Bond, Consequence, ConsumerId, MAX_CONSUMER_ATTEMPTS, MAX_LABEL_BYTES,
     MAX_LEGAL_TARGETS, MAX_OBJECTIVE_BYTES, MAX_OPERATION_PARTICIPANTS, MAX_OUTCOME_NAME_BYTES,
@@ -140,6 +144,9 @@ pub struct CampaignModule {
     /// (E5c deviation 1), which is also what keeps the rule-1 allowlist tripwire able
     /// to see the verb in a default composition.
     recovery: Option<recovery::RecoveryConfig>,
+    /// **Doc 45 cut AP.1** — how an operation's notice reaches its eligible defenders
+    /// ([`notice`]). `None` says the line to a connected defender and keeps nothing.
+    defender_notice: Option<Arc<DefenderNoticeFn>>,
 }
 
 impl CampaignModule {
@@ -173,6 +180,17 @@ impl CampaignModule {
     #[must_use]
     pub fn with_recovery(mut self, cfg: recovery::RecoveryConfig) -> CampaignModule {
         self.recovery = Some(cfg);
+        self
+    }
+
+    /// **The composition seam an operation's notice leaves through** (doc 45 cut AP.1;
+    /// Q-45-15, Q-45-17), on [`CampaignModule::with_formation_kinds`]' shape: the composition
+    /// root's function queues the line for a defender who is not connected and posts the
+    /// letter, so `mush-campaign` takes no edge to a mail module, to the reconnect queue or to
+    /// any field host.
+    #[must_use]
+    pub fn with_defender_notice(mut self, post: Arc<DefenderNoticeFn>) -> CampaignModule {
+        self.defender_notice = Some(post);
         self
     }
 
@@ -219,6 +237,12 @@ impl GameModule for CampaignModule {
         reg.state(match self.seat_audit.clone() {
             Some(audit) => seatstate::SeatAuditHolder::new(audit),
             None => seatstate::SeatAuditHolder::unwired(),
+        });
+        // Doc 45 cut AP.1: the notice's way out, carried in world state so the tick reaches
+        // it. Unwired, a connected defender is told and nothing is queued or mailed.
+        reg.state(match self.defender_notice.clone() {
+            Some(post) => DefenderNotice::new(post),
+            None => DefenderNotice::default(),
         });
         // E7r1 R3: `@recovery`, in its own classified group (K8.5), and the module
         // default restored after it.

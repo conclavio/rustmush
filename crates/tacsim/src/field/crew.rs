@@ -1068,14 +1068,13 @@ pub(crate) fn captured_loaded(ctx: &mut Ctx<'_>, load: &LoadCapture<'_>) -> Vec<
         vacate_seat(ctx, who, load.casualty);
         step_into(ctx, who, load.room);
         put(ctx, capture(&record, load.carrier, load.captor, now));
-        ctx.out.sys_to_actor(
-            who,
-            "tacsim.field",
-            CAPTURED
-                .replace("{name}", &name)
-                .replace("{carrier}", &carrier)
-                .replace("{captor}", &captor),
-        );
+        // Doc 45 cut AP.1 (Q-45-21): said as ever, queued for a captive who is not connected,
+        // and sent by IC mail, so a player taken while away reads it on return.
+        let line = CAPTURED
+            .replace("{name}", &name)
+            .replace("{carrier}", &carrier)
+            .replace("{captor}", &captor);
+        super::notice::captured(ctx, load.site, who, &line);
         capture_standing(ctx, load, who);
         taken.push(who);
     }
