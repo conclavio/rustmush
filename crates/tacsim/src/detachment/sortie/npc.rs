@@ -130,7 +130,38 @@ fn visit(
     };
     let now = ctx.w.world_ic_now().at;
     let sequence = delivered.order.sequence;
-    let valid = delivered.completed_at_ms.is_none()
+    // Doc 45 unit AP.8 (Q-45-13): an order that lapsed with its leader's absence admits no new
+    // work. Inside a running field the unit stands in its place; on open ground it stops.
+    let lapse = orders.lapse_of(slot, sequence);
+    if let Some(lapse) = lapse
+        && let Some(site) = crate::field::field_of_unit(ctx.w, unit)
+    {
+        // An order issued before the lapse and still in flight to this slot carries a lower
+        // sequence than the stand: taking the stand first would have the field refuse that
+        // order when it arrives. The unit waits for it to arrive or be withdrawn, and flies the
+        // lapsed order meanwhile. Every write that saves the roster records the lapse before
+        // it admits an order, so this is only an order the absent leader left in flight, which
+        // the next poll withdraws.
+        if book
+            .pending(slot)
+            .is_some_and(|pending| pending.sequence < lapse.stand)
+        {
+            return Step::Idle;
+        }
+        return match crate::field::orders::stand(
+            ctx,
+            &site,
+            (unit, actor),
+            &roster,
+            &delivered,
+            (lapse.stand, lapse.answer),
+        ) {
+            crate::field::orders::Step::Waiting => Step::Held,
+            _ => Step::Idle,
+        };
+    }
+    let valid = lapse.is_none()
+        && delivered.completed_at_ms.is_none()
         && delivered.order.expires_at_ms.is_none_or(|end| {
             u64::try_from(now)
                 .ok()

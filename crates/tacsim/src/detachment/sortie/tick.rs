@@ -111,7 +111,7 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         // The same bounded flight index discovers active operations. A refresh
         // never moves a unit and retains no second roster/location registry.
         if flight.phase == Phase::Field && operations.insert(op.id) {
-            if super::field_orders::needs_poll(ctx.w, &op)
+            if super::field_orders::needs_poll(ctx.w, &mut &*ctx, &h, &op)
                 && let Ok(request) = super::field_orders::request(
                     ctx,
                     &h,

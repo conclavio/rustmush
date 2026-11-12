@@ -470,7 +470,220 @@ Not built.
 
 ## AP.8
 
-Not built.
+A detachment whose leader is gone (doc 45 §7.1; Q-45-13; doc 44 Q-44-18, Q-44-38, Q-44-43,
+Q-44-44, Q-44-46). PR #557. Built on MW.7's presence record and MW.14a's commander.
+
+**Built.**
+
+- **The rule, in one place** (`crates/tacsim/src/field/orders.rs`). `presses` says which orders
+  carry an attack forward: an `ENGAGE` and an `ADVANCE`, and no other. `lapses` is the rule: a
+  delivered order lapses when it presses, a player gave it, and the field has that player gone
+  from the unit they gave it from (`gone_from_field`: MW.7's record on that unit reads
+  `handed`, or the unit is out at its ramp with its recover still owed). So the clock is
+  MW.7's and no other: five wall minutes after a lost link, at once on a clean quit
+  (Q-44-46), at once for a pilot who is knocked out (Q-44-43). An NPC leader's order never
+  lapses this way.
+- **The roster's succession reads the same record** (`presence`, read by
+  `crates/tacsim/src/detachment/sortie/field.rs`, `reconcile`). While a running field holds a
+  player's unit, the field's record says whether they are here, waited for or gone, and the
+  session's facts are read only where the field keeps no record. Before this a player whose
+  unit had passed to its mind went on leading for as long as the server kept their session.
+- **The lapse is written once, into the roster's order history**
+  (`detachment/sortie/field_orders.rs`: `Lapse`, `FieldOrders::lapsed`, `lapsing`, `lapse_due`;
+  `detachment/sortie/prepare.rs`). Every write that saves the roster records the lapses that
+  are due in the same write: an order's poll, an issue, a reply and a refresh. So no write
+  makes somebody else the leader and leaves the absent leader's attack running. The flight
+  tick's poll runs when a lapse is due and nothing else has (`needs_poll`). The record
+  survives a restart and the leader's return, and goes only when another order is delivered to
+  the slot. Only an order a hired NPC is carrying out on its current field flight lapses: a
+  player recipient's order is advice, an order from an earlier flight binds nothing, and an
+  order the recipient answered NEGATIVE was never flown.
+- **Two reserved sequences** (`crates/mush-tactics/src/detachment/orders.rs`,
+  `OrderBook::reserve_sequence`). The field's kernel fences a hull's orders by sequence, so
+  the stand a unit takes in place of a lapsed order needs numbers above every order issued
+  before the lapse and below every order issued after it. The history takes two from the
+  order book when it records the lapse. Before an issue or a reply, so a new leader's order is
+  above them; after a poll's deliveries, so an order the poll replaces is not lapsed first.
+- **What the unit does** (`field/orders.rs`, `stand`, called from the NPC walk in
+  `detachment/sortie/npc.rs`). First it holds: a `HOLD` under the first number. It stops where
+  it is, takes no target and fires nothing, whoever its leader marked Hostile. Then it
+  answers: once its own frame shows a hit on its own hull that it did not show when the hold
+  was taken, a `SCREEN` under the second number, facing the nearest contact its own frame
+  holds Hostile. It stays on its cell and fires on a Hostile in the screen's arc and its
+  reach, until a leader orders it otherwise. A `HOLD FIRE` on the lapsed order is kept through
+  both (Q-44-18), so such a unit never answers. The stand is the crew's own act: it waits on
+  no relay, is answered to nobody, and is issued by the unit's own operator from its own
+  unit. The host decides on the unit's own frame only. An offer the kernel did not take is
+  made again after the window any order has to stand.
+- **A successor's order replaces the stand.** The compiled commander treats a lapsed order as
+  not standing (`detachment/sortie/commander.rs`, `owes`), so its posture is sent even when it
+  reads the same as the order that lapsed; a player who leads next types an order as usual.
+- **The leader is told** (`detachment/sortie/runtime.rs`, `tell_lapses`, at the submission of
+  the write that records the lapse). The leader who gave the order reads `ORDER_LAPSED` on the
+  reconnect queue at trip level (`port_tick::notify_budget`, the queue AP.1's notices use);
+  the roster's leader after the write, when that is another player, hears
+  `ORDER_LAPSED_LEAD`. `+sortie/orders` marks a lapsed order in the issuer's list
+  (`ORDER_LAPSED_STATUS`) and in the recipient's own (`ORDER_LAPSED_OWN`).
+- `docs/help/detachments.md` and `docs/help/field.md` say all of it. Doc 45's AP.8 row and
+  §7.3 name the files as built.
+
+**Settled from the code** (the four questions the unit was given).
+
+- **A leader who is connected but out of the field** (aboard the carrier, in another room) is
+  not absent, and their order stands. They stop leading at once, because the roster's leader
+  must control a unit on its field flight, and that was already so. They can come back and
+  lead, and they chose to step away with the order standing.
+- **A clean QUIT lapses the order at once.** One rule: the order lapses when its leader's
+  unit passes to its mind, and a quit hands the unit over at once (Q-44-46).
+- **An order mid-execution** stops where it is. A unit that was closing stops on the cell it
+  has reached and does not finish the approach; rounds already in the air land.
+- **A returning leader finds the order still lapsed.** They are told at login, the order
+  report says so, and the unit holds until they give the order again, which is then an order
+  like any other. They lead again once they hold their unit's console.
+
+**Tests.** In-source: the presence rule's arms and what presses (`field::orders`); a reserved
+sequence between two orders, across a checkpoint (`mush_tactics::detachment::orders`); the
+order of succession, a leader who is waited for, then the next player, then the commander
+(`mush_tactics::detachment::roster`). Stories in `domain_field`
+(`crates/tacsim/tests/domain_field/field_ap8.rs`), each a field of three parties flown with
+`roster_rig::fly`:
+
+- `ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit`. A captain leads a
+  combat roster with Rook Adeyemi in an armed rig, marks the intruder Hostile and orders
+  `2 ENGAGE`; Adeyemi fires on the intruder. The link is lost and the server goes on keeping
+  the session. Half a minute short of five minutes the captain still leads and the order
+  stands. At five minutes the rig passes to its mind, the lead passes with the session still
+  there, the order lapses and the tank holds: no round in fourteen seconds, on the same cell.
+  The third party's hull, which nobody has fired on, fires on it; after a round hits, the
+  tank fires again, from a screen, on the same cell. The captain reads the lapse at login
+  and in `+sortie/orders`, and it is still lapsed after their return.
+- `ap8_the_npc_commander_replaces_a_lapsed_advance`. The captain orders Okonkwo, the plan's
+  commander, to a cell of their choosing and quits. She leads, and her own ADVANCE to the
+  work point is delivered and stands; its sequence is three past the captain's, which is the
+  lapse's two numbers taken first.
+- `ap8_a_hold_the_leader_left_is_still_held`. `2 HOLD`, a quit, four hundred seconds: the
+  same order, the same order row on the rig, no lapse, nobody told.
+- `ap8_a_restart_keeps_the_clock_and_the_lapse`. The link is lost, the server restarts a
+  hundred seconds in, the order still stands; it lapses five minutes after the loss with
+  less than five minutes since the boot. A second restart finds it lapsed and the rig
+  holding, and offers the old order to nothing.
+- `ap8_a_lapsed_order_stays_lapsed_until_its_leader_gives_it_again`. A quit, the lapse, the
+  captain back while their rig is still in the field. They are told, take the focus and the
+  helm back, lead again, find the order lapsed and the rig holding, give the order again,
+  and it is delivered and obeyed.
+
+**Verified, and how** (Linux, conclav.dev, at the PR's head). The five stories pass, run
+twice, five at once and two at once. The whole `domain_field` binary passes (261 run, 11
+ignored), as do the tacsim library's tests (2,238) and `mush-tactics`' (73). Clippy is clean on
+every target of both crates, `cargo doc` is clean under `-D warnings`, `cargo fmt --check`
+passes on both, and `mush-contract-tests` passes with nothing re-blessed. Five mutations, each
+run against the five stories:
+
+| Mutation | What failed |
+|---|---|
+| Nothing lapses (`lapses` is false) | stories 1, 2, 4 and 5; the HOLD story passes |
+| The stand never answers a hit | story 1 only, at "the tank answers once it is hit" |
+| Every order presses, so a HOLD lapses too | the HOLD story only |
+| The roster's succession reads the session, as on main | story 1 only, at "the lead passed on the field's clock" |
+| The stand is never offered: the lapse is a record and nothing more | stories 1, 4 and 5; the commander's order still replaces it in story 2 |
+
+The stories cannot be compiled on main (they read `Lapse` and the lapse's lines), so the first
+row stands in for "fails on main today".
+
+**What doc 45 had wrong, or left out.**
+
+- **`detachment/live.rs` is the practice host.** The IC roster is hosted by
+  `detachment/sortie/` (`field.rs`, `field_orders.rs`, `prepare.rs`, `npc.rs`, `tick.rs`).
+  The practice host is untouched (Q-44-19).
+- **"Hold and defend under their doctrine" is not an order the doctrine has.** A `HOLD` parks
+  the unit and fires nothing, even under fire. With no order the doctrine closes on every
+  party its book holds Hostile, which is the attack running on. A `SCREEN` fires in an arc of
+  sixty degrees either side. Nothing stands and answers all round. Hence the two halves.
+- **Leadership did not follow MW.7's clock.** The roster read the session, so the lead
+  passed when the server's own grace ended, whatever the field had done with the unit.
+- **The session's end gives up the console.** Sim's disconnect hook releases a departing
+  player's focus and billet when their session ends, so the lead can pass before the field's
+  five minutes when the server's grace is shorter. The order's lapse still waits for the
+  field's clock. With the default server grace the two are the same five minutes. Seen in a
+  run of story 1 that ended the session a minute in (the lead passed at once, the order stood
+  until five minutes); the story as merged keeps the session, to pin the field's clock.
+- **A write that saved the roster did not have to be the poll.** An NPC's WILCO is a message
+  too, and it saved the new leader seconds before the flight tick's poll ran; the first
+  build recorded the lapse only in the poll and the commander issued over an order that had
+  not lapsed yet. Hence every write.
+- **No hired NPC can be seated in an armed rig.** `+sortie/seat` hands the helm over through
+  Sim's hand-off, which takes a console of exactly one channel (`mush_sim::handoff`,
+  `station_channel`), and the escort tank's one console carries the helm, the sensors and
+  the fire channel. Rook Adeyemi, hired under a combat contract, can therefore only fly a
+  prospector, which carries nothing that fires. **For the owner; not fixed here.**
+- **The field rig cannot restart a roster's world as it stands.** `driving_rig` keeps every
+  composed module write as typed action state, and a roster's journey lands comsys's channel
+  documents and the transport's envelopes, which are their modules' own. The restart story
+  hands those to the boot as module data. A rig fix would be `driving_rig::keep`'s.
+
+**Defaults taken.** None needs a refactor to undo unless it says so.
+
+- **The order lapses whoever leads next.** Q-45-13 reads "lapses ... and no other leader
+  takes over". Taken as: the absent leader's attack ends at the grace, and a successor's
+  orders stand in its place. The alternative, an ENGAGE that runs on under a new leader until
+  they change it, is one condition in `lapsing`.
+- **The clock is the field's only.** A leader who was never at the controls of a unit in a
+  running field (they recovered to the carrier and then quit, or no field was running) has no
+  record, and their orders stand. Reading the session there would lapse every such order at
+  each restart, when every session ends for a moment. AP.5, merged while this unit ran, gives
+  a record to a leader who is away in their seat when a field opens
+  (`Why::AwayAtAdmission`), and by the same rule their order lapses at admission. A leader
+  who is in no seat when they go is still without one: AP.7's.
+- **It answers a hit, not a near miss.** The unit's own frame carries its last hit and
+  nothing of a round that missed, and the host reads nothing else. MW.7's rule for a player's
+  unit counts a miss; that record is the kernel's.
+- **It answers in an arc, and not only the unit that hit it.** The screen faces the nearest
+  Hostile the unit's own frame holds when it is first hit, and fires on any Hostile in the
+  arc and in reach, a party its leader marked among them. A hit from behind is answered only
+  if a Hostile stands in front.
+- **Only hired NPC recipients lapse.** A player who was sent an ENGAGE still reads it.
+- **Told at submission, not at commit.** A write that is refused at its final take is made
+  again and tells nothing twice. A restart between the line and the commit tells it once
+  more. A leader who reconnects in the same instant is told of a lapse that then is not
+  written.
+- **The numbers are provisional**: none of this unit's own. The five minutes are MW.7's.
+
+**Not built, and where each lives.**
+
+- **A stand that answers all round, and only the unit that fired on it.** It needs an
+  objective the doctrine does not have and the arena's record of who fired on whom, which is
+  MW.7's gate. `stand` names the seam: swap the second half's objective. **AP.6**, which
+  builds what a `HOLD` posture needs.
+- **A lapse for a leader with no field record** (above): a leader in no seat. **AP.7**.
+- **A second player in the roster's units taking the lead before the commander, as a field
+  story.** A Dray-P bays two rigs, so a roster of two players has no room for the
+  commander's. The order is pinned on the roster (`mush_tactics`). A story needs a carrier
+  with three bays. **AP.11**, or whichever unit ships such a hull.
+- **An NPC crew in an armed rig by production commands** (the gap above). The story refits
+  the hired prospector by a staff hand.
+- **The practice simulator** (Q-44-19), **space** (AP.9), **a Rhai commander** (MW.14b).
+- **Open ground.** A delivered order is lapsed only for a unit on its field flight whose
+  leader the field has gone, which needs a running field. An `ADVANCE` on open ground is one
+  drive and an `ENGAGE` there is a mark, and neither is touched.
+
+**Not pinned by a story.** A lapse recorded by a refresh or by an issue (the stories reach it
+through a poll and a reply). The stand offered again after the kernel did not take it. A
+`HOLD FIRE` kept through a lapse. A leader knocked out while connected. The next player
+leader's line (`ORDER_LAPSED_LEAD`). A unit hit while holding across a restart (the boot takes
+the hit it finds as known, so only a later one is answered). A lapse while the clock is
+frozen (the flight tick does not run; it is written at the thaw). The lead passing back to a
+player whose unit went home while the server still keeps their session. A leader who is away
+when the field opens (AP.5's record, which this rule reads; AP.5's own stories fly no roster).
+
+**Reviewed.** A read-only review of the first commit by a second agent found one bug and
+eleven risks and nits. Fixed in the PR's second commit: a lapse was not tied to the
+recipient's current flight, so an order from an earlier flight could freeze a relaunched
+unit; the lead and the lapse were not one write; the stand was never offered again; the
+notice was computed apart from the write; the presence record was read without its pilot;
+the session was read where the field has no record, which would lapse orders at a restart;
+NEGATIVE-answered orders and player recipients lapsed; the stand's journal line named the
+absent leader. Left as recorded above: the hit across a restart, the frozen clock, the lead
+passing back.
 
 ## AP.9
 
