@@ -134,8 +134,10 @@ with no LLM and no change to the mind ABI.
   executor and the kernel's own checks (`field/orders.rs`, `arena/detachment.rs`, both
   unchanged). The order book is the commander's only memory, so a restart derives the same next
   order. The one thing kept in RAM is scheduling: an order just submitted to a slot is not
-  submitted again for `RESEND_AFTER_S` (60 IC seconds), so one refused at its final take is
-  retried at that pace and the commander's own hull flies its order meanwhile.
+  submitted again for `RESEND_AFTER_S` (60 wall seconds), and an attempt that submitted nothing
+  is not repeated for `RETRY_AFTER_S` (5), so one refused at its final take or answered NEGATIVE
+  is retried at that pace and the commander's own hull flies its order in the fires between.
+  Wall time, because at the live rate of 24:1 an IC minute is under three fires.
 - **What the commander sees** (`crates/tacsim/src/field/orders.rs`): `sight` reads the Hostile
   contacts off the last frame the NPC's own seat was sent; `lost` says a unit is lost in its
   field when its operator's own frame shows a wreck or the field's kernel has named it
@@ -168,7 +170,7 @@ posture (`detachment::commander`); each posture as the roster order a player typ
 (`mush_tactics::detachment::roster`, two tests). Stories in `domain_field`
 (`crates/tacsim/tests/domain_field/field_mw14a.rs`), each passing alone on Windows:
 
-- `mw14a_an_npc_led_detachment_advances_holds_and_withdraws` (74 s) and `…_at_512` (65 s). A
+- `mw14a_an_npc_led_detachment_advances_holds_and_withdraws` (108 s) and `…_at_512` (89 s). A
   captain hires Sana Okonkwo and Ilya Mendes, names Okonkwo the commander and launches both
   from aboard the carrier; no player is in the roster's units. An escort and an intruder stand
   on the ground and the escort's fire order promotes the site. With nobody typing an order:
@@ -177,12 +179,12 @@ posture (`detachment::commander`); each posture as the roster order a player typ
   does not arrive, and both hulls keep their ADVANCE; the jam is cleared and both hulls stand;
   the intruder destroys Okonkwo's rig, and Mendes leads under a new term, orders the withdrawal
   from his own unit and drives for the ramp.
-- `mw14a_a_returning_player_takes_the_lead` (27 s). A captain leads from rig 1 with Okonkwo,
+- `mw14a_a_returning_player_takes_the_lead` (26 s). A captain leads from rig 1 with Okonkwo,
   the plan's commander, in rig 2. While the captain leads she gives no order. The captain's
   session ends: she leads and orders the advance, to her own hull only. The captain returns:
   after the hysteresis the lead is theirs, their `ORDER DT:… 2 HOLD` is delivered and obeyed,
   and she gives no order under their term.
-- `mw14a_the_same_run_gives_the_same_orders_twice` (57 s). The script to the HOLD on two fresh
+- `mw14a_the_same_run_gives_the_same_orders_twice` (55 s). The script to the HOLD on two fresh
   worlds delivers the same orders, with the same sequences, from the same slot.
 
 **Divergences and defaults.** None needs a refactor to undo; each is one function or one filter.
@@ -236,14 +238,22 @@ posture (`detachment::commander`); each posture as the roster order a player typ
 - Damping. A Hostile that drifts in and out of the commander's sight flips the posture between
   HOLD and ADVANCE as often as once a world second.
 - A commander's orders on open ground, and a plan objective.
-- A second order to a hull that answered NEGATIVE: the delivered order is the posture, so it is
-  not sent again.
 
 **Not pinned by a story.** A restart with an NPC leading. The commander taking the lead back
 from its successor (the roster's unit test has it). The ADVANCE returning once the Hostile is out
 of sight. The withdrawing rig boarding its carrier (the story ends with it driving for the ramp).
-A successor refused for want of the command right (unit test only). The commander's own orders
-answered NEGATIVE.
+A successor refused for want of the command right (unit test only). A posture answered
+NEGATIVE and sent again a minute later, and an order refused at its final take and retried: the
+resend guard has no test of its own. Whether a destroyed hull keeps its field mark until the
+field closes was not checked beyond the acceptance story, where the successor's WITHDRAW stood
+for the half minute the story watched; if the mark were cleared earlier the roster would read no
+loss and the posture would go back to HOLD or ADVANCE.
+
+**Reviewed.** A read-only review of the engine diff by a second agent found six points, four
+fixed in the PR's last commit: the resend guard was in IC seconds, which is no pacing at 24:1; a
+posture answered NEGATIVE counted as standing and was never sent again; the work point's clamp
+panicked on a site that reads no side; and an attempt that never reached the queue was recorded
+as sent. The fifth is the missing damping above. The sixth was two doc comments.
 
 ## MW.14b
 

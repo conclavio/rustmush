@@ -17,7 +17,7 @@ pub(crate) struct Walk {
     /// Scheduling only: a congested reply never becomes an execution permit.
     replies: BTreeMap<ObjId, (u64, i64)>,
     /// Scheduling only (doc 44 unit MW.14a): what an NPC commander last sent each slot and the
-    /// IC second before which it does not send that again ([`super::commander::Sent`]).
+    /// world second before which it does not send that again ([`super::commander::Sent`]).
     sent: super::commander::Sent,
 }
 
