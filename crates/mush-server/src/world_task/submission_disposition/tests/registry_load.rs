@@ -188,7 +188,8 @@ fn group(comm: &str) -> &'static str {
         "bulk"
     } else if comm.starts_with("tacsim-mind") {
         "think"
-    } else if comm.starts_with("tokio-runtime") {
+    } else if comm.starts_with("tokio-r") {
+        // `tokio-rt-worker` (current tokio) or `tokio-runtime-w`.
         "tokio"
     } else {
         "other"
