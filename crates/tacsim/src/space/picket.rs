@@ -251,7 +251,8 @@ pub(crate) fn reloaded_seal(
 
 /// **A cast actor's seal in a rig with no world** (doc 44 unit MW.10): the pack's doctrine,
 /// by the pack's digest, resolved with no store. A world seals its actors itself
-/// ([`cast_doctrine_in_world`]) and never calls this.
+/// ([`cast_doctrine_in_world`]) and never calls this, so it is built for tests alone.
+#[cfg(test)]
 pub(crate) fn pack_cast_seal(
     actor: crate::minds::content::cast::CastActor,
     unit: ObjId,
