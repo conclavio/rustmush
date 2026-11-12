@@ -58,6 +58,9 @@ use crate::port_tick::{NoticeLevel, notify_budget, on_watch};
 pub const FIELD_LINKDEAD_GRACE_WALL_S: i64 = 300;
 /// **How often the host tries a home unit's recover again**, wall seconds.
 pub const RECOVER_RETRY_WALL_S: i64 = 10;
+/// **How many times it tries** before it leaves the unit beside the ramp for its pilot: five
+/// minutes of tries.
+pub const RECOVER_TRIES: u32 = 30;
 
 /// The pilot, when the mind takes a unit whose pilot is still connected: `{unit}`.
 pub const MIND_HAS_IT: &str = "You cannot fly #{unit}: its mind has the controls and is taking it home. It fires only on a unit that fires on it.";
@@ -68,6 +71,8 @@ pub const BACK_IN_SEAT: &str = "You are back at the controls of #{unit}; its min
 /// The pilot, back after the unit left the field: `{unit}`.
 pub const WENT_HOME: &str =
     "While you were away its mind took #{unit} out of the field at its carrier's ramp.";
+/// The pilot, queued, when the host gives up putting the unit aboard: `{unit}`.
+pub const LEFT_AT_RAMP: &str = "While you were away its mind took #{unit} out of the field, but it could not be put aboard: it stands beside your carrier's ramp. Recover it yourself.";
 /// The pilot, back but not fit to fly: `{unit}`.
 pub const NOT_FIT: &str = "You are in no state to fly #{unit}: its mind keeps the controls.";
 /// Those the unit was with, when it goes home: `{unit}`, `{why}`.
@@ -123,6 +128,10 @@ struct Homebound {
     then: Then,
     /// The wall second before which it is not tried again.
     retry_at_wall_s: i64,
+    /// Why its player was away when it left.
+    why: Why,
+    /// How many times the recover has been tried again.
+    tries: u32,
 }
 
 /// **What this boot's host has done for its absent players' units** (RAM, module state): the
@@ -502,6 +511,8 @@ pub(crate) fn on_out(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, then: O
                 pilot: row.pilot,
                 then,
                 retry_at_wall_s: now.saturating_add(RECOVER_RETRY_WALL_S),
+                why: row.away.map_or(Why::LinkLost, |away| away.why),
+                tries: 0,
             },
         );
     }
@@ -607,6 +618,30 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
             }
             continue;
         }
+        // Back in a field: its carrier was lost at the ramp and the host put it back
+        // (`super::boarding`), with a fresh row and its pilot's seat. Its pilot is still away
+        // (their return clears this list), so the unit passes to its mind again.
+        if row_of(ctx.w, unit).is_some() {
+            if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+                minding.homebound.remove(&unit);
+            }
+            hand_over(ctx, unit, owed.pilot, owed.why);
+            continue;
+        }
+        // A recover that never lands is given up: the carrier lifted, or the unit can no
+        // longer come aboard. It stands where it is, and its pilot reads why at login.
+        if owed.tries >= RECOVER_TRIES {
+            if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+                minding.homebound.remove(&unit);
+            }
+            notify_budget(
+                ctx,
+                owed.pilot,
+                &LEFT_AT_RAMP.replace("{unit}", &unit.0.to_string()),
+                NoticeLevel::Trip,
+            );
+            continue;
+        }
         // Still on its way out (the exit's own first try), or not yet due.
         if now < owed.retry_at_wall_s
             || super::exit::leaving(ctx.w, &owed.site, unit)
@@ -618,6 +653,7 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
             && let Some(row) = minding.homebound.get_mut(&unit)
         {
             row.retry_at_wall_s = now.saturating_add(RECOVER_RETRY_WALL_S);
+            row.tries = row.tries.saturating_add(1);
         }
         let saved = ctx.actor;
         ctx.actor = owed.pilot;

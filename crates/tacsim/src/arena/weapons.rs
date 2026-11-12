@@ -2570,6 +2570,28 @@ mod tests {
             Err(Refusal::Unwarranted)
         );
 
+        // A change of command that reaches it meanwhile does not take the go-home order.
+        let mut claimed = away.clone();
+        assert!(
+            claimed.apply_detachment_control(crate::arena::detachment::DetachmentControl {
+                unit: RED,
+                epoch: 1,
+                authority: Some(crate::arena::detachment::DetachmentAuthority {
+                    detachment: 4,
+                    revision: 7,
+                    term: 1,
+                }),
+            })
+        );
+        assert!(
+            claimed
+                .minds
+                .get(&RED)
+                .and_then(|row| row.order.as_ref())
+                .is_some_and(|order| order.objective == MindObjective::Withdraw),
+            "a detachment's claim leaves an absent player's unit its order"
+        );
+
         // Handed back, the rule is over; and the order goes with it on a hull still a mind's.
         let mut back = away.clone();
         back.set_absent(RED, false);

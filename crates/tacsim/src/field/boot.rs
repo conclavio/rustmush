@@ -174,6 +174,13 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     let head = crate::arena::Snapshot::head(&document).map_err(|error| error.to_string())?;
     let mut arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit)
         .map_err(|error| error.to_string())?;
+    // Doc 44 cut MW.7 (the review's finding 1): the snapshot's word on which units are flown
+    // for an absent player may be older than the live record's, which is written at once. The
+    // record decides: a unit handed back after the snapshot is not left under the absent
+    // player's rule, and one handed over after it is under it from the first pulse.
+    for row in &live.units {
+        arena.set_absent(row.unit, row.away.is_some_and(|away| away.handed));
+    }
     // Doc 40 cut FR.4 (Q-38-28, Q-40-21): the resume rolls from the snapshot it rewinds to, onto
     // a segment past both the live record's and the snapshot's, so no opening writes to a log
     // another opening wrote; the `segment` line is the resume's first.

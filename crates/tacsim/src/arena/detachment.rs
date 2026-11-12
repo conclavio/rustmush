@@ -99,9 +99,12 @@ impl Arena {
             .is_some_and(|(old, new)| {
                 old.detachment == new.detachment && old.revision == new.revision
             });
+        // Doc 44 cut MW.7 (the review's finding 6): a unit flown for an absent player keeps
+        // its go-home order under any change of command (`crate::arena::absent`).
         if !same_assignment
             && (control.authority.is_some()
                 || previous.is_some_and(|state| state.authority.is_some()))
+            && !self.absent(control.unit)
         {
             // Claiming a hull also removes its legacy instruction. The two
             // authorities never share ownership of a machine's standing order.

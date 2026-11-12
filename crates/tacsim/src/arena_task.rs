@@ -337,7 +337,7 @@ pub enum ArenaMsg {
     /// MW.7; Q-44-22, Q-44-38): the absent player's rule binds the unit while it stands
     /// (`crate::arena::absent`). Latest-wins per unit and applied by `Arena::set_absent` at the
     /// next pulse's head, ahead of the withdrawals and of the pulse's controls. Clearing it
-    /// also recalls a withdrawal of that unit still waiting for the pulse, answered
+    /// also recalls a withdrawal of that unit offered before it and still waiting, answered
     /// [`crate::arena::withdraw::WithdrawRefusal::Recalled`]: the player is back, and a ramp
     /// exit the host asked for while they were away is not theirs. Only the IC field host
     /// sends it, and a task with no [`FieldTerms`] ignores it.
@@ -1613,6 +1613,10 @@ struct PrePulse {
     /// **Doc 44 cut MW.7**: the host's word on which units are flown for an absent player,
     /// latest-wins per unit.
     absences: BTreeMap<ObjId, bool>,
+    /// **Doc 44 cut MW.7** (Q-44-37): the units whose waiting withdrawal a hand-back recalled,
+    /// each owed its answer at the pulse's head. Only a withdrawal offered before the
+    /// hand-back's word is recalled: one that arrives after it is the returning pilot's own.
+    recalled: BTreeSet<ObjId>,
 }
 
 impl PrePulse {
@@ -1979,6 +1983,9 @@ async fn arena_loop(mut task: Task) {
                     // Doc 44 cut MW.7: and so does the host's word on an absent player.
                     Some(ArenaMsg::Absent { unit, absent }) => {
                         waiting.absences.insert(unit, absent);
+                        if !absent && waiting.withdrawals.remove(&unit).is_some() {
+                            waiting.recalled.insert(unit);
+                        }
                     }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
@@ -2072,19 +2079,19 @@ impl Task {
         }
         // Doc 44 cut MW.7 (Q-44-37): the host's word on its absent players, ahead of the
         // withdrawals. A unit handed back to its player is not taken out at the ramp by an ask
-        // the host made while they were away: that ask is recalled and answered.
+        // the host made while they were away: that ask was recalled as the word arrived (the
+        // task's inbox arm) and is answered here. A withdrawal offered after the word is the
+        // returning pilot's own and is decided below like any other.
         if self.terms.is_some() {
             for (unit, absent) in std::mem::take(&mut waiting.absences) {
                 self.arena.set_absent(unit, absent);
-                if !absent && waiting.withdrawals.remove(&unit).is_some() {
-                    self.queue_withdrawn(
-                        unit,
-                        Err(crate::arena::withdraw::WithdrawRefusal::Recalled),
-                    );
-                }
+            }
+            for unit in std::mem::take(&mut waiting.recalled) {
+                self.queue_withdrawn(unit, Err(crate::arena::withdraw::WithdrawRefusal::Recalled));
             }
         } else {
             waiting.absences.clear();
+            waiting.recalled.clear();
         }
         for tug in std::mem::take(&mut waiting.tow_releases) {
             let outcome = self.release(tug);

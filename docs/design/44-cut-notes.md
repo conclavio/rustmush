@@ -506,14 +506,39 @@ home only with the view narrowed. The stories cannot be compiled on main (they r
   calls it for a unit with no seated pilot is **AP.5** (admission) and **AP.7** (the plan).
 - **A unit put back into the field because its carrier was lost at the ramp**
   (`field/boarding.rs`, `carrier::rejoin`) comes back with a fresh row and its pilot's seat.
-  If that pilot is still away, nothing hands it over again: absence is opened by a hook or a
-  boot, never by polling. **AP.5**, whose admission rule asks the connection at a join too.
+  The host's recover list hands it over again while this boot holds the list; after a restart
+  in that window nothing does, since absence is opened by a hook or a boot, never by polling.
+  **AP.5**, whose admission rule asks the connection at a join too.
 - **A gate in space.** The rule is callable; the bubble's fire record is not built. **MW.9's
   follow-up.**
 - **A staff read of why a shot was refused.** `Denied` has a sentence for each limit, and
   the mind is told `unwarranted` as for any held shot. No verb shows which limit it was.
 
-**Not pinned by a story.** A refused recover tried again (the first try passes in story 1).
+**Reviewed.** A read-only review of the engine diff by a second agent found six points, all on
+the host's side; it found nothing in the gate, the snapshot, the hash or the simulator's
+paths. Five are fixed in the PR's last commit:
+
+- a restart did not reconcile the arena's flag with the live record, so a unit handed back
+  after the last snapshot came up still under the absent player's rule (`field/boot.rs` now
+  sets the flag from the record before the task starts);
+- the recover list never drained when a recover could never land (it now gives up after
+  thirty tries, five minutes, and queues the pilot a line saying the unit stands beside the
+  ramp);
+- a unit put back into the field after its carrier was lost stayed on the recover list and
+  was nobody's (the list now hands it over again);
+- the recall took any waiting withdrawal of the unit, so a returning pilot's own recover,
+  typed before the next pulse, was dropped without a word (the task now recalls only what was
+  offered before the hand-back's word);
+- a detachment's authority control arriving after the hand-over cleared the go-home order
+  (`apply_detachment_control` now leaves an absent player's unit its order; pinned in the
+  kernel test).
+
+The sixth stands, a race of one pulse: a pilot who reconnects after the kernel has let the
+unit out and before the host has heard so is told they are back, then that the unit is up the
+ramp; the recover runs and the unit is put aboard. Nothing is lost.
+
+**Not pinned by a story.** A refused recover tried again and given up (the first try passes
+in story 1). A restart between a hand-back and the next snapshot.
 A player leader's DT roster unit taken home by the DT recover (story 1 flies a rig). The
 telling of a friend party's leader (no rig stands two friendly parties with different
 leaders). The recall of a ramp exit at the hand-back (`WithdrawRefusal::Recalled`). A pilot
