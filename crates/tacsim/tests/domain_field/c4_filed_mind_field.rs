@@ -48,14 +48,16 @@ const THIRD_AT: (i64, i64) = (136, 122);
 /// clock.
 const STANDS_MS: i64 = 40_000;
 
-/// **The pilot's own script, written to fire first.** At every think it picks a contact it has
-/// told apart that is not a friend (one that reads hostile, where there is one), arms the
-/// cannon on a lock, locks it and fires. It asks whether or not anyone has fired on it. Told to
-/// go home, it stands and keeps asking for forty seconds, then drives for its party's entry,
-/// which is its carrier's ramp.
+/// **The pilot's own script, written to fire first.** A cold hull it starts up (the Registry's
+/// trials begin cold). Then at every think it picks a contact it has told apart that is not a
+/// friend (one that reads hostile, where there is one), arms the cannon on a lock, locks it and
+/// fires. It asks whether or not anyone has fired on it. Told to go home, it stands and keeps
+/// asking for forty seconds, then drives for its party's entry, which is its carrier's ramp.
 fn fires_first() -> String {
     format!(
         "fn think(v, c) {{ \
+           if v.power == \"off\" {{ startup(); return; }} \
+           if v.power != \"online\" {{ return; }} \
            let id = (); \
            for k in v.contacts {{ if k.identified && !k.friendly {{ id = k.id; }} }} \
            for k in v.contacts {{ if k.relation == \"hostile\" {{ id = k.id; }} }} \
@@ -189,6 +191,7 @@ async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
         mush_roll::commerce::RevisionIdentity::capture(&revision).expect("the revision identity");
     let started = Instant::now();
     let deadline = started + Duration::from_secs(7_200);
+    let mut told = Instant::now();
     loop {
         world.pulse();
         let done = world.rows("rating_receipts").into_iter().any(|wire| {
@@ -197,6 +200,32 @@ async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
         });
         if done {
             break;
+        }
+        // The Registry's own job for this revision: queued or running is a wait; any other
+        // end without a receipt (nonconforming, failed, interrupted, cancelled) is the story's
+        // failure, said at once and not at the guard.
+        use mush_roll::commerce::rating::{RatingJob, RatingJobState};
+        let jobs: Vec<RatingJob> = world
+            .rows("rating_jobs")
+            .into_iter()
+            .filter_map(|row| serde_json::from_value(row).ok())
+            .filter(|job: &RatingJob| job.subject().revision() == identity)
+            .collect();
+        for job in &jobs {
+            match job.state() {
+                RatingJobState::Queued {}
+                | RatingJobState::Running { .. }
+                | RatingJobState::Completed { .. } => {}
+                other => panic!("the Registry ended {name}'s rating without a receipt: {other:?}"),
+            }
+        }
+        if told.elapsed() >= Duration::from_secs(120) {
+            told = Instant::now();
+            eprintln!(
+                "C4_FIELD rating {name}: {} s, jobs {:?}",
+                started.elapsed().as_secs(),
+                jobs.iter().map(RatingJob::state).collect::<Vec<_>>()
+            );
         }
         assert!(
             Instant::now() < deadline,
