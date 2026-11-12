@@ -981,6 +981,15 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
             if let Some(on) = frame.ecm {
                 lines.push(emcon_status_line(on).to_owned());
             }
+            // **Doc 45 unit AP.4** (Q-45-19): the posture the hull holds, off its own record
+            // and only when it is not the default — what its mind is told when its pilot is
+            // not at the controls. `MIND POSTURE` reads it always and sets it.
+            let posture = crate::posture::record::of(ctx.w, seat.unit);
+            if !posture.is_return() {
+                lines.push(
+                    crate::posture::order::POSTURE_LINE.replace("{posture}", posture.label()),
+                );
+            }
             // **16b cut F.2**: doc 16 §5's *armor and internals per section as
             // current over max*, one line per section and wrapped to eighty
             // columns by construction — the section, its internals, then each

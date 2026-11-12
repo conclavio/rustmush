@@ -112,6 +112,9 @@ reads a quarter of that and nobody hears it, for the same charge and time.
   +tv/<n> scan [go]        read the nine fields around the rig
   +tv/<n> sound [quiet] [go]  read every pocket around the rig
   +tv/quiet [on|off]       stop (or start) hearing other rigs' soundings
+  +tv/<n> posture [return|guard|hold]
+                           read, or set, the posture a rig holds when nobody is
+                           at its controls (help field, "Postures")
   +tv/forget <site>|<body> [go]  strike your readings of a site, or of every
                            site on a body, from your chart
 

@@ -34,7 +34,7 @@ use crate::field_host_rig::{
     armed, egress, fragile, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
 
-/// The escort's own rig: the lessee's only live record, slot 1.
+/// The escort's own rig: the lessee's one live armed lease, slot 1.
 fn escort_rig(rig: &Rig, pilot: ObjId) -> ObjId {
     let store = rig
         .tw
@@ -43,9 +43,10 @@ fn escort_rig(rig: &Rig, pilot: ObjId) -> ObjId {
         .expect("the layer");
     let live: Vec<_> = store
         .tv_leases_of(pilot)
-        .filter(|record| record.live())
+        .filter(|record| record.live() && record.mark.starts_with("OWP-ES"))
         .collect();
-    assert_eq!(live.len(), 1, "one live lease: {live:?}");
+    assert_eq!(live.len(), 1, "one live escort lease: {live:?}");
+    assert_eq!(live[0].slot, 1, "the escort is leased first");
     live[0].tv
 }
 
@@ -193,17 +194,56 @@ pub(crate) fn contact_near(
     })
 }
 
+/// Mint `minor` into `who`'s own credit account from Ceres's treasury (staff's path).
+fn top_up(rig: &mut Rig, who: ObjId, minor: i64) {
+    let account = tacsim::port::credit::own_account(rig.tw.world(), who)
+        .map(|account| account.id.0)
+        .expect("the pilot's account");
+    let treasury = crate::driving_rig::port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let out = run(
+        &mut rig.tw,
+        mush_core::GOD,
+        &format!("@econ/mint {treasury}={account} {minor}"),
+    );
+    assert!(!out.contains("Usage"), "{out}");
+}
+
 /// **The escort and the intruder on Ahuna Flank**, the escort launched and driven out beside a
 /// working prospector; answers (escort pilot, escort hull, intruder pilot, intruder hull).
 pub(crate) fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
+    let (escort, hull, intruder, hostile, _) = stand_up_with(rig, 0);
+    (escort, hull, intruder, hostile)
+}
+
+/// [`stand_up`], the escort's hull also carrying `prospectors` leased prospectors that stay in
+/// its bay (doc 45 unit AP.4: a lessee in one rig's cab with another rig of his own on the
+/// site); answers them last, by slot.
+pub(crate) fn stand_up_with(
+    rig: &mut Rig,
+    prospectors: usize,
+) -> (ObjId, ObjId, ObjId, ObjId, Vec<ObjId>) {
     // A miner's prospector works the ground the escort is there for.
     let (miner, _, miner_tvs) = on_pad_as(rig, "Miner", 2, "Tally Moth", 1);
     let worker = miner_tvs[0];
     launched(rig, miner, worker);
     to_cell(rig, worker, (140, 120));
     // (1) The escort's lease, signed at Ceres before the hull sails.
-    let (escort, _, tvs) = on_pad_with(rig, "Pilot", 1, "Salt Moth", lease_escort);
-    assert_eq!(tvs.len(), 1, "the escort is the hull's one rig");
+    let (escort, _, tvs) = on_pad_with(rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
+        lease_escort(rig, pilot);
+        for _ in 0..prospectors {
+            // The escort's deposit leaves too little for a second lease: staff mint the
+            // term and the deposit of one more.
+            top_up(rig, pilot, 1_000_000);
+            crate::driving_rig::lease_one(rig, pilot);
+        }
+    });
+    assert_eq!(
+        tvs.len(),
+        1 + prospectors,
+        "the escort, in slot 1, and the prospectors after it"
+    );
     let hull = escort_rig(rig, escort);
     assert_eq!(tvs[0], hull);
     // (2) Aboard it in the bay, down the ramp, out beside the rig.
@@ -218,7 +258,13 @@ pub(crate) fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
     let hostile = armed(rig, "Grey Hound", (146, 122), 270_000);
     seat(rig, hostile, intruder);
     warm(rig);
-    (escort, hull, intruder, hostile)
+    (
+        escort,
+        hull,
+        intruder,
+        hostile,
+        tvs.get(1..).unwrap_or_default().to_vec(),
+    )
 }
 
 /// **CF.6c's gate** (doc 32 §14): lease, fly out, fight from the line cockpit, withdraw, return.
