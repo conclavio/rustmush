@@ -1474,7 +1474,7 @@ dropped.
 | D-UM-53 | (*R-C*) W7's deliberation is reframed as an **NPC lance-leader** — an AI-played character — issuing `ORDER` under their own warrant through the existing path, the order carrying that leader in `by` (D-UM-52) while `issuer` stays `None`, the squad's commander unit (`deliberation/request.rs:506`, `arena_bridge.rs:3904`). The leader is never a `Controller` value: it **rides the squad's commander unit** (the lowest unit id, `deliberation/squad.rs`), which stays `Controller::Mind`, flown by its sealed mind; the leader's hints are written against that hull's own contact set, today's scope unchanged, and the leader is down when that hull is wrecked, so the squad drops to doctrine as today. Cut L amends `squad.rs`'s "not a role" doctrine to say the commander is where the leader rides, and mints one leader per AI fill squad, so every fill squad that deliberates today still does; an IC squad dispatched with no character leader, human or AI-played, gets no deliberated orders and runs on doctrine. In the OOC sim each fill leader is a **sim persona**, minted for the match, with no IC character record or warrant, touching nothing IC (D-UM-50). When this lands, doc 16 needs: W7's row reworded to "NPC lance-leaders are people; their orders reach the lance over the relay; deliberation is optional", its §6 Deliberation and Provider-failure paragraphs restated per lance-leader (requested per leader, the order's author the leader, the lapse sentence in the leader's name), the frontier-mind lease recorded as advice to offices and never an order's author, and an as-built §11 entry. Doc 16 is not edited until then. |
 | D-UM-54 | (*R-D*) Player minds may fly NPC organisations' hulls only under a licence the author released through a listing (sealed, open or open-resale); procurement buys such a licence like any holder (budget, trial rating per credit, standing filter, 40 percent diversity cap; seats are its concurrent sealed sorties). A player mind on an organisation's hull without one is contraband. |
 | D-UM-55 | (*R-D*) **Quirk recognition** is an earned-evidence channel for the contraband loop: an author who recognises their own mind's behaviour in an organisation's hulls, from what their own sensors earned, may file a claim with the Registry; the engine never confirms or denies a likeness, and the claim is testimony that opens a custody inspection or a black-box read of the suspects' seal lines, which alone establish the fact. Published as `minds.claimed`. |
-| D-UM-56 | (*Proposed 2026-10-04 after review, finding 5; pending the owner*) Filing and listing are separate acts: `@mind/file` files a revision with the same conformance and fee and a public Roll entry offering no forms; filing is not R-D's release (procurement buys only a listed line); filing issues the charter owner a priced-at-nothing, non-transferable **owner's licence** on the audit term renewed by attestation, following the charter's title; an unfiled draft runs IC only on an ungoverned core (contraband). |
+| D-UM-56 | (*Proposed 2026-10-04 after review, finding 5; pending the owner*) Filing and listing are separate acts: `@mind/file` files a revision with the same conformance and fee and a public Roll entry offering no forms; filing is not R-D's release (procurement buys only a listed line); filing issues the charter owner a priced-at-nothing, non-transferable **owner's licence** on the audit term renewed by attestation, following the charter's title; an unfiled draft runs IC only on an ungoverned core (contraband). **Ruled 2026-11-11 (doc 44 Q-44-9): accepted as written on 2026-10-04: filing and listing are separate acts, and filing issues the charter owner a free, non-transferable owner's licence.** No longer pending the owner. |
 | D-UM-57 | (*Proposed 2026-10-04 after review, finding 5; parent-loss rules ruled by the owner 2026-10-17*) An `open` fork is a derivative draft filed privately only while the holder's parent licence is Active or Grace, under a lineage check (parent live and held, chain depth ≤3, royalty cap); its owner's licence is **dependent** on the parent's and lapses with it. Existing sealed sorties finish, but new owner-use sorties and filings are blocked and the fork becomes source-sealed until parent rights return (Q-UM-17). Existing paid derivative licences remain usable through their own term under their own restrictions, without separate ancestor licences; new sales and renewals wait for the issuer's parent rights to return. `open-resale` additionally allows listing; charters are refused between one account's characters. |
 
 ---
@@ -1519,6 +1519,8 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
     an unarmed hull may not be sealed with a mind or sent out unseated until its role doctrine exists.
     **The default relied on by 17b cut M5 (C-23), unruled:** an unarmed hull is never refused for the
     odds floor, at the choice or at the seal, and flies Standard Doctrine with its fire half absent (§24).
+    **Ruled 2026-11-11 (doc 44 Q-44-10): the written default:** the ROM on an unarmed hull runs
+    Standard Doctrine with its fire half absent.
 13. **Q-UM-13, whose holdings in the OOC sim: the character's or the account's.** The ruling says
     "a player" has the minds they have IC. **Default:** the character who boards the pod, so the sim
     set is exactly that character's IC library and matches the alt-laundering refusal of D-UM-40.
@@ -1529,6 +1531,7 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
     flag at launch; publishing a listing is the release R-D names, and an author who does not want
     organisations flying a mind does not list it. **Alternative:** a listing term `orgs=off` that
     procurement's `AvailabilityProvider` honours.
+    **Ruled 2026-11-11 (doc 44 Q-44-10): the written default:** no `orgs=off` term on a listing.
 15. **Q-UM-15, may a licensed mind fly against humans who do not hold it in the OOC sim?** R-A gives
     a character access to exactly the minds they hold IC. A side lead's fill flying a licensed mind,
     or a pilot's sealed mind flying their released hull, against opposing humans who do not hold that
@@ -1571,6 +1574,8 @@ armed unit, a match or the arena map (D-UM-45 to D-UM-48).
     Grace length), and sorties still out keep their seats until they close so open sealed sorties never
     exceed seats. **Alternatives:** a longer or no deadline; seats freed at settlement (which lets one
     licence fly the seller's and the buyer's hulls at once).
+    **Ruled 2026-11-11 (doc 44 Q-44-10): the written default:** a pending transfer settles at the last
+    admitted sortie's close, or at the earlier of the term's end and 3 IC days.
 
 ---
 

@@ -29,6 +29,8 @@ mod field_raiders_rig;
 mod geology_keyed;
 #[path = "support/field/grounds_rig.rs"]
 mod grounds_rig;
+#[path = "support/field/roster_rig.rs"]
+mod roster_rig;
 #[path = "support/field/site_record_rig.rs"]
 mod site_record_rig;
 mod support;
@@ -53,6 +55,10 @@ mod driving;
 mod escort_lease;
 #[path = "domain_field/excursions.rs"]
 mod excursions;
+#[path = "domain_field/field_ap1.rs"]
+mod field_ap1;
+#[path = "domain_field/field_ap2.rs"]
+mod field_ap2;
 #[path = "domain_field/field_boarding.rs"]
 mod field_boarding;
 #[path = "domain_field/field_carrier.rs"]
@@ -83,6 +89,8 @@ mod field_gc5;
 mod field_gc6;
 #[path = "domain_field/field_host.rs"]
 mod field_host;
+#[path = "domain_field/field_mw15.rs"]
+mod field_mw15;
 #[path = "domain_field/field_raiders.rs"]
 mod field_raiders;
 #[path = "domain_field/field_rs1.rs"]

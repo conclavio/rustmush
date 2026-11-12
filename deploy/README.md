@@ -52,6 +52,26 @@ header spells the mechanism out with `__KEY__` tokens; that is exactly the rule
 the test applies, so the shell and the test cannot disagree about what a
 complete render is.
 
+Two `instance.env` keys are not `__TOKEN__`s, because each decides whether a
+line of the template's commented `[tacsim.minds]` block is rendered live, and a
+token can only fill a line that is already there. `render.sh` reads them itself
+(doc 44 cut MW.1):
+
+- `MINDS_LAUNCH` is `on` or `off` (empty is off; anything else refuses the
+  render). On, **and with the box's launch document at `<DATA_DIR>/launch.json`**,
+  the `[tacsim.minds]` header and `launch_path = "<DATA_DIR>/launch.json"` are
+  rendered live. On with no document, or off, the line stays the template's
+  comment, so a deploy onto a fresh or wiped store boots without the launch
+  whatever the switch says. No state renders an empty path.
+- `REGISTRY_PULSE_MS`, when it is not empty, renders the header and
+  `registry_pulse_ms = <value>` live. dev1 and dev2 set 50, so a Registry
+  rating takes minutes; empty is the server's 1,000 (about three hours).
+
+With `MINDS_LAUNCH` off and `REGISTRY_PULSE_MS` empty the render is the plain
+substitution above, byte for byte (`scripts/tests/render-launch.sh` holds it
+against the shipped template, and `shipped_configs.rs` applies the same rule).
+See *Named launch and the player market* below for what turns the launch on.
+
 Every argument after the output path names a binary whose own `--check-config`
 is run over the render — `mushd` for the all-in-one, `mush-gateway` **and**
 `mush-server` for the split. Nothing is installed until all of them pass: the
@@ -374,9 +394,18 @@ sudo scripts/reset-instance.sh /opt/rustmush/dev1/instance.env --yes
 It stops the instance's unit (either shape), flushes that instance's Redis, and
 removes world-bound data: the archive, quarantine spool, offer/resolution/decision
 keys and logs. It **preserves `DATA_DIR/ssh_host_ed25519` in place**, so existing
-SSH host-key pins remain valid, and keeps the rendered configuration. Startup
+SSH host-key pins remain valid, and keeps the rendered configuration, with one
+line excepted: a live `[tacsim.minds].launch_path` is commented in place. The
+launch document it names lived in the data directory and named ids of the world
+just flushed; left live, the line refuses `--bootstrap-staff` and then every
+boot. `deploy/instance/launch-bringup.py` brings the launch up again on the new
+world (*Named launch and the player market*, below). Startup
 reapplies the configured boot packs; on dev1 both starting rooms are Limbo `#0`.
 The script reads the installed `instance.env`; it never sources it.
+
+Add `--no-start` to leave the unit stopped after the wipe (and the bootstrap).
+It is the first step of a bring-up that keeps players off until the named
+launch is Active: the bring-up script starts the unit itself.
 
 Add `--staff keeper` to create the first staff account before the service starts.
 The script prompts without echo on a terminal, or reads one password line from
@@ -722,14 +751,149 @@ bootstrap never replaces an existing account or password.
 
 **Until `[tacsim.minds].launch_path` is live for an instance, that world
 composes no mind commerce at all**: no House chain (17g C0's 365-day owner
-term included) and no player market. The templates ship the key commented
+term included) and no player market. The template ships the key commented
 (`instance/mushd.toml.tmpl`), because a live path on a fresh store refuses the
 boot: the document names organizations, accounts, rooms and characters that only
 a booted world can create, and a named identity that does not exist is a boot
-refusal. Making the path live per instance is an owner decision this cut does
-not make: either an empty value meaning unset, or a per-instance overlay.
-`instance.env` cannot say "unset" today, because an empty path is the boot
-refusal `launch deployment path is empty`.
+refusal.
+
+**The switch (doc 44 cut MW.1).** `MINDS_LAUNCH=on` in an instance's
+`instance.env` says the instance takes the launch; dev1 and dev2 both do.
+`render.sh` renders `launch_path` live only once the box's launch document
+exists at `<DATA_DIR>/launch.json` (*A new instance: render the template*,
+above), so the switch can be on from the first deploy:
+
+- a deploy onto a fresh or wiped store renders the line commented and the world
+  boots without the launch;
+- `deploy/instance/launch-bringup.py` makes the launch's identities, writes the
+  document, and renders again, which makes the line live;
+- every later deploy finds the document and renders the line live;
+- `scripts/reset-instance.sh` comments the line when it wipes the data
+  directory, so a reset never leaves a config that names a missing file.
+
+The path is never empty and never edited by hand: an empty path is the boot
+refusal `launch deployment path is empty`, and a hand edit of the rendered file
+does not survive the next deploy.
+
+### The bring-up script
+
+`deploy/instance/launch-bringup.py` walks the whole sequence below on a fresh
+store, as root, on the box:
+
+```bash
+sudo python3 /opt/rustmush/dev1/build/deploy/instance/launch-bringup.py /opt/rustmush/dev1/instance.env
+```
+
+It asks for the staff account's password (one line on stdin, `--password-file`,
+or a prompt; the account is `keeper` unless `--staff` names another, and on a
+store with no account the script bootstraps it). Then, in order:
+
+1. **The plain boot.** As #1: steps 2 to 6 below, the Tether back room (the
+   ungoverning shop the dev launch names), and each House's procurement agent
+   with what the procurement section below asks for. It writes
+   `<DATA_DIR>/launch.json` in mode `initialize` and renders the config again.
+2. **The Initialize boot.** All seven Registry grants to every operator, then
+   the four initialize actions. It sets the document's mode to `active`.
+3. **The Active boot.** `@mind/launch` must name every operator `ready`; an
+   operator that `lacks` a grant is given the seven again and asked again, and
+   a second `lacks` stops the script. Then the dev launch's extras: the 18
+   major NPCs of the cast packs enabled with `@agent/enable` (Q-44-47; the
+   shipped packs are not edited), one named source rated by the Registry, filed
+   by #1 and listed on the player market, and one House's purchase of it by its
+   own agent, read from the House's procurement ledger in the store.
+4. **The unit is started**, and on it the script reads `@mind/launch` again and
+   runs the LLM check (below).
+
+**How its in-game steps are typed as #1.** The script runs the world itself for
+the three boots: `mush-server` on a private IPC socket under
+`<DATA_DIR>/bringup/`, and beside it a private `mush-gateway` whose SSH listener
+is `127.0.0.1:<SSH_PORT + 20000>` (one `mushd` bound the same way where the
+split is not built). It opens SSH sessions to that port and types
+`connect <staff account> <password>` at the welcome screen, as a person would.
+Every line typed and every reply is kept in `<DATA_DIR>/bringup/transcript.log`;
+a line that carries a password is recorded without it.
+
+**How players are kept off until the Active boot.** The instance's world unit
+is stopped before the first boot and started only after the Active boot has
+passed its checks. While it is stopped nothing answers on the instance's own
+IPC socket, so the public gateway generations, which stay up, have no world to
+log anybody in to or register anybody on; the private gateway listens on
+loopback only. (A private `--ipc` socket alone would lock the operator out too;
+that is why the script brings its own gateway.) If the script stops on a
+refusal it leaves the unit stopped. For a box that must never be reachable
+without its market, start from a stopped unit:
+
+```bash
+sudo scripts/reset-instance.sh /opt/rustmush/dev1/instance.env --yes --staff keeper --no-start
+```
+
+```bash
+sudo SERVER_HOLD=1 bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh
+```
+
+```bash
+sudo python3 /opt/rustmush/dev1/build/deploy/instance/launch-bringup.py /opt/rustmush/dev1/instance.env
+```
+
+`SERVER_HOLD=1` has the deploy install and enable the server unit without
+starting it; the gateway generation starts and holds the front door. Without
+those two knobs the world is reachable, with no market, between the deploy's
+start of the unit and the bring-up's stop of it.
+
+**Safe to interrupt and run again.** Where the bring-up stands is read from the
+world and from the document, never assumed: every identity is looked up by name
+before it is made, a grant is made only when `@org/show` does not list it, an
+account is minted only up to its figure, and the phase is the document's own
+(absent, `initialize`, `active`). The one thing the script keeps is
+`<DATA_DIR>/bringup/state.json`: the hulls it has lent a House (below), so a
+run that stops in between hands back what it took. It is in the data
+directory, so a reset removes it with the world.
+
+**The service logins.** Where the hand sequence below hangs the clerk and the
+operator off `LaunchAgent`'s login with `@newchar`, the script gives each
+service character a login of its own, named after it and made with `create` at
+the welcome screen: `LaunchAgent`, `MarketClerk`, `RegistryOperator`, and
+`MeridianiAgent`, `CopratesAgent`, `TychoAgent`. One step makes the login and
+its character, so there is no half-made login to come back to, and no password
+to keep: each gets a random one that is thrown away. Nobody plays these
+logins. On the day somebody must (the Registry operator, to recall a
+revision), #1 types `@newpassword RegistryOperator=<password>`.
+
+**The hulls are lent, not given.** A House buys nothing without titled hulls
+(its cap is the floor of 400 per mille of them, so three for the first
+licence), and the only spare hulls a fresh world has are the Ceres Co-op's
+pool Drays. A Dray titled to a House closes `+coop/enrol` for every player:
+the Co-op's readiness wants every pool Dray with the Trust or a graduate. So
+the script titles three free Drays to one House (`--purchase-house`,
+Meridiani), waits for the purchase, and hands them back to the Co-op First
+Captain Trust on the scope they came from. After the bring-up the Houses hold
+their policies, agents, grants and funded treasuries, one House holds a
+licence, and none holds a hull, so none buys again until it has hulls.
+`--keep-house-hulls` leaves the three with the House: it keeps buying, and
+enrolment stays closed. Giving the Houses hulls of their own needs a route the
+game does not have yet (doc 44's cut notes, MW.1).
+
+**The LLM check** (doc 44 section 8, step 8; Q-44-6, Q-44-48). On the started
+unit, which has the provider keys, #1 asks a major NPC a question and starts a
+simulator match against an AI squad, then reads `@llm/log`. There must be an
+`ok` row for an `npc_dialogue_*` route and one for `tacsim_deliberate`, and
+`@agent/show` must say the NPC's last turn was the model's. A reply alone
+proves nothing: an NPC whose provider fails speaks its fallback line. A route
+with no `ok` row stops the script with the box held back, since play does not
+run without the LLM. `@llm/budget` and `@llm/dashboard` are recorded in
+`<DATA_DIR>/bringup/llm-check.txt` (the ledger starts again at a restart).
+`--llm-check` runs this step alone on a running instance; `--no-llm-check`
+skips it.
+
+Other switches: `--no-npcs`, `--no-seed` (no line rated or listed, so no
+purchase), `--no-purchase`, `--no-start` (leave the unit stopped after the
+Active boot's checks), `--no-systemd` (a rig with no unit: the bot's rig, CI).
+`scripts/launch-bringup-acceptance.sh` runs the whole thing, a reset and a
+second bring-up on a scratch instance with its own Redis.
+
+### The sequence by hand
+
+What the script types, and the reference for reading its transcript.
 
 **What format 2 adds.** A format-1 document (`"format": 1`) composes the House
 chain alone, exactly as before C1. A format-2 document adds a `market` block
@@ -853,9 +1017,14 @@ Every id below is the one your world printed; replace every id in the example.
    seventh lets them take the core's title for the Registry with `@registry/forfeit #<hull>`, once
    `[tacsim.minds].seizure_hold_ic_days` have passed.
 
-10. As #1, `+act roll-initialize-commerce with {}`, then the three industry
-    initialize actions the same way: `initialize-core-die-stock`,
-    `initialize-core-factory` and `initialize-core-refit`.
+10. As #1, the three industry initialize actions, `+act initialize-core-die-stock
+    with {}`, `initialize-core-factory` and `initialize-core-refit` the same
+    way, and then `+act roll-initialize-commerce with {}`, last. Each answers
+    `Action accepted.` and then `Action committed.`. The Roll's goes last
+    because once it has landed the world boots only Active: the Initialize
+    boot's preflight wants untouched commerce records
+    (`commerce initialization preflight: commercial records disagree`), so a
+    bring-up that stopped after it could not come back for the other three.
 11. Set `"mode": "active"` and restart.
 12. As #1, read `@mind/launch`. After the launch help (several lines), one line
     beginning `Player market:` states the player market's prices and windows.
@@ -891,13 +1060,27 @@ Every id below is the one your world printed; replace every id in the example.
   terms change on a world in play as needing a fresh store until it is
   measured.
 - A world initialized under format 1 is not promised to boot under format 2:
-  start the market on a fresh store. A reset removes the world the ids name, so
-  take `launch_path` out of the live config before a reset and bring the
-  launch up again from step 1.
+  start the market on a fresh store. A reset removes the world the ids name;
+  `scripts/reset-instance.sh` comments `launch_path` as it wipes, and the
+  bring-up script starts again from step 1.
 
 **House procurement (doc 17h cut M8f), optional.** A named House buys mind licences from the
-player market's listings once per IC calendar month through a procurement agent. For each House
-that should buy, before booting with the policy:
+player market's listings once per IC calendar month through a procurement agent. The bring-up
+script does steps 1 to 5 for all three Houses (each agent on a login named `<House>Agent`, a
+member of the Republic, the policy's `standing`; each root-scope treasury funded with one
+month's budget). A policy alone buys nothing. A purchase also needs:
+
+- **titled hulls**: the House's cap on one charter is the floor of `cap_permille` (400) per
+  mille of the hulls titled to its organisation, counted among the port maps' hulls, the yards'
+  and the commissioned ships, so three hulls for the first licence;
+- **money in the root-scope treasury**: the account of the House's organisation on its ROOT
+  scope, not the `publication` treasury its filing fee comes from;
+- **a rated line listed on the player market** whose rating scored above nothing. The House
+  counter's own listings are not read.
+
+A House shops once an IC month. A month in which it found nothing to buy stays closed until
+the next one or a restart of the world, so a line listed later in the month waits. For each
+House that should buy, before booting with the policy:
 
 1. Create the agent as a character on an operator-held login account of its own (never #1's, the
    clerk's or an operator's: the Quote refuses two characters of one account, so its account must

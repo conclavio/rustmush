@@ -668,6 +668,11 @@ as its hangar (D-23-2; §10 item 2).
 - **Not done / owed.** Staff `close`/`home` for a ship, a second carrier and the abandoned flag's
   lifetime (S.3); the `Missed`, from-the-field and helm-fallback pages have no integration test; a
   retry of a target whose prepare was refused reuses its key (verified safe: the core remembers only a staged intent under a key — `ActionCoordinator::preflight`, `prepare_and_stage_resolved` — and a refused prepare is prepared again, as `mush-market`'s `trade.rs` already relies on); the typed-only shards 1, 3, 5 and 6 run on CI; retention.
+- **Owed: a wrecked ship's epoch never closes** (recorded 2026-11-11 from doc 44 §4c row 26). There
+  is no wreck path for a ship: `port/epoch.rs` closes an epoch only at a hangar port
+  (`ReturnedToBase` or `RecoveredToBase`), and its close arm reserves `destroyed` ("there is no
+  wreck path for a ship yet"); a carrier wreck writes nothing to `tacsim.ship_epoch`, so the epoch
+  stays open past the wreck (§9's S.2 row).
 - **The CI fix round (2026-10-27, after the PR).** Three cells the cut loop's local gate does not
   run went red. (1) The lint cell's M7 memory-size step (`-D clippy::large_stack_frames`, a
   65,536-byte threshold, run only on CI): `port_tick.rs`' registration function reached 71 KB with

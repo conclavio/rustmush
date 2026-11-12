@@ -79,11 +79,15 @@ pub enum Release {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Detached {
     /// Every connection the link still owned, with the actor each played:
-    /// each one goes down as `Lost`.
+    /// each one goes down as `Lost`. A bare connection
+    /// ([`LinkRegistry::claim_bare`]) is among them, and the world takes its
+    /// `Lost` in silence.
     pub conns: Vec<(u64, ObjId)>,
     /// Every actor the link owed a `SessionGone` for (one of its connections
     /// went down `Lost` and its gateway's grace timer had not fired) plus the
-    /// actors of `conns`: the server reaps each after the linkdead grace,
+    /// actors of `conns`, a bare connection's excepted (it was never the
+    /// actor's presence, so its end owes no reaping): the server reaps each
+    /// after the linkdead grace,
     /// since the gateway that would have is gone. The world ignores a stale
     /// one (the actor reconnected elsewhere).
     pub actors: Vec<ObjId>,
@@ -104,6 +108,9 @@ struct LinkEntry {
 struct Owner {
     link: LinkId,
     actor: ObjId,
+    /// A bare connection (doc 44 unit MW.24): owned for routing, and no part
+    /// of the actor's session.
+    bare: bool,
 }
 
 #[derive(Default)]
@@ -177,6 +184,20 @@ impl LinkRegistry {
     /// already owns re-points it (the world re-attaches a reused id the same
     /// way); another live link owning it is the duplicate §4.3 refuses.
     pub fn claim(&self, link: LinkId, conn: u64, actor: ObjId) -> Claim {
+        self.claim_as(link, conn, actor, false)
+    }
+
+    /// A link announced a **bare connection** (`BareUp`, doc 44 unit MW.24):
+    /// owned by the link like any other, so a reply addressed to it reaches
+    /// that gateway and a duplicate id is refused the same way, and nothing
+    /// more. It does not clear a `SessionGone` the link owes for the actor (a
+    /// bare connection is not the actor coming back), and when the link ends
+    /// its actor is not reaped on its account.
+    pub fn claim_bare(&self, link: LinkId, conn: u64, actor: ObjId) -> Claim {
+        self.claim_as(link, conn, actor, true)
+    }
+
+    fn claim_as(&self, link: LinkId, conn: u64, actor: ObjId, bare: bool) -> Claim {
         let mut t = self.table();
         if let Some(owner) = t.owners.get(&conn)
             && owner.link != link
@@ -186,10 +207,12 @@ impl LinkRegistry {
             self.metrics.ipc_duplicate_conn_id();
             return Claim::Duplicate { owner };
         }
-        t.owners.insert(conn, Owner { link, actor });
+        t.owners.insert(conn, Owner { link, actor, bare });
         if let Some(entry) = t.links.get_mut(&link) {
             entry.conns.insert(conn);
-            entry.linkdead.remove(&actor);
+            if !bare {
+                entry.linkdead.remove(&actor);
+            }
         }
         Claim::Owned
     }
@@ -245,7 +268,9 @@ impl LinkRegistry {
             }
             t.owners.remove(&conn);
             detached.conns.push((conn, owner.actor));
-            actors.insert(owner.actor);
+            if !owner.bare {
+                actors.insert(owner.actor);
+            }
         }
         drop(t);
         detached.conns.sort_unstable();
@@ -392,6 +417,11 @@ impl Link {
         self.registry.claim(self.id, conn, actor)
     }
 
+    /// [`LinkRegistry::claim_bare`] for this link.
+    pub fn claim_bare(&self, conn: u64, actor: ObjId) -> Claim {
+        self.registry.claim_bare(self.id, conn, actor)
+    }
+
     /// [`LinkRegistry::release`] for this link.
     pub fn release(&self, conn: u64) -> Release {
         self.registry.release(self.id, conn)
@@ -535,6 +565,39 @@ mod tests {
         let detached = reg.close(a.id()).expect("close");
         assert_eq!(detached.conns, vec![(5, ObjId(10))]);
         assert_eq!(detached.actors, vec![ObjId(10)]);
+    }
+
+    /// Doc 44 unit MW.24: a bare connection is owned for routing and is no
+    /// part of its actor's session. It does not clear a `SessionGone` the
+    /// link owes for that actor, and a link that ends with one still up
+    /// detaches it without reaping the actor on its account.
+    #[tokio::test]
+    async fn a_bare_claim_routes_and_owes_no_reaping() {
+        let reg = registry();
+        let (a, mut ra) = open(&reg);
+        let (b, _rb) = open(&reg);
+        // 10 is offline and runs an exec; 20 went Lost and runs one too.
+        assert_eq!(a.claim_bare(7, ObjId(10)), Claim::Owned);
+        assert_eq!(a.claim(2, ObjId(20)), Claim::Owned);
+        assert_eq!(a.release(2), Release::Owned);
+        a.note_linkdead(ObjId(20));
+        assert_eq!(a.claim_bare(8, ObjId(20)), Claim::Owned);
+        // Owned like any other: routed to its link, refused on another.
+        assert!(reg.send_to_conn(7, exempt(1)));
+        assert!(ra.try_recv().is_ok());
+        assert_eq!(
+            b.claim_bare(7, ObjId(10)),
+            Claim::Duplicate { owner: a.id() }
+        );
+        // A bare connection that ended is released like any other.
+        assert_eq!(a.release(8), Release::Owned);
+        let detached = reg.close(a.id()).expect("close");
+        assert_eq!(detached.conns, vec![(7, ObjId(10))]);
+        assert_eq!(
+            detached.actors,
+            vec![ObjId(20)],
+            "20's owed SessionGone stands; 10 was never here"
+        );
     }
 
     /// Routing: a connection-addressed frame reaches the owning link only; a

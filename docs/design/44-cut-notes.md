@@ -81,7 +81,138 @@ Not built.
 
 ## MW.2
 
-Not built.
+The two market defects ruled to be fixed before the go-live (doc 44 §7.1; Q-44-14, Q-44-15;
+second review, §4c rows 8 and 9; doc 17g §7). Every Q-44 question it rests on is ruled.
+
+**Built.**
+
+- **A read the Roll owns says whether a listing can still be sold.**
+  `crates/mush-roll/src/commerce/withdrawal/sellable.rs`, reached only as
+  `EntitlementPurchaseWriter::sellable` (the writer the market already holds). Given what a
+  listing froze of its seller's standing (`ListedSubject`), it answers `Sellable::Yes` or
+  `No(Unsellable)` for a batch of up to 32 listings:
+  - `Withdrawn`, `Recalled`: the listed revision's status row (recall is told first).
+  - `SellerLicence`: the seller's owner licence is past Grace, has moved to another term, is
+    revoked, or its holder is barred by an inspection for now.
+  - `ParentLicence` (a derived listing): the seller's qualifying parent licence (the one the
+    child was filed under, or a committed replacement) is not theirs, is past Grace, is not an
+    open-resale term, or is revoked; or the parent source is recalled.
+  - `CharterMoved`: the charter's title is not the seller's at the listed title revision, or the
+    seller is no live character.
+  - `Unproved`: a row the answer needs is missing or does not match. The market treats it as
+    unsellable.
+  It reads at most 4 rows for an original listing and 12 for a derived one, in at most 12
+  batched reads a call. The rows are read through the market's own read lens: `install` adds
+  seven read-only family grants to `market` (`status`, `licences`, `revoked_terms`,
+  `operations`, `owner_parents`, `owner_qualification_heads`, `owner_qualification_operations`).
+  The market holds no handle to any of them.
+- **The counter and the House agent's list ask it.** In `crates/mush-market/src/mind_commands.rs`
+  "current" is now two tests, the policy (`current_policy`) and then the Roll's answer, for
+  `Listings`, `ListingsAfter`, `ListingByCode` and `ProcurementListings` (which now shares
+  `Listings`' page loop, `page`). A dead listing leaves `+minds`, the `mind.market` panel and
+  the agent's list; its code is no longer found (`+minds <code>`, `+minds/buy <code>`); it still
+  serves as a `MORE` cursor, as a policy-stale listing does. The read's descriptor
+  `mind_market_commands` is version 3.
+- **The Roll's answers are paid for inside the read's own allowance.** Core gives an owner read
+  256 reads and 512 rows and fails the whole read past either; the listing scans alone could
+  spend every row. The page loop counts each scan and each listing asked about (`Budget`) and,
+  when what is left cannot pay for the next, ends the page with the last listing it decided as
+  the cursor. A page that meets a long run of dead listings can therefore be short, or empty,
+  and still say `MORE`; following the cursor reaches what lies behind them.
+- **The Roll's renewal readers carry a lasting-refusal verdict.** `RenewalStop` in
+  `crates/mush-roll/src/commerce/renewal/reader.rs`, used by `house_renewal/reader.rs` as well:
+  `Recalled`, `Withdrawn` (the pinned revision's status row; one more row a licence) and, for a
+  personal licence, `OwnCharter` (the holder now owns the charter it is sold under, so the
+  holder would be buyer and seller at once; from the economy's title, no row). It is derived at
+  every read and never stored. `Inventory` leaves a stopped licence out; `Status` answers it.
+- **Both renewal services stop on it.** In `mind_renewal/service.rs` and
+  `mind_house_renewal/service.rs`: the scan admits no stopped licence; a draft entry admitted
+  before the stop arose ends at its next turn; the player's `request`, `accept` and `retry`
+  answer the lasting line and submit nothing (a decline of an open offer still goes through; a
+  funded offer still runs to its grant or refund). Nothing in the service's memory decides it,
+  so the next scan and a restart's first scan are told the same by the Roll.
+- **`+minds/renew` says why**, in the ruled words (`player::RENEW_STOPPED`): "This licence cannot
+  be renewed: <reason>. Nothing further will be tried." The reasons are "the Registry recalled
+  this mind", "its author withdrew this mind" and "you now own this mind's charter".
+
+**Tests.**
+
+- `mush-roll`, `commerce::withdrawal::sellable::tests` (six): each of the four ways a listing
+  dies and `Unproved`, the Grace boundary, the parent choice (bound licence, replacement, a
+  later owner with none), and the declared row costs. `commerce::renewal::reader::service_tests`
+  (two new): the three lasting causes and their order; an entry that is not stopped serialises
+  as before.
+- `mush-market`, `mind_commands::tests` (four new): a listing the Roll calls unsellable leaves
+  `Listings`, `ListingByCode` and `ProcurementListings`, is never asked about when the policy
+  already dropped it, and still serves as a cursor; a dead row does not count toward a code's
+  ambiguity; over 200 dead derived listings no read spends more than core's allowance, every
+  cursor moves forward and the one live listing behind them is reached; a full page followed
+  only by dead listings is the last page. `mind_renewal::tests` (one new): the ruled sentence
+  for each cause, exhaustively, and the House type is the same type.
+- The two stories are rewritten (`player_market_story.rs`, `player_market_typed.rs`). The typed
+  story: after the typed `Withdraw` the `mind.market` panel has no rows and the empty counter's
+  notice. The command story: both listings read on the counter within the owner term's Grace;
+  after `@mind/attest` they are gone and the code is not found (see Divergences); after
+  `@mind/withdraw` the counter is still empty, no quote row is added, and `+minds/renew` answers
+  the withdrawn line with no renewal operation opened; after the recall and the restart it
+  answers the recalled line, again with none opened. Both run on the CI dispatch only.
+
+**Divergences.**
+
+- **An owner's attestation takes that owner's listings off the counter.** A listing freezes the
+  owner term it was made under, and a quote has always refused a listing whose frozen subject
+  differs from the Roll's current facts (`mind_entitlement::offers::current_listing`). So once
+  `@mind/attest` opens the owner's next term, every listing made under the earlier term could
+  already not be quoted; it used to stay on the counter and now leaves it, and the author has to
+  list again. The same holds for any change of the charter's title revision. The command story
+  pins it. Whether a listing should survive its owner's attestation is a rule of the quote, not
+  of this unit, and is the owner's to decide.
+- **"Expired" is not a terminal state here.** The brief named recalled, withdrawn and expired.
+  The renewal protocol renews an expired predecessor on purpose (the reader's descriptor says
+  `expired_predecessor_permitted`), there is no renewal deadline anywhere in the Roll, and the
+  service only begins once a term has ended. Leaving lapsed licences out would turn the service
+  off. `OwnCharter` is added instead: it is the second cause doc 17g §7 recorded for the fault.
+- **A lasting refusal is known before a draft is sent, not learned from one.** A refused draft
+  tells the service nothing (the provider answers one uniform refusal and the observation is
+  `NoIntent` with no payload), so the lasting causes are read from the Roll's rows. The service
+  therefore tries a recalled licence not once but never; an entry it already held ends at its
+  next turn.
+- **The reason phrases are a default.** The sentence is the owner's ruling; the three phrases
+  that fill "<the Registry's reason>" are this unit's wording.
+- **The counter's answer is slimmer than a quote's.** It proves no ancestry, root, rating or
+  royalty evidence, so a listing it shows can still refuse a quote (a re-conformed rating, a
+  product the policy now computes differently, a buyer-specific refusal).
+- **Fingerprints move.** The seven read grants enter the state-family registry's fingerprint and
+  the descriptor's version enters the mechanics registry's. Neither is pinned in the tree;
+  `tacsim/src/hardware/flow/launch.rs`' check of the read's version is updated to 3.
+
+Two of these would take real work to undo: the budgeted page loop (the old loop is gone, and
+`ProcurementListings` now shares the new one), and the choice to read the Roll inside the
+market's read rather than from the caller, which is why the answer has to be slim.
+
+**Not built.**
+
+- No back-off for a passing refusal. A draft that refuses for a cause that is not one of the
+  three (a derivative waiting on its parent author's renewal, a short wallet, a pending resale,
+  an officer without the grant, and also any fault this unit does not classify: a charter an
+  organisation holds, a retired House purchase template, an integrity mismatch) is still retried
+  once a real second, as before, and the holder still reads the uniform line.
+- The House agent keeps no memory of a dead listing it had already quoted; it is simply not
+  handed the listing again, and its open quote expires as any quote does.
+- No change to the quote path, to `+minds/holdings`, or to tacsim's commands.
+
+**Not pinned by a story.**
+
+- No engine-level test drives the renewal service over a recalled or withdrawn revision; the
+  command story on the CI dispatch is the only run that does, and only for the personal service.
+  The House service's stop has no story at all.
+- "A derivative waiting on its parent's renewal is still retried" holds by construction (it has
+  no `RenewalStop`, and the retry path is untouched) and has no test of its own.
+- `ParentLicence`, `SellerLicence` by revocation or bar, and `CharterMoved` are pinned by the
+  Roll's unit tests on the decision alone; no story lists a derived mind and then lapses its
+  parent.
+- The House agent's list is pinned over the in-memory listing family; the procurement stories
+  (`m8_world`) run it over real rows without a dead listing among them.
 
 ## MW.3
 
@@ -89,7 +220,22 @@ Not built.
 
 ## MW.4
 
-Not built.
+Docs only (2026-11-11). Each ruling is written where its question was first asked, as "Ruled
+2026-11-11 (doc 44 Q-44-n)"; no question was deleted and no surrounding text rewritten.
+
+- `17-unit-minds.md`: D-UM-56 (Q-44-9); Q-UM-12, Q-UM-14, Q-UM-18 (Q-44-10).
+- `17g-m7-completion-plan.md`: §3 C4 (Q-44-15); §4's paid Follow and §5 item 4 (Q-44-11); §5
+  item 3 (Q-44-5); §5 item 5 (Q-44-9, Q-44-10); §7's renewal-retry finding (Q-44-14).
+- `17h-m8-contraband-procurement-plan.md`: the heirloom (Q-44-12); the House term (Q-44-13).
+- `36-ground-combat-after-the-field.md`: Q-36-41 (Q-44-7); Q-36-43 (Q-44-21).
+- `03-llm-integration.md`: the status line, from `LlmFeature` and its callers (§4 G), with Q-44-29
+  and Q-44-6.
+- `27-ic-field-operations-design-and-survey.md`: Q-H5 (Q-44-35 to Q-44-38).
+- `42b-surrender.md`: the yielded hull that keeps firing on a busy exit (§4c row 22), checked in
+  `field/raiders.rs`.
+- `23-ic-sorties.md`: §14 S.2's owed list, a wrecked ship's epoch (§4c row 26), checked in
+  `port/epoch.rs`.
+- `README.md`: the 17g row.
 
 ## MW.5
 
@@ -184,11 +330,75 @@ Not built.
 
 ## MW.15
 
-Not built.
+The story doc 36 owed for SCREEN and SUPPORT flown as delivered orders (doc 44 §7.1; doc 36 cut
+GC.0's "Not built"; Q-36-42). No engine code changed: the cut is a test rig and a story.
+
+**Built.**
+
+- **`roster_rig`** (`crates/tacsim/tests/support/field/roster_rig.rs`), the rig that flies a
+  detachment's roster into a field in tacsim's own world harness. `fly` is `mush-server`'s
+  `pair_field_fixture` on `driving_rig`'s composed world, every step the production command:
+  the hire at the Slack Line (`+sortie/crew`, `+sortie/hire`), a leased prospector a slot with
+  its operational loans (`+tv/lease go`, `+tv/<n>/permissions go`), the crew brought aboard
+  (`+sortie/board`), the voyage to the site, the sub-loan to each NPC
+  (`@unitgrant/issue … operate_crew parent=<loan>`), the leader's own boarding
+  (`+tv/<n> board`, `+focus`), the plan (`+sortie/draft`, `+sortie/accept`, `@station/handoff`,
+  `+sortie/ready`, `+sortie/activate`), each NPC's seat (`+sortie/seat`), the launch
+  (`+sortie/launch`) and the refresh until the field command names a leader.
+- Its parts are what MW.14a's story needs next: `Plan` takes any billets (a `Leader`, a `Hired`
+  crew member by name) and a `commander` by name; `commit` lands whatever a line queued on the
+  composed path whoever owns the action (tacsim's, Org's unit grants, Sim's helm hand-off, which
+  `driving_rig::drain` drops); `apply_due` lands a due scheduled action on the composed scheduled
+  path (Sim's `control_handoff_apply`, the lander doc 36 said such a story needs); `beat` is one
+  world second of both; `fence` and `reply` read the order prefill and a sent order's status off
+  `+sortie/orders`, as a player's client does.
+- **The story** (`crates/tacsim/tests/domain_field/field_mw15.rs`), at 256 on Ahuna Flank and at
+  512 on Urvara Reach. A captain leads a mining roster from rig 1 with Ilya Mendes hired into rig
+  2. A second captain's armed hull escorts and a third party's armed hull stands off it; the
+  escort's `+field/fire` promotes the site and three parties are admitted. Then, by the leader's
+  own `ORDER DT:… ` lines:
+  1. `2 SCREEN 90`: the order is delivered, stands on Mendes's own frame, the rig turns onto 90
+     degrees and the WILCO comes back. The leader drives four cells off and the screen stays on
+     its cell and its bearing;
+  2. `2 SUPPORT 1`: the rig leaves the cell it screened from, closes to its station on the
+     leader's rig, and answers WILCO;
+  3. `2 SCREEN 270`: the rig turns onto the new bearing, so the bearing it holds is the order's;
+  4. `2 SUPPORT 2` (its own slot): NEGATIVE, and the screen goes on standing.
+
+**Tests.** `field_mw15::mw15_a_rosters_screen_and_support_are_delivered_and_obeyed` and
+`…_at_512` in `domain_field`. Local, Windows: 85 s and 81 s, each passing alone. GC.0's two
+in-source gates are untouched.
+
+**Divergences.**
+
+- **One NPC flies both orders, in turn.** A Dray-P's bay holds two rigs, so a roster with a
+  player leader has one hired NPC (`fly` refuses a third billet). The row's "the screening unit"
+  and "the supporting unit" are the same rig under two successive orders, with the screen's hold
+  checked while the leader moves away and the supporter's close checked after it.
+- **"Keeps to its charge" is the doctrine's station, with the motor's tolerance.** The supporter
+  ends within `SUPPORT_STATION_CELLS` (5) of its own plot of the charge plus the kernel motor's
+  arrival tolerance; the story allows two cells for that.
+- **The escort and the intruder are fixture hulls with players seated** (CF.2's `armed_on` and
+  `seat`), not the content's raider on its doctrine, so nobody fires after the opening order and
+  the story does not hang on the field's dice. Three parties stand in the field; only the roster
+  is under test.
+- **The rigs are stood on their cells by a staff hand** after the launch, as every field story
+  places its units.
+
+**Not built.** A SUPPORT whose charge is another NPC's rig (it needs a third bay), and SCREEN or
+SUPPORT under fire with a Hostile in the screen's arc: the story is about delivery and obedience,
+not the stand the doctrine takes. A restart with an order standing.
+
+**Not pinned by a story.** The jammed and the damaged carrier relay holding these two orders back
+(FR.5's stories pin that for the orders they fly). A SUPPORT refused for a charge in another party
+or outside the field, which GC.0's in-source gate covers and this story covers only for the
+recipient's own slot.
 
 ## MW.16
 
-Not built.
+Surveyed as [doc 45](45-the-absent-player.md): every way a player can be absent while something of theirs is exposed, what the game does and what an attacker can do today, checked in the tree.
+Twenty-five owner questions, Q-45-1 to Q-45-25, open at their defaults; no units of work until they are ruled.
+PR #533.
 
 ## MW.17
 
@@ -387,7 +597,166 @@ Not built.
 
 ## MW.24
 
-Not built.
+SSH `mind push`, `mind pull` and `mind check` without a presence (doc 44 §7.1; §4c row 23;
+Q-44-35 to Q-44-37, whose hand-back at reconnect is why this had to land first, §7.4).
+
+**Built.** A **bare connection**: one bound to a character so that an invoke on it runs as them
+and its reply reaches it, and nothing else. It is carried end to end as its own pair of
+messages, not as a flag on `ConnUp` (see Divergences).
+
+- **The engine** (`crates/mush-core/src/engine.rs`). `Inbound::BareUp { conn, actor }` and
+  `Inbound::BareDown { conn, actor }`. `bare_up` binds the connection in the world
+  (`World::bind_connection`, the one thing `handle_invoke` checks) and records it in the engine's
+  connection map with `ConnInfo::bare`. It does not touch `conn_count`, `set_live_conns`,
+  `set_connected` or `session_start`, announces nothing, and fires no hook and no world event;
+  `bare_down` undoes exactly that. So `World::is_connected`, `has_live_conns`, `connected()`,
+  `Engine::connections_of` and `WHO` cannot see one. `Engine::actor_of` does answer for it,
+  which is what the gateway's readiness probe asks. A `BareDown` for a connection that is not
+  bare is ignored, and a `BareUp` on a live connection's id is ignored, so a stray frame cannot
+  take a player's real connection down or over. `conn_down` on a bare connection is silent
+  (a link that ends takes everything it owned down as `Lost`), and `session_gone` leaves a bare
+  connection bound, so an exec that outlives its player's grace still gets its reply.
+- **The wire** (`crates/mush-ipc`). `WireInbound::BareUp` and `BareDown`, mirrored field for
+  field. Two new `ToServer` arms, so **`IPC_VERSION` 13 → 14**, the first bump inside doc 33's
+  window: the golden set `tests/golden/v14/` is recorded (34 `ToServer`, 43 `ToGateway` frames;
+  the two new samples are last among the `Inbound` ones, so every older frame keeps its number)
+  and the v13 set still decodes. Nothing is gated toward the gateway (no `ToGateway` frame
+  changed). **Deploy order is the window's: the server first.** A 14 server serves a 13 gateway,
+  which never sends either frame and attaches its exec in full as before; a 14 gateway refuses
+  a 13 server. 12 leaves the window, so a gateway that sends no `Hello` is now refused.
+- **The server** (`crates/mush-server`). The two frames are classed with the lifecycle
+  messages in `world_task/mode.rs` (`ConnectionHooks`, held in the lifecycle slot behind a
+  pending commit, allowed in an outage countdown), so they keep `ConnUp`'s ordering against a
+  commit and against the invoke behind them. `LinkRegistry::claim_bare` (`links.rs`): the link
+  owns the connection for routing and a duplicate id is refused as for any other, but the claim
+  does not clear a `SessionGone` the link owes for that actor, and a link that ends with a bare
+  connection up does not reap its actor on that account.
+- **The session manager** (`crates/mush-session/src/manager.rs`). `attach_bare`,
+  `detach_bare`, `bare_conns`, `character_of_conn`. A bare connection lives in its own map:
+  no session is made, joined or revived, the link-dead epoch is not read or written, the
+  link-dead observer is not called, and it receives nothing addressed to the character, a
+  session or everyone. `send_to_conn`, `conn_handle` and the flood bucket work on it by id.
+- **The gateway** (`crates/mush-gateway`). `GameBridge::enter_bare`: `attach_bare`, a
+  `BareUp`, then the same exact readiness probe a login makes (`ServiceReq::ConnectionReady`);
+  a refusal sends a `BareDown` and undoes the attach. `GameBridge::disconnected` ends a bare
+  connection with a `BareDown` and nothing else: no `ConnDown`, no reaper. `SshBridge::connect_exec`
+  makes the same ownership check as `connect_character` and then `enter_bare`; the exec is
+  still watched by a gateway drain (doc 33 §4.6). After a server restart `resync_boundary`
+  sends a `BareUp` for each bare connection behind the roster and ahead of the barrier, so the
+  invoke the gateway replays from input custody finds its binding and an exec caught by a
+  restart completes, as it did when it was an ordinary connection. `ReAnnounce` itself is
+  unchanged, and a bare connection is never in it.
+- **The SSH transport** (`crates/mush-net-ssh`). `SshHooks::connect_exec`, called by
+  `start_mind_exec` in place of `connect_character`. Who may run the exec is untouched: verified
+  public key, an owned character.
+- **The doorway** (`crates/mush-sshdoorway/src/server.rs`). The pump writes an injected line
+  only into a channel whose client asked for a shell (`PumpCtx::shell`, set by `shell_request`
+  before it relays, and at once for the menu's channel). Until then the lines wait in the
+  queue; in an exec or a subsystem they are never written. The session is still closed at the
+  drain's deadline.
+
+**Tests.** All run on Windows and Linux unless marked.
+
+- `mush-core`: `a_bare_connection_is_never_presence` and
+  `a_bare_frame_never_touches_a_live_connection` (`tests/module_api.rs`; the toy module now
+  records the `revived` and `linkdead` hooks as well): offline, link-dead, grace expiring under
+  a bare connection, a `Lost` teardown, and the six hook and event lists compared before and
+  after. `engine::typed_invoke_tests::an_invoke_runs_over_a_bare_connection`.
+- `mush-session` (`tests/session.rs`): `a_bare_connection_has_no_session_and_leaves_none`,
+  `a_bare_connection_does_not_touch_a_linkdead_window` (four minutes in; the expiry instant is
+  compared), `a_bare_connection_beside_a_live_session`.
+- `mush-ipc`: the round trip and conversion cases gain both frames; the golden suite; the
+  version pins moved to 14. `window::tests::a_frame_newer_than_the_link_is_withheld` is now
+  written against the window instead of the numbers 12 and 13.
+- `mush-server`: `links::tests::a_bare_claim_routes_and_owes_no_reaping`;
+  `admit_gateway_pins_the_window_and_the_marker` now pins that a gateway with no `Hello` is
+  refused. `tests/split_boundary/ipc_window.rs` is rewritten for the window as it now stands:
+  a gateway one step behind is served in full, one at the server's version is served, one with
+  no `Hello` and one a step ahead are refused.
+- `mush-gateway`: `ssh_bridge::exec_tests` (four, against a link that records every frame):
+  an offline exec sends `BareUp`, the invoke and `BareDown` and never `ConnUp`, `ConnDown` or
+  `SessionGone`; an exec four minutes into a link loss leaves the expiry instant where it was;
+  a server that does not bind it refuses and undoes it; a character the account does not own
+  is refused before anything is sent. `resync_orders_full_roster_before_readiness_barrier`
+  gains the bare connection's `BareUp` between the roster and the barrier.
+- `mushd`: `mw24_a_mind_exec_is_never_presence` (`tests/world_journeys/ssh_e2e.rs`), over real
+  SSH on the all-in-one server with a second player watching the room: an offline player's
+  `mind pull` answers as them, nobody is told anything and `WHO` has no row; a connected
+  player's own exec works; an exec halfway through a real link loss is announced as nothing,
+  and the character is disconnected when the original grace ends, less than one grace after
+  the exec.
+- `mush-sshdoorway`: `a_drain_warns_a_shell_and_writes_nothing_into_an_exec`
+  (`tests/e2e.rs`): a spliced shell reads the warning while a `mind pull` through the same
+  doorway gets its one result line and no other byte.
+- The existing SSH mind stories are unchanged and are the "still works" half:
+  `mush-net-ssh` `tests/loopback.rs` (`mind_exec_*`) and `mush-bot`
+  `arena_mind_author_story.rs`.
+
+Run on the Windows box: the `mush-core`, `mush-session` and `mush-ipc` tests above; the
+doorway's `tests/e2e.rs` (34 passed; with the pump's condition taken out the new test fails on
+the warning in the exec's output, so it tests the fix); `mush-net-ssh` `mind_exec` (3); the
+gateway's `exec_tests` and the resync test (5); the `mushd` story (with the old full attach put
+back it fails on "Nick has connected."); `mush-contract-tests` (35 + 80 + 76); clippy with
+warnings denied and rustdoc on the eight changed crates. Left to the Linux CI: everything in
+`mush-server`, and the gateway's `tests/split_halves/*` and
+`tests/split_boundary/unit_signals.rs` (`cfg(unix)`, so the `Hello` added to
+`server_panic_relaunch.rs` was not even type-checked here). CI ran all of them green on the
+first full run but one: `mush-server`'s
+`ic_slice_loop::ic12_part_two_the_queue_runs_the_return` ("a sale is never negative"), a
+trade story that builds no bare connection. It passed when its cell was run again on the
+same commit, so it is a flake of that story's own (it ran 93 s on a loaded runner), owed a
+look by doc 18's owner and not touched here.
+
+**Divergences.**
+
+- **Two messages, not a flag on `ConnUp`.** The row says "a flag from the SSH hook through the
+  gateway bridge and the IPC message to `Engine::conn_up` and `conn_down`". A field on
+  `Inbound::ConnUp` would have edited about 110 sites that build one, in fifty files, most of
+  them other chains' tests, for a connection that shares none of `ConnUp`'s behaviour. As its
+  own variant every exhaustive match had to choose what a bare connection is, which is where
+  the server's classes and the link registry's rule came from. **Costly to undo** only in the
+  sense that it is now wire vocabulary (version 14).
+- **A bare connection takes no slot of the split gateway's lifecycle ledger**
+  (`LifecycleCustody`). That ledger counts sessions and the `SessionGone` each may owe, and
+  reserving in it converts a link-dead player's owed `SessionGone` into the new connection,
+  which is the bug this unit removes. A bare connection is bounded by the SSH accept gates and
+  by public-key authentication instead.
+- **`SshHooks::connect_exec` has a default** that attaches in full, so the test doubles of four
+  crates keep compiling and keep their old behaviour. The gateway is the one production
+  implementer and overrides it.
+- **A subsystem channel through the doorway gets no banner either.** The rule is "only a
+  shell", which is wider than "not an exec" by that one case.
+- **Bare frames are refused by a world mode that refuses connections** (booting, recovering,
+  integrity-frozen): the exec is then refused at the readiness probe with "Character
+  attachment was refused.", as it was before.
+- **An exec no longer holds its character connected, so it no longer shields them.** The
+  workshop cancels a character's authoring jobs when they go link-dead or disconnect
+  (`WorkshopCommands::linkdead`). While the exec was a live connection, a player whose shell
+  dropped during their own `mind check` was not link-dead until the exec ended; now they are
+  at once, and that check is cancelled with their other jobs. In the other direction, the end
+  of an offline player's exec used to fire that hook and now fires nothing: a job the client
+  abandoned runs to its own bound and its result is dropped by the connection lease
+  (`structured.rs`), which is what already happened for a player connected elsewhere.
+
+**Not built.**
+
+- A story on the split pair (gateway and server as two processes) for the exec, and one for an
+  exec caught by a server restart. The resync order is pinned by a unit test; the replayed
+  invoke reaching its binding on a fresh server is not run anywhere.
+- A story that a ship or a field unit held by a backup mind stays held through an exec. It is
+  true by construction (the space seat and the arena bridge act on the `connected`, `revived`
+  and `linkdead` hooks and on `has_live_conns`, and none of those moves), and the engine test
+  pins exactly those; no tacsim story flies it.
+- The exec's refusal still reads "Character attachment was refused." whatever the reason (a
+  restart gap, a busy world).
+- A second shell channel opened after an exec on the same doorway connection gets no drain
+  warning (the inject queue belongs to the first channel). The connection is still closed at
+  the deadline.
+
+**Not pinned by a story.** `BareUp` and `BareDown` behind a pending commit (the lifecycle
+slot); a duplicate bare id across two gateway generations; a gateway drain's deadline closing
+an exec in flight; a link's end with a bare connection up, end to end (the registry half and
+the engine half are each pinned).
 
 ## MW.17b
 

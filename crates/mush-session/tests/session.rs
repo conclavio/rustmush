@@ -526,3 +526,144 @@ fn conns_of_session_lists_handles_in_attach_order() {
         "unknown session lists nothing"
     );
 }
+
+// ---- bare connections (doc 44 unit MW.24) --------------------------------
+
+/// A bare connection is bound to a character and to no session: it can be
+/// sent to by its id, and nothing else in the manager can find it. An offline
+/// character stays without a session behind one, and its end leaves nothing
+/// linkdead.
+#[test]
+fn a_bare_connection_has_no_session_and_leaves_none() {
+    let mgr = SessionManager::new();
+    let t0 = Instant::now();
+    let (c1, mut rx1) = conn_at(1, 1, 8, t0);
+    assert!(mgr.attach_bare(c1, CharKey(42)));
+
+    assert_eq!(mgr.character_of_conn(ConnId(1)), Some(CharKey(42)));
+    assert!(mgr.conn_handle(ConnId(1)).is_some());
+    assert_eq!(mgr.bare_conns(), vec![(ConnId(1), CharKey(42))]);
+    assert_eq!(mgr.session_of_conn(ConnId(1)), None);
+    assert_eq!(mgr.session_of_char(CharKey(42)), None);
+    assert_eq!(mgr.session_count(), 0);
+    assert_eq!(mgr.connection_count(), 0);
+    assert!(mgr.who().is_empty(), "WHO has no row for it");
+
+    // Addressed by its id it is reached; by character or by everyone, not.
+    let event = ev("the reply");
+    assert_eq!(
+        mgr.send_to_conn(ConnId(1), Arc::clone(&event)),
+        SendToConn::Delivered
+    );
+    assert!(Arc::ptr_eq(&rx1.try_recv().expect("the reply"), &event));
+    assert_eq!(mgr.send_to_char(CharKey(42), ev("room noise")).delivered, 0);
+    assert_eq!(mgr.broadcast_all(ev("@wall")).delivered, 0);
+    assert!(rx1.try_recv().is_err(), "nothing but what was sent to it");
+
+    // Its flood bucket is its own and is charged.
+    assert_eq!(mgr.check_query_flood_at(ConnId(1), t0), FloodVerdict::Ok);
+
+    // A session detach does not know it; its own does, and leaves nothing.
+    assert_eq!(mgr.detach(ConnId(1), DetachReason::Lost), None);
+    assert_eq!(mgr.detach_bare(ConnId(1)), Some(CharKey(42)));
+    assert_eq!(mgr.detach_bare(ConnId(1)), None);
+    assert_eq!(mgr.session_count(), 0);
+    assert_eq!(mgr.next_linkdead_expiry(), None);
+    assert!(mgr.take_expired(t0 + Duration::from_secs(600)).is_empty());
+    assert_eq!(mgr.character_of_conn(ConnId(1)), None);
+    assert_eq!(
+        mgr.send_to_conn(ConnId(1), ev("too late")),
+        SendToConn::Unknown
+    );
+    assert!(
+        matches!(rx1.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)),
+        "the handle is dropped, so the transport's queue closes"
+    );
+}
+
+/// A bare connection four minutes into a link loss: the session stays
+/// linkdead, its window keeps its start, the linkdead observer is not told
+/// again, and the session is reaped when it would have been.
+#[test]
+fn a_bare_connection_does_not_touch_a_linkdead_window() {
+    let mgr = SessionManager::new(); // default grace: 300 s
+    let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&told);
+    mgr.set_linkdead_hook(Arc::new(move |_, _| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let t0 = Instant::now();
+    let (c1, _rx1) = conn_at(1, 1, 8, t0);
+    let (sess, _) = mgr.attach(c1, CharKey(5), "kayla".into());
+    mgr.detach_at(ConnId(1), DetachReason::Lost, t0);
+    let expiry = Some(t0 + Duration::from_secs(300));
+    assert_eq!(mgr.next_linkdead_expiry(), expiry);
+    assert_eq!(told.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let (c2, mut rx2) = conn_at(2, 1, 8, t0 + Duration::from_secs(240));
+    assert!(mgr.attach_bare(c2, CharKey(5)));
+    assert!(mgr.is_linkdead(sess), "not revived");
+    assert_eq!(
+        mgr.next_linkdead_expiry(),
+        expiry,
+        "the window keeps its start"
+    );
+    let who = mgr.who();
+    assert_eq!(who.len(), 1);
+    assert!(who[0].linkdead);
+    assert_eq!(who[0].conns, 0);
+    // What the room says to a linkdead character goes to the ring, not here.
+    assert_eq!(mgr.send_to_char(CharKey(5), ev("room noise")).delivered, 0);
+    assert!(rx2.try_recv().is_err());
+
+    assert_eq!(mgr.detach_bare(ConnId(2)), Some(CharKey(5)));
+    assert!(mgr.is_linkdead(sess));
+    assert_eq!(
+        mgr.next_linkdead_expiry(),
+        expiry,
+        "and its end restarts nothing"
+    );
+    assert_eq!(
+        told.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the linkdead observer is told once, by the real loss"
+    );
+    assert!(mgr.take_expired(t0 + Duration::from_secs(299)).is_empty());
+    let reaped = mgr.take_expired(t0 + Duration::from_secs(301));
+    assert_eq!(reaped.len(), 1);
+    assert_eq!(reaped[0].sess, sess);
+}
+
+/// A connected character's session does not count a bare connection either,
+/// and an id that is already attached is refused.
+#[test]
+fn a_bare_connection_beside_a_live_session() {
+    let mgr = SessionManager::new();
+    let t0 = Instant::now();
+    let (c1, mut rx1) = conn_at(1, 1, 8, t0);
+    let (sess, _) = mgr.attach(c1, CharKey(7), "zoe".into());
+    let (c2, mut rx2) = conn_at(2, 1, 8, t0);
+    assert!(mgr.attach_bare(c2, CharKey(7)));
+
+    assert_eq!(mgr.connection_count(), 1);
+    assert_eq!(mgr.who()[0].conns, 1);
+    assert_eq!(mgr.conns_of_session(sess).len(), 1);
+    assert_eq!(mgr.send_to_char(CharKey(7), ev("a page")).delivered, 1);
+    assert!(rx1.try_recv().is_ok());
+    assert!(rx2.try_recv().is_err());
+
+    let (dup_live, _rx) = conn_at(1, 1, 8, t0);
+    assert!(
+        !mgr.attach_bare(dup_live, CharKey(7)),
+        "a live id is refused"
+    );
+    let (dup_bare, _rx) = conn_at(2, 1, 8, t0);
+    assert!(
+        !mgr.attach_bare(dup_bare, CharKey(7)),
+        "a bare id is refused"
+    );
+
+    assert_eq!(mgr.detach_bare(ConnId(2)), Some(CharKey(7)));
+    assert!(!mgr.is_linkdead(sess));
+    assert_eq!(mgr.connection_count(), 1);
+}

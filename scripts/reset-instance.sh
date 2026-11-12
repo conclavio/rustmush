@@ -19,10 +19,17 @@
 #      under it), owned by the user the unit runs as;
 #   4. optionally bootstrap the first staff login, then start the unit again.
 #
-# The rendered `mushd.toml` is NOT touched: the config is the thing you keep.
+# The rendered `mushd.toml` is kept: the config is the thing you keep. One line
+# of it is the exception, `[tacsim.minds].launch_path`, which names a document
+# of ids that died with the world; a live one is commented (step 3a below).
 #
 # Usage:
-#   sudo scripts/reset-instance.sh <instance.env> --yes [--unit <name>] [--staff <account>]
+#   sudo scripts/reset-instance.sh <instance.env> --yes [--unit <name>] [--staff <account>] [--no-start]
+#
+# --no-start leaves the unit stopped after the wipe (and the bootstrap, when
+# asked for): the first step of a bring-up that must keep players off until
+# the named launch is Active (doc 44 cut MW.1; deploy/instance/launch-bringup.py
+# starts the unit when it is).
 #
 # <instance.env> is the file the instance's mushd.toml was rendered from (see
 # deploy/instance/). It is READ, never sourced — a value here is a sed
@@ -37,7 +44,7 @@ set -euo pipefail
 set +x
 
 usage() {
-	echo "usage: $0 <instance.env> --yes [--unit <name>] [--staff <account>]" >&2
+	echo "usage: $0 <instance.env> --yes [--unit <name>] [--staff <account>] [--no-start]" >&2
 	exit 2
 }
 
@@ -45,6 +52,7 @@ env_file=""
 confirmed=0
 unit=""
 staff=""
+start=1
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -64,6 +72,10 @@ while [ "$#" -gt 0 ]; do
 		staff="$2"
 		[ -n "$staff" ] || usage
 		shift 2
+		;;
+	--no-start)
+		start=0
+		shift
 		;;
 	-h | --help)
 		usage
@@ -250,6 +262,11 @@ if [ -n "$staff" ]; then
 	fi
 fi
 
+# The rendered config beside the instance.env (deploy/README.md: the two are
+# kept together). Read for the launch line in step 3a; `--staff` has already
+# required it above.
+rendered="$(dirname "$env_file")/mushd.toml"
+
 echo "resetting instance '$instance': unit $unit, redis 127.0.0.1:$redis_port, data $data_dir"
 echo "preserving SSH host identity: $host_key (if present)"
 
@@ -276,13 +293,34 @@ if [ -d "$data_dir" ]; then
 fi
 install -d -o "$owner" -g "$group" -m 0750 -- "$data_dir"
 
+# 3a. The named launch (doc 44 cut MW.1). `[tacsim.minds].launch_path` names a
+#     document full of ids — organisations, accounts, rooms, characters — that
+#     belonged to the world just flushed, and the document itself lived in the
+#     data dir and went with it. Left live, the line refuses `--bootstrap-staff`
+#     below and then every boot (`launch deployment <path>: No such file`), so
+#     the unit would crash-loop on the fresh store. It is the ONE line of the
+#     rendered config a reset touches: commented, in place, owner and mode kept.
+#     deploy/instance/launch-bringup.py makes the launch again on the new world
+#     and renders the line live; a plain re-render (any deploy) also leaves it
+#     commented until that document exists.
+if [ -f "$rendered" ] && grep -q '^launch_path[[:space:]]*=' "$rendered"; then
+	cp -p -- "$rendered" "$rendered.reset"
+	sed 's|^launch_path[[:space:]]*=|# launch_path =|' "$rendered" >"$rendered.reset"
+	mv -- "$rendered.reset" "$rendered"
+	echo "took [tacsim.minds].launch_path out of $rendered: the launch it named went with the world"
+	echo "bring the launch up again with deploy/instance/launch-bringup.py once the instance is running"
+fi
+
 # 4. Bootstrap while no gateway can register a player first. Failure leaves
 #    the service stopped, so the operator can retry the CLI on the empty store.
 if [ -n "$staff" ]; then
 	printf '%s\n' "$staff_password" | runuser -u "$owner" -- "$bootstrap" --config "$config" --bootstrap-staff "$staff"
 	unset staff_password
 fi
-systemctl start "$unit"
-
-echo "instance '$instance' reset; configured boot packs are applied on startup."
+if [ "$start" -eq 1 ]; then
+	systemctl start "$unit"
+	echo "instance '$instance' reset; configured boot packs are applied on startup."
+else
+	echo "instance '$instance' reset and left STOPPED (--no-start); configured boot packs are applied when $unit starts."
+fi
 echo "Check START_ROOM / START_ROOM_UNAPPROVED before letting anyone connect."

@@ -39,10 +39,28 @@
 //! one (mush-core's `SessionStat::prev_input`) came after the offer opened. No sweep runs. The
 //! stamps are wall seconds, so a command typed in the demotion's own second is not seen as after
 //! it; and a reconnect seeds the stamp afresh, so a command typed before a drop is forgiven.
+//!
+//! **A leader who is not there** (doc 45 cut AP.2; Q-45-20). Ten IC minutes is twenty-five real
+//! seconds at the game's rate, so a leader who was not connected when the field demoted lost the
+//! offer before they could answer it. For a player leader who is not on watch at the demotion
+//! (not connected, or linkdead) the grant's window is written to end [`VOID_ABSENT_IC_S`] (28 IC
+//! days) after the demotion instead, and the offer **runs from their return**: on the
+//! connection or the revival `LeaderReturns` tells them what waits ([`VOID_WAITING`]) and
+//! stamps the IC second, and `+field/void` takes the offer until their next command or
+//! [`VOID_WINDOW_IC_S`] after that stamp, whichever is first, and never past the 28 IC days.
+//! A leader who lets it lapse and returns again inside the 28 IC days is offered it again. For a
+//! connected leader nothing changes: the same window, the same lines. An NPC leader is never
+//! waited for. Standing itself moves exactly as before, whoever is connected.
+//!
+//! A waiting offer is told from an ordinary one by what is left of it: an ordinary offer never
+//! has more than [`VOID_WINDOW_IC_S`] to run, so a window with more is waiting on its leader
+//! (`waiting`). Inside the last ten IC minutes of the 28 IC days a waiting offer is an ordinary
+//! one, open until its end or the leader's next command. The return stamps are RAM
+//! (`Returned`): a restart ends every session, and the next connection stamps again.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{CanonicalId, Ctx, ObjId, World};
+use mush_core::{CanonicalId, Ctx, EventHook, ObjId, World};
 
 use super::{FieldBook, FireRow};
 use crate::arena::PartyId;
@@ -57,6 +75,10 @@ pub const STANDING_FIELD_CAP: i16 = -10;
 /// **How long a leader may void friendly fire's standing** (provisional): ten IC minutes, unless
 /// the leader's next command comes first.
 pub const VOID_WINDOW_IC_S: i64 = 600;
+/// **How long a void waits for a leader who was not connected at the demotion** (doc 45 cut
+/// AP.2; Q-45-20; the owner's rule that a wait on a player's response is at least 28 IC days):
+/// 28 IC days from the demotion, taken or not.
+pub const VOID_ABSENT_IC_S: i64 = 28 * 24 * 3_600;
 
 /// **The change, told to each principal it moved** (`{n}` the field's ordinal, `{site}` its
 /// name, `{party}` the victim's letter, `{delta}` the change, `{factions}` the factions).
@@ -65,6 +87,11 @@ moves your standing with {factions} by {delta}.";
 /// **The void's offer**, told to the shooter party's leader.
 pub const VOID_OFFERED: &str = "Party {party} was a friend of yours: +field/void cancels the \
 standing your party's fire on it cost, until your next command or ten IC minutes.";
+/// **The offer that waited** (doc 45 cut AP.2), told to a leader on their return (`{n}` how many
+/// changes wait).
+pub const VOID_WAITING: &str = "While you were away your party's fire on a friend cost \
+standing: {n} change(s) wait on you. +field/void cancels them, until your next command or ten \
+IC minutes.";
 /// **The void**, told to the leader.
 pub const VOIDED: &str =
     "Voided as friendly fire: {n} standing change(s) your party's fire caused.";
@@ -190,10 +217,18 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
     let prefix = cause_prefix(site, ordinal);
     let site_name = crate::surface::act::site_name(ctx.w, site);
     let party = |id: PartyId| parties.iter().find(|row| row.party == id);
-    // Doc 40 cut FR.2 (Q-40-16): the window rides each grant, written once with it.
-    let window = mush_faction::VoidWindow {
-        opened_at: ctx.w.now(),
-        until_ic: ctx.w.world_ic_now().at.saturating_add(VOID_WINDOW_IC_S),
+    // Doc 40 cut FR.2 (Q-40-16): the window rides each grant, written once with it. Doc 45 cut
+    // AP.2 (Q-45-20): for a leader who is not there it ends 28 IC days on, and the offer runs
+    // from their return.
+    let opened_at = ctx.w.now();
+    let now_ic = ctx.w.world_ic_now().at;
+    let window_for = |w: &World, leader: ObjId| mush_faction::VoidWindow {
+        opened_at,
+        until_ic: now_ic.saturating_add(if absent(w, leader) {
+            VOID_ABSENT_IC_S
+        } else {
+            VOID_WINDOW_IC_S
+        }),
     };
     for ((shooter, victim), rounds) in counts {
         let (Some(by), Some(at)) = (party(shooter), party(victim)) else {
@@ -216,6 +251,7 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
         }
         let friendly = friends.contains(&(shooter.min(victim), shooter.max(victim)));
         let voidable_by = by.leader.filter(|leader| friendly && live(ctx.w, *leader));
+        let window = voidable_by.map(|leader| window_for(ctx.w, leader));
         let names = faction_names(ctx.w, &effects);
         let reason = format!(
             "Fire by party {} on party {} in field {ordinal} at {site_name}.",
@@ -241,7 +277,7 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
                 &effects,
                 &reason,
                 voidable_by,
-                voidable_by.map(|_| window),
+                window,
             ) {
                 Ok(_) => {
                     let line = STANDING_CHANGED
@@ -303,6 +339,72 @@ fn open(now_ic: i64, prev_input: Option<i64>, window: mush_faction::VoidWindow) 
     now_ic <= window.until_ic && prev_input.is_none_or(|prev| prev <= window.opened_at)
 }
 
+/// **Whether `window` is an offer waiting on its leader at `now_ic`** (doc 45 cut AP.2; this
+/// module's head): still inside its end, with more left than an ordinary offer ever has.
+#[must_use]
+fn waiting(now_ic: i64, window: mush_faction::VoidWindow) -> bool {
+    window.until_ic.saturating_sub(now_ic) > VOID_WINDOW_IC_S
+}
+
+/// **Whether a waiting offer is open to a leader who returned at `returned`** (doc 45 cut AP.2):
+/// [`VOID_WINDOW_IC_S`] from their return. An ordinary offer asks nothing here, and a leader no
+/// stamp was taken for is not refused on its account.
+#[must_use]
+fn within_return(now_ic: i64, returned: Option<i64>, window: mush_faction::VoidWindow) -> bool {
+    !waiting(now_ic, window)
+        || returned.is_none_or(|at| now_ic <= at.saturating_add(VOID_WINDOW_IC_S))
+}
+
+/// **Whether the field waits for `leader`** (doc 45 cut AP.2; Q-45-20): a player who is not on
+/// watch, which is not connected or linkdead. An NPC is never waited for.
+#[must_use]
+fn absent(w: &World, leader: ObjId) -> bool {
+    w.get(leader)
+        .is_some_and(|object| object.kind == mush_core::ObjKind::Player)
+        && !crate::port_tick::on_watch(w, leader)
+}
+
+/// **When each leader with a waiting offer last returned** (doc 45 cut AP.2), as an IC second.
+/// RAM: a restart ends every session, and the next connection stamps again.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Returned(BTreeMap<ObjId, i64>);
+
+/// **A leader returns** (doc 45 cut AP.2; Q-45-20): on a connection or a revival, a leader with
+/// offers that waited is told so and the offer's ten IC minutes start.
+#[derive(Debug)]
+pub(crate) struct LeaderReturns;
+
+impl LeaderReturns {
+    fn returned(ctx: &mut Ctx<'_>, actor: ObjId) {
+        let now_ic = ctx.w.world_ic_now().at;
+        let waits = mush_faction::voidable_causes(ctx.w, "field:", actor)
+            .into_iter()
+            .filter(|(_, window)| window.is_some_and(|window| waiting(now_ic, window)))
+            .count();
+        if waits == 0 {
+            return;
+        }
+        if let Some(book) = ctx.w.module_state_mut::<Returned>() {
+            book.0.insert(actor, now_ic);
+        }
+        ctx.out.sys_to_actor(
+            actor,
+            "tacsim.field",
+            VOID_WAITING.replace("{n}", &waits.to_string()),
+        );
+    }
+}
+
+impl EventHook for LeaderReturns {
+    fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        Self::returned(ctx, actor);
+    }
+
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        Self::returned(ctx, actor);
+    }
+}
+
 /// **`+field/void`**: the actor voids every open change naming it (doc 40 cut FR.2: each grant
 /// under `field:` it may void whose window is still open). The close is read here, in the command
 /// path: an offer closes at the actor's next command, so a void typed after another command is
@@ -311,9 +413,18 @@ pub(crate) fn void(ctx: &mut Ctx<'_>) {
     let actor = ctx.actor;
     let now_ic = ctx.w.world_ic_now().at;
     let prev_input = ctx.w.session_stat(actor).and_then(|stat| stat.prev_input);
+    // Doc 45 cut AP.2: an offer that waited for the actor runs from their return.
+    let returned = ctx
+        .w
+        .module_state::<Returned>()
+        .and_then(|book| book.0.get(&actor).copied());
     let causes: Vec<String> = mush_faction::voidable_causes(ctx.w, "field:", actor)
         .into_iter()
-        .filter(|(_, window)| window.is_some_and(|window| open(now_ic, prev_input, window)))
+        .filter(|(_, window)| {
+            window.is_some_and(|window| {
+                open(now_ic, prev_input, window) && within_return(now_ic, returned, window)
+            })
+        })
         .map(|(cause, _)| cause)
         .collect();
     let mut voided = 0_usize;
@@ -405,6 +516,70 @@ mod tests {
         assert!(
             !open(window.until_ic.saturating_add(1), None, window),
             "the IC window ends it"
+        );
+    }
+
+    /// **Doc 45 cut AP.2.** An offer written for a leader who was away ends 28 IC days after
+    /// the demotion and runs ten IC minutes from their return; an ordinary offer is untouched by
+    /// any of it.
+    #[test]
+    fn ap2_a_waiting_offer_runs_from_the_leaders_return_and_ends_at_28_ic_days() {
+        let demoted_ic = 1_000_000;
+        let ordinary = mush_faction::VoidWindow {
+            opened_at: 50,
+            until_ic: demoted_ic + VOID_WINDOW_IC_S,
+        };
+        let waits = mush_faction::VoidWindow {
+            opened_at: 50,
+            until_ic: demoted_ic + VOID_ABSENT_IC_S,
+        };
+        // An ordinary offer is never waiting, and no return stamp opens or closes it.
+        assert!(!waiting(demoted_ic, ordinary));
+        assert!(within_return(demoted_ic + 10, None, ordinary));
+        assert!(within_return(demoted_ic + 10, Some(0), ordinary));
+        assert!(open(demoted_ic + VOID_WINDOW_IC_S, None, ordinary));
+        assert!(!open(demoted_ic + VOID_WINDOW_IC_S + 1, None, ordinary));
+        // The leader returns three IC days on: ten IC minutes from then, and their next command
+        // still closes it.
+        let back = demoted_ic + 3 * 86_400;
+        assert!(waiting(back, waits));
+        assert!(open(back + 30, None, waits) && within_return(back + 30, Some(back), waits));
+        assert!(
+            !within_return(back + VOID_WINDOW_IC_S + 1, Some(back), waits),
+            "ten IC minutes after the return it has lapsed"
+        );
+        assert!(
+            !open(back + 30, Some(60), waits),
+            "another command closed it"
+        );
+        // A later return inside the 28 IC days offers it again.
+        let again = demoted_ic + 20 * 86_400;
+        assert!(within_return(again + 5, Some(again), waits));
+        // Past the 28 IC days it is gone, returned or not.
+        let late = demoted_ic + VOID_ABSENT_IC_S + 1;
+        assert!(!open(late, None, waits));
+        // Inside the last ten IC minutes of the 28 IC days it is an ordinary offer.
+        let last = demoted_ic + VOID_ABSENT_IC_S - 60;
+        assert!(!waiting(last, waits));
+        assert!(open(last, None, waits) && within_return(last, None, waits));
+    }
+
+    /// **Doc 45 cut AP.2.** Only a player who is not on watch is waited for.
+    #[test]
+    fn ap2_only_an_absent_player_is_waited_for() {
+        let mut w = World::new_minimal();
+        let make = |w: &mut World, kind, name: &str| {
+            w.create(kind, name, mush_core::GOD, Some(mush_core::LIMBO))
+                .expect("a character")
+        };
+        let player = make(&mut w, mush_core::ObjKind::Player, "Lead");
+        let npc = make(&mut w, mush_core::ObjKind::Npc, "Raider");
+        assert!(absent(&w, player), "a player with no connection");
+        assert!(!absent(&w, npc), "an NPC is never waited for");
+        w.set_connected(player, true);
+        assert!(
+            absent(&w, player),
+            "linkdead: marked connected, no live transport"
         );
     }
 

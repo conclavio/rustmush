@@ -600,6 +600,8 @@ data or the kernel's hashes.
   `@field/raiders/mark` verb.
 - **Why:** the multi-party field needs someone to be hostile without staff present. The pieces it
   needs (arrival, departure, doctrine) are being built in this phase anyway.
+- Ruled 2026-11-11 (doc 44 Q-44-7): the raid director is on, on both dev boxes (dev1 and dev2), at
+  this document's defaults.
 
 **Q-36-42 — SCREEN and SUPPORT on open ground.**
 - **Proposed default:** keep NEGATIVE on open ground, and document that both bind once a field
@@ -614,6 +616,8 @@ data or the kernel's hashes.
   Q-36-10's shared membership.
 - **Alternative:** one level of attachments per roster, for the 12v12 target.
 - **Why:** doc 26 deferred it until play shows the need. The cap is still 24.
+- Ruled 2026-11-11 (doc 44 Q-44-21): sub-leaders and the squad layer in IC fields both stay
+  deferred (Q-36-43 as ruled).
 
 ### H. Minds and crew
 
@@ -1160,8 +1164,9 @@ left something open, this is what the cut decided, for the owner to object to:
   the same field and party is NEGATIVE there too. The gates are in-source in `field/orders.rs`:
   SCREEN reaches the kernel as a screen facing its bearing, and SUPPORT binds only to another
   unit of the recipient's own party in the same field. *Not built:* a shard_1 story that flies
-  them as delivered orders. No tacsim test yet runs a DT roster to its field, and the hook below
-  is what such a story needs. No gate flies a roster through it yet (doc 36a lane 4, 2026-11-03):
+  them as delivered orders (built since as doc 44 unit MW.15, `field_mw15` over `roster_rig`).
+  No tacsim test yet runs a DT roster to its field, and the hook below is what such a story
+  needs. No gate flies a roster through it yet (doc 36a lane 4, 2026-11-03):
   its callers are `escort_lease`'s `gc0_the_harness_lands_the_org_unit_grant` and the escort
   story's own operational loan, and `field_gc3`'s and `field_gc4`'s launches and ticks.
 - **The harness hook** (Q-36-49). The Org unit grant failed in tacsim's world harness because its
@@ -3230,7 +3235,8 @@ Every cut of §7 has landed. What each as-built section left open, gathered in o
   - A restart between a raider's join and the next snapshot stands the raider at the pad (GC.11).
   - An epoch held by a DT flight is left open at a close-destroyed or a load (GC.3, GC.4).
   - ~~Releasing a tow inside a promoted field (GC.4).~~ Fixed by 36a lane 1 (P1-10): the release waits.
-  - A shard_1 story flying SCREEN and SUPPORT as delivered orders (GC.0).
+  - ~~A shard_1 story flying SCREEN and SUPPORT as delivered orders (GC.0).~~ Built as doc 44
+    unit MW.15: `field_mw15` over `roster_rig`, which flies a DT roster into a field.
 - **Recovery and salvage:**
   - Returning a vacated hull to its title holder (GC.6).
   - Hot parts on a vacated claim, and a salvor's strip (GC.6, GC.8b).

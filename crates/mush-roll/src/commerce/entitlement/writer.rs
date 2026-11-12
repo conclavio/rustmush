@@ -356,6 +356,17 @@ impl EntitlementPurchaseWriter {
         reg.delegate_state_family(&families.paid_holdings, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
         reg.delegate_state_family(&families.term_economics, "market")?;
+        // Doc 44 MW.2: `sellable` runs inside the market's own counter read
+        // and reads these through the market's lens; the market writes none
+        // of them (read-only grants). The parent licence, its term and the
+        // seller's bar are already delegated above.
+        reg.grant_state_family_read(&families.status, "market")?;
+        reg.grant_state_family_read(&families.licences, "market")?;
+        reg.grant_state_family_read(&families.revoked_terms, "market")?;
+        reg.grant_state_family_read(&families.operations, "market")?;
+        reg.grant_state_family_read(&families.owner_parents, "market")?;
+        reg.grant_state_family_read(&families.owner_qualification_heads, "market")?;
+        reg.grant_state_family_read(&families.owner_qualification_operations, "market")?;
         self.0
             .set(Registration {
                 families,
@@ -365,6 +376,27 @@ impl EntitlementPurchaseWriter {
                 derived,
             })
             .map_err(|_| ModError::msg("entitlement writer registration conflicts"))
+    }
+    /// Doc 44 MW.2 (Q-44-15): whether each listing the market froze can still
+    /// be sold, by the Roll's own rows (`withdrawal::sellable`, which says
+    /// what it checks and what it costs). For the market's own bounded read
+    /// alone: the rows are read through that read's lens, under the grants
+    /// `install` declares, and on its budget.
+    ///
+    /// # Errors
+    /// `Unavailable` before the Roll installs this writer or while its
+    /// commerce or the economy is not ready; `Limit` past
+    /// [`super::SELLABLE_SUBJECTS`] listings.
+    pub fn sellable(
+        &self,
+        ctx: &mush_core::read_service::OwnerReadContext<'_>,
+        subjects: &[super::ListedSubject],
+    ) -> Result<Vec<super::Sellable>, mush_core::read_service::OwnerReadError> {
+        let registration = self
+            .0
+            .get()
+            .ok_or(mush_core::read_service::OwnerReadError::Unavailable)?;
+        super::super::withdrawal::sellable::check(ctx, &registration.families, subjects)
     }
     pub fn validate_registration(
         &self,

@@ -204,6 +204,16 @@ fn a_release_fee_falls_due_after_28_ic_days() {
     );
 }
 
+/// 11. **Doc 45 cut AP.2** (Q-45-20): a friendly-fire void offered to a leader who was not
+///     connected when the field demoted waits for them at least the floor.
+#[test]
+fn an_absent_leaders_void_waits_at_least_28_ic_days() {
+    at_least(
+        "tacsim::field::standing::VOID_ABSENT_IC_S",
+        tacsim::field::standing::VOID_ABSENT_IC_S,
+    );
+}
+
 /// The first value under `key`, depth first.
 fn find<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     match value {

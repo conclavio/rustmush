@@ -25,6 +25,10 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 struct Memory {
     rows: BTreeMap<String, EntitlementListingV1>,
     scans: RefCell<Vec<(Option<String>, usize)>>,
+    /// Doc 44 MW.2: the listings the Roll says cannot be sold any more, and
+    /// the size of every batch it was asked about.
+    dead: BTreeSet<CommitToken>,
+    asked: RefCell<Vec<usize>>,
     actors: BTreeMap<ObjId, EntitlementActorIndex>,
     /// M8c S1: the organisations' rows and who acts for each.
     orgs: BTreeMap<mush_org::OrgId, EntitlementActorIndex>,
@@ -113,6 +117,18 @@ impl<'a> ListingSource<'a> for &'a Memory {
         let page: Vec<_> = rows.by_ref().take(limit).collect();
         Ok((page, rows.next().is_some()))
     }
+    fn sellable(&self, rows: &[&'a EntitlementListingV1]) -> Result<Vec<bool>, OwnerReadError> {
+        if rows.len() > SELLABLE_SUBJECTS {
+            return Err(OwnerReadError::Limit);
+        }
+        if !rows.is_empty() {
+            self.asked.borrow_mut().push(rows.len());
+        }
+        Ok(rows
+            .iter()
+            .map(|row| !self.dead.contains(&row.publication()))
+            .collect())
+    }
 }
 impl Memory {
     fn add(&mut self, row: EntitlementListingV1) {
@@ -120,6 +136,9 @@ impl Memory {
     }
     fn take_scans(&self) -> Vec<(Option<String>, usize)> {
         std::mem::take(&mut *self.scans.borrow_mut())
+    }
+    fn take_asked(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.asked.borrow_mut())
     }
     fn take_reads(&self) -> Vec<(&'static str, usize)> {
         std::mem::take(&mut *self.reads.borrow_mut())
@@ -1571,5 +1590,228 @@ fn org_own_purchase_funds_the_actors_own_quote() -> TestResult {
     );
     check_eq!(quote_of(b)?, Some(theirs), "B funds B's");
     check_eq!(quote_of(c)?, None, "C quoted nothing to fund");
+    Ok(())
+}
+
+/// Doc 44 MW.2 (Q-44-15): a listing the Roll says cannot be sold any more
+/// (withdrawn, recalled, lapsed with a licence, moved with its charter) is
+/// not current. It leaves the counter's pages, its code stops resolving, and
+/// the House agent's list drops it, so the agent is never handed it to quote
+/// again; the policy's own test still runs first, and the Roll is never asked
+/// about a listing the policy already dropped. A dead listing still serves as
+/// a `MORE` cursor, as a policy-stale one does.
+#[test]
+fn a_listing_the_roll_calls_unsellable_leaves_the_counter_and_the_agents_list() -> TestResult {
+    use crate::mind_entitlement::tests::{command_config, current_listing_fixture};
+    let config = command_config(400)?;
+    let older = command_config(300)?;
+    let live = token([0x30, 0, 0, 1], 1);
+    let dead = token([0x20, 0, 0, 1], 1);
+    let repriced = token([0x10, 0, 0, 1], 1);
+    let mut memory = Memory::default();
+    memory.add(current_listing_fixture(&config, live)?);
+    memory.add(current_listing_fixture(&config, dead)?);
+    memory.add(current_listing_fixture(&older, repriced)?);
+    let source = &memory;
+    let ask = |actor: u32, request| answer(&source, own(actor), || true, &config, request);
+    let listed = |request| -> TestResult<Vec<CommitToken>> {
+        Ok(ask(8, request)?
+            .into_listings()
+            .ok_or("a page")?
+            .rows()
+            .iter()
+            .map(PublicListingView::publication)
+            .collect())
+    };
+
+    // While the Roll answers yes for both, both are on the counter.
+    check_eq!(
+        listed(MarketCommandRequest::listings(None))?,
+        vec![dead, live]
+    );
+    check_eq!(
+        memory.take_asked(),
+        vec![2],
+        "one question, about the two listings the policy admits"
+    );
+
+    // The Roll now says one cannot be sold (the author withdrew it, say).
+    memory.dead.insert(dead);
+    let source = &memory;
+    let ask = |actor: u32, request| answer(&source, own(actor), || true, &config, request);
+    let listed = |request| -> TestResult<Vec<CommitToken>> {
+        Ok(ask(8, request)?
+            .into_listings()
+            .ok_or("a page")?
+            .rows()
+            .iter()
+            .map(PublicListingView::publication)
+            .collect())
+    };
+    check_eq!(listed(MarketCommandRequest::listings(None))?, vec![live]);
+    check_eq!(
+        ask(8, MarketCommandRequest::listing_by_code(&code(dead))),
+        Err(OwnerReadError::Refused),
+        "its code is not found, as a policy-stale one's is not"
+    );
+    let found = ask(8, MarketCommandRequest::listing_by_code(&code(live)))?
+        .into_listing()
+        .ok_or("a lookup")?;
+    check!(matches!(&found, CodeLookup::One(view) if view.publication() == live));
+    check_eq!(
+        listed(MarketCommandRequest::listings_after(&code(dead)))?,
+        vec![live],
+        "a dead listing still serves as a cursor"
+    );
+    memory.take_asked();
+
+    // The House agent's list (GOD's read, no counter) drops it too.
+    let agent = |request| answer(&source, own(1), || false, &config, request);
+    let page = agent(MarketCommandRequest::procurement_listings(None))?
+        .into_procurement_listings()
+        .ok_or("a page")?;
+    check_eq!(
+        page.rows()
+            .iter()
+            .map(|row| row.view().publication())
+            .collect::<Vec<_>>(),
+        vec![live],
+        "the agent is not handed a dead listing"
+    );
+    check_eq!(page.next(), None);
+    check_eq!(
+        memory.take_asked(),
+        vec![2],
+        "the Roll is not asked about the listing the policy dropped"
+    );
+    Ok(())
+}
+
+/// Doc 44 MW.2: only current rows count toward a code's ambiguity, and
+/// current includes the Roll's answer: a dead listing beside a live one that
+/// shares its code resolves to the live one.
+#[test]
+fn by_code_does_not_count_an_unsellable_row() -> TestResult {
+    let shared = [0xab, 0xcd, 0xef, 0x01];
+    let (first, second) = (token(shared, 1), token(shared, 2));
+    let mut memory = Memory::default();
+    memory.add(listing(first)?);
+    memory.add(listing(second)?);
+    let source = &memory;
+    check_eq!(
+        by_code(&source, "abcdef01", |_| true)?,
+        CodeLookup::Ambiguous
+    );
+    memory.dead.insert(first);
+    let source = &memory;
+    let found = by_code(&source, "abcdef01", |_| true)?;
+    check!(matches!(&found, CodeLookup::One(view) if view.publication() == second));
+    memory.dead.insert(second);
+    let source = &memory;
+    check_eq!(
+        by_code(&source, "abcdef01", |_| true),
+        Err(OwnerReadError::Refused)
+    );
+    Ok(())
+}
+
+/// Doc 44 MW.2: the Roll's answers are paid for out of the read's own
+/// allowance (core's `MAX_OWNER_READS` reads and `MAX_OWNER_READ_ROWS` rows),
+/// which the listing scans alone could spend. Over a family of nothing but
+/// dead listings, each costing the most a listing can, no read ever asks for
+/// more than the allowance; each read still moves its cursor, and following
+/// the cursors reaches the one live listing behind them.
+#[test]
+fn a_run_of_unsellable_listings_never_overspends_the_read_and_never_hides_what_follows()
+-> TestResult {
+    let mut memory = Memory::default();
+    for n in 1..=200_u8 {
+        let publication = token([n, 0, 0, 0], n);
+        // `listing` is a derived listing: the dearest kind to ask about.
+        let row = listing(publication)?;
+        check_eq!(
+            row.listed_subject().rows(),
+            mush_roll::commerce::entitlement::SELLABLE_ROWS_DERIVED
+        );
+        memory.add(row);
+        memory.dead.insert(publication);
+    }
+    let live = token([0xf0, 0, 0, 0], 1);
+    memory.add(listing(live)?);
+    let source = &memory;
+
+    let mut cursor: Option<CommitToken> = None;
+    let mut reads = 0_usize;
+    let mut found = Vec::new();
+    loop {
+        let page = listings(&source, key(cursor), SCANS, |_| true)?;
+        let scans = memory.take_scans();
+        let asked = memory.take_asked();
+        let rows_spent = scans.iter().map(|(_, limit)| limit).sum::<usize>()
+            + asked.iter().sum::<usize>() * mush_roll::commerce::entitlement::SELLABLE_ROWS_DERIVED;
+        let reads_spent = scans.len() + asked.len() * SELLABLE_READS;
+        check!(
+            rows_spent <= usize::from(mush_core::read_service::MAX_OWNER_READ_ROWS),
+            "one read's rows: {rows_spent}"
+        );
+        check!(
+            reads_spent <= usize::from(mush_core::read_service::MAX_OWNER_READS),
+            "one read's reads: {reads_spent}"
+        );
+        check!(asked.iter().all(|batch| *batch <= SELLABLE_SUBJECTS));
+        found.extend(page.rows().iter().map(PublicListingView::publication));
+        reads += 1;
+        check!(reads < 50, "the cursor always moves");
+        match page.next() {
+            Some(next) => {
+                check!(cursor.is_none_or(|was| next > was), "forward only");
+                cursor = Some(next);
+            }
+            None => break,
+        }
+    }
+    check!(reads > 1, "the family does not fit one read's allowance");
+    check_eq!(
+        found,
+        vec![live],
+        "the live listing behind the run is reached"
+    );
+    Ok(())
+}
+
+/// Doc 44 MW.2: a full page still says whether more follows by a listing
+/// that can be sold, never by a dead one: twenty live listings and then only
+/// dead ones is a last page.
+#[test]
+fn a_full_page_followed_only_by_unsellable_listings_is_the_last_page() -> TestResult {
+    let mut memory = Memory::default();
+    for n in 1..=24_u8 {
+        let publication = token([n, 0, 0, 0], n);
+        memory.add(listing(publication)?);
+        if usize::from(n) > LISTINGS_PER_PAGE {
+            memory.dead.insert(publication);
+        }
+    }
+    let source = &memory;
+    let page = listings(&source, None, SCANS, |_| true)?;
+    check_eq!(page.rows().len(), LISTINGS_PER_PAGE);
+    check_eq!(page.next(), None, "nothing sellable follows");
+    // And with one live listing after them, the page says so.
+    let live = token([0xf0, 0, 0, 0], 1);
+    memory.add(listing(live)?);
+    let source = &memory;
+    let page = listings(&source, None, SCANS, |_| true)?;
+    check_eq!(page.rows().len(), LISTINGS_PER_PAGE);
+    let next = page.next();
+    check_eq!(next, page.rows().last().map(PublicListingView::publication));
+    let rest = listings(&source, key(next), SCANS, |_| true)?;
+    check_eq!(
+        rest.rows()
+            .iter()
+            .map(PublicListingView::publication)
+            .collect::<Vec<_>>(),
+        vec![live]
+    );
+    check_eq!(rest.next(), None);
     Ok(())
 }

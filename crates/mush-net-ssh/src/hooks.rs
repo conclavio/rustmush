@@ -185,6 +185,29 @@ pub trait SshHooks: Send + Sync {
         character: u64,
     ) -> BoxFuture<'a, Result<(), String>>;
 
+    /// Bind `conn` to `character` under `account` for one exec request, the
+    /// `mind push|pull|check` of this crate's `mind_exec` (doc 44 unit MW.24),
+    /// **without logging the character in**. The binary gives the connection
+    /// what the exec needs and no more: an [`invoke`](Self::invoke) on it runs
+    /// as the character and its result comes back on `conn.tx`. The character
+    /// is not connected by it. Nobody is told they arrived, a player whose
+    /// link is down is not revived and their grace does not restart, and when
+    /// [`disconnected`](Self::disconnected) follows nothing goes link-dead.
+    ///
+    /// The default attaches in full ([`connect_character`](Self::connect_character)),
+    /// which is all a binary with no such path can do and is what every
+    /// binary did before this method existed: a character logged in for the
+    /// length of the exec and dropped as a lost link after it. The gateway
+    /// overrides it.
+    fn connect_exec<'a>(
+        &'a self,
+        conn: NewConn,
+        account: &'a str,
+        character: u64,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        self.connect_character(conn, account, character)
+    }
+
     /// One completed input line from a connected (in-game) connection.
     fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()>;
 
@@ -243,8 +266,10 @@ pub trait SshHooks: Send + Sync {
     }
 
     /// The transport for `conn` is gone (only fired for connections that
-    /// passed [`connect_character`](Self::connect_character); the binary
-    /// detaches it — `DetachReason::Lost` unless it already detached).
+    /// passed [`connect_character`](Self::connect_character) or
+    /// [`connect_exec`](Self::connect_exec); the binary detaches it —
+    /// `DetachReason::Lost` unless it already detached, and for an exec's
+    /// connection with nothing left link-dead).
     fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()>;
 
     /// Whether this address is currently banned/throttled (IpGuard lives

@@ -3172,9 +3172,16 @@ fn clamp(mut text: String) -> String {
     text
 }
 
+/// **Whether a line said to `who` now reaches them** (doc 45 cut AP.1): connected, over a live
+/// transport. A linkdead session is not on watch: its lines are queued, as [`notify`] does.
+#[must_use]
+pub fn on_watch(w: &World, who: ObjId) -> bool {
+    w.is_connected(who) && w.has_live_conns(who)
+}
+
 /// Tell `who` over a live transport, else queue it (including linkdead grace).
 pub fn notify(ctx: &mut Ctx<'_>, who: ObjId, text: &str) {
-    if ctx.w.is_connected(who) && ctx.w.has_live_conns(who) {
+    if on_watch(ctx.w, who) {
         ctx.out.sys_to_actor(who, "tacsim", text);
     } else {
         queue_notice(ctx, who, text);
@@ -3198,7 +3205,7 @@ pub enum NoticeLevel {
 /// an unload, a plan's parking or end, an idle return, a stranded rig, a refused act — never a
 /// cycle, a reading, a drive, a launch or a recover. The ring's cap ([`MAX_NOTICE_LINES`]) stands.
 pub fn notify_budget(ctx: &mut Ctx<'_>, who: ObjId, text: &str, level: NoticeLevel) {
-    match delivery(ctx.w.is_connected(who) && ctx.w.has_live_conns(who), level) {
+    match delivery(on_watch(ctx.w, who), level) {
         Delivery::Say => ctx.out.sys_to_actor(who, "tacsim", text),
         Delivery::Queue => queue_notice(ctx, who, text),
         Delivery::Drop => {}

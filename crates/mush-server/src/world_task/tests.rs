@@ -4626,6 +4626,22 @@ fn inbound_classifier_covers_every_variant() {
             Inbound::SessionGone { actor: GOD },
             IngressClass::ConnectionHooks,
         ),
+        // Doc 44 unit MW.24: a bare connection fires no hook and is lifecycle
+        // all the same, so it keeps the lifecycle's ordering and admission.
+        (
+            Inbound::BareUp {
+                conn: 2,
+                actor: GOD,
+            },
+            IngressClass::ConnectionHooks,
+        ),
+        (
+            Inbound::BareDown {
+                conn: 2,
+                actor: GOD,
+            },
+            IngressClass::ConnectionHooks,
+        ),
         (
             Inbound::Apply(WorldCommand::SlowTestDone {
                 actor: GOD,
@@ -4824,6 +4840,20 @@ fn only_transferred_semantic_or_lifecycle_custody_uses_deferred_slot() {
             conn: 9,
             actor: GOD,
             reason: DisconnectKind::Quit,
+        }
+    )));
+    // Doc 44 unit MW.24: a bare connection's frames wait in the same slot, so
+    // the invoke behind a `BareUp` cannot run ahead of its binding.
+    assert!(must_defer_behind_commit(&WorldMsg::Inbound(
+        Inbound::BareUp {
+            conn: 9,
+            actor: GOD,
+        }
+    )));
+    assert!(must_defer_behind_commit(&WorldMsg::Inbound(
+        Inbound::BareDown {
+            conn: 9,
+            actor: GOD,
         }
     )));
     assert!(must_defer_behind_commit(&WorldMsg::Inbound(

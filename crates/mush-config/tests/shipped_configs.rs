@@ -138,6 +138,17 @@ struct ShippedInstance {
     ic_epoch: &'static str,
     /// The `[web]` shape this box chose.
     web: WebShape,
+    /// Doc 44 cut MW.1: whether this box's `MINDS_LAUNCH` switch is on. On,
+    /// `render.sh` writes `[tacsim.minds].launch_path` live once the box's
+    /// launch document exists; the dev boxes run the mind market (Q-44-3).
+    minds_launch: bool,
+    /// Doc 44 cut MW.1 (Q-44-41): the `[tacsim.minds].registry_pulse_ms` this
+    /// box runs. An empty `REGISTRY_PULSE_MS` leaves the template's commented
+    /// line alone, which is the server's 1,000; a dev box renders 50.
+    registry_pulse_ms: u64,
+    /// Doc 44 cut MW.1 (Q-44-7): the `[tacsim.field].raid_director` this box
+    /// renders. On for the dev boxes, which nobody staffs.
+    raid_director: bool,
 }
 
 /// The shipped parameterisations. 16b cut R-b: one game — the Shadowrun env left
@@ -153,6 +164,9 @@ const SHIPPED: &[ShippedInstance] = &[
         ic_ratio: 1,
         ic_epoch: "2020-01-01 00:00",
         web: WebShape::NativeTls,
+        minds_launch: false,
+        registry_pulse_ms: 1_000,
+        raid_director: false,
     },
     ShippedInstance {
         env: "deploy/dev1/instance.env",
@@ -165,6 +179,11 @@ const SHIPPED: &[ShippedInstance] = &[
         ic_epoch: "0987-04-20 06:00",
         // Caddy on conclav.io since 2026-10-31 (deploy/README.md → "Behind Caddy").
         web: WebShape::BehindLoopbackProxy,
+        // Doc 44 (Q-44-3, Q-44-41, Q-44-7): the mind market, the fast Registry
+        // and the raid director, on both dev boxes.
+        minds_launch: true,
+        registry_pulse_ms: 50,
+        raid_director: true,
     },
     ShippedInstance {
         env: "deploy/dev2/instance.env",
@@ -175,6 +194,9 @@ const SHIPPED: &[ShippedInstance] = &[
         ic_ratio: 24,
         ic_epoch: "0987-04-20 06:00",
         web: WebShape::BehindLoopbackProxy,
+        minds_launch: true,
+        registry_pulse_ms: 50,
+        raid_director: true,
     },
 ];
 
@@ -232,12 +254,102 @@ fn parse_env(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Render the template exactly as the deploy does: every `__KEY__` token
-/// replaced by that key's value from `instance.env`, and nothing else.
-fn render(template: &str, env: &[(String, String)]) -> String {
+/// The substitution half of the render: every `__KEY__` token replaced by that
+/// key's value from `instance.env`, and nothing else. Until doc 44 cut MW.1 this
+/// was the whole render, and with `MINDS_LAUNCH` off and `REGISTRY_PULSE_MS`
+/// empty it still is, byte for byte ([`render`]).
+fn substitute(template: &str, env: &[(String, String)]) -> String {
     let mut out = template.to_string();
     for (key, value) in env {
         out = out.replace(&format!("__{key}__"), value);
+    }
+    out
+}
+
+/// The two `instance.env` keys `deploy/instance/render.sh` reads for itself
+/// (doc 44 cut MW.1). Neither is a `__TOKEN__`: each decides whether a line of
+/// the template's commented `[tacsim.minds]` block is rendered live.
+const RENDER_KEYS: &[&str] = &["MINDS_LAUNCH", "REGISTRY_PULSE_MS"];
+
+/// Whether the box's launch document, `<DATA_DIR>/launch.json`, is on disk when
+/// the render runs. `render.sh` tests the file; a test says which it means.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LaunchDocument {
+    /// A fresh or wiped store: no document yet.
+    Absent,
+    /// `deploy/instance/launch-bringup.py` has written it.
+    Written,
+}
+
+fn env_value<'a>(env: &'a [(String, String)], key: &str) -> &'a str {
+    env.iter()
+        .find(|(k, _)| k == key)
+        .map_or("", |(_, v)| v.as_str())
+}
+
+/// Make the one line of `text` that `matches` read `live`. Exactly one line
+/// must match, which is `render.sh`'s `uncomment_line` rule: a template whose
+/// minds block was reworded is a refusal, not a silently commented launch.
+fn uncomment_line(text: &str, matches: impl Fn(&str) -> bool, live: &str) -> String {
+    let hits = text.lines().filter(|l| matches(l)).count();
+    assert_eq!(
+        hits, 1,
+        "the template must carry exactly one commented line to render as {live:?}"
+    );
+    let mut out = String::with_capacity(text.len() + live.len());
+    for line in text.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        if matches(body) {
+            out.push_str(live);
+            if line.ends_with('\n') {
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// Render the template exactly as `deploy/instance/render.sh` does: the
+/// substitution, then the two keys the script reads for itself.
+///
+/// - `MINDS_LAUNCH=on` with the launch document written: the `[tacsim.minds]`
+///   header and the `launch_path` line go live, the path
+///   `<DATA_DIR>/launch.json`. On with no document, or off (or empty): the line
+///   stays the template's comment. Anything else is a refusal.
+/// - `REGISTRY_PULSE_MS` not empty: the header and the `registry_pulse_ms` line
+///   go live with that number.
+fn render(template: &str, env: &[(String, String)], document: LaunchDocument) -> String {
+    let mut out = substitute(template, env);
+    let launch_live = match env_value(env, "MINDS_LAUNCH") {
+        "" | "off" => false,
+        "on" => document == LaunchDocument::Written,
+        other => panic!("MINDS_LAUNCH must be on or off, got {other:?}"),
+    };
+    let pulse = env_value(env, "REGISTRY_PULSE_MS");
+    assert!(
+        pulse.chars().all(|c| c.is_ascii_digit()),
+        "REGISTRY_PULSE_MS must be empty or a number, got {pulse:?}"
+    );
+    if launch_live || !pulse.is_empty() {
+        out = uncomment_line(&out, |l| l == "# [tacsim.minds]", "[tacsim.minds]");
+    }
+    if launch_live {
+        let data_dir = env_value(env, "DATA_DIR");
+        assert!(!data_dir.is_empty(), "MINDS_LAUNCH=on needs DATA_DIR");
+        out = uncomment_line(
+            &out,
+            |l| l.starts_with("# launch_path = "),
+            &format!("launch_path = \"{data_dir}/launch.json\""),
+        );
+    }
+    if !pulse.is_empty() {
+        out = uncomment_line(
+            &out,
+            |l| l.starts_with("# registry_pulse_ms = "),
+            &format!("registry_pulse_ms = {pulse}"),
+        );
     }
     out
 }
@@ -257,7 +369,11 @@ fn rendered_instance(instance: &ShippedInstance) -> (String, Config) {
             *value = DOCUMENTATION_IP.to_string();
         }
     }
-    let text = render(&template, &env);
+    // A shipped env is rendered the way a deploy onto a fresh store renders
+    // it: no launch document yet, so `launch_path` is commented whatever
+    // `MINDS_LAUNCH` says (doc 44 cut MW.1). The written-document render has
+    // its own test below.
+    let text = render(&template, &env, LaunchDocument::Absent);
 
     // A key in the template with no line in instance.env would otherwise
     // install a config containing the literal `__START_ROOM__`, which parses as
@@ -680,7 +796,7 @@ fn the_unresolved_deploy_time_marker_reaches_the_listeners() {
         }
         boxes_with_a_marker += 1;
 
-        let text = render(&template, &env);
+        let text = render(&template, &env, LaunchDocument::Absent);
         let listeners: Vec<&str> = text
             .lines()
             .map(str::trim)
@@ -892,6 +1008,17 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
         let env_file = instance.env;
         let env = parse_env(&read(&root.join(env_file)));
         let keys: BTreeSet<String> = env.into_iter().map(|(k, _)| k).collect();
+        // Doc 44 cut MW.1: the keys `render.sh` reads for itself are part of
+        // the closed set too. Each must have a line (an empty value is a
+        // value), and neither is a token the template could use.
+        let mut used = used.clone();
+        for key in RENDER_KEYS {
+            assert!(
+                !used.contains(*key),
+                "{key} is read by render.sh and must not also be a template token"
+            );
+            used.insert((*key).to_string());
+        }
         let missing: Vec<_> = used.difference(&keys).collect();
         let unused: Vec<_> = keys.difference(&used).collect();
         assert!(
@@ -1130,4 +1257,156 @@ fn m4_every_shipped_configuration_carries_the_exact_signature_factor() {
             "{env_file}: the rendered [tacsim.sensors].max_signature_factor is 1.0"
         );
     }
+}
+
+/// **Doc 44 cut MW.1: the launch switch.** `MINDS_LAUNCH` and
+/// `REGISTRY_PULSE_MS` are read by `deploy/instance/render.sh` itself, and
+/// [`render`] is that rule. What a box gets from each state:
+///
+/// - off (the reference instance): the render is the plain substitution, byte
+///   for byte, so a box that does not want the launch is rendered as it was
+///   before the switch existed;
+/// - on with no launch document (a deploy onto a fresh or wiped store):
+///   `launch_path` is still commented, so the config loads and the world boots
+///   without the launch, where a live path with no file would refuse it;
+/// - on with the document written: the line is live and names
+///   `<DATA_DIR>/launch.json`;
+/// - and no state of either key renders an empty path, which is the boot
+///   refusal `launch deployment path is empty`.
+#[test]
+fn mw1_the_launch_switch_renders_the_path_only_beside_its_document() {
+    let root = repo_root();
+    let template = read(&root.join("deploy/instance/mushd.toml.tmpl"));
+    let load = |text: &str, tag: &str| -> Config {
+        static RENDER: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mush-mw1-{tag}-{}-{}",
+            std::process::id(),
+            RENDER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mushd.toml");
+        std::fs::write(&path, text).unwrap();
+        let cfg =
+            Config::load(&path).unwrap_or_else(|e| panic!("the {tag} render does not parse: {e}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        cfg
+    };
+    let mut on_somewhere = false;
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let mut env = parse_env(&read(&root.join(env_file)));
+        for (key, value) in &mut env {
+            if key == "EXTERNAL_IP" && value == DEPLOY_TIME_MARKER {
+                *value = DOCUMENTATION_IP.to_string();
+            }
+        }
+        let switch = env_value(&env, "MINDS_LAUNCH");
+        assert_eq!(
+            switch,
+            if instance.minds_launch { "on" } else { "off" },
+            "{env_file}: MINDS_LAUNCH"
+        );
+        let data_dir = env_value(&env, "DATA_DIR").to_string();
+        let live_path = format!("launch_path = \"{data_dir}/launch.json\"");
+
+        // No document: the path is commented in every shipped render.
+        let absent = render(&template, &env, LaunchDocument::Absent);
+        assert!(
+            !absent.lines().any(|l| l.starts_with("launch_path")),
+            "{env_file}: a render with no launch document carries a live launch_path"
+        );
+        let cfg = load(&absent, "absent");
+        assert_eq!(
+            cfg.tacsim.minds.launch_path, None,
+            "{env_file}: no document, no launch"
+        );
+        assert_eq!(
+            cfg.tacsim.minds.bulk_maintenance_ms, instance.registry_pulse_ms,
+            "{env_file}: the Registry's pulse"
+        );
+        assert_eq!(
+            cfg.tacsim.field.raid_director, instance.raid_director,
+            "{env_file}: the raid director"
+        );
+
+        // The document written.
+        let written = render(&template, &env, LaunchDocument::Written);
+        if instance.minds_launch {
+            on_somewhere = true;
+            assert!(
+                written.lines().any(|l| l == live_path),
+                "{env_file}: the written document's render has no line {live_path:?}"
+            );
+            assert!(
+                written.lines().any(|l| l == "[tacsim.minds]"),
+                "{env_file}: a live launch_path needs its [tacsim.minds] header live"
+            );
+            let cfg = load(&written, "written");
+            assert_eq!(
+                cfg.tacsim.minds.launch_path.as_deref(),
+                Some(format!("{data_dir}/launch.json").as_str()),
+                "{env_file}: the launch path the server reads"
+            );
+            // The one line and, where the pulse had not already made it live,
+            // the header: nothing else moves.
+            let changed: Vec<(&str, &str)> = absent
+                .lines()
+                .zip(written.lines())
+                .filter(|(a, b)| a != b)
+                .collect();
+            assert!(
+                changed.len() <= 2
+                    && changed
+                        .iter()
+                        .all(|(_, b)| *b == live_path || *b == "[tacsim.minds]"),
+                "{env_file}: the document moved more than the launch lines: {changed:?}"
+            );
+            assert_eq!(absent.lines().count(), written.lines().count());
+        } else {
+            assert_eq!(
+                written, absent,
+                "{env_file}: with the switch off a launch document changes nothing"
+            );
+        }
+
+        // Off and no pulse is the plain substitution.
+        if !instance.minds_launch && env_value(&env, "REGISTRY_PULSE_MS").is_empty() {
+            assert_eq!(
+                absent,
+                substitute(&template, &env),
+                "{env_file}: with the switch off the render must be the plain substitution"
+            );
+        }
+
+        // An empty path is never rendered, by any state.
+        for text in [&absent, &written] {
+            assert!(
+                !text
+                    .lines()
+                    .any(|l| l.replace(' ', "").starts_with("launch_path=\"\"")),
+                "{env_file}: an empty launch_path was rendered"
+            );
+        }
+    }
+    assert!(
+        on_somewhere,
+        "no shipped instance turns MINDS_LAUNCH on any more, so the written-document \
+         render above checks nothing"
+    );
+
+    // The switch turned off on a box that has it on, with its pulse emptied,
+    // is the plain substitution again: off is a state a box can return to.
+    let mut env = parse_env(&read(&root.join("deploy/dev1/instance.env")));
+    for (key, value) in &mut env {
+        match key.as_str() {
+            "MINDS_LAUNCH" => *value = "off".to_string(),
+            "REGISTRY_PULSE_MS" => value.clear(),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        render(&template, &env, LaunchDocument::Written),
+        substitute(&template, &env)
+    );
 }
