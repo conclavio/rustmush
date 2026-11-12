@@ -294,7 +294,204 @@ the skipped keys stay bounded. A row that fails `validate` in `page` is not pinn
 
 ## MW.7
 
-Not built.
+The field's backup mind and the absent-player gate (doc 44 §7.1, §4 C, §4b rows 2 and 3, §4c
+rows 11 to 13 and 22; Q-44-16 to Q-44-19, Q-44-22, Q-44-35 to Q-44-38, Q-44-42, Q-44-43,
+Q-44-46; doc 35 §11.4's `FB.1` to `FB.3`; doc 27 Q-H5). PR #549, stacked on MW.14a (#545).
+
+**Built.**
+
+- **The absent player's rule, once** (`crates/tacsim/src/arena/absent.rs`). `permits(facts,
+  ask)` is the whole rule and the only copy: for a unit a mind flies for an absent player, a
+  shot is let through only at a unit whose fire has arrived on this one, and not at all while
+  a hold on its fire stands; mining and trading are refused. It reads no arena, no clock and
+  no dice. The arena asks it at the one door every shot no seat typed goes through
+  (`Arena::resolve_fire_by`, `arena/weapons.rs`): a mind's own cited shot, a standing fire
+  rule's and a machine's alike, so the stock mind's cornered stand and a player's sealed
+  script meet the same refusal (`unwarranted`, the word a held shot already reads). A seat's
+  typed `FIRE` is never asked.
+- **The three facts, on the unit** (`arena/state.rs`). `UnitState::absent`, written only by
+  the host's word (`ArenaMsg::Absent`, applied at a pulse's head by `Arena::set_absent`).
+  `UnitState::fired_on_by`, the units whose fire has arrived on this one, hit or miss, written
+  at every impact (`arena/damage.rs`) in a field whose end is its host's and never in a
+  practice match. The hold: the seat's own master gate (`weapons_hold`, the hold the pilot
+  left) or a standing order's `hold_fire`. Both new fields are carried by the snapshot and
+  folded into the state hash only when set, as `coupled_to` is, so `SNAPSHOT_FORMAT` stands at
+  19 and every practice match hashes as it did.
+- **Going home reaches every mind.** `Arena::set_absent` lays a standing `Withdraw` with no
+  deadline on the unit's mind row (`lay_go_home`), and a `Released` that hands over a unit
+  already marked lays it too. The stock mind obeys it as it obeys a leader's: it drives for
+  its party's home and never rallies while the order stands. A player's sealed script reads
+  it as `v.order` (objective `withdraw`). An order to advance or attack that stood is
+  replaced; its `hold_fire` is kept. A detachment command that reaches the unit meanwhile
+  can only add `hold_fire` (`arena/detachment.rs`).
+- **What the mind is shown** (`Arena::mind_view`). While the flag stands, a contact its party
+  holds Hostile reads Neutral unless the rule would let the unit answer it. Without this the
+  stock mind's cornered stand stopped the unit beside any marked party in range and it never
+  got home. The view is narrowed, never widened, and the gate does not depend on it.
+- **The field's presence record and the one door** (`crates/tacsim/src/field/absent.rs`).
+  `Away { why, since_wall_s, handed }` rides the unit's row of the live record, so a restart
+  keeps it. `hand_over(ctx, unit, pilot, why)` is the door: it marks the record, tells the
+  arena (the flag first, then the seat's `Released`), tells the pilot, and tells those the
+  unit was with. Three callers today: the field's own five-minute clock
+  (`FIELD_LINKDEAD_GRACE_WALL_S`, 300 wall seconds from the lost link, checked once a world
+  second), a clean QUIT (the seat's `Disconnected` hook with no clock running, at once), and
+  `crew::on_frames` when a pilot inside a hull is incapacitated (at once, connected or not).
+- **The host boards it** (`field/home.rs`, `field/exit.rs`). `home::ask_out` has a rig's exit
+  ask (the ramp its own carrier stands with) beside the DT one, and asks quietly: nobody is
+  told the ask or its refusals. Once the kernel lets the unit out, `exit::tick` runs its
+  recover as its pilot (the rig's recover act, or the DT recover), and
+  `absent::retry_recovers` tries it again every ten wall seconds until the unit is off the
+  site's ground.
+- **The way back** (`absent::take_back`, from the seat's `Connected` and `Revived` hooks and
+  from the tick). A pilot who is connected, fit and still seated in the unit is bound and
+  seated again; the arena is told the player is back. The seat's `Live` control discards the
+  mind's pending think and its order (`Arena::suspend_mind`, unchanged), and the task recalls
+  a ramp exit it has not yet applied (`WithdrawRefusal::Recalled`). A unit already out at the
+  ramp stays out, and the pilot is told.
+- **A restart** (`field/boot.rs`, `absent::at_resume`). A unit its mind held is not seated;
+  the tick tells the resumed task again. A seated pilot who is not connected is bound, the
+  seat `Linkdead`, and the five minutes run from the boot unless the record carries an
+  earlier loss. A pilot who is connected is seated as before.
+- **The lead is told** (doc 35 §11.4's open point). The leader of the unit's own party and the
+  leaders of the parties that stand its friends hear one line (`GONE_HOME`), queued for one
+  who is offline. The unit goes.
+- `docs/help/field.md` has a new section, "If you lose your link, or quit". Doc 35 §11.4 and
+  doc 27 Q-H5 read as built.
+
+**What a caller in space must provide** (for MW.9's follow-up; one rule, not a copy). Call
+`tacsim::arena::absent::permits(&Facts { absent, holds_fire, fired_on_by }, &Ask::Fire { at })`
+(or `Ask::Mine`, `Ask::Trade`) where the seat accepts an intent, and act only on `Ok`.
+
+- `absent`: the hull is flown for a player who is not at her controls. Space has it:
+  `SpaceLinkdeadState::backup_has_helm()`.
+- `holds_fire`: a hold the crew left stands. Space has no such order today; pass `false`
+  until it does.
+- `fired_on_by`: the set of hulls whose fire has arrived on this hull since the bubble
+  opened, keyed by the same id the `Ask`'s target uses (`ObjId` fits). **This is the one
+  thing space does not have**: the bubble keeps no record of who fired on whom (doc 35
+  Q-35-B3). It is a set a hull, written where a round's arrival is resolved, carried with the
+  bubble's state. Until it exists the seat's present rule, refuse every lock, shot and
+  arming, is the same rule with an empty set.
+
+**Tests.** In-source: the rule's arms (`arena::absent`), the rule at the door for each source
+of a shot, the go-home order, the narrowed view and the hold (`arena::weapons`,
+`mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it`), the hash fold
+(`arena::hash`), the record's wire form (`field::absent`). Arena
+(`crates/tacsim/tests/domain_arena/minds_rhai.rs`): a sealed Rhai script written to fire
+first is refused every shot, fires once it has been fired on, reads the order and drives
+home, and the kernel lets it out at the ramp; a script that faults three thinks running is
+dropped to the Standard Doctrine, which drives home and fires on nobody. Stories in
+`domain_field` (`crates/tacsim/tests/domain_field/field_mw7.rs`), each a field of three
+parties, each passing on Linux (conclav.dev, six at once):
+
+- `mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_first` (54 s). A
+  miner's prospector, a leased escort flown from its cab, an intruder. The escort's pilot
+  marks the intruder Hostile, sets weapons free and loses their link. Twenty seconds short of
+  five minutes the seat is still theirs; at five minutes the mind has the unit. It drives to
+  the ramp, the kernel lets it out, the host's recover puts it in the bay, and it has fired
+  nothing since the link was lost.
+- `mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it` (41 s). A clean QUIT
+  hands over at once. With the raider marked Hostile eight cells off and weapons free the
+  unit fires on nobody for twelve seconds; once the raider's fire arrives it answers the
+  raider, after that first arrival, and never the third party. No carrier of its party is on
+  the site, and it holds where it stands.
+- `mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack` (110 s). The seat left at
+  weapons hold: three of the raider's rounds arrive and the unit answers nobody.
+- `mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat` (25 s). Link lost, the
+  session ended, ten minutes gone. The pilot connects, is told, is bound again, takes the
+  focus, and their `DRIVE` is the hull's goal with no order standing.
+- `mw7_a_pilot_knocked_out_while_connected_stops_steering` (20 s). A pilot inside a walker
+  whose cockpit is destroyed: connected, incapacitated, the seat released at once; a
+  reconnect is refused the controls.
+- `mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind` (44 s). The server restarts
+  with the mind holding the unit. The boot seats nobody; the resumed mind fires on nobody
+  until the raider's fire arrives, then answers; the pilot connects and is seated.
+
+**What the survey had wrong, or left out.**
+
+- **A `Released` already sends a unit home.** §4 C says the released unit "never goes home".
+  The kernel seeds the Standard Doctrine `Withdraw` at every release, so a released unit does
+  drive for its party's home. What was true is that it rallies after a lull and fights, that
+  only doctrine is seeded (a sealed script is told nothing), and that nothing puts it aboard.
+- **The IC weapons hold is the "HOLD FIRE left by the pilot".** A seated hull holds no
+  standing order at all (`apply_detachment_command` refuses a pilot's hull, and a possess
+  clears the row), so the only hold a pilot can leave on their own unit is the seat's master
+  gate. Every IC seat opens at hold (Q-CF-41). Before this cut a hull a mind took over
+  ignored that gate by design.
+- **No intent in the arena mines or trades.** The rule has both arms for space; in a field
+  there is nothing to refuse. Mining in a field is refused as an order already
+  (`field/orders.rs`).
+- **The cornered stand needed more than a refused shot.** With the shot refused the stock
+  mind still stopped and faced the nearest marked party, and stayed there. Hence the narrowed
+  view.
+- **"Five minutes" was the server's session grace**, `[game].linkdead_grace_s`, not a field
+  rule: an operator who shortened it shortened the owner's five minutes. The field now runs
+  its own clock, and a session that ends on a lost link no longer releases the seat.
+- **A cockpit command is answered from the seat's last frame**, so a returning pilot's first
+  command waits for the first frame of the new tenure (one pulse). The story waits for it.
+
+**Defaults taken.** None needs a refactor to undo unless it says so.
+
+- **The pilot's weapons hold binds the mind.** A player who never set `FIRE FREE` leaves a
+  unit that answers nobody, even under fire. It is the ruling's "the stricter rule wins"
+  read on the only hold a pilot has, and every IC seat starts there. If the owner would
+  rather an absent player's unit always defend itself, it is one clause in
+  `Arena::absent_denies_fire` and one in `Arena::answerable`. **For the owner.**
+- **The field's five minutes are a constant**, as space's are. `[game].linkdead_grace_s` no
+  longer decides when a field unit is handed over. A story steps the world's wall second, so
+  none waits five real minutes.
+- **A session that ends with no clock running is a quit.** The `Disconnected` hook carries no
+  reason, so the field tells a quit from a grace's end by its own record, as space does. A
+  pilot whose link was already down when the field opened and whose session then ends is
+  therefore handed over at once; they had been gone the whole grace already.
+- **A sealed script that ignores the order is not driven home.** The order reaches it and
+  the engine binds its fire; if it never moves, the unit holds. This is doc 35 Q-35-B4's
+  default for space, taken for the field too. The alternative, the engine driving any absent
+  unit home whatever its mind asks, would be a second controller beside the mind and is the
+  one change here that would be a real refactor. **For the owner**, with Q-35-B4.
+- **A mind falls to the house default after three faults running**, the kernel's standing
+  rule, not at the first. For up to three thinks the unit does nothing.
+- **Who is told**: the unit's own party's leader and the leaders of parties that are its
+  party's standing friends (owner or organization), never a party that only marked it
+  Friendly. Queued at trip level for one who is offline.
+- **A restart starts the five minutes again** for a pilot who was flying when the server went
+  down (doc 35 Q-35-B8's recommendation, taken for the field). An earlier loss on the record
+  is kept.
+- **The tick reconciles presence toward "here" only.** A pilot who is connected and whose
+  hook never fired (a restart's re-attached connection) is seated by the next tick. Absence
+  is opened only by a hook or a boot, never by polling, so a story that sets a session's
+  facts by hand is not handed over.
+
+**Not built, and where each lives.**
+
+- **The filed mind through the claim path, as a field story.** The row's second story is
+  pinned at the arena with a sealed Rhai script, not through the Registry, the licence and
+  the claim seal MW.0 and MW.22 composed. A field story needs the M8 world, a governed core
+  on an armed rig and a rated script of the story's own, and none of the rigs flies that
+  combination yet. **Owed to MW.5**, whose stories run on the production composition; MW.21's
+  story then covers the same in space. PR #546's fix did not matter to anything built here.
+- **`FB.4`, the retrieval job** for a unit with no ramp in reach (Q-35-B6): the unit holds
+  and says nothing more. **Doc 41's retrieval contract; needs the owner's call on who pays.**
+- **The recover owed across a restart.** The retry list is RAM. A unit let out at its ramp
+  whose recover had not landed when the server went down stands beside the ramp, out of the
+  field, and its pilot's own recover passes, as for any exit today. **AP.7**, which gives a
+  carrier's mind the taking aboard.
+- **Absent at admission** (a pilot logged off in the seat when the field opens) and **the
+  posture record**: **AP.5** and **AP.3**. Both call `hand_over` with a `Why` of their own;
+  AP.3's `HOLD` and `GUARD` change what `lay_go_home` lays and what `answerable` admits.
+- **A player's rig on a fill plan when a field opens** keeps to today's rule. **AP.7.**
+- **A gate in space.** The rule is callable; the bubble's fire record is not built. **MW.9's
+  follow-up.**
+- **A staff read of why a shot was refused.** `Denied` has a sentence for each limit, and
+  the mind is told `unwarranted` as for any held shot. No verb shows which limit it was.
+
+**Not pinned by a story.** A refused recover tried again (the first try passes in story 1).
+A player leader's DT roster unit taken home by the DT recover (story 1 flies a rig). The
+telling of a friend party's leader (no rig stands two friendly parties with different
+leaders). The recall of a ramp exit at the hand-back (`WithdrawRefusal::Recalled`). A pilot
+who was flying at a restart and does not come back within five minutes. A reconnect inside
+the five minutes (the hook's path is `Revived`, unchanged from before, plus the record
+cleared). A detachment command tightening an absent unit's order.
 
 ## MW.8
 
