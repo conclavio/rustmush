@@ -268,7 +268,7 @@ by_hand = "a2ef4075"
 [[test]]
 id = "mush-server/src/world_task/submission_disposition/tests/registry_load.rs::c4_registry_rating_beside_live_simulator_matches_is_measured"
 tier = "by-hand"
-by_hand = "9d8fc96b"
+by_hand = "9c625bdf"
 
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
