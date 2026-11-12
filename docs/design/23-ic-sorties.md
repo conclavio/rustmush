@@ -1785,8 +1785,8 @@ store. It reads no TacSim record, so `TvLease` is not consulted, and Draft 0.10'
 Q-23-19 left an organisation's licence to "the Roll's org admission path". The tree already
 carries most of it: the cursor keeps the `org=` the pilot launched with, the reader's paid arm
 projects an organisation's licence for any character acting for it (M8c F1), and the owner
-projection admits an organisation's charter title under the grant (M8c B2). Two places still
-assumed a personal owner, and S.4c changes both:
+projection admits an organisation's charter title under the grant (M8c B2). Three places still
+assumed a personal owner or a personal term, and S.4c changes all three:
 
 - the reader's fence over an **owner licence's charter** required the dispatcher's personal
   title. It now accepts the arm the owner projection proved: a character's charter by title, a
@@ -1794,7 +1794,13 @@ assumed a personal owner, and S.4c changes both:
 - the claim history's audit required an owner licence's dispatcher to be the charter's
   historical owner. A House charter is held by its organisation and cannot be transferred, so
   for a House birth the audit accepts any dispatcher, as the paid arm already does for an
-  organisation's licence (M8c S2): the live grant at the dispatch is the proof.
+  organisation's licence (M8c S2): the live grant at the dispatch is the proof;
+- the kernel's audit of a claim row (`mush-core`, `terminal_capacity/ic_claim.rs`) capped every
+  claim's captured term at 90 IC days. A House's own owner licence runs 365 (17g C0 raised the
+  Roll's owner bound and left this one), so its claim passed all four owners and was refused
+  at the last step. The bound now follows the claim's kind: an owner licence's claim may carry
+  an owner term, a paid seat's a paid term. Both bounds are the kernel's constants
+  (`mush_core::licence_term`) and the Roll's are those values.
 
 ### 18.4 What the claim records, and what ends it
 

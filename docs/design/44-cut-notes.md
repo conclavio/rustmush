@@ -287,12 +287,26 @@ dispatch (doc 44 §7.1, Q-44-39; second review, §4c row 2). The design note is 
   charter by the acting character's office. The claim history's audit (`ic_claims/audit.rs`)
   accepted only the charter's historical owner as dispatcher; for a House birth it accepts any
   dispatcher, as the paid arm already does for an organisation's licence.
+- **The kernel admits an owner licence's term on a claim.** Found on the CI dispatch: a House's
+  own licence passed the reader and all four owners and was refused at the last step,
+  "IC captured term bounds". `mush-core`'s audit of a claim row
+  (`action_state/terminal_capacity/ic_claim.rs`) capped every claim's captured term at 90 IC
+  days; a House's owner licence runs 365 (17g C0 raised the Roll's owner bound, and nothing
+  could open an owner licence's claim that long until now). The bound now follows the claim's
+  kind: 365 days for a claim dispatched under an owner licence, 90 for a paid seat. The two
+  bounds are constants in the kernel (`mush_core::licence_term`) and the Roll's
+  `MAX_TERM_SECONDS` and `MAX_OWNER_TERM_SECONDS` are those values.
+- **The reader's owner arm says why it refuses**, at debug on the `ic_claim` target, as its paid
+  arm did; doc 17h's tier-2 and zero-PC stories print that target.
 
 **Tests.**
 
 - `mush-roll`, six tests in `ic_claims::hull` (`s4c_*`): each arm, the order they are tried in,
   the refusal naming the holder, a title that is not live admitting nobody, a claim that is not
   the titled lessor's, a grant on another scope.
+- `mush-core`, `the_captured_term_is_bounded_by_the_claims_kind`: an owner licence's claim with
+  a 365-day term parses and a 366-day one does not; a paid seat's with 90 days parses and 91
+  does not.
 - `tacsim`, in source: `s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open`
   (`surface/dispatch/tests.rs`), rewritten: nothing is read without the claim path.
 - `tacsim`, fast, on the production composition:
@@ -319,6 +333,10 @@ RESULTS_PLACEHOLDER
 
 **Divergences.**
 
+- **A change in `mush-core`, outside the row's files.** The term bound above is the kernel's. It
+  is one bound in one audit, with its own test, but it is the engine's and not the Roll's or
+  the dispatch's. Without it a House's own licence cannot open a claim on any hull, and doc
+  17h's tier-2 story and the leak battery fail with the claim path composed.
 - **The lease is read from the economy's contract, not from `TvLease`.** Doc 23 Draft 0.10
   sketched a `LeaseFence { lease, lessor, lessee, term_ends_ic }` captured from TacSim's rig
   lease record. The Roll cannot read a TacSim record, and the economy already holds the lease as
