@@ -20,6 +20,8 @@
 //!   work and false of the scan);
 //! - advance **at most one consumer per operation per fire**, each idempotent and
 //!   keyed `campaign.resolve/{op}/{consumer}`;
+//! - push an activated operation's **notice** to its eligible defenders, once (doc 45 cut
+//!   AP.1; [`crate::notice`]), counted as work, beside that operation's own step;
 //! - **skip a paused operation entirely.** Only the subject is stopped, so one
 //!   operation's wall of refusals cannot starve another's fan-out (08c §5.2 B4).
 //!
@@ -231,6 +233,31 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
         );
         return Step::Paused;
     }
+    // (iii) the notice (doc 45 cut AP.1; Q-45-15, Q-45-17): once its terms are frozen, the
+    // operation's eligible defenders are told, a queued notice and IC mail, through the
+    // composition seam. The mark and the push are one batch, so a re-run past it is a no-op.
+    // It is not the operation's step: the window's sweep below still runs this fire.
+    let pushed = !doc.runtime.noticed
+        && matches!(
+            doc.runtime.state,
+            OperationState::Activated | OperationState::Running
+        );
+    let doc = if pushed {
+        let told = crate::notice::push(ctx, &doc);
+        let mut doc = doc;
+        doc.runtime.noticed = true;
+        doc.runtime.revision = doc.runtime.revision.saturating_add(1);
+        put_operation(ctx, doc.clone());
+        tracing::info!(
+            target: "campaign",
+            operation = id.0,
+            told,
+            "campaign: an operation's notice was pushed to its eligible defenders"
+        );
+        doc
+    } else {
+        doc
+    };
     let now = ic_now(ctx);
     // Two stamps are only ever compared on the same clock. A window on a retired
     // generation is FROZEN and paged, never silently compared as bare integers.
@@ -300,7 +327,7 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
             };
         }
     }
-    Step::Skipped
+    if pushed { Step::Worked } else { Step::Skipped }
 }
 
 /// Evaluate one operation's objective against durable state. Exhaustive, total, and

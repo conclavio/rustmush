@@ -67,6 +67,7 @@ pub(crate) mod exit;
 pub(crate) mod ground;
 pub(crate) mod home;
 pub(crate) mod known;
+pub mod notice;
 pub(crate) mod orders;
 pub(crate) mod parties;
 pub mod provider;
@@ -175,6 +176,9 @@ pub struct FieldBook {
     /// milliseconds: the check decodes the whole snapshot, so it is paced
     /// ([`raiders::LIFT_CHECK_MS`]).
     pub(crate) lift_checked: BTreeMap<CanonicalId, i64>,
+    /// **Who has what in each running field** (doc 45 cut AP.1; [`notice`]), by site: read at
+    /// each snapshot, reported and forgotten at the close.
+    pub(crate) stakes: BTreeMap<CanonicalId, notice::Stakes>,
 }
 
 impl FieldBook {
@@ -263,8 +267,18 @@ pub(crate) fn config(w: &World) -> crate::config::FieldConfig {
 }
 
 /// One line to everyone on the site's ground or aboard a hull settled on its pad — a physical
-/// fact anyone there observes, never who marked whom (Q-CF-7).
+/// fact anyone there observes, never who marked whom (Q-CF-7). Said, never queued: a character
+/// who is not connected does not hear it. What an absent player is owed of a field is
+/// [`notice`]'s.
 pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
+    for who in site_audience(ctx, site) {
+        ctx.out.sys_to_actor(who, "tacsim.field", text.to_owned());
+    }
+}
+
+/// **Who [`tell_site`] tells**: whoever sits in a unit on the site's ground, and the operators of
+/// rigs out on the site, wherever they stand.
+pub(crate) fn site_audience(ctx: &Ctx<'_>, site: &CanonicalId) -> BTreeSet<ObjId> {
     let mut seen: BTreeSet<ObjId> = BTreeSet::new();
     if let Some(domain) = parties::site_domain(ctx.w, site) {
         for unit in parties::on_ground(ctx.w, domain) {
@@ -292,9 +306,7 @@ pub(crate) fn tell_site(ctx: &mut Ctx<'_>, site: &CanonicalId, text: &str) {
             }
         }
     }
-    for who in seen {
-        ctx.out.sys_to_actor(who, "tacsim.field", text.to_owned());
-    }
+    seen
 }
 
 /// **The field host's registration**: its RAM book, `+field`, its tick and the clock observer.
@@ -386,6 +398,11 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
     let fire = book.fire.get(&site).cloned();
     // Doc 40 cut FR.2 (Q-40-15): the fire tally as it stands at this snapshot.
     let tally = standing::rows(book.tally.get(&site));
+    // Doc 45 cut AP.1: the opening pulse's snapshot is the field's first.
+    let opening = book
+        .live
+        .get(&site)
+        .is_some_and(|hosted| hosted.live.at_ms == 0 && hosted.live.segment == 1);
     let live = book.live.get_mut(&site).map(|hosted| {
         hosted.live.at_ms = at_ms;
         hosted.live.fire = fire;
@@ -402,6 +419,9 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
     if let Some(live) = live {
         record::write_live(ctx, &live);
     }
+    // Doc 45 cut AP.1 (Q-45-17): every player with a unit or a carrier in the field is told it
+    // opened, connected or not; a unit that joined since the last snapshot brings its players.
+    notice::fold(ctx, &site, opening);
     // Doc 36 cut GC.0: a raider's carrier whose hulls are all aboard or down lifts.
     raiders::lift_check_paced(ctx, &site, at_ms);
 }

@@ -21,6 +21,11 @@
 //! standing of the shooter's principals with its victims' factions, and friendly fire's change
 //! is offered to the shooter party's leader to void (`super::standing`). A void end writes none.
 //!
+//! **The absent** (doc 45 cut AP.1; Q-45-17): the site's settling line is said to whoever is
+//! there; every player with a unit or a carrier in the field, connected or not, is told it
+//! settled and what became of each of their units, and is sent a letter for a loss
+//! (`super::notice`).
+//!
 //! **A void** (a panic, a stall, a ledger overflow, a refused resume) demotes from **the last
 //! snapshot the world holds**: its units' cells and poses are the return. With no snapshot every
 //! unit checks in as it went out, which is what the snapshot would have said.
@@ -177,6 +182,9 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         handle.signal_stop();
         drop(join);
     }
+    // Doc 45 cut AP.1 (Q-45-17): what became of each stakeholder's units, read while the host
+    // still holds the field and now its units and crews are checked in.
+    let closing = super::notice::closing(ctx, &site, &demoted);
     let ordinal = ctx
         .w
         .module_state_mut::<FieldBook>()
@@ -199,6 +207,8 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
         .replace("{n}", &ordinal.unwrap_or(0).to_string())
         .replace("{site}", &super::admit::site_name(ctx, &site));
     super::tell_site(ctx, &site, &line);
+    // Doc 45 cut AP.1: and every player with a unit or a carrier in it, connected or not.
+    super::notice::tell_closed(ctx, &site, &line, closing);
     tracing::info!(
         site = %site,
         reason = ?end.reason,

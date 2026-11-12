@@ -422,6 +422,37 @@ stand in. While world time is frozen the clock does not run.
   +sortie/condition        how you are and where, and the time left on an
                            extraction, a treatment or a processing hour
 
+## While you were away
+
+A field does not wait for you to be connected. If you have a unit or a carrier
+on a site when a field opens there, you are told, online or not. A unit counts
+as yours when you sat in it as the field opened, when it is a rig you sent out,
+when it is a carrier you command, or when it belongs to a party you lead or
+organized. A player with nothing on the site is told nothing.
+
+- **The opening and the settling** are the two lines everyone on the site hears.
+  Connected, you hear each once. Not connected, they wait for you, and you read
+  them at your next login under "While you were off watch:".
+- **What became of your units**, when the field settles, one line a fate:
+
+      After field 1 on Ahuna Flank, lost: Dust Mule.
+      After field 1 on Ahuna Flank, home: Salt Moth.
+
+  The fates are `lost` (a wreck, or destroyed), `captured, aboard another's
+  carrier`, `taken in tow`, `down on the site, a casualty`, `holding on the
+  site`, `home` (aboard its own party's carrier or a Friend's, or a carrier
+  still on its pad) and `gone from the site`. A line names up to four units and
+  counts the rest, so one field never fills your notices however many units you
+  had there.
+- **A letter** comes by IC mail, under the site's name, when a unit of yours was
+  lost, left a casualty, captured or taken in tow, or when the close left you
+  stranded on the site. It lists every unit you had in the field (`help mail`).
+- **A capture.** A character taken captive when their casualty is hauled into
+  another party's bay is sent the capture's line by IC mail, and reads it at
+  login if they were away (see *Crew*).
+
+A salvage claim on a hull of yours reaches you by IC mail as before.
+
 ## Leaving units behind
 
 A carrier normally lifts only with every rig and detachment unit aboard. To go
