@@ -33,6 +33,16 @@ with MW.22 below as one change: the owner ruled that neither reaches main withou
   Hull cover asks for the claim path, not the other way about, and stays uncomposed.
 - **The shared story helpers follow the claim.** `m8_world::launch` and `recover` pump the
   claim arm where a launch opened a claim, so doc 17h's stories read as before.
+- **A rig's second claim in one boot closes** (found on the CI dispatch once doc 17h's tier-2
+  story ran with the claim path composed; a defect of doc 23's S.4b-2, live as soon as the
+  path is). The surface tick's claim arm (`surface/mind_claim.rs`) kept each rig's Open and
+  Close tickets in memory keyed by the rig alone, and never visited a rig again once its Close
+  had landed, so the spent Close ticket stayed. The rig's next claim in the same boot then
+  resubmitted that ticket for its own Close, which the owners do not offer: the claim never
+  closed, its licence's seat stayed held and the rig could not fly a licensed mind again until
+  a restart. Each ticket is now kept with the claim it is for (an Open with its epoch's
+  instant, a Close with the claim's open token), a ticket kept for another claim is
+  acknowledged and replaced, and a landed Close gets one more visit that releases it.
 
 **Tests.** Fast, on the production composition (`domain_field::m8_world`):
 `m8g_the_combined_world_boots_active` now asserts the claim path is composed, and every M8
@@ -539,7 +549,16 @@ dispatch (doc 44 §7.1, Q-44-39; second review, §4c row 2). The design note is 
   `m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap` and
   `m8g_story_the_combined_world_rates_files_lists_and_sells`.
 
-RESULTS_PLACEHOLDER
+**Results on the CI dispatch (2026-11-12).** Three defects came out of these runs and are
+fixed: the kernel's term bound (above), the claim arm's tickets (MW.0, above) and two of the
+rewritten story's own assertions. On `def8832c` (run 43125566722, the term bound fixed):
+`s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home` passed all six steps;
+`s4b3_a_licensed_mind_flies_a_field_at_256` and `_at_512` passed; both `d23_18_*` stories
+passed; `m8g_story_the_combined_world_rates_files_lists_and_sells` and
+`m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap` passed; the leak battery
+passed; the M7 stories that had finished passed.
+`m8g_story_tier2_held_minds_seal_aboard` failed there at its second claim's Close, which is
+the claim arm's defect. The arm's fix followed in its own pull request, which records the story's run over it.
 
 **Divergences.**
 
