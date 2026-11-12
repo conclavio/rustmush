@@ -182,7 +182,7 @@ impl ContactBook {
 }
 
 /// **What the host knows of a bubble that its ships do not carry**: the stops, who holds
-/// them, and the step.
+/// them, the step, and the posture each ship's player left on her.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Situation {
     /// How long the bubble flies before the minds think again, milliseconds.
@@ -191,6 +191,10 @@ pub struct Situation {
     pub stops: BTreeMap<String, Stop>,
     /// The ship that holds those stops: the customs corvette, or the interdictor.
     pub stopper: Option<String>,
+    /// **The posture each ship holds**, by her id in the bubble (doc 45 unit AP.3; Q-45-23):
+    /// read off the hull's own record (`crate::posture::record`) by the host that flies her,
+    /// and `RETURN` for a ship with no row. The same word a unit on the ground reads.
+    pub postures: BTreeMap<String, crate::posture::Posture>,
 }
 
 impl Situation {
@@ -201,7 +205,14 @@ impl Situation {
             step_ms,
             stops: BTreeMap::new(),
             stopper: None,
+            postures: BTreeMap::new(),
         }
+    }
+
+    /// The posture `ship_id` holds: `RETURN` unless the host laid another.
+    #[must_use]
+    pub fn posture_of(&self, ship_id: &str) -> crate::posture::Posture {
+        self.postures.get(ship_id).copied().unwrap_or_default()
     }
 
     /// The stop `ship_id` is under.
@@ -505,6 +516,8 @@ pub fn space_mind_view(
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
         space: Some(Arc::new(space)),
+        // Doc 45 unit AP.3: the posture her player left on her, the ground's own word.
+        posture: situation.posture_of(ship_id),
     };
     Some((view, contact_map))
 }

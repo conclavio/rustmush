@@ -615,6 +615,11 @@ thread_local! {
 ///        `u32`, then each unit's id as `u32` in id order — and **nothing at all
 ///        while it is empty**, which it is for every unit of every practice
 ///        match. It decides which shot sub-item 24's rule lets through.
+///    26. **the posture** (doc 45 unit AP.3; Q-45-4):
+///        [`crate::arena::state::UnitState::posture`] — `[2]`, then the posture's
+///        own byte (`crate::posture::Posture::fold_byte`) — and **nothing at all
+///        for a unit on `RETURN`**, the default, which is every unit of every
+///        practice match. It is what the unit's mind reads at its next think.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -1271,6 +1276,11 @@ pub fn state_hash(arena: &Arena) -> u64 {
             for by in &unit.fired_on_by {
                 fold.bytes(&by.0.to_le_bytes());
             }
+        }
+        // **Doc 45 unit AP.3** (sub-item 26): the posture, only when it is not `RETURN` —
+        // no byte for a unit on the default, which is every unit of every practice match.
+        if !unit.posture.is_return() {
+            fold.bytes(&[2_u8, unit.posture.fold_byte()]);
         }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
@@ -2776,6 +2786,52 @@ mod tests {
             base,
             "neither set folds no byte"
         );
+    }
+
+    /// **Doc 45 unit AP.3: the posture folds only off its default** (item 1's sub-item 26):
+    /// every unit checks out on `RETURN` and folds no byte for it; `GUARD` and `HOLD` each
+    /// move the hash, apart from each other and from the absent player's flag, and a unit set
+    /// back to `RETURN` hashes as the base did.
+    #[test]
+    fn ap3_the_hash_folds_a_posture_only_when_it_is_not_return() {
+        use crate::posture::Posture;
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena.units.iter().all(|unit| unit.posture.is_return()),
+            "every unit checks out on the default"
+        );
+        let with = |edit: &dyn Fn(&mut crate::arena::state::UnitState)| {
+            let mut arena = two_tanks();
+            if let Some(unit) = arena.unit_mut(ObjId(9)) {
+                edit(unit);
+            }
+            state_hash(&arena)
+        };
+        let guard = with(&|unit| unit.posture = Posture::Guard);
+        let hold = with(&|unit| unit.posture = Posture::Hold);
+        assert_ne!(guard, base, "a posture went unhashed");
+        assert_ne!(hold, base, "a posture went unhashed");
+        assert_ne!(guard, hold, "which posture folds too");
+        assert_ne!(
+            guard,
+            with(&|unit| unit.absent = true),
+            "the two fold apart"
+        );
+        assert_eq!(
+            with(&|unit| {
+                unit.posture = Posture::Guard;
+                unit.posture = Posture::Return;
+            }),
+            base,
+            "the default folds no byte"
+        );
+        let mut arena = two_tanks();
+        assert!(arena.set_posture(ObjId(9), Posture::Hold));
+        assert_eq!(arena.posture(ObjId(9)), Posture::Hold);
+        assert_eq!(state_hash(&arena), hold, "the host's word is the field");
+        assert!(!arena.set_posture(ObjId(99), Posture::Hold), "no such unit");
+        assert_eq!(arena.posture(ObjId(99)), Posture::Return);
     }
 
     /// **17b cut M5.2: the active profile folds only off its default** (item

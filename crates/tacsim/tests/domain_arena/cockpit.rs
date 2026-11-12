@@ -1262,7 +1262,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 9,
+            "version": 10,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -2898,6 +2898,7 @@ mod fixture {
             max_speed_cms: 1_500,
             reverse_cms: 750,
             turn_rate_mdeg_s: 30_000,
+            posture: tacsim::posture::Posture::Return,
         }
     }
 
@@ -3909,7 +3910,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 9, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 10, "retain": "latest" },
             "seated": false,
         })
     );
@@ -14141,11 +14142,17 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
     // DT.1b adds opaque standing-order identity at version 8; doc 32 cut CF.0
-    // (`party`, per-row `relation` and `party`) makes it 9.
-    assert_eq!(cockpit::FRAME_VERSION, 9);
+    // (`party`, per-row `relation` and `party`) makes it 9; doc 45 unit AP.3
+    // (`posture`) makes it 10.
+    assert_eq!(cockpit::FRAME_VERSION, 10);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(9))
+        Some(&serde_json::json!(10))
+    );
+    assert_eq!(
+        payload.pointer("/posture"),
+        Some(&serde_json::json!("return")),
+        "every hull checks out on the default posture"
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -14730,10 +14737,10 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     use tacsim::arena::weapons::FrameArming;
     let frame = fixture::frame();
     let payload = cockpit::status_frame(fixture::MATCH, &frame);
-    assert_eq!(cockpit::FRAME_VERSION, 9);
+    assert_eq!(cockpit::FRAME_VERSION, 10);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(9))
+        Some(&serde_json::json!(10))
     );
     assert_eq!(
         payload.pointer("/weapons/0/armed"),

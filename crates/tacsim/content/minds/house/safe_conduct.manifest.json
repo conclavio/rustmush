@@ -5,10 +5,10 @@
   "status": "unfiled_role_content",
   "declared_class": "II",
   "ops_ceiling": 3000,
-  "mind_abi": "rhai=1.26.0;api=8;stock=3",
+  "mind_abi": "rhai=1.26.0;api=9;stock=3",
   "source_sha256": "c27da39ae61fe2a6a81110a302a99f72a9c388465ab32cfed9222c6c950408a2",
   "source_bytes": 4049,
-  "envelope_sha256": "8d6c7fcc8ff4c3d5176ed93299b628b466b8147bd2c7f8fc6547ca417a64662f",
+  "envelope_sha256": "d7cf8b748df9bd73a983189e94a175be36edcad5fa644051270b3943ce880fdd",
   "roles": [
     {
       "profile": "Escort",

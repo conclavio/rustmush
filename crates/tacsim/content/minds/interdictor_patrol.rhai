@@ -1,5 +1,5 @@
 // Interdictor Patrol — Waypoint Interdictor Picket Doctrine (SF.R14, D-35-1, D-35-17; doc 44 MW.9)
-// name: Interdictor Patrol Doctrine; role: combat; api: 8; stock: 3; rated: class I (1,500 ops a think)
+// name: Interdictor Patrol Doctrine; role: combat; api: 9; stock: 3; rated: class I (1,500 ops a think)
 //
 // She takes the nearest hull that is still hostile to her. The first think she holds it, she
 // lights up and hails, unless it is already radiating for a fight. After that she reads its

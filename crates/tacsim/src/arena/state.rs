@@ -2438,6 +2438,18 @@ pub struct UnitState {
     /// is: written and folded only when not empty (sub-item 25).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub fired_on_by: BTreeSet<ObjId>,
+    /// **The posture its player left on it** (doc 45 unit AP.3; Q-45-4, Q-45-23): the host's
+    /// copy of the unit's own record (`crate::posture::record`), which is the keeper. Written
+    /// only by `Arena::set_posture` and `RETURN` for every unit until a host says otherwise.
+    /// Read by the unit's frame and so by whichever mind flies it (`View.posture`); nothing in
+    /// the arena acts on it (what a mind does with `GUARD` and `HOLD` is doc 45 unit AP.6's).
+    ///
+    /// Decoded by `serde` default and written only when it is not `RETURN`, so
+    /// `SNAPSHOT_FORMAT` stands; folded into [`crate::arena::hash::state_hash`] **only when
+    /// it is not `RETURN`** (item 1's sub-item 26), so every match that never sets one hashes
+    /// as it did.
+    #[serde(default, skip_serializing_if = "crate::posture::Posture::is_return")]
+    pub posture: crate::posture::Posture,
 }
 
 // ---------------------------------------------------------------------------
@@ -5367,6 +5379,9 @@ impl Arena {
             // Doc 44 cut MW.7: its pilot's until the host says otherwise, and unfired on.
             absent: false,
             fired_on_by: BTreeSet::new(),
+            // Doc 45 unit AP.3: every unit checks out on the default; the host that keeps
+            // its record says otherwise (`Arena::set_posture`).
+            posture: crate::posture::Posture::Return,
         };
         // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3, Q-40-6): the rows a part's
         // condition word decides — the sight, the pod, the filter and the plant

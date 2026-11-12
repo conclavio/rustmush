@@ -71,6 +71,7 @@ pub(crate) mod known;
 pub mod notice;
 pub(crate) mod orders;
 pub(crate) mod parties;
+pub(crate) mod posture;
 pub mod provider;
 pub mod raiders;
 pub mod record;
@@ -341,6 +342,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(orders::RelayLate::default());
     reg.state(home::Asked::default());
     reg.state(absent::Minding::default());
+    // Doc 45 unit AP.3: what this boot's host has told each field's arena of its units'
+    // postures.
+    reg.state(posture::Told::default());
     // Doc 45 cut AP.5 (Q-45-1): when each player's link was lost, so a field that opens around
     // a link-dead player's unit runs their five minutes from the loss.
     reg.state(admit::LinksLost::default());

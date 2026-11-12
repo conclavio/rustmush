@@ -301,6 +301,13 @@ pub struct Frame {
     /// pulses draws it at the hull's own rate, and need not measure it from
     /// consecutive frames. A fit constant for the match.
     pub turn_rate_mdeg_s: u32,
+    /// **The posture the hull's player left on it** (doc 45 unit AP.3; Q-45-4):
+    /// [`crate::arena::state::UnitState::posture`], `RETURN` unless they set another. The
+    /// person in the seat and the mind that flies the hull read the same word (the keyframe's
+    /// `posture`, `View.posture`; `crate::minds::api::PARITY`). The hull's own standing
+    /// word, outside the observer rule; [`Frame::same_as`] compares it, so a change is sent
+    /// at once.
+    pub posture: crate::posture::Posture,
 }
 
 /// **The hull's sealed mind on the pilot's frame** (17b cut M5.4; doc 17 §12
@@ -684,6 +691,7 @@ impl Frame {
             // own flip and the ceilings never, so neither costs a frame anybody
             // would not already have been sent.
             && self.weapons_free == other.weapons_free
+            && self.posture == other.posture
             && self.max_speed_cms == other.max_speed_cms
             && self.reverse_cms == other.reverse_cms
             // **Doc 21 cut G.4b**: a constant of the fit, as the ceilings are.
@@ -955,6 +963,8 @@ impl Arena {
             reverse_cms: unit.mobility.reverse_ceiling_cms(),
             // **Doc 21 cut G.4b**: the rate the motion step turns the hull at.
             turn_rate_mdeg_s: unit.mobility.turn_rate_mdeg_s,
+            // **Doc 45 unit AP.3**: the posture its player left on it.
+            posture: unit.posture,
         })
     }
 

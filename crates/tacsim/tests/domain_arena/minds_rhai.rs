@@ -1545,7 +1545,7 @@ fn think(v, c) {
 /// `max_range_band` and a deadline — an `Engage` on the hostile live, the same
 /// with its deadline passed, and an `Advance`, a `Screen` and a `Support` of
 /// the wingman. M5rules adds authored Fire/Hold/Lock and all predicate shapes.
-/// Every one of `PARITY`'s 150 rows is exercised, and every row
+/// Every one of `PARITY`'s 151 rows is exercised, and every row
 /// is compared at least once on a value the keyframe printed (not `()`, not
 /// a null handle, not a null key read as its default).
 #[test]
@@ -1835,7 +1835,7 @@ fn m2_every_getter_matches_the_keyframe_through_the_parity_table() {
         .iter()
         .map(|(ty, getter, _)| ((*ty).to_owned(), (*getter).to_owned()))
         .collect();
-    assert_eq!(PARITY.len(), 150);
+    assert_eq!(PARITY.len(), 151);
     assert_eq!(
         exercised.rows,
         rows,
@@ -3603,6 +3603,16 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `4_191_525_885_588_509_762` / `aee4969f…` / `25d919aa…`,
 /// `4_593_528_509_461_668_393` / `469d2a99…` / `6ff3a5a8…`,
 /// `10_559_587_572_615_102_858` / `37d56f2b…` / `4ea397ba…`.
+///
+/// **Doc 45 unit AP.3 re-pins all four rows.** The mind ABI moved to API 9 (`View.posture`)
+/// and the Standard header with it; a seal folds its ABI and its source, so every hash
+/// moved, the float probe's with them. No fight moved: the four stopping times (180,250,
+/// 177,500, 170,000 and 900,000), the probe's 3,600 thinks and the 369098751 bitmask are as
+/// they were. Read on Linux (conclav.dev); Windows is ci.yml's same step. Were:
+/// `11_840_588_791_329_419_110` / `c4c42a86…` / `49ccded1…`,
+/// `14_806_315_734_231_040_912` / `abbc70ca…` / `d333c189…`,
+/// `18_435_737_973_288_515_964` / `8f1f0f70…` / `b3ed4810…`,
+/// `3_500_444_545_657_099_864` / `0d8bad3f…` / `62cbfde1…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
@@ -6229,4 +6239,92 @@ fn mw7_a_faulting_mind_falls_to_the_house_default_and_goes_home() {
         red_cells_from(&rig.arena, home)
     );
     assert_eq!(red_rounds(&rig.journal()), 0, "and it fires on nobody");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 45 unit AP.3: a mind reads its unit's posture
+// ---------------------------------------------------------------------------
+
+/// **A script that reads its posture and acts on the word**: the armed red starts up, then
+/// drives for the cell the test writes in for `HOME` while it reads `return`, and stays
+/// where it is on any other word. It keeps the word it last read in memory.
+const READS_POSTURE: &str = r#"
+fn think(v, c) {
+    if v.unit != 4 { return; }
+    if !("k" in this) { this.k = 0; }
+    this.k += 1;
+    this.posture = v.posture;
+    if this.k == 1 { startup(); return; }
+    if v.posture == "return" { goto(HOME); }
+}
+"#;
+
+/// **Doc 45 unit AP.3: a sealed script reads its unit's posture, and a changed posture
+/// changes what the unit does** (Q-45-4: one more field in the mind's view, the house
+/// default's and a sealed mind's alike). On the default the script reads `return` and drives
+/// the hull home. Set to `HOLD` by its host, the same script at the same ground reads `hold`
+/// in its view and the hull never leaves its cell; set back to `RETURN` mid-run, it goes.
+/// The Standard Doctrine beside it reads the word too and, in this unit, does nothing with it.
+#[test]
+fn ap3_a_sealed_script_reads_its_posture_and_a_changed_posture_changes_what_it_does() {
+    use tacsim::posture::Posture;
+    let probe = the_j_field(Controller::Mind);
+    let home = probe.entry_cell(RED).expect("red has a home");
+    let source = READS_POSTURE.replace("HOME", &format!("[{}, {}]", home.0, home.1));
+    let runner = rhai(&probe, &source);
+    let start = red_cells_from(&probe, home);
+    assert!(start > 1, "red starts away from home: {start} cells");
+
+    // On the default: it reads `return` and goes home.
+    let recorded = Recorded::on(runner.clone());
+    let mut arena = the_j_field(Controller::Mind);
+    arena.mind_runner = recorded.clone();
+    assert_eq!(arena.posture(RED), Posture::Return);
+    let mut going = Rig::new(arena);
+    going.to(think_at(RED, 60));
+    let kept = recorded.think(RED, 6);
+    assert_eq!(kept.result.fault, None, "{:?}", kept.result.trace);
+    assert_eq!(kept.view.posture, Posture::Return);
+    assert_eq!(
+        decode_memory(&kept.result.memory).get("posture"),
+        Some(&MemValue::Str("return".to_owned())),
+        "the script read the word"
+    );
+    assert!(
+        red_cells_from(&going.arena, home) <= 1,
+        "on RETURN the script drives it home: {} cells off, from {start}",
+        red_cells_from(&going.arena, home)
+    );
+
+    // Set to HOLD by its host: the same script reads `hold` and the hull stays.
+    let recorded = Recorded::on(runner);
+    let mut arena = the_j_field(Controller::Mind);
+    arena.mind_runner = recorded.clone();
+    assert!(arena.set_posture(RED, Posture::Hold));
+    let mut staying = Rig::new(arena);
+    staying.to(think_at(RED, 60));
+    let kept = recorded.think(RED, 6);
+    assert_eq!(kept.result.fault, None, "{:?}", kept.result.trace);
+    assert_eq!(kept.view.posture, Posture::Hold);
+    assert_eq!(
+        decode_memory(&kept.result.memory).get("posture"),
+        Some(&MemValue::Str("hold".to_owned()))
+    );
+    assert_eq!(
+        red_cells_from(&staying.arena, home),
+        start,
+        "on HOLD the same script leaves it where it stands"
+    );
+    // The unarmed red beside it is on the default still: one unit's posture is its own.
+    assert_eq!(staying.arena.posture(RED2), Posture::Return);
+
+    // Set back to RETURN mid-run, the script reads the new word at its next think and goes.
+    assert!(staying.arena.set_posture(RED, Posture::Return));
+    let now = staying.arena.now_ms;
+    staying.to(now + 60 * STOCK_THINK_MS);
+    assert!(
+        red_cells_from(&staying.arena, home) <= 1,
+        "set back to RETURN it goes home: {} cells off",
+        red_cells_from(&staying.arena, home)
+    );
 }

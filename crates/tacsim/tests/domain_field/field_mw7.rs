@@ -185,7 +185,7 @@ pub(crate) const RAIDER_AT: (i64, i64) = (146, 122);
 pub(crate) const ESCORT_AT: (i64, i64) = (136, 122);
 
 /// [`Yard`], with `ward` the hull the story stood up for the ward's pilot.
-async fn yard_with(mut rig: Rig, pilot: ObjId, ward: ObjId) -> Yard {
+pub(crate) async fn yard_with(mut rig: Rig, pilot: ObjId, ward: ObjId) -> Yard {
     let (captain, _, _) = on_pad_as(&mut rig, "Other", 2, "Tally Moth", 0);
     let (stranger, _, _) = on_pad_as(&mut rig, "Third", 3, "Lone Moth", 0);
     let escort = armed(&mut rig, "Red Hound", ESCORT_AT, 90_000);

@@ -41,7 +41,11 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// gone for the own `party` letter, and every contact row carries the viewer's
 /// `relation` and the contact's `party` letter (Q-CF-12). Taken once, with the
 /// mind API (7) and the snapshot (19).
-pub const FRAME_VERSION: u32 = 9;
+/// **Doc 45 unit AP.3 bumps it to 10** for the hull's `posture`, one top-level
+/// word (`return`, `guard` or `hold`) that a mind reads as `View.posture`
+/// (mind API 9). A field added for a reader that is not a person is a version
+/// (17b cut M1b.3's rule); every consumer ignores unknown keys and the version.
+pub const FRAME_VERSION: u32 = 10;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].
@@ -677,6 +681,9 @@ pub fn status_frame_held(
         // it, so a client draws a turn between pulses at the hull's own rate.
         object.insert("turn_rate_mdeg_s".into(), frame.turn_rate_mdeg_s.into());
         object.insert("mode".into(), frame.mode.as_str().into());
+        // **Doc 45 unit AP.3 (frame 10)**: the posture the hull's player left on it,
+        // `return`, `guard` or `hold` — what its mind reads as `View.posture`.
+        object.insert("posture".into(), frame.posture.as_str().into());
         object.insert(
             "objective".into(),
             frame

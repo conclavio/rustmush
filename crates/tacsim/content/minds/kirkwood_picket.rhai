@@ -1,5 +1,5 @@
 // Kirkwood Customs Picket — Republic Customs Corvette Doctrine (SF.R14, D-35-1, D-35-11, D-35-17; doc 44 MW.9)
-// name: Kirkwood Picket Doctrine; role: combat; api: 8; stock: 3; rated: class I (1,500 ops a think)
+// name: Kirkwood Picket Doctrine; role: combat; api: 9; stock: 3; rated: class I (1,500 ops a think)
 //
 // What she reads: each contact's relation, and the stop it is under
 // (`space_contact(v, id).stop`), which the picket's host keeps. Nothing writes her memory;

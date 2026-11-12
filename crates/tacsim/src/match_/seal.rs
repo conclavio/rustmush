@@ -1391,13 +1391,13 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
-        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=8;stock=3");
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=9;stock=3");
         let api4_source = crate::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API 4 Standard source digest");
         let api7_source = crate::arena::snapshot::digest_from_text(
-            "42c694edd1d2190b0acc37dbd3257cd8d543d27569f4d70c73ab215f3e76e4bc",
+            "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef",
         )
         .expect("the observed API 7 Standard source digest");
         assert_eq!(crate::minds::content::standard_digest().0, api7_source);
@@ -1499,6 +1499,9 @@ mod m5_tests {
         // Doc 44 unit MW.9: the mind ABI moved to API 8 (four space kernels) and the Standard
         // header with it. A seal's digest covers its ABI and its source, so all nine moved; no
         // custody did. Captured on Linux.
+        // Doc 45 unit AP.3: the mind ABI moved to API 9 (`View.posture`) and the Standard
+        // header with it; all nine moved again, and the API 4 projection above still holds, so
+        // no custody did. Captured on Linux.
         let pinned = [
             "tacsim.unit.line_tank fixture \
              fb7946fdbbb3f1d1e0abf42f9cc10a19bfe07d621b6c1eba0d58d4ebcbe8a5be",

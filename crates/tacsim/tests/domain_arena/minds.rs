@@ -3479,7 +3479,8 @@ fn m1a5_the_production_hash_does_not_move() {
     // moved; the duel's 34 ledger lines are byte-equal but for `hash` (`tests/motor.rs`), and the
     // API 4 identity control there still holds. Doc 44 unit MW.9: the mind ABI moved to API 8
     // (four space kernels) and the Standard header with it; a seal folds both, so all three
-    // moved again, and nothing an arena does moved with them.
+    // moved again, and nothing an arena does moved with them. Doc 45 unit AP.3: the same for
+    // the move to API 9 (`View.posture`): all three moved, and nothing else.
     let actual = [
         first_hash,
         last_hash,
@@ -6884,15 +6885,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"42c694edd1d2190b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"2bea23917e55807b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"42c694edd1d2190b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"2bea23917e55807b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"42c694edd1d2190b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"2bea23917e55807b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,

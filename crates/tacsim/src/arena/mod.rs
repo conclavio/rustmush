@@ -328,6 +328,7 @@ pub mod part_effects;
 pub mod party;
 pub mod path;
 pub mod perception;
+pub mod posture;
 pub mod profile_rules;
 pub mod profile_runtime;
 pub mod profile_seal;

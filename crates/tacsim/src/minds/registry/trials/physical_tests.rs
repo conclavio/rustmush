@@ -438,6 +438,14 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// `C4_TRIAL_PIN` lines the test prints. CI runs Linux only: the run on the other host is by
 /// hand (`cargo test -p tacsim --lib c4_a_registry_trial -j 2` on a Windows checkout), and
 /// whoever re-blesses records it in their cut note.
+///
+/// **Re-blessed by doc 45 unit AP.3** (the mind ABI at API 9, `View.posture`): each row's
+/// state hash, ledger digest and result digest moved, and nothing else. Every case still ends
+/// in the same elimination at 58,500 ms, and of each filed result's 31 fields three differ
+/// from main's: the end's state hash, the end's ledger digest and the coverage's witness (a
+/// rolling digest that folds the sealed program's). The meter's figures and the think counts
+/// are equal (`docs/design/45-cut-notes.md`, AP.3). The states were `2ac0bb5770d49505`, `366ad86d479ee5d5`, `f8d70307b1c6f298` and
+/// `a1804cd413eba194`.
 const C4_TRIAL_PINS: [&str; 4] = [
     "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=2ac0bb5770d49505 ledger=9adf3f2351084758a774f3ee83c8ef3d8974373801a187cd6d5213e7d4649f89 result=e7f18842334322008f5aa8e0549777d46b4d0301d43928773ae558c5286f838c",
     "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=366ad86d479ee5d5 ledger=42f3888715bbf465e74e682e9e4face459e60ff14c45bcad2d5aa71ec56781f5 result=bc08d3501e32a8b64b79f4173c027189978159391e33bcf893c8f95675de93b7",

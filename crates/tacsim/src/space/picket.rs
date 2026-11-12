@@ -1105,6 +1105,8 @@ pub fn run_drone_rhai_think(
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
         space: None,
+        // Doc 45 unit AP.3: a collector drone is nobody's standing order; the default.
+        posture: crate::posture::Posture::Return,
     });
     run_sealed_mind_on_pool(
         drone_obj,

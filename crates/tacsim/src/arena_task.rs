@@ -347,6 +347,17 @@ pub enum ArenaMsg {
         /// Flown for an absent player, or handed back.
         absent: bool,
     },
+    /// **The posture `unit`'s player left on it** (doc 45 unit AP.3; Q-45-4, Q-45-23): the
+    /// host's word from the unit's own record (`crate::posture::record`). Latest-wins per unit
+    /// and applied by `Arena::set_posture` at the next pulse's head, so the unit's mind reads
+    /// it at its next think. Only the IC field host sends it, and a task with no
+    /// [`FieldTerms`] ignores it.
+    Posture {
+        /// The unit.
+        unit: ObjId,
+        /// What it holds now.
+        posture: crate::posture::Posture,
+    },
 }
 
 /// **The IC field host's terms** (doc 32 cut CF.2; Q-CF-20): what the task
@@ -692,6 +703,7 @@ impl ArenaHandle {
                 | ArenaMsg::Release { .. }
                 | ArenaMsg::Home { .. }
                 | ArenaMsg::Absent { .. }
+                | ArenaMsg::Posture { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -1617,6 +1629,9 @@ struct PrePulse {
     /// each owed its answer at the pulse's head. Only a withdrawal offered before the
     /// hand-back's word is recalled: one that arrives after it is the returning pilot's own.
     recalled: BTreeSet<ObjId>,
+    /// **Doc 45 unit AP.3**: the host's word on the posture each unit holds, latest-wins per
+    /// unit.
+    postures: BTreeMap<ObjId, crate::posture::Posture>,
 }
 
 impl PrePulse {
@@ -1987,6 +2002,10 @@ async fn arena_loop(mut task: Task) {
                             waiting.recalled.insert(unit);
                         }
                     }
+                    // Doc 45 unit AP.3: and so does the host's word on a unit's posture.
+                    Some(ArenaMsg::Posture { unit, posture }) => {
+                        waiting.postures.insert(unit, posture);
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -2089,9 +2108,15 @@ impl Task {
             for unit in std::mem::take(&mut waiting.recalled) {
                 self.queue_withdrawn(unit, Err(crate::arena::withdraw::WithdrawRefusal::Recalled));
             }
+            // Doc 45 unit AP.3: the posture each unit's player left on it, for its mind's
+            // next think.
+            for (unit, posture) in std::mem::take(&mut waiting.postures) {
+                self.arena.set_posture(unit, posture);
+            }
         } else {
             waiting.absences.clear();
             waiting.recalled.clear();
+            waiting.postures.clear();
         }
         for tug in std::mem::take(&mut waiting.tow_releases) {
             let outcome = self.release(tug);

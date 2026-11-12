@@ -1463,7 +1463,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 50] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 51] {
         let UnitState {
             id: _,
             team: _,
@@ -1515,6 +1515,7 @@ mod tests {
             coupled_to: _,
             absent: _,
             fired_on_by: _,
+            posture: _,
         } = unit;
         [
             "id",
@@ -1576,6 +1577,9 @@ mod tests {
             // a later shot of a mind flying for an absent player.
             "absent",
             "fired_on_by",
+            // Doc 45 unit AP.3: carried on purpose, written only when it is not `RETURN` —
+            // it is what the unit's mind reads at its next think.
+            "posture",
         ]
     }
 
@@ -1607,6 +1611,8 @@ mod tests {
             .filter(|field| *field != "coupled_to")
             // Doc 44 cut MW.7: likewise, and a unit its pilot flies, unfired on, is neither.
             .filter(|field| *field != "absent" && *field != "fired_on_by")
+            // Doc 45 unit AP.3: likewise, and a unit on the default posture is not.
+            .filter(|field| *field != "posture")
             .collect();
         assert_eq!(keys, named);
     }

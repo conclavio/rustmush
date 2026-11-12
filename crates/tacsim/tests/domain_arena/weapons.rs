@@ -1424,13 +1424,13 @@ const M1B0_SEAT_LINES: &[PinnedLine] = &[
     (0, r#"{"kind":"match_started"}"#, &[], 11419726640622680787),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"42c694edd1d2190b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"2bea23917e55807b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
         11_419_726_640_622_680_787,
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"42c694edd1d2190b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"2bea23917e55807b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
         11_419_726_640_622_680_787,
     ),

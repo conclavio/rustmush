@@ -599,6 +599,7 @@
   "odds_floor_permille": 100,
   "order": null,
   "party": "R",
+  "posture": "return",
   "power": "online",
   "receiver": null,
   "reverse_kph": 27,
@@ -637,7 +638,7 @@
   "schema": {
     "id": "arena.cockpit",
     "retain": "latest",
-    "version": 9
+    "version": 10
   },
   "scope": "hostile",
   "sections": [
