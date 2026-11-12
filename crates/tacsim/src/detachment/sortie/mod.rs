@@ -46,10 +46,9 @@ pub const ORDER_LAPSED: &str = "While you were away your order {order} to slot {
 /// `{slot}`.
 pub const ORDER_LAPSED_LEAD: &str = "Slot {slot}'s order {order} lapsed with the leader who gave it. The unit stands where it is, and answers only if it is hit, until you order it.";
 
-/// **What `+sortie/orders` adds to a sent order's status once it lapsed** (doc 45 unit AP.8;
-/// Q-45-13): an `ENGAGE` or an `ADVANCE` whose leader went away.
-pub const ORDER_LAPSED_STATUS: &str = "lapsed while you were away, give it again if you want it";
-/// **What `+sortie/orders` tells a recipient whose own delivered order lapsed** (doc 45 unit
-/// AP.8): `{sequence}`.
-pub const ORDER_LAPSED_OWN: &str =
-    "Order {sequence} lapsed when the leader who gave it went away. It binds nothing now.";
+/// **What `+sortie/orders` says after a sent order's line once the order lapsed** (doc 45 unit
+/// AP.8; Q-45-13): an `ENGAGE` or an `ADVANCE` whose leader went away. A sentence of its own,
+/// after [`ORDER_SENT`]'s, so the line a player client parses for the reply's word is unchanged
+/// (`mush-bot`'s `order_replies` pins it).
+pub const ORDER_LAPSED_STATUS: &str =
+    "It lapsed while you were away; give it again if you want it.";

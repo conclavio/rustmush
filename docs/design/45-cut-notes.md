@@ -523,7 +523,9 @@ Q-44-44, Q-44-46). PR #557. Built on MW.7's presence record and MW.14a's command
   reconnect queue at trip level (`port_tick::notify_budget`, the queue AP.1's notices use);
   the roster's leader after the write, when that is another player, hears
   `ORDER_LAPSED_LEAD`. `+sortie/orders` marks a lapsed order in the issuer's list
-  (`ORDER_LAPSED_STATUS`) and in the recipient's own (`ORDER_LAPSED_OWN`).
+  with a sentence after its line (`ORDER_LAPSED_STATUS`). The line itself is unchanged: the
+  bot parses it for the reply's word (`mush-bot`, `order_replies`), and its contract test now
+  carries a lapsed order.
 - `docs/help/detachments.md` and `docs/help/field.md` say all of it. Doc 45's AP.8 row and
   §7.3 name the files as built.
 
