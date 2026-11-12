@@ -88,7 +88,7 @@ Q-44-41, Q-44-47, Q-44-48; §4c rows 3 to 7 and 19). Every question it rests on 
    measured on conclav.dev (32 cores, release build): **a copy of Standard Doctrine rated in
    1,948 s, 32.5 minutes, at `registry_pulse_ms = 50`**. A lease took 1.27 s at 50 ms and 1.10 s
    at 10 ms, with the server at about 6 per cent of one core: below about a second the pulse is
-   not what paces a rating. A named House source is longer: the Meridiani source rated in 4,757 s, 79 minutes, at 50 ms. So the bring-up does not hold players off for the
+   not what paces a rating. A named House source is longer: the Meridiani source rated in 4,757 s, 79 minutes, at 50 ms, and in 4,084 s at 10 ms. So the bring-up does not hold players off for the
    rating: the unit is started after the Active boot's checks, and the seed line and the House's
    purchase run on the running world.
 2. **No House can be given hulls on a live world.** A House's first licence needs three titled
@@ -214,11 +214,13 @@ at this branch), each run on its own scratch instance. Never on dev1 or dev2.
   simulator match #1 started and boarded against an AI squad. With no provider the same check
   reads `disabled` or `error` rows and fails.
 - **The purchase, in the script's final shape** (the whole acceptance, the long step last, on
-  the second bring-up's running world): at 10 ms, `Seedline@1` rated in 1,666.1 s; listed as
-  `a6ed32e9  Seedline Market  sealed  class I  400cr  90+28 days`; Meridiani lent Slack Water,
-  Cold Comfort and Ninth Ledger; the unit restarted; `Meridiani's agent #812 bought licence 2
-  of charter 828 for 40000 minor credits (15s after the boot); the root treasury holds 160000
-  minor`, read from the procurement ledger; the three Drays handed back; `acceptance: PASSED`.
+  the second bring-up's running world): twice. At the defaults (50 ms): `Seedline@1`
+  rated in 1,949.2 s; listed as `59809cd4  Seedline Market  sealed  class I  400cr  90+28
+  days`; Meridiani lent Slack Water, Cold Comfort and Ninth Ledger; the unit restarted;
+  `Meridiani's agent #812 bought licence 2 of charter 828 for 40000 minor credits (15s after
+  the boot); the root treasury holds 160000 minor`, read from the procurement ledger; the three
+  Drays handed back, and `@tacsim/port status` read every programme's hulls ready;
+  `acceptance: PASSED`. At 10 ms the same, with the rating at 1,666.1 s.
 - **The purchase of a House source** (`--seed-line meridiani`, 50 ms): the Meridiani source
   rated in 4,757.2 s and was listed as `a92edfa1  Meridiani Field Series M  sealed  class II
   400cr  90+28 days`; Meridiani's agent bought it 15 s after the restart. This run was
@@ -229,7 +231,8 @@ at this branch), each run on its own scratch instance. Never on dev1 or dev2.
   8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]`. The script now reads
   that line itself and stops if any programme's hulls are not ready.
 - **Ratings timed** (queued to finished, release build, conclav.dev): a copy of Standard
-  Doctrine 1,948.3 s at 50 ms and 1,666.1 s at 10 ms; the Meridiani source 4,757.2 s at 50 ms.
+  Doctrine 1,948.3 s and 1,949.2 s at 50 ms, 1,666.1 s at 10 ms; the Meridiani source 4,757.2 s
+  at 50 ms and 4,084.3 s at 10 ms.
 - An earlier shape of the script, with the seed step inside the Active boot, kept 184 attempts
   to register out over the 37 minutes of its rating.
 - Locally: `cargo test -p mush-config -j 2` (the new
