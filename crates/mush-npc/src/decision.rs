@@ -11,8 +11,9 @@
 //! (the capture action), `npc_lease` (the lease action the kernel records each
 //! provider lease with) and `npc_idle` (the no-op every NPC always holds, the
 //! deadline fallback); one action provider per definition; the decision
-//! capture sink the driving loop arms; and the decision source itself with the
-//! idle fallback.
+//! capture sink the driving loop arms; the decision source itself with the
+//! idle fallback; and the source's attribution (MW.17b), which names the NPC a
+//! leased decision's provider call is charged to.
 //!
 //! `npc_decide` and `npc_idle` are projected **only** for an `ObjKind::Npc`
 //! actor that carries a valid agent profile, so a player never receives either
@@ -27,16 +28,16 @@
 use mush_core::ActionPresentation;
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionProvider, AuthoritativeActionOutput,
-    CanonicalId, DecisionCaptureFamilies, DecisionCaptureSink, DecisionFallbackAdapter,
-    DecisionFallbackSelection, DecisionPrompt, DecisionPromptStateCodec,
-    DecisionTerminalReceiptStateCodec, DefinitionDescriptor, DefinitionId, DefinitionKind,
-    DefinitionRef, DefinitionValidationContext, DurableScheduleStateCodec, Engine,
-    FallbackPolicyRef, IdempotencyKeyText, LegalActionQuery, ModError, ObjId, ObjKind,
-    PendingDecisionStateCodec, PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema,
-    ProviderOfferDraft, Registrar, RevisionSet, RulesValue, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, decision_prompt_state_family_descriptor,
-    decision_terminal_receipt_state_family_descriptor, durable_schedule_state_family_descriptor,
-    pending_decision_state_family_descriptor,
+    CanonicalId, DecisionAttribution, DecisionAttributionAdapter, DecisionCaptureFamilies,
+    DecisionCaptureSink, DecisionFallbackAdapter, DecisionFallbackSelection, DecisionPrompt,
+    DecisionPromptStateCodec, DecisionTerminalReceiptStateCodec, DefinitionDescriptor,
+    DefinitionId, DefinitionKind, DefinitionRef, DefinitionValidationContext,
+    DurableScheduleStateCodec, Engine, FallbackPolicyRef, IdempotencyKeyText, LegalActionQuery,
+    ModError, ObjId, ObjKind, PendingDecisionStateCodec, PrincipalId, ProjectedParameterSchema,
+    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RevisionSet, RulesValue,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, World,
+    decision_prompt_state_family_descriptor, decision_terminal_receipt_state_family_descriptor,
+    durable_schedule_state_family_descriptor, pending_decision_state_family_descriptor,
 };
 use serde::{Deserialize, Serialize};
 
@@ -267,6 +268,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>, lease_secs: i64) -> Result<(), M
             identity: canonical(FALLBACK_IDENTITY)?,
         },
     )?;
+    reg.decision_attribution(NpcAttribution)?;
     reg.state(NpcDecisionHandles {
         families,
         sink,
@@ -473,6 +475,33 @@ impl ActionProvider for NpcIdleProvider {
             serde_json::json!({ "idle": true }),
         )?))
     }
+}
+
+/// The source's attribution (doc 44 MW.17b): a leased decision's provider call
+/// is charged to its NPC, on the NPC's own standing.
+struct NpcAttribution;
+
+impl DecisionAttributionAdapter for NpcAttribution {
+    fn attribute(&self, world: &World, actor: ObjId) -> Option<DecisionAttribution> {
+        Some(attribution_for(world, actor))
+    }
+}
+
+/// Who a decision leased for `npc` is charged to, read from the NPC's profile
+/// as it stands now: the NPC itself, under its own `daily_tokens` ceiling when
+/// the profile sets one (the same override a dialogue turn passes), and
+/// withheld when the NPC is parked. Parked means what it means to the agent
+/// tick: the profile is disabled (`@llm/kill`, `@agent/set <npc>/enabled=no`)
+/// or is no longer a valid profile at all.
+///
+/// This is the only world fact that crosses the lease for an NPC: the dbref
+/// the budget and the audit key on, one number and one flag.
+#[must_use]
+pub fn attribution_for(world: &World, npc: ObjId) -> DecisionAttribution {
+    let profile = crate::module::read_profile(world, npc);
+    DecisionAttribution::new(npc)
+        .with_daily_tokens(profile.as_ref().and_then(|profile| profile.daily_tokens))
+        .with_withheld(!profile.is_some_and(|profile| profile.enabled))
 }
 
 /// The deadline fallback: select the `idle` offer, which every NPC prompt

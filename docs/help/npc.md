@@ -11,7 +11,8 @@ or do nothing. Everything the model produces is re-validated by the game before
 it applies, so a jailbroken NPC can still only do those allowlisted things.
 
 An NPC alone in a room costs nothing: no connected player present means no
-wake and no tokens. NPC agents need the server's LLM layer switched on
+wake and no tokens. A major NPC may also speak unprompted now and then when a
+player is present (see "Speaking unprompted" below). NPC agents need the server's LLM layer switched on
 (`[llm].enabled = true`); with it off, an NPC that is spoken to falls back to a
 canned line rather than erroring.
 
@@ -278,8 +279,42 @@ Tier picks the LLM route, the default cooldown, and the budget posture:
 The models each route resolves to live in `mushd.toml` under `[llm.routes]`;
 the memory-fold pass uses `npc_summarize`. Per-NPC daily budgets come from
 `[llm.budgets].per_npc_default`; the whole pipeline is bounded by the global
-and per-feature budgets. Rapid chatter is coalesced into a single turn (a short
+and per-feature budgets. An NPC's scene-turn decisions (route `npc_decision`)
+are charged to the same per-NPC budget as its dialogue, under the same
+`daily_tokens` ceiling when its profile sets one. Rapid chatter is coalesced into a single turn (a short
 1–2s window), and only one turn per NPC is ever in flight.
+
+## Speaking unprompted
+
+An enabled **major** NPC may speak without being spoken to. No other tier does.
+
+  - Someone must be present in its room: a player connected over a live link
+    (not link-dead), not DARK, who typed something in the last ten minutes,
+    and whom the NPC can perceive. A character reached only by an SSH
+    `mind push` is not present.
+  - The room must have been quiet: a present player there for five minutes,
+    and no NPC of the room taking a turn in that time. An unprompted line
+    never talks over a conversation.
+  - A room hears at most one unprompted line in 30 minutes, whichever of its
+    NPCs speaks. Two majors in one room take turns.
+  - An NPC speaks unprompted at most once in 30 minutes, wherever it walks.
+
+All of these are real minutes, whatever rate the game clock runs at. The turn
+is an ordinary dialogue turn on the `npc_dialogue_major` route, under the same
+per-NPC, per-feature and global budgets. The model may choose to say nothing;
+the room's 30 minutes are used either way. If the model cannot be reached the
+NPC says nothing at all, where an NPC that was spoken to would say its fallback
+line.
+
+`@agent/show <npc>` has a line for this, `Unprompted:`, which says why the NPC
+will never speak unprompted (not a major, parked, or the timer is off), that it
+is waiting for a present player, when it is next due, or when its room last
+heard a line and how long until the next. After an unprompted turn the last-turn
+line reads `woken by the ambient timer`, and `@llm/log npc_dialogue_major` shows
+the call with `actor=-` and `npc=` naming the NPC.
+
+Operators: `[npc].ambient_window_secs` (default 1800; 0 turns this off) and
+`[npc].ambient_active_secs` (default 600) in `mushd.toml`.
 
 ## Kill switches
 
@@ -291,6 +326,12 @@ and per-feature budgets. Rapid chatter is coalesced into a single turn (a short
 
 A killed or budget-tripped NPC that is spoken to falls back to a profile line
 rather than erroring; staff get a one-time notice when an NPC degrades.
+
+Parking an NPC stops its decisions as well as its dialogue. A decision is the
+turn an NPC takes when a scene hands it one (`+timestop/next`). If the NPC is
+parked while it holds one, the model is not asked: `@llm/log npc_decision` shows
+the refused call as `disabled` with `npc=` naming the NPC, and the turn passes
+as its idle action. A call already under way when the NPC is parked finishes.
 
 ## Informants (the intel loop)
 
@@ -348,8 +389,11 @@ trade in character, and their names sign their houses' business: each line on a
 board names the clerk who signs for it, and a sale line names who countersigns.
 They never move money or goods themselves — every purchase, sale and enrolment
 is a command you type, and with the model off their fallback lines name those
-commands. The principals behind the houses are on record and never wake. See
-"help ports".
+commands. The principals behind the houses are on record and never wake: they
+are major NPCs that ship parked. A server whose `mushd.toml` sets
+`[npc].wake_majors = true` creates them enabled instead and then leaves each
+as staff set it, so parking one holds across a pack upgrade. On a world that
+already exists staff wake one with `@agent/enable <npc>`. See "help ports".
 
 ## See also
 

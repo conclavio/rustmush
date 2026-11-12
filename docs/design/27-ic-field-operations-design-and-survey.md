@@ -605,7 +605,7 @@ with real, embarked human-NPC leadership.
   mind is a house default every unit carries; a mind the player sealed takes its place. It may move,
   pay from the unit's own stores and defend itself; it never opens fire first. A player who
   reconnects takes the controls back at once. This replaces P-2's no-mind default (hold, no fire,
-  no motion). Not built.
+  no motion). Built: space in doc 35 cut `SF.R32`, the field in doc 44 cut `MW.7`.
 - **As rules (2026-11-11; the whole of it is doc 35 §11, which this entry follows):**
   1. Handover after five minutes with no crew member linked; at once when the crew quit.
   2. The mind is, in order: the one the player sealed on the unit; the house default the store
@@ -619,14 +619,21 @@ with real, embarked human-NPC leadership.
   bridge-station holders and the captain); the five minutes run from the last of them to drop;
   a hand-back cancels what the mind had not yet done and a restart resumes the mind; the mind
   fires only at a unit that has fired on it, by an engine gate no script can pass.
-  Today a released field unit goes to the compiled combat doctrine (`arena_bridge.rs`), which
-  the ruling forbids.
-  The space half is built (doc 35 cut `SF.R32`). The field half is planned in doc 35 §11.4 as
-  `FB.1` to `FB.4`, on the withdraw path a raider line already uses (`field/raiders.rs`
-  `order_home`, `field/home.rs` `ask_out`, `field/exit.rs` `on_withdrawn`). Doc 27a's
-  `resolve_link_loss_posture` was never built and is superseded by it. Not built in the field.
+  **As built in the field (doc 44 cut `MW.7`; doc 35 §11.4).** The five minutes are the field's
+  own clock on the unit's row of the live record, not the server's session grace. At five
+  minutes, at once on a clean QUIT and at once for a pilot incapacitated while connected, the
+  unit passes to its mind as an absent player's: the engine refuses it any shot but one at a
+  unit that has fired on it, a hold the pilot left stays, the go-home order reaches whatever
+  mind flies it, and the host puts it aboard at its carrier's ramp, on the withdraw path a
+  raider line already uses (`field/home.rs` `ask_out`, `field/exit.rs` `on_withdrawn`). With
+  no carrier on the site it holds (rule 4's retrieval job is not built). A pilot who reconnects
+  while the field runs is seated again, and a restart seats only a pilot who is connected.
+  The space half is doc 35 cut `SF.R32`. Doc 27a's `resolve_link_loss_posture` was never built
+  and is superseded by it.
 - **Ruled 2026-11-11 (doc 44 Q-44-35 to Q-44-38, the four defaults accepted as written)**, on
-  the amendment above. Not built.
+  the amendment above. Built in space (`SF.R32`) and in the field (`MW.7`); the engine gate of
+  Q-44-38 is the field's, and space refuses every shot until its bubble records who fired on
+  whom.
   - *Who keeps a unit crewed (Q-44-35):* the characters who hold a bridge station on the hull, and
     its captain (the charter or title holder) when aboard. A passenger does not: their link
     neither holds the backup mind off nor takes the controls back. In the field it is the seated

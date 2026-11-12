@@ -560,6 +560,7 @@ mod tests {
             epoch: None,
             aboard: Vec::new(),
             arrived: false,
+            away: None,
         };
         let live = super::super::record::FieldLive {
             format: super::super::record::FIELD_LIVE_FORMAT,

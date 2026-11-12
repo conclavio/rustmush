@@ -126,6 +126,13 @@ pub struct CallCtx {
     /// NPC — staff use it to cap a runaway agent or raise a plot-critical one.
     /// Only meaningful together with [`CallCtx::npc`].
     pub npc_limit: Option<crate::budget::BudgetLimit>,
+    /// The caller knows this call's NPC is parked (its profile is disabled, as
+    /// `@llm/kill` leaves it). The call is refused before any provider is
+    /// asked, exactly as a kill switch refuses it, and the refusal is audited
+    /// against the NPC. Set by a caller that cannot simply not call: a durable
+    /// decision captured before the NPC was parked still reaches its provider
+    /// (doc 44 MW.17b).
+    pub parked: bool,
     /// Priority.
     pub priority: Priority,
 }
@@ -139,6 +146,7 @@ impl CallCtx {
             actor: None,
             npc: None,
             npc_limit: None,
+            parked: false,
             priority,
         }
     }
@@ -162,6 +170,13 @@ impl CallCtx {
     #[must_use]
     pub fn with_npc_limit(mut self, limit: crate::budget::BudgetLimit) -> CallCtx {
         self.npc_limit = Some(limit);
+        self
+    }
+
+    /// Mark the call's NPC as parked: the call is refused as disabled.
+    #[must_use]
+    pub fn with_parked(mut self, parked: bool) -> CallCtx {
+        self.parked = parked;
         self
     }
 }
@@ -465,7 +480,7 @@ impl LlmService {
         let route_key = ctx.feature.route_key();
 
         // 1. Kill switch.
-        if self.kill.is_disabled(route_key, ctx.npc) {
+        if ctx.parked || self.kill.is_disabled(route_key, ctx.npc) {
             self.write_audit(&ctx, "-", "-", &req, Outcome::Disabled, None, start);
             return Err(LlmError::Disabled);
         }
@@ -638,7 +653,7 @@ impl LlmService {
         let start = Instant::now();
         let route_key = ctx.feature.route_key();
 
-        if self.kill.is_disabled(route_key, ctx.npc) {
+        if ctx.parked || self.kill.is_disabled(route_key, ctx.npc) {
             self.write_audit(&ctx, "-", "-", &req, Outcome::Disabled, None, start);
             return Err(LlmError::Disabled);
         }

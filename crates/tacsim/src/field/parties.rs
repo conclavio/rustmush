@@ -535,6 +535,7 @@ pub(crate) fn letter(
                 epoch: entrant.epoch,
                 aboard: entrant.aboard.clone(),
                 arrived: false,
+                away: None,
             })
         })
         .collect();

@@ -773,6 +773,13 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             // `Withdraw`, so it drives itself home and rallies on Q.7's clock
             // as the reflex machine did (deleted in 17b cut M4.6).
             arena.set_controller(c.unit, Controller::Mind, MachineState::Withdraw);
+            // **Doc 44 cut MW.7** (Q-44-22; `crate::arena::absent`): a unit the host has
+            // said is flown for an absent player is handed over with its go-home order
+            // standing, so a mind the player sealed reads it as the doctrine does. The
+            // host's word reaches the arena at the pulse's head, ahead of this control.
+            if arena.absent(c.unit) {
+                arena.lay_go_home(c.unit);
+            }
         }
         ControlState::Live => {
             // **16b cut Y.3**: a `Live` naming a pilot is that pilot in the seat,

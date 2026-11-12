@@ -113,6 +113,7 @@ builder will start from. Paths are under `crates/`.
 | A core's removal | **absent** | the refit always installs an incoming core; the displaced one becomes `AssetPosition::Detached { order, from_hull }` (`refit/audit.rs:275-296`). No path takes a hull to Class 0. |
 | The industry journal of a refit | partial | the `ReplacementJournal` of mush-tactics (`refit/policies.rs:64`, `refit/capacity.rs:22`); nothing records *who* integrated a core on its title |
 | `core3_end_user` entitlement, `Legality::Restricted` | partial | `mush-economy/src/core_integration/{subject.rs:11, authority.rs:200-215, delivery.rs:81-95}` checked for Class III, provisioned only in tests; `Legality` exists in mush-market (`record.rs:173-201`) and no tacsim content sets it |
+| ↳ as of doc 44 unit MW.23 (2026-11-12) | **issued by the launch** | the check is one rule, `core_integration/end_user.rs::entitlement`, asked by `authority.rs` and `delivery.rs`; an Active launch issues the entitlement through `+enduser/apply go` (`tacsim/src/launch/end_user.rs`, `mush_economy::core_integration::register_end_user`): the end user pays the Registry 2,500cr and is issued one unit by the launch's `registry_issuer`. No test fixture is needed in a launch world. `Legality::Restricted` is still set by no tacsim content |
 | **The ungoverning refit, heirloom dies, grey dies** | **absent** | docs only (`17-unit-minds.md:866,1463,1717`) |
 
 ### 2.3 The Registry: states, recall, revocation, attestation, facts
@@ -492,6 +493,9 @@ Recorded in both ledgers (here and doc 23 §14). Pending the owner's Q-M8-1. Thi
 - **`Legality` on tacsim content** (Class III as `Restricted`, the `core3_end_user` entitlement
   seeded in content rather than tests): small, and not a channel; a follow-up of M8b if the owner
   wants the Class III scarcity live.
+  *The entitlement's half is built* (doc 44 unit MW.23, Q-44-40): an Active launch issues it by
+  the end user's own paid registration, `+enduser/apply go`. The `Legality::Restricted` label on
+  the market's catalogue entry is still not set; nothing reads it.
 - **17g §4's other follow-ups** (Registry pacing, the shared instrument lifecycle) stand.
 - **Small houses and the diversity cap** (the M8-2a review finding). `cap_for` is
   `floor(cap_permille × hulls / 1000)`, so at the default 400‰ a House with one or two titled
@@ -984,8 +988,12 @@ This closes **17g §4's first deferral**.
   lines stay out of it.**
 - **Still owed:**
   - **To S.4b:** the pending-transfer refusal and the IC audit over a draft claim.
-  - **Blocked:** the heirloom over the launch world, because the launch composes no core3
-    entitlement. Its test stays in the hardware rig.
+  - ~~**Blocked:** the heirloom over the launch world, because the launch composes no core3
+    entitlement. Its test stays in the hardware rig.~~ Unblocked by doc 44 unit MW.23: the
+    launch issues the entitlement, and
+    `mw23_a_heirloom_in_the_back_room_is_under_the_entitlement` (`tests/domain_field/m8_end_user.rs`)
+    integrates a heirloom in the combined world's back room: refused until the pilot registers,
+    then an ungoverned Class III (Q-44-12, no exemption). The hardware rig's test stays as well.
   - **Not built:** tier 1 as one story, and the M8a delegation pin.
   - ~~**A harness gap:** a reboot after a back-room refit (`UnsealedNonTail`).~~ Closed by the
     same ordering fix (PR #163); the attestation control's restart step is restored.

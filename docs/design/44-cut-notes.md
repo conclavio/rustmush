@@ -33,6 +33,16 @@ with MW.22 below as one change: the owner ruled that neither reaches main withou
   Hull cover asks for the claim path, not the other way about, and stays uncomposed.
 - **The shared story helpers follow the claim.** `m8_world::launch` and `recover` pump the
   claim arm where a launch opened a claim, so doc 17h's stories read as before.
+- **A rig's second claim in one boot closes** (found on the CI dispatch once doc 17h's tier-2
+  story ran with the claim path composed; a defect of doc 23's S.4b-2, live as soon as the
+  path is). The surface tick's claim arm (`surface/mind_claim.rs`) kept each rig's Open and
+  Close tickets in memory keyed by the rig alone, and never visited a rig again once its Close
+  had landed, so the spent Close ticket stayed. The rig's next claim in the same boot then
+  resubmitted that ticket for its own Close, which the owners do not offer: the claim never
+  closed, its licence's seat stayed held and the rig could not fly a licensed mind again until
+  a restart. Each ticket is now kept with the claim it is for (an Open with its epoch's
+  instant, a Close with the claim's open token), a ticket kept for another claim is
+  acknowledged and replaced, and a landed Close gets one more visit that releases it.
 
 **Tests.** Fast, on the production composition (`domain_field::m8_world`):
 `m8g_the_combined_world_boots_active` now asserts the claim path is composed, and every M8
@@ -77,7 +87,227 @@ step 3 is the launch refused while the licence's resale is pending). Results are
 
 ## MW.1
 
-Not built.
+The launch switch and the bring-up script (doc 44 §7.1, §8 steps 2 to 8; Q-44-3 to Q-44-8,
+Q-44-41, Q-44-47, Q-44-48; §4c rows 3 to 7 and 19). Every question it rests on is ruled.
+
+**Two things the owner should read first.**
+
+1. **A rating is long at any pulse, so the seed line comes after go-live.** Q-44-41 and MW.6
+   say a dev box at 50 ms rates a mind in minutes, from the acceptance stories' rig (a lease a
+   third of a second, a certificate about six minutes). On a world brought up by the runbook,
+   measured on conclav.dev (32 cores, release build): **a copy of Standard Doctrine rated in
+   1,948 s, 32.5 minutes, at `registry_pulse_ms = 50`**. A lease took 1.27 s at 50 ms and 1.10 s
+   at 10 ms, with the server at about 6 per cent of one core: below about a second the pulse is
+   not what paces a rating. A named House source is longer: the Meridiani source rated in 4,757 s, 79 minutes, at 50 ms, and in 4,084 s at 10 ms. So the bring-up does not hold players off for the
+   rating: the unit is started after the Active boot's checks, and the seed line and the House's
+   purchase run on the running world.
+2. **No House can be given hulls on a live world.** A House's first licence needs three titled
+   hulls. The only spare hulls a fresh world has are the Ceres Co-op's eight pool Drays; three
+   Houses need nine; and a Dray titled to a House closes `+coop/enrol` for every player
+   (`port/hull.rs`: the Co-op's readiness wants every pool Dray with the Trust or a graduate).
+   No staff verb makes a hull, and the yard commissions one only from goods delivered out of a
+   docked hold. So the script **lends** three Drays to one House for the purchase and hands
+   them back. Every House has its policy, agent, grants and funded treasury; none keeps a hull,
+   so none buys again. Giving the Houses hulls of their own needs content (the lane pack titles
+   them hulls) or a staff commission verb. Neither is in this unit's files; it is the follow-up
+   this unit leaves.
+
+**Built.**
+
+- **`MINDS_LAUNCH` in `instance.env`** (`on` or `off`; empty is off; anything else refuses the
+  render). `deploy/instance/render.sh` reads it itself: it is not a `__TOKEN__`, because what it
+  decides is whether a commented line of the template is live at all. On, **and with the box's
+  launch document at `<DATA_DIR>/launch.json`**, the `[tacsim.minds]` header and
+  `launch_path = "<DATA_DIR>/launch.json"` are rendered live. On with no document, or off, the
+  line stays the template's comment. So `launch_path` is out of the rendered file until the
+  document exists, a deploy onto a fresh or wiped store boots without the launch whatever the
+  switch says, and no state renders an empty path. dev1 and dev2 ship `MINDS_LAUNCH=on`
+  (Q-44-3); the reference instance ships `off`.
+- **`REGISTRY_PULSE_MS`**, read by `render.sh` the same way: not empty, it renders the header and
+  `registry_pulse_ms = <n>` live. dev1 and dev2 ship 50 (Q-44-41, provisional); the reference
+  instance ships it empty, which is the server's 1,000.
+- **`RAID_DIRECTOR`**, an ordinary token, in a new `[tacsim.field]` block of the template with
+  that one key (the block's other keys keep their compiled defaults). dev1 and dev2 ship `true`
+  (Q-44-7); the reference instance `false`. `mushd.toml.example` gains the block.
+- **`[llm.routes.content_assist]`** in the template and the example: `z-ai/glm-5.3`, 2,048
+  tokens (the pass asks for no more), 60 s, reasoning low. Provisional; it is the class the other
+  structured authoring routes use.
+- **`scripts/reset-instance.sh`** comments a live `launch_path` in the rendered config when it
+  wipes the world, after the wipe and before `--bootstrap-staff` and the start, both of which a
+  live path with no file refuses. It is the one line of the rendered config a reset touches.
+  `--no-start` leaves the unit stopped after the wipe.
+- **`SERVER_HOLD=1`** in `deploy/dev1-split/deploy.sh` and `deploy/dev2-split/deploy.sh`: a
+  server unit that is not running is installed and enabled and not started.
+- **`deploy/instance/launch-bringup.py`** (Python 3, standard library; root on a box). It runs
+  the world itself for three boots, on a private IPC socket with a private gateway on
+  `127.0.0.1:<SSH_PORT + 20000>`, and types as #1 over SSH at that gateway's welcome screen:
+  1. the plain boot: the Republic, the three system accounts, the three Houses, the Basin
+     importer and its fitting shop, the Tether back room, the Registry, six service logins, and
+     each House's procurement agent, grants, faction membership and funded root-scope treasury;
+     then `launch.json` in mode `initialize`, with `hardware.ungovern` and three `procurement`
+     entries, and a render;
+  2. the Initialize boot: the seven Registry grants on the review scope to every operator, the
+     four initialize actions, the document's mode set to `active`;
+  3. the Active boot: `@mind/launch` must name every operator `ready`; the 18 major NPCs
+     enabled with `@agent/enable`, read from the cast packs in the tree (not by editing them);
+  4. the unit started, `@mind/launch` read again on it, and the LLM check;
+  5. on the running world: one line imported or copied, saved, rated, filed by #1 and listed
+     on the player market; three Drays lent to one House; the unit restarted (a House's month
+     that found an empty counter stays closed until a restart); the House's purchase read from
+     its procurement ledger in the store; the Drays handed back. `--seed-only` runs this step
+     alone and takes a stopped one up; `--no-seed` leaves it out.
+  A second run on a box that is already live stops nothing.
+- **The LLM check** (§8 step 8): #1 asks a major NPC a question and starts a simulator match
+  against an AI squad, then reads `@llm/log`. It passes only on an `ok` row for an
+  `npc_dialogue_*` route, an `ok` row for `tacsim_deliberate`, and an `@agent/show` that says the
+  NPC's last turn was the model's. `@llm/budget` and `@llm/dashboard` are written to
+  `<DATA_DIR>/bringup/llm-check.txt` (Q-44-48). `--llm-check` runs it alone.
+- **`scripts/launch-bringup-acceptance.sh`**: the proof below as one script, on a scratch
+  instance with its own Redis, driving the real `reset-instance.sh` and the real bring-up as
+  root over a `systemctl` shim. `scripts/tests/render-launch.sh` (in CI's script step) holds the
+  switch against the shipped template; `scripts/tests/reset-instance.sh` gains the launch line
+  and `--no-start`; `scripts/tests/llm-stub.py` answers the LLM routes for the acceptance run.
+- `deploy/README.md` describes the switch, the script, how its steps are typed as #1, how
+  players are kept off, what a rating costs, and what a House's purchase needs.
+
+**How players are kept off.** The instance's world unit is stopped before the first boot and
+started only after the Active boot's checks. With it stopped nothing answers on the instance's
+IPC socket, so the public gateway generations have no world to log in to or register on; the
+private gateway is on loopback. A stop on a refusal, or an interruption, leaves the unit
+stopped and the private boots stopped. Fresh store to players let in is about two minutes.
+
+**What the proof found that the runbook did not say**, each handled by the script and written
+into the README:
+
+- **The Roll's initialize action must be typed last.** Once `roll-initialize-commerce` has landed
+  the world boots only Active: the Initialize boot's preflight refuses
+  (`commerce initialization preflight: commercial records disagree`). The runbook and the tests
+  type it first. A bring-up interrupted between it and the three industry actions left a store
+  that booted in neither mode. The script types the three industry actions first, and treats
+  that refusal of the Initialize boot as "all four landed". The README's step 10 now says so.
+- **A typed line is flood-limited for #1 too** (ten a second, thirty in a burst), and the world
+  answers "busy" while the last action commits. The script paces itself and types a
+  turned-away line again.
+- **A boot more than 30 s after the store's last clock checkpoint runs the five-minute
+  post-outage countdown**, with every world action refused. A second run of the bring-up after a
+  pause meets it. The script waits it out and says so.
+- **A House's month that found nothing stays closed until a restart** (the flag is in memory),
+  and its first look is at an empty counter. Hence the restart in step 5.
+- **`@account/list` stops at twenty rows with no cursor**, so accounts are found by
+  `@account/show` one id at a time.
+- **A backgrounded shell hands a child SIGINT ignored**, and a closed terminal sends SIGHUP: the
+  script sets its own handlers for INT, TERM and HUP so its private boots are always stopped,
+  writes their pids down, and stops any a killed run left behind.
+
+**Tests.** The proof is `scripts/launch-bringup-acceptance.sh`, run as root on conclav.dev
+(Ubuntu 26.04, Redis 8.10 on a spare port, a release build of `mush-server` and `mush-gateway`
+at this branch), each run on its own scratch instance. Never on dev1 or dev2.
+
+- **The fast steps** (`SEED=0`), passed in five minutes:
+  - run 1, a fresh store, interrupted by SIGINT 40 s in. It was inside the Initialize boot,
+    with the first initialize action landed and three to go. Four attempts to register at the
+    public front door during it were all kept out, and no private boot was left running;
+  - run 2, the same store, to the end: it took up at the Initialize boot, landed the other
+    three actions, and `@mind/launch` read `Registry operators: #810 ready.` in the Active boot
+    and again on the started unit. Probes were kept out until the unit started, and one
+    registered once it had;
+  - the LLM check, with no provider answering, failed as it must;
+  - the real `reset-instance.sh --staff keeper --no-start`: the rendered config read
+    `# launch_path`, and the data directory held no document;
+  - run 3, the second bring-up on the reset store: plain, Initialize and Active boots (1.0 s,
+    1.5 s, 1.5 s to come up), `ready`, five probes kept out;
+  - `scripts/tests/render-launch.sh`: off, on without and with the document, the pulse, the
+    refusals, and the plain substitution byte for byte.
+- **The LLM check's passing path** (`LLM=stub`, the providers pointed at
+  `scripts/tests/llm-stub.py`): `npc_dialogue_major ok` for the first major NPC,
+  `@agent/show` "the model answered and did nothing", and `tacsim_deliberate ok` from a
+  simulator match #1 started and boarded against an AI squad. With no provider the same check
+  reads `disabled` or `error` rows and fails.
+- **The purchase, in the script's final shape** (the whole acceptance, the long step last, on
+  the second bring-up's running world): twice. At the defaults (50 ms): `Seedline@1`
+  rated in 1,949.2 s; listed as `59809cd4  Seedline Market  sealed  class I  400cr  90+28
+  days`; Meridiani lent Slack Water, Cold Comfort and Ninth Ledger; the unit restarted;
+  `Meridiani's agent #812 bought licence 2 of charter 828 for 40000 minor credits (15s after
+  the boot); the root treasury holds 160000 minor`, read from the procurement ledger; the three
+  Drays handed back, and `@tacsim/port status` read every programme's hulls ready;
+  `acceptance: PASSED`. At 10 ms the same, with the rating at 1,666.1 s.
+- **The purchase of a House source** (`--seed-line meridiani`, 50 ms): the Meridiani source
+  rated in 4,757.2 s and was listed as `a92edfa1  Meridiani Field Series M  sealed  class II
+  400cr  90+28 days`; Meridiani's agent bought it 15 s after the restart. This run was
+  stopped and taken up with `--seed-only` three times on the way (a name the holdings list
+  cuts at twenty characters, which the script now knows by its start; an older rig's shim), and
+  each time went on from where the line stood.
+- **After the hand-back**, on that running world, `@tacsim/port status` read `ceres_port hulls:
+  8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]`. The script now reads
+  that line itself and stops if any programme's hulls are not ready.
+- **Ratings timed** (queued to finished, release build, conclav.dev): a copy of Standard
+  Doctrine 1,948.3 s and 1,949.2 s at 50 ms, 1,666.1 s at 10 ms; the Meridiani source 4,757.2 s
+  at 50 ms and 4,084.3 s at 10 ms.
+- An earlier shape of the script, with the seed step inside the Active boot, kept 184 attempts
+  to register out over the 37 minutes of its rating.
+- Locally: `cargo test -p mush-config -j 2` (the new
+  `mw1_the_launch_switch_renders_the_path_only_beside_its_document` among the 15 of
+  `shipped_configs`) and `cargo test -p mush-contract-tests -j 2` green; `cargo fmt -p
+  mush-config --check` clean. On Linux: `scripts/tests/reset-instance.sh` (the launch line,
+  `--no-start`) and `scripts/tests/render-launch.sh` pass.
+
+**Divergences.**
+
+- **The seed line and the purchase come after the unit is started**, not in the Active boot
+  (first paragraph). The unit's row asks that no player can log in before the Active boot; that
+  holds. It does not hold players off for the hours a rating takes.
+- **The Houses are lent hulls, not given them** (second paragraph). `--keep-house-hulls` leaves
+  them, with enrolment closed.
+- **Byte for byte, precisely.** With `MINDS_LAUNCH` off and `REGISTRY_PULSE_MS` empty the render
+  is the plain token substitution of the template, byte for byte, and both the shell test and
+  `shipped_configs.rs` assert it. Against main's render of the same env the file differs by the
+  template's own additions: the `[tacsim.field]` block, the `content_assist` route, and comment
+  lines about the switch. No live line that main rendered is changed.
+- **The service characters each have a login of their own**, where the runbook hangs the clerk
+  and the operator off `LaunchAgent`'s login with `@newchar`. One `create` makes login and
+  character together, so no run stops with a login half made, and no password is kept: each is
+  random and thrown away. To play one, #1 types `@newpassword <name>=<password>`. (The first
+  draft kept the passwords in a state file; CodeQL flagged it, rightly.)
+- **The seed line is filed personally by #1**: by default charter `Seedline Market`, a copy of
+  Standard Doctrine named `Seedline` (`--seed-line standard`: the quickest to rate, and a House
+  buys it). `--seed-line meridiani`, `coprates` or `safe_conduct` imports that named source
+  instead, as the zero-player story does. Whether a House filing of the same revision is still
+  possible after #1 has filed it personally was not tried.
+- **Procurement policies name the Republic as `standing`** and a budget of 200,000 a month
+  (the config's default, written into the document so the grant's limit and the policy agree).
+  Each root-scope treasury is funded with one month's budget from `launch.faucet`.
+- `hardware.ungovern` carries no `fee_minor`: the catalogue's fee applies.
+- `deploy/instance/launch.json.example` is unchanged: it is the format-2 document two tests
+  read, and the dev launch's document is the one the script writes.
+
+**Defaults that would be costly to undo.** None. The switch's shape (a key `render.sh` reads,
+the document's fixed place in the data directory) is the one other units will lean on; changing
+it is an edit to `render.sh`, the contract test and three env files.
+
+**Not built.**
+
+- Hulls for the Houses (above).
+- Anything that makes a rating shorter. Below a second the pulse is not what paces it.
+- The House chain's own filings and counter listings of the three named sources. The runbook
+  does not list them, and procurement does not read the House counter.
+- A staff way to end the post-outage countdown early. A re-run after a pause waits five minutes.
+- The acceptance script is not in CI: it needs root and a Redis with the JSON module, and its
+  last step is hours. MW.19 stands the bring-up up in the bot's rig (`--no-systemd`).
+- Nothing was run on dev1 or dev2. MW.3 is the go-live.
+
+**Not pinned by a story.**
+
+- The LLM check against a real provider. The acceptance run proves it fails with no provider
+  and passes against a local stub that answers every request with one line; what a real model's
+  `ok` row and a real fallback look like on a box is MW.3's to see.
+- Co-op enrolment after the Drays go back: the port's readiness report reads the pool's hulls
+  ready again, and the script checks that line, but no player was enrolled afterwards in the
+  proof.
+- A House's purchase of the same line a second time, or by the other two Houses: one House,
+  one licence.
+- The all-in-one path (`mushd` alone, where the split is not built) and the two older unit
+  shapes: written, not run.
+- The script against a store that already has players.
 
 ## MW.2
 
@@ -294,7 +524,257 @@ the skipped keys stay bounded. A row that fails `validate` in `page` is not pinn
 
 ## MW.7
 
-Not built.
+The field's backup mind and the absent-player gate (doc 44 §7.1, §4 C, §4b rows 2 and 3, §4c
+rows 11 to 13 and 22; Q-44-16 to Q-44-19, Q-44-22, Q-44-35 to Q-44-38, Q-44-42, Q-44-43,
+Q-44-46; doc 35 §11.4's `FB.1` to `FB.3`; doc 27 Q-H5). PR #549, stacked on MW.14a (#545).
+
+**Built.**
+
+- **The absent player's rule, once** (`crates/tacsim/src/arena/absent.rs`). `permits(facts,
+  ask)` is the whole rule and the only copy: for a unit a mind flies for an absent player, a
+  shot is let through only at a unit whose fire has arrived on this one, and not at all while
+  a hold on its fire stands; mining and trading are refused. It reads no arena, no clock and
+  no dice. The arena asks it at the one door every shot no seat typed goes through
+  (`Arena::resolve_fire_by`, `arena/weapons.rs`): a mind's own cited shot, a standing fire
+  rule's and a machine's alike, so the stock mind's cornered stand and a player's sealed
+  script meet the same refusal (`unwarranted`, the word a held shot already reads). A seat's
+  typed `FIRE` is never asked.
+- **The three facts, on the unit** (`arena/state.rs`). `UnitState::absent`, written only by
+  the host's word (`ArenaMsg::Absent`, applied at a pulse's head by `Arena::set_absent`).
+  `UnitState::fired_on_by`, the units whose fire has arrived on this one, hit or miss, written
+  at every impact (`arena/damage.rs`) in a field whose end is its host's and never in a
+  practice match. The hold: the seat's own master gate (`weapons_hold`, the hold the pilot
+  left) or a standing order's `hold_fire`. Both new fields are carried by the snapshot and
+  folded into the state hash only when set, as `coupled_to` is, so `SNAPSHOT_FORMAT` stands at
+  19 and every practice match hashes as it did.
+- **Going home reaches every mind.** `Arena::set_absent` lays a standing `Withdraw` with no
+  deadline on the unit's mind row (`lay_go_home`), and a `Released` that hands over a unit
+  already marked lays it too. The stock mind obeys it as it obeys a leader's: it drives for
+  its party's home and never rallies while the order stands. A player's sealed script reads
+  it as `v.order` (objective `withdraw`). An order to advance or attack that stood is
+  replaced; its `hold_fire` is kept. A detachment command that reaches the unit meanwhile
+  can only add `hold_fire` (`arena/detachment.rs`).
+- **What the mind is shown** (`Arena::mind_view`). While the flag stands, a contact its party
+  holds Hostile reads Neutral unless the rule would let the unit answer it. Without this the
+  stock mind's cornered stand stopped the unit beside any marked party in range and it never
+  got home. The view is narrowed, never widened, and the gate does not depend on it.
+- **The field's presence record and the one door** (`crates/tacsim/src/field/absent.rs`).
+  `Away { why, since_wall_s, handed }` rides the unit's row of the live record, so a restart
+  keeps it. `hand_over(ctx, unit, pilot, why)` is the door: it marks the record, tells the
+  arena (the flag first, then the seat's `Released`), tells the pilot, and tells those the
+  unit was with. Three callers today: the field's own five-minute clock
+  (`FIELD_LINKDEAD_GRACE_WALL_S`, 300 wall seconds from the lost link, checked once a world
+  second), a clean QUIT (the seat's `Disconnected` hook with no clock running, at once), and
+  `crew::on_frames` when a pilot inside a hull is incapacitated (at once, connected or not).
+- **The host boards it** (`field/home.rs`, `field/exit.rs`). `home::ask_out` has a rig's exit
+  ask (the ramp its own carrier stands with) beside the DT one, and asks quietly: nobody is
+  told the ask or its refusals. Once the kernel lets the unit out, `exit::tick` runs its
+  recover as its pilot (the rig's recover act, or the DT recover), and
+  `absent::retry_recovers` tries it again every ten wall seconds until the unit is off the
+  site's ground.
+- **The way back** (`absent::take_back`, from the seat's `Connected` and `Revived` hooks and
+  from the tick). A pilot who is connected, fit and still seated in the unit is bound and
+  seated again; the arena is told the player is back. The seat's `Live` control discards the
+  mind's pending think and its order (`Arena::suspend_mind`, unchanged), and the task recalls
+  a ramp exit it has not yet applied (`WithdrawRefusal::Recalled`). A unit already out at the
+  ramp stays out, and the pilot is told.
+- **A restart** (`field/boot.rs`, `absent::at_resume`). A unit its mind held is not seated;
+  the tick tells the resumed task again. A seated pilot who is not connected is bound, the
+  seat `Linkdead`, and the five minutes run from the boot unless the record carries an
+  earlier loss. A pilot who is connected is seated as before.
+- **The lead is told** (doc 35 §11.4's open point). The leader of the unit's own party and the
+  leaders of the parties that stand its friends hear one line (`GONE_HOME`), queued for one
+  who is offline. The unit goes.
+- `docs/help/field.md` has a new section, "If you lose your link, or quit". Doc 35 §11.4 and
+  doc 27 Q-H5 read as built.
+
+**What a caller in space must provide** (for MW.9's follow-up; one rule, not a copy). Call
+`tacsim::arena::absent::permits(&Facts { absent, holds_fire, fired_on_by }, &Ask::Fire { at })`
+(or `Ask::Mine`, `Ask::Trade`) where the seat accepts an intent, and act only on `Ok`.
+
+- `absent`: the hull is flown for a player who is not at her controls. Space has it:
+  `SpaceLinkdeadState::backup_has_helm()`.
+- `holds_fire`: a hold the crew left stands. Space has no such order today; pass `false`
+  until it does.
+- `fired_on_by`: the set of hulls whose fire has arrived on this hull since the bubble
+  opened, keyed by the same id the `Ask`'s target uses (`ObjId` fits). **This is the one
+  thing space does not have**: the bubble keeps no record of who fired on whom (doc 35
+  Q-35-B3). It is a set a hull, written where a round's arrival is resolved, carried with the
+  bubble's state. Until it exists the seat's present rule, refuse every lock, shot and
+  arming, is the same rule with an empty set.
+
+**Tests.** In-source: the rule's arms (`arena::absent`), the rule at the door for each source
+of a shot, the go-home order, the narrowed view and the hold (`arena::weapons`,
+`mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it`), the hash fold
+(`arena::hash`), the record's wire form (`field::absent`). Arena
+(`crates/tacsim/tests/domain_arena/minds_rhai.rs`): a sealed Rhai script written to fire
+first is refused every shot, fires once it has been fired on, reads the order and drives
+home, and the kernel lets it out at the ramp; a script that faults three thinks running is
+dropped to the Standard Doctrine, which drives home and fires on nobody. Stories in
+`domain_field` (`crates/tacsim/tests/domain_field/field_mw7.rs`), each a field of three
+parties, each passing on Linux (conclav.dev, six at once):
+
+- `mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_first` (54 s). A
+  miner's prospector, a leased escort flown from its cab, an intruder. The escort's pilot
+  marks the intruder Hostile, sets weapons free and loses their link. Twenty seconds short of
+  five minutes the seat is still theirs; at five minutes the mind has the unit. It drives to
+  the ramp, the kernel lets it out, the host's recover puts it in the bay, and it has fired
+  nothing since the link was lost.
+- `mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it` (41 s). A clean QUIT
+  hands over at once. With the raider marked Hostile eight cells off and weapons free the
+  unit fires on nobody for twelve seconds; once the raider's fire arrives it answers the
+  raider, after that first arrival, and never the third party. No carrier of its party is on
+  the site, and it holds where it stands.
+- `mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack` (110 s). The seat left at
+  weapons hold: three of the raider's rounds arrive and the unit answers nobody.
+- `mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat` (25 s). Link lost, the
+  session ended, ten minutes gone. The pilot connects, is told, is bound again, takes the
+  focus, and their `DRIVE` is the hull's goal with no order standing.
+- `mw7_a_pilot_knocked_out_while_connected_stops_steering` (20 s). A pilot inside a walker
+  whose cockpit is destroyed: connected, incapacitated, the seat released at once; a
+  reconnect is refused the controls.
+- `mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind` (44 s). The server restarts
+  with the mind holding the unit. The boot seats nobody; the resumed mind fires on nobody
+  until the raider's fire arrives, then answers; the pilot connects and is seated.
+
+**Verified, and how** (Linux, conclav.dev, at `654031bf`). The six stories and the two arena
+tests pass. The whole `domain_field` binary passes (253 run), with one older story changed:
+`field_crash::cf_review_an_extraction_out_of_a_running_field_releases_the_seat` asserted that
+an incapacitated pilot keeps the seat until extraction, which Q-44-43 ends. `domain_arena`
+(1,125) and the tacsim library's tests (2,222) pass; `cargo doc -p tacsim` is clean under
+`-D warnings`; clippy is clean on the library. Five mutations in a second throwaway clone,
+each run against the stories and the arena tests:
+
+| Mutation | What failed |
+|---|---|
+| The field takes no part in the seat's hooks (main's behaviour: a drop is a plain `Released`) | all six stories |
+| The gate off and the view not narrowed | the four fire stories (the unit fired first, 11 to 38 rounds) and both arena tests |
+| The gate off, the view narrowed | the sealed-script arena test only: in a field the narrowed view alone keeps the stock mind from firing first |
+| The view not narrowed, the gate on | story 1 (the unit stood where it was, facing the marked party, and never reached the ramp) and the arena test's view assertion; the other fire stories passed on the gate alone |
+| A returning pilot is never taken back | the reconnect, restart and knocked-out stories |
+
+So the stock mind is held by either half, a sealed script only by the gate, and the unit gets
+home only with the view narrowed. The stories cannot be compiled on main (they read
+`tacsim::field::absent`), so the first row stands in for "fails on main today".
+
+**What the survey had wrong, or left out.**
+
+- **A `Released` already sends a unit home.** §4 C says the released unit "never goes home".
+  The kernel seeds the Standard Doctrine `Withdraw` at every release, so a released unit does
+  drive for its party's home. What was true is that it rallies after a lull and fights, that
+  only doctrine is seeded (a sealed script is told nothing), and that nothing puts it aboard.
+- **The IC weapons hold is the "HOLD FIRE left by the pilot".** A seated hull holds no
+  standing order at all (`apply_detachment_command` refuses a pilot's hull, and a possess
+  clears the row), so the only hold a pilot can leave on their own unit is the seat's master
+  gate. Every IC seat opens at hold (Q-CF-41). Before this cut a hull a mind took over
+  ignored that gate by design.
+- **No intent in the arena mines or trades.** The rule has both arms for space; in a field
+  there is nothing to refuse. Mining in a field is refused as an order already
+  (`field/orders.rs`).
+- **The cornered stand needed more than a refused shot.** With the shot refused the stock
+  mind still stopped and faced the nearest marked party, and stayed there. Hence the narrowed
+  view.
+- **"Five minutes" was the server's session grace**, `[game].linkdead_grace_s`, not a field
+  rule: an operator who shortened it shortened the owner's five minutes. The field now runs
+  its own clock, and a session that ends on a lost link no longer releases the seat.
+- **A cockpit command is answered from the seat's last frame**, so a returning pilot's first
+  command waits for the first frame of the new tenure (one pulse). The story waits for it.
+
+**Defaults taken.** None needs a refactor to undo unless it says so.
+
+- **The pilot's weapons hold binds the mind.** A player who never set `FIRE FREE` leaves a
+  unit that answers nobody, even under fire. It is the ruling's "the stricter rule wins"
+  read on the only hold a pilot has, and every IC seat starts there. If the owner would
+  rather an absent player's unit always defend itself, it is one clause in
+  `Arena::absent_denies_fire` and one in `Arena::answerable`. **For the owner.**
+- **The field's five minutes are a constant**, as space's are. `[game].linkdead_grace_s` no
+  longer decides when a field unit is handed over. A story steps the world's wall second, so
+  none waits five real minutes.
+- **A session that ends with no clock running is a quit.** The `Disconnected` hook carries no
+  reason, so the field tells a quit from a grace's end by its own record, as space does. A
+  pilot whose link was already down when the field opened and whose session then ends is
+  therefore handed over at once; they had been gone the whole grace already.
+- **A sealed script that ignores the order is not driven home.** The order reaches it and
+  the engine binds its fire; if it never moves, the unit holds. This is doc 35 Q-35-B4's
+  default for space, taken for the field too. The alternative, the engine driving any absent
+  unit home whatever its mind asks, would be a second controller beside the mind and is the
+  one change here that would be a real refactor. **For the owner**, with Q-35-B4.
+- **A mind falls to the house default after three faults running**, the kernel's standing
+  rule, not at the first. For up to three thinks the unit does nothing.
+- **Who is told**: the unit's own party's leader and the leaders of parties that are its
+  party's standing friends (owner or organization), never a party that only marked it
+  Friendly. Queued at trip level for one who is offline.
+- **A restart starts the five minutes again** for a pilot who was flying when the server went
+  down (doc 35 Q-35-B8's recommendation, taken for the field). An earlier loss on the record
+  is kept.
+- **The tick reconciles presence toward "here" only.** A pilot who is connected and whose
+  hook never fired (a restart's re-attached connection) is seated by the next tick. Absence
+  is opened only by a hook or a boot, never by polling, so a story that sets a session's
+  facts by hand is not handed over.
+
+**Not built, and where each lives.**
+
+- **The filed mind through the claim path, as a field story.** The row's second story is
+  pinned at the arena with a sealed Rhai script, not through the Registry, the licence and
+  the claim seal MW.0 and MW.22 composed. A field story needs the M8 world, a governed core
+  on an armed rig and a rated script of the story's own, and none of the rigs flies that
+  combination yet. **Owed to MW.5**, whose stories run on the production composition; MW.21's
+  story then covers the same in space. PR #546's fix did not matter to anything built here.
+- **`FB.4`, the retrieval job** for a unit with no ramp in reach (Q-35-B6): the unit holds
+  and says nothing more. **Doc 41's retrieval contract; needs the owner's call on who pays.**
+- **The recover owed across a restart.** The retry list is RAM. A unit let out at its ramp
+  whose recover had not landed when the server went down stands beside the ramp, out of the
+  field, and its pilot's own recover passes, as for any exit today. **AP.7**, which gives a
+  carrier's mind the taking aboard.
+- **Absent at admission** (a pilot logged off in the seat when the field opens) and **the
+  posture record**: **AP.5** and **AP.3**. Both call `hand_over` with a `Why` of their own;
+  AP.3's `HOLD` and `GUARD` change what `lay_go_home` lays and what `answerable` admits.
+- **A player's rig on a fill plan when a field opens** keeps to today's rule. **AP.7.**
+- **A unit nobody sits in is not an absent player's unit yet.** A rig launched with a filed
+  mind and no pilot in its cab is its mind's from admission, with no record and no flag, so
+  the rule does not bind it and nothing takes it home. The door is there (`hand_over`); what
+  calls it for a unit with no seated pilot is **AP.5** (admission) and **AP.7** (the plan).
+- **A unit put back into the field because its carrier was lost at the ramp**
+  (`field/boarding.rs`, `carrier::rejoin`) comes back with a fresh row and its pilot's seat.
+  The host's recover list hands it over again while this boot holds the list; after a restart
+  in that window nothing does, since absence is opened by a hook or a boot, never by polling.
+  **AP.5**, whose admission rule asks the connection at a join too.
+- **A gate in space.** The rule is callable; the bubble's fire record is not built. **MW.9's
+  follow-up.**
+- **A staff read of why a shot was refused.** `Denied` has a sentence for each limit, and
+  the mind is told `unwarranted` as for any held shot. No verb shows which limit it was.
+
+**Reviewed.** A read-only review of the engine diff by a second agent found six points, all on
+the host's side; it found nothing in the gate, the snapshot, the hash or the simulator's
+paths. Five are fixed in the PR's last commit:
+
+- a restart did not reconcile the arena's flag with the live record, so a unit handed back
+  after the last snapshot came up still under the absent player's rule (`field/boot.rs` now
+  sets the flag from the record before the task starts);
+- the recover list never drained when a recover could never land (it now gives up after
+  thirty tries, five minutes, and queues the pilot a line saying the unit stands beside the
+  ramp);
+- a unit put back into the field after its carrier was lost stayed on the recover list and
+  was nobody's (the list now hands it over again);
+- the recall took any waiting withdrawal of the unit, so a returning pilot's own recover,
+  typed before the next pulse, was dropped without a word (the task now recalls only what was
+  offered before the hand-back's word);
+- a detachment's authority control arriving after the hand-over cleared the go-home order
+  (`apply_detachment_control` now leaves an absent player's unit its order; pinned in the
+  kernel test).
+
+The sixth stands, a race of one pulse: a pilot who reconnects after the kernel has let the
+unit out and before the host has heard so is told they are back, then that the unit is up the
+ramp; the recover runs and the unit is put aboard. Nothing is lost.
+
+**Not pinned by a story.** A refused recover tried again and given up (the first try passes
+in story 1). A restart between a hand-back and the next snapshot.
+A player leader's DT roster unit taken home by the DT recover (story 1 flies a rig). The
+telling of a friend party's leader (no rig stands two friendly parties with different
+leaders). The recall of a ramp exit at the hand-back (`WithdrawRefusal::Recalled`). A pilot
+who was flying at a restart and does not come back within five minutes. A reconnect inside
+the five minutes (the hook's path is `Revived`, unchanged from before, plus the record
+cleared). A detachment command tightening an absent unit's order.
 
 ## MW.8
 
@@ -827,7 +1307,147 @@ result) through `@agent/show`.
 
 ## MW.18
 
-Not built.
+The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c row 19).
+
+**Built.** In `crates/mush-npc`, with three keys in `[npc]` (`crates/mush-config`,
+`crates/mush-composition`, `mushd.toml.example`):
+
+- **The scheduler** (`module.rs`, `NpcTick::schedule_ambient`). Every 30 real seconds the
+  agent tick finds the rooms that hold a present player beside an enabled major NPC. For
+  each one that is due and quiet it begins one ordinary dialogue turn for one of the
+  room's majors, woken by `Stimulus::AmbientTimer` alone. Nothing is read for a game
+  with nobody connected.
+- **Presence, one definition** (`present_for_ambient`): a player character with a live
+  connection, not `DARK`, who typed within `[npc].ambient_active_secs` (600) real
+  seconds. A link-dead character is still `World::is_connected` but has no live
+  connection; a bare connection (MW.24's SSH `mind push`) is neither connected nor live;
+  both fail `World::has_live_conns`, so one test covers the two. The NPC must also be
+  able to perceive that player.
+- **The room window** (`runtime.rs`, `AmbientState`): a room is due when it has been
+  attended for the settle time (300 real seconds) and its last unprompted turn is at
+  least `[npc].ambient_window_secs` (1,800) old. The window opens when the turn BEGINS,
+  whether or not the model then speaks and whether or not a budget refuses the call, so
+  it bounds calls and not only lines. Two majors in one room take the room's turns in
+  rotation. Times are real seconds (`World::now`), never the IC clock.
+- **The NPC's own window** (`NpcRuntime::last_unprompted_at`): an NPC also takes at most
+  one unprompted turn in that window, wherever it walks. This is Q-44-31's "each", kept
+  beside Q-44-47's room cap, so a major that follows a player from room to room does not
+  speak in each.
+- **Quiet**: no NPC of the room, of any tier, is mid-turn, has a stimulus waiting, has a
+  memory fold pending, or took a turn within the settle time. An unprompted line never
+  talks over a conversation.
+- **Under the existing budgets.** The turn is fired through `fire_dialogue`, so it uses
+  the major dialogue route, the per-NPC, per-feature and global budgets, the audit row
+  and MW.17's `LastDecision` unchanged. Nothing was added to the budget (Q-44-48).
+- **A degraded unprompted turn says nothing.** `LastDecision` gains `unprompted`; when the
+  model is not reached, a turn somebody prompted still says the profile's fallback line,
+  and an unprompted one says nothing. Staff are still told the NPC is degraded.
+- **What staff see.** `@agent/show` gains one line, `Unprompted: ...`: never (and why:
+  the timer is off, not a major, parked), waiting for a present player, due in so many
+  minutes, or when the room last heard a line and how long until the next. Its last-turn
+  line already reads `woken by the ambient timer`. `@llm/log npc_dialogue_major` shows
+  the call with `actor=-` and `npc=` the NPC (MW.17b).
+- **The switch that enables the majors: `[npc].wake_majors`** (default `false`). The
+  shipped cast (`crates/tacsim/content/cast/*.json`) authors its eighteen majors
+  `"enabled": false`. With the key set, a cast pack CREATES its major NPCs enabled,
+  whatever the pack says, and a later upgrade of that pack keeps each major enabled or
+  parked as staff last left it (`content.rs`, `applied_enabled`). So it wakes the majors
+  of a fresh world at boot, and on a world that already exists it wakes nobody.
+  **For MW.3**: set it under `[npc]` in the box's `mushd.toml` (the template is
+  `deploy/instance/mushd.toml.tmpl`, which this unit did not touch). On a wiped and
+  reloaded box that is all. On a world whose cast is already there, also run
+  `@agent/enable <npc>` for each major; the key then keeps them woken across the next
+  pack upgrade.
+
+**What the survey had wrong, or left out.**
+
+- "Presence counts link-dead, DARK and idle characters" is true of `players_present`,
+  which every stimulus-driven wake uses, and that is left as it is: a stimulus is itself
+  something a live player just did, so nothing is spent on an idle room there, and a
+  `DARK` wizard who speaks to an NPC is still answered. The narrower definition is the
+  ambient timer's alone.
+- The eighteen majors are stubs. Each has a one-line background and a persona of a few
+  words (four have an empty persona), no goals, no knowledge, no lore and no fallback
+  line. Enabled, they will speak from almost nothing. That is content, not this unit,
+  and it is the first thing a dev-box playtest will show.
+- They stand in six rooms (five in Ceres's Authority, four on Aitken's spine, three each
+  at Stickney and Voltaire, two at Ligeia, one in the Ceres Registry). With every one of
+  those rooms attended that is at most six unprompted calls in 30 minutes for the whole
+  game, which is the figure to hold against the day's budget (Q-44-48).
+- A pack re-apply writes the whole profile again and keeps only `public_faction`. So
+  without `wake_majors`, a major woken by hand goes back to `enabled: false` at the next
+  pack upgrade, and any other NPC that staff parked with `@llm/kill` is woken again by
+  one. That is the applier as it was, for every tier, and it is left alone here except
+  for majors under the key, which keep what staff left. The general case (a pack upgrade
+  quietly undoing a park) has no unit; it wants one.
+- Q-44-31 says "at most once every 30 real minutes each"; Q-44-47, the later ruling, says
+  a room hears at most one line in a window whichever NPC speaks. Both are built: the
+  room cap is the stricter where NPCs share a room, the NPC's own is the stricter for
+  one that walks.
+
+**Defaults taken** (none ruled; all cheap to change):
+
+- **The settle time, 300 real seconds**, and the quiet rule. Without them the line would
+  come the second a player walks in or in the middle of a conversation. Not a file key.
+- **The window opens at the turn's beginning**, so a refused or silent turn uses it up.
+- **A degraded unprompted turn is silent.**
+- **Rotation** by object id among the room's enabled majors.
+- **A restart forgets the windows** (runtime state, like the mailbox): a room may hear a
+  second line inside 30 minutes across a restart, once its settle time has passed again.
+- **A clock that steps backwards fails closed**: scans stop until the clock passes the
+  last scan's second again, and a window or settle time measured across the step reads
+  as not yet passed. Nothing extra is spent.
+- **`wake_majors` keeps what staff left on an upgrade.** The first build woke every major
+  again at each pack upgrade, which undid `@llm/kill`; the outside read of this unit
+  caught it. The cost of the rule built instead is that the key alone does not wake an
+  existing world.
+- **Only majors**, as ruled; Q-44-47's alternative (the timer for minor NPCs) is not
+  built and nothing here prepares it beyond the tier test in `ambient_speakers`.
+
+**Tests.** No test waits on a real clock or calls a real provider.
+
+- `crates/mush-npc/tests/agents.rs`, on a clock stepped by hand with a mock provider:
+  `mw18_a_room_hears_one_unprompted_line_in_its_window` (two majors, one line, the audit
+  row, both staff lines, the whole window silent for both, the other NPC next);
+  `mw18_only_a_present_player_draws_an_unprompted_line` (link-dead, `DARK`, idle and
+  bare for two hours: no turn begun, no room tracked, the NPC never woken; then served
+  once the `DARK` one is seen); `mw18_a_parked_or_lesser_npc_never_speaks_unprompted`;
+  `mw18_an_unprompted_turn_waits_for_quiet_and_says_nothing_when_it_degrades`;
+  `mw18_a_zero_window_turns_the_ambient_timer_off`;
+  `mw18_presence_is_read_from_the_engines_own_link_state` (real `ConnUp`, `BareUp`,
+  `Cmd` and a lost `ConnDown` through `Engine::step`);
+  `mw18_an_npc_that_walks_to_another_room_keeps_its_own_window`.
+- `runtime::tests::mw18_a_rooms_window_is_due_once_and_rotates_its_speakers`;
+  `content::tests::mw18_wake_majors_creates_a_major_enabled_and_keeps_what_staff_left`.
+- `mush-config` `mw18_npc_ambient_keys_default_and_parse`.
+- `crates/tacsim/tests/domain_economy/stations.rs`
+  `mw18_wake_majors_applies_the_shipped_principals_enabled`: the production roster with
+  the key set boots the real cast with all eighteen majors enabled;
+  `ic1_the_principals_never_wake` is the same boot without it.
+- Mutation check: with the window, the `DARK` test, the live-link test, the tier test and
+  the silent-fallback rule each broken, four of the five stories fail.
+
+**Not built.**
+
+- Nothing enables the majors on any box: that is MW.3, with the owner.
+- `deploy/instance/mushd.toml.tmpl` has no `wake_majors` line (the deploy chain's file).
+- The windows are not persisted.
+- The stories drive the NPC module's tick by hand. No story runs the ambient timer
+  through the production world task, and none flies it against the live cast.
+
+**Not pinned by a story.** A room over the 256-room table cap being served later (a room
+that has heard a line keeps its row for the whole window, so 256 such rooms keep a new
+one out for up to 30 minutes); an NPC in an exclusive scene being passed over; a speaker
+inside a cooldown longer than the settle time being passed over; the per-NPC ceiling
+refusing an unprompted turn (the global budget's refusal is the one flown); a real pack
+upgrade over a parked major (`applied_enabled` is pinned as a function, and the fresh
+boot is flown against the real cast).
+
+**Read from outside.** An independent read of both units (MW.17b and MW.18) checked the
+claims above against the code and found four things, all fixed in this unit: the
+`wake_majors` rule above, stray spaces in the staff line for a silent unprompted turn,
+the missing per-NPC window, and a help sentence that overstated what `@llm/kill` stops
+when a call is already under way.
 
 ## MW.19
 
@@ -913,7 +1533,16 @@ dispatch (doc 44 §7.1, Q-44-39; second review, §4c row 2). The design note is 
   `m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap` and
   `m8g_story_the_combined_world_rates_files_lists_and_sells`.
 
-RESULTS_PLACEHOLDER
+**Results on the CI dispatch (2026-11-12).** Three defects came out of these runs and are
+fixed: the kernel's term bound (above), the claim arm's tickets (MW.0, above) and two of the
+rewritten story's own assertions. On `def8832c` (run 43125566722, the term bound fixed):
+`s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home` passed all six steps;
+`s4b3_a_licensed_mind_flies_a_field_at_256` and `_at_512` passed; both `d23_18_*` stories
+passed; `m8g_story_the_combined_world_rates_files_lists_and_sells` and
+`m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap` passed; the leak battery
+passed; the M7 stories that had finished passed.
+`m8g_story_tier2_held_minds_seal_aboard` failed there at its second claim's Close, which is
+the claim arm's defect. The arm's fix followed in its own pull request, which records the story's run over it.
 
 **Divergences.**
 
@@ -967,7 +1596,235 @@ may fly which hull: the grant is the organisation-wide one its licences use.
 
 ## MW.23
 
-Not built.
+The Class III end-user entitlement issued by a launch route (doc 44 §7.1; Q-44-40, ruled at its
+default; second review, §4c row 3). Q-44-12 (no heirloom exemption) is ruled and is pinned here
+by a story.
+
+**Built.**
+
+- **One rule for the entitlement.** `mush_economy::core_integration::end_user::entitlement`
+  (`crates/mush-economy/src/core_integration/end_user.rs`) is what the integration's acceptance
+  and completion (`authority.rs`) and the delivery (`delivery.rs`) now ask, in place of two
+  copies of the same test. The test is unchanged: the instrument
+  `tacsim.licence.core3_end_user` is registered as an active, indivisible, untransferable
+  entitlement, and the requester holds an `Active` unscoped account in it with a balance. A
+  requester without it is refused exactly as before ("Core manufacture is unavailable or
+  changed."). `CORE3_ENTITLEMENT` is now a public constant.
+- **The registration, in the economy.** `register_end_user(ctx, &EndUserRegistration)` posts
+  **one transaction** with four lines: the fee from the holder's own credit account to the
+  Registry's account, and one unit of the entitlement from the issuer's source account to the
+  holder's. The fee and the right are one journal entry, so a restart keeps both or neither.
+  The issuer must be a registered title issuer (`EconomyModule::with_title_issuers`, the
+  wiring-frozen table `issue_title` asks). The post runs under an authority that admits
+  exactly those four lines, by the holder (`issue_title`'s pattern), because the live org
+  bridge refuses any debit of a system account that staff did not type. The first
+  registration on a world registers the instrument and opens the issuer's source account;
+  each holder's first opens their own account. `check_end_user_registration` makes every
+  check and writes nothing; `end_user_standing` reads `Unlisted`, `Registered` or `Suspended`.
+- **Once.** A registered holder is refused (`EndUserError::Registered`) with nothing written.
+  The idempotency key is the holder and their entitlement account's journal sequence, so two
+  calls over one state resolve to one transaction, and a registration staff later reverse can
+  be made again.
+- **The route, in the launch.** `+enduser` (`crates/tacsim/src/launch/end_user.rs`, registered
+  in `commands.rs` beside `+licence`). `+enduser` and `+enduser/show` read the actor's
+  standing; `+enduser/apply` previews; `+enduser/apply go` registers. The fee is 2,500cr
+  (`END_USER_FEE_MINOR`), paid into `LaunchDeployment::registry`'s account, where the filing
+  fee and the levy go; the issuer is the deployment's `registry_issuer`, the principal that
+  already issues the launch's charter and core titles. It answers "The Registry takes no
+  end-user registrations on this world." with no launch or on an `Initialize` boot. It works
+  on a format-1 launch as on a format-2 one.
+- **Nothing in the launch file, the bring-up or `deploy/`.** No format bump, no new key, no
+  new account for an operator to open, no new grant. `launch.json.example`,
+  `launch-bringup.py` and the test rigs are untouched.
+- **Help.** `docs/help/hardware.md` has the registration's section, and the sentence that said
+  only that Class III "requires the buyer's actual receiving entitlement" now says how to get
+  it.
+
+**The route chosen, and why.** Every right a launch issues to an end user is the end user's
+own paid act, with the Registry's fee landing in the launch's Registry account and no clerk
+or staff on the path: a filing (the fee, then the owner licence), a House Pin and a personal
+Pin (quote, fund, grant). The game's one other `Entitlement` instrument, the prospecting
+licence, is issued the same way by `+licence/buy go`. Class III follows that kind: a paid
+registration with the Registry. It needs no person at a desk, so it works on a dev box nobody
+is watching, and it needs nothing from the bring-up.
+
+**Rejected.**
+
+- *A Registry operator's grant* (`@registry/enduser <character>` under a new
+  `roll.registry.*` capability). It puts a person on the path of every Class III core, adds
+  an eighth grant to the runbook and the bring-up script (a `deploy/` change while MW.1's PR
+  is open), and would be the only right in a launch issued at an operator's discretion; the
+  operators' verbs recall, revoke, inspect, fine and seize, they do not issue.
+- *A typed purchase* (quote, fund, grant as an economy owner participant, like the Pins). It
+  is the right shape if the registration ever has a term, seats or a resale, and it is the
+  future family named in `legacy-handlers.toml`. It is several thousand lines of protocol for
+  a right that today is one account balance read by a legacy-lane snapshot, and nothing in
+  Q-44-40 needs it.
+- *Naming entitled characters in the launch file.* A format bump, and not a route: a player
+  who arrives later could never have a Class III core.
+
+**`ungovern`.** Delivering a Class III core in a launch world needs only the entitlement. The
+importer's certified Class III die is integrated at the chartered factory as a governed core;
+the ungoverning shop is for the refit that takes a governor off and for heirloom and grey
+dies. So nothing was composed for it. The second review's "the example launch has no
+`ungovern`" is true of `deploy/instance/launch.json.example` and stays true; the bring-up
+script (MW.1) already stands up the Tether back room on the dev launch and names it in the
+file it writes, and the M8 test world composes one too.
+
+**Tests.**
+
+- `mush-economy`, `core_integration::end_user::tests` (five, fast): the fee and the unit are
+  one transaction, the preview writes nothing, the instrument does not exist before the first
+  registration, a second registration is refused with nothing paid or issued; every refusal
+  is whole (another character's wallet, an unregistered issuer, a short wallet, a zero fee,
+  the payer as its own Registry) and registers nothing; a frozen registration entitles nobody
+  and is not issued again; an account with nothing in it entitles nobody and is the one a
+  registration fills; a restart from the folded store keeps the registration and still
+  issues it once. Four mutations of the module were each caught by a test of their own: the
+  rule not asking for a balance, a registered holder not refused, an unregistered issuer
+  admitted, a frozen account not refused.
+- `tacsim`, in source (two, fast): the help's figure is the fee the verb charges and a tenth
+  of the Class III core's price; the route issues the instrument doc 17 names.
+- `tacsim`, `domain_field::m8_end_user` (three, fast, on the production composition, the M8
+  world booted plain, `Initialize`, `Active` as the bring-up boots it):
+  - `mw23_a_registered_end_user_has_a_class_three_core_built_and_delivered`, the acceptance.
+    The world has no entitlement instrument. The pilot is told they are not listed; the stock
+    agent issues a certified Class III die and offers its integration, and the pilot's
+    acceptance is refused with the uniform refusal and nothing charged. `+enduser/apply`
+    previews and writes nothing. `+enduser/apply go` takes 2,500cr into the launch's Registry
+    account and leaves the pilot one unit and the issuer's source at minus one. A second
+    `go`, and a second preview, answer the standing and move nothing. The world restarts
+    from its store and the registration stands. The same integration is then accepted,
+    worked its 96 hours, completed and delivered into the pilot's hands for 25,000cr, the
+    delivery's facts hold, and the title's birth reads Class III, certified. Another
+    character with a full wallet is still refused.
+  - `mw23_a_heirloom_in_the_back_room_is_under_the_entitlement` (Q-44-12): the pilot's own
+    heirloom die is refused at the back room until they register; then the same offer is
+    accepted and the heirloom is delivered as a Class III core whose birth reads heirloom.
+    This closes doc 17h's "blocked: the heirloom over the launch world".
+  - `mw23_the_route_exists_only_on_an_active_launch`: a world with no launch answers the
+    not-open line to all three forms and issues nothing.
+- **Staff in the stories.** Staff commands mint credits into a wallet and open a second
+  character's wallet. None issues the entitlement, the core or the certified die. The
+  heirloom story's die is issued by staff, which is how doc 17h seeds heirlooms (its §4 defers
+  the back room as a vendor). The stories write no module state by hand; the fiat budget is
+  unchanged.
+
+**Results (2026-11-12).**
+
+- **Local (Windows):** the five `mush-economy` unit tests pass; `cargo check -p tacsim --tests`,
+  clippy on `mush-economy` and the rustdoc check on `mush-economy` and `tacsim` are clean.
+- **conclav.dev (Linux, a throwaway clone of main `330a8b249` with this branch applied):** the
+  three `m8_end_user` stories pass (the acceptance in 16 s). `tacsim`'s 46 in-source tests of
+  the hardware flow and the launch pass, among them
+  `shipped_class_three_requires_actual_entitlement_and_never_charges_on_refusal` and the
+  heirloom and grey-die tests, which run the shared rule. `cargo fmt --check`, clippy with
+  `-D warnings` over all targets of `mush-economy` and `tacsim`, and the M7 memory-size lints
+  are clean. `cargo nextest run -p mush-contract-tests`: 192 passed, 8 skipped, with no budget
+  or census re-blessed; the only register that moved is `legacy-handlers.toml`'s new stanza.
+- **Mutation checks, on the stories** (a second clone): with the integration no longer asking
+  for the entitlement, the acceptance and the heirloom story fail at "refused"; with a
+  registered holder no longer refused, the acceptance fails at "once"; with the registration
+  issuing no unit, both fail. The unmutated tree passes in the same clone.
+- **CI, PR #553:** green on the first push (`0c8e518cd`) and on the code's last commit
+  (`14ea5234b`): 28 checks passed each time, the 15 dispatch-only jobs skipped.
+- **The three dispatch-only claim stories PR #546 repaired**, run on conclav.dev with
+  `--run-ignored only` on this branch, since they share the launch's composition:
+  - `s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`: passed (639 s).
+  - `g4_the_attestation_channel_learns_an_ungoverned_flight_of_a_filed_mind`: passed
+    (1,789 s).
+  - `m8g_story_tier2_held_minds_seal_aboard`: **failed** (1,782 s), "close_ic_mind by #808
+    did not land: that action is not currently offered". It is not this unit's. The same
+    story run on main `330a8b249` with none of this branch fails with the same line
+    (1,790 s), and run on this branch over PR #554's head `7294d9e9d` it passes (1,788 s).
+    PR #554 (the MW.0 follow-up: a rig's second claim in one boot never closes) is the fix,
+    and this branch merges with it without conflict.
+
+**What the survey and the brief had wrong.**
+
+- The entitlement was said to be provisioned "in the rigs under `m8_world.rs`". It was not:
+  only `tacsim`'s hardware flow rig and `mush-industry`'s delivery fixture issued it, and the
+  M8 world had no Class III core in it at all (its grey-die story says so).
+- `mush-server`'s `launch_world` rig builds the launch's identities by production commands,
+  but it has never driven the hardware: it checks only that `issue-core-die` is offered. So
+  the acceptance is in the M8 world, which runs `LaunchComposition::prepare` (the call
+  `mush_server::boot` makes) and has the hardware driver.
+- Doc 17 §16 says the entitlement is "checked at transaction time the way
+  `extraction_authorized` checks an extraction licence". It is stricter: the extraction
+  licence asks for an `Active` account, this asks for a balance as well. That is why the
+  route has to post a unit and cannot only open an account, as `+licence/buy` does.
+- 17f M7.11 says "an org grant is scoped to the org". Nothing checks an organisation's
+  entitlement: the rule reads the requester's personal, unscoped account, and an integration
+  is always ordered by a character.
+
+**Defaults taken.**
+
+- **The fee is 2,500cr**: a tenth of the Class III core's 25,000cr, and the prospecting
+  licence's fee. Provisional.
+- **No term.** The registration does not lapse. The entitlement is an account balance the
+  economy reads at the act; a lapse needs a record of the term and a gate at the acceptance.
+- **One registration a character**, not one a login account: the economy's rule is about the
+  requesting character.
+- **The fee is not in the `launch_content` definition**, so no definition or digest of an
+  existing world moves and a kept store boots as before.
+- **The registration is not chronicled.** It is one private journal entry. The prospecting
+  licence's fee is a Public contract the canon bridge records; this is not, because a
+  contract's settlement cannot carry the entitlement's unit in the same transaction.
+- **A principal the Registry has barred** (`@registry/revoke principal=`, 90 IC days) can
+  still register. The bar is a Roll row and the verb is a legacy-lane command with no read of
+  it.
+- **No verb suspends a registration.** `Suspended` is read when the entitlement account is
+  not `Active`; today only a boot's drift freeze or a closed account produces that. Staff can
+  take a registration back by reversing its transaction (`@econ/reverse`), which also returns
+  the fee; that path is not pinned by a test.
+
+**What would be a significant change to undo.**
+
+- **A second power for a registered title issuer.** `register_end_user` is a public function
+  of `mush-economy` that debits a system account without staff, under its own injected
+  authority. It is bounded (one unit of this one instrument, to the paying character, with
+  the fee in the same transaction), but it is a new way value is created, and removing it
+  means another route.
+- **A legacy-lane verb that decides action legality**, listed in `legacy-handlers.toml` as
+  `legacy-post-image` with `+licence` as its precedent. Moving the registration to a typed
+  purchase replaces the verb's write path, the idempotency key and the stanza, and the
+  entitlement check would have to stop reading the legacy snapshot's accounts first.
+- **Adding a term later** changes what a registration is: every registered character would
+  hold a right with no end date, and a term needs a migration rule for them.
+
+**Not built, and for whom.**
+
+- **C4's story 4** (MW.5): the hardware story through the launch's governed hardware with a
+  refit and a restart. What it needs is reachable: after `+enduser/apply go`,
+  `M8World::integrate(requester, payer, DieClass::III)` builds and delivers the core and
+  `M8World::refit` fits it; `m8_end_user.rs` has the steps.
+- **A fitted Class III on a hull** is not in these stories (they end at delivery). MW.5.
+- **A typed action for the web and the TUI, and an offer in `+actions`.** `+enduser` is line
+  mode only. Deferred: no unit owns client surfaces for it; MW.5 should take it if story 4
+  is to be driven from a client.
+- **The bot.** `mush-bot` has no sentence for `+enduser`. MW.19 (the bot's minds lane) if a bot is
+  to buy a Class III core.
+- **An organisation's entitlement** (17f M7.11). Deferred: no integration is ordered by an
+  organisation.
+- **`Legality::Restricted`** on the catalogue entry (doc 17h §4). Deferred; nothing reads
+  it.
+- **The principal bar refusing a registration, and a Registry verb that suspends one.**
+  Deferred to doc 17h's follow-ups; both want the registration readable from the Roll's side.
+- **`deploy/README.md`** is unchanged: nothing it says is now untrue, and the route asks
+  nothing of an operator.
+
+**Not pinned by a story.**
+
+- A world the server binary booted. The stories run on what `prepare` returns in the test
+  harness, as MW.0's do.
+- `+enduser` on an `Initialize` boot. The verb tests the deployment's mode; the story covers
+  a world with no launch, because an initialised world cannot be booted back to `Initialize`.
+- A format-1 launch. The route reads only the deployment's mode, Registry account and
+  issuer, which both formats have; the stories run on format 2.
+- A registration refused by the post after the instrument or an account was written (the
+  pinned-queue path). The checks before the first write make it unreachable in a test
+  without a fault store.
+- A reversal by staff followed by a second registration.
 
 ## MW.24
 
@@ -1134,4 +1991,123 @@ the engine half are each pinned).
 
 ## MW.17b
 
-Not built.
+The NPC decision call carries its NPC (doc 44 §7.1; first review, finding 8; second review,
+§4c row 19; MW.17's first divergence).
+
+**Built.**
+
+- **The lease carries an attribution** (`crates/mush-core/src/decision.rs`).
+  `DecisionWorkerLease` gains `attribution: Option<DecisionAttribution>`. A
+  `DecisionAttribution` holds three things: the subject a call is charged to (an object id,
+  read through `audit_subject()`), that subject's own daily token ceiling when it has one,
+  and whether its spend is withheld. That is the whole of what crosses.
+- **The owner names it, at the lease** (`crates/mush-core/src/decision_source.rs`,
+  `module.rs`). A source's owner registers a `DecisionAttributionAdapter` with
+  `Registrar::decision_attribution`, after `decision_source`. The registry asks it on the
+  world task in `plan_candidate`, each time it plans a lease, a retry and a lease after a
+  restart included, and sets the answer on the planned lease. A source that registers none
+  leases unattributed, as before.
+- **`mush-npc` reads the profile** (`crates/mush-npc/src/decision.rs`, `attribution_for`):
+  the NPC itself, its `daily_tokens` when the profile sets one (the override a dialogue
+  turn already passes), and withheld when the NPC is parked, which is the agent tick's own
+  test: the profile is disabled or is no longer a valid profile.
+- **The provider charges it** (`crates/mush-server/src/decision_llm.rs`, `call_ctx_for`):
+  the attribution becomes the call's NPC scope, its per-NPC ceiling and a new
+  `CallCtx::parked` flag. `request_for` still takes the prompt alone, so the attribution
+  goes to the meter and never to the model.
+- **A parked call is refused as disabled** (`crates/mush-llm/src/service.rs`): `call` and
+  `stream` treat `ctx.parked` as they treat a kill switch, before the route, the budget or
+  any provider, and write the `disabled` audit row against the NPC.
+- **`@llm/log` names the NPC** (`crates/mush-worldgen/src/commands.rs`). The row printed
+  the triggering player only; a decision has none, so its row named nobody. It now ends
+  `actor=<player or -> npc=<npc or ->`, as the dashboard's recent calls already did.
+
+So `@llm/kill` (and `@agent/set <npc>/enabled=no`, the same flag) stops a decision that was
+already captured: the call is refused before the model is asked, each attempt leaves a
+`npc_decision disabled` row against the NPC, and the decision reaches `npc_idle` when its
+attempts are spent (three, each refused at once) or at its deadline, whichever is first. A decision that is answered is counted on its NPC's budget counter and is refused
+up front when it would pass the NPC's ceiling.
+
+**What moved in a stored or versioned format: nothing.** The lease is not serialised
+anywhere; it is built in memory when a lease is planned and dropped when the worker
+answers. The attribution is not written to the pending record, the prompt record or the
+terminal receipt (`PendingDecision::SCHEMA_VERSION` stays 2), and the adapter does not
+enter the decision-source registry fingerprint, because it selects no durable outcome.
+`plan_worker_lease` keeps its signature and plans an unattributed lease; only the
+registry attributes one.
+
+**What the survey had wrong.**
+
+- "`@llm/kill` reaches an NPC's dialogue but not its decisions" is half true. `@llm/kill`
+  does not use the LLM service's kill switch at all: it sets `enabled = false` in the
+  NPC's profile (`llm_toggle_npc`), and `KillSwitch::disable_npc` has no caller. The agent
+  tick already refuses a NEW decision request for a disabled NPC (`issue_capture`). What
+  nothing reached was a decision already captured: it was still leased, and the provider
+  still asked, up to the kernel's attempt limit.
+- "The lease names a controller and a decision, not an object" is true of the lease, but
+  the pending record it is planned from has always held the acting object
+  (`PendingDecision::actor`), so nothing new had to be stored to attribute it.
+
+**Defaults taken.**
+
+- **The owner names the attribution; the kernel does not derive it from the actor.** For
+  `npc` the two are the same object. The hook exists because the ceiling and the parked
+  flag are the owner's facts, and because a later owner may charge a decision to something
+  other than its actor.
+- **The subject is an object id, not a hash.** The budget ledger, the per-NPC ceiling,
+  `@llm/budget`, the dashboard's top spenders and the audit row all key on an object id
+  and print the NPC by it; an opaque key would need a second table to turn it back into a
+  name. The type is inert instead: it is not serialisable, it has one reader
+  (`call_ctx_for`), it never enters the prompt, and a worker holds no world to resolve it
+  against. Reversing this later (a keyed hash) is contained to `mush-llm`'s scopes and the
+  staff views, not a refactor of the kernel.
+- **Parked is a flag on the call, not the service's per-NPC kill switch.**
+  `KillSwitch::disable_npc` would have to be kept in step with the profile by every path
+  that writes it, and seeded again at boot. Reading the profile at the lease has no state
+  to drift. `KillSwitch::disable_npc` stays as it was, with no caller.
+- **A parked decision still runs its lease and its attempts.** The kernel's lifecycle is
+  untouched: each attempt is refused at once and audited, and the turn goes to `npc_idle`
+  when the attempts are spent or the deadline passes. Nothing cancels the pending record
+  early.
+
+**Tests.** No test makes a provider call.
+
+- `decision::tests::lease_carries_only_its_prompt_its_fence_and_an_attribution`
+  (`mush-core`): the pin. It destructures the lease and the attribution with no `..`, so a
+  field added to either stops the test compiling; it also holds that a lease the kernel
+  plans alone names nobody, that attributing a lease leaves the durable post-image the
+  same, and that the attribution is no larger than an id, a ceiling and a flag.
+- `mw17b_a_decision_is_attributed_to_its_npc_on_the_npcs_present_standing`
+  (`crates/mush-npc/tests/agents.rs`): open, capped by `@agent/set`, parked and woken, and
+  an object that is no agent.
+- `a_parked_npcs_call_is_refused_as_disabled_and_audited_against_it`
+  (`crates/mush-llm/tests/service.rs`).
+- `decision_llm::tests::mw17b_the_attribution_sets_the_calls_npc_scope` (`mush-server`).
+- Three stories through the production world task and the production provider over a mock
+  (`crates/mush-server/src/world_task/tests.rs`), each failing before this unit:
+  `mw17b_a_decision_is_charged_to_its_npc_and_names_it_in_the_audit` (the counter, the
+  row, and the NPC's dbref absent from the request the model was sent);
+  `mw17b_llm_kill_stops_a_decision_that_was_already_captured` (the real `@llm/kill`
+  between the capture and the lease: no call, no tokens, `disabled` rows against the NPC,
+  the turn idles); `mw17b_an_npcs_own_daily_ceiling_holds_for_its_decisions`.
+- `llm_log_names_the_npc_a_call_was_charged_to` (`crates/mush-worldgen/tests/worldgen.rs`).
+
+**Not built.**
+
+- A kill that lands while a decision's call is in flight does not recall it. The call
+  finishes and is charged; the lease is at most `NPC_DECISION_LEASE_SECS` (60). Dialogue
+  has the same window.
+- `@agent/show`'s last turn (MW.17) still covers dialogue turns only. A scene-turn
+  decision is read in `@llm/log` and in its turn receipt. Successor: MW.18 records the
+  ambient turn, which is a dialogue turn; a decision's own line in `@agent/show` has no
+  unit yet.
+- `KillSwitch::disable_npc` and `enable_npc` remain uncalled.
+
+**Not pinned by a story.** A lease planned after a restart carrying a fresh attribution
+(the path is the same `plan_candidate`); a second owner's adapter.
+
+**Limits of the tests.** That the attribution never reaches the model is held by the
+shape of the code (`request_for` takes the prompt alone, and no provider is handed a
+`CallCtx`); the story's own probe only checks that the NPC's dbref string is absent from
+the request. The two refused-decision stories run the production world task on the real
+clock, with a five-second deadline and a twenty-second wait.

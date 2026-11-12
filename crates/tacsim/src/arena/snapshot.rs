@@ -1463,7 +1463,7 @@ mod tests {
     ///
     /// [`UnitState`] destructured with every field named and no `..`, answering
     /// the names, so the test below can hold the encoded unit's keys to them.
-    fn every_unit_field(unit: &UnitState) -> [&'static str; 48] {
+    fn every_unit_field(unit: &UnitState) -> [&'static str; 50] {
         let UnitState {
             id: _,
             team: _,
@@ -1513,6 +1513,8 @@ mod tests {
             orders_in_window: _,
             own_last_hit_ms: _,
             coupled_to: _,
+            absent: _,
+            fired_on_by: _,
         } = unit;
         [
             "id",
@@ -1570,6 +1572,10 @@ mod tests {
             "own_last_hit_ms",
             // Doc 40 cut FR.5 (§4.1 item 5): carried on purpose, and written only while coupled.
             "coupled_to",
+            // Doc 44 cut MW.7: carried on purpose, each written only when set — both decide
+            // a later shot of a mind flying for an absent player.
+            "absent",
+            "fired_on_by",
         ]
     }
 
@@ -1599,6 +1605,8 @@ mod tests {
             .filter(|field| *field != "sensor_authored")
             // Doc 40 cut FR.5 (§4.1 item 5): likewise, and an uncoupled unit is not.
             .filter(|field| *field != "coupled_to")
+            // Doc 44 cut MW.7: likewise, and a unit its pilot flies, unfired on, is neither.
+            .filter(|field| *field != "absent" && *field != "fired_on_by")
             .collect();
         assert_eq!(keys, named);
     }

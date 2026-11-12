@@ -5,7 +5,9 @@
 //!
 //! **No players, no stimuli.** The observers only enqueue when a connected
 //! player shares the NPC's room, so an NPC alone in a room receives nothing and
-//! burns zero tokens.
+//! burns zero tokens. The one stimulus no player causes is
+//! [`Stimulus::AmbientTimer`], which the agent tick queues for an enabled major
+//! NPC whose room holds a present player (doc 44 cut MW.18).
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
@@ -59,8 +61,9 @@ pub enum Stimulus {
         /// The leaver.
         who: ObjId,
     },
-    /// A scheduled ambient beat (only ever queued while players share the
-    /// room).
+    /// A scheduled ambient beat: the NPC speaks unprompted, if it chooses to.
+    /// Only ever queued for an enabled major NPC while a present player shares
+    /// the room, at most once a room in a window of real time (MW.18).
     AmbientTimer,
     /// A digested ruleset/game event (combat, weather change, …).
     GameEvent {

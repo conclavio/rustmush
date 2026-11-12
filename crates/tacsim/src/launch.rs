@@ -3,6 +3,9 @@
 mod admission;
 mod content;
 mod deployment;
+// Doc 44 unit MW.23 (Q-44-40): `+enduser`, the route that issues the Class III end-user
+// entitlement on an Active launch.
+pub mod end_user;
 // 17g C1b: format 2's typed player-market policies; C1c composes them in the
 // Active branch of `LaunchComposition::prepare`.
 mod market;
