@@ -418,25 +418,31 @@ fn physical_loss_after_real_source_fault_does_not_erase_the_fault() -> TestResul
 // Doc 44 unit MW.5 (doc 17g C4, item 4): a Registry trial ends the same on every host
 // ---------------------------------------------------------------------------
 
-/// A script that drives at whatever it has told apart, with the stock fire rules: movement,
-/// sensing, the dice and the damage pipeline all take part in how its trial ends.
+/// A script that drives at whatever it has told apart, with the stock fire rules, so that
+/// movement, sensing, the dice and the damage pipeline all take part in the state its trial
+/// ends in.
 const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !k.friendly && k.cell != () { goto(k.cell); return; } } }";
 
 /// **The pinned ends** ([`c4_a_registry_trial_ends_the_same_on_every_host`]): for each case,
-/// the millisecond its arena stopped at, the arena's final state hash, the black box's digest
+/// why its arena ended the match and what the Registry files that as, the millisecond it
+/// stopped at, the arena's final state hash, the black box's digest
 /// and the SHA-256 of the case result the Registry would file (its JSON, the record a rating's
 /// page carries: the key, the binding, the meter's summary, the coverage, the outcome and the
 /// trial's own end).
 ///
 /// Blessed on Linux (conclav.dev, x86-64) and run on Windows (x86-64) at the same commit; the
-/// cut note (`docs/design/44-cut-notes.md`, MW.5) records both runs. A change that moves a row
-/// on purpose (a new mind ABI, a rule's numbers, a trial's layout) re-blesses it from the
-/// `C4_TRIAL_PIN` lines the test prints, and runs it on the other host before it merges.
+/// cut note (`docs/design/44-cut-notes.md`, MW.5) records both runs. The test is not
+/// `#[ignore]`d, so a change that moves a row fails the pull request that makes it, as a
+/// change to D-UM-28's corpus does. A change that moves a row on purpose (a new mind ABI, a
+/// rule's numbers, a trial's layout, the proving content) re-blesses it from the
+/// `C4_TRIAL_PIN` lines the test prints. CI runs Linux only: the run on the other host is by
+/// hand (`cargo test -p tacsim --lib c4_a_registry_trial -j 2` on a Windows checkout), and
+/// whoever re-blesses records it in their cut note.
 const C4_TRIAL_PINS: [&str; 4] = [
-    "stands/I/fixed at_ms=58500 state=2ac0bb5770d49505 ledger=9adf3f2351084758a774f3ee83c8ef3d8974373801a187cd6d5213e7d4649f89 result=e7f18842334322008f5aa8e0549777d46b4d0301d43928773ae558c5286f838c",
-    "stands/I/cycle at_ms=58500 state=366ad86d479ee5d5 ledger=42f3888715bbf465e74e682e9e4face459e60ff14c45bcad2d5aa71ec56781f5 result=bc08d3501e32a8b64b79f4173c027189978159391e33bcf893c8f95675de93b7",
-    "closes/I/fixed at_ms=58500 state=f8d70307b1c6f298 ledger=1a4f042b377cf8d81033bacbbcd671bb023d70a9a501d5f472e4adeefd734b32 result=18020786323446b38988cbe48da6c3d078f0be3405b63b856b1d6abdf4ee9706",
-    "stock/II at_ms=58500 state=a1804cd413eba194 ledger=462bc14e1b6d950896415726d2c14d5aea91e819ed05a2119f7f13c85f88cadb result=b497f3b07b2699e436ab645e481bd57328941707ffb1d8c2429d0ec1f5d52311",
+    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=2ac0bb5770d49505 ledger=9adf3f2351084758a774f3ee83c8ef3d8974373801a187cd6d5213e7d4649f89 result=e7f18842334322008f5aa8e0549777d46b4d0301d43928773ae558c5286f838c",
+    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=366ad86d479ee5d5 ledger=42f3888715bbf465e74e682e9e4face459e60ff14c45bcad2d5aa71ec56781f5 result=bc08d3501e32a8b64b79f4173c027189978159391e33bcf893c8f95675de93b7",
+    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=f8d70307b1c6f298 ledger=1a4f042b377cf8d81033bacbbcd671bb023d70a9a501d5f472e4adeefd734b32 result=18020786323446b38988cbe48da6c3d078f0be3405b63b856b1d6abdf4ee9706",
+    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=a1804cd413eba194 ledger=462bc14e1b6d950896415726d2c14d5aea91e819ed05a2119f7f13c85f88cadb result=b497f3b07b2699e436ab645e481bd57328941707ffb1d8c2429d0ec1f5d52311",
 ];
 
 /// Lower-case base-16 of `bytes`.
@@ -456,9 +462,16 @@ fn ended(label: &str, mut trial: Trial) -> Result<String, Box<dyn std::error::Er
         }
     }
     let result = terminal.ok_or("the trial reaches its bounded terminal")?;
+    // A real terminal: the arena itself ended the match and the case is conformant. A case
+    // that stopped on a budget fault also answers a result, with no end, and is not this.
+    let end = trial.arena.ended.ok_or("the arena ended the match")?;
+    check!(matches!(result.outcome(), CaseOutcome::Conformant {}));
+    let filed = result.terminal().ok_or("the case result carries the end")?;
     let wire = serde_json::to_string(&result)?;
     Ok(format!(
-        "{label} at_ms={} state={:016x} ledger={} result={}",
+        "{label} end={:?}/{:?} at_ms={} state={:016x} ledger={} result={}",
+        end.reason,
+        filed.outcome(),
         trial.arena.now_ms,
         crate::arena::state_hash(&trial.arena),
         base16(&trial.arena.ledger.digest()),

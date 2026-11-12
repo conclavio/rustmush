@@ -90,6 +90,21 @@ fn core_of(world: &M8World, hull: ObjId) -> Option<(tacsim::arena::core::CoreCla
     tacsim::arena::core::read_core(&unit(world, hull)).map(|hw| (hw.class, hw.governed))
 }
 
+/// **Where the kernel's refit record puts `core`** (`mush-core`'s `industry_refit_assets`
+/// head): `pending`, `mounted`, `released` or `detached`. A core is admitted to a fitting only
+/// with no head or a `released` one.
+fn head_of(world: &M8World, core: ObjId) -> String {
+    world
+        .rows("industry_refit_assets")
+        .into_iter()
+        .find(|row| row.get("object") == Some(&json!(core)))
+        .and_then(|row| {
+            row.pointer("/position/state")
+                .and_then(|state| state.as_str().map(str::to_owned))
+        })
+        .unwrap_or_else(|| panic!("the kernel holds a refit head for #{}", core.0))
+}
+
 /// **The refit's steps, each refusal returned**: the stock agent offers `core` (built under
 /// `manufacture`) for `hull`, the pilot accepts paying from `payer`, the fitting's hours run and
 /// the pilot installs. `Ok` when the core is in.
@@ -151,12 +166,13 @@ fn try_refit(
 ///    in the first one's place. The root is the family's Class II; the dent and every other
 ///    cell and component outside the core are as they were; the displaced Class III core is
 ///    back in the pilot's hands, still theirs, unencumbered.
-/// 6. **A core is fitted once.** The core now fitted in the first rig cannot be fitted into the
-///    pilot's second rig. Nor can the displaced one: the kernel admits a core to a fitting only
-///    if it has never been mounted (`mush-core`'s `core_refit` heads: an incoming core's head is
-///    absent or `released`; a displaced core's is `detached`), so it stays the pilot's and stays
-///    out. Nothing is charged for either try. A third core, fresh from the shop, goes into the
-///    second rig, so the second rig was never the reason.
+/// 6. **A core is fitted once.** The core fitted in the first rig is in that hull and not in
+///    the pilot's hands, so the shop will not offer it for the second rig. The displaced core
+///    is in the pilot's hands and the shop offers it, but the kernel refuses the acceptance:
+///    it admits a core to a fitting only if its head is absent or `released`
+///    (`mush-core`'s `core_refit` heads), and a displaced core's reads `detached`. So it
+///    stays the pilot's and stays out. Nothing is charged for either try. A third core, fresh
+///    from the shop, goes into the second rig, so the second rig was never the reason.
 /// 7. **A second restart** keeps both rigs as they stood.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -321,6 +337,17 @@ fn c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced() {
             assert_eq!(after.cell(addr), Some(cell), "{addr:?} is as it was");
         }
     }
+    for (addr, _) in after.cells() {
+        if !matches!(addr, mush_tactics::CellAddr::Component { component, .. } if component.as_str() == "core")
+        {
+            assert!(before.cell(addr).is_some(), "{addr:?} is no new cell");
+        }
+    }
+    assert_eq!(
+        after.components().count(),
+        before.components().count(),
+        "the refit adds and removes no component"
+    );
     for (component, state) in before.components() {
         if component.as_str() != "core" {
             assert_eq!(
@@ -343,20 +370,31 @@ fn c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced() {
     assert_eq!(displaced.title_owner, PrincipalId::Object(pilot));
     assert!(displaced.encumbrances.is_empty(), "{displaced:?}");
 
-    // 6. A core is fitted once. The fitted core and the displaced one are each refused the
-    // second rig, with nothing charged and nothing moved.
+    // 6. A core is fitted once. The fitted core is in its hull, not in the pilot's hands, and
+    // the shop will not offer it. The displaced core is in the pilot's hands, the shop offers
+    // it, and the kernel refuses the acceptance: its head reads `detached`. Nothing is charged
+    // and nothing moves.
     let wallet = credit(&world, pilot).1;
-    for (name, again, class) in [
-        ("the fitted core", (second_built, second), DieClass::II),
-        ("the displaced core", (built, core), DieClass::III),
+    assert_eq!(head_of(&world, second), "mounted");
+    assert_eq!(head_of(&world, core), "detached");
+    for (name, again, class, stage) in [
+        (
+            "the fitted core",
+            (second_built, second),
+            DieClass::II,
+            "offer:",
+        ),
+        (
+            "the displaced core",
+            (built, core),
+            DieClass::III,
+            "accept:",
+        ),
     ] {
         let refused = try_refit(&mut world, payer, spare, again, class)
             .expect_err("a core that has been mounted is not fitted again");
+        assert!(refused.starts_with(stage), "{name}: {refused}");
         assert!(refused.contains(REFIT_REFUSAL), "{name}: {refused}");
-        eprintln!(
-            "C4_STORY4 {name} refused: {}",
-            refused.split(':').next().unwrap_or("")
-        );
         assert_eq!(credit(&world, pilot).1, wallet, "{name}: nothing charged");
         assert_eq!(core_of(&world, spare), None, "{name}");
     }
