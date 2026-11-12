@@ -15,8 +15,12 @@
 //!    player's unit: the seat is released, and the arena is told the unit is flown for an
 //!    absent player (`crate::arena::absent`), which lays the go-home order every mind reads and
 //!    binds whatever mind flies it to the absent player's rule. `hand_over` is the one door,
-//!    and link loss is only one way through it: admission of a pilot who is not there (doc 45
-//!    AP.5) and a posture (AP.3) call the same function with a [`Why`] of their own.
+//!    and link loss is only one way through it. **Admission** comes through it too (doc 45 cut
+//!    AP.5; Q-45-1, Q-45-2; `super::admit::seat_absent`): a field that takes in a unit whose
+//!    seated pilot is not connected, or not fit, hands it over in the same world turn, and one
+//!    whose pilot's link was lost less than five minutes before keeps the seat `Linkdead` for
+//!    what is left of them (`admitted_link_lost`). A posture (AP.3) will call it with a
+//!    [`Why`] of its own.
 //! 3. **Going home** (`tick`). Once a world second the host asks the field to let the unit
 //!    out at its carrier's ramp (`super::home::ask_out`), as it does for an NPC under a
 //!    WITHDRAW, and the kernel decides on the unit's own pose. No mind may board (D-UM-11), so
@@ -75,6 +79,9 @@ pub const WENT_HOME: &str =
 pub const LEFT_AT_RAMP: &str = "While you were away its mind took #{unit} out of the field, but it could not be put aboard: it stands beside your carrier's ramp. Recover it yourself.";
 /// The pilot, back but not fit to fly: `{unit}`.
 pub const NOT_FIT: &str = "You are in no state to fly #{unit}: its mind keeps the controls.";
+/// The pilot, queued, when a field opened around a unit they sat in while they were away (doc 45
+/// cut AP.5): `{unit}`.
+pub const ADMITTED_AWAY: &str = "A field opened around #{unit} while you were away: its mind has the controls, makes for its carrier's ramp and fires only on a unit that fires on it.";
 /// Those the unit was with, when it goes home: `{unit}`, `{why}`.
 pub const GONE_HOME: &str =
     "#{unit} breaks off for its carrier's ramp under its mind: {why}. It will not fire first.";
@@ -89,6 +96,9 @@ pub enum Why {
     Quit,
     /// The pilot is incapacitated or held (Q-44-43).
     Incapacitated,
+    /// The pilot sat in the unit and was not connected when the field took it in (doc 45 cut
+    /// AP.5; Q-45-1, Q-45-2).
+    AwayAtAdmission,
 }
 
 impl Why {
@@ -99,6 +109,7 @@ impl Why {
             Why::LinkLost => "its pilot's link is lost",
             Why::Quit => "its pilot has left",
             Why::Incapacitated => "its pilot is down",
+            Why::AwayAtAdmission => "its pilot was away when the field opened",
         }
     }
 }
@@ -237,6 +248,37 @@ pub(crate) fn on_link_lost(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId) {
     set_away(ctx, &row.site, unit, Some(away));
 }
 
+/// **A field took in a unit whose pilot's link was already lost** (doc 45 cut AP.5; Q-45-1;
+/// `super::admit::seat_absent`): the seat is `Linkdead` from the unit's first pulse and the one
+/// clock runs from the loss, `since_wall_s`, not from the admission. The five minutes are the
+/// pilot's, and a field opening inside them neither shortens nor restarts them. Nothing when
+/// the row already carries a record.
+pub(crate) fn admitted_link_lost(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, since_wall_s: i64) {
+    let Some(row) = row_of(ctx.w, unit).filter(|row| row.pilot == pilot) else {
+        return;
+    };
+    if row.away.is_some() || super::orders::is_npc(ctx.w, pilot) {
+        return;
+    }
+    let away = Away {
+        why: Why::LinkLost,
+        since_wall_s,
+        handed: false,
+    };
+    set_away(ctx, &row.site, unit, Some(away));
+    crate::arena_bridge::control_all_channels(ctx, unit, ControlState::Linkdead, pilot);
+}
+
+/// **The kernel has just taken `unit` into a running field** (doc 45 cut AP.5; a hull put back
+/// in after its carrier was lost at the ramp, a launch): the host's word on an absent player is
+/// owed again. A word offered before the join was applied named a unit the arena did not hold
+/// yet and was dropped there, so [`tick`] tells the task again.
+pub(crate) fn tell_again(ctx: &mut Ctx<'_>, unit: ObjId) {
+    if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+        minding.told.remove(&unit);
+    }
+}
+
 /// **The pilot's session ended** (the seat's `Disconnected` hook): `true` when a field holds
 /// the unit, and the seat is then this module's to release. A session that ends with the clock
 /// already running was a lost link whose server grace ran out: the field's own clock decides
@@ -332,6 +374,8 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, why: Why) 
     // The pilot: said to one who is connected and down, queued for one who is away.
     let line = if on_watch(ctx.w, pilot) {
         MIND_HAS_IT
+    } else if why == Why::AwayAtAdmission {
+        ADMITTED_AWAY
     } else {
         TAKEN_HOME
     };
@@ -377,7 +421,9 @@ fn leads(w: &World, row: &Row) -> BTreeSet<ObjId> {
 
 /// **Tell the arena `row`'s unit is flown for an absent player**: the host's word first, so
 /// the unit is bound by the absent player's rule from the pulse that hands it over, then the
-/// seat's release. Nothing when the field will not take the word now; [`tick`] offers again.
+/// seat's release. Nothing when the field will not take the word now; [`tick`] offers again,
+/// and it offers again too when the task took the word and not every channel's release (doc 45
+/// cut AP.5's review): a seat left half released is a unit nobody flies.
 fn tell_arena(ctx: &mut Ctx<'_>, row: &Row) {
     let Some(tasks) = ctx
         .w
@@ -398,8 +444,20 @@ fn tell_arena(ctx: &mut Ctx<'_>, row: &Row) {
     {
         return;
     }
-    crate::arena_bridge::control_all_channels(ctx, row.unit, ControlState::Released, row.pilot);
-    if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+    let mut released = true;
+    for channel in crate::arena::state::Channel::ALL {
+        if let Err(error) = crate::arena_bridge::send_control(
+            ctx,
+            row.unit,
+            channel,
+            ControlState::Released,
+            Some(row.pilot),
+        ) {
+            tracing::debug!(unit = row.unit.0, channel = channel.as_str(), %error, "tacsim: an absent player's seat was not released; the host's pass offers again");
+            released = false;
+        }
+    }
+    if released && let Some(minding) = ctx.w.module_state_mut::<Minding>() {
         minding.told.insert(row.unit, row.task);
     }
 }
@@ -518,6 +576,16 @@ pub(crate) fn on_out(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, then: O
     }
 }
 
+/// **Why `unit`'s player was away when its mind took it out at the ramp**, while the host
+/// still owes its recover ([`on_out`]): what a hull put back into the field is handed over
+/// under again (doc 45 cut AP.5).
+#[must_use]
+pub(crate) fn owed_why(w: &World, unit: ObjId) -> Option<Why> {
+    w.module_state::<Minding>()
+        .and_then(|minding| minding.homebound.get(&unit))
+        .map(|owed| owed.why)
+}
+
 /// **Whether the host owes `unit` its recover** ([`on_out`]): its refusals are tried again,
 /// never said.
 #[must_use]
@@ -621,7 +689,16 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
         // Back in a field: its carrier was lost at the ramp and the host put it back
         // (`super::boarding`), with a fresh row and its pilot's seat. Its pilot is still away
         // (their return clears this list), so the unit passes to its mind again.
+        //
+        // Doc 45 cut AP.5 (its review): not before the kernel has answered the join. A word
+        // offered ahead of it names a unit the arena does not hold yet and is dropped there,
+        // while the release that follows it lands after the join, and would leave the hull a
+        // mind under no rule. The join's answer hands it over
+        // (`super::admit::seat_absent`), and until then it is a seat nobody types at.
         if row_of(ctx.w, unit).is_some() {
+            if super::carrier::rejoining_unit(ctx.w, unit) {
+                continue;
+            }
             if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
                 minding.homebound.remove(&unit);
             }
