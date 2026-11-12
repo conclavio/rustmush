@@ -866,11 +866,19 @@ file it writes, and the M8 test world composes one too.
   for the entitlement, the acceptance and the heirloom story fail at "refused"; with a
   registered holder no longer refused, the acceptance fails at "once"; with the registration
   issuing no unit, both fail. The unmutated tree passes in the same clone.
-- **CI, PR #553:** green on the first push (`0c8e518cd`): 28 checks passed, the 15
-  dispatch-only jobs skipped.
+- **CI, PR #553:** green on the first push (`0c8e518cd`) and on the code's last commit
+  (`14ea5234b`): 28 checks passed each time, the 15 dispatch-only jobs skipped.
 - **The three dispatch-only claim stories PR #546 repaired**, run on conclav.dev with
   `--run-ignored only` on this branch, since they share the launch's composition:
-  still running when this was written; the result is recorded in the next commit to this note.
+  - `s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`: passed (639 s).
+  - `g4_the_attestation_channel_learns_an_ungoverned_flight_of_a_filed_mind`: passed
+    (1,789 s).
+  - `m8g_story_tier2_held_minds_seal_aboard`: **failed** (1,782 s), "close_ic_mind by #808
+    did not land: that action is not currently offered". It is not this unit's. The same
+    story run on main `330a8b249` with none of this branch fails with the same line
+    (1,790 s), and run on this branch over PR #554's head `7294d9e9d` it passes (1,788 s).
+    PR #554 (the MW.0 follow-up: a rig's second claim in one boot never closes) is the fix,
+    and this branch merges with it without conflict.
 
 **What the survey and the brief had wrong.**
 
