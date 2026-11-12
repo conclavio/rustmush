@@ -189,6 +189,21 @@ impl<P> OrderBook<P> {
         self.last_time_ms = Some(now_ms);
         Ok(())
     }
+    /// Take the next sequence for something the host itself records against a
+    /// delivered order, such as its lapse. No message is admitted, delivered or
+    /// replaced: the number only keeps the host's own event ordered after every
+    /// order issued so far and before every order issued later, so an executor
+    /// that fences by sequence can tell the three apart.
+    pub fn reserve_sequence(&mut self, now_ms: u64) -> Result<u64, OrderError> {
+        self.check_time(now_ms)?;
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(OrderError::SequenceExhausted)?;
+        self.sequence = sequence;
+        self.last_time_ms = Some(now_ms);
+        Ok(sequence)
+    }
     #[must_use]
     pub fn new(detachment: DetachmentId) -> Self {
         Self {
@@ -529,6 +544,44 @@ mod tests {
             directive: Directive::Objective(payload),
             expires_at_ms: None,
         }
+    }
+
+    /// Doc 45 unit AP.8: a reserved sequence sits between the orders issued before
+    /// it and the next one issued, changes no message, and survives a checkpoint.
+    #[test]
+    fn ap8_a_reserved_sequence_orders_a_host_event_between_two_orders() -> TestResult {
+        let (roster, _) = fixture()?;
+        let slot = Slot::new(3)?;
+        let mut book = OrderBook::new(roster.id());
+        let first = book.issue(
+            &roster,
+            1,
+            request(&roster, OrderTarget::Slot(slot), "engage"),
+            |_| true,
+        )?;
+        book.deliver(&roster, slot, first.sequence, 2, |_| true)?;
+        let reserved = book.reserve_sequence(3)?;
+        check_eq!(reserved, first.sequence + 1);
+        check_eq!(
+            book.delivered(slot)
+                .map(|delivered| delivered.order.sequence),
+            Some(first.sequence)
+        );
+        check!(book.pending(slot).is_none());
+        check!(matches!(
+            book.reserve_sequence(2),
+            Err(OrderError::TimeReversed)
+        ));
+        let restored = OrderBook::restore(&book.checkpoint(), &roster)?;
+        check_eq!(restored.sequence(), reserved);
+        let next = book.issue(
+            &roster,
+            4,
+            request(&roster, OrderTarget::Slot(slot), "hold"),
+            |_| true,
+        )?;
+        check!(next.sequence > reserved);
+        Ok(())
     }
 
     #[test]

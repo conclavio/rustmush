@@ -31,11 +31,27 @@
 //! **Open ground** (§4a): doctrine runs only inside a field, so a delivered `ENGAGE` received on
 //! the unpromoted surface naming a presence row is its leader's Hostile mark on that flight's
 //! party ([`surface_mark`] → [`super::mark_from_order`]), resolved from the recipient's own unit.
+//!
+//! **A leader who is gone** (doc 45 unit AP.8; Q-45-13, doc 44 Q-44-18, Q-44-46). A hired NPC is
+//! a person in the world: nobody flies its unit for an absent player, and the absent player's
+//! rule (`crate::arena::absent`) never binds it. What ends with its leader's absence is the
+//! attack the leader started. [`presence`] says how a roster member's player stands to their
+//! unit, on the field's own record of who is away (`super::absent`, the clock MW.7 built) and on
+//! the session only where the field keeps no record; the roster's succession reads the same
+//! function, so the leader stops leading and their order lapses at one moment. [`lapses`] is the
+//! rule: an `ENGAGE` or an `ADVANCE` a player gave lapses once that player is gone, and no other
+//! order does. The roster's history records the lapse once
+//! (`crate::detachment::sortie::field_orders::Lapse`), so it survives a restart and the leader's
+//! return, and [`stand`] is what the recipient then does: it stops where it is and fires
+//! nothing, and once its own hull is hit it answers from where it stands. A `HOLD FIRE` the
+//! lapsed order carried is kept. A new leader's order replaces the stand like any other.
 
 use std::collections::BTreeMap;
 
 use mush_core::{CanonicalId, Ctx, ObjId, ObjKind, World};
-use mush_tactics::detachment::{DeliveredOrder, DetachmentRoster, Directive, Response};
+use mush_tactics::detachment::{
+    DeliveredOrder, DetachmentRoster, Directive, OrderEnvelope, Response,
+};
 use smol_str::SmolStr;
 
 use crate::arena::detachment::{
@@ -217,6 +233,234 @@ pub(crate) fn lost(w: &World, unit: ObjId, operator: ObjId) -> bool {
         .is_some_and(|units| units.contains(&unit))
 }
 
+/// **How a roster member's player stands to their unit** (doc 45 unit AP.8): what the roster's
+/// succession and an order's lapse both read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Presence {
+    /// At the controls, or free to be: connected over a live transport.
+    Here,
+    /// Away, and still waited for: the unit is theirs and their orders stand.
+    Waiting,
+    /// Gone: the unit has passed to its mind, or their session has ended.
+    Gone,
+}
+
+/// **[`presence`]'s rule**, on plain facts. The field's own record decides where it exists
+/// (`away`, the unit's presence record: five wall minutes after a lost link, at once on a clean
+/// QUIT and at once for a pilot who is knocked out, Q-44-43 and Q-44-46), and so does a unit its
+/// mind has already taken out at the ramp (`taken_home`). With neither, the player is not at a
+/// field unit's controls and the session is all there is: a live link, a link the server still
+/// waits for, or a session that has ended.
+const fn presence_of(
+    away: Option<super::absent::Away>,
+    taken_home: bool,
+    live: bool,
+    connected: bool,
+) -> Presence {
+    match away {
+        Some(away) if away.handed => Presence::Gone,
+        Some(_) => Presence::Waiting,
+        None if taken_home => Presence::Gone,
+        None if live => Presence::Here,
+        None if connected => Presence::Waiting,
+        None => Presence::Gone,
+    }
+}
+
+/// **How `character` stands to `unit`, their unit of a roster** (this module's head). One clock:
+/// while a running field holds the unit, the field's five minutes decide and the server's own
+/// link grace does not.
+#[must_use]
+pub(crate) fn presence(w: &World, unit: ObjId, character: ObjId) -> Presence {
+    presence_of(
+        super::absent::away_of(w, unit),
+        super::absent::homebound(w, unit),
+        w.has_live_conns(character),
+        w.is_connected(character),
+    )
+}
+
+/// **Whether an order presses**: an `ENGAGE` or an `ADVANCE`, the two orders that carry an
+/// attack forward (Q-45-13). A `HOLD`, a `SCREEN`, a `SUPPORT`, a `WITHDRAW`, a mining run and a
+/// release do not, and stand whoever is away.
+#[must_use]
+pub(crate) const fn presses(directive: &Directive<FieldPayload>) -> bool {
+    matches!(
+        directive,
+        Directive::Objective(FieldPayload {
+            objective: FieldObjective::Engage { .. } | FieldObjective::Advance { .. },
+            ..
+        })
+    )
+}
+
+/// **Whether a delivered order lapses now** (this module's head; Q-45-13): it presses, a player
+/// gave it, and that player is gone. An NPC leader's order never lapses this way: an NPC is
+/// never absent.
+#[must_use]
+pub(crate) fn lapses(w: &World, order: &OrderEnvelope<FieldPayload>) -> bool {
+    presses(&order.directive)
+        && !is_npc(w, order.issuer)
+        && presence(w, order.issuer_unit, order.issuer) == Presence::Gone
+}
+
+/// **Where a unit that answers fire faces**: the bearing of the nearest live contact its own
+/// frame holds Hostile, else the heading it has.
+fn answer_facing_mdeg(frame: &crate::arena::step::Frame) -> u32 {
+    frame
+        .contacts
+        .iter()
+        .filter(|contact| {
+            contact.relation == crate::arena::party::Relation::Hostile
+                && contact.reads_dead != Some(true)
+        })
+        .min_by_key(|contact| (contact.range_cm, contact.id.0))
+        .map_or(frame.pose.heading_mdeg, |contact| contact.bearing_mdeg)
+        % 360_000
+}
+
+/// **Which half of a stand a unit is in**, off its own frame's order row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stood {
+    /// Neither half stands yet: the lapsed order, or nothing.
+    Not,
+    /// It holds: stopped, firing nothing.
+    Holding,
+    /// It answers: stopped, firing on a Hostile in front of it.
+    Answering,
+}
+
+/// **One NPC unit stands on a lapsed order, in the field on `site`** (this module's head).
+/// `(hold, answer)` are the two numbers the roster's history reserved for the stand, above the
+/// lapsed order's and below any later order's, so the kernel's fence takes each once and takes
+/// the next leader's order after them.
+///
+/// The stand has two halves, each an order the doctrine already flies:
+///
+/// 1. **It holds.** A `HOLD` under `hold`: the unit stops where it is, takes no target and fires
+///    nothing. The attack its leader started ends here, whoever that leader marked Hostile.
+/// 2. **It answers.** Once its own frame shows a hit on its own hull that it did not show when
+///    the hold was taken, a `SCREEN` under `answer`, facing [`answer_facing_mdeg`]: the unit
+///    stays where it is and fires on a Hostile inside the screen's arc and its reach, until a
+///    leader orders it otherwise. A `HOLD FIRE` the lapsed order carried is kept through both
+///    halves (Q-44-18: the stricter order the leader left stays), so such a unit never answers.
+///
+/// The stand is the crew's own act, not a message: it waits on no relay, it is answered to
+/// nobody, and its issuing unit is the recipient's own (the leader's may have left the field).
+/// The host decides on the recipient's own frame and on nothing the kernel knows beyond it.
+///
+/// **A seam, named**: the doctrine has no order that stands and answers all round, or that
+/// answers only the unit that hit it. A screen covers the arc in front of the unit, and a unit
+/// hit from behind turns to the nearest Hostile it holds, which may not be the one that hit it.
+/// Doc 45 unit AP.6 builds the stand a `HOLD` posture needs in the arena; when it exists, swap
+/// the second half's objective here and nothing else moves.
+pub(crate) fn stand(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    (unit, operator): (ObjId, ObjId),
+    roster: &DetachmentRoster,
+    delivered: &DeliveredOrder<FieldPayload>,
+    (hold, answer): (u64, u64),
+) -> Step {
+    let Some((task, party)) = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .and_then(|hosted| Some((hosted.task, hosted.live.party_of(unit)?)))
+    else {
+        return Step::Idle;
+    };
+    // Its own frame says which half stands (a restart forgets what was offered), whether it has
+    // been hit, and where an answer faces.
+    let Some((stood, hit_ms, facing_mdeg)) = own_frame(ctx.w, unit, operator).map(|frame| {
+        let row = frame.order.as_ref().and_then(|row| row.identity.as_deref());
+        let stood = if row == Some(identity(roster, answer).as_str()) {
+            Stood::Answering
+        } else if row == Some(identity(roster, hold).as_str()) {
+            Stood::Holding
+        } else {
+            Stood::Not
+        };
+        (stood, frame.own_last_hit_ms, answer_facing_mdeg(frame))
+    }) else {
+        return Step::Waiting;
+    };
+    let fence = epoch(roster);
+    let seen = ctx
+        .w
+        .module_state::<Offered>()
+        .and_then(|offered| offered.1.get(&unit).copied());
+    let hold_fire = matches!(
+        &delivered.order.directive,
+        Directive::Objective(payload) if payload.hold_fire
+    );
+    let (sequence, objective) = match stood {
+        Stood::Answering => return Step::Idle,
+        Stood::Not => (hold, Objective::Hold),
+        Stood::Holding => {
+            // The hit it had when this boot first saw it holding is not news; a later one is.
+            let Some((_, baseline)) = seen.filter(|(at, _)| *at == (task, hold)) else {
+                if let Some(book) = ctx.w.module_state_mut::<Offered>() {
+                    book.1.insert(unit, ((task, hold), hit_ms));
+                }
+                return Step::Idle;
+            };
+            if hold_fire || hit_ms.is_none() || hit_ms == baseline {
+                return Step::Idle;
+            }
+            (answer, Objective::Screen { facing_mdeg })
+        }
+    };
+    let key = (task, fence, sequence);
+    if ctx
+        .w
+        .module_state::<Offered>()
+        .is_some_and(|offered| offered.0.get(&unit).is_some_and(|(at, _)| *at == key))
+    {
+        return Step::Waiting;
+    }
+    let authority = DetachmentAuthority {
+        detachment: roster.id().0,
+        revision: roster.revision(),
+        term: roster.term(),
+    };
+    let control = DetachmentControl {
+        unit,
+        epoch: fence,
+        authority: Some(authority),
+    };
+    let command = DetachmentCommand {
+        authority,
+        authority_epoch: fence,
+        sequence,
+        issuer: delivered.order.issuer,
+        issuer_unit: unit,
+        squad: crate::deliberation::SquadId {
+            team: party,
+            index: 1,
+        },
+        directive: Some(DetachmentObjective {
+            objective,
+            constraints: Constraints {
+                hold_fire,
+                ..Constraints::default()
+            },
+        }),
+        expires_at_ms: None,
+    };
+    let now = ctx.w.now();
+    if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+        && let Some(book) = ctx.w.module_state_mut::<Offered>()
+    {
+        book.0.insert(unit, (key, now));
+        // The hold is taken with the hits the unit already had.
+        if sequence == hold {
+            book.1.insert(unit, ((task, hold), hit_ms));
+        }
+    }
+    Step::Waiting
+}
+
 /// **What [`step`] did** for one unit's delivered order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
@@ -231,8 +475,15 @@ pub(crate) enum Step {
 /// The orders offered to field tasks (RAM, module state): unit → (task, fence epoch, sequence)
 /// and the world second it was offered. A restart forgets it and the next visit offers again;
 /// the kernel's fence refuses the duplicate harmlessly.
+///
+/// Its second map is a stand's baseline (doc 45 unit AP.8; [`stand`]): unit → (task, the stand's
+/// hold sequence) and the last hit the unit's own frame showed when the hold was taken, or when
+/// this boot first saw it holding. A hit after that is what the unit answers.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Offered(BTreeMap<ObjId, ((MatchId, u64, u64), i64)>);
+pub(crate) struct Offered(
+    BTreeMap<ObjId, ((MatchId, u64, u64), i64)>,
+    BTreeMap<ObjId, ((MatchId, u64), Option<i64>)>,
+);
 
 /// **The delivered orders a damaged relay is holding back** (doc 40 cut FR.5, Q-40-5; RAM,
 /// module state): recipient unit → (task, fence epoch, sequence) and the world second the order
@@ -526,6 +777,76 @@ mod tests {
         ));
         assert_eq!(row_of_words("CB"), None);
         assert_eq!(row_of_words("NE-sideways"), None);
+    }
+
+    /// **Doc 45 unit AP.8**: the field's record decides while it exists, a unit its mind took
+    /// out at the ramp is its player gone, and off the field's record the session decides.
+    #[test]
+    fn ap8_presence_reads_the_fields_record_before_the_session() {
+        use super::super::absent::{Away, Why};
+        let away = |handed| {
+            Some(Away {
+                why: Why::LinkLost,
+                since_wall_s: 10,
+                handed,
+            })
+        };
+        // The five minutes are running: waited for, whatever the server's own grace did to
+        // the session meanwhile.
+        for (live, connected) in [(false, true), (false, false)] {
+            assert_eq!(
+                presence_of(away(false), false, live, connected),
+                Presence::Waiting
+            );
+        }
+        // Handed to the mind: gone, even for a pilot who is connected and knocked out.
+        for (live, connected) in [(true, true), (false, true), (false, false)] {
+            assert_eq!(
+                presence_of(away(true), false, live, connected),
+                Presence::Gone
+            );
+        }
+        assert_eq!(presence_of(None, true, false, true), Presence::Gone);
+        assert_eq!(presence_of(None, false, true, true), Presence::Here);
+        assert_eq!(presence_of(None, false, false, true), Presence::Waiting);
+        assert_eq!(presence_of(None, false, false, false), Presence::Gone);
+    }
+
+    /// **Doc 45 unit AP.8 (Q-45-13)**: an `ENGAGE` and an `ADVANCE` press, with or without a
+    /// `HOLD FIRE`; no other order does, so a `HOLD` a leader left stands whoever is away.
+    #[test]
+    fn ap8_only_an_engage_and_an_advance_press() {
+        let order = |objective, hold_fire| {
+            Directive::Objective(FieldPayload {
+                objective,
+                hold_fire,
+            })
+        };
+        for hold_fire in [false, true] {
+            assert!(presses(&order(
+                FieldObjective::Engage {
+                    contact: None,
+                    at: None
+                },
+                hold_fire
+            )));
+            assert!(presses(&order(
+                FieldObjective::Advance { to: (4, 4) },
+                hold_fire
+            )));
+            for stays in [
+                FieldObjective::Hold,
+                FieldObjective::Withdraw,
+                FieldObjective::Screen { bearing_mdeg: 0 },
+                FieldObjective::Support {
+                    slot: mush_tactics::detachment::Slot::new(1).expect("a slot"),
+                },
+                FieldObjective::Mine { family: None },
+            ] {
+                assert!(!presses(&order(stays, hold_fire)));
+            }
+        }
+        assert!(!presses(&Directive::Cancel));
     }
 
     /// A roster of four NPC-flown hulls, units 101 to 104 in slots 1 to 4, and a field that

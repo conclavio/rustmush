@@ -545,6 +545,21 @@ pub(crate) fn fly(
     plan: &Plan,
     at_ceres: impl FnOnce(&mut Rig, ObjId),
 ) -> Flown {
+    fly_leased(rig, at, plan, &[], at_ceres)
+}
+
+/// **[`fly`], with the lease each slot's rig is signed under** (doc 45 unit AP.8):
+/// `leases[n - 1]` is the counter's word for slot `n`'s rig, `""` for a prospector
+/// (`+tv/lease go`) and `"escort"` for an escort line tank (`+tv/lease escort go`), a
+/// prospector where the slice is shorter. Occator signs one armed lease a captain, so at most
+/// one slot flies an armed rig.
+pub(crate) fn fly_leased(
+    rig: &mut Rig,
+    at: &Ground,
+    plan: &Plan,
+    leases: &[&str],
+    at_ceres: impl FnOnce(&mut Rig, ObjId),
+) -> Flown {
     let hired: Vec<Option<ObjId>> = plan
         .billets
         .iter()
@@ -565,7 +580,7 @@ pub(crate) fn fly(
     let (organiser, row, units) = if crewed {
         // Everything but the launch at Ceres, the organiser in a cab while the crew board.
         let (organiser, row) = prospector(rig, plan.who.0, plan.who.1, plan.who.2);
-        ashore(rig, organiser, &hired, slots, at_ceres);
+        ashore(rig, organiser, &hired, (slots, leases), at_ceres);
         load(
             rig,
             &row,
@@ -607,7 +622,7 @@ pub(crate) fn fly(
     } else {
         // (1) At Ceres: the crew hired, the rigs leased with their loans, the crew aboard.
         let (organiser, row, units) = on_pad_with_at(rig, plan.who, at.site(), |rig, organiser| {
-            ashore(rig, organiser, &hired, slots, at_ceres);
+            ashore(rig, organiser, &hired, (slots, leases), at_ceres);
             for npc in hired.iter().flatten() {
                 let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
                 assert!(aboard.contains("has come aboard"), "{aboard}");
@@ -714,7 +729,7 @@ fn ashore(
     rig: &mut Rig,
     organiser: ObjId,
     hired: &[Option<ObjId>],
-    slots: usize,
+    (slots, leases): (usize, &[&str]),
     at_ceres: impl FnOnce(&mut Rig, ObjId),
 ) {
     let _ = rig.tw.connect(organiser);
@@ -723,7 +738,11 @@ fn ashore(
     }
     at_counter(rig, organiser);
     for n in 1..=slots {
-        let leased = run(&mut rig.tw, organiser, "+tv/lease go");
+        let line = match leases.get(n - 1).copied().unwrap_or("") {
+            "" => "+tv/lease go".to_owned(),
+            design => format!("+tv/lease {design} go"),
+        };
+        let leased = run(&mut rig.tw, organiser, &line);
         assert!(
             leased.contains("Occator Water & Propellant leases you "),
             "rig {n} is leased: {leased}"

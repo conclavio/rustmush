@@ -1379,6 +1379,29 @@ fn message(
                 let context = orders.flights.entry(member.slot).or_default();
                 context.standing = context.pending.take();
             }
+            // Doc 45 unit AP.8 (Q-45-13): an ENGAGE or an ADVANCE whose leader is gone lapses,
+            // once. The history reserves the two sequences the recipient's stand takes, so the
+            // field's fence orders it after the lapsed order and before the next leader's. A
+            // lapse whose order was just replaced by a delivery above is dropped first.
+            orders.prune_lapsed(&book);
+            for (slot, sequence, issuer) in
+                field_orders::lapsing(world, &roster, &orders, &book, now)
+            {
+                let stand = book.reserve_sequence(now).map_err(|e| e.to_string())?;
+                let answer = book.reserve_sequence(now).map_err(|e| e.to_string())?;
+                orders.lapsed.insert(
+                    slot,
+                    field_orders::Lapse {
+                        sequence,
+                        stand,
+                        answer,
+                        at_ms: now,
+                    },
+                );
+                patch
+                    .observations
+                    .push(json!({"slot":slot,"lapsed":sequence,"issuer":issuer,"stand":stand}));
+            }
         }
         Act::Respond {
             slot,
@@ -1414,6 +1437,9 @@ fn message(
             }));
         }
     }
+    // A lapse belongs to the delivered order it names; an issue that cleared a reused slot's
+    // delivery takes its lapse with it.
+    orders.prune_lapsed(&book);
     orders.book = book.checkpoint();
     let mut next = old.clone();
     next.command = Some(Box::new(roster.checkpoint()));

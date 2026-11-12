@@ -9,6 +9,56 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 #[derive(Clone, Default)]
 struct TickState {
     after: Option<mush_core::ObjId>,
+    /// The lapses already said (doc 45 unit AP.8; RAM): operation, slot and order sequence. A
+    /// poll that is refused is tried again and says nothing twice; a restart between the line
+    /// and the poll's commit says it once more.
+    told: BTreeSet<(OperationId, u16, u64)>,
+}
+
+/// **Tell a lapse** (doc 45 unit AP.8; Q-45-13), as the poll that records it is queued: the
+/// leader who gave the order, on the reconnect queue when they are not on watch, and the
+/// roster's leader now when that is another player.
+fn tell_lapses(
+    ctx: &mut Ctx<'_>,
+    h: &SortieHandles,
+    op: &OperationRecord,
+    facts: &super::field::OwnerFacts,
+) {
+    use super::{ORDER_LAPSED, ORDER_LAPSED_LEAD};
+    use crate::field::orders::is_npc;
+    use crate::port_tick::{NoticeLevel, notify_budget};
+    let lapsing = super::field_orders::lapsing_of(ctx.w, op);
+    if lapsing.is_empty() {
+        return;
+    }
+    let lead = super::field::reconcile(ctx.w, &mut &*ctx, h, op, facts)
+        .ok()
+        .and_then(|(roster, _)| roster.leader())
+        .map(|leader| leader.character)
+        .filter(|lead| !is_npc(ctx.w, *lead));
+    for (slot, sequence, issuer, directive) in lapsing {
+        let key = (op.id, slot.get(), sequence);
+        let fresh = ctx.w.module_state_mut::<TickState>().is_some_and(|state| {
+            if state.told.len() >= 256 {
+                state.told.clear();
+            }
+            state.told.insert(key)
+        });
+        if !fresh {
+            continue;
+        }
+        let fill = |line: &str| {
+            line.replace(
+                "{order}",
+                &super::field_commands::directive_text(&directive),
+            )
+            .replace("{slot}", &slot.get().to_string())
+        };
+        notify_budget(ctx, issuer, &fill(ORDER_LAPSED), NoticeLevel::Trip);
+        if let Some(lead) = lead.filter(|lead| *lead != issuer) {
+            notify_budget(ctx, lead, &fill(ORDER_LAPSED_LEAD), NoticeLevel::Trip);
+        }
+    }
 }
 pub(super) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(TickState::default());
@@ -122,10 +172,11 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
                 && runtime::enqueue(
                     ctx,
                     op.id.organizer,
-                    runtime::Command::Message(Box::new(request)),
+                    runtime::Command::Message(Box::new(request.clone())),
                 )
                 .is_ok()
             {
+                tell_lapses(ctx, &h, &op, &request.facts);
                 acted.insert(op.id.organizer);
                 if acted.len() >= 8 {
                     break;

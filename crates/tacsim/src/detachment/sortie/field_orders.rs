@@ -276,6 +276,24 @@ pub struct FieldOrderFlights {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing: Option<FieldOrderFlight>,
 }
+/// **A delivered order that lapsed with its leader's absence** (doc 45 unit AP.8; Q-45-13;
+/// `crate::field::orders`). Written once, by the poll that finds the order's issuer gone, and
+/// kept while that order is the slot's delivered one: the issuer's return does not clear it, and
+/// the next order delivered to the slot does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lapse {
+    /// The delivered order that lapsed.
+    pub sequence: u64,
+    /// The sequence reserved for the first half of the stand the recipient takes in its place
+    /// (it holds): above every order issued before the lapse and below every order issued after
+    /// it.
+    pub stand: u64,
+    /// The sequence reserved for the stand's second half (it answers a hit): above `stand`.
+    pub answer: u64,
+    /// When, IC milliseconds.
+    pub at_ms: u64,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldOrders {
@@ -289,6 +307,10 @@ pub struct FieldOrders {
     /// is never silently rebound to a subsequent departure at the same site.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub flights: BTreeMap<Slot, FieldOrderFlights>,
+    /// The delivered orders that lapsed with their leader's absence (doc 45 unit AP.8). Absent
+    /// on every history written before AP.8.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lapsed: BTreeMap<Slot, Lapse>,
 }
 pub(super) fn message_key(id: OperationId, sequence: u64, slot: Slot) -> String {
     format!(
@@ -315,7 +337,24 @@ impl FieldOrders {
             received: BTreeMap::new(),
             replies: BTreeMap::new(),
             flights: BTreeMap::new(),
+            lapsed: BTreeMap::new(),
         }
+    }
+    /// **The lapse standing on `slot`'s delivered order**, if that order lapsed (doc 45 unit
+    /// AP.8).
+    #[must_use]
+    pub fn lapse_of(&self, slot: Slot, sequence: u64) -> Option<Lapse> {
+        self.lapsed
+            .get(&slot)
+            .copied()
+            .filter(|lapse| lapse.sequence == sequence)
+    }
+    /// Drop every lapse whose order is no longer its slot's delivered one.
+    pub(super) fn prune_lapsed(&mut self, book: &OrderBook<FieldPayload>) {
+        self.lapsed.retain(|slot, lapse| {
+            book.delivered(*slot)
+                .is_some_and(|delivered| delivered.order.sequence == lapse.sequence)
+        });
     }
     pub fn validate(&self, roster: &DetachmentRoster) -> Result<(), String> {
         let book = OrderBook::restore(&self.book, roster).map_err(|e| e.to_string())?;
@@ -324,8 +363,20 @@ impl FieldOrders {
             || self.received.len() > 6
             || self.replies.len() > 6
             || self.flights.len() > 6
+            || self.lapsed.len() > 6
         {
             return Err("Invalid field message history.".into());
+        }
+        if self.lapsed.iter().any(|(slot, lapse)| {
+            lapse.stand <= lapse.sequence
+                || lapse.answer <= lapse.stand
+                || lapse.answer > book.sequence()
+                || book.delivered(*slot).is_none_or(|delivered| {
+                    delivered.order.sequence != lapse.sequence
+                        || lapse.at_ms < delivered.delivered_at_ms
+                })
+        }) {
+            return Err("A lapse differs from its delivered order.".into());
         }
         for m in roster.members() {
             for order in book
@@ -441,6 +492,58 @@ impl FieldOrders {
     }
 }
 
+/// **The delivered orders that lapse now and are not yet recorded as lapsed** (doc 45 unit
+/// AP.8; `crate::field::orders::lapses`): the slot, the order's sequence and its issuer. An
+/// order that completed or ran out its own deadline is past lapsing.
+pub(super) fn lapsing(
+    world: &mush_core::World,
+    roster: &DetachmentRoster,
+    orders: &FieldOrders,
+    book: &OrderBook<FieldPayload>,
+    now_ms: u64,
+) -> Vec<(Slot, u64, ObjId)> {
+    roster
+        .members()
+        .iter()
+        .filter_map(|member| {
+            let delivered = book.delivered(member.slot)?;
+            let order = &delivered.order;
+            (delivered.completed_at_ms.is_none()
+                && order.expires_at_ms.is_none_or(|end| now_ms < end)
+                && orders.lapse_of(member.slot, order.sequence).is_none()
+                && crate::field::orders::lapses(world, order))
+            .then_some((member.slot, order.sequence, order.issuer))
+        })
+        .collect()
+}
+
+/// **[`lapsing`] off a saved operation**, with each order as its leader typed it: what the
+/// flight tick tells the leader and the roster's next one (doc 45 unit AP.8).
+pub(super) fn lapsing_of(
+    world: &mush_core::World,
+    op: &super::model::OperationRecord,
+) -> Vec<(Slot, u64, ObjId, Directive<FieldPayload>)> {
+    let (Some(saved), Some(orders)) = (&op.command, &op.orders) else {
+        return Vec::new();
+    };
+    let Ok(roster) = DetachmentRoster::restore(saved) else {
+        return Vec::new();
+    };
+    let Ok(book) = OrderBook::restore(&orders.book, &roster) else {
+        return Vec::new();
+    };
+    let now = u64::try_from(world.world_ic_now().at)
+        .unwrap_or(0)
+        .saturating_mul(1000);
+    lapsing(world, &roster, orders, &book, now)
+        .into_iter()
+        .filter_map(|(slot, sequence, issuer)| {
+            let directive = book.delivered(slot)?.order.directive.clone();
+            Some((slot, sequence, issuer, directive))
+        })
+        .collect()
+}
+
 pub(super) fn needs_poll(world: &mush_core::World, op: &super::model::OperationRecord) -> bool {
     let (Some(saved), Some(orders)) = (&op.command, &op.orders) else {
         return false;
@@ -454,6 +557,10 @@ pub(super) fn needs_poll(world: &mush_core::World, op: &super::model::OperationR
     let now = u64::try_from(world.world_ic_now().at)
         .unwrap_or(0)
         .saturating_mul(1000);
+    // Doc 45 unit AP.8: an order whose leader is gone is the poll's to lapse.
+    if !lapsing(world, &roster, orders, &book, now).is_empty() {
+        return true;
+    }
     roster.members().iter().any(|m| {
         book.pending(m.slot).is_some_and(|p| {
             p.command_term != roster.term()

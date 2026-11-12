@@ -254,7 +254,7 @@ pub(crate) fn field_response(
 fn line(ctx: &mut Ctx<'_>, text: String) {
     ctx.out.sys_to_actor(ctx.actor, "tacsim.detachment", text)
 }
-fn directive_text(directive: &Directive<FieldPayload>) -> String {
+pub(super) fn directive_text(directive: &Directive<FieldPayload>) -> String {
     let Directive::Objective(payload) = directive else {
         return "RELEASE".into();
     };
@@ -351,6 +351,17 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
                     .strip_prefix(&prefix)
                     .and_then(|s| s.split_once(':'))
                     .unwrap_or(("?", "?"));
+                // Doc 45 unit AP.8: an order that lapsed while its leader was away says so.
+                let lapsed = sequence
+                    .parse::<u64>()
+                    .ok()
+                    .zip(slot.parse::<u16>().ok().and_then(|n| Slot::new(n).ok()))
+                    .is_some_and(|(sequence, slot)| orders.lapse_of(slot, sequence).is_some());
+                let status = if lapsed {
+                    format!("{status}; {}", super::ORDER_LAPSED_STATUS)
+                } else {
+                    status
+                };
                 super::ORDER_SENT
                     .replace("{slot}", slot)
                     .replace("{sequence}", sequence)
@@ -378,6 +389,16 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
                     directive_text(&delivered.order.directive)
                 ),
             );
+            if orders
+                .lapse_of(member.slot, delivered.order.sequence)
+                .is_some()
+            {
+                line(
+                    ctx,
+                    super::ORDER_LAPSED_OWN
+                        .replace("{sequence}", &delivered.order.sequence.to_string()),
+                );
+            }
             line(
                 ctx,
                 format!(

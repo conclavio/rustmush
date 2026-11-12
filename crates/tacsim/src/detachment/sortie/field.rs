@@ -342,14 +342,22 @@ pub(super) fn reconcile(
             .is_ok();
         let unit = mush_tactics::module::unit_of(world, member.unit);
         let condition = unit.and_then(|u| crate::field_ops::assess_tacsim_unit(u, None).ok());
-        let connection = if npc || world.has_live_conns(character) {
+        // Doc 45 unit AP.8: one clock. While a running field holds the unit, the field's own
+        // record of who is away decides when its player stops leading (five wall minutes after
+        // a lost link, at once on a quit or a knock-out), and the server's link grace does not;
+        // off a field's record the session decides, as before. The grace has no deadline here:
+        // whoever owns it ends it, and the next refresh reads that.
+        use crate::field::orders::Presence;
+        let connection = if npc {
             Connection::Connected
-        } else if world.is_connected(character) {
-            Connection::Linkdead {
-                grace_until_ms: u64::MAX,
-            }
         } else {
-            Connection::Disconnected
+            match crate::field::orders::presence(world, member.unit, character) {
+                Presence::Here => Connection::Connected,
+                Presence::Waiting => Connection::Linkdead {
+                    grace_until_ms: u64::MAX,
+                },
+                Presence::Gone => Connection::Disconnected,
+            }
         };
         live.push(MemberFacts {
             slot: member.slot,
