@@ -341,6 +341,15 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(orders::RelayLate::default());
     reg.state(home::Asked::default());
     reg.state(absent::Minding::default());
+    // Doc 45 cut AP.5 (Q-45-1): when each player's link was lost, so a field that opens around
+    // a link-dead player's unit runs their five minutes from the loss.
+    reg.state(admit::LinksLost::default());
+    reg.hook(mush_core::HookPoint::Connected, Arc::new(admit::LinkWatch));
+    reg.hook(mush_core::HookPoint::Linkdead, Arc::new(admit::LinkWatch));
+    reg.hook(
+        mush_core::HookPoint::Disconnected,
+        Arc::new(admit::LinkWatch),
+    );
     // Doc 45 cut AP.2 (Q-45-20): a friendly-fire void offered to a leader who was away runs from
     // their return.
     reg.state(standing::Returned::default());

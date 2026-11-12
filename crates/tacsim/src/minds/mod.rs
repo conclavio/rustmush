@@ -178,6 +178,10 @@ pub use content::{
     MindManifest, STANDARD_MANIFEST_JSON, STANDARD_RHAI, STANDARD_SHA256, source_lookup,
     standard_digest, standard_manifest, standard_runner,
 };
+/// 17g C2: every sentence the `+minds`, `@mind/*` and `@registry/*` commands print. Public
+/// (doc 44 MW.5) so the external bot's sentence table can test its needles against these
+/// constants; the command modules themselves stay crate-private.
+pub use market_commands::words;
 pub use pool::{BatchFailed, BatchHandle, MindPool};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
 pub use sealed::{

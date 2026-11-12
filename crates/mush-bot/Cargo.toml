@@ -57,6 +57,9 @@ mush-tactics.workspace = true
 # (server fixture setup only).
 mush-economy.workspace = true
 mush-org.workspace = true
+# Doc 44 MW.5: the renewal service's player sentences (`mind_renewal::player`), which the
+# bot's sentence table (`src/mine/minds.rs`) tests its needles against (contract tests only).
+mush-market.workspace = true
 
 [lints]
 workspace = true
