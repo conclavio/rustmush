@@ -713,6 +713,11 @@ filed, launched and flown on the production composition.
   the same story with no mind chosen. MW.7's stories run on the driving rig, which composes no
   launch; this is the rule over the launch composition for the mind every hull has.
 
+**Runs.** conclav.dev (Linux, over main `d2be044c5`): the filed story green twice (339 s
+before the review's fixes, 262 s after), the house-mind entry 42 s. The CI dispatch on the
+branch (run 43284568648, at `3dcd278d7`): the story's job, "M8 MW.5 a filed mind flies an
+absent pilot's escort", passed on the hosted runner in 744 s with its build.
+
 The story, on P3 (`m8_world_manned`), through the production command paths:
 
 1. the pilot leases Occator's escort at Ceres (`+tv/lease escort go`), takes the operational
