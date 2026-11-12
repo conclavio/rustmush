@@ -312,6 +312,10 @@ Line mode stays first-class, so this cut can follow C2's ship.
 The existing four CI stories become a subset. Update the 17b M7 row, 17f's status
 and doc 17 §22.
 
+**As built 2026-11-12 (doc 44 unit MW.5): not complete.** Items 2, 3 and 4 are built and item 5
+is measured; of item 1, stories 2 and 7 stand on no launch and were not built. §7, "C4 — as
+built", has each line's state and what is missing, with the reason.
+
 Ruled 2026-11-11 (doc 44 Q-44-15): C4's stories are a cut of doc 44's programme and do not gate
 the dev boxes. The withdrawn-listing and renewal defects (§7, C2 as built) are fixed before the
 bring-up runs.
@@ -2700,3 +2704,91 @@ holds both values and every cap at or above the floor.
 every charter offer on a licence with 28 days of Grace refused (`Mismatch`). It now reads
 `mush_core::player_wait::MAX_LICENCE_GRACE_SECONDS`; the settlement delay keeps its own 3-day
 bound. Pinned by `managed_charter_transfer::tests::the_owner_term_carries_a_28_ic_day_grace`.
+
+### C4 — as built (2026-11-12, doc 44 unit MW.5; PRs #558, #561, #563, #566, #567)
+
+C4 is **not complete**. Items 2, 3 and 4 are built; item 5 is measured and reported; of item 1's six
+stories two mostly stood on a launch already and four do not, and this cut moved none of the
+four. The story doc 44's MW.7 left is built. The full inventory, checked against the
+code, and the account of each slice are in `docs/design/44-cut-notes.md`, MW.5; this section is
+the record of what C4's five lines came to.
+
+**What "the production composition" means here.** The launch is
+`mush_server::boot::game_modules` reading `[tacsim.minds].launch_path`, calling
+`LaunchComposition::prepare` and handing the result to `server_modules_with_launch`. Three
+test rigs stand a launch up through `prepare`: the named launch in tacsim
+(`hardware/flow/launch.rs`), the server's own (`mush-server`'s `player_market.rs` rig, the only
+one that runs the server's roster, world task and persist path), and the combined M8 world
+(`tacsim/tests/domain_field/m8_world.rs`). A story on a hand-built `MindCommerce` chain
+(`PlayerWorld`, `IcWorld`, `PurchaseFixture`, `game_modules_with_mind_commerce`) is not on it.
+
+| C4's line | State | Where | What is not built, and why |
+|---|---|---|---|
+| **1.** Stories 1, 2, 3, 5, 6 and 7 on the production composition, each with a restart | **Partly, as it stood before this cut** | see the table below | see the table below |
+| **2.** Story 4 through the launch's governed hardware, with a refit and a restart | **Built** (#558) | `tacsim/tests/domain_field/c4_hardware.rs`, default sweep | its clause "existing OOC pods show no owned-hardware dependency": the M8 rig runs no simulator match |
+| **3.** `cargo test -p mush-bot` green on every new sentence | **Built** (#561), as a standing gate | `mush-bot/src/mine/minds.rs`: 149 rows over six game modules, each tested against the game's own constant, with a census that fails on a constant with no row | sentences built inside functions are not constants and no census sees them (the renewal status details; the reasons two sentences are filled with). No lane reads the table: MW.19 |
+| **4.** The cross-host deterministic cases | **Built** (#558) | `tacsim/src/minds/registry/trials/physical_tests.rs`, `c4_a_registry_trial_ends_the_same_on_every_host`: four Duel trials pinned (end reason, stop millisecond, state hash, black box digest, the filed case result), equal on Linux and Windows x86-64. D-UM-28's corpus and its pool and twin cases were run on Windows at `api=8` and pass | a whole rating's receipt and a Conduct verdict are not pinned; no Windows lane exists in CI, so the second host is by hand; no aarch64 run |
+| **5.** Registry load beside live arenas, reported | **Measured** (#566), as a report and not a gate | `mush-server`'s `registry_load.rs` (by hand, on conclav.dev): a rating alone 1,943 s (1,517 leases of 1.12 s, the Registry's worker idle for nearly all of each); beside a match of 4 or of 12 units, with the commands that drive it, 3,106 s and 3,109 s; two authors' ratings alternate lease by lease and finish together at 2.57 times one. The table and the method are in the cut note | a rating beside an IC field arena (the rig stands up the simulator only); Redis; production's 1,000 ms pulse; real players. The no-match run had no command traffic, so the 60% is a match and its driver together; whether the matches were slowed was not measured (the fill is native, and no arena step time was taken); and the second in every lease, which looks like the continuation's fixed retry, is not proven |
+
+**Item 1, story by story.** "There" means on a launch, with a restart, in a story CI runs.
+
+| Story (17f §9) | There today | Not there | Why, and whose |
+|---|---|---|---|
+| **1, commercial author** | the server rig's command story and typed story (`mind-commerce-acceptance`): A files over a genuine rating, publishes sealed, B on another login buys and holds, B resells with one balanced split, with restarts. And since this cut, the M8 world's `c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home`: an author writes, rates, files, seals and flies their own mind, IC, under their owner's licence | B selecting, sealing and flying the mind B bought **in the simulator**; cards and trace readable while source and memory never are, on every surface; the OOC run posting nothing; the old holding refused at the next seal after a restart | needs the simulator driven in a launch rig, which none does. **MW.21** flies a bought mind end to end with two accounts; the privacy battery on a launch has no unit |
+| **2, private and derivative** | only as far as a draft: an open listing bought and forked | a fork filed privately and refused a listing; an open-resale derivative paying its parent chain; parent lapse, transfer, revocation and recall sealing the dependent; restoration; an existing customer keeping their term | every piece is proven on fixtures (`dependent_owner`, `authored_fork`, `paid_resale` integration tests) and the commands exist (`@mind/fork`, `@mind/update`, `form=open-resale`). It is a second command story of the size of the first (two genuine ratings, a parent and a child). **Not built; no unit owns it** |
+| **3, seat and term** | the M8 world's `s4b2_*` (a one-seat Pin's live claim, the seat refused, a resale pending under an open claim, the close, a restart with a House claim open); the server story's renewal after the term, revocation, recall and charter transfer | a two-seat licence with one live claim; the pending sale settling at the last close and at the deadline; a restart during the pending sale; a free owner's parallel dispatches; a title transfer with a claim open | **a launch sells one-seat licences only** (`@mind/publish .. seats=2` answers the provisional-terms refusal; the House Pin is one seat), so the story's first premise has no production form until per-listing terms exist. The rest is an extension of `s4b2_*`. **Not built; no unit owns it** |
+| **5, authority and adversarial** | the server rig: the alt pair, a foreign target reading as a missing one, stale terms, an org form without the holder grant, a rating queued and cancelled; the named launch's resale privacy fence | same-account transfers, the missing account oracle, forged receipt, grade and lineage, the generic-title bypass, malformed retained records, queue saturation | each is a fault-injection test of one owner, proven where that owner's fixture can inject the fault; a launch boot offers no seam to forge a record through. **Not a story on a launch; left on the fixtures by decision of this cut** |
+| **6, launch catalogue** | the named launch story (three Houses' sources rated, filed, listed, sold; the treasury's filing fee; Coprates' membership fence at three points; four restarts) and the M8 world's procurement budget | Safe Conduct's role run on a launch; the priced cover discount, the premium, exposure, claim and wreck-title records, the zero-charge refusal | **hull cover is not composed by a launch** (`prepare` calls neither `with_hull_coverage` nor `with_qualified_hull_coverage`; §4, "still deferred"), so the cover clauses cannot run there. The Conduct owner is composed and no launch story drives `@conduct/run`. **Hull cover on a launch needs its own ruling and unit** |
+| **7, the fact interface** | nothing, though every Active launch composes the provider (`with_minds_facts`) | all of it | a fact is read through a contract's condition, and `EconomyStore::facts` is crate-private, so a story must draft a contract with a `minds` condition, have it accepted and wait the economy's sweep. Proven on `PlayerWorld` and `IcWorld`. "A renewal after a lapse leaves the lapse on record" and "a front consumes a mind fact" are asserted nowhere. **Not built; no unit owns it** |
+
+**The two stories wave 1 left.** MW.23's refit and restart of a fitted Class III is item 2.
+MW.7's filed mind flying an absent player's unit in a field is built (#567),
+`tacsim/tests/domain_field/c4_filed_mind_field.rs`. On the combined M8 world a pilot leases
+Occator's escort, writes a script that fires first, has the Registry rate it, files it, and
+launches the escort from its cab under their own owner's licence, so the claim path seals it
+(MW.0) on a leased hull (MW.22). In a field of three parties the pilot quits and the mind has
+the unit. It locks its target and no round leaves. The raider's captain fires on it; it
+answers the raider and fires at nobody else; it drives to its carrier's ramp, is put aboard,
+and its claim closes. The field's black box shows that order and that the mind neither
+faulted nor was dropped, and the seal line names the filed mind, the licence and the claim's
+card. The box records no refused intent, so that the shot was asked and refused is shown by
+mutation: with the gate off the same script fires before it is fired on and the story fails,
+while the house mind's entry still passes on its narrowed view. That difference is why the
+story was owed. It takes one genuine rating, so the CI dispatch runs it (`m8-gate-stories`);
+a second entry flies the house mind through the same story in the default sweep.
+
+**Found by this cut.**
+
+- A displaced core is never fitted again: the kernel admits a core to a fitting only if it
+  has never been mounted. 17f §9 says so ("a second install cannot reuse it") and story 4 pins
+  it; it leaves the owner of a displaced Class III core holding hardware of no further use.
+  For the owner.
+- The story's rigs are leased and the refit asks for the titleholder, so staff title them; the
+  fitting shop is an object in `launch.json`, not a place a rig can be taken to. No story
+  joins the yard (which titles a rig to a player) to the hardware.
+- D-UM-28's pins had not been run on Windows since MW.9 re-blessed them from Linux. They
+  hold.
+- A script that asks once for what its hull cannot do (a shot from a cannon shot away, on one
+  think of three trials in thirty-six) fails its whole rating, as `Failed { reason:
+  Execution }`, and nothing tells the author which case or why.
+- A rating is 1,517 leases of 1.12 s with the Registry's worker idle for nearly all of each;
+  read against the code, a fixed one-second retry may sit in every lease. And a rating sends
+  its author `Queued.` and `Done.` for every lease, by the code's own path (seen in the rig,
+  not on a live connection).
+- The bot's census, merged at 15:54Z, failed main's bot job on the next merge (AP.5 added a
+  sentence); #563 repaired it. That is the gate working, and a cost every later unit that adds
+  a sentence now pays in the same PR.
+
+**Verified.** Each PR's body and the cut note carry the commands and counts. In short: the
+new default-sweep tests and the contract tests on conclav.dev (Linux) under `clippy -D
+warnings`; the trial pin and D-UM-28's three cases on Windows; the bot's table by two
+mutations; each slice read adversarially by a second agent, whose findings are fixed and
+listed in the PRs. The filed-mind story ran on conclav.dev (339 s) and on the CI dispatch at its head; see #567.
+
+**What this leaves of C4's gate (§3).** "The existing four CI stories become a subset" did
+not happen: the six `mind-commerce-acceptance` stories and the M8 gate's stories stand as
+they were, and this cut adds three default-sweep tests (story 4, the trial pin, the house
+mind's field story), one dispatch story (the filed mind in a field) and one by-hand
+measurement. Stories 2 and 7,
+story 3's settlement half and story 1's simulator half are the work that would make C4
+whole.

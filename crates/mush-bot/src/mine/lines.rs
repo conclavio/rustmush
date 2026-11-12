@@ -1742,6 +1742,18 @@ mod tests {
             ]
         );
         assert!(order_replies(&window, 2).is_empty());
+        // Doc 45 unit AP.8: an order that lapsed with its leader's absence keeps its line, and
+        // the lapse is a sentence after it, so its reply's word still reads.
+        let lapsed = normalise(&format!(
+            "{} {} {}",
+            sent("4", "WILCO received"),
+            tacsim::detachment::sortie::ORDER_LAPSED_STATUS,
+            sent("5", "submitted; no reply confirmed")
+        ));
+        assert_eq!(
+            order_replies(&lapsed, 1),
+            vec![(4, Some("WILCO".to_owned())), (5, None)]
+        );
 
         let hint = tacsim::port::voyage::LEAVE_HINT.replace("{list}", "1,#345");
         assert!(has(&normalise(&hint), LEAVE_HINT), "{hint}");

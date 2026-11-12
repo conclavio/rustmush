@@ -1607,6 +1607,19 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         total(w).await?,
     );
     restart(w, cy).await?;
+    // What the recall notice has already said is remembered by the process
+    // alone (`registry_recall::notice`: a session notice "may repeat after
+    // restart"), so the booted world tells the buyer of the recall again, on
+    // the readback's first tick that finds them connected. It is awaited
+    // here, as it was before the restart, and before any command drains the
+    // recorder. Left alone it lands some seconds after the boot, and when
+    // that was inside Cy's step below, which holds that no line of it
+    // reaches anyone else, the story failed on a line that was never Cy's
+    // (the dispatch of 2026-11-12 on main: "+minds/renew 2 reached #795:
+    // [Registry recall: your mind licence 3 …]").
+    await_own(&w.server, buyer, |l| l.starts_with(&notice))
+        .await
+        .map_err(|e| format!("{e}; the buyer's recall notice again, after the restart"))?;
     check_eq!(views(w, &[author, buyer, cy]).await?, views_before);
     check_eq!(
         (
