@@ -290,6 +290,10 @@ pub struct TacsimStore {
     /// **Doc 35 §11 `B-3`** — `tacsim:doctrine:{role}`: the stored source each house doctrine
     /// role flies, by digest. A role with no pointer flies the doctrine compiled in.
     pub(crate) house_doctrines: BTreeMap<SmolStr, [u8; 32]>,
+    /// **Doc 44 unit MW.10** — what the boot refused of the space cast
+    /// ([`crate::minds::content::cast`]): one line for each actor whose doctrine the store
+    /// does not hold, naming the actor and the digest. RAM only, written by the boot's check.
+    pub(crate) cast_faults: Vec<String>,
     /// **Doc 18 cut IC3** — `tacsim:port:{pack}/{entry}`: what each port
     /// entry's applier made ([`crate::port::PortMap`]), keyed `(pack, entry)`.
     /// Persisted, like the arena rosters, because which org and which
@@ -1022,6 +1026,22 @@ impl TacsimStore {
             .get(role)
             .copied()
             .filter(|digest| self.mind_sources.contains_key(digest))
+    }
+
+    /// **The digest the `tacsim:doctrine:{role}` pointer names**, whether or not the store
+    /// holds its source (doc 44 unit MW.10): what staff selected, as written. The reader
+    /// decides what an unheld one means; [`Self::house_doctrine`] is the same pointer with
+    /// the unheld ones left out.
+    #[must_use]
+    pub fn doctrine_pointer(&self, role: &str) -> Option<[u8; 32]> {
+        self.house_doctrines.get(role).copied()
+    }
+
+    /// **What the boot refused of the space cast** (doc 44 unit MW.10): a line for each
+    /// actor whose doctrine the store did not hold when the world loaded.
+    #[must_use]
+    pub fn cast_faults(&self) -> &[String] {
+        &self.cast_faults
     }
 
     /// **Whether this world holds the sealed source under `digest`**, readable
@@ -2025,6 +2045,33 @@ pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
         ctx.persist(operation);
     }
     true
+}
+
+/// **Write the `tacsim:doctrine:{role}` pointer, or clear it** (doc 44 unit MW.10): the RAM
+/// install, then one whole-document `JsonSet` (`{"sha256": "<64 hex>"}`, the shape the loader
+/// reads), or one `Del` for `None`. The pointer names a source by digest and never holds
+/// bytes; the caller has checked that the store holds the source it names.
+pub(crate) fn put_doctrine_pointer(ctx: &mut Ctx<'_>, role: &str, digest: Option<[u8; 32]>) {
+    let key = doctrine_key(role);
+    let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {
+        return;
+    };
+    let op = match digest {
+        Some(digest) => {
+            store.house_doctrines.insert(SmolStr::new(role), digest);
+            ModuleWrite::JsonSet {
+                key,
+                value: serde_json::json!({ "sha256": crate::arena::digest_text(&digest) }),
+            }
+        }
+        None => {
+            if store.house_doctrines.remove(role).is_none() {
+                return;
+            }
+            ModuleWrite::Del { key }
+        }
+    };
+    push_op(ctx.out, op);
 }
 
 /// RAM-only fixture source installation. Production writes always use the fully

@@ -556,6 +556,30 @@ pub struct CompletedInterdictionBubble {
     pub snapshots: Vec<BubbleSnapshot>,
     /// Final Kirkwood Customs Picket state when the bubble closed (`SF.R6`, `D-35-11`).
     pub picket: Option<super::picket::KirkwoodPicketState>,
+    /// The doctrines the bubble's NPC actors were sealed with when it opened (doc 44 unit
+    /// MW.10): what flew it, by digest, whatever the cast names since. The record keeps no
+    /// tape of inputs and no seal, so this is the one place a closed bubble says it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flown: Vec<FlownDoctrine>,
+}
+
+/// One NPC actor's doctrine as a closed bubble records it (doc 44 unit MW.10).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlownDoctrine {
+    /// The doctrine's name: the seal's `mind`.
+    pub mind: SmolStr,
+    /// The digest of the source that thought, 64 lowercase base-16 characters.
+    #[serde(with = "crate::arena::snapshot::digest_serde")]
+    pub source_sha256: [u8; 32],
+}
+
+impl FlownDoctrine {
+    fn of(seal: Option<&crate::arena::mind::MindSeal>) -> Option<Self> {
+        seal.map(|seal| Self {
+            mind: seal.mind.clone(),
+            source_sha256: seal.source_sha256,
+        })
+    }
 }
 
 impl CompletedInterdictionBubble {
@@ -574,6 +598,18 @@ impl CompletedInterdictionBubble {
             tape: BubbleInputTape::new(&active.bubble),
             snapshots: Vec::new(),
             picket: None,
+            flown: match active.picket.as_ref() {
+                Some(picket) => [
+                    FlownDoctrine::of(picket.corvette_seal.as_ref()),
+                    FlownDoctrine::of(picket.raider_seal.as_ref()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+                None => FlownDoctrine::of(active.interdictor_seal.as_ref())
+                    .into_iter()
+                    .collect(),
+            },
         }
     }
 }
@@ -2071,36 +2107,22 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
         crate::minds::content::ensure_space_mind_sources_installed(store);
     }
+    // Doc 44 unit MW.10: an open bubble comes back with the seals it took when it opened.
+    // The hull's own attribute is the whole seal; the bubble's record holds the digest beside
+    // it (`compact_mind_seal`), and that is what the reload has already rebuilt. Neither is
+    // replaced by what the cast names today: a selection made since changes the next bubble,
+    // never this one. A record that holds no seal at all leaves its actor without a mind.
     for active in state.book.by_domain.values_mut() {
         if let Some(picket) = active.picket.as_mut() {
-            picket.corvette_seal = super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull)
-                .or_else(|| {
-                    super::picket::build_space_mind_seal(
-                        picket.corvette_hull,
-                        crate::arena::mind::SortieId::ic(picket.corvette_hull, 1),
-                        "kirkwood_picket",
-                        crate::minds::content::kirkwood_picket_digest().0,
-                    )
-                });
-            picket.raider_seal = super::picket::space_mind_seal_of(ctx.w, picket.raider_hull)
-                .or_else(|| {
-                    super::picket::build_space_mind_seal(
-                        picket.raider_hull,
-                        crate::arena::mind::SortieId::ic(picket.raider_hull, 1),
-                        "belt_raider",
-                        crate::minds::content::belt_raider_digest().0,
-                    )
-                });
-        } else {
-            active.interdictor_seal =
-                super::picket::space_mind_seal_of(ctx.w, active.interdictor_hull).or_else(|| {
-                    super::picket::build_space_mind_seal(
-                        active.interdictor_hull,
-                        crate::arena::mind::SortieId::ic(active.interdictor_hull, 1),
-                        "interdictor_patrol",
-                        crate::minds::content::interdictor_patrol_digest().0,
-                    )
-                });
+            if let Some(seal) = super::picket::space_mind_seal_of(ctx.w, picket.corvette_hull) {
+                picket.corvette_seal = Some(seal);
+            }
+            if let Some(seal) = super::picket::space_mind_seal_of(ctx.w, picket.raider_hull) {
+                picket.raider_seal = Some(seal);
+            }
+        } else if let Some(seal) = super::picket::space_mind_seal_of(ctx.w, active.interdictor_hull)
+        {
+            active.interdictor_seal = Some(seal);
         }
     }
     for sess in state.book.cluster_sessions.values_mut() {
@@ -4561,12 +4583,21 @@ fn step_interdictor_picket(
         return emitted;
     }
     let situation = active.situation(step_ms);
+    // Doc 44 unit MW.10: it thinks with the mind it was sealed with when the bubble opened,
+    // and with no other. With no seal it does not think.
+    let Some(sealed) = active
+        .interdictor_seal
+        .as_ref()
+        .map(|seal| seal.source_sha256)
+    else {
+        return emitted;
+    };
     let Some((res, cmap)) = super::picket::run_space_rhai_think_with_seal(
         &active.bubble,
         &active.interdictor_ship_id,
         active.interdictor_hull,
         active.interdictor_seal.as_ref(),
-        crate::minds::content::interdictor_patrol_digest().0,
+        sealed,
         store,
         active.interdictor_think_seq,
         &active.interdictor_memory,
@@ -4938,6 +4969,12 @@ fn build_interdiction_bubble(
         (raider_hull, raider_ship_id, Some(picket_state), None)
     } else {
         let cast = super::picket::picket_cast_book()?;
+        // Doc 44 unit MW.10: the interdictor's doctrine is resolved from the store before
+        // its hull is made. If the store does not hold it, none sails and the carrier passes.
+        let doctrine = super::picket::cast_doctrine_in_world(
+            ctx,
+            crate::minds::content::cast::CastActor::Interdictor,
+        )?;
         let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
         let interdictor_commander = reuse_or_create_npc_commander(
             ctx,
@@ -4957,8 +4994,8 @@ fn build_interdiction_bubble(
             ctx,
             interdictor_hull,
             crate::arena::mind::SortieId::ic(interdictor_hull, ic_now_s.max(1)),
-            &cast.interdictor.doctrine,
-            crate::minds::content::interdictor_patrol_digest().0,
+            doctrine.name.as_str(),
+            doctrine.digest,
         );
         let mut interdictor_ship = check_out_space_unit(
             ctx,
@@ -5360,7 +5397,11 @@ mod interdictor_tests {
             ship_hulls: BTreeMap::new(),
             interdictor_memory: Vec::new(),
             interdictor_think_seq: 0,
-            interdictor_seal: None,
+            // As a bubble opened by a world: sealed with what the cast names.
+            interdictor_seal: super::super::picket::pack_cast_seal(
+                crate::minds::content::cast::CastActor::Interdictor,
+                ObjId(900),
+            ),
             interdictor_contacts: super::super::view::ContactBook::default(),
             stood_down: std::collections::BTreeSet::new(),
         }
@@ -5503,6 +5544,38 @@ mod interdictor_tests {
             Some("hull.20")
         );
 
+        // What the tape holds of the closing bubble is what its mind asked. A replay reads
+        // the tape and nothing else, so it comes out as the bubble did whatever the store
+        // or the cast say by then (doc 44 unit MW.10).
+        let (replayed, _) = closing.tape.replay();
+        assert_eq!(
+            replayed.ships[INTERDICTOR].thrust_mmps2, thrust,
+            "the replay closes as the bubble did"
+        );
+        assert_eq!(
+            replayed.ships[INTERDICTOR].locked_target_id.as_deref(),
+            Some("hull.20")
+        );
+        // And the record a closed bubble leaves names the doctrine that flew it.
+        let shipped = crate::minds::content::interdictor_patrol_digest().0;
+        let closed = CompletedInterdictionBubble::from_closed(&closing, 2_000);
+        assert_eq!(
+            closed.flown,
+            vec![FlownDoctrine {
+                mind: SmolStr::new("interdictor_patrol"),
+                source_sha256: shipped,
+            }]
+        );
+
+        // A bubble whose record holds no seal has no mind: nothing thinks for it, and no
+        // doctrine is put in its place.
+        let mut unsealed = interdiction(&carriers);
+        unsealed.interdictor_seal = None;
+        let _ = step_interdictor_picket(&mut unsealed, None, 1_000);
+        let _ = step_interdictor_picket(&mut unsealed, None, 1_000);
+        assert_eq!(unsealed.interdictor_think_seq, 0);
+        assert_eq!(interdictor_of(&unsealed).locked_target_id, None);
+
         let compiled = crate::minds::content::interdictor_patrol_source();
         assert!(compiled.contains("        speed(1000);\n"));
         let holding = compiled.replace("        speed(1000);\n", "        hold();\n");
@@ -5521,6 +5594,9 @@ mod interdictor_tests {
         let _ = step_interdictor_picket(&mut held, Some(&store), 1_000);
         let _ = step_interdictor_picket(&mut held, Some(&store), 1_000);
         assert_eq!(held.interdictor_think_seq, 2, "the revision thought");
+        let closed = CompletedInterdictionBubble::from_closed(&held, 2_000);
+        assert_eq!(closed.flown.len(), 1);
+        assert_eq!(closed.flown[0].source_sha256, digest);
         assert_eq!(interdictor_of(&held).thrust_mmps2, [0, 0, 0]);
         assert_eq!(
             interdictor_of(&held).locked_target_id.as_deref(),

@@ -43,6 +43,8 @@ use super::RhaiRunner;
 use crate::arena::mind::MindRunner;
 use crate::config::ArenaConfig;
 
+pub mod cast;
+
 /// **Standard Doctrine's source** (`content/minds/standard.rhai`).
 pub static STANDARD_RHAI: &str = include_str!("../../content/minds/standard.rhai");
 
@@ -157,13 +159,27 @@ pub fn linkdead_return_digest() -> Digest {
     *DIGEST
 }
 
-/// Install the five shipped space/mining doctrine sources into `TacsimStore` (`SF.R14`, `D-35-17`).
+/// The five space and mining doctrine sources the tree ships (`SF.R14`, `D-35-17`; doc 35
+/// §11): the three the space cast names, the collector drone's and the link-loss backup's.
+#[must_use]
+pub const fn shipped_space_sources() -> [&'static str; 5] {
+    [
+        kirkwood_picket_source(),
+        belt_raider_source(),
+        interdictor_patrol_source(),
+        drone_mining_source(),
+        linkdead_return_source(),
+    ]
+}
+
+/// Hold the five shipped space/mining doctrine sources in `TacsimStore`'s RAM (`SF.R14`,
+/// `D-35-17`). The boot writes their documents ([`cast::boot`], doc 44 unit MW.10); this is
+/// for a world whose layer is off and for a rig that never booted. A digest whose key is
+/// claimed by a document that does not read is left unheld: the store never rewrites a key.
 pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore) {
-    let _ = crate::store::install_mind_source(store, kirkwood_picket_source());
-    let _ = crate::store::install_mind_source(store, belt_raider_source());
-    let _ = crate::store::install_mind_source(store, interdictor_patrol_source());
-    let _ = crate::store::install_mind_source(store, drone_mining_source());
-    let _ = crate::store::install_mind_source(store, linkdead_return_source());
+    for source in shipped_space_sources() {
+        let _ = crate::store::install_mind_source(store, source);
+    }
 }
 
 /// **The SHA-256 of [`STANDARD_RHAI`]'s bytes**, 64 lowercase characters

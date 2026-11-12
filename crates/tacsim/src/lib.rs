@@ -1269,6 +1269,10 @@ impl GameModule for TacsimRuleset {
         field::crew::read(ctx, &kv);
         // Doc 23 cut S.4b-T: every author's earned-contacts ring.
         minds::earned_contacts::read(ctx, &kv);
+        // Doc 44 unit MW.10 (Q-44-25): the shipped space doctrines stored under their
+        // digests, and the space cast checked against the store. An actor whose doctrine the
+        // store does not hold is refused here by name and does not sail.
+        minds::content::cast::boot(ctx);
         // Doc 35 cut SF.R8 (`D-35-12`): hydrate space bubbles, free-flight records,
         // open-epoch derelicts, paused docking sessions, and 48h salvage claims.
         space::boot_read(ctx, &kv);
