@@ -384,6 +384,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     ),
     ("View", "scan_tables", "scan_tables"),
     ("View", "odds_floor_permille", "odds_floor_permille"),
+    ("View", "posture", "posture"),
     ("View", "rules", "rules (all active slots, in slot order)"),
     (
         "Contact",
@@ -720,6 +721,11 @@ fn register_view(api: &mut Registrar<'_>) {
     });
     getter!(api, "View", "odds_floor_permille", |v: &mut View| {
         int(v.0.odds_floor_permille)
+    });
+    // Doc 45 unit AP.3 (API 9): the posture the unit's player left on it, as the word
+    // `return`, `guard` or `hold`; the same word on the ground and in a space bubble.
+    getter!(api, "View", "posture", |v: &mut View| {
+        word(v.0.posture.as_str())
     });
 }
 
@@ -1504,6 +1510,7 @@ mod tests {
             ("v.contacts.len()", "3".into()),
             ("v.scan_tables", "[[\"hull\", \"turret\"]]".into()),
             ("v.odds_floor_permille", "100".into()),
+            ("v.posture", "\"guard\"".into()),
             // Contacts: the hostile, the friend, the unidentified return.
             ("v.contacts[0].id", hostile.clone()),
             ("v.contacts[1].id", "34".into()),
@@ -1680,7 +1687,7 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), PARITY.len(), "a parity row written twice");
         // The table's size, for 17b cut M2.4's parity test to count on.
-        assert_eq!(PARITY.len(), 150);
+        assert_eq!(PARITY.len(), 151);
         assert_eq!(
             registered, rows,
             "a view getter without a parity row, or a row without a getter"

@@ -1,5 +1,5 @@
 // Belt Raider — Ambush & Torpedo/Railgun Strike Doctrine (SF.R14, D-35-1, D-35-11, D-35-17; doc 44 MW.9)
-// name: Belt Raider Doctrine; role: combat; api: 8; stock: 3; rated: class I (1,500 ops a think)
+// name: Belt Raider Doctrine; role: combat; api: 9; stock: 3; rated: class I (1,500 ops a think)
 //
 // She lurks dark until the picket's radio says customs have finished with a carrier
 // (`space(v).heard`), then lights her torch. Her prey is the nearest hostile customs have

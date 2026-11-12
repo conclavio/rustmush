@@ -163,6 +163,8 @@ pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Th
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     // Doc 44 cut MW.7: and the units their minds fly home for absent players.
     super::absent::tick(ctx);
+    // Doc 45 unit AP.3: and each unit's posture, from its own record to its arena.
+    super::posture::sync(ctx);
     let units: Vec<ObjId> = ctx
         .w
         .module_state::<super::FieldBook>()

@@ -207,8 +207,10 @@ pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore
 /// (`nearer_in_line`, `STAND_TRIES`); CF.0's was `a37766b5…6e5336`.
 /// **Re-blessed by doc 44 unit MW.9** for the header's `api: 8` alone (the mind
 /// API bump that added the four space kernels); CF.6b's was `3837c345…73a316`.
+/// **Re-blessed by doc 45 unit AP.3** for the header's `api: 9` alone (the mind
+/// API bump that added `View.posture`); MW.9's was `42c694ed…76e4bc`.
 pub const STANDARD_SHA256: &str =
-    "42c694edd1d2190b0acc37dbd3257cd8d543d27569f4d70c73ab215f3e76e4bc";
+    "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the

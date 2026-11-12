@@ -438,11 +438,19 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// `C4_TRIAL_PIN` lines the test prints. CI runs Linux only: the run on the other host is by
 /// hand (`cargo test -p tacsim --lib c4_a_registry_trial -j 2` on a Windows checkout), and
 /// whoever re-blesses records it in their cut note.
+///
+/// **Re-blessed by doc 45 unit AP.3** (the mind ABI at API 9, `View.posture`): each row's
+/// state hash, ledger digest and result digest moved, and nothing else. Every case still ends
+/// in the same elimination at 58,500 ms, and of each filed result's 31 fields three differ
+/// from main's: the end's state hash, the end's ledger digest and the coverage's witness (a
+/// rolling digest that folds the sealed program's). The meter's figures and the think counts
+/// are equal (`docs/design/45-cut-notes.md`, AP.3). The states were `2ac0bb5770d49505`, `366ad86d479ee5d5`, `f8d70307b1c6f298` and
+/// `a1804cd413eba194`.
 const C4_TRIAL_PINS: [&str; 4] = [
-    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=2ac0bb5770d49505 ledger=9adf3f2351084758a774f3ee83c8ef3d8974373801a187cd6d5213e7d4649f89 result=e7f18842334322008f5aa8e0549777d46b4d0301d43928773ae558c5286f838c",
-    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=366ad86d479ee5d5 ledger=42f3888715bbf465e74e682e9e4face459e60ff14c45bcad2d5aa71ec56781f5 result=bc08d3501e32a8b64b79f4173c027189978159391e33bcf893c8f95675de93b7",
-    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=f8d70307b1c6f298 ledger=1a4f042b377cf8d81033bacbbcd671bb023d70a9a501d5f472e4adeefd734b32 result=18020786323446b38988cbe48da6c3d078f0be3405b63b856b1d6abdf4ee9706",
-    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=a1804cd413eba194 ledger=462bc14e1b6d950896415726d2c14d5aea91e819ed05a2119f7f13c85f88cadb result=b497f3b07b2699e436ab645e481bd57328941707ffb1d8c2429d0ec1f5d52311",
+    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=b96cfc871125c968 ledger=6ea2856883ef1c8852d5bd5157a97d634a34a0d114eabf1476d1f2d16371addf result=9dff107bc4c1febd328b2ec80a374cbc2dba1c758cb136e62ba74d3d9d4b65b4",
+    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=5d1fab14efb06d56 ledger=8e1a74777fc86285c229e7093f86bc7234d83da6f3a89b4320c9e27e8ac4ebd1 result=5b7084e80b736a6f3737b6b5b141948412f98d964e9d0cf8fea2919af0198218",
+    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=2bf92a826a6c2b3e ledger=4a798a497f93ca7849c9997513a2616b267f507631bcacdbddd0ad12a58471cb result=7dca3a15cea3e30641ac8aee5996b942e7b32dfec0a280ecc9c35df229c5b344",
+    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=d0dabee505065909 ledger=9fa842770bbac2d7bb1f757b9f670fb5a8433e083c27f54393d235be2f65ade5 result=0cec2e8a4d95aa46e78518132306f01ac7916be4b29bfa1b5868f82add9c2d38",
 ];
 
 /// Lower-case base-16 of `bytes`.

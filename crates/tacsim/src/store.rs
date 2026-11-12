@@ -4041,15 +4041,39 @@ mod tests {
 
     #[test]
     fn retained_api4_source_survives_actual_cold_audit_without_new_save_authority() {
+        retained_source_survives_the_cold_audit("rhai=1.26.0;api=4;stock=2", 4);
+    }
+
+    /// **Doc 45 unit AP.3: a source saved under any ABI since the Registry opened survives
+    /// the boot's audit**, the ABI that API 9 replaced among them. Until that cut a revision
+    /// saved under API 6, 7 or 8 was quarantined at the first boot after the ABI moved.
+    #[test]
+    fn ap3_a_source_saved_under_every_retained_abi_survives_the_cold_audit() {
+        assert!(
+            crate::minds::RETAINED_ABIS
+                .iter()
+                .any(|(abi, _)| *abi == "rhai=1.26.0;api=8;stock=3")
+        );
+        for (abi, api) in crate::minds::RETAINED_ABIS {
+            retained_source_survives_the_cold_audit(abi, api);
+        }
+    }
+
+    /// A source saved under `old_abi`, whose header names `api`, is still there after a
+    /// cold boot, byte for byte, and is no fresh save.
+    #[allow(clippy::too_many_lines)]
+    fn retained_source_survives_the_cold_audit(old_abi: &'static str, api: u32) {
         use mush_roll::RevisionAdapter as _;
-        const OLD_ABI: &str = "rhai=1.26.0;api=4;stock=2";
-        const SOURCE: &str = "const MIND = #{name: \"Retained\", api: 4, class: \"discretion\", role: \"combat\", core: \"I\"}; fn think(v,c) { this.marker = 73; }";
-        assert_ne!(crate::minds::MIND_ABI, OLD_ABI);
+        let source_text = format!(
+            "const MIND = #{{name: \"Retained\", api: {api}, class: \"discretion\", role: \"combat\", core: \"I\"}}; fn think(v,c) {{ this.marker = 73; }}"
+        );
+        let source_text = source_text.as_str();
+        assert_ne!(crate::minds::MIND_ABI, old_abi);
 
         // Build the migration image through the actual Roll/source save union.
         // This test-only previous-ABI adapter validates the known-compatible
         // source in the real current sandbox; it issues no certificate or seal.
-        struct PreviousAbiRules;
+        struct PreviousAbiRules(&'static str);
         impl mush_roll::RevisionAdapter for PreviousAbiRules {
             fn normalize_source(&self, source: &str) -> Result<String, mush_roll::RollError> {
                 crate::minds::normalize::normalize_source(source)
@@ -4059,17 +4083,17 @@ mod tests {
                 source: &str,
                 envelope: &mush_roll::Envelope,
             ) -> Result<(), mush_roll::RollError> {
-                check_eq!(envelope.mind_abi, OLD_ABI);
+                check_eq!(envelope.mind_abi, self.0);
                 crate::minds::authoring::validate_retained_registry(source, envelope)
             }
         }
         let actor = ObjId(10);
         let mut draft = transaction_draft();
-        draft.source = SOURCE.into();
-        draft.envelope.mind_abi = OLD_ABI.into();
+        draft.source = source_text.into();
+        draft.envelope.mind_abi = old_abi.into();
         assert!(
             crate::minds::authoring::RevisionRules
-                .validate(SOURCE, &draft.envelope)
+                .validate(source_text, &draft.envelope)
                 .is_err()
         );
         let mut engine = Box::new(transaction_engine(true));
@@ -4105,7 +4129,7 @@ mod tests {
                 base,
                 "",
                 None,
-                &PreviousAbiRules,
+                &PreviousAbiRules(old_abi),
                 sources,
             )
             .unwrap();
@@ -4180,7 +4204,7 @@ mod tests {
                 assert_eq!(serde_json::to_vec(revision).unwrap(), revision_bytes);
                 assert_eq!(revision.reference(), saved);
                 let sources = cold.world.module_state::<TacsimStore>().unwrap();
-                assert_eq!(sources.read_source(source).unwrap(), SOURCE);
+                assert_eq!(sources.read_source(source).unwrap(), source_text);
                 assert!(
                     roll.prepare_save(
                         actor,

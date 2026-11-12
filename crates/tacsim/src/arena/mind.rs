@@ -1404,6 +1404,11 @@ pub struct MindView {
     /// through the kernels `space(v)` and `space_contact(v, id)`, never a
     /// getter, so the keyframe's parity table is not moved by it.
     pub space: Option<std::sync::Arc<crate::space::view::SpaceView>>,
+    /// **The posture the unit's player left on it** (`posture`; doc 45 unit AP.3, Q-45-4,
+    /// Q-45-23): `RETURN` unless they set another. One word for a hull on the ground and a
+    /// hull in a space bubble, for the house default and a sealed mind alike; a script reads
+    /// it as `v.posture`. The view carries the word and nothing acts on it here.
+    pub posture: crate::posture::Posture,
 }
 
 /// **One contact as a mind sees it** (17b cut M1a.5; doc 17 §3): a keyframe
@@ -2034,6 +2039,7 @@ impl Arena {
             scan_tables: frame.scan_tables,
             odds_floor_permille: frame.odds_floor_permille,
             space: None,
+            posture: frame.posture,
         })
     }
 

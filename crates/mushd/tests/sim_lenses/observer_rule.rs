@@ -767,9 +767,10 @@ fn unseated(feed: &str) -> Value {
         }),
         // 17b cut M1a.3 bumped the cockpit frame to version 2, 17b cut M1b.3
         // to 3, M5rules to 4, M5r to 5, M6 to 6 for authored cards/rules,
-        // M7 to 7 for odds, and DT.1b to 8 for opaque order identities.
+        // M7 to 7 for odds, and DT.1b to 8 for opaque order identities; doc 45
+        // unit AP.3 to 10 for the hull's posture.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 9, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 10, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -2560,7 +2561,7 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "the frame carries its arena millisecond: {cockpit}"
     );
     assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
-    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(9)));
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(10)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
         Some(ra.as_str()),
@@ -4595,6 +4596,8 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         max_speed_cms: 1_500,
         reverse_cms: 750,
         turn_rate_mdeg_s: 30_000,
+        // Doc 45 unit AP.3: every hull checks out on the default posture.
+        posture: tacsim::posture::Posture::Return,
     }
 }
 

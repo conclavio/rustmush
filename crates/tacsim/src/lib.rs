@@ -163,6 +163,8 @@ pub mod minds;
 pub mod pack;
 pub mod port;
 pub mod port_tick;
+// Doc 45 unit AP.3: the posture every unit carries, and its record on the unit's object.
+pub mod posture;
 // Doc 17h cut M8f: a House buys mind licences from the Roll.
 pub(crate) mod procurement;
 pub mod quest;

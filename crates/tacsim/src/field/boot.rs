@@ -181,6 +181,8 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     for row in &live.units {
         arena.set_absent(row.unit, row.away.is_some_and(|away| away.handed));
     }
+    // Doc 45 unit AP.3: and so does each unit's own posture record, on the same argument.
+    super::posture::at_resume(ctx.w, &mut arena, live.units.iter().map(|row| row.unit));
     // Doc 40 cut FR.4 (Q-38-28, Q-40-21): the resume rolls from the snapshot it rewinds to, onto
     // a segment past both the live record's and the snapshot's, so no opening writes to a log
     // another opening wrote; the `segment` line is the resume's first.

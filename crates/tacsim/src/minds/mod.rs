@@ -200,7 +200,12 @@ pub use sealed::{
 /// `course_of(dx, dy, dz)`, carry what a hull in a space bubble reads and the
 /// helm word that names a direction there. No getter, intent or refusal moved,
 /// so the frame and the snapshot format stand.
-pub const API_VERSION: u32 = 8;
+///
+/// **9 since doc 45 unit AP.3** (Q-45-4, Q-45-23): one getter, `View.posture`,
+/// the posture the unit's player left on it (`return`, `guard` or `hold`), the
+/// same word on the ground and in a space bubble. Taken with the frame (10);
+/// the snapshot format stands. The ABI this replaced joins [`RETAINED_ABIS`].
+pub const API_VERSION: u32 = 9;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; version 3 distinguishes replacement detachment orders from
@@ -211,7 +216,31 @@ pub const STOCK_VERSION: u32 = 3;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=8;stock=3";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=9;stock=3";
+
+/// **Every ABI a revision may have been saved or filed under before this one**, each with
+/// its `api=` number (doc 45 unit AP.3; doc 17 §13, §16): the Registry's first, API 4, and
+/// every one since.
+///
+/// A revision's envelope names the ABI it was saved under and is never rewritten. When the
+/// ABI moves, what was saved under an older one is kept: the cold audit at boot reads it as
+/// an archive (`authoring::RetainedRevisionRules`), and the Registry rates it again against
+/// the engine as it now stands (`registry::subject::PreparedSubject::prepare_reconformance`),
+/// where its unchanged source must compile and run on the current sandbox. Both ask
+/// `metadata::validate_retained_registry`, which admits exactly these rows. An ABI that is
+/// not here is refused for ever, so **an ABI move adds the ABI it replaces**:
+/// `every_abi_since_the_registry_opened_is_retained` fails until it does. API 1 to 3 predate
+/// the Registry and no revision carries them.
+pub const RETAINED_ABIS: [(&str, u32); 5] = [
+    ("rhai=1.26.0;api=4;stock=2", 4),
+    ("rhai=1.26.0;api=5;stock=2", 5),
+    ("rhai=1.26.0;api=6;stock=3", 6),
+    ("rhai=1.26.0;api=7;stock=3", 7),
+    ("rhai=1.26.0;api=8;stock=3", 8),
+];
+
+/// The first API a revision could be saved under: the Registry's opening (17b cut M6).
+pub const FIRST_REGISTRY_API: u32 = 4;
 
 /// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -718,6 +747,8 @@ pub(crate) mod fixture {
             scan_tables: vec![vec![SmolStr::new("hull"), SmolStr::new("turret")]],
             odds_floor_permille: 100,
             space: None,
+            // Doc 45 unit AP.3: held off the default, so a read of it is a read.
+            posture: crate::posture::Posture::Guard,
         }
     }
 
@@ -912,6 +943,28 @@ mod tests {
     use super::fixture::{self, think};
     use super::*;
 
+    /// **Doc 45 unit AP.3: an ABI move retains the ABI it replaces.** Every API from the
+    /// Registry's first to the one before this has exactly one row, in order, and the
+    /// current ABI is not among them. Raising `API_VERSION` without adding the row for the
+    /// ABI it replaces fails here, so a filed mind is never left with no way back.
+    #[test]
+    fn every_abi_since_the_registry_opened_is_retained() {
+        let apis: Vec<u32> = RETAINED_ABIS.iter().map(|(_, api)| *api).collect();
+        assert_eq!(
+            apis,
+            (FIRST_REGISTRY_API..API_VERSION).collect::<Vec<_>>(),
+            "one row an API, from the Registry's first to the one this replaced"
+        );
+        for (abi, api) in RETAINED_ABIS {
+            assert_ne!(
+                abi, MIND_ABI,
+                "the current ABI is not retained, it is current"
+            );
+            let stock = if api <= 5 { 2 } else { 3 };
+            assert_eq!(abi, format!("{RHAI_ABI};api={api};stock={stock}"));
+        }
+    }
+
     /// 17b Â§2's M2.3 test 8: the ABI composed from its three parts equals the
     /// literal, and the sandbox is one per process.
     #[test]
@@ -920,7 +973,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=8;stock=3");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=9;stock=3");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -1034,7 +1087,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 285] = [
+    const PINNED: [&str; 286] = [
         "type View",
         "type Objective",
         "type Motor",
@@ -1084,6 +1137,7 @@ mod tests {
         "View.contacts",
         "View.scan_tables",
         "View.odds_floor_permille",
+        "View.posture",
         "Contact.id",
         "Contact.designator",
         "Contact.alias",
@@ -1323,7 +1377,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 249] = [
+    const CALLS: [(&str, &str); 250] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.cell", "v.cell"),
@@ -1358,6 +1412,7 @@ mod tests {
         ("View.contacts", "v.contacts"),
         ("View.scan_tables", "v.scan_tables"),
         ("View.odds_floor_permille", "v.odds_floor_permille"),
+        ("View.posture", "v.posture"),
         ("Contact.id", "v.contacts[0].id"),
         ("Contact.designator", "v.contacts[0].designator"),
         ("Contact.alias", "v.contacts[0].alias"),

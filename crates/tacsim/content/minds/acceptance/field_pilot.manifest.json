@@ -4,10 +4,10 @@
   "role": "combat",
   "licence": "discretion",
   "core": "II",
-  "api": 8,
+  "api": 9,
   "source": "field_pilot.rhai",
   "envelope": "field_pilot.envelope.json",
-  "source_sha256": "07fa6444fd4f50d99755ada23df3af400674c8c546d4355c3477498c3556aa42",
+  "source_sha256": "796de48ff636421362f30b9f779913824875e21f2eb4e5973fe5481a9d21a9be",
   "source_bytes": 19312,
   "functions": [
     "turn",

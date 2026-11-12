@@ -1,5 +1,5 @@
 // Link-Loss Return — the house backup mind every hull carries (doc 35 section 11, Q-35d-2; doc 44 MW.9)
-// name: Link-Loss Return Doctrine; role: backup; api: 8; stock: 3; rated: class I (1,500 ops a think)
+// name: Link-Loss Return Doctrine; role: backup; api: 9; stock: 3; rated: class I (1,500 ops a think)
 //
 // What the backup seat reads: inside a bubble, `space(v)`: her velocity, what her drive
 // gives, the stop a picket or an interdictor has on her and the contact that holds it;

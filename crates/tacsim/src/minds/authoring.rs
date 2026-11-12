@@ -27,9 +27,10 @@ impl RevisionAdapter for RevisionRules {
 }
 
 /// Historical source audit only. This adapter is never the authoring save
-/// boundary and grants no certificate or execution authority. Known API4/API5 rows
-/// retain their original parser/metadata validity; current rows still receive
-/// full current validation. Re-conformance separately compiles for current use.
+/// boundary and grants no certificate or execution authority. A row saved under any
+/// ABI since the Registry opened (`super::RETAINED_ABIS`) retains its original
+/// parser/metadata validity; current rows still receive full current validation.
+/// Re-conformance separately compiles for current use.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RetainedRevisionRules;
 impl RevisionAdapter for RetainedRevisionRules {
@@ -187,6 +188,70 @@ mod tests {
         assert!(
             RetainedRevisionRules
                 .validate("fn think(v,c) { missing_name; }", &envelope())
+                .is_err()
+        );
+    }
+
+    /// **Doc 45 unit AP.3: no ABI since the Registry opened is refused for ever.** A
+    /// revision saved under each of them, the one this ABI replaced among them, is still an
+    /// archive the cold audit reads and a subject the Registry may rate again, and is never
+    /// a fresh save. Its header's `api` is the one its envelope names and no other.
+    #[test]
+    fn every_abi_since_the_registry_opened_is_retained_and_none_is_a_fresh_save() {
+        assert!(
+            super::super::RETAINED_ABIS
+                .iter()
+                .any(|(abi, api)| *abi == "rhai=1.26.0;api=8;stock=3" && *api == 8),
+            "the ABI that API 9 replaced"
+        );
+        for (abi, api) in super::super::RETAINED_ABIS {
+            let source = format!(
+                "const MIND = #{{name: \"Retained\", api: {api}, class: \"discretion\", role: \"combat\", core: \"I\"}}; fn think(v,c) {{ this.marker = 73; }}"
+            );
+            let mut old = envelope();
+            old.mind_abi = abi.to_owned();
+            let before = serde_json::to_vec(&old).unwrap();
+            assert!(
+                RetainedRevisionRules.validate(&source, &old).is_ok(),
+                "{abi}"
+            );
+            assert!(validate_retained_registry(&source, &old).is_ok(), "{abi}");
+            assert!(RevisionRules.validate(&source, &old).is_err(), "{abi}");
+            assert_eq!(serde_json::to_vec(&old).unwrap(), before, "{abi}");
+            // The header must name the API its own envelope does.
+            let other = source.replace(&format!("api: {api}"), &format!("api: {}", api + 1));
+            assert!(
+                RetainedRevisionRules.validate(&other, &old).is_err(),
+                "{abi}"
+            );
+            // Retained is not a licence to run what no longer compiles.
+            assert!(
+                validate_retained_registry("fn think(v,c) { missing_name; }", &old).is_err(),
+                "{abi}"
+            );
+        }
+        // An ABI that never was is still refused.
+        let mut never = envelope();
+        never.mind_abi = "rhai=1.26.0;api=8;stock=2".into();
+        assert!(
+            RetainedRevisionRules
+                .validate("fn think(v,c) {}", &never)
+                .is_err()
+        );
+    }
+
+    /// **Doc 45 unit AP.3: a script that reads the posture saves under API 9**, and its
+    /// header may not claim the API before the getter existed.
+    #[test]
+    fn a_script_that_reads_the_posture_saves_under_the_current_api() {
+        let source = format!(
+            "const MIND = #{{name: \"Posture\", api: {}, class: \"discretion\", role: \"combat\", core: \"I\"}}; fn think(v,c) {{ this.posture = v.posture; }}",
+            super::super::API_VERSION
+        );
+        assert!(RevisionRules.validate(&source, &envelope()).is_ok());
+        assert!(
+            RevisionRules
+                .validate(&source.replace("api: 9", "api: 8"), &envelope())
                 .is_err()
         );
     }

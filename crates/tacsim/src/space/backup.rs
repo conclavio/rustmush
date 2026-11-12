@@ -212,7 +212,12 @@ fn read(result: ThinkResult, state: &mut SpaceLinkdeadState) -> Thought {
 
 /// The view of a hull outside every bubble: no contacts, and the motor's `no_route` while the
 /// planner's last refusal stands.
-fn tier1_view(hull: ObjId, wall_now_s: i64, no_route: bool) -> MindView {
+fn tier1_view(
+    hull: ObjId,
+    wall_now_s: i64,
+    no_route: bool,
+    posture: crate::posture::Posture,
+) -> MindView {
     MindView {
         unit: hull.0,
         callsign: Designator::Unit {
@@ -256,6 +261,7 @@ fn tier1_view(hull: ObjId, wall_now_s: i64, no_route: bool) -> MindView {
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
         space: None,
+        posture,
     }
 }
 
@@ -362,7 +368,13 @@ fn step_adrift(ctx: &mut Ctx<'_>, mut state: SpaceLinkdeadState) {
     let Some(thought) = think(
         ctx.w,
         hull,
-        tier1_view(hull, wall_now_s, no_route),
+        tier1_view(
+            hull,
+            wall_now_s,
+            no_route,
+            // Doc 45 unit AP.3: the posture her player left on her, off her own record.
+            crate::posture::record::of(ctx.w, hull),
+        ),
         &mut state,
     ) else {
         keep(ctx, hull, state);
@@ -466,7 +478,12 @@ pub(crate) fn fly_in_bubble(
     ship.crew_linkdead = false;
     ship.pdc_auto = true;
 
-    let situation = active.situation(dt_wall_ms);
+    let mut situation = active.situation(dt_wall_ms);
+    // Doc 45 unit AP.3: the posture her player left on her, off her own record, so her mind
+    // reads in a bubble the word it reads outside one.
+    situation
+        .postures
+        .insert(ship_id.to_owned(), crate::posture::record::of(w, hull));
     let stop = situation.stop_of(ship_id);
     let customs_holds = active.picket.is_some() && stop.holds();
     let Some((view, contacts)) = super::view::space_mind_view(
@@ -570,5 +587,24 @@ pub(crate) fn settle_bubble_backup(ctx: &mut Ctx<'_>, hull: ObjId, flown: Bubble
             %refusal,
             "tacsim: the backup seat's customs submission was refused; it asks again next step"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mush_core::ObjId;
+
+    use super::tier1_view;
+    use crate::posture::Posture;
+
+    /// Doc 45 unit AP.3: a hull outside every bubble reads the posture its seat hands the
+    /// view, which the seat reads off the hull's own record.
+    #[test]
+    fn a_hull_outside_every_bubble_reads_the_posture_it_is_given() {
+        for posture in Posture::ALL {
+            let view = tier1_view(ObjId(7), 100, false, posture);
+            assert_eq!(view.posture, posture);
+            assert!(view.space.is_none() && view.contacts.is_empty());
+        }
     }
 }

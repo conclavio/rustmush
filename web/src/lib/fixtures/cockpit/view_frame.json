@@ -652,6 +652,7 @@
     0
   ],
   "party": "R",
+  "posture": "return",
   "power": "online",
   "receiver": null,
   "reverse_kph": 27,
@@ -869,7 +870,7 @@
     "id": "arena.cockpit",
     "retain": "latest",
     "shape": "grid",
-    "version": 9
+    "version": 10
   },
   "scope": "hostile",
   "sections": [

@@ -407,3 +407,109 @@ fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox()
     }
     Ok(())
 }
+
+/// One think of `subject`'s own runner for a line tank whose arena holds `posture` for it:
+/// the unchanged source on the current sandbox, no old engine. Answers the think's memory.
+fn think_once(
+    subject: &PreparedSubject,
+    posture: crate::posture::Posture,
+) -> Result<crate::arena::mind::Memory, Box<dyn std::error::Error>> {
+    use crate::arena::{
+        Controller, PartyId,
+        motor::MotorCounters,
+        state::Power,
+        test_support::{arena_of, line_tank, pose},
+    };
+    let own = ObjId(4);
+    let mut hull = line_tank(own, PartyId::RED, pose(1500, 4500));
+    hull.controller = Controller::Mind;
+    hull.reseal(&crate::match_::SealTerms::fixture())?;
+    let mut arena = arena_of(vec![
+        hull,
+        line_tank(ObjId(9), PartyId::BLUE, pose(6500, 4500)),
+    ]);
+    arena.unit_mut(own).ok_or("own")?.power = Power::Online;
+    check!(arena.set_posture(own, posture));
+    arena.now_ms = 1250;
+    arena.collect_think(own, 0, 1001, &mut MotorCounters::default());
+    let think = arena.collected.pop().ok_or("current runner think")?;
+    let answer = subject.runner().think(&think.job());
+    check!(answer.fault.is_none());
+    Ok(crate::arena::mind::decode_memory(&answer.memory))
+}
+
+/// A revision of `source` whose immutable envelope names `abi`.
+fn revision_under(source: &str, abi: &str) -> Result<Revision, Box<dyn std::error::Error>> {
+    let current = revision(source)?;
+    let mut value = serde_json::to_value(&current)?;
+    value["envelope"]["mind_abi"] = json!(abi);
+    let envelope: Envelope = serde_json::from_value(value["envelope"].clone())?;
+    value["reference"]["digest"] = serde_json::to_value(envelope.digest(source)?)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+/// **Doc 45 unit AP.3: a mind filed under any ABI since the Registry opened is conformed
+/// again, not refused for ever.** For each of them, the ABI that API 9 replaced among them:
+/// the revision is not a fresh rating subject, it is a re-conformance subject, none of its
+/// bytes move, and its unchanged source runs a think on the current sandbox. Until this cut
+/// the retained list stopped at API 5, so a mind filed under API 6, 7 or 8 failed
+/// `prepare_reconformance` at every scan and stayed uncertified.
+#[test]
+fn ap3_a_mind_filed_under_any_abi_since_the_registry_opened_is_conformed_again() -> TestResult {
+    use crate::arena::mind::MemValue;
+    let cfg = ArenaConfig::default();
+    check!(
+        crate::minds::RETAINED_ABIS
+            .iter()
+            .any(|(abi, _)| *abi == "rhai=1.26.0;api=8;stock=3")
+    );
+    for (abi, api) in crate::minds::RETAINED_ABIS {
+        let source = format!(
+            "const MIND = #{{name: \"Retained\", api: {api}, class: \"discretion\", role: \"combat\", core: \"I\"}}; fn think(v,c) {{ this.marker = 73; }}"
+        );
+        let retained = revision_under(&source, abi)?;
+        let bytes = serde_json::to_vec(&retained)?;
+        check!(PreparedSubject::prepare(&retained, &source, &cfg).is_err());
+        let measured = PreparedSubject::prepare_reconformance(&retained, &source, &cfg)?;
+        check_eq!(
+            measured.subject().revision(),
+            mush_roll::commerce::RevisionIdentity::capture(&retained)?
+        );
+        check_eq!(serde_json::to_vec(&retained)?, bytes);
+        let memory = think_once(&measured, crate::posture::Posture::Return)?;
+        check_eq!(memory.get("marker"), Some(&MemValue::Int(73)));
+        // Its header and its envelope name one API; a later header on it is refused.
+        let later = source.replace(&format!("api: {api}"), &format!("api: {}", api + 1));
+        let wrong = revision_under(&later, abi)?;
+        check!(PreparedSubject::prepare_reconformance(&wrong, &later, &cfg).is_err());
+    }
+    // An ABI that never was is not retained.
+    let source = "fn think(v,c) { this.marker = 73; }";
+    let never = revision_under(source, "rhai=1.26.0;api=8;stock=2")?;
+    check!(PreparedSubject::prepare_reconformance(&never, source, &cfg).is_err());
+    Ok(())
+}
+
+/// **Doc 45 unit AP.3: a script that reads the posture is rated, and reads the unit's
+/// word.** Saved under the current ABI it is a rating subject; its think on the current
+/// sandbox answers the posture the arena holds for its hull, whichever of the three it is.
+#[test]
+fn ap3_a_script_that_reads_the_posture_is_rated_and_reads_the_units_word() -> TestResult {
+    use crate::arena::mind::MemValue;
+    use crate::posture::Posture;
+    let cfg = ArenaConfig::default();
+    let source = format!(
+        "const MIND = #{{name: \"Posture\", api: {}, class: \"discretion\", role: \"combat\", core: \"I\"}}; fn think(v,c) {{ this.posture = v.posture; }}",
+        crate::minds::API_VERSION
+    );
+    let current = revision(&source)?;
+    let subject = PreparedSubject::prepare(&current, &source, &cfg)?;
+    for posture in Posture::ALL {
+        let memory = think_once(&subject, posture)?;
+        check_eq!(
+            memory.get("posture"),
+            Some(&MemValue::Str(posture.as_str().into()))
+        );
+    }
+    Ok(())
+}

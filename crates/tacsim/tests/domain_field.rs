@@ -61,6 +61,8 @@ mod excursions;
 mod field_ap1;
 #[path = "domain_field/field_ap2.rs"]
 mod field_ap2;
+#[path = "domain_field/field_ap3.rs"]
+mod field_ap3;
 #[path = "domain_field/field_ap5.rs"]
 mod field_ap5;
 #[path = "domain_field/field_ap8.rs"]

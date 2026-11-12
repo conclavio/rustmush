@@ -32,11 +32,17 @@ pub(crate) fn validate_retained_registry(
     source: &str,
     envelope: &Envelope,
 ) -> Result<(), RollError> {
-    let api = match envelope.mind_abi.as_str() {
-        abi if abi == super::MIND_ABI => super::API_VERSION,
-        "rhai=1.26.0;api=4;stock=2" => 4,
-        "rhai=1.26.0;api=5;stock=2" => 5,
-        _ => return Err(invalid("mind_abi", "unsupported retained Registry ABI")),
+    // Doc 45 unit AP.3: every ABI since the Registry opened, one table
+    // (`super::RETAINED_ABIS`). Until that cut the list stopped at API 5, so a
+    // revision saved under API 6, 7 or 8 was refused here for ever.
+    let api = if envelope.mind_abi == super::MIND_ABI {
+        super::API_VERSION
+    } else {
+        super::RETAINED_ABIS
+            .iter()
+            .find(|(abi, _)| *abi == envelope.mind_abi)
+            .map(|(_, api)| *api)
+            .ok_or_else(|| invalid("mind_abi", "unsupported retained Registry ABI"))?
     };
     validate_for_api(source, envelope, api)
 }

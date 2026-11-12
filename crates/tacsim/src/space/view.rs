@@ -182,7 +182,7 @@ impl ContactBook {
 }
 
 /// **What the host knows of a bubble that its ships do not carry**: the stops, who holds
-/// them, and the step.
+/// them, the step, and the posture each ship's player left on her.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Situation {
     /// How long the bubble flies before the minds think again, milliseconds.
@@ -191,6 +191,10 @@ pub struct Situation {
     pub stops: BTreeMap<String, Stop>,
     /// The ship that holds those stops: the customs corvette, or the interdictor.
     pub stopper: Option<String>,
+    /// **The posture each ship holds**, by her id in the bubble (doc 45 unit AP.3; Q-45-23):
+    /// read off the hull's own record (`crate::posture::record`) by the host that flies her,
+    /// and `RETURN` for a ship with no row. The same word a unit on the ground reads.
+    pub postures: BTreeMap<String, crate::posture::Posture>,
 }
 
 impl Situation {
@@ -201,7 +205,14 @@ impl Situation {
             step_ms,
             stops: BTreeMap::new(),
             stopper: None,
+            postures: BTreeMap::new(),
         }
+    }
+
+    /// The posture `ship_id` holds: `RETURN` unless the host laid another.
+    #[must_use]
+    pub fn posture_of(&self, ship_id: &str) -> crate::posture::Posture {
+        self.postures.get(ship_id).copied().unwrap_or_default()
     }
 
     /// The stop `ship_id` is under.
@@ -505,6 +516,8 @@ pub fn space_mind_view(
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
         space: Some(Arc::new(space)),
+        // Doc 45 unit AP.3: the posture her player left on her, the ground's own word.
+        posture: situation.posture_of(ship_id),
     };
     Some((view, contact_map))
 }
@@ -561,6 +574,62 @@ mod tests {
             }
         }
         assert_eq!(helm_word_of([0, 0, 0]), 0);
+    }
+
+    /// Doc 45 unit AP.3: a ship's view carries the posture the host laid for her, by her own id
+    /// in the bubble, and `RETURN` for every ship with no row. One ship's word is not another's.
+    #[test]
+    fn a_ships_view_carries_her_own_posture_and_return_without_one() {
+        use crate::posture::Posture;
+        use crate::space::picket::{CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY};
+
+        let mut bubble = LocalSpaceBubble::new("bubble.test.posture", "domain.4", "Test", 1_000);
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "customs.4.1",
+            "Corvette",
+            CUSTOMS_CORVETTE_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        for (id, name, at) in [
+            ("hull.10", "Salt Moth", [3_000, 4_000, 12_000]),
+            ("hull.11", "Tin Kettle", [-9_000, 0, 0]),
+        ] {
+            bubble.insert_ship(SpaceShipState::new_dray(
+                id,
+                name,
+                CARRIER_PARTY,
+                at,
+                [0, 0, 0],
+            ));
+        }
+        let posture_of = |situation: &Situation, ship: &str| {
+            let mut book = ContactBook::default();
+            space_mind_view(&bubble, ship, ObjId(7), &mut book, situation)
+                .map(|(view, _)| view.posture)
+        };
+        let mut situation = Situation::open(1_000);
+        for ship in ["customs.4.1", "hull.10", "hull.11"] {
+            assert_eq!(
+                posture_of(&situation, ship),
+                Some(Posture::Return),
+                "{ship}"
+            );
+        }
+        situation
+            .postures
+            .insert("hull.10".to_owned(), Posture::Hold);
+        situation
+            .postures
+            .insert("hull.11".to_owned(), Posture::Guard);
+        assert_eq!(situation.posture_of("hull.10"), Posture::Hold);
+        assert_eq!(posture_of(&situation, "hull.10"), Some(Posture::Hold));
+        assert_eq!(posture_of(&situation, "hull.11"), Some(Posture::Guard));
+        assert_eq!(
+            posture_of(&situation, "customs.4.1"),
+            Some(Posture::Return),
+            "a hull with no row reads the default"
+        );
     }
 
     /// Doc 44 unit MW.9's acceptance: adding a ship the observer cannot detect leaves her
