@@ -37,12 +37,14 @@
 //! rule (`crate::arena::absent`) never binds it. What ends with its leader's absence is the
 //! attack the leader started. [`presence`] says how a roster member's player stands to their
 //! unit, on the field's own record of who is away (`super::absent`, the clock MW.7 built) and on
-//! the session only where the field keeps no record; the roster's succession reads the same
-//! function, so the leader stops leading and their order lapses at one moment. [`lapses`] is the
-//! rule: an `ENGAGE` or an `ADVANCE` a player gave lapses once that player is gone, and no other
-//! order does. The roster's history records the lapse once
-//! (`crate::detachment::sortie::field_orders::Lapse`), so it survives a restart and the leader's
-//! return, and [`stand`] is what the recipient then does: it stops where it is and fires
+//! the session only where the field keeps no record; the roster's succession reads it, so a
+//! leader whose unit has passed to its mind stops leading then. [`lapses`] is the rule, on that
+//! record alone ([`gone_from_field`]): an `ENGAGE` or an `ADVANCE` a player gave lapses once
+//! the field has that player gone from the unit they gave it from, and no other order does.
+//! Every write that saves the roster records the lapses that are due
+//! (`crate::detachment::sortie::field_orders::Lapse`), so the lead and the order pass in one
+//! write and the lapse survives a restart and the leader's return. [`stand`] is what the
+//! recipient then does: it stops where it is and fires
 //! nothing, and once its own hull is hit it answers from where it stands. A `HOLD FIRE` the
 //! lapsed order carried is kept. A new leader's order replaces the stand like any other.
 
@@ -234,7 +236,7 @@ pub(crate) fn lost(w: &World, unit: ObjId, operator: ObjId) -> bool {
 }
 
 /// **How a roster member's player stands to their unit** (doc 45 unit AP.8): what the roster's
-/// succession and an order's lapse both read.
+/// succession reads. An order's lapse reads the narrower [`gone_from_field`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Presence {
     /// At the controls, or free to be: connected over a live transport.
