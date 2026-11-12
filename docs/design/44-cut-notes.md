@@ -466,22 +466,27 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
   burn given no direction; the picket's host writing the corvette's memory; a burn going one
   fixed way; the stand-down leaving `fired`. Each was caught by the test named for it above
   (the stand-down mutations by the unit test and by the story).
-- **`tacsim`'s library tests and `tests/domain_arena/`**, on Linux: 3,349 passed after the
-  re-pin.
-- **`tests/domain_world/`**, all 263 stories, on Linux. Four older stories were re-timed for
-  the one think the hail and the raider's torch now take (`sfr6`, `sfr8`, `sfr20`), and one
-  damage figure was re-pinned for the volley that no longer lands (`sfr15`).
+- **The whole of `tacsim`'s tests**, on Linux (conclav.dev), after the re-pin: 4,475 passed,
+  31 skipped (the `#[ignore]`d ones).
+- **The cross-platform corpus** (`m2_the_twin_corpus_hashes_the_same_on_every_host`, D-UM-28):
+  the four re-pinned rows read the same on Linux and on Windows, byte for byte. The other two
+  `#[ignore]`d steps of CI's `tacsim-minds` cell pass on Linux unchanged.
+- **`tests/domain_world/`**, all 263 stories, among them. Three older stories were re-timed
+  for the one think the hail and the raider's torch now take (`sfr6`, `sfr8`, `sfr20`), and
+  one damage figure was re-pinned for the volley that no longer lands (`sfr15`).
 - **`mush-contract-tests`**: 203 on Windows, 195 on Linux (eight are skipped there), with no
   budget re-blessed.
-- `cargo clippy -D warnings` and `cargo doc -D warnings --document-private-items` on
-  `tacsim`.
+- `cargo clippy --all-targets -D warnings` on `tacsim` and `mush-contract-tests`, and
+  `cargo doc -D warnings --document-private-items` on `tacsim`.
+- **CI** run 43142475684 on `23b4ffcae`, the code as it stands, on main at `330a8b249`: every
+  job green, the ten `tacsim` integration shards and `tacsim-minds` among them.
 
 **Not verified.**
 
 - **The `#[ignore]`d tests that run only on the nightly** (the M6 replay, the M7 and M8
   stories, the scale harness, the 16b harness and its baselines). Any of them that pins a
   hash that folds a seal has moved with the ABI and is not re-pinned here. The three that
-  run on a pull request (`tacsim-minds`) were run on Linux: one was re-pinned, two passed.
+  run on a pull request (`tacsim-minds`) were run: one was re-pinned, two passed.
 - Nothing was run against a live server or over SSH. The stories drive commands in the test
   rig.
 - The think's cost. The raider's extra think a step is not measured; MW.11 measures.
