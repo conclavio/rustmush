@@ -1053,18 +1053,22 @@ run them).
 - An interdictor bubble with three or more carriers, and a picket bubble where the corvette
   is lost while a carrier is hailed (the stop then reads `none`; not pinned).
 
-**Merged, after MW.7.** The owner merged main into the branch (`3b926fd35`: MW.7 #549, the
-claim fix #554, the release smoke fix #555) and merged PR #551 as `9d8fc96b7` on 2026-11-12.
-MW.7 landed first, and this unit's re-pins stood on the merged tree without another pass:
-MW.7 folds its new unit state (`absent`, `fired_on_by`) into the arena hash only when it is
-set, and no practice match sets it, so every pin this unit moved reads as it was re-pinned.
-On the merged head, main's own CI (run 43238006928) is green on all 25 jobs: `tacsim-lib`
-(the nine seal identities), `tacsim-minds` (the cross-platform corpus) and the ten
-integration shards, which hold the arena pins, MW.7's two arena tests in `minds_rhai.rs` and
-its stories in `domain_field/field_mw7.rs`, unchanged. The dispatch-only stories and the
-harness on the merged head are run 43243601962 and the gate's runs; this note does not say
-how they ended. The one conflict was in doc 35 §11.3, where MW.7's text stands for Q-35-B3
-and this unit's for Q-35-B4.
+**Merged, after MW.7; nothing moved.** The owner merged main into the branch (`3b926fd35`:
+MW.7 #549, the claim fix #554, the release smoke fix #555) and merged PR #551 as `9d8fc96b7`
+on 2026-11-12. MW.7 landed first, and the two units met on main with no run on the
+combination. Three runs on `9d8fc96b7` then read it:
+
+| Run | What it covers | Result |
+|---|---|---|
+| Hosted CI, 43238006928 | `tacsim-lib` (the nine seal identities), `tacsim-minds` (the cross-platform corpus), the ten integration shards (the arena state hashes and pinned ledger lines, MW.7's two arena tests in `minds_rhai.rs`, its stories in `domain_field/field_mw7.rs`), lint, docs | green, all 25 jobs |
+| Gate sweep on conclav.dev, 43238207078 | the workspace's tests on the blessing host | green |
+| Gate harness on conclav.dev, 43238230594 | every harness lane under `TACSIM_ASSERT` and the delta against the baseline this unit re-blessed, timing gate live | green |
+
+So no seal identity, arena state hash, pinned ledger line, corpus row or harness field
+needed a second pass. The reason is in MW.7's note: it folds its new unit state (`absent`,
+`fired_on_by`) into the arena hash only when it is set, and no practice match sets it. The
+one conflict was in doc 35 §11.3, where MW.7's text stands for Q-35-B3 and this unit's for
+Q-35-B4.
 
 ## MW.10
 
