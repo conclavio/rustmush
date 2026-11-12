@@ -4,6 +4,8 @@
 //! commands, the same mind memory and the same outcome; and a step whose thinks have not
 //! answered is held without the stepping thread waiting.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -807,5 +809,62 @@ fn mw11_every_think_of_a_bubble_runs_on_a_pool_worker() {
         3,
         "one runner for each of the three seals, for {} steps",
         run.active.steps
+    );
+}
+
+/// **Doc 44 unit MW.11: a tape replay still runs no think.** What the minds decided is on the
+/// tape as the commands the applier wrote when their answers landed, so replaying the tape
+/// from its first snapshot reproduces the bubble, and it does so with no host, no pool and
+/// no runner in reach: [`BubbleInputTape::replay`] takes none.
+#[test]
+fn mw11_a_replay_of_the_tape_reproduces_the_bubble_and_runs_no_think() {
+    let tw = TestWorld::new();
+    let w = tw.world();
+    // The runner alone, so the host's own rules change no relation off the tape.
+    let (mut active, linkdead) = interdiction_encounter();
+    active.bubble.ships.remove("hull.20");
+    active.carriers.remove(&ESCORT);
+    active.hull = RUNNER;
+    active.carrier_ship_id = "hull.21".to_owned();
+    active.tape = BubbleInputTape::new(&active.bubble);
+    let host = ThinkHost::on_pool(MindPool::new(2));
+    let mut run = Run {
+        active,
+        linkdead,
+        log: Vec::new(),
+    };
+    let paused = std::collections::BTreeSet::new();
+    let orders = mush_sim::tick::StandingOrderBook::default();
+    for n in 0..8_i64 {
+        let tick = BubbleTick {
+            frozen: false,
+            wall_now_s: 101 + n,
+            ic_now_s: 1_000 + (101 + n) * 24,
+            paused_hulls: &paused,
+            standing_orders: &orders,
+            host: &host,
+            store: None,
+            w,
+        };
+        let mut out = BubbleTickOut::default();
+        assert!(step_bubble(
+            &mut run.active,
+            &tick,
+            &mut run.linkdead,
+            &mut out
+        ));
+    }
+    assert!(
+        mind_commands(&run.active.tape.entries) >= 2,
+        "the interdictor's decisions are on the tape: {:?}",
+        run.active.tape.entries
+    );
+    let thinks = host.stats().thinks;
+    let (replayed, _) = run.active.tape.replay();
+    assert_eq!(host.stats().thinks, thinks, "the replay thought nothing");
+    assert_eq!(
+        replayed.state_hash(),
+        run.active.bubble.state_hash(),
+        "the tape alone reproduces the bubble"
     );
 }

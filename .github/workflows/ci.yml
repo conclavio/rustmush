@@ -1434,6 +1434,14 @@ jobs:
   # C4_LOAD_SIDE (0, 2, 6) and once with C4_LOAD_AUTHORS=2:
   # C4_LOAD_SIDE=2 cargo test --release -p mush-server --lib c4_registry_rating_beside_live_simulator_matches_is_measured -- --ignored --nocapture
 
+  # Doc 44 unit MW.11 (Q-44-28): what one space think costs the world thread, for each actor
+  # and for a picket bubble's step (crates/tacsim/src/space/think_cost.rs). A measurement in
+  # release, never a gate, so no job runs it: it is run by hand, on conclav.dev and on the
+  # Windows box. Its figures, before the unit and after it, are in doc 44's MW.11 cut note.
+  # Its tier is by-hand in crates/mush-contract-tests/test-tiers.toml, with its last run's
+  # revision. By hand:
+  # cargo test --release -p tacsim --lib mw11_what_a_space_think_costs_the_world_thread -- --ignored --nocapture
+
   # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
   # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
   # reinforcement, a tow struck and released under fire, a jammed sight, a segment rolled and

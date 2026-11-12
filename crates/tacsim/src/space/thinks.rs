@@ -189,7 +189,15 @@ struct Flight {
     flying: Flying,
     /// The owner's step as it fell due, from the tick that first held it.
     held: Option<Due>,
+    /// How many ticks have found the step held.
+    held_ticks: u32,
 }
+
+/// Held ticks after which a held step is said once in the log, and the interval at which
+/// it is said again: a batch that late is a pool that is saturated or a runner that is
+/// stuck, and its owner stands still until it answers.
+const HELD_WARN_TICKS: u32 = 5;
+const HELD_WARN_AGAIN_TICKS: u32 = 60;
 
 /// **The host of every space think** (the file head): the pool, the runners by digest, and
 /// the batches in flight. One for each [`TacsimStore`] ([`TacsimStore::space_thinks`]).
@@ -198,7 +206,7 @@ struct Flight {
 #[derive(Debug)]
 pub struct ThinkHost {
     /// The server's pool. `None` runs a batch on the thread that submits it, and only a
-    /// unit test with no world can build such a host ([`ThinkHost::inline`]).
+    /// unit test with no world can build such a host (`ThinkHost::inline`).
     pool: Option<Arc<MindPool>>,
     /// Whether a late batch holds its owner's step (the server) or is waited for (a rig).
     hold: AtomicBool,
@@ -453,6 +461,7 @@ impl ThinkHost {
                 asked,
                 flying,
                 held: None,
+                held_ticks: 0,
             },
         );
         true
@@ -500,7 +509,18 @@ impl ThinkHost {
             };
             if !done && self.holds_late_steps() {
                 flight.held.get_or_insert(due);
+                flight.held_ticks = flight.held_ticks.saturating_add(1);
                 self.held.fetch_add(1, Ordering::Relaxed);
+                if flight.held_ticks == HELD_WARN_TICKS
+                    || flight.held_ticks % HELD_WARN_AGAIN_TICKS == 0
+                {
+                    tracing::warn!(
+                        ?owner,
+                        ticks = flight.held_ticks,
+                        thinks = flight.asked.len(),
+                        "tacsim: a space step is held for thinks the pool has not answered"
+                    );
+                }
                 return Owed::Held;
             }
             match flights.remove(&owner) {

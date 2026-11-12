@@ -4900,9 +4900,12 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     //    `BELT_RAIDER_RHAI` launches its 2-torpedo salvo and 120 km railgun shot
     //    (`RAIDER_TORCH_AND_SALVO`). `KIRKWOOD_PICKET_RHAI` screens (`PICKET_SCREEN_ENGAGE_RAIDER`).
     //    Doc 44 unit MW.9: when to light up is the raider's doctrine's, so it is one think later
-    //    than when the picket's host lit it for her.
-    let (_, submitted) = one_second(&mut rig, pilot);
-    land_quietly(&mut rig, &submitted);
+    //    than when the picket's host lit it for her. Doc 44 unit MW.11: and each of the two
+    //    thinks lands a step after it is collected, so the salvo is one second later again.
+    for _ in 0..2 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
     {
         let bubble_book = rig
             .tw
@@ -5425,8 +5428,9 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
         "expected customs inspection completion: {submit_out}"
     );
     // Doc 44 unit MW.9: the raider's doctrine lights her torch on the tick after the ruling and
-    // opens on the next; the picket's host used to light it for her on the first.
-    for _ in 0..2 {
+    // opens on the next; the picket's host used to light it for her on the first. Doc 44 unit
+    // MW.11: each think lands a step after it is collected, so her salvo is a second later.
+    for _ in 0..3 {
         let next_real2 = rig.tw.world().now() + 1;
         rig.tw.set_now(next_real2);
         let _ = rig.tw.fire_due(next_real2 * 1_000);
@@ -6781,6 +6785,14 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
     // Light up the interdictor with active radar (`+helm/emcon combat`) and step the tick:
     // the interdictor fires a torpedo at the carrier and both crew receive updated feeds from the tick!
     let _ = run(&mut rig.tw, pilot, "+helm/emcon combat");
+    // Doc 44 unit MW.11: the interdictor reads her radiating on the snapshot this tick
+    // leaves, and what it decides on it lands at the head of the next step: the torpedo is one
+    // tick later, and it flies in the step it is launched in. Her point defence on AUTO
+    // reaches it inside that first second (as it did on the second after the launch, when
+    // the launch came after the step), so no tick would ever show it: the gunner holds the
+    // point defence while the feeds are read.
+    let _ = run(&mut rig.tw, gunner, "+tac/pdc manual");
+    let _ = fire_quietly(&mut rig);
     let tick1_events = fire_quietly(&mut rig);
     let gunner_holo_1 = panel_data_for(&tick1_events, gunner, "space.holotank")
         .expect("gunner receives space.holotank from tick step 1 without typing");
@@ -7306,6 +7318,27 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
     let t_step = rig2.tw.world().now().saturating_add(6);
     rig2.tw.set_now(t_step);
     let _ = rig2.tw.fire_due(t_step.saturating_mul(1_000));
+    // Doc 44 unit MW.11: a drone no longer thinks in the command that launches it, and a think
+    // collected on one tick lands on the next. The first tick collects think nought, so two
+    // more land thinks nought and one: after `n` ticks a drone has landed `n - 1` thinks.
+    let drone_thinks = |rig: &Rig| -> Vec<u64> {
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .cluster_sessions
+            .get(&hull2)
+            .expect("cluster session for hull2")
+            .active_drones
+            .iter()
+            .map(|drone| drone.mind_think_seq)
+            .collect()
+    };
+    assert_eq!(drone_thinks(&rig2), vec![0, 0], "collected, not yet landed");
+    one_more_second(&mut rig2.tw);
+    assert_eq!(drone_thinks(&rig2), vec![1, 1]);
+    one_more_second(&mut rig2.tw);
+    assert_eq!(drone_thinks(&rig2), vec![2, 2]);
     {
         let tstore2 = store(&rig2.tw);
         let book2 = rig2
@@ -7655,9 +7688,12 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     // Confirm rear-split combat damage was written to *Salt Moth*'s `TacticalUnit` (`drive` and `hull` both damaged):
     let ship_damaged = run(&mut rig.tw, pilot, "+ship");
     // Doc 44 unit MW.9: the interdictor's first think is its hail, so one volley fewer lands in
-    // the four ticks than when it fired from the first (`drive 64/250, hull 418/600`).
+    // the four ticks than when it fired from the first (`drive 64/250, hull 418/600`). Doc 44
+    // unit MW.11: its second think waits for the hail to be answered, so one fewer again
+    // (`drive 118/250, hull 471/600`): each step is one volley, 54 off the drive and 53 off
+    // the hull.
     assert!(
-        ship_damaged.contains("Damage: drive 118/250, hull 471/600."),
+        ship_damaged.contains("Damage: drive 172/250, hull 524/600."),
         "expected rear-split combat damage on docked Dray: {ship_damaged}"
     );
 
@@ -9645,6 +9681,32 @@ fn cr6_a_crewed_derelict_hard_docked_by_a_stranger_is_captured_and_handed_over_a
             break;
         }
     }
+    // Doc 44 unit MW.11: the raider's salvo lands a step after she lights her torch, so there
+    // is now a second with her lit and nothing in flight, where the wait above ends. The dock
+    // is refused while she flies or anything is in flight (`SF.R9`), so the story waits for
+    // the corvette to finish with her and for her last ordnance to land, as it always did:
+    // before the unit her ordnance in flight kept the wait above going until then.
+    for _ in 0..120 {
+        let fight_over = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_a))
+            .is_none_or(|a| {
+                let raider_flies = a
+                    .picket
+                    .as_ref()
+                    .and_then(|picket| a.bubble.ships.get(&picket.raider_ship_id))
+                    .is_some_and(|ship| ship.status == tacsim::space::HullStatus::Operational);
+                !raider_flies && a.bubble.torpedoes.is_empty() && a.bubble.railgun_slugs.is_empty()
+            });
+        if fight_over {
+            break;
+        }
+        let next = rig.tw.world().now() + 1;
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next * 1_000);
+    }
     let clamp = clamp_derelict(&mut rig, pilot_a, hull_a, &format!("#{}", hull_b.0));
     assert!(
         clamp.contains("Hard dock and magnetic collar seal confirmed"),
@@ -9985,18 +10047,21 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
     // penetrates `Front` (`internal_dmg >= 25`) and strips `pdc_dorsal` offline (`PdcOffline`), then
     // turn stern (`+helm/heading 180 0`) so subsequent hits split `hull` / `drive` on `Rear`.
     // Doc 44 unit MW.9: its first think is its hail, so its volleys land on ticks 1, 2 and 3.
+    // Doc 44 unit MW.11: its second think waits for the hail to be answered, so they land on
+    // ticks 2, 3 and 4, and the turn to stern, the later beams and the vents are a tick later
+    // with them.
     let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 0 0");
-    for i in 0..4 {
+    for i in 0..5 {
         let next_real = rig_combat.tw.world().now() + 1;
         rig_combat.tw.set_now(next_real);
         let _ = rig_combat.tw.fire_due(next_real * 1_000);
-        if i == 2 {
+        if i == 3 {
             let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 180 0");
         }
-        if i == 0 || i == 2 || i == 3 {
+        if i == 0 || i == 3 || i == 4 {
             let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
         }
-        if i == 1 || i == 2 {
+        if i == 2 || i == 3 {
             let _ = run(&mut rig_combat.tw, pilot_c, "+damage/vent");
         }
     }
@@ -10982,6 +11047,8 @@ fn sfr23_mining_and_sensing_remainders() {
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(t_ld_exp);
     let _ = rig.tw.fire_due(t_ld_exp.saturating_mul(1_000));
+    // Doc 44 unit MW.11: that tick collects her backup mind's first think; the next lands it.
+    one_more_second(&mut rig.tw);
     set_rate(&mut rig.tw, story_rate);
     assert!(
         !rig.tw
@@ -11787,6 +11854,8 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(past_grace);
     let _ = rig.tw.fire_due(past_grace.saturating_mul(1_000));
+    // Doc 44 unit MW.11: that tick collects her backup mind's first think; the next lands it.
+    one_more_second(&mut rig.tw);
     set_rate(&mut rig.tw, 3_600);
     let home_burn = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &home_burn);
@@ -12872,9 +12941,20 @@ fn wait_out_the_grace(rig: &mut Rig) {
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(past);
     let _ = rig.tw.fire_due(past.saturating_mul(1_000));
+    // Doc 44 unit MW.11: the tick the grace runs out on collects her backup mind's first
+    // think; the next lands it, and the seat acts on it then.
+    one_more_second(&mut rig.tw);
     set_rate(&mut rig.tw, 3_600);
     let submitted = drain_space_and_industry(&mut rig.tw);
     land_quietly(rig, &submitted);
+}
+
+/// One wall second more, and the ticks that fall due in it (doc 44 unit MW.11): where a
+/// story waits for a mind whose think is collected on one tick and lands on the next.
+fn one_more_second(tw: &mut TestWorld) {
+    let next = tw.world().now().saturating_add(1);
+    tw.set_now(next);
+    let _ = tw.fire_due(next.saturating_mul(1_000));
 }
 
 /// `hull`'s ship in her bubble: her thrust, her speed relative to the customs corvette, and the
@@ -13157,7 +13237,11 @@ fn sfr32_the_link_loss_backup_mind_flies_her_home_stops_for_customs_and_stands_d
         .now()
         .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
     rig.tw.set_now(past);
-    let handover = rig.tw.fire_due(past.saturating_mul(1_000));
+    let mut handover = rig.tw.fire_due(past.saturating_mul(1_000));
+    // Doc 44 unit MW.11: that tick hands her over and collects her mind's first think; the
+    // next lands it, and the seat says what it found then.
+    rig.tw.set_now(past + 1);
+    handover.extend(rig.tw.fire_due((past + 1).saturating_mul(1_000)));
     let heard = said(&rig.tw, &handover, pilot);
     assert!(heard.contains(tacsim::space::BACKUP_TAKES_HELM), "{heard}");
     assert_eq!(
@@ -13387,6 +13471,8 @@ fn sfr32b_only_helm_crew_keep_her_crewed_the_window_runs_from_the_last_and_a_res
     set_rate(&mut rig.tw, 24);
     let handed = rig.tw.world().now() + grace + 10;
     fire_at(&mut rig, handed);
+    // Doc 44 unit MW.11: the mind's first think is collected on that tick and lands on the next.
+    fire_at(&mut rig, handed + 1);
     let before = linkdead_of(&rig.tw, hull).expect("her record");
     assert!(before.backup_has_helm());
     assert_eq!(before.backup_act, BackupAct::HoldingForRetrieval);
@@ -14010,10 +14096,13 @@ fn mw10_staff_publish_a_revision_and_select_it_and_the_next_interdictor_flies_it
     let next = interdictor_doctrine(&rig.tw).expect("B is held");
     assert_eq!((next.digest, next.selected, next.pack_digest), (b, true, a));
 
-    // The open bubble keeps A. The hull holds her course, so on its next think the
-    // interdictor closes on her: what A does, and B never does.
-    let (_, submitted) = one_second(&mut rig, pilot_a);
-    land_quietly(&mut rig, &submitted);
+    // The open bubble keeps A. Its next think waits for the hail to be answered (doc 44 unit
+    // MW.11). The hull holds her course, so on the think after that the interdictor closes
+    // on her: what A does, and B never does.
+    for _ in 0..2 {
+        let (_, submitted) = one_second(&mut rig, pilot_a);
+        land_quietly(&mut rig, &submitted);
+    }
     let closing = at_the_interdictor(&rig.tw, hull_a).expect("still in the bubble");
     assert_ne!(
         closing.interdictor_thrust,
@@ -14317,11 +14406,11 @@ fn mw10_other_bytes_under_a_digest_are_refused_and_a_cast_the_store_cannot_serve
 ///
 /// The rig's `[tacsim.minds].workers` is three and nothing has thought when the interdictor's
 /// bubble opens, so its think is the server's first. The pool is then three workers, and it
-/// is the pool a match would be handed. Each step of the bubble hands the pool one batch,
-/// collected on the state that step left; the answer lands at the head of the next step, so
-/// the interdictor's record is always one landed think behind the bubble's steps. One runner
-/// is built for the interdictor's seal and kept. The rig's clock is moved by hand, so its
-/// host waits for its workers and no step is held.
+/// is the pool a match would be handed. The bubble hands the pool one batch when it opens
+/// and one at each step, collected on the state that step left; the answer lands at the head
+/// of the next step, so there is always one think out that the interdictor's record has not
+/// counted yet. One runner is built for the interdictor's seal and kept. The rig's clock is
+/// moved by hand, so its host waits for its workers and no step is held.
 ///
 /// Before the cut the pool was a process static sized by its first caller, space asked for
 /// one worker, the think ran on the world thread inside the step and landed in it, and a
@@ -14356,6 +14445,16 @@ fn mw11_a_server_whose_first_think_is_in_space_has_the_configured_workers() {
     let _ = fire_quietly(&mut rig);
     let _ = to_ic(&mut rig, boundary);
     at_the_interdictor(&rig.tw, hull).expect("the interdictor's bubble");
+    assert_eq!(
+        host.stats(),
+        ThinkStats {
+            thinks: 1,
+            batches: 1,
+            held: 0,
+            runners_built: 1,
+        },
+        "the bubble's opening is step nought: its mind's first think is out, on the pool"
+    );
 
     let record = |rig: &Rig| {
         let book = rig
@@ -14382,15 +14481,18 @@ fn mw11_a_server_whose_first_think_is_in_space_has_the_configured_workers() {
         );
         assert_eq!(
             u64::from(steps),
-            landed + 1,
-            "the think collected on a step lands at the head of the next"
+            landed,
+            "each step lands the think collected on the one before, the opening's first"
         );
         let stats = host.stats();
-        assert_eq!(stats.batches, u64::from(steps), "one batch a step");
         assert_eq!(
-            stats.thinks,
-            u64::from(steps),
-            "one think a step for the one mind"
+            stats.batches,
+            u64::from(steps) + 1,
+            "one batch at the opening and one a step"
+        );
+        assert_eq!(
+            stats.thinks, stats.batches,
+            "one think a batch for the one mind"
         );
         assert_eq!(
             stats.runners_built, 1,

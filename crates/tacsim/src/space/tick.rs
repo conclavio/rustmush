@@ -4216,7 +4216,12 @@ fn step_bubble(
     }
     // The answers land, in the order they were collected, through the one applier.
     let mut events = Vec::new();
-    for answer in answers {
+    for mut answer in answers {
+        // A ship that has left the bubble since the think was collected names nothing now:
+        // an intent on its contact is dropped by the applier, as one on an unknown contact.
+        answer
+            .contacts
+            .retain(|_, ship_id| active.bubble.ships.contains_key(ship_id));
         land_bubble_think(
             active,
             answer,
@@ -4363,6 +4368,8 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         return;
     };
     if slot.by_domain.is_empty() {
+        // The last bubble has closed: nothing of its thinks is kept.
+        host.keep_bubbles(&std::collections::BTreeSet::new());
         return;
     }
     // `SF.R29` (doc 35d §6.6, `D-35-17`): the book is lifted out of the world for the step so
@@ -4861,6 +4868,42 @@ fn collect_bubble_thinks(
     asks
 }
 
+/// **A bubble's minds first think on the snapshot it opens with** (doc 44 unit MW.11): the
+/// opening is step nought, and what is collected on it lands at the head of the bubble's
+/// first step, as every later think lands at the head of the step after its own. Without
+/// this nobody in a new bubble would decide anything until its second step.
+fn collect_thinks_at_open(ctx: &mut Ctx<'_>, domain: DomainId) {
+    let Some(host) = super::thinks::host_of(ctx.w) else {
+        return;
+    };
+    let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+        return;
+    };
+    // The bubble and the link-loss records leave the book while the store is read.
+    let Some(mut active) = book.by_domain.remove(&domain) else {
+        return;
+    };
+    let mut linkdead_hulls = std::mem::take(&mut book.linkdead_hulls);
+    let owed = ThinksOwed {
+        step: 0,
+        step_ms: COMBAT_STEP_WALL_MS,
+    };
+    let asks = collect_bubble_thinks(
+        &mut active,
+        &host,
+        ctx.w.module_state::<TacsimStore>(),
+        ctx.w,
+        &mut linkdead_hulls,
+        owed,
+    );
+    let (owner, mark) = active.think_owner(owed);
+    active.thinks_owed = host.submit(owner, mark, asks).then_some(owed);
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.linkdead_hulls = linkdead_hulls;
+        book.by_domain.insert(domain, active);
+    }
+}
+
 /// **The thinks `active`'s due step owes, answered** (doc 44 unit MW.11, Q-44-28): `None`
 /// holds the step, because the batch is still on the pool and this host does not wait.
 /// Otherwise the answers to land, in collection order, and the step to take: `due`, or the
@@ -5197,6 +5240,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.by_domain.insert(domain, active);
         }
+        collect_thinks_at_open(ctx, domain);
         let line = "[SPACE] Interdiction contact detected at waypoint boundary; local space bubble opened on 1:1 wall clock.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
         super::commands::push_space_panels(ctx, hull);
@@ -5906,8 +5950,12 @@ mod interdictor_tests {
         // The carrier is abeam of the interdictor, up the y axis and a little above it.
         let carriers = [(ESCORT, CARRIER_PARTY, [0, 16_000, 12_000], [15_000, 0, 0])];
 
-        // The first think hails; the carrier holds her course, so the second engages.
+        // The first think hails, and the second waits for the hail to be answered (doc 44
+        // unit MW.11: the hull could not have heard it sooner). The carrier holds her course,
+        // so the third engages.
         let mut closing = interdiction(&carriers);
+        let _ = step_interdictor_picket(&mut closing, None, 1_000);
+        assert_eq!(interdictor_of(&closing).thrust_mmps2, [0, 0, 0]);
         let _ = step_interdictor_picket(&mut closing, None, 1_000);
         assert_eq!(interdictor_of(&closing).thrust_mmps2, [0, 0, 0]);
         let _ = step_interdictor_picket(&mut closing, None, 1_000);

@@ -25,6 +25,8 @@
 //! The figures of both runs, on Linux and on Windows, are in `docs/design/44-cut-notes.md`
 //! under MW.11.
 
+#![cfg(test)]
+
 use std::time::Instant;
 
 use super::*;

@@ -24,19 +24,6 @@ use mush_contract_tests::scan;
 /// The think host: the one file that may name the pool.
 const HOST: &str = "crates/tacsim/src/space/thinks.rs";
 
-/// Files under `space/` that are tests and nothing else, each declared `#[cfg(test)]` with a
-/// `#[path]` by the file named beside it.
-const TEST_FILES: [(&str, &str); 2] = [
-    (
-        "crates/tacsim/src/space/think_cost.rs",
-        "crates/tacsim/src/space/picket.rs",
-    ),
-    (
-        "crates/tacsim/src/space/tick_thinks_tests.rs",
-        "crates/tacsim/src/space/tick.rs",
-    ),
-];
-
 /// What only the host may name.
 const POOL_NAMES: [&str; 4] = ["MindPool", "BatchHandle", "run_batch_inline", "mind_pool("];
 
@@ -49,7 +36,8 @@ const THINKS_HERE: [&str; 4] = [
 ];
 
 /// Every production line of `crates/tacsim/src/space/`, as `(file, line number, text)`, with
-/// comments, literals and `#[cfg(test)]` items blanked, and the test-only files left out.
+/// comments, literals and `#[cfg(test)]` items blanked, and the files that are tests whole
+/// (a leading `#![cfg(test)]`) left out.
 fn space_lines() -> Vec<(String, usize, String)> {
     let root = scan::repo_root();
     let space = root.join("crates/tacsim/src/space");
@@ -62,31 +50,17 @@ fn space_lines() -> Vec<(String, usize, String)> {
     let mut lines = Vec::new();
     for file in files {
         let name = scan::relative(&root, &file);
-        if TEST_FILES.iter().any(|(test, _)| *test == name) {
+        let source = std::fs::read_to_string(&file).expect("a readable source file");
+        let stripped = scan::strip_comments_and_literals(&source);
+        if scan::file_is_test_only(&stripped) {
             continue;
         }
-        let source = std::fs::read_to_string(&file).expect("a readable source file");
-        let stripped = scan::blank_cfg_test_items(&scan::strip_comments_and_literals(&source));
+        let stripped = scan::blank_cfg_test_items(&stripped);
         for (number, line) in stripped.lines().enumerate() {
             lines.push((name.clone(), number + 1, line.to_owned()));
         }
     }
     lines
-}
-
-#[test]
-fn the_files_left_out_are_tests_and_nothing_else() {
-    let root = scan::repo_root();
-    for (test, declared_by) in TEST_FILES {
-        let file = test.rsplit('/').next().expect("a file name");
-        let source =
-            std::fs::read_to_string(root.join(declared_by)).expect("a readable source file");
-        let declaration = format!("#[cfg(test)]\n#[path = \"{file}\"]\nmod ");
-        assert!(
-            source.replace("\r\n", "\n").contains(&declaration),
-            "{declared_by} must declare {file} under #[cfg(test)]: it is left out of the scan as a test"
-        );
-    }
 }
 
 #[test]
@@ -173,7 +147,7 @@ fn the_host_waits_in_one_place_behind_its_hold_check() {
     let returns_held = lines
         .iter()
         .skip(hold_check)
-        .take(6)
+        .take(20)
         .any(|(_, line)| line.contains("return Owed::Held;"));
     assert!(
         returns_held,
