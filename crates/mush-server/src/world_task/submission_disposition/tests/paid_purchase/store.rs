@@ -1,6 +1,9 @@
 //! Actual durable store forwarding. Only the selected paid Grant writer phase is faulted.
 #[path = "registry_timing.rs"]
 mod registry_timing;
+// 17g C4 item 5: every Registry lease's two commits, for `registry_load`.
+#[path = "lease_clock.rs"]
+pub(in crate::world_task::submission_disposition::tests) mod lease_clock;
 
 use futures::future::BoxFuture;
 use mush_core::{
@@ -63,6 +66,7 @@ pub(in crate::world_task::submission_disposition::tests) struct PurchaseFaultSto
     released: AtomicBool,
     release: Notify,
     registry_timing: registry_timing::Observer,
+    lease_clock: lease_clock::LeaseClock,
 }
 
 impl PurchaseFaultStore {
@@ -73,7 +77,16 @@ impl PurchaseFaultStore {
             released: AtomicBool::new(true),
             release: Notify::new(),
             registry_timing: registry_timing::Observer::new(),
+            lease_clock: lease_clock::LeaseClock::new(),
         }
+    }
+
+    /// 17g C4 item 5: the store's clock on every Registry lease committed so
+    /// far (`lease_clock`).
+    pub(in crate::world_task::submission_disposition::tests) fn lease_commits(
+        &self,
+    ) -> Vec<lease_clock::LeaseCommit> {
+        self.lease_clock.commits()
     }
 
     pub(super) fn arm(&self, quote: CommitToken, fault: Fault) -> Result<(), StoreError> {
@@ -295,6 +308,7 @@ impl PurchaseFaultStore {
     ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
         Box::pin(async move {
             self.registry_timing.reserve_enter(&bundle);
+            self.lease_clock.reserve_enter(&bundle);
             let exact = Self::identify(&bundle)?;
             let fault = exact
                 .as_ref()
@@ -346,6 +360,7 @@ impl PurchaseFaultStore {
             }
             let receipt = self.inner.reconcile_authoritative(token, hash).await?;
             self.registry_timing.committed(token, hash);
+            self.lease_clock.committed(token, hash);
             self.mark(token, hash, true)?;
             Ok(receipt)
         })

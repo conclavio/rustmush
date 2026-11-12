@@ -1421,6 +1421,14 @@ jobs:
   # crates/mush-contract-tests/test-tiers.toml, with its last run's revision. By hand:
   # cargo test --release -p tacsim --test domain_arena gc12_the_field_pulse_is_measured_at_scale -- --ignored --exact --test-threads=1 --nocapture
 
+  # Doc 17g C4 item 5 (doc 17f §9; doc 44 MW.5): one genuine Registry rating beside live
+  # AI-filled simulator matches in the server's own rig, measured and reported (C4_LOAD
+  # lines), never a timing gate. About 35 minutes a configuration in release, so no job runs
+  # it: it is run by hand on conclav.dev, pinned with taskset. Its tier is by-hand in
+  # crates/mush-contract-tests/test-tiers.toml, with its last run's revision. By hand, once per
+  # C4_LOAD_SIDE (0, 2, 6) and once with C4_LOAD_AUTHORS=2:
+  # C4_LOAD_SIDE=2 cargo test --release -p mush-server --lib c4_registry_rating_beside_live_simulator_matches_is_measured -- --ignored --nocapture
+
   # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
   # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
   # reinforcement, a tow struck and released under fire, a jammed sight, a segment rolled and

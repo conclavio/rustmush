@@ -261,6 +261,15 @@ by_hand = "a2ef4075"
 
 # ---- by-hand ----
 
+# 17g C4 item 5 (doc 17f §9): a genuine Registry rating beside live AI-filled simulator
+# matches, measured and reported (`C4_LOAD` lines), never a timing gate. Configured by
+# C4_LOAD_SIDE (0 to 6 units a side) and C4_LOAD_AUTHORS (2 = the queue probe); the
+# recorded run is on conclav.dev, its figures in doc 44's MW.5 cut note.
+[[test]]
+id = "mush-server/src/world_task/submission_disposition/tests/registry_load.rs::c4_registry_rating_beside_live_simulator_matches_is_measured"
+tier = "by-hand"
+by_hand = "9c625bdf"
+
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
 [[test]]
