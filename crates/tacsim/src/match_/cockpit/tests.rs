@@ -2683,7 +2683,7 @@ fn m5_mind_is_the_seventeenth_selector_and_its_words_are_pinned() {
         "MIND [PROFILE <name>|RULES]  your tank's sealed mind: what it is, its profiles and \
          the one it will fly when you leave the seat, and who holds each channel; it is \
          dormant while you fly. MIND PROFILE <name> switches to another sealed profile, \
-         once in ten seconds. MIND RULES [slot] reads live pilot rules; MIND RULE <slot> <rule or OFF> replaces or removes one."
+         once in ten seconds. MIND RULES [slot] reads live pilot rules; MIND RULE <slot> <rule or OFF> replaces or removes one. In an IC field, MIND POSTURE [RETURN|GUARD|HOLD] reads or sets the posture the hull holds when you are not at its controls (help field)."
     );
     let head = include_str!("../cockpit.rs");
     assert!(

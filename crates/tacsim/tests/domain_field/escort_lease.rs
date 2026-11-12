@@ -193,6 +193,22 @@ pub(crate) fn contact_near(
     })
 }
 
+/// Mint `minor` into `who`'s own credit account from Ceres's treasury (staff's path).
+fn top_up(rig: &mut Rig, who: ObjId, minor: i64) {
+    let account = tacsim::port::credit::own_account(rig.tw.world(), who)
+        .map(|account| account.id.0)
+        .expect("the pilot's account");
+    let treasury = crate::driving_rig::port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let out = run(
+        &mut rig.tw,
+        mush_core::GOD,
+        &format!("@econ/mint {treasury}={account} {minor}"),
+    );
+    assert!(!out.contains("Usage"), "{out}");
+}
+
 /// **The escort and the intruder on Ahuna Flank**, the escort launched and driven out beside a
 /// working prospector; answers (escort pilot, escort hull, intruder pilot, intruder hull).
 pub(crate) fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
@@ -216,6 +232,9 @@ pub(crate) fn stand_up_with(
     let (escort, _, tvs) = on_pad_with(rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
         lease_escort(rig, pilot);
         for _ in 0..prospectors {
+            // The escort's deposit leaves too little for a second lease: staff mint the
+            // term and the deposit of one more.
+            top_up(rig, pilot, 1_000_000);
             crate::driving_rig::lease_one(rig, pilot);
         }
     });
