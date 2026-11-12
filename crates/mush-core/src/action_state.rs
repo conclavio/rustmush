@@ -47,6 +47,19 @@ pub mod player_wait {
     pub const REFIT_RESERVATION_SECONDS: i64 = 28 * 24 * 60 * 60;
 }
 
+/// **The kernel's bounds on a mind licence's term**, in world-IC seconds. The
+/// terminal-capacity audit of an IC claim reads these, and the Roll's copies
+/// (`mush_roll::commerce::MAX_TERM_SECONDS`, `MAX_OWNER_TERM_SECONDS`) are these values, so
+/// the two sides cannot drift apart. They did once: 17g C0 raised the Roll's owner bound to
+/// 365 days for a House's own licence while the claim audit kept 90 for every claim, which
+/// nothing met until an organisation's owner licence could open a claim (doc 23 cut S.4c).
+pub mod licence_term {
+    /// A paid term, its renewals, and a personal or dependent owner term: 90 IC days.
+    pub const MAX_PAID_SECONDS: i64 = 90 * 24 * 60 * 60;
+    /// An owner term: 365 IC days (17g C0: a House-filed mind's free owner licence).
+    pub const MAX_OWNER_SECONDS: i64 = 365 * 24 * 60 * 60;
+}
+
 use crate::action::{MAX_CASCADE_OPERATIONS, ProviderRegistrationOrdinal};
 use crate::authoritative::{AuthoritativeKey, ReplayWrite};
 use crate::mechanics::{

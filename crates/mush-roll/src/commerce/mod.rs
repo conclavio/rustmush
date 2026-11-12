@@ -29,13 +29,13 @@ pub const VALUE_FORMAT: u16 = 1;
 pub const MAX_PAID_SEATS: u16 = 1_024;
 /// Compact audit term bound, in world-IC seconds (90 days): every paid term, its
 /// renewals, and the personal and dependent owner terms.
-pub const MAX_TERM_SECONDS: i64 = 90 * 24 * 60 * 60;
+pub const MAX_TERM_SECONDS: i64 = mush_core::licence_term::MAX_PAID_SECONDS;
 /// The owner-term bound, in world-IC seconds (365 days). 17g C0: a House-filed
 /// mind's free owner licence runs 365 IC days until House owner attestation
 /// exists. Only owner filing terms, the attested owner terms (M8c: the House
 /// attestation's 365 days) and [`TermWindow`] itself use it; a paid
 /// record still holds its window to [`MAX_TERM_SECONDS`].
-pub const MAX_OWNER_TERM_SECONDS: i64 = 365 * 24 * 60 * 60;
+pub const MAX_OWNER_TERM_SECONDS: i64 = mush_core::licence_term::MAX_OWNER_SECONDS;
 /// Compact Grace bound, in world-IC seconds (28 days; 3 until the owner's rule of
 /// 2026-11-04 that a timer waiting on an absent player's response allows at least 28 IC
 /// days). The kernel's audits read the same value

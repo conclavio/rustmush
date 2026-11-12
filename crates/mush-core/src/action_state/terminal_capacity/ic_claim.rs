@@ -225,16 +225,25 @@ impl Claim {
         {
             return Err(refused("IC captured admission window"));
         }
+        let capacity = field(&open, "capacity")?;
+        // The captured window is the licence's own term. A claim dispatched under an owner
+        // licence may carry an owner term (a House's own licence runs 365 IC days, 17g C0);
+        // a claim on a paid seat carries a paid term. Doc 23 cut S.4c: an organisation's
+        // owner licence opens a claim, so the owner bound is reachable here.
+        let term_bound = match field(capacity, "kind")?.as_str() {
+            Some("owned_dispatch") => crate::licence_term::MAX_OWNER_SECONDS,
+            Some("paid_seats") => crate::licence_term::MAX_PAID_SECONDS,
+            _ => return Err(refused("IC capacity kind")),
+        };
         if !end
             .checked_sub(start)
-            .is_some_and(|n| (1..=90 * 24 * 60 * 60).contains(&n))
+            .is_some_and(|n| (1..=term_bound).contains(&n))
             || !grace
                 .checked_sub(end)
                 .is_some_and(|n| (0..=crate::player_wait::MAX_LICENCE_GRACE_SECONDS).contains(&n))
         {
             return Err(refused("IC captured term bounds"));
         }
-        let capacity = field(&open, "capacity")?;
         match field(capacity, "kind")?.as_str() {
             Some("owned_dispatch") => {
                 if format == 3 {
