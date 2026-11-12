@@ -16,10 +16,19 @@
 //!   and submits; once the row is closed the Close is acknowledged and nothing more is owed (the
 //!   next `go` replaces the cursor).
 //!
-//! **Nothing here is durable**: the tickets are RAM, keyed by rig, and a reboot re-owes every
-//! transition from the record (the host's inbox is empty at boot by design). Each transition is
-//! observed in the book, never by request id. The arm holds the composed host only where the
-//! claim path is composed (`TacsimRuleset::ic_host`); elsewhere no record carries a cursor.
+//! **Nothing here is durable**: the tickets are RAM, and a reboot re-owes every transition from
+//! the record (the host's inbox is empty at boot by design). Each transition is observed in the
+//! book, never by request id. The arm holds the composed host only where the claim path is
+//! composed (`TacsimRuleset::ic_host`); elsewhere no record carries a cursor.
+//!
+//! **A ticket is one claim's, not the rig's** (doc 44 MW.22's follow-up). A rig flies many
+//! claims in one boot, so each ticket is kept with what it was minted for: an Open with its
+//! epoch's instant (`launch_ic`), a Close with the claim's open token. A ticket kept for another
+//! claim is never submitted: it is acknowledged out of the host's inbox and a new one minted.
+//! And a Close that has landed is acknowledged on one more visit ([`owed`]), which releases its
+//! inbox row. Before this the tickets were keyed by rig alone and a landed Close was never
+//! visited again, so a rig's second claim in a boot resubmitted the first claim's spent Close
+//! for ever: the claim stayed open and its licence's seat held until a restart.
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -29,12 +38,33 @@ use crate::minds::ic_sortie::{ClaimRead, IcHost, IcHostTicket, claim_closed, cla
 use crate::port_tick::{Fire, Step, SwapRefused};
 use crate::surface::excursion::{ClaimCloseKind, ClaimCursor, RigRecord};
 
-/// **The arm's slot**: the composed IC host, and each rig's ticket in flight this boot.
+/// **The arm's slot**: the composed IC host, and each rig's ticket in flight this boot, with
+/// the claim it is for (the module note).
 #[derive(Clone, Default)]
 pub(crate) struct ClaimArm {
     host: Option<IcHost>,
-    opens: BTreeMap<ObjId, Arc<IcHostTicket>>,
-    closes: BTreeMap<ObjId, Arc<IcHostTicket>>,
+    /// A rig's Open in flight, with the epoch instant (`launch_ic`) its `go` fixed.
+    opens: BTreeMap<ObjId, (i64, Arc<IcHostTicket>)>,
+    /// A rig's Close in flight, with the open token of the claim it closes.
+    closes: BTreeMap<ObjId, (mush_core::CommitToken, Arc<IcHostTicket>)>,
+}
+
+impl ClaimArm {
+    /// The rig's Open ticket, if it was minted for the epoch `launch_ic`.
+    fn open_for(&self, tv: ObjId, launch_ic: i64) -> Option<Arc<IcHostTicket>> {
+        self.opens
+            .get(&tv)
+            .filter(|(at, _)| *at == launch_ic)
+            .map(|(_, ticket)| Arc::clone(ticket))
+    }
+
+    /// The rig's Close ticket, if it was minted for the claim `open`.
+    fn close_for(&self, tv: ObjId, open: mush_core::CommitToken) -> Option<Arc<IcHostTicket>> {
+        self.closes
+            .get(&tv)
+            .filter(|(of, _)| *of == open)
+            .map(|(_, ticket)| Arc::clone(ticket))
+    }
 }
 
 /// **The composed IC host**, where the claim path is composed (doc 23 cut S.4b-3: the field's
@@ -54,11 +84,16 @@ pub(crate) fn register(reg: &mut mush_core::Registrar<'_>, host: Option<IcHost>)
 
 /// **Whether `record` is owed a claim transition** (the tick's `claim` candidate reason): an
 /// `Opening` cursor with nothing in flight, or a `Closing` one whose Close the book does not
-/// hold yet.
+/// hold yet, or holds while the arm still keeps its ticket (one more visit acknowledges the
+/// landed Close out of the host's inbox, so the rig's next claim starts with none).
 pub(crate) fn owed(w: &mush_core::World, record: &RigRecord) -> bool {
     match record.claim.as_deref() {
         Some(ClaimCursor::Opening { .. }) => record.act.is_none() && record.run.is_none(),
-        Some(ClaimCursor::Closing { open, .. }) => claim_closed(w, *open).is_none(),
+        Some(ClaimCursor::Closing { open, .. }) => {
+            claim_closed(w, *open).is_none()
+                || w.module_state::<ClaimArm>()
+                    .is_some_and(|arm| arm.closes.contains_key(&record.tv))
+        }
         _ => false,
     }
 }
@@ -86,7 +121,7 @@ pub(crate) fn step(
             ..
         }) => match claim_of(ctx.w, tv) {
             ClaimRead::Active { dispatcher, .. } if dispatcher == *operator => {
-                if let Some(ticket) = arm.opens.remove(&tv) {
+                if let Some((_, ticket)) = arm.opens.remove(&tv) {
                     let _ = host.acknowledge(ctx.w, &ticket);
                 }
                 // Doc 38a F-23.4: a staff `close` or `home` cleared the queued launch under the
@@ -103,13 +138,17 @@ pub(crate) fn step(
             ClaimRead::Active { .. } => Step::Refused,
             // Doc 38a F-23.4: no launch is queued and no Open is in flight: the claim is refused,
             // never opened only to close.
-            ClaimRead::None if !queued_launch(record) && !arm.opens.contains_key(&tv) => {
+            ClaimRead::None if !queued_launch(record) && arm.open_for(tv, *launch_ic).is_none() => {
                 refuse(ctx, fire, start, record)
             }
             ClaimRead::None => {
-                let ticket = match arm.opens.get(&tv) {
-                    Some(ticket) => Arc::clone(ticket),
+                let ticket = match arm.open_for(tv, *launch_ic) {
+                    Some(ticket) => ticket,
                     None => {
+                        // A ticket kept for an earlier launch of this rig is not this claim's.
+                        if let Some((_, stale)) = arm.opens.remove(&tv) {
+                            let _ = host.acknowledge(ctx.w, &stale);
+                        }
                         let minted = crate::minds::ic_sortie::surface::surface_start(
                             ctx.w, *operator, tv, *launch_ic,
                         )
@@ -121,7 +160,7 @@ pub(crate) fn step(
                         match minted {
                             Ok(ticket) => {
                                 let ticket = Arc::new(ticket);
-                                arm.opens.insert(tv, Arc::clone(&ticket));
+                                arm.opens.insert(tv, (*launch_ic, Arc::clone(&ticket)));
                                 ticket
                             }
                             Err(error) => {
@@ -140,14 +179,19 @@ pub(crate) fn step(
             operator,
         }) => {
             if claim_closed(ctx.w, *open).is_some() {
-                if let Some(ticket) = arm.closes.remove(&tv) {
+                if let Some((_, ticket)) = arm.closes.remove(&tv) {
                     let _ = host.acknowledge(ctx.w, &ticket);
                 }
                 Step::Idle
             } else {
-                let ticket = match arm.closes.get(&tv) {
-                    Some(ticket) => Arc::clone(ticket),
+                let ticket = match arm.close_for(tv, *open) {
+                    Some(ticket) => ticket,
                     None => {
+                        // A ticket kept for an earlier claim of this rig (its Close landed and
+                        // was never acknowledged) is not this claim's.
+                        if let Some((_, stale)) = arm.closes.remove(&tv) {
+                            let _ = host.acknowledge(ctx.w, &stale);
+                        }
                         let minted = crate::minds::ic_sortie::surface::surface_close(
                             ctx.w,
                             *operator,
@@ -158,7 +202,7 @@ pub(crate) fn step(
                         match minted {
                             Ok(ticket) => {
                                 let ticket = Arc::new(ticket);
-                                arm.closes.insert(tv, Arc::clone(&ticket));
+                                arm.closes.insert(tv, (*open, Arc::clone(&ticket)));
                                 ticket
                             }
                             Err(error) => {

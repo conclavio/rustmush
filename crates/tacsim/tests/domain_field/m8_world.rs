@@ -2733,7 +2733,8 @@ fn claimed_recover(world: &mut M8World, n: usize, open: mush_core::CommitToken) 
 ///    House. The pilot's `go` under the House's owner licence (`org=Coprates`) opens the claim
 ///    in the bay and launches; the open line names the House the holder with the pilot acting;
 ///    the server restarts with that claim open and the claim history's audit admits it; the
-///    recover closes it, and a plain launch afterwards is not held by the spent cursor.
+///    recover closes it; the same rig then opens and closes a second claim in the same boot;
+///    and a plain launch afterwards is not held by the spent cursor.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
 #[allow(clippy::too_many_lines)]
@@ -2957,6 +2958,12 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         "the House's claim survives a restart"
     );
     claimed_recover(&mut world, 2, open);
+    // The same rig's next claim in the same boot opens and closes too: a claim's tickets are
+    // its own, not the rig's (the surface tick's claim arm once resubmitted the first claim's
+    // spent Close for the second, which then never closed).
+    let again = claimed_launch(&mut world, 2, &house(2), owner_licence.get());
+    assert_ne!(again, open, "a new claim");
+    claimed_recover(&mut world, 2, again);
     let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/2 launch go");
     assert!(
         crate::excursions::record_of(&mut world.rig.tw, second).is_some_and(|r| r.act.is_some()),
