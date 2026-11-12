@@ -869,8 +869,8 @@ revision), #1 types `@newpassword RegistryOperator=<password>`.
 matches, and a match is paced by its own simulation, not by the Registry's
 pulse: the server sits at a few per cent of one core while it rates. Measured
 on a 32-core box, release build: a copy of Standard Doctrine took 32 minutes at
-`registry_pulse_ms = 50`, and a named House source takes longer (doc 44's cut
-notes have the figures). The acceptance stories' "about 1,070 leases" is their
+`registry_pulse_ms = 50` (28 at 10), and the Meridiani source 79 minutes (doc
+44's cut notes have the figures). The acceptance stories' "about 1,070 leases" is their
 own rig's certificate. That is why the seed comes after the unit is started:
 nobody is kept off for it. The Registry's job runs in the world whether or not
 the script stays connected, so the step can be stopped and started again:

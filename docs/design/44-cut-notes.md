@@ -88,7 +88,7 @@ Q-44-41, Q-44-47, Q-44-48; §4c rows 3 to 7 and 19). Every question it rests on 
    measured on conclav.dev (32 cores, release build): **a copy of Standard Doctrine rated in
    1,948 s, 32.5 minutes, at `registry_pulse_ms = 50`**. A lease took 1.27 s at 50 ms and 1.10 s
    at 10 ms, with the server at about 6 per cent of one core: below about a second the pulse is
-   not what paces a rating. A named House source is longer: the Meridiani source was 74 minutes in, on match 47 of a 258-match plan, and still rating when this was written. So the bring-up does not hold players off for the
+   not what paces a rating. A named House source is longer: the Meridiani source rated in 4,757 s, 79 minutes, at 50 ms. So the bring-up does not hold players off for the
    rating: the unit is started after the Active boot's checks, and the seed line and the House's
    purchase run on the running world.
 2. **No House can be given hulls on a live world.** A House's first licence needs three titled
@@ -213,15 +213,25 @@ at this branch), each run on its own scratch instance. Never on dev1 or dev2.
   `@agent/show` "the model answered and did nothing", and `tacsim_deliberate ok` from a
   simulator match #1 started and boarded against an AI squad. With no provider the same check
   reads `disabled` or `error` rows and fails.
-- **The purchase.** On a scratch instance at 50 ms, with the seed step still inside
-  the Active boot (this script's first shape, before the rating's length moved it):
-  `Seedline@1` rated in 1,948.3 s; listed as `e036c2a7  Seedline Market  sealed  class I  400cr
-  90+28 days`; Meridiani lent Slack Water, Cold Comfort and Ninth Ledger; and after the restart
-  `Meridiani's agent #812 bought licence 2 of charter 822 for 40000 minor credits (20s after
-  the boot); the root treasury holds 160000 minor`, read from the procurement ledger. The three
-  Drays went back to the Trust. 184 attempts to register were kept out over that 37-minute run.
-  The final shape (the same steps on the started unit, with a unit restart) was still rating
-  when this was written.
+- **The purchase, in the script's final shape** (the whole acceptance, the long step last, on
+  the second bring-up's running world): at 10 ms, `Seedline@1` rated in 1,666.1 s; listed as
+  `a6ed32e9  Seedline Market  sealed  class I  400cr  90+28 days`; Meridiani lent Slack Water,
+  Cold Comfort and Ninth Ledger; the unit restarted; `Meridiani's agent #812 bought licence 2
+  of charter 828 for 40000 minor credits (15s after the boot); the root treasury holds 160000
+  minor`, read from the procurement ledger; the three Drays handed back; `acceptance: PASSED`.
+- **The purchase of a House source** (`--seed-line meridiani`, 50 ms): the Meridiani source
+  rated in 4,757.2 s and was listed as `a92edfa1  Meridiani Field Series M  sealed  class II
+  400cr  90+28 days`; Meridiani's agent bought it 15 s after the restart. This run was
+  stopped and taken up with `--seed-only` three times on the way (a name the holdings list
+  cuts at twenty characters, which the script now knows by its start; an older rig's shim), and
+  each time went on from where the line stood.
+- **After the hand-back**, on that running world, `@tacsim/port status` read `ceres_port hulls:
+  8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]`. The script now reads
+  that line itself and stops if any programme's hulls are not ready.
+- **Ratings timed** (queued to finished, release build, conclav.dev): a copy of Standard
+  Doctrine 1,948.3 s at 50 ms and 1,666.1 s at 10 ms; the Meridiani source 4,757.2 s at 50 ms.
+- An earlier shape of the script, with the seed step inside the Active boot, kept 184 attempts
+  to register out over the 37 minutes of its rating.
 - Locally: `cargo test -p mush-config -j 2` (the new
   `mw1_the_launch_switch_renders_the_path_only_beside_its_document` among the 15 of
   `shipped_configs`) and `cargo test -p mush-contract-tests -j 2` green; `cargo fmt -p
@@ -277,8 +287,11 @@ it is an edit to `render.sh`, the contract test and three env files.
 - The LLM check against a real provider. The acceptance run proves it fails with no provider
   and passes against a local stub that answers every request with one line; what a real model's
   `ok` row and a real fallback look like on a box is MW.3's to see.
-- Co-op enrolment after the Drays go back: the titles are read back as the Trust's, but no
-  player was enrolled afterwards in the proof.
+- Co-op enrolment after the Drays go back: the port's readiness report reads the pool's hulls
+  ready again, and the script checks that line, but no player was enrolled afterwards in the
+  proof.
+- A House's purchase of the same line a second time, or by the other two Houses: one House,
+  one licence.
 - The all-in-one path (`mushd` alone, where the split is not built) and the two older unit
   shapes: written, not run.
 - The script against a store that already has players.

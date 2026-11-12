@@ -207,6 +207,7 @@ class Session:
         self.pos = 0
         self.typed_at = 0.0
         self.bracketed = 0
+        self.closed = False
         self.suffix = None
         master, slave = pty.openpty()
         settings = termios.tcgetattr(slave)
@@ -358,6 +359,9 @@ class Session:
         return self.text()
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
         try:
             self.type("QUIT")
             self.pump(1)
@@ -458,6 +462,12 @@ class Box:
     def own(self, path):
         if self.owner and os.geteuid() == 0:
             shutil.chown(path, self.owner, self.owner)
+
+    def systemctl(self, verb):
+        done = subprocess.run(["systemctl", verb, self.unit], capture_output=True, text=True)
+        if done.returncode != 0:
+            raise Stop(f"systemctl {verb} {self.unit} failed ({done.returncode}): "
+                       f"{(done.stderr or done.stdout).strip()}")
 
     def unit_active(self):
         return bool(self.unit) and subprocess.run(
@@ -1071,8 +1081,11 @@ def seed_listing(box, staff, document):
     charter = f"{source} Market"
 
     def row_naming(text, pattern):
+        # The lists cut a name to its column (twenty characters on
+        # `+minds/holdings`), so a row is known by the start of the name.
+        start = source.lower()[:16]
         for found in re.finditer(pattern, text, re.M):
-            if source.lower() in found.group(0).lower():
+            if start in found.group(0).lower():
                 return found
         return None
 
@@ -1234,9 +1247,18 @@ def return_hulls(box, staff):
         if re.search(rf"title org:.* \(#{lent['org']}\) ", shown):
             staff.s.do(f"@asset/transfer #{hull['hull']}=org:{lent['trust']} scope={hull['scope']}",
                        r"Title transferred \(transaction #\d+\)")
+    # The Co-op's own word that its pool is whole again: the port's readiness
+    # report has a line for each programme's hulls, and enrolment follows it.
+    report = staff.s.ask("@tacsim/port status")
+    wrong = [line.strip() for line in re.findall(r"^\s+\S+ hulls: .*$", report, re.M)
+             if not line.rstrip().endswith("[ready]")]
+    if wrong:
+        raise Stop("the hulls went back and the port still reads them not ready, so Co-op "
+                   f"enrolment may be closed: {'; '.join(wrong)}")
     del box.state["lent"]
     box.save_state()
-    say(f"handed the {len(lent['hulls'])} Drays back to the {TRUST}; Co-op enrolment is open again")
+    say(f"handed the {len(lent['hulls'])} Drays back to the {TRUST}; Co-op enrolment is open again "
+        "(@tacsim/port status reads every programme's hulls ready)")
 
 
 def purchases(box, org):
@@ -1401,7 +1423,7 @@ def bring_up(box, password):
         box.render()
     if box.unit_active():
         say(f"stopping {box.unit}: the world is down until the Active boot has passed")
-        subprocess.run(["systemctl", "stop", box.unit], check=True)
+        box.systemctl("stop")
     elif box.unit:
         say(f"{box.unit} is stopped, and stays stopped until the Active boot has passed")
     if box.split and not args.no_systemd:
@@ -1515,7 +1537,7 @@ def seed_and_purchase(box, password):
             if box.unit:
                 say(f"restarting {box.unit} so {house[1]}'s month opens again (the gateway holds "
                     "connections; players see a restart, not a drop)")
-                subprocess.run(["systemctl", "restart", box.unit], check=True)
+                box.systemctl("restart")
             else:
                 say(f"no unit to restart: restart the world now, or {house[1]} waits for the next IC month")
             time.sleep(5)
@@ -1605,7 +1627,7 @@ def main():
             return 0
         if not box.unit_active():
             say(f"starting {box.unit}: players are let in from here")
-            subprocess.run(["systemctl", "start", box.unit], check=True)
+            box.systemctl("start")
         held_back = None
         try:
             checks_on_the_unit(box, password)
