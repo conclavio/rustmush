@@ -49,8 +49,12 @@ fn world_stamp(stamp: &ClockStamp) -> Result<(), PublicationError> {
 }
 
 /// Exact immutable Open evidence, constructed only by the closed owner writer.
-/// Warrant is deliberately personal in this protocol; house dispatch is not
-/// inferred from an object owner or a staff permission.
+/// The warrant is the dispatcher's own: `dispatcher` is the character who
+/// launched, never an organisation, and a House's licence or hull is flown by
+/// a character whose grant the reader asked live (doc 23 cut S.4c, §18). The
+/// row records neither that grant nor the arm that admitted the hull (title,
+/// lease or office); nothing is inferred from an object owner or a staff
+/// permission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OpenClaim {

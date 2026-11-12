@@ -7,7 +7,73 @@ on. Each session edits only its own section, so two units' notes never touch the
 
 ## MW.0
 
-Not built.
+Licensed minds composed on a live server (doc 44 §7.1, Q-44-39; second review, §4c row 1). Built
+with MW.22 below as one change: the owner ruled that neither reaches main without the other.
+
+**Built.**
+
+- **Every Active launch composes the claim path.** `tacsim::launch::LaunchComposition::prepare`
+  (`crates/tacsim/src/launch.rs`) now ends its Active branch with
+  `with_ic_minds_in_bays(Vec::new())`, after the House chain and the player market, for a
+  format-1 and a format-2 deployment alike. An `Initialize` launch composes none of it, as
+  before. So on a production boot `claim_path_composed` is true once the launch is Active: a
+  licensed `+tv/<n> launch mind=filed:<n> go` opens its claim in the bay before the ramp, the
+  field's `claim_seal` finds the claim and admits the rig under its own seal, a licence's seats
+  are counted at `go`, and the reader refuses an Open while a resale is pending.
+- **One function, shared by construction.** `mush_server::boot` already called `prepare` and
+  nothing after it. The switch the rigs alone could reach,
+  `LaunchComposition::with_ic_minds_in_bays`, is deleted, and the M8 world's `factory`
+  (`crates/tacsim/tests/domain_field/m8_world.rs`) calls `prepare` and nothing after it. No
+  world can now compose a launch without the claim path or with something production lacks, so
+  every M8 story runs on the production composition. `m8_world_with_claims` and `factory_for`
+  are gone; `m8_world_field` remains as the M8 world on a chosen site.
+- **Nothing else had to be composed with it.** Doc 17g §4 deferred "IC claims and hull cover in
+  live play" for want of an IC region host. The host exists since doc 23's S.4b (the surface
+  tick's claim arm and the IC field). `with_ic_minds_in_bays` asks only for an Active commerce.
+  Hull cover asks for the claim path, not the other way about, and stays uncomposed.
+- **The shared story helpers follow the claim.** `m8_world::launch` and `recover` pump the
+  claim arm where a launch opened a claim, so doc 17h's stories read as before.
+
+**Tests.** Fast, on the production composition (`domain_field::m8_world`):
+`m8g_the_combined_world_boots_active` now asserts the claim path is composed, and every M8
+world asserts, at its own `Initialize` boot, that none is composed there. **The server's own
+boot shows it too**: `mush-server`'s player-market tests boot the server's module list from a
+launch document (`game_modules` with `[tacsim.minds].launch_path`), and their pinned count of
+read services and grants rose from 41/44 to 42/45, which is the claim path's admission reader
+and TacSim's grant to it (`player_market_commands.rs`, `player_market_typed.rs`; the same pin
+in `tacsim`'s `hardware::flow::launch` rose from 40/43 to 41/44; the caps are 64/64). The acceptance stories are `#[ignore]`d (each takes a genuine Registry rating) and run on
+the CI dispatch: `s4b3_a_licensed_mind_flies_a_field_at_256` and `_at_512` (a filed mind on a
+rig its pilot holds title to opens a claim, is admitted to a field under its own seal and card,
+and the one seat refuses the second rig), and
+`s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`, rewritten for MW.22 (its
+step 3 is the launch refused while the licence's resale is pending). Results are under MW.22.
+
+**Divergences.**
+
+- **A leased rig and a House hull are not refused.** The row's last clause ("a leased rig and a
+  House-titled hull are refused by name") describes MW.0 alone. Under Q-44-39 it never reaches
+  main alone, and MW.22 admits both. What is refused by name is a hull the pilot has no
+  authority over (MW.22).
+- **No change to `mush-server`'s code**, only a comment at the call: the function it calls
+  changed.
+
+**Not built.** Hull cover and paid Follow stay uncomposed (17g §4). The DT launch
+(`+sortie/launch`) still takes no `mind=` word, so a detachment's flight opens no claim (doc 23
+§17.9, 23-10). A cored ship opens no claim (D-23-12).
+
+**Not pinned by a story.**
+
+- **A changed mind changing what the rig does.** The field stories pin that the rig flies the
+  claim's own seal, mind and card and not the ROM's, with no drop and no fault. No story flies
+  two different filed minds on one rig and compares what it did; MW.7's filed-mind story is the
+  first that flies a mind written to behave differently.
+- **A rig launched on a world the server binary booted.** `mush-server`'s tests boot its own
+  module list over an Active launch and count the claim path's reader, and the M8 world flies
+  rigs on what `prepare` returns, but no one test does both. MW.1's bring-up is where a rig is
+  first launched on a box.
+- **A definition-set change at deploy.** The claim path adds its owners' definitions to an
+  Active launch's manifest, so a store written by an earlier build does not boot under this
+  one. The dev boxes are wiped at every step; nothing migrates.
 
 ## MW.1
 
@@ -403,7 +469,109 @@ Not built.
 
 ## MW.22
 
-Not built.
+Doc 23's cut S.4c: lease and organisation authority in the title fence, in the Roll and at the
+dispatch (doc 44 §7.1, Q-44-39; second review, §4c row 2). The design note is doc 23 §18
+(D-23-24), written first.
+
+**Built.**
+
+- **One rule, in the Roll.** `mush_roll::commerce::ic_claims::hull_authority(world, hull, actor)`
+  (`crates/mush-roll/src/commerce/ic_claims/hull.rs`) answers by which of three arms a character
+  may open a claim on a hull, or why not. The title must be live. Then: the character's own
+  unscoped **title**; a **lease**, read from the economy alone (the title carries its holder's
+  `Lease` claim, and that contract is Active, lease-shaped, issued by the holder, pledges the
+  hull and names the character a party); or an **office** (the hull is an organisation's and
+  the character holds a live `roll.holder.org` grant on the title's scope, asked as a read).
+- **The Roll's reader captures it.** `TitleFence` (`ic_claims/reader.rs`) keeps the arm with the
+  title's revision and re-reads both at the fresh check, so a lease that ended or a grant taken
+  back between the read and the commit is stale. The reader's definition says
+  `"hull":"current_title_lease_or_office"`.
+- **The dispatch calls the same function.** `untitled_refusal` (`surface/dispatch.rs`) refuses at
+  `go` exactly what the Open would refuse for want of authority, and names the hull and its
+  title's holder: "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you, leased
+  to you, or held by an organisation you act for." The dispatch's own copy of the rule
+  (`titled_to`) is deleted. The bot's pinned phrase is still inside the sentence.
+- **An organisation's owner licence opens a claim** (doc 23 Q-23-19's path, which a House's
+  licence on any hull needs). The reader's fence over an owner licence's charter accepted only
+  the dispatcher's personal title; it now accepts the arm the owner projection proved, a House's
+  charter by the acting character's office. The claim history's audit (`ic_claims/audit.rs`)
+  accepted only the charter's historical owner as dispatcher; for a House birth it accepts any
+  dispatcher, as the paid arm already does for an organisation's licence.
+
+**Tests.**
+
+- `mush-roll`, six tests in `ic_claims::hull` (`s4c_*`): each arm, the order they are tried in,
+  the refusal naming the holder, a title that is not live admitting nobody, a claim that is not
+  the titled lessor's, a grant on another scope.
+- `tacsim`, in source: `s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open`
+  (`surface/dispatch/tests.rs`), rewritten: nothing is read without the claim path.
+- `tacsim`, fast, on the production composition:
+  `mw22_the_hull_rule_reads_a_real_lease_a_house_title_and_a_personal_title`
+  (`domain_field::m8_world`) asks the rule of the M8 world's own rig as `+tv/lease go` left it
+  (the lessee admitted by the lease, a stranger refused naming Occator), then titled to a House
+  (refused naming the House; admitted by the office once granted), then titled to the pilot.
+- The acceptance story, `#[ignore]`d, on the CI dispatch:
+  `s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`, rewritten. Through
+  registered commands, with a non-GOD pilot: (1) a chartered pilot launches her paid Pin on her
+  leased rig, the claim opening in the bay and the open line carrying the claim's seal; (2) the
+  one seat refuses the second leased rig; (3) with the Pin's resale accepted while that claim
+  is open, the second rig is refused by the pending sentence; (4) the recover lands the Close;
+  (5) on a rig titled to a House she holds no office with, she is refused by the sentence,
+  naming the rig; (6) on a rig titled to the Coprates House she flies the House's own owner
+  licence, the House the holder and she the acting principal, the server restarts with that
+  claim open, and it closes at home.
+- Doc 17h's stories with the claim path composed, on the CI dispatch:
+  `m8g_story_tier2_held_minds_seal_aboard`,
+  `m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap` and
+  `m8g_story_the_combined_world_rates_files_lists_and_sells`.
+
+RESULTS_PLACEHOLDER
+
+**Divergences.**
+
+- **The lease is read from the economy's contract, not from `TvLease`.** Doc 23 Draft 0.10
+  sketched a `LeaseFence { lease, lessor, lessee, term_ends_ic }` captured from TacSim's rig
+  lease record. The Roll cannot read a TacSim record, and the economy already holds the lease as
+  a contract and a claim on the title, so the rule reads those. Doc 23 §18.2 records it.
+- **The claim row does not record the arm.** Draft 0.10 has the lease "audited like the title's
+  revision". The row keeps the title's revision, as before, and nothing else new: the row's wire
+  is mirrored field for field in `mush-core`'s terminal-capacity protocol, and M8c S2 already
+  set the precedent that the row records the dispatcher and not the grant.
+- **The fence is asked as a read.** `roll.holder.org` is amount-bearing; flying a hull moves no
+  money, so a grant with a spending limit admits (M8f's P2a ruling). An organisation's licence
+  itself is still asked the way M8c built it.
+- **A House is "an organization" in the refusal.** The sentence names the title's holder with
+  the port's own helper (`port::claims::holder_name`), which names a character and a lane
+  organisation (Occator) and calls any other organisation "an organization". So a pilot refused
+  on a House's hull reads "OWP-TV-01 is an organization's hull; ...": the rig is named, the
+  House is not. Naming it means deciding which organisations a player may be told the name of.
+
+**Defaults that would be a significant change to undo.**
+
+- **Recording the arm on the claim.** If an inspection or a dispute ever has to say on what
+  authority a hull was flown, the claim row, the admission digest and `mush-core`'s mirror of
+  the row all change, and every stored claim with them.
+- **A forfeit rig lease still admits.** The Roll reads the economy's contract, which stays
+  Active after Occator captures the deposit; the launch verb does not refuse a forfeit rig
+  either. Refusing a licensed mind there means a TacSim fact in the Roll's rule, or a second
+  rule at the dispatch that the Open does not share.
+
+**Not built.** Hull cover still sells only over a hull titled to its dispatcher
+(`coverage/reader.rs`); no production launch composes it. The Trust's charter of a ship has the
+lease arm's shape but no ship opens a claim (D-23-12). No verb lets a House name which officers
+may fly which hull: the grant is the organisation-wide one its licences use.
+
+**Not pinned by a story.**
+
+- A lease that ends, or a grant taken back, **while the claim is open**: the design says the
+  claim stays open until the epoch closes; no story ends a lease mid-claim. No in-game verb
+  takes a `roll.holder.org` grant back.
+- A rig repossessed where it lies on a site with its claim open: not traced (doc 23 §18.4).
+- The reader's stale fence (authority lost between the read and the commit) end to end; the
+  unit tests pin the rule, not the race.
+- A character-held owner licence flown on a leased rig, and an organisation's paid Pin on an
+  organisation's hull: the story flies a personal paid Pin on a lease and a House owner licence
+  on a House hull; the zero-PC story flies a House's paid Pin on a leased rig.
 
 ## MW.23
 

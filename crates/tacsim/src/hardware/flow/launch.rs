@@ -1825,10 +1825,11 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (40, 43),
-        "40 services and 43 grants: Sim's four movement readers and actual field-crew \
-         control reader each add a service and grant to the 35/38 DT.2b1 composition; \
-         the caps are 64/64"
+        (41, 44),
+        "41 services and 44 grants: Sim's four movement readers and actual field-crew \
+         control reader each add a service and grant to the 35/38 DT.2b1 composition, and \
+         the claim path every Active launch composes (doc 44 MW.0) adds the Roll's IC \
+         admission reader and Tacsim's grant to it; the caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
     check!(

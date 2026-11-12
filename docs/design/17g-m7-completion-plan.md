@@ -331,6 +331,10 @@ bring-up runs.
 - **IC claims and hull cover in live play.** These need an IC region host that doesn't
   exist (17f §10). They stay composed in tests, named as the conditional
   integration, and are not presented as a passed live story.
+  **IC claims closed 2026-11-11** by doc 44's MW.0 with MW.22: the IC host exists since doc
+  23's S.4b (the surface tick's claim arm and the IC field), and every Active launch now
+  composes the claim path (`LaunchComposition::prepare`), with doc 23's S.4c beside it. Hull
+  cover is still deferred.
 - **Follow-ups 17f already lists:**
   - the recall notice drain aborting on one bad holding (`registry_recall/notice.rs`)
   - Registry pacing, 3–7 s per lease, which real players will feel

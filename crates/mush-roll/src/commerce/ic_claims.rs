@@ -6,6 +6,7 @@
 
 pub(crate) mod audit;
 mod config;
+mod hull;
 mod inventory;
 mod owner_protocol;
 mod protocol;
@@ -17,6 +18,7 @@ mod writer;
 
 pub use audit::IcClaimHistory;
 pub use config::IcClaimConfig;
+pub use hull::{HullAdmission, HullAuthority, HullRefusal, hull_authority};
 pub(crate) use inventory::ClaimInventory;
 pub use owner_protocol::{IcCloseKind, IcSealOutput, IcSealParticipant};
 pub(crate) use protocol::{IcParticipants, IcProtocol, Transition};

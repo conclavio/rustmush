@@ -11,9 +11,8 @@ use mush_core::read_service::{
     OwnerReadContext, OwnerReadError, OwnerReadHandle, OwnerReadService,
 };
 use mush_core::{ClockStamp, DefinitionRef, Flags, ModError, ObjId, ObjKind, Registrar, World};
-use mush_economy::{AssetLifecycle, EconomyStore};
 use serde::Serialize;
-use std::{any::TypeId, collections::BTreeSet};
+use std::collections::BTreeSet;
 
 use super::super::families::CommerceFamilies;
 use super::super::owner_holdings::{OwnerProjectionError, project_owner_with_parent_for};
@@ -22,10 +21,12 @@ use super::super::personal_paid_holdings::{project_entitlement_paid_for, reader_
 use super::super::rating::{RatingCompatibility, RatingFamilies};
 use super::super::records::PublicationError;
 use super::super::{Capacity, LicenceId, TermPhase, TermWindow, WorldIcSeconds};
+use super::hull::{HullAuthority, HullRefusal, hull_authority};
 use crate::RollStore;
 
-/// Exact personal dispatch selector. No actor, capacity, currentness bit,
-/// source, executable, title or caller-provided warrant appears here.
+/// Exact dispatch selector. No actor, capacity, currentness bit, source,
+/// executable, title, lease, office or caller-provided warrant appears here:
+/// the reader finds the hull's authority itself (doc 23 cut S.4c).
 #[derive(Serialize)]
 pub struct IcAdmissionRequest {
     unit: ObjId,
@@ -37,52 +38,66 @@ impl IcAdmissionRequest {
     }
 }
 
+/// **What a fence stands over** (doc 23 cut S.4c): the hull the claim flies, admitted by any
+/// of [`hull_authority`]'s three arms, or an owner licence's charter, which is never leased.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+enum Fenced {
+    Hull,
+    Charter,
+}
+
+/// **A live title and the arm that admits `holder` under it** (doc 23 D-23-22, widened by
+/// cut S.4c, D-23-24): captured at the read and re-read whole at the fresh check, so a title
+/// that moved, a lease that ended or a grant that was revoked between the two is `Stale`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct TitleFence {
     object: ObjId,
     revision: u64,
     holder: ObjId,
+    over: Fenced,
+    by: HullAuthority,
 }
 impl TitleFence {
-    fn capture(world: &World, object: ObjId, holder: ObjId) -> Result<Self, PublicationError> {
-        if world
-            .module_state_owner(TypeId::of::<EconomyStore>())
-            .is_none_or(|owner| owner.as_str() != "economy")
-        {
-            return Err(PublicationError::Unavailable);
-        }
-        let economy = world
-            .module_state::<EconomyStore>()
-            .ok_or(PublicationError::Unavailable)?;
-        let title = economy
-            .snapshot()
-            .asset(object)
-            .ok_or(PublicationError::Missing)?;
-        if economy.is_frozen()
-            || world
-                .get(object)
-                .is_none_or(|row| row.kind != ObjKind::Thing || row.flags.contains(Flags::GOING))
-            || title.object != object
-            || title.title_owner != mush_org::PrincipalId::Object(holder)
-            || title.scope.is_some()
-            || title.frozen
-            || title.stolen.is_some()
-            || title.lifecycle != AssetLifecycle::Active
-            || title.revision == 0
-        {
+    fn capture(
+        world: &World,
+        object: ObjId,
+        holder: ObjId,
+        over: Fenced,
+    ) -> Result<Self, PublicationError> {
+        let admitted = hull_authority(world, object, holder).map_err(|refusal| match refusal {
+            HullRefusal::Untitled => PublicationError::Missing,
+            HullRefusal::Unavailable | HullRefusal::Anothers { .. } => {
+                PublicationError::Unavailable
+            }
+        })?;
+        if over == Fenced::Charter && matches!(admitted.authority, HullAuthority::Lease { .. }) {
             return Err(PublicationError::Unavailable);
         }
         Ok(Self {
             object,
-            revision: title.revision,
+            revision: admitted.revision,
             holder,
+            over,
+            by: admitted.authority,
         })
     }
     fn check(&self, world: &World) -> Result<(), PublicationError> {
-        if Self::capture(world, self.object, self.holder)? != *self {
+        if Self::capture(world, self.object, self.holder, self.over)? != *self {
             return Err(PublicationError::Stale);
         }
         Ok(())
+    }
+    /// Whether the fence's arm is the one `holder` holds the charter by: a character by
+    /// their own title, an organisation by an office with that organisation.
+    fn held_as(&self, holder: super::super::Holder) -> bool {
+        match (holder, &self.by) {
+            (super::super::Holder::Character(c), HullAuthority::Title) => c == self.holder,
+            (
+                super::super::Holder::Organization { org, acting },
+                HullAuthority::Office { org: titled, .. },
+            ) => org == *titled && acting == self.holder,
+            _ => false,
+        }
     }
 }
 
@@ -217,7 +232,7 @@ fn refusal(e: OwnerProjectionError) -> OwnerReadError {
 pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescriptor, ModError> {
     super::super::holding_reader::descriptor(manifest)?;
     Ok(DefinitionDescriptor::new(DefinitionKind::new("owner_read").map_err(error)?,DefinitionId::new("personal_ic_admission").map_err(error)?,1,
-        serde_json::json!({"format":1,"protocol":"personal_ic_admission_v1","subject":"actual_actor","hull":"current_personal_title","owner":"current_owner_and_parent","paid":"own_term_status","source_display":false,"manifest":manifest})).map_err(error)?.with_references(vec![manifest.clone()]))
+        serde_json::json!({"format":1,"protocol":"personal_ic_admission_v1","subject":"actual_actor","hull":"current_title_lease_or_office","owner":"current_owner_and_parent","paid":"own_term_status","source_display":false,"manifest":manifest})).map_err(error)?.with_references(vec![manifest.clone()]))
 }
 impl IcAdmissionReader {
     pub fn request(
@@ -280,7 +295,7 @@ impl OwnerReadService for IcAdmissionReader {
         }
         roll.commerce_ready()
             .map_err(|_| OwnerReadError::Unavailable)?;
-        let hull = TitleFence::capture(ctx.world(), request.unit, ctx.actor()).map_err(|e| {
+        let hull = TitleFence::capture(ctx.world(), request.unit, ctx.actor(), Fenced::Hull).map_err(|e| {
             tracing::debug!(target: "ic_claim", unit = request.unit.0, error = ?e, "roll: IC admission: the hull's title fence");
             OwnerReadError::Refused
         })?;
@@ -300,17 +315,36 @@ impl OwnerReadService for IcAdmissionReader {
                     request.licence,
                     &self.expected,
                 )
-                .map_err(refusal)?;
+                .map_err(|e| {
+                    tracing::debug!(target: "ic_claim", error = ?e, "roll: IC admission: the owner projection");
+                    refusal(e)
+                })?;
                 super::super::charter_pending::current::require_clear(
                     ctx,
                     &self.families,
                     holding.charter(),
                 )
-                .map_err(|_| OwnerReadError::Refused)?;
-                let charter =
-                    TitleFence::capture(ctx.world(), ObjId(holding.charter().get()), ctx.actor())
-                        .map_err(|_| OwnerReadError::Integrity)?;
-                if charter.revision != holding.title_revision() {
+                .map_err(|_| {
+                    tracing::debug!(target: "ic_claim", "roll: IC admission: a pending charter transfer");
+                    OwnerReadError::Refused
+                })?;
+                // Doc 23 cut S.4c (Q-23-19's organisation path): the charter is the holder's
+                // own, a character's by title or an organisation's by the acting character's
+                // office, the arm the owner projection above already proved.
+                let charter = TitleFence::capture(
+                    ctx.world(),
+                    ObjId(holding.charter().get()),
+                    ctx.actor(),
+                    Fenced::Charter,
+                )
+                .map_err(|e| {
+                    tracing::debug!(target: "ic_claim", error = ?e, "roll: IC admission: the charter's title fence");
+                    OwnerReadError::Integrity
+                })?;
+                if charter.revision != holding.title_revision()
+                    || !charter.held_as(holding.holder())
+                {
+                    tracing::debug!(target: "ic_claim", fence = ?charter, holder = ?holding.holder(), "roll: IC admission: the charter's fence is not the holding's");
                     return Err(OwnerReadError::Integrity);
                 }
                 // Use the selected current qualification already proved by
