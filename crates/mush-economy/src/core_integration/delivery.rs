@@ -4,9 +4,7 @@ use super::{
     CoreClass, CoreDeliveryPromise, CoreIntegrationError as Error, CorePaymentHistory,
     CoreTerminalResult,
 };
-use crate::{
-    AccountStatus, AssetLifecycle, EconomyStore, InstrumentId, InstrumentKind, InstrumentStatus,
-};
+use crate::{AssetLifecycle, EconomyStore};
 use mush_core::{CommitToken, Flags, ObjKind, World};
 use mush_org::PrincipalId;
 use std::{any::TypeId, collections::BTreeSet};
@@ -84,22 +82,8 @@ pub fn require_core_delivery(
         }
     }
     if history.subject().class == CoreClass::III {
-        let id = InstrumentId::new(super::subject::CORE3_ENTITLEMENT).ok_or(Error::Invalid)?;
-        let entitlement = snapshot.instrument(&id).ok_or(Error::Unavailable)?;
-        let principal = PrincipalId::Object(requester);
-        if entitlement.kind != InstrumentKind::Entitlement
-            || entitlement.scale != 0
-            || entitlement.transferable
-            || entitlement.status != InstrumentStatus::Active
-            || !snapshot.accounts_of(&principal).any(|a| {
-                a.instrument == id
-                    && a.scope.is_none()
-                    && a.status == AccountStatus::Active
-                    && a.posted_balance.minor() > 0
-            })
-        {
-            return Err(Error::Unavailable);
-        }
+        // The end-user entitlement, by the register's one rule (doc 44 unit MW.23).
+        super::end_user::entitlement(snapshot, requester)?;
     }
     Ok(history)
 }

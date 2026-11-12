@@ -1346,7 +1346,235 @@ may fly which hull: the grant is the organisation-wide one its licences use.
 
 ## MW.23
 
-Not built.
+The Class III end-user entitlement issued by a launch route (doc 44 §7.1; Q-44-40, ruled at its
+default; second review, §4c row 3). Q-44-12 (no heirloom exemption) is ruled and is pinned here
+by a story.
+
+**Built.**
+
+- **One rule for the entitlement.** `mush_economy::core_integration::end_user::entitlement`
+  (`crates/mush-economy/src/core_integration/end_user.rs`) is what the integration's acceptance
+  and completion (`authority.rs`) and the delivery (`delivery.rs`) now ask, in place of two
+  copies of the same test. The test is unchanged: the instrument
+  `tacsim.licence.core3_end_user` is registered as an active, indivisible, untransferable
+  entitlement, and the requester holds an `Active` unscoped account in it with a balance. A
+  requester without it is refused exactly as before ("Core manufacture is unavailable or
+  changed."). `CORE3_ENTITLEMENT` is now a public constant.
+- **The registration, in the economy.** `register_end_user(ctx, &EndUserRegistration)` posts
+  **one transaction** with four lines: the fee from the holder's own credit account to the
+  Registry's account, and one unit of the entitlement from the issuer's source account to the
+  holder's. The fee and the right are one journal entry, so a restart keeps both or neither.
+  The issuer must be a registered title issuer (`EconomyModule::with_title_issuers`, the
+  wiring-frozen table `issue_title` asks). The post runs under an authority that admits
+  exactly those four lines, by the holder (`issue_title`'s pattern), because the live org
+  bridge refuses any debit of a system account that staff did not type. The first
+  registration on a world registers the instrument and opens the issuer's source account;
+  each holder's first opens their own account. `check_end_user_registration` makes every
+  check and writes nothing; `end_user_standing` reads `Unlisted`, `Registered` or `Suspended`.
+- **Once.** A registered holder is refused (`EndUserError::Registered`) with nothing written.
+  The idempotency key is the holder and their entitlement account's journal sequence, so two
+  calls over one state resolve to one transaction, and a registration staff later reverse can
+  be made again.
+- **The route, in the launch.** `+enduser` (`crates/tacsim/src/launch/end_user.rs`, registered
+  in `commands.rs` beside `+licence`). `+enduser` and `+enduser/show` read the actor's
+  standing; `+enduser/apply` previews; `+enduser/apply go` registers. The fee is 2,500cr
+  (`END_USER_FEE_MINOR`), paid into `LaunchDeployment::registry`'s account, where the filing
+  fee and the levy go; the issuer is the deployment's `registry_issuer`, the principal that
+  already issues the launch's charter and core titles. It answers "The Registry takes no
+  end-user registrations on this world." with no launch or on an `Initialize` boot. It works
+  on a format-1 launch as on a format-2 one.
+- **Nothing in the launch file, the bring-up or `deploy/`.** No format bump, no new key, no
+  new account for an operator to open, no new grant. `launch.json.example`,
+  `launch-bringup.py` and the test rigs are untouched.
+- **Help.** `docs/help/hardware.md` has the registration's section, and the sentence that said
+  only that Class III "requires the buyer's actual receiving entitlement" now says how to get
+  it.
+
+**The route chosen, and why.** Every right a launch issues to an end user is the end user's
+own paid act, with the Registry's fee landing in the launch's Registry account and no clerk
+or staff on the path: a filing (the fee, then the owner licence), a House Pin and a personal
+Pin (quote, fund, grant). The game's one other `Entitlement` instrument, the prospecting
+licence, is issued the same way by `+licence/buy go`. Class III follows that kind: a paid
+registration with the Registry. It needs no person at a desk, so it works on a dev box nobody
+is watching, and it needs nothing from the bring-up.
+
+**Rejected.**
+
+- *A Registry operator's grant* (`@registry/enduser <character>` under a new
+  `roll.registry.*` capability). It puts a person on the path of every Class III core, adds
+  an eighth grant to the runbook and the bring-up script (a `deploy/` change while MW.1's PR
+  is open), and would be the only right in a launch issued at an operator's discretion; the
+  operators' verbs recall, revoke, inspect, fine and seize, they do not issue.
+- *A typed purchase* (quote, fund, grant as an economy owner participant, like the Pins). It
+  is the right shape if the registration ever has a term, seats or a resale, and it is the
+  future family named in `legacy-handlers.toml`. It is several thousand lines of protocol for
+  a right that today is one account balance read by a legacy-lane snapshot, and nothing in
+  Q-44-40 needs it.
+- *Naming entitled characters in the launch file.* A format bump, and not a route: a player
+  who arrives later could never have a Class III core.
+
+**`ungovern`.** Delivering a Class III core in a launch world needs only the entitlement. The
+importer's certified Class III die is integrated at the chartered factory as a governed core;
+the ungoverning shop is for the refit that takes a governor off and for heirloom and grey
+dies. So nothing was composed for it. The second review's "the example launch has no
+`ungovern`" is true of `deploy/instance/launch.json.example` and stays true; the bring-up
+script (MW.1) already stands up the Tether back room on the dev launch and names it in the
+file it writes, and the M8 test world composes one too.
+
+**Tests.**
+
+- `mush-economy`, `core_integration::end_user::tests` (five, fast): the fee and the unit are
+  one transaction, the preview writes nothing, the instrument does not exist before the first
+  registration, a second registration is refused with nothing paid or issued; every refusal
+  is whole (another character's wallet, an unregistered issuer, a short wallet, a zero fee,
+  the payer as its own Registry) and registers nothing; a frozen registration entitles nobody
+  and is not issued again; an account with nothing in it entitles nobody and is the one a
+  registration fills; a restart from the folded store keeps the registration and still
+  issues it once. Four mutations of the module were each caught by a test of their own: the
+  rule not asking for a balance, a registered holder not refused, an unregistered issuer
+  admitted, a frozen account not refused.
+- `tacsim`, in source (two, fast): the help's figure is the fee the verb charges and a tenth
+  of the Class III core's price; the route issues the instrument doc 17 names.
+- `tacsim`, `domain_field::m8_end_user` (three, fast, on the production composition, the M8
+  world booted plain, `Initialize`, `Active` as the bring-up boots it):
+  - `mw23_a_registered_end_user_has_a_class_three_core_built_and_delivered`, the acceptance.
+    The world has no entitlement instrument. The pilot is told they are not listed; the stock
+    agent issues a certified Class III die and offers its integration, and the pilot's
+    acceptance is refused with the uniform refusal and nothing charged. `+enduser/apply`
+    previews and writes nothing. `+enduser/apply go` takes 2,500cr into the launch's Registry
+    account and leaves the pilot one unit and the issuer's source at minus one. A second
+    `go`, and a second preview, answer the standing and move nothing. The world restarts
+    from its store and the registration stands. The same integration is then accepted,
+    worked its 96 hours, completed and delivered into the pilot's hands for 25,000cr, the
+    delivery's facts hold, and the title's birth reads Class III, certified. Another
+    character with a full wallet is still refused.
+  - `mw23_a_heirloom_in_the_back_room_is_under_the_entitlement` (Q-44-12): the pilot's own
+    heirloom die is refused at the back room until they register; then the same offer is
+    accepted and the heirloom is delivered as a Class III core whose birth reads heirloom.
+    This closes doc 17h's "blocked: the heirloom over the launch world".
+  - `mw23_the_route_exists_only_on_an_active_launch`: a world with no launch answers the
+    not-open line to all three forms and issues nothing.
+- **Staff in the stories.** Staff commands mint credits into a wallet and open a second
+  character's wallet. None issues the entitlement, the core or the certified die. The
+  heirloom story's die is issued by staff, which is how doc 17h seeds heirlooms (its §4 defers
+  the back room as a vendor). The stories write no module state by hand; the fiat budget is
+  unchanged.
+
+**Results (2026-11-12).**
+
+- **Local (Windows):** the five `mush-economy` unit tests pass; `cargo check -p tacsim --tests`,
+  clippy on `mush-economy` and the rustdoc check on `mush-economy` and `tacsim` are clean.
+- **conclav.dev (Linux, a throwaway clone of main `330a8b249` with this branch applied):** the
+  three `m8_end_user` stories pass (the acceptance in 16 s). `tacsim`'s 46 in-source tests of
+  the hardware flow and the launch pass, among them
+  `shipped_class_three_requires_actual_entitlement_and_never_charges_on_refusal` and the
+  heirloom and grey-die tests, which run the shared rule. `cargo fmt --check`, clippy with
+  `-D warnings` over all targets of `mush-economy` and `tacsim`, and the M7 memory-size lints
+  are clean. `cargo nextest run -p mush-contract-tests`: 192 passed, 8 skipped, with no budget
+  or census re-blessed; the only register that moved is `legacy-handlers.toml`'s new stanza.
+- **Mutation checks, on the stories** (a second clone): with the integration no longer asking
+  for the entitlement, the acceptance and the heirloom story fail at "refused"; with a
+  registered holder no longer refused, the acceptance fails at "once"; with the registration
+  issuing no unit, both fail. The unmutated tree passes in the same clone.
+- **CI, PR #553:** green on the first push (`0c8e518cd`) and on the code's last commit
+  (`14ea5234b`): 28 checks passed each time, the 15 dispatch-only jobs skipped.
+- **The three dispatch-only claim stories PR #546 repaired**, run on conclav.dev with
+  `--run-ignored only` on this branch, since they share the launch's composition:
+  - `s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`: passed (639 s).
+  - `g4_the_attestation_channel_learns_an_ungoverned_flight_of_a_filed_mind`: passed
+    (1,789 s).
+  - `m8g_story_tier2_held_minds_seal_aboard`: **failed** (1,782 s), "close_ic_mind by #808
+    did not land: that action is not currently offered". It is not this unit's. The same
+    story run on main `330a8b249` with none of this branch fails with the same line
+    (1,790 s), and run on this branch over PR #554's head `7294d9e9d` it passes (1,788 s).
+    PR #554 (the MW.0 follow-up: a rig's second claim in one boot never closes) is the fix,
+    and this branch merges with it without conflict.
+
+**What the survey and the brief had wrong.**
+
+- The entitlement was said to be provisioned "in the rigs under `m8_world.rs`". It was not:
+  only `tacsim`'s hardware flow rig and `mush-industry`'s delivery fixture issued it, and the
+  M8 world had no Class III core in it at all (its grey-die story says so).
+- `mush-server`'s `launch_world` rig builds the launch's identities by production commands,
+  but it has never driven the hardware: it checks only that `issue-core-die` is offered. So
+  the acceptance is in the M8 world, which runs `LaunchComposition::prepare` (the call
+  `mush_server::boot` makes) and has the hardware driver.
+- Doc 17 §16 says the entitlement is "checked at transaction time the way
+  `extraction_authorized` checks an extraction licence". It is stricter: the extraction
+  licence asks for an `Active` account, this asks for a balance as well. That is why the
+  route has to post a unit and cannot only open an account, as `+licence/buy` does.
+- 17f M7.11 says "an org grant is scoped to the org". Nothing checks an organisation's
+  entitlement: the rule reads the requester's personal, unscoped account, and an integration
+  is always ordered by a character.
+
+**Defaults taken.**
+
+- **The fee is 2,500cr**: a tenth of the Class III core's 25,000cr, and the prospecting
+  licence's fee. Provisional.
+- **No term.** The registration does not lapse. The entitlement is an account balance the
+  economy reads at the act; a lapse needs a record of the term and a gate at the acceptance.
+- **One registration a character**, not one a login account: the economy's rule is about the
+  requesting character.
+- **The fee is not in the `launch_content` definition**, so no definition or digest of an
+  existing world moves and a kept store boots as before.
+- **The registration is not chronicled.** It is one private journal entry. The prospecting
+  licence's fee is a Public contract the canon bridge records; this is not, because a
+  contract's settlement cannot carry the entitlement's unit in the same transaction.
+- **A principal the Registry has barred** (`@registry/revoke principal=`, 90 IC days) can
+  still register. The bar is a Roll row and the verb is a legacy-lane command with no read of
+  it.
+- **No verb suspends a registration.** `Suspended` is read when the entitlement account is
+  not `Active`; today only a boot's drift freeze or a closed account produces that. Staff can
+  take a registration back by reversing its transaction (`@econ/reverse`), which also returns
+  the fee; that path is not pinned by a test.
+
+**What would be a significant change to undo.**
+
+- **A second power for a registered title issuer.** `register_end_user` is a public function
+  of `mush-economy` that debits a system account without staff, under its own injected
+  authority. It is bounded (one unit of this one instrument, to the paying character, with
+  the fee in the same transaction), but it is a new way value is created, and removing it
+  means another route.
+- **A legacy-lane verb that decides action legality**, listed in `legacy-handlers.toml` as
+  `legacy-post-image` with `+licence` as its precedent. Moving the registration to a typed
+  purchase replaces the verb's write path, the idempotency key and the stanza, and the
+  entitlement check would have to stop reading the legacy snapshot's accounts first.
+- **Adding a term later** changes what a registration is: every registered character would
+  hold a right with no end date, and a term needs a migration rule for them.
+
+**Not built, and for whom.**
+
+- **C4's story 4** (MW.5): the hardware story through the launch's governed hardware with a
+  refit and a restart. What it needs is reachable: after `+enduser/apply go`,
+  `M8World::integrate(requester, payer, DieClass::III)` builds and delivers the core and
+  `M8World::refit` fits it; `m8_end_user.rs` has the steps.
+- **A fitted Class III on a hull** is not in these stories (they end at delivery). MW.5.
+- **A typed action for the web and the TUI, and an offer in `+actions`.** `+enduser` is line
+  mode only. Deferred: no unit owns client surfaces for it; MW.5 should take it if story 4
+  is to be driven from a client.
+- **The bot.** `mush-bot` has no sentence for `+enduser`. MW.19 (the bot's minds lane) if a bot is
+  to buy a Class III core.
+- **An organisation's entitlement** (17f M7.11). Deferred: no integration is ordered by an
+  organisation.
+- **`Legality::Restricted`** on the catalogue entry (doc 17h §4). Deferred; nothing reads
+  it.
+- **The principal bar refusing a registration, and a Registry verb that suspends one.**
+  Deferred to doc 17h's follow-ups; both want the registration readable from the Roll's side.
+- **`deploy/README.md`** is unchanged: nothing it says is now untrue, and the route asks
+  nothing of an operator.
+
+**Not pinned by a story.**
+
+- A world the server binary booted. The stories run on what `prepare` returns in the test
+  harness, as MW.0's do.
+- `+enduser` on an `Initialize` boot. The verb tests the deployment's mode; the story covers
+  a world with no launch, because an initialised world cannot be booted back to `Initialize`.
+- A format-1 launch. The route reads only the deployment's mode, Registry account and
+  issuer, which both formats have; the stories run on format 2.
+- A registration refused by the post after the instrument or an account was written (the
+  pinned-queue path). The checks before the first write make it unreachable in a test
+  without a fault store.
+- A reversal by staff followed by a second registration.
 
 ## MW.24
 

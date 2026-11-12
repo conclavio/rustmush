@@ -8,6 +8,11 @@ mod consent;
 mod delivery;
 pub use bridge::CoreTitleBirth;
 pub use delivery::require_core_delivery;
+mod end_user;
+pub use end_user::{
+    EndUserError, EndUserRegistered, EndUserRegistration, EndUserStanding,
+    check_end_user_registration, end_user_standing, register_end_user,
+};
 mod fold;
 pub(crate) mod install;
 pub(crate) mod money;
@@ -21,8 +26,8 @@ pub use receipt::{
     CoreFundingReceipt, CorePaymentHistory, CoreTerminalReceipt, CoreTerminalResult,
 };
 pub use subject::{
-    CoreClass, CoreDeliveryPromise, CoreFundingSubject, CorePaymentPolicy, DieSource,
-    IntegrationSite, ScopedCoreAccount, UngovernedIntegration,
+    CORE3_ENTITLEMENT, CoreClass, CoreDeliveryPromise, CoreFundingSubject, CorePaymentPolicy,
+    DieSource, IntegrationSite, ScopedCoreAccount, UngovernedIntegration,
 };
 
 use mush_core::CommitToken;

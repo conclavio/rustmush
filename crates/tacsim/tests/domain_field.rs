@@ -107,6 +107,8 @@ mod field_rs5;
 mod field_story;
 #[path = "domain_field/ic_sortie_surface.rs"]
 mod ic_sortie_surface;
+#[path = "domain_field/m8_end_user.rs"]
+mod m8_end_user;
 #[path = "domain_field/m8_leaks.rs"]
 mod m8_leaks;
 #[path = "domain_field/m8_world.rs"]
