@@ -292,13 +292,13 @@ order of succession, a leader who is waited for, then the next player, then the 
 
 - `ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit`. A captain leads a
   combat roster with Rook Adeyemi in an armed rig, marks the intruder Hostile and orders
-  `2 ENGAGE`; Adeyemi fires on the intruder. The link is lost. The server's grace ends the
-  session a minute later, which gives up the helm and the lead; the order still stands half a
-  minute short of five minutes. At five minutes the rig passes to its mind, the order lapses
-  and the escort holds: no round in fourteen seconds, on the same cell. The intruder's player
-  fires on it; after a round hits, the escort fires on the intruder again, from a screen, on
-  the same cell. The captain reads the lapse at login and in `+sortie/orders`, and it is
-  still lapsed after their return.
+  `2 ENGAGE`; Adeyemi fires on the intruder. The link is lost and the server goes on keeping
+  the session. Half a minute short of five minutes the captain still leads and the order
+  stands. At five minutes the rig passes to its mind, the lead passes with the session still
+  there, the order lapses and the tank holds: no round in fourteen seconds, on the same cell.
+  The third party's hull, which nobody has fired on, fires on it; after a round hits, the
+  tank fires again, from a screen, on the same cell. The captain reads the lapse at login
+  and in `+sortie/orders`, and it is still lapsed after their return.
 - `ap8_the_npc_commander_replaces_a_lapsed_advance`. The captain orders Okonkwo, the plan's
   commander, to a cell of their choosing and quits. She leads, and her own ADVANCE to the
   work point is delivered and stands; its sequence is three past the captain's, which is the
@@ -314,6 +314,24 @@ order of succession, a leader who is waited for, then the next player, then the 
   helm back, lead again, find the order lapsed and the rig holding, give the order again,
   and it is delivered and obeyed.
 
+**Verified, and how** (Linux, conclav.dev, at the PR's head). The five stories pass, run
+twice, five at once and two at once. The whole `domain_field` binary passes (261 run, 11
+ignored), as do the tacsim library's tests (2,238) and `mush-tactics`' (73). Clippy is clean on
+every target of both crates, `cargo doc` is clean under `-D warnings`, `cargo fmt --check`
+passes on both, and `mush-contract-tests` passes with nothing re-blessed. Five mutations, each
+run against the five stories:
+
+| Mutation | What failed |
+|---|---|
+| Nothing lapses (`lapses` is false) | stories 1, 2, 4 and 5; the HOLD story passes |
+| The stand never answers a hit | story 1 only, at "the tank answers once it is hit" |
+| Every order presses, so a HOLD lapses too | the HOLD story only |
+| The roster's succession reads the session, as on main | story 1 only, at "the lead passed on the field's clock" |
+| The stand is never offered: the lapse is a record and nothing more | stories 1, 4 and 5; the commander's order still replaces it in story 2 |
+
+The stories cannot be compiled on main (they read `Lapse` and the lapse's lines), so the first
+row stands in for "fails on main today".
+
 **What doc 45 had wrong, or left out.**
 
 - **`detachment/live.rs` is the practice host.** The IC roster is hosted by
@@ -328,7 +346,9 @@ order of succession, a leader who is waited for, then the next player, then the 
 - **The session's end gives up the console.** Sim's disconnect hook releases a departing
   player's focus and billet when their session ends, so the lead can pass before the field's
   five minutes when the server's grace is shorter. The order's lapse still waits for the
-  field's clock (story 1). With the default server grace the two are the same five minutes.
+  field's clock. With the default server grace the two are the same five minutes. Seen in a
+  run of story 1 that ended the session a minute in (the lead passed at once, the order stood
+  until five minutes); the story as merged keeps the session, to pin the field's clock.
 - **A write that saved the roster did not have to be the poll.** An NPC's WILCO is a message
   too, and it saved the new leader seconds before the flight tick's poll ran; the first
   build recorded the lapse only in the poll and the commander issued over an order that had

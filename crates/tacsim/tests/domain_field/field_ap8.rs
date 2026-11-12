@@ -5,12 +5,13 @@
 //!
 //! 1. **An `ENGAGE` lapses after the grace, and the crew still answers a hit**
 //!    ([`ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit`]). A captain
-//!    leads a combat roster from a prospector with Rook Adeyemi hired into a leased escort tank.
-//!    The captain marks the intruder's party Hostile and orders `2 ENGAGE`; Adeyemi fires on the
-//!    intruder. The captain's link is lost. The server's own grace ends the session a minute
-//!    later, which gives up the helm and the lead, and the order still stands half a minute
-//!    short of five minutes. At five minutes the captain's rig passes to its mind, the order
-//!    lapses, and Adeyemi's tank holds: it fires nothing more at the party its leader marked.
+//!    leads a combat roster from a prospector with Rook Adeyemi hired into an armed rig. The
+//!    captain marks the intruder's party Hostile and orders `2 ENGAGE`; Adeyemi fires on the
+//!    intruder. The captain's link is lost, and the server goes on keeping their session. Half
+//!    a minute short of five minutes the captain still leads and the order stands. At five
+//!    minutes the captain's rig passes to its mind: the lead passes on the field's clock, with
+//!    the session still there, the order lapses, and Adeyemi's tank holds: it fires nothing
+//!    more at the party its leader marked.
 //!    The third party's escort, which nobody has fired on, fires on it; once a round hits,
 //!    the tank answers from where it stands. The captain reads the lapse at login and in `+sortie/orders`, and it is still
 //!    lapsed after their return.
@@ -468,15 +469,13 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     let engage = delivered_to(&mut field.rig, field.flown.operation, 2).expect("the ENGAGE");
     assert_eq!((engage.issuer, engage.issuer_unit), (captain, lead_rig));
 
-    // The captain's link is lost. A minute on the server's own grace ends their session, which
-    // gives up their console and so the lead (Sim's rule for any billet). The order is another
-    // matter: half a minute short of five minutes it still stands. Its clock is the field's.
+    // The captain's link is lost, and the server keeps their session through the whole story
+    // (its own grace is an operator's setting). Half a minute short of five minutes nothing has
+    // changed: the captain is waited for, still leads, and the order stands.
     lose_link(&mut field.rig, captain);
     let lost = away_of(field.rig.tw.world(), lead_rig)
         .expect("the clock runs")
         .since_wall_s;
-    field.pass(60);
-    end_session(&mut field.rig, captain);
     field.pass_to(lost + FIELD_LINKDEAD_GRACE_WALL_S - 40);
     field.wait(2).await;
     assert!(
@@ -490,8 +489,8 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     );
     assert_eq!(
         field.leader(),
-        None,
-        "the session's end gave up the helm, and with it the lead"
+        Some((captain, LeaderKind::Player)),
+        "a leader who is waited for still leads"
     );
     assert!(
         field.lapse(2).is_none()
@@ -524,8 +523,15 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     assert_eq!(
         field.leader(),
         None,
-        "nobody took over: the roster nominated no commander"
+        "the lead passed on the field's clock, with the server still keeping the session, and \
+         nobody took over: the roster nominated no commander"
     );
+    assert!(
+        field.rig.tw.world().is_connected(captain),
+        "the server still keeps the captain's session"
+    );
+    // The server's own grace runs out later. Nothing more changes.
+    end_session(&mut field.rig, captain);
     // A round already in the air lands; then the escort fires nothing at the party its leader
     // marked, through two of its cannon's cycles and more.
     field.wait(2).await;
