@@ -109,6 +109,11 @@ pub struct Options {
     pub escort_for: Option<String>,
     /// `--escorted-by <character>`: the escort the field captain pages its own party.
     pub escorted_by: Option<String>,
+    /// `--minds <author|buyer>` (doc 44 unit MW.19): walk the mind market in that role. It
+    /// plays on the mining lane, so `mine` is set beside it (the buyer's site).
+    pub minds: Option<crate::mine::MarketRole>,
+    /// `--charter <name>`: the charter the author files under and the buyer looks for.
+    pub charter: Option<String>,
 }
 
 pub enum Control {
@@ -906,7 +911,13 @@ pub async fn run_controlled(
         app.arena_start(side, arena_matches)?;
     }
     if let Some(site) = app.options.mine {
-        app.mine_start(site)?;
+        // Doc 44 unit MW.19: the author's mind is written over the SSH mind service before
+        // the lane types its first line.
+        let written = match app.options.minds {
+            Some(crate::mine::MarketRole::Author) => Some(app.minds_write().await?),
+            _ => None,
+        };
+        app.mine_start(site, written)?;
     }
     let result = app.drive().await;
     // The one `SIM LEAVE`, when it is due, before the session closes.
@@ -1958,7 +1969,11 @@ impl App {
     /// Start the mining lane for `site` (`--mine`): the hull's name from the
     /// SSH username, the epoch of the lane's clock in unix milliseconds, and
     /// the character's name as [`arena_me`] reads it.
-    fn mine_start(&mut self, site: crate::mine::Site) -> Result<()> {
+    fn mine_start(
+        &mut self,
+        site: crate::mine::Site,
+        written: Option<crate::mine::lane::market::Written>,
+    ) -> Result<()> {
         let hull = crate::mine::hull_name(&self.config.ssh.username)?;
         let epoch_unix_ms = unix_now_ms().saturating_sub(self.elapsed_ms());
         let me = arena_me(&self.config.ssh.username, &self.character);
@@ -1979,10 +1994,81 @@ impl App {
         if self.options.field_escort {
             lane = lane.with_escort(self.options.escort_for.clone());
         }
+        if let Some(role) = self.options.minds {
+            let charter = self
+                .options
+                .charter
+                .clone()
+                .ok_or("--minds takes --charter <name>")?;
+            lane = match (role, written) {
+                (crate::mine::MarketRole::Author, Some(written)) => {
+                    lane.with_author(written.name, written.revision, charter)
+                }
+                (crate::mine::MarketRole::Author, None) => {
+                    return Err("the author's mind was not written".into());
+                }
+                (crate::mine::MarketRole::Buyer, _) => lane.with_buyer(charter),
+            };
+        }
         let events = lane.events();
         self.mine = Some(lane);
         self.mine_reported = false;
         self.mine_events(events)
+    }
+
+    /// **Write the author's mind over the SSH mind service** (doc 44 unit MW.19; `help
+    /// mindcraft`, "Source over SSH"): `mind push` creates the draft and replaces its source
+    /// with the bot's own, `mind check` runs the game's six pictures over it, and `mind push`
+    /// saves the revision the lane then files. Each request and its reply's status go to the
+    /// transcript as a `minds-exec` record; a step the service refuses ends the run with the
+    /// service's own words.
+    async fn minds_write(&mut self) -> Result<crate::mine::lane::market::Written> {
+        use crate::mine::lane::market::{self, Written};
+        use crate::transport::{MindExec, mind_exec};
+        let ssh = self.config.ssh.clone();
+        let name = market::MIND_NAME;
+        let mut steps = Vec::new();
+        let mut note = |exec: MindExec, op: &str, reply: &serde_json::Value| {
+            steps.push(json!({
+                "exec": exec.command(),
+                "op": op,
+                "status": reply.get("status").cloned().unwrap_or(serde_json::Value::Null),
+            }));
+        };
+        // A run taken up again finds the draft there: the read decides, not the create.
+        let created = mind_exec(&ssh, MindExec::Push, &market::create_request(name)).await?;
+        note(MindExec::Push, "create", &created);
+        let read = mind_exec(&ssh, MindExec::Pull, &market::read_request(name)).await?;
+        note(MindExec::Pull, "read", &read);
+        let (mut base, draft) = market::read_reply(&read)?;
+        if market::draft_source(&draft) != Some(market::MIND_SOURCE) {
+            let request = market::replace_request(name, &base, &draft, market::MIND_SOURCE);
+            let replaced = mind_exec(&ssh, MindExec::Push, &request).await?;
+            note(MindExec::Push, "replace", &replaced);
+            base = market::edited_reply(&replaced)?;
+        }
+        let checked = mind_exec(&ssh, MindExec::Check, &market::check_request(name, &base)).await?;
+        note(MindExec::Check, "check", &checked);
+        let pictures = market::checked_reply(&checked)?;
+        let saved = mind_exec(&ssh, MindExec::Push, &market::save_request(name, &base)).await?;
+        note(MindExec::Push, "save", &saved);
+        let (revision, digest) = market::saved_reply(&saved)?;
+        for record in steps {
+            self.log.record("minds-exec", record)?;
+        }
+        self.log.event(
+            "mine",
+            &format!(
+                "Wrote {name} over the SSH mind service: {pictures} pictures checked, saved as \
+                 revision {revision} ({digest})."
+            ),
+        )?;
+        Ok(Written {
+            name: name.to_owned(),
+            revision,
+            digest,
+            pictures,
+        })
     }
 
     /// Whether this tick is the mining lane's: it plays and the run is

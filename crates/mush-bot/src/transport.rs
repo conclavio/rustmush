@@ -56,6 +56,158 @@ pub struct Session {
     handle: client::Handle<HostCheck>,
 }
 
+/// Connect and authenticate as `config` says: the host key checked, then a public key
+/// (`identity_file`), else a password (`password_env`), else none.
+async fn authenticated(config: &Ssh, handler: HostCheck) -> Result<client::Handle<HostCheck>> {
+    let ssh_config = client::Config {
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
+        ..Default::default()
+    };
+    let mut handle = client::connect(
+        Arc::new(ssh_config),
+        (config.host.as_str(), config.port),
+        handler,
+    )
+    .await?;
+    let authenticated = if let Some(path) = &config.identity_file {
+        let passphrase = secret(&config.key_password_env)?;
+        let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
+        let hash = handle.best_supported_rsa_hash().await?.flatten();
+        handle
+            .authenticate_publickey(
+                &config.username,
+                PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+            )
+            .await?
+            .success()
+    } else if let Some(password) = secret(&config.password_env)? {
+        handle
+            .authenticate_password(&config.username, password)
+            .await?
+            .success()
+    } else {
+        handle.authenticate_none(&config.username).await?.success()
+    };
+    if !authenticated {
+        return Err("SSH authentication rejected".into());
+    }
+    Ok(handle)
+}
+
+/// The three SSH exec commands of the typed mind service (`help mindcraft`, "Source over
+/// SSH"): each accepts only its own operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MindExec {
+    /// `mind push`: `create`, `replace`, `save`.
+    Push,
+    /// `mind pull`: `read`.
+    Pull,
+    /// `mind check`: `check`.
+    Check,
+}
+
+impl MindExec {
+    /// The exec command line, exactly as the server matches it.
+    pub fn command(self) -> &'static str {
+        match self {
+            MindExec::Push => "mind push",
+            MindExec::Pull => "mind pull",
+            MindExec::Check => "mind check",
+        }
+    }
+}
+
+/// The largest reply [`mind_exec`] keeps: the service bounds its own frame at 272 KiB.
+const MIND_REPLY_BYTES: usize = 1024 * 1024;
+
+/// **One SSH exec of the typed mind service** (doc 44 unit MW.19, over the exec doc 44 unit
+/// MW.24 made a bare connection): a connection of its own beside the line session,
+/// authenticated by the configured public key as `account+character`, one JSON request on
+/// standard input, then end of input. The reply is one JSON record a line; the last is the
+/// final one, and its `result` object is returned whatever its `status` (a refusal is a reply,
+/// and the caller reads it). `Err` is the transport: no key configured, the exec refused, no
+/// reply, or a reply that is not the mind service's JSON.
+///
+/// This is how a player with an editor pushes source (`help mindcraft`). It types no line into
+/// the game and carries no credential but the key.
+pub async fn mind_exec(
+    config: &Ssh,
+    exec: MindExec,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    if config.identity_file.is_none() {
+        return Err(
+            "the SSH mind service takes a verified public key: set [ssh].identity_file".into(),
+        );
+    }
+    let failure = Arc::new(Mutex::new(None));
+    let handler = HostCheck {
+        config: config.clone(),
+        failure: failure.clone(),
+    };
+    let body = serde_json::to_vec(request)?;
+    let result = tokio::time::timeout(Duration::from_secs(config.timeout_secs.max(120)), async {
+        let handle = authenticated(config, handler).await?;
+        let mut channel = handle.channel_open_session().await?;
+        channel.exec(true, exec.command()).await?;
+        for packet in body.chunks(16 * 1024) {
+            channel.data(packet).await?;
+        }
+        channel.eof().await?;
+        let mut bytes = Vec::new();
+        while let Some(message) = channel.wait().await {
+            match message {
+                russh::ChannelMsg::Data { data } => {
+                    if bytes.len().saturating_add(data.len()) > MIND_REPLY_BYTES {
+                        return Err(format!("`{}` answered more than 1 MiB", exec.command()).into());
+                    }
+                    bytes.extend_from_slice(&data);
+                }
+                russh::ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let _ = handle
+            .disconnect(russh::Disconnect::ByApplication, "mind exec done", "en")
+            .await;
+        mind_reply(exec, &bytes)
+    })
+    .await;
+    if let Some(message) = failure.lock().unwrap().take() {
+        return Err(message.into());
+    }
+    result.map_err(|_| format!("`{}` timed out", exec.command()))?
+}
+
+/// The final record's `result` object out of an exec's whole output.
+fn mind_reply(exec: MindExec, bytes: &[u8]) -> Result<serde_json::Value> {
+    let text = String::from_utf8_lossy(bytes);
+    let last = text
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .ok_or_else(|| format!("`{}` answered nothing", exec.command()))?;
+    let record: serde_json::Value = serde_json::from_str(last).map_err(|_| {
+        format!(
+            "`{}` answered something that is not the mind service's JSON: {}",
+            exec.command(),
+            crate::tail(last, 200)
+        )
+    })?;
+    match record.get("result") {
+        Some(result) if record.get("service").and_then(|s| s.as_str()) == Some("mind") => {
+            Ok(result.clone())
+        }
+        _ => Err(format!(
+            "`{}` answered a record with no mind result: {}",
+            exec.command(),
+            crate::tail(last, 200)
+        )
+        .into()),
+    }
+}
+
 impl Session {
     pub async fn connect(config: &Ssh) -> Result<Self> {
         let failure = Arc::new(Mutex::new(None));
@@ -64,39 +216,7 @@ impl Session {
             failure: failure.clone(),
         };
         let result = tokio::time::timeout(Duration::from_secs(config.timeout_secs), async {
-            let ssh_config = client::Config {
-                keepalive_interval: Some(Duration::from_secs(30)),
-                keepalive_max: 3,
-                ..Default::default()
-            };
-            let mut handle = client::connect(
-                Arc::new(ssh_config),
-                (config.host.as_str(), config.port),
-                handler,
-            )
-            .await?;
-            let authenticated = if let Some(path) = &config.identity_file {
-                let passphrase = secret(&config.key_password_env)?;
-                let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
-                let hash = handle.best_supported_rsa_hash().await?.flatten();
-                handle
-                    .authenticate_publickey(
-                        &config.username,
-                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                    )
-                    .await?
-                    .success()
-            } else if let Some(password) = secret(&config.password_env)? {
-                handle
-                    .authenticate_password(&config.username, password)
-                    .await?
-                    .success()
-            } else {
-                handle.authenticate_none(&config.username).await?.success()
-            };
-            if !authenticated {
-                return Err("SSH authentication rejected".into());
-            }
+            let handle = authenticated(config, handler).await?;
             let channel = handle.channel_open_session().await?;
             // RustMUSH requires a PTY even for line mode. TERM=dumb requests
             // plain text; no alternate screen or privileged structured feed.
@@ -202,6 +322,33 @@ mod tests {
         ] {
             assert!(validate_command(command).is_err(), "{command}");
         }
+    }
+
+    /// Doc 44 unit MW.19: the exec's reply is the last record's `result`, a refusal included.
+    #[test]
+    fn a_mind_exec_reply_is_its_last_record() {
+        use super::{MindExec, mind_reply};
+        let two = concat!(
+            r#"{"service":"mind","result":{"status":"queued","job":4}}"#,
+            "\n",
+            r#"{"service":"mind","result":{"status":"saved","revision":1}}"#,
+            "\n\n"
+        );
+        let saved = mind_reply(MindExec::Push, two.as_bytes()).expect("the final record");
+        assert_eq!(saved["status"], "saved");
+        assert_eq!(saved["revision"], 1);
+        let refused = mind_reply(
+            MindExec::Pull,
+            br#"{"service":"mind","result":{"status":"error","code":"missing"}}"#,
+        )
+        .expect("a refusal is a reply");
+        assert_eq!(refused["code"], "missing");
+        assert!(mind_reply(MindExec::Check, b"").is_err());
+        assert!(mind_reply(MindExec::Check, b"Character attachment was refused.").is_err());
+        assert!(mind_reply(MindExec::Check, br#"{"service":"other","result":{}}"#).is_err());
+        assert_eq!(MindExec::Push.command(), "mind push");
+        assert_eq!(MindExec::Pull.command(), "mind pull");
+        assert_eq!(MindExec::Check.command(), "mind check");
     }
 
     #[test]
