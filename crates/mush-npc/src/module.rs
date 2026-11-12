@@ -13,7 +13,7 @@ use std::sync::Arc;
 use mush_core::commands::movement::{find_exit, traverse_exit};
 use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
-    ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, GameModule, ModError,
+    ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, Flags, GameModule, ModError,
     ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Powers, Registrar, Role,
     TickCadence, World, WorldEventKind, WorldObserver, obj_ref, perm,
 };
@@ -39,7 +39,7 @@ use crate::memory::{
     MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUMMARY_CHARS, MemoryContext, MemoryKind, MemoryRecord,
     record_key,
 };
-use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
+use crate::profile::{AgentProfile, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
 use crate::runtime::NpcHostState;
 use crate::snapshot::{
     AgentGrounding, AppliedAction, MAX_PRESENT_DESCRIPTION_BYTES, MAX_SCENE_DESCRIPTION_BYTES,
@@ -58,6 +58,12 @@ pub struct NpcModule {
     decision_lease_secs: i64,
     /// H2b: how long a scene turn waits for its decision, seconds.
     scene_turn_deadline_secs: i64,
+    /// MW.18: the ambient timer's room window, REAL seconds (0 = off).
+    ambient_window_secs: i64,
+    /// MW.18: how recently a player must have typed to count as present.
+    ambient_active_secs: i64,
+    /// MW.18: whether cast packs apply their major NPCs enabled.
+    wake_majors: bool,
 }
 
 impl NpcModule {
@@ -68,6 +74,9 @@ impl NpcModule {
             grounding: Arc::new(NoGrounding),
             decision_lease_secs: crate::decision::NPC_DECISION_LEASE_SECS,
             scene_turn_deadline_secs: crate::runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS,
+            ambient_window_secs: crate::runtime::DEFAULT_AMBIENT_WINDOW_SECS,
+            ambient_active_secs: crate::runtime::DEFAULT_AMBIENT_ACTIVE_SECS,
+            wake_majors: false,
         }
     }
 
@@ -88,6 +97,28 @@ impl NpcModule {
         self
     }
 
+    /// Doc 44 cut MW.18: the ambient timer's two tunable figures, in REAL seconds.
+    /// `[npc].ambient_window_secs` is the least time between two unprompted lines in one
+    /// room (0 turns the timer off); `[npc].ambient_active_secs` is how recently a player
+    /// must have typed to count as present.
+    #[must_use]
+    pub fn with_ambient(mut self, window_secs: i64, active_secs: i64) -> NpcModule {
+        self.ambient_window_secs = window_secs.max(0);
+        self.ambient_active_secs = active_secs.max(1);
+        self
+    }
+
+    /// Doc 44 cut MW.18 (Q-44-47): `[npc].wake_majors`. When set, a cast pack CREATES
+    /// its major NPCs enabled, whatever the pack's `profile.enabled` says, and a later
+    /// upgrade of that pack leaves each major enabled or parked as staff last left it.
+    /// So it wakes the majors of a fresh world at boot, and it never undoes a park
+    /// (`@llm/kill`) or a wake (`@agent/enable`) on a world that already exists.
+    #[must_use]
+    pub fn with_wake_majors(mut self, wake: bool) -> NpcModule {
+        self.wake_majors = wake;
+        self
+    }
+
     /// A module grounded by `grounding` (the driver's ruleset adapter).
     #[must_use]
     pub fn with_grounding(grounding: Arc<dyn AgentGrounding>) -> NpcModule {
@@ -95,6 +126,9 @@ impl NpcModule {
             grounding,
             decision_lease_secs: crate::decision::NPC_DECISION_LEASE_SECS,
             scene_turn_deadline_secs: crate::runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS,
+            ambient_window_secs: crate::runtime::DEFAULT_AMBIENT_WINDOW_SECS,
+            ambient_active_secs: crate::runtime::DEFAULT_AMBIENT_ACTIVE_SECS,
+            wake_majors: false,
         }
     }
 }
@@ -122,6 +156,9 @@ impl GameModule for NpcModule {
         crate::private_lore::register(reg)?;
         let mut state = NpcHostState::new(panel);
         state.config.scene_turn_deadline_secs = self.scene_turn_deadline_secs;
+        state.config.ambient_window_secs = self.ambient_window_secs;
+        state.config.ambient_active_secs = self.ambient_active_secs;
+        state.config.wake_majors = self.wake_majors;
         let tick_period = state.config.tick;
         reg.state(state);
         // WS03-A1: `crate::content`'s entry appliers run under the CONTENT
@@ -1280,6 +1317,8 @@ impl mush_core::module::TickHandler for NpcTick {
         if let Some(request) = request {
             issue_capture(ctx, request);
         }
+        // Doc 44 cut MW.18: a room that is due hears one unprompted line.
+        self.schedule_ambient(ctx);
         let now = now_ms(ctx.w);
         let pending = match ctx.state::<NpcHostState>() {
             Some(h) => h.pending(),
@@ -1340,7 +1379,166 @@ fn issue_capture(ctx: &mut Ctx<'_>, request: crate::decision::NpcDecisionRequest
     }
 }
 
+/// **Presence, in Q-44-47's sense** (doc 44 cut MW.18): whether `who` is a player an NPC
+/// may speak unprompted for. The one definition the ambient timer uses:
+///
+/// - a player character with a **live** connection. A link-dead character is still
+///   [`World::is_connected`] but has no live connection, and an SSH `mind push` binds a
+///   bare connection that is neither (MW.24), so both fail here;
+/// - not `DARK`;
+/// - who typed something within `active_secs` REAL seconds of `now`.
+///
+/// It is narrower than `players_present`, which every stimulus-driven wake still uses:
+/// a stimulus is itself something a live player just did, so nothing is spent on an idle
+/// room there, and a `DARK` wizard who speaks to an NPC is still answered.
+#[must_use]
+pub fn present_for_ambient(w: &World, who: ObjId, now: i64, active_secs: i64) -> bool {
+    w.get(who)
+        .is_some_and(|o| o.kind == ObjKind::Player && !o.flags.contains(Flags::DARK))
+        && w.has_live_conns(who)
+        && w.session_stat(who)
+            .is_some_and(|stat| now.saturating_sub(stat.last_input) <= active_secs)
+}
+
+/// The enabled major NPCs of `room` that may take its unprompted turn, in id order, each
+/// with its own cooldown: enabled, major, outside any exclusive scene, and able to
+/// perceive at least one of `present`.
+fn ambient_speakers(
+    ctx: &Ctx<'_>,
+    room: ObjId,
+    present: &[ObjId],
+) -> Vec<(ObjId, std::time::Duration)> {
+    let mut speakers: Vec<(ObjId, std::time::Duration)> = npcs_in(ctx.w, room)
+        .into_iter()
+        .filter_map(|npc| {
+            let profile = read_profile(ctx.w, npc)?;
+            (profile.enabled
+                && profile.tier == NpcTier::Major
+                && !ctx.w.in_exclusive_scene(npc)
+                && present.iter().any(|&who| ctx.can_perceive(npc, who)))
+            .then(|| (npc, profile.cooldown()))
+        })
+        .collect();
+    speakers.sort_by_key(|(npc, _)| npc.0);
+    speakers
+}
+
 impl NpcTick {
+    /// **The ambient timer, scheduled** (doc 44 cut MW.18; Q-44-31, Q-44-47). Every
+    /// [`AMBIENT_SCAN_SECS`](crate::runtime::AMBIENT_SCAN_SECS) REAL seconds: find the
+    /// rooms that hold a present player ([`present_for_ambient`]) beside an enabled major
+    /// NPC, and for each one that is due
+    /// ([`AmbientState::due`](crate::runtime::AmbientState::due)) and quiet, begin one
+    /// dialogue turn for one of its majors, woken by [`Stimulus::AmbientTimer`] alone.
+    ///
+    /// The turn is an ordinary dialogue turn: the same route, the same per-NPC, feature
+    /// and global budgets, the same audit row and the same `@agent/show` record. The
+    /// room's window opens when the turn begins, whether or not the model then chooses
+    /// to speak, so the window bounds the calls and not only the lines.
+    fn schedule_ambient(&self, ctx: &mut Ctx<'_>) {
+        let now = ctx.w.now();
+        let Some((window, active, settle)) = ctx.state::<NpcHostState>().and_then(|h| {
+            let config = &h.config;
+            (config.ambient_window_secs > 0 && now >= h.ambient.next_scan_at).then_some((
+                config.ambient_window_secs,
+                config.ambient_active_secs,
+                config.ambient_settle_secs,
+            ))
+        }) else {
+            return;
+        };
+        // The rooms that hold a present player, and who that is. Bounded by the
+        // connected roster; nothing is read for an empty game.
+        let mut rooms: std::collections::BTreeMap<ObjId, Vec<ObjId>> =
+            std::collections::BTreeMap::new();
+        let connected: Vec<ObjId> = ctx.w.connected().collect();
+        for who in connected {
+            if !present_for_ambient(ctx.w, who, now, active) {
+                continue;
+            }
+            if let Some(room) = ctx.w.get(who).and_then(|o| o.location) {
+                rooms.entry(room).or_default().push(who);
+            }
+        }
+        let mut attended: Vec<(ObjId, Vec<(ObjId, std::time::Duration)>)> = Vec::new();
+        for (room, present) in &rooms {
+            let speakers = ambient_speakers(ctx, *room, present);
+            if !speakers.is_empty() {
+                attended.push((*room, speakers));
+            }
+        }
+        let attended_rooms: std::collections::BTreeSet<ObjId> =
+            attended.iter().map(|(room, _)| *room).collect();
+        let now_millis = now_ms(ctx.w);
+        let settle_ms = settle.saturating_mul(1000);
+        let mut to_fire: Vec<(ObjId, ObjId)> = Vec::new();
+        {
+            let npcs_of: Vec<(ObjId, Vec<ObjId>)> = attended
+                .iter()
+                .map(|(room, _)| (*room, npcs_in(ctx.w, *room)))
+                .collect();
+            let Some(h) = ctx.state_mut::<NpcHostState>() else {
+                return;
+            };
+            h.ambient.next_scan_at = now.saturating_add(crate::runtime::AMBIENT_SCAN_SECS);
+            h.ambient.lapse(&attended_rooms, now, window);
+            for ((room, speakers), (_, everyone)) in attended.iter().zip(&npcs_of) {
+                if !h.ambient.attend(*room, now) || !h.ambient.due(*room, now, window, settle) {
+                    continue;
+                }
+                // Quiet: no NPC of the room is mid-turn, has something waiting, or took
+                // a turn within the settle time. An unprompted line never talks over a
+                // conversation.
+                let busy = everyone.iter().any(|npc| {
+                    h.runtime(*npc).is_some_and(|rt| {
+                        rt.in_flight
+                            || !rt.mailbox.is_empty()
+                            || rt.summarize_pending
+                            || rt
+                                .last_turn_at
+                                .is_some_and(|at| now_millis.saturating_sub(at) < settle_ms)
+                    })
+                });
+                if busy {
+                    continue;
+                }
+                // A speaker still inside its own cooldown (a profile may set one
+                // longer than the settle time), or inside its own window (it spoke
+                // unprompted in another room and walked here), is passed over.
+                let ready: Vec<ObjId> = speakers
+                    .iter()
+                    .filter(|(npc, cooldown)| {
+                        h.runtime(*npc).is_none_or(|rt| {
+                            rt.cooldown_ok(now_millis, *cooldown, false)
+                                && rt
+                                    .last_unprompted_at
+                                    .is_none_or(|at| now.saturating_sub(at) >= window)
+                        })
+                    })
+                    .map(|(npc, _)| *npc)
+                    .collect();
+                if let Some(npc) = h.ambient.next_speaker(*room, &ready)
+                    && h.enqueue(npc, Stimulus::AmbientTimer, now_millis)
+                {
+                    h.ambient.spoke(*room, npc, now);
+                    h.runtime_mut(npc).last_unprompted_at = Some(now);
+                    to_fire.push((*room, npc));
+                }
+            }
+        }
+        for (room, npc) in to_fire {
+            let Some(profile) = read_profile(ctx.w, npc) else {
+                drop_mailbox(ctx, npc);
+                continue;
+            };
+            let present: Vec<_> = players_present(ctx.w, room)
+                .into_iter()
+                .filter(|&who| ctx.can_perceive(npc, who))
+                .collect();
+            self.fire_dialogue(ctx, npc, &profile, room, &present, now_millis);
+        }
+    }
+
     fn maybe_fire(&self, ctx: &mut Ctx<'_>, npc: ObjId, now: i64) {
         let Some(profile) = read_profile(ctx.w, npc) else {
             drop_mailbox(ctx, npc);
@@ -1575,6 +1773,12 @@ impl AsyncCompletion for NpcCompletion {
         {
             h.finish_decision(npc, correlation, result);
         }
+        // Doc 44 cut MW.18: a turn nothing but the ambient timer woke.
+        let unprompted = ctx
+            .state::<NpcHostState>()
+            .and_then(|h| h.runtime(npc))
+            .and_then(|rt| rt.last_decision.as_ref())
+            .is_some_and(|last| last.correlation == correlation && last.unprompted);
         // Re-validate against current state.
         if ctx.w.get(npc).is_none_or(|o| o.kind != ObjKind::Npc) {
             return;
@@ -1598,7 +1802,10 @@ impl AsyncCompletion for NpcCompletion {
                     .unwrap_or_default();
                 let line = crate::interface::with_command_hint(&line, &commands);
                 let line = crate::action::sanitize_line(&line, crate::action::SAY_CAP);
-                if !line.is_empty() {
+                // MW.18: nobody asked an unprompted turn anything, so one the model
+                // could not answer says nothing rather than a canned line out of the
+                // blue. Staff are still told the NPC is degraded.
+                if !line.is_empty() && !unprompted {
                     say_as_npc(ctx, npc, room, NarrativeKind::Say, &line);
                 }
                 notify_staff_once(ctx, npc, &reason);
@@ -2462,6 +2669,8 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
             ctx.out.info(ctx.actor, line);
         }
     }
+    // Doc 44 cut MW.18: why this NPC does or does not speak unprompted.
+    ctx.out.info(ctx.actor, ambient_status(ctx, npc, &profile));
     // Persisted memory (survives reboots): the rolling summary attribute + the
     // count of durable, subject-keyed memories reloaded into the long-term store.
     let summary = read_summary(ctx.w, npc);
@@ -3258,8 +3467,7 @@ fn is_clearable(field: &str) -> bool {
     )
 }
 
-fn parse_tier(value: &str) -> Result<crate::profile::NpcTier, CmdError> {
-    use crate::profile::NpcTier;
+fn parse_tier(value: &str) -> Result<NpcTier, CmdError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "major" => Ok(NpcTier::Major),
         "minor" | "" => Ok(NpcTier::Minor),
@@ -4082,6 +4290,60 @@ fn delete_pool(ctx: &mut Ctx<'_>, tag: &str) -> bool {
 /// time base both the observers and the tick use.
 fn now_ms(w: &World) -> i64 {
     w.now().saturating_mul(1000)
+}
+
+/// The `@agent/show` line on the ambient timer (doc 44 cut MW.18): whether this NPC may
+/// speak unprompted at all, and if so where its room's window stands.
+fn ambient_status(ctx: &Ctx<'_>, npc: ObjId, profile: &AgentProfile) -> String {
+    let Some(h) = ctx.state::<NpcHostState>() else {
+        return "  Unprompted: never (the NPC layer has no state).".to_string();
+    };
+    let window = h.config.ambient_window_secs;
+    if window <= 0 {
+        return "  Unprompted: never (the ambient timer is off: [npc].ambient_window_secs = 0)."
+            .to_string();
+    }
+    if profile.tier != NpcTier::Major {
+        return "  Unprompted: never (only major NPCs speak unprompted).".to_string();
+    }
+    if !profile.enabled {
+        return "  Unprompted: never while parked.".to_string();
+    }
+    let now = ctx.w.now();
+    let minutes = |secs: i64| (secs.max(0) + 59) / 60;
+    let room = ctx.w.get(npc).and_then(|o| o.location);
+    let entry = room.and_then(|room| h.ambient.rooms.get(&room).copied());
+    let last = entry.and_then(|entry| {
+        let at = entry.last_line_at?;
+        let who = entry
+            .last_speaker
+            .map_or_else(|| "an NPC".to_string(), |who| display_name(ctx.w, who));
+        Some((at, who))
+    });
+    match (entry.and_then(|entry| entry.attended_since), last) {
+        (_, Some((at, who))) if now.saturating_sub(at) < window => format!(
+            "  Unprompted: this room heard {who} {}m ago; nothing more for {}m.",
+            minutes(now.saturating_sub(at)),
+            minutes(window - now.saturating_sub(at)),
+        ),
+        (Some(since), _) => {
+            let waited = now.saturating_sub(since);
+            let settle = h.config.ambient_settle_secs;
+            if waited >= settle {
+                "  Unprompted: due, once the room is quiet.".to_string()
+            } else {
+                format!(
+                    "  Unprompted: a player is present; due in {}m if the room stays quiet.",
+                    minutes(settle - waited)
+                )
+            }
+        }
+        (None, _) => format!(
+            "  Unprompted: waiting for a present player (connected, not link-dead, not DARK, \
+             active in the last {}m).",
+            minutes(h.config.ambient_active_secs)
+        ),
+    }
 }
 
 fn drop_mailbox(ctx: &mut Ctx<'_>, npc: ObjId) {

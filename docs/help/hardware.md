@@ -12,9 +12,29 @@ Use `+actions` to see the offers available to your character.
 | Class III | 25,000 cr | 22,500 cr | 2,500 cr | 96 IC hours | 4 IC hours |
 
 Fitting costs another 100 cr for every class. Class III also requires the buyer's
-actual receiving entitlement; having the money or being staff does not supply it.
+end-user registration with the Registry (below); having the money or being staff
+does not supply it.
 The named importer may issue at most 64 Class I, 16 Class II and 4 Class III dies
 per IC civil month, shared by its two configured stock agents.
+
+## The Class III end-user registration
+
+No works builds a Class III core for, or hands one to, a character the Registry
+does not list as a Class III end user. Where the mind launch is open, you register
+yourself, from anywhere:
+
+```text
++enduser
++enduser/apply
++enduser/apply go
+```
+
+`+enduser` (or `+enduser/show`) reads where you stand. `+enduser/apply` says what a
+registration costs and writes nothing; `+enduser/apply go` pays the Registry
+2500.00cr from your own credit account and lists you, in one step. You register
+once: it does not lapse, and it cannot be sold or handed to another character.
+A heirloom die in a back room needs it like any other Class III. The Registry may
+suspend a registration; `+enduser` then says so, and staff can tell you why.
 
 ## Buying a core
 

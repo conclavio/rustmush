@@ -833,6 +833,58 @@ fn the_unresolved_deploy_time_marker_reaches_the_listeners() {
     );
 }
 
+/// The scripts that write an `instance.env` of their own, in a heredoc, and
+/// render the shipped template against it. They are not in [`SHIPPED`] (their
+/// values are shell variables, so there is nothing here to render), but they
+/// owe the template the same thing a committed `instance.env` does: a line for
+/// every key it names.
+const SCRIPT_ENVS: &[&str] = &[
+    "scripts/release-smoke.sh",
+    "scripts/launch-bringup-acceptance.sh",
+];
+
+/// A key added to the template needs a line in every script that renders it,
+/// or `deploy/instance/render.sh` stops that script with `INCOMPLETE`. Doc 44
+/// cut MW.1 added `__RAID_DIRECTOR__` and missed the release smoke's heredoc;
+/// only the nightly runs that script, so no pull request's CI saw it and
+/// main's dispatch failed on it (2026-11-12). This runs on every push.
+#[test]
+fn every_script_that_renders_the_template_names_every_key_it_carries() {
+    let root = repo_root();
+    let template = read(&root.join("deploy/instance/mushd.toml.tmpl"));
+    let mut keys = BTreeSet::new();
+    for line in template.lines() {
+        // The deploy's own rule for where a token counts: before any `#`.
+        let mut rest = live(line);
+        while let Some(start) = rest.find("__") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find("__") else { break };
+            keys.insert(&after[..end]);
+            rest = &after[end + 2..];
+        }
+    }
+    assert!(
+        keys.contains("RAID_DIRECTOR") && keys.contains("START_ROOM"),
+        "the template's live tokens were not read: {keys:?}"
+    );
+    for script in SCRIPT_ENVS {
+        let text = read(&root.join(script));
+        let missing: Vec<&str> = keys
+            .iter()
+            .copied()
+            .filter(|key| {
+                let line = format!("{key}=");
+                !text.lines().any(|l| l.starts_with(&line))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{script} writes an instance.env with no line for {missing:?}; \
+             deploy/instance/render.sh would stop it with INCOMPLETE"
+        );
+    }
+}
+
 #[test]
 fn the_template_never_points_the_boundary_at_the_store() {
     for instance in SHIPPED {

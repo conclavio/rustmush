@@ -427,6 +427,9 @@ impl Arena {
         ) {
             self.relations.note_fire(shooter, victim);
         }
+        // **Doc 44 cut MW.7** (Q-44-38): and the unit's own record of who has fired on it,
+        // which is what a mind flying it for an absent player may answer.
+        self.note_fired_on(shot.shooter, shot.target);
         let miss = |reason: &str, journal: &mut Vec<Notice>| {
             journal.push((
                 t_ms,

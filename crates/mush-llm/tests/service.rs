@@ -287,6 +287,42 @@ async fn kill_switch_blocks_calls() {
     svc.call(ctx(LlmFeature::StaffTool), req()).await.err(); // no route → error, but not Disabled
 }
 
+/// MW.17b: a call whose caller knows its NPC is parked is refused as a kill
+/// switch refuses it, before any provider is asked, and the refusal is audited
+/// against that NPC. The same NPC, not parked, is served.
+#[tokio::test]
+async fn a_parked_npcs_call_is_refused_as_disabled_and_audited_against_it() {
+    let provider = Arc::new(MockProvider::new("openrouter"));
+    provider.set_default(Ok(mock::ok_response("ok", mock::usage(3, 1, None))));
+    let svc = LlmService::builder()
+        .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+        .route("npc_decision", route("z-ai/glm-5.3", 64))
+        .build();
+    let npc = ObjId(12);
+    let call = ctx(LlmFeature::NpcDecision).with_npc(npc);
+
+    assert!(matches!(
+        svc.call(call.with_parked(true), req()).await,
+        Err(LlmError::Disabled)
+    ));
+    assert_eq!(
+        provider.call_count(),
+        0,
+        "a parked call reached the provider"
+    );
+    assert_eq!(svc.ledger().npc(npc).total_tokens(), 0);
+    let rows = svc.audit_log().recent(8);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].npc, Some(npc));
+    assert_eq!(rows[0].outcome, mush_llm::Outcome::Disabled);
+
+    svc.call(call, req())
+        .await
+        .expect("the same NPC, not parked");
+    assert_eq!(provider.call_count(), 1);
+    assert_eq!(svc.ledger().npc(npc).total_tokens(), 4);
+}
+
 #[tokio::test]
 async fn per_actor_quota_enforced() {
     let provider = Arc::new(MockProvider::new("openrouter"));

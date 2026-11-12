@@ -4471,6 +4471,39 @@ impl<'a> Registrar<'a> {
             })
     }
 
+    /// Name who this module's decisions are charged to (doc 44 MW.17b). Call
+    /// it after [`Registrar::decision_source`]. The adapter is asked on the
+    /// world task each time a lease is planned, and its answer rides the
+    /// worker lease to the provider for metering and audit; it is never
+    /// persisted and does not enter the decision-source fingerprint.
+    pub fn decision_attribution<A>(&mut self, adapter: A) -> Result<(), ModError>
+    where
+        A: crate::decision_source::DecisionAttributionAdapter + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.decision_sources.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: decision-source registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .decision_source_builder
+            .attribute(&owner, std::sync::Arc::new(adapter))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: decision attribution registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
     /// Register the immutable-world evaluator for one revision kind owned by
     /// this module. Owner identity is stamped; no dotted-id inference occurs.
     pub fn revision_validator<V>(

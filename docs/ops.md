@@ -889,6 +889,13 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
   its deadline; boot logs one warning naming the missing route.
 - **Workers.** `[llm].decision_workers` (default 8, at most 32; boot refuses
   0 or more).
+- **Charged to its NPC.** A decision's call is metered against the NPC it is
+  for: the per-NPC budget (`[llm.budgets].per_npc_default`, or the profile's
+  `daily_tokens`), the audit row (`@llm/log npc_decision` ends `npc=#<id>`),
+  and the park flag. The NPC's profile is read each time a lease is planned,
+  so `@llm/kill` stops a decision that was captured before it: the call is
+  refused as `disabled` and the decision reaches `npc_idle` once its attempts
+  are spent or its deadline passes.
 - **Boot audit.** Every production boot audits every durable decision record
   before the world task exists. **A malformed pending record freezes the `npc`
   owner at boot** (the kernel's contract): fix or remove the record
@@ -896,6 +903,23 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
 - **Indicator.** `mush_npc_thinking` counts dialogue turns in flight **plus**
   non-terminal decisions; `mush_npc_decisions{state="ready|leased|resolving"}`
   splits the decisions; `@stats` prints both lines.
+- **Speaking unprompted (doc 44 MW.18).** An enabled major NPC may take one
+  unprompted dialogue turn when a player is present in its room (connected over
+  a live link, not link-dead, not `DARK`, active within
+  `[npc].ambient_active_secs`, default 600) and the room has been quiet for five
+  minutes. A room gets at most one such turn in `[npc].ambient_window_secs`
+  (default 1800; `0` turns the timer off). Both are real seconds whatever the
+  game clock's rate. One NPC also takes at most one such turn in that window,
+  wherever it walks. The turn is an ordinary `npc_dialogue_major` call under the
+  existing budgets, and the windows are not kept across a restart.
+- **Waking the majors.** The shipped cast's eighteen major NPCs are authored
+  parked. With `[npc].wake_majors = true` a cast pack creates its majors enabled,
+  and a later upgrade of the pack keeps each one enabled or parked as staff last
+  left it. So the key wakes the majors of a fresh world at boot. On a world that
+  already exists it wakes nobody: run `@agent/enable <npc>` for each, and set the
+  key as well so the next pack upgrade does not park them again. Without the key
+  a pack upgrade rewrites `enabled` to the pack's value for every NPC, which
+  parks a major woken by hand and wakes any other NPC that staff parked.
 - **Scene turns (H2b).** When `+timestop/next` hands the turn to an NPC agent,
   that turn is one durable decision: the NPC module requests it (cause
   `npc.scene_turn`, keyed on the scene, the round and the NPC), the agent tick

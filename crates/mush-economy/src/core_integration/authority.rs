@@ -8,11 +8,11 @@ use super::{
 use super::{
     consent::{CoreOfferAttribution, CoreOfferAuthority},
     plans::FundingIntent,
-    subject::{CORE3_ENTITLEMENT, DiePayment},
+    subject::DiePayment,
 };
 use crate::{
-    Account, AccountStatus, EconomyStore, InstrumentDef, InstrumentId, InstrumentKind,
-    InstrumentStatus, Vault, VaultStatus,
+    Account, AccountStatus, EconomyStore, InstrumentDef, InstrumentKind, InstrumentStatus, Vault,
+    VaultStatus,
 };
 use mush_core::{ClockStamp, DefinitionRef, Flags, ObjId, ObjKind, World};
 use mush_org::{AuthRequest, CapabilityId, OrgStatus, OrgStore, PrincipalId, ScopeStatus};
@@ -205,25 +205,9 @@ fn accounts(
     }
     let mut instruments = vec![instrument.clone()];
     if subject.class == CoreClass::III {
-        let id = InstrumentId::new(CORE3_ENTITLEMENT).ok_or(Error::Invalid)?;
-        let entitlement = state.snapshot().instrument(&id).ok_or(Error::Unavailable)?;
-        if entitlement.kind != InstrumentKind::Entitlement
-            || entitlement.scale != 0
-            || entitlement.transferable
-            || entitlement.status != InstrumentStatus::Active
-        {
-            return Err(Error::Unavailable);
-        }
-        let principal = PrincipalId::Object(subject.requester);
-        if !state.snapshot().accounts_of(&principal).any(|a| {
-            a.instrument == id
-                && a.scope.is_none()
-                && a.status == AccountStatus::Active
-                && a.posted_balance.minor() > 0
-        }) {
-            return Err(Error::Unavailable);
-        }
-        instruments.push(entitlement.clone());
+        // The end-user entitlement, by the register's one rule (doc 44 unit MW.23).
+        instruments
+            .push(super::end_user::entitlement(state.snapshot(), subject.requester)?.clone());
     }
     Ok((accounts, instruments))
 }

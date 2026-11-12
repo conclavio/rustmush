@@ -645,10 +645,16 @@ impl mush_core::CommandHandler for LlmStaffCmd {
                 .actor
                 .map(|a| format!("#{}", a.0))
                 .unwrap_or_else(|| "-".to_string());
+            // MW.17b: the NPC a call was charged to. A decision has no
+            // triggering player, so without this its row named nobody.
+            let npc = r
+                .npc
+                .map(|n| format!("#{}", n.0))
+                .unwrap_or_else(|| "-".to_string());
             ctx.out.info(
                 ctx.actor,
                 format!(
-                    "  {} {} [{}] {}/{}t ${:.4} {}ms actor={}",
+                    "  {} {} [{}] {}/{}t ${:.4} {}ms actor={} npc={}",
                     r.feature,
                     r.outcome.as_str(),
                     r.model,
@@ -656,7 +662,8 @@ impl mush_core::CommandHandler for LlmStaffCmd {
                     r.output_tokens,
                     r.cost_usd.unwrap_or(0.0),
                     r.latency_ms,
-                    actor
+                    actor,
+                    npc
                 ),
             );
         }

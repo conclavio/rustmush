@@ -97,8 +97,10 @@ pub(crate) fn homes(w: &World, entrants: &[Entrant], rows: &[FieldUnit]) -> Vec<
 }
 
 /// **Ask the field holding `unit` to let it go at its ramp**, at most once a world second, as
-/// `requester` (an NPC: the refusals it is told reach nobody). Nothing when the unit's party has
-/// no home (the head's rule), its exit is already in flight, or it names no ramp.
+/// `requester`: an NPC, or the pilot of a unit its mind flies home for them (doc 44 cut MW.7;
+/// `super::absent`). The ask is quiet: nobody is told it was made or that the unit is not there
+/// yet. Nothing when the unit's party has no home (the head's rule: it holds where it stands,
+/// Q-44-42), its exit is already in flight, or it names no ramp.
 pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Then) {
     let Some(site) = super::field_of_unit(ctx.w, unit) else {
         return;
@@ -132,8 +134,10 @@ pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Th
     let ramp = match then {
         Then::Raider => super::raiders::hull_ramp(ctx.w, unit),
         Then::Sortie { .. } => crate::detachment::sortie::field_ramp(ctx, unit),
-        Then::Rig { .. }
-        | Then::Lift { .. }
+        // Doc 44 cut MW.7: a rig's exit ask, at the ramp its own carrier stands with.
+        Then::Rig { .. } => super::boarding::carrier_of(ctx, unit, &then)
+            .and_then(|hull| super::exit::rig_ramp(ctx.w, hull)),
+        Then::Lift { .. }
         | Then::RaiderLift
         | Then::Yield
         | Then::Towed { .. }
@@ -148,7 +152,7 @@ pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Th
     let saved = ctx.actor;
     ctx.actor = requester;
     // A refusal here (the field busy, not yet running) is offered again next second.
-    let _ = super::exit::request(ctx, unit, Some(ramp), then);
+    let _ = super::exit::request_quiet(ctx, unit, Some(ramp), then);
     ctx.actor = saved;
 }
 
@@ -157,6 +161,8 @@ pub(crate) fn ask_out(ctx: &mut Ctx<'_>, unit: ObjId, requester: ObjId, then: Th
 /// (so a restart or a busy queue never loses it; a duplicate the kernel refuses harmlessly) and
 /// asked out at its ramp.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
+    // Doc 44 cut MW.7: and the units their minds fly home for absent players.
+    super::absent::tick(ctx);
     let units: Vec<ObjId> = ctx
         .w
         .module_state::<super::FieldBook>()

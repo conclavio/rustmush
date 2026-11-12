@@ -22,13 +22,14 @@ use crate::action_state::{ActionStateError, ActionTxn, StateFamilyRegistry};
 use crate::clock::ClockStamp;
 use crate::decision::{
     DecisionActionBinding, DecisionAdmissionIndex, DecisionAttemptFailureKind,
-    DecisionAttemptTransition, DecisionCancellationTransition, DecisionCaptureFamilies,
-    DecisionCompactionTransition, DecisionCompletionFence, DecisionControllerId, DecisionError,
-    DecisionFallbackReason, DecisionFallbackTransition, DecisionId, DecisionKeyRing,
-    DecisionLeaseTransition, DecisionPrompt, DecisionResolvingTransition, DecisionResponse,
-    DecisionTerminalOutcome, DecisionTerminalReceipt, DecisionTerminalTransition, DecisionWake,
-    DecisionWorkerLease, FallbackPolicyRef, MAX_DECISION_ATTEMPTS, MAX_DECISION_RECOVERY_PAGE,
-    PendingDecision, PendingDecisionStatus, PendingOfferWitness,
+    DecisionAttemptTransition, DecisionAttribution, DecisionCancellationTransition,
+    DecisionCaptureFamilies, DecisionCompactionTransition, DecisionCompletionFence,
+    DecisionControllerId, DecisionError, DecisionFallbackReason, DecisionFallbackTransition,
+    DecisionId, DecisionKeyRing, DecisionLeaseTransition, DecisionPrompt,
+    DecisionResolvingTransition, DecisionResponse, DecisionTerminalOutcome,
+    DecisionTerminalReceipt, DecisionTerminalTransition, DecisionWake, DecisionWorkerLease,
+    FallbackPolicyRef, MAX_DECISION_ATTEMPTS, MAX_DECISION_RECOVERY_PAGE, PendingDecision,
+    PendingDecisionStatus, PendingOfferWitness,
 };
 use crate::durable_schedule::ScheduleId;
 use crate::mechanics::{
@@ -50,6 +51,9 @@ struct DecisionSourceEntry {
     wake_adapter: CanonicalId,
     lease_duration: i64,
     fallback_adapter: std::sync::Arc<dyn DecisionFallbackAdapter>,
+    /// Who a lease of this owner's is charged to. Audit only: it selects no
+    /// durable outcome, so it does not enter the registry fingerprint.
+    attribution_adapter: Option<std::sync::Arc<dyn DecisionAttributionAdapter>>,
 }
 
 impl std::fmt::Debug for DecisionSourceEntry {
@@ -61,6 +65,7 @@ impl std::fmt::Debug for DecisionSourceEntry {
             .field("families", &self.families)
             .field("wake_adapter", &self.wake_adapter)
             .field("fallback_adapter", self.fallback_adapter.identity())
+            .field("attributed", &self.attribution_adapter.is_some())
             .finish()
     }
 }
@@ -93,10 +98,49 @@ pub trait DecisionFallbackAdapter: Send + Sync {
     ) -> Result<DecisionFallbackSelection, String>;
 }
 
+/// One synchronous owner surface that names who a decision's provider call is
+/// charged to (doc 44 MW.17b). The registry asks it on the world task each
+/// time it plans a lease, a retry included, so the answer is as fresh as the
+/// lease; the kernel carries the answer on the worker lease and nowhere else.
+///
+/// It reads the world and returns a [`DecisionAttribution`]: a subject to
+/// meter and audit against, that subject's own ceiling, and whether its spend
+/// is withheld. It cannot change the pending record, the prompt, the lease
+/// fence or the fallback, and what it returns is never persisted.
+pub trait DecisionAttributionAdapter: Send + Sync {
+    /// The attribution for a decision `actor` is about to be leased for, or
+    /// `None` to leave the call unattributed.
+    fn attribute(
+        &self,
+        world: &crate::world::World,
+        actor: crate::ObjId,
+    ) -> Option<DecisionAttribution>;
+}
+
 impl DecisionSourceRegistryBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Attach `owner`'s attribution adapter to its already registered source.
+    pub(crate) fn attribute(
+        &mut self,
+        owner: &OwnerId,
+        adapter: std::sync::Arc<dyn DecisionAttributionAdapter>,
+    ) -> Result<(), DecisionSourceRegistryError> {
+        let Some(entry) = self.entries.get_mut(owner) else {
+            return Err(DecisionSourceRegistryError::AttributionWithoutSource {
+                owner: owner.clone(),
+            });
+        };
+        if entry.attribution_adapter.is_some() {
+            return Err(DecisionSourceRegistryError::DuplicateAttribution {
+                owner: owner.clone(),
+            });
+        }
+        entry.attribution_adapter = Some(adapter);
+        Ok(())
     }
 
     pub(crate) fn register(
@@ -137,6 +181,7 @@ impl DecisionSourceRegistryBuilder {
                 wake_adapter,
                 lease_duration,
                 fallback_adapter,
+                attribution_adapter: None,
             },
         );
         Ok(())
@@ -2184,6 +2229,12 @@ impl DecisionSourceRegistry {
         }
         let transition =
             ready.plan_worker_lease(prompt, &candidate.wake, keys, &now, entry.lease_duration)?;
+        // MW.17b: the owner names who this lease's provider call is charged
+        // to, read now so a ceiling or a withhold set since the capture holds.
+        let transition = match &entry.attribution_adapter {
+            Some(adapter) => transition.attributed(adapter.attribute(&engine.world, ready.actor)),
+            None => transition,
+        };
         let PendingDecisionStatus::Leased { attempt, .. } = transition.post_image().status else {
             return Err(DecisionSourcePlanError::StaleCandidate);
         };
@@ -2895,6 +2946,10 @@ pub enum DecisionSourceRegistryError {
     LeaseDuration { actual: i64, max: i64 },
     #[error("decision source is registered more than once for owner {owner}")]
     Duplicate { owner: OwnerId },
+    #[error("decision attribution for {owner} names an owner with no decision source")]
+    AttributionWithoutSource { owner: OwnerId },
+    #[error("decision attribution is registered more than once for owner {owner}")]
+    DuplicateAttribution { owner: OwnerId },
     #[error("decision source names an uncomposed owner {owner}")]
     UnknownOwner { owner: OwnerId },
     #[error("decision source for {owner} has no exact lease action provider: {source}")]

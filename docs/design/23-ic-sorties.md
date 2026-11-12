@@ -1832,7 +1832,17 @@ traced for this cut, and what closes its epoch and claim is not changed by it.
 - **A ship's charter is admitted by the rule but opens no claim**: D-23-12 stands, claims are for
   rigs until a ship is cored.
 
-### 18.6 Decision
+### 18.6 A defect of S.4b-2 the composition exposed
+
+Doc 17h's tier-2 story flies two claims on one rig in one boot, and with the claim path composed
+the second never closed. The surface tick's claim arm kept its in-flight tickets keyed by the
+rig alone and never revisited a rig whose Close had landed, so the spent Close ticket stayed and
+the rig's next claim resubmitted it. A ticket is now kept with the claim it is for (an Open
+with its epoch's instant, a Close with the claim's open token), a ticket kept for another claim
+is acknowledged and replaced, and a landed Close gets one more visit that releases it
+(`surface/mind_claim.rs`). S.4b's own stories flew one claim a rig a boot and did not meet it.
+
+### 18.7 Decision
 
 | # | Decision | Status |
 |---|---|---|

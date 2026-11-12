@@ -55,6 +55,7 @@
 //! its leg reached on the campaign clock and the field takes the rig from there on wall time; at
 //! demotion the surface takes the field's exact pose and any intent is dropped.
 
+pub mod absent;
 pub(crate) mod admit;
 pub(crate) mod boarding;
 pub(crate) mod boot;
@@ -339,6 +340,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Doc 40 cut FR.5 (Q-40-5): the orders a damaged carrier relay holds back.
     reg.state(orders::RelayLate::default());
     reg.state(home::Asked::default());
+    reg.state(absent::Minding::default());
     // Doc 45 cut AP.2 (Q-45-20): a friendly-fire void offered to a leader who was away runs from
     // their return.
     reg.state(standing::Returned::default());

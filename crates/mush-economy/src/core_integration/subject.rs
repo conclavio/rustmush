@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 /// timer waiting on an absent player's response allows at least 28 IC days), the kernel audit's
 /// [`mush_core::player_wait::REFIT_RESERVATION_SECONDS`].
 pub(crate) const RESERVATION_SECONDS: i64 = mush_core::player_wait::REFIT_RESERVATION_SECONDS;
-pub(crate) const CORE3_ENTITLEMENT: &str = "tacsim.licence.core3_end_user";
+/// **The Class III end-user entitlement** (doc 17 §16; 17f M7.11): the instrument a principal
+/// holds an account in to have a Class III core integrated and delivered. Issued by
+/// [`super::register_end_user`] (doc 44 unit MW.23).
+pub const CORE3_ENTITLEMENT: &str = "tacsim.licence.core3_end_user";
 
 /// Physical governed core class. ROM is not a manufactured input or output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

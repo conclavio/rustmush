@@ -946,9 +946,78 @@ pub struct DecisionActionBinding {
     pub request_hash: CanonicalHash,
 }
 
+/// Who a leased decision's provider call is charged to, and on what standing
+/// (doc 44 MW.17b). It is the one audit fact a [`DecisionWorkerLease`] carries
+/// beside its prompt and its fence, and it is read once, on the world task,
+/// when the lease is planned (see
+/// [`DecisionAttributionAdapter`](crate::decision_source::DecisionAttributionAdapter)).
+///
+/// It holds three things and no more: the subject a budget ledger, a kill
+/// switch and an audit row key on; that subject's own daily token ceiling, when
+/// its owner set one; and whether the owner has withheld the subject's spend
+/// altogether. The subject is an object id because every ledger and audit row
+/// already keys on one, but the type is deliberately inert: it is not
+/// serialisable, it never enters the prompt, the durable record or the
+/// registry fingerprint, and a worker holds no world to resolve it against.
+/// `lease_carries_only_its_prompt_its_fence_and_an_attribution` pins the
+/// shape, so a field added here or on the lease fails that test.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecisionAttribution {
+    subject: ObjId,
+    daily_tokens: Option<u64>,
+    withheld: bool,
+}
+
+impl DecisionAttribution {
+    /// A call charged to `subject`, under the configured default ceiling.
+    #[must_use]
+    pub const fn new(subject: ObjId) -> Self {
+        Self {
+            subject,
+            daily_tokens: None,
+            withheld: false,
+        }
+    }
+
+    /// Replace the default ceiling with the subject's own daily token ceiling.
+    #[must_use]
+    pub const fn with_daily_tokens(mut self, daily_tokens: Option<u64>) -> Self {
+        self.daily_tokens = daily_tokens;
+        self
+    }
+
+    /// Mark the subject's spend as withheld by its owner: the provider is
+    /// asked nothing and the refusal is audited against the subject.
+    #[must_use]
+    pub const fn with_withheld(mut self, withheld: bool) -> Self {
+        self.withheld = withheld;
+        self
+    }
+
+    /// The key the budget, the kill switch and the audit row use. For audit
+    /// and metering only: it is never a handle to act through.
+    #[must_use]
+    pub const fn audit_subject(&self) -> ObjId {
+        self.subject
+    }
+
+    /// The subject's own daily token ceiling, if its owner set one.
+    #[must_use]
+    pub const fn daily_tokens(&self) -> Option<u64> {
+        self.daily_tokens
+    }
+
+    /// Whether the owner has withheld the subject's spend.
+    #[must_use]
+    pub const fn is_withheld(&self) -> bool {
+        self.withheld
+    }
+}
+
 /// Public-safe worker input fenced to one exact durable lease. It owns only
-/// the persisted projected prompt; no world or private witness reference can
-/// cross the async boundary.
+/// the persisted projected prompt and, when the source's owner names one, the
+/// [`DecisionAttribution`] its provider call is charged to; no world or
+/// private witness reference can cross the async boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecisionWorkerLease {
     controller: DecisionControllerId,
@@ -957,6 +1026,7 @@ pub struct DecisionWorkerLease {
     attempt: u8,
     lease_until: ClockStamp,
     prompt: DecisionPrompt,
+    attribution: Option<DecisionAttribution>,
 }
 
 /// Exact operational fence carried back by one async provider completion.
@@ -1049,6 +1119,13 @@ impl DecisionWorkerLease {
     #[must_use]
     pub const fn prompt(&self) -> &DecisionPrompt {
         &self.prompt
+    }
+
+    /// Who this lease's provider call is charged to, when the source's owner
+    /// names one. `None` for a source that registers no attribution.
+    #[must_use]
+    pub const fn attribution(&self) -> Option<&DecisionAttribution> {
+        self.attribution.as_ref()
     }
 }
 
@@ -1295,6 +1372,13 @@ impl DecisionLeaseTransition {
     #[must_use]
     pub fn into_parts(self) -> (PendingDecision, DecisionWorkerLease) {
         (self.post_image, self.worker)
+    }
+
+    /// Set who the planned lease's provider call is charged to. The post-image
+    /// is untouched: an attribution is never durable state.
+    pub(crate) fn attributed(mut self, attribution: Option<DecisionAttribution>) -> Self {
+        self.worker.attribution = attribution;
+        self
     }
 
     /// Stage the exact lease post-image. The returned worker value remains
@@ -1655,6 +1739,9 @@ impl PendingDecision {
                 attempt,
                 lease_until,
                 prompt: prompt.prompt.clone(),
+                // The owner's attribution adapter, if any, is asked by the
+                // source registry when it plans the dispatch.
+                attribution: None,
             },
         })
     }
@@ -3068,6 +3155,66 @@ mod tests {
                 .plan_worker_lease(&prompt, &wake, &keys, &deadline(20), 1)
                 .unwrap_err(),
             DecisionError::DeadlineReached
+        );
+    }
+
+    /// MW.17b: the pin on what crosses the async boundary. Both destructures
+    /// are exhaustive on purpose (no `..`), so a field added to the lease or
+    /// to its attribution stops this test compiling until somebody has decided
+    /// that the new field may cross.
+    #[test]
+    fn lease_carries_only_its_prompt_its_fence_and_an_attribution() {
+        let (keys, pending, prompt) = pair();
+        let wake = DecisionWake {
+            id: pending.id,
+            revision: pending.revision,
+            prompt_digest: pending.prompt_digest,
+        };
+        let plan = || {
+            pending
+                .plan_worker_lease(&prompt, &wake, &keys, &deadline(18), 10)
+                .unwrap()
+        };
+        // A lease the kernel plans on its own names nobody: an attribution is
+        // only ever the owner's, set by the source registry.
+        let (_, bare) = plan().into_parts();
+        assert_eq!(bare.attribution(), None);
+
+        let charged = DecisionAttribution::new(pending.actor)
+            .with_daily_tokens(Some(4_000))
+            .with_withheld(true);
+        let transition = plan().attributed(Some(charged));
+        // The attribution is not durable: the post-image is the same record.
+        assert_eq!(transition.post_image(), plan().post_image());
+        let (_, worker) = transition.into_parts();
+        let DecisionWorkerLease {
+            controller,
+            decision,
+            revision,
+            attempt,
+            lease_until,
+            prompt: leased_prompt,
+            attribution,
+        } = worker;
+        assert_eq!(controller, pending.controller);
+        assert_eq!(decision, pending.id);
+        assert_eq!(revision, pending.revision);
+        assert_eq!(attempt, 1);
+        assert_eq!(lease_until, pending.deadline);
+        assert_eq!(leased_prompt, prompt.prompt);
+        let DecisionAttribution {
+            subject,
+            daily_tokens,
+            withheld,
+        } = attribution.expect("the attribution the registry set");
+        assert_eq!(subject, pending.actor);
+        assert_eq!(daily_tokens, Some(4_000));
+        assert!(withheld);
+        // An id, a ceiling and a flag: nothing an attribution could hide a
+        // reference in.
+        assert!(
+            std::mem::size_of::<DecisionAttribution>()
+                <= std::mem::size_of::<(ObjId, Option<u64>, bool)>()
         );
     }
 

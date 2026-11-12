@@ -93,6 +93,8 @@ mod field_host;
 mod field_mw14a;
 #[path = "domain_field/field_mw15.rs"]
 mod field_mw15;
+#[path = "domain_field/field_mw7.rs"]
+mod field_mw7;
 #[path = "domain_field/field_raiders.rs"]
 mod field_raiders;
 #[path = "domain_field/field_rs1.rs"]
@@ -105,6 +107,8 @@ mod field_rs5;
 mod field_story;
 #[path = "domain_field/ic_sortie_surface.rs"]
 mod ic_sortie_surface;
+#[path = "domain_field/m8_end_user.rs"]
+mod m8_end_user;
 #[path = "domain_field/m8_leaks.rs"]
 mod m8_leaks;
 #[path = "domain_field/m8_world.rs"]

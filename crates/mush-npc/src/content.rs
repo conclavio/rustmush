@@ -184,6 +184,26 @@ fn profile_of(def: &NpcDef) -> Result<AgentProfile, String> {
     Ok(profile)
 }
 
+/// Whether an NPC a pack is applying comes out enabled (doc 44 cut MW.18, Q-44-47).
+///
+/// Without `[npc].wake_majors` the pack decides, as it always has: `pack_enabled`,
+/// on a first apply and on every upgrade. With it, a **major** NPC is created enabled
+/// whatever the pack says, and on an upgrade it keeps the state it already has
+/// (`existing`), so a major that staff parked with `@llm/kill` is not woken again by a
+/// pack upgrade, and one staff woke by hand is not parked again.
+fn applied_enabled(
+    pack_enabled: bool,
+    tier: NpcTier,
+    wake_majors: bool,
+    existing: Option<bool>,
+) -> bool {
+    if tier == NpcTier::Major && wake_majors {
+        existing.unwrap_or(true)
+    } else {
+        pack_enabled
+    }
+}
+
 fn knowledge_of(def: &NpcDef) -> Result<NpcKnowledge, String> {
     let knowledge = NpcKnowledge {
         lore: def.lore.iter().map(LoreDef::to_entry).collect(),
@@ -225,9 +245,22 @@ fn create_npc(
         return Err(format!("{id}: {name:?} is not an NPC name"));
     }
     let mut profile = profile_of(&def).map_err(|e| format!("{id}: {e}"))?;
+    let old = existing.and_then(|npc| crate::module::read_profile(ctx.w, npc));
+    // Doc 44 cut MW.18 (Q-44-47): `[npc].wake_majors`. Read from the world, not the
+    // checked slot: an applier runs under the content module.
+    let wake_majors = ctx
+        .w
+        .module_state::<NpcHostState>()
+        .is_some_and(|host| host.config.wake_majors);
+    profile.enabled = applied_enabled(
+        profile.enabled,
+        def.tier,
+        wake_majors,
+        old.as_ref().map(|old| old.enabled),
+    );
     // Public affiliation is a runtime role binding/staff choice, not an authored
     // pack default. Reapplying prose must not reset that independent decision.
-    if let Some(old) = existing.and_then(|npc| crate::module::read_profile(ctx.w, npc)) {
+    if let Some(old) = old {
         profile.public_faction = old.public_faction;
     }
     let knowledge = knowledge_of(&def).map_err(|e| format!("{id}: {e}"))?;
@@ -539,6 +572,27 @@ impl EntryApplier for NpcApplier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Doc 44 cut MW.18: `[npc].wake_majors` creates a major enabled and never undoes
+    /// what staff did to it afterwards; without the key, and for every other tier, the
+    /// pack decides as before.
+    #[test]
+    fn mw18_wake_majors_creates_a_major_enabled_and_keeps_what_staff_left() {
+        let (major, minor) = (NpcTier::Major, NpcTier::Minor);
+        // Without the key the pack decides, on a first apply and on an upgrade.
+        assert!(!applied_enabled(false, major, false, None));
+        assert!(!applied_enabled(false, major, false, Some(true)));
+        assert!(applied_enabled(true, major, false, Some(false)));
+        // With it: created enabled, whatever the pack says.
+        assert!(applied_enabled(false, major, true, None));
+        // An upgrade keeps a park, and keeps a wake.
+        assert!(!applied_enabled(false, major, true, Some(false)));
+        assert!(!applied_enabled(true, major, true, Some(false)));
+        assert!(applied_enabled(false, major, true, Some(true)));
+        // The key is about majors only.
+        assert!(!applied_enabled(false, minor, true, None));
+        assert!(applied_enabled(true, minor, true, Some(false)));
+    }
 
     #[test]
     fn authored_command_references_normalize_without_changing_personality() {

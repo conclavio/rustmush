@@ -99,9 +99,12 @@ impl Arena {
             .is_some_and(|(old, new)| {
                 old.detachment == new.detachment && old.revision == new.revision
             });
+        // Doc 44 cut MW.7 (the review's finding 6): a unit flown for an absent player keeps
+        // its go-home order under any change of command (`crate::arena::absent`).
         if !same_assignment
             && (control.authority.is_some()
                 || previous.is_some_and(|state| state.authority.is_some()))
+            && !self.absent(control.unit)
         {
             // Claiming a hull also removes its legacy instruction. The two
             // authorities never share ownership of a machine's standing order.
@@ -193,6 +196,7 @@ impl Arena {
         if recipient.controller == Controller::Pilot {
             return IntentOutcome::Refused(Refusal::NotMachine);
         }
+        let absent = recipient.absent;
         let authorised = self.detachment_commands.get(&unit).is_some_and(|state| {
             state.epoch == command.authority_epoch
                 && state.authority == Some(command.authority)
@@ -228,6 +232,32 @@ impl Arena {
             }
         }
         let hash = self.event_hash();
+        // **Doc 44 cut MW.7** (Q-44-18; `crate::arena::absent`): a unit flown for an absent
+        // player keeps its go-home order. A command that reaches it meanwhile is taken and
+        // journalled, and can only tighten that order: its `hold_fire` is added, and its
+        // objective and a cancellation change nothing.
+        if absent {
+            if command
+                .directive
+                .is_some_and(|directive| directive.constraints.hold_fire)
+                && let Some(order) = self.minds.get_mut(&unit).and_then(|row| row.order.as_mut())
+            {
+                order.hold_fire = true;
+            }
+            if let Some(state) = self.detachment_commands.get_mut(&unit) {
+                state.sequence = command.sequence;
+            }
+            let _ = self.ledger.append(
+                self.now_ms,
+                super::ledger::EventKind::DetachmentCommanded {
+                    unit,
+                    command: Box::new(command.clone()),
+                },
+                Vec::new(),
+                hash,
+            );
+            return IntentOutcome::AppliedContinuous;
+        }
         self.clear_detachment_order(unit);
         if let Some(directive) = command.directive {
             let mut rekeyed = self.rekey_objective(

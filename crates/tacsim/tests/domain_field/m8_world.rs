@@ -2354,8 +2354,9 @@ fn m8g_a_real_ungoverned_core_is_seized_impounded_and_forfeited() {
 /// Tether back room integrates it as an ungoverned Class I (a certified Class I fitted at Basin
 /// first: `core_ungovern` never fits a coreless chassis) and fits it into the pilot's leased
 /// rig; the Registry's inspection reads the core `Grey`, Class I, ungoverned, and the operator
-/// may seize it. (M8b-2's heirloom is Class III, which integrates only under a Class III
-/// entitlement the production launch does not compose: the M8g report.)
+/// may seize it. (M8b-2's heirloom is Class III, which integrates only under the Class III
+/// end-user entitlement; since doc 44 unit MW.23 the launch issues it, and the heirloom's story
+/// is `m8_end_user::mw23_a_heirloom_in_the_back_room_is_under_the_entitlement`.)
 #[test]
 fn m8g_a_grey_core_reads_grey_to_the_inspection_and_is_seizable() {
     use tacsim::minds::registry_inspection::{HullClass, Provenance};
@@ -2732,7 +2733,8 @@ fn claimed_recover(world: &mut M8World, n: usize, open: mush_core::CommitToken) 
 ///    House. The pilot's `go` under the House's owner licence (`org=Coprates`) opens the claim
 ///    in the bay and launches; the open line names the House the holder with the pilot acting;
 ///    the server restarts with that claim open and the claim history's audit admits it; the
-///    recover closes it, and a plain launch afterwards is not held by the spent cursor.
+///    recover closes it; the same rig then opens and closes a second claim in the same boot;
+///    and a plain launch afterwards is not held by the spent cursor.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
 #[allow(clippy::too_many_lines)]
@@ -2956,6 +2958,12 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         "the House's claim survives a restart"
     );
     claimed_recover(&mut world, 2, open);
+    // The same rig's next claim in the same boot opens and closes too: a claim's tickets are
+    // its own, not the rig's (the surface tick's claim arm once resubmitted the first claim's
+    // spent Close for the second, which then never closed).
+    let again = claimed_launch(&mut world, 2, &house(2), owner_licence.get());
+    assert_ne!(again, open, "a new claim");
+    claimed_recover(&mut world, 2, again);
     let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/2 launch go");
     assert!(
         crate::excursions::record_of(&mut world.rig.tw, second).is_some_and(|r| r.act.is_some()),
