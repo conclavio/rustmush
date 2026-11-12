@@ -469,7 +469,181 @@ Docs only (2026-11-11). Each ruling is written where its question was first aske
 
 ## MW.5
 
-Not built.
+Doc 17g's C4 acceptance (doc 44 §7.1; §4b row 7; Q-44-15). Started 2026-11-12 on main
+`9d8fc96b7`. This section opens with the inventory the unit was asked to start from, checked
+against the code and not against docs 17f and 17g; what is built follows it.
+
+### Inventory (2026-11-12, at `9d8fc96b7`)
+
+**What "the production composition" is.** `mush_server::boot::game_modules`
+(`crates/mush-server/src/boot.rs`) reads `[tacsim.minds].launch_path`, decodes the deployment,
+calls `tacsim::launch::LaunchComposition::prepare` and hands the result to
+`modules::server_modules_with_launch`. There is no function named `compose_launch`; the brief
+and two notes use that name for this path. Three test rigs stand a launch up through `prepare`:
+
+| Rig | Where | Roster under the launch | Restart | A genuine rating |
+|---|---|---|---|---|
+| **P1**, the named launch | `crates/tacsim/src/hardware/flow/launch.rs` (`modules`, `reboot`) | tacsim's `domain_modules_with_launch` | `Rig::restart` over the kept store | about 55 min a story |
+| **P2**, the server | the rig is `crates/mush-server/src/world_task/submission_disposition/tests/player_market.rs` (`launch_world`, `initialized_launch_with`, `launch_active`) over `Running::boot(config, store, None)`; its stories are `player_market_story.rs` and `player_market_typed.rs` beside it | **the server's own**: `game_modules`, `server_modules_with_launch`, the world task and the persist path | `server.stop()`, then `active(..)` over the same store | about 35 min at `MIND_PULSE_MS` unset |
+| **P3**, the combined M8 world | `crates/tacsim/tests/domain_field/m8_world.rs` (`factory`, `m8_world*`, `M8World::reboot`) | a test twin (`excursions::Roster::launch_modules`: `domain_modules_with_launch` over the test world's layer with the shipped content) | `reboot_with` over the rig's store | about 8 to 25 min a rating (CPU-bound; no wall-clock pulse) |
+
+Only P2 runs the server's roster. P1 and P3 run `prepare` under tacsim's own domain roster, so a
+story on them proves the launch composition and not the server's boot around it. The rigs that
+do **not** count: every `minds/bulk/*_integration_tests` fixture (`PurchaseFixture`,
+`PlayerWorld`, `IcWorld`: hand-built `MindCommerce::prepare` chains), `paid_purchase` in
+`mush-server` (`game_modules_with_mind_commerce`), `player_market.rs`'s `player_market_commerce`
+chain, the hardware flow's own rig (`hardware/flow.rs`: `GovernedHardware` with no launch) and
+the excursions' `reboot_with_inspection`.
+
+**Item 1: 17f §9's stories 1, 2, 3, 5, 6 and 7, each with a restart.**
+
+| Story | On the production composition today | Not there |
+|---|---|---|
+| **1, commercial author** | P2, `player_market_commands_story_two_accounts_alt_stale_tiny_and_restart` (dispatch): A files by command over a genuine rating, publishes sealed, B on another login buys at the counter and reads it in `+minds/holdings`, B resells with one balanced split; three restarts. The typed story repeats quote, pay, complete and the panels on the typed surfaces, with a restart | B selecting, sealing and flying a **player-authored** mind (P3 flies House Pins only: `m8g_story_tier2_held_minds_seal_aboard`, `s4b3_*`); cards and trace readable while source and memory never are, on every surface (`assert_private` checks digests and account ids only); the OOC run posting nothing; the old holding refused at the next seal **after a restart** (tier 2's step 3 refuses it, with no restart and no split check) |
+| **2, private and derivative** | P2 only as far as a draft: an open listing bought, `@mind/fork`, one `roll_mind_draft_parent` row | every other clause: a fork filed privately and refused a listing; an open-resale derivative paying its parent chain; parent lapse, transfer, revocation and recall sealing the dependent; restoration; an existing customer keeping their term. All of it is proven only on `PlayerWorld` and `IcWorld` fixtures (`dependent_owner_integration_tests.rs`, `authored_fork_integration_tests.rs`, `paid_resale*_integration_tests.rs`) |
+| **3, seat and term** | P3, `s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home` (dispatch): a one-seat Pin's live claim, the second rig refused the seat, a resale pending while the claim is open and the seller refused by name, the close, a restart with a House claim open. P2's part 3: the renewal after the term, revocation, recall, a charter transfer. P3 tier 2 step 4: the lapse fallback heard by the operator alone | **a two-seat licence cannot be made on a launch**: `@mind/publish .. seats=2` answers the provisional-terms refusal (`market_commands/market.rs`, `seats == 1`) and the House Pin is one seat (`launch/content.rs`). So "two-seat licence, one live claim" has no production form. Also absent: the pending sale settling at the last close and at the deadline, once; the buyer refused while pending; a duplicate close; a refund on revocation asserted; a free owner's parallel dispatches; a title transfer with a claim open; a restart **during** the pending sale |
+| **5, authority and adversarial** | P2: the alt pair at the counter, a foreign target reading as a missing one, stale terms, an org form without the holder grant (`player_market_commands.rs`, default sweep, no restart), a rating queued and cancelled (no restart). P1: the resale privacy fence | same-account licence and charter **transfers**, the missing account oracle, forged receipt, grade and lineage, the generic-title bypass, malformed retained records and queue saturation are each proven on a fixture only |
+| **6, launch catalogue** | P1, `named_coprates_real_save_rate_house_sale_and_membership_fences` (dispatch): three named Houses' sources rated, filed, listed and sold, the treasury's filing fee, Coprates' membership fence lost after the plan, after the stage and at the take; four restarts. P3: the same three lines in the combined world, and the procurement budget (`m8g_story_zero_pc_procurement_*`) | Safe Conduct's role run (`@conduct/run`) on a launch: the Conduct owner is composed (`with_conduct_trials`) and no launch test drives it. **Hull cover is not composed by a launch at all** (`prepare` calls neither `with_hull_coverage` nor `with_qualified_hull_coverage`; doc 17g §4 says "still deferred", correctly), so the priced discount, the premium, exposure, claim and wreck-title records and the zero-charge refusal cannot run on the production composition. Free Doctrine staying free is asserted on the doctrine library's own rig |
+| **7, the fact interface** | nothing. `with_minds_facts` is composed by every Active launch (`launch.rs`) | all of it: the filing, lapse and transfer-receipt facts are read only on `PlayerWorld` and `IcWorld`. Nowhere at all: a renewal after a lapse leaving the lapse on record, and a front consuming a mind fact |
+
+So the row's "moved onto the production composition" is the wrong picture for four of the six.
+Stories 1 and 6 mostly exist there with restarts. Stories 2 and 7 do not exist there in any
+form; story 3 exists in part and one of its premises cannot be built on a launch; story 5 is
+scattered across unit tests of the owners.
+
+**Item 2: story 4, the hardware story.** Before this unit: on the hardware flow's own rig only
+(`hardware/flow.rs`, no launch, the Class III entitlement minted by a test fixture), and on P3
+as far as delivery (MW.23's `m8_end_user.rs`). No launch world fitted a Class III core, read it
+after a restart or replaced it; the M8 stories that fly a cored rig bind the root by staff
+(`ic_sortie_surface::fit`: `@unit/remove`, `@unit/create`).
+
+**Item 3: the bot's sentences.** The bot keeps substring needles in
+`crates/mush-bot/src/mine/lines.rs` and `arena/lines.rs`; unit tests there read tacsim's own
+`pub const` templates through the dev-dependency and assert each needle is inside the game's
+sentence, so a changed sentence fails `cargo test -p mush-bot`. `mush-market` is not a
+dev-dependency, so its sentences are copied text that no test reads. Of what this programme
+added, the bot holds `MIND_UNTITLED` only. Not held: MW.23's twelve `+enduser` lines
+(`tacsim::launch::end_user`), MW.2's `RENEW_STOPPED` and the other `RENEW_*`
+(`mush-market/src/mind_renewal/player.rs`), the claim refusals (`surface::excursion`'s
+`CLAIM_*`, `surface::dispatch`'s `MIND_PENDING`, `MIND_SEATS_HELD`, `MIND_NO_LICENCE`,
+`MIND_GOVERNED_DRAFT`, `MIND_NO_CORE`, `MIND_UNAVAILABLE`), MW.7's seven lines
+(`field::absent`), and the whole `+minds` family (about a hundred constants in
+`minds/market_commands/words.rs`, a `pub(crate)` module). MW.1 and MW.24 added no player
+sentence.
+
+**Item 4: the cross-host cases.** D-UM-28's corpus (`domain_arena::minds_rhai`,
+`m2_the_twin_corpus_hashes_the_same_on_every_host`, with the pool and twin cases beside it)
+runs on Linux only: `ci.yml` has no Windows lane and says Windows is the blessing host, by
+hand. MW.9 re-pinned its four rows at `api=8` from a Linux run, so **since MW.9 the pins have
+not been run on Windows**. Nothing under `minds/registry/` or the Roll's `rating/` pins a hash:
+a Registry trial's result, a rating's execution digest and a Conduct verdict have never been
+compared across hosts.
+
+**Item 5: Registry load beside live arenas.** Never measured. A rating runs on its own
+`mind-bulk-N` threads (`minds/bulk/executor.rs`, `proving_workers`, default 1), each lease
+committed by the world thread at `registry_pulse_ms`; arena thinks go to the `tacsim-mind-N`
+pool (`[tacsim.minds].workers`). They share the cores and the world thread. MW.1's figures are
+a rating alone on an idle server. No counter exists for the Registry's queue depth or a
+lease's latency; the timing hooks are test-only prints (`M7_LAUNCH_REGISTRY_TIMING`,
+`M7_STORY_RATED`).
+
+**The two owed stories.** MW.7's filed mind in a field: pinned at the arena only
+(`domain_arena::minds_rhai::mw7_a_sealed_mind_that_fires_first_is_refused_until_it_is_fired_on`).
+The P3 field stories (`s4b3_*`) fly a House Pin on a prospector with nobody in its cab, which
+is not an absent player's unit (the gate binds a unit with a seated pilot; AP.5 and AP.7 own
+the empty cab). MW.23's refit and restart: item 2.
+
+### Built: item 2, story 4 on the launch (PR #558)
+
+`crates/tacsim/tests/domain_field/c4_hardware.rs`,
+`c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced`, in the default
+sweep (about 22 s). It is also MW.23's owed "refit and restart of a fitted Class III". On P3,
+with nothing minted but credits:
+
+1. the pilot registers as an end user by their own verb (`+enduser/apply go`);
+2. the importer's stock agent issues a certified Class III die and offers its integration,
+   the pilot pays the catalogue's price, the work runs its 96 hours, and the core is
+   delivered with a title born of that integration;
+3. the pilot's own coreless rig is fitted at the chartered shop: the root is the rig
+   family's governed Class III, and the fitting fee goes to the shop;
+4. the server restarts. The unit is the same unit; the Registry's inspection reads that
+   core, Class III, governed, certified by the importer; the rig's next launch seals over
+   it and the seal names the core and its class;
+5. with a dent in the plating, a Class II core is fitted in the first one's place: the root
+   is the family's Class II, the dent and every cell and component outside the core are as
+   they were, and the displaced core is back in the pilot's hands, titled to them,
+   unencumbered;
+6. a core is fitted once. The core fitted in the first rig is in that hull and not in the
+   pilot's hands, so the shop will not offer it for the second rig (the kernel's head for
+   it reads `mounted`). The displaced core is in the pilot's hands and the shop offers it,
+   and the kernel refuses the acceptance: its head reads `detached`. The story asserts both
+   heads and the step each refusal comes from; nothing is charged. A core fresh from the
+   shop goes into the second rig, so the second rig was never the reason;
+7. a second restart keeps both rigs.
+
+**What staff do in it**, none of it the thing under test: a wallet top-up; the two leased
+rigs titled to the pilot (`@asset/release`, `@asset/transfer`); the pilot and a rig stood in
+the fitting shop and back in the bay; the dent (`@unit/damage`).
+
+**Not in it.** Story 4's last clause, "existing OOC pods show no owned-hardware
+dependency": the M8 rig runs no simulator match. The hardware flow's own rig
+(`hardware/flow.rs`) and the simulator's reset stories cover the pods; nothing joins the two
+on a launch world.
+
+**Found.**
+
+- **A displaced core is never fitted again.** The kernel admits a core to a fitting only if
+  its head is absent or `released` (`mush-core`,
+  `action_state/terminal_capacity/core_refit/transition.rs`, `admission_heads`); a core
+  that has been mounted reads `mounted`, and one displaced by a later fitting reads
+  `detached`. Doc 17f §9 says "displaced core remains owned, and a second install cannot
+  reuse it", so this is the rule as written and the story pins it. It makes a displaced
+  Class III core, 25,000cr of hardware, an object its owner holds and can never use again.
+  **For the owner**: if a displaced core should go back into a hull (or be sold to someone
+  who can fit it), the change is in that admission and in the `detached` head's meaning,
+  and it is a kernel change, not a tuning.
+- **The story's rigs are leased, and the refit asks for the titleholder.** So staff title
+  them to the pilot, as every M8 hardware story does. A rig a player holds title to comes
+  from the yard (`+yard/collect`, doc 39 cut IN.9, `port/commission.rs`), and a hull from
+  the Co-op buyout. No story builds a rig at the yard and then has a core fitted to it, and
+  whether the refit's roots (`payment.fits`: the line, rig and coreless-TV families) admit
+  a yard design is unchecked. **Left for the unit that joins the yard to the hardware.**
+- **The fitting shop is not a place.** The launch's `factory` is an object named in
+  `launch.json`; the refit asks that the requester and the hull stand in it, and nothing in
+  the game moves a rig there. The story stands them there by staff. On a dev box the
+  bring-up's shop is the same kind of object. **Gap, with the one above.**
+
+### Built: item 4, the cross-host cases (PR #558)
+
+- **A Registry trial pinned** (`crates/tacsim/src/minds/registry/trials/physical_tests.rs`,
+  `c4_a_registry_trial_ends_the_same_on_every_host`, default sweep, 2 s). Four cases of the
+  Duel trial at seed 1 run to their real terminals: a script that stands and fires by the
+  stock rules (its fixed and its cycling variant), a script that closes on what it sees, and
+  the stock profile at Class II. The test asserts each case is conformant and that the
+  arena itself ended the match (a case stopped by a budget fault also answers a result, and
+  is not one). Each case's pin holds why the arena ended and what the Registry files that
+  as, the stop millisecond, the arena's final state hash, the black box's digest and the
+  SHA-256 of the case result's JSON (the record a rating's page carries). All four end by
+  elimination, the candidate lost, at 58,500 ms: the opponent's fire decides the moment,
+  and what the candidate did shows in the state and the black box, which differ case by
+  case. Blessed on Linux (conclav.dev, x86-64) and run on Windows
+  (x86-64) at the same tree: all four rows equal. It is not `#[ignore]`d, so every pull
+  request runs it on Linux and every local run of tacsim's library tests runs it on Windows.
+  A change that moves a row on purpose (a new mind ABI, a rule's numbers, the proving
+  content) re-blesses it from the `C4_TRIAL_PIN` lines the test prints. CI has no Windows
+  lane, so the run on the other host is by hand and nothing enforces it; that is true of
+  D-UM-28's corpus as well. **A Windows lane for the two corpora is the missing piece, and
+  no unit owns it.**
+- **D-UM-28's corpus run on Windows at `api=8`.** On this Windows box at `9d8fc96b7`:
+  `minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host` (the four rows and the float
+  probe MW.9 re-pinned from Linux), `twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool`
+  and `minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library` all pass. So
+  the pins MW.9 took on Linux hold on Windows, and MW.7 with MW.9 together on main moved
+  none of them.
+- **Not pinned:** a whole rating's receipt (a certificate takes about 1,070 leases; its
+  digest folds every case result, so one case result differing across hosts would move it,
+  and four are pinned), and a Conduct verdict. A third host family (aarch64) has never run
+  either corpus.
 
 ## MW.6
 
