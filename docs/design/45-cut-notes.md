@@ -322,6 +322,50 @@ Q-44-46). Built on MW.7 (doc 44's cut note, "the field's presence record and the
      `DRIVE` steers nothing and a reconnect is refused the controls.
   6. `ap5_a_restart_before_the_player_returns_keeps_the_mind_and_still_seats_them`.
 
+**Verified, and how** (Linux, conclav.dev, the PR's tree over main `9d8fc96b7`).
+
+- The six stories pass, and beside them MW.7's six and AP.1's and AP.2's (eighteen at once).
+  The whole `domain_field` binary passes: 262 run, 262 passed, 11 ignored as on main. No
+  older story changed: none opens a field over a seated player who is not connected.
+- Locally (Windows): `cargo clippy -p tacsim --all-targets -- -D warnings`, `cargo doc -p
+  tacsim --document-private-items` under `-D warnings`, and `cargo test -p
+  mush-contract-tests` (nothing re-blessed).
+- Five mutations in a second throwaway clone, each run against the six stories. The stories
+  cannot be compiled on main (they read `Why::AwayAtAdmission`), so the first row stands in
+  for "fails on main today".
+
+| Mutation | What failed |
+|---|---|
+| Admission asks the seat alone (`seat_absent` is not called: main's behaviour) | five of six; only the connected pilot's story passes |
+| The record is written and the seat released, but the kernel is never told the unit is an absent player's (a mind under no rule, Q-45-1's alternative) | story 2: the ward put fourteen rounds into the raider its pilot had marked |
+| The five minutes run from the field's opening, not from the loss | story 4 |
+| A link-dead pilot is handed over at once, like one who is gone | story 4 |
+| Admission asks the connection and not whether the pilot is fit | story 5 |
+
+The second row is why story 2 cuts the rally time to four seconds and waits thirty: a hull
+released to a mind under no rule falls back first and fights after
+`[tacsim.arena.reflex].rally_ms` (twenty seconds as shipped), so a twelve-second stretch
+passed with or without the rule.
+
+**Reviewed.** A read-only review of the diff by a second agent (Opus). Fixed in the PR:
+
+- a hull put back into a field after its carrier was lost was handed over by MW.7's
+  `retry_recovers` before the kernel had answered the join, so the flag was dropped and the
+  release landed on a hull the rule did not bind; the hand-over now waits for the answer;
+- the link stamp was kept from the first drop, so a return no hook reported (a reconnect
+  that races the session's end) made the next drop look old; each link-dead onset is now a
+  fresh stamp;
+- a join handed over with the admission's reason and line, though no field had opened;
+- `tell_arena` counted a unit as told when the flag was taken and a channel's release was
+  not; it now offers again;
+- the note said in two places that a restart ends every session, which a hot restart does
+  not; the wording is corrected under "not built";
+- story 5's `DRIVE` assertion claimed more than it checks, and is reworded.
+
+It found the ordering inside `admit`, the kernel interleaving at admission (a pulse that
+lands between the flag and the release leaves an inert seat), the hook facts the stamps rely
+on, the order of `at_controls`, and the raid director's NPC crews sound.
+
 **Divergences from the row.**
 
 - **`custody_unit` still checks the seat out.** The row names `custody_unit` as the place.
