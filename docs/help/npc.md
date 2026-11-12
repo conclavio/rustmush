@@ -298,7 +298,7 @@ Parking an NPC stops its decisions as well as its dialogue. A decision is the
 turn an NPC takes when a scene hands it one (`+timestop/next`). If the NPC is
 parked while it holds one, the model is not asked: `@llm/log npc_decision` shows
 the refused call as `disabled` with `npc=` naming the NPC, and the turn passes
-as its idle action at the deadline.
+as its idle action.
 
 ## Informants (the intel loop)
 

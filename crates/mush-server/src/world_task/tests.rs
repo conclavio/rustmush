@@ -11039,7 +11039,7 @@ async fn mw17b_a_decision_is_charged_to_its_npc_and_names_it_in_the_audit() {
 /// but a captured one was still leased and the provider still asked. Now
 /// the lease carries the NPC's standing, the service refuses the call
 /// before any provider is asked, the refusal is audited against the NPC,
-/// and the deadline hands the turn to `npc_idle`.
+/// and the turn goes to `npc_idle` once the attempts are spent.
 #[tokio::test]
 async fn mw17b_llm_kill_stops_a_decision_that_was_already_captured() {
     let (llm, mock) = npc_decision_service();

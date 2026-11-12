@@ -894,7 +894,8 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
   `daily_tokens`), the audit row (`@llm/log npc_decision` ends `npc=#<id>`),
   and the park flag. The NPC's profile is read each time a lease is planned,
   so `@llm/kill` stops a decision that was captured before it: the call is
-  refused as `disabled` and the decision reaches `npc_idle` at its deadline.
+  refused as `disabled` and the decision reaches `npc_idle` once its attempts
+  are spent or its deadline passes.
 - **Boot audit.** Every production boot audits every durable decision record
   before the world task exists. **A malformed pending record freezes the `npc`
   owner at boot** (the kernel's contract): fix or remove the record

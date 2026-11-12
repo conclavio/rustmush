@@ -775,8 +775,8 @@ The NPC decision call carries its NPC (doc 44 §7.1; first review, finding 8; se
 
 So `@llm/kill` (and `@agent/set <npc>/enabled=no`, the same flag) stops a decision that was
 already captured: the call is refused before the model is asked, each attempt leaves a
-`npc_decision disabled` row against the NPC, and the decision reaches `npc_idle` at its
-deadline. A decision that is answered is counted on its NPC's budget counter and is refused
+`npc_decision disabled` row against the NPC, and the decision reaches `npc_idle` when its
+attempts are spent (three, each refused at once) or at its deadline, whichever is first. A decision that is answered is counted on its NPC's budget counter and is refused
 up front when it would pass the NPC's ceiling.
 
 **What moved in a stored or versioned format: nothing.** The lease is not serialised
@@ -817,8 +817,9 @@ registry attributes one.
   that writes it, and seeded again at boot. Reading the profile at the lease has no state
   to drift. `KillSwitch::disable_npc` stays as it was, with no caller.
 - **A parked decision still runs its lease and its attempts.** The kernel's lifecycle is
-  untouched: each attempt is refused at once and audited, and the deadline hands the turn
-  to `npc_idle`. Nothing cancels the pending record early.
+  untouched: each attempt is refused at once and audited, and the turn goes to `npc_idle`
+  when the attempts are spent or the deadline passes. Nothing cancels the pending record
+  early.
 
 **Tests.** No test makes a provider call.
 
