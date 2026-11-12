@@ -2156,6 +2156,7 @@ dependencies = [
  "mush-core",
  "mush-economy",
  "mush-llm",
+ "mush-market",
  "mush-net-ssh",
  "mush-org",
  "mush-proto",

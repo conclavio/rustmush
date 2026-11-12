@@ -50,7 +50,7 @@ pub(crate) mod registry;
 pub(crate) mod renew;
 pub(crate) mod trade;
 pub(crate) mod typed;
-pub(crate) mod words;
+pub mod words;
 
 use std::sync::{Arc, Mutex};
 

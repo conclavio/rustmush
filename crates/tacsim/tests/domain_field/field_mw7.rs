@@ -49,14 +49,14 @@ use crate::field_host_rig::{
 };
 
 /// The field holds through the stories' quiet stretches.
-fn quiet(cfg: &mut tacsim::TacsimConfig) {
+pub(crate) fn quiet(cfg: &mut tacsim::TacsimConfig) {
     tune(cfg);
     cfg.field.disengage_s = 3_600;
     cfg.field.idle_demote_s = 3_600;
 }
 
 /// Drop every connection of `who` with `reason`.
-fn drop_conns(rig: &mut Rig, who: ObjId, reason: mush_core::DisconnectKind) {
+pub(crate) fn drop_conns(rig: &mut Rig, who: ObjId, reason: mush_core::DisconnectKind) {
     let mut out = mush_core::Outbox::new();
     let mut fx = mush_core::Effects::new();
     let conns: Vec<u64> = (1..=64)
@@ -77,17 +77,17 @@ fn drop_conns(rig: &mut Rig, who: ObjId, reason: mush_core::DisconnectKind) {
 }
 
 /// `who`'s link is lost: the server's own grace starts, and the field's.
-fn lose_link(rig: &mut Rig, who: ObjId) {
+pub(crate) fn lose_link(rig: &mut Rig, who: ObjId) {
     drop_conns(rig, who, mush_core::DisconnectKind::Lost);
 }
 
 /// `who` quits.
-fn quit(rig: &mut Rig, who: ObjId) {
+pub(crate) fn quit(rig: &mut Rig, who: ObjId) {
     drop_conns(rig, who, mush_core::DisconnectKind::Quit);
 }
 
 /// The server's grace runs out for `who`: their session ends.
-fn end_session(rig: &mut Rig, who: ObjId) {
+pub(crate) fn end_session(rig: &mut Rig, who: ObjId) {
     let mut out = mush_core::Outbox::new();
     let mut fx = mush_core::Effects::new();
     rig.tw.engine_mut().step(
@@ -98,13 +98,18 @@ fn end_session(rig: &mut Rig, who: ObjId) {
 }
 
 /// What `who` hears when they connect.
-fn connect(rig: &mut Rig, who: ObjId) -> String {
+pub(crate) fn connect(rig: &mut Rig, who: ObjId) -> String {
     let events = rig.tw.connect(who);
     crate::driving_rig::said(&rig.tw, &events, who)
 }
 
 /// `secs` world seconds, the arena's egress pumped as they pass.
-fn pass(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>, secs: i64) {
+pub(crate) fn pass(
+    rig: &mut Rig,
+    rx: &mut Receiver<ArenaOut>,
+    lines: &mut Vec<LedgerEvent>,
+    secs: i64,
+) {
     for n in 0..secs {
         let _ = second(rig);
         if n % 10 == 0 {
@@ -115,7 +120,7 @@ fn pass(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>
 }
 
 /// Whether the arena's registry holds a seat for `who`.
-fn bound(rig: &Rig, who: ObjId) -> bool {
+pub(crate) fn bound(rig: &Rig, who: ObjId) -> bool {
     rig.tw
         .world()
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
@@ -123,7 +128,7 @@ fn bound(rig: &Rig, who: ObjId) -> bool {
 }
 
 /// The rounds `shooter` fired at `target`.
-fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
+pub(crate) fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
     lines
         .iter()
         .filter(|line| {
@@ -134,7 +139,7 @@ fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
 }
 
 /// The rounds of `shooter` that arrived on `target`, hit or miss.
-fn arrived(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
+pub(crate) fn arrived(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
     lines
         .iter()
         .filter(|line| {
@@ -145,7 +150,7 @@ fn arrived(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
 }
 
 /// How many live Hostile contacts `who`'s own frame holds.
-fn hostiles(rig: &Rig, who: ObjId) -> usize {
+pub(crate) fn hostiles(rig: &Rig, who: ObjId) -> usize {
     frame(rig, who).map_or(0, |frame| {
         frame
             .contacts
@@ -159,25 +164,25 @@ fn hostiles(rig: &Rig, who: ObjId) -> usize {
 /// the story takes away; a raider eight cells south of it; an escort of a third captain's, whose
 /// fire order on the raider promotes the site. The ward's pilot is connected and has marked the
 /// raider's party Hostile.
-struct Yard {
-    rig: Rig,
+pub(crate) struct Yard {
+    pub(crate) rig: Rig,
     /// The ward's pilot and hull.
-    pilot: ObjId,
-    ward: ObjId,
+    pub(crate) pilot: ObjId,
+    pub(crate) ward: ObjId,
     /// The raider's player and hull.
-    stranger: ObjId,
-    raider: ObjId,
+    pub(crate) stranger: ObjId,
+    pub(crate) raider: ObjId,
     /// The escort's captain and hull.
-    captain: ObjId,
-    escort: ObjId,
-    rx: Receiver<ArenaOut>,
-    lines: Vec<LedgerEvent>,
+    pub(crate) captain: ObjId,
+    pub(crate) escort: ObjId,
+    pub(crate) rx: Receiver<ArenaOut>,
+    pub(crate) lines: Vec<LedgerEvent>,
 }
 
 /// The cells the three stand on.
-const WARD_AT: (i64, i64) = (146, 114);
-const RAIDER_AT: (i64, i64) = (146, 122);
-const ESCORT_AT: (i64, i64) = (136, 122);
+pub(crate) const WARD_AT: (i64, i64) = (146, 114);
+pub(crate) const RAIDER_AT: (i64, i64) = (146, 122);
+pub(crate) const ESCORT_AT: (i64, i64) = (136, 122);
 
 /// [`Yard`], with `ward` the hull the story stood up for the ward's pilot.
 async fn yard_with(mut rig: Rig, pilot: ObjId, ward: ObjId) -> Yard {
@@ -248,7 +253,7 @@ async fn yard() -> Yard {
 
 impl Yard {
     /// Pump and tick until `done` holds or `secs` of wall time pass.
-    async fn wait(
+    pub(crate) async fn wait(
         &mut self,
         secs: u64,
         done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
@@ -257,13 +262,13 @@ impl Yard {
     }
 
     /// World seconds, with nothing waited for.
-    fn pass(&mut self, secs: i64) {
+    pub(crate) fn pass(&mut self, secs: i64) {
         pass(&mut self.rig, &mut self.rx, &mut self.lines, secs);
     }
 
     /// **The raider's player keeps a lock on the ward and fires** until `done` holds or `secs`
     /// of wall time pass: the two lines a player types, once a wall second.
-    async fn raid(
+    pub(crate) async fn raid(
         &mut self,
         secs: u64,
         mut done: impl FnMut(&Rig, &[LedgerEvent]) -> bool,
@@ -293,13 +298,13 @@ impl Yard {
     }
 
     /// The raider's player ceases fire.
-    fn cease(&mut self) {
+    pub(crate) fn cease(&mut self) {
         let gun = weapon_of(&self.rig, self.raider);
         let _ = run(&mut self.rig.tw, self.stranger, &format!("FIRE {gun} OFF"));
     }
 
     /// What the black box holds of the ward and the raider, for a failed wait.
-    fn exchange(&self) -> String {
+    pub(crate) fn exchange(&self) -> String {
         format!(
             "ward fired {} (at the raider {}, at the escort {}); raider fired {}, arrived on the ward {}; away {:?}",
             fired(&self.lines, self.ward),

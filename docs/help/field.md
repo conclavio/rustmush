@@ -488,6 +488,24 @@ not, it flies the unit home for you.
   its mind has the controls and is taking it home. It fires only on a unit that
   fires on it." A hull that has lost its controls cannot drive to the ramp, so
   it holds. You get the controls back only when you are fit again.
+- **If a field opens while you are away.** Logging off in a unit's seat on open
+  ground leaves you named in that seat. A field that opens around the unit does
+  not take you for its pilot: it asks whether you are connected. If you are not,
+  the unit is its mind's from the moment the field takes it in, exactly as after
+  a `QUIT` inside a field, and you read at your next login "A field opened
+  around #123 while you were away: its mind has the controls, makes for its
+  carrier's ramp and fires only on a unit that fires on it." The same holds if
+  you are in the seat but knocked out or held.
+- **If your link dropped just before the field opened**, the five minutes are
+  still yours, counted from the moment the link dropped and not from the
+  field's opening. The unit waits in the field, firing nothing, for what is left
+  of them, then passes to its mind. A link lost more than five minutes before
+  is not waited for.
+
+It is the same rule each time: the unit is yours while you are connected and at
+its controls, and five minutes after your link drops, or at once if you quit or
+were not there to begin with, its mind has it. A connected pilot is taken into a
+field as their unit's pilot, as always.
 
 **What the mind will and will not do while you are away.** It never opens fire
 first. It fires only on a unit whose fire has arrived on your unit in this
@@ -496,7 +514,9 @@ neither is fire on a friend. This binds any mind, one you wrote and filed as
 much as the house default: a shot it asks for at anyone else is refused. If you
 left the seat at weapons hold (`FIRE HOLD`, where every seat in a field starts),
 the hold stays, and the unit answers nobody, even under fire. Set `FIRE FREE`
-before you go if you want it to defend itself. An order to advance or attack
+before you go if you want it to defend itself. A unit taken into a field while
+you were away starts at `FIRE HOLD` like every other seat, and nobody was there
+to change it: it goes home and answers nobody. An order to advance or attack
 that stood on the unit lapses; a hold-fire order stays.
 
 **Those you were with are told.** The leader of your party, and the leaders of

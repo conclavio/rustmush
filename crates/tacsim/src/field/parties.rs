@@ -239,6 +239,16 @@ pub(crate) fn site_population(
 }
 
 /// **Who sits in `unit`**: the first occupied station, by station id.
+///
+/// The seat says who a unit's pilot is and nothing about whether they are there: the assignment
+/// outlives a disconnect, so a character who logged off in the cab is still named here. Who
+/// holds the controls is [`at_controls`]'s question (doc 45 cut AP.5).
+///
+/// **One pilot a unit** (Q-44-35: "in the field it is the seated pilot"). A hull with a second
+/// occupied station still has one pilot, the first by station id; the second holder neither
+/// keeps the unit's mind off nor is handed its controls. No unit the field admits with a seat
+/// has more than one station today (a rig's `pilot`, a line hull's `cockpit`, a raider's crew
+/// station), and a carrier's bridge is not a cockpit (`carrier_entrant`).
 #[must_use]
 pub(crate) fn seated(w: &World, unit: ObjId) -> Option<(ObjId, SmolStr)> {
     let state = w.module_state::<mush_sim::SpatialState>()?;
@@ -247,6 +257,73 @@ pub(crate) fn seated(w: &World, unit: ObjId) -> Option<(ObjId, SmolStr)> {
         .iter()
         .next()
         .map(|(station, seat)| (seat.actor, SmolStr::new(station.as_str())))
+}
+
+/// **Who holds a unit's controls as a field takes it in** (doc 45 cut AP.5; Q-45-1, Q-45-2):
+/// admission asks the connection as well as the seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AtControls {
+    /// Its seated player, connected over a live transport, conscious and at liberty: the seat
+    /// is theirs, as before the cut.
+    Pilot,
+    /// No player's absence: a hired NPC sits in it (its hull is the doctrine's under its
+    /// delivered orders, Q-CF-42; an NPC crew is not flown for an absent player, Q-45-13), or
+    /// nobody does (a rig worked from its carrier, a carrier: doc 45 cut AP.7's).
+    Mind,
+    /// Its seated player is not at them, and the unit is an absent player's.
+    Away(NotThere),
+}
+
+/// **Why a seated player is not at the controls** ([`AtControls::Away`]), in the order the
+/// test asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotThere {
+    /// Incapacitated or held (Q-44-43), connected or not: at once.
+    Unfit,
+    /// Their link was lost at `since_wall_s`, less than the field's five minutes ago
+    /// (`super::absent::FIELD_LINKDEAD_GRACE_WALL_S`): the seat is theirs, link-dead, for what
+    /// is left of the five minutes (Q-44-36).
+    LinkLost {
+        /// The wall second the link was lost.
+        since_wall_s: i64,
+    },
+    /// Not connected: they quit (Q-44-46), their session ended long ago, or they hold only a
+    /// bare connection, which is never a presence (doc 44 cut MW.24). At once.
+    Gone,
+}
+
+/// **Whether `pilot`, seated in a unit, holds its controls now** ([`AtControls`]; doc 45 cut
+/// AP.5). The test is the one the field's hand-over and its way back already make
+/// (`super::absent`): fit ([`super::absent::fit`]: conscious and at liberty, Q-44-43) and on
+/// watch ([`crate::port_tick::on_watch`]: connected, over a live transport). So:
+///
+/// - a live connection is at the controls, a `DARK` wizard's included: `DARK` hides a
+///   character from a room and from `WHO`, and they still type;
+/// - a link-dead session is not on watch. When its link was lost is `lost`'s answer
+///   (`super::admit::link_lost_at`), which is `None` once the five minutes have run;
+/// - a bare SSH `mind push` connection is neither connected nor live (doc 44 cut MW.24);
+/// - `mush-npc`'s `present_for_ambient` (doc 44 cut MW.18) is narrower on purpose, and stays
+///   so: it asks who an NPC may speak to unprompted (not `DARK`, typed within ten minutes),
+///   which is not who may fly a unit. An idle pilot is still a pilot.
+#[must_use]
+pub(crate) fn at_controls(w: &World, pilot: Option<ObjId>, lost: Option<i64>) -> AtControls {
+    let Some(pilot) = pilot else {
+        return AtControls::Mind;
+    };
+    if super::orders::is_npc(w, pilot) {
+        return AtControls::Mind;
+    }
+    if !super::absent::fit(w, pilot) {
+        return AtControls::Away(NotThere::Unfit);
+    }
+    if crate::port_tick::on_watch(w, pilot) {
+        return AtControls::Pilot;
+    }
+    AtControls::Away(
+        lost.map_or(NotThere::Gone, |since_wall_s| NotThere::LinkLost {
+            since_wall_s,
+        }),
+    )
 }
 
 /// An open flight's operation, its epoch, its roster's leader, its organizer and its carrier.
@@ -808,6 +885,56 @@ mod tests {
             affiliations: BTreeSet::new(),
             director: false,
         }
+    }
+
+    /// **Doc 45 cut AP.5** (Q-45-1, Q-45-2): who holds a seated unit's controls. A live
+    /// connection does, `DARK` or not; a link-dead session, a session that is gone and a
+    /// character with no connection at all do not; an NPC's seat and an empty one are nobody's
+    /// absence.
+    #[test]
+    fn ap5_admission_asks_the_connection_as_well_as_the_seat() {
+        let mut w = World::new_minimal();
+        let make = |w: &mut World, kind, name: &str| {
+            w.create(kind, name, mush_core::GOD, Some(mush_core::LIMBO))
+                .expect("a character")
+        };
+        let player = make(&mut w, mush_core::ObjKind::Player, "Pilot");
+        let npc = make(&mut w, mush_core::ObjKind::Npc, "Hand");
+        w.set_now(1_000);
+        // Nobody in the seat, and a hired NPC in it.
+        assert_eq!(at_controls(&w, None, None), AtControls::Mind);
+        assert_eq!(at_controls(&w, Some(npc), None), AtControls::Mind);
+        // Never connected: gone. A bare connection sets neither mark, so it reads the same.
+        assert_eq!(
+            at_controls(&w, Some(player), None),
+            AtControls::Away(NotThere::Gone)
+        );
+        // Connected over a live transport: the seat is theirs, `DARK` or not.
+        w.set_connected(player, true);
+        w.set_live_conns(player, 1);
+        assert_eq!(at_controls(&w, Some(player), None), AtControls::Pilot);
+        w.set_flag(player, mush_core::Flags::DARK, true)
+            .expect("the flag");
+        assert_eq!(at_controls(&w, Some(player), None), AtControls::Pilot);
+        // A stale loss stamp does not unseat somebody who is here.
+        assert_eq!(at_controls(&w, Some(player), Some(900)), AtControls::Pilot);
+        // Link-dead: still marked connected, no live transport. The loss's second is carried.
+        w.set_live_conns(player, 0);
+        assert_eq!(
+            at_controls(&w, Some(player), Some(940)),
+            AtControls::Away(NotThere::LinkLost { since_wall_s: 940 })
+        );
+        // The same session once its five minutes are over: no stamp is offered, so gone.
+        assert_eq!(
+            at_controls(&w, Some(player), None),
+            AtControls::Away(NotThere::Gone)
+        );
+        // The session ended on that lost link inside the five minutes: the stamp still counts.
+        w.set_connected(player, false);
+        assert_eq!(
+            at_controls(&w, Some(player), Some(940)),
+            AtControls::Away(NotThere::LinkLost { since_wall_s: 940 })
+        );
     }
 
     #[test]
