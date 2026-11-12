@@ -1427,17 +1427,17 @@ value to write. Whichever of AP.3 and MW.10 merges second merges main in and re-
   it resolved the doctrines, so a refusal left her in a bubble's custody with no bubble; a
   selection whose document did not read was taken for no selection and flew the pack's
   doctrine; and the reload preferred the hull's attribute to the bubble's record unseen.
-- **On Linux, the tree before the merge of main** (`cb1511b20`): the whole `domain_world`
-  binary and the library's `space::`, `minds::content`, `minds::workshop` and `store::`
-  tests, 359 passed; `mush-contract-tests`, 195 passed and 8 skipped there, no budget
-  re-blessed; `cargo clippy --all-targets -D warnings` on `tacsim` and `mush-contract-tests`;
-  `cargo doc -D warnings --document-private-items` on `tacsim`; `cargo fmt --check`.
-- **The whole of `tacsim`'s tests** were run on Linux on the first cut of the unit, before the
-  review's fixes, and stopped by hand at 3,994 of 4,508 with none failed, to free the box for
-  the fixed tree. The whole suite on the head is the pull request's CI.
+- **The whole of `tacsim`'s tests on Linux** (conclav.dev), on `5eccf1c01`, which is this
+  unit with main merged in at `0bad68f0b`: 4,520 passed, 31 skipped (the `#[ignore]`d ones).
+- **On the same commit there**: `mush-contract-tests`, 195 passed and 8 skipped there, no
+  budget re-blessed; `cargo clippy --all-targets -D warnings` on `tacsim` and
+  `mush-contract-tests`; `cargo doc -D warnings --document-private-items` on `tacsim`;
+  `cargo fmt --check`.
 - **`mush-contract-tests` on Windows**, the first cut: 203 passed.
-- **CI on the head**: see the PR for the pull-request run and the dispatch of the
-  dispatch-only jobs.
+- **CI on `5eccf1c01`**: the pull-request run 43258253021 is green but for `test (bot)`,
+  which is red on main since `668425fab` (`mine::minds::tests::absent_census`: AP.5's new
+  sentence has no row in MW.5's table; PR #563 is the fix) and touches nothing of this unit.
+  The dispatch of the dispatch-only jobs is run 43258329034; the PR says how it read.
 
 **Not verified.**
 
