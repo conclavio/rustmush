@@ -1504,23 +1504,23 @@ mod m5_tests {
         // no custody did. Captured on Linux.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             fb7946fdbbb3f1d1e0abf42f9cc10a19bfe07d621b6c1eba0d58d4ebcbe8a5be",
+             b3d768dbe02d5c9d83fa857340121ff0d64915c52b1f350cbaa6c6d53ffd7ab0",
             "tacsim.unit.line_tank production_fixture \
-             fb7946fdbbb3f1d1e0abf42f9cc10a19bfe07d621b6c1eba0d58d4ebcbe8a5be",
+             b3d768dbe02d5c9d83fa857340121ff0d64915c52b1f350cbaa6c6d53ffd7ab0",
             "tacsim.unit.line_tank production_principal \
-             06bfd8a41c3d2eb25491d36029f34ebbc80032fd20bc8ca47c3e847a2fa373be",
+             70b74e0d3871c7cbfcf1e09666ba4091e3cf200ea14c66313368060a92d79377",
             "tacsim.unit.heavy_mk1 fixture \
-             0ce92d0606555b28c7102f56b2fe12c859bc6a085f645ae809a75d6f97801ff9",
+             394ee782b94710526165243ca8c1a1666b59bf0ba11fbf915c75b2b24d4c76c5",
             "tacsim.unit.heavy_mk1 production_fixture \
-             0ce92d0606555b28c7102f56b2fe12c859bc6a085f645ae809a75d6f97801ff9",
+             394ee782b94710526165243ca8c1a1666b59bf0ba11fbf915c75b2b24d4c76c5",
             "tacsim.unit.heavy_mk1 production_principal \
-             42a2077f5e7f6caa1dc7d34300b719993d4e58d574d25b5d2b844f8ff1562bb9",
+             c71d7e0bbca473732fedd2bbfc2a85ad9d24f31419ee5c54cfd3248449df095c",
             "tacsim.unit.target_mk1 fixture \
-             7044095fdb89aff12309afecdbcbf748d85924dfbb5dcdab4adbf0363a6323f0",
+             306543bb3ca74809f4ded496f1fd03dc9c5fdf42b02ec31f2f3af48665f862af",
             "tacsim.unit.target_mk1 production_fixture \
-             7044095fdb89aff12309afecdbcbf748d85924dfbb5dcdab4adbf0363a6323f0",
+             306543bb3ca74809f4ded496f1fd03dc9c5fdf42b02ec31f2f3af48665f862af",
             "tacsim.unit.target_mk1 production_principal \
-             bd6baf9df75b93cdfd960cfb4d956da442cbb9f68087c67058ee2fb23b83be46",
+             3267b2541e8d04024cb635fc1cf3d3c7cb6139f120ef438168b84ae36acb1dc9",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

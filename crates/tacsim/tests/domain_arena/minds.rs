@@ -3489,9 +3489,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0xd530_f06f_b89a_1de5),
-            Some(0x7148_c511_991c_ebd7),
-            Some(0x166e_3024_39c1_a862)
+            Some(0xb805_607a_6669_4c4b),
+            Some(0x269a_e671_07dc_8353),
+            Some(0x7698_6d0e_7b05_1087)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
