@@ -630,8 +630,10 @@ row stands in for "fails on main today".
 - **The clock is the field's only.** A leader who was never at the controls of a unit in a
   running field (they recovered to the carrier and then quit, or no field was running) has no
   record, and their orders stand. Reading the session there would lapse every such order at
-  each restart, when every session ends for a moment. What gives such a player a record is
-  AP.5's and AP.7's.
+  each restart, when every session ends for a moment. AP.5, merged while this unit ran, gives
+  a record to a leader who is away in their seat when a field opens
+  (`Why::AwayAtAdmission`), and by the same rule their order lapses at admission. A leader
+  who is in no seat when they go is still without one: AP.7's.
 - **It answers a hit, not a near miss.** The unit's own frame carries its last hit and
   nothing of a round that missed, and the host reads nothing else. MW.7's rule for a player's
   unit counts a miss; that record is the kernel's.
@@ -652,7 +654,7 @@ row stands in for "fails on main today".
   objective the doctrine does not have and the arena's record of who fired on whom, which is
   MW.7's gate. `stand` names the seam: swap the second half's objective. **AP.6**, which
   builds what a `HOLD` posture needs.
-- **A lapse for a leader with no field record** (above). **AP.5** and **AP.7**.
+- **A lapse for a leader with no field record** (above): a leader in no seat. **AP.7**.
 - **A second player in the roster's units taking the lead before the commander, as a field
   story.** A Dray-P bays two rigs, so a roster of two players has no room for the
   commander's. The order is pinned on the roster (`mush_tactics`). A story needs a carrier
@@ -670,7 +672,8 @@ through a poll and a reply). The stand offered again after the kernel did not ta
 leader's line (`ORDER_LAPSED_LEAD`). A unit hit while holding across a restart (the boot takes
 the hit it finds as known, so only a later one is answered). A lapse while the clock is
 frozen (the flight tick does not run; it is written at the thaw). The lead passing back to a
-player whose unit went home while the server still keeps their session.
+player whose unit went home while the server still keeps their session. A leader who is away
+when the field opens (AP.5's record, which this rule reads; AP.5's own stories fly no roster).
 
 **Reviewed.** A read-only review of the first commit by a second agent found one bug and
 eleven risks and nits. Fixed in the PR's second commit: a lapse was not tied to the
