@@ -49,19 +49,26 @@ const THIRD_AT: (i64, i64) = (136, 122);
 const STANDS_MS: i64 = 40_000;
 
 /// **The pilot's own script, written to fire first.** A cold hull it starts up (the Registry's
-/// trials begin cold). Then at every think it picks a contact it has told apart that is not a
-/// friend (one that reads hostile, where there is one), arms the cannon on a lock, locks it and
-/// fires. It asks whether or not anyone has fired on it. Told to go home, it stands and keeps
-/// asking for forty seconds, then drives for its party's entry, which is its carrier's ramp.
+/// trials begin cold). Then at every think it picks a contact that is not a
+/// friend and does not read dead (one that reads hostile, where there is one), and, while its
+/// cannon holds a round, arms the cannon on a lock, locks the contact and fires. It asks
+/// whether or not anyone has fired on it. Told to go home, it stands and keeps asking for
+/// forty seconds, then drives for its party's entry, which is its carrier's ramp.
+///
+/// The two guards are what the Registry asks of any script: an intent the hull cannot carry out
+/// (a shot from a cannon that is spent, a lock on a wreck) is a fault, and one fault in one
+/// think of one trial ends the rating as failed.
 fn fires_first() -> String {
     format!(
         "fn think(v, c) {{ \
            if v.power == \"off\" {{ startup(); return; }} \
            if v.power != \"online\" {{ return; }} \
+           let gun = (); \
+           for w in v.weapons {{ if w.id == \"cannon\" && w.rounds > 0 {{ gun = w.id; }} }} \
            let id = (); \
-           for k in v.contacts {{ if k.identified && !k.friendly {{ id = k.id; }} }} \
-           for k in v.contacts {{ if k.relation == \"hostile\" {{ id = k.id; }} }} \
-           if id != () {{ arm(\"cannon\", \"lock\", 100, 15, 0, 0, 4294967295); lock(id); fire(\"cannon\", 1); }} \
+           for k in v.contacts {{ if !k.friendly && k.reads_dead != true {{ id = k.id; }} }} \
+           for k in v.contacts {{ if k.relation == \"hostile\" && k.reads_dead != true {{ id = k.id; }} }} \
+           if id != () && gun != () {{ arm(gun, \"lock\", 100, 15, 0, 0, 4294967295); lock(id); fire(gun, 1); }} \
            if v.order != () && v.order.objective == \"withdraw\" {{ \
              if !(\"since\" in this) {{ this.since = v.t_ms; }} \
              if v.t_ms - this.since >= {STANDS_MS} {{ let home = entry_cell(v); if home != () {{ goto(home); }} }} \
@@ -234,26 +241,28 @@ async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     eprintln!("C4_FIELD rated {name} in {} s", started.elapsed().as_secs());
-    // The filing: the charter's shell first, then the filing itself, each the pilot's own
-    // submission landed on the composed path. The Registry releases its job a pulse after the
-    // receipt, so the first line is asked again until it is taken.
+    // The filing. `@mind/file` first reserves the charter's shell, and once that has landed the
+    // same line files the rated revision; each is the pilot's own submission, landed on the
+    // composed path. The Registry releases its job a pulse after the receipt, so the line is
+    // typed again until the filing itself has been staged and landed.
     let deadline = Instant::now() + Duration::from_secs(120);
-    let mut filed = 0;
-    while filed < 2 {
-        let (said, queued) =
-            crate::excursions::command(&mut world.rig, pilot, &format!("@mind/file {name}@1"));
+    loop {
+        let said = run(&mut world.rig.tw, pilot, &format!("@mind/file {name}@1"));
         eprintln!("C4_FIELD file -> {said}");
-        if queued.is_empty() {
-            assert!(Instant::now() < deadline, "the filing never staged: {said}");
-            world.pulse();
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            continue;
+        let mut staged = Vec::new();
+        while let Some(submit) = world.rig.tw.engine_mut().take_authoritative_submit() {
+            staged.push(*submit);
         }
-        for submit in &queued {
+        for submit in &staged {
             crate::excursions::land(&mut world.rig, submit)
                 .unwrap_or_else(|refused| panic!("@mind/file: {refused}"));
         }
-        filed += 1;
+        if said.contains("Filing ") && !staged.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the filing never landed: {said}");
+        world.pulse();
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let row = world
         .rows("roll_mind_initial_filing")
@@ -366,33 +375,31 @@ fn bound(rig: &crate::driving_rig::Rig, who: ObjId) -> bool {
         .is_some_and(|registry| registry.seat_of_pilot(who).is_some())
 }
 
-/// **The raider's captain fires on the escort until it answers** (the story's step 5): a lock
-/// kept on the escort and a shot a wall second, then the order of things on the black box: the
-/// escort's first shot follows the raider's first arrival on it.
+/// **The raider's captain fires on the escort for `secs` seconds** (the story's step 5): a
+/// lock kept on the escort, the contact on their own frame nearest where it stands, and a shot
+/// a wall second. What came of it is read from the black box at the story's end
+/// ([`answered_in_order`]): the box reaches the host in batches, so nothing here waits on it.
 async fn raided(
     rig: &mut crate::driving_rig::Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
-    (tv, raider, third): (ObjId, ObjId, ObjId),
-    stranger: ObjId,
+    (raider, stranger): (ObjId, ObjId),
+    secs: u32,
 ) {
     let gun = weapon_of(rig, raider);
-    let mut answered = false;
-    for _ in 0..90 {
-        // The raider's captain keeps a lock on the escort: the contact on their own frame that
-        // is not the third captain's hull, which never moves.
+    for _ in 0..secs {
         let escort = frame(rig, stranger).and_then(|frame| {
             let lock = frame.lock;
             frame
                 .contacts
                 .iter()
-                .find(|contact| {
-                    contact.cell.is_some_and(|(x, y)| {
-                        i64::from(x).abs_diff(THIRD_AT.0) > 2
-                            || i64::from(y).abs_diff(THIRD_AT.1) > 2
-                    })
+                .filter_map(|contact| {
+                    let (x, y) = contact.cell?;
+                    let off = i64::from(x).abs_diff(WARD_AT.0) + i64::from(y).abs_diff(WARD_AT.1);
+                    (off <= 6).then_some((off, contact.id, contact.designator.clone()))
                 })
-                .map(|contact| (contact.id, contact.designator.clone(), lock))
+                .min_by_key(|(off, _, _)| *off)
+                .map(|(_, id, designator)| (id, designator, lock))
         });
         if let Some((id, designator, lock)) = escort
             && lock != Some(id)
@@ -400,42 +407,36 @@ async fn raided(
             let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("LOCK {designator}"));
         }
         let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("FIRE {gun}"));
-        if until_composed(rig, rx, lines, 1, |_, lines| {
-            fired_at(lines, tv, raider) > 0
-        })
-        .await
-        {
-            answered = true;
-            break;
-        }
+        let _ = until_composed(rig, rx, lines, 1, |_, _| false).await;
     }
     let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("FIRE {gun} OFF"));
+}
+
+/// **What the black box holds of the exchange, in order** (the story's steps 4 and 5): the
+/// raider's fire arrived on the escort; the escort fired at the raider, and its first round
+/// left after that first arrival; and, written to fire first, the script had asked before
+/// anyone fired on it. The pilot never armed a slot or took a lock, so an arming or a lock of
+/// this unit ahead of the raider's first arrival is the script's own.
+fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, ObjId)) {
     let exchange = format!(
-        "escort fired {} (at the raider {}, at the third {}); raider fired {}, arrived {}; away {:?}; in the field {}; the raider sees {:?}",
+        "escort fired {} (at the raider {}, at the third {}); raider fired {}, arrived {}",
         fired(lines, tv),
         fired_at(lines, tv, raider),
         fired_at(lines, tv, third),
         fired(lines, raider),
         arrived(lines, raider, tv),
-        away_of(rig.tw.world(), tv),
-        in_field(rig, tv),
-        frame(rig, stranger).map(|frame| (
-            frame.lock,
-            frame
-                .contacts
-                .iter()
-                .map(|contact| (contact.id, contact.cell, contact.relation))
-                .collect::<Vec<_>>()
-        )),
     );
-    assert!(answered, "it answers the unit that fired on it: {exchange}");
     let first_arrival = lines
         .iter()
         .position(|line| {
             matches!(&line.kind, EventKind::Impact { unit, target, .. }
                 if *unit == raider && *target == tv)
         })
-        .expect("the raider's fire arrived");
+        .unwrap_or_else(|| panic!("the raider's fire arrived on the escort: {exchange}"));
+    assert!(
+        fired_at(lines, tv, raider) > 0,
+        "it answers the unit that fired on it: {exchange}"
+    );
     let first_answer = lines
         .iter()
         .position(|line| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == tv))
@@ -444,6 +445,17 @@ async fn raided(
         first_answer > first_arrival,
         "its first shot follows the raider's first arrival: {exchange}"
     );
+    assert!(
+        asked(&lines[..first_arrival], tv) > 0,
+        "the script asked before it was fired on: {:?}",
+        lines[..first_arrival]
+            .iter()
+            .filter(|line| format!("{:?}", line.kind).contains(&format!("ObjId({})", tv.0)))
+            .map(|line| format!("{:?}", line.kind))
+            .take(12)
+            .collect::<Vec<_>>()
+    );
+    eprintln!("C4_FIELD the exchange: {exchange}");
 }
 
 /// **The story** (this module's head). With `script`, the pilot's own mind is written, rated,
@@ -500,7 +512,15 @@ async fn story(script: Option<&str>) {
     let raider = armed(&mut rig, "Grey Hound", RAIDER_AT, 0);
     seat(&mut rig, third, captain);
     seat(&mut rig, raider, stranger);
-    let _ = rig.tw.connect(pilot);
+    let before = mush_tactics::module::unit_of(rig.tw.world(), tv)
+        .expect("the escort's unit")
+        .clone();
+    // All three are players at their controls when the field opens. A seated pilot who is not
+    // connected then is handed to their unit's mind at the admission (doc 45 cut AP.5), and the
+    // story needs the raider's captain to type their own shots.
+    for player in [pilot, captain, stranger] {
+        let _ = rig.tw.connect(player);
+    }
     let mut rx: Receiver<ArenaOut> = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     for _ in 0..3 {
@@ -515,6 +535,7 @@ async fn story(script: Option<&str>) {
         .await,
         "the field's task opens"
     );
+    let opened = std::time::Instant::now();
     let live = tacsim::field::live_on(rig.tw.world(), &crate::driving_rig::cid(SITE.1))
         .expect("the live record");
     let parties: std::collections::BTreeSet<_> = [tv, raider, third]
@@ -528,6 +549,127 @@ async fn story(script: Option<&str>) {
             .any(|row| row.unit == tv && row.pilot.as_ref().is_some_and(|(p, _)| *p == pilot)),
         "the escort is admitted with its pilot seated"
     );
+    // 3. The raider's party marked Hostile and fire free, from the cab.
+    let letter = live.party_of(raider).expect("the raider's party").letter();
+    let marked =
+        crate::driving_rig::run(&mut rig.tw, pilot, &format!("+field/mark {letter}=hostile"));
+    let free = crate::driving_rig::run(&mut rig.tw, pilot, "FIRE FREE");
+    let hostile_in_view = |rig: &crate::driving_rig::Rig| {
+        frame(rig, pilot).is_some_and(|frame| {
+            frame.weapons_free
+                && frame
+                    .contacts
+                    .iter()
+                    .any(|contact| contact.relation == Relation::Hostile)
+        })
+    };
+    assert!(
+        until_composed(&mut rig, &mut rx, &mut lines, 60, |rig, _| hostile_in_view(
+            rig
+        ))
+        .await,
+        "the escort is fire free with the raider Hostile in view: {marked}; {free}; {:?}",
+        frame(&rig, pilot).map(|frame| (frame.weapons_free, frame.contacts.len()))
+    );
+    assert_eq!(fired(&lines, tv), 0, "the pilot fired nothing");
+    eprintln!(
+        "C4_FIELD t+{} s: fire free, the raider Hostile in view",
+        opened.elapsed().as_secs()
+    );
+    // The raider's captain has their own picture of the ground before the pilot leaves, so
+    // their fire in step 5 starts when the story says and not when a first frame arrives.
+    let seen = until_composed(&mut rig, &mut rx, &mut lines, 90, |rig, _| {
+        frame(rig, stranger).is_some()
+    })
+    .await;
+    eprintln!(
+        "C4_FIELD t+{} s: the raider's captain has a frame: {seen}",
+        opened.elapsed().as_secs()
+    );
+    assert!(seen, "the raider's captain is sent a cockpit frame");
+    // The pilot quits.
+    quit(&mut rig, pilot);
+    assert!(
+        until_composed(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
+            minded(rig.tw.world(), tv) && !bound(rig, pilot)
+        })
+        .await,
+        "a clean QUIT hands the unit to its mind at once: {:?}",
+        away_of(rig.tw.world(), tv)
+    );
+
+    // 4. Nobody has fired on it: for five seconds it stands with a Hostile in range and
+    // fire free. The field's black box reaches the host in batches, so what the unit did in
+    // this interval is read from the whole log afterwards, by order: step 5 for the filed
+    // script, the end of the story for the house mind.
+    let _ = until_composed(&mut rig, &mut rx, &mut lines, 5, |_, _| false).await;
+    eprintln!(
+        "C4_FIELD t+{} s: the quiet interval is over",
+        opened.elapsed().as_secs()
+    );
+
+    // 5. The raider's captain fires on it for fifteen seconds; from the first arrival it
+    // answers the raider (read from the black box at the end). The filed script stands for
+    // this; the house mind is already on its way home, and MW.7's own story of an answer
+    // (`field_mw7`) is a unit with no carrier to go to.
+    if script.is_some() {
+        raided(&mut rig, &mut rx, &mut lines, (raider, stranger), 15).await;
+    }
+
+    eprintln!("C4_FIELD t+{} s: going home", opened.elapsed().as_secs());
+    // 6. It goes home: the ramp, out of the field, the bay.
+    let out = until_composed(&mut rig, &mut rx, &mut lines, 420, |rig, _| {
+        !in_field(rig, tv)
+            && crate::field_host_rig::site_record_at(rig, SITE.1)
+                .is_some_and(|record| record.exited(tv))
+    })
+    .await;
+    assert!(
+        out,
+        "the mind takes the escort out at its carrier's ramp: last at {:?}, away {:?}, in the field {}",
+        last_cell(&lines, tv),
+        away_of(rig.tw.world(), tv),
+        in_field(&rig, tv)
+    );
+    let home = until_composed(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+        let due = {
+            let h = crate::driving_rig::handles(&rig.tw);
+            crate::driving_rig::typed(
+                &mut rig.tw,
+                &h.families.excursions,
+                &tacsim::surface::excursion::RigKey(tv),
+            )
+            .and_then(|record| record.act.map(|act| act.due_ic))
+        };
+        if let Some(due) = due {
+            crate::driving_rig::to_ic(rig, due);
+        }
+        matches!(
+            crate::driving_rig::parent(&rig.tw, tv),
+            mush_sim::SpatialParent::Interior { .. }
+        )
+    })
+    .await;
+    eprintln!(
+        "C4_FIELD t+{} s: out of the field",
+        opened.elapsed().as_secs()
+    );
+    assert!(
+        home,
+        "the host's recover puts the escort in its carrier's bay"
+    );
+    if let Some((open, _)) = claim {
+        assert!(
+            until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, _| {
+                tacsim::ic_claim_closed(rig.tw.world(), open).is_some()
+            })
+            .await,
+            "the claim's Close lands once the unit is home"
+        );
+    }
+    // The field admitted it under its claim: the seal line on the field's log, read here
+    // and not at the admission, because a field nobody fires in closes after two quiet
+    // minutes and the line reaches the host in its own time.
     if let Some((_, seal)) = &claim {
         let sealed = |lines: &[LedgerEvent]| {
             lines.iter().find_map(|line| match &line.kind {
@@ -571,116 +713,67 @@ async fn story(script: Option<&str>) {
         assert_eq!(card, facts.card_digest, "the claim's card, not the ROM's");
     }
 
-    // 3. The raider's party marked Hostile, fire free, and the pilot quits.
-    let letter = live.party_of(raider).expect("the raider's party").letter();
-    let marked =
-        crate::driving_rig::run(&mut rig.tw, pilot, &format!("+field/mark {letter}=hostile"));
-    let free = crate::driving_rig::run(&mut rig.tw, pilot, "FIRE FREE");
-    let hostile_in_view = |rig: &crate::driving_rig::Rig| {
-        frame(rig, pilot).is_some_and(|frame| {
-            frame.weapons_free
-                && frame
-                    .contacts
-                    .iter()
-                    .any(|contact| contact.relation == Relation::Hostile)
-        })
-    };
-    assert!(
-        until_composed(&mut rig, &mut rx, &mut lines, 60, |rig, _| hostile_in_view(
-            rig
-        ))
-        .await,
-        "the escort is fire free with the raider Hostile in view: {marked}; {free}; {:?}",
-        frame(&rig, pilot).map(|frame| (frame.weapons_free, frame.contacts.len()))
-    );
-    assert_eq!(fired(&lines, tv), 0, "the pilot fired nothing");
-    quit(&mut rig, pilot);
-    assert!(
-        until_composed(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
-            minded(rig.tw.world(), tv) && !bound(rig, pilot)
-        })
-        .await,
-        "a clean QUIT hands the unit to its mind at once: {:?}",
-        away_of(rig.tw.world(), tv)
-    );
-    let handed = lines.len();
-
-    // 4. Nobody has fired on it: it fires nothing, though (filed) the script asks.
-    let _ = until_composed(&mut rig, &mut rx, &mut lines, 15, |_, _| false).await;
-    assert_eq!(
-        fired(&lines, tv),
-        0,
-        "with a Hostile in range and fire free, the mind's unit fires on nobody"
-    );
-    if script.is_some() {
-        assert!(
-            asked(&lines[handed..], tv) > 0,
-            "the script asks all the while: {:?}",
-            lines[handed..]
-                .iter()
-                .filter(|line| format!("{:?}", line.kind).contains(&format!("ObjId({})", tv.0)))
-                .map(|line| format!("{:?}", line.kind))
-                .take(12)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    // 5. The raider's captain fires on it; from the first arrival it answers the raider. The
-    // filed script stands for this; the house mind is already on its way home, and MW.7's own
-    // story of an answer (`field_mw7`) is a unit with no carrier to go to.
-    if script.is_some() {
-        raided(&mut rig, &mut rx, &mut lines, (tv, raider, third), stranger).await;
-    }
-
-    // 6. It goes home: the ramp, out of the field, the bay.
-    let out = until_composed(&mut rig, &mut rx, &mut lines, 420, |rig, _| {
-        !in_field(rig, tv)
-            && crate::field_host_rig::site_record_at(rig, SITE.1)
-                .is_some_and(|record| record.exited(tv))
-    })
-    .await;
-    assert!(
-        out,
-        "the mind takes the escort out at its carrier's ramp: last at {:?}, away {:?}, in the field {}",
-        last_cell(&lines, tv),
-        away_of(rig.tw.world(), tv),
-        in_field(&rig, tv)
-    );
-    assert_eq!(
-        fired_at(&lines, tv, third),
-        0,
-        "it never fired on the party that never fired on it"
-    );
-    let home = until_composed(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
-        let due = {
-            let h = crate::driving_rig::handles(&rig.tw);
-            crate::driving_rig::typed(
-                &mut rig.tw,
-                &h.families.excursions,
-                &tacsim::surface::excursion::RigKey(tv),
+    // What the unit did, from its own record: the recover wrote the hull the field left, so a
+    // round spent or a plate struck shows as a cell that differs from the hull that went out.
+    let after = mush_tactics::module::unit_of(rig.tw.world(), tv)
+        .expect("the escort's unit")
+        .clone();
+    let changed: Vec<String> = before
+        .cells()
+        .filter(|(addr, cell)| after.cell(addr).map(|now| now.current) != Some(cell.current))
+        .map(|(addr, cell)| {
+            format!(
+                "{addr:?}: {} -> {:?}",
+                cell.current,
+                after.cell(addr).map(|now| now.current)
             )
-            .and_then(|record| record.act.map(|act| act.due_ic))
-        };
-        if let Some(due) = due {
-            crate::driving_rig::to_ic(rig, due);
-        }
-        matches!(
-            crate::driving_rig::parent(&rig.tw, tv),
-            mush_sim::SpatialParent::Interior { .. }
-        )
-    })
-    .await;
-    assert!(
-        home,
-        "the host's recover puts the escort in its carrier's bay"
-    );
-    if let Some((open, _)) = claim {
+        })
+        .collect();
+    eprintln!("C4_FIELD the escort's hull, out and home: {changed:?}");
+    if script.is_some() {
+        // The whole exchange, read once the black box has caught up. A quiet field's box
+        // reaches the host as its chunks fill, and whole when the field closes; with nobody
+        // firing, the field closes after its two quiet minutes. So the story waits for the
+        // close (or for a position summary that no longer lists the unit, which was written
+        // after it left), then for the last of the box.
+        let caught_up = until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, lines| {
+            task(rig).is_none()
+                || lines
+                    .iter()
+                    .rev()
+                    .find_map(|line| match &line.kind {
+                        EventKind::PositionSummary { units } => {
+                            Some(!units.iter().any(|row| row.0 == tv))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false)
+        })
+        .await;
+        assert!(caught_up, "the field closes and its log is whole");
+        let _ = until_composed(&mut rig, &mut rx, &mut lines, 5, |_, _| false).await;
+        eprintln!(
+            "C4_FIELD t+{} s: the black box is in hand, {} lines",
+            opened.elapsed().as_secs(),
+            lines.len()
+        );
+        assert_eq!(
+            fired_at(&lines, tv, third),
+            0,
+            "it never fired on the party that never fired on it"
+        );
+        answered_in_order(&lines, (tv, raider, third));
         assert!(
-            until_composed(&mut rig, &mut rx, &mut lines, 600, |rig, _| {
-                tacsim::ic_claim_closed(rig.tw.world(), open).is_some()
-            })
-            .await,
-            "the claim's Close lands once the unit is home"
+            !changed.is_empty(),
+            "the escort that fought came home with rounds spent or plates struck"
+        );
+    } else {
+        // The house mind, with a Hostile in range and fire free, spent nothing and was not
+        // struck: the hull that came home is the hull that went out. (The dispatch story reads
+        // the black box; the box of a field this quiet takes minutes to reach the host.)
+        assert!(
+            changed.is_empty(),
+            "the house mind fired on nobody: {changed:?}"
         );
     }
     drop(kept);
