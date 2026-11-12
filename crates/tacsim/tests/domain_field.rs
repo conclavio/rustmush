@@ -43,6 +43,8 @@ mod vertex;
 mod bay_36a;
 #[path = "domain_field/bay_gc8.rs"]
 mod bay_gc8;
+#[path = "domain_field/c4_filed_mind_field.rs"]
+mod c4_filed_mind_field;
 #[path = "domain_field/c4_hardware.rs"]
 mod c4_hardware;
 #[path = "domain_field/crew_custody.rs"]

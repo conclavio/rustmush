@@ -180,6 +180,12 @@ id = "tacsim/tests::m8_world::*"
 tier = "nightly"
 job = "m8-gate-stories"
 
+# Doc 44 unit MW.5: the filed mind flying an absent pilot's unit in a field (one rating).
+[[test]]
+id = "tacsim/tests::c4_filed_mind_field::c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home"
+tier = "nightly"
+job = "m8-gate-stories"
+
 # H3: the scale harness, against a disposable Redis.
 [[test]]
 id = "mush-contract-tests/tests::scale_harness::*"
