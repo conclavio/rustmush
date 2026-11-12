@@ -17,7 +17,9 @@ deploy/README.md, "Named launch and the player market"):
      only beside its document).
   2. INITIALIZE. The seven Registry grants to every operator, then the four
      initialize actions. The document's mode is set to `active`.
-  3. ACTIVE. `@mind/launch` must name every operator `ready`. Then the major
+  3. ACTIVE. `@mind/launch` must name every operator `ready`. The counter is
+     given its door from the Registry's desk at Ceres Freeport (a dug room has
+     no exit, and the market's verbs are refused anywhere else). Then the major
      NPCs are enabled (Q-44-47).
 
 Then the instance's own unit is started, and on it: `@mind/launch` again, the
@@ -118,6 +120,14 @@ MARKET_TERMS = {
     "charter_settle_ic_seconds": 259200,
 }
 TRUST = "Co-op First Captain Trust"
+# The counter's door (doc 44 unit MW.19). The counter is a room the bring-up
+# digs, and a dug room has no exit: until this, no player could walk to it, so
+# nobody but staff could list a mind or buy one. The door is hung off the
+# Registry's own desk at Ceres Freeport, where a new captain already stands to
+# enrol. Provisional: where the counter belongs in the port is the owner's call.
+COUNTER_DESK = "Registry & Co-op Desk"
+COUNTER_DOOR = "Mind Counter <MC>;mc;minds;mind counter;counter"
+COUNTER_BACK = "Registry <R>;r;registry;out;o"
 # Replies that mean "not now", to a line that was not run.
 TRANSIENT = (r"You're doing that too fast\.|post-outage recovery countdown"
              r"|still starting; please try again|please retry in a moment"
@@ -1031,6 +1041,31 @@ def readiness(staff, document):
     raise Stop(f"@mind/launch does not name every operator ready: {line.group(0)}")
 
 
+def counter_door(staff, document):
+    """A way to the counter on foot, and back: an exit from the Registry's desk
+    at Ceres Freeport into the venue room, and one out of it. Made only where
+    the room's own `Exits` line does not already show it."""
+    counter = document["venue"]["room"]
+    desk = staff.find(COUNTER_DESK)
+    if desk is None:
+        raise Stop(f"no room named '{COUNTER_DESK}' in this world: the counter (#{counter}) has no "
+                   "door, and no player can reach it to list or buy a mind")
+    opened = 0
+    for room, names, to in ((desk, COUNTER_DOOR, counter), (counter, COUNTER_BACK, desk)):
+        view = staff.s.ask(f"@teleport #{room}")
+        label = names.split(";")[0]
+        if re.search(rf"^Exits\s.*{re.escape(label)}", view, re.M):
+            continue
+        staff.s.do(f"@open {names}=#{to}", r"Opened\. \(#\d+\)")
+        opened += 1
+    staff.s.ask("@teleport #0")
+    if opened:
+        say(f"opened the counter's door: '{COUNTER_DOOR.split(';')[0]}' from the {COUNTER_DESK} "
+            f"(#{desk}) to the counter (#{counter}), and '{COUNTER_BACK.split(';')[0]}' back")
+    else:
+        say(f"the counter (#{counter}) has its door from the {COUNTER_DESK} (#{desk})")
+
+
 def major_npcs(box):
     """The major NPCs the shipped cast packs park (`"enabled": false`), read
     from the tree this script ships in, so the list is the content's own."""
@@ -1473,6 +1508,7 @@ def bring_up(box, password):
     try:
         registry_grants(staff, document)
         ready = readiness(staff, document)
+        counter_door(staff, document)
         if not args.no_npcs:
             enable_npcs(box, staff)
         # A run that stopped while a House held lent hulls: they go back before
@@ -1504,6 +1540,8 @@ def checks_on_the_unit(box, password):
     staff = staff_on_the_unit(box, password)
     try:
         readiness(staff, box.read_document())
+        # A box brought up before the counter had a door gets it here.
+        counter_door(staff, box.read_document())
         if not box.args.no_llm_check:
             llm_check(box, staff)
     finally:
