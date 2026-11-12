@@ -184,6 +184,11 @@ jobs:
             test: m8_world::d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256
           - name: D-23-18 a licensed mind carries its memory at 512
             test: m8_world::d23_18_a_licensed_mind_carries_its_memory_between_fields_at_512
+          # Doc 44 unit MW.5 (the story MW.7 left): a player's own filed mind, launched under
+          # its owner's licence on a leased escort, flies the unit for its absent pilot in a
+          # field of three parties (one rating, of the story's own script).
+          - name: MW.5 a filed mind flies an absent pilot's escort
+            test: c4_filed_mind_field::c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain
