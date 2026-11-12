@@ -1054,12 +1054,27 @@ pub struct NpcCfg {
     /// H2b: how long an NPC's scene turn may wait for its durable decision
     /// before the idle fallback fires, seconds (default 120).
     pub scene_turn_deadline_secs: u32,
+    /// Doc 44 MW.18 (Q-44-47): apply a cast pack's major NPCs enabled,
+    /// whatever the pack's `profile.enabled` says (default false: the pack
+    /// decides, and the shipped majors stay parked). It acts when a pack is
+    /// applied: at boot on a fresh world, at the next pack upgrade on an
+    /// existing one.
+    pub wake_majors: bool,
+    /// MW.18 (Q-44-31): the least time between two unprompted NPC lines in
+    /// one room, REAL seconds (default 1800). 0 turns the ambient timer off.
+    pub ambient_window_secs: u32,
+    /// MW.18 (Q-44-47): how recently a player must have typed to count as
+    /// present for an unprompted line, REAL seconds (default 600).
+    pub ambient_active_secs: u32,
 }
 
 impl Default for NpcCfg {
     fn default() -> Self {
         NpcCfg {
             scene_turn_deadline_secs: 120,
+            wake_majors: false,
+            ambient_window_secs: 1_800,
+            ambient_active_secs: 600,
         }
     }
 }

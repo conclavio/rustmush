@@ -3886,3 +3886,310 @@ fn mw17b_a_decision_is_attributed_to_its_npc_on_the_npcs_present_standing() {
     // An object that is no agent is withheld, never charged on an open standing.
     assert!(mush_npc::attribution_for(&rig.engine.world, bar).is_withheld());
 }
+
+// ----------------------------------------------------------------------
+// Doc 44 cut MW.18: the ambient timer, scheduled (Q-44-31, Q-44-47)
+// ----------------------------------------------------------------------
+
+impl Rig {
+    /// A player present in Q-44-47's sense: connected over a live link, and typing now.
+    fn present_player(&mut self, name: &str, room: ObjId) -> ObjId {
+        let id = self.player(name, room, true);
+        self.engine.world.set_live_conns(id, 1);
+        self.engine.world.session_start(id);
+        id
+    }
+
+    /// `who` types something now (it stamps their last input, as any command does).
+    fn types(&mut self, who: ObjId) {
+        self.engine.world.session_input(who);
+    }
+
+    /// Step the REAL clock from `from` to `to` inclusive, a scan apart, with `active`
+    /// typing at every step, and return every turn the tick began on the way.
+    fn step_clock(&mut self, from: i64, to: i64, active: &[ObjId]) -> Vec<(i64, ObjId)> {
+        let mut began = Vec::new();
+        let mut at = from;
+        while at <= to {
+            self.set_now(at);
+            for who in active {
+                self.types(*who);
+            }
+            for (npc, _, _) in self.all_turns() {
+                began.push((at, npc));
+            }
+            at += mush_npc::AMBIENT_SCAN_SECS;
+        }
+        began
+    }
+}
+
+/// The acceptance story. A room with two enabled major NPCs and one present player: once
+/// the room has been attended and quiet for the settle time, exactly one of them speaks
+/// unprompted; nothing more is begun in that room for the whole window, by either NPC,
+/// though the player stays and stays active; when the window has passed the other one
+/// takes the next. The clock is stepped by hand and the provider is a mock.
+#[tokio::test]
+async fn mw18_a_room_hears_one_unprompted_line_in_its_window() {
+    let mut rig = Rig::new();
+    let window = mush_npc::DEFAULT_AMBIENT_WINDOW_SECS;
+    let settle = mush_npc::DEFAULT_AMBIENT_SETTLE_SECS;
+    rig.set_now(10_000);
+    let office = rig.room("Authority");
+    let holm = rig.npc("Dagny Holm", office, &profile(NpcTier::Major));
+    let kalu = rig.npc("Matthias Kalu", office, &profile(NpcTier::Major));
+    let alice = rig.present_player("Alice", office);
+
+    // Attended, but not yet for the settle time: nothing.
+    let early = rig.step_clock(10_000, 10_000 + settle - 30, &[alice]);
+    assert!(early.is_empty(), "spoke before the room settled: {early:?}");
+
+    // The settle time passes: one turn, for the first of the two.
+    let first_at = 10_000 + settle;
+    rig.set_now(first_at);
+    rig.types(alice);
+    let mut turns = rig.all_turns();
+    assert_eq!(turns.len(), 1, "one turn for the room, not one each");
+    let (npc, corr, payload) = turns.remove(0);
+    assert_eq!(npc, holm);
+    assert!(
+        payload.contains("\"ambient\""),
+        "the turn carries the ambient beat: {payload}"
+    );
+
+    // The model answers; the line is said in the room.
+    let (svc, mock) = service();
+    mock.push_response(tool_resp(vec![say_tool("Quiet shift, for once.")]));
+    let out = run_npc_turn_async(&svc, &payload).await;
+    let events = rig.complete(holm, corr, &out).take();
+    assert!(
+        said_lines(&events)
+            .iter()
+            .any(|line| line.contains("Quiet shift, for once.")),
+        "{:?}",
+        said_lines(&events)
+    );
+
+    // The audit: one call, on the major route, charged to the NPC, caused by no player.
+    let rows = svc.audit_log().recent(8);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].feature, "npc_dialogue_major");
+    assert_eq!(rows[0].npc, Some(holm));
+    assert_eq!(rows[0].actor, None, "nobody prompted it");
+    assert_eq!(svc.ledger().npc(holm).total_tokens(), 15);
+
+    // The staff view says what woke it and where the room's window stands.
+    let show = rig.staff(&format!("@agent/show #{}", holm.0));
+    assert!(
+        show.contains("Last turn: woken by the ambient timer;"),
+        "{show}"
+    );
+    assert!(
+        show.contains("Last turn result: the model answered: say."),
+        "{show}"
+    );
+    assert!(
+        show.contains("Unprompted: this room heard Dagny Holm 0m ago; nothing more for 30m."),
+        "{show}"
+    );
+
+    // The whole window: Alice stays and keeps typing, and nothing is begun for either.
+    let quiet = rig.step_clock(first_at + 30, first_at + window - 30, &[alice]);
+    assert!(
+        quiet.is_empty(),
+        "a second line inside the window: {quiet:?}"
+    );
+    assert_eq!(mock.call_count(), 1, "one call in the window");
+
+    // The window has passed: the next line is the other NPC's.
+    let after = rig.step_clock(first_at + window, first_at + window, &[alice]);
+    assert_eq!(after, vec![(first_at + window, kalu)]);
+}
+
+/// Presence is Q-44-47's. A room whose only characters are link-dead, `DARK`, idle past
+/// the active time, or reached over a bare connection (an SSH `mind push`: neither
+/// connected nor live) draws nothing however long it waits: no turn is begun, so nothing
+/// is spent. The same room, once the `DARK` one is seen and types, is served.
+#[tokio::test]
+async fn mw18_only_a_present_player_draws_an_unprompted_line() {
+    let mut rig = Rig::new();
+    let active = mush_npc::DEFAULT_AMBIENT_ACTIVE_SECS;
+    rig.set_now(0);
+    let office = rig.room("Authority");
+    let holm = rig.npc("Dagny Holm", office, &profile(NpcTier::Major));
+
+    // Link-dead: still "connected", a session on record, and no live link.
+    let linkdead = rig.player("Linkdead", office, true);
+    rig.engine.world.session_start(linkdead);
+    // DARK: live and typing, and unseen.
+    let dark = rig.present_player("Dark", office);
+    rig.engine
+        .world
+        .set_flag(dark, mush_core::Flags::DARK, true)
+        .unwrap();
+    // Idle: live, and last typed at second 0.
+    let idle = rig.present_player("Idle", office);
+    // A bare connection binds no presence at all (MW.24).
+    let bare = rig.player("Pusher", office, false);
+
+    let from = active + 30;
+    let began = rig.step_clock(from, from + 7_200, &[linkdead, dark]);
+    assert!(began.is_empty(), "spent on an unattended room: {began:?}");
+    let now = from + 7_200;
+    for who in [linkdead, dark, idle, bare] {
+        assert!(
+            !mush_npc::present_for_ambient(&rig.engine.world, who, now, active),
+            "#{} counted as present",
+            who.0
+        );
+    }
+    assert!(
+        rig.host().ambient.rooms.is_empty(),
+        "the room was never attended"
+    );
+    assert!(
+        rig.host().runtime(holm).is_none(),
+        "the NPC was never woken"
+    );
+    let show = rig.staff(&format!("@agent/show #{}", holm.0));
+    assert!(
+        show.contains("Unprompted: waiting for a present player"),
+        "{show}"
+    );
+
+    // The DARK one is seen again and types: the room settles and is served.
+    rig.engine
+        .world
+        .set_flag(dark, mush_core::Flags::DARK, false)
+        .unwrap();
+    let start = now + 30;
+    let began = rig.step_clock(
+        start,
+        start + mush_npc::DEFAULT_AMBIENT_SETTLE_SECS,
+        &[dark],
+    );
+    assert_eq!(
+        began,
+        vec![(start + mush_npc::DEFAULT_AMBIENT_SETTLE_SECS, holm)]
+    );
+}
+
+/// Only an ENABLED MAJOR NPC speaks unprompted. A parked major beside an enabled minor
+/// and an enabled extra, with a present player for two hours: nothing. Staff wake the
+/// major and it takes the room's line.
+#[tokio::test]
+async fn mw18_a_parked_or_lesser_npc_never_speaks_unprompted() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let office = rig.room("Authority");
+    let parked = AgentProfile {
+        enabled: false,
+        ..profile(NpcTier::Major)
+    };
+    let holm = rig.npc("Dagny Holm", office, &parked);
+    let clerk = rig.npc("Clerk", office, &profile(NpcTier::Minor));
+    let _porter = rig.npc("Porter", office, &profile(NpcTier::Extra));
+    let alice = rig.present_player("Alice", office);
+
+    let began = rig.step_clock(0, 7_200, &[alice]);
+    assert!(began.is_empty(), "{began:?}");
+    let show = rig.staff(&format!("@agent/show #{}", holm.0));
+    assert!(show.contains("Unprompted: never while parked."), "{show}");
+    let show = rig.staff(&format!("@agent/show #{}", clerk.0));
+    assert!(
+        show.contains("Unprompted: never (only major NPCs speak unprompted)."),
+        "{show}"
+    );
+
+    let _ = rig.staff(&format!("@agent/set #{}/enabled=yes", holm.0));
+    let began = rig.step_clock(
+        7_230,
+        7_230 + mush_npc::DEFAULT_AMBIENT_SETTLE_SECS,
+        &[alice],
+    );
+    assert_eq!(
+        began,
+        vec![(7_230 + mush_npc::DEFAULT_AMBIENT_SETTLE_SECS, holm)]
+    );
+}
+
+/// An unprompted line never talks over a conversation, and the budgets still rule it.
+/// While a player is talking to an NPC of the room the timer holds off; and an unprompted
+/// turn the model cannot answer (here the day's budget is spent) says nothing at all,
+/// where a turn somebody prompted would say the profile's fallback line.
+#[tokio::test]
+async fn mw18_an_unprompted_turn_waits_for_quiet_and_says_nothing_when_it_degrades() {
+    let mut rig = Rig::new();
+    let settle = mush_npc::DEFAULT_AMBIENT_SETTLE_SECS;
+    rig.set_now(0);
+    let office = rig.room("Authority");
+    let holm = rig.npc("Dagny Holm", office, &profile(NpcTier::Major));
+    let alice = rig.present_player("Alice", office);
+
+    // Alice speaks to the NPC just before the room would have settled. That is a turn
+    // somebody prompted, and it restarts the room's quiet.
+    let _ = rig.step_clock(0, settle - 60, &[alice]);
+    rig.set_now(settle - 30);
+    rig.run(alice, "say Dagny Holm, a word?");
+    rig.set_now(settle - 28);
+    let (npc, corr, payload) = rig.one_turn().expect("the prompted turn");
+    assert_eq!(npc, holm);
+    assert!(!payload.contains("\"ambient\""), "{payload}");
+    let (svc, mock) = service();
+    mock.push_response(tool_resp(vec![say_tool("Briefly.")]));
+    let out = run_npc_turn_async(&svc, &payload).await;
+    let _ = rig.complete(holm, corr, &out).take();
+
+    // The room had been attended for the settle time, but not quiet for it.
+    let talked_at = settle - 28;
+    let began = rig.step_clock(settle, talked_at + settle - 30, &[alice]);
+    assert!(began.is_empty(), "spoke over a conversation: {began:?}");
+
+    // Quiet for the settle time: the unprompted turn begins, and the budget is gone.
+    let at = talked_at + settle + 2;
+    rig.set_now(at);
+    rig.types(alice);
+    let (npc, corr, payload) = rig.one_turn().expect("the unprompted turn");
+    assert_eq!(npc, holm);
+    let budget = BudgetConfig {
+        global: Some(BudgetLimit::tokens(1)),
+        ..BudgetConfig::default()
+    };
+    let (starved, starved_mock) = service_with_budget(budget);
+    let out = run_npc_turn_async(&starved, &payload).await;
+    assert!(out.contains("\"status\":\"degraded\""), "{out}");
+    let events = rig.complete(holm, corr, &out).take();
+    assert!(
+        said_lines(&events).is_empty(),
+        "an unprompted turn spoke its fallback line: {:?}",
+        said_lines(&events)
+    );
+    assert_eq!(starved_mock.call_count(), 0, "the budget refused the call");
+    let rows = starved.audit_log().recent(8);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].npc, Some(holm));
+    assert_eq!(rows[0].outcome, mush_llm::Outcome::Budget);
+    let show = rig.staff(&format!("@agent/show #{}", holm.0));
+    assert!(
+        show.contains("Last turn result: nothing said: the model was not reached"),
+        "{show}"
+    );
+
+    // The refused turn still opened the room's window: the bill stays bounded.
+    let began = rig.step_clock(at + 30, at + 3_600 - 1_830, &[alice]);
+    assert!(began.is_empty(), "{began:?}");
+}
+
+/// `[npc].ambient_window_secs = 0` turns the timer off.
+#[tokio::test]
+async fn mw18_a_zero_window_turns_the_ambient_timer_off() {
+    let mut rig = Rig::with_module(Box::new(NpcModule::new().with_ambient(0, 600)));
+    rig.set_now(0);
+    let office = rig.room("Authority");
+    let holm = rig.npc("Dagny Holm", office, &profile(NpcTier::Major));
+    let alice = rig.present_player("Alice", office);
+    let began = rig.step_clock(0, 7_200, &[alice]);
+    assert!(began.is_empty(), "{began:?}");
+    let show = rig.staff(&format!("@agent/show #{}", holm.0));
+    assert!(show.contains("the ambient timer is off"), "{show}");
+}

@@ -225,6 +225,17 @@ fn create_npc(
         return Err(format!("{id}: {name:?} is not an NPC name"));
     }
     let mut profile = profile_of(&def).map_err(|e| format!("{id}: {e}"))?;
+    // Doc 44 cut MW.18 (Q-44-47): `[npc].wake_majors`. A box that sets it applies a
+    // cast pack's major NPCs enabled, whatever the pack's `profile.enabled` says. Read
+    // from the world, not the checked slot: an applier runs under the content module.
+    if def.tier == NpcTier::Major
+        && ctx
+            .w
+            .module_state::<NpcHostState>()
+            .is_some_and(|host| host.config.wake_majors)
+    {
+        profile.enabled = true;
+    }
     // Public affiliation is a runtime role binding/staff choice, not an authored
     // pack default. Reapplying prose must not reset that independent decision.
     if let Some(old) = existing.and_then(|npc| crate::module::read_profile(ctx.w, npc)) {
