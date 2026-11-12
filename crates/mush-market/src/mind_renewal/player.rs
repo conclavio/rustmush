@@ -219,16 +219,29 @@ pub const QUEUED_LINE: &str =
 pub const UNRESOLVED_LINE: &str =
     "A renewal request is still unresolved; inspect status before retrying.";
 
+// The status label of each state (`label`). Constants since doc 44 MW.5, so
+// the external bot's sentence census sees a new one; the text is unchanged.
+
+/// `RenewalState::None`'s status label.
+pub const STATUS_NONE: &str = "No renewal offer has been requested.";
+/// `RenewalState::Drafted`'s status label.
+pub const STATUS_DRAFTED: &str = "A renewal offer awaits your explicit acceptance or decline.";
+/// `RenewalState::Funded`'s status label.
+pub const STATUS_FUNDED: &str = "Payment is held; completion is pending.";
+/// `RenewalState::Granted`'s status label.
+pub const STATUS_GRANTED: &str = "Renewal completed.";
+/// `RenewalState::Closed`'s status label.
+pub const STATUS_CLOSED: &str =
+    "The last renewal closed without a new term. You may explicitly request a retry.";
+
 /// The status label of each state.
 const fn label(state: RenewalState) -> &'static str {
     match state {
-        RenewalState::None => "No renewal offer has been requested.",
-        RenewalState::Drafted => "A renewal offer awaits your explicit acceptance or decline.",
-        RenewalState::Funded => "Payment is held; completion is pending.",
-        RenewalState::Granted => "Renewal completed.",
-        RenewalState::Closed => {
-            "The last renewal closed without a new term. You may explicitly request a retry."
-        }
+        RenewalState::None => STATUS_NONE,
+        RenewalState::Drafted => STATUS_DRAFTED,
+        RenewalState::Funded => STATUS_FUNDED,
+        RenewalState::Granted => STATUS_GRANTED,
+        RenewalState::Closed => STATUS_CLOSED,
     }
 }
 
