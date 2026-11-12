@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod lane;
 pub mod lines;
+pub mod minds;
 pub mod report;
 
 pub use lane::{Beat, Edge, Fed, Lane, LaneEvent, LaneResult, Milestone, Send, in_vocabulary};
