@@ -18,7 +18,7 @@
 //!
 //! **One writer.** [`set`] is the only function that writes it. It also tells a field that
 //! holds the unit (`crate::field::posture`), so the mind flying it reads the new word on its
-//! next think. The verbs that call it are doc 45 unit AP.4's.
+//! next think. The verbs that call it are doc 45 unit AP.4's (`super::order`).
 
 use mush_core::{Attr, Ctx, GOD, ObjId, World};
 

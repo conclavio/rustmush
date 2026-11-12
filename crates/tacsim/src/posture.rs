@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod order;
 pub mod record;
 
 /// **The posture a unit holds** (the module head). `Return` is every unit's default (Q-45-4).

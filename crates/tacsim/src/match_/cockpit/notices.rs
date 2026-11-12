@@ -2307,7 +2307,7 @@ pub(super) fn drive_goal(
 /// **`MIND`'s usage line** (17b cut M5.4), for a form it does not take — a
 /// word that is not `PROFILE`, `RULES` or `TRACE`, `PROFILE` with no name,
 /// `RULES` with a word after it.
-pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]]; bare MIND reads your sealed mind.";
+pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]|POSTURE [RETURN|GUARD|HOLD]]; bare MIND reads your sealed mind.";
 
 /// **What `MIND` says of a hull no seal reached** (17b cut M5.4): the frame
 /// carries no [`Frame::mind`]. Bare `MIND` and `MIND RULES` say it alone;
@@ -2620,8 +2620,40 @@ pub(super) fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
         "profile" if !tail.is_empty() => mind_profile(ctx, seat, tail),
         "card" if tail.is_empty() => mind_card(ctx, seat),
         "trace" => mind_trace(ctx, seat, tail),
+        "posture" => mind_posture(ctx, seat, tail),
         _ => Err(CockpitError::Usage(MIND_USAGE.to_owned())),
     }
+}
+
+/// **`MIND POSTURE [RETURN|GUARD|HOLD]`** (doc 45 unit AP.4; Q-45-19: a posture is set from
+/// the unit's seat): the posture the hull holds, read with no word and set with one. It is
+/// the hull's own standing word (`crate::posture::record`), what its mind reads when its
+/// pilot is not at the controls, so it is written to the hull's record and not staged as an
+/// intent: it stands after the field is gone. Set only from a seat in the world: a pod in the
+/// simulator is an OOC room, and a posture there is doc 45 unit AP.10's.
+pub(super) fn mind_posture(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result<(), CockpitError> {
+    use crate::posture::order;
+    let name = display_name(ctx.w, seat.unit);
+    let lines = if tail.trim().is_empty() {
+        vec![order::line(
+            order::POSTURE_READ,
+            &name,
+            crate::posture::record::of(ctx.w, seat.unit),
+        )]
+    } else {
+        let refused = |error: mush_core::CmdError| CockpitError::Refused(error.to_string());
+        let posture = order::word(tail).map_err(refused)?;
+        // A practice match's seat is in the simulator centre whatever room the test of the
+        // room says: a unit no field holds is not set from a cockpit.
+        if crate::field::field_of_unit(ctx.w, seat.unit).is_none() {
+            return Err(CockpitError::Refused(order::POSTURE_OOC.to_owned()));
+        }
+        order::set_present(ctx, seat.unit, &name, posture).map_err(refused)?
+    };
+    for line in lines {
+        ctx.out.sys_to_actor(ctx.actor, NOTICE_CATEGORY, line);
+    }
+    Ok(())
 }
 
 pub(super) fn mind_trace(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result<(), CockpitError> {

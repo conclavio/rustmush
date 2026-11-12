@@ -540,6 +540,47 @@ nothing, and then passes to its mind.
 The simulator is different: there a dropped pilot's unit goes to its mind and
 fights on (`help simulator`).
 
+## Postures
+
+Every unit holds one posture: the standing word its mind reads when you are not
+at its controls. There are three, and a unit holds RETURN until you set another.
+
+- **RETURN**: go home. This is what the section above describes.
+- **GUARD**: stay where it stands and defend.
+- **HOLD**: stay, and hold its fire.
+
+The posture belongs to the unit, not to the field around it. Set it on the open
+surface and it is still there when a field opens, after a restart, and when the
+field has settled.
+
+**What is flown today.** The house mind flies RETURN. It does not act on GUARD
+or HOLD yet: with either set it still takes the unit home, and you are told so
+when you set one. A mind you wrote and filed reads the word (`help minds`) and
+may act on it now. Whatever the posture, the limits above stand: a mind flying
+for you never fires first.
+
+**Setting it.** A posture is an order to a unit, and it is given the way an
+order reaches one:
+
+- **From its seat**, in a field: `MIND POSTURE GUARD`. `MIND POSTURE` with no
+  word reads it.
+- **From aboard its carrier**, or from the rig's own cab on open ground:
+  `+tv/2 posture hold` sets rig 2's. `+tv/2 posture` reads it.
+- **Over the relay.** If you are on the site but neither aboard the carrier
+  nor in that rig's cab (in another rig, say), the same `+tv/2 posture hold`
+  goes to rig 2 as an order over the comms relay. Jamming where the rig stands
+  stops it, and so does your carrier's relay when it reads jammed in a field.
+  You hear "Your order does not reach Rig 2: the relay to it is jammed. It
+  still holds RETURN." and nothing has changed; an order that does not arrive
+  is not kept for later. From another site or a port you have no relay to the
+  rig at all: give the order from aboard its carrier.
+- **Never from an OOC room.** "A posture is an order to a unit in the world.
+  It is not given from an OOC room." A seat in the simulator is an OOC room.
+
+**Reading it.** `STATUS` in the seat and `+tv` aboard the carrier each show a
+line "posture GUARD" for a unit that holds one other than RETURN. A unit on
+RETURN shows no line.
+
 ## Leaving units behind
 
 A carrier normally lifts only with every rig and detachment unit aboard. To go

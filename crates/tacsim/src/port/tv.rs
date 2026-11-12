@@ -96,6 +96,7 @@ A lease past its term is re-debited at your next +tv/lease, or the deposit is fo
 +tv/<n> plan <pockets and blocks> [family=<good>] [go]  leave rig n working: mine the pockets you name and every pocket of a block you read fair or better, sounding a field first where you have only scanned it; it comes home and unloads at every full hopper, and parks when the hold has no room for another cycle or the list is worked out, within 288 IC h. It is never re-armed. While it works, the rig takes no other order.
 +tv/<n> plan show  read rig n's plan back.  +tv/<n> plan clear  end it after the step in flight, or strike a finished one.
 +tv/quiet [on|off]  stop (or start) hearing other rigs' soundings.
++tv/<n> posture [return|guard|hold]  read, or set, the posture rig n holds when nobody is at its controls: at once from aboard the carrier or the rig's cab, as an order over the relay from elsewhere on the site, never from an OOC room (help field).
 +tv/forget <site>|<body> [go]  strike your readings of a site, or of every site on a body, from your chart.
 From the bay, a scan, a sounding or a drive goes down the ramp first. Mining is help mining.
 Each act shows what it would do and commits nothing; go commits it. Without a number it addresses the rig you named last, or your only rig.";
@@ -225,7 +226,9 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/launch mind=<mind> [org=<org>] [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/plan <pockets|blocks> [family=<good>] [go]  or  +tv[/<n>]/plan show|clear  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>] posture [return|guard|hold]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/launch mind=<mind> [org=<org>] [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/plan <pockets|blocks> [family=<good>] [go]  or  +tv[/<n>]/plan show|clear  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+/// `+tv/<n> posture`'s grammar (doc 45 unit AP.4).
+pub const POSTURE_USAGE: &str = "Usage: +tv[/<n>] posture [return|guard|hold]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -1720,6 +1723,11 @@ enum Act {
         /// On, off, or toggle.
         set: Option<bool>,
     },
+    /// **Doc 45 unit AP.4**: `+tv[/<n>] posture [return|guard|hold]`; `None` reads.
+    Posture {
+        /// The word typed, lower-cased.
+        word: Option<String>,
+    },
     /// **Doc 20 cut SM.4b**: `+tv[/<n>]/drive <target…> [go]` — the words after the act as typed
     /// (whitespace collapsed, case kept, `go` removed).
     Drive {
@@ -1808,8 +1816,8 @@ enum Act {
 /// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`; since SM.11
 /// `plan`; since doc 36 cut GC.4 `tow`, `release` and `load`, since GC.5 `pickup`, and since
 /// GC.6 `scrap`, as first words; since doc 41 cut RS.1 the tender's `unjam`, `stabilize`, `rearm`
-/// and `stores`).
-const ACT_WORDS: [&str; 24] = [
+/// and `stores`; since doc 45 unit AP.4 `posture`, a first word).
+const ACT_WORDS: [&str; 25] = [
     "lease",
     "launch",
     "recover",
@@ -1834,6 +1842,7 @@ const ACT_WORDS: [&str; 24] = [
     "stabilize",
     "rearm",
     "stores",
+    "posture",
 ];
 
 /// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the
@@ -1966,6 +1975,13 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 return Err(CmdError::msg(FORGET_WHICH));
             }
             return Ok((None, Act::Forget { name, go }));
+        }
+        // Doc 45 unit AP.4: `posture [return|guard|hold]`; with no word, the read.
+        "posture" => {
+            if !first_word || words.next().is_some() {
+                return Err(CmdError::msg(POSTURE_USAGE));
+            }
+            return Ok((slot, Act::Posture { word: next }));
         }
         "quiet" => {
             if slot.is_some() {
@@ -2374,6 +2390,16 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Act::Forget { name, go } => forget(ctx, &name, go),
         Act::Quiet { set } => quiet(ctx, set),
+        // Doc 45 unit AP.4 (Q-45-19): the rig's posture, read, set by an operator who is with
+        // it, or sent to it over the relay. Not an act of the rig: it takes no charge and no
+        // `go`, and it stands whether or not a field holds the rig.
+        Act::Posture { word } => {
+            let rig = select_word(ctx, slot, "posture").map_err(CmdError::msg)?;
+            for line in crate::posture::order::tv(ctx, &rig, word.as_deref())? {
+                say(ctx, line);
+            }
+            Ok(())
+        }
         // Doc 20 cut SM.4b (§3.5, §3.10 of the brief).
         Act::Drive { words, go } => {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Drive)
@@ -2999,6 +3025,11 @@ fn status_lines(
         );
         if house {
             lines.push(crate::port::yard::house_rig_line(w, record.pilot));
+        }
+        // Doc 45 unit AP.4: the posture the rig holds, when it is not the default.
+        let posture = crate::posture::record::of(w, record.tv);
+        if !posture.is_return() {
+            lines.push(crate::posture::order::POSTURE_LINE.replace("{posture}", posture.label()));
         }
         lines.extend(acts);
         // Doc 20 cut SM.4a (§5, §10; lead ruling 8): where a rig on the ground stands.
