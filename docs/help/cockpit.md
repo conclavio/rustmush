@@ -73,6 +73,10 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
                       <name> switches to another sealed profile, once in ten
                       seconds; MIND RULES reads live pilot rules, and MIND RULE
                       replaces or removes one numbered slot.
+  MIND POSTURE [RETURN|GUARD|HOLD]
+                      in an IC field only: read, or set, the posture your unit
+                      holds when you are not at its controls. See "Postures"
+                      in help field.
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.

@@ -17763,6 +17763,15 @@ async fn m5_mind_profile_switches_a_sealed_profile_at_most_once_in_ten_seconds()
         rig.say(0, "mind trace 3"),
         "MIND TRACE refused. No mind trace is available."
     );
+    // Doc 45 unit AP.4 (Q-45-19): a pod in the simulator is an OOC room. The posture is read
+    // there and never set; a posture in a practice match is doc 45 unit AP.10's.
+    let read = rig.say(0, "mind posture");
+    assert!(read.ends_with(" holds RETURN."), "{read}");
+    assert_eq!(
+        rig.say(0, "mind posture guard"),
+        tacsim::posture::order::POSTURE_OOC
+    );
+    assert_eq!(rig.say(0, "mind posture"), read, "nothing changed");
 
     // The switch, from the seat on helm.
     let mark = rig.log.len();

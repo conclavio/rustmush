@@ -795,6 +795,68 @@ pub(crate) fn step(
     })
 }
 
+/// **What became of a posture sent to a unit over the relay** (doc 45 unit AP.4; Q-45-19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PostureOrder {
+    /// It reached the unit, and the unit holds it.
+    Arrived,
+    /// The relay to the unit is jammed: nothing changed.
+    Jammed,
+    /// The sender has no relay to where the unit is: nothing changed.
+    NoPath,
+}
+
+/// **A posture sent to `unit` over the comms relay by `sender`** (doc 45 unit AP.4; Q-45-19:
+/// "over the comms relay as an order to the unit, which jamming can stop").
+///
+/// The order is carried by the transport every order rides (`mush_propagation`): it needs a
+/// context between the sender and the unit, which is two ends on one site (one place, one
+/// tactical window or one domain), and it is stopped by interference declared at the unit's
+/// end, as a roster's orders are. Inside a field it is also stopped by its party's carrier
+/// relay reading jammed ([`carrier_relay`], the rule [`relay_passes`] holds a roster's orders
+/// to). A posture is one word and is not queued: it arrives now or it does not arrive, and an
+/// order that does not arrive changes nothing. A damaged relay, which delays a roster's order,
+/// lets a posture through.
+pub(crate) fn posture_order(
+    ctx: &mut Ctx<'_>,
+    sender: ObjId,
+    unit: ObjId,
+    posture: crate::posture::Posture,
+) -> PostureOrder {
+    let w: &World = ctx.w;
+    let delivery = w
+        .module_state::<mush_propagation::PropagationStore>()
+        .zip(w.module_state::<mush_sim::SpatialState>())
+        .and_then(|(store, spatial)| {
+            mush_propagation::pass::context_between(
+                store,
+                spatial,
+                w,
+                sender,
+                unit,
+                &w.world_ic_now(),
+            )
+        })
+        .map(|context| mush_propagation::resolve_delivery(&context));
+    let Some(delivery) = delivery else {
+        return PostureOrder::NoPath;
+    };
+    let relay_jammed = super::field_of_unit(w, unit)
+        .and_then(|site| super::live_on(w, &site))
+        .and_then(|live| {
+            let party = live.party_of(unit)?;
+            carrier_relay(w, &live, party)
+        })
+        .is_some_and(|(_, word)| word == mush_tactics::field_ops::ComponentCondition::Jammed);
+    if !delivery.is_reachable() || relay_jammed {
+        return PostureOrder::Jammed;
+    }
+    match crate::posture::record::set(ctx, unit, posture) {
+        Ok(_) => PostureOrder::Arrived,
+        Err(_) => PostureOrder::NoPath,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

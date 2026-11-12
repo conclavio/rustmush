@@ -493,7 +493,181 @@ is its own. Not changed.
 
 ## AP.4
 
-Not built.
+Setting a posture (doc 45 §7.1; Q-45-19). PR #568, stacked on AP.3 (#565) and built on
+AP.8's branch (#557), which is merged into it. Paths are under `crates/tacsim/src/` unless
+given.
+
+**Built.**
+
+- **The order's rules, once** (`posture/order.rs`, new): the three ways, the OOC rule, the
+  lines. Every way ends in the record's one writer (`posture::record::set`, AP.3).
+- **From the unit's seat**: `MIND POSTURE [RETURN|GUARD|HOLD]`
+  (`match_/cockpit/notices.rs` `mind_posture`). A form of the seat's `MIND` verb, not a new
+  verb: the posture is what the unit's mind is told. With no word it reads. With one it sets
+  the posture of the hull the actor is flying, in an IC field only, and only from the seat
+  that holds the helm (the check a helm intent takes, `arena_bridge::authorise_seat`).
+- **From aboard its carrier, or the rig's own cab**: `+tv[/<n>] posture [return|guard|hold]`
+  (`port/tv.rs`, a first word, as `tow` is). An operator who is with the rig
+  (`RigAt::operator_present`: aboard the carrier, or at the rig's own helm) sets it at once.
+- **Over the comms relay**: the same line from the rig's own operator (its lessee or title
+  holder) when he is neither; a hired crew's operator sets it from aboard the rig only. The order goes to
+  the rig through `field::orders::posture_order` (`field/orders.rs`): it needs a
+  `mush_propagation` delivery context between the sender and the rig (two ends on one site),
+  and it is stopped by interference declared where the rig stands, as a roster's orders
+  are, and inside a field by its party's carrier relay reading jammed (`carrier_relay`, the
+  rule `relay_passes` holds a roster's orders to). It arrives now or not at all: an order
+  that does not arrive changes nothing and is not kept.
+- **Never from an OOC room** (`posture::order::ooc`): Limbo, a room of the OOC area's pack,
+  or anything inside one. A seat in the simulator is refused the set (its pod is in the OOC
+  area, and no field holds its unit). A read answers anywhere.
+- **What shows it.** `STATUS` in the seat and the carrier's roster (`+tv`) each carry one
+  line, `posture GUARD`, for a unit that holds a posture other than `RETURN`. `MIND POSTURE`
+  and `+tv/<n> posture` read it always. The cockpit keyframe has carried `posture` since AP.3.
+- **Help**: `docs/help/field.md` has a new section, "Postures"; `cockpit.md` and `mining.md`
+  list the two forms; `+tv`'s and `MIND`'s own help lines name them.
+- `crates/mush-contract-tests/legacy-handlers.toml`: the `mind` and `+tv` notes are refreshed.
+  No new verb, switch or family.
+
+**Tests.**
+
+- In source (`posture::order`): Limbo and what stands in it are OOC and a plain room and a
+  cab in it are not; the words and the lines; every line inside 120 columns.
+- `tests/domain_arena/cockpit.rs` (a practice match): `MIND POSTURE` reads in a pod and
+  `MIND POSTURE GUARD` is refused with the OOC line, and nothing changes.
+- Stories (`tests/domain_field/field_ap4.rs`), each typed by a player who is not staff:
+  - `ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room`. An operator
+    with two rigs, aboard her carrier. She reads and sets each rig's; the roster shows the
+    line under rig 1 and none under a rig on `RETURN`; a second set says nothing changed; a
+    word that is no posture is refused. From an OOC room every set is refused and nothing
+    changes; the read answers.
+  - `ap4_a_posture_is_set_from_the_units_seat_in_a_field` (a field of three parties). The
+    ward's pilot reads and sets the posture from the cockpit; the record at once, the hull's
+    own frame within a pulse, `STATUS`; a bad word is refused; the raider's pilot sets his
+    own hull's and not the ward's.
+  - `ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_relay`
+    (`escort_lease`'s ground, the lessee with a second rig). He boarded his armed rig in the
+    bay with `+tv/1 board` and drove it out, and sits in its cab on open ground, off his
+    carrier. His own rig's posture is set at once, with interference declared where it
+    stands. His order to the rig in the carrier's bay goes over the relay and arrives; with
+    interference declared where that rig stands the order does not arrive and the rig holds
+    what it held; with it lifted the same order arrives.
+
+**Divergences from the row, and what doc 45 had wrong.**
+
+- **The row's "the relay" is not the roster's order book.** `field/orders.rs` executes a
+  detachment's delivered orders for hired NPC crews. A posture is not one of those: an order
+  in the book is a standing objective that replaces the slot's last one, and a posture is a
+  word beside the objective; and hired NPC crews are not flown for an absent player at all
+  (AP.8), so nothing would read it there. What Q-45-19 rules out is a posture set from
+  anywhere with no transport, so the relay built here is for the unit a posture is for, a
+  player's own rig: the order rides the same transport and meets the same jamming, in the
+  same file, without entering the book. `ORDER DT:... <slot> POSTURE <word>` is not built
+  (below).
+- **A posture verb cannot be a new bare verb.** `posture` would share the prefix `pos` with
+  core's `pose`, and the registry resolves a bare verb by prefix. It is a form of `MIND` in
+  the seat and a first word of `+tv` aboard.
+- **A set is not a submission.** The record is an attribute on the unit's object (AP.3), so
+  a set is one object write and prints no `Queued.`; `@field/raiders` writes the raider's
+  standing withdrawal the same way. `+tv` and the cockpit verbs are classed as ingress for
+  authoritative actions; `+tv/quiet` already writes a document from inside `+tv` without
+  one. The notes in `legacy-handlers.toml` say so.
+- **GUARD and HOLD are set and shown, and not yet flown.** AP.6 makes the field's mind act on
+  them. Until then the house mind takes the unit home whatever it holds, and every set of
+  `GUARD` or `HOLD` says so in its answer, as does the help. A filed mind reads the word.
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | The seat's form is `MIND POSTURE`, the carrier's `+tv/<n> posture` | Low: words |
+| 2 | An order over the relay is not queued: it arrives at once or does not arrive. A roster's order waits out a jam; a posture does not | Low: one function. Queueing it would need a record of orders in flight, which the roster's book is |
+| 3 | The relay reaches a rig on the sender's own site only (one place, one tactical window or one domain, `PropagationContext::build`'s rule). From another site or a port the answer is "you have no relay to where it is" | Medium: an order across sites would ride the interplanetary relay (doc 15), with its delays and queues |
+| 4 | A damaged carrier relay, which delays a roster's order, lets a posture through; a jammed one stops it | Low |
+| 5 | A unit on `RETURN` shows no posture line in `STATUS` or the roster; the explicit read always answers | Low. It keeps every existing transcript of `+tv` and `STATUS` as it was |
+| 6 | A read is allowed from an OOC room; only a set is an order | Low |
+| 7 | The simulator's seat is refused, by the OOC rule | Low: AP.10 opens it |
+| 8 | Who may set it: the seat that holds the helm, for `MIND POSTURE`; for `+tv`, the rig's lessee or title holder at the helm hull (at once when with the rig, over the relay otherwise), and a hired crew's operator from aboard the rig only | Low |
+| 9 | A room no atlas record places in the OOC area is in the world (a hull's interior has none). A staff-built room with no record is therefore not an OOC room; an order from one finds no relay and no rig to be aboard | Low: one function, `posture::order::ooc` |
+
+**Not built, and where each lives.**
+
+- **A posture as a roster order** (`ORDER DT:<id>:<rev>:<term> <slot> POSTURE <word>`), for a
+  leader to set the posture of an absent member's unit. It needs a decision this unit should
+  not take alone: whether a leader may set another player's unit's standing word, and a
+  place in the order book that is not the slot's objective. **Deferred, for the owner**;
+  AP.8's chain is where it would be built.
+- **A carrier's own posture, and a ship's.** `+tv` addresses rigs. A carrier in a field is
+  set from its seat by `MIND POSTURE` like any hull; on its pad with no field there is no
+  verb for it. **AP.7** (the carrier's mind) for the carrier, **AP.9** for a ship in space.
+- **What the house mind does with `GUARD` and `HOLD`**: **AP.6**. The line
+  `POSTURE_NOT_FLOWN_YET` and the help's "What is flown today" paragraph go when it lands.
+- **The simulator**: **AP.10**.
+- **The clients** (the web panel and the TUI) draw nothing for the keyframe's `posture`; the
+  line client's `STATUS` and `+tv` show it. No unit names it; it is a renderer's change.
+
+**Not pinned by a story.**
+
+- The carrier relay's jam inside a running field (the part's condition is read off the
+  carrier's world record; doc 40 FR.5's stories jam it for roster orders, none for a
+  posture). The declared-interference jam is pinned.
+- The relay inside a running field, and "no relay to where it is" from another site.
+- `+tv/<n> posture` by a hired crew's operator, aboard and refused off the rig.
+- `MIND POSTURE` refused to a seat that does not hold the helm (a second berth, a seat its
+  mind has taken over): the check is the one every helm intent takes and is pinned there.
+- A captive's read passing the held-character gate, and their set refused.
+
+**Reviewed.** A second agent read the unit adversarially (read-only). It found no defect in
+the authorization of `+tv` (only the actor's live leases and titled rigs on their helm hull
+can be selected), the held-character gate, the direction of the relay (interference is read
+at the unit's end; a carrier under way or another site gives no path; nothing is written on
+a jam), the parsing, or the persistence (a posture command stages no action, so the object's
+write goes out with the step's dirty objects and survives a restart in the production
+composition). It found four gaps, all fixed:
+
+- **The relay story stood the operator in a position the game cannot produce** (inside a rig
+  by a hand move, which the presence rule reads as nowhere). The relay is now exercised from
+  a rig's cab the lessee boarded with his own commands, to his other rig.
+- **`MIND POSTURE` asked no helm.** Any focused station of the hull could set it. It now
+  takes the helm intent's own check.
+- **A hired crew's operator could relay a posture to the owner's rig** from off it. A crew
+  now sets it from aboard the rig only.
+- **The help said "your carrier's relay"**; the rule reads the carrier relay of the rig's
+  party, as a roster's orders do. The help says so.
+
+Smaller: the OOC walk now fails closed past eight containers; a posture's read passes the
+held-character gate, as the status does.
+
+**Verified, and how.**
+
+- **Mutation checks**, on Linux (conclav.dev), three builds of a throwaway clone:
+
+  | Mutation | What failed |
+  |---|---|
+  | No room is OOC, and a seat no field holds may set a posture | the in-source OOC test; the practice match's seat ("Red Tank 1 now holds GUARD." where the OOC line was due). Either guard alone still refuses a pod, so the two were removed together |
+  | The roster shows no posture line | story 1, at "the roster shows rig 1's posture, once" |
+  | Every set goes over the relay, an operator with the rig or not | story 1 (aboard the carrier the answer became "reaches Rig 1 over the relay") and story 3 (in the cab, with interference declared, "does not reach Rig 1") |
+  | `STATUS` shows no posture line | story 2, at "the unit's status shows it" |
+  | Jamming does not stop an order over the relay | story 3, at the jammed order ("reaches Rig 2 over the relay" where "does not reach Rig 2" was due) |
+
+- **The whole of `tacsim`'s tests**, on Linux (conclav.dev), on this unit's tree (AP.3, AP.8's
+  branch and main at `d2be044c5` under it): 4,551 run and 4,551 passed.
+- **The bot's job** (`cargo nextest run -P ci -p mush-bot`, the two long binaries left out as
+  CI leaves them): 763 passed. It holds the cockpit's lines under 120 columns, which caught
+  this unit's first `MIND` usage line.
+- **`mush-contract-tests`** on Linux and on Windows (the help lint, the command allowlist,
+  the census, the panic budget, the restriction lints, the fiat budget), no budget re-blessed.
+- `cargo clippy --all-targets -D warnings` and `cargo doc -D warnings
+  --document-private-items` on `tacsim`, on Linux.
+- **CI**: the pull request's CI and a full dispatch on the head commit; the runs are in the
+  pull request's body.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
+  player reads were read in the test rig's line mode, not in the TUI or the web client.
+- The story's OOC step with the OOC rule alone removed (the mutation that removed it also
+  removed the roster's line, which fails the same story earlier); the in-source test and the
+  practice match's seat hold the rule.
 
 ## AP.5
 
