@@ -234,9 +234,11 @@ AP.3; Q-45-4, Q-45-23*): `posture`, the standing word the unit's player left on 
 or `hold`, and `return` unless they set another. The keyframe carries the key `posture`
 (`FRAME_VERSION` 10) and a mind reads it as `v.posture` (mind API 9), the house default and a sealed
 mind alike. The word is the unit's own: it is kept on the unit's object, not in the host that flies
-it (`crates/tacsim/src/posture/`), so a hull in a space bubble reads the same word off the same record
-as a hull on the ground. The view carries the word and the arena acts on none of it; what each
-host's mind does with `guard` and `hold` is doc 45's (units AP.6, AP.7 and AP.9).
+it (`crates/tacsim/src/posture/`), so a player's hull flown by the backup seat in space reads the same
+word off the same record as a hull on the ground (`space/backup.rs`; the space view takes it from
+`Situation::postures`, and a hull the host lays no row for, every NPC actor's today, reads `return`).
+The view carries the word and the arena acts on none of it; what each host's mind does with `guard`
+and `hold` is doc 45's (units AP.6, AP.7 and AP.9).
 
 **Notices.** `pending_notices` is cleared every pulse and must be empty between pulses, so a think
 that spans pulses cannot read it. `MindState.notices` is a bounded buffer (16 entries) filled by the

@@ -260,6 +260,13 @@ pub fn live_on(w: &World, site: &CanonicalId) -> Option<FieldLive> {
         .map(|hosted| hosted.live.clone())
 }
 
+/// **The last snapshot the world holds of the field running on `site`** (doc 45 unit AP.3:
+/// what a story reads to know which word a resume starts from), when one runs and has saved.
+#[must_use]
+pub fn snapshot_on(w: &World, site: &CanonicalId) -> Option<serde_json::Value> {
+    w.module_state::<FieldBook>()?.snapshot(site).cloned()
+}
+
 /// The `[tacsim.field]` the server runs under.
 #[must_use]
 pub(crate) fn config(w: &World) -> crate::config::FieldConfig {

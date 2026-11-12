@@ -576,6 +576,62 @@ mod tests {
         assert_eq!(helm_word_of([0, 0, 0]), 0);
     }
 
+    /// Doc 45 unit AP.3: a ship's view carries the posture the host laid for her, by her own id
+    /// in the bubble, and `RETURN` for every ship with no row. One ship's word is not another's.
+    #[test]
+    fn a_ships_view_carries_her_own_posture_and_return_without_one() {
+        use crate::posture::Posture;
+        use crate::space::picket::{CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY};
+
+        let mut bubble = LocalSpaceBubble::new("bubble.test.posture", "domain.4", "Test", 1_000);
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "customs.4.1",
+            "Corvette",
+            CUSTOMS_CORVETTE_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        for (id, name, at) in [
+            ("hull.10", "Salt Moth", [3_000, 4_000, 12_000]),
+            ("hull.11", "Tin Kettle", [-9_000, 0, 0]),
+        ] {
+            bubble.insert_ship(SpaceShipState::new_dray(
+                id,
+                name,
+                CARRIER_PARTY,
+                at,
+                [0, 0, 0],
+            ));
+        }
+        let posture_of = |situation: &Situation, ship: &str| {
+            let mut book = ContactBook::default();
+            space_mind_view(&bubble, ship, ObjId(7), &mut book, situation)
+                .map(|(view, _)| view.posture)
+        };
+        let mut situation = Situation::open(1_000);
+        for ship in ["customs.4.1", "hull.10", "hull.11"] {
+            assert_eq!(
+                posture_of(&situation, ship),
+                Some(Posture::Return),
+                "{ship}"
+            );
+        }
+        situation
+            .postures
+            .insert("hull.10".to_owned(), Posture::Hold);
+        situation
+            .postures
+            .insert("hull.11".to_owned(), Posture::Guard);
+        assert_eq!(situation.posture_of("hull.10"), Posture::Hold);
+        assert_eq!(posture_of(&situation, "hull.10"), Some(Posture::Hold));
+        assert_eq!(posture_of(&situation, "hull.11"), Some(Posture::Guard));
+        assert_eq!(
+            posture_of(&situation, "customs.4.1"),
+            Some(Posture::Return),
+            "a hull with no row reads the default"
+        );
+    }
+
     /// Doc 44 unit MW.9's acceptance: adding a ship the observer cannot detect leaves her
     /// view the same, byte for byte. The added ship sorts ahead of every other in the bubble,
     /// which is what used to move the ids and the designator letters of the ones she holds.

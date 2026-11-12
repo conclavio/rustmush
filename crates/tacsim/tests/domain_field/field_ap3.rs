@@ -10,8 +10,9 @@
 //! 2. the site promotes around it, and the ward's own frame, which its mind's view is built
 //!    from, reads `guard`, while the raider's reads `return`;
 //! 3. set to `HOLD` in the running field, its frame reads `hold`;
-//! 4. set back to `RETURN` and the server restarted at once, the resumed field reads
-//!    `return`, though the snapshot it resumed from was taken on `HOLD`;
+//! 4. once the field's saved snapshot carries `HOLD` for the ward, it is set back to `RETURN`
+//!    and the server restarted at once; the resumed field reads `return`, though the snapshot
+//!    it resumed from says `HOLD`;
 //! 5. set to `GUARD` in the resumed field, its frame reads `guard`;
 //! 6. nobody fires for a minute, the field demotes, and the record still says `GUARD`.
 //!
@@ -24,8 +25,8 @@ use mush_core::ObjId;
 use tacsim::arena::ledger::LedgerEvent;
 use tacsim::posture::Posture;
 
-use crate::driving_rig::{Rig, crash, on_pad_as, run, stocked_tuned};
-use crate::field_host_rig::{armed, egress, frame, seat, site_record, task, tune, until};
+use crate::driving_rig::{Rig, cid, crash, on_pad_as, run, stocked_tuned};
+use crate::field_host_rig::{AHUNA, armed, egress, frame, seat, site_record, task, tune, until};
 use crate::field_mw7::{WARD_AT, Yard, yard_with};
 
 /// The yard's parties stand in range of each other after the promoting shot, so the field
@@ -53,6 +54,25 @@ fn held(rig: &Rig, unit: ObjId) -> Posture {
 /// The posture `pilot`'s own frame carries.
 fn read(rig: &Rig, pilot: ObjId) -> Option<Posture> {
     frame(rig, pilot).map(|frame| frame.posture)
+}
+
+/// The posture the field's last snapshot carries for `unit`: `None` with no snapshot or no
+/// such unit in it, `RETURN` for a unit whose row writes no key.
+fn saved(rig: &Rig, unit: ObjId) -> Option<Posture> {
+    let document = tacsim::field::snapshot_on(rig.tw.world(), &cid(AHUNA))?;
+    // The state rides the document as a value or as its own text; read it either way.
+    let state = match document.get("state")? {
+        serde_json::Value::String(text) => serde_json::from_str(text).ok()?,
+        other => other.clone(),
+    };
+    let row =
+        state.get("units")?.as_array()?.iter().find(|row| {
+            row.get("id").and_then(serde_json::Value::as_u64) == Some(u64::from(unit.0))
+        })?;
+    Some(match row.get("posture") {
+        None => Posture::Return,
+        Some(word) => Posture::parse(word.as_str()?)?,
+    })
 }
 
 /// **The story** (this module's head).
@@ -95,8 +115,15 @@ async fn ap3_a_units_posture_is_its_own_through_a_field_a_restart_and_a_demotion
         "a posture set mid-field reaches the unit: {:?}",
         read(&yard.rig, pilot)
     );
-    // The field saves every half second: its snapshot now holds HOLD.
-    let _ = yard.wait(2, |_, _| false).await;
+    // The field saves every half second. The story waits until the snapshot the world holds
+    // carries HOLD for the ward, and from here pumps nothing more before the restart: that
+    // snapshot is the one the resume decodes.
+    assert!(
+        yard.wait(20, |rig, _| saved(rig, ward) == Some(Posture::Hold))
+            .await,
+        "the field's snapshot holds the ward on HOLD: {:?}",
+        saved(&yard.rig, ward)
+    );
 
     // (4) Set back to RETURN, and the server goes down before the field can save again.
     set(&mut yard.rig, ward, Posture::Return);

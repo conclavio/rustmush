@@ -349,8 +349,9 @@ pub enum ArenaMsg {
     },
     /// **The posture `unit`'s player left on it** (doc 45 unit AP.3; Q-45-4, Q-45-23): the
     /// host's word from the unit's own record (`crate::posture::record`). Latest-wins per unit
-    /// and applied by `Arena::set_posture` at the next pulse's head, so the unit's mind reads
-    /// it at its next think. Only the IC field host sends it, and a task with no
+    /// and applied by `Arena::set_posture` at the next pulse's head, after that head's joins,
+    /// so the unit's mind reads it at its next think; a word for a unit whose join has not
+    /// landed waits for it. Only the IC field host sends it, and a task with no
     /// [`FieldTerms`] ignores it.
     Posture {
         /// The unit.
@@ -1630,7 +1631,7 @@ struct PrePulse {
     /// hand-back's word is recalled: one that arrives after it is the returning pilot's own.
     recalled: BTreeSet<ObjId>,
     /// **Doc 45 unit AP.3**: the host's word on the posture each unit holds, latest-wins per
-    /// unit.
+    /// unit. A word for a unit the arena does not hold stays until the unit joins.
     postures: BTreeMap<ObjId, crate::posture::Posture>,
 }
 
@@ -2108,11 +2109,6 @@ impl Task {
             for unit in std::mem::take(&mut waiting.recalled) {
                 self.queue_withdrawn(unit, Err(crate::arena::withdraw::WithdrawRefusal::Recalled));
             }
-            // Doc 45 unit AP.3: the posture each unit's player left on it, for its mind's
-            // next think.
-            for (unit, posture) in std::mem::take(&mut waiting.postures) {
-                self.arena.set_posture(unit, posture);
-            }
         } else {
             waiting.absences.clear();
             waiting.recalled.clear();
@@ -2158,6 +2154,15 @@ impl Task {
                 );
             }
             self.queue_joined(unit, outcome);
+        }
+        // Doc 45 unit AP.3: the posture each unit's player left on it, for its mind's next
+        // think. After the joins, so a unit that joined at this head starts on its own word;
+        // a word for a unit the arena does not hold yet (the host's word can arrive before
+        // its join does) waits here for it, latest-wins, and is bounded by the field's units.
+        if self.terms.is_some() {
+            waiting
+                .postures
+                .retain(|unit, posture| !self.arena.set_posture(*unit, *posture));
         }
     }
 
@@ -4445,6 +4450,76 @@ mod tests {
             !task.arena.runners.contains_key(&RED),
             "nobody else's runner is touched"
         );
+    }
+
+    /// **Doc 45 unit AP.3: a posture waits for its unit's join.** The host tells a task a
+    /// unit's posture as soon as the unit's row is in the live record, which can be before
+    /// its join has landed. The word is applied after the head's joins, so a unit that joins
+    /// at the same head starts on it; a word that arrives a head early is kept until the unit
+    /// is in; a later word replaces a kept one; and a task that is not a field's drops them.
+    #[test]
+    fn ap3_a_posture_told_before_its_units_join_is_applied_when_it_lands() {
+        use crate::posture::Posture;
+        let arrival = ObjId(77);
+        let field = || {
+            let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+            arena.end = crate::arena::party::EndCondition::Host;
+            let (mut task, world) = af2_task(arena, 2, 5_000);
+            task.terms = Some(fr5_terms());
+            (task, world)
+        };
+        let join = |waiting: &mut PrePulse| {
+            waiting.joins.insert(
+                arrival,
+                (
+                    Box::new(tank(arrival, PartyId::RED, pose(4_500, 4_500))),
+                    None,
+                    fr5_host(),
+                    8,
+                    None,
+                    None,
+                ),
+            );
+        };
+
+        // The word and the join at one head: the joined unit starts on its word.
+        let (mut task, _world) = field();
+        let mut waiting = PrePulse::default();
+        waiting.postures.insert(arrival, Posture::Guard);
+        waiting.postures.insert(RED, Posture::Hold);
+        join(&mut waiting);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(task.arena.posture(arrival), Posture::Guard);
+        assert_eq!(task.arena.posture(RED), Posture::Hold);
+        assert!(waiting.postures.is_empty(), "both were applied");
+
+        // The word a head early: kept, replaced by a later word, applied when the join lands.
+        let (mut task, _world) = field();
+        let mut waiting = PrePulse::default();
+        waiting.postures.insert(arrival, Posture::Guard);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.unit(arrival).is_none());
+        assert_eq!(
+            waiting.postures.get(&arrival),
+            Some(&Posture::Guard),
+            "the word waits for the unit"
+        );
+        waiting.postures.insert(arrival, Posture::Hold);
+        join(&mut waiting);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(task.arena.posture(arrival), Posture::Hold);
+        assert!(waiting.postures.is_empty());
+
+        // A practice match takes no word and keeps none.
+        let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+        let (mut task, _world) = af2_task(arena, 2, 5_000);
+        let hash = crate::arena::hash::state_hash(&task.arena);
+        let mut waiting = PrePulse::default();
+        waiting.postures.insert(RED, Posture::Hold);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(task.arena.posture(RED), Posture::Return);
+        assert_eq!(crate::arena::hash::state_hash(&task.arena), hash);
+        assert!(waiting.postures.is_empty(), "dropped, not kept");
     }
 
     /// **Doc 38a F-01: a claimed rig's join resumes its carried mind.** A scripted seal joined

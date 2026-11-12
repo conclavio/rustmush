@@ -7,17 +7,20 @@
 //!
 //! **When.** [`sync`] runs once a world second from the host's pass (`super::home::tick`) and
 //! at once when the record is written (`crate::posture::record::set`). It offers the arena a
-//! word for every unit whose record differs from what this boot's host last told the unit's
-//! task, so a unit that was on `GUARD` before the field opened is on `GUARD` in it within a
-//! second of its admission, and a posture set mid-field is read at the mind's next think. A
-//! unit on a posture other than the default is told again every [`REFRESH_WALL_S`] seconds,
-//! which costs one message and covers a unit that left at a ramp and joined again inside one
-//! pass, whose fresh arena row starts on the default.
+//! word for every unit this boot's host has not yet told the unit's task of, and for every
+//! unit whose record differs from what it last told. So every unit is told once when a task
+//! first holds it, whatever its posture: a unit that was on `GUARD` before the field opened
+//! is on `GUARD` in it within a second of its admission, a unit that joins a running field
+//! likewise (the task keeps the word until the join lands, `ArenaMsg::Posture`), and a posture
+//! set mid-field is read at the mind's next think. A unit on a posture other than the default
+//! is told again every [`REFRESH_WALL_S`] seconds, which costs one message and covers a unit
+//! that left at a ramp and joined again while its row stood in the live record, whose fresh
+//! arena row starts on the default.
 //!
 //! **A restart.** The resumed arena is set from the record before its task starts
 //! ([`at_resume`]), since the snapshot's word may be older than the record's. What the host
-//! had told is RAM and starts empty, so the first pass tells every unit off the default again;
-//! the arena's setter is idempotent.
+//! had told is RAM and starts empty, so the first pass tells every unit again; the arena's
+//! setter is idempotent.
 //!
 //! **A demotion** changes nothing: the arena's copy goes with the arena, and the record
 //! stands.
@@ -77,8 +80,9 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
             .get(&unit)
             .filter(|(told_task, _)| *told_task == task)
             .map(|(_, posture)| *posture);
-        // A unit this host has told nothing of stands on the default in its arena.
-        let stale = have.unwrap_or_default() != want;
+        // A unit this host has not told this task of is told whatever it holds: the host
+        // does not know what the arena has for it (a join, a resume).
+        let stale = have != Some(want);
         if !(stale || (refresh && !want.is_return())) {
             if let Some(posture) = have {
                 rows.insert(unit, (task, posture));

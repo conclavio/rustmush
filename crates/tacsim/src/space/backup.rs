@@ -589,3 +589,22 @@ pub(crate) fn settle_bubble_backup(ctx: &mut Ctx<'_>, hull: ObjId, flown: Bubble
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mush_core::ObjId;
+
+    use super::tier1_view;
+    use crate::posture::Posture;
+
+    /// Doc 45 unit AP.3: a hull outside every bubble reads the posture its seat hands the
+    /// view, which the seat reads off the hull's own record.
+    #[test]
+    fn a_hull_outside_every_bubble_reads_the_posture_it_is_given() {
+        for posture in Posture::ALL {
+            let view = tier1_view(ObjId(7), 100, false, posture);
+            assert_eq!(view.posture, posture);
+            assert!(view.space.is_none() && view.contacts.is_empty());
+        }
+    }
+}

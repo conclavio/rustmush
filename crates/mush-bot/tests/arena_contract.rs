@@ -398,6 +398,8 @@ fn frame() -> Frame {
         max_speed_cms: 1_500,
         reverse_cms: 750,
         turn_rate_mdeg_s: 30_000,
+        // Doc 45 unit AP.3: every hull checks out on the default posture.
+        posture: tacsim::posture::Posture::Return,
     }
 }
 
