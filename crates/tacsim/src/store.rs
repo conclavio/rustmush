@@ -8,7 +8,7 @@
 //! | `tacsim:pin:{subject}` | pin | **skipped loudly**. A lost pin does **not** float its subject onto a newer version: resolution refuses, naming the pack, because §3.1 invariant (i)'s whole point is that a published contract's assumptions never shift underneath it |
 //! | `tacsim:tutorial:{account}` | per-account | **skipped loudly**; that account reads its hints again (16b cut AH.1: `crate::match_::tutorial`) |
 //! | `tacsim:mindsrc:{sha256}` | immutable source | **skipped loudly** when its `sha256` disagrees with its key or its bytes do not hash to it (17b cut M3.3; doc 17 §13). The **key still counts**: the boot never rewrites a document under a key it holds, so a tampered stock source stays unreadable rather than silently replaced, and a scripted seal naming it refuses its resume by name (`crate::match_::resume`) |
-//! | `tacsim:doctrine:{role}` | pointer | **skipped loudly**; the role flies the doctrine compiled into the binary (doc 35 §11 `B-3`: the link-loss backup mind's house default). Written by an operator, never by the boot |
+//! | `tacsim:doctrine:{role}` | pointer | **skipped loudly**, and what that costs is the role's reader's rule. The link-loss backup mind (`linkdead_return`, doc 35 §11 `B-3`) flies the doctrine compiled into the binary; written by an operator, never by the boot. A space cast actor (`cast.<actor>`, doc 44 unit MW.10, written by `@mind/cast`) is refused and does not sail until staff select again or clear the pointer: the key is remembered, so a selection that does not read is never taken for no selection |
 //! | `tacsim:port:{pack}/{entry}` | applier map (doc 18 cut IC3) | **skipped loudly, and the key still bars re-creation**: the entry's next apply refuses before any write, naming the key, and `@tacsim/port status` reports the map unreadable; repair is a staff act on the document (doc 18 §4.7) |
 //! | `tacsim:notice:{obj}` | per-character queue (doc 18 cut IC5: `crate::port_tick`'s reconnect notices) | **dropped loudly** for that character; the key bars nothing, and the next notice rewrites it |
 //! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
@@ -290,6 +290,10 @@ pub struct TacsimStore {
     /// **Doc 35 §11 `B-3`** — `tacsim:doctrine:{role}`: the stored source each house doctrine
     /// role flies, by digest. A role with no pointer flies the doctrine compiled in.
     pub(crate) house_doctrines: BTreeMap<SmolStr, [u8; 32]>,
+    /// **Every role whose `tacsim:doctrine:` document did not read** (doc 44 unit MW.10): the
+    /// key is there and names nothing. A reader that must not take that for "no pointer"
+    /// asks [`Self::doctrine_pointer_unreadable`].
+    pub(crate) unreadable_doctrine_pointers: BTreeSet<SmolStr>,
     /// **Doc 44 unit MW.10** — what the boot refused of the space cast
     /// ([`crate::minds::content::cast`]): one line for each actor whose doctrine the store
     /// does not hold, naming the actor and the digest. RAM only, written by the boot's check.
@@ -1035,6 +1039,13 @@ impl TacsimStore {
     #[must_use]
     pub fn doctrine_pointer(&self, role: &str) -> Option<[u8; 32]> {
         self.house_doctrines.get(role).copied()
+    }
+
+    /// **Whether `role`'s `tacsim:doctrine:` document is there and did not read** (doc 44 unit
+    /// MW.10).
+    #[must_use]
+    pub fn doctrine_pointer_unreadable(&self, role: &str) -> bool {
+        self.unreadable_doctrine_pointers.contains(role)
     }
 
     /// **What the boot refused of the space cast** (doc 44 unit MW.10): a line for each
@@ -2049,8 +2060,9 @@ pub(crate) fn put_mind_source(ctx: &mut Ctx<'_>, source: &str) -> bool {
 
 /// **Write the `tacsim:doctrine:{role}` pointer, or clear it** (doc 44 unit MW.10): the RAM
 /// install, then one whole-document `JsonSet` (`{"sha256": "<64 hex>"}`, the shape the loader
-/// reads), or one `Del` for `None`. The pointer names a source by digest and never holds
-/// bytes; the caller has checked that the store holds the source it names.
+/// reads), or one `Del` for `None`, which also deletes a document that did not read. The
+/// pointer names a source by digest and never holds bytes; the caller has checked that the
+/// store holds the source it names.
 pub(crate) fn put_doctrine_pointer(ctx: &mut Ctx<'_>, role: &str, digest: Option<[u8; 32]>) {
     let key = doctrine_key(role);
     let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {
@@ -2059,13 +2071,17 @@ pub(crate) fn put_doctrine_pointer(ctx: &mut Ctx<'_>, role: &str, digest: Option
     let op = match digest {
         Some(digest) => {
             store.house_doctrines.insert(SmolStr::new(role), digest);
+            store.unreadable_doctrine_pointers.remove(role);
             ModuleWrite::JsonSet {
                 key,
                 value: serde_json::json!({ "sha256": crate::arena::digest_text(&digest) }),
             }
         }
         None => {
-            if store.house_doctrines.remove(role).is_none() {
+            // A document that did not read is deleted too: the key is what stands.
+            let held = store.house_doctrines.remove(role).is_some();
+            let unreadable = store.unreadable_doctrine_pointers.remove(role);
+            if !held && !unreadable {
                 return;
             }
             ModuleWrite::Del { key }
@@ -2788,7 +2804,12 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                     store.house_doctrines.insert(SmolStr::new(role), digest);
                 }
                 _ => {
-                    tracing::warn!(%key, "tacsim: a house doctrine pointer did not parse; skipped")
+                    tracing::warn!(%key, "tacsim: a house doctrine pointer did not parse; skipped");
+                    if !role.is_empty() {
+                        store
+                            .unreadable_doctrine_pointers
+                            .insert(SmolStr::new(role));
+                    }
                 }
             }
         } else if let Some(rest) = key.strip_prefix(crate::port::PORT_MAP_PREFIX) {

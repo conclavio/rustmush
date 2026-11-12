@@ -208,7 +208,8 @@ pub fn seal_space_unit_in_world(
 /// ([`crate::minds::content::cast::cast_doctrine`]). `None`, with an error line that names the
 /// actor and the digest, when the store does not hold it: the caller opens no bubble for her.
 ///
-/// Asked before anything of a bubble is built, so a refusal leaves the world as it was.
+/// The caller asks before anything of a bubble is built and before the carrier is checked
+/// out, so a refusal leaves the world as it was.
 pub fn cast_doctrine_in_world(
     ctx: &mut Ctx<'_>,
     actor: crate::minds::content::cast::CastActor,
@@ -222,9 +223,35 @@ pub fn cast_doctrine_in_world(
         .ok()
 }
 
-/// **The seal a cast actor's record holds before a world has sealed her** (doc 44 unit
-/// MW.10): the pack's doctrine, by the pack's digest. The spawn replaces it with the seal the
-/// world took ([`cast_doctrine_in_world`]); a unit rig with no world thinks on this one.
+/// **The seal an open bubble's actor comes back with after a restart** (doc 44 unit MW.10).
+///
+/// `record` is the seal the bubble's own document rebuilt (`compact_mind_seal`: the unit, the
+/// sortie, the doctrine's name and its digest). `attribute` is the whole seal read from the
+/// hull. The attribute is taken only when it is the record's seal: the same unit, sortie and
+/// digest. A hull is reused by name from one bubble to the next, so an attribute that
+/// disagrees is some other bubble's, and the record stands. With no record the attribute is
+/// all there is.
+#[must_use]
+pub(crate) fn reloaded_seal(
+    record: Option<crate::arena::mind::MindSeal>,
+    attribute: Option<crate::arena::mind::MindSeal>,
+) -> Option<crate::arena::mind::MindSeal> {
+    match (record, attribute) {
+        (Some(record), Some(attribute))
+            if attribute.unit == record.unit
+                && attribute.sortie == record.sortie
+                && attribute.source_sha256 == record.source_sha256 =>
+        {
+            Some(attribute)
+        }
+        (Some(record), _) => Some(record),
+        (None, attribute) => attribute,
+    }
+}
+
+/// **A cast actor's seal in a rig with no world** (doc 44 unit MW.10): the pack's doctrine,
+/// by the pack's digest, resolved with no store. A world seals its actors itself
+/// ([`cast_doctrine_in_world`]) and never calls this.
 pub(crate) fn pack_cast_seal(
     actor: crate::minds::content::cast::CastActor,
     unit: ObjId,
@@ -236,6 +263,19 @@ pub(crate) fn pack_cast_seal(
         doctrine.name.as_str(),
         doctrine.digest,
     )
+}
+
+impl KirkwoodPicketState {
+    /// This record with both actors sealed as [`pack_cast_seal`] seals them: for a rig with
+    /// no world.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn sealed_by_pack(mut self) -> Self {
+        use crate::minds::content::cast::CastActor;
+        self.corvette_seal = pack_cast_seal(CastActor::Corvette, self.corvette_hull);
+        self.raider_seal = pack_cast_seal(CastActor::Raider, self.raider_hull);
+        self
+    }
 }
 
 /// Read the [`crate::arena::mind::MindSeal`] attached to `unit` (`SF.R14`, `D-35-1`, `D-35-17`).
@@ -449,9 +489,9 @@ impl KirkwoodPicketState {
         raider_hull: ObjId,
         raider_ship_id: String,
     ) -> Self {
-        use crate::minds::content::cast::CastActor;
-        let corvette_seal = pack_cast_seal(CastActor::Corvette, corvette_hull);
-        let raider_seal = pack_cast_seal(CastActor::Raider, raider_hull);
+        // Doc 44 unit MW.10: a fresh record holds no seal. The spawn puts in the seals the
+        // world took; nothing here names a doctrine.
+        let (corvette_seal, raider_seal) = (None, None);
         Self {
             corvette_hull,
             corvette_ship_id,
@@ -1730,7 +1770,7 @@ static PICKET_CAST: std::sync::LazyLock<Option<PicketCastBook>> = std::sync::Laz
             tracing::error!(
                 actor,
                 doctrine = %entry.doctrine,
-                "tacsim: content/space/picket_cast.json names a doctrine_sha256 that is not 64                  base-16 characters; no picket or interdictor sails"
+                "tacsim: content/space/picket_cast.json names a doctrine_sha256 that is not 64 lowercase base-16 characters; no picket or interdictor sails"
             );
             return None;
         }
@@ -1775,14 +1815,12 @@ pub fn spawn_kirkwood_picket_ships_in_world(
     bubble: &mut LocalSpaceBubble,
     domain: mush_sim::DomainId,
     leg_cursor: u32,
-    _carrier_ship_id: &str,
+    corvette_doctrine: &crate::minds::content::cast::CastDoctrine,
+    raider_doctrine: &crate::minds::content::cast::CastDoctrine,
 ) -> Option<KirkwoodPicketState> {
-    use crate::minds::content::cast::CastActor;
+    // Doc 44 unit MW.10: the caller resolved both doctrines from the store before it checked
+    // the carrier out ([`cast_doctrine_in_world`]); this seals with them and names no other.
     let cast = picket_cast_book()?;
-    // Doc 44 unit MW.10: both doctrines are resolved from the store before a hull is made.
-    // If either is not held, no picket sails and the carrier passes.
-    let corvette_doctrine = cast_doctrine_in_world(ctx, CastActor::Corvette)?;
-    let raider_doctrine = cast_doctrine_in_world(ctx, CastActor::Raider)?;
     let site_id = format!("domain.{}", domain.0);
     let corvette_ship_id = format!("customs.{}.{}", domain.0, leg_cursor);
     let raider_ship_id = format!("raider.{}.{}", domain.0, leg_cursor);
@@ -1922,12 +1960,10 @@ pub fn build_kirkwood_picket_ships(
     bubble.insert_ship(corvette);
     bubble.insert_ship(raider);
 
-    Some(KirkwoodPicketState::new(
-        corvette_hull,
-        corvette_ship_id,
-        raider_hull,
-        raider_ship_id,
-    ))
+    Some(
+        KirkwoodPicketState::new(corvette_hull, corvette_ship_id, raider_hull, raider_ship_id)
+            .sealed_by_pack(),
+    )
 }
 
 #[cfg(test)]

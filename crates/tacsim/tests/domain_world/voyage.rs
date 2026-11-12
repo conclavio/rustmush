@@ -14258,6 +14258,21 @@ fn mw10_other_bytes_under_a_digest_are_refused_and_a_cast_the_store_cannot_serve
         journey(&rig.tw, hull).is_some_and(|j| *j.state() == mush_sim::JourneyState::Cruising),
         "she is on her passage"
     );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .cleared_interdiction_legs
+            .iter()
+            .any(|(cleared, _)| *cleared == hull),
+        "she reached the interdicted boundary and was let through it"
+    );
+    // And she was never checked out into a bubble that did not open: the refusal came first.
+    assert!(
+        mush_tactics::custody::marker_of(rig.tw.world(), hull).is_none(),
+        "her unit is in nobody's custody"
+    );
 
     // Staff select a revision the store holds, by its digest: the refusal is gone.
     let b_text = tacsim::arena::digest_text(&b);

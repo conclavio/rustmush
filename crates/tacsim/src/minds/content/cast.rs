@@ -15,9 +15,10 @@
 //! Either way the store must hold a readable source under the digest. If it does not, **the
 //! actor does not sail**: the boot says so in a line that names the actor and the digest
 //! ([`boot`], kept on [`TacsimStore::cast_faults`]), every seal site refuses, and a carrier
-//! that would have met her passes her waypoint with no bubble. Nothing falls back to another
-//! doctrine: not a selection to the pack's, and not the pack's to the bytes compiled into the
-//! binary.
+//! that would have met her passes her waypoint with no bubble. At a seal nothing falls back
+//! to another doctrine: not a selection to the pack's (a selection whose document does not
+//! read is refused too, not taken for none), and not the pack's to the bytes compiled into
+//! the binary.
 //!
 //! # A changed doctrine is a new revision
 //!
@@ -112,6 +113,11 @@ pub enum CastFault {
         /// Whose entry was asked for.
         actor: CastActor,
     },
+    /// The world holds a selection for the actor whose document does not read.
+    SelectionUnreadable {
+        /// Whose selection it is.
+        actor: CastActor,
+    },
     /// The store holds no readable source under the digest the actor is to fly.
     NotHeld {
         /// Whose doctrine it is.
@@ -132,6 +138,13 @@ impl std::fmt::Display for CastFault {
                 f,
                 "the space cast did not load, so its {} has no doctrine and does not sail",
                 actor.word()
+            ),
+            Self::SelectionUnreadable { actor } => write!(
+                f,
+                "the document that selects a doctrine for the space cast's {actor} \
+                 (tacsim:doctrine:cast.{actor}) does not read: no {actor} sails until staff \
+                 select a held revision or clear the selection (@mind/cast {actor}=PACK)",
+                actor = actor.word(),
             ),
             Self::NotHeld {
                 actor,
@@ -190,6 +203,9 @@ pub fn cast_doctrine(
     actor: CastActor,
 ) -> Result<CastDoctrine, CastFault> {
     let (name, pack_digest) = pack_doctrine(actor)?;
+    if store.is_some_and(|store| store.doctrine_pointer_unreadable(&actor.role())) {
+        return Err(CastFault::SelectionUnreadable { actor });
+    }
     let selection = store.and_then(|store| store.doctrine_pointer(&actor.role()));
     let (digest, selected) = selection.map_or((pack_digest, false), |digest| (digest, true));
     let held = match store {
@@ -296,11 +312,10 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     })?;
     let what = what.trim();
     if what.eq_ignore_ascii_case("PACK") {
-        let had = ctx
-            .w
-            .module_state::<TacsimStore>()
-            .and_then(|store| store.doctrine_pointer(&actor.role()))
-            .is_some();
+        let had = ctx.w.module_state::<TacsimStore>().is_some_and(|store| {
+            store.doctrine_pointer(&actor.role()).is_some()
+                || store.doctrine_pointer_unreadable(&actor.role())
+        });
         crate::store::put_doctrine_pointer(ctx, &actor.role(), None);
         let now = cast_doctrine(ctx.w.module_state::<TacsimStore>(), actor);
         let line = match (had, now) {
@@ -518,6 +533,33 @@ mod tests {
         let line = fault.to_string();
         assert!(line.contains("interdictor"), "{line}");
         assert!(line.contains(&"5a".repeat(32)), "{line}");
+    }
+
+    /// A selection whose document does not read is a refusal, not "no selection": the actor
+    /// does not fly the pack's doctrine behind staff's back. Clearing it deletes the document.
+    #[test]
+    fn a_selection_that_does_not_read_is_refused_and_not_taken_for_none() {
+        let role = CastActor::Raider.role();
+        let documents = vec![(
+            crate::store::doctrine_key(&role),
+            serde_json::json!({ "sha256": "not a digest" }),
+        )];
+        let mut store = crate::store::load(&documents, crate::TacsimConfig::default());
+        crate::minds::content::ensure_space_mind_sources_installed(&mut store);
+        assert!(store.doctrine_pointer_unreadable(&role));
+        assert_eq!(store.doctrine_pointer(&role), None);
+        let fault = cast_doctrine(Some(&store), CastActor::Raider).expect_err("unreadable");
+        assert_eq!(
+            fault,
+            CastFault::SelectionUnreadable {
+                actor: CastActor::Raider
+            }
+        );
+        let line = fault.to_string();
+        assert!(line.contains("raider"), "{line}");
+        assert!(line.contains("tacsim:doctrine:cast.raider"), "{line}");
+        // The other actors are not touched by it.
+        assert!(cast_doctrine(Some(&store), CastActor::Corvette).is_ok());
     }
 
     /// The pack's own digest is refused the same way when the store does not hold it: a store
