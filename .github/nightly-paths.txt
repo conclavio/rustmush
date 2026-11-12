@@ -46,6 +46,22 @@ fr7-round-story nightly crates/mush-bot/tests/mining_cohort/fr7_round.rs
 fr7-round-story nightly crates/mush-bot/src/
 fr7-round-story nightly crates/tacsim/src/field/
 
+# Doc 44 unit MW.19: the bot's minds lane, the mind market walked over SSH on a
+# launch-composed instance. It moves with the bot, the script that stands the instance up,
+# the bring-up and the render, and the sentences of every module the walk crosses.
+bot-minds-lane nightly scripts/bot-minds-lane.sh
+bot-minds-lane nightly crates/mush-bot/src/
+bot-minds-lane nightly deploy/instance/
+bot-minds-lane nightly crates/tacsim/src/minds/
+bot-minds-lane nightly crates/tacsim/src/launch/
+bot-minds-lane nightly crates/tacsim/src/match_/
+bot-minds-lane nightly crates/tacsim/src/port/
+bot-minds-lane nightly crates/tacsim/src/surface/
+bot-minds-lane nightly crates/mush-market/src/
+bot-minds-lane nightly crates/mush-roll/src/
+bot-minds-lane nightly crates/mush-net-ssh/src/
+bot-minds-lane nightly crates/mush-gateway/src/
+
 # The 16b cut H harness (rule #13 already binds its hash-pinned files).
 tacsim-harness nightly crates/tacsim/tests/harness.rs
 tacsim-harness nightly crates/tacsim/tests/harness_baseline/

@@ -1460,6 +1460,63 @@ jobs:
       - name: The round story, both sizes
         run: cargo nextest run -P ci-bot -p mush-bot --test mining_cohort --run-ignored only --test-threads 2 -E 'test(=fr7_round::fr7_the_rounds_story_at_256) | test(=fr7_round::fr7_the_rounds_story_at_512)'
 
+  # Doc 44 unit MW.19 (Q-44-33): the bot's minds lane, the one walk of the mind market's
+  # whole path as a player makes it, over SSH, on an instance stood up the way a dev box is
+  # (scripts/bot-minds-lane.sh: the deploy's render with the dev boxes' switches, a Redis of
+  # its own, the split pair, and the launch brought up by deploy/instance/launch-bringup.py).
+  # Two bots on two logins: one pushes a mind over the SSH mind service, files it, has the
+  # Registry rate it and lists it at the counter; the other buys a licence, flies it in the
+  # simulator and launches it under the licence on a site. No staff line after the bring-up,
+  # no model, no provider. A job of its own, so its result reads apart from the other bot
+  # jobs', with its own instance, ports and Redis; nightly and on a dispatch.
+  #
+  # Its length is the game's clocks, not the runner's speed: the Registry's rating at the
+  # instance's pulse (REGISTRY_PULSE_MS=50, the dev boxes' value), then the simulator's
+  # unattended match (five real minutes) and two hops at the live game's 24:1. The debug
+  # binaries are enough for that, and the release build would add half an hour of thin LTO.
+  # The lane prints `MINDS_LANE time ...` lines; the MW.19 cut note has the measured figures.
+  bot-minds-lane:
+    name: MW.19 the bot's minds lane (the mind market over SSH)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bot-minds-lane
+      - name: Build the split pair and the bot
+        run: cargo build --locked -p mush-server -p mush-gateway -p mush-bot
+      # The lane's own Redis, on a port no other job's Redis uses in this job's runner.
+      - name: Start disposable Redis 8
+        run: docker run -d --rm --name minds-lane-redis -p 127.0.0.1:6396:6379 redis:8 redis-server --appendonly yes
+      - name: The minds lane
+        env:
+          REDIS: external
+          REDIS_PORT: "6396"
+        run: scripts/bot-minds-lane.sh target/debug "$RUNNER_TEMP/minds-lane"
+      # What the two bots read and typed, their reports, and the instance's logs. Never the
+      # keys or the staff password, which stay in the runner's scratch directory.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: bot-minds-lane
+          path: |
+            ${{ runner.temp }}/minds-lane/bots/*.json
+            ${{ runner.temp }}/minds-lane/bots/*.jsonl
+            ${{ runner.temp }}/minds-lane/bots/*.out
+            ${{ runner.temp }}/minds-lane/bots/offline-exec.log
+            ${{ runner.temp }}/minds-lane/bringup.log
+            ${{ runner.temp }}/minds-lane/server.log
+            ${{ runner.temp }}/minds-lane/gateway.log
+          if-no-files-found: ignore
+
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack
@@ -1572,7 +1629,7 @@ jobs:
   nightly-report:
     name: Nightly report
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, tacsim-harness, web]
+    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, bot-minds-lane, tacsim-harness, web]
     runs-on: ubuntu-latest
     steps:
       - name: Name what failed
