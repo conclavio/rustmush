@@ -43,7 +43,7 @@ pub const POSTURE_JAMMED: &str =
 /// A set to a unit the sender cannot reach at all: `{unit}`.
 pub const POSTURE_NO_PATH: &str = "Your order does not reach {unit}: you have no relay to where it is. Give it from aboard its carrier.";
 /// What follows a `GUARD` or a `HOLD`, until the house mind flies them (doc 45 unit AP.6).
-pub const POSTURE_NOT_FLOWN_YET: &str = "The house mind does not fly GUARD or HOLD yet: left alone it still takes the unit home. A mind you filed reads the word.";
+pub const POSTURE_NOT_FLOWN_YET: &str = "The house mind does not fly GUARD or HOLD yet and still takes the unit home; a mind you filed reads the word.";
 /// The roster's and the status's line for a unit off the default: `{posture}`.
 pub const POSTURE_LINE: &str = "  posture {posture}";
 
@@ -196,6 +196,30 @@ mod tests {
             .expect("a thing is made");
         w.move_to(player, cab).expect("into the cab");
         assert!(!ooc(&w, player), "a cab in the world is in the world");
+    }
+
+    /// The terminal floor is 120 columns: no line this module says is wider.
+    #[test]
+    fn every_line_fits_the_terminal_floor() {
+        use super::{
+            POSTURE_JAMMED, POSTURE_KEPT, POSTURE_LINE, POSTURE_NO_PATH, POSTURE_OOC,
+            POSTURE_RELAYED, POSTURE_WORDS,
+        };
+        for template in [
+            POSTURE_OOC,
+            POSTURE_WORDS,
+            POSTURE_READ,
+            POSTURE_SET,
+            POSTURE_KEPT,
+            POSTURE_RELAYED,
+            POSTURE_JAMMED,
+            POSTURE_NO_PATH,
+            POSTURE_NOT_FLOWN_YET,
+            POSTURE_LINE,
+        ] {
+            let said = line(template, "Rig 4", Posture::Return);
+            assert!(said.chars().count() < 120, "{said}");
+        }
     }
 
     #[test]

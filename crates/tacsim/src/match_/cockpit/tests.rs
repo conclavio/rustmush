@@ -3179,7 +3179,7 @@ fn m5_mind_profile_refuses_off_the_frame_in_one_line() {
     );
     assert_eq!(
         MIND_USAGE,
-        "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]]; bare MIND reads your sealed mind."
+        "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]|POSTURE [word]]; bare MIND reads it."
     );
 }
 

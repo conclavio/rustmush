@@ -2307,7 +2307,7 @@ pub(super) fn drive_goal(
 /// **`MIND`'s usage line** (17b cut M5.4), for a form it does not take — a
 /// word that is not `PROFILE`, `RULES` or `TRACE`, `PROFILE` with no name,
 /// `RULES` with a word after it.
-pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]|POSTURE [RETURN|GUARD|HOLD]]; bare MIND reads your sealed mind.";
+pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]|POSTURE [word]]; bare MIND reads it.";
 
 /// **What `MIND` says of a hull no seal reached** (17b cut M5.4): the frame
 /// carries no [`Frame::mind`]. Bare `MIND` and `MIND RULES` say it alone;
