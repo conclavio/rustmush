@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod applier;
 pub mod backup;
 pub mod bubble;
 pub mod commands;
@@ -19,6 +20,7 @@ pub mod docking;
 pub mod mining;
 pub mod picket;
 pub mod tick;
+pub mod view;
 pub mod weapons;
 
 pub use backup::{
@@ -87,9 +89,9 @@ pub use picket::{
     emit_light_lagged_picket_hail, inspect_hull_manifest, levy_customs_fine_and_advance_front,
     picket_cast_book, queue_or_deliver_light_lagged_hail, record_customs_seizure,
     record_ran_the_picket_incident, relative_speed_3d_mmps, resolve_hull_customs_principal,
-    run_sealed_mind_on_pool, run_space_rhai_think, seal_space_unit_in_world,
-    should_open_kirkwood_picket, space_mind_seal_of, spawn_kirkwood_picket_ships_in_world,
-    step_kirkwood_picket, step_pending_light_lag_hails,
+    run_sealed_mind_on_pool, seal_space_unit_in_world, should_open_kirkwood_picket,
+    space_mind_seal_of, spawn_kirkwood_picket_ships_in_world, step_kirkwood_picket,
+    step_pending_light_lag_hails,
 };
 pub use tick::{
     ActiveInterdictionBubble, BUBBLE_INPUT_ACTION, BUBBLE_INPUT_OUTCOME, BUBBLE_TAPE_FAMILY,
@@ -882,6 +884,8 @@ mod tests {
                 interdictor_memory: Vec::new(),
                 interdictor_think_seq: 0,
                 interdictor_seal: None,
+                interdictor_contacts: view::ContactBook::default(),
+                stood_down: std::collections::BTreeSet::new(),
                 approaching_derelict: false,
                 holding_for_salvage: false,
                 last_stepped_wall_s: 0,

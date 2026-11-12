@@ -1531,6 +1531,13 @@ impl LocalSpaceBubble {
         self.party_relations.mark(party_b, party_a, mark);
     }
 
+    /// End the fight between `party_a` and `party_b`, both ways and for those two alone
+    /// (doc 44 unit MW.9; [`crate::arena::party::Relations::stand_down`]): each one's mark
+    /// of the other is cleared and each forgets that the other fired.
+    pub fn stand_down_parties(&mut self, party_a: PartyId, party_b: PartyId) -> bool {
+        self.party_relations.stand_down(party_a, party_b)
+    }
+
     /// **What `viewer` believes `other` is** (`D-35-1`, Q-CF-7): the arena's
     /// precedence over this bubble's books.
     #[must_use]

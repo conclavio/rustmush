@@ -190,7 +190,13 @@ pub use sealed::{
 /// **7 since doc 32 cut CF.0** (Q-CF-3, Q-CF-43): `View.team` is gone and
 /// `Contact.relation` reads the hull's party's relation to the row, so a mind
 /// sees relation and never party. Taken once, with the snapshot and the frame.
-pub const API_VERSION: u32 = 7;
+///
+/// **8 since doc 44 unit MW.9** (Q-44-24): four kernels, `space(v)`,
+/// `space_contact(v, id)`, `course(bearing_mdeg, elevation_mdeg)` and
+/// `course_of(dx, dy, dz)`, carry what a hull in a space bubble reads and the
+/// helm word that names a direction there. No getter, intent or refusal moved,
+/// so the frame and the snapshot format stand.
+pub const API_VERSION: u32 = 8;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; version 3 distinguishes replacement detachment orders from
@@ -201,7 +207,7 @@ pub const STOCK_VERSION: u32 = 3;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=7;stock=3";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=8;stock=3";
 
 /// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -707,6 +713,7 @@ pub(crate) mod fixture {
             ],
             scan_tables: vec![vec![SmolStr::new("hull"), SmolStr::new("turret")]],
             odds_floor_permille: 100,
+            space: None,
         }
     }
 
@@ -909,7 +916,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=7;stock=3");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=8;stock=3");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -1023,7 +1030,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 281] = [
+    const PINNED: [&str; 285] = [
         "type View",
         "type Objective",
         "type Motor",
@@ -1252,6 +1259,10 @@ mod tests {
         "arc",
         "stand_off_want",
         "rand",
+        "space",
+        "space_contact",
+        "course",
+        "course_of",
         "lands_ms",
         "t_ms",
         "decide_ms",
@@ -1308,7 +1319,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 245] = [
+    const CALLS: [(&str, &str); 249] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.cell", "v.cell"),
@@ -1537,6 +1548,10 @@ mod tests {
         ("arc", "arc(0, 90000)"),
         ("stand_off_want", "stand_off_want(4000, 1000, 300)"),
         ("rand", "rand(10)"),
+        ("space", "space(v)"),
+        ("space_contact", "space_contact(v, v.lock)"),
+        ("course", "course(90000, 45000)"),
+        ("course_of", "course_of(0, 100, 100)"),
         ("lands_ms", "lands_ms()"),
         ("t_ms", "t_ms()"),
         ("decide_ms", "decide_ms()"),

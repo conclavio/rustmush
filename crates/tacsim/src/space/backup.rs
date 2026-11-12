@@ -18,22 +18,27 @@
 //! # The seat
 //!
 //! The mind asks; the seat, which is this module, acts, and the seat is where the ruling's
-//! limits are kept, so no source can step past them:
+//! limits are kept, so no source can step past them. Inside a bubble the mind's intents go
+//! through the one applier every space mind uses ([`super::applier::apply_intents`], doc 44
+//! unit MW.9), seated [`Seat::ABSENT`]:
 //!
 //! | The mind asks | Outside a bubble | Inside a bubble |
 //! |---|---|---|
-//! | `speed(n)`, n above nought | the return passage, by the ruled order | nothing: she coasts |
-//! | `hold()` | she holds where she is | she brakes to rest against the picket, and submits to a customs hail once hove to |
-//! | `emcon(on)` | nothing | her emission posture |
+//! | `speed(n)`, n above nought | the return passage, by the ruled order | while a stop holds her, a burn of that strength along its `helm(word)` if it takes her drift against the stopping ship off; any other burn is dropped and she coasts |
+//! | `hold()` | she holds where she is | her drive is cut; hove to under a customs hail, she is submitted to inspection |
+//! | `emcon(on)` | nothing | her emission posture, COMBAT or STANDARD |
 //! | `lock`, `fire`, `arm` | dropped | dropped |
 //!
 //! The return is `execute_linkdead_return_journey` (`commands.rs`): the filed port, then
 //! every open port nearest first, each through the planner with its tank and locker checks and
 //! its debit. Nothing here draws from a vault; the seat has no verb that mines or trades.
 //!
-//! What the mind reads beyond its contacts: `v.held` while a customs picket holds her
-//! uncleared, and `v.motor.outcome == "no_route"` for [`BACKUP_RETURN_RETRY_WALL_S`] after
-//! every open port was refused.
+//! What the mind reads: inside a bubble, the view every space mind reads
+//! ([`super::view::space_mind_view`]): her contacts, her own velocity and drive, and the stop
+//! a picket or an interdictor has on her (`space(v).stop`; `v.held` is true while it holds
+//! her). The burn that heaves her to is the mind's own, worked out from that view. Outside a
+//! bubble, `v.motor.outcome == "no_route"` for [`BACKUP_RETURN_RETRY_WALL_S`] after every
+//! open port was refused.
 
 use std::sync::Arc;
 
@@ -41,8 +46,9 @@ use mush_core::{Ctx, ObjId, World};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use super::bubble::{BubbleInputCommand, EmconPosture, HullStatus};
-use super::picket::{CARRIER_PARTY, HEAVE_TO_REL_VEL_MMPS, PicketInspectionStatus};
+use super::applier::{BurnRule, Seat};
+use super::bubble::HullStatus;
+use super::picket::{CARRIER_PARTY, HEAVE_TO_REL_VEL_MMPS};
 use super::tick::{ActiveInterdictionBubble, SpaceBubbleBook, SpaceLinkdeadState};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{MindView, ThinkResult};
@@ -55,9 +61,6 @@ use crate::store::TacsimStore;
 /// Real seconds the seat waits, after every open port's passage was refused, before it asks
 /// the planner again (doc 35 §11 `B-6`). She drifts meanwhile, so the answer can change.
 pub const BACKUP_RETURN_RETRY_WALL_S: i64 = 60;
-
-/// Relative speed under which the seat stops braking: she is at rest against the picket.
-const BRAKE_REST_MMPS: i64 = 500;
 
 /// The hull's line when the grace runs out.
 pub const BACKUP_TAKES_HELM: &str =
@@ -93,10 +96,11 @@ enum Ask {
     Hold,
 }
 
-/// One think, read: the helm ask and the emission posture, if the mind set one.
+/// One think, read: what it asks of the seat outside a bubble, and the intents themselves,
+/// which inside a bubble go to the applier.
 struct Thought {
     ask: Ask,
-    emcon: Option<bool>,
+    intents: Vec<IntentKind>,
 }
 
 /// The two documents an operator writes to replace the house default of `role` with `source`
@@ -183,27 +187,27 @@ fn read(result: ThinkResult, state: &mut SpaceLinkdeadState) -> Thought {
     {
         state.mind_last_trace = Some(word.clone());
     }
-    let mut thought = Thought {
-        ask: Ask::Nothing,
-        emcon: None,
-    };
+    let mut ask = Ask::Nothing;
     for intent in &result.intents {
         match intent {
-            IntentKind::Goal(MotorGoal::Hold) => thought.ask = Ask::Hold,
+            IntentKind::Goal(MotorGoal::Hold) => ask = Ask::Hold,
             IntentKind::Speed { cms } => {
-                thought.ask = if *cms > 0 {
+                ask = if *cms > 0 {
                     Ask::MakeForPort
                 } else {
                     Ask::Hold
                 };
             }
-            IntentKind::Emcon { on } => thought.emcon = Some(*on),
-            // `B-4`: the seat has no way to open fire, to mine or to trade. A lock, a shot
-            // and an arming are dropped here whatever source asked for them.
+            // `B-4`: outside a bubble the seat has two acts, a passage and a hold. Inside
+            // one the applier's absent seat drops a lock, a shot and an arming whatever
+            // source asked for them.
             _ => {}
         }
     }
-    thought
+    Thought {
+        ask,
+        intents: result.intents,
+    }
 }
 
 /// The view of a hull outside every bubble: no contacts, and the motor's `no_route` while the
@@ -251,6 +255,7 @@ fn tier1_view(hull: ObjId, wall_now_s: i64, no_route: bool) -> MindView {
         contacts: Vec::new(),
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
+        space: None,
     }
 }
 
@@ -438,10 +443,11 @@ pub(crate) struct BubbleBackup {
     line: Option<&'static str>,
 }
 
-/// Fly `hull` for one step of her bubble (doc 35 §11 `B-5`): think on what her sensors hold,
-/// and on `hold()` brake her to rest against the picket over the `dt_wall_ms` the bubble is
-/// about to step. Her helm is live under the seat, so the linkdead drive cut is lifted; her
-/// point defence stays on AUTO.
+/// Fly `hull` for one step of her bubble (doc 35 §11 `B-5`; doc 44 unit MW.9): think on the
+/// view every space mind reads, with the `dt_wall_ms` the bubble is about to step as its
+/// step, and hand what the mind asks to the one applier, seated [`Seat::ABSENT`]. Her helm is
+/// live under the seat, so the linkdead drive cut is lifted; her point defence stays on AUTO.
+/// The seat adds nothing to her flying: a burn that heaves her to is the mind's own.
 pub(crate) fn fly_in_bubble(
     w: &World,
     active: &mut ActiveInterdictionBubble,
@@ -460,113 +466,67 @@ pub(crate) fn fly_in_bubble(
     ship.crew_linkdead = false;
     ship.pdc_auto = true;
 
-    let customs_holds = active.picket.as_ref().is_some_and(|picket| {
-        active
-            .bubble
-            .ships
-            .get(&picket.corvette_ship_id)
-            .is_some_and(|corvette| corvette.status == HullStatus::Operational)
-            && matches!(
-                picket.inspection_status_for(hull),
-                PicketInspectionStatus::AwaitingHeaveTo
-                    | PicketInspectionStatus::HoveToReadyForInspection
-            )
-    });
-    let Some((mut view, _)) = super::picket::space_mind_view(&active.bubble, ship_id, hull) else {
+    let situation = active.situation(dt_wall_ms);
+    let stop = situation.stop_of(ship_id);
+    let customs_holds = active.picket.is_some() && stop.holds();
+    let Some((view, contacts)) = super::view::space_mind_view(
+        &active.bubble,
+        ship_id,
+        hull,
+        &mut state.mind_contacts,
+        &situation,
+    ) else {
         return flown;
     };
-    view.held = customs_holds;
     let Some(thought) = think(w, hull, view, state) else {
         return flown;
     };
+    // `B-4`: she never runs a picket under power. While a stop holds her the one burn the seat
+    // lets her mind fly is one that takes her drift against the stopping ship off; with no
+    // stop on her it flies none.
+    let stopper_vel = situation
+        .stopper
+        .as_deref()
+        .and_then(|stopper| active.bubble.ships.get(stopper))
+        .map(|ship| ship.vel_mmps);
+    let burn = match (stop.holds(), stopper_vel, active.bubble.ships.get(ship_id)) {
+        (true, Some(theirs), Some(ship)) => BurnRule::Toward([
+            theirs[0].saturating_sub(ship.vel_mmps[0]),
+            theirs[1].saturating_sub(ship.vel_mmps[1]),
+            theirs[2].saturating_sub(ship.vel_mmps[2]),
+        ]),
+        _ => BurnRule::Never,
+    };
+    let mut answered = Vec::new();
+    let applied = super::applier::apply_intents(
+        &mut active.bubble,
+        &mut active.tape,
+        ship_id,
+        Seat {
+            burn,
+            ..Seat::ABSENT
+        },
+        &contacts,
+        &thought.intents,
+        &mut answered,
+    );
 
-    if let Some(on) = thought.emcon {
-        let posture = if on {
-            EmconPosture::ActiveCombat
+    // What the seat does with the world in hand, and what the crew are told.
+    let hove_to = active.bubble.ships.get(ship_id).is_some_and(|ship| {
+        stopper_vel.is_some_and(|stopper_vel| {
+            super::picket::relative_speed_3d_mmps(ship.vel_mmps, stopper_vel)
+                < HEAVE_TO_REL_VEL_MMPS
+        })
+    });
+    if applied.asked_hold && customs_holds && hove_to {
+        flown.submit = true;
+    } else if applied.asked_burn && stop.holds() && state.backup_act != BackupAct::HeavingTo {
+        state.backup_act = BackupAct::HeavingTo;
+        flown.line = Some(if customs_holds {
+            "[SPACE] Backup mind: heaving to for the customs picket."
         } else {
-            EmconPosture::Standard
-        };
-        if active
-            .bubble
-            .ships
-            .get(ship_id)
-            .is_some_and(|ship| ship.emcon != posture)
-        {
-            let _ = active.tape.record_and_apply(
-                &mut active.bubble,
-                BubbleInputCommand::SetEmcon {
-                    ship_id: ship_id.to_owned(),
-                    posture,
-                },
-            );
-        }
-    }
-
-    // She heaves to against the picket's corvette, or the interdictor where there is none.
-    let reference_id = active
-        .picket
-        .as_ref()
-        .map_or(active.interdictor_ship_id.as_str(), |picket| {
-            picket.corvette_ship_id.as_str()
+            "[SPACE] Backup mind: heaving to."
         });
-    let reference_vel = active
-        .bubble
-        .ships
-        .get(reference_id)
-        .map_or([0, 0, 0], |ship| ship.vel_mmps);
-    let Some(ship) = active.bubble.ships.get(ship_id) else {
-        return flown;
-    };
-    let burning = ship.thrust_mmps2 != [0, 0, 0] || ship.thrust_mps2 != [0, 0, 0];
-    let rel_speed_mmps = super::picket::relative_speed_3d_mmps(ship.vel_mmps, reference_vel);
-    let thrust_mmps2 = if thought.ask == Ask::Hold && rel_speed_mmps >= BRAKE_REST_MMPS {
-        let max_mmps2 = if ship.max_accel_mmps2 > 0 {
-            ship.max_accel_mmps2
-        } else {
-            ship.max_accel_mps2.saturating_mul(1_000)
-        }
-        .max(1);
-        // The acceleration that brings her to rest over this step, up to what her drive gives.
-        let want_mmps2 = rel_speed_mmps
-            .saturating_mul(1_000)
-            .checked_div(i64::from(dt_wall_ms.max(1)))
-            .unwrap_or(max_mmps2)
-            .clamp(1, max_mmps2);
-        let against = |own: i64, other: i64| -> i64 {
-            let rel = own.saturating_sub(other);
-            let scaled = i128::from(rel) * i128::from(want_mmps2) / i128::from(rel_speed_mmps);
-            i64::try_from(-scaled).unwrap_or(0)
-        };
-        let [vx, vy, vz] = ship.vel_mmps;
-        let [rx, ry, rz] = reference_vel;
-        [against(vx, rx), against(vy, ry), against(vz, rz)]
-    } else {
-        [0, 0, 0]
-    };
-    if thrust_mmps2 != [0, 0, 0] || burning {
-        // A stop for customs is flown into the return reserve if it must be: a hull that
-        // coasts past the picket's boundary has run it.
-        let _ = active.tape.record_and_apply(
-            &mut active.bubble,
-            BubbleInputCommand::CommandBurnMmps2 {
-                ship_id: ship_id.to_owned(),
-                thrust_mmps2,
-                force_into_reserve: true,
-            },
-        );
-    }
-
-    if thought.ask == Ask::Hold {
-        if customs_holds && rel_speed_mmps < HEAVE_TO_REL_VEL_MMPS {
-            flown.submit = true;
-        } else if state.backup_act != BackupAct::HeavingTo && rel_speed_mmps >= BRAKE_REST_MMPS {
-            state.backup_act = BackupAct::HeavingTo;
-            flown.line = Some(if customs_holds {
-                "[SPACE] Backup mind: heaving to for the customs picket."
-            } else {
-                "[SPACE] Backup mind: heaving to."
-            });
-        }
     }
     flown
 }

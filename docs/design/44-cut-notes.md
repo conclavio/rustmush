@@ -302,7 +302,187 @@ Not built.
 
 ## MW.9
 
-Not built.
+One applier and one view for every space mind, the trace-string and memory hooks removed, and
+the interdictor's stand-down hull by hull (doc 44 §7.1, Q-44-24; first review finding 6, second
+review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given.
+
+**Built.**
+
+- **The one applier (`applier.rs`, new).** `apply_intents` turns one think's intents into
+  bubble commands for every actor: the customs corvette and the raider (`picket.rs`), the
+  interdictor (`tick.rs`) and the backup mind of a hull whose crew has no link (`backup.rs`).
+  Those were four hand-written mappings. What each intent means in a bubble is one table, at
+  the head of the file:
+  - `lock(id)`: her lock is the ship that row names.
+  - `helm(word)`: the direction of this think's burn. `speed(n)`: its strength, `n` cm/s², as
+    far as her drive gives; below nought, the other way. With no helm word the burn is toward
+    her lock; with neither, nothing. `speed(0)` and `hold()` cut the drive. A burn stands
+    until a later think changes it.
+  - `emcon(true)` is COMBAT; `emcon(false)` is the quietest posture the seat allows.
+  - `fire(id, slot)`: the mount `id` fires at her lock. Each `fire` of a tube is one torpedo of
+    one salvo. A shot with no lock is dropped: the applier never picks a target.
+  - Every other intent is dropped.
+- **Seats.** The applier is one function; a `Seat` says what its actor may do. `Seat::PATROL`
+  and `Seat::RAIDER` fire as their doctrine decides. `Seat::ABSENT` is a hull flown for an
+  absent crew: every lock and shot is dropped (`FireRule::Never`), and every burn but one
+  that takes her drift against the ship stopping her off (`BurnRule::Toward`), so doc 35 §11
+  `B-4` holds whatever source thinks: she never fires and never runs a picket under power.
+- **The one view (`view.rs`, new).** `space_mind_view` builds what every space mind reads.
+  Beyond the arena's view it carries a `SpaceView`, hung on `MindView::space`:
+  - her own velocity as a vector, her pitch, what her drive gives now, her reaction mass, the
+    change of speed her tank holds and the reserve she must keep, and which of the four
+    emission postures she holds;
+  - the stop a picket or an interdictor has on her (`none`, `hailed`, `hove_to`, `cleared`,
+    `ran`), the contact that holds it, and the furthest of those words a picket has spoken on
+    open radio in the bubble (a hull that holds no contact still hears it);
+  - for each contact: its elevation, its velocity as a vector, the posture its emissions read
+    as, and the stop it is under.
+- **Contact ids.** Each observer has a `ContactBook`, kept in its mind's record
+  (`corvette_contacts`, `raider_contacts`, `interdictor_contacts`, `mind_contacts`). A ship is
+  numbered the first time that observer's sensors hold it and keeps the number for the life of
+  the bubble; its designator letter is the number's. A ship she has never detected has no
+  number and moves no other. The view's `lock` is now the hull's own lock; it used to be the
+  nearest contact whatever she was locked on.
+- **Four kernels, and the mind ABI at `api=8`** (`crates/tacsim/src/minds/kernels.rs`,
+  `mod.rs`): `space(v)` and `space_contact(v, id)` answer the rows above as maps, `()` on the
+  ground; `course(bearing_mdeg, elevation_mdeg)` and `course_of(dx, dy, dz)` answer the helm
+  word for a direction. No getter, intent, refusal or snapshot format moved.
+- **The hooks are gone.** No Rust reads a trace word. `sync_corvette_cleared_stage_in_memory`
+  (the write) and `read_corvette_stage_from_memory` (the read) are deleted: the corvette reads
+  each contact's stop from its view, and the picket's own rules (hove to under the heave-to
+  speed, run past the boundary) are settled on the bubble's state in `settle_picket_stops`.
+  With them went what Rust decided for the minds: the raider's uncloak, the interdictor's
+  forced posture and its fixed burn, a default target for a shot with no lock, the raider's
+  press attack and the interdictor's tube gate. Each is in its doctrine now.
+- **The doctrines** (`crates/tacsim/content/minds/`), all four rewritten to steer and fire by
+  intents alone:
+  - `kirkwood_picket.rhai` reads each contact's stop; it keeps one word of memory, that it has
+    hailed.
+  - `belt_raider.rhai` lurks dark until the radio says customs have finished with a carrier,
+    lights up, and on the next think opens on the nearest hostile customs have finished with.
+    It presses only a prey that is radiating for a fight, as the Rust hook did.
+  - `interdictor_patrol.rhai` hails on its first think of a hull that is not radiating for a
+    fight. After that it reads the hull's velocity: one whose change of velocity is against
+    its drift past the interdictor is slowing, and the interdictor holds its fire and its
+    drive for it. Any other hull it closes on, along the line to it, and fires at.
+  - `linkdead_return.rhai` computes its own brake from the view: the way the stopping ship
+    moves against her, sized to end her drift in the step ahead.
+- **The stand-down, hull by hull, on state** (`tick.rs` `settle_interdictor_stand_down`;
+  `crates/tacsim/src/arena/party.rs` `Relations::stand_down`). A carrier under the heave-to
+  speed against an interdictor that still stands is stood down: the interdictor's party and
+  hers clear their marks of each other and forget that the other fired, both ways, and no
+  third party's book moves. `ActiveInterdictionBubble::stood_down` records each hull once. It
+  no longer sets the bubble's `cleared`, which let every carrier go.
+- **The contract test** (`crates/mush-contract-tests/tests/engine_contracts/space_mind_memory.rs`):
+  nothing under `space/` names `encode_memory`, `decode_memory` or `mush_mind::memory`, and
+  every assignment to a mind's memory field has its own think's `memory` on the right.
+
+**What the survey had wrong, and what it did not see.**
+
+- "Three older appliers" were three NPC mappings and MW.8's seat, so four. The drone has
+  none: its think's intents are discarded (`mining.rs`, `commands.rs`) and its yield is a
+  timer. Not changed here; MW.12.
+- The memory hook was two hooks, a write and a read. The read drove the inspection status on
+  a path only the unit tests reached (`carriers` empty); production always passed carriers.
+- **Nobody could heave to against the interdictor.** It un-ghosted, burned at the carrier at
+  10 m/s² from its first think and never stopped, and a carrier enters its bubble 45 m/s off
+  it with a drive that gives under 1 m/s². Its doctrine stood down a target that was not
+  moving, which never came true. "A Dray can heave to against the interdictor" therefore
+  needed the interdictor's doctrine as well as the Dray's: it hails first and holds for a
+  hull that is slowing.
+- The detection of a contact never depended on its index (the object ids handed to
+  `evaluate_space_contact_detection` are not read by the resolver). Only the ids and the
+  designator letters leaked.
+- **What an ABI move costs.** A seal's digest covers its ABI and its source, and the arena
+  folds each seal into its state hash. So an ABI move re-pins: the nine default seal
+  identities (`match_/seal.rs` `m5rules_default_seal_identities_are_pinned`); the stock
+  mind's digest, because `tests/domain_arena/content.rs` holds its manifest to `API_VERSION`
+  and its header says the API; and the arena pins that fold a Standard seal (six tests in
+  `tests/domain_arena/` `minds.rs`, `motor.rs` and `reflex.rs`: three state hashes and the
+  `hash` of 84 pinned ledger lines). 58 values in all, re-pinned from one Linux run by
+  script. Nothing an arena does moved: the ledger lines differ in `hash` and in the
+  `mind_sealed` lines' `source` alone. The three house minds' envelopes and manifests and the
+  acceptance mind's source name the ABI too.
+- A changed burn is applied by the bubble as a one-second impulse on the step it changes, on
+  top of the thrust it then integrates (`bubble.rs` `command_burn_mmps2`). A doctrine that
+  re-aims every think therefore gets about twice what it asked. Not changed; the interdictor
+  and the raider ask for their closing burn once and let it stand.
+- Relation changes (`set_party_relation`, and now `stand_down_parties`) are made on the bubble
+  directly, not through the tape, so a replay from a snapshot does not reproduce them. That
+  was so before this unit.
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **The ABI moved to `rhai=1.26.0;api=8;stock=3`**, once. Every sealed mind, compile cache key and resume check carries it | **Expensive.** Doc 45's AP.3 moves it again; nothing here needs another move |
+| 2 | Space facts reach a script through kernels that answer maps, not through getters on `View` and `Contact`. A getter needs a row in the keyframe parity table and a field on the ground keyframe, and the ground has neither | Medium: it is API. A script reads `space(v).stop`, not `v.stop` |
+| 3 | **The helm word.** `helm(mdeg)` carries one number; in space it is the bearing plus a whole turn for each tenth of a degree of elevation. A plain bearing is a level burn, and the arena, which reads a heading modulo a turn, sees the bearing. Scripts use `course` and `course_of`, never the packing. The cleaner shape is a pitch on the intent, which is a new field on a carried enum and a snapshot format move in the arena | Low for scripts; the format move is the cost of the cleaner shape |
+| 4 | The stand-down is the host's rule, as a customs clearance is. A doctrine cannot refuse it, because no intent names it. Each hull is stood down once; one that fires afterwards is hostile again and is not offered a second | Low |
+| 5 | The interdictor hails first and holds its fire for a hull that is slowing. A hull already radiating for a fight is not hailed. With nobody hostile in sight it shows itself at STANDARD, so it is never an unseen blocker. This changes play: a hull that brakes is not fired on, and its first volley is one think later | Low: it is the doctrine |
+| 6 | `emcon(false)` is the quietest posture the seat allows: GHOST for a raider, STANDARD for the others. It used to be two meanings in two mappings. A mind cannot choose PASSIVE: the intent is a switch | Low |
+| 7 | A hail and a clearance are open radio: every hull in a bubble reads the furthest word spoken (`space(v).heard`), whether or not it holds the ship spoken to. It is how the raider knows when to light up | Low |
+| 8 | The absent seat lets through only a burn that heaves her to, and none when nothing is stopping her. Stricter than MW.8, which braked for her; never looser | Low: one rule in `backup.rs` |
+| 9 | One heat reflex stays in Rust, the same for every seat that may fire: a hull over 650 per mille vents before she shoots. It was 600 for the corvette | Low |
+
+**Left, and for which unit.**
+
+- **Return fire in space (Q-44-38).** Not built. The absent seat refuses every lock and shot.
+  The seam is `FireRule` in `applier.rs`; the follow-up adds the variant that asks MW.7's
+  rule, and a record of which unit fired on which in a bubble (`Relations::fired` is by
+  party). It follows MW.7.
+- **MW.10** (a doctrine by digest): every seal is still built with the compiled digest. The
+  unit test selects a revision by building the seal with another digest and handing the think
+  a store that holds its source.
+- **MW.11** (thinks off the world thread): every think is still
+  `MindPool::shared(1).submit().wait()`. The raider now thinks while she lurks, so a picket
+  bubble has two thinks a step from the moment it opens. Relation changes are not on the tape.
+- **MW.12** (drones): untouched; the drone's view has `space: None`.
+- **MW.13** (a player's mind on a ship): the seat rules it needs are `Seat` and `BurnRule`.
+  Q-35-B4 is still the owner's call.
+- **No intent names** a stand-down, a coolant vent, one of four postures or the nose's
+  attitude. Each needs a variant on a carried enum, so each waits for the arena's next
+  snapshot format move. Deferred, with no unit.
+- The view's mount rows are still placeholders (100 rounds, 850 per mille). They wait for the
+  mounts' redesign.
+
+**The acceptance, and what holds each.**
+
+| The row asks | Held by | Before the cut |
+|---|---|---|
+| A doctrine changed to hold where it used to close makes its actor hold | `tick.rs` `interdictor_tests::a_doctrine_changed_to_hold_where_it_closed_makes_the_interdictor_hold`: the compiled doctrine closes along the line to a target abeam and above; a revision with `hold()` where that one has `speed(1000)`, named by its digest in the seal, leaves the same hull at rest with the same lock | The interdictor burned one fixed way whatever its doctrine asked, so the closing half fails |
+| An escort that heaves to does not clear the runner beside her | The story `mw9_an_escort_that_heaves_to_is_stood_down_alone_though_she_fired_and_the_runner_is_not` (two chartered hulls, by commands), and the unit test `an_escort_that_heaves_to_is_stood_down_alone_though_she_had_fired` | One hull hove to cleared every party and marked the bubble cleared |
+| After a stand-down a party that had fired is no longer hostile | The same story and unit test, and `arena/party.rs` `a_stand_down_ends_the_fight_for_the_two_it_names_and_only_those` | The marks were cleared and `fired` was left |
+| A Dray can heave to against the interdictor, by a burn a mind computed from the view | The story `mw9_a_dray_whose_crew_has_no_link_heaves_to_against_the_interdictor_by_her_minds_own_burn`: her backup mind brakes her, she is never hit, she is stood down and takes up her passage | Her view said nothing of an interdictor; she coasted and was shot |
+| Adding a ship the observer cannot detect leaves a mind's view the same bytes | `view.rs` `a_ship_the_observer_cannot_detect_leaves_her_view_the_same_bytes`, for three observers, with the unseen ship sorting first | Ids and designator letters were an index over every ship |
+| No code outside a mind writes its memory | The contract test `space_mind_memory` | `sync_corvette_cleared_stage_in_memory` |
+
+**Verified, and how.**
+
+- **Mutation checks**, on Linux, each putting one removed behaviour back: the stand-down
+  clearing every carrier; contacts numbered before the detection filter; the backup doctrine's
+  burn given no direction; the picket's host writing the corvette's memory; a burn going one
+  fixed way; the stand-down leaving `fired`. Each was caught by the test named for it above
+  (the stand-down mutations by the unit test and by the story).
+- **`tacsim`'s library tests and `tests/domain_arena/`**, on Linux: 3,349 passed after the
+  re-pin.
+- **`tests/domain_world/`**, all 263 stories, on Linux. Four older stories were re-timed for
+  the one think the hail and the raider's torch now take (`sfr6`, `sfr8`, `sfr20`), and one
+  damage figure was re-pinned for the volley that no longer lands (`sfr15`).
+- **`mush-contract-tests`**: 203 on Windows, 195 on Linux (eight are skipped there), with no
+  budget re-blessed.
+- `cargo clippy -D warnings` and `cargo doc -D warnings --document-private-items` on
+  `tacsim`.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH. The stories drive commands in the test
+  rig.
+- The think's cost. The raider's extra think a step is not measured; MW.11 measures.
+- A sealed player mind on the backup seat: no verb seals one on a ship, so the seat's rules
+  for it (`BurnRule`, `FireRule`) are pinned by the applier's unit tests only.
+- An interdictor bubble with three or more carriers, and a picket bubble where the corvette
+  is lost while a carrier is hailed (the stop then reads `none`; not pinned).
 
 ## MW.10
 

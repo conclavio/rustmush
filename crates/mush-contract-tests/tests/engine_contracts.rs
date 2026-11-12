@@ -54,6 +54,8 @@ mod pixel_sight_heights;
 mod player_wait_floors;
 #[path = "engine_contracts/sheet_write_republish.rs"]
 mod sheet_write_republish;
+#[path = "engine_contracts/space_mind_memory.rs"]
+mod space_mind_memory;
 #[path = "engine_contracts/state_slot_owners.rs"]
 mod state_slot_owners;
 #[path = "engine_contracts/typed_state_lens.rs"]

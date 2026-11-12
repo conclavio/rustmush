@@ -44,26 +44,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use smol_str::SmolStr;
 
+use super::applier::Seat;
 use super::bubble::{
-    BubbleInputCommand, BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble,
-    SpaceShipState, admitted_party,
+    BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble, SpaceShipState, admitted_party,
 };
+use super::view::{ContactBook, Situation, Stop};
 use super::weapons::isqrt_i128;
 use crate::arena::card::line;
 use crate::arena::core::{ClassTable, CoreClass};
-use crate::arena::intents::{IntentKind, MotorGoal};
-use crate::arena::mind::{MindView, ThinkResult, ViewContact};
+use crate::arena::intents::IntentKind;
+use crate::arena::mind::{MindView, ThinkResult};
 use crate::arena::party::{Mark, PartyId};
-use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, Receiver as FrameReceiver};
+use crate::arena::perception::{FrameNotice, Receiver as FrameReceiver};
 use crate::arena::profile_rules::BoundProgram;
 use crate::arena::profile_runtime::ProfileToken;
 use crate::arena::runtime_card::{CardCatalog, ProfileKey, stock_definition};
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, Classification, ContactId, Designator, MatchMode, Power,
-    TerrainCell, Waypoints,
+    ArenaDefinition, ArenaTerrain, ContactId, Designator, MatchMode, Power, TerrainCell, Waypoints,
 };
-use crate::arena::step::FrameHeat;
-use crate::arena::weapons::FrameWeapon;
 use crate::config::{ArenaConfig, ReflexConfig};
 use crate::port::apply::{credit_scale, minor_of};
 use crate::port::licence::{LICENCE_SETTLE_WINDOW_SECS, licence_gate, licence_port};
@@ -385,6 +383,12 @@ pub struct KirkwoodPicketState {
     /// Sealed mind record for the Belt Raider (`SF.R14`, `D-35-1`, `D-35-17`).
     #[serde(default, with = "compact_mind_seal")]
     pub raider_seal: Option<crate::arena::mind::MindSeal>,
+    /// The corvette's own contact numbers (doc 44 unit MW.9; [`ContactBook`]).
+    #[serde(default, skip_serializing_if = "ContactBook::is_empty")]
+    pub corvette_contacts: ContactBook,
+    /// The raider's own contact numbers (doc 44 unit MW.9; [`ContactBook`]).
+    #[serde(default, skip_serializing_if = "ContactBook::is_empty")]
+    pub raider_contacts: ContactBook,
     /// Per-carrier customs inspection status keyed by carrier hull [`ObjId`] (`SF.R18`).
     #[serde(
         default,
@@ -442,6 +446,8 @@ impl KirkwoodPicketState {
             raider_last_trace: Vec::new(),
             raider_last_intents: Vec::new(),
             raider_seal,
+            corvette_contacts: ContactBook::default(),
+            raider_contacts: ContactBook::default(),
             carrier_inspection_status: BTreeMap::new(),
             carrier_inspection_outcome: BTreeMap::new(),
         }
@@ -1014,12 +1020,11 @@ pub fn run_sealed_mind_on_pool(
     Some(answers.pop()?.result)
 }
 
-/// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`, `SF.R22`).
-///
-/// Builds a propagation-gated [`MindView`] (`mush_propagation::resolve_detection`) so the AI mind
-/// sees only contacts that pass inverse-square IR / EMCON detection, installs the runner via
-/// [`crate::minds::sealed::install_sealed_runners`] from `seal` and `store`, and executes the
-/// job on [`crate::minds::MindPool`].
+/// Run one think of the mind sealed on `ship_id` inside `bubble` (`D-35-1`, `D-35-11`,
+/// `SF.R22`; doc 44 unit MW.9), on the one view every space mind reads
+/// ([`super::view::space_mind_view`]): `book` is this observer's contact numbers and
+/// `situation` what the host knows of the stops. Answers the think and the ship each contact
+/// id of that view names, for [`super::applier::apply_intents`].
 #[allow(clippy::too_many_arguments)]
 pub fn run_space_rhai_think_with_seal(
     bubble: &LocalSpaceBubble,
@@ -1030,8 +1035,11 @@ pub fn run_space_rhai_think_with_seal(
     store: Option<&crate::store::TacsimStore>,
     think_seq: u64,
     memory: &[u8],
+    book: &mut ContactBook,
+    situation: &Situation,
 ) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
-    let (view, contact_map) = space_mind_view(bubble, ship_id, unit_obj)?;
+    let (view, contact_map) =
+        super::view::space_mind_view(bubble, ship_id, unit_obj, book, situation)?;
     let t_ms = view.t_ms;
     let result = run_sealed_mind_on_pool(
         unit_obj,
@@ -1044,194 +1052,6 @@ pub fn run_space_rhai_think_with_seal(
         memory,
     )?;
     Some((result, contact_map))
-}
-
-/// The propagation-gated [`MindView`] `ship_id` reads inside `bubble`, and the ship each of its
-/// contact rows names: what [`run_space_rhai_think_with_seal`] hands a doctrine, and what the
-/// link-loss backup seat adds its own situation to (doc 35 §11).
-pub(crate) fn space_mind_view(
-    bubble: &LocalSpaceBubble,
-    ship_id: &str,
-    unit_obj: ObjId,
-) -> Option<(MindView, BTreeMap<ContactId, String>)> {
-    let observer = bubble.ships.get(ship_id)?;
-
-    let mut contact_map = BTreeMap::new();
-    let mut contacts = Vec::new();
-    for (idx, other) in bubble.ships.values().enumerate() {
-        if other.id == ship_id {
-            continue;
-        }
-        let obs = super::commands::evaluate_space_contact_detection(
-            observer,
-            unit_obj,
-            other,
-            ObjId(u32::try_from(idx).unwrap_or(0).saturating_add(2)),
-            None,
-            bubble.ic_timestamp_s,
-        );
-        if !obs.outcome.is_detected() {
-            continue;
-        }
-        let cid = ContactId((idx as u64).saturating_add(1));
-        contact_map.insert(cid, other.id.clone());
-
-        let rel = bubble.party_relation(observer.party, other.party);
-        let rel_speed_mmps = relative_speed_3d_mmps(observer.vel_mmps, other.vel_mmps);
-        let moving = rel_speed_mmps >= HEAVE_TO_REL_VEL_MMPS;
-        let reads_dead = other.status != HullStatus::Operational;
-        let party_id = other.party;
-        let letter = char::from(b'A'.saturating_add(u8::try_from(idx.min(25)).unwrap_or(0)));
-        let desig = Designator::Unit {
-            party: party_id,
-            letter,
-        };
-        let range_m = u64::try_from(obs.dist_m.max(0)).unwrap_or(0);
-        let dx = (other.pos_m[0] - observer.pos_m[0]) as f64;
-        let dy = (other.pos_m[1] - observer.pos_m[1]) as f64;
-        let bearing_deg = (libm::atan2(dy, dx).to_degrees().round() as i32).rem_euclid(360);
-        let band = if range_m <= 15_000 {
-            SmolStr::new_static("near")
-        } else if range_m <= 60_000 {
-            SmolStr::new_static("medium")
-        } else {
-            SmolStr::new_static("far")
-        };
-        contacts.push(ViewContact {
-            id: cid,
-            designator: desig,
-            alias: None,
-            class: Classification::Classified { party: party_id },
-            friendly: rel.is_friendly(),
-            relation: rel,
-            moving,
-            bearing_deg: bearing_deg as u32,
-            relative_deg: (bearing_deg - observer.attitude_deg.0).rem_euclid(360) as u32,
-            range_m,
-            band,
-            age_ms: 0,
-            cell: Some((8, 8)),
-            condition: None::<FrameCondition>,
-            fatal: Some(Vec::new()),
-            aspect: Aspect::Front,
-            odds: Vec::new(),
-            reads_dead: Some(reads_dead),
-        });
-    }
-    contacts.sort_by_key(|c| (c.range_m, c.id));
-
-    let mut weapons = Vec::new();
-    if let Some(laser) = observer.lasers.first() {
-        let id = SmolStr::new(&laser.id);
-        weapons.push(FrameWeapon {
-            id,
-            ready: laser.cooldown_remaining_ms == 0,
-            ready_in_ms: i64::from(laser.cooldown_remaining_ms),
-            rounds: 100,
-            rounds_max: 100,
-            range_band: None,
-            p_permille: Some(850),
-            bands_cm: vec![25_000_000],
-            heat_per_shot: 0,
-            armed: None,
-        });
-    }
-    if let Some(tube) = observer.torpedo_tubes.first() {
-        let id = SmolStr::new(&tube.id);
-        weapons.push(FrameWeapon {
-            id,
-            ready: tube.cooldown_remaining_ms == 0 && tube.magazine_remaining > 0,
-            ready_in_ms: i64::from(tube.cooldown_remaining_ms),
-            rounds: u32::from(tube.magazine_remaining),
-            rounds_max: u32::from(tube.magazine_remaining.max(8)),
-            range_band: None,
-            p_permille: Some(850),
-            bands_cm: vec![25_000_000],
-            heat_per_shot: 0,
-            armed: None,
-        });
-    }
-    if let Some(rg) = observer.railguns.first() {
-        let id = SmolStr::new(&rg.id);
-        weapons.push(FrameWeapon {
-            id,
-            ready: rg.cooldown_remaining_ms == 0 && rg.rounds_remaining > 0,
-            ready_in_ms: i64::from(rg.cooldown_remaining_ms),
-            rounds: u32::from(rg.rounds_remaining),
-            rounds_max: u32::from(rg.rounds_remaining.max(24)),
-            range_band: None,
-            p_permille: Some(850),
-            bands_cm: vec![25_000_000],
-            heat_per_shot: 0,
-            armed: None,
-        });
-    }
-
-    let t_ms = i64::try_from(bubble.wall_elapsed_ms).unwrap_or(i64::MAX);
-    let view = MindView {
-        unit: unit_obj.0,
-        callsign: Designator::Unit {
-            party: observer.party,
-            letter: 'A',
-        },
-        party: observer.party,
-        cell: Some((8, 8)),
-        mode: MatchMode::Skirmish,
-        own_last_hit_ms: None,
-        objective: None,
-        motor: None,
-        x_cm: observer.pos_m[0].saturating_mul(100),
-        y_cm: observer.pos_m[1].saturating_mul(100),
-        z_cm: observer.pos_m[2].saturating_mul(100),
-        heading_mdeg: (observer.attitude_deg.0.rem_euclid(360) as u32) * 1_000,
-        speed_cms: (isqrt_i128(
-            i128::from(observer.vel_mmps[0]).pow(2)
-                + i128::from(observer.vel_mmps[1]).pow(2)
-                + i128::from(observer.vel_mmps[2]).pow(2),
-        ) / 10) as i32,
-        power: Power::Online,
-        held: false,
-        wreck: observer.status != HullStatus::Operational,
-        immobile: observer.status != HullStatus::Operational,
-        sight_m: 250_000,
-        ecm: Some(observer.active_decoy_ms > 0),
-        receiver: Some(FrameReceiver {
-            budget: 100,
-            budget_max: 100,
-            reach_permille: 1_000,
-        }),
-        heat: Some(FrameHeat {
-            heat: u32::from(observer.heat_permille),
-            max: 1_000,
-        }),
-        sections: Vec::new(),
-        lock: contacts.first().map(|c| c.id),
-        weapons,
-        rules: Vec::new(),
-        order: None,
-        t_ms,
-        notices: Vec::<FrameNotice>::new(),
-        contacts,
-        scan_tables: Vec::new(),
-        odds_floor_permille: 0,
-    };
-    Some((view, contact_map))
-}
-
-/// Compile and run one Rhai [`crate::minds::MindPool`] think step for `ship_id` inside `bubble` (`D-35-1`, `D-35-11`).
-pub fn run_space_rhai_think(
-    bubble: &LocalSpaceBubble,
-    ship_id: &str,
-    unit_obj: ObjId,
-    source: &str,
-    think_seq: u64,
-    memory: &[u8],
-) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
-    use sha2::{Digest as _, Sha256};
-    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
-    run_space_rhai_think_with_seal(
-        bubble, ship_id, unit_obj, None, digest, None, think_seq, memory,
-    )
 }
 
 /// Run one Rhai [`crate::minds::MindPool`] think step for a collector drone sortie (`drone_mining.rhai`, `SF.R14`, `SF.R22`, `D-35-13`).
@@ -1284,6 +1104,7 @@ pub fn run_drone_rhai_think(
         contacts: Vec::new(),
         scan_tables: Vec::new(),
         odds_floor_permille: 0,
+        space: None,
     });
     run_sealed_mind_on_pool(
         drone_obj,
@@ -1297,530 +1118,233 @@ pub fn run_drone_rhai_think(
     )
 }
 
-fn sync_corvette_cleared_stage_in_memory(picket: &mut KirkwoodPicketState) {
-    let any_cleared = picket.is_customs_cleared()
-        || picket
-            .carrier_inspection_status
-            .keys()
-            .any(|&h| picket.is_carrier_customs_cleared(h));
-    if !any_cleared {
-        return;
+/// **The stops the customs corvette has on the carriers of its bubble** (doc 44 unit MW.9):
+/// what every mind in a picket bubble reads of customs, from the picket's own per-carrier
+/// state. A hail stands only while the corvette is there to enforce it.
+#[must_use]
+pub fn picket_situation(
+    bubble: &LocalSpaceBubble,
+    picket: &KirkwoodPicketState,
+    carriers: &[(ObjId, String, PartyId)],
+    step_ms: u32,
+) -> Situation {
+    let corvette_stands = bubble
+        .ships
+        .get(&picket.corvette_ship_id)
+        .is_some_and(|corvette| corvette.status == HullStatus::Operational);
+    let mut situation = Situation::open(step_ms);
+    situation.stopper = Some(picket.corvette_ship_id.clone());
+    for (hull, ship_id, _) in carriers {
+        let stop = match picket.inspection_status_for(*hull) {
+            PicketInspectionStatus::AwaitingHeaveTo if corvette_stands => Stop::Hailed,
+            PicketInspectionStatus::HoveToReadyForInspection if corvette_stands => Stop::HoveTo,
+            PicketInspectionStatus::AwaitingHeaveTo
+            | PicketInspectionStatus::HoveToReadyForInspection => Stop::None,
+            PicketInspectionStatus::Cleared
+            | PicketInspectionStatus::ClearedAfterFine
+            | PicketInspectionStatus::ClearedAfterSeizure => Stop::Cleared,
+            PicketInspectionStatus::RanThePicket => Stop::Ran,
+        };
+        if stop != Stop::None {
+            situation.stops.insert(ship_id.clone(), stop);
+        }
     }
-    let mut mem = crate::arena::mind::decode_memory(&picket.corvette_memory);
-    if !matches!(mem.get("stage"), Some(mush_mind::memory::Value::Int(3 | 5))) {
-        mem.insert("stage".to_owned(), mush_mind::memory::Value::Int(5));
-        picket.corvette_memory = crate::arena::mind::encode_memory(&mem);
-    }
+    situation
 }
 
-fn read_corvette_stage_from_memory(memory: &[u8]) -> Option<i64> {
-    let mem = crate::arena::mind::decode_memory(memory);
-    match mem.get("stage") {
-        Some(mush_mind::memory::Value::Int(stage)) => Some(*stage),
-        _ => None,
-    }
-}
-
+/// One think of the corvette's mind, applied by the one applier.
 fn step_corvette_mind_on_bubble(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
-    carrier_ship_id: &str,
-    carriers: &[(ObjId, String, PartyId)],
+    situation: &Situation,
     store: Option<&crate::store::TacsimStore>,
     emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
 ) {
-    sync_corvette_cleared_stage_in_memory(picket);
-
-    if let Some(corvette) = bubble.ships.get(&picket.corvette_ship_id)
-        && corvette.status == HullStatus::Operational
-        && let Some((res, cmap)) = run_space_rhai_think_with_seal(
-            bubble,
-            &picket.corvette_ship_id,
-            picket.corvette_hull,
-            picket.corvette_seal.as_ref(),
-            crate::minds::content::kirkwood_picket_digest().0,
-            store,
-            picket.corvette_think_seq,
-            &picket.corvette_memory,
-        )
-        && res.fault.is_none()
+    if bubble
+        .ships
+        .get(&picket.corvette_ship_id)
+        .is_none_or(|corvette| corvette.status != HullStatus::Operational)
     {
-        picket.corvette_think_seq = picket.corvette_think_seq.saturating_add(1);
-        picket.corvette_memory = res.memory;
-        picket.corvette_last_trace = res.trace;
-        picket.corvette_last_intents = res.intents.clone();
+        return;
+    }
+    let Some((res, cmap)) = run_space_rhai_think_with_seal(
+        bubble,
+        &picket.corvette_ship_id,
+        picket.corvette_hull,
+        picket.corvette_seal.as_ref(),
+        crate::minds::content::kirkwood_picket_digest().0,
+        store,
+        picket.corvette_think_seq,
+        &picket.corvette_memory,
+        &mut picket.corvette_contacts,
+        situation,
+    ) else {
+        return;
+    };
+    if res.fault.is_some() {
+        return;
+    }
+    picket.corvette_think_seq = picket.corvette_think_seq.saturating_add(1);
+    picket.corvette_memory = res.memory;
+    picket.corvette_last_trace = res.trace;
+    let _ = super::applier::apply_intents(
+        bubble,
+        tape,
+        &picket.corvette_ship_id,
+        Seat::PATROL,
+        &cmap,
+        &res.intents,
+        emitted_events,
+    );
+    picket.corvette_last_intents = res.intents;
+}
 
-        // Read `this.stage` from the Corvette's Rhai memory (`SF.R14`, `D-35-1`, `D-35-11`, `D-35-17`):
-        if carriers.is_empty()
-            && let Some(stage) = read_corvette_stage_from_memory(&picket.corvette_memory)
+/// **The picket's own rules, on state** (`SF.R18`; doc 44 unit MW.9): a carrier that is hailed
+/// and comes under the heave-to speed against the corvette is hove to and ready; one that is
+/// not cleared and passes the boundary has run, and the corvette's party holds hers hostile.
+/// These are the host's, read off the bubble; no mind's memory is read or written for them.
+fn settle_picket_stops(
+    bubble: &mut LocalSpaceBubble,
+    picket: &mut KirkwoodPicketState,
+    carriers: &[(ObjId, String, PartyId)],
+) {
+    let Some((corvette_pos, corvette_vel)) = bubble
+        .ships
+        .get(&picket.corvette_ship_id)
+        .filter(|corvette| corvette.status == HullStatus::Operational)
+        .map(|corvette| (corvette.pos_m, corvette.vel_mmps))
+    else {
+        return;
+    };
+    for (chull, cship_id, cparty) in carriers {
+        let Some(carrier) = bubble.ships.get(cship_id) else {
+            continue;
+        };
+        if carrier.status != HullStatus::Operational {
+            continue;
+        }
+        let (carrier_pos, carrier_vel) = (carrier.pos_m, carrier.vel_mmps);
+        let cur_status = picket.inspection_status_for(*chull);
+        if cur_status == PicketInspectionStatus::AwaitingHeaveTo
+            && relative_speed_3d_mmps(carrier_vel, corvette_vel) < HEAVE_TO_REL_VEL_MMPS
         {
-            if stage == 4 && !picket.is_customs_cleared() {
-                picket.inspection_status = PicketInspectionStatus::RanThePicket;
-                bubble.set_party_relation(
-                    CUSTOMS_CORVETTE_PARTY,
-                    CARRIER_PARTY,
-                    Some(Mark::Hostile),
-                );
-            } else if stage == 2
-                && picket.inspection_status == PicketInspectionStatus::AwaitingHeaveTo
-            {
+            picket
+                .carrier_inspection_status
+                .insert(*chull, PicketInspectionStatus::HoveToReadyForInspection);
+            if picket.inspection_status == PicketInspectionStatus::AwaitingHeaveTo {
                 picket.inspection_status = PicketInspectionStatus::HoveToReadyForInspection;
             }
         }
-
-        let mut locked_ship = bubble
-            .ships
-            .get(&picket.corvette_ship_id)
-            .and_then(|s| s.locked_target_id.clone())
-            .unwrap_or_else(|| picket.raider_ship_id.clone());
-
-        if bubble
-            .ships
-            .get(&picket.corvette_ship_id)
-            .is_some_and(|s| s.heat_permille > 600)
+        if !picket.is_carrier_customs_cleared(*chull)
+            && cur_status != PicketInspectionStatus::RanThePicket
+            && distance_3d_m(carrier_pos, corvette_pos) > PICKET_RUN_BOUNDARY_M
         {
-            emitted_events.extend(tape.record_and_apply(
-                bubble,
-                BubbleInputCommand::BlowdownCoolant {
-                    ship_id: picket.corvette_ship_id.clone(),
-                },
-            ));
-        }
-
-        for intent in &res.intents {
-            match intent {
-                IntentKind::Emcon { on } => {
-                    let posture = if *on {
-                        EmconPosture::ActiveCombat
-                    } else {
-                        EmconPosture::Standard
-                    };
-                    if bubble
-                        .ships
-                        .get(&picket.corvette_ship_id)
-                        .is_some_and(|s| s.emcon != posture)
-                    {
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::SetEmcon {
-                                ship_id: picket.corvette_ship_id.clone(),
-                                posture,
-                            },
-                        ));
-                    }
-                }
-                IntentKind::Lock { contact } => {
-                    if let Some(target_id) = cmap.get(contact) {
-                        locked_ship = target_id.clone();
-                        if bubble
-                            .ships
-                            .get(&picket.corvette_ship_id)
-                            .is_some_and(|s| s.locked_target_id.as_deref() != Some(target_id))
-                        {
-                            emitted_events.extend(tape.record_and_apply(
-                                bubble,
-                                BubbleInputCommand::SetLockedTarget {
-                                    ship_id: picket.corvette_ship_id.clone(),
-                                    target_id: Some(target_id.clone()),
-                                },
-                            ));
-                        }
-                    }
-                }
-                IntentKind::Goal(MotorGoal::Hold) => {
-                    if bubble
-                        .ships
-                        .get(&picket.corvette_ship_id)
-                        .is_some_and(|s| s.thrust_mps2 != [0, 0, 0])
-                    {
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::CommandBurn {
-                                ship_id: picket.corvette_ship_id.clone(),
-                                thrust_mps2: [0, 0, 0],
-                                force_into_reserve: false,
-                            },
-                        ));
-                    }
-                }
-                IntentKind::Fire { weapon, .. } if weapon.as_str().starts_with("laser") => {
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::FireOffensiveLasers {
-                            shooter_id: picket.corvette_ship_id.clone(),
-                            target_id: locked_ship.clone(),
-                        },
-                    ));
-                }
-                IntentKind::Fire { weapon, .. } if weapon.as_str().starts_with("rail") => {
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::FireRailgun {
-                            shooter_id: picket.corvette_ship_id.clone(),
-                            target_id: locked_ship.clone(),
-                        },
-                    ));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Per-carrier heave-to and 35 km perimeter breach evaluation (`SF.R18`):
-    if carriers.is_empty() {
-        if !picket.is_customs_cleared()
-            && picket.inspection_status != PicketInspectionStatus::RanThePicket
-            && let (Some(carrier), Some(corvette)) = (
-                bubble.ships.get(carrier_ship_id),
-                bubble.ships.get(&picket.corvette_ship_id),
-            )
-            && carrier.status == HullStatus::Operational
-            && corvette.status == HullStatus::Operational
-            && distance_3d_m(carrier.pos_m, corvette.pos_m) > PICKET_RUN_BOUNDARY_M
-        {
-            picket.inspection_status = PicketInspectionStatus::RanThePicket;
-            bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
-        }
-    } else if let Some(corvette) = bubble.ships.get(&picket.corvette_ship_id).cloned()
-        && corvette.status == HullStatus::Operational
-    {
-        for (chull, cship_id, cparty) in carriers {
-            let Some(carrier) = bubble.ships.get(cship_id) else {
-                continue;
-            };
-            if carrier.status != HullStatus::Operational {
-                continue;
-            }
-            let cur_status = picket.inspection_status_for(*chull);
-            if cur_status == PicketInspectionStatus::AwaitingHeaveTo
-                && relative_speed_3d_mmps(carrier.vel_mmps, corvette.vel_mmps)
-                    < HEAVE_TO_REL_VEL_MMPS
-            {
-                picket
-                    .carrier_inspection_status
-                    .insert(*chull, PicketInspectionStatus::HoveToReadyForInspection);
-                if picket.inspection_status == PicketInspectionStatus::AwaitingHeaveTo {
-                    picket.inspection_status = PicketInspectionStatus::HoveToReadyForInspection;
-                }
-            }
-            if !picket.is_carrier_customs_cleared(*chull)
-                && cur_status != PicketInspectionStatus::RanThePicket
-                && distance_3d_m(carrier.pos_m, corvette.pos_m) > PICKET_RUN_BOUNDARY_M
-            {
-                picket.set_inspection_status_for(*chull, PicketInspectionStatus::RanThePicket);
-                bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, *cparty, Some(Mark::Hostile));
-            }
+            picket.set_inspection_status_for(*chull, PicketInspectionStatus::RanThePicket);
+            bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, *cparty, Some(Mark::Hostile));
         }
     }
 }
 
+/// One think of the raider's mind, applied by the one applier. She thinks while she lurks as
+/// well: when to light her torch is her doctrine's to decide.
 fn step_raider_mind_on_bubble(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
-    carrier_ship_id: &str,
+    situation: &Situation,
     store: Option<&crate::store::TacsimStore>,
     emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
 ) {
-    let any_outcome_or_run = picket.inspection_outcome.is_some()
-        || !picket.carrier_inspection_outcome.is_empty()
-        || picket.inspection_status == PicketInspectionStatus::RanThePicket
-        || picket
-            .carrier_inspection_status
-            .values()
-            .any(|&s| s == PicketInspectionStatus::RanThePicket);
-    let should_uncloak_raider = !picket.raider_ambush_launched && any_outcome_or_run;
-    if should_uncloak_raider
-        && let Some(raider) = bubble.ships.get(&picket.raider_ship_id)
-        && raider.status == HullStatus::Operational
-        && raider.emcon == EmconPosture::Ghost
+    if bubble
+        .ships
+        .get(&picket.raider_ship_id)
+        .is_none_or(|raider| raider.status != HullStatus::Operational)
     {
-        emitted_events.extend(tape.record_and_apply(
-            bubble,
-            BubbleInputCommand::SetEmcon {
-                ship_id: picket.raider_ship_id.clone(),
-                posture: EmconPosture::ActiveCombat,
-            },
-        ));
+        return;
     }
-
-    if let Some(raider) = bubble.ships.get(&picket.raider_ship_id)
-        && raider.status == HullStatus::Operational
-        && raider.emcon != EmconPosture::Ghost
-        && let Some((res, cmap)) = run_space_rhai_think_with_seal(
-            bubble,
-            &picket.raider_ship_id,
-            picket.raider_hull,
-            picket.raider_seal.as_ref(),
-            crate::minds::content::belt_raider_digest().0,
-            store,
-            picket.raider_think_seq,
-            &picket.raider_memory,
-        )
-        && res.fault.is_none()
-    {
-        picket.raider_think_seq = picket.raider_think_seq.saturating_add(1);
-        picket.raider_memory = res.memory;
-        picket.raider_last_trace = res.trace;
-        picket.raider_last_intents = res.intents.clone();
-
-        let mut locked_ship = bubble
-            .ships
-            .get(&picket.raider_ship_id)
-            .and_then(|s| s.locked_target_id.clone())
-            .unwrap_or_else(|| carrier_ship_id.to_owned());
-
-        for intent in &res.intents {
-            match intent {
-                IntentKind::Emcon { on } => {
-                    let posture = if *on {
-                        EmconPosture::ActiveCombat
-                    } else {
-                        EmconPosture::Ghost
-                    };
-                    if bubble
-                        .ships
-                        .get(&picket.raider_ship_id)
-                        .is_some_and(|s| s.emcon != posture)
-                    {
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::SetEmcon {
-                                ship_id: picket.raider_ship_id.clone(),
-                                posture,
-                            },
-                        ));
-                    }
-                }
-                IntentKind::Lock { contact } => {
-                    if let Some(target_id) = cmap.get(contact) {
-                        locked_ship = target_id.clone();
-                        if bubble
-                            .ships
-                            .get(&picket.raider_ship_id)
-                            .is_some_and(|s| s.locked_target_id.as_deref() != Some(target_id))
-                        {
-                            emitted_events.extend(tape.record_and_apply(
-                                bubble,
-                                BubbleInputCommand::SetLockedTarget {
-                                    ship_id: picket.raider_ship_id.clone(),
-                                    target_id: Some(target_id.clone()),
-                                },
-                            ));
-                        }
-                    }
-                }
-                IntentKind::Speed { cms } => {
-                    if *cms > 0 {
-                        let desired_thrust = if let (Some(raider_ship), Some(target_ship)) = (
-                            bubble.ships.get(&picket.raider_ship_id),
-                            bubble.ships.get(&locked_ship),
-                        ) {
-                            let max_accel = raider_ship.max_accel_mps2.max(1);
-                            let mag = (i64::from(*cms) / 100).clamp(1, max_accel);
-                            let dx =
-                                i128::from(target_ship.pos_m[0]) - i128::from(raider_ship.pos_m[0]);
-                            let dy =
-                                i128::from(target_ship.pos_m[1]) - i128::from(raider_ship.pos_m[1]);
-                            let dz =
-                                i128::from(target_ship.pos_m[2]) - i128::from(raider_ship.pos_m[2]);
-                            let dist = isqrt_i128(dx * dx + dy * dy + dz * dz);
-                            if dist > 0 {
-                                let tx = ((dx * i128::from(mag)) / dist) as i64;
-                                let ty = ((dy * i128::from(mag)) / dist) as i64;
-                                let tz = ((dz * i128::from(mag)) / dist) as i64;
-                                let v = [tx, ty, tz];
-                                if v == [0, 0, 0] { [-15, 0, 0] } else { v }
-                            } else {
-                                [-15, 0, 0]
-                            }
-                        } else {
-                            [-15, 0, 0]
-                        };
-                        if bubble
-                            .ships
-                            .get(&picket.raider_ship_id)
-                            .is_some_and(|s| s.thrust_mps2 != desired_thrust)
-                        {
-                            emitted_events.extend(tape.record_and_apply(
-                                bubble,
-                                BubbleInputCommand::CommandBurn {
-                                    ship_id: picket.raider_ship_id.clone(),
-                                    thrust_mps2: desired_thrust,
-                                    force_into_reserve: true,
-                                },
-                            ));
-                        }
-                    }
-                }
-                IntentKind::Fire { weapon, .. } => {
-                    if weapon.as_str().starts_with("torp") {
-                        picket.raider_ambush_launched = true;
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::FireTorpedoSalvo {
-                                shooter_id: picket.raider_ship_id.clone(),
-                                target_id: locked_ship.clone(),
-                                count: 2,
-                            },
-                        ));
-                    } else if weapon.as_str().starts_with("rail") {
-                        picket.raider_ambush_launched = true;
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::FireRailgun {
-                                shooter_id: picket.raider_ship_id.clone(),
-                                target_id: locked_ship.clone(),
-                            },
-                        ));
-                    } else if weapon.as_str().starts_with("laser") {
-                        emitted_events.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::FireOffensiveLasers {
-                                shooter_id: picket.raider_ship_id.clone(),
-                                target_id: locked_ship.clone(),
-                            },
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if picket
-            .raider_last_trace
-            .iter()
-            .any(|t| t == "RAIDER_PRESS_ATTACK")
-        {
-            if let Some(active_combat_carrier) = bubble
-                .ships
-                .values()
-                .find(|s| {
-                    s.id != picket.raider_ship_id
-                        && s.id != picket.corvette_ship_id
-                        && s.status == HullStatus::Operational
-                        && s.emcon == EmconPosture::ActiveCombat
-                        && bubble.party_relation(BELT_RAIDER_PARTY, s.party)
-                            == crate::arena::party::Relation::Hostile
-                })
-                .map(|s| s.id.clone())
-            {
-                locked_ship = active_combat_carrier;
-            }
-            if bubble.ships.get(&locked_ship).is_some_and(|s| {
-                s.id != picket.corvette_ship_id
-                    && s.status == HullStatus::Operational
-                    && s.emcon == EmconPosture::ActiveCombat
-            }) {
-                if bubble
-                    .ships
-                    .get(&picket.raider_ship_id)
-                    .is_some_and(|s| s.heat_permille > 650)
-                {
-                    emitted_events.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::BlowdownCoolant {
-                            ship_id: picket.raider_ship_id.clone(),
-                        },
-                    ));
-                }
-                emitted_events.extend(tape.record_and_apply(
-                    bubble,
-                    BubbleInputCommand::FireRailgun {
-                        shooter_id: picket.raider_ship_id.clone(),
-                        target_id: locked_ship.clone(),
-                    },
-                ));
-                emitted_events.extend(tape.record_and_apply(
-                    bubble,
-                    BubbleInputCommand::FireOffensiveLasers {
-                        shooter_id: picket.raider_ship_id.clone(),
-                        target_id: locked_ship,
-                    },
-                ));
-            }
-        }
+    let Some((res, cmap)) = run_space_rhai_think_with_seal(
+        bubble,
+        &picket.raider_ship_id,
+        picket.raider_hull,
+        picket.raider_seal.as_ref(),
+        crate::minds::content::belt_raider_digest().0,
+        store,
+        picket.raider_think_seq,
+        &picket.raider_memory,
+        &mut picket.raider_contacts,
+        situation,
+    ) else {
+        return;
+    };
+    if res.fault.is_some() {
+        return;
     }
+    picket.raider_think_seq = picket.raider_think_seq.saturating_add(1);
+    picket.raider_memory = res.memory;
+    picket.raider_last_trace = res.trace;
+    let applied = super::applier::apply_intents(
+        bubble,
+        tape,
+        &picket.raider_ship_id,
+        Seat::RAIDER,
+        &cmap,
+        &res.intents,
+        emitted_events,
+    );
+    if applied.fired_heavy {
+        picket.raider_ambush_launched = true;
+    }
+    picket.raider_last_intents = res.intents;
 }
 
-/// Step the Kirkwood Customs Picket `RhaiRunner` doctrines (`kirkwood_picket.rhai` and
-/// `belt_raider.rhai`), reading `this.stage` from `picket.corvette_memory` (`SF.R14`, `D-35-11`, `D-35-17`).
+/// The carrier a test names by its ship id alone, as the entry the picket steps by.
+fn lone_carrier(bubble: &LocalSpaceBubble, carrier_ship_id: &str) -> Vec<(ObjId, String, PartyId)> {
+    let hull = carrier_ship_id
+        .strip_prefix("hull.")
+        .and_then(|number| number.parse::<u32>().ok())
+        .map_or(ObjId(0), ObjId);
+    let party = bubble
+        .ships
+        .get(carrier_ship_id)
+        .map_or(CARRIER_PARTY, |ship| ship.party);
+    vec![(hull, carrier_ship_id.to_owned(), party)]
+}
+
+/// Step the Kirkwood Customs Picket's two minds for a bubble with the one carrier
+/// `carrier_ship_id`, a second at a time and on the compiled doctrines.
 pub fn step_kirkwood_picket(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
     carrier_ship_id: &str,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
-    step_kirkwood_picket_for_carriers_with_store(bubble, tape, picket, carrier_ship_id, &[], None)
+    let carriers = lone_carrier(bubble, carrier_ship_id);
+    step_kirkwood_picket_for_carriers_with_store(bubble, tape, picket, &carriers, None, 1_000)
 }
 
-/// Step the Kirkwood Customs Picket `RhaiRunner` doctrines across all participating carriers (`SF.R18`).
-pub fn step_kirkwood_picket_for_carriers(
-    bubble: &mut LocalSpaceBubble,
-    tape: &mut BubbleInputTape,
-    picket: &mut KirkwoodPicketState,
-    carrier_ship_id: &str,
-    carriers: &[(ObjId, String, PartyId)],
-) -> Vec<super::bubble::SpaceCombatEvent> {
-    step_kirkwood_picket_for_carriers_with_store(
-        bubble,
-        tape,
-        picket,
-        carrier_ship_id,
-        carriers,
-        None,
-    )
-}
-
-/// Step the Kirkwood Customs Picket sealed minds across all participating carriers with an
-/// explicit [`crate::store::TacsimStore`] reference (`SF.R22`).
+/// Step the Kirkwood Customs Picket's sealed minds across all participating carriers
+/// (`SF.R18`, `SF.R22`; doc 44 unit MW.9): each mind thinks once on the one view and is applied
+/// by the one applier, and the picket's own rules are settled on state between them. `store`
+/// is where a seal's source is looked up; `step_ms` is what the bubble steps by.
 pub fn step_kirkwood_picket_for_carriers_with_store(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
-    carrier_ship_id: &str,
     carriers: &[(ObjId, String, PartyId)],
     store: Option<&crate::store::TacsimStore>,
+    step_ms: u32,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
     let mut emitted_events = Vec::new();
     bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
+    settle_picket_stops(bubble, picket, carriers);
+    let situation = picket_situation(bubble, picket, carriers, step_ms);
     if picket.inspection_outcome.is_some() || !picket.carrier_inspection_outcome.is_empty() {
-        step_raider_mind_on_bubble(
-            bubble,
-            tape,
-            picket,
-            carrier_ship_id,
-            store,
-            &mut emitted_events,
-        );
-        step_corvette_mind_on_bubble(
-            bubble,
-            tape,
-            picket,
-            carrier_ship_id,
-            carriers,
-            store,
-            &mut emitted_events,
-        );
+        step_raider_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
+        step_corvette_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
     } else {
-        step_corvette_mind_on_bubble(
-            bubble,
-            tape,
-            picket,
-            carrier_ship_id,
-            carriers,
-            store,
-            &mut emitted_events,
-        );
-        step_raider_mind_on_bubble(
-            bubble,
-            tape,
-            picket,
-            carrier_ship_id,
-            store,
-            &mut emitted_events,
-        );
+        step_corvette_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
+        step_raider_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
     }
     bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
     emitted_events
@@ -2343,6 +1867,7 @@ pub fn build_kirkwood_picket_ships(
 mod tests {
     use super::*;
     use crate::arena::party::Relation;
+    use crate::space::bubble::BubbleInputCommand;
 
     #[test]
     fn kirkwood_picket_and_belt_raider_rhai_doctrines_run_on_rhai_runner_without_faults() {
@@ -2365,9 +1890,8 @@ mod tests {
                 .expect("kirkwood picket ships should build");
         let mut tape = BubbleInputTape::new(&bubble);
 
-        // Step 1: Carrier is closing at 15 m/s relative speed (`[25_000, 0, 0]` vs `[10_000, 0, 0]`).
-        // The lurking Belt Raider is in `Ghost` at 120 km (undetected by inverse-square IR).
-        // Republic Customs Corvette's `RhaiRunner` (`KIRKWOOD_PICKET_RHAI`) hails and awaits heave-to.
+        // Step 1: the carrier is closing at 15 m/s against the corvette. The corvette's mind
+        // hails her; the raider's mind thinks too, and lurks dark.
         let _ = tape.record_and_apply(
             &mut bubble,
             BubbleInputCommand::StepWall {
@@ -2385,11 +1909,16 @@ mod tests {
             picket.corvette_last_trace,
             vec!["PICKET_HAIL_HEAVE_TO".to_owned()]
         );
+        assert_eq!(picket.raider_think_seq, 1);
+        assert!(picket.raider_last_trace.is_empty());
+        assert_eq!(
+            bubble.ships.get(&picket.raider_ship_id).map(|s| s.emcon),
+            Some(EmconPosture::Ghost)
+        );
         assert!(!picket.raider_ambush_launched);
 
-        // Step 2: Carrier decelerates to `[14_000, 0, 0]` (relative speed 4 m/s < 10 m/s heave-to gate).
-        // Corvette's `RhaiRunner` transitions to `"inspecting"` (`PICKET_CARRIER_HOVE_TO_READY`),
-        // and the Raider does NOT prematurely uncloak before `+helm/submit`!
+        // Step 2: the carrier slows to 4 m/s against the corvette. The picket's host reads her
+        // hove to, on her state, and the corvette's mind reads that word from its view.
         if let Some(c) = bubble.ships.get_mut("hull.10") {
             c.vel_mmps = [14_000, 0, 0];
         }
@@ -2405,25 +1934,60 @@ mod tests {
         );
         assert!(!picket.raider_ambush_launched);
 
-        // Step 3: Inspection outcome is recorded (`ClearedAfterFine`), and on the next step
-        // the Belt Raider lights its torch (`ActiveCombat`), `BELT_RAIDER_RHAI` fires its
-        // 2-torpedo salvo + 120 km railgun shot (`RAIDER_TORCH_AND_SALVO`), and the Corvette's
-        // `RhaiRunner` (`KIRKWOOD_PICKET_RHAI`) transitions to `"screen_defend"` (`PICKET_SCREEN_ENGAGE_RAIDER`).
-        picket.inspection_status = PicketInspectionStatus::ClearedAfterFine;
-        picket.inspection_outcome = Some(PicketInspectionOutcome::Fined {
-            contract_id: 42,
-            fine_minor: 200_000,
-            unlicensed_strategic_ore_kg: 4_000,
-            front_id: Some(1),
-        });
+        // Step 3: customs fine her and clear her. The raider hears the clearance on the
+        // picket's radio and lights her torch; the corvette, which now holds her, screens.
+        picket.set_inspection_status_for(ObjId(10), PicketInspectionStatus::ClearedAfterFine);
+        picket.set_inspection_outcome_for(
+            ObjId(10),
+            PicketInspectionOutcome::Fined {
+                contract_id: 42,
+                fine_minor: 200_000,
+                unlicensed_strategic_ore_kg: 4_000,
+                front_id: Some(1),
+            },
+        );
         bubble.set_party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY, Some(Mark::Friendly));
+        let memory_before = picket.corvette_memory.clone();
 
+        let _ = step_kirkwood_picket(&mut bubble, &mut tape, &mut picket, "hull.10");
+        assert_eq!(
+            picket.raider_last_trace,
+            vec!["RAIDER_LIGHT_TORCH".to_owned()]
+        );
+        assert_eq!(
+            bubble.ships.get(&picket.raider_ship_id).map(|s| s.emcon),
+            Some(EmconPosture::ActiveCombat)
+        );
+        assert!(!picket.raider_ambush_launched);
+        assert_eq!(
+            picket.corvette_last_trace,
+            vec!["PICKET_SCREEN_ENGAGE_RAIDER".to_owned()]
+        );
+        // The clearance reached the corvette's mind through its view: its memory is what its
+        // own last think left, and nothing else has written it.
+        assert_eq!(picket.corvette_memory, memory_before);
+
+        // Step 4: with her torch lit the raider holds the carrier, and opens: two torpedoes
+        // and a railgun round, at the lock her mind set, on the burn her mind asked.
         let ambush_events = step_kirkwood_picket(&mut bubble, &mut tape, &mut picket, "hull.10");
         assert!(picket.raider_ambush_launched);
-        assert_eq!(picket.raider_think_seq, 1);
         assert_eq!(
             picket.raider_last_trace,
             vec!["RAIDER_TORCH_AND_SALVO".to_owned()]
+        );
+        assert_eq!(
+            bubble
+                .ships
+                .get(&picket.raider_ship_id)
+                .and_then(|s| s.locked_target_id.clone())
+                .as_deref(),
+            Some("hull.10")
+        );
+        assert!(
+            bubble
+                .ships
+                .get(&picket.raider_ship_id)
+                .is_some_and(SpaceShipState::is_burning)
         );
         assert_eq!(bubble.torpedoes.len(), 2);
         assert_eq!(bubble.railgun_slugs.len(), 1);
@@ -2435,10 +1999,6 @@ mod tests {
             e,
             super::super::bubble::SpaceCombatEvent::RailgunFired { .. }
         )));
-        assert_eq!(
-            picket.corvette_last_trace,
-            vec!["PICKET_SCREEN_ENGAGE_RAIDER".to_owned()]
-        );
     }
 
     #[test]

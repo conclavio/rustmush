@@ -329,6 +329,27 @@ impl Relations {
         self.books.entry(b).or_default().friends.insert(a);
     }
 
+    /// **`a` and `b` stand down toward each other** (doc 44 unit MW.9;
+    /// Q-44-24): each one's mark of the other is cleared and each forgets
+    /// that the other fired, so the fight between the two is over whoever
+    /// opened it. Nothing else moves: a third party keeps its own marks and
+    /// its own record of who fired, and a standing friendship is untouched.
+    /// Fire after the stand-down is hostility again, as any fire is
+    /// ([`Relations::note_fire`]). Answers whether any book changed.
+    pub fn stand_down(&mut self, a: PartyId, b: PartyId) -> bool {
+        if a == b {
+            return false;
+        }
+        let mut changed = false;
+        for (by, of) in [(a, b), (b, a)] {
+            if let Some(book) = self.books.get_mut(&by) {
+                changed |= book.marks.remove(&of).is_some();
+                changed |= book.fired.remove(&of);
+            }
+        }
+        changed
+    }
+
     /// **`shooter` fired on `victim`** (Q-CF-5, Q-CF-9): the victim's book and
     /// the book of every party that holds the victim a friend now hold the
     /// shooter hostile — under any mark, which still decides. The shooter's
@@ -638,6 +659,45 @@ mod tests {
         books.note_fire(raider, miner);
         assert_eq!(books.relation(escort, raider), Relation::Friend);
         assert_eq!(books.relation(wingman, raider), Relation::Neutral);
+    }
+
+    /// Doc 44 unit MW.9 (Q-44-24): a stand-down ends the fight between two
+    /// parties, both ways and whoever fired, and moves nobody else.
+    #[test]
+    fn a_stand_down_ends_the_fight_for_the_two_it_names_and_only_those() {
+        let picket = PartyId::from_letter('B').unwrap();
+        let escort = PartyId::from_letter('A').unwrap();
+        let runner = PartyId::from_letter('D').unwrap();
+        let mut books = Relations::new();
+        for party in [picket, escort, runner] {
+            books.admit(party);
+        }
+        books.befriend(escort, runner);
+        for carrier in [escort, runner] {
+            books.mark(picket, carrier, Some(Mark::Hostile));
+            books.mark(carrier, picket, Some(Mark::Hostile));
+        }
+        // Each fired on the other; the runner, a friend of the escort, was told.
+        assert!(books.note_fire(escort, picket));
+        assert!(books.note_fire(picket, escort));
+        assert!(books.book(runner).unwrap().fired.contains(&picket));
+
+        assert!(books.stand_down(picket, escort));
+        assert_eq!(books.relation(picket, escort), Relation::Neutral);
+        assert_eq!(books.relation(escort, picket), Relation::Neutral);
+        assert!(books.book(picket).unwrap().fired.is_empty());
+        assert!(books.book(escort).unwrap().fired.is_empty());
+        // The runner's quarrel is its own: its mark, and what it was told.
+        assert_eq!(books.relation(picket, runner), Relation::Hostile);
+        assert_eq!(books.relation(runner, picket), Relation::Hostile);
+        assert!(books.book(runner).unwrap().fired.contains(&picket));
+        assert_eq!(books.relation(escort, runner), Relation::Friend);
+        // Nothing left to end, and a party does not stand down from itself.
+        assert!(!books.stand_down(picket, escort));
+        assert!(!books.stand_down(picket, picket));
+        // Fire after it is hostility again.
+        assert!(books.note_fire(escort, picket));
+        assert_eq!(books.relation(picket, escort), Relation::Hostile);
     }
 
     #[test]

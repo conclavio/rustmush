@@ -1253,6 +1253,13 @@ the pending submission and left the debit to `reconcile_space_burns`.
   bubble and so move when an unseen ship is there; the seat uses no contact id, and the shipped doctrine reads
   none. It thinks on `MindPool::shared(1)`, as they do.
 
+**Amended by doc 44 unit MW.9 (PR #551).** The seat no longer brakes. Inside a bubble the mind reads the view
+every space mind reads (`view.rs`) and its intents go through the one applier (`applier.rs`) seated
+`Seat::ABSENT`: every lock and shot is dropped, and every burn but one that takes her drift against the ship
+stopping her off. The house default works its own brake out from the view; it now heaves to against an
+interdictor as well as a customs picket, and is stood down there. `hold()` hove to under a customs hail is
+still the submission. Doc 35 §11 `B-5` and `B-8` say so; doc 44's cut note has the rest.
+
 ## SF.R26b — an in-flight debit lands once, or the passage is cut (doc 35d §9a; Q-35d-6 ruled)
 
 The owner ruled Q-35d-6 on 2026-11-11: in-bubble helm and tactical inputs are bubble orders on the bubble's own
