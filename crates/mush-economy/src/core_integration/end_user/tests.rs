@@ -281,6 +281,55 @@ fn mw23_a_frozen_registration_entitles_nobody_and_is_not_issued_again() -> TestR
 }
 
 #[test]
+fn mw23_an_empty_account_entitles_nobody_and_is_the_one_a_registration_fills() -> TestResult {
+    let mut r = rig()?;
+    let holder = r.holder;
+    let answer = r.register(holder);
+    check!(answer.starts_with("Ok("), "{answer}");
+    // A second character whose entitlement account staff opened, with nothing in it.
+    let other = r.tw.spawn_player("Second end user");
+    for line in [
+        format!("@account/open #{}={CORE3_ENTITLEMENT}", other.0),
+        format!("@account/open #{}={CREDIT}", other.0),
+    ] {
+        r.tw.exec_ok(GOD, &line);
+    }
+    let empty = account_of(&r.tw, &PrincipalId::Object(other), CORE3_ENTITLEMENT)?;
+    check_eq!(balance(&r.tw, empty)?, 0);
+    check!(
+        entitlement(snapshot(&r.tw)?, other).is_err(),
+        "an account with nothing in it entitles nobody"
+    );
+    check_eq!(
+        end_user_standing(r.tw.world(), other),
+        EndUserStanding::Unlisted
+    );
+    // Their registration fills that account and opens no second one.
+    let wallet = account_of(&r.tw, &PrincipalId::Object(other), CREDIT)?;
+    let faucet = account_of(&r.tw, &system("test.faucet")?, CREDIT)?;
+    r.tw.exec_ok(GOD, &format!("@econ/mint {}={} {FEE}", faucet.0, wallet.0));
+    let line = format!("@register {} {} {FEE}", wallet.0, r.registry.0);
+    let answer = said(&mut r.tw, other, &line);
+    check!(answer.starts_with("Ok("), "{answer}");
+    check_eq!(balance(&r.tw, empty)?, 1);
+    check_eq!(balance(&r.tw, wallet)?, 0);
+    check_eq!(
+        end_user_standing(r.tw.world(), other),
+        EndUserStanding::Registered { account: empty }
+    );
+    check_eq!(
+        snapshot(&r.tw)?
+            .accounts_of(&PrincipalId::Object(other))
+            .filter(|a| a.instrument.as_str() == CORE3_ENTITLEMENT)
+            .count(),
+        1
+    );
+    let source = account_of(&r.tw, &system(ISSUER)?, CORE3_ENTITLEMENT)?;
+    check_eq!(balance(&r.tw, source)?, -2, "two units issued, one source");
+    Ok(())
+}
+
+#[test]
 fn mw23_a_restart_keeps_the_registration() -> TestResult {
     let mut r = rig()?;
     let holder = r.holder;
