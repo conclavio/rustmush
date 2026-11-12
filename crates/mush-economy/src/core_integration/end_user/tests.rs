@@ -241,6 +241,18 @@ fn mw23_a_registration_is_refused_whole() -> TestResult {
         let answer = said(&mut r.tw, holder, &line);
         check!(answer.contains(expect), "{line}: {answer}");
     }
+    // A second wallet of the holder's own is not the Registry: a fee paid to oneself is no fee.
+    r.tw.exec_ok(GOD, &format!("@account/open #{}={CREDIT}", holder.0));
+    let second = snapshot(&r.tw)?
+        .accounts_of(&PrincipalId::Object(holder))
+        .filter(|a| a.instrument.as_str() == CREDIT)
+        .map(|a| a.id)
+        .max()
+        .ok_or("the second wallet")?;
+    check_ne!(second, payer);
+    let line = format!("@register {} {} {FEE}", payer.0, second.0);
+    let answer = said(&mut r.tw, holder, &line);
+    check!(answer.contains("Unavailable"), "{answer}");
     check_eq!(r.transactions()?, before);
     check_eq!(balance(&r.tw, payer)?, paid);
     check!(

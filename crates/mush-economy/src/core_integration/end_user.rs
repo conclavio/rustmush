@@ -256,7 +256,8 @@ fn plan(world: &World, request: &EndUserRegistration) -> Result<Plan, EndUserErr
         return Err(EndUserError::Unavailable);
     }
     // The fee: the holder's own live unscoped account, with no approval rule to wait on, in
-    // an active currency; the Registry's live account in the same currency.
+    // an active currency; the Registry's live account in the same currency, and never an
+    // account of the holder's own (a fee paid to oneself is no fee).
     let payer = snapshot
         .account(request.payer)
         .ok_or(EndUserError::Unavailable)?;
@@ -273,6 +274,7 @@ fn plan(world: &World, request: &EndUserRegistration) -> Result<Plan, EndUserErr
         || currency.kind != InstrumentKind::Currency
         || currency.status != InstrumentStatus::Active
         || registry.instrument != payer.instrument
+        || registry.owner == holder
         || registry.status != AccountStatus::Active
         || !api::credit_allowed(world, registry)
     {

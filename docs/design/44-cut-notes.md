@@ -813,13 +813,16 @@ file it writes, and the M8 test world composes one too.
 
 **Tests.**
 
-- `mush-economy`, `core_integration::end_user::tests` (four, fast): the fee and the unit are
+- `mush-economy`, `core_integration::end_user::tests` (five, fast): the fee and the unit are
   one transaction, the preview writes nothing, the instrument does not exist before the first
   registration, a second registration is refused with nothing paid or issued; every refusal
   is whole (another character's wallet, an unregistered issuer, a short wallet, a zero fee,
   the payer as its own Registry) and registers nothing; a frozen registration entitles nobody
-  and is not issued again; a restart from the folded store keeps the registration and still
-  issues it once.
+  and is not issued again; an account with nothing in it entitles nobody and is the one a
+  registration fills; a restart from the folded store keeps the registration and still
+  issues it once. Four mutations of the module were each caught by a test of their own: the
+  rule not asking for a balance, a registered holder not refused, an unregistered issuer
+  admitted, a frozen account not refused.
 - `tacsim`, in source (two, fast): the help's figure is the fee the verb charges and a tenth
   of the Class III core's price; the route issues the instrument doc 17 names.
 - `tacsim`, `domain_field::m8_end_user` (three, fast, on the production composition, the M8
