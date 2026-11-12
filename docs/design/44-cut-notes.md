@@ -399,9 +399,11 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
   mind's digest, because `tests/domain_arena/content.rs` holds its manifest to `API_VERSION`
   and its header says the API; and the arena pins that fold a Standard seal (six tests in
   `tests/domain_arena/` `minds.rs`, `motor.rs` and `reflex.rs`: three state hashes and the
-  `hash` of 84 pinned ledger lines). 58 values in all, re-pinned from one Linux run by
-  script. Nothing an arena does moved: the ledger lines differ in `hash` and in the
-  `mind_sealed` lines' `source` alone. The three house minds' envelopes and manifests and the
+  `hash` of 84 pinned ledger lines), 58 values re-pinned from one Linux run by script; and
+  the four rows of the cross-platform corpus (`minds_rhai.rs` `M2_CROSS_PLATFORM_PINS`),
+  whose test is `#[ignore]`d and runs only in CI's `tacsim-minds` cell. Nothing an arena
+  does moved: the ledger lines differ in `hash` and in the `mind_sealed` lines' `source`
+  alone, and the corpus's four stopping times are as they were. The three house minds' envelopes and manifests and the
   acceptance mind's source name the ABI too.
 - A changed burn is applied by the bubble as a one-second impulse on the step it changes, on
   top of the thrust it then integrates (`bubble.rs` `command_burn_mmps2`). A doctrine that
@@ -476,6 +478,10 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
 
 **Not verified.**
 
+- **The `#[ignore]`d tests that run only on the nightly** (the M6 replay, the M7 and M8
+  stories, the scale harness, the 16b harness and its baselines). Any of them that pins a
+  hash that folds a seal has moved with the ABI and is not re-pinned here. The three that
+  run on a pull request (`tacsim-minds`) were run on Linux: one was re-pinned, two passed.
 - Nothing was run against a live server or over SSH. The stories drive commands in the test
   rig.
 - The think's cost. The raider's extra think a step is not measured; MW.11 measures.
