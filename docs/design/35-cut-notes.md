@@ -992,6 +992,10 @@ A subset of doc 35d §9's `SF.R29` row, and one place where building it changed 
   store down to `run_sealed_mind_on_pool`, where `crate::minds::content::source_lookup` tries the store's
   `mind_source` before the compiled-in sources. Both were passing `None`, so a doctrine sealed to a digest the binary
   does not carry never ran (doc 35d §6.6, `D-35-17`).
+  **Amended by doc 44 unit MW.10.** That lookup changed nothing in play: every seal was still built with the digest
+  compiled into the binary, and nothing could select another. Since MW.10 the cast names each doctrine with its
+  digest, a bubble seals its NPC actors from the store by that digest or by the one staff selected with
+  `@mind/cast`, and the shipped doctrines are written to the store at boot (doc 35 §12; `44-cut-notes.md`, MW.10).
 - **A clock that steps back re-anchors the bubble.** `last_stepped_wall_s` is set to the new time and the bubble
   steps again on the next tick. It used to wait, stepping nothing, until the wall clock passed the old value.
 

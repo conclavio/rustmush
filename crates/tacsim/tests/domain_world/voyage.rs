@@ -13787,3 +13787,521 @@ fn mw9_an_escort_that_heaves_to_is_stood_down_alone_though_she_fired_and_the_run
         "the interdictor closes on the hull that would not stop"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Doc 44 unit MW.10: a doctrine named by the cast with its digest
+// ---------------------------------------------------------------------------
+
+/// The SHA-256 of `source`: the digest the store holds it under.
+fn source_digest(source: &str) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(source.as_bytes()).into()
+}
+
+/// A staff character (`SIM_ADMIN`) on an account of their own: a hand that submits, which the
+/// harness forbids GOD.
+fn doctrine_staff(rig: &mut Rig) -> ObjId {
+    let staff = rig.tw.spawn_player("Doctrine Staff");
+    rig.tw
+        .world_mut()
+        .get_mut(staff)
+        .expect("the staff character")
+        .powers
+        .insert(mush_core::Powers::SIM_ADMIN);
+    if let Ok(mut map) = rig.oracle.0.lock() {
+        map.insert(
+            staff,
+            AccountId::mint("DoctrineStaffAcct", 77).expect("an account id"),
+        );
+    }
+    staff
+}
+
+/// `who` publishes `source` as a new mind `name` with the workshop's verbs (`@mind/new`,
+/// `@mind/paste`, `@mind/save`), the author service pumped until the Roll holds the saved
+/// revision. Answers the revision's number and the digest the store holds its source under,
+/// read from the saved revision and never worked out here.
+fn publish_revision(rig: &mut Rig, who: ObjId, name: &str, source: &str) -> (u64, [u8; 32]) {
+    let made = run(&mut rig.tw, who, &format!("@mind/new {name}"));
+    assert!(made.contains("Mind draft created"), "{made}");
+    let _ = run(&mut rig.tw, who, &format!("@mind/paste {name}"));
+    assert_eq!(rig.tw.world().input_depth(who), 1, "the paste is open");
+    for line in source.lines() {
+        let _ = run(&mut rig.tw, who, line);
+    }
+    let pasted = run(&mut rig.tw, who, ".");
+    assert!(pasted.contains("Working source replaced"), "{pasted}");
+    let queued = run(
+        &mut rig.tw,
+        who,
+        &format!("@mind/save {name}=a doctrine revision"),
+    );
+    assert!(queued.contains("queued"), "{queued}");
+
+    let saved = |rig: &Rig| -> Option<(u64, [u8; 32])> {
+        let roll = rig.tw.world().module_state::<mush_roll::RollStore>()?;
+        let key = roll.mind(who, name).ok()?.latest()?;
+        let revision = roll.revision(who, key).ok()?;
+        Some((key.number, *revision.source().as_bytes()))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        if let Some(found) = saved(rig) {
+            return found;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the author service did not save {name}"
+        );
+        if let Some(when) = rig.tw.engine_mut().sched.next_due() {
+            let _ = rig.tw.fire_due(when);
+        }
+        let submitted = drain(&mut rig.tw);
+        land_quietly(rig, &submitted);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// The digest the interdictor of `hull`'s open bubble was sealed with, and its doctrine's name.
+fn interdictor_sealed_with(tw: &TestWorld, hull: ObjId) -> Option<(String, [u8; 32])> {
+    let book = tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let seal = book.active_for_hull(hull)?.interdictor_seal.as_ref()?;
+    Some((seal.mind.to_string(), seal.source_sha256))
+}
+
+/// What the space cast's interdictor is to fly next, as a seal site resolves it.
+fn interdictor_doctrine(
+    tw: &TestWorld,
+) -> Result<tacsim::minds::content::cast::CastDoctrine, tacsim::minds::content::cast::CastFault> {
+    tacsim::minds::content::cast::cast_doctrine(
+        Some(store(tw)),
+        tacsim::minds::content::cast::CastActor::Interdictor,
+    )
+}
+
+/// A second chartered hull, the *Escort Hawk*, loaded and with her pilot at C01's lock.
+fn second_chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, ObjId) {
+    let second = pilot(rig, who, seed);
+    let enrol = run(&mut rig.tw, second, "+coop/enrol Escort Hawk");
+    assert!(enrol.contains("now the Escort Hawk"), "{enrol}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), second).expect("a second charter");
+    let row = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter.hull.0)
+        .expect("the second hull's row");
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(rig, vault, "propellant", 53, LotId(964));
+    seed_pool(rig, vault, "provisions", 19, LotId(965));
+    (second, ObjId(row.hull))
+}
+
+/// **Doc 44 unit MW.10 (Q-44-25, as corrected in §4a)** — staff publish a revision of a space
+/// doctrine and select it for an actor; the next bubble flies it, and one that was open keeps
+/// the doctrine it was sealed with, across a restart.
+///
+/// The pack's cast names the interdictor's doctrine with its digest, `A`, and the store holds
+/// `A`'s source. Revision `B` is `A` with one line changed: where `A` closes on a hull that
+/// will not stop, `B` holds. Staff publish `B` with the workshop's verbs, which stores it under
+/// its own digest and leaves `A`'s document as it was.
+///
+/// The *Salt Moth* meets the interdictor: its bubble opens sealed `A`. Staff then select `B`
+/// for the interdictor. The open bubble's interdictor still closes, which only `A` does: a
+/// selection changes the next seal and never a live one. Its tape replays to the same burn,
+/// reading nothing but the tape. After a restart the bubble is still sealed `A`, and the
+/// selection is still `B`. When the bubble closes its record names `A`.
+///
+/// The *Escort Hawk* then crosses the same waypoint: her bubble opens sealed `B`, and the
+/// interdictor takes her and holds, where `A` closed.
+///
+/// Before the cut every seal named the digest compiled into the binary and no verb selected
+/// another, so the second interdictor closed like the first.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mw10_staff_publish_a_revision_and_select_it_and_the_next_interdictor_flies_it() {
+    let roster = Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster);
+    let staff = doctrine_staff(&mut rig);
+
+    // The pack's cast names the interdictor's doctrine by digest, and the boot stored the
+    // shipped source under it.
+    let shipped = tacsim::minds::content::interdictor_patrol_source();
+    let a = source_digest(shipped);
+    let pack = interdictor_doctrine(&rig.tw).expect("the pack's doctrine is held");
+    assert_eq!((pack.digest, pack.selected), (a, false));
+    assert_eq!(pack.name, "interdictor_patrol");
+    assert!(store(&rig.tw).cast_faults().is_empty());
+    assert_eq!(store(&rig.tw).mind_source(&a), Some(shipped));
+
+    // Staff publish revision B: A, but it holds where A closes.
+    assert!(shipped.contains("        speed(1000);\n"));
+    let holding = shipped.replace("        speed(1000);\n", "        hold();\n");
+    let (number, b) = publish_revision(&mut rig, staff, "HoldingPatrol", &holding);
+    assert_ne!(b, a, "other bytes are another digest");
+    assert!(store(&rig.tw).has_mind_source(&b), "the store holds B");
+    assert_eq!(
+        store(&rig.tw).mind_source(&a),
+        Some(shipped),
+        "and A's document is as it was"
+    );
+    // Published is not selected.
+    assert_eq!(interdictor_doctrine(&rig.tw).expect("still held").digest, a);
+
+    let (pilot_a, row_a) = chartered(&mut rig, "Pilot", 1);
+    let hull_a = ObjId(row_a.hull);
+    load(&mut rig, &row_a, 53, 19);
+    let (pilot_b, hull_b) = second_chartered(&mut rig, "Escort", 2);
+    set_rate(&mut rig.tw, 3_600);
+
+    // The first hull sails, and the interdictor's bubble opens on her, sealed A.
+    board(&mut rig, pilot_a);
+    let pending = undock_and_burn(&mut rig, pilot_a, hull_a);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, boundary);
+    let entry = at_the_interdictor(&rig.tw, hull_a).expect("the first bubble");
+    assert_eq!(entry.held_by_interdictor, Relation::Hostile);
+    assert_eq!(
+        interdictor_sealed_with(&rig.tw, hull_a),
+        Some(("interdictor_patrol".to_owned(), a)),
+        "the bubble is sealed with the digest the cast names"
+    );
+
+    // Its first think hails: it takes her and holds.
+    let (_, submitted) = one_second(&mut rig, pilot_a);
+    land_quietly(&mut rig, &submitted);
+    let hailed = at_the_interdictor(&rig.tw, hull_a).expect("still in the bubble");
+    assert_eq!(hailed.interdictor_lock, Some(hull_a));
+    assert_eq!(hailed.interdictor_thrust, [0, 0, 0]);
+
+    // Staff select B for the interdictor while that bubble is open.
+    let refused = run(
+        &mut rig.tw,
+        pilot_a,
+        &format!("@mind/cast interdictor=HoldingPatrol@{number}"),
+    );
+    assert!(refused.contains("Permission denied"), "{refused}");
+    let selected = run(
+        &mut rig.tw,
+        staff,
+        &format!("@mind/cast interdictor=HoldingPatrol@{number}"),
+    );
+    assert!(selected.contains("Selected."), "{selected}");
+    let b_text = tacsim::arena::digest_text(&b);
+    assert!(selected.contains(&b_text), "{selected}");
+    let listing = run(&mut rig.tw, staff, "@mind/cast");
+    assert!(
+        listing.contains(&format!("interdictor: {b_text}, selected by staff")),
+        "{listing}"
+    );
+    assert!(listing.contains("corvette: kirkwood_picket"), "{listing}");
+    let next = interdictor_doctrine(&rig.tw).expect("B is held");
+    assert_eq!((next.digest, next.selected, next.pack_digest), (b, true, a));
+
+    // The open bubble keeps A. The hull holds her course, so on its next think the
+    // interdictor closes on her: what A does, and B never does.
+    let (_, submitted) = one_second(&mut rig, pilot_a);
+    land_quietly(&mut rig, &submitted);
+    let closing = at_the_interdictor(&rig.tw, hull_a).expect("still in the bubble");
+    assert_ne!(
+        closing.interdictor_thrust,
+        [0, 0, 0],
+        "the open bubble's interdictor closes, as A does"
+    );
+    assert_eq!(
+        interdictor_sealed_with(&rig.tw, hull_a).map(|(_, digest)| digest),
+        Some(a),
+        "a selection never changes a live seal"
+    );
+    // A replay of that bubble reads its tape and nothing else: it closes as the bubble did.
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull_a).expect("the first bubble");
+        let (replayed, _) = active.tape.replay();
+        let live = &active.bubble.ships[&active.interdictor_ship_id];
+        let again = &replayed.ships[&active.interdictor_ship_id];
+        assert_eq!(again.thrust_mmps2, live.thrust_mmps2);
+        assert_eq!(again.thrust_mmps2, closing.interdictor_thrust);
+        assert_eq!(again.locked_target_id, live.locked_target_id);
+    }
+
+    // A restart keeps both: the open bubble is still sealed A, and the selection is still B.
+    let mut rig = reboot_with(rig, roster);
+    assert_eq!(
+        interdictor_sealed_with(&rig.tw, hull_a),
+        Some(("interdictor_patrol".to_owned(), a)),
+        "the open bubble comes back with the seal it took"
+    );
+    assert!(store(&rig.tw).cast_faults().is_empty());
+    let after = interdictor_doctrine(&rig.tw).expect("B is held after the restart");
+    assert_eq!((after.digest, after.selected), (b, true));
+    let listing = run(&mut rig.tw, staff, "@mind/cast");
+    assert!(
+        listing.contains(&format!("interdictor: {b_text}, selected by staff")),
+        "{listing}"
+    );
+    assert_eq!(
+        at_the_interdictor(&rig.tw, hull_a).map(|at| at.interdictor_thrust),
+        Some(closing.interdictor_thrust),
+        "and it is still closing"
+    );
+
+    // She brakes; A holds its fire and its drive for a hull that is slowing, she is stood
+    // down, and the bubble closes behind her. Its record names A.
+    let _ = run(&mut rig.tw, pilot_a, "+helm/thrust 1000 -1000 0 0 force");
+    let orders = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &orders);
+    let mut closed = false;
+    for _ in 0..900 {
+        let (_, submitted) = one_second(&mut rig, pilot_a);
+        land_quietly(&mut rig, &submitted);
+        match at_the_interdictor(&rig.tw, hull_a) {
+            None => {
+                closed = true;
+                break;
+            }
+            Some(at) => assert_eq!(
+                interdictor_sealed_with(&rig.tw, hull_a).map(|(_, digest)| digest),
+                Some(a),
+                "the open bubble is sealed A to its end (drift {} mm/s)",
+                at.drift
+            ),
+        }
+    }
+    assert!(closed, "the first bubble never closed");
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let record = book.completed.get(&hull_a).expect("the closed bubble");
+        assert_eq!(
+            record
+                .flown
+                .iter()
+                .map(|flown| (flown.mind.as_str(), flown.source_sha256))
+                .collect::<Vec<_>>(),
+            vec![("interdictor_patrol", a)],
+            "the closed bubble's record names the doctrine that flew it"
+        );
+    }
+
+    // The next hull to cross meets an interdictor sealed B.
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot_b, gallery);
+    let aboard = run(&mut rig.tw, pilot_b, "+ship/board");
+    assert!(
+        aboard.contains("You cycle the lock into the Escort Hawk."),
+        "{aboard}"
+    );
+    let pending = undock_and_burn(&mut rig, pilot_b, hull_b);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, boundary);
+    let entry = at_the_interdictor(&rig.tw, hull_b).expect("the second bubble");
+    assert_eq!(entry.held_by_interdictor, Relation::Hostile);
+    assert_eq!(
+        interdictor_sealed_with(&rig.tw, hull_b),
+        Some(("interdictor_patrol".to_owned(), b)),
+        "the next bubble is sealed with the revision staff selected"
+    );
+
+    // She holds her course as the first hull did. A closed on the second think; B takes her
+    // and holds, think after think.
+    for second in 0..4 {
+        let (_, submitted) = one_second(&mut rig, pilot_b);
+        land_quietly(&mut rig, &submitted);
+        let at = at_the_interdictor(&rig.tw, hull_b).expect("still in the second bubble");
+        assert_eq!(
+            at.interdictor_lock,
+            Some(hull_b),
+            "second {second}: B still takes its target"
+        );
+        assert_eq!(
+            at.interdictor_thrust,
+            [0, 0, 0],
+            "second {second}: B holds where A closed"
+        );
+        assert!(!at.stood_down, "second {second}: she never slowed");
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 44 unit MW.10 (Q-44-25, as corrected in §4a)** — other bytes under a digest are
+/// refused, and a cast whose doctrine the store cannot serve is refused at load by name.
+///
+/// Publishing other bytes with the workshop's verbs stores them under their own digest; the
+/// first document is not touched, and no verb takes a digest for bytes. A digest the store does
+/// not hold cannot be selected. A document written under `A`'s key that carries other bytes
+/// does not load: the boot refuses the cast's interdictor in a line that names the actor and
+/// the digest, `@mind/cast` shows the refusal, and a carrier that crosses the interdicted
+/// waypoint meets nobody, though the binary carries `A`'s bytes. Staff then select a revision
+/// the store holds, and the refusal is gone, and stays gone across a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mw10_other_bytes_under_a_digest_are_refused_and_a_cast_the_store_cannot_serve_does_not_sail() {
+    use tacsim::minds::content::cast::{CastActor, CastFault, cast_doctrine};
+
+    let roster = Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster);
+    let staff = doctrine_staff(&mut rig);
+    let shipped = tacsim::minds::content::interdictor_patrol_source();
+    let a = source_digest(shipped);
+    let a_text = tacsim::arena::digest_text(&a);
+    let a_key = SmolStr::new(format!("tacsim:mindsrc:{a_text}"));
+
+    // Other bytes, published: their own digest, and A's document untouched.
+    let holding = shipped.replace("        speed(1000);\n", "        hold();\n");
+    let (_, b) = publish_revision(&mut rig, staff, "HoldingPatrol", &holding);
+    assert_ne!(b, a);
+    assert_eq!(store(&rig.tw).mind_source(&a), Some(shipped));
+    // The same bytes again, under another name, are the same document and nothing new.
+    let (_, again) = publish_revision(&mut rig, staff, "HoldingPatrolAgain", &holding);
+    assert_eq!(again, b);
+
+    // A digest the store does not hold is not selected.
+    let absent = "5a".repeat(32);
+    let out = run(
+        &mut rig.tw,
+        staff,
+        &format!("@mind/cast interdictor={absent}"),
+    );
+    assert!(out.contains("holds no source"), "{out}");
+    assert_eq!(
+        store(&rig.tw).doctrine_pointer(&CastActor::Interdictor.role()),
+        None
+    );
+    let out = run(&mut rig.tw, staff, "@mind/cast escort=PACK");
+    assert!(out.contains("No such actor"), "{out}");
+    let out = run(&mut rig.tw, staff, "@mind/cast interdictor=HoldingPatrol");
+    assert!(out.contains("not a revision you have saved"), "{out}");
+
+    // A document under A's key that carries B's bytes.
+    let rig = reboot_editing(rig, roster, |folded| {
+        let kv = &mut folded.entry(SmolStr::new(tacsim::NS)).or_default().kv;
+        assert!(
+            kv.iter().any(|(key, _)| *key == a_key),
+            "the boot wrote A's document"
+        );
+        kv.retain(|(key, _)| *key != a_key);
+        kv.push((
+            a_key.clone(),
+            serde_json::json!({
+                "sha256": a_text,
+                "abi": tacsim::minds::MIND_ABI,
+                "bytes": holding,
+            }),
+        ));
+    });
+    let mut rig = rig;
+    assert!(
+        !store(&rig.tw).has_mind_source(&a),
+        "bytes that do not hash to their key are not held, and the key is not rewritten"
+    );
+    let faults = store(&rig.tw).cast_faults().to_vec();
+    assert_eq!(faults.len(), 1, "{faults:?}");
+    assert!(faults[0].contains("interdictor"), "{faults:?}");
+    assert!(faults[0].contains(&a_text), "{faults:?}");
+    assert_eq!(
+        cast_doctrine(Some(store(&rig.tw)), CastActor::Interdictor),
+        Err(CastFault::NotHeld {
+            actor: CastActor::Interdictor,
+            name: SmolStr::new("interdictor_patrol"),
+            digest: a,
+            selected: false,
+        })
+    );
+    assert!(cast_doctrine(Some(store(&rig.tw)), CastActor::Corvette).is_ok());
+    assert!(cast_doctrine(Some(store(&rig.tw)), CastActor::Raider).is_ok());
+    let listing = run(&mut rig.tw, staff, "@mind/cast");
+    assert!(listing.contains("interdictor: REFUSED"), "{listing}");
+    assert!(listing.contains(&a_text), "{listing}");
+
+    // A carrier crosses the interdicted waypoint and meets nobody.
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, boundary);
+    for _ in 0..3 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .active_for_hull(hull)
+            .is_none(),
+        "no bubble opens for an interdictor with no doctrine"
+    );
+    assert!(
+        journey(&rig.tw, hull).is_some_and(|j| *j.state() == mush_sim::JourneyState::Cruising),
+        "she is on her passage"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .cleared_interdiction_legs
+            .iter()
+            .any(|(cleared, _)| *cleared == hull),
+        "she reached the interdicted boundary and was let through it"
+    );
+    // And she was never checked out into a bubble that did not open: the refusal came first.
+    assert!(
+        mush_tactics::custody::marker_of(rig.tw.world(), hull).is_none(),
+        "her unit is in nobody's custody"
+    );
+
+    // Staff select a revision the store holds, by its digest: the refusal is gone.
+    let b_text = tacsim::arena::digest_text(&b);
+    let selected = run(
+        &mut rig.tw,
+        staff,
+        &format!("@mind/cast interdictor={b_text}"),
+    );
+    assert!(selected.contains("Selected."), "{selected}");
+    let now = cast_doctrine(Some(store(&rig.tw)), CastActor::Interdictor).expect("B is held");
+    assert_eq!((now.digest, now.selected), (b, true));
+
+    // And stays gone across a restart, with A's key still claimed and unreadable.
+    let mut rig = reboot_with(rig, roster);
+    assert!(!store(&rig.tw).has_mind_source(&a));
+    assert!(
+        store(&rig.tw).cast_faults().is_empty(),
+        "{:?}",
+        store(&rig.tw).cast_faults()
+    );
+    assert_eq!(
+        store(&rig.tw).doctrine_pointer(&CastActor::Interdictor.role()),
+        Some(b)
+    );
+
+    // Clearing the selection brings the refusal back, in words.
+    let cleared = run(&mut rig.tw, staff, "@mind/cast interdictor=PACK");
+    assert!(cleared.contains("Selection cleared"), "{cleared}");
+    assert!(cleared.contains(&a_text), "{cleared}");
+    assert!(cast_doctrine(Some(store(&rig.tw)), CastActor::Interdictor).is_err());
+    no_refused_writes(&rig.tw);
+}

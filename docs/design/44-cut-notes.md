@@ -1246,7 +1246,214 @@ Q-35-B4.
 
 ## MW.10
 
-Not built.
+A space doctrine is named by the pack's cast with its digest; staff publish a revision with the
+workshop's verbs and select it for an actor; the next bubble flies it (doc 44 §7.1, Q-44-25 as
+corrected in §4a; first review finding 4). PR #562. Doc 35 §12 holds the rules. Paths are under
+`crates/tacsim/src/` unless given.
+
+**Built.**
+
+- **The cast names a digest** (`content/space/picket_cast.json`, `space/picket.rs`
+  `PicketCastEntry::doctrine_sha256`). The cast's actors are three: `corvette`, `raider`,
+  `interdictor`. Each names its doctrine and the SHA-256 of that doctrine's source. A cast whose
+  digest is not 64 lowercase base-16 characters does not load, like one that does not parse.
+- **The store holds the shipped doctrines** (`minds/content/cast.rs` `boot`, called from
+  `lib.rs` `on_world_loaded` before the space books are read back). The five shipped space
+  sources are written as `tacsim:mindsrc:<sha256>` documents by the first boot that finds no
+  document under the key, as Standard Doctrine is. Before this unit they were put in RAM at
+  each seal site and never written.
+- **One resolution** (`minds/content/cast.rs` `cast_doctrine`): staff's selection if the world
+  holds one, else the cast's digest, and in both cases only if the store holds a readable
+  source under it. Otherwise a `CastFault` whose text names the actor and the digest. A
+  selection whose document does not read is a fault too, not "no selection".
+- **Every cast seal site asks it, first** (`space/tick.rs` `build_interdiction_bubble`,
+  `space/picket.rs` `cast_doctrine_in_world`). The doctrines a bubble needs (the corvette's
+  and the raider's, or the interdictor's) are resolved before the carrier is checked out and
+  before a hull is made, so a refusal touches nothing: no bubble opens and the carrier flies
+  on. The seals are built with the resolved digests. No seal site of a cast actor names a
+  compiled digest any more, and `KirkwoodPicketState::new` holds no seal until the spawn
+  gives it the ones the world took.
+- **A think runs the seal's digest and nothing else.** The three step functions passed the
+  compiled digest as the one to use when the record held no seal. They now read the seal; a
+  record with no seal does not think.
+- **A reload keeps the seal** (`space/picket.rs` `reloaded_seal`, `space/tick.rs`
+  `boot_read`). The bubble's record holds each seal's digest and the reload rebuilds a seal
+  from it. The hull's attribute, which is the whole seal, is taken only when it is that same
+  seal (unit, sortie and digest). The reload used to replace a missing attribute with a seal
+  of the compiled digest, over whatever the record held.
+- **Refusal at load.** `boot` resolves every actor once the store is up. Each refusal is one
+  `error!` line and one entry of `TacsimStore::cast_faults`. The boot goes on.
+- **`@mind/cast`** (`minds/content/cast.rs` `command`; the switch is in
+  `minds/workshop/commands.rs`). Staff only, by `/live`'s gate (`SIM_ADMIN` or Royalty).
+  Bare, it lists the three actors. `<actor>=<owned mind>@<revision>` selects a revision the
+  asker saved; `=<digest>` any source the store holds; `=PACK` clears, and deletes a selection
+  that did not read. It refuses a digest the store does not hold and a source that does not
+  compile. The write is one pointer document, `tacsim:doctrine:cast.<actor>` (`store.rs`
+  `put_doctrine_pointer`), or its deletion.
+- **A closed bubble says what flew it** (`space/tick.rs` `CompletedInterdictionBubble::flown`):
+  each NPC actor's doctrine name and digest, taken from the seals when the bubble closes.
+
+**Where the selection lives, and why.** In the world's own documents, as
+`tacsim:doctrine:cast.<actor>`: the key family and the shape (`{"sha256": …}`) of MW.8's house
+default pointer, read by the same loader arm.
+
+- It survives a restart: the boot reads it with the rest of the store.
+- It survives a pack upgrade: it is not content. After an upgrade the selected digest still
+  flies, and `@mind/cast` shows it beside the digest the cast now names.
+- Rejected, the cast file: content is compiled into the binary, so staff could not change it
+  on a running box, and an upgrade would overwrite it.
+- Rejected, an attribute on the NPC hull or its commander: those objects are made when a
+  bubble first opens, are reused by name, and are not there for the boot to check.
+- Rejected, a Roll record (a filing or a licence): a selection grants nothing and is owned by
+  nobody, and the Roll's records are both.
+
+No pack, lane, relay or snapshot format version moved. Two documents gained a field: a cast
+entry's `doctrine_sha256` (required in the cast file, which is compiled in) and a completed
+bubble's `flown` (optional; absent on older records).
+
+**What the survey had wrong, and what it did not see.**
+
+- The survey's list of cast actors ("the picket, the interdictor, the raider, the escort") has
+  one that does not exist. There is no escort in the cast: an escort is a player's hull.
+- "Publishing other bytes under A's digest" cannot be said through any verb. The store's key
+  is the SHA-256 of the bytes, so other bytes are another key. The only way other bytes come
+  to sit under A's key is a document written from outside, and the store's answer to that is
+  at load: it does not hold the document, and it never writes the key again. Both are proved.
+- **A replay reads the tape and nothing else.** `BubbleInputTape::replay` applies the recorded
+  commands to the first snapshot. It takes no store and runs no think, so no selection can
+  reach it. That half of the row held on main already, by construction.
+- **A closed bubble kept nothing to replay and did not say what flew it.**
+  `CompletedInterdictionBubble::from_closed` replaces the tape with an empty one over the
+  final state and drops the seals. `flown` is the record this unit adds.
+- The compact seal does keep the digest. What it drops is the class, the principal and the
+  channels, which are constants for a cast actor (class I, no principal, helm and sensors).
+  That loss matters to a player's seal, not to these: MW.13.
+- **The reload could change an open bubble's mind.** If a hull's seal attribute was missing,
+  `boot_read` built a seal with the compiled digest over whatever the record held. And an
+  attribute that was there won over the record without being compared with it, on a hull
+  that is reused by name. Both fixed here.
+- **The shipped doctrines were never in the persisted store.** `install_mind_source` is the
+  RAM-only fixture path; production called it at every seal. So "the store" a space think
+  read was the binary's bytes by another route.
+- `source_lookup` still answers the binary's bytes for a shipped digest the store does not
+  hold. That is what lets a rig with no world think, and an open bubble keep thinking if its
+  document is lost. It can only ever answer the bytes that hash to the digest asked for. A
+  new seal does not use it: `cast_doctrine` asks the store alone.
+- **The carrier is checked out before the bubble's NPC hulls are made**
+  (`build_carrier_ship_state`), and a spawn that then fails leaves her checked out with no
+  bubble: nothing checks her back in. That was so before this unit for the rare failures
+  (a hull that will not create, a unit that will not check out). This unit's refusal is not
+  one of them: it comes first.
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **An actor whose doctrine the store does not hold does not sail, and the boot goes on.** No bubble opens for her; the carrier crosses unstopped. The alternative is to refuse the boot, as a pack that does not load does. Taken because the store's rule is that a document it cannot use never fails the boot, and because the fault is one actor's | Low: one call in `on_world_loaded` |
+| 2 | A selection the store does not hold, or whose document does not read, is refused the same way; it does not fall back to the cast's doctrine | Low |
+| 3 | The selection's key is `tacsim:doctrine:cast.<actor>`, by actor, not by doctrine name. Two actors that name one doctrine are selected apart | Low: no world holds one yet |
+| 4 | The pointer holds a digest and nothing else: not who selected it or when. The selection is logged at `info` | Low: a wider document needs the loader arm to read it |
+| 5 | `@mind/cast` writes its pointer in the handler, as the workshop's draft verbs write theirs; it submits nothing, so it does not end `Queued.` The handler note is in `legacy-handlers.toml` | Medium if selections must become a typed, audited family |
+| 6 | `<owned mind>@<revision>` needs the revision named. A bare name is the working copy, which is not stored | Low |
+| 7 | Selecting checks that the source compiles, and nothing more. A doctrine that compiles and faults at its first think leaves its actor inert for that bubble. A digest selects any source the store holds, whoever published it and whatever it was written for | Low |
+| 8 | The seal of a selected revision still reads `origin: Doctrine { revision: 1 }` and the cast's doctrine name. The digest is what tells revisions apart | Low |
+
+**Left, and for which unit.**
+
+- **The backup mind's pointer has no verb** (doc 35 Q-35-B2). `put_doctrine_pointer` writes
+  any role, and the listing would take a fourth row. Not built here: its rule is different
+  (read on every think, with the compiled default behind it). Deferred, with no unit; MW.13
+  touches that seat next.
+- **MW.11** (thinks off the world thread): untouched. A seal is still resolved on the world
+  thread when a bubble opens, which is one map lookup.
+- **MW.12** (drones): the drone's seal is still built with `drone_mining_digest()`
+  (`space/commands.rs`, and the reload in `space/tick.rs`). When the drone becomes a sortie,
+  it takes a row in the cast and `cast_doctrine` resolves it.
+- **MW.13** (a player's mind on a ship): the seal a reload rebuilds from the record is class
+  I with no principal. A player's seal needs the hull's attribute, or a wider compact record.
+  And an NPC hull that is salvaged keeps its `tacsim:mind_seal` attribute, which the backup
+  mind tries first (`space/backup.rs`); that was so before this unit, and the seal it finds
+  can now be a revision staff selected. Clearing the attribute at check-in is MW.13's.
+- **A spawn that fails after the carrier is checked out** leaves her checked out (above).
+  Not changed. Deferred, with no unit: it wants one check-in on every `None` of
+  `build_interdiction_bubble`.
+- **House policy and port arms** (Q-44-32, deferred): a role under `tacsim:doctrine:` and a
+  digest in the store is the path they would use; nothing here is specific to space but the
+  three actor names.
+- **The cast is still compiled in**, not in the lane pack (doc 35 `D-35-17`, owed since
+  SF.R30). Moving it is a lane format move and was not needed for this unit.
+
+**AP.3 and the ABI.** No story or test of this unit pins a digest: each works it out from the
+shipped bytes or reads it from the revision it saved. One pin moves with a shipped space
+doctrine's bytes: the three `doctrine_sha256` values in `picket_cast.json`. If the `api:` line
+of `kirkwood_picket.rhai`, `belt_raider.rhai` or `interdictor_patrol.rhai` is rewritten, the
+unit test `the_packs_cast_names_each_shipped_doctrine_by_its_digest` fails and prints the
+value to write. Whichever of AP.3 and MW.10 merges second merges main in and re-pins.
+
+**The acceptance, and what holds each.** The two stories are in
+`crates/tacsim/tests/domain_world/voyage.rs`; the unit tests in `minds/content/cast.rs` and
+`space/tick.rs` (`interdictor_tests`).
+
+| The row asks | Held by | Before the cut |
+|---|---|---|
+| Staff publish revision B and select it; the next picket behaves as B | `mw10_staff_publish_a_revision_and_select_it_and_the_next_interdictor_flies_it`: B is the shipped interdictor doctrine with `hold()` where it has `speed(1000)`, published with `@mind/new`, `@mind/paste`, `@mind/save` and selected with `@mind/cast`. The second hull's bubble is sealed B, and its interdictor takes her and holds for four thinks, where A closed on its second | Every seal named the compiled digest and no verb selected another |
+| A bubble that was open behaves as A | The same story: B is selected after the first bubble's first think; on the next the interdictor closes, which only A does. The seal reads A to the bubble's end, and after a restart | — |
+| A replay of an earlier one behaves as A | The same story: the open bubble's tape replays to the same burn and lock after the selection. Its closed record names A (`flown`). And `a_doctrine_changed_to_hold_where_it_closed_makes_the_interdictor_hold` | The replay held by construction; the closed record named nothing |
+| Publishing other bytes under A's digest is refused | `mw10_other_bytes_under_a_digest_are_refused_and_a_cast_the_store_cannot_serve_does_not_sail`: published, other bytes take their own digest and A's document is untouched; written under A's key, they do not load and the key is not rewritten. `the_store_refuses_other_bytes_under_a_digest` | The store's rule was there; nothing proved it for a doctrine |
+| The selection survives a restart | Both stories | No selection |
+| A cast naming a digest the store lacks is refused at load, in a line that names the actor and the digest | The second story: `cast_faults` holds one line with `interdictor` and A's digest, `@mind/cast` shows it, the carrier crosses with no bubble and in nobody's custody, and selecting a held revision ends the refusal. `the_packs_digest_is_refused_when_the_store_does_not_hold_it`, `a_selection_wins_and_an_unheld_one_is_refused_by_name`, `a_selection_that_does_not_read_is_refused_and_not_taken_for_none` | The compiled digest was sealed whatever the store held |
+
+**Verified, and how.**
+
+- **Mutation checks**, on Linux (conclav.dev), each putting one behaviour back or taking one
+  rule out, against the two stories and the unit tests. All eleven were caught:
+
+  | Mutation | Caught by |
+  |---|---|
+  | A selection is never read (main's behaviour) | Both stories; `a_selection_wins_and_an_unheld_one_is_refused_by_name` |
+  | A live bubble's think follows the cast, not its seal | The first story: "the open bubble's interdictor closes, as A does" |
+  | The reload seals an open bubble again from the cast | The first story: "the open bubble comes back with the seal it took" |
+  | A digest the store does not hold falls back to the binary's bytes | The second story; two unit tests |
+  | The store holds bytes that do not hash to their key | The second story; `the_store_refuses_other_bytes_under_a_digest` |
+  | The boot does not check the cast | The second story: no line in `cast_faults` |
+  | A closed bubble does not record what flew it | The first story; the unit test in `tick.rs` |
+  | A refused doctrine opens the bubble on the compiled digest | The second story: "no bubble opens for an interdictor with no doctrine" |
+  | The reload takes whatever seal the hull's attribute holds | `a_reload_keeps_the_seal_the_bubbles_record_names` |
+  | A selection that does not read is taken for none | `a_selection_that_does_not_read_is_refused_and_not_taken_for_none` |
+  | The carrier is checked out before the doctrines are resolved | The second story: "her unit is in nobody's custody" |
+
+- **A second reader** (an Opus agent, the diff only, nothing run) found three defects, all
+  fixed and each now held by a mutation above: the first cut checked the carrier out before
+  it resolved the doctrines, so a refusal left her in a bubble's custody with no bubble; a
+  selection whose document did not read was taken for no selection and flew the pack's
+  doctrine; and the reload preferred the hull's attribute to the bubble's record unseen.
+- **The whole of `tacsim`'s tests on Linux** (conclav.dev), on `5eccf1c01`, which is this
+  unit with main merged in at `0bad68f0b`: 4,520 passed, 31 skipped (the `#[ignore]`d ones).
+- **On the same commit there**: `mush-contract-tests`, 195 passed and 8 skipped there, no
+  budget re-blessed; `cargo clippy --all-targets -D warnings` on `tacsim` and
+  `mush-contract-tests`; `cargo doc -D warnings --document-private-items` on `tacsim`;
+  `cargo fmt --check`.
+- **`mush-contract-tests` on Windows**, the first cut: 203 passed.
+- **CI on `5eccf1c01`**: the pull-request run 43258253021 is green but for `test (bot)`,
+  which is red on main since `668425fab` (`mine::minds::tests::absent_census`: AP.5's new
+  sentence has no row in MW.5's table; PR #563 is the fix) and touches nothing of this unit.
+  The dispatch of the dispatch-only jobs on the same commit, run 43258329034: every job
+  green, the TacSim harness (no baseline moved), the M6, M7 and M8 stories and
+  `tacsim-minds` among them, but for that `test (bot)` and one M8 job that never built (its
+  runner could not download the toolchain). Main was merged in again once #563 had landed;
+  the PR records the runs on that head.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH. The stories drive commands in the test
+  rig, the workshop's paste and save among them.
+- The picket's two actors (the corvette and the raider) are selected by the same code as the
+  interdictor and are covered by the unit tests, but no story selects a revision for either.
+- A pack upgrade. The selection is not content, so an upgrade cannot touch it; no test boots
+  a second cast file over a world that holds a selection, because the cast is compiled in.
+- A selected doctrine that compiles and faults at its first think: the actor is inert for
+  that bubble by the step functions' existing rule, which no test of this unit pins.
+- The `#[ignore]`d by-hand lanes that no workflow runs.
 
 ## MW.11
 
