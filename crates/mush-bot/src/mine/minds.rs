@@ -171,6 +171,9 @@ pub mod absent {
     pub const WENT_HOME: &str = "out of the field at its carrier's ramp.";
     /// `tacsim::field::absent::LEFT_AT_RAMP`.
     pub const LEFT_AT_RAMP: &str = "out of the field, but it could not be put aboard: it stands beside your carrier's ramp. Recover it yourself.";
+    /// `tacsim::field::absent::ADMITTED_AWAY` (doc 45 cut AP.5).
+    pub const ADMITTED_AWAY: &str =
+        "while you were away: its mind has the controls, makes for its carrier's ramp";
     /// `tacsim::field::absent::NOT_FIT`.
     pub const NOT_FIT: &str = "its mind keeps the controls.";
     /// `tacsim::field::absent::GONE_HOME`.
@@ -525,6 +528,7 @@ mod tests {
             WENT_HOME,
             LEFT_AT_RAMP,
             NOT_FIT,
+            ADMITTED_AWAY,
             GONE_HOME,
         )
     }
