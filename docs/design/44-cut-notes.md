@@ -1123,4 +1123,117 @@ the engine half are each pinned).
 
 ## MW.17b
 
-Not built.
+The NPC decision call carries its NPC (doc 44 §7.1; first review, finding 8; second review,
+§4c row 19; MW.17's first divergence).
+
+**Built.**
+
+- **The lease carries an attribution** (`crates/mush-core/src/decision.rs`).
+  `DecisionWorkerLease` gains `attribution: Option<DecisionAttribution>`. A
+  `DecisionAttribution` holds three things: the subject a call is charged to (an object id,
+  read through `audit_subject()`), that subject's own daily token ceiling when it has one,
+  and whether its spend is withheld. That is the whole of what crosses.
+- **The owner names it, at the lease** (`crates/mush-core/src/decision_source.rs`,
+  `module.rs`). A source's owner registers a `DecisionAttributionAdapter` with
+  `Registrar::decision_attribution`, after `decision_source`. The registry asks it on the
+  world task in `plan_candidate`, each time it plans a lease, a retry and a lease after a
+  restart included, and sets the answer on the planned lease. A source that registers none
+  leases unattributed, as before.
+- **`mush-npc` reads the profile** (`crates/mush-npc/src/decision.rs`, `attribution_for`):
+  the NPC itself, its `daily_tokens` when the profile sets one (the override a dialogue
+  turn already passes), and withheld when the NPC is parked, which is the agent tick's own
+  test: the profile is disabled or is no longer a valid profile.
+- **The provider charges it** (`crates/mush-server/src/decision_llm.rs`, `call_ctx_for`):
+  the attribution becomes the call's NPC scope, its per-NPC ceiling and a new
+  `CallCtx::parked` flag. `request_for` still takes the prompt alone, so the attribution
+  goes to the meter and never to the model.
+- **A parked call is refused as disabled** (`crates/mush-llm/src/service.rs`): `call` and
+  `stream` treat `ctx.parked` as they treat a kill switch, before the route, the budget or
+  any provider, and write the `disabled` audit row against the NPC.
+- **`@llm/log` names the NPC** (`crates/mush-worldgen/src/commands.rs`). The row printed
+  the triggering player only; a decision has none, so its row named nobody. It now ends
+  `actor=<player or -> npc=<npc or ->`, as the dashboard's recent calls already did.
+
+So `@llm/kill` (and `@agent/set <npc>/enabled=no`, the same flag) stops a decision that was
+already captured: the call is refused before the model is asked, each attempt leaves a
+`npc_decision disabled` row against the NPC, and the decision reaches `npc_idle` when its
+attempts are spent (three, each refused at once) or at its deadline, whichever is first. A decision that is answered is counted on its NPC's budget counter and is refused
+up front when it would pass the NPC's ceiling.
+
+**What moved in a stored or versioned format: nothing.** The lease is not serialised
+anywhere; it is built in memory when a lease is planned and dropped when the worker
+answers. The attribution is not written to the pending record, the prompt record or the
+terminal receipt (`PendingDecision::SCHEMA_VERSION` stays 2), and the adapter does not
+enter the decision-source registry fingerprint, because it selects no durable outcome.
+`plan_worker_lease` keeps its signature and plans an unattributed lease; only the
+registry attributes one.
+
+**What the survey had wrong.**
+
+- "`@llm/kill` reaches an NPC's dialogue but not its decisions" is half true. `@llm/kill`
+  does not use the LLM service's kill switch at all: it sets `enabled = false` in the
+  NPC's profile (`llm_toggle_npc`), and `KillSwitch::disable_npc` has no caller. The agent
+  tick already refuses a NEW decision request for a disabled NPC (`issue_capture`). What
+  nothing reached was a decision already captured: it was still leased, and the provider
+  still asked, up to the kernel's attempt limit.
+- "The lease names a controller and a decision, not an object" is true of the lease, but
+  the pending record it is planned from has always held the acting object
+  (`PendingDecision::actor`), so nothing new had to be stored to attribute it.
+
+**Defaults taken.**
+
+- **The owner names the attribution; the kernel does not derive it from the actor.** For
+  `npc` the two are the same object. The hook exists because the ceiling and the parked
+  flag are the owner's facts, and because a later owner may charge a decision to something
+  other than its actor.
+- **The subject is an object id, not a hash.** The budget ledger, the per-NPC ceiling,
+  `@llm/budget`, the dashboard's top spenders and the audit row all key on an object id
+  and print the NPC by it; an opaque key would need a second table to turn it back into a
+  name. The type is inert instead: it is not serialisable, it has one reader
+  (`call_ctx_for`), it never enters the prompt, and a worker holds no world to resolve it
+  against. Reversing this later (a keyed hash) is contained to `mush-llm`'s scopes and the
+  staff views, not a refactor of the kernel.
+- **Parked is a flag on the call, not the service's per-NPC kill switch.**
+  `KillSwitch::disable_npc` would have to be kept in step with the profile by every path
+  that writes it, and seeded again at boot. Reading the profile at the lease has no state
+  to drift. `KillSwitch::disable_npc` stays as it was, with no caller.
+- **A parked decision still runs its lease and its attempts.** The kernel's lifecycle is
+  untouched: each attempt is refused at once and audited, and the turn goes to `npc_idle`
+  when the attempts are spent or the deadline passes. Nothing cancels the pending record
+  early.
+
+**Tests.** No test makes a provider call.
+
+- `decision::tests::lease_carries_only_its_prompt_its_fence_and_an_attribution`
+  (`mush-core`): the pin. It destructures the lease and the attribution with no `..`, so a
+  field added to either stops the test compiling; it also holds that a lease the kernel
+  plans alone names nobody, that attributing a lease leaves the durable post-image the
+  same, and that the attribution is no larger than an id, a ceiling and a flag.
+- `mw17b_a_decision_is_attributed_to_its_npc_on_the_npcs_present_standing`
+  (`crates/mush-npc/tests/agents.rs`): open, capped by `@agent/set`, parked and woken, and
+  an object that is no agent.
+- `a_parked_npcs_call_is_refused_as_disabled_and_audited_against_it`
+  (`crates/mush-llm/tests/service.rs`).
+- `decision_llm::tests::mw17b_the_attribution_sets_the_calls_npc_scope` (`mush-server`).
+- Three stories through the production world task and the production provider over a mock
+  (`crates/mush-server/src/world_task/tests.rs`), each failing before this unit:
+  `mw17b_a_decision_is_charged_to_its_npc_and_names_it_in_the_audit` (the counter, the
+  row, and the NPC's dbref absent from the request the model was sent);
+  `mw17b_llm_kill_stops_a_decision_that_was_already_captured` (the real `@llm/kill`
+  between the capture and the lease: no call, no tokens, `disabled` rows against the NPC,
+  the turn idles); `mw17b_an_npcs_own_daily_ceiling_holds_for_its_decisions`.
+- `llm_log_names_the_npc_a_call_was_charged_to` (`crates/mush-worldgen/tests/worldgen.rs`).
+
+**Not built.**
+
+- A kill that lands while a decision's call is in flight does not recall it. The call
+  finishes and is charged; the lease is at most `NPC_DECISION_LEASE_SECS` (60). Dialogue
+  has the same window.
+- `@agent/show`'s last turn (MW.17) still covers dialogue turns only. A scene-turn
+  decision is read in `@llm/log` and in its turn receipt. Successor: MW.18 records the
+  ambient turn, which is a dialogue turn; a decision's own line in `@agent/show` has no
+  unit yet.
+- `KillSwitch::disable_npc` and `enable_npc` remain uncalled.
+
+**Not pinned by a story.** A lease planned after a restart carrying a fresh attribution
+(the path is the same `plan_candidate`); a second owner's adapter.

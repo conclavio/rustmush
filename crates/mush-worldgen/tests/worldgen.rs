@@ -925,6 +925,40 @@ fn llm_staff_commands_reach_the_shared_service() {
     assert!(!llm.kill_switch().global_disabled());
 }
 
+/// Doc 44 MW.17b: `@llm/log` names the NPC a call was charged to. A decision has no
+/// triggering player, so its row reads `actor=-` and the NPC is the only attribution.
+#[test]
+fn llm_log_names_the_npc_a_call_was_charged_to() {
+    let mock = Arc::new(MockProvider::new("openrouter"));
+    let llm = service(&mock);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
+    llm.audit_log().record(mush_llm::AuditRecord {
+        ts: 1_700_000_000,
+        feature: "npc_decision".into(),
+        provider: "-".into(),
+        model: "-".into(),
+        actor: None,
+        npc: Some(mush_core::ObjId(41)),
+        prompt_sha256: "deadbeef".into(),
+        prompt_summary: String::new(),
+        response_summary: String::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_usd: None,
+        latency_ms: 0,
+        outcome: mush_llm::Outcome::Disabled,
+    });
+    let (events, _) = step_cmd(&mut tw, GOD, "@llm/log npc_decision");
+    let lines = sys_to(&events, GOD);
+    assert!(
+        contains(&lines, "npc_decision disabled") && contains(&lines, "actor=- npc=#41"),
+        "{lines:?}"
+    );
+}
+
 // ----------------------------------------------------------------------
 // The LLM cost dashboard (M10c): the "llm.dashboard" query handler +
 // `@llm/dashboard`.

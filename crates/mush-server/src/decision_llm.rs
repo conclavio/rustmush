@@ -11,6 +11,14 @@
 //! request back to prove no revision, no object id and no token reaches the
 //! model except where the response must echo it.
 //!
+//! **Whom it charges** (doc 44 MW.17b). A lease may carry a
+//! [`DecisionAttribution`]: the subject its source's owner charges the call to
+//! (for `npc`, the NPC), that subject's own daily ceiling, and whether its
+//! spend is withheld. [`call_ctx_for`] is the only reader: it sets the call's
+//! NPC scope, so the per-NPC budget, the audit row and a parked NPC's refusal
+//! all reach a decision as they reach a dialogue turn. The attribution goes to
+//! the meter and never to the model: [`request_for`] takes the prompt alone.
+//!
 //! **What it never decides.** Every failure is a typed
 //! [`DecisionProviderFailureKind`]: a budget trip, a kill switch, a transport
 //! error or a missing route is `Unavailable` (the kernel retries and then falls
@@ -25,12 +33,12 @@ use std::sync::Arc;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use mush_core::{
-    DecisionPrompt, DecisionResponse, DecisionWorkerLease, OwnerId, PerceivedRef,
-    ProjectedLegalAction, ProjectedParameterKind, ProjectedTargetSchema,
+    DecisionAttribution, DecisionPrompt, DecisionResponse, DecisionWorkerLease, OwnerId,
+    PerceivedRef, ProjectedLegalAction, ProjectedParameterKind, ProjectedTargetSchema,
 };
 use mush_llm::{
-    CallCtx, ChatMessage, CompletionRequest, ContentBlock, LlmError, LlmFeature, LlmService,
-    Priority, Sampling, ToolChoice, ToolDef,
+    BudgetLimit, CallCtx, ChatMessage, CompletionRequest, ContentBlock, LlmError, LlmFeature,
+    LlmService, Priority, Sampling, ToolChoice, ToolDef,
 };
 
 use crate::decision_dispatch::{
@@ -288,6 +296,24 @@ pub fn response_for(
     })
 }
 
+/// The metering context of one decision call: `feature`'s route at background
+/// priority, charged to the lease's attribution when it carries one. An
+/// unattributed lease is metered at the global and feature scopes only.
+#[must_use]
+pub fn call_ctx_for(feature: LlmFeature, attribution: Option<&DecisionAttribution>) -> CallCtx {
+    let ctx = CallCtx::new(feature, Priority::Background);
+    let Some(attribution) = attribution else {
+        return ctx;
+    };
+    let ctx = ctx
+        .with_npc(attribution.audit_subject())
+        .with_parked(attribution.is_withheld());
+    match attribution.daily_tokens() {
+        Some(tokens) => ctx.with_npc_limit(BudgetLimit::tokens(tokens)),
+        None => ctx,
+    }
+}
+
 /// The typed class of one service error (text never decides policy).
 #[must_use]
 pub const fn failure_kind(error: &LlmError) -> DecisionProviderFailureKind {
@@ -326,7 +352,7 @@ impl DecisionProviderAdapter for LlmDecisionProvider {
             let prompt = lease.prompt().clone();
             let (request, names) = request_for(&prompt);
             let reply = llm
-                .call(CallCtx::new(feature, Priority::Background), request)
+                .call(call_ctx_for(feature, lease.attribution()), request)
                 .await
                 .map_err(|error| {
                     DecisionProviderFailure::new(failure_kind(&error), error.to_string())
@@ -517,6 +543,33 @@ mod tests {
             failure_kind(&LlmError::MalformedOutput("x".into())),
             DecisionProviderFailureKind::Malformed
         );
+    }
+
+    /// MW.17b: the lease's attribution becomes the call's NPC scope, and
+    /// nothing else: an unattributed lease is metered as before.
+    #[test]
+    fn mw17b_the_attribution_sets_the_calls_npc_scope() {
+        let feature = LlmFeature::NpcDecision;
+        let bare = call_ctx_for(feature, None);
+        assert_eq!((bare.npc, bare.npc_limit, bare.parked), (None, None, false));
+        assert_eq!(bare.actor, None);
+        assert_eq!(bare.priority, Priority::Background);
+
+        let npc = ObjId(41);
+        let open = call_ctx_for(feature, Some(&DecisionAttribution::new(npc)));
+        assert_eq!(
+            (open.npc, open.npc_limit, open.parked),
+            (Some(npc), None, false)
+        );
+
+        let capped = DecisionAttribution::new(npc)
+            .with_daily_tokens(Some(900))
+            .with_withheld(true);
+        let ctx = call_ctx_for(feature, Some(&capped));
+        assert_eq!(ctx.npc, Some(npc));
+        assert_eq!(ctx.npc_limit, Some(BudgetLimit::tokens(900)));
+        assert!(ctx.parked);
+        assert_eq!(ctx.actor, None, "a decision has no triggering player");
     }
 
     /// The probe (09 K7.2): the serialized request carries no revision, no

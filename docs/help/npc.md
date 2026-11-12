@@ -278,7 +278,9 @@ Tier picks the LLM route, the default cooldown, and the budget posture:
 The models each route resolves to live in `mushd.toml` under `[llm.routes]`;
 the memory-fold pass uses `npc_summarize`. Per-NPC daily budgets come from
 `[llm.budgets].per_npc_default`; the whole pipeline is bounded by the global
-and per-feature budgets. Rapid chatter is coalesced into a single turn (a short
+and per-feature budgets. An NPC's scene-turn decisions (route `npc_decision`)
+are charged to the same per-NPC budget as its dialogue, under the same
+`daily_tokens` ceiling when its profile sets one. Rapid chatter is coalesced into a single turn (a short
 1–2s window), and only one turn per NPC is ever in flight.
 
 ## Kill switches
@@ -291,6 +293,12 @@ and per-feature budgets. Rapid chatter is coalesced into a single turn (a short
 
 A killed or budget-tripped NPC that is spoken to falls back to a profile line
 rather than erroring; staff get a one-time notice when an NPC degrades.
+
+Parking an NPC stops its decisions as well as its dialogue. A decision is the
+turn an NPC takes when a scene hands it one (`+timestop/next`). If the NPC is
+parked while it holds one, the model is not asked: `@llm/log npc_decision` shows
+the refused call as `disabled` with `npc=` naming the NPC, and the turn passes
+as its idle action.
 
 ## Informants (the intel loop)
 

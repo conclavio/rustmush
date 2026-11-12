@@ -18,7 +18,9 @@ but a generation just says "LLM features are disabled." and no call is made.
                           NPCs by spend today, and the most recent calls.
   @llm/log [<feature>]    The recent audit rows, optionally one feature route
                           (worldgen_room, worldgen_brief, ambience, npc_dialogue_*,
-                          npc_summarize).
+                          npc_summarize, npc_decision). Each row ends with who it
+                          was charged to: `actor=` the builder or player who
+                          caused it, `npc=` the NPC whose turn it was.
 
 `@llm/dashboard` and the web **LLM** panel are **Wizard+** (the whole `@llm/*`
 staff surface is Wizard, and both surfaces of the dashboard share that floor).
@@ -51,6 +53,10 @@ auto-committed). Caps are set in `mushd.toml` (`[llm.budgets]`).
   @llm/enable             Lift it.
   @llm/kill <npc>         Park one NPC agent (no wakes, no tokens).
   @llm/revive <npc>       Wake a parked NPC agent.
+
+`@llm/kill` stops an NPC's decisions as well as its dialogue, including a
+scene turn it was already holding: that call is refused before the model is
+asked and logged as `npc_decision disabled` against the NPC.
 
 Use `@llm/disable` if cost or output ever runs away; in-flight drafts finish
 harmlessly and everything else falls back to its deterministic behaviour (hand-
