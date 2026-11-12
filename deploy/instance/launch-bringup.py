@@ -17,11 +17,15 @@ deploy/README.md, "Named launch and the player market"):
      only beside its document).
   2. INITIALIZE. The seven Registry grants to every operator, then the four
      initialize actions. The document's mode is set to `active`.
-  3. ACTIVE. `@mind/launch` must name every operator `ready`. Then the dev
-     launch's extras: the major NPCs enabled, one rated line listed on the
-     player market, and one House's purchase of it by its own agent.
+  3. ACTIVE. `@mind/launch` must name every operator `ready`. Then the major
+     NPCs are enabled (Q-44-47).
 
-Then the instance's own unit is started, and the LLM routes are checked on it.
+Then the instance's own unit is started, and on it: `@mind/launch` again, the
+LLM routes' check, and last the dev launch's seed: one line rated by the
+Registry, filed by #1 and listed on the player market, and one House's
+purchase of it by its own agent. The seed comes after players are let in
+because a rating on a launch world is HOURS at any pulse; `--seed-only` takes
+it up again after a stop, and `--no-seed` leaves it out.
 
 HOW THE IN-GAME STEPS ARE TYPED AS #1. The script runs the world itself for the
 three boots: `mush-server` on a private IPC socket, and a private
@@ -115,12 +119,22 @@ MARKET_TERMS = {
 TRUST = "Co-op First Captain Trust"
 # Replies that mean "not now", to a line that was not run.
 TRANSIENT = (r"You're doing that too fast\.|post-outage recovery countdown"
-             r"|still starting; please try again|please retry in a moment")
+             r"|still starting; please try again|please retry in a moment"
+             r"|server is busy; please retry that input")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\x1b[=>]")
 
 
 class Stop(Exception):
     """A refusal the operator has to read. Nothing after it is attempted."""
+
+
+class Interrupted(BaseException):
+    """SIGINT, SIGTERM or SIGHUP. Raised from the handler so that the private
+    boots are stopped on the way out, whatever ended the run."""
+
+
+def interrupted(number, _frame):
+    raise Interrupted(signal.Signals(number).name)
 
 
 def say(text):
@@ -385,6 +399,7 @@ class Box:
         self.work = os.path.join(self.data, "bringup")
         self.document = os.path.join(self.data, "launch.json")
         self.state_file = os.path.join(self.work, "state.json")
+        self.pids_file = os.path.join(self.work, "private.pids")
         self.children = []
         self.ssh_endpoint = None
         self.unit = None
@@ -410,6 +425,7 @@ class Box:
                 self.state = json.load(handle)
         self.log = open(os.path.join(self.work, "transcript.log"), "ab")
         os.chmod(self.log.name, 0o600)
+        self.reap_leftovers()
 
     # ---- the unit and the service user
 
@@ -546,7 +562,42 @@ class Box:
                                  stdin=subprocess.DEVNULL, start_new_session=True)
         child.log_path = log_path
         self.children.append(child)
+        with open(self.pids_file, "a", encoding="utf-8") as handle:
+            handle.write(f"{child.pid}\n")
         return child
+
+    def reap_leftovers(self):
+        """Stop the private boots of a run that was killed before it could:
+        the pids it wrote down, where each is still a process of this work
+        directory."""
+        if not os.path.isfile(self.pids_file):
+            return
+        with open(self.pids_file, encoding="utf-8") as handle:
+            pids = [int(line) for line in handle.read().split() if line.isdigit()]
+        left = []
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                    if self.work.encode() in handle.read():
+                        left.append(pid)
+            except OSError:
+                pass
+        for pid in left:
+            say(f"stopping a private boot an earlier run left behind (pid {pid})")
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        end = time.monotonic() + 90
+        while left and time.monotonic() < end:
+            left = [pid for pid in left if os.path.exists(f"/proc/{pid}")]
+            time.sleep(0.5)
+        for pid in left:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        os.remove(self.pids_file)
 
     def until(self, ready, child, what):
         end = time.monotonic() + self.args.boot_timeout
@@ -576,6 +627,8 @@ class Box:
                 child.wait()
         self.children = []
         self.ssh_endpoint = None
+        if os.path.isfile(self.pids_file):
+            os.remove(self.pids_file)
 
     def public_endpoint(self):
         with open(self.config, encoding="utf-8") as handle:
@@ -928,8 +981,10 @@ def initialize(staff):
                 say(f"initialize action already landed: {verb}")
                 break
             staff.s.type(f"+act {verb} with {{}}")
+            # Anything else that answers is "not now" (the world busy with the
+            # last action's commit, most often): the loop types it again.
             answer = staff.s.wait(r"Action committed\.|rejected by the server|no longer available"
-                                  r"|game is busy|game is unavailable|doing that too fast",
+                                  rf"|game is busy|game is unavailable|{TRANSIENT}",
                                   120, f"the answer to +act {verb}").group(0)
             if "committed" in answer:
                 say(f"initialize action landed: {verb}")
@@ -1072,7 +1127,9 @@ def seed_listing(box, staff, document):
                 time.sleep(3)
             started = time.monotonic()
             pulse = box.env.get("REGISTRY_PULSE_MS") or "1000"
-            say(f"the Registry is rating {reference} at registry_pulse_ms = {pulse}")
+            say(f"the Registry is rating {reference} at registry_pulse_ms = {pulse}: hours, not "
+                "minutes, on a launch world (a few hundred trial matches, each paced by its own "
+                "simulation)")
             staff.s.wait(r"Registry work finished\.|Registry preparation refused|was not admitted",
                          box.args.rating_timeout, "the end of the rating")
             box.timings["rating (queued to finished)"] = round(time.monotonic() - started, 1)
@@ -1219,9 +1276,10 @@ def await_purchase(box, staff, document):
             box.timings["purchase (boot to granted)"] = round(time.monotonic() - started, 1)
             return row
         if time.monotonic() - started > box.args.purchase_timeout:
-            raise Stop(f"{house[1]} bought nothing in {box.args.purchase_timeout}s. The server log's "
-                       "tacsim.procurement.refused and tacsim.procurement.month_closed lines say why "
-                       f"({os.path.join(box.work, f'server-{box.boots}.log')})")
+            raise Stop(f"{house[1]} bought nothing in {box.args.purchase_timeout}s. The world's log "
+                       "says why, in its tacsim.procurement.refused and "
+                       "tacsim.procurement.month_closed lines. The lent hulls are still with the "
+                       "House: run again with --seed-only to hand them back")
         time.sleep(5)
 
 
@@ -1393,19 +1451,8 @@ def bring_up(box, password):
         ready = readiness(staff, document)
         if not args.no_npcs:
             enable_npcs(box, staff)
-        house = next(h for h in HOUSES if h[0] == args.purchase_house)
-        org = document["houses"][house[0]]["organization"]
-        if not args.no_seed:
-            seed_listing(box, staff, document)
-        if not args.no_seed and not args.no_purchase and not purchases(box, org):
-            lend_hulls(box, staff, document)
-            # A House shops once an IC month, and a month it found nothing in
-            # stays closed until the next one or a restart: so, a restart.
-            staff.close()
-            box.stop_private()
-            box.start_private("Active, the House's purchase")
-            staff = Staff(box, args.staff, password)
-            await_purchase(box, staff, document)
+        # A run that stopped while a House held lent hulls: they go back before
+        # anybody is let in, so enrolment is never left closed.
         if not args.keep_house_hulls:
             return_hulls(box, staff)
     finally:
@@ -1414,23 +1461,65 @@ def bring_up(box, password):
     return ready
 
 
-def checks_on_the_unit(box, password):
-    """What is checked on the instance's own unit, with its own environment:
-    the readiness line again, and the LLM routes."""
+def staff_on_the_unit(box, password):
+    """A staff session at the instance's own front door, once it answers."""
     box.ssh_endpoint = box.public_endpoint()
     end = time.monotonic() + box.args.boot_timeout
     while True:
         try:
-            staff = Staff(box, box.args.staff, password)
-            break
+            return Staff(box, box.args.staff, password)
         except (Stop, OSError):
             if time.monotonic() >= end:
                 raise
             time.sleep(5)
+
+
+def checks_on_the_unit(box, password):
+    """What is checked on the instance's own unit, with its own environment:
+    the readiness line again, and the LLM routes."""
+    staff = staff_on_the_unit(box, password)
     try:
         readiness(staff, box.read_document())
         if not box.args.no_llm_check:
             llm_check(box, staff)
+    finally:
+        staff.close()
+
+
+def seed_and_purchase(box, password):
+    """On the running unit, with players already let in: one rated line on the
+    player market, and one House's purchase of it.
+
+    It is here and not in the Active boot because a rating on a launch world
+    is HOURS, at any pulse: the trial plan is a few hundred matches, and a
+    match is paced by its own simulation, not by the Registry's pulse. Nobody
+    is kept off for that. The Registry's job runs in the world whether or not
+    this session stays connected, so a run that is stopped here can be started
+    again (`--seed-only`) and takes the line up where it stands."""
+    args = box.args
+    document = box.read_document()
+    house = next(h for h in HOUSES if h[0] == args.purchase_house)
+    org = document["houses"][house[0]]["organization"]
+    staff = staff_on_the_unit(box, password)
+    try:
+        seed_listing(box, staff, document)
+        if not args.no_purchase and not purchases(box, org):
+            lend_hulls(box, staff, document)
+            # A House shops once an IC month, and a month it found nothing in
+            # stays closed until the next one or a restart of the world. The
+            # gateway holds every connection across a server restart.
+            staff.close()
+            if box.unit:
+                say(f"restarting {box.unit} so {house[1]}'s month opens again (the gateway holds "
+                    "connections; players see a restart, not a drop)")
+                subprocess.run(["systemctl", "restart", box.unit], check=True)
+            else:
+                say(f"no unit to restart: restart the world now, or {house[1]} waits for the next IC month")
+            time.sleep(5)
+            staff = staff_on_the_unit(box, password)
+            await_purchase(box, staff, document)
+        if not args.keep_house_hulls:
+            return_hulls(box, staff)
     finally:
         staff.close()
 
@@ -1469,12 +1558,19 @@ def main():
     parser.add_argument("--no-llm-check", action="store_true", help="skip the LLM routes' check")
     parser.add_argument("--llm-check", action="store_true",
                         help="only the checks on the running unit: readiness and the LLM routes")
+    parser.add_argument("--seed-only", action="store_true",
+                        help="only the seed line and the House's purchase, on the running unit "
+                             "(what a stopped run comes back to; a rating is hours)")
     parser.add_argument("--llm-npc", help="the NPC to ask (the first major NPC of the cast packs)")
     parser.add_argument("--llm-timeout", type=int, default=120)
     parser.add_argument("--boot-timeout", type=int, default=600)
     parser.add_argument("--rating-timeout", type=int, default=5 * 3600)
     parser.add_argument("--purchase-timeout", type=int, default=600)
     args = parser.parse_args()
+    # Its own handlers, SIGINT's included: a shell that started this in the
+    # background hands it SIGINT ignored, and a closed terminal sends SIGHUP.
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, interrupted)
     box = None
     try:
         box = Box(args)
@@ -1484,26 +1580,62 @@ def main():
         if args.llm_check:
             checks_on_the_unit(box, password)
             return 0
-        ready = bring_up(box, password)
-        say("the Active boot passed: " + ready)
-        for what, seconds in box.timings.items():
-            say(f"  {what}: {seconds}s")
-        if args.no_systemd or args.no_start:
-            say("the world is left stopped; start it, then run this again with --llm-check")
+        if args.seed_only:
+            seed_and_purchase(box, password)
+            for what, seconds in box.timings.items():
+                say(f"  {what}: {seconds}s")
             return 0
-        say(f"starting {box.unit}: players are let in from here")
-        subprocess.run(["systemctl", "start", box.unit], check=True)
-        checks_on_the_unit(box, password)
+        document = box.read_document()
+        if document and document["mode"] == "active" and box.launch_is_live() and box.unit_active():
+            # A second run on a box that is already live: nothing is stopped.
+            say(f"the launch is Active and {box.unit} is running: nobody is put off; "
+                "checking it where it runs")
+        else:
+            ready = bring_up(box, password)
+            say("the Active boot passed: " + ready)
+            for what, seconds in box.timings.items():
+                say(f"  {what}: {seconds}s")
+        if args.no_systemd or args.no_start:
+            say("the world is left stopped; start it, then run this again with --llm-check and, "
+                "for the seed line and the House's purchase, with --seed-only")
+            return 0
+        if not box.unit_active():
+            say(f"starting {box.unit}: players are let in from here")
+            subprocess.run(["systemctl", "start", box.unit], check=True)
+        held_back = None
+        try:
+            checks_on_the_unit(box, password)
+        except Stop as stop:
+            # The seed line does not wait on the LLM; the failure is still the
+            # run's result.
+            held_back = stop
+            print(f"launch-bringup: {stop}", file=sys.stderr)
+        if not args.no_seed:
+            box.timings.clear()
+            say("the seed line and the House's purchase, on the running world. The rating is HOURS; "
+                "stop this whenever, and `--seed-only` takes it up again")
+            seed_and_purchase(box, password)
+            for what, seconds in box.timings.items():
+                say(f"  {what}: {seconds}s")
+        if held_back:
+            raise held_back
         say("done")
         return 0
     except Stop as stop:
         print(f"launch-bringup: STOPPED: {stop}", file=sys.stderr)
-        if box and box.unit and not args.llm_check:
+        if box and box.unit and not box.unit_active():
             print(f"launch-bringup: {box.unit} is left STOPPED, so nobody is let in to a half-made "
                   "launch. Run this again: it takes up where it stopped", file=sys.stderr)
         return 1
+    except Interrupted as signal_name:
+        print(f"launch-bringup: interrupted ({signal_name}). The private boots are stopped; run "
+              "this again and it takes up where it stopped", file=sys.stderr)
+        return 130
     finally:
         if box:
+            # Nothing may cut the clean-up short.
+            for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(number, signal.SIG_IGN)
             box.stop_private()
 
 

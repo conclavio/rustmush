@@ -19,7 +19,9 @@
 #      `create` at the PUBLIC front door every few seconds for the whole
 #      bring-up and is never let in, and is let in once the unit is started;
 #   4. a House with three titled hulls, a funded treasury and a rated listing
-#      buys a licence by its own agent, and the hulls go back to the Co-op;
+#      buys a licence by its own agent, and the hulls go back to the Co-op.
+#      This is the long step: a rating on a launch world is hours. It runs
+#      last, on the second bring-up's live world; SEED=0 leaves it out;
 #   5. a reset (the real scripts/reset-instance.sh) takes launch_path out, and
 #      a second bring-up on the wiped store ends the same way;
 #   6. rendering with the switch off is the plain substitution, byte for byte
@@ -30,7 +32,9 @@
 #
 # OWNER is the unprivileged user the instance runs as (it must be able to read
 # the tree and the binaries). Knobs: REDIS_PORT (6391), SSH_PORT (16895),
-# INTERRUPT_S (seconds into the first run it is interrupted, 45), LLM=stub
+# INTERRUPT_S (seconds into the first run it is interrupted, 45), PULSE (the
+# instance's REGISTRY_PULSE_MS, 50), SEED=0 (leave the hours-long step 4 out),
+# BRINGUP_ARGS (extra bring-up arguments, e.g. `--seed-line standard`), LLM=stub
 # (answer the LLM routes from a local stub and require the LLM check to pass;
 # without it the check is required to FAIL, since no provider answers), and
 # KEEP=1 to leave the scratch directory and its Redis up for a look.
@@ -80,24 +84,29 @@ cat > "$work/shim/systemctl" << EOF
 #!/usr/bin/env bash
 pidfile="$work/server.pid"
 alive() { [ -f "\$pidfile" ] && kill -0 "\$(cat "\$pidfile")" 2> /dev/null; }
-case "\$1" in
-cat) [ "\$2" = "$unit" ] ;;
-show) if [ "\$3" = User ] || [ "\$3" = Group ]; then echo "$owner"; fi ;;
-is-active) alive ;;
-stop)
+stop_unit() {
   if alive; then
     kill -TERM "\$(cat "\$pidfile")"
     for _ in \$(seq 1 120); do alive || break; sleep 0.5; done
   fi
   rm -f "\$pidfile"
-  echo "\$(date +%s) stop" >> "$work/unit.log" ;;
-start)
-  alive && exit 0
+  echo "\$(date +%s) stop" >> "$work/unit.log"
+}
+start_unit() {
+  alive && return 0
   rm -f "$inst/ipc.sock"
   $LLM_ENV setsid runuser -u "$owner" -- "$bin/mush-server" --config "$inst/mushd.toml" \\
     >> "$work/unit-server.log" 2>&1 < /dev/null &
   echo "\$!" > "\$pidfile"
-  echo "\$(date +%s) start" >> "$work/unit.log" ;;
+  echo "\$(date +%s) start" >> "$work/unit.log"
+}
+case "\$1" in
+cat) [ "\$2" = "$unit" ] ;;
+show) if [ "\$3" = User ] || [ "\$3" = Group ]; then echo "$owner"; fi ;;
+is-active) alive ;;
+stop) stop_unit ;;
+start) start_unit ;;
+restart) stop_unit; start_unit ;;
 *) echo "shim systemctl: unexpected \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -160,7 +169,7 @@ CHARGEN_REQUIRED=false
 START_ROOM=0
 START_ROOM_UNAPPROVED=0
 MINDS_LAUNCH=on
-REGISTRY_PULSE_MS=50
+REGISTRY_PULSE_MS=${PULSE:-50}
 RAID_DIRECTOR=true
 LLM_ENABLED=$llm_enabled
 PIXEL_DIAGNOSTICS=false
@@ -198,10 +207,13 @@ probe() {
   if grep -q 'Account created\.\|Connected as ' <<< "$out"; then echo in; else echo out; fi
 }
 prober() {
-  local n=0
+  local n=0 answer
   while [ -f "$work/probing" ]; do
     n=$((n + 1))
-    echo "$(date +%s) $(probe "probe$1x$n")" >> "$work/probes.log"
+    # Stamped when the answer is in: a probe that began before the unit
+    # started and was let in after it is not a player who got in early.
+    answer="$(probe "probe$1x$n")"
+    echo "$(date +%s) $answer" >> "$work/probes.log"
     sleep 3
   done
 }
@@ -236,8 +248,6 @@ full_run() {
 }
 expect_ready() {
   grep -q 'Registry operators: #[0-9]* ready\.' "$1" || { echo "acceptance: $1 names no operator ready" >&2; return 1; }
-  grep -q 'bought licence' "$1" || { echo "acceptance: $1 shows no House purchase" >&2; return 1; }
-  grep -q 'handed the 3 Drays back' "$1" || { echo "acceptance: $1 did not hand the hulls back" >&2; return 1; }
 }
 llm_args=(--no-llm-check)
 if [ "${LLM:-}" = stub ]; then
@@ -246,14 +256,15 @@ if [ "${LLM:-}" = stub ]; then
   llm_args=()
 fi
 
-# --- 1 to 4: a fresh store; the first run interrupted, the second to the end.
+# --- 1 to 3: a fresh store; the first run interrupted, the second to the end.
+# Neither rates a line (--no-seed): the seed is step 4's, on the live world.
 log "run 1: interrupted after ${interrupt_s}s"
 : > "$work/probes.log"; : > "$work/unit.log"; touch "$work/probing"
 prober first &
 prober_pid=$!
 status=0
 timeout -s INT "$interrupt_s" python3 "$deploy_dir/launch-bringup.py" "$inst/instance.env" \
-  --bin-dir "$bin" --password-file "$work/staff-password" "${extra[@]}" --no-llm-check \
+  --bin-dir "$bin" --password-file "$work/staff-password" "${extra[@]}" --no-seed --no-llm-check \
   > "$work/bringup-interrupted.log" 2>&1 || status=$?
 rm -f "$work/probing"; wait "$prober_pid" || true
 tail -5 "$work/bringup-interrupted.log"
@@ -263,7 +274,7 @@ if pgrep -u "$owner" -f "$inst/data/bringup" > /dev/null; then
 fi
 kept_off
 log "run 2: the same store, to the end"
-full_run second "${llm_args[@]}"
+full_run second --no-seed "${llm_args[@]}"
 expect_ready "$work/bringup-second.log"
 kept_off
 [ "$(probe afterstart)" = in ] || { echo "acceptance: nobody can register after the unit started" >&2; exit 1; }
@@ -288,11 +299,21 @@ fi
 grep -q '^# launch_path = ' "$inst/mushd.toml"
 [ ! -e "$inst/data/launch.json" ] && [ ! -e "$inst/data/bringup" ]
 log "run 3: the second bring-up, on the reset store"
-full_run third "${llm_args[@]}"
+full_run third --no-seed "${llm_args[@]}"
 expect_ready "$work/bringup-third.log"
 kept_off
+
+# --- 4: the seed line and a House's purchase, on the live world of run 3.
+# HOURS: the Registry's rating is a few hundred trial matches. SEED=0 skips it.
+if [ "${SEED:-1}" != 0 ]; then
+  log "the seed line and the House's purchase (a rating: hours)"
+  bringup --seed-only > "$work/bringup-seed.log" 2>&1 || { tail -30 "$work/bringup-seed.log" >&2; exit 1; }
+  cat "$work/bringup-seed.log"
+  grep -q 'bought licence' "$work/bringup-seed.log" || { echo "acceptance: no House purchase" >&2; exit 1; }
+  grep -q 'handed the 3 Drays back' "$work/bringup-seed.log" || { echo "acceptance: the hulls did not go back" >&2; exit 1; }
+fi
 
 # --- 6: the switch off.
 bash scripts/tests/render-launch.sh
 log "PASSED"
-grep -h 'rating took\|bought licence\|boot [0-9]' "$work"/bringup-second.log "$work"/bringup-third.log || true
+grep -h 'rating took\|bought licence\|boot [0-9]' "$work"/bringup-*.log || true

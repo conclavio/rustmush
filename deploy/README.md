@@ -796,13 +796,19 @@ store with no account the script bootstraps it). Then, in order:
    the four initialize actions. It sets the document's mode to `active`.
 3. **The Active boot.** `@mind/launch` must name every operator `ready`; an
    operator that `lacks` a grant is given the seven again and asked again, and
-   a second `lacks` stops the script. Then the dev launch's extras: the 18
-   major NPCs of the cast packs enabled with `@agent/enable` (Q-44-47; the
-   shipped packs are not edited), one named source rated by the Registry, filed
-   by #1 and listed on the player market, and one House's purchase of it by its
-   own agent, read from the House's procurement ledger in the store.
-4. **The unit is started**, and on it the script reads `@mind/launch` again and
-   runs the LLM check (below).
+   a second `lacks` stops the script. Then the 18 major NPCs of the cast packs
+   are enabled with `@agent/enable` (Q-44-47; the shipped packs are not edited).
+4. **The unit is started**, and players are let in. On it the script reads
+   `@mind/launch` again and runs the LLM check (below).
+5. **The seed line and a House's purchase**, on the running world: one line
+   rated by the Registry, filed by #1 and listed on the player market, and one
+   House's purchase of it by its own agent, read from the House's procurement
+   ledger in the store. **This step is hours** (below); `--no-seed` leaves it
+   out and `--seed-only` runs it alone.
+
+The first four steps take a few minutes. A second run on a box that is already
+live (the document `active`, the unit running) stops nothing: it checks the
+world where it runs and goes on to step 5.
 
 **How its in-game steps are typed as #1.** The script runs the world itself for
 the three boots: `mush-server` on a private IPC socket under
@@ -859,6 +865,27 @@ to keep: each gets a random one that is thrown away. Nobody plays these
 logins. On the day somebody must (the Registry operator, to recall a
 revision), #1 types `@newpassword RegistryOperator=<password>`.
 
+**The seed line is hours, at any pulse.** A Registry rating on a launch world
+is a few hundred trial matches (171 for a copy of Standard Doctrine, 258 for
+the Meridiani source), and a match is paced by its own simulation: about 45 s
+of wall clock a match for the first, about 90 s for the second, on a 32-core
+box with `registry_pulse_ms = 50`. So a rating is about two hours for a copy of
+Standard and about six for a named House source, and the pulse does not make
+it minutes (the "about 1,070 leases" figure is the acceptance stories' own
+certificate, in their rig's world). That is why the seed comes after the unit
+is started: nobody is kept off for it. The Registry's job runs in the world
+whether or not the script stays connected, so the step can be stopped and
+started again: `--seed-only` asks `@mind/file` where the line stands and goes
+on from there. `--seed-line` picks what is rated: `meridiani` (the default),
+`coprates`, `safe_conduct`, or `standard`, a copy of Standard Doctrine named
+`Seedline`. A House buys only a line whose rating scored above nothing.
+
+After the listing the script lends the House its hulls (next paragraph) and
+**restarts the world's unit**: a House shops once an IC month, a month in which
+it found nothing stays closed until the next one or a restart, and its first
+look was at an empty counter. The gateway holds every connection across the
+restart. `--no-purchase` stops after the listing.
+
 **The hulls are lent, not given.** A House buys nothing without titled hulls
 (its cap is the floor of 400 per mille of them, so three for the first
 licence), and the only spare hulls a fresh world has are the Ceres Co-op's
@@ -887,9 +914,20 @@ skips it.
 
 Other switches: `--no-npcs`, `--no-seed` (no line rated or listed, so no
 purchase), `--no-purchase`, `--no-start` (leave the unit stopped after the
-Active boot's checks), `--no-systemd` (a rig with no unit: the bot's rig, CI).
-`scripts/launch-bringup-acceptance.sh` runs the whole thing, a reset and a
-second bring-up on a scratch instance with its own Redis.
+Active boot's checks), `--no-systemd` (a rig with no unit: the bot's rig, CI;
+it stops after the Active boot, and the rig starts its own world).
+`scripts/launch-bringup-acceptance.sh` runs the whole thing on a scratch
+instance with its own Redis: an interrupted run and its second run, a reset
+and a second bring-up, and then the seed line and the purchase (`SEED=0`
+leaves the hours out).
+
+**A second run after a pause waits five minutes.** A world booted more than
+30 s after its store's last clock checkpoint runs the post-outage recovery
+countdown (`[game].outage_freeze_threshold_s`, `outage_countdown_s`), and
+refuses every world action until it ends. The bring-up's own boots follow each
+other within seconds; a run started some minutes after a stopped one, or after
+a reset's `--bootstrap-staff`, meets the countdown on its first boot, says so,
+and waits it out.
 
 ### The sequence by hand
 
