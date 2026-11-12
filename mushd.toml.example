@@ -523,6 +523,19 @@ bus = 180
 # idle fallback fires, seconds. Every key here defaults; an unknown key refuses
 # to boot, like every other typed section.
 scene_turn_deadline_secs = 120
+# (doc 44 MW.18) NPCs that speak unprompted. Only an ENABLED MAJOR NPC does, and
+# only when a player is present in its room: connected over a live link (not
+# link-dead), not DARK, and active within `ambient_active_secs`. A room hears at
+# most one such line in `ambient_window_secs`, whichever of its NPCs speaks. Both
+# are REAL seconds whatever the game clock's rate. 0 turns the timer off.
+ambient_window_secs = 1800
+ambient_active_secs = 600
+# The shipped cast's major NPCs (the houses' principals) are authored
+# `"enabled": false` and never wake. `true` applies every cast pack's major NPCs
+# ENABLED instead. It acts when a pack is applied: at boot on a fresh world, at
+# the next pack upgrade on an existing one (wake those by hand with
+# `@agent/enable <npc>`). Each enabled major may then spend on the LLM.
+wake_majors = false
 
 [llm]                              # (M7) LLM layer: worldgen (@gen), budgets, kill switch
 # Master switch. FALSE by default so a keyless clone boots and passes tests;

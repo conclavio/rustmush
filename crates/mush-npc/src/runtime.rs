@@ -890,6 +890,56 @@ mod tests {
         }
     }
 
+    /// Doc 44 cut MW.18: a room's ambient window. A room is due only after it has been
+    /// attended for the settle time and its last line is a window old; losing its present
+    /// player ends the stretch but keeps the window; a room with nothing left to enforce
+    /// is forgotten; two NPCs take the room's lines in turn; the table is bounded.
+    #[test]
+    fn mw18_a_rooms_window_is_due_once_and_rotates_its_speakers() {
+        use std::collections::BTreeSet;
+        let (room, a, b) = (ObjId(50), ObjId(60), ObjId(61));
+        let (window, settle) = (1_800, 300);
+        let mut ambient = AmbientState::default();
+        assert!(!ambient.due(room, 0, window, settle), "an unknown room");
+
+        assert!(ambient.attend(room, 1_000));
+        assert!(ambient.attend(room, 1_200), "a second look keeps the first second");
+        assert_eq!(ambient.rooms[&room].attended_since, Some(1_000));
+        assert!(!ambient.due(room, 1_299, window, settle));
+        assert!(ambient.due(room, 1_300, window, settle));
+
+        // The first line goes to the first candidate, the next to the other, and round.
+        assert_eq!(ambient.next_speaker(room, &[a, b]), Some(a));
+        ambient.spoke(room, a, 1_300);
+        assert!(!ambient.due(room, 1_301, window, settle));
+        assert!(!ambient.due(room, 1_300 + window - 1, window, settle));
+        assert!(ambient.due(room, 1_300 + window, window, settle));
+        assert_eq!(ambient.next_speaker(room, &[a, b]), Some(b));
+        ambient.spoke(room, b, 3_100);
+        assert_eq!(ambient.next_speaker(room, &[a, b]), Some(a));
+        assert_eq!(ambient.next_speaker(room, &[]), None);
+
+        // The player leaves: the stretch ends, the window is kept.
+        ambient.lapse(&BTreeSet::new(), 3_200, window);
+        assert_eq!(ambient.rooms[&room].attended_since, None);
+        assert_eq!(ambient.rooms[&room].last_line_at, Some(3_100));
+        // They come back at once: the settle starts again and the window still holds.
+        assert!(ambient.attend(room, 3_210));
+        assert!(!ambient.due(room, 3_210 + settle, window, settle));
+        assert!(ambient.due(room, 3_100 + window, window, settle));
+        // Unattended past its window, the room is forgotten.
+        ambient.lapse(&BTreeSet::new(), 3_100 + window, window);
+        assert!(ambient.rooms.is_empty());
+
+        // The table is bounded: a new room past the cap is not tracked.
+        for id in 0..MAX_AMBIENT_ROOMS {
+            assert!(ambient.attend(ObjId(1_000 + u32::try_from(id).unwrap()), 0));
+        }
+        assert!(!ambient.attend(ObjId(9), 0));
+        assert_eq!(ambient.rooms.len(), MAX_AMBIENT_ROOMS);
+        assert!(ambient.attend(ObjId(1_000), 5), "a tracked room is still served");
+    }
+
     /// Doc 44 cut MW.17: a turn records what woke it, what it was shown and what it came
     /// to; a completion for another turn changes nothing; the staff lines carry kinds,
     /// names and counts, and never a stimulus's text.

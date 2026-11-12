@@ -1655,6 +1655,42 @@ fn ic1_ic_and_the_door_for_a_ceres_pilot_and_a_new_one() {
 // 12. The principals never wake
 // ---------------------------------------------------------------------------
 
+/// Doc 44 cut MW.18 (Q-44-47): `[npc].wake_majors` is the switch a bring-up sets. The
+/// shipped cast packs author their eighteen majors `"enabled": false`; a box that sets
+/// the key applies the same packs with every one of them enabled, and the rest of the
+/// cast as it was. `ic1_the_principals_never_wake` below is the same boot without it.
+#[test]
+fn mw18_wake_majors_applies_the_shipped_principals_enabled() {
+    use tacsim::composition as comp;
+
+    let game = tacsim::GameEconomyConfig::default();
+    let (mut mods, inventory) = comp::domain_modules_with_economy(
+        mush_economy::EconomyConfig::default(),
+        mush_atlas::AtlasConfig::default(),
+        &game,
+    );
+    let npc = match comp::npc_agent_adapter() {
+        Some(grounding) => mush_npc::NpcModule::with_grounding(grounding),
+        None => mush_npc::NpcModule::new(),
+    };
+    mods.push(Box::new(npc.with_wake_majors(true)));
+    mods.push(comp::tacsim_module_wired(config(), true, inventory));
+    mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+    let tw = TestWorld::with_modules(mods);
+
+    for principal in PRINCIPALS {
+        let p = profile(&tw, obj(&tw, npc_pack(principal), principal));
+        assert!(p.enabled, "{principal} was applied parked");
+        assert_eq!(p.tier, mush_npc::NpcTier::Major, "{principal}");
+    }
+    for entry in CAST {
+        assert!(
+            profile(&tw, obj(&tw, npc_pack(entry), entry)).enabled,
+            "{entry}"
+        );
+    }
+}
+
 #[test]
 fn ic1_the_principals_never_wake() {
     let mut tw = booted();

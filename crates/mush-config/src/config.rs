@@ -2887,6 +2887,27 @@ scene_turn_dedline_secs = 30
         assert!(refused.is_err(), "an unknown [npc] key must refuse");
     }
 
+    /// Doc 44 MW.18: the ambient timer's keys default to Q-44-31's and Q-44-47's
+    /// figures with the majors left as their pack ships them, and each is settable.
+    #[test]
+    fn mw18_npc_ambient_keys_default_and_parse() {
+        let absent: Config = toml::from_str("").expect("an empty config parses");
+        assert!(!absent.npc.wake_majors, "the shipped majors stay parked");
+        assert_eq!(absent.npc.ambient_window_secs, 1_800);
+        assert_eq!(absent.npc.ambient_active_secs, 600);
+        let set: Config = toml::from_str(
+            "[npc]
+wake_majors = true
+ambient_window_secs = 0
+ambient_active_secs = 120
+",
+        )
+        .expect("parses");
+        assert!(set.npc.wake_majors);
+        assert_eq!(set.npc.ambient_window_secs, 0);
+        assert_eq!(set.npc.ambient_active_secs, 120);
+    }
+
     #[test]
     fn defaults_when_missing() {
         let cfg = Config::load(Path::new("Z:/definitely/not/here/mushd.toml")).unwrap();
