@@ -20,8 +20,9 @@
 #      bring-up and is never let in, and is let in once the unit is started;
 #   4. a House with three titled hulls, a funded treasury and a rated listing
 #      buys a licence by its own agent, and the hulls go back to the Co-op.
-#      This is the long step: a rating on a launch world is hours. It runs
-#      last, on the second bring-up's live world; SEED=0 leaves it out;
+#      This is the long step: a rating is half an hour for a copy of
+#      Standard Doctrine and longer for a House source. It runs last, on the
+#      second bring-up's live world; SEED=0 leaves it out;
 #   5. a reset (the real scripts/reset-instance.sh) takes launch_path out, and
 #      a second bring-up on the wiped store ends the same way;
 #   6. rendering with the switch off is the plain substitution, byte for byte
@@ -33,7 +34,7 @@
 # OWNER is the unprivileged user the instance runs as (it must be able to read
 # the tree and the binaries). Knobs: REDIS_PORT (6391), SSH_PORT (16895),
 # INTERRUPT_S (seconds into the first run it is interrupted, 45), PULSE (the
-# instance's REGISTRY_PULSE_MS, 50), SEED=0 (leave the hours-long step 4 out),
+# instance's REGISTRY_PULSE_MS, 50), SEED=0 (leave the long step 4 out),
 # BRINGUP_ARGS (extra bring-up arguments, e.g. `--seed-line standard`), LLM=stub
 # (answer the LLM routes from a local stub and require the LLM check to pass;
 # without it the check is required to FAIL, since no provider answers), and
@@ -304,9 +305,9 @@ expect_ready "$work/bringup-third.log"
 kept_off
 
 # --- 4: the seed line and a House's purchase, on the live world of run 3.
-# HOURS: the Registry's rating is a few hundred trial matches. SEED=0 skips it.
+# The long step: the Registry's rating is its trial matches. SEED=0 skips it.
 if [ "${SEED:-1}" != 0 ]; then
-  log "the seed line and the House's purchase (a rating: hours)"
+  log "the seed line and the House's purchase (a rating: half an hour or more)"
   bringup --seed-only > "$work/bringup-seed.log" 2>&1 || { tail -30 "$work/bringup-seed.log" >&2; exit 1; }
   cat "$work/bringup-seed.log"
   grep -q 'bought licence' "$work/bringup-seed.log" || { echo "acceptance: no House purchase" >&2; exit 1; }

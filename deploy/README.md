@@ -803,8 +803,8 @@ store with no account the script bootstraps it). Then, in order:
 5. **The seed line and a House's purchase**, on the running world: one line
    rated by the Registry, filed by #1 and listed on the player market, and one
    House's purchase of it by its own agent, read from the House's procurement
-   ledger in the store. **This step is hours** (below); `--no-seed` leaves it
-   out and `--seed-only` runs it alone.
+   ledger in the store. **This step is half an hour or more** (below);
+   `--no-seed` leaves it out and `--seed-only` runs it alone.
 
 The first four steps take a few minutes. A second run on a box that is already
 live (the document `active`, the unit running) stops nothing: it checks the
@@ -865,20 +865,21 @@ to keep: each gets a random one that is thrown away. Nobody plays these
 logins. On the day somebody must (the Registry operator, to recall a
 revision), #1 types `@newpassword RegistryOperator=<password>`.
 
-**The seed line is hours, at any pulse.** A Registry rating on a launch world
-is a few hundred trial matches (171 for a copy of Standard Doctrine, 258 for
-the Meridiani source), and a match is paced by its own simulation: about 45 s
-of wall clock a match for the first, about 90 s for the second, on a 32-core
-box with `registry_pulse_ms = 50`. So a rating is about two hours for a copy of
-Standard and about six for a named House source, and the pulse does not make
-it minutes (the "about 1,070 leases" figure is the acceptance stories' own
-certificate, in their rig's world). That is why the seed comes after the unit
-is started: nobody is kept off for it. The Registry's job runs in the world
-whether or not the script stays connected, so the step can be stopped and
-started again: `--seed-only` asks `@mind/file` where the line stands and goes
-on from there. `--seed-line` picks what is rated: `meridiani` (the default),
-`coprates`, `safe_conduct`, or `standard`, a copy of Standard Doctrine named
-`Seedline`. A House buys only a line whose rating scored above nothing.
+**The seed line is long, at any pulse.** A Registry rating is a run of trial
+matches, and a match is paced by its own simulation, not by the Registry's
+pulse: the server sits at a few per cent of one core while it rates. Measured
+on a 32-core box, release build: a copy of Standard Doctrine took 32 minutes at
+`registry_pulse_ms = 50`, and a named House source takes longer (doc 44's cut
+notes have the figures). The acceptance stories' "about 1,070 leases" is their
+own rig's certificate. That is why the seed comes after the unit is started:
+nobody is kept off for it. The Registry's job runs in the world whether or not
+the script stays connected, so the step can be stopped and started again:
+`--seed-only` asks `@mind/file` where the line stands and goes on from there.
+`--seed-line` picks what is rated: `standard` (the default), a copy of Standard
+Doctrine named `Seedline`, listed as `Seedline Market`; or `meridiani`,
+`coprates` or `safe_conduct`, the named source #1 imports as its configured
+publisher. A House buys only a line whose rating scored above nothing; a copy
+of Standard does.
 
 After the listing the script lends the House its hulls (next paragraph) and
 **restarts the world's unit**: a House shops once an IC month, a month in which
@@ -919,7 +920,7 @@ it stops after the Active boot, and the rig starts its own world).
 `scripts/launch-bringup-acceptance.sh` runs the whole thing on a scratch
 instance with its own Redis: an interrupted run and its second run, a reset
 and a second bring-up, and then the seed line and the purchase (`SEED=0`
-leaves the hours out).
+leaves the long step out).
 
 **A second run after a pause waits five minutes.** A world booted more than
 30 s after its store's last clock checkpoint runs the post-outage recovery

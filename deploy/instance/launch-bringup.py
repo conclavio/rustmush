@@ -24,8 +24,9 @@ Then the instance's own unit is started, and on it: `@mind/launch` again, the
 LLM routes' check, and last the dev launch's seed: one line rated by the
 Registry, filed by #1 and listed on the player market, and one House's
 purchase of it by its own agent. The seed comes after players are let in
-because a rating on a launch world is HOURS at any pulse; `--seed-only` takes
-it up again after a stop, and `--no-seed` leaves it out.
+because a rating is long at any pulse (about half an hour for a copy of
+Standard Doctrine, longer for a House source) and nobody is kept off for it;
+`--seed-only` takes it up again after a stop, and `--no-seed` leaves it out.
 
 HOW THE IN-GAME STEPS ARE TYPED AS #1. The script runs the world itself for the
 three boots: `mush-server` on a private IPC socket, and a private
@@ -1055,10 +1056,11 @@ def enable_npcs(box, staff):
 
 def seed_listing(box, staff, document):
     """One rated line on the player market, so a House has something to buy:
-    #1, the configured publisher, imports a named source, saves it, has the
-    Registry rate it, files it personally and lists it at the counter. A House
-    buys only a line whose rating scored above nothing, which the named sources
-    do. Returns the listing's row."""
+    #1 copies Standard Doctrine (or, as the configured publisher, imports a
+    named House source), saves it, has the Registry rate it, files it
+    personally and lists it at the counter. A House buys only a line whose
+    rating scored above nothing; a copy of Standard does. Returns the
+    listing's row."""
     if box.args.seed_line == "standard":
         source, selector = "Seedline", None
     else:
@@ -1127,9 +1129,9 @@ def seed_listing(box, staff, document):
                 time.sleep(3)
             started = time.monotonic()
             pulse = box.env.get("REGISTRY_PULSE_MS") or "1000"
-            say(f"the Registry is rating {reference} at registry_pulse_ms = {pulse}: hours, not "
-                "minutes, on a launch world (a few hundred trial matches, each paced by its own "
-                "simulation)")
+            say(f"the Registry is rating {reference} at registry_pulse_ms = {pulse}: about half an "
+                "hour for a copy of Standard Doctrine, longer for a House source (trial matches, "
+                "each paced by its own simulation)")
             staff.s.wait(r"Registry work finished\.|Registry preparation refused|was not admitted",
                          box.args.rating_timeout, "the end of the rating")
             box.timings["rating (queued to finished)"] = round(time.monotonic() - started, 1)
@@ -1490,10 +1492,11 @@ def seed_and_purchase(box, password):
     """On the running unit, with players already let in: one rated line on the
     player market, and one House's purchase of it.
 
-    It is here and not in the Active boot because a rating on a launch world
-    is HOURS, at any pulse: the trial plan is a few hundred matches, and a
-    match is paced by its own simulation, not by the Registry's pulse. Nobody
-    is kept off for that. The Registry's job runs in the world whether or not
+    It is here and not in the Active boot because a rating is long at any
+    pulse: its trial matches are paced by their own simulation, not by the
+    Registry's pulse (a copy of Standard Doctrine took 32 minutes at 50 ms,
+    and a House source takes longer). Nobody is kept off for that. The
+    Registry's job runs in the world whether or not
     this session stays connected, so a run that is stopped here can be started
     again (`--seed-only`) and takes the line up where it stands."""
     args = box.args
@@ -1537,10 +1540,11 @@ def main():
     parser.add_argument("--bin-dir", help="where the binaries are (<BUILD_DIR>/target/release)")
     parser.add_argument("--private-port", type=int,
                         help="the loopback SSH port of the private gateway (SSH_PORT + 20000)")
-    parser.add_argument("--seed-line", default="meridiani",
-                        choices=[h[0] for h in HOUSES] + ["standard"],
-                        help="what #1 rates and lists on the player market: a named House source, "
-                             "or `standard`, a copy of Standard Doctrine named Seedline")
+    parser.add_argument("--seed-line", default="standard",
+                        choices=["standard"] + [h[0] for h in HOUSES],
+                        help="what #1 rates and lists on the player market: `standard`, a copy of "
+                             "Standard Doctrine named Seedline (the default, and the quickest to "
+                             "rate), or a named House source")
     parser.add_argument("--purchase-house", default="meridiani", choices=[h[0] for h in HOUSES],
                         help="the House whose purchase is waited for")
     parser.add_argument("--house-hulls", type=int, default=3,
@@ -1560,7 +1564,7 @@ def main():
                         help="only the checks on the running unit: readiness and the LLM routes")
     parser.add_argument("--seed-only", action="store_true",
                         help="only the seed line and the House's purchase, on the running unit "
-                             "(what a stopped run comes back to; a rating is hours)")
+                             "(what a stopped run comes back to; a rating is half an hour or more)")
     parser.add_argument("--llm-npc", help="the NPC to ask (the first major NPC of the cast packs)")
     parser.add_argument("--llm-timeout", type=int, default=120)
     parser.add_argument("--boot-timeout", type=int, default=600)
@@ -1612,8 +1616,8 @@ def main():
             print(f"launch-bringup: {stop}", file=sys.stderr)
         if not args.no_seed:
             box.timings.clear()
-            say("the seed line and the House's purchase, on the running world. The rating is HOURS; "
-                "stop this whenever, and `--seed-only` takes it up again")
+            say("the seed line and the House's purchase, on the running world. The rating is half "
+                "an hour or more; stop this whenever, and `--seed-only` takes it up again")
             seed_and_purchase(box, password)
             for what, seconds in box.timings.items():
                 say(f"  {what}: {seconds}s")
