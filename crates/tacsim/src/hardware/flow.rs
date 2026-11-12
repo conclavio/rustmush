@@ -1228,9 +1228,10 @@ async fn m8b_a_rig_is_fitted_at_stickney_then_ungoverned_in_the_back_room() -> R
     Ok(())
 }
 
-/// The Class III end-user entitlement (`core3_end_user`), which no shipped composition
-/// provisions (doc 17h §2.2): a test-only staff command registering it, composed for the
-/// rig's provisioning boot only (`mush-industry`'s delivery fixture's pattern).
+/// The Class III end-user entitlement (`core3_end_user`). A launch issues it by the end
+/// user's own registration (`+enduser`, doc 44 unit MW.23); this rig composes the hardware
+/// with no launch, so it keeps a test-only staff command registering the instrument, composed
+/// for the rig's provisioning boot only (`mush-industry`'s delivery fixture's pattern).
 const CORE3: &str = "tacsim.licence.core3_end_user";
 struct Core3Fixture;
 impl GameModule for Core3Fixture {

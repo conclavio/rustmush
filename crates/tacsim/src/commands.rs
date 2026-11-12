@@ -502,6 +502,29 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::licence::licence_cmd),
     )?;
+    // ---- Doc 44 unit MW.23 (Q-44-40): `+enduser`, the Registry's Class III end-user
+    // registration ----
+    //
+    // Under the module's `LegacyPostImage` class, `+licence`'s shape: the bare verb and
+    // `/show` are pure reads; `/apply` previews and writes nothing; `/apply go` is ONE
+    // command through the economy's own API (`register_end_user`: the fee to the launch's
+    // Registry account and one entitlement unit to the actor, one transaction). No
+    // authoritative submission. Registered unconditionally; without an Active launch it
+    // says the Registry takes no registrations. Accepted from anywhere.
+    reg.command(
+        CommandSpec {
+            name: crate::launch::end_user::END_USER_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["apply", "show"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::launch::end_user::END_USER_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::launch::end_user::end_user_cmd),
+    )?;
     // ---- Doc 18 cut IC13 (§4.1 "Losses, dormancy and release"; D-18-25; lead ruling
     // L9): `@coop/revoke`, staff ----
     //

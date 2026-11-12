@@ -119,6 +119,12 @@ family = "economy.obligation"
 note = "Doc 41 cut RS.5 (Q-41-13): +debts is a pure read of the actor's one-term ruleset debts (mush_economy::debts_of). /pay <id> is ONE post through the economy's own API (mush_economy::pay_debt: the amount from the debtor's account, the obligation Satisfied in the same step, refused with nothing written when the account cannot cover it), under the debtor's own debit authority. No tacsim document is written. Future family: the obligation as a typed economy record."
 
 [[handler]]
+name = "+enduser"
+category = "legacy-post-image"
+family = "economy.core3_end_user"
+note = "doc 44 unit MW.23 (Q-44-40; doc 17 section 16; 17f M7.11): the Registry's Class III end-user registration, the route by which an Active launch issues tacsim.licence.core3_end_user. +enduser and +enduser/show are pure reads (the actor's own entitlement account, through mush_economy::core_integration::end_user_standing). /apply previews through check_end_user_registration and writes nothing. /apply go is ONE command through the economy's own API, register_end_user: one posted transaction that moves the fee from the actor's own unscoped credit account to the launch's Registry account and one unit of the entitlement from the launch's registered title issuer's source account to the actor's, under an injected authority that admits exactly those four lines (issue_title's pattern); the first registration on a world registers the instrument and opens the issuer's source account, and each holder's first opens their own account. tacsim writes no document of its own and touches no economy slot. The entitlement decides whether a Class III integration is accepted, completed and delivered, as +licence's decides extraction; like +licence it rides the economy's journal, the legacy lane the entitlement check itself reads (EconomySnapshot accounts), so a typed family would have nothing to gate until that check moves. Registered unconditionally; without an Active launch it refuses out loud. No authoritative submission. Future family: the end-user register as an economy-owned typed purchase (quote, fund, grant) beside the managed entitlement purchases, if the registration ever gains a term, a seat count or a resale."
+
+[[handler]]
 name = "+faction"
 category = "legacy-post-image"
 family = "faction.stance"

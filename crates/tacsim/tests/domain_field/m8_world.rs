@@ -2354,8 +2354,9 @@ fn m8g_a_real_ungoverned_core_is_seized_impounded_and_forfeited() {
 /// Tether back room integrates it as an ungoverned Class I (a certified Class I fitted at Basin
 /// first: `core_ungovern` never fits a coreless chassis) and fits it into the pilot's leased
 /// rig; the Registry's inspection reads the core `Grey`, Class I, ungoverned, and the operator
-/// may seize it. (M8b-2's heirloom is Class III, which integrates only under a Class III
-/// entitlement the production launch does not compose: the M8g report.)
+/// may seize it. (M8b-2's heirloom is Class III, which integrates only under the Class III
+/// end-user entitlement; since doc 44 unit MW.23 the launch issues it, and the heirloom's story
+/// is `m8_end_user::mw23_a_heirloom_in_the_back_room_is_under_the_entitlement`.)
 #[test]
 fn m8g_a_grey_core_reads_grey_to_the_inspection_and_is_seizable() {
     use tacsim::minds::registry_inspection::{HullClass, Provenance};
