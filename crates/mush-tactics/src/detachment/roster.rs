@@ -692,7 +692,9 @@ mod tests {
         });
         roster.reconcile(2, &facts)?;
         check_eq!(
-            roster.leader().map(|leader| (leader.character, leader.kind)),
+            roster
+                .leader()
+                .map(|leader| (leader.character, leader.kind)),
             Some((ObjId(60), LeaderKind::Player))
         );
         check_eq!(roster.term(), 2);
@@ -702,7 +704,9 @@ mod tests {
         });
         roster.reconcile(3, &facts)?;
         check_eq!(
-            roster.leader().map(|leader| (leader.character, leader.kind)),
+            roster
+                .leader()
+                .map(|leader| (leader.character, leader.kind)),
             Some((ObjId(30), LeaderKind::Npc))
         );
         check_eq!(roster.term(), 3);

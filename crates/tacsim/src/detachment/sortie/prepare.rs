@@ -55,12 +55,7 @@ impl Snapshot {
     ) -> Option<(
         OperationId,
         Option<mush_tactics::detachment::Leader>,
-        Vec<(
-            mush_tactics::detachment::Slot,
-            u64,
-            ObjId,
-            mush_tactics::detachment::Directive<super::field_orders::FieldPayload>,
-        )>,
+        Vec<super::field_orders::NewLapse>,
     )> {
         let write = self.record.as_deref()?;
         let before = write.before.as_ref().and_then(|op| op.orders.as_deref());

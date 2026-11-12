@@ -11,8 +11,8 @@
 //!    later, which gives up the helm and the lead, and the order still stands half a minute
 //!    short of five minutes. At five minutes the captain's rig passes to its mind, the order
 //!    lapses, and Adeyemi's tank holds: it fires nothing more at the party its leader marked.
-//!    The intruder's player fires on it; once a round hits, the tank answers from where it
-//!    stands. The captain reads the lapse at login and in `+sortie/orders`, and it is still
+//!    The third party's escort, which nobody has fired on, fires on it; once a round hits,
+//!    the tank answers from where it stands. The captain reads the lapse at login and in `+sortie/orders`, and it is still
 //!    lapsed after their return.
 //! 2. **The plan's NPC commander replaces a lapsed order**
 //!    ([`ap8_the_npc_commander_replaces_a_lapsed_advance`]). A captain leads with Sana Okonkwo,
@@ -38,7 +38,7 @@
 //!
 //! What the stories stand in for:
 //! - **the escort and the intruder are fixture hulls with players seated** (CF.2's `armed_on`
-//!   and `seat`); the intruder's player types every shot (`LOCK`, `FIRE`);
+//!   and `seat`); the escort's player types every shot at the tank (`LOCK`, `FIRE`);
 //! - **the roster's rigs are stood on their cells by a staff hand** before the field opens, as
 //!   every field story places its units;
 //! - **the five minutes are world wall seconds**, which the rig steps: none is waited out.
@@ -82,8 +82,9 @@ const FAR: (u16, u16) = (170, 100);
 struct Field {
     rig: Rig,
     flown: Flown,
-    /// The escort's player.
+    /// The escort's player and hull: the third party.
     other: ObjId,
+    escort: ObjId,
     /// The intruder's player and hull.
     stranger: ObjId,
     intruder: ObjId,
@@ -192,6 +193,7 @@ async fn opened(plan: &Plan, armed: bool) -> Field {
         flown,
         other,
         stranger,
+        escort,
         intruder,
         rx,
         lines,
@@ -266,11 +268,11 @@ impl Field {
         run(&mut self.rig.tw, leader, &line)
     }
 
-    /// **The intruder's player keeps a lock on the contact within two cells of `cell` and
+    /// **`who`, at `hull`'s controls, keeps a lock on the contact within two cells of `cell` and
     /// fires**, one pass of the two lines a player types.
-    fn fire_on(&mut self, cell: (u16, u16)) {
-        let (stranger, gun) = (self.stranger, weapon_of(&self.rig, self.intruder));
-        let near = frame(&self.rig, stranger).and_then(|frame| {
+    fn fire_on(&mut self, (who, hull): (ObjId, ObjId), cell: (u16, u16)) {
+        let gun = weapon_of(&self.rig, hull);
+        let near = frame(&self.rig, who).and_then(|frame| {
             frame
                 .contacts
                 .iter()
@@ -284,15 +286,15 @@ impl Field {
         if let Some((id, designator, lock)) = near
             && lock != Some(id)
         {
-            let _ = run(&mut self.rig.tw, stranger, &format!("LOCK {designator}"));
+            let _ = run(&mut self.rig.tw, who, &format!("LOCK {designator}"));
         }
-        let _ = run(&mut self.rig.tw, stranger, &format!("FIRE {gun}"));
+        let _ = run(&mut self.rig.tw, who, &format!("FIRE {gun}"));
     }
 
-    /// The intruder's player ceases fire.
-    fn cease(&mut self) {
-        let gun = weapon_of(&self.rig, self.intruder);
-        let _ = run(&mut self.rig.tw, self.stranger, &format!("FIRE {gun} OFF"));
+    /// `who`, at `hull`'s controls, ceases fire.
+    fn cease(&mut self, (who, hull): (ObjId, ObjId)) {
+        let gun = weapon_of(&self.rig, hull);
+        let _ = run(&mut self.rig.tw, who, &format!("FIRE {gun} OFF"));
     }
 }
 
@@ -542,35 +544,34 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     );
     assert_eq!(standing(&field.rig, adeyemi), Some(MindObjective::Hold));
 
-    // The intruder's player fires on the escort. Once a round hits, it answers from where it
-    // stands.
-    let cell = stood.expect("the escort's cell");
+    // The third party's hull, which nobody has fired on, fires on the tank. Once a round hits,
+    // the tank answers from where it stands.
+    let cell = stood.expect("the tank's cell");
+    let third = (field.other, field.escort);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
-    let before = fired_at(&field.lines, tank, intruder);
     assert_eq!(
         frame(&field.rig, adeyemi).and_then(|frame| frame.own_last_hit_ms),
         None,
-        "nothing has hit the escort yet"
+        "nothing has hit the tank yet"
     );
     let mut answered = false;
     while std::time::Instant::now() < deadline && !answered {
-        field.fire_on(cell);
-        answered = field
-            .until(1, |_, lines| fired_at(lines, tank, intruder) > before)
-            .await;
+        field.fire_on(third, cell);
+        answered = field.until(1, |_, lines| fired(lines, tank) > spent).await;
     }
-    field.cease();
-    assert!(
-        frame(&field.rig, adeyemi).is_some_and(|frame| frame.own_last_hit_ms.is_some()),
-        "the escort fired again only after a round hit it: {} rounds at it",
-        fired_at(&field.lines, intruder, tank)
-    );
+    field.cease(third);
     assert!(
         answered,
-        "the escort answers the unit that hit it: order {:?}, hit {:?}, {} rounds at it",
+        "the tank answers once it is hit: order {:?}, hit {:?}, {} rounds at it",
         standing(&field.rig, adeyemi),
         frame(&field.rig, adeyemi).and_then(|frame| frame.own_last_hit_ms),
-        fired_at(&field.lines, intruder, tank)
+        fired_at(&field.lines, third.1, tank)
+    );
+    assert!(
+        frame(&field.rig, adeyemi).is_some_and(|frame| frame.own_last_hit_ms.is_some())
+            && fired_at(&field.lines, third.1, tank) > 0,
+        "it fired again only after the third party's round hit it: {} rounds at it",
+        fired_at(&field.lines, third.1, tank)
     );
     assert!(
         matches!(
@@ -781,6 +782,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
         flown,
         other,
         stranger,
+        escort,
         intruder,
         mut rx,
         ..
@@ -799,6 +801,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
         flown,
         other,
         stranger,
+        escort,
         intruder,
         rx,
         lines,
@@ -854,6 +857,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
         flown,
         other,
         stranger,
+        escort,
         intruder,
         mut rx,
         ..
@@ -872,6 +876,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
         flown,
         other,
         stranger,
+        escort,
         intruder,
         rx,
         lines,

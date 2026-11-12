@@ -282,11 +282,14 @@ with a real physical helm station and current control lease leads; launching or
 organizing the operation confers no field priority. A nominated NPC can take over
 only with the accepted command employment scope and current unit command rights.
 An unavailable roster has no leader. A leader whose link is lost still leads
-while they are waited for: inside a running field that is the field's own five
-minutes (`help field`), and anywhere else the server's link grace. A leader who
-quits, or who is knocked out in their unit, stops leading at once. Returning
-players settle briefly before reclaiming priority. A restart retains the command
-term and reconnect timers, then rechecks current sessions and control.
+while the server keeps their session (its link grace, five minutes by default);
+when the session ends they give up their console, and the lead with it. Inside a
+running field they stop leading no later than the field's own five minutes, when
+their unit passes to its mind (`help field`). A leader who quits, or who is
+knocked out in their unit, stops leading at once. A returning player leads again
+once they hold their unit's console (`+focus`, and `@station/handoff` if the
+helm passed on) and have settled briefly. A restart retains the command term and
+reconnect timers, then rechecks current sessions and control.
 
 An NPC who leads commands. Inside a running field, with no player leading, the
 plan's NPC commander gives the roster one posture at a time, as ordinary roster
@@ -301,18 +304,21 @@ takes the lead back after the usual settling, and the NPC gives no further order
 A roster with no nominated commander is never led by an NPC. On open ground an
 NPC leader gives no orders.
 
-If the leader goes away, an ENGAGE or an ADVANCE they gave lapses when they stop
-leading: five minutes after a lost link inside a field, at once on a quit or a
-knock-out. A hired crew is not flown for you while you are away and keeps its
-own doctrine, but the attack you started does not run on without you. The unit
-stops where it is and holds its fire. If it is hit it answers from where it
-stands, firing on a Hostile in front of it; it does not turn to cover its rear.
-A HOLD FIRE on the lapsed order is kept, and such a unit answers nobody. Every
-other order stands: a HOLD, a SCREEN, a SUPPORT, a WITHDRAW or a mining run you
-left is still what the unit does. Whoever leads next, the next active player and
-then the plan's NPC commander, can give the unit a new order, which replaces the
-stand. You are told what lapsed when you log in and in `+sortie/orders`, and the
-order stays lapsed after you return until you give it again.
+If the leader goes away inside a running field, an ENGAGE or an ADVANCE they
+gave a hired crew lapses when their own unit passes to its mind: five minutes
+after a lost link, at once on a quit or a knock-out. A hired crew is not flown
+for you while you are away and keeps its own doctrine, but the attack you
+started does not run on without you. The unit stops where it is and holds its
+fire. Once it is hit it answers from where it stands, firing on a Hostile in
+front of it; it does not turn to cover its rear. A HOLD FIRE on the lapsed order
+is kept, and such a unit answers nobody. Every other order stands: a HOLD, a
+SCREEN, a SUPPORT, a WITHDRAW or a mining run you left is still what the unit
+does. Whoever leads next, the next active player and then the plan's NPC
+commander, can give the unit a new order, which replaces the stand. You are told
+what lapsed when you log in and in `+sortie/orders`, and the order stays lapsed
+after you return until you give it again. If you were not at the controls of a
+unit in a running field when you went away (you had recovered to the carrier, or
+no field was running), there is no such clock and your orders stand.
 
 `/field` is the saved operation record, not a live casualty or position report.
 The flight tick refreshes changed leadership; `/refresh` requests the same durable

@@ -579,13 +579,26 @@ pub(super) fn lapse_due(
     Ok(recorded)
 }
 
+/// **A lapse a write records for the first time** (doc 45 unit AP.8): what its submission
+/// tells.
+pub(super) struct NewLapse {
+    /// The recipient's slot.
+    pub slot: Slot,
+    /// The lapsed order's sequence.
+    pub sequence: u64,
+    /// The leader who gave it.
+    pub issuer: ObjId,
+    /// The order, as that leader typed it.
+    pub directive: Directive<FieldPayload>,
+}
+
 /// **The lapses `after` records that `before` did not** (doc 45 unit AP.8), each with the
 /// order as its leader typed it and who gave it: what a submission tells
 /// (`super::runtime::enqueue`).
 pub(super) fn new_lapses(
     before: Option<&FieldOrders>,
     after: &super::model::OperationRecord,
-) -> Vec<(Slot, u64, ObjId, Directive<FieldPayload>)> {
+) -> Vec<NewLapse> {
     let (Some(saved), Some(orders)) = (&after.command, &after.orders) else {
         return Vec::new();
     };
@@ -603,8 +616,12 @@ pub(super) fn new_lapses(
         })
         .filter_map(|(slot, lapse)| {
             let order = &book.delivered(*slot)?.order;
-            (order.sequence == lapse.sequence)
-                .then(|| (*slot, lapse.sequence, order.issuer, order.directive.clone()))
+            (order.sequence == lapse.sequence).then(|| NewLapse {
+                slot: *slot,
+                sequence: lapse.sequence,
+                issuer: order.issuer,
+                directive: order.directive.clone(),
+            })
         })
         .collect()
 }

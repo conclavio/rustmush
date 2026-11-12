@@ -98,7 +98,13 @@ fn tell_lapses(ctx: &mut Ctx<'_>, snapshot: &prepare::Snapshot) {
     let lead = leader
         .filter(|leader| leader.kind == mush_tactics::detachment::LeaderKind::Player)
         .map(|leader| leader.character);
-    for (slot, sequence, issuer, directive) in lapses {
+    for super::field_orders::NewLapse {
+        slot,
+        sequence,
+        issuer,
+        directive,
+    } in lapses
+    {
         let fresh = ctx.w.module_state_mut::<ToldLapses>().is_some_and(|told| {
             if told.0.len() >= 256 {
                 told.0.clear();
