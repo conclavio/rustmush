@@ -710,6 +710,30 @@
         "minds.stock_authored.final_substep_hash": "11620081165489262692",
         "minds.ceiling_authored.final_substep_hash": "13684314779734303388"
       }
+    },
+    "ap3_deterministic_update": {
+      "cut": "doc 45 AP.3, the mind ABI at API 9",
+      "recorded_utc": "2026-11-12T16:45:00Z",
+      "measured_revision": "ed5593464aa03b3f603e93ba63d2366d0eedaaca, against main at 0bad68f0bf8490486c4a68c048ab9c38514261d0",
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev (by hand as ghrunner, nice 10, HOSTNAME unset)"
+      ],
+      "reason": "AP.3 adds one getter to the mind's view, View.posture (the posture a unit's player left on it), and so raises the mind API to 9: MIND_ABI is rhai=1.26.0;api=9;stock=3, and minds/content.rs re-blessed the Standard Doctrine's source identity for its header alone (42c694ed to 2bea2391). A seal's digest covers its ABI and its source, and the arena folds every seal into its state hash, so every state hash moved: the minds lane's four final_substep_hash leaves, and the hash value on every line of the arena lane's ledger. A ledger line writes that value as a decimal, so the stream is 320 bytes longer (1650916 to 1651236, still 103 chunks). No count moved and nothing a unit does moved: every unit of the harness is on the default posture, which the snapshot and the hash spend no byte on. Proved on conclav.dev by dumping the arena lane's streamed ledger at main and at this revision: 9323 lines each, 9323 hash values each, 300 mind_sealed source prefixes each, no line differs once hash and the mind_sealed lines' source are taken out, and the 320 bytes are the digits of the hash values alone (180898 to 181218). A deterministic-only update, as the MW.9 record before it.",
+      "timing_policy": "TS.21's timings and host (conclav.dev) retained; no threshold or host comparison changed.",
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.ceiling_authored.final_substep_hash"
+      ],
+      "previous": {
+        "counters.ledger_bytes_streamed": 1650916,
+        "minds.fill_authored.final_substep_hash": "5028223047829299195",
+        "minds.stock_ci.final_substep_hash": "2814354088987883261",
+        "minds.stock_authored.final_substep_hash": "1771993770098865287",
+        "minds.ceiling_authored.final_substep_hash": "1115581876497461230"
+      }
     }
   },
   "classes": {
@@ -755,7 +779,7 @@
     "frames_per_pulse_mean": 21.192,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1650916,
+    "ledger_bytes_streamed": 1651236,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },
@@ -795,7 +819,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "1115581876497461230",
+      "final_substep_hash": "477923012376592334",
       "inline_thinks": 1754,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -901,7 +925,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "5028223047829299195",
+      "final_substep_hash": "16090300274155741832",
       "inline_thinks": 1671,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -943,7 +967,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "1771993770098865287",
+      "final_substep_hash": "3144024366270822576",
       "inline_thinks": 1683,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -976,7 +1000,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "2814354088987883261",
+      "final_substep_hash": "8502901592418194973",
       "inline_thinks": 1691,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
