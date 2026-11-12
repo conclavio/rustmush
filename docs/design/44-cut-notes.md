@@ -316,11 +316,17 @@ messages, not as a flag on `ConnUp` (see Divergences).
 Run on the Windows box: the `mush-core`, `mush-session` and `mush-ipc` tests above; the
 doorway's `tests/e2e.rs` (34 passed; with the pump's condition taken out the new test fails on
 the warning in the exec's output, so it tests the fix); `mush-net-ssh` `mind_exec` (3); the
-gateway's `exec_tests` and the resync test (5); `mush-contract-tests` (35 + 80 + 76); clippy
-with warnings denied and rustdoc on the eight changed crates. Left to the Linux CI:
-everything in `mush-server`, the gateway's `tests/split_halves/*` and
+gateway's `exec_tests` and the resync test (5); the `mushd` story (with the old full attach put
+back it fails on "Nick has connected."); `mush-contract-tests` (35 + 80 + 76); clippy with
+warnings denied and rustdoc on the eight changed crates. Left to the Linux CI: everything in
+`mush-server`, and the gateway's `tests/split_halves/*` and
 `tests/split_boundary/unit_signals.rs` (`cfg(unix)`, so the `Hello` added to
-`server_panic_relaunch.rs` was not even type-checked here), and the `mushd` story.
+`server_panic_relaunch.rs` was not even type-checked here). CI ran all of them green on the
+first full run but one: `mush-server`'s
+`ic_slice_loop::ic12_part_two_the_queue_runs_the_return` ("a sale is never negative"), a
+trade story that builds no bare connection. It passed when its cell was run again on the
+same commit, so it is a flake of that story's own (it ran 93 s on a loaded runner), owed a
+look by doc 18's owner and not touched here.
 
 **Divergences.**
 
