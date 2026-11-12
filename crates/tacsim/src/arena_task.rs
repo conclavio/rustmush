@@ -333,6 +333,20 @@ pub enum ArenaMsg {
         /// The ramp's zone, one cell.
         zone: crate::arena::state::EntryZone,
     },
+    /// **Whether a mind flies `unit` for a player who is not at its controls** (doc 44 cut
+    /// MW.7; Q-44-22, Q-44-38): the absent player's rule binds the unit while it stands
+    /// (`crate::arena::absent`). Latest-wins per unit and applied by `Arena::set_absent` at the
+    /// next pulse's head, ahead of the withdrawals and of the pulse's controls. Clearing it
+    /// also recalls a withdrawal of that unit still waiting for the pulse, answered
+    /// [`crate::arena::withdraw::WithdrawRefusal::Recalled`]: the player is back, and a ramp
+    /// exit the host asked for while they were away is not theirs. Only the IC field host
+    /// sends it, and a task with no [`FieldTerms`] ignores it.
+    Absent {
+        /// The unit.
+        unit: ObjId,
+        /// Flown for an absent player, or handed back.
+        absent: bool,
+    },
 }
 
 /// **The IC field host's terms** (doc 32 cut CF.2; Q-CF-20): what the task
@@ -677,6 +691,7 @@ impl ArenaHandle {
                 | ArenaMsg::Join { .. }
                 | ArenaMsg::Release { .. }
                 | ArenaMsg::Home { .. }
+                | ArenaMsg::Absent { .. }
         ) && self.inbox.capacity() <= self.reserve
         {
             return Err(msg);
@@ -1595,6 +1610,9 @@ struct PrePulse {
     /// **Doc 36 cut GC.11**: the homes the host lays for parties arriving mid-field, latest-wins
     /// per party, so bounded by the parties.
     homes: BTreeMap<crate::arena::PartyId, crate::arena::state::EntryZone>,
+    /// **Doc 44 cut MW.7**: the host's word on which units are flown for an absent player,
+    /// latest-wins per unit.
+    absences: BTreeMap<ObjId, bool>,
 }
 
 impl PrePulse {
@@ -1958,6 +1976,10 @@ async fn arena_loop(mut task: Task) {
                     Some(ArenaMsg::Home { zone }) => {
                         waiting.homes.insert(zone.team, zone);
                     }
+                    // Doc 44 cut MW.7: and so does the host's word on an absent player.
+                    Some(ArenaMsg::Absent { unit, absent }) => {
+                        waiting.absences.insert(unit, absent);
+                    }
                     // Every sender is gone: the world has forgotten this match
                     // and nothing can ever drive it again. End silently, for the
                     // same reason the stop signal does.
@@ -2047,6 +2069,22 @@ impl Task {
     fn apply_field_acts(&mut self, waiting: &mut PrePulse) {
         for ((by, of), mark) in std::mem::take(&mut waiting.marks) {
             self.arena.mark_party(by, of, mark);
+        }
+        // Doc 44 cut MW.7 (Q-44-37): the host's word on its absent players, ahead of the
+        // withdrawals. A unit handed back to its player is not taken out at the ramp by an ask
+        // the host made while they were away: that ask is recalled and answered.
+        if self.terms.is_some() {
+            for (unit, absent) in std::mem::take(&mut waiting.absences) {
+                self.arena.set_absent(unit, absent);
+                if !absent && waiting.withdrawals.remove(&unit).is_some() {
+                    self.queue_withdrawn(
+                        unit,
+                        Err(crate::arena::withdraw::WithdrawRefusal::Recalled),
+                    );
+                }
+            }
+        } else {
+            waiting.absences.clear();
         }
         for tug in std::mem::take(&mut waiting.tow_releases) {
             let outcome = self.release(tug);

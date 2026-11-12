@@ -497,6 +497,7 @@ pub(crate) fn joining_as(
             epoch: entrant.epoch,
             aboard: entrant.aboard.clone(),
             arrived: true,
+            away: None,
         });
         live.units.sort_by_key(|row| row.unit);
     }
@@ -1085,6 +1086,7 @@ mod review_72h_tests {
                 epoch: None,
                 aboard: vec![],
                 arrived: true,
+                away: None,
             }],
             homes: vec![],
             fire: None,

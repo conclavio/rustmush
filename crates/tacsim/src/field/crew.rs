@@ -14,7 +14,9 @@
 //!   fell, which strands everyone aboard it (doc 36 cut GC.3, `crate::carrier_damage`); and
 //! - **immediately on a control-section kill** (`on_frames`): a pilot inside a hull whose
 //!   head, cockpit or bridge is destroyed is incapacitated the pulse the frame says so, and is
-//!   told then.
+//!   told then. They also stop flying it (doc 44 cut MW.7; Q-44-43): the unit passes to its
+//!   mind at once, as an absent player's (`super::absent::hand_over`), and is theirs again only
+//!   when they are fit.
 //!
 //! The condition reads the control sections (`crate::field_ops`'s anatomy: `head`, `cockpit`,
 //! `bridge`): one destroyed incapacitates, one damaged injures, else fit. A pilot at a remote
@@ -1576,6 +1578,9 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
             "tacsim.field",
             INCAPACITATED.replace("{section}", &section),
         );
+        // Doc 44 cut MW.7 (Q-44-43: conscious and at liberty): a pilot knocked out while
+        // connected loses the controls to the unit's mind at once, with no five minutes.
+        super::absent::hand_over(ctx, frame.unit, *pilot, super::absent::Why::Incapacitated);
     }
 }
 

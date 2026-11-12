@@ -604,6 +604,17 @@ thread_local! {
 ///        sub-item 20's rule, so every match without a tow (every practice match)
 ///        folds the bytes it folded before the cut. It decides where the casualty
 ///        stands next substep and whether it may fire, with no ledger line of its own.
+///    24. **the absent player** (doc 44 cut MW.7; Q-44-38):
+///        [`crate::arena::state::UnitState::absent`] — `[1]` while a mind flies the
+///        hull for a player who is not at its controls and **nothing at all
+///        otherwise**, by sub-item 20's rule, so every match that never sets it
+///        (every practice match) folds the bytes it folded before the cut. It
+///        decides whether a later shot of the hull's mind is refused;
+///    25. **who has fired on it** (doc 44 cut MW.7; Q-44-38):
+///        [`crate::arena::state::UnitState::fired_on_by`] — `[1]`, the count as
+///        `u32`, then each unit's id as `u32` in id order — and **nothing at all
+///        while it is empty**, which it is for every unit of every practice
+///        match. It decides which shot sub-item 24's rule lets through.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -1247,6 +1258,19 @@ pub fn state_hash(arena: &Arena) -> u64 {
         if let Some(tug) = unit.coupled_to {
             fold.bytes(&[1_u8]);
             fold.bytes(&tug.0.to_le_bytes());
+        }
+        // **Doc 44 cut MW.7** (sub-items 24 and 25): the absent player's flag and the units
+        // that have fired on this one, each only when set — no byte for a unit its pilot
+        // flies and nobody has fired on.
+        if unit.absent {
+            fold.bytes(&[1_u8]);
+        }
+        if !unit.fired_on_by.is_empty() {
+            fold.bytes(&[1_u8]);
+            fold.bytes(&(unit.fired_on_by.len() as u32).to_le_bytes());
+            for by in &unit.fired_on_by {
+                fold.bytes(&by.0.to_le_bytes());
+            }
         }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
@@ -2710,6 +2734,48 @@ mod tests {
             unit.coupled_to = None;
         }
         assert_eq!(state_hash(&released), base, "no tow folds no byte");
+    }
+
+    /// **Doc 44 cut MW.7: the absent player's flag and the fire record fold only when set**
+    /// (item 1's sub-items 24 and 25): no unit checks out absent or fired on, so the base
+    /// folds no byte for either; each moves the hash, who fired folds too, and both cleared
+    /// hash as the base did.
+    #[test]
+    fn mw7_the_hash_folds_the_absent_player_and_the_fire_record_only_when_set() {
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena
+                .units
+                .iter()
+                .all(|unit| !unit.absent && unit.fired_on_by.is_empty()),
+            "every unit checks out its pilot's and unfired on"
+        );
+        let with = |edit: &dyn Fn(&mut crate::arena::state::UnitState)| {
+            let mut arena = two_tanks();
+            if let Some(unit) = arena.unit_mut(ObjId(9)) {
+                edit(unit);
+            }
+            state_hash(&arena)
+        };
+        let absent = with(&|unit| unit.absent = true);
+        let fired = |by: u32| {
+            with(&|unit| {
+                unit.fired_on_by.insert(ObjId(by));
+            })
+        };
+        assert_ne!(absent, base, "an absent player's unit went unhashed");
+        assert_ne!(fired(4), base, "a fire record went unhashed");
+        assert_ne!(fired(4), fired(5), "who fired folds too");
+        assert_ne!(absent, fired(4), "the two fold apart");
+        assert_eq!(
+            with(&|unit| {
+                unit.absent = false;
+                unit.fired_on_by.clear();
+            }),
+            base,
+            "neither set folds no byte"
+        );
     }
 
     /// **17b cut M5.2: the active profile folds only off its default** (item

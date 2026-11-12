@@ -1037,6 +1037,15 @@ impl Arena {
         // law-gated shot on a cycling or empty gun reads `Cycling`/`Empty`.
         // All automatic sources honor vetoes. Cited mind shots additionally
         // verify their slot identity, law and warrant at this final boundary.
+        //
+        // **Doc 44 cut MW.7** (Q-44-38; `crate::arena::absent`): and ahead of them all, the
+        // absent player's rule. Every shot no seat typed comes through here, a mind's own, a
+        // standing fire rule's and a machine's alike, so this is the one place the rule is
+        // asked: a unit flown for an absent player fires only on a unit that has fired on it,
+        // and not at all while a hold the player left stands.
+        if !matches!(by, FiredBy::Seat) && self.absent_denies_fire(unit, target).is_some() {
+            return Err(Refusal::Unwarranted);
+        }
         match by {
             FiredBy::Seat => {}
             FiredBy::Machine | FiredBy::Cond { .. } => {
@@ -2474,6 +2483,106 @@ mod tests {
             base.clone()
                 .resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 })
                 .is_ok()
+        );
+    }
+
+    /// **Doc 44 cut MW.7: the absent player's rule at the one door** (Q-44-18, Q-44-38;
+    /// `crate::arena::absent`). A mind's lawful, warranted shot fires for a unit its player
+    /// flies. Flown for an absent player it is refused, by every source no seat typed, until
+    /// the target's fire has arrived on this unit; a seat's typed `FIRE` is never asked. A
+    /// hold the pilot left, the seat's master gate or a standing order's `hold_fire`, holds
+    /// through that attack. The go-home order stands with no deadline, and the mind is shown
+    /// as hostile only what it may answer. A practice match records no fire.
+    #[test]
+    fn mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it() {
+        use crate::arena::party::{EndCondition, Relation};
+        use crate::arena::perception::MindObjective;
+        let mind = FiredBy::Mind { slot: Some(1) };
+        let base = a_minds_lock();
+        assert_eq!(base.clone().resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
+        let relation = |arena: &Arena| {
+            let view = arena.clone().mind_view(RED).expect("red reads a view");
+            view.contacts.first().map(|row| row.relation)
+        };
+        assert_eq!(relation(&base), Some(Relation::Hostile));
+
+        let mut away = base.clone();
+        away.end = EndCondition::Host;
+        assert!(away.set_absent(RED, true));
+        assert!(!away.set_absent(ObjId(99), true), "no such unit");
+        for by in [mind, FiredBy::Machine, FiredBy::Cond { slot: 1 }] {
+            assert_eq!(
+                away.clone().resolve_fire_by(RED, "cannon", 0, by),
+                Err(Refusal::Unwarranted),
+                "{by:?} would open fire first"
+            );
+        }
+        assert!(
+            away.clone()
+                .resolve_fire_by(RED, "cannon", 0, FiredBy::Seat)
+                .is_ok(),
+            "a seat's own shot is the player's"
+        );
+        let order = away.minds.get(&RED).and_then(|row| row.order.clone());
+        assert!(
+            order.as_ref().is_some_and(|order| {
+                order.objective == MindObjective::Withdraw
+                    && !order.hold_fire
+                    && order.expires_ms == i64::MAX
+            }),
+            "{order:?}"
+        );
+        assert_eq!(
+            relation(&away),
+            Some(Relation::Neutral),
+            "a party held hostile that has not fired on it is not shown as one to answer"
+        );
+
+        // Blue's fire arrives on red, hit or miss.
+        away.note_fired_on(BLUE, RED);
+        assert_eq!(away.clone().resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
+        assert_eq!(relation(&away), Some(Relation::Hostile));
+
+        // A hold the pilot left holds through the attack: the seat's master gate...
+        let mut gated = away.clone();
+        if let Some(state) = gated.unit_mut(RED) {
+            state.weapons_hold = true;
+        }
+        assert_eq!(
+            gated.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted)
+        );
+        assert_eq!(relation(&gated), Some(Relation::Neutral));
+        // ...and a standing order's, which the go-home order keeps.
+        let mut ordered = holding_fire(base.clone());
+        ordered.end = EndCondition::Host;
+        ordered.set_absent(RED, true);
+        ordered.note_fired_on(BLUE, RED);
+        assert!(
+            ordered
+                .minds
+                .get(&RED)
+                .and_then(|row| row.order.as_ref())
+                .is_some_and(|order| order.objective == MindObjective::Withdraw && order.hold_fire)
+        );
+        assert_eq!(
+            ordered.resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted)
+        );
+
+        // Handed back, the rule is over; and the order goes with it on a hull still a mind's.
+        let mut back = away.clone();
+        back.set_absent(RED, false);
+        assert!(back.minds.get(&RED).is_some_and(|row| row.order.is_none()));
+        assert_eq!(back.resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
+
+        // A practice match keeps no record of who fired on whom.
+        let mut practice = base;
+        practice.note_fired_on(BLUE, RED);
+        assert!(
+            practice
+                .unit(RED)
+                .is_some_and(|state| state.fired_on_by.is_empty())
         );
     }
 

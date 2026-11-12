@@ -1951,6 +1951,20 @@ impl Arena {
         } else {
             odds_rows.truncate(profile.odds_rows);
         }
+        // **Doc 44 cut MW.7** (Q-44-38; `crate::arena::absent`, "what the mind is shown"):
+        // a mind flying for an absent player is shown as hostile only the contacts it may
+        // answer, the units that have fired on this one; every other contact its party
+        // holds hostile reads neutral. `None` for a unit its player flies: the view as it
+        // always was.
+        let answerable = self.answerable(unit);
+        let shown = |id: ContactId, relation: crate::arena::party::Relation| match &answerable {
+            Some(may)
+                if relation == crate::arena::party::Relation::Hostile && !may.contains(&id) =>
+            {
+                crate::arena::party::Relation::Neutral
+            }
+            _ => relation,
+        };
         let contacts = rows
             .into_iter()
             .filter_map(|row| {
@@ -1961,7 +1975,7 @@ impl Arena {
                     alias: row.alias,
                     class: held.class,
                     friendly: row.friendly,
-                    relation: row.relation,
+                    relation: shown(row.id, row.relation),
                     moving: held.moving,
                     bearing_deg: row.bearing_deg,
                     relative_deg: row.relative_deg,

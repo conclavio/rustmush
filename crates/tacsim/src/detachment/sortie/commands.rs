@@ -83,6 +83,15 @@ pub(crate) fn field_ramp(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
     (flight.key.unit == unit && flight.phase.open()).then_some((flight.ramp.x_cm, flight.ramp.y_cm))
 }
 
+/// **The operation and roster slot `unit`'s open flight flies for** (doc 44 cut MW.7): what the
+/// field host recovers an absent player's unit by (`crate::field::absent`).
+pub(crate) fn field_flight(ctx: &Ctx<'_>, unit: ObjId) -> Option<(OperationId, u16)> {
+    let h = ctx.w.module_state::<runtime::SortieHandles>()?;
+    let head = ctx.action_state(&h.heads, &unit).ok()??;
+    let flight = ctx.action_state(&h.flights, &head.flight).ok()??;
+    (flight.key.unit == unit && flight.phase.open()).then_some((flight.operation, flight.slot))
+}
+
 /// **The carrier `unit`'s open flight returns to** (doc 40, the ramp exit's boarding window).
 pub(crate) fn field_carrier(ctx: &Ctx<'_>, unit: ObjId) -> Option<ObjId> {
     let h = ctx.w.module_state::<runtime::SortieHandles>()?;

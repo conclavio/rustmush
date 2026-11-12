@@ -2419,6 +2419,25 @@ pub struct UnitState {
     /// did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coupled_to: Option<ObjId>,
+    /// **A mind flies this unit for a player who is not at its controls** (doc 44 cut MW.7;
+    /// Q-44-22, Q-44-38): the IC field host's fact, written only by `Arena::set_absent` and
+    /// `false` for every unit of every practice match (Q-44-19). While it stands the absent
+    /// player's rule binds whatever mind flies the hull (`crate::arena::absent`).
+    ///
+    /// Decoded by `serde` default and written only when set, so `SNAPSHOT_FORMAT` stands;
+    /// folded into [`crate::arena::hash::state_hash`] **only when set** (item 1's sub-item
+    /// 24), so every match that never sets it hashes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// **The units whose fire has arrived on this one** (doc 44 cut MW.7; Q-44-38), hit or
+    /// miss, since the field opened: what "it may answer a unit that has fired on it" reads.
+    ///
+    /// Written by `Arena::resolve_impact` in a field whose end is its host's
+    /// ([`crate::arena::party::EndCondition::Host`]) and never in a practice match, where no
+    /// unit is ever flown for an absent player. Carried and folded as [`UnitState::absent`]
+    /// is: written and folded only when not empty (sub-item 25).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fired_on_by: BTreeSet<ObjId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5345,6 +5364,9 @@ impl Arena {
             orders_in_window: 0,
             // Doc 40 cut FR.5 (§4.1 item 5): under its own power until `Arena::couple`.
             coupled_to: None,
+            // Doc 44 cut MW.7: its pilot's until the host says otherwise, and unfired on.
+            absent: false,
+            fired_on_by: BTreeSet::new(),
         };
         // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3, Q-40-6): the rows a part's
         // condition word decides — the sight, the pod, the filter and the plant
