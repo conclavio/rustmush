@@ -602,5 +602,13 @@ pub fn npc_module_with(
         Some(g) => mush_npc::NpcModule::with_grounding(g),
         None => mush_npc::NpcModule::new(),
     };
-    Box::new(module.with_scene_turn_deadline_secs(i64::from(npc.scene_turn_deadline_secs)))
+    Box::new(
+        module
+            .with_scene_turn_deadline_secs(i64::from(npc.scene_turn_deadline_secs))
+            .with_ambient(
+                i64::from(npc.ambient_window_secs),
+                i64::from(npc.ambient_active_secs),
+            )
+            .with_wake_majors(npc.wake_majors),
+    )
 }

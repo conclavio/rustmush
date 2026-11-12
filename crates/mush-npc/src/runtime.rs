@@ -44,6 +44,110 @@ pub const SUMMARY_RETRY_MAX_MS: i64 = 300_000;
 /// How long a participant remains the NPC's conversational focus, in milliseconds.
 pub const CONVERSATION_FOCUS_MS: i64 = 120_000;
 
+/// Doc 44 cut MW.18 (Q-44-31, Q-44-47): a room hears at most one unprompted line in this
+/// many REAL seconds, whichever of its NPCs speaks (`[npc].ambient_window_secs`; 0 turns the
+/// ambient timer off). Provisional.
+pub const DEFAULT_AMBIENT_WINDOW_SECS: i64 = 1_800;
+
+/// MW.18 (Q-44-47): a player counts as present for an unprompted line only if they typed
+/// something within this many REAL seconds (`[npc].ambient_active_secs`). Provisional.
+pub const DEFAULT_AMBIENT_ACTIVE_SECS: i64 = 600;
+
+/// MW.18: a room must have held a present player, with none of its NPCs taking a turn, for
+/// this many REAL seconds before one of them speaks unprompted. A default taken, not a
+/// ruling: it keeps the line for a quiet moment rather than the second a player walks in.
+pub const DEFAULT_AMBIENT_SETTLE_SECS: i64 = 300;
+
+/// MW.18: how often the agent tick looks for a room that is due, REAL seconds.
+pub const AMBIENT_SCAN_SECS: i64 = 30;
+
+/// MW.18: the most rooms the ambient timer keeps a window for.
+pub const MAX_AMBIENT_ROOMS: usize = 256;
+
+/// One room's ambient window (doc 44 cut MW.18). Times are REAL unix seconds
+/// ([`mush_core::World::now`]), never the IC clock: the window is a bound on spend, and
+/// spend is paid in real time whatever rate the game clock runs at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AmbientRoom {
+    /// When this unbroken stretch of a present player began; `None` while nobody present
+    /// is in the room.
+    pub attended_since: Option<i64>,
+    /// When the room's last unprompted turn was begun.
+    pub last_line_at: Option<i64>,
+    /// Which NPC took it, so the next one goes to another.
+    pub last_speaker: Option<ObjId>,
+}
+
+/// Every room's ambient window, and when the tick next looks (doc 44 cut MW.18). Runtime
+/// state: it is not persisted, so a restart forgets the windows.
+#[derive(Clone, Debug, Default)]
+pub struct AmbientState {
+    /// The rooms that hold, or lately held, a present player beside an enabled major NPC.
+    pub rooms: HashMap<ObjId, AmbientRoom>,
+    /// The REAL second the tick next scans at.
+    pub next_scan_at: i64,
+}
+
+impl AmbientState {
+    /// Note that `room` holds a present player at `now`. Returns `false`, and tracks
+    /// nothing, when the table is full and the room is new to it.
+    pub fn attend(&mut self, room: ObjId, now: i64) -> bool {
+        if !self.rooms.contains_key(&room) && self.rooms.len() >= MAX_AMBIENT_ROOMS {
+            return false;
+        }
+        let entry = self.rooms.entry(room).or_default();
+        if entry.attended_since.is_none() {
+            entry.attended_since = Some(now);
+        }
+        true
+    }
+
+    /// Every room not in `attended` has lost its present player: its stretch ends, and a
+    /// room with no window left to enforce is forgotten.
+    pub fn lapse(&mut self, attended: &std::collections::BTreeSet<ObjId>, now: i64, window: i64) {
+        self.rooms.retain(|room, entry| {
+            if attended.contains(room) {
+                return true;
+            }
+            entry.attended_since = None;
+            entry
+                .last_line_at
+                .is_some_and(|at| now.saturating_sub(at) < window)
+        });
+    }
+
+    /// Whether `room` may hear an unprompted line at `now`: a present player has been
+    /// there for `settle` seconds, and the room's last unprompted line is at least
+    /// `window` seconds old.
+    #[must_use]
+    pub fn due(&self, room: ObjId, now: i64, window: i64, settle: i64) -> bool {
+        self.rooms.get(&room).is_some_and(|entry| {
+            entry
+                .attended_since
+                .is_some_and(|since| now.saturating_sub(since) >= settle)
+                && entry
+                    .last_line_at
+                    .is_none_or(|at| now.saturating_sub(at) >= window)
+        })
+    }
+
+    /// Which of `candidates` (in id order) speaks next in `room`: the one after the
+    /// room's last speaker, wrapping, so two NPCs in one room take turns.
+    #[must_use]
+    pub fn next_speaker(&self, room: ObjId, candidates: &[ObjId]) -> Option<ObjId> {
+        let last = self.rooms.get(&room).and_then(|entry| entry.last_speaker);
+        last.and_then(|last| candidates.iter().copied().find(|npc| npc.0 > last.0))
+            .or_else(|| candidates.first().copied())
+    }
+
+    /// Record that `npc` began the room's unprompted turn at `now`: the window opens.
+    pub fn spoke(&mut self, room: ObjId, npc: ObjId, now: i64) {
+        let entry = self.rooms.entry(room).or_default();
+        entry.last_line_at = Some(now);
+        entry.last_speaker = Some(npc);
+    }
+}
+
 /// The exact events submitted to one summarizer. They remain in working memory
 /// until that call succeeds, and arrivals cannot become part of its acknowledgement.
 #[derive(Clone, Debug)]
@@ -81,6 +185,17 @@ pub struct NpcConfig {
     /// H2b: how long an NPC's scene turn may wait for its durable decision
     /// before the idle fallback fires, seconds (`[npc].scene_turn_deadline_secs`).
     pub scene_turn_deadline_secs: i64,
+    /// MW.18: the room window of the ambient timer, REAL seconds; 0 turns it off
+    /// (`[npc].ambient_window_secs`).
+    pub ambient_window_secs: i64,
+    /// MW.18: how recently a player must have typed to count as present, REAL seconds
+    /// (`[npc].ambient_active_secs`).
+    pub ambient_active_secs: i64,
+    /// MW.18: how long a room must have been attended and quiet first, REAL seconds.
+    pub ambient_settle_secs: i64,
+    /// MW.18 (Q-44-47): a cast pack's major NPCs are applied enabled, whatever the pack
+    /// says (`[npc].wake_majors`).
+    pub wake_majors: bool,
 }
 
 impl Default for NpcConfig {
@@ -91,6 +206,10 @@ impl Default for NpcConfig {
             transcript_chars: 6000,
             recall_top_n: 5,
             scene_turn_deadline_secs: DEFAULT_SCENE_TURN_DEADLINE_SECS,
+            ambient_window_secs: DEFAULT_AMBIENT_WINDOW_SECS,
+            ambient_active_secs: DEFAULT_AMBIENT_ACTIVE_SECS,
+            ambient_settle_secs: DEFAULT_AMBIENT_SETTLE_SECS,
+            wake_majors: false,
         }
     }
 }
@@ -147,6 +266,9 @@ pub struct LastDecision {
     pub public_facts: usize,
     /// Long-term memories recalled into the prompt.
     pub recalled: usize,
+    /// Whether nothing but the ambient timer woke it (doc 44 cut MW.18): nobody spoke
+    /// to the NPC and nobody arrived, so a turn that degrades says nothing at all.
+    pub unprompted: bool,
     /// What it came to.
     pub result: DecisionResult,
 }
@@ -184,6 +306,10 @@ impl LastDecision {
                 format!("the model answered: {}", actions.join(", "))
             }
             DecisionResult::ModelSilent => "the model answered and did nothing".to_owned(),
+            DecisionResult::Fallback { reason } if self.unprompted => format!(
+                "nothing said: the model was not reached, and an unprompted turn has no \
+                 fallback line ({reason})"
+            ),
             DecisionResult::Fallback { reason } => {
                 format!("the profile's fallback line, not the model ({reason})")
             }
@@ -237,6 +363,11 @@ pub struct NpcRuntime {
     pub dropped_stimuli: u64,
     /// The last dialogue turn this NPC began, for the staff view (doc 44 cut MW.17).
     pub last_decision: Option<LastDecision>,
+    /// When this NPC last began an unprompted turn, REAL unix seconds (doc 44 cut
+    /// MW.18). The room's window bounds a room; this bounds the NPC itself, so one that
+    /// walks to another room does not speak unprompted again inside the window
+    /// (Q-44-31's "each").
+    pub last_unprompted_at: Option<i64>,
 }
 
 impl NpcRuntime {
@@ -344,6 +475,8 @@ pub struct NpcHostState {
     /// S6 (doc 14 §4.6 rule 4): every interface-ability call, newest last,
     /// at most [`MAX_INTERFACE_AUDIT_ROWS`]; `@agent/audit` reads it.
     pub interface_audit: VecDeque<InterfaceAuditRow>,
+    /// Doc 44 cut MW.18: the ambient timer's room windows.
+    pub ambient: AmbientState,
 }
 
 /// The most interface-ability audit rows kept.
@@ -402,6 +535,7 @@ impl NpcHostState {
             config: NpcConfig::default(),
             decision_requests: VecDeque::new(),
             interface_audit: VecDeque::new(),
+            ambient: AmbientState::default(),
         }
     }
 
@@ -419,6 +553,7 @@ impl NpcHostState {
             config: NpcConfig::default(),
             decision_requests: VecDeque::new(),
             interface_audit: VecDeque::new(),
+            ambient: AmbientState::default(),
         }
     }
 
@@ -518,6 +653,10 @@ impl NpcHostState {
             woke_total: batch.len(),
             public_facts: 0,
             recalled: 0,
+            unprompted: !batch.is_empty()
+                && batch
+                    .iter()
+                    .all(|stimulus| matches!(stimulus, Stimulus::AmbientTimer)),
             result: DecisionResult::InFlight,
         });
         batch
@@ -755,6 +894,62 @@ mod tests {
             text: text.into(),
             kind: SpeechKind::Say,
         }
+    }
+
+    /// Doc 44 cut MW.18: a room's ambient window. A room is due only after it has been
+    /// attended for the settle time and its last line is a window old; losing its present
+    /// player ends the stretch but keeps the window; a room with nothing left to enforce
+    /// is forgotten; two NPCs take the room's lines in turn; the table is bounded.
+    #[test]
+    fn mw18_a_rooms_window_is_due_once_and_rotates_its_speakers() {
+        use std::collections::BTreeSet;
+        let (room, a, b) = (ObjId(50), ObjId(60), ObjId(61));
+        let (window, settle) = (1_800, 300);
+        let mut ambient = AmbientState::default();
+        assert!(!ambient.due(room, 0, window, settle), "an unknown room");
+
+        assert!(ambient.attend(room, 1_000));
+        assert!(
+            ambient.attend(room, 1_200),
+            "a second look keeps the first second"
+        );
+        assert_eq!(ambient.rooms[&room].attended_since, Some(1_000));
+        assert!(!ambient.due(room, 1_299, window, settle));
+        assert!(ambient.due(room, 1_300, window, settle));
+
+        // The first line goes to the first candidate, the next to the other, and round.
+        assert_eq!(ambient.next_speaker(room, &[a, b]), Some(a));
+        ambient.spoke(room, a, 1_300);
+        assert!(!ambient.due(room, 1_301, window, settle));
+        assert!(!ambient.due(room, 1_300 + window - 1, window, settle));
+        assert!(ambient.due(room, 1_300 + window, window, settle));
+        assert_eq!(ambient.next_speaker(room, &[a, b]), Some(b));
+        ambient.spoke(room, b, 3_100);
+        assert_eq!(ambient.next_speaker(room, &[a, b]), Some(a));
+        assert_eq!(ambient.next_speaker(room, &[]), None);
+
+        // The player leaves: the stretch ends, the window is kept.
+        ambient.lapse(&BTreeSet::new(), 3_200, window);
+        assert_eq!(ambient.rooms[&room].attended_since, None);
+        assert_eq!(ambient.rooms[&room].last_line_at, Some(3_100));
+        // They come back at once: the settle starts again and the window still holds.
+        assert!(ambient.attend(room, 3_210));
+        assert!(!ambient.due(room, 3_210 + settle, window, settle));
+        assert!(ambient.due(room, 3_100 + window, window, settle));
+        // Unattended past its window, the room is forgotten.
+        ambient.lapse(&BTreeSet::new(), 3_100 + window, window);
+        assert!(ambient.rooms.is_empty());
+
+        // The table is bounded: a new room past the cap is not tracked.
+        for id in 0..MAX_AMBIENT_ROOMS {
+            assert!(ambient.attend(ObjId(1_000 + u32::try_from(id).unwrap()), 0));
+        }
+        assert!(!ambient.attend(ObjId(9), 0));
+        assert_eq!(ambient.rooms.len(), MAX_AMBIENT_ROOMS);
+        assert!(
+            ambient.attend(ObjId(1_000), 5),
+            "a tracked room is still served"
+        );
     }
 
     /// Doc 44 cut MW.17: a turn records what woke it, what it was shown and what it came

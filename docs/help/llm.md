@@ -55,8 +55,9 @@ auto-committed). Caps are set in `mushd.toml` (`[llm.budgets]`).
   @llm/revive <npc>       Wake a parked NPC agent.
 
 `@llm/kill` stops an NPC's decisions as well as its dialogue, including a
-scene turn it was already holding: that call is refused before the model is
-asked and logged as `npc_decision disabled` against the NPC.
+scene turn it was already holding: the call is refused before the model is
+asked and logged as `npc_decision disabled` against the NPC. A call that was
+already under way when the NPC was parked finishes and is charged.
 
 Use `@llm/disable` if cost or output ever runs away; in-flight drafts finish
 harmlessly and everything else falls back to its deterministic behaviour (hand-

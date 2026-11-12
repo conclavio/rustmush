@@ -1054,12 +1054,28 @@ pub struct NpcCfg {
     /// H2b: how long an NPC's scene turn may wait for its durable decision
     /// before the idle fallback fires, seconds (default 120).
     pub scene_turn_deadline_secs: u32,
+    /// Doc 44 MW.18 (Q-44-47): a cast pack creates its major NPCs enabled,
+    /// whatever the pack's `profile.enabled` says, and a later upgrade of the
+    /// pack keeps each as staff last left it (default false: the pack
+    /// decides, and the shipped majors stay parked). It wakes the majors of a
+    /// fresh world at boot; on a world that already exists staff wake each
+    /// with `@agent/enable`.
+    pub wake_majors: bool,
+    /// MW.18 (Q-44-31): the least time between two unprompted NPC lines in
+    /// one room, REAL seconds (default 1800). 0 turns the ambient timer off.
+    pub ambient_window_secs: u32,
+    /// MW.18 (Q-44-47): how recently a player must have typed to count as
+    /// present for an unprompted line, REAL seconds (default 600).
+    pub ambient_active_secs: u32,
 }
 
 impl Default for NpcCfg {
     fn default() -> Self {
         NpcCfg {
             scene_turn_deadline_secs: 120,
+            wake_majors: false,
+            ambient_window_secs: 1_800,
+            ambient_active_secs: 600,
         }
     }
 }
@@ -2870,6 +2886,27 @@ scene_turn_dedline_secs = 30
 ",
         );
         assert!(refused.is_err(), "an unknown [npc] key must refuse");
+    }
+
+    /// Doc 44 MW.18: the ambient timer's keys default to Q-44-31's and Q-44-47's
+    /// figures with the majors left as their pack ships them, and each is settable.
+    #[test]
+    fn mw18_npc_ambient_keys_default_and_parse() {
+        let absent: Config = toml::from_str("").expect("an empty config parses");
+        assert!(!absent.npc.wake_majors, "the shipped majors stay parked");
+        assert_eq!(absent.npc.ambient_window_secs, 1_800);
+        assert_eq!(absent.npc.ambient_active_secs, 600);
+        let set: Config = toml::from_str(
+            "[npc]
+wake_majors = true
+ambient_window_secs = 0
+ambient_active_secs = 120
+",
+        )
+        .expect("parses");
+        assert!(set.npc.wake_majors);
+        assert_eq!(set.npc.ambient_window_secs, 0);
+        assert_eq!(set.npc.ambient_active_secs, 120);
     }
 
     #[test]

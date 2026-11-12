@@ -97,8 +97,10 @@
 //! - **Embedding / vector recall** is the M10 [`MemoryRecall`]
 //!   seam; legacy recall uses name matches, while personal experience/belief
 //!   recall uses bounded name/topic matching and deterministic aging.
-//! - **Ambient timers** (`Stimulus::AmbientTimer`) are modeled but not yet
-//!   scheduled; the tick fires only on real stimuli / pending summaries.
+//! - **Ambient timers** (`Stimulus::AmbientTimer`) are scheduled for enabled major
+//!   NPCs only (doc 44 cut MW.18): a room that holds a present player hears at most one
+//!   unprompted line in a window of real time. Every other turn is still woken by a
+//!   real stimulus or a pending summary.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/ci_policy/restriction_lints.rs` carries
@@ -163,6 +165,7 @@ pub use memory::{
     MemoryRecord, MemoryRecordError, MemoryUpdate, record_key,
 };
 pub use module::ability_submit_key;
+pub use module::present_for_ambient;
 pub use module::{
     MAX_TURN_DESCRIPTION_BYTES, MAX_TURN_EXITS, MAX_TURN_NAME_BYTES, MAX_TURN_PERSONA_BYTES,
     MAX_TURN_PRESENT, NpcModule, scene_turn_context,
@@ -187,6 +190,10 @@ pub use relationships::{
     RelationshipStore, relationship_key,
 };
 pub use runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS;
+pub use runtime::{
+    AMBIENT_SCAN_SECS, AmbientRoom, AmbientState, DEFAULT_AMBIENT_ACTIVE_SECS,
+    DEFAULT_AMBIENT_SETTLE_SECS, DEFAULT_AMBIENT_WINDOW_SECS, MAX_AMBIENT_ROOMS,
+};
 pub use runtime::{
     InterfaceAuditRow, MAX_INTERFACE_AUDIT_ROWS, MAX_PENDING_STIMULI, MAX_PENDING_STIMULUS_BYTES,
     NpcConfig, NpcHostState, NpcRuntime,
