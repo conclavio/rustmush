@@ -15,7 +15,138 @@ Not built.
 
 ## MW.2
 
-Not built.
+The two market defects ruled to be fixed before the go-live (doc 44 §7.1; Q-44-14, Q-44-15;
+second review, §4c rows 8 and 9; doc 17g §7). Every Q-44 question it rests on is ruled.
+
+**Built.**
+
+- **A read the Roll owns says whether a listing can still be sold.**
+  `crates/mush-roll/src/commerce/withdrawal/sellable.rs`, reached only as
+  `EntitlementPurchaseWriter::sellable` (the writer the market already holds). Given what a
+  listing froze of its seller's standing (`ListedSubject`), it answers `Sellable::Yes` or
+  `No(Unsellable)` for a batch of up to 32 listings:
+  - `Withdrawn`, `Recalled`: the listed revision's status row (recall is told first).
+  - `SellerLicence`: the seller's owner licence is past Grace, has moved to another term, is
+    revoked, or its holder is barred by an inspection for now.
+  - `ParentLicence` (a derived listing): the seller's qualifying parent licence (the one the
+    child was filed under, or a committed replacement) is not theirs, is past Grace, is not an
+    open-resale term, or is revoked; or the parent source is recalled.
+  - `CharterMoved`: the charter's title is not the seller's at the listed title revision, or the
+    seller is no live character.
+  - `Unproved`: a row the answer needs is missing or does not match. The market treats it as
+    unsellable.
+  It reads at most 4 rows for an original listing and 12 for a derived one, in at most 12
+  batched reads a call. The rows are read through the market's own read lens: `install` adds
+  seven read-only family grants to `market` (`status`, `licences`, `revoked_terms`,
+  `operations`, `owner_parents`, `owner_qualification_heads`, `owner_qualification_operations`).
+  The market holds no handle to any of them.
+- **The counter and the House agent's list ask it.** In `crates/mush-market/src/mind_commands.rs`
+  "current" is now two tests, the policy (`current_policy`) and then the Roll's answer, for
+  `Listings`, `ListingsAfter`, `ListingByCode` and `ProcurementListings` (which now shares
+  `Listings`' page loop, `page`). A dead listing leaves `+minds`, the `mind.market` panel and
+  the agent's list; its code is no longer found (`+minds <code>`, `+minds/buy <code>`); it still
+  serves as a `MORE` cursor, as a policy-stale listing does. The read's descriptor
+  `mind_market_commands` is version 3.
+- **The Roll's answers are paid for inside the read's own allowance.** Core gives an owner read
+  256 reads and 512 rows and fails the whole read past either; the listing scans alone could
+  spend every row. The page loop counts each scan and each listing asked about (`Budget`) and,
+  when what is left cannot pay for the next, ends the page with the last listing it decided as
+  the cursor. A page that meets a long run of dead listings can therefore be short, or empty,
+  and still say `MORE`; following the cursor reaches what lies behind them.
+- **The Roll's renewal readers carry a lasting-refusal verdict.** `RenewalStop` in
+  `crates/mush-roll/src/commerce/renewal/reader.rs`, used by `house_renewal/reader.rs` as well:
+  `Recalled`, `Withdrawn` (the pinned revision's status row; one more row a licence) and, for a
+  personal licence, `OwnCharter` (the holder now owns the charter it is sold under, so the
+  holder would be buyer and seller at once; from the economy's title, no row). It is derived at
+  every read and never stored. `Inventory` leaves a stopped licence out; `Status` answers it.
+- **Both renewal services stop on it.** In `mind_renewal/service.rs` and
+  `mind_house_renewal/service.rs`: the scan admits no stopped licence; a draft entry admitted
+  before the stop arose ends at its next turn; the player's `request`, `accept` and `retry`
+  answer the lasting line and submit nothing (a decline of an open offer still goes through; a
+  funded offer still runs to its grant or refund). Nothing in the service's memory decides it,
+  so the next scan and a restart's first scan are told the same by the Roll.
+- **`+minds/renew` says why**, in the ruled words (`player::RENEW_STOPPED`): "This licence cannot
+  be renewed: <reason>. Nothing further will be tried." The reasons are "the Registry recalled
+  this mind", "its author withdrew this mind" and "you now own this mind's charter".
+
+**Tests.**
+
+- `mush-roll`, `commerce::withdrawal::sellable::tests` (six): each of the four ways a listing
+  dies and `Unproved`, the Grace boundary, the parent choice (bound licence, replacement, a
+  later owner with none), and the declared row costs. `commerce::renewal::reader::service_tests`
+  (two new): the three lasting causes and their order; an entry that is not stopped serialises
+  as before.
+- `mush-market`, `mind_commands::tests` (four new): a listing the Roll calls unsellable leaves
+  `Listings`, `ListingByCode` and `ProcurementListings`, is never asked about when the policy
+  already dropped it, and still serves as a cursor; a dead row does not count toward a code's
+  ambiguity; over 200 dead derived listings no read spends more than core's allowance, every
+  cursor moves forward and the one live listing behind them is reached; a full page followed
+  only by dead listings is the last page. `mind_renewal::tests` (one new): the ruled sentence
+  for each cause, exhaustively, and the House type is the same type.
+- The two stories are rewritten (`player_market_story.rs`, `player_market_typed.rs`). The typed
+  story: after the typed `Withdraw` the `mind.market` panel has no rows and the empty counter's
+  notice. The command story: both listings read on the counter within the owner term's Grace;
+  after `@mind/attest` they are gone and the code is not found (see Divergences); after
+  `@mind/withdraw` the counter is still empty, no quote row is added, and `+minds/renew` answers
+  the withdrawn line with no renewal operation opened; after the recall and the restart it
+  answers the recalled line, again with none opened. Both run on the CI dispatch only.
+
+**Divergences.**
+
+- **An owner's attestation takes that owner's listings off the counter.** A listing freezes the
+  owner term it was made under, and a quote has always refused a listing whose frozen subject
+  differs from the Roll's current facts (`mind_entitlement::offers::current_listing`). So once
+  `@mind/attest` opens the owner's next term, every listing made under the earlier term could
+  already not be quoted; it used to stay on the counter and now leaves it, and the author has to
+  list again. The same holds for any change of the charter's title revision. The command story
+  pins it. Whether a listing should survive its owner's attestation is a rule of the quote, not
+  of this unit, and is the owner's to decide.
+- **"Expired" is not a terminal state here.** The brief named recalled, withdrawn and expired.
+  The renewal protocol renews an expired predecessor on purpose (the reader's descriptor says
+  `expired_predecessor_permitted`), there is no renewal deadline anywhere in the Roll, and the
+  service only begins once a term has ended. Leaving lapsed licences out would turn the service
+  off. `OwnCharter` is added instead: it is the second cause doc 17g §7 recorded for the fault.
+- **A lasting refusal is known before a draft is sent, not learned from one.** A refused draft
+  tells the service nothing (the provider answers one uniform refusal and the observation is
+  `NoIntent` with no payload), so the lasting causes are read from the Roll's rows. The service
+  therefore tries a recalled licence not once but never; an entry it already held ends at its
+  next turn.
+- **The reason phrases are a default.** The sentence is the owner's ruling; the three phrases
+  that fill "<the Registry's reason>" are this unit's wording.
+- **The counter's answer is slimmer than a quote's.** It proves no ancestry, root, rating or
+  royalty evidence, so a listing it shows can still refuse a quote (a re-conformed rating, a
+  product the policy now computes differently, a buyer-specific refusal).
+- **Fingerprints move.** The seven read grants enter the state-family registry's fingerprint and
+  the descriptor's version enters the mechanics registry's. Neither is pinned in the tree;
+  `tacsim/src/hardware/flow/launch.rs`' check of the read's version is updated to 3.
+
+Two of these would take real work to undo: the budgeted page loop (the old loop is gone, and
+`ProcurementListings` now shares the new one), and the choice to read the Roll inside the
+market's read rather than from the caller, which is why the answer has to be slim.
+
+**Not built.**
+
+- No back-off for a passing refusal. A draft that refuses for a cause that is not one of the
+  three (a derivative waiting on its parent author's renewal, a short wallet, a pending resale,
+  an officer without the grant, and also any fault this unit does not classify: a charter an
+  organisation holds, a retired House purchase template, an integrity mismatch) is still retried
+  once a real second, as before, and the holder still reads the uniform line.
+- The House agent keeps no memory of a dead listing it had already quoted; it is simply not
+  handed the listing again, and its open quote expires as any quote does.
+- No change to the quote path, to `+minds/holdings`, or to tacsim's commands.
+
+**Not pinned by a story.**
+
+- No engine-level test drives the renewal service over a recalled or withdrawn revision; the
+  command story on the CI dispatch is the only run that does, and only for the personal service.
+  The House service's stop has no story at all.
+- "A derivative waiting on its parent's renewal is still retried" holds by construction (it has
+  no `RenewalStop`, and the retry path is untouched) and has no test of its own.
+- `ParentLicence`, `SellerLicence` by revocation or bar, and `CharterMoved` are pinned by the
+  Roll's unit tests on the decision alone; no story lists a derived mind and then lapses its
+  parent.
+- The House agent's list is pinned over the in-memory listing family; the procurement stories
+  (`m8_world`) run it over real rows without a dead listing among them.
 
 ## MW.3
 

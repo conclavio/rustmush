@@ -287,6 +287,30 @@ pub const RENEW_PAYING: &str =
 /// The holder turned the drafted offer down (the step submitted the Close).
 pub const RENEW_DECLINING: &str = "Turning down the renewal offer on licence {licence}.";
 
+/// Doc 44 MW.2 (Q-44-14, the owner's wording, ruled 2026-11-11): the licence
+/// can never be renewed as the Registry's records stand. `{reason}` is the
+/// Registry's reason (`stop_reason`). Nothing was submitted and the renewal
+/// service will not try either.
+pub const RENEW_STOPPED: &str =
+    "This licence cannot be renewed: {reason}. Nothing further will be tried.";
+
+/// The Registry's reason for a lasting refusal, as `RENEW_STOPPED` words it.
+#[must_use]
+pub const fn stop_reason(stop: mush_roll::commerce::renewal::reader::RenewalStop) -> &'static str {
+    use mush_roll::commerce::renewal::reader::RenewalStop;
+    match stop {
+        RenewalStop::Recalled => "the Registry recalled this mind",
+        RenewalStop::Withdrawn => "its author withdrew this mind",
+        RenewalStop::OwnCharter => "you now own this mind's charter",
+    }
+}
+
+/// `RENEW_STOPPED` for `stop`.
+#[must_use]
+pub fn renew_stopped(stop: mush_roll::commerce::renewal::reader::RenewalStop) -> String {
+    RENEW_STOPPED.replace("{reason}", stop_reason(stop))
+}
+
 const HOUR: i64 = 3_600;
 const DAY: i64 = 86_400;
 

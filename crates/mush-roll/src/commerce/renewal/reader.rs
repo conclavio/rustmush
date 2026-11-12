@@ -100,6 +100,73 @@ impl RenewalInventory {
         self.next_after.as_deref()
     }
 }
+/// Doc 44 MW.2 (Q-44-14): why a licence can never be renewed while the Roll's
+/// rows stand as they do: a **lasting** refusal, told apart from a passing one.
+///
+/// A renewal is a fresh sale of the same revision, and the sale reader
+/// refuses a revision the Registry recalled or its author withdrew; neither
+/// act can be undone, so every draft would refuse for ever. A holder who has
+/// come to own the charter would be buyer and seller at once, which the
+/// writer refuses for as long as the title stays theirs (an owner flies the
+/// mind on the owner's licence, so nothing is lost).
+///
+/// It is derived from the rows at every read and never stored: a restart
+/// reaches the same verdict, and a title that moves on lifts `OwnCharter` by
+/// itself. Nothing passing is here on purpose. A derivative waiting on its
+/// parent author's renewal, a wallet that is short, a resale that is pending,
+/// a Registry sanction that runs out, an officer who lost a grant another
+/// officer still has: each can end without the holder doing anything new, so
+/// the service keeps trying those. A lapsed term is not here either: the
+/// protocol renews an expired predecessor (`expired_predecessor_permitted`),
+/// and the service only begins once a term has ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenewalStop {
+    /// The Registry recalled the licensed revision.
+    Recalled,
+    /// Its author withdrew the licensed revision.
+    Withdrawn,
+    /// The holder now owns the charter the licence is sold under.
+    OwnCharter,
+}
+impl RenewalStop {
+    /// The verdict, pure: the Registry's act is told before the author's,
+    /// and either before the title.
+    #[must_use]
+    pub const fn of(recalled: bool, withdrawn: bool, own_charter: bool) -> Option<Self> {
+        if recalled {
+            Some(Self::Recalled)
+        } else if withdrawn {
+            Some(Self::Withdrawn)
+        } else if own_charter {
+            Some(Self::OwnCharter)
+        } else {
+            None
+        }
+    }
+    /// The verdict for a licence pinned to `filed` (`None` for a term that
+    /// follows its line: no one revision's status ends it), from that
+    /// revision's status row and whether the holder owns the charter.
+    pub(crate) fn read(
+        ctx: &OwnerReadContext<'_>,
+        families: &CommerceFamilies,
+        policy: super::super::records::RevisionPolicy,
+        own_charter: bool,
+    ) -> Result<Option<Self>, OwnerReadError> {
+        let (recalled, withdrawn) = match policy {
+            super::super::records::RevisionPolicy::Pin { filed, .. } => {
+                let status =
+                    history::read(ctx, &families.status, filed.key()).map_err(integrity)?;
+                if status.filed != filed {
+                    return Err(OwnerReadError::Integrity);
+                }
+                (status.recalled_by.is_some(), status.withdrawn_by.is_some())
+            }
+            super::super::records::RevisionPolicy::Follow { .. } => (false, false),
+        };
+        Ok(Self::of(recalled, withdrawn, own_charter))
+    }
+}
 #[derive(Serialize)]
 pub struct RenewalInventoryEntry {
     licence: LicenceId,
@@ -110,8 +177,17 @@ pub struct RenewalInventoryEntry {
     attempted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     holder_generation: Option<u64>,
+    /// Doc 44 MW.2 (Q-44-14): set when this licence cannot be renewed as the
+    /// Roll's rows stand. `Status` answers it (the holder is told why);
+    /// `Inventory` leaves such a licence out (the service never tries it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<RenewalStop>,
 }
 impl RenewalInventoryEntry {
+    /// Why this licence cannot be renewed, when it cannot ([`RenewalStop`]).
+    pub const fn stop(&self) -> Option<RenewalStop> {
+        self.stop
+    }
     pub const fn licence(&self) -> LicenceId {
         self.licence
     }
@@ -484,7 +560,12 @@ impl RenewalReader {
             {
                 continue;
             }
-            if let Some(item) = self.inventory_entry(roll, ctx, licence)? {
+            // Doc 44 MW.2: a licence that can never be renewed is no work
+            // for the service; it is left out here, at every scan and after
+            // every restart, because the verdict is the Roll's rows' own.
+            if let Some(item) = self.inventory_entry(roll, ctx, licence)?
+                && item.stop.is_none()
+            {
                 entries.push(item);
             }
         }
@@ -541,8 +622,30 @@ impl RenewalReader {
             last_operation,
             attempted,
             holder_generation: licence.ownership().map(|b| b.generation),
+            stop: RenewalStop::read(
+                ctx,
+                &self.families,
+                term.policy(),
+                own_charter(ctx.world(), licence),
+            )?,
         }))
     }
+}
+
+/// Whether the licence's holder is a character who now owns the charter it
+/// is sold under (the economy's current title; no row is read). An
+/// unreadable title is `false`: it stops nothing.
+fn own_charter(
+    world: &mush_core::World,
+    licence: &super::super::paid::PersonalPaidLicence,
+) -> bool {
+    let Holder::Character(holder) = licence.holder() else {
+        return false;
+    };
+    world
+        .module_state::<EconomyStore>()
+        .and_then(|economy| economy.snapshot().asset(ObjId(licence.charter().get())))
+        .is_some_and(|title| title.title_owner == mush_org::PrincipalId::Object(holder))
 }
 
 #[cfg(test)]
@@ -589,6 +692,66 @@ mod service_tests {
         check_eq!(
             serde_json::to_value(RenewalRequest::status(licence))?,
             serde_json::json!({"status_licence":licence})
+        );
+        Ok(())
+    }
+    /// Doc 44 MW.2 (Q-44-14): the lasting refusals, and their order. Nothing
+    /// passing is one, so the service keeps trying everything else.
+    #[test]
+    fn a_recalled_or_withdrawn_revision_and_an_owned_charter_stop_a_renewal() -> TestResult {
+        check_eq!(RenewalStop::of(false, false, false), None);
+        check_eq!(
+            RenewalStop::of(true, false, false),
+            Some(RenewalStop::Recalled)
+        );
+        check_eq!(
+            RenewalStop::of(false, true, false),
+            Some(RenewalStop::Withdrawn)
+        );
+        check_eq!(
+            RenewalStop::of(false, false, true),
+            Some(RenewalStop::OwnCharter)
+        );
+        // The Registry's act is told before the author's, either before the title.
+        check_eq!(
+            RenewalStop::of(true, true, true),
+            Some(RenewalStop::Recalled)
+        );
+        check_eq!(
+            RenewalStop::of(false, true, true),
+            Some(RenewalStop::Withdrawn)
+        );
+        check_eq!(
+            serde_json::to_value(RenewalStop::OwnCharter)?,
+            serde_json::json!("own_charter")
+        );
+        Ok(())
+    }
+    /// An entry that is not stopped serialises exactly as before the field
+    /// (the service descriptor is unchanged); a stopped one carries its cause.
+    #[test]
+    fn the_stop_is_absent_from_the_wire_unless_set() -> TestResult {
+        let entry = |stop| RenewalInventoryEntry {
+            licence: LicenceId::new(7).unwrap(),
+            holder: Holder::Character(ObjId(2)),
+            generation: super::super::super::TermGeneration::new(1).unwrap(),
+            term_end: WorldIcSeconds(10),
+            last_operation: None,
+            attempted: false,
+            holder_generation: None,
+            stop,
+        };
+        let plain = serde_json::to_value(entry(None))?;
+        check!(plain.get("stop").is_none());
+        check_eq!(
+            serde_json::to_value(entry(Some(RenewalStop::Recalled)))?
+                .get("stop")
+                .cloned(),
+            Some(serde_json::json!("recalled"))
+        );
+        check_eq!(
+            entry(Some(RenewalStop::Withdrawn)).stop(),
+            Some(RenewalStop::Withdrawn)
         );
         Ok(())
     }
