@@ -1280,14 +1280,30 @@ pub(crate) fn on_pad_as(
 /// `+ship/undock` word and the site's port entry.
 pub(crate) fn on_pad_as_at(
     rig: &mut Rig,
-    (who, seed, name): (&str, i64, &str),
-    (venue, entry): (&str, &str),
+    who: (&str, i64, &str),
+    site: (&str, &str),
     n_rigs: usize,
 ) -> (ObjId, HullRow, Vec<ObjId>) {
+    let (pilot, row, tvs) = on_pad_leasing_at(rig, who, site, |rig, pilot| {
+        for _ in 0..n_rigs {
+            lease_one(rig, pilot);
+        }
+    });
+    assert_eq!(tvs.len(), n_rigs);
+    (pilot, row, tvs)
+}
+
+/// **[`on_pad_as_at`] with the pilot's own leases** (doc 44 unit MW.5; `driving_rig`'s
+/// `on_pad_with_at`): `lease` runs at Ceres once the pilot is chartered and before the hull
+/// sails, so a story can sign a lease other than the prospector's.
+pub(crate) fn on_pad_leasing_at(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (venue, entry): (&str, &str),
+    lease: impl FnOnce(&mut Rig, ObjId),
+) -> (ObjId, HullRow, Vec<ObjId>) {
     let (pilot, row) = prospector(rig, who, seed, name);
-    for _ in 0..n_rigs {
-        lease_one(rig, pilot);
-    }
+    lease(rig, pilot);
     load(
         rig,
         &row,
@@ -1310,7 +1326,6 @@ pub(crate) fn on_pad_as_at(
         "the hull is settled on {entry}'s pad"
     );
     let tvs = rigs_of(&rig.tw, pilot);
-    assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
 }
 

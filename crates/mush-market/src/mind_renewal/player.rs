@@ -213,10 +213,10 @@ impl Switches {
 }
 
 /// `@…renewal`'s line after a submission.
-pub(crate) const QUEUED_LINE: &str =
+pub const QUEUED_LINE: &str =
     "Renewal request queued. Status or its acknowledged receipt establishes completion.";
 /// `@…renewal`'s line while the selection's earlier submission is unresolved.
-pub(crate) const UNRESOLVED_LINE: &str =
+pub const UNRESOLVED_LINE: &str =
     "A renewal request is still unresolved; inspect status before retrying.";
 
 /// The status label of each state.

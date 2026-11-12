@@ -43,6 +43,8 @@ mod vertex;
 mod bay_36a;
 #[path = "domain_field/bay_gc8.rs"]
 mod bay_gc8;
+#[path = "domain_field/c4_hardware.rs"]
+mod c4_hardware;
 #[path = "domain_field/crew_custody.rs"]
 mod crew_custody;
 #[path = "domain_field/crew_exit.rs"]
@@ -59,6 +61,8 @@ mod excursions;
 mod field_ap1;
 #[path = "domain_field/field_ap2.rs"]
 mod field_ap2;
+#[path = "domain_field/field_ap5.rs"]
+mod field_ap5;
 #[path = "domain_field/field_boarding.rs"]
 mod field_boarding;
 #[path = "domain_field/field_carrier.rs"]
