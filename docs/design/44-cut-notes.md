@@ -453,7 +453,118 @@ result) through `@agent/show`.
 
 ## MW.18
 
-Not built.
+The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c row 19).
+
+**Built.** In `crates/mush-npc`, with three keys in `[npc]` (`crates/mush-config`,
+`crates/mush-composition`, `mushd.toml.example`):
+
+- **The scheduler** (`module.rs`, `NpcTick::schedule_ambient`). Every 30 real seconds the
+  agent tick finds the rooms that hold a present player beside an enabled major NPC. For
+  each one that is due and quiet it begins one ordinary dialogue turn for one of the
+  room's majors, woken by `Stimulus::AmbientTimer` alone. Nothing is read for a game
+  with nobody connected.
+- **Presence, one definition** (`present_for_ambient`): a player character with a live
+  connection, not `DARK`, who typed within `[npc].ambient_active_secs` (600) real
+  seconds. A link-dead character is still `World::is_connected` but has no live
+  connection; a bare connection (MW.24's SSH `mind push`) is neither connected nor live;
+  both fail `World::has_live_conns`, so one test covers the two. The NPC must also be
+  able to perceive that player.
+- **The room window** (`runtime.rs`, `AmbientState`): a room is due when it has been
+  attended for the settle time (300 real seconds) and its last unprompted turn is at
+  least `[npc].ambient_window_secs` (1,800) old. The window opens when the turn BEGINS,
+  whether or not the model then speaks and whether or not a budget refuses the call, so
+  it bounds calls and not only lines. Two majors in one room take the room's turns in
+  rotation. Times are real seconds (`World::now`), never the IC clock.
+- **Quiet**: no NPC of the room, of any tier, is mid-turn, has a stimulus waiting, has a
+  memory fold pending, or took a turn within the settle time. An unprompted line never
+  talks over a conversation.
+- **Under the existing budgets.** The turn is fired through `fire_dialogue`, so it uses
+  the major dialogue route, the per-NPC, per-feature and global budgets, the audit row
+  and MW.17's `LastDecision` unchanged. Nothing was added to the budget (Q-44-48).
+- **A degraded unprompted turn says nothing.** `LastDecision` gains `unprompted`; when the
+  model is not reached, a turn somebody prompted still says the profile's fallback line,
+  and an unprompted one says nothing. Staff are still told the NPC is degraded.
+- **What staff see.** `@agent/show` gains one line, `Unprompted: ...`: never (and why:
+  the timer is off, not a major, parked), waiting for a present player, due in so many
+  minutes, or when the room last heard a line and how long until the next. Its last-turn
+  line already reads `woken by the ambient timer`. `@llm/log npc_dialogue_major` shows
+  the call with `actor=-` and `npc=` the NPC (MW.17b).
+- **The switch that enables the majors: `[npc].wake_majors`** (default `false`). The
+  shipped cast (`crates/tacsim/content/cast/*.json`) authors its eighteen majors
+  `"enabled": false`. With the key set, `content.rs` applies every cast pack's major NPCs
+  enabled, whatever the pack says. It acts when a pack is applied: at boot on a fresh
+  world, and at the next pack upgrade on an existing one. **For MW.3**: set it under
+  `[npc]` in the box's `mushd.toml` (the template is
+  `deploy/instance/mushd.toml.tmpl`, which this unit did not touch); on a world whose
+  packs are already latched, wake each major by hand with `@agent/enable <npc>` as well.
+
+**What the survey had wrong, or left out.**
+
+- "Presence counts link-dead, DARK and idle characters" is true of `players_present`,
+  which every stimulus-driven wake uses, and that is left as it is: a stimulus is itself
+  something a live player just did, so nothing is spent on an idle room there, and a
+  `DARK` wizard who speaks to an NPC is still answered. The narrower definition is the
+  ambient timer's alone.
+- The eighteen majors are stubs. Each has a one-line background and a persona of a few
+  words (four have an empty persona), no goals, no knowledge, no lore and no fallback
+  line. Enabled, they will speak from almost nothing. That is content, not this unit,
+  and it is the first thing a dev-box playtest will show.
+- They stand in six rooms (five in Ceres's Authority, four on Aitken's spine, three each
+  at Stickney and Voltaire, two at Ligeia, one in the Ceres Registry). With every one of
+  those rooms attended that is at most six unprompted calls in 30 minutes for the whole
+  game, which is the figure to hold against the day's budget (Q-44-48).
+- A pack re-apply writes the whole profile again and keeps only `public_faction`. So a
+  major woken by hand goes back to `enabled: false` at the next pack upgrade unless
+  `wake_majors` is set, and with it set a major that staff parked is woken again by a
+  pack upgrade. Both follow from the applier as it was; neither is changed here.
+- Q-44-31 says "at most once every 30 real minutes each"; Q-44-47, the later ruling, says
+  a room hears at most one line in a window whichever NPC speaks. The room cap is the
+  one built. It is the stricter of the two wherever NPCs share a room.
+
+**Defaults taken** (none ruled; all cheap to change):
+
+- **The settle time, 300 real seconds**, and the quiet rule. Without them the line would
+  come the second a player walks in or in the middle of a conversation. Not a file key.
+- **The window opens at the turn's beginning**, so a refused or silent turn uses it up.
+- **A degraded unprompted turn is silent.**
+- **Rotation** by object id among the room's enabled majors.
+- **A restart forgets the windows** (runtime state, like the mailbox): a room may hear a
+  second line inside 30 minutes across a restart, once its settle time has passed again.
+- **Only majors**, as ruled; Q-44-47's alternative (the timer for minor NPCs) is not
+  built and nothing here prepares it beyond the tier test in `ambient_speakers`.
+
+**Tests.** No test waits on a real clock or calls a real provider.
+
+- `crates/mush-npc/tests/agents.rs`, on a clock stepped by hand with a mock provider:
+  `mw18_a_room_hears_one_unprompted_line_in_its_window` (two majors, one line, the audit
+  row, both staff lines, the whole window silent for both, the other NPC next);
+  `mw18_only_a_present_player_draws_an_unprompted_line` (link-dead, `DARK`, idle and
+  bare for two hours: no turn begun, no room tracked, the NPC never woken; then served
+  once the `DARK` one is seen); `mw18_a_parked_or_lesser_npc_never_speaks_unprompted`;
+  `mw18_an_unprompted_turn_waits_for_quiet_and_says_nothing_when_it_degrades`;
+  `mw18_a_zero_window_turns_the_ambient_timer_off`;
+  `mw18_presence_is_read_from_the_engines_own_link_state` (real `ConnUp`, `BareUp`,
+  `Cmd` and a lost `ConnDown` through `Engine::step`).
+- `runtime::tests::mw18_a_rooms_window_is_due_once_and_rotates_its_speakers`.
+- `mush-config` `mw18_npc_ambient_keys_default_and_parse`.
+- `crates/tacsim/tests/domain_economy/stations.rs`
+  `mw18_wake_majors_applies_the_shipped_principals_enabled`: the production roster with
+  the key set boots the real cast with all eighteen majors enabled;
+  `ic1_the_principals_never_wake` is the same boot without it.
+- Mutation check: with the window, the `DARK` test, the live-link test, the tier test and
+  the silent-fallback rule each broken, four of the five stories fail.
+
+**Not built.**
+
+- Nothing enables the majors on any box: that is MW.3, with the owner.
+- `deploy/instance/mushd.toml.tmpl` has no `wake_majors` line (the deploy chain's file).
+- The windows are not persisted.
+- The stories drive the NPC module's tick by hand. No story runs the ambient timer
+  through the production world task, and none flies it against the live cast.
+
+**Not pinned by a story.** A room over the 256-room table cap being served later; an NPC
+in an exclusive scene being passed over; the per-NPC ceiling refusing an unprompted turn
+(the global budget's refusal is the one flown).
 
 ## MW.19
 

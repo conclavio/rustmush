@@ -1387,7 +1387,7 @@ fn issue_capture(ctx: &mut Ctx<'_>, request: crate::decision::NpcDecisionRequest
 /// - not `DARK`;
 /// - who typed something within `active_secs` REAL seconds of `now`.
 ///
-/// It is narrower than [`players_present`], which every stimulus-driven wake still uses:
+/// It is narrower than `players_present`, which every stimulus-driven wake still uses:
 /// a stimulus is itself something a live player just did, so nothing is spent on an idle
 /// room there, and a `DARK` wizard who speaks to an NPC is still answered.
 #[must_use]
@@ -1399,19 +1399,26 @@ pub fn present_for_ambient(w: &World, who: ObjId, now: i64, active_secs: i64) ->
             .is_some_and(|stat| now.saturating_sub(stat.last_input) <= active_secs)
 }
 
-/// The enabled major NPCs of `room` that may take its unprompted turn: enabled, major,
-/// outside any exclusive scene, and able to perceive at least one of `present`.
-fn ambient_speakers(ctx: &Ctx<'_>, room: ObjId, present: &[ObjId]) -> Vec<ObjId> {
-    let mut speakers: Vec<ObjId> = npcs_in(ctx.w, room)
+/// The enabled major NPCs of `room` that may take its unprompted turn, in id order, each
+/// with its own cooldown: enabled, major, outside any exclusive scene, and able to
+/// perceive at least one of `present`.
+fn ambient_speakers(
+    ctx: &Ctx<'_>,
+    room: ObjId,
+    present: &[ObjId],
+) -> Vec<(ObjId, std::time::Duration)> {
+    let mut speakers: Vec<(ObjId, std::time::Duration)> = npcs_in(ctx.w, room)
         .into_iter()
-        .filter(|&npc| {
-            read_profile(ctx.w, npc)
-                .is_some_and(|profile| profile.enabled && profile.tier == NpcTier::Major)
+        .filter_map(|npc| {
+            let profile = read_profile(ctx.w, npc)?;
+            (profile.enabled
+                && profile.tier == NpcTier::Major
                 && !ctx.w.in_exclusive_scene(npc)
-                && present.iter().any(|&who| ctx.can_perceive(npc, who))
+                && present.iter().any(|&who| ctx.can_perceive(npc, who)))
+            .then(|| (npc, profile.cooldown()))
         })
         .collect();
-    speakers.sort_by_key(|npc| npc.0);
+    speakers.sort_by_key(|(npc, _)| npc.0);
     speakers
 }
 
@@ -1452,7 +1459,7 @@ impl NpcTick {
                 rooms.entry(room).or_default().push(who);
             }
         }
-        let mut attended: Vec<(ObjId, Vec<ObjId>)> = Vec::new();
+        let mut attended: Vec<(ObjId, Vec<(ObjId, std::time::Duration)>)> = Vec::new();
         for (room, present) in &rooms {
             let speakers = ambient_speakers(ctx, *room, present);
             if !speakers.is_empty() {
@@ -1494,7 +1501,17 @@ impl NpcTick {
                 if busy {
                     continue;
                 }
-                if let Some(npc) = h.ambient.next_speaker(*room, speakers)
+                // A speaker still inside its own cooldown (a profile may set one
+                // longer than the settle time) is passed over.
+                let ready: Vec<ObjId> = speakers
+                    .iter()
+                    .filter(|(npc, cooldown)| {
+                        h.runtime(*npc)
+                            .is_none_or(|rt| rt.cooldown_ok(now_millis, *cooldown, false))
+                    })
+                    .map(|(npc, _)| *npc)
+                    .collect();
+                if let Some(npc) = h.ambient.next_speaker(*room, &ready)
                     && h.enqueue(npc, Stimulus::AmbientTimer, now_millis)
                 {
                     h.ambient.spoke(*room, npc, now);

@@ -903,7 +903,10 @@ mod tests {
         assert!(!ambient.due(room, 0, window, settle), "an unknown room");
 
         assert!(ambient.attend(room, 1_000));
-        assert!(ambient.attend(room, 1_200), "a second look keeps the first second");
+        assert!(
+            ambient.attend(room, 1_200),
+            "a second look keeps the first second"
+        );
         assert_eq!(ambient.rooms[&room].attended_since, Some(1_000));
         assert!(!ambient.due(room, 1_299, window, settle));
         assert!(ambient.due(room, 1_300, window, settle));
@@ -937,7 +940,10 @@ mod tests {
         }
         assert!(!ambient.attend(ObjId(9), 0));
         assert_eq!(ambient.rooms.len(), MAX_AMBIENT_ROOMS);
-        assert!(ambient.attend(ObjId(1_000), 5), "a tracked room is still served");
+        assert!(
+            ambient.attend(ObjId(1_000), 5),
+            "a tracked room is still served"
+        );
     }
 
     /// Doc 44 cut MW.17: a turn records what woke it, what it was shown and what it came

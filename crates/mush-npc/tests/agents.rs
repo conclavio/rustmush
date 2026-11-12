@@ -4193,3 +4193,92 @@ async fn mw18_a_zero_window_turns_the_ambient_timer_off() {
     let show = rig.staff(&format!("@agent/show #{}", holm.0));
     assert!(show.contains("the ambient timer is off"), "{show}");
 }
+
+/// Presence is read from the engine's own link state, not from flags a test sets by hand.
+/// A character is present for the ambient timer once a real connection attaches; not while
+/// offline, not over a bare connection (MW.24's SSH `mind push`), not once idle past the
+/// active time until they type again, and not link-dead, though a link-dead character is
+/// still "connected" to everything that asks [`World::is_connected`].
+#[test]
+fn mw18_presence_is_read_from_the_engines_own_link_state() {
+    let mut rig = Rig::new();
+    let active = mush_npc::DEFAULT_AMBIENT_ACTIVE_SECS;
+    rig.set_now(100);
+    let office = rig.room("Authority");
+    let pilot = rig
+        .engine
+        .world
+        .create(ObjKind::Player, "Pilot", GOD, Some(office))
+        .expect("player");
+    let step = |rig: &mut Rig, inbound: Inbound| {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        rig.engine.step(inbound, &mut out, &mut fx);
+    };
+    let present = |rig: &Rig| {
+        mush_npc::present_for_ambient(&rig.engine.world, pilot, rig.engine.world.now(), active)
+    };
+    assert!(!present(&rig), "offline");
+
+    // A bare connection binds the character and never a presence.
+    let bare = ConnId::from(7u64);
+    step(
+        &mut rig,
+        Inbound::BareUp {
+            conn: bare,
+            actor: pilot,
+        },
+    );
+    assert!(!present(&rig), "a bare connection is not presence");
+    step(
+        &mut rig,
+        Inbound::BareDown {
+            conn: bare,
+            actor: pilot,
+        },
+    );
+
+    // A real connection is.
+    let link = ConnId::from(8u64);
+    step(
+        &mut rig,
+        Inbound::ConnUp {
+            conn: link,
+            actor: pilot,
+            caps_structured: false,
+            from_linkdead: false,
+        },
+    );
+    assert!(
+        present(&rig),
+        "connected over a live link, and just arrived"
+    );
+
+    // Idle past the active time, until they type.
+    rig.set_now(100 + active + 1);
+    assert!(!present(&rig), "idle past the active time");
+    step(
+        &mut rig,
+        Inbound::Cmd {
+            conn: link,
+            actor: pilot,
+            line: "look".to_string(),
+        },
+    );
+    assert!(present(&rig), "typing makes them present again");
+
+    // The link is lost: still connected to the world, and not present.
+    step(
+        &mut rig,
+        Inbound::ConnDown {
+            conn: link,
+            actor: pilot,
+            reason: mush_core::DisconnectKind::Lost,
+        },
+    );
+    assert!(
+        rig.engine.world.is_connected(pilot),
+        "a link-dead character is still connected"
+    );
+    assert!(!present(&rig), "link-dead is not presence");
+}

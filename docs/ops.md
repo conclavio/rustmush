@@ -903,6 +903,20 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
 - **Indicator.** `mush_npc_thinking` counts dialogue turns in flight **plus**
   non-terminal decisions; `mush_npc_decisions{state="ready|leased|resolving"}`
   splits the decisions; `@stats` prints both lines.
+- **Speaking unprompted (doc 44 MW.18).** An enabled major NPC may take one
+  unprompted dialogue turn when a player is present in its room (connected over
+  a live link, not link-dead, not `DARK`, active within
+  `[npc].ambient_active_secs`, default 600) and the room has been quiet for five
+  minutes. A room gets at most one such turn in `[npc].ambient_window_secs`
+  (default 1800; `0` turns the timer off). Both are real seconds whatever the
+  game clock's rate. The turn is an ordinary `npc_dialogue_major` call under the
+  existing budgets, and the window is not kept across a restart.
+- **Waking the majors.** The shipped cast's eighteen major NPCs are authored
+  parked. `[npc].wake_majors = true` applies every cast pack's majors enabled. It
+  acts when a pack is applied: at boot on a fresh world, at the next pack upgrade
+  on an existing one. On a world whose packs are already latched, also run
+  `@agent/enable <npc>` for each. A pack upgrade rewrites an NPC's profile, so
+  without the key a major woken by hand is parked again by the next upgrade.
 - **Scene turns (H2b).** When `+timestop/next` hands the turn to an NPC agent,
   that turn is one durable decision: the NPC module requests it (cause
   `npc.scene_turn`, keyed on the scene, the round and the NPC), the agent tick
