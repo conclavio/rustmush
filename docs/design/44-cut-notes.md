@@ -1437,7 +1437,11 @@ value to write. Whichever of AP.3 and MW.10 merges second merges main in and re-
 - **CI on `5eccf1c01`**: the pull-request run 43258253021 is green but for `test (bot)`,
   which is red on main since `668425fab` (`mine::minds::tests::absent_census`: AP.5's new
   sentence has no row in MW.5's table; PR #563 is the fix) and touches nothing of this unit.
-  The dispatch of the dispatch-only jobs is run 43258329034; the PR says how it read.
+  The dispatch of the dispatch-only jobs on the same commit, run 43258329034: every job
+  green, the TacSim harness (no baseline moved), the M6, M7 and M8 stories and
+  `tacsim-minds` among them, but for that `test (bot)` and one M8 job that never built (its
+  runner could not download the toolchain). Main was merged in again once #563 had landed;
+  the PR records the runs on that head.
 
 **Not verified.**
 
