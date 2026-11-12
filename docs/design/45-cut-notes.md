@@ -124,7 +124,71 @@ section, so two units' notes never touch the same lines.
 
 ## AP.2
 
-Not built.
+**Built.**
+
+- **The window waits** (`crates/tacsim/src/field/standing.rs`, `at_demotion`). For a player
+  leader who is not on watch when the field demotes (not connected, or linkdead), the grant's
+  void window is written to end `VOID_ABSENT_IC_S` (28 IC days) after the demotion, where a
+  connected leader's ends `VOID_WINDOW_IC_S` (600 IC seconds) after it. Nothing else about the
+  grant differs, and standing moves exactly as before.
+- **The offer runs from the return** (`LeaderReturns`, a `Connected` hook, on a connection and
+  on a revival inside the linkdead grace). A leader with offers that waited is told
+  `VOID_WAITING` ("While you were away your party's fire on a friend cost standing: …") and the
+  IC second is stamped. `+field/void` takes a waiting offer until the leader's next command or
+  600 IC seconds after that stamp, whichever is first, and never past the 28 IC days.
+- **How a waiting offer is told from an ordinary one.** By what is left of it: an ordinary
+  offer never has more than 600 IC seconds to run, so a window with more is waiting on its
+  leader. No field was added to `mush-faction`'s receipt.
+- **Unchanged:** a connected leader (the same window, the same lines, `field_fr2.rs`'s stories
+  untouched); an NPC leader, who is never waited for; a director raid's own void.
+- The 28 IC days are pinned by the player-wait floor guard
+  (`crates/mush-contract-tests/tests/engine_contracts/player_wait_floors.rs`, 11).
+- `docs/help/field.md`, under *Standing*.
+
+**Tests.**
+
+- `crates/tacsim/tests/domain_field/field_ap2.rs`, three parties on a site (Pilot and Other,
+  Friends by a faction; Third, nobody's friend, seated and holding fire). Pilot's fire reaches
+  Other, both stand down, and Pilot logs off before the field settles. At the demotion the
+  change is Pilot's, bounded, naming Pilot as its voider, with 28 IC days on its window. Then:
+  - at 256 and at 512, well past ten IC minutes: Pilot logs in, is offered the void and takes it;
+  - at 512: Pilot logs in, lets ten IC minutes pass and is refused; logs in again a day later,
+    is offered it again and takes it;
+  - at 256: the clock is carried past the 28 IC days; Pilot logs in, is offered nothing, is
+    refused, and the change stands.
+- Unit tests in `field::standing::tests`: the waiting window's arithmetic beside an ordinary
+  offer's, and that only a player who is not on watch is waited for (a linkdead player is; an
+  NPC is not).
+
+**Divergences.**
+
+- **A lapsed offer is offered again at the next return.** The ruling says the window runs from
+  the leader's reconnect, at most 28 IC days from the demotion. A leader who logs in, types
+  something else or lets ten IC minutes pass, and later logs in again inside the 28 IC days is
+  offered it again: the stamp is the latest return. It was the simplest reading of "from their
+  reconnect", and it is one line to change (`LeaderReturns::returned`).
+- **Linkdead at the demotion counts as absent.** A leader inside the linkdead grace hears
+  nothing said to them, so they are waited for, and a revival offers the void.
+- **The last ten IC minutes of the 28 IC days.** There a waiting offer is an ordinary one: open
+  until its end or the leader's next command, with no line at login.
+- **Stacked on AP.1.** The branch is cut from AP.1's, for `port_tick::on_watch` and so the two
+  units' test-root lines do not conflict.
+
+**Not built.**
+
+- **Durable return stamps.** They are RAM (`standing::Returned`). A restart ends every session,
+  so the next connection stamps again; nothing is lost that a player could notice.
+- **The standing change itself is not queued for an absent principal.** `STANDING_CHANGED` is
+  still said only to whoever is connected. An absent leader learns of it through the offer's
+  line; an absent organizer who is not the leader reads it in `+standing`.
+- **An offer for anyone but the party's leader.** As before, only the leader may void.
+
+**Not pinned by a story.**
+
+- A leader who is linkdead at the demotion and revives (the unit test covers the predicate, not
+  the hook's `revived` arm).
+- An offer that waited across a server restart.
+- Several waiting changes at once (the line's count).
 
 ## AP.3
 
