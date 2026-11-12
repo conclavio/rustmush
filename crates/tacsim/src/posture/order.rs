@@ -10,7 +10,7 @@
 //!    word is set at once.
 //! 3. **Over the comms relay**: the same `+tv/<n> posture <word>` typed by an operator who is
 //!    in the world but neither aboard the carrier nor in that rig's cab. The order travels to
-//!    the unit ([`crate::field::orders::posture_order`]) and jamming stops it: an order that
+//!    the unit (`crate::field::orders::posture_order`) and jamming stops it: an order that
 //!    does not arrive changes nothing.
 //!
 //! **Never from an OOC room** ([`ooc`]): Limbo, the OOC area and the simulator centre inside
