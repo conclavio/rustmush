@@ -480,6 +480,14 @@ parties, each passing on Linux (conclav.dev, six at once):
   posture record**: **AP.5** and **AP.3**. Both call `hand_over` with a `Why` of their own;
   AP.3's `HOLD` and `GUARD` change what `lay_go_home` lays and what `answerable` admits.
 - **A player's rig on a fill plan when a field opens** keeps to today's rule. **AP.7.**
+- **A unit nobody sits in is not an absent player's unit yet.** A rig launched with a filed
+  mind and no pilot in its cab is its mind's from admission, with no record and no flag, so
+  the rule does not bind it and nothing takes it home. The door is there (`hand_over`); what
+  calls it for a unit with no seated pilot is **AP.5** (admission) and **AP.7** (the plan).
+- **A unit put back into the field because its carrier was lost at the ramp**
+  (`field/boarding.rs`, `carrier::rejoin`) comes back with a fresh row and its pilot's seat.
+  If that pilot is still away, nothing hands it over again: absence is opened by a hook or a
+  boot, never by polling. **AP.5**, whose admission rule asks the connection at a join too.
 - **A gate in space.** The rule is callable; the bubble's fire record is not built. **MW.9's
   follow-up.**
 - **A staff read of why a shot was refused.** `Denied` has a sentence for each limit, and

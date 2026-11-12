@@ -449,10 +449,12 @@ async fn cf_review_an_extraction_out_of_a_running_field_releases_the_seat() {
         "B is incapacitated in the field's first frames"
     );
     let field = task(&rig).expect("the field runs");
+    // Doc 44 cut MW.7 (Q-44-43): a pilot knocked out in the hull stops flying it at once, so
+    // the hull is its mind's before any extraction is asked for.
     assert_eq!(
         controller(&rig, field, hull_b),
-        Some(Controller::Pilot),
-        "B's seat is the pilot's"
+        Some(Controller::Mind),
+        "an incapacitated pilot does not keep the controls"
     );
 
     let asked = run(&mut rig.tw, b, "+sortie/extract");
