@@ -648,7 +648,8 @@ on a launch world.
 ### Built: item 3, the bot's sentences (PRs #561 and #563)
 
 `crates/mush-bot/src/mine/minds.rs`: one needle for each sentence constant of six game
-modules, 149 rows, named as the game names them.
+modules, 149 rows (148 new needles, and `MIND_UNTITLED`, which the bot held), named as the
+game names them.
 
 | Family | Game module | Rows |
 |---|---|---|
@@ -731,12 +732,16 @@ The story, on P3 (`m8_world_manned`), through the production command paths:
    the raider's captain fires on it for fifteen seconds;
 6. the unit goes home: its carrier's ramp, out of the field (at about 74 s), into the bay by
    the host's recover; the claim's Close lands;
-7. read from the field's black box once the field has closed, in order: the script armed and
-   locked before the raider's first round arrived on it (it asked); no round of its left
-   before that arrival (it was refused); its rounds after it went at the raider and none at
-   the third party; and the field's seal line for the unit names the filed mind, the pilot's
-   owner's licence, `active`, and the claim's card. The hull's own record agrees: it came
-   home with rounds spent and plates struck.
+7. read from the field's black box once the field has closed, in order: the script had
+   locked its target before the raider's first round arrived on it; no round of its left
+   before that arrival; its rounds after it went at the raider and none at the third party;
+   no line says the mind faulted or was dropped, so it was the script that flew; and the
+   field's seal line for the unit names the filed mind, the pilot's owner's licence,
+   `active`, and the claim's card. The hull's own record agrees: it came home with rounds
+   spent and plates struck. **What the box does not hold is the refusal itself**: a refused
+   intent writes no line (and a lawful arming writes none either), so "it asked and was
+   refused" rests on the first mutation below, in which the same script, with the gate off,
+   fires before it is fired on. MW.7's arena test reads the refused intent directly.
 
 **Mutations** (on conclav.dev, in a throwaway copy of the tree): each run against both entries.
 
@@ -746,9 +751,15 @@ The story, on P3 (`m8_world_manned`), through the production command paths:
 | The gate off and the view not narrowed (`Arena::answerable` answers nothing) | not run | **fails**: "the house mind fired on nobody"; the cannon's rounds 40 to 36, the machine gun's 2,000 to 1,810 |
 
 So the filed story is the one that holds the gate on a launch: a player's script is bound by
-the engine's refusal and by nothing else.
+the engine's refusal and by nothing else. The house-mind entry holds the hand-over, the going
+home and the taking aboard; it does not hold the gate. "It fired no round at the third party"
+is what the unit did (the script prefers a contact that reads hostile); it is not the gate
+tried against the third.
 
-**What staff do in it.** A wallet top-up for the filing fee; the escort stood at its cell on
+**What staff and the story do by hand.** The story moves the IC clock to the due instant of
+the recover the field's host starts (the recover is the host's own), and it connects the
+three players and drops the pilot's connection as a clean QUIT. Staff: a wallet top-up for
+the filing fee; the escort stood at its cell on
 the ground (the combined world has no geology key, so its ground reads dark and no rig drives
 in it: every M8 field story stands its rig by staff); the two other parties' hulls and seats
 (the field stories' fixture, CF.2's `armed` and `seat`). The unit under test is play's from
@@ -769,8 +780,11 @@ the lease to the bay.
   test-only prints); and `certify_saved` should fail fast the same way.
 - **AP.5 changed what a field story's other captains must be.** Merged to main during this
   cut: a seated pilot who is not connected when a field opens is handed to their unit's mind
-  at the admission. The story's two other captains are connected players for that reason.
-  MW.7's stories pass without it because their fixture captains are never seated in a cab.
+  at the admission. In this story's world the two other captains read as away until they
+  connect, and the raider's captain then has no cockpit to type into; the story connects all
+  three. MW.7's stories seat their other captains the same way, connect only the pilot, and
+  pass on main; why the combined world differs (it has two restarts behind it, and a restart
+  seats only a connected pilot) was not run down.
 - **A quiet field's black box reaches the host late.** With nobody firing, the box arrives as
   its chunks fill or when the field closes, and the stock field closes after two quiet
   minutes. A story at the stock tempo cannot assert on the box inside a short window; this
@@ -813,42 +827,62 @@ each run pinned to eight cores.
 | 6 a side (12 units) | 3,108.7 s | 1,125.2 / 3,116.2 / 10,172.2 | 153.2 / 3,169.5 / 12,116.8 | 0.1 / 0.2 / 0.3 / 4.7 | 0.2 / 157.4 | 89 (0.03) | 1,072 MB |
 | 2 authors, no match | 4,991.0 s and 4,992.0 s | 1,124.6 and 1,117.6 (p50) | 2,146.9 and 2,153.8 (p50) | none | 3.3 / 14.7 | 151 (0.03) | 391 MB |
 
-**What it shows.**
+**What it shows, and how far.** A second agent read the method adversarially; the limits it
+found are in the wording here.
 
-- **A rating is not a CPU load.** The process averages 0.03 of a core; the Registry's worker
-  spends about 2.4 ms a lease against a lease of 1.12 s. A rating is **1,517 leases**, not
-  the "about 1,070" on file, and its pace is the world's commit cycle and the continuation's
-  retry. MW.6 and MW.1 saw the same from the other side: a 10 ms pulse saved 15%.
-- **With a match running, a rating takes 60% longer, whatever the match's size.** The median
-  lease does not move; the tail and the gaps grow in whole seconds. That fits the
-  continuation's fixed 1,000 ms retry (`RETRY_MS`, `minds/bulk/registry_service.rs`) losing
-  races with the match's commits. **The cause is not proven and nothing was changed.**
-- **The matches were not slowed**: think-wait p99 under a millisecond, the world's round
-  trip p99 0.2 ms.
+- **A rating is not a CPU load.** The process averages 0.03 of a core. The Registry's worker
+  spends a few milliseconds a lease against a lease of 1.12 s (the story's per-lease split
+  is approximate: it counts the preparation thread with the workers, and misses threads that
+  have exited). A rating is **1,517 leases**, not the "about 1,070" on file.
+- **A lease of 1.12 s is itself unexplained.** The rig's own note expects about a third of a
+  second a lease at the 50 ms pulse. Read against `minds/bulk/registry_service.rs`, every
+  scheduled continuation is pushed 1,000 ms out (`RETRY_MS`) and only three paths reset it;
+  an observation that resolves without an acknowledgement goes back to unsubmitted with no
+  reset. That would put the retry's second in **every** lease, match or no match, and a
+  rating alone would be about three times longer than it need be. **Not proven: nobody
+  counted the continuations that made no progress.** MW.6 and MW.1 saw the same from the
+  other side (a 10 ms pulse saved 15%).
+- **With a match running the rating took 60% longer, and the run cannot say why.** The
+  median lease does not move; the tail and the gaps grow in whole seconds. But the no-match
+  run had no driver: with a match, the story also types `SIM STATUS` every two seconds and
+  the lobby's lines at every restart, each a round trip through the world. So the 60% is "a
+  match and its driver's commands", and the two are not separated. **A "driver, no match"
+  control is the missing run.**
+- **Whether the matches were slowed was not measured.** The fill flies the native doctrine,
+  so the think-wait figure (the Rhai pool's) covers almost nothing, and nothing recorded the
+  arena's step time or its pulse lateness. What was measured is that the world's round trip
+  stayed at 0.2 ms p99.
 - **The queue is fair and unbounded.** One lease is in flight at a time and two authors'
   leases alternate strictly; there is no per-author quota and no refusal. The second author
   is told "Registry preparation queued.", then "Registry work retained and queued." and has a
-  first grant 3.8 s after asking. Both ratings finish together at 2.57 times a lone one.
+  first grant 3.8 s after asking. Both ratings finish together at 2.57 times a lone one (the
+  excess over twice is not explained).
 
-**Seen in the rig, not fixed, and not confirmed on a live connection.** The rig's recorder of
-what a character is sent shows the author sent `Queued.` and `Done.` for every grant and
-settle of their rating (750 lines over 186 leases in a 240 s run; about 6,000 over a rating),
-and the second author in the queue sent "That did not go through. Nothing changed." about
-every 3.3 s. If a live connection receives them it is a defect in what a rating says to its
-author, in the engine's output path for continuations. **For MW.19**, whose lane rates a mind
-over SSH and will see it or not.
+**A rating talks to its author all the way through.** In diagnostic runs (at `3da18e483`,
+after the recorded ones) the author was sent `Queued.` and `Done.` for the grants and settles
+of their own rating: 750 lines over 186 leases in 240 s, which would be about 6,000 over a
+rating; and the second author in a queue was sent "That did not go through. Nothing
+changed." about every 3.3 s. Read against the code this is not the rig's doing: the
+Registry's continuation is submitted as the author, the engine answers a submission with
+`Queued.` to its actor (`mush-core`, `drain_authoritative_submit`), and the world task
+answers the commit with `Done.` (`mush-server`, `world_task.rs`). **Not observed on a live
+connection.** If it is as read, it is a defect in what a rating says to its author, and the
+fix is in the output path for a service's continuations. **For the owner and MW.19**, whose
+lane rates a mind over SSH.
 
 **What it cannot show.** No real players typing; an in-memory store, not Redis (the RSS
-column includes everything the rig retains, and its rise with matches is not explained); a
-shared box (the one-minute load ran between 8 and 26 across the runs); the 50 ms pulse, not
-production's 1,000 ms, at which a rating alone is about three hours and the retry's second is
-a smaller share of a lease; one centre, one match at a time, twelve units at most; and no IC
-field arena beside the rating, which is the "live arenas" a deployed world will have most of.
-**MW.20** measures minds at size; a rating beside a field belongs with it.
+column is the process's high-water mark from boot and includes everything the rig retains;
+its rise with matches is not explained); a shared box (the one-minute load ran between 8 and
+26 across the runs); the 50 ms pulse, not production's 1,000 ms; a match no production world
+runs as configured (`ai_fill` on and `unattended_ms` 0, so a pilotless match runs on); one
+centre, one match at a time, twelve units at most; and no IC field arena beside the rating,
+which is the "live arenas" a deployed world will have most of. **MW.20** measures minds at
+size; a rating beside a field, the driver-only control and the arena's own step time belong
+with it.
 
-**Q-44-48.** The budget stays as it is: nothing here says the Registry's work crowds a
-match. What the measurement adds is that a match slows a rating by more than half, and that
-the place to look is the retry, not the cores.
+**Q-44-48.** The budget stays as it is. Nothing here says the Registry's work crowds a match
+for CPU. What the measurement adds is two questions about the Registry's own pace: the
+second in every lease, and what a busy world adds to it.
 
 ### Item 1: what this unit did not build
 

@@ -8,7 +8,7 @@
 //! Registry rate, filed, and launched under their own owner's licence, so the unit is admitted
 //! to the field under the seal of a claim the Roll opened in the bay.
 //!
-//! The unit is play's own from end to end. The pilot leases Occator's escort at Ceres
+//! The unit's journey is play's own but for two steps, named below. The pilot leases Occator's escort at Ceres
 //! (`+tv/lease escort go`), takes the operational loan, sails to Ahuna Flank, writes the script
 //! with the workshop's verbs, rates it (`@mind/rate`), files it (`@mind/file`), boards the rig
 //! in the bay and launches it with `mind=filed:<licence>`. MW.22 admits the filed mind on the
@@ -16,11 +16,18 @@
 //! fixture hull each, a second and a third captain seated in them by staff (CF.2's `armed` and
 //! `seat`), and the raider's captain types every shot.
 //!
+//! What is not play's: staff top the pilot's wallet up for the filing fee and stand the escort
+//! at its cell on the ground (the combined world carries no geology key, so no rig drives in
+//! it); and the story moves the IC clock to the due instant of the recover the field's host
+//! starts, as every surface story finishes an act. The QUIT is the engine's own `ConnDown`.
+//!
 //! Two entries share the script:
 //!
 //! - [`c4_the_house_mind_takes_an_absent_pilots_escort_home_on_the_launch`] flies no filed mind
-//!   and takes no rating, so it runs in the default sweep: MW.7's rule over the launch
-//!   composition, for the mind every hull has.
+//!   and takes no rating, so it runs in the default sweep: the hand-over, the going home and
+//!   the taking aboard over the launch composition, for the mind every hull has. It does not
+//!   hold the gate (the house mind is kept from firing first by its narrowed view alone, as
+//!   MW.7 found); the filed story does.
 //! - [`c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home`] is the owed story. It
 //!   takes one genuine Registry rating, so the CI dispatch runs it.
 
@@ -245,6 +252,7 @@ async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
     // same line files the rated revision; each is the pilot's own submission, landed on the
     // composed path. The Registry releases its job a pulse after the receipt, so the line is
     // typed again until the filing itself has been staged and landed.
+    let before = world.rows("roll_mind_initial_filing");
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let said = run(&mut world.rig.tw, pilot, &format!("@mind/file {name}@1"));
@@ -264,11 +272,14 @@ async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
         world.pulse();
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let row = world
+    let filings: Vec<_> = world
         .rows("roll_mind_initial_filing")
         .into_iter()
-        .last()
-        .expect("the pilot's filing");
+        .filter(|row| !before.contains(row))
+        .collect();
+    let [row] = filings.as_slice() else {
+        panic!("one new filing, the pilot's: {filings:?}")
+    };
     let licence = row
         .get("licence")
         .and_then(|licence| {
@@ -302,27 +313,6 @@ fn board(world: &mut M8World, tv: ObjId) {
     fires(world, 3);
 }
 
-/// Every connection of `who` dropped as a clean QUIT.
-fn quit(rig: &mut crate::driving_rig::Rig, who: ObjId) {
-    let mut out = mush_core::Outbox::new();
-    let mut fx = mush_core::Effects::new();
-    let conns: Vec<u64> = (0..=64)
-        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(who))
-        .collect();
-    assert!(!conns.is_empty(), "{who} holds a connection");
-    for conn in conns {
-        rig.tw.engine_mut().step(
-            mush_core::Inbound::ConnDown {
-                conn,
-                actor: who,
-                reason: mush_core::DisconnectKind::Quit,
-            },
-            &mut out,
-            &mut fx,
-        );
-    }
-}
-
 /// The rounds `shooter` fired at `target`.
 fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
     lines
@@ -345,14 +335,12 @@ fn arrived(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
         .count()
 }
 
-/// The slots `unit` armed and the locks it took.
-fn asked(lines: &[LedgerEvent], unit: ObjId) -> usize {
+/// The locks `unit` took. (A lawful arming writes no line: the box records an arming only
+/// where a lifted floor made it unlawful.)
+fn locks(lines: &[LedgerEvent], unit: ObjId) -> usize {
     lines
         .iter()
-        .filter(|line| {
-            matches!(&line.kind, EventKind::Armed { unit: by, .. } | EventKind::Locked { unit: by, .. }
-                if *by == unit)
-        })
+        .filter(|line| matches!(&line.kind, EventKind::Locked { unit: by, .. } if *by == unit))
         .count()
 }
 
@@ -396,7 +384,7 @@ async fn raided(
                 .filter_map(|contact| {
                     let (x, y) = contact.cell?;
                     let off = i64::from(x).abs_diff(WARD_AT.0) + i64::from(y).abs_diff(WARD_AT.1);
-                    (off <= 6).then_some((off, contact.id, contact.designator.clone()))
+                    (off <= 6).then_some((off, contact.id, contact.designator))
                 })
                 .min_by_key(|(off, _, _)| *off)
                 .map(|(_, id, designator)| (id, designator, lock))
@@ -414,9 +402,8 @@ async fn raided(
 
 /// **What the black box holds of the exchange, in order** (the story's steps 4 and 5): the
 /// raider's fire arrived on the escort; the escort fired at the raider, and its first round
-/// left after that first arrival; and, written to fire first, the script had asked before
-/// anyone fired on it. The pilot never armed a slot or took a lock, so an arming or a lock of
-/// this unit ahead of the raider's first arrival is the script's own.
+/// left after that first arrival; before that arrival the script had locked its target and no
+/// round of the unit's had left; and no line says the mind faulted or was dropped.
 fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, ObjId)) {
     let exchange = format!(
         "escort fired {} (at the raider {}, at the third {}); raider fired {}, arrived {}",
@@ -445,15 +432,36 @@ fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, 
         first_answer > first_arrival,
         "its first shot follows the raider's first arrival: {exchange}"
     );
+    // The script had its target before anyone fired on it: a lock of this unit ahead of the
+    // raider's first arrival is the script's own (a seated pilot's mind does not think, and
+    // this pilot took no lock). A lock is not a shot asked for: the box records no refused
+    // intent, and that the script's shot was asked and refused is what the mutation run
+    // shows (with the gate off the same script fires before it is fired on; the cut note has
+    // the run).
     assert!(
-        asked(&lines[..first_arrival], tv) > 0,
-        "the script asked before it was fired on: {:?}",
+        locks(&lines[..first_arrival], tv) > 0,
+        "the script had locked its target before it was fired on: {:?}",
         lines[..first_arrival]
             .iter()
             .filter(|line| format!("{:?}", line.kind).contains(&format!("ObjId({})", tv.0)))
             .map(|line| format!("{:?}", line.kind))
             .take(12)
             .collect::<Vec<_>>()
+    );
+    // And it was the script that flew the unit throughout: a mind that faults three thinks
+    // running is dropped to the house default, which would answer the raider as well.
+    let troubled: Vec<String> = lines
+        .iter()
+        .filter(|line| {
+            matches!(&line.kind,
+                EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. }
+                    if *unit == tv)
+        })
+        .map(|line| format!("{:?}", line.kind))
+        .collect();
+    assert!(
+        troubled.is_empty(),
+        "the filed mind neither faulted nor was dropped: {troubled:?}"
     );
     eprintln!("C4_FIELD the exchange: {exchange}");
 }
@@ -470,7 +478,7 @@ fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, 
 /// 3. The pilot marks the raider's party Hostile, sets fire free, and quits. The unit passes to
 ///    its mind at once.
 /// 4. With the raider held Hostile in range and fire free, the mind's unit fires nothing. The
-///    filed script asks all the while (it arms and locks); the shot is what is refused.
+///    filed script has locked its target and asks at every think; the shot is what is refused.
 /// 5. The raider's captain fires on it. From the first arrival the unit answers the raider, and
 ///    never the third party.
 /// 6. It goes home: to its carrier's ramp, out of the field, into the bay by the host's
@@ -588,7 +596,7 @@ async fn story(script: Option<&str>) {
     );
     assert!(seen, "the raider's captain is sent a cockpit frame");
     // The pilot quits.
-    quit(&mut rig, pilot);
+    crate::field_mw7::quit(&mut rig, pilot);
     assert!(
         until_composed(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
             minded(rig.tw.world(), tv) && !bound(rig, pilot)
@@ -760,7 +768,9 @@ async fn story(script: Option<&str>) {
         assert_eq!(
             fired_at(&lines, tv, third),
             0,
-            "it never fired on the party that never fired on it"
+            "it fired no round at the party that never fired on it (the script prefers a \
+             contact that reads hostile, so this is what the unit did, not the gate tried \
+             against the third)"
         );
         answered_in_order(&lines, (tv, raider, third));
         assert!(
@@ -780,8 +790,8 @@ async fn story(script: Option<&str>) {
     crate::driving_rig::no_refused_writes(&rig.tw);
 }
 
-/// **MW.7's rule on the launch composition, for the house mind** (this module's head): no mind
-/// chosen, no rating; the default sweep runs it.
+/// **The hand-over and the going home on the launch composition, for the house mind** (this
+/// module's head): no mind chosen, no rating; the default sweep runs it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c4_the_house_mind_takes_an_absent_pilots_escort_home_on_the_launch() {
     story(None).await;

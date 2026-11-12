@@ -2726,9 +2726,9 @@ one that runs the server's roster, world task and persist path), and the combine
 |---|---|---|---|
 | **1.** Stories 1, 2, 3, 5, 6 and 7 on the production composition, each with a restart | **Partly, as it stood before this cut** | see the table below | see the table below |
 | **2.** Story 4 through the launch's governed hardware, with a refit and a restart | **Built** (#558) | `tacsim/tests/domain_field/c4_hardware.rs`, default sweep | its clause "existing OOC pods show no owned-hardware dependency": the M8 rig runs no simulator match |
-| **3.** `cargo test -p mush-bot` green on every new sentence | **Built** (#561), as a standing gate | `mush-bot/src/mine/minds.rs`: 148 needles over six game modules, each tested against the game's own constant, with a census that fails on a constant with no row | sentences built inside functions are not constants and no census sees them (the renewal status details; the reasons two sentences are filled with). No lane reads the table: MW.19 |
+| **3.** `cargo test -p mush-bot` green on every new sentence | **Built** (#561), as a standing gate | `mush-bot/src/mine/minds.rs`: 149 rows over six game modules, each tested against the game's own constant, with a census that fails on a constant with no row | sentences built inside functions are not constants and no census sees them (the renewal status details; the reasons two sentences are filled with). No lane reads the table: MW.19 |
 | **4.** The cross-host deterministic cases | **Built** (#558) | `tacsim/src/minds/registry/trials/physical_tests.rs`, `c4_a_registry_trial_ends_the_same_on_every_host`: four Duel trials pinned (end reason, stop millisecond, state hash, black box digest, the filed case result), equal on Linux and Windows x86-64. D-UM-28's corpus and its pool and twin cases were run on Windows at `api=8` and pass | a whole rating's receipt and a Conduct verdict are not pinned; no Windows lane exists in CI, so the second host is by hand; no aarch64 run |
-| **5.** Registry load beside live arenas, reported | **Measured** (#566), as a report and not a gate | `mush-server`'s `registry_load.rs` (by hand, on conclav.dev): a rating alone 1,943 s; beside a match of 4 or of 12 units 3,106 s and 3,109 s, the matches unslowed (think-wait p99 under a millisecond); two authors' ratings alternate lease by lease and finish together at 2.57 times one. The table and the method are in the cut note | a rating beside an IC field arena (the rig stands up the simulator only); Redis; production's 1,000 ms pulse; real players. Why a match slows a rating by 60% is not proven (the continuation's one-second retry is the suspect) |
+| **5.** Registry load beside live arenas, reported | **Measured** (#566), as a report and not a gate | `mush-server`'s `registry_load.rs` (by hand, on conclav.dev): a rating alone 1,943 s (1,517 leases of 1.12 s, the Registry's worker idle for nearly all of each); beside a match of 4 or of 12 units, with the commands that drive it, 3,106 s and 3,109 s; two authors' ratings alternate lease by lease and finish together at 2.57 times one. The table and the method are in the cut note | a rating beside an IC field arena (the rig stands up the simulator only); Redis; production's 1,000 ms pulse; real players. The no-match run had no command traffic, so the 60% is a match and its driver together; whether the matches were slowed was not measured (the fill is native, and no arena step time was taken); and the second in every lease, which looks like the continuation's fixed retry, is not proven |
 
 **Item 1, story by story.** "There" means on a launch, with a restart, in a story CI runs.
 
@@ -2742,17 +2742,20 @@ one that runs the server's roster, world task and persist path), and the combine
 | **7, the fact interface** | nothing, though every Active launch composes the provider (`with_minds_facts`) | all of it | a fact is read through a contract's condition, and `EconomyStore::facts` is crate-private, so a story must draft a contract with a `minds` condition, have it accepted and wait the economy's sweep. Proven on `PlayerWorld` and `IcWorld`. "A renewal after a lapse leaves the lapse on record" and "a front consumes a mind fact" are asserted nowhere. **Not built; no unit owns it** |
 
 **The two stories wave 1 left.** MW.23's refit and restart of a fitted Class III is item 2.
-MW.7's filed mind flying an absent player's unit in a field: built (#567), `tacsim/tests/domain_field/c4_filed_mind_field.rs`. On the
-combined M8 world a pilot leases Occator's escort, writes a script that fires first, has the
-Registry rate it, files it, and launches the escort from its cab under their own owner's
-licence, so the claim path seals it (MW.0) on a leased hull (MW.22). In a field of three
-parties the pilot quits; the mind has the unit; it asks for a shot and is refused; the raider's
-captain fires on it and it answers the raider and nobody else; it drives to its carrier's ramp,
-is put aboard, and its claim closes. The field's black box shows the order, and the seal line
-names the filed mind, the licence and the claim's card. One genuine rating, so the CI
-dispatch runs it (`m8-gate-stories`); a second entry flies the house mind through the same
-story in the default sweep. With the gate mutated off the filed story fails and the house
-mind's does not, which is the reason the story was owed.
+MW.7's filed mind flying an absent player's unit in a field is built (#567),
+`tacsim/tests/domain_field/c4_filed_mind_field.rs`. On the combined M8 world a pilot leases
+Occator's escort, writes a script that fires first, has the Registry rate it, files it, and
+launches the escort from its cab under their own owner's licence, so the claim path seals it
+(MW.0) on a leased hull (MW.22). In a field of three parties the pilot quits and the mind has
+the unit. It locks its target and no round leaves. The raider's captain fires on it; it
+answers the raider and fires at nobody else; it drives to its carrier's ramp, is put aboard,
+and its claim closes. The field's black box shows that order and that the mind neither
+faulted nor was dropped, and the seal line names the filed mind, the licence and the claim's
+card. The box records no refused intent, so that the shot was asked and refused is shown by
+mutation: with the gate off the same script fires before it is fired on and the story fails,
+while the house mind's entry still passes on its narrowed view. That difference is why the
+story was owed. It takes one genuine rating, so the CI dispatch runs it (`m8-gate-stories`);
+a second entry flies the house mind through the same story in the default sweep.
 
 **Found by this cut.**
 
@@ -2768,8 +2771,10 @@ mind's does not, which is the reason the story was owed.
 - A script that asks once for what its hull cannot do (a shot from a cannon shot away, on one
   think of three trials in thirty-six) fails its whole rating, as `Failed { reason:
   Execution }`, and nothing tells the author which case or why.
-- With a match running a rating takes 60% longer, and the Registry's worker is idle for most
-  of every lease: the pace is the commit cycle and a one-second retry.
+- A rating is 1,517 leases of 1.12 s with the Registry's worker idle for nearly all of each;
+  read against the code, a fixed one-second retry may sit in every lease. And a rating sends
+  its author `Queued.` and `Done.` for every lease, by the code's own path (seen in the rig,
+  not on a live connection).
 - The bot's census, merged at 15:54Z, failed main's bot job on the next merge (AP.5 added a
   sentence); #563 repaired it. That is the gate working, and a cost every later unit that adds
   a sentence now pays in the same PR.
@@ -2782,6 +2787,8 @@ listed in the PRs. The filed-mind story ran on conclav.dev (339 s) and on the CI
 
 **What this leaves of C4's gate (§3).** "The existing four CI stories become a subset" did
 not happen: the six `mind-commerce-acceptance` stories and the M8 gate's stories stand as
-they were, and this cut adds two default-sweep tests and one dispatch story (the filed mind in a field), one default-sweep story beside it, and one by-hand measurement. Stories 2 and 7,
+they were, and this cut adds three default-sweep tests (story 4, the trial pin, the house
+mind's field story), one dispatch story (the filed mind in a field) and one by-hand
+measurement. Stories 2 and 7,
 story 3's settlement half and story 1's simulator half are the work that would make C4
 whole.
