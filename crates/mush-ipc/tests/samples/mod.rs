@@ -113,6 +113,16 @@ pub fn every_to_server() -> Vec<ToServer> {
             id: 3,
             choice: RespondChoice::Confirm(true),
         }),
+        // Version 14 (doc 44 unit MW.24): the bare connection, last among the
+        // `Inbound` samples so the older frames keep their numbers.
+        ToServer::Inbound(WireInbound::BareUp {
+            conn: 9,
+            actor: ObjId(2),
+        }),
+        ToServer::Inbound(WireInbound::BareDown {
+            conn: 9,
+            actor: ObjId(2),
+        }),
         ToServer::Input(command.clone()),
         ToServer::Input(GatewayRequest::new(
             0x1234,

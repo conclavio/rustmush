@@ -109,7 +109,16 @@ pub use mush_core::ControlMsg;
 // step behind keeps playing: a 13 server serves a 12 gateway by the bootstrap
 // rule (a first frame that is not `ToServer::Hello` is a 12 peer), and every
 // later server serves its N-1 gateway by the window.
-pub const IPC_VERSION: u32 = 13;
+// Version 14 (doc 44 unit MW.24) adds the bare connection: `WireInbound::BareUp`
+// and `WireInbound::BareDown`, a connection bound to an actor for one invoke
+// and its reply that is never presence. Two new `ToServer` arms, so a bump: a
+// 13 server has no arm for them and would tear the link down. The first bump
+// inside the window, and it needs no lockstep: the server goes first and serves
+// a 13 gateway, which never sends either frame and attaches its `mind` exec in
+// full as before; a 14 gateway refuses a 13 server. Nothing is gated toward
+// the gateway (no `ToGateway` frame changed), and 12 leaves the window, so a
+// gateway with no Hello is now refused.
+pub const IPC_VERSION: u32 = 14;
 
 /// The oldest protocol version this build still serves: the floor of the
 /// window, one step below [`IPC_VERSION`]. A server at [`IPC_VERSION`] accepts
@@ -170,7 +179,7 @@ pub const MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS: usize = 256;
 
 /// The cross-boundary subset of [`mush_core::Inbound`].
 ///
-/// Only these five variants originate in the gateway and cross the seam.
+/// Only these variants originate in the gateway and cross the seam.
 /// [`Inbound::Apply`] (typed async completions) and [`Inbound::Control`]
 /// (engine-internal control) are server-internal and are structurally excluded
 /// here — there is no arm for them, so they cannot be sent over the wire.
@@ -235,6 +244,25 @@ pub enum WireInbound {
     /// The session layer gave up on the actor entirely ([`Inbound::SessionGone`]).
     SessionGone {
         /// The actor whose session ended.
+        actor: ObjId,
+    },
+    /// A bare connection came up ([`Inbound::BareUp`], doc 44 unit MW.24):
+    /// bound to an actor for an invoke and its reply, and never presence. A
+    /// lifecycle frame like `ConnUp` (the link that sends it owns the
+    /// connection, and it is must-deliver), with none of `ConnUp`'s session
+    /// custody: it takes no slot of the lifecycle ledger and owes no
+    /// `SessionGone`. Since version 14.
+    BareUp {
+        /// The new connection.
+        conn: u64,
+        /// The actor its invokes run as.
+        actor: ObjId,
+    },
+    /// A bare connection ended ([`Inbound::BareDown`]). Since version 14.
+    BareDown {
+        /// The connection that went away.
+        conn: u64,
+        /// The actor it was bound to.
         actor: ObjId,
     },
     /// A composing hint from a live connection ([`Inbound::Composing`],
@@ -622,6 +650,8 @@ impl From<WireInbound> for Inbound {
                 reason,
             },
             WireInbound::SessionGone { actor } => Inbound::SessionGone { actor },
+            WireInbound::BareUp { conn, actor } => Inbound::BareUp { conn, actor },
+            WireInbound::BareDown { conn, actor } => Inbound::BareDown { conn, actor },
             WireInbound::Composing {
                 conn,
                 actor,
@@ -699,6 +729,8 @@ impl TryFrom<Inbound> for WireInbound {
                 reason,
             }),
             Inbound::SessionGone { actor } => Ok(WireInbound::SessionGone { actor }),
+            Inbound::BareUp { conn, actor } => Ok(WireInbound::BareUp { conn, actor }),
+            Inbound::BareDown { conn, actor } => Ok(WireInbound::BareDown { conn, actor }),
             Inbound::Composing {
                 conn,
                 actor,

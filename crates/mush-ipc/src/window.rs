@@ -307,21 +307,27 @@ mod tests {
         assert_eq!(ToGateway::Bye.for_link(PRE_WINDOW), Some(ToGateway::Bye));
     }
 
-    /// The test hook at work: declare `Bye` a version-13 frame and the gate
-    /// withholds it from a 12 link, from a link that has not spoken, and
-    /// hands it to a 13 link.
+    /// The test hook at work: declare `Bye` a frame of the current version
+    /// and the gate withholds it from a link one step back, from a link that
+    /// has not spoken, and hands it to a link at the current version. Written
+    /// against the window, not against two version numbers, so it stands
+    /// through a bump (it named 12 and 13 until the bump to 14 moved the
+    /// floor an unspoken link is read at).
     #[test]
     fn a_frame_newer_than_the_link_is_withheld() {
         fn bye_is_new(msg: &ToGateway) -> u32 {
             match msg {
-                ToGateway::Bye => 13,
+                ToGateway::Bye => IPC_VERSION,
                 other => other.introduced_at(),
             }
         }
-        let twelve = EmissionGate::with_introduction_table(LinkVersion::announced(12), bye_is_new);
-        assert_eq!(twelve.admit(ToGateway::Bye), None);
+        let behind = EmissionGate::with_introduction_table(
+            LinkVersion::announced(IPC_MIN_PROTO),
+            bye_is_new,
+        );
+        assert_eq!(behind.admit(ToGateway::Bye), None);
         assert_eq!(
-            twelve.admit(ToGateway::SetFloodExempt {
+            behind.admit(ToGateway::SetFloodExempt {
                 char: 1,
                 exempt: false
             }),
@@ -333,12 +339,12 @@ mod tests {
         );
         let silent = EmissionGate::with_introduction_table(LinkVersion::unknown(), bye_is_new);
         assert_eq!(silent.admit(ToGateway::Bye), None, "unknown is the floor");
-        let thirteen =
-            EmissionGate::with_introduction_table(LinkVersion::announced(13), bye_is_new);
-        assert_eq!(thirteen.admit(ToGateway::Bye), Some(ToGateway::Bye));
-        // The link cell is shared: once the silent link announces 13, its
-        // gate opens without being rebuilt.
-        silent.link().record(13);
+        let current =
+            EmissionGate::with_introduction_table(LinkVersion::announced(IPC_VERSION), bye_is_new);
+        assert_eq!(current.admit(ToGateway::Bye), Some(ToGateway::Bye));
+        // The link cell is shared: once the silent link announces the current
+        // version, its gate opens without being rebuilt.
+        silent.link().record(IPC_VERSION);
         assert_eq!(silent.admit(ToGateway::Bye), Some(ToGateway::Bye));
     }
 }

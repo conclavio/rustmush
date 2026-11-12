@@ -433,6 +433,9 @@ struct Pair {
     pending: Pending,
     /// Set once the client has closed its side of the channel.
     closed: Arc<AtomicBool>,
+    /// Set when the client asks this channel for a shell; see
+    /// [`PumpCtx::shell`].
+    shell: Arc<AtomicBool>,
 }
 
 /// A request that wants a reply (29a R-1).
@@ -567,6 +570,14 @@ struct PumpCtx {
     handle: Handle,
     pending: Pending,
     inject: Option<mpsc::Receiver<String>>,
+    /// Whether the channel is a shell. An injected line (a drain's warning)
+    /// is written only into a shell (doc 44 unit MW.24): the channel is
+    /// paired when it opens, before the client says what it is for, and an
+    /// exec's or a subsystem's output is a byte stream somebody's program
+    /// reads, where a banner is corruption (`mind pull > file.rhai`). Until
+    /// the shell is asked for the lines wait in the queue; in an exec they
+    /// wait for ever, and the session is still closed at the deadline.
+    shell: Arc<AtomicBool>,
     disconnect: DisconnectSlot,
     bytes: Arc<Bytes>,
     farewell: String,
@@ -642,7 +653,10 @@ async fn pump(mut ctx: PumpCtx) {
                 Some(ChannelMsg::Failure) => reply(&ctx.pending, false),
                 Some(_) => {}
             },
-            line = next_inject(&mut ctx.inject) => {
+            // Only a shell is read for: every request's reply passes through
+            // the arm above, so the pump comes back round to this condition as
+            // soon as the shell request has been answered.
+            line = next_inject(&mut ctx.inject), if ctx.shell.load(Ordering::SeqCst) => {
                 let Some(line) = line else {
                     ctx.inject = None;
                     continue;
@@ -1052,9 +1066,11 @@ impl Conn {
         down_write: ChannelWriteHalf<Msg>,
         up: Channel<client::Msg>,
         handle: Handle,
+        shell: bool,
     ) {
         let (up_read, up_write) = up.split();
         let pending: Pending = Arc::default();
+        let shell = Arc::new(AtomicBool::new(shell));
         let inject = if self.pairs.is_empty() {
             let (tx, rx) = mpsc::channel(INJECT_QUEUE);
             self.door.drain.register(
@@ -1086,6 +1102,7 @@ impl Conn {
             handle,
             pending: Arc::clone(&pending),
             inject,
+            shell: Arc::clone(&shell),
             disconnect,
             bytes: Arc::clone(&self.bytes),
             farewell: self.farewell(),
@@ -1102,6 +1119,7 @@ impl Conn {
                 writer,
                 pending,
                 closed,
+                shell,
             },
         );
     }
@@ -1426,7 +1444,8 @@ impl Conn {
         };
         self.user = format!("{service}+play");
         self.stage = Stage::Spliced;
-        self.pair_up(front_id, front_write, up, session.handle());
+        // The menu's channel: its shell was asked for and replayed above.
+        self.pair_up(front_id, front_write, up, session.handle(), true);
     }
 }
 
@@ -1729,7 +1748,8 @@ impl Handler for Conn {
                     Ok(up) => {
                         reply.accept().await;
                         self.opened.store(true, Ordering::SeqCst);
-                        self.pair_up(id, write, up, session.handle());
+                        // Not a shell until the client asks for one.
+                        self.pair_up(id, write, up, session.handle(), false);
                     }
                     Err(_) => drop(reply),
                 }
@@ -1836,7 +1856,10 @@ impl Handler for Conn {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.pairs.contains_key(&channel) {
+        if let Some(pair) = self.pairs.get(&channel) {
+            // Marked before the relay, so the upstream's reply, which passes
+            // through the pump, finds it set.
+            pair.shell.store(true, Ordering::SeqCst);
             return if self.relay_reply(channel, Req::Shell).await? {
                 session.channel_success(channel)
             } else {

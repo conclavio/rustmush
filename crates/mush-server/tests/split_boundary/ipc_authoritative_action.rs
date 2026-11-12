@@ -84,6 +84,17 @@ async fn hello_and_attach(
         frames.read::<ToGateway>().await.unwrap().unwrap(),
         ToGateway::Hello { .. }
     ));
+    // The gateway's half of the handshake: a link with no Hello is a version-12
+    // peer, below the window since the bump to 14 (doc 44 unit MW.24).
+    write_frame(
+        &mut writer,
+        &ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .expect("send Hello");
     write_frame(
         &mut writer,
         &ToServer::Inbound(WireInbound::ConnUp {
@@ -1542,6 +1553,17 @@ fn an_early_reader_loop_error_does_not_leave_a_reaper_running() {
         "the reader loop must spawn its retained-claim reaper",
     );
 
+    // The gateway's half of the handshake first, so the frame after it is read
+    // as a frame and not as a version-12 peer's first one (below the window
+    // since the bump to 14, doc 44 unit MW.24).
+    rt.block_on(write_frame(
+        &mut peer,
+        &ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    ))
+    .expect("the Hello is written to the reader's socket");
     // Raw player input that bypassed the custody envelope: an early
     // `return Err(..)`, nowhere near the end of the function.
     rt.block_on(write_frame(

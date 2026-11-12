@@ -320,6 +320,95 @@ async fn draining_warns_on_schedule_and_closes_at_the_deadline() {
     wait_for(|| t.door.drain.live() == 0).await;
 }
 
+/// Doc 44 unit MW.24: a drain's warning is written into a shell and never
+/// into an exec. A player's shell, spliced through to the game, reads the
+/// warning between the game's output; a `mind pull` running through the same
+/// doorway at the same moment gets its one result line and not a byte more,
+/// so `mind pull > file.rhai` is the script whatever the doorway is doing.
+#[tokio::test]
+async fn a_drain_warns_a_shell_and_writes_nothing_into_an_exec() {
+    let t = Rig::start(Hooks::default()).await;
+
+    // A player in the game: the first connected session.
+    let mut player = t.client().await;
+    assert!(
+        player
+            .authenticate_password("dev1+faenix+Kira", "pw")
+            .await
+            .unwrap()
+            .success()
+    );
+    let mut shell_ch = shell(&player).await;
+    wait_for(|| t.hooks.connected().len() == 1).await;
+
+    // An exec through the same doorway: the second. The instance's hooks do
+    // not answer an invoke, so it is in flight until the test answers it.
+    let mut author = t.client().await;
+    assert!(
+        author
+            .authenticate_publickey("dev1+faenix", with_hash(test_key(1)))
+            .await
+            .unwrap()
+            .success()
+    );
+    let mut exec_ch = author.channel_open_session().await.unwrap();
+    exec_ch.exec(true, "mind pull").await.unwrap();
+    assert!(next_reply(&mut exec_ch).await, "the exec was refused");
+    // Its one request on stdin, then EOF: the instance binds the exec then.
+    exec_ch
+        .data(&br#"{"op":"read","name":"mine","revision":null}"#[..])
+        .await
+        .unwrap();
+    exec_ch.eof().await.unwrap();
+    wait_for(|| t.hooks.connected().len() == 2).await;
+
+    // One warning, well before the deadline.
+    t.door.drain.begin();
+    let warnings = vec![mush_sshdoorway::config::Warning {
+        remaining: Duration::from_millis(2500),
+        label: "3s".into(),
+    }];
+    let door = std::sync::Arc::clone(&t.door);
+    let msg = mush_sshdoorway::config::DEFAULT_DRAIN_MESSAGE.to_owned();
+    let run = tokio::spawn(async move {
+        door.drain
+            .run(Duration::from_millis(3000), &warnings, &msg)
+            .await;
+    });
+
+    // The shell has it, so the warning has been handed to every session.
+    let seen = read_until(&mut shell_ch, "reconnect within the next 3s.").await;
+    assert!(seen.contains("ATTENTION: Game Doorway updated"), "{seen}");
+
+    // The game answers the pull; the exec ends on that one line.
+    assert!(t.hooks.send(
+        1,
+        mush_proto::OutputEvent::InvokeResult {
+            id: 1,
+            result: mush_proto::InvokeResult::Mind(mush_proto::MindResponse::Library {
+                names: vec!["the-script".into()],
+            }),
+        },
+    ));
+    let out = read_to_close(&mut exec_ch).await;
+    assert!(
+        out.starts_with("{\"service\":\"mind\"") && out.ends_with("}\n"),
+        "the result line and nothing around it: {out:?}"
+    );
+    assert_eq!(out.matches('\n').count(), 1, "one line: {out:?}");
+    assert!(out.contains("the-script"), "{out:?}");
+    assert!(
+        !out.contains("ATTENTION") && !out.contains('\r'),
+        "no drain warning in an exec's output: {out:?}"
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(|| t.door.drain.live() == 0).await;
+}
+
 #[tokio::test]
 async fn a_client_that_stops_reading_is_cut_off_and_memory_stays_bounded() {
     let t = Rig::start(Hooks::default()).await;

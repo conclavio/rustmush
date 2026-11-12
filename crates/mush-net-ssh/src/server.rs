@@ -1648,10 +1648,14 @@ impl ConnHandler {
             tx,
             stamped_tx: None,
         };
+        // Doc 44 unit MW.24: bound for the one request, never logged in. The
+        // exec of a player who is offline leaves nobody link-dead in a room,
+        // and one typed during a real link loss neither restarts its grace nor
+        // takes a unit back from the mind that holds it.
         self.connected.store(true, Ordering::SeqCst);
         if self
             .hooks
-            .connect_character(conn, &account, character.key)
+            .connect_exec(conn, &account, character.key)
             .await
             .is_err()
         {

@@ -2066,6 +2066,20 @@ async fn resync_boundary(
     if !conn.tx.send(ToServer::ReAnnounce(recs)) {
         return Err("fresh boundary closed while enqueueing ReAnnounce".to_string());
     }
+    // A bare connection (doc 44 unit MW.24) is in no session, so the roster
+    // above cannot name it, and it must not: a re-attach is presence. It is
+    // announced again as what it is, behind the roster and ahead of the
+    // barrier, so the fresh server has its binding before the custody replay
+    // below hands it the invoke that was in flight, and an exec caught by a
+    // server restart completes as it did when it was an ordinary connection.
+    for (bare, character) in sessions.bare_conns() {
+        if !conn.tx.send(ToServer::Inbound(WireInbound::BareUp {
+            conn: bare.0,
+            actor: char_key_obj(character),
+        })) {
+            return Err("fresh boundary closed while re-announcing a bare connection".to_string());
+        }
+    }
 
     match tokio::time::timeout(
         RESYNC_TIMEOUT,
@@ -3313,6 +3327,13 @@ mod tests {
         let (output_tx, _output_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
         let handle = ConnectionHandle::new(ConnId(77), addr(7), ansi_caps(false), output_tx);
         sessions.attach(handle, CharKey(42), "boss".to_string());
+        // Doc 44 unit MW.24: an exec in flight for an offline character. It is
+        // in no session, so not in the roster; it is announced again as bare.
+        let (exec_tx, _exec_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        assert!(sessions.attach_bare(
+            ConnectionHandle::new(ConnId(78), addr(8), ansi_caps(true), exec_tx),
+            CharKey(43),
+        ));
 
         let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
         let (tx, _metrics, _lifecycle) = test_tx(raw_tx, usize::MAX, 0);
@@ -3368,6 +3389,14 @@ mod tests {
             }
             other => panic!("expected ReAnnounce first, got {other:?}"),
         }
+        assert_eq!(
+            raw_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::BareUp {
+                conn: 78,
+                actor: ObjId(43),
+            })),
+            "the bare connection is bound again behind the roster and ahead of the barrier"
+        );
         let barrier_id = match raw_rx.recv().await.expect("resync emitted its barrier") {
             ToServer::Request {
                 id,

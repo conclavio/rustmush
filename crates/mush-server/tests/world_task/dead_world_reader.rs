@@ -212,6 +212,18 @@ async fn dead_world(death: Death) -> (WorldHandle, WorldExitStatus) {
 /// Serialize `frames` into one buffer the reader can consume as its socket.
 async fn wire(frames: &[ToServer]) -> mush_ipc::BoxRead {
     let mut bytes: Vec<u8> = Vec::new();
+    // The gateway's half of the handshake comes first: a link with no Hello is
+    // a version-12 peer, below the window since the bump to 14 (doc 44 unit
+    // MW.24), and the reader would refuse it before reaching `frames`.
+    write_frame(
+        &mut bytes,
+        &ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .expect("hello encodes");
     for frame in frames {
         write_frame(&mut bytes, frame).await.expect("frame encodes");
     }
@@ -483,6 +495,17 @@ async fn serve_returns_when_the_world_ends_under_a_live_gateway() {
     // Kill the world, then keep the boundary open and read nothing more. The
     // reader half of `serve` is parked on this socket; only the world's join
     // handle can end the process now.
+    // The gateway's half of the handshake: a link with no Hello is a version-12
+    // peer, below the window since the bump to 14 (doc 44 unit MW.24).
+    write_frame(
+        &mut writer,
+        &ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .expect("send Hello");
     write_frame(&mut writer, &ToServer::Control(ControlMsg::Shutdown))
         .await
         .expect("send shutdown control");
