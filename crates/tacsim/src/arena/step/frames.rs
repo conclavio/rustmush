@@ -302,7 +302,9 @@ pub struct Frame {
     /// consecutive frames. A fit constant for the match.
     pub turn_rate_mdeg_s: u32,
     /// **The posture the hull's player left on it** (doc 45 unit AP.3; Q-45-4):
-    /// [`crate::arena::state::UnitState::posture`], `RETURN` unless they set another. The
+    /// [`crate::arena::state::UnitState::posture`], `RETURN` unless they set another; and,
+    /// since doc 45 unit AP.6, `RETURN` for a `GUARD` a mind flies for an absent player on a
+    /// hull that can no longer defend itself (`Arena::flown_posture`, Q-45-9). The
     /// person in the seat and the mind that flies the hull read the same word (the keyframe's
     /// `posture`, `View.posture`; `crate::minds::api::PARITY`). The hull's own standing
     /// word, outside the observer rule; [`Frame::same_as`] compares it, so a change is sent
@@ -963,8 +965,9 @@ impl Arena {
             reverse_cms: unit.mobility.reverse_ceiling_cms(),
             // **Doc 21 cut G.4b**: the rate the motion step turns the hull at.
             turn_rate_mdeg_s: unit.mobility.turn_rate_mdeg_s,
-            // **Doc 45 unit AP.3**: the posture its player left on it.
-            posture: unit.posture,
+            // **Doc 45 unit AP.3**: the posture its player left on it, as its mind is held
+            // to it (doc 45 unit AP.6: a `GUARD` it can no longer defend reads `RETURN`).
+            posture: crate::arena::absent::flown(unit),
         })
     }
 

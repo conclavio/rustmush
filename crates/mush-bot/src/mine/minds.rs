@@ -178,6 +178,14 @@ pub mod absent {
     pub const NOT_FIT: &str = "its mind keeps the controls.";
     /// `tacsim::field::absent::GONE_HOME`.
     pub const GONE_HOME: &str = "breaks off for its carrier's ramp under its mind:";
+    /// `tacsim::field::absent::MIND_HAS_IT_ON` (doc 45 unit AP.6).
+    pub const MIND_HAS_IT_ON: &str = "its mind has the controls and keeps it on ";
+    /// `tacsim::field::absent::TAKEN_ON` (doc 45 unit AP.6).
+    pub const TAKEN_ON: &str = "passed to its mind, which flies it on ";
+    /// `tacsim::field::absent::ADMITTED_ON` (doc 45 unit AP.6).
+    pub const ADMITTED_ON: &str = "while you were away: its mind has the controls and flies it on ";
+    /// `tacsim::field::absent::STAYS_ON` (doc 45 unit AP.6).
+    pub const STAYS_ON: &str = "passes to its mind, which flies it on ";
 }
 
 /// The `+minds`, `@mind/*` and `@registry/*` command family (17g C2, doc 17h M8):
@@ -530,6 +538,10 @@ mod tests {
             NOT_FIT,
             ADMITTED_AWAY,
             GONE_HOME,
+            MIND_HAS_IT_ON,
+            TAKEN_ON,
+            ADMITTED_ON,
+            STAYS_ON,
         )
     }
 

@@ -49,8 +49,6 @@ pub const POSTURE_JAMMED: &str =
 pub const POSTURE_NO_PATH: &str = "Your order does not reach {unit}: you have no relay to where it is. Give it from aboard its carrier.";
 /// A hired crew's operator who is not aboard the rig.
 pub const POSTURE_CREW: &str = "A crew sets its rig's posture from aboard the rig.";
-/// What follows a `GUARD` or a `HOLD`, until the house mind flies them (doc 45 unit AP.6).
-pub const POSTURE_NOT_FLOWN_YET: &str = "The house mind does not fly GUARD or HOLD yet and still takes the unit home; a mind you filed reads the word.";
 /// The roster's and the status's line for a unit off the default: `{posture}`.
 pub const POSTURE_LINE: &str = "  posture {posture}";
 
@@ -124,14 +122,11 @@ pub fn set_present(
     ))
 }
 
-/// The answer to a set: the line, and the note for a posture the house mind does not fly yet.
+/// The answer to a set: the one line. Every posture is flown by whichever mind holds the
+/// unit (doc 45 unit AP.6), so a set says what was set and nothing more.
 #[must_use]
 pub fn said(template: &str, name: &str, posture: Posture) -> Vec<String> {
-    let mut lines = vec![line(template, name, posture)];
-    if !posture.is_return() {
-        lines.push(POSTURE_NOT_FLOWN_YET.to_owned());
-    }
-    lines
+    vec![line(template, name, posture)]
 }
 
 /// **`+tv/<n> posture [word]`** (this module's head, 2 and 3): the rig's posture read, or set
@@ -183,7 +178,7 @@ pub fn tv(
 mod tests {
     use mush_core::{GOD, LIMBO, ObjKind, World};
 
-    use super::{POSTURE_NOT_FLOWN_YET, POSTURE_READ, POSTURE_SET, line, ooc, said, word};
+    use super::{POSTURE_READ, POSTURE_SET, line, ooc, said, word};
     use crate::posture::Posture;
 
     #[test]
@@ -227,7 +222,6 @@ mod tests {
             POSTURE_RELAYED,
             POSTURE_JAMMED,
             POSTURE_NO_PATH,
-            POSTURE_NOT_FLOWN_YET,
             POSTURE_LINE,
             super::POSTURE_CREW,
         ] {
@@ -251,10 +245,8 @@ mod tests {
         );
         assert_eq!(
             said(POSTURE_SET, "Rig 2", Posture::Guard),
-            vec![
-                "Rig 2 now holds GUARD.".to_owned(),
-                POSTURE_NOT_FLOWN_YET.to_owned()
-            ]
+            vec!["Rig 2 now holds GUARD.".to_owned()],
+            "a posture the house mind flies needs no note"
         );
     }
 }

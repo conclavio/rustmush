@@ -1282,6 +1282,18 @@ pub fn state_hash(arena: &Arena) -> u64 {
         if !unit.posture.is_return() {
             fold.bytes(&[2_u8, unit.posture.fold_byte()]);
         }
+        // **Doc 45 unit AP.6** (sub-items 27 and 28): the cell a mind stands its posture on
+        // and the player whose unit it is, each only when set, each under its own tag byte:
+        // no byte for a unit of a practice match, where neither is ever written.
+        if let Some((x, y)) = unit.stand_at {
+            fold.bytes(&[3_u8]);
+            fold.bytes(&x.to_le_bytes());
+            fold.bytes(&y.to_le_bytes());
+        }
+        if let Some(player) = unit.player {
+            fold.bytes(&[4_u8]);
+            fold.bytes(&player.0.to_le_bytes());
+        }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
     fold.bytes(&(arena.spent_said.len() as u64).to_le_bytes());
@@ -2832,6 +2844,56 @@ mod tests {
         assert_eq!(state_hash(&arena), hold, "the host's word is the field");
         assert!(!arena.set_posture(ObjId(99), Posture::Hold), "no such unit");
         assert_eq!(arena.posture(ObjId(99)), Posture::Return);
+    }
+
+    /// **Doc 45 unit AP.6: where a posture is stood and whose the unit is fold only when
+    /// set** (item 1's sub-items 27 and 28): no unit checks out with either, each moves the
+    /// hash apart from the other and from the posture, and cleared they fold no byte.
+    #[test]
+    fn ap6_the_hash_folds_the_stood_cell_and_the_player_only_when_set() {
+        use crate::posture::Posture;
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena
+                .units
+                .iter()
+                .all(|unit| unit.stand_at.is_none() && unit.player.is_none()),
+            "no unit checks out stood or named"
+        );
+        let with = |edit: &dyn Fn(&mut crate::arena::state::UnitState)| {
+            let mut arena = two_tanks();
+            if let Some(unit) = arena.unit_mut(ObjId(9)) {
+                edit(unit);
+            }
+            state_hash(&arena)
+        };
+        let stood = with(&|unit| unit.stand_at = Some((3, 4)));
+        let named = with(&|unit| unit.player = Some(ObjId(501)));
+        assert_ne!(stood, base, "a stood cell went unhashed");
+        assert_ne!(named, base, "a unit's player went unhashed");
+        assert_ne!(stood, named, "the two fold apart");
+        assert_ne!(
+            stood,
+            with(&|unit| unit.stand_at = Some((4, 3))),
+            "which cell"
+        );
+        assert_ne!(
+            named,
+            with(&|unit| unit.player = Some(ObjId(502))),
+            "which player"
+        );
+        assert_ne!(stood, with(&|unit| unit.posture = Posture::Guard));
+        assert_eq!(
+            with(&|unit| {
+                unit.stand_at = Some((3, 4));
+                unit.player = Some(ObjId(501));
+                unit.stand_at = None;
+                unit.player = None;
+            }),
+            base,
+            "cleared, they fold no byte"
+        );
     }
 
     /// **17b cut M5.2: the active profile folds only off its default** (item

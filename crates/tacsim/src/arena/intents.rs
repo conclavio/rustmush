@@ -772,13 +772,24 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             // drop intact and its order cleared) or a fresh one — seeded
             // `Withdraw`, so it drives itself home and rallies on Q.7's clock
             // as the reflex machine did (deleted in 17b cut M4.6).
-            arena.set_controller(c.unit, Controller::Mind, MachineState::Withdraw);
+            //
+            // **Doc 45 unit AP.6** (Q-45-7): but a unit handed to its mind to stand `GUARD`
+            // or `HOLD` for an absent player is not seeded home. Any state but `Withdraw`
+            // leaves the row's memory as it stands (`Arena::adopt_mind`), and the unit's
+            // first think stops it where it is (`Arena::stand_posture`).
+            let stays = arena.absent(c.unit) && !arena.flown_posture(c.unit).is_return();
+            let seed = if stays {
+                MachineState::Patrol
+            } else {
+                MachineState::Withdraw
+            };
+            arena.set_controller(c.unit, Controller::Mind, seed);
             // **Doc 44 cut MW.7** (Q-44-22; `crate::arena::absent`): a unit the host has
-            // said is flown for an absent player is handed over with its go-home order
-            // standing, so a mind the player sealed reads it as the doctrine does. The
+            // said is flown for an absent player is handed over with the standing order of
+            // its posture, so a mind the player sealed reads it as the doctrine does. The
             // host's word reaches the arena at the pulse's head, ahead of this control.
             if arena.absent(c.unit) {
-                arena.lay_go_home(c.unit);
+                arena.lay_standing(c.unit);
             }
         }
         ControlState::Live => {

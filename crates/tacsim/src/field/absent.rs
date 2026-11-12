@@ -19,13 +19,16 @@
 //!    AP.5; Q-45-1, Q-45-2; `super::admit::seat_absent`): a field that takes in a unit whose
 //!    seated pilot is not connected, or not fit, hands it over in the same world turn, and one
 //!    whose pilot's link was lost less than five minutes before keeps the seat `Linkdead` for
-//!    what is left of them (`admitted_link_lost`). A posture (AP.3) will call it with a
-//!    [`Why`] of its own.
-//! 3. **Going home** (`tick`). Once a world second the host asks the field to let the unit
-//!    out at its carrier's ramp (`super::home::ask_out`), as it does for an NPC under a
-//!    WITHDRAW, and the kernel decides on the unit's own pose. No mind may board (D-UM-11), so
-//!    the host does: out, the unit's recover runs as its pilot, the rig's recover act or the
-//!    DT recover, and is tried again every [`RECOVER_RETRY_WALL_S`] until the unit is off the
+//!    what is left of them (`admitted_link_lost`).
+//! 3. **Going home, or staying** (`tick`; doc 45 unit AP.6, Q-45-7). The unit's posture
+//!    decides, and the kernel reads it (`crate::arena::absent`, "flying a posture"). Once a
+//!    world second the host asks the field to let the unit out at its carrier's ramp
+//!    (`super::home::ask_out`), as it does for an NPC under a WITHDRAW, and the kernel decides
+//!    on the unit's own pose and on the posture it is flown on: a unit on `RETURN` is let go
+//!    once it stands beside the ramp, one on `GUARD` is kept until it can no longer defend
+//!    itself, and one on `HOLD` is never asked. No mind may board (D-UM-11), so the host
+//!    does: out, the unit's recover runs as its pilot, the rig's recover act or the DT
+//!    recover, and is tried again every [`RECOVER_RETRY_WALL_S`] until the unit is off the
 //!    ground. A unit whose party has no carrier on the site has no ramp to be asked out at and
 //!    holds where it stands (Q-44-42).
 //! 4. **The way back** (`take_back`). A pilot who reconnects, at any time while the field
@@ -41,7 +44,8 @@
 //! **The escort that leaves** (doc 35 §11.4's open point). A unit that goes home leaves
 //! whoever it was with. It goes, and they are told: the leader of its own party and the
 //! leaders of the parties that hold it a friend hear one line ([`GONE_HOME`]), queued for one
-//! who is not connected.
+//! who is not connected. For a unit left on `GUARD` or `HOLD` they hear the word it is
+//! flown on instead ([`STAYS_ON`]).
 //!
 //! **The simulator is unchanged** (Q-44-19): nothing here acts on a unit no field hosts.
 
@@ -85,6 +89,18 @@ pub const ADMITTED_AWAY: &str = "A field opened around #{unit} while you were aw
 /// Those the unit was with, when it goes home: `{unit}`, `{why}`.
 pub const GONE_HOME: &str =
     "#{unit} breaks off for its carrier's ramp under its mind: {why}. It will not fire first.";
+/// [`MIND_HAS_IT`] for a unit left on `GUARD` or `HOLD` (doc 45 unit AP.6): `{unit}`,
+/// `{posture}`.
+pub const MIND_HAS_IT_ON: &str = "You cannot fly #{unit}: its mind has the controls and keeps it on {posture}. It will not fire first.";
+/// [`TAKEN_HOME`] for a unit left on `GUARD` or `HOLD`: `{unit}`, `{posture}`.
+pub const TAKEN_ON: &str = "While you were away #{unit} passed to its mind, which flies it on {posture} and will not fire first.";
+/// [`ADMITTED_AWAY`] for a unit left on `GUARD` or `HOLD`: `{unit}`, `{posture}`.
+pub const ADMITTED_ON: &str = "A field opened around #{unit} while you were away: its mind has the controls and flies it on {posture}. It will not fire first.";
+/// [`GONE_HOME`] for a unit left on `GUARD` or `HOLD`: `{unit}`, `{posture}`, `{why}`. It
+/// names the word and not what the unit does: only the kernel knows whether a guard can
+/// still defend itself, and one that cannot goes home.
+pub const STAYS_ON: &str =
+    "#{unit} passes to its mind, which flies it on {posture}: {why}. It will not fire first.";
 
 /// **Why a unit's player is not at its controls.**
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,24 +387,34 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, why: Why) 
     };
     set_away(ctx, &row.site, unit, Some(away));
     tell_arena(ctx, &row);
-    // The pilot: said to one who is connected and down, queued for one who is away.
-    let line = if on_watch(ctx.w, pilot) {
-        MIND_HAS_IT
-    } else if why == Why::AwayAtAdmission {
-        ADMITTED_AWAY
-    } else {
-        TAKEN_HOME
+    // The pilot: said to one who is connected and down, queued for one who is away. A unit
+    // left on `GUARD` or `HOLD` is told so (doc 45 unit AP.6): its mind does not take it home.
+    let posture = crate::posture::record::of(ctx.w, unit);
+    let line = match (on_watch(ctx.w, pilot), posture.is_return()) {
+        (true, true) => MIND_HAS_IT,
+        (true, false) => MIND_HAS_IT_ON,
+        (false, true) if why == Why::AwayAtAdmission => ADMITTED_AWAY,
+        (false, false) if why == Why::AwayAtAdmission => ADMITTED_ON,
+        (false, true) => TAKEN_HOME,
+        (false, false) => TAKEN_ON,
     };
     notify_budget(
         ctx,
         pilot,
-        &line.replace("{unit}", &unit.0.to_string()),
+        &line
+            .replace("{unit}", &unit.0.to_string())
+            .replace("{posture}", posture.label()),
         NoticeLevel::Trip,
     );
     // Those it was with (this module's head, "the escort that leaves").
-    let line = GONE_HOME
-        .replace("{unit}", &unit.0.to_string())
-        .replace("{why}", why.clause());
+    let line = if posture.is_return() {
+        GONE_HOME
+    } else {
+        STAYS_ON
+    }
+    .replace("{unit}", &unit.0.to_string())
+    .replace("{posture}", posture.label())
+    .replace("{why}", why.clause());
     for lead in leads(ctx.w, &row) {
         notify_budget(ctx, lead, &line, NoticeLevel::Trip);
     }
@@ -638,6 +664,13 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             .is_some_and(|minding| minding.told.get(&row.unit) == Some(&row.task));
         if !told {
             tell_arena(ctx, &row);
+            continue;
+        }
+        // Doc 45 unit AP.6 (Q-45-7): a unit on `HOLD` stays, and is never asked out. One on
+        // `GUARD` is asked like one on `RETURN`, and the kernel keeps it while it can still
+        // defend itself (`crate::arena::withdraw::WithdrawRefusal::Standing`): only the
+        // kernel holds the unit's live damage and its rounds.
+        if crate::posture::record::of(ctx.w, row.unit) == crate::posture::Posture::Hold {
             continue;
         }
         if let Some(then) = recover_of(ctx, row.unit) {

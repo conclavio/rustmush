@@ -28,8 +28,8 @@
 use mush_core::{LIMBO, ObjId};
 use tacsim::posture::Posture;
 use tacsim::posture::order::{
-    POSTURE_JAMMED, POSTURE_KEPT, POSTURE_LINE, POSTURE_NOT_FLOWN_YET, POSTURE_OOC, POSTURE_READ,
-    POSTURE_RELAYED, POSTURE_SET, POSTURE_WORDS, line,
+    POSTURE_JAMMED, POSTURE_KEPT, POSTURE_LINE, POSTURE_OOC, POSTURE_READ, POSTURE_RELAYED,
+    POSTURE_SET, POSTURE_WORDS, line,
 };
 
 use crate::driving_rig::{Rig, on_pad_as, run, stocked_tuned};
@@ -71,10 +71,7 @@ fn ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room() {
     );
     assert_eq!(
         run(&mut rig.tw, operator, "+tv/1 posture guard"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_SET, "Rig 1", Posture::Guard)
-        )
+        line(POSTURE_SET, "Rig 1", Posture::Guard)
     );
     assert_eq!(
         (held(&rig, one), held(&rig, two)),
@@ -93,10 +90,7 @@ fn ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room() {
     assert!(first < at && at < second, "under rig 1: {roster}");
     assert_eq!(
         run(&mut rig.tw, operator, "+tv/1 posture guard"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_KEPT, "Rig 1", Posture::Guard)
-        ),
+        line(POSTURE_KEPT, "Rig 1", Posture::Guard),
         "a second set changes nothing and says so"
     );
     assert_eq!(
@@ -111,10 +105,7 @@ fn ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room() {
 
     assert_eq!(
         run(&mut rig.tw, operator, "+tv/2 posture hold"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_SET, "Rig 2", Posture::Hold)
-        )
+        line(POSTURE_SET, "Rig 2", Posture::Hold)
     );
 
     // (2) From an OOC room every set is refused and nothing changes; the read still answers.
@@ -161,7 +152,7 @@ async fn ap4_a_posture_is_set_from_the_units_seat_in_a_field() {
     // The set, from the seat: the record at once, the hull's own frame within a pulse or two.
     let set = run(&mut yard.rig.tw, pilot, "MIND POSTURE GUARD");
     assert!(
-        set.contains(&line(POSTURE_SET, "", Posture::Guard)) && set.contains(POSTURE_NOT_FLOWN_YET),
+        set.ends_with(&line(POSTURE_SET, "", Posture::Guard)),
         "{set}"
     );
     assert_eq!(held(&yard.rig, ward), Posture::Guard);
@@ -226,10 +217,7 @@ fn ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_
     jam(&mut rig, armed_rig, 4);
     assert_eq!(
         run(&mut rig.tw, lessee, "+tv/1 posture hold"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_SET, "Rig 1", Posture::Hold)
-        )
+        line(POSTURE_SET, "Rig 1", Posture::Hold)
     );
     assert_eq!(held(&rig, armed_rig), Posture::Hold);
     jam(&mut rig, armed_rig, 0);
@@ -238,10 +226,7 @@ fn ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_
     // that rig's cab: his order to it goes over the relay, and arrives.
     assert_eq!(
         run(&mut rig.tw, lessee, "+tv/2 posture guard"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_RELAYED, "Rig 2", Posture::Guard)
-        )
+        line(POSTURE_RELAYED, "Rig 2", Posture::Guard)
     );
     assert_eq!(held(&rig, prospector), Posture::Guard);
 
@@ -266,10 +251,7 @@ fn ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_
     jam(&mut rig, prospector, 0);
     assert_eq!(
         run(&mut rig.tw, lessee, "+tv/2 posture hold"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_RELAYED, "Rig 2", Posture::Hold)
-        )
+        line(POSTURE_RELAYED, "Rig 2", Posture::Hold)
     );
     assert_eq!(
         (held(&rig, armed_rig), held(&rig, prospector)),

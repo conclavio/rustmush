@@ -2490,9 +2490,11 @@ mod tests {
     /// `crate::arena::absent`). A mind's lawful, warranted shot fires for a unit its player
     /// flies. Flown for an absent player it is refused, by every source no seat typed, until
     /// the target's fire has arrived on this unit; a seat's typed `FIRE` is never asked. A
-    /// hold the pilot left, the seat's master gate or a standing order's `hold_fire`, holds
-    /// through that attack. The go-home order stands with no deadline, and the mind is shown
-    /// as hostile only what it may answer. A practice match records no fire.
+    /// standing order's `hold_fire` holds through that attack. The seat's own master gate
+    /// does not: since doc 45 unit AP.6 it is the seat's and never binds the mind
+    /// (`crate::arena::absent`, "the posture and the seat's fire hold"). The go-home order
+    /// stands with no deadline, and the mind is shown as hostile only what it may answer. A
+    /// practice match records no fire.
     #[test]
     fn mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it() {
         use crate::arena::party::{EndCondition, Relation};
@@ -2543,17 +2545,20 @@ mod tests {
         assert_eq!(away.clone().resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
         assert_eq!(relation(&away), Some(Relation::Hostile));
 
-        // A hold the pilot left holds through the attack: the seat's master gate...
+        // Doc 45 unit AP.6: the seat's master gate is the seat's. Left at hold it does not
+        // bind the mind, which still answers the unit that fired on it...
         let mut gated = away.clone();
         if let Some(state) = gated.unit_mut(RED) {
             state.weapons_hold = true;
         }
         assert_eq!(
             gated.clone().resolve_fire_by(RED, "cannon", 0, mind),
-            Err(Refusal::Unwarranted)
+            Ok(1),
+            "the seat's switch does not bind the mind"
         );
-        assert_eq!(relation(&gated), Some(Relation::Neutral));
-        // ...and a standing order's, which the go-home order keeps.
+        assert_eq!(relation(&gated), Some(Relation::Hostile));
+        // ...and a standing order's hold does hold through the attack; the go-home order
+        // keeps it.
         let mut ordered = holding_fire(base.clone());
         ordered.end = EndCondition::Host;
         ordered.set_absent(RED, true);
@@ -2605,6 +2610,476 @@ mod tests {
             practice
                 .unit(RED)
                 .is_some_and(|state| state.fired_on_by.is_empty())
+        );
+    }
+
+    /// Red's player's other unit, a stranger's unit, and the player.
+    const KIN: ObjId = ObjId(21);
+    const STRANGER: ObjId = ObjId(22);
+    const OWNER: ObjId = ObjId(501);
+
+    /// **A field of four parties** (doc 45 unit AP.6): [`a_minds_lock`]'s red, a mind's hull
+    /// with a lock on blue and a lawful slot armed, and blue; a second hull of red's player
+    /// in a party of its own; and a stranger's. The host has said whose red and its kin are.
+    fn a_guards_field() -> Arena {
+        use crate::arena::test_support::line_tank;
+        let party = |n: usize| PartyId::nth(n).expect("a party letter");
+        let mut red = line_tank(RED, PartyId::RED, pose(1_500, 3_500));
+        red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("the fixture terms seal");
+        let mut arena = arena_of(vec![
+            red,
+            line_tank(BLUE, PartyId::BLUE, pose(5_500, 3_500)),
+            line_tank(KIN, party(2), pose(1_500, 5_500)),
+            line_tank(STRANGER, party(3), pose(5_500, 5_500)),
+        ]);
+        arena.end = crate::arena::party::EndCondition::Host;
+        arena.resolution.p_min = 500;
+        arena.resolution.p_max = 500;
+        let id = hold(&mut arena, RED, BLUE);
+        online(&mut arena, RED);
+        assert_eq!(arena.resolve_lock(RED, id, 0), Ok(()));
+        assert_eq!(
+            arena.resolve_arming(
+                RED,
+                &crate::arena::conditions::Arming::Arm(on_lock("cannon", 100)),
+                0
+            ),
+            Ok(Some(1))
+        );
+        assert!(arena.set_player(RED, Some(OWNER)));
+        assert!(arena.set_player(KIN, Some(OWNER)));
+        assert!(!arena.set_player(ObjId(99), Some(OWNER)), "no such unit");
+        arena
+    }
+
+    /// Red's standing objective.
+    fn objective_of(arena: &Arena) -> Option<crate::arena::perception::MindObjective> {
+        arena
+            .minds
+            .get(&RED)
+            .and_then(|row| row.order.as_ref())
+            .map(|order| order.objective)
+    }
+
+    /// **Doc 45 unit AP.6: `GUARD` answers for its player's other unit, and for nobody
+    /// else** (Q-45-6, Q-45-8, Q-45-12; `crate::arena::absent`). Blue is held hostile by
+    /// red's party from the start, as a party marked or declared Hostile is. On `GUARD`, red's
+    /// mind is refused its shot at blue; still refused once blue has fired on a stranger; and
+    /// allowed once blue has fired on red's player's other unit and red's mind stands the
+    /// posture. The same field on `HOLD` and on `RETURN` does not answer for the neighbour.
+    /// A unit of the same player that fired on its own is not answered.
+    #[test]
+    fn ap6_a_guard_answers_for_its_players_other_unit_and_holds_fire_on_a_strangers_quarrel() {
+        use crate::arena::party::Relation;
+        use crate::arena::perception::MindObjective;
+        use crate::posture::Posture;
+        let mind = FiredBy::Mind { slot: Some(1) };
+        let left_on = |posture: Posture| {
+            let mut arena = a_guards_field();
+            assert!(arena.set_posture(RED, posture));
+            assert!(arena.set_absent(RED, true));
+            arena
+        };
+        let shown = |arena: &Arena| {
+            let view = arena.clone().mind_view(RED).expect("red reads a view");
+            view.contacts
+                .iter()
+                .find(|row| row.relation == Relation::Hostile)
+                .map(|row| row.id)
+        };
+
+        let mut guard = left_on(Posture::Guard);
+        assert_eq!(
+            objective_of(&guard),
+            Some(MindObjective::Hold),
+            "a guard is laid a hold where it stands, not the way home"
+        );
+        assert_eq!(guard.flown_posture(RED), Posture::Guard);
+        for by in [mind, FiredBy::Machine, FiredBy::Cond { slot: 1 }] {
+            assert_eq!(
+                guard.clone().resolve_fire_by(RED, "cannon", 0, by),
+                Err(Refusal::Unwarranted),
+                "{by:?} would open fire first on a party only held hostile"
+            );
+        }
+        // A stranger's quarrel beside it.
+        guard.note_fired_on(BLUE, STRANGER);
+        guard.stand_posture(RED);
+        assert_eq!(
+            guard.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted),
+            "fire on a stranger is not a guard's to answer"
+        );
+        assert_eq!(
+            shown(&guard),
+            None,
+            "and its mind is shown nobody to answer"
+        );
+        assert_eq!(objective_of(&guard), Some(MindObjective::Hold));
+        // Fire on its player's other unit.
+        guard.note_fired_on(BLUE, KIN);
+        guard.stand_posture(RED);
+        assert_eq!(
+            guard.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1),
+            "the unit that fired on its player's other unit is answered"
+        );
+        assert!(shown(&guard).is_some(), "and its mind is shown that unit");
+        assert!(
+            matches!(objective_of(&guard), Some(MindObjective::Screen { .. })),
+            "its order turns it to face what it may answer: {:?}",
+            objective_of(&guard)
+        );
+        assert_eq!(
+            guard.absent_denies_fire(RED, STRANGER),
+            Some(crate::arena::absent::Denied::FiredFirst),
+            "and nobody else"
+        );
+
+        // The same field, the same fire, on HOLD and on RETURN: not for a neighbour.
+        for posture in [Posture::Hold, Posture::Return] {
+            let mut other = left_on(posture);
+            other.note_fired_on(BLUE, KIN);
+            other.stand_posture(RED);
+            assert_eq!(
+                other.clone().resolve_fire_by(RED, "cannon", 0, mind),
+                Err(Refusal::Unwarranted),
+                "{posture} does not answer for its neighbour"
+            );
+            assert_eq!(shown(&other), None, "{posture}");
+            // Each still answers for itself.
+            other.note_fired_on(BLUE, RED);
+            assert_eq!(
+                other.resolve_fire_by(RED, "cannon", 0, mind),
+                Ok(1),
+                "{posture} answers the unit that fired on it"
+            );
+        }
+
+        // A unit of the same player is never the one answered.
+        let mut own = left_on(Posture::Guard);
+        assert!(own.set_player(BLUE, Some(OWNER)));
+        own.note_fired_on(BLUE, KIN);
+        own.stand_posture(RED);
+        assert_eq!(
+            own.resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted),
+            "its player's own unit is not answered"
+        );
+        // A unit whose player the host has not named answers for nobody but itself.
+        let mut unnamed = left_on(Posture::Guard);
+        assert!(unnamed.set_player(RED, None));
+        unnamed.note_fired_on(BLUE, KIN);
+        unnamed.stand_posture(RED);
+        assert_eq!(
+            unnamed.resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted)
+        );
+    }
+
+    /// **Doc 45 unit AP.6: staying, the leash, and when `GUARD` ends** (Q-45-7 to Q-45-9).
+    /// A unit left on `HOLD` or `GUARD` is laid a hold and not the way home, is kept by the
+    /// kernel at its ramp, and stands on the cell its mind took it on. A guard off its leash
+    /// answers for itself alone. A guard that can no longer defend itself is flown as
+    /// `RETURN`: the frame says so, the order is the way home, and the ramp lets it go. A
+    /// standing order's hold on its fire is kept. The player's return ends all of it.
+    #[test]
+    fn ap6_hold_and_guard_stay_and_a_guard_that_cannot_defend_itself_goes_home() {
+        use crate::arena::absent::GUARD_LEASH_CELLS;
+        use crate::arena::perception::MindObjective;
+        use crate::arena::withdraw::WithdrawRefusal;
+        use crate::posture::Posture;
+        let mind = FiredBy::Mind { slot: Some(1) };
+        let ramp = (1_500, 3_500);
+        let here = |arena: &Arena| {
+            arena
+                .unit(RED)
+                .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+                .expect("red stands on a cell")
+        };
+
+        for posture in [Posture::Guard, Posture::Hold] {
+            let mut arena = a_guards_field();
+            assert!(arena.set_posture(RED, posture));
+            assert!(arena.set_absent(RED, true));
+            assert_eq!(objective_of(&arena), Some(MindObjective::Hold), "{posture}");
+            assert_eq!(
+                arena.unit(RED).and_then(|state| state.stand_at),
+                None,
+                "not stood before its mind's first think"
+            );
+            arena.stand_posture(RED);
+            assert_eq!(
+                arena.unit(RED).and_then(|state| state.stand_at),
+                Some(here(&arena)),
+                "{posture} is stood where its mind took it"
+            );
+            assert_eq!(
+                arena.clone().withdraw(RED, Some(ramp)).err(),
+                Some(WithdrawRefusal::Standing),
+                "{posture} is not taken home at its ramp"
+            );
+            // The player is back: nothing of it stands, and the ramp is theirs again.
+            let mut back = arena.clone();
+            assert!(back.set_absent(RED, false));
+            assert_eq!(back.unit(RED).and_then(|state| state.stand_at), None);
+            assert_eq!(objective_of(&back), None);
+            assert!(back.withdraw(RED, Some(ramp)).is_ok());
+            // Set to RETURN while its mind flies it: the way home, at once.
+            assert!(arena.set_posture(RED, Posture::Return));
+            assert_eq!(objective_of(&arena), Some(MindObjective::Withdraw));
+            assert_eq!(arena.unit(RED).and_then(|state| state.stand_at), None);
+            assert!(arena.withdraw(RED, Some(ramp)).is_ok());
+        }
+
+        // A unit left on RETURN is laid the way home and let go, as before this unit.
+        let mut home = a_guards_field();
+        assert!(home.set_absent(RED, true));
+        assert_eq!(objective_of(&home), Some(MindObjective::Withdraw));
+        home.stand_posture(RED);
+        assert_eq!(home.unit(RED).and_then(|state| state.stand_at), None);
+        assert!(home.withdraw(RED, Some(ramp)).is_ok());
+
+        // The leash: off it, a guard answers for itself alone.
+        let mut guard = a_guards_field();
+        assert!(guard.set_posture(RED, Posture::Guard));
+        assert!(guard.set_absent(RED, true));
+        guard.note_fired_on(BLUE, KIN);
+        guard.stand_posture(RED);
+        assert_eq!(guard.clone().resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
+        let (x, y) = here(&guard);
+        let mut edge = guard.clone();
+        if let Some(state) = edge.unit_mut(RED) {
+            state.stand_at = Some((x.saturating_add(GUARD_LEASH_CELLS), y));
+        }
+        assert_eq!(
+            edge.resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1),
+            "at the leash's end it still stands guard"
+        );
+        let mut strayed = guard.clone();
+        if let Some(state) = strayed.unit_mut(RED) {
+            state.stand_at = Some((x.saturating_add(GUARD_LEASH_CELLS).saturating_add(1), y));
+        }
+        assert_eq!(
+            strayed.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted),
+            "past the leash it does not answer for its player's other unit"
+        );
+        strayed.note_fired_on(BLUE, RED);
+        assert_eq!(
+            strayed.resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1),
+            "and still answers for itself"
+        );
+
+        // GUARD ends when the unit can no longer defend itself: its last round gone...
+        let mut spent = guard.clone();
+        if let Some(state) = spent.unit_mut(RED) {
+            for rounds in state.ammo.values_mut() {
+                *rounds = 0;
+            }
+        }
+        // ...or its motion disabled.
+        let mut lamed = guard.clone();
+        if let Some(state) = lamed.unit_mut(RED) {
+            state.limits.motion_disabled = true;
+        }
+        for (mut ended, why) in [(spent, "no round left"), (lamed, "motion disabled")] {
+            assert_eq!(ended.flown_posture(RED), Posture::Return, "{why}");
+            assert_eq!(
+                ended.posture(RED),
+                Posture::Guard,
+                "the player's word is kept"
+            );
+            let tempo = ended.clock.tempo();
+            assert_eq!(
+                ended.frame_for(RED, tempo).map(|frame| frame.posture),
+                Some(Posture::Return),
+                "{why}: its mind reads RETURN"
+            );
+            assert_eq!(
+                ended.absent_denies_fire(RED, BLUE),
+                Some(crate::arena::absent::Denied::FiredFirst),
+                "{why}: the widening is gone"
+            );
+            ended.stand_posture(RED);
+            assert_eq!(objective_of(&ended), Some(MindObjective::Withdraw), "{why}");
+            assert_eq!(ended.unit(RED).and_then(|state| state.stand_at), None);
+            assert_ne!(
+                ended.withdraw(RED, Some(ramp)).err(),
+                Some(WithdrawRefusal::Standing),
+                "{why}: the ramp does not keep it"
+            );
+        }
+        // A unit its player flies reads the word they set, whatever its state.
+        let mut flown = a_guards_field();
+        assert!(flown.set_posture(RED, Posture::Guard));
+        if let Some(state) = flown.unit_mut(RED) {
+            state.limits.motion_disabled = true;
+        }
+        assert_eq!(flown.flown_posture(RED), Posture::Guard);
+
+        // A standing order's hold on its fire is kept through the posture's order, and holds
+        // for a guard as for any unit.
+        let mut held = holding_fire(a_guards_field());
+        assert!(held.set_posture(RED, Posture::Guard));
+        assert!(held.set_absent(RED, true));
+        held.note_fired_on(BLUE, RED);
+        held.note_fired_on(BLUE, KIN);
+        held.stand_posture(RED);
+        assert!(
+            held.minds
+                .get(&RED)
+                .and_then(|row| row.order.as_ref())
+                .is_some_and(|order| order.objective == MindObjective::Hold && order.hold_fire),
+            "{:?}",
+            objective_of(&held)
+        );
+        assert_eq!(
+            held.resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted)
+        );
+    }
+
+    /// **Doc 45 unit AP.6: nothing an attacker reads changes** (Q-45-16). Blue holds red on
+    /// its plot. Its whole frame, and its mind's whole view, are the same bytes whether red is
+    /// flown by its pilot or by its mind for an absent one, on any posture, stood or not,
+    /// named for a player or not.
+    #[test]
+    fn ap6_what_another_unit_reads_of_it_is_byte_for_byte_what_it_was() {
+        use crate::posture::Posture;
+        let mut base = a_guards_field();
+        let id = crate::arena::rng::draw_contact_id(base.seed, BLUE, RED);
+        base.contacts.insert(
+            BLUE,
+            id,
+            ShadowContact::sighted(
+                RED,
+                Classification::Classified {
+                    party: PartyId::RED,
+                },
+                0,
+                base.unit(RED).map(SeenPose::of).unwrap_or_default(),
+            ),
+        );
+        if let Some(state) = base.unit_mut(BLUE) {
+            state.controller = Controller::Mind;
+        }
+        base.adopt_mind(BLUE, None);
+        let read = |arena: &Arena| {
+            let tempo = arena.clock.tempo();
+            let frame = arena.frame_for(BLUE, tempo).expect("blue's frame");
+            assert!(
+                frame.contacts.iter().any(|row| row.id == id),
+                "blue plots red"
+            );
+            let view = arena.clone().mind_view(BLUE).expect("blue's view");
+            format!("{frame:?}\n{view:?}")
+        };
+        let before = read(&base);
+        for posture in Posture::ALL {
+            let mut away = base.clone();
+            assert!(away.set_posture(RED, posture));
+            assert!(away.set_absent(RED, true));
+            away.note_fired_on(BLUE, KIN);
+            away.stand_posture(RED);
+            assert_eq!(
+                away.unit(RED).is_some_and(|state| state.stand_at.is_some()),
+                !posture.is_return(),
+                "{posture}"
+            );
+            assert_eq!(
+                read(&away),
+                before,
+                "{posture}: what blue reads of red moved with red's absence"
+            );
+            // And for a unit its pilot still flies, whatever word it holds.
+            let mut present = base.clone();
+            assert!(present.set_posture(RED, posture));
+            assert!(present.set_player(RED, None));
+            assert_eq!(read(&present), before, "{posture}");
+        }
+    }
+
+    /// **Doc 45 unit AP.6: a mind told to stay stops where it is and does not break for
+    /// home when it is hurt** (Q-45-7). At the first think of a posture that stays the kernel
+    /// sets a Standard Doctrine memory that was driving home back to its patrol and spends
+    /// the doctrine's one retreat, once, and leaves any other memory alone.
+    #[test]
+    fn ap6_a_mind_driving_home_is_stopped_when_its_posture_stays() {
+        use crate::arena::doctrine::MachineState;
+        use crate::arena::mind::{doctrine_state_of, seed_stay, withdraw_seed};
+        use crate::posture::Posture;
+        assert_eq!(doctrine_state_of(&withdraw_seed()), MachineState::Withdraw);
+        assert_eq!(
+            doctrine_state_of(&seed_stay(&withdraw_seed())),
+            MachineState::Patrol
+        );
+        let rallied = |memory: &[u8]| {
+            crate::arena::stock_mind::StockMemory::from(&crate::arena::mind::decode_memory(memory))
+                .rallied
+        };
+        assert!(!rallied(&withdraw_seed()));
+        assert!(
+            rallied(&seed_stay(&withdraw_seed())) && rallied(&seed_stay(&[])),
+            "the doctrine's one retreat is spent: a hurt hull told to stay does not break off"
+        );
+        assert_eq!(
+            doctrine_state_of(&seed_stay(&[])),
+            MachineState::Startup,
+            "a fresh memory still starts up"
+        );
+        let driving_home = |doctrine: bool| {
+            let mut arena = a_guards_field();
+            if let Some(state) = arena.unit_mut(RED) {
+                state.seal.doctrine = doctrine;
+            }
+            assert!(arena.set_absent(RED, true));
+            let row = arena.minds.get_mut(&RED).expect("red's mind row");
+            row.memory = withdraw_seed();
+            row.doctrine_state = MachineState::Withdraw;
+            // Its player's word changes while it drives home.
+            assert!(arena.set_posture(RED, Posture::Hold));
+            arena.stand_posture(RED);
+            arena
+        };
+        let stopped = driving_home(true);
+        assert_eq!(
+            stopped.minds.get(&RED).map(|row| row.doctrine_state),
+            Some(MachineState::Patrol)
+        );
+        assert_eq!(
+            stopped.minds.get(&RED).map(|row| rallied(&row.memory)),
+            Some(true)
+        );
+        // A mind handed a unit that was never going home is told to stay too.
+        let mut fresh = a_guards_field();
+        assert!(fresh.set_posture(RED, Posture::Guard));
+        assert!(fresh.set_absent(RED, true));
+        fresh.stand_posture(RED);
+        assert_eq!(
+            fresh.minds.get(&RED).map(|row| rallied(&row.memory)),
+            Some(true)
+        );
+        // Once: a withdrawal the doctrine takes up by itself afterwards is its own.
+        let mut again = stopped;
+        if let Some(row) = again.minds.get_mut(&RED) {
+            row.memory = withdraw_seed();
+            row.doctrine_state = MachineState::Withdraw;
+        }
+        again.stand_posture(RED);
+        assert_eq!(
+            again.minds.get(&RED).map(|row| row.doctrine_state),
+            Some(MachineState::Withdraw)
+        );
+        // A mind that is not Standard Doctrine keeps its own memory.
+        let sealed = driving_home(false);
+        assert_eq!(
+            sealed.minds.get(&RED).map(|row| row.memory.clone()),
+            Some(withdraw_seed())
         );
     }
 

@@ -69,6 +69,8 @@ mod field_ap3;
 mod field_ap4;
 #[path = "domain_field/field_ap5.rs"]
 mod field_ap5;
+#[path = "domain_field/field_ap6.rs"]
+mod field_ap6;
 #[path = "domain_field/field_ap8.rs"]
 mod field_ap8;
 #[path = "domain_field/field_boarding.rs"]

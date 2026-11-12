@@ -224,6 +224,17 @@ pub(crate) fn stand_up_with(
     rig: &mut Rig,
     prospectors: usize,
 ) -> (ObjId, ObjId, ObjId, ObjId, Vec<ObjId>) {
+    stand_up_out(rig, prospectors, None)
+}
+
+/// [`stand_up_with`], the lessee's first prospector launched and standing at `out` before he
+/// boards the escort (doc 45 unit AP.6: a player in one rig's cab whose other rig is out on
+/// the same ground, nobody in its cab).
+pub(crate) fn stand_up_out(
+    rig: &mut Rig,
+    prospectors: usize,
+    out: Option<(i64, i64)>,
+) -> (ObjId, ObjId, ObjId, ObjId, Vec<ObjId>) {
     // A miner's prospector works the ground the escort is there for.
     let (miner, _, miner_tvs) = on_pad_as(rig, "Miner", 2, "Tally Moth", 1);
     let worker = miner_tvs[0];
@@ -246,6 +257,16 @@ pub(crate) fn stand_up_with(
     );
     let hull = escort_rig(rig, escort);
     assert_eq!(tvs[0], hull);
+    // Doc 45 unit AP.6: his prospector goes down the ramp first and is stood off it, launched
+    // by his own command from aboard the carrier.
+    if let Some(cell) = out {
+        let kin = tvs[1];
+        let launch = act_go(rig, escort, "+tv/2 launch go");
+        assert!(!launch.is_empty(), "{launch}");
+        let _ = finish(rig, kin, escort);
+        assert!(on_ground_at(&rig.tw, kin, RAMP));
+        to_cell(rig, kin, cell);
+    }
     // (2) Aboard it in the bay, down the ramp, out beside the rig.
     board_escort(rig, escort, hull);
     launched(rig, escort, hull);

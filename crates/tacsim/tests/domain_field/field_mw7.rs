@@ -18,8 +18,10 @@
 //!    the unit over at once. With a party marked Hostile in range and weapons free it fires on
 //!    nobody, and once the raider's fire arrives on it, it answers the raider and nobody else.
 //!    Its party has no carrier on the site, so it holds where it stands (Q-44-42).
-//! 3. [`mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack`]: the same, the seat left at
-//!    weapons hold: under the raider's fire it answers nobody.
+//! 3. [`ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind`]: the same, the seat left at
+//!    `FIRE HOLD`. Until doc 45 unit AP.6 the hold bound the mind and the unit answered nobody
+//!    (this story was `mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack`); AP.6 rules
+//!    the seat's switch the seat's own, and the unit answers the raider's fire.
 //! 4. [`mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat`]: the link lost, the
 //!    session ended, ten minutes gone. The pilot connects, is seated again, and their first
 //!    command is what the hull does.
@@ -508,11 +510,13 @@ async fn mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it() {
     );
 }
 
-/// **Story 3** (this module's head): a hold the pilot left holds through an attack.
+/// **Story 3** (this module's head): the seat's `FIRE HOLD` is the seat's, and does not bind
+/// the mind that flies for its absent pilot (doc 45 unit AP.6; Q-45-5, Q-45-7 to Q-45-9). The
+/// unit is on `RETURN`, the default, and still answers the unit that fires on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack() {
+async fn ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind() {
     let mut yard = yard().await;
-    let (pilot, ward, raider) = (yard.pilot, yard.ward, yard.raider);
+    let (pilot, ward, raider, escort) = (yard.pilot, yard.ward, yard.raider, yard.escort);
     // Every IC seat opens at weapons hold (Q-CF-41), and this pilot leaves it there.
     assert!(
         frame(&yard.rig, pilot).is_some_and(|frame| !frame.weapons_free),
@@ -520,22 +524,39 @@ async fn mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack() {
     );
     quit(&mut yard.rig, pilot);
     assert!(minded(yard.rig.tw.world(), ward));
-    // The raider's fire arrives on it, round after round.
-    let struck = yard
-        .raid(120, |_, lines| arrived(lines, raider, ward) >= 3)
-        .await;
-    assert!(
-        struck,
-        "the raider's fire arrives on the ward: {}",
-        yard.exchange()
-    );
-    let _ = yard.wait(10, |_, _| false).await;
-    yard.cease();
+    // With the raider marked Hostile eight cells off, nothing: the hold is not what holds it.
+    let _ = yard.wait(12, |_, _| false).await;
     assert_eq!(
         fired(&yard.lines, ward),
         0,
-        "the hold its pilot left holds through the attack: {}",
+        "the mind opens fire on nobody: {}",
         yard.exchange()
+    );
+    // The raider's fire arrives on it, and it answers the raider.
+    let answered = yard
+        .raid(120, |_, lines| fired_at(lines, ward, raider) > 0)
+        .await;
+    yard.cease();
+    assert!(
+        answered,
+        "a seat left at FIRE HOLD does not keep its mind from answering: {}",
+        yard.exchange()
+    );
+    let first_arrival = yard.lines.iter().position(|line| {
+        matches!(&line.kind, EventKind::Impact { unit, target, .. } if *unit == raider && *target == ward)
+    });
+    let first_answer = yard
+        .lines
+        .iter()
+        .position(|line| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == ward));
+    assert!(
+        first_arrival.is_some() && first_arrival < first_answer,
+        "its first round follows the raider's first arrival: {first_arrival:?} then {first_answer:?}"
+    );
+    assert_eq!(
+        fired_at(&yard.lines, ward, escort),
+        0,
+        "and it answers nobody else"
     );
 }
 

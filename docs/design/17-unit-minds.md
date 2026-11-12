@@ -237,8 +237,10 @@ mind alike. The word is the unit's own: it is kept on the unit's object, not in 
 it (`crates/tacsim/src/posture/`), so a player's hull flown by the backup seat in space reads the same
 word off the same record as a hull on the ground (`space/backup.rs`; the space view takes it from
 `Situation::postures`, and a hull the host lays no row for, every NPC actor's today, reads `return`).
-The view carries the word and the arena acts on none of it; what each host's mind does with `guard`
-and `hold` is doc 45's (units AP.6, AP.7 and AP.9).
+The view carries the word. In a field the arena acts on it for a unit a mind flies for an absent
+player (doc 45 unit AP.6; `crates/tacsim/src/arena/absent.rs`): it decides the standing order the
+mind is laid and what the absent player's rule lets the unit answer, and a `guard` the unit can no
+longer defend reads `return`. A rig on a plan and a carrier are doc 45's AP.7, and space is AP.9.
 
 **Notices.** `pending_notices` is cleared every pulse and must be empty between pulses, so a think
 that spans pulses cannot read it. `MindState.notices` is a bounded buffer (16 entries) filled by the
