@@ -407,6 +407,26 @@ parties, each passing on Linux (conclav.dev, six at once):
   with the mind holding the unit. The boot seats nobody; the resumed mind fires on nobody
   until the raider's fire arrives, then answers; the pilot connects and is seated.
 
+**Verified, and how** (Linux, conclav.dev, at `654031bf`). The six stories and the two arena
+tests pass. The whole `domain_field` binary passes (253 run), with one older story changed:
+`field_crash::cf_review_an_extraction_out_of_a_running_field_releases_the_seat` asserted that
+an incapacitated pilot keeps the seat until extraction, which Q-44-43 ends. `domain_arena`
+(1,125) and the tacsim library's tests (2,222) pass; `cargo doc -p tacsim` is clean under
+`-D warnings`; clippy is clean on the library. Five mutations in a second throwaway clone,
+each run against the stories and the arena tests:
+
+| Mutation | What failed |
+|---|---|
+| The field takes no part in the seat's hooks (main's behaviour: a drop is a plain `Released`) | all six stories |
+| The gate off and the view not narrowed | the four fire stories (the unit fired first, 11 to 38 rounds) and both arena tests |
+| The gate off, the view narrowed | the sealed-script arena test only: in a field the narrowed view alone keeps the stock mind from firing first |
+| The view not narrowed, the gate on | story 1 (the unit stood where it was, facing the marked party, and never reached the ramp) and the arena test's view assertion; the other fire stories passed on the gate alone |
+| A returning pilot is never taken back | the reconnect, restart and knocked-out stories |
+
+So the stock mind is held by either half, a sealed script only by the gate, and the unit gets
+home only with the view narrowed. The stories cannot be compiled on main (they read
+`tacsim::field::absent`), so the first row stands in for "fails on main today".
+
 **What the survey had wrong, or left out.**
 
 - **A `Released` already sends a unit home.** §4 C says the released unit "never goes home".
