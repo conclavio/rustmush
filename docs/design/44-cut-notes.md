@@ -850,7 +850,27 @@ file it writes, and the M8 test world composes one too.
   the back room as a vendor). The stories write no module state by hand; the fiat budget is
   unchanged.
 
-RESULTS_MW23
+**Results (2026-11-12).**
+
+- **Local (Windows):** the five `mush-economy` unit tests pass; `cargo check -p tacsim --tests`,
+  clippy on `mush-economy` and the rustdoc check on `mush-economy` and `tacsim` are clean.
+- **conclav.dev (Linux, a throwaway clone of main `330a8b249` with this branch applied):** the
+  three `m8_end_user` stories pass (the acceptance in 16 s). `tacsim`'s 46 in-source tests of
+  the hardware flow and the launch pass, among them
+  `shipped_class_three_requires_actual_entitlement_and_never_charges_on_refusal` and the
+  heirloom and grey-die tests, which run the shared rule. `cargo fmt --check`, clippy with
+  `-D warnings` over all targets of `mush-economy` and `tacsim`, and the M7 memory-size lints
+  are clean. `cargo nextest run -p mush-contract-tests`: 192 passed, 8 skipped, with no budget
+  or census re-blessed; the only register that moved is `legacy-handlers.toml`'s new stanza.
+- **Mutation checks, on the stories** (a second clone): with the integration no longer asking
+  for the entitlement, the acceptance and the heirloom story fail at "refused"; with a
+  registered holder no longer refused, the acceptance fails at "once"; with the registration
+  issuing no unit, both fail. The unmutated tree passes in the same clone.
+- **CI, PR #553:** green on the first push (`0c8e518cd`): 28 checks passed, the 15
+  dispatch-only jobs skipped.
+- **The three dispatch-only claim stories PR #546 repaired**, run on conclav.dev with
+  `--run-ignored only` on this branch, since they share the launch's composition:
+  still running when this was written; the result is recorded in the next commit to this note.
 
 **What the survey and the brief had wrong.**
 
@@ -879,6 +899,9 @@ RESULTS_MW23
   requesting character.
 - **The fee is not in the `launch_content` definition**, so no definition or digest of an
   existing world moves and a kept store boots as before.
+- **The registration is not chronicled.** It is one private journal entry. The prospecting
+  licence's fee is a Public contract the canon bridge records; this is not, because a
+  contract's settlement cannot carry the entitlement's unit in the same transaction.
 - **A principal the Registry has barred** (`@registry/revoke principal=`, 90 IC days) can
   still register. The bar is a Roll row and the verb is a legacy-lane command with no read of
   it.
@@ -928,6 +951,8 @@ RESULTS_MW23
   harness, as MW.0's do.
 - `+enduser` on an `Initialize` boot. The verb tests the deployment's mode; the story covers
   a world with no launch, because an initialised world cannot be booted back to `Initialize`.
+- A format-1 launch. The route reads only the deployment's mode, Registry account and
+  issuer, which both formats have; the stories run on format 2.
 - A registration refused by the post after the instrument or an account was written (the
   pinned-queue path). The checks before the first write make it unreachable in a test
   without a fault store.
