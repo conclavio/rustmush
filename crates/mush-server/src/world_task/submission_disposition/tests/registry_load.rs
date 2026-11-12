@@ -336,22 +336,41 @@ fn leases(commits: &[LeaseCommit], job: CommitToken) -> Leases {
 struct Mail {
     origin: Instant,
     lines: BTreeMap<u32, Vec<(Duration, String)>>,
+    /// Every line each watched character read, counted by its text.
+    heard: BTreeMap<u32, BTreeMap<String, u64>>,
 }
 impl Mail {
     fn new(origin: Instant, watched: &[ObjId]) -> Self {
         Self {
             origin,
             lines: watched.iter().map(|id| (id.0, Vec::new())).collect(),
+            heard: watched.iter().map(|id| (id.0, BTreeMap::new())).collect(),
         }
     }
     fn push(&mut self, who: u64, line: String) {
         let at = self.origin.elapsed();
-        if let Ok(who) = u32::try_from(who)
-            && let Some(kept) = self.lines.get_mut(&who)
+        let Ok(who) = u32::try_from(who) else { return };
+        if let Some(counts) = self.heard.get_mut(&who)
+            && (counts.len() < 256 || counts.contains_key(&line))
+        {
+            *counts.entry(line.clone()).or_insert(0) += 1;
+        }
+        if let Some(kept) = self.lines.get_mut(&who)
             && kept.len() < LINES_KEPT
         {
             kept.push((at, line));
         }
+    }
+    /// `who`'s most frequent lines, most frequent first.
+    fn most_heard(&self, who: ObjId, top: usize) -> Vec<(u64, String)> {
+        let mut counts: Vec<(u64, String)> = self
+            .heard
+            .get(&who.0)
+            .map(|c| c.iter().map(|(line, n)| (*n, line.clone())).collect())
+            .unwrap_or_default();
+        counts.sort_by_key(|c| std::cmp::Reverse(c.0));
+        counts.truncate(top);
+        counts
     }
     /// Routes one drain: `actor`'s own lines, then every other line by its
     /// target.
@@ -810,6 +829,17 @@ async fn measure(
         .map(|(name, secs)| format!("{name}={secs:.1}"))
         .collect();
     eprintln!("C4_LOAD_THREADS side={side} cpu_s {}", by_name.join(" "));
+    // What each author read over the whole story, counted: the rating's own
+    // lines and anything the Registry's continuations sent the author.
+    for (index, a) in jobs.iter().enumerate() {
+        eprintln!(
+            "C4_LOAD_HEARD side={side} rating={index} lines={} most={:?}",
+            mail.heard
+                .get(&a.author.0)
+                .map_or(0, |c| c.values().sum::<u64>()),
+            mail.most_heard(a.author, 6)
+        );
+    }
     // The queue: what the second author was told, and when its leases ran.
     if let [first, second] = jobs.as_slice()
         && let (Some(a), Some(b)) = (first.job, second.job)
