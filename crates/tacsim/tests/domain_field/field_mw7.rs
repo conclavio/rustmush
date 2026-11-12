@@ -341,7 +341,16 @@ async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_firs
         parties.len() >= 3,
         "the miner, the escort and the intruder are three parties: {parties:?}"
     );
-    // Weapons free, and the intruder held Hostile in the escort's own sight.
+    // Weapons free, and the intruder's party marked Hostile, in the escort's own sight.
+    let letter = live
+        .party_of(hostile)
+        .expect("the intruder's party")
+        .letter();
+    let _ = run(
+        &mut rig.tw,
+        escort,
+        &format!("+field/mark {letter}=hostile"),
+    );
     let free = run(&mut rig.tw, escort, "FIRE FREE");
     assert!(
         until(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
@@ -565,6 +574,17 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
         pilot,
         &format!("+focus #{}/cockpit", ward.0),
     );
+    // The hull is cold: the five and ten minutes were the world's, and the arena has had a few
+    // seconds of its own in which the mind, holding where it stood, started nothing.
+    let startup = run(&mut yard.rig.tw, pilot, "STARTUP");
+    assert!(
+        yard.wait(60, |rig, _| frame(rig, pilot).is_some_and(|frame| frame
+            .power
+            == tacsim::arena::state::Power::Online))
+            .await,
+        "the pilot's STARTUP is taken: {startup}; {:?}",
+        frame(&yard.rig, pilot).map(|frame| frame.power)
+    );
     let drive = run(&mut yard.rig.tw, pilot, "DRIVE 150,110");
     let driving = yard
         .wait(60, |rig, _| {
@@ -700,6 +720,12 @@ async fn mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind() {
         rx,
         lines,
     };
+    // Focus never survives a boot: the raider's player takes the cockpit back.
+    let _ = run(
+        &mut yard.rig.tw,
+        stranger,
+        &format!("+focus #{}/cockpit", raider.0),
+    );
     // Still the absent player's rule: nothing until the raider's fire arrives, then an answer.
     let _ = yard.wait(12, |_, _| false).await;
     assert_eq!(
