@@ -28,6 +28,7 @@ fn think(v, c) {
         hold();
         this.target = 0;
         this.closing = false;
+        this.heard = true;
         trace("INTERDICTOR_HOLD_STATION");
         return;
     }
@@ -61,10 +62,16 @@ fn think(v, c) {
         trace("INTERDICTOR_HAIL_HEAVE_TO");
         return;
     }
+    if !known {
+        // A hull she takes without hailing it, because it is radiating for a fight, owes
+        // her no answer: a wait left over from another hull's hail is dropped.
+        this.heard = true;
+    }
     if !combat && "heard" in this && this.heard == false {
         // The think after her hail: the hull heard it on this snapshot and no sooner, and
         // what it does about it shows on the next.
         hold();
+        this.closing = false;
         this.heard = true;
         trace("INTERDICTOR_AWAIT_ANSWER");
         return;

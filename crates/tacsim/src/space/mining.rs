@@ -1455,6 +1455,13 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         .unwrap_or_default();
     // Doc 44 unit MW.11: the drones think on the server's pool, through the store's host.
     let think_host = super::thinks::host_of(ctx.w);
+    if let Some(host) = think_host.as_deref() {
+        // A hull whose cluster session has ended leaves no drone's think behind.
+        host.keep_hulls(|owner| match owner {
+            super::thinks::Owner::Cluster(hull) => hulls.contains(&hull),
+            super::thinks::Owner::Bubble(_) | super::thinks::Owner::Adrift(_) => true,
+        });
+    }
 
     for hull in hulls {
         let mut in_tick_committed: BTreeMap<(VaultId, OreFamily), u64> = BTreeMap::new();

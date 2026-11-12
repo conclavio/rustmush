@@ -7058,8 +7058,8 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
 ///    leg 0, promoting a ship on `ceres_stickney` into the 3-party Kirkwood Customs Picket.
 /// 4. Picket NPC ships (`corvette_hull`, `raider_hull`) carry verified `MindSeal`s (`SealEngine::Scripted`)
 ///    whose `source_sha256` resolves through `TacsimStore::mind_source` (`kirkwood_picket.rhai`,
-///    `belt_raider.rhai`), and `step_kirkwood_picket` derives stage transitions from Rhai memory
-///    rather than re-deciding stage in Rust before calling Rhai.
+///    `belt_raider.rhai`), and the picket's step settles its stops on the bubble's state and
+///    lands what each mind decided (doc 44 units MW.9 and MW.11).
 /// 5. An interdicted non-Kirkwood leg (`kirkwood_picket: false`) does NOT open the Kirkwood Customs Picket
 ///    even when flown by a `Dray-P` (`active.picket.is_none()`, `active.bubble.ships.len() == 2`), and its
 ///    `interdictor_hull` carries a verified `MindSeal` for `interdictor_patrol.rhai`.
@@ -10553,8 +10553,8 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
 ///    reads the four authored clusters from `campaign-seed` (`OrbitalClusterId` and `LANE_CLUSTER_ROCKS`
 ///    are deleted).
 /// 2. `picket_cast_book()` loads `corvette`, `raider`, and `interdictor` from `content/space/picket_cast.json`,
-///    and `run_sealed_mind_on_pool` installs sealed runners from the unit's `MindSeal` digest via
-///    `install_sealed_runners` and executes on `MindPool::shared()` (`CACHED_RHAI_RUNNERS` is deleted).
+///    and each think runs on the runner kept for its seal's digest, on the server's pool
+///    (`tacsim::space::thinks`, doc 44 unit MW.11; `CACHED_RHAI_RUNNERS` is deleted).
 /// 3. Launching collector drones via `+mine/drones` stages valid `RigRecord`s into `PortHandles::families.excursions`
 ///    (`tacsim.excursion`) with `RigRecord::excursion` populated (`Excursion { id, operator, hull, slot, site }`).
 #[test]

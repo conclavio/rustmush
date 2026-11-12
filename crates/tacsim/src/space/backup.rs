@@ -297,6 +297,15 @@ pub(crate) fn step_backup_minds(ctx: &mut Ctx<'_>) {
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(host) = super::thinks::host_of(ctx.w) {
+        // A hull whose record is gone (her crew is back, she is lost) leaves no think behind.
+        let flown: std::collections::BTreeSet<ObjId> =
+            held.iter().map(|state| state.hull).collect();
+        host.keep_hulls(|owner| match owner {
+            Owner::Adrift(hull) => flown.contains(&hull),
+            Owner::Bubble(_) | Owner::Cluster(_) => true,
+        });
+    }
     for mut state in held {
         let hull = state.hull;
         let here = whereabouts(ctx.w, hull);

@@ -4296,9 +4296,13 @@ fn step_bubble(
             ic_now_s,
         },
     ));
+    if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
+        step_derelict_approach_in_bubble(active);
+    }
     // The host's rules are settled on the step just taken, and the minds' next thinks
-    // are collected on that snapshot and handed to the pool. Their intents land at the
-    // head of this bubble's next step.
+    // are collected on the state it leaves and handed to the pool. Nothing moves the
+    // bubble after this but a crew's command, so a bubble read back after a restart
+    // collects on the same state. Their intents land at the head of its next step.
     let owed = ThinksOwed {
         step: active.steps.saturating_add(1),
         step_ms: dt_wall_ms,
@@ -4315,9 +4319,6 @@ fn step_bubble(
                 out.ran_picket_hulls.push(chull);
             }
         }
-    }
-    if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
-        step_derelict_approach_in_bubble(active);
     }
     active.push_bounded_snapshot();
     active.compact_tape_if_needed();

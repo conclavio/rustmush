@@ -282,7 +282,7 @@ by_hand = "9c625bdf"
 [[test]]
 id = "tacsim/src/space/think_cost.rs::mw11_what_a_space_think_costs_the_world_thread"
 tier = "by-hand"
-by_hand = "00000000"
+by_hand = "556a20a2"
 
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).

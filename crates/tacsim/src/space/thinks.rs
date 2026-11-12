@@ -159,13 +159,26 @@ pub struct ThinkStats {
     pub runners_built: u64,
 }
 
-/// A batch on its way, or already answered on the submitting thread.
+/// An owner's thinks on their way, or already answered on the submitting thread. Each
+/// actor's ask is a pool batch of its own, in the order the asks were collected: the pool
+/// loses a whole batch when a runner panics, and one actor's runner must not take the
+/// other minds of its bubble with it.
 #[derive(Debug)]
 enum Flying {
-    /// On the pool.
-    Pooled(BatchHandle),
-    /// A host with no pool ran it where it was submitted.
-    Answered(Vec<ThinkAnswer>),
+    /// On the pool, a batch for each ask.
+    Pooled(Vec<BatchHandle>),
+    /// A host with no pool ran them where they were submitted, ask by ask.
+    Answered(Vec<Vec<ThinkAnswer>>),
+}
+
+impl Flying {
+    /// Whether every ask has answered.
+    fn is_done(&self) -> bool {
+        match self {
+            Flying::Pooled(handles) => handles.iter().all(BatchHandle::is_done),
+            Flying::Answered(_) => true,
+        }
+    }
 }
 
 /// What is kept of one [`Ask`] while its jobs are out.
@@ -175,8 +188,6 @@ struct Asked {
     unit: ObjId,
     think_seq: u64,
     contacts: BTreeMap<ContactId, String>,
-    /// How many jobs of the batch are this actor's.
-    sources: usize,
     /// Struck ([`ThinkHost::forget`]): its answer is not to land.
     struck: bool,
 }
@@ -363,10 +374,7 @@ impl ThinkHost {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&owner)
             .filter(|flight| flight.mark == mark)
-            .is_some_and(|flight| match &flight.flying {
-                Flying::Pooled(handle) => handle.is_done(),
-                Flying::Answered(_) => true,
-            })
+            .is_some_and(|flight| flight.flying.is_done())
     }
 
     /// The runner kept for `digest`, if this host has thought with it.
@@ -424,8 +432,9 @@ impl ThinkHost {
     /// **Hand `asks` to the pool as `owner`'s one batch** under `mark`, in place of any it
     /// had. Answers whether a batch is now in flight: `false` when nothing was asked.
     pub fn submit(&self, owner: Owner, mark: Mark, asks: Vec<Ask>) -> bool {
-        let mut jobs = Vec::new();
+        let mut jobs: Vec<Vec<CollectedThink>> = Vec::with_capacity(asks.len());
         let mut asked = Vec::with_capacity(asks.len());
+        let mut thinks = 0_usize;
         for ask in asks {
             if ask.jobs.is_empty() {
                 continue;
@@ -435,10 +444,10 @@ impl ThinkHost {
                 unit: ask.unit,
                 think_seq: ask.think_seq,
                 contacts: ask.contacts,
-                sources: ask.jobs.len(),
                 struck: false,
             });
-            jobs.extend(ask.jobs);
+            thinks = thinks.saturating_add(ask.jobs.len());
+            jobs.push(ask.jobs);
         }
         let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
         if jobs.is_empty() {
@@ -446,13 +455,15 @@ impl ThinkHost {
             return false;
         }
         self.batches.fetch_add(1, Ordering::Relaxed);
-        self.thinks.fetch_add(
-            u64::try_from(jobs.len()).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
+        self.thinks
+            .fetch_add(u64::try_from(thinks).unwrap_or(u64::MAX), Ordering::Relaxed);
         let flying = match &self.pool {
-            Some(pool) => Flying::Pooled(pool.submit(jobs)),
-            None => Flying::Answered(crate::arena::mind::run_batch_inline(&jobs)),
+            Some(pool) => Flying::Pooled(jobs.into_iter().map(|ask| pool.submit(ask)).collect()),
+            None => Flying::Answered(
+                jobs.iter()
+                    .map(|ask| crate::arena::mind::run_batch_inline(ask))
+                    .collect(),
+            ),
         };
         flights.insert(
             owner,
@@ -503,10 +514,7 @@ impl ThinkHost {
                 flights.remove(&owner);
                 return Owed::Nothing;
             }
-            let done = match &flight.flying {
-                Flying::Pooled(handle) => handle.is_done(),
-                Flying::Answered(_) => true,
-            };
+            let done = flight.flying.is_done();
             if !done && self.holds_late_steps() {
                 flight.held.get_or_insert(due);
                 flight.held_ticks = flight.held_ticks.saturating_add(1);
@@ -529,27 +537,31 @@ impl ThinkHost {
             }
         };
         let due = flight.held.unwrap_or(due);
-        // Past this point the batch is done, or this host is a rig's and waits for it.
-        let answered = match flight.flying {
-            Flying::Pooled(handle) => handle.wait(),
-            Flying::Answered(answers) => Ok(answers),
-        };
-        let mut answered = match answered {
-            Ok(answers) => answers.into_iter(),
-            Err(failed) => {
-                tracing::error!(%failed, ?owner, "tacsim: a space think batch was lost; its actors do nothing this step");
-                Vec::new().into_iter()
-            }
+        // Past this point every ask is done, or this host is a rig's and waits for them.
+        let answered: Vec<Vec<ThinkAnswer>> = match flight.flying {
+            Flying::Pooled(handles) => handles
+                .into_iter()
+                .map(|handle| match handle.wait() {
+                    Ok(answers) => answers,
+                    Err(failed) => {
+                        tracing::error!(
+                            %failed,
+                            ?owner,
+                            "tacsim: a space mind's runner panicked; it does nothing this step"
+                        );
+                        Vec::new()
+                    }
+                })
+                .collect(),
+            Flying::Answered(answers) => answers,
         };
         let answers = flight
             .asked
             .into_iter()
-            .map(|asked| {
+            .zip(answered)
+            .map(|(asked, sources)| {
                 let mut result = None;
-                for _ in 0..asked.sources {
-                    let Some(answer) = answered.next() else {
-                        break;
-                    };
+                for answer in sources {
                     if result.is_some() || asked.struck {
                         continue;
                     }
@@ -600,6 +612,19 @@ impl ThinkHost {
                 }
             }
         }
+    }
+
+    /// Drop the batch of every hull adrift, and of every hull's drones, that `keep` does
+    /// not answer for: a hull that is no longer the seat's to fly outside a bubble, or
+    /// whose cluster session has ended, leaves nothing behind.
+    pub fn keep_hulls(&self, keep: impl Fn(Owner) -> bool) {
+        self.flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|owner, _| match owner {
+                Owner::Bubble(_) => true,
+                Owner::Adrift(_) | Owner::Cluster(_) => keep(*owner),
+            });
     }
 
     /// Drop the batch of every bubble that is not in `live`.
