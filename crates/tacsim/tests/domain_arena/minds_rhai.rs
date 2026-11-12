@@ -3593,34 +3593,44 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// and the 369098751 bitmask. Read on Linux (conclav.dev); Windows is ci.yml's
 /// same step. Were: `12_465_543_414_996_090_189` / `20f549f1…` / `6349d78a…`,
 /// `6_776_313_200_826_027_730` / `a019a970…` / `1c1fd95e…`.
+///
+/// **Doc 44 unit MW.9 re-pins all four rows.** The mind ABI moved to API 8 (four space
+/// kernels) and the Standard header with it; a seal folds its ABI and its source, so every
+/// hash moved, the float probe's with them. No fight moved: the four stopping times
+/// (180,250, 177,500, 170,000 and 900,000), the probe's 3,600 thinks and the 369098751
+/// bitmask are as they were. Read on Linux (conclav.dev); Windows is ci.yml's same step.
+/// Were: `15_586_863_211_666_066_749` / `cde0021e…` / `05d2d1f5…`,
+/// `4_191_525_885_588_509_762` / `aee4969f…` / `25d919aa…`,
+/// `4_593_528_509_461_668_393` / `469d2a99…` / `6ff3a5a8…`,
+/// `10_559_587_572_615_102_858` / `37d56f2b…` / `4ea397ba…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         180250,
-        15586863211666066749,
-        "cde0021ec66db3e7c863fc7e5d2a1f011f35b8a8a25aa45c13280d86c6eb4214",
-        "05d2d1f5b663ec7b18c20f19ab86017dfc70070961429395127131c2b4cc37ab",
+        11840588791329419110,
+        "c4c42a86420617e4a0195496c69fa9ccd7f5570692fe79390adc7f5bd7cfefc0",
+        "49ccded176c4c20c3a996a13c9358ae9bc28b61668dade188ee3960e637cc628",
     ),
     (
         2351,
         177500,
-        4191525885588509762,
-        "aee4969fc9b274cfd3a78c070205a6ca4a5c44d97c5ccff5dcbd39ece6384422",
-        "25d919aa526b7630e33c4f9b782187649b7073fcd6c217a07a74d76b5bce39e8",
+        14806315734231040912,
+        "abbc70cac334c1856c3caec5e3e1ea072a3ff9635e0048d075cab10bb8b7fd29",
+        "d333c189793efae509c26ba04ccc166dfbfe59c99b292bd03b2162dfcb115756",
     ),
     (
         2352,
         170000,
-        4593528509461668393,
-        "469d2a995fd8e2cb0e6c3e3975720657a137f602220cff94be798d32c2becfd1",
-        "6ff3a5a8c05bd73c0de4f4172fd5e34e3e9228e726cf2a4791268f0b3ad05475",
+        18435737973288515964,
+        "8f1f0f701e1ae498721da4973b9bf5c858c0a7de996068fb2b2d18e0e30f25ab",
+        "b3ed48101b465aa15b6e0f25551442452bd04d40b41e9cb3db61c985426cfd87",
     ),
     (
         2350,
         900000,
-        10559587572615102858,
-        "37d56f2b967eee2d77d39a2be5588cb1bbaf5e526a6a5f38f81cb9e38ad8918e",
-        "4ea397ba90963e86e06dc21a020dc5e97188890183e2d81d881e3717317fd510",
+        3500444545657099864,
+        "0d8bad3fc0852407c67ed63aba26aa636c44d7a1f927a4280bad0d660508f55a",
+        "62cbfde107578e7e307af928c8f7716e354ae3ba463c6de7d44cae4ec2405ce0",
     ),
 ];
 

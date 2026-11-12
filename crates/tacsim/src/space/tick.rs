@@ -182,6 +182,13 @@ pub struct ActiveInterdictionBubble {
     /// Sealed mind attached to the non-picket interdictor (`SF.R14`, `D-35-17`).
     #[serde(default, with = "super::picket::compact_mind_seal")]
     pub interdictor_seal: Option<crate::arena::mind::MindSeal>,
+    /// The non-picket interdictor's own contact numbers (doc 44 unit MW.9).
+    #[serde(default, skip_serializing_if = "super::view::ContactBook::is_empty")]
+    pub interdictor_contacts: super::view::ContactBook,
+    /// The carrier hulls the interdictor has stood down (doc 44 unit MW.9; Q-44-24): each
+    /// hull once, on its own state.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub stood_down: std::collections::BTreeSet<ObjId>,
 }
 
 impl ActiveInterdictionBubble {
@@ -234,6 +241,42 @@ impl ActiveInterdictionBubble {
             }
         }
         admitted_party(3)
+    }
+
+    /// **What the host knows of the stops in this bubble** (doc 44 unit MW.9): the customs
+    /// picket's per-carrier state where there is one, else the interdictor's. An interdictor
+    /// that has lit up holds a stop on every carrier its party still holds hostile (one that
+    /// runs dark has hailed nobody); a hull it has stood down reads cleared, and one that took
+    /// up the fight again reads as having run.
+    #[must_use]
+    pub fn situation(&self, step_ms: u32) -> super::view::Situation {
+        use super::view::Stop;
+        let carriers = self.carrier_picket_entries();
+        if let Some(picket) = &self.picket {
+            return super::picket::picket_situation(&self.bubble, picket, &carriers, step_ms);
+        }
+        let mut situation = super::view::Situation::open(step_ms);
+        situation.stopper = Some(self.interdictor_ship_id.clone());
+        let stands = self
+            .bubble
+            .ships
+            .get(&self.interdictor_ship_id)
+            .is_some_and(|ship| {
+                ship.status == HullStatus::Operational && ship.emcon != EmconPosture::Ghost
+            });
+        for (hull, ship_id, party) in carriers {
+            let hostile = self.bubble.party_relation(INTERDICTOR_PARTY, party) == Relation::Hostile;
+            let stop = match (self.stood_down.contains(&hull), hostile) {
+                (true, true) => Stop::Ran,
+                (true, false) => Stop::Cleared,
+                (false, true) if stands => Stop::Hailed,
+                (false, _) => Stop::None,
+            };
+            if stop != Stop::None {
+                situation.stops.insert(ship_id, stop);
+            }
+        }
+        situation
     }
 
     /// Return all carrier `(hull, ship_id, party)` tuples for picket stepping (`SF.R18`).
@@ -881,6 +924,9 @@ pub struct SpaceLinkdeadState {
     /// The last word the backup mind traced (doc 35 §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mind_last_trace: Option<String>,
+    /// The backup mind's own contact numbers inside a bubble (doc 44 unit MW.9).
+    #[serde(default, skip_serializing_if = "super::view::ContactBook::is_empty")]
+    pub mind_contacts: super::view::ContactBook,
     /// What the backup seat last did for her (doc 35 §11); the crew hear each change once.
     #[serde(default)]
     pub backup_act: super::backup::BackupAct,
@@ -2738,6 +2784,7 @@ fn begin_linkdead_for_hull(ctx: &mut Ctx<'_>, hull: ObjId, announce_grace: bool)
                     queued_return_port: queued_return_port.clone(),
                     mind_memory: Vec::new(),
                     mind_last_trace: None,
+                    mind_contacts: super::view::ContactBook::default(),
                     backup_act: super::backup::BackupAct::Standby,
                     return_retry_at_wall_s: 0,
                     next_think_at_wall_s: 0,
@@ -4109,9 +4156,9 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 &mut active.bubble,
                 &mut active.tape,
                 picket,
-                &active.carrier_ship_id,
                 &carrier_picket_entries,
                 store,
+                dt_wall_ms,
             );
             events.extend(picket_events);
             for (chull, _, _) in &carrier_picket_entries {
@@ -4123,18 +4170,7 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 }
             }
         } else {
-            let picket_events = step_interdictor_picket(
-                &mut active.bubble,
-                &mut active.tape,
-                active.interdictor_hull,
-                &active.interdictor_ship_id,
-                &active.carrier_ship_id,
-                active.interdictor_seal.as_ref(),
-                &mut active.interdictor_think_seq,
-                &mut active.interdictor_memory,
-                &mut active.cleared,
-                store,
-            );
+            let picket_events = step_interdictor_picket(active, store, dt_wall_ms);
             events.extend(picket_events);
         }
         if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
@@ -4469,208 +4505,90 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn step_interdictor_picket(
-    bubble: &mut LocalSpaceBubble,
-    tape: &mut BubbleInputTape,
-    interdictor_hull: ObjId,
-    interdictor_ship_id: &str,
-    carrier_ship_id: &str,
-    interdictor_seal: Option<&crate::arena::mind::MindSeal>,
-    think_seq: &mut u64,
-    memory: &mut Vec<u8>,
-    cleared: &mut bool,
-    store: Option<&TacsimStore>,
-) -> Vec<super::bubble::SpaceCombatEvent> {
-    use crate::arena::{IntentKind, MotorGoal};
-
-    let mut emitted = Vec::new();
-    let Some(iship) = bubble.ships.get(interdictor_ship_id) else {
-        return emitted;
-    };
-    if iship.status != HullStatus::Operational {
-        return emitted;
-    }
-    let carrier_operational = bubble
+/// **The interdictor's stand-down, hull by hull, on state** (doc 44 unit MW.9; Q-44-24).
+///
+/// A carrier that is under the heave-to speed against an interdictor that still stands has
+/// complied: the interdictor's party and hers end their fight, both ways, whoever fired
+/// first ([`LocalSpaceBubble::stand_down_parties`]), and no other party is touched. Each
+/// hull is stood down once; one that takes up the fight again afterwards is hostile like any
+/// other and is not offered a second.
+///
+/// This is the host's rule, as a customs clearance is. A doctrine cannot refuse it: no
+/// intent names it.
+fn settle_interdictor_stand_down(active: &mut ActiveInterdictionBubble) {
+    let Some(interdictor_vel) = active
+        .bubble
         .ships
-        .get(carrier_ship_id)
-        .is_some_and(|s| s.status == HullStatus::Operational);
-    if !carrier_operational {
+        .get(&active.interdictor_ship_id)
+        .filter(|ship| ship.status == HullStatus::Operational)
+        .map(|ship| ship.vel_mmps)
+    else {
+        return;
+    };
+    for (hull, ship_id, party) in active.carrier_picket_entries() {
+        if active.stood_down.contains(&hull)
+            || active.bubble.party_relation(INTERDICTOR_PARTY, party) != Relation::Hostile
+        {
+            continue;
+        }
+        let hove_to = active.bubble.ships.get(&ship_id).is_some_and(|ship| {
+            ship.status == HullStatus::Operational
+                && super::picket::relative_speed_3d_mmps(ship.vel_mmps, interdictor_vel)
+                    < super::picket::HEAVE_TO_REL_VEL_MMPS
+        });
+        if hove_to {
+            active.bubble.stand_down_parties(INTERDICTOR_PARTY, party);
+            active.stood_down.insert(hull);
+        }
+    }
+}
+
+/// One think of the interdictor's mind, applied by the one applier
+/// ([`super::applier::apply_intents`]), after the host has settled who is stood down.
+fn step_interdictor_picket(
+    active: &mut ActiveInterdictionBubble,
+    store: Option<&TacsimStore>,
+    step_ms: u32,
+) -> Vec<super::bubble::SpaceCombatEvent> {
+    let mut emitted = Vec::new();
+    settle_interdictor_stand_down(active);
+    if active
+        .bubble
+        .ships
+        .get(&active.interdictor_ship_id)
+        .is_none_or(|ship| ship.status != HullStatus::Operational)
+    {
         return emitted;
     }
-    if iship.emcon == super::bubble::EmconPosture::Ghost {
-        emitted.extend(tape.record_and_apply(
-            bubble,
-            BubbleInputCommand::SetEmcon {
-                ship_id: interdictor_ship_id.to_owned(),
-                posture: super::bubble::EmconPosture::Standard,
-            },
-        ));
-    }
+    let situation = active.situation(step_ms);
     let Some((res, cmap)) = super::picket::run_space_rhai_think_with_seal(
-        bubble,
-        interdictor_ship_id,
-        interdictor_hull,
-        interdictor_seal,
+        &active.bubble,
+        &active.interdictor_ship_id,
+        active.interdictor_hull,
+        active.interdictor_seal.as_ref(),
         crate::minds::content::interdictor_patrol_digest().0,
         store,
-        *think_seq,
-        memory,
+        active.interdictor_think_seq,
+        &active.interdictor_memory,
+        &mut active.interdictor_contacts,
+        &situation,
     ) else {
         return emitted;
     };
     if res.fault.is_some() {
         return emitted;
     }
-    *think_seq = think_seq.saturating_add(1);
-    *memory = res.memory;
-    if res
-        .trace
-        .iter()
-        .any(|t| t == "INTERDICTOR_STAND_DOWN_CLEARED")
-    {
-        *cleared = true;
-        let carrier_parties: Vec<PartyId> = bubble
-            .ships
-            .values()
-            .filter(|s| s.party != INTERDICTOR_PARTY)
-            .map(|s| s.party)
-            .collect();
-        for cparty in carrier_parties {
-            bubble.set_party_relation(cparty, INTERDICTOR_PARTY, None);
-        }
-        emitted.extend(tape.record_and_apply(
-            bubble,
-            BubbleInputCommand::CommandBurn {
-                ship_id: interdictor_ship_id.to_owned(),
-                thrust_mps2: [0, 0, 0],
-                force_into_reserve: false,
-            },
-        ));
-        return emitted;
-    }
-
-    let mut locked_ship = bubble
-        .ships
-        .get(interdictor_ship_id)
-        .and_then(|s| s.locked_target_id.clone())
-        .unwrap_or_else(|| carrier_ship_id.to_owned());
-
-    if bubble
-        .ships
-        .get(interdictor_ship_id)
-        .is_some_and(|s| s.heat_permille > 650)
-    {
-        emitted.extend(tape.record_and_apply(
-            bubble,
-            BubbleInputCommand::BlowdownCoolant {
-                ship_id: interdictor_ship_id.to_owned(),
-            },
-        ));
-    }
-
-    for intent in &res.intents {
-        match intent {
-            IntentKind::Emcon { on } => {
-                let target_posture = if *on {
-                    super::bubble::EmconPosture::ActiveCombat
-                } else {
-                    super::bubble::EmconPosture::Standard
-                };
-                if bubble
-                    .ships
-                    .get(interdictor_ship_id)
-                    .is_some_and(|s| s.emcon != target_posture)
-                {
-                    emitted.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::SetEmcon {
-                            ship_id: interdictor_ship_id.to_owned(),
-                            posture: target_posture,
-                        },
-                    ));
-                }
-            }
-            IntentKind::Lock { contact } => {
-                if let Some(target_ship_id) = cmap.get(contact).cloned() {
-                    locked_ship = target_ship_id.clone();
-                    if bubble.ships.get(interdictor_ship_id).is_some_and(|s| {
-                        s.locked_target_id.as_deref() != Some(target_ship_id.as_str())
-                    }) {
-                        emitted.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::SetLockedTarget {
-                                ship_id: interdictor_ship_id.to_owned(),
-                                target_id: Some(target_ship_id),
-                            },
-                        ));
-                    }
-                }
-            }
-            IntentKind::Goal(MotorGoal::Hold) => {
-                if bubble
-                    .ships
-                    .get(interdictor_ship_id)
-                    .is_some_and(|s| s.thrust_mps2 != [0, 0, 0])
-                {
-                    emitted.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::CommandBurn {
-                            ship_id: interdictor_ship_id.to_owned(),
-                            thrust_mps2: [0, 0, 0],
-                            force_into_reserve: false,
-                        },
-                    ));
-                }
-            }
-            IntentKind::Speed { cms } if *cms > 0 => {
-                if bubble
-                    .ships
-                    .get(interdictor_ship_id)
-                    .is_some_and(|s| s.thrust_mps2 == [0, 0, 0])
-                {
-                    emitted.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::CommandBurn {
-                            ship_id: interdictor_ship_id.to_owned(),
-                            thrust_mps2: [-10, 0, 0],
-                            force_into_reserve: false,
-                        },
-                    ));
-                }
-            }
-            IntentKind::Fire { weapon, .. } => {
-                if weapon.starts_with("torp") {
-                    if bubble
-                        .ships
-                        .get(&locked_ship)
-                        .is_some_and(|s| s.emcon == super::bubble::EmconPosture::ActiveCombat)
-                        && bubble.ships.get(interdictor_ship_id).is_some_and(|s| {
-                            s.torpedo_tubes.iter().any(|t| t.magazine_remaining == 8)
-                        })
-                    {
-                        emitted.extend(tape.record_and_apply(
-                            bubble,
-                            BubbleInputCommand::FireTorpedoSalvo {
-                                shooter_id: interdictor_ship_id.to_owned(),
-                                target_id: locked_ship.clone(),
-                                count: 1,
-                            },
-                        ));
-                    }
-                } else if weapon.starts_with("laser") {
-                    emitted.extend(tape.record_and_apply(
-                        bubble,
-                        BubbleInputCommand::FireOffensiveLasers {
-                            shooter_id: interdictor_ship_id.to_owned(),
-                            target_id: locked_ship.clone(),
-                        },
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
+    active.interdictor_think_seq = active.interdictor_think_seq.saturating_add(1);
+    active.interdictor_memory = res.memory;
+    let _ = super::applier::apply_intents(
+        &mut active.bubble,
+        &mut active.tape,
+        &active.interdictor_ship_id,
+        super::applier::Seat::PATROL,
+        &cmap,
+        &res.intents,
+        &mut emitted,
+    );
     emitted
 }
 
@@ -5123,6 +5041,8 @@ fn build_interdiction_bubble(
         interdictor_memory: Vec::new(),
         interdictor_think_seq: 0,
         interdictor_seal,
+        interdictor_contacts: super::view::ContactBook::default(),
+        stood_down: std::collections::BTreeSet::new(),
     })
 }
 
@@ -5355,5 +5275,257 @@ pub(crate) fn destroy_unclaimed_npc_hull(ctx: &mut Ctx<'_>, npc_hull: ObjId) {
     let _ = mush_sim::deployed::clear(ctx.w, npc_hull);
     if ctx.w.destroy(npc_hull).is_ok() {
         ctx.emit_world_event(&mush_core::WorldEvent::ObjDestroyed { obj: npc_hull });
+    }
+}
+
+/// Doc 44 unit MW.9: the interdictor on the one applier, and its stand-down hull by hull.
+#[cfg(test)]
+mod interdictor_tests {
+    use super::*;
+    use crate::space::view::Stop;
+
+    const INTERDICTOR: &str = "interdictor.5.1";
+    const ESCORT: ObjId = ObjId(20);
+    const RUNNER: ObjId = ObjId(21);
+
+    fn carrier_entry(hull: ObjId, party: PartyId) -> BubbleCarrierEntry {
+        BubbleCarrierEntry {
+            hull,
+            ship_id: format!("hull.{}", hull.0),
+            party,
+            leg_cursor: 1,
+            departed_at_ic_s: 1_000,
+            last_synced_propellant_kg: 0,
+            approaching_derelict: false,
+            holding_for_salvage: false,
+            holding_for_salvage_until_wall_s: None,
+        }
+    }
+
+    /// An interdiction bubble with no customs picket: the interdictor, lurking dark at rest,
+    /// and `carriers` as `(hull, party, position, velocity)`, each hostile to it both ways and
+    /// friends of one another.
+    fn interdiction(carriers: &[(ObjId, PartyId, [i64; 3], [i64; 3])]) -> ActiveInterdictionBubble {
+        let mut bubble = LocalSpaceBubble::new("bubble.test.int", "domain.5", "Test", 1_000);
+        let mut interdictor = SpaceShipState::new_corvette(
+            INTERDICTOR,
+            "Interdictor Picket",
+            INTERDICTOR_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        super::super::custody::apply_space_unit_overlay(
+            &mut interdictor,
+            &super::super::custody::space_unit_overlay_for_id("tacsim.unit.corvette_interdictor"),
+        );
+        interdictor.emcon = EmconPosture::Ghost;
+        bubble.insert_ship(interdictor);
+        let mut entries = BTreeMap::new();
+        for (hull, party, pos, vel) in carriers {
+            let entry = carrier_entry(*hull, *party);
+            bubble.insert_ship(SpaceShipState::new_dray(
+                &entry.ship_id,
+                "Carrier",
+                *party,
+                *pos,
+                *vel,
+            ));
+            bubble.set_party_relation(*party, INTERDICTOR_PARTY, Some(Mark::Hostile));
+            for other in entries.values().map(|e: &BubbleCarrierEntry| e.party) {
+                bubble.set_party_relation(*party, other, Some(Mark::Friendly));
+            }
+            entries.insert(*hull, entry);
+        }
+        let tape = BubbleInputTape::new(&bubble);
+        let first = carriers.first().map_or(ObjId(0), |c| c.0);
+        ActiveInterdictionBubble {
+            hull: first,
+            interdictor_hull: ObjId(900),
+            domain: DomainId(5),
+            carrier_ship_id: format!("hull.{}", first.0),
+            interdictor_ship_id: INTERDICTOR.to_owned(),
+            leg_cursor: 1,
+            opened_ic_s: 1_000,
+            steps: 0,
+            cleared: false,
+            snapshots: vec![bubble.snapshot()],
+            bubble,
+            tape,
+            picket: None,
+            approaching_derelict: false,
+            holding_for_salvage: false,
+            last_stepped_wall_s: 0,
+            last_synced_propellant_kg: 0,
+            carriers: entries,
+            ship_hulls: BTreeMap::new(),
+            interdictor_memory: Vec::new(),
+            interdictor_think_seq: 0,
+            interdictor_seal: None,
+            interdictor_contacts: super::super::view::ContactBook::default(),
+            stood_down: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn interdictor_of(active: &ActiveInterdictionBubble) -> &SpaceShipState {
+        active
+            .bubble
+            .ships
+            .get(INTERDICTOR)
+            .expect("the interdictor")
+    }
+
+    /// An escort that heaves to does not clear the runner beside her, and after the
+    /// stand-down a party that had fired is no longer hostile.
+    #[test]
+    fn an_escort_that_heaves_to_is_stood_down_alone_though_she_had_fired() {
+        let escort_party = CARRIER_PARTY;
+        let runner_party = admitted_party(3);
+        let mut active = interdiction(&[
+            // Three metres a second against the interdictor: hove to.
+            (ESCORT, escort_party, [-12_000, 2_000, 0], [3_000, 0, 0]),
+            // Twenty-five: still running.
+            (
+                RUNNER,
+                runner_party,
+                [-14_000, -3_000, 1_000],
+                [25_000, 0, 0],
+            ),
+        ]);
+        // The escort fired on the interdictor before she hove to, and it on her.
+        assert!(
+            active
+                .bubble
+                .party_relations
+                .note_fire(escort_party, INTERDICTOR_PARTY)
+        );
+        assert!(
+            active
+                .bubble
+                .party_relations
+                .note_fire(INTERDICTOR_PARTY, escort_party)
+        );
+
+        let _ = step_interdictor_picket(&mut active, None, 1_000);
+
+        assert!(
+            !active.cleared,
+            "one hull's stand-down does not clear the bubble"
+        );
+        assert_eq!(
+            active.stood_down,
+            std::collections::BTreeSet::from([ESCORT])
+        );
+        for (viewer, other) in [
+            (INTERDICTOR_PARTY, escort_party),
+            (escort_party, INTERDICTOR_PARTY),
+        ] {
+            assert_eq!(
+                active.bubble.party_relation(viewer, other),
+                Relation::Neutral,
+                "the fight between the two is over, whoever fired"
+            );
+            assert!(
+                active
+                    .bubble
+                    .party_relations
+                    .book(viewer)
+                    .is_some_and(|book| !book.fired.contains(&other)),
+                "and neither holds that the other fired"
+            );
+        }
+        assert_eq!(
+            active
+                .bubble
+                .party_relation(INTERDICTOR_PARTY, runner_party),
+            Relation::Hostile
+        );
+        assert_eq!(
+            active
+                .bubble
+                .party_relation(runner_party, INTERDICTOR_PARTY),
+            Relation::Hostile
+        );
+        assert!(active.is_carrier_clear_to_resume(ESCORT));
+        assert!(!active.is_carrier_clear_to_resume(RUNNER));
+        let situation = active.situation(1_000);
+        assert_eq!(situation.stop_of("hull.20"), Stop::Cleared);
+        assert_eq!(situation.stop_of("hull.21"), Stop::Hailed);
+        // Its mind, on the same step, took the runner: the one hull still hostile to it.
+        assert_eq!(
+            interdictor_of(&active).locked_target_id.as_deref(),
+            Some("hull.21")
+        );
+
+        // A hull is stood down once. If she takes up the fight again she is hostile like any
+        // other, and heaving to does not clear her a second time.
+        assert!(
+            active
+                .bubble
+                .party_relations
+                .note_fire(escort_party, INTERDICTOR_PARTY)
+        );
+        let _ = step_interdictor_picket(&mut active, None, 1_000);
+        assert_eq!(
+            active
+                .bubble
+                .party_relation(INTERDICTOR_PARTY, escort_party),
+            Relation::Hostile
+        );
+        assert_eq!(active.situation(1_000).stop_of("hull.20"), Stop::Ran);
+    }
+
+    /// Changing the mind changes play: the compiled doctrine closes on its target along the
+    /// line to it, and a revision that holds where that one closes leaves the same hull at
+    /// rest. The seal names the revision by digest and the store holds its source.
+    #[test]
+    fn a_doctrine_changed_to_hold_where_it_closed_makes_the_interdictor_hold() {
+        // The carrier is abeam of the interdictor, up the y axis and a little above it.
+        let carriers = [(ESCORT, CARRIER_PARTY, [0, 16_000, 12_000], [15_000, 0, 0])];
+
+        // The first think hails; the carrier holds her course, so the second engages.
+        let mut closing = interdiction(&carriers);
+        let _ = step_interdictor_picket(&mut closing, None, 1_000);
+        assert_eq!(interdictor_of(&closing).thrust_mmps2, [0, 0, 0]);
+        let _ = step_interdictor_picket(&mut closing, None, 1_000);
+        let thrust = interdictor_of(&closing).thrust_mmps2;
+        assert_eq!(
+            thrust[0], 0,
+            "nothing along x: the target is abeam ({thrust:?})"
+        );
+        assert!(
+            thrust[1] > 0 && thrust[2] > 0,
+            "toward the target: {thrust:?}"
+        );
+        // Four parts along y to three up, as the line to the target runs.
+        assert_eq!(thrust[1] * 3, thrust[2] * 4, "{thrust:?}");
+        assert_eq!(
+            interdictor_of(&closing).locked_target_id.as_deref(),
+            Some("hull.20")
+        );
+
+        let compiled = crate::minds::content::interdictor_patrol_source();
+        assert!(compiled.contains("        speed(1000);\n"));
+        let holding = compiled.replace("        speed(1000);\n", "        hold();\n");
+        let mut store = TacsimStore::default();
+        let digest = crate::store::install_mind_source(&mut store, &holding)
+            .expect("the store takes the revision");
+        assert_ne!(digest, crate::minds::content::interdictor_patrol_digest().0);
+        let mut held = interdiction(&carriers);
+        held.interdictor_seal = super::super::picket::build_space_mind_seal(
+            held.interdictor_hull,
+            crate::arena::mind::SortieId::ic(held.interdictor_hull, 1),
+            "interdictor_patrol",
+            digest,
+        );
+        assert!(held.interdictor_seal.is_some());
+        let _ = step_interdictor_picket(&mut held, Some(&store), 1_000);
+        let _ = step_interdictor_picket(&mut held, Some(&store), 1_000);
+        assert_eq!(held.interdictor_think_seq, 2, "the revision thought");
+        assert_eq!(interdictor_of(&held).thrust_mmps2, [0, 0, 0]);
+        assert_eq!(
+            interdictor_of(&held).locked_target_id.as_deref(),
+            Some("hull.20"),
+            "it still took its target: only the helm changed"
+        );
     }
 }

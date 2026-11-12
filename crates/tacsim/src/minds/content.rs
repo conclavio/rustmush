@@ -189,8 +189,10 @@ pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore
 /// fallback: `stand` and `withdraw_stand`, when the best hostile has no line,
 /// fire on the best nearer than it that has one, mirrored in `NativeStockMind`
 /// (`nearer_in_line`, `STAND_TRIES`); CF.0's was `a37766b5…6e5336`.
+/// **Re-blessed by doc 44 unit MW.9** for the header's `api: 8` alone (the mind
+/// API bump that added the four space kernels); CF.6b's was `3837c345…73a316`.
 pub const STANDARD_SHA256: &str =
-    "3837c3456fbf1e3b8e012375a3d4e4cfcc2645d024fe203eef9359de1473a316";
+    "42c694edd1d2190b0acc37dbd3257cd8d543d27569f4d70c73ab215f3e76e4bc";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the

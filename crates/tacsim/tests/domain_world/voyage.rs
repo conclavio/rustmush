@@ -4889,10 +4889,14 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         customs_clock
     );
 
-    // 6. On the next 1-second tick after inspection, the lurking Belt Raider lights its torch
-    //    (`ActiveCombat`), `BELT_RAIDER_RHAI` launches its 2-torpedo salvo and 120 km railgun shot
-    //    (`RAIDER_TORCH_AND_SALVO`), and `KIRKWOOD_PICKET_RHAI` transitions to `"screen_defend"`
-    //    (`PICKET_SCREEN_ENGAGE_RAIDER`)!
+    // 6. On the tick after inspection the lurking Belt Raider hears the clearance and lights its
+    //    torch (`ActiveCombat`, `RAIDER_LIGHT_TORCH`); on the next, holding the carrier,
+    //    `BELT_RAIDER_RHAI` launches its 2-torpedo salvo and 120 km railgun shot
+    //    (`RAIDER_TORCH_AND_SALVO`). `KIRKWOOD_PICKET_RHAI` screens (`PICKET_SCREEN_ENGAGE_RAIDER`).
+    //    Doc 44 unit MW.9: when to light up is the raider's doctrine's, so it is one think later
+    //    than when the picket's host lit it for her.
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
     {
         let bubble_book = rig
             .tw
@@ -5414,9 +5418,13 @@ fn sfr8_space_state_persists_in_tacsim_store_and_survives_full_engine_restart_mi
         submit_out.contains("customs clearance granted"),
         "expected customs inspection completion: {submit_out}"
     );
-    let next_real2 = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real2);
-    let _ = rig.tw.fire_due(next_real2 * 1_000);
+    // Doc 44 unit MW.9: the raider's doctrine lights her torch on the tick after the ruling and
+    // opens on the next; the picket's host used to light it for her on the first.
+    for _ in 0..2 {
+        let next_real2 = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real2);
+        let _ = rig.tw.fire_due(next_real2 * 1_000);
+    }
     let _ = run(&mut rig.tw, pilot, "+tac/pdc auto");
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
 
@@ -7640,8 +7648,10 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
 
     // Confirm rear-split combat damage was written to *Salt Moth*'s `TacticalUnit` (`drive` and `hull` both damaged):
     let ship_damaged = run(&mut rig.tw, pilot, "+ship");
+    // Doc 44 unit MW.9: the interdictor's first think is its hail, so one volley fewer lands in
+    // the four ticks than when it fired from the first (`drive 64/250, hull 418/600`).
     assert!(
-        ship_damaged.contains("Damage: drive 64/250, hull 418/600."),
+        ship_damaged.contains("Damage: drive 118/250, hull 471/600."),
         "expected rear-split combat damage on docked Dray: {ship_damaged}"
     );
 
@@ -9965,15 +9975,16 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
         pending_c.plan.depart_ic + i64::from(pending_c.plan.legs[0].secs),
     );
 
-    // Turn bow (`+helm/heading 0 0`) across ticks 0..1 so the Interdictor Picket's second volley
+    // Turn bow (`+helm/heading 0 0`) across ticks 0..2 so the Interdictor Picket's second volley
     // penetrates `Front` (`internal_dmg >= 25`) and strips `pdc_dorsal` offline (`PdcOffline`), then
-    // turn stern (`+helm/heading 180 0`) so subsequent hits split `hull` / `drive` on `Rear`:
+    // turn stern (`+helm/heading 180 0`) so subsequent hits split `hull` / `drive` on `Rear`.
+    // Doc 44 unit MW.9: its first think is its hail, so its volleys land on ticks 1, 2 and 3.
     let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 0 0");
     for i in 0..4 {
         let next_real = rig_combat.tw.world().now() + 1;
         rig_combat.tw.set_now(next_real);
         let _ = rig_combat.tw.fire_due(next_real * 1_000);
-        if i == 1 {
+        if i == 2 {
             let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 180 0");
         }
         if i == 0 || i == 2 || i == 3 {
@@ -13407,5 +13418,372 @@ fn sfr30_a_world_with_no_authored_clusters_has_none() {
     assert!(
         tacsim::space::picket_cast_book().is_some(),
         "content/space/picket_cast.json parses"
+    );
+}
+
+/// What a story reads of `hull` against the interdictor of her bubble, while she is in one.
+struct AtTheInterdictor {
+    /// Her commanded thrust, mm/s².
+    thrust: [i64; 3],
+    /// Her speed relative to the interdictor, mm/s.
+    drift: i64,
+    /// What the interdictor's party holds her party.
+    held_by_interdictor: Relation,
+    /// What her party holds the interdictor's.
+    holds_interdictor: Relation,
+    /// Whether the interdictor has stood her down.
+    stood_down: bool,
+    /// Whether she is clear to take up her journey.
+    clear: bool,
+    /// The internals left in each of her sections: a hit takes some.
+    internals: Vec<u32>,
+    /// The ship the interdictor is locked on, by its hull.
+    interdictor_lock: Option<ObjId>,
+    /// The interdictor's commanded thrust, mm/s².
+    interdictor_thrust: [i64; 3],
+}
+
+fn at_the_interdictor(tw: &TestWorld, hull: ObjId) -> Option<AtTheInterdictor> {
+    let book = tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let active = book.active_for_hull(hull)?;
+    assert!(
+        active.picket.is_none(),
+        "an interdiction, not a customs picket"
+    );
+    let ship = active.bubble.ships.get(active.carrier_ship_id_for(hull))?;
+    let interdictor = active.bubble.ships.get(&active.interdictor_ship_id)?;
+    let party = active.carrier_party_for(hull);
+    Some(AtTheInterdictor {
+        thrust: ship.thrust_mmps2,
+        drift: tacsim::space::relative_speed_3d_mmps(ship.vel_mmps, interdictor.vel_mmps),
+        held_by_interdictor: active
+            .bubble
+            .party_relation(tacsim::space::INTERDICTOR_PARTY, party),
+        holds_interdictor: active
+            .bubble
+            .party_relation(party, tacsim::space::INTERDICTOR_PARTY),
+        stood_down: active.stood_down.contains(&hull),
+        clear: active.is_carrier_clear_to_resume(hull),
+        internals: ship.sections.values().map(|s| s.internals).collect(),
+        interdictor_lock: interdictor
+            .locked_target_id
+            .as_deref()
+            .and_then(|locked| active.hull_for_ship_id(locked)),
+        interdictor_thrust: interdictor.thrust_mmps2,
+    })
+}
+
+/// **Doc 44 unit MW.9 (Q-44-24)** — a Dray can heave to against the interdictor, by a burn a
+/// mind computed from the view.
+///
+/// The *Salt Moth*'s pilot loses her link on the corridor and the grace runs out there, so the
+/// backup mind has her helm when the interdictor's bubble opens on her. Its view says she is
+/// told to heave to, by which contact, and how that contact moves against her; the burn is the
+/// mind's own, handed to the one applier. The interdictor's mind reads her slowing and holds its
+/// fire. When she is under the heave-to speed the bubble's host stands her down, and she is free
+/// to go, never hit.
+///
+/// Before the cut her view said nothing of an interdictor, so the mind asked for port, the seat
+/// let her coast, and the interdictor, which burned at her whatever she did, shot her drive out.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mw9_a_dray_whose_crew_has_no_link_heaves_to_against_the_interdictor_by_her_minds_own_burn() {
+    use tacsim::space::BackupAct;
+
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+
+    // Her pilot's link drops on the corridor. Past the grace the mind has her, and leaves her
+    // to the passage she is on.
+    let _ = drop_link(&mut rig, pilot);
+    wait_out_the_grace(&mut rig);
+    let on_passage = linkdead_of(&rig.tw, hull).expect("her linkdead record");
+    assert!(
+        on_passage.backup_has_helm(),
+        "past the grace the mind has her"
+    );
+    assert_eq!(on_passage.backup_act, BackupAct::MakingForPort);
+
+    // The interdictor's bubble opens on her.
+    let _ = to_ic(&mut rig, boundary);
+    let entry = at_the_interdictor(&rig.tw, hull).expect("the interdictor's bubble");
+    assert_eq!(entry.held_by_interdictor, Relation::Hostile);
+    assert!(
+        entry.drift >= tacsim::space::HEAVE_TO_REL_VEL_MMPS,
+        "she comes in too fast to be let go ({} mm/s)",
+        entry.drift
+    );
+    assert_eq!(entry.thrust, [0, 0, 0]);
+
+    // The interdictor lights up and hails on its first think. On the next second the mind
+    // reads the stop, and the contact that holds it, and burns against her drift.
+    for _ in 0..2 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    let braking = at_the_interdictor(&rig.tw, hull).expect("still in the bubble");
+    assert_ne!(
+        braking.thrust,
+        [0, 0, 0],
+        "the mind brakes her; before the cut she coasted with her drive cut"
+    );
+    assert!(
+        braking.drift < entry.drift,
+        "she is slowing against the interdictor ({} mm/s, then {} mm/s)",
+        entry.drift,
+        braking.drift
+    );
+    let record = linkdead_of(&rig.tw, hull).expect("her record");
+    assert_eq!(record.mind_last_trace.as_deref(), Some("BACKUP_HEAVE_TO"));
+    assert_eq!(record.backup_act, BackupAct::HeavingTo);
+
+    // She keeps braking until she is under the heave-to speed, and is stood down. The
+    // interdictor never fires on a hull that is slowing for it.
+    let mut stood_down = false;
+    let mut last = braking.drift;
+    for second in 0..900 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+        let Some(now) = at_the_interdictor(&rig.tw, hull) else {
+            // The bubble closed behind her: she was let go.
+            stood_down = true;
+            break;
+        };
+        assert_eq!(
+            now.internals, entry.internals,
+            "second {second}: she was hit while she was heaving to"
+        );
+        assert_eq!(
+            now.interdictor_thrust,
+            [0, 0, 0],
+            "second {second}: the interdictor burned at a hull that was heaving to"
+        );
+        if now.stood_down {
+            assert!(now.drift < tacsim::space::HEAVE_TO_REL_VEL_MMPS);
+            assert_eq!(now.held_by_interdictor, Relation::Neutral);
+            assert_eq!(now.holds_interdictor, Relation::Neutral);
+            assert!(now.clear, "stood down, she is clear to go");
+            stood_down = true;
+            break;
+        }
+        assert!(
+            now.drift <= last,
+            "second {second}: her drift grew ({last} mm/s, then {} mm/s)",
+            now.drift
+        );
+        last = now.drift;
+    }
+    assert!(
+        stood_down,
+        "she was never stood down; her drift was last {last} mm/s"
+    );
+
+    // And she takes up her passage again.
+    let mut resumed = false;
+    for _ in 0..5 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+        if journey(&rig.tw, hull).is_some_and(|j| *j.state() == mush_sim::JourneyState::Cruising) {
+            resumed = true;
+            break;
+        }
+    }
+    assert!(resumed, "her journey resumes once she is let go");
+    assert!(
+        at_the_interdictor(&rig.tw, hull).is_none(),
+        "and she is out of the bubble"
+    );
+}
+
+/// **Doc 44 unit MW.9 (Q-44-24)** — the interdictor's stand-down is hull by hull, on state: an
+/// escort that heaves to does not clear the runner beside her, and after the stand-down a party
+/// that had fired is no longer hostile.
+///
+/// Two chartered hulls cross the interdicted waypoint together. The escort fires on the
+/// interdictor, then brakes hard; the runner brakes too, more gently, so neither is fired on.
+/// The escort comes under the heave-to speed first and is stood down, alone: the interdictor's
+/// party and hers are neutral both ways although she fired, she is clear to go, and the runner
+/// is still held hostile. The runner then cuts her drive, and the interdictor closes on her.
+///
+/// Before the cut one hull hove to cleared every hull in the bubble and marked the whole
+/// encounter cleared, and a hull that had fired stayed hostile under the cleared mark.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mw9_an_escort_that_heaves_to_is_stood_down_alone_though_she_fired_and_the_runner_is_not() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        ..Roster::default()
+    });
+    let (pilot_runner, row_runner) = chartered(&mut rig, "Runner", 1);
+    let hull_runner = ObjId(row_runner.hull);
+    load(&mut rig, &row_runner, 53, 19);
+
+    let pilot_escort = pilot(&mut rig, "Escort", 2);
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    assert!(
+        enrol_escort.contains("now the Escort Hawk"),
+        "{enrol_escort}"
+    );
+    let charter_escort =
+        tacsim::port::live_charter(rig.tw.world(), pilot_escort).expect("escort charter");
+    let row_escort = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter_escort.hull.0)
+        .expect("escort hull row");
+    let hull_escort = ObjId(row_escort.hull);
+    let vault_escort = hold_vault(&rig.tw, &row_escort);
+    seed_pool(&mut rig, vault_escort, "propellant", 53, LotId(964));
+    seed_pool(&mut rig, vault_escort, "provisions", 19, LotId(965));
+
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_runner);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot_escort, gallery);
+    let board_escort = run(&mut rig.tw, pilot_escort, "+ship/board");
+    assert!(
+        board_escort.contains("You cycle the lock into the Escort Hawk."),
+        "{board_escort}"
+    );
+    let pending_runner = undock_and_burn(&mut rig, pilot_runner, hull_runner);
+    let pending_escort = undock_and_burn(&mut rig, pilot_escort, hull_escort);
+    let _ = fire_quietly(&mut rig);
+    let runner_due = pending_runner.plan.depart_ic + i64::from(pending_runner.plan.legs[0].secs);
+    let escort_due = pending_escort.plan.depart_ic + i64::from(pending_escort.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, runner_due.max(escort_due));
+
+    // One bubble holds them both, each hostile to the interdictor and too fast to be let go.
+    let escort_entry = at_the_interdictor(&rig.tw, hull_escort).expect("the escort's bubble");
+    let runner_entry = at_the_interdictor(&rig.tw, hull_runner).expect("the runner's bubble");
+    for entry in [&escort_entry, &runner_entry] {
+        assert_eq!(entry.held_by_interdictor, Relation::Hostile);
+        assert!(entry.drift >= tacsim::space::HEAVE_TO_REL_VEL_MMPS);
+    }
+
+    // The interdictor lights up and hails. The escort fires on it, then both brake: the escort
+    // with all she has, the runner gently.
+    let (_, submitted) = one_second(&mut rig, pilot_escort);
+    land_quietly(&mut rig, &submitted);
+    let beam = run(&mut rig.tw, pilot_escort, "+tac/beam Interdictor Picket");
+    assert!(beam.contains("Laser battery fired on"), "{beam}");
+    let _ = run(
+        &mut rig.tw,
+        pilot_escort,
+        "+helm/thrust 1000 -1000 0 0 force",
+    );
+    let _ = run(
+        &mut rig.tw,
+        pilot_runner,
+        "+helm/thrust 250 -1000 0 0 force",
+    );
+    let orders = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &orders);
+    assert_ne!(
+        at_the_interdictor(&rig.tw, hull_escort).map(|at| at.thrust),
+        Some([0, 0, 0]),
+        "the escort is braking"
+    );
+
+    let mut cleared = None;
+    for second in 0..900 {
+        let (_, submitted) = one_second(&mut rig, pilot_escort);
+        land_quietly(&mut rig, &submitted);
+        let escort = at_the_interdictor(&rig.tw, hull_escort);
+        let runner = at_the_interdictor(&rig.tw, hull_runner)
+            .unwrap_or_else(|| panic!("second {second}: the runner left the bubble"));
+        assert!(
+            !runner.stood_down && !runner.clear,
+            "second {second}: the runner was let go"
+        );
+        assert_eq!(
+            runner.held_by_interdictor,
+            Relation::Hostile,
+            "second {second}: the runner is still held hostile"
+        );
+        match escort {
+            Some(escort) if escort.stood_down => {
+                cleared = Some((escort, runner));
+                break;
+            }
+            Some(_) => {}
+            None => panic!("second {second}: the escort left the bubble before she was stood down"),
+        }
+    }
+    let (escort, runner) = cleared.expect("the escort was never stood down");
+    assert!(escort.drift < tacsim::space::HEAVE_TO_REL_VEL_MMPS);
+    assert!(runner.drift >= tacsim::space::HEAVE_TO_REL_VEL_MMPS);
+    assert_eq!(
+        (escort.held_by_interdictor, escort.holds_interdictor),
+        (Relation::Neutral, Relation::Neutral),
+        "she fired on it, and the stand-down ended that fight both ways"
+    );
+    assert!(escort.clear, "the escort is clear to go");
+    assert_eq!(runner.holds_interdictor, Relation::Hostile);
+    {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book
+            .active_for_hull(hull_runner)
+            .expect("the runner's bubble");
+        assert!(
+            !active.cleared,
+            "one hull's stand-down does not mark the encounter cleared"
+        );
+    }
+
+    // The escort takes up her passage; the runner is still in the bubble.
+    let mut resumed = false;
+    for _ in 0..5 {
+        let (_, submitted) = one_second(&mut rig, pilot_escort);
+        land_quietly(&mut rig, &submitted);
+        if journey(&rig.tw, hull_escort)
+            .is_some_and(|j| *j.state() == mush_sim::JourneyState::Cruising)
+        {
+            resumed = true;
+            break;
+        }
+    }
+    assert!(resumed, "the escort's journey resumes");
+    assert!(
+        matches!(
+            journey(&rig.tw, hull_runner).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "the runner's does not"
+    );
+
+    // The runner cuts her drive and holds her course: the interdictor takes her and closes.
+    let _ = run(&mut rig.tw, pilot_runner, "+helm/thrust 0");
+    let orders = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &orders);
+    let mut closing = false;
+    for _ in 0..6 {
+        let (_, submitted) = one_second(&mut rig, pilot_runner);
+        land_quietly(&mut rig, &submitted);
+        let runner = at_the_interdictor(&rig.tw, hull_runner).expect("the runner's bubble");
+        if runner.interdictor_lock == Some(hull_runner) && runner.interdictor_thrust != [0, 0, 0] {
+            closing = true;
+            break;
+        }
+    }
+    assert!(
+        closing,
+        "the interdictor closes on the hull that would not stop"
     );
 }

@@ -1391,13 +1391,13 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
-        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=7;stock=3");
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=8;stock=3");
         let api4_source = crate::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API 4 Standard source digest");
         let api7_source = crate::arena::snapshot::digest_from_text(
-            "3837c3456fbf1e3b8e012375a3d4e4cfcc2645d024fe203eef9359de1473a316",
+            "42c694edd1d2190b0acc37dbd3257cd8d543d27569f4d70c73ab215f3e76e4bc",
         )
         .expect("the observed API 7 Standard source digest");
         assert_eq!(crate::minds::content::standard_digest().0, api7_source);
@@ -1496,25 +1496,28 @@ mod m5_tests {
         // The old pins above independently reject every custody change beyond
         // the declared ABI, source and stock provenance migration. Captured on
         // Windows; cross-host reproduction remains required before acceptance.
+        // Doc 44 unit MW.9: the mind ABI moved to API 8 (four space kernels) and the Standard
+        // header with it. A seal's digest covers its ABI and its source, so all nine moved; no
+        // custody did. Captured on Linux.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             298153d09f46f506012486c0b0c1489b7407f28487173c35f6fd0c63b2c93683",
+             fb7946fdbbb3f1d1e0abf42f9cc10a19bfe07d621b6c1eba0d58d4ebcbe8a5be",
             "tacsim.unit.line_tank production_fixture \
-             298153d09f46f506012486c0b0c1489b7407f28487173c35f6fd0c63b2c93683",
+             fb7946fdbbb3f1d1e0abf42f9cc10a19bfe07d621b6c1eba0d58d4ebcbe8a5be",
             "tacsim.unit.line_tank production_principal \
-             1004ea324fe9a49a10c084a00159f074a6f0f6193bd98ff13c0ae87c746b559a",
+             06bfd8a41c3d2eb25491d36029f34ebbc80032fd20bc8ca47c3e847a2fa373be",
             "tacsim.unit.heavy_mk1 fixture \
-             9b4f4ae24e592fc237c57b8b14d1d8505a12d9213e8a0ee15032dbd20068eca9",
+             0ce92d0606555b28c7102f56b2fe12c859bc6a085f645ae809a75d6f97801ff9",
             "tacsim.unit.heavy_mk1 production_fixture \
-             9b4f4ae24e592fc237c57b8b14d1d8505a12d9213e8a0ee15032dbd20068eca9",
+             0ce92d0606555b28c7102f56b2fe12c859bc6a085f645ae809a75d6f97801ff9",
             "tacsim.unit.heavy_mk1 production_principal \
-             e2b6d85b653ca67d7a5a854b762140d02b52306a008d629de0f4f5b4bda0a7d8",
+             42a2077f5e7f6caa1dc7d34300b719993d4e58d574d25b5d2b844f8ff1562bb9",
             "tacsim.unit.target_mk1 fixture \
-             15f9f35d30e35f0d4351fba2e1cbc7b5b4ddb70b91feb2461798ab77a8573d2c",
+             7044095fdb89aff12309afecdbcbf748d85924dfbb5dcdab4adbf0363a6323f0",
             "tacsim.unit.target_mk1 production_fixture \
-             15f9f35d30e35f0d4351fba2e1cbc7b5b4ddb70b91feb2461798ab77a8573d2c",
+             7044095fdb89aff12309afecdbcbf748d85924dfbb5dcdab4adbf0363a6323f0",
             "tacsim.unit.target_mk1 production_principal \
-             6d0f41e4ae4d26734f8f5c64bdef6b9a6d5b2f46ecc8f4f6e19c5e4017a38590",
+             bd6baf9df75b93cdfd960cfb4d956da442cbb9f68087c67058ee2fb23b83be46",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

@@ -54,7 +54,7 @@ use super::RAND_MAX_K;
 use super::Registrar;
 use super::api::{
     Contact, View, bounded, cell, cell_arg, contact_int, contact_of, int, opt, opt_cell_arg,
-    opt_int_arg,
+    opt_int_arg, word,
 };
 use super::context::{REFUSED_LIMIT, REFUSED_TYPE, REFUSED_UNKNOWN, refuse, refused, with};
 use super::fees::{
@@ -597,6 +597,86 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     });
     function!(api, "stand_off_want", stand_off_want);
     function!(api, "rand", rand);
+
+    // Doc 44 unit MW.9 (API 8): what a hull in a space bubble reads beyond the
+    // view's own getters, and the helm word that names a direction there.
+    // `space` and `space_contact` are reads, fee 1; the two course helpers are
+    // integer helpers, free.
+    function!(api, "space", |v: &mut View| -> Dynamic {
+        charge(FEE_READ);
+        opt(v.0.space.as_deref(), space_map)
+    });
+    function!(api, "space_contact", |v: &mut View, id: INT| -> Dynamic {
+        charge(FEE_READ);
+        opt(
+            v.0.space
+                .as_deref()
+                .and_then(|space| space.contacts.get(&contact_of(id))),
+            space_contact_map,
+        )
+    });
+    function!(api, "course", |bearing_mdeg: INT,
+                              elevation_mdeg: INT|
+     -> INT {
+        INT::from(crate::space::view::helm_word(bearing_mdeg, elevation_mdeg))
+    });
+    function!(api, "course_of", |dx: INT, dy: INT, dz: INT| -> INT {
+        INT::from(crate::space::view::helm_word_of([dx, dy, dz]))
+    });
+}
+
+/// **`space(v)`** — the hull's own row in a space bubble as a map, `()` on the
+/// ground (doc 44 unit MW.9): `vx_cms`, `vy_cms`, `vz_cms` (her velocity in
+/// the bubble's frame), `pitch_mdeg`, `accel_cms2` (what her drive gives now),
+/// `propellant_kg`, `dv_mps` and `reserve_mps` (what her tank holds and what
+/// she must keep to make a port), `emcon` (`ghost`, `passive`, `standard`,
+/// `combat`), `step_ms` (how long the bubble flies what she asks), `stop`
+/// (`none`, `hailed`, `hove_to`, `cleared`, `ran`), `stop_by` (the contact
+/// that holds the stop on her, or `()`) and `heard` (the furthest of those
+/// words a picket has spoken on open radio in the bubble).
+fn space_map(space: &crate::space::view::SpaceView) -> Dynamic {
+    let mut map = mush_mind::rhai::Map::new();
+    let [vx, vy, vz] = space.vel_cms;
+    map.insert("vx_cms".into(), int(vx));
+    map.insert("vy_cms".into(), int(vy));
+    map.insert("vz_cms".into(), int(vz));
+    map.insert("pitch_mdeg".into(), int(space.pitch_mdeg));
+    map.insert("accel_cms2".into(), int(space.accel_cms2));
+    map.insert("propellant_kg".into(), int(space.propellant_kg));
+    map.insert("dv_mps".into(), int(space.dv_mps));
+    map.insert("reserve_mps".into(), int(space.reserve_mps));
+    map.insert(
+        "emcon".into(),
+        word(crate::space::view::emcon_word(space.emcon)),
+    );
+    map.insert("step_ms".into(), int(space.step_ms));
+    map.insert("stop".into(), word(space.stop.as_str()));
+    map.insert(
+        "stop_by".into(),
+        opt(space.stop_by, |id| Dynamic::from_int(contact_int(id))),
+    );
+    map.insert("heard".into(), word(space.heard.as_str()));
+    Dynamic::from_map(map)
+}
+
+/// **`space_contact(v, id)`** — what a hull in a space bubble reads of the
+/// contact `id` beyond its row, as a map; `()` on the ground and for an id the
+/// view does not hold: `elevation_deg`, `vx_cms`, `vy_cms`, `vz_cms` (its
+/// velocity in the bubble's frame), `stop` (the stop it is under) and `emcon`
+/// (the posture its emissions read as).
+fn space_contact_map(row: &crate::space::view::SpaceContactView) -> Dynamic {
+    let mut map = mush_mind::rhai::Map::new();
+    let [vx, vy, vz] = row.vel_cms;
+    map.insert("elevation_deg".into(), int(row.elevation_deg));
+    map.insert("vx_cms".into(), int(vx));
+    map.insert("vy_cms".into(), int(vy));
+    map.insert("vz_cms".into(), int(vz));
+    map.insert("stop".into(), word(row.stop.as_str()));
+    map.insert(
+        "emcon".into(),
+        word(crate::space::view::emcon_word(row.emcon)),
+    );
+    Dynamic::from_map(map)
 }
 
 #[cfg(test)]

@@ -1399,6 +1399,11 @@ pub struct MindView {
     /// held to, learned lawfully off the keyframe's own key and never off the
     /// config.
     pub odds_floor_permille: u32,
+    /// **What a hull in a space bubble reads beyond all of the above** (doc 44
+    /// unit MW.9): `None` for every hull on the ground. Read from a script
+    /// through the kernels `space(v)` and `space_contact(v, id)`, never a
+    /// getter, so the keyframe's parity table is not moved by it.
+    pub space: Option<std::sync::Arc<crate::space::view::SpaceView>>,
 }
 
 /// **One contact as a mind sees it** (17b cut M1a.5; doc 17 §3): a keyframe
@@ -2028,6 +2033,7 @@ impl Arena {
             contacts,
             scan_tables: frame.scan_tables,
             odds_floor_permille: frame.odds_floor_permille,
+            space: None,
         })
     }
 

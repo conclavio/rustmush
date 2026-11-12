@@ -685,6 +685,31 @@
         "linux/32/hg.conclav.dev (harness kind run 41855932681)"
       ],
       "reason": "FR.5 is doc 40's one kernel rebless (Q-36-56, doc 40 §4a). Two of its items move the harness fights: a mind's line_to now traces the wrecks the fire trace walks (§4.1 item 3, Q-40-8, no API bump), and a jammed or damaged part now takes its effect, the sight off or at half range, the pod and filter off, a jammed plant Off with STARTUP refused, a damaged plant's heat at half, a core a class down (item 4, Q-40-3/4). So thinks, landings, cond fires, the states at the end (one hull ends in startup: a warm-up hit jammed its plant), the motor and perception totals, the shots and the four final substep hashes move. The await (item 1), note_fire (item 2) and the coupled tow (item 5) touch no OOC lane. The timing block is unmoved (TS.21's, conclav.dev), and every lane held its lenses and was sound on the same run."
+    },
+    "mw9_deterministic_update": {
+      "cut": "doc 44 MW.9 (PR #551), the mind ABI at API 8",
+      "recorded_utc": "2026-11-12T04:05:00Z",
+      "measured_revision": "297e6161da39975cace5e859b4c8b4a083924221, against main at 330a8b249497cebd292806bef3e2013a61d22027",
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev (by hand as ghrunner, nice 10, HOSTNAME unset)",
+        "linux/4/github-ubuntu-latest (run 43146168987)"
+      ],
+      "reason": "MW.9 adds four kernels for minds in space (space, space_contact, course, course_of) and so raises the mind API to 8: MIND_ABI is rhai=1.26.0;api=8;stock=3, and minds/content.rs re-blessed the Standard Doctrine's source identity for its header alone (3837c345 to 42c694ed). A seal's digest covers its ABI and its source, and the arena folds every seal into its state hash, so every state hash moved: the minds lane's four final_substep_hash leaves, and the hash value on every line of the arena lane's ledger. A ledger line writes that value as a decimal, so the stream is 766 bytes longer (1650150 to 1650916, still 103 chunks). No count moved and nothing a unit does moved. Proved on conclav.dev by dumping the arena lane's streamed ledger at main and at this revision: 9324 lines each, 9323 hash values each, no line differs once hash and the mind_sealed lines' source are taken out, and the 766 bytes are the digits of the hash values alone (180132 to 180898). A deterministic-only update, as the CF.0 and CF.6b records before it.",
+      "timing_policy": "TS.21's timings and host (conclav.dev) retained; no threshold or host comparison changed. On the same run the timing gate was live there and read p50 -0.5%, p99 +4.6% and the window p99 +6.1%, inside 20%.",
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.ceiling_authored.final_substep_hash"
+      ],
+      "previous": {
+        "counters.ledger_bytes_streamed": 1650150,
+        "minds.fill_authored.final_substep_hash": "11296100550182435994",
+        "minds.stock_ci.final_substep_hash": "10958828204349461749",
+        "minds.stock_authored.final_substep_hash": "11620081165489262692",
+        "minds.ceiling_authored.final_substep_hash": "13684314779734303388"
+      }
     }
   },
   "classes": {
@@ -730,7 +755,7 @@
     "frames_per_pulse_mean": 21.192,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1650150,
+    "ledger_bytes_streamed": 1650916,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },
@@ -770,7 +795,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "13684314779734303388",
+      "final_substep_hash": "1115581876497461230",
       "inline_thinks": 1754,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -876,7 +901,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "11296100550182435994",
+      "final_substep_hash": "5028223047829299195",
       "inline_thinks": 1671,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -918,7 +943,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "11620081165489262692",
+      "final_substep_hash": "1771993770098865287",
       "inline_thinks": 1683,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -951,7 +976,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "10958828204349461749",
+      "final_substep_hash": "2814354088987883261",
       "inline_thinks": 1691,
       "jitter_ms": 250,
       "jitter_per_mille": 250,

@@ -18,13 +18,13 @@ pub struct Api4SealHashControl {
 impl Api4SealHashControl {
     pub fn capture(units: &[CustodyUnit]) -> Self {
         assert!(!units.is_empty(), "the control must capture actual custody");
-        assert_eq!(tacsim::minds::MIND_ABI, "rhai=1.26.0;api=7;stock=3");
+        assert_eq!(tacsim::minds::MIND_ABI, "rhai=1.26.0;api=8;stock=3");
         let api4_source = tacsim::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API4 Standard source digest");
         let api6_source = tacsim::arena::snapshot::digest_from_text(
-            "3837c3456fbf1e3b8e012375a3d4e4cfcc2645d024fe203eef9359de1473a316",
+            "42c694edd1d2190b0acc37dbd3257cd8d543d27569f4d70c73ab215f3e76e4bc",
         )
         .expect("the observed API6 Standard source digest");
         assert!(
