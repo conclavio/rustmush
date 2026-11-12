@@ -77,7 +77,227 @@ step 3 is the launch refused while the licence's resale is pending). Results are
 
 ## MW.1
 
-Not built.
+The launch switch and the bring-up script (doc 44 §7.1, §8 steps 2 to 8; Q-44-3 to Q-44-8,
+Q-44-41, Q-44-47, Q-44-48; §4c rows 3 to 7 and 19). Every question it rests on is ruled.
+
+**Two things the owner should read first.**
+
+1. **A rating is long at any pulse, so the seed line comes after go-live.** Q-44-41 and MW.6
+   say a dev box at 50 ms rates a mind in minutes, from the acceptance stories' rig (a lease a
+   third of a second, a certificate about six minutes). On a world brought up by the runbook,
+   measured on conclav.dev (32 cores, release build): **a copy of Standard Doctrine rated in
+   1,948 s, 32.5 minutes, at `registry_pulse_ms = 50`**. A lease took 1.27 s at 50 ms and 1.10 s
+   at 10 ms, with the server at about 6 per cent of one core: below about a second the pulse is
+   not what paces a rating. A named House source is longer: the Meridiani source rated in 4,757 s, 79 minutes, at 50 ms, and in 4,084 s at 10 ms. So the bring-up does not hold players off for the
+   rating: the unit is started after the Active boot's checks, and the seed line and the House's
+   purchase run on the running world.
+2. **No House can be given hulls on a live world.** A House's first licence needs three titled
+   hulls. The only spare hulls a fresh world has are the Ceres Co-op's eight pool Drays; three
+   Houses need nine; and a Dray titled to a House closes `+coop/enrol` for every player
+   (`port/hull.rs`: the Co-op's readiness wants every pool Dray with the Trust or a graduate).
+   No staff verb makes a hull, and the yard commissions one only from goods delivered out of a
+   docked hold. So the script **lends** three Drays to one House for the purchase and hands
+   them back. Every House has its policy, agent, grants and funded treasury; none keeps a hull,
+   so none buys again. Giving the Houses hulls of their own needs content (the lane pack titles
+   them hulls) or a staff commission verb. Neither is in this unit's files; it is the follow-up
+   this unit leaves.
+
+**Built.**
+
+- **`MINDS_LAUNCH` in `instance.env`** (`on` or `off`; empty is off; anything else refuses the
+  render). `deploy/instance/render.sh` reads it itself: it is not a `__TOKEN__`, because what it
+  decides is whether a commented line of the template is live at all. On, **and with the box's
+  launch document at `<DATA_DIR>/launch.json`**, the `[tacsim.minds]` header and
+  `launch_path = "<DATA_DIR>/launch.json"` are rendered live. On with no document, or off, the
+  line stays the template's comment. So `launch_path` is out of the rendered file until the
+  document exists, a deploy onto a fresh or wiped store boots without the launch whatever the
+  switch says, and no state renders an empty path. dev1 and dev2 ship `MINDS_LAUNCH=on`
+  (Q-44-3); the reference instance ships `off`.
+- **`REGISTRY_PULSE_MS`**, read by `render.sh` the same way: not empty, it renders the header and
+  `registry_pulse_ms = <n>` live. dev1 and dev2 ship 50 (Q-44-41, provisional); the reference
+  instance ships it empty, which is the server's 1,000.
+- **`RAID_DIRECTOR`**, an ordinary token, in a new `[tacsim.field]` block of the template with
+  that one key (the block's other keys keep their compiled defaults). dev1 and dev2 ship `true`
+  (Q-44-7); the reference instance `false`. `mushd.toml.example` gains the block.
+- **`[llm.routes.content_assist]`** in the template and the example: `z-ai/glm-5.3`, 2,048
+  tokens (the pass asks for no more), 60 s, reasoning low. Provisional; it is the class the other
+  structured authoring routes use.
+- **`scripts/reset-instance.sh`** comments a live `launch_path` in the rendered config when it
+  wipes the world, after the wipe and before `--bootstrap-staff` and the start, both of which a
+  live path with no file refuses. It is the one line of the rendered config a reset touches.
+  `--no-start` leaves the unit stopped after the wipe.
+- **`SERVER_HOLD=1`** in `deploy/dev1-split/deploy.sh` and `deploy/dev2-split/deploy.sh`: a
+  server unit that is not running is installed and enabled and not started.
+- **`deploy/instance/launch-bringup.py`** (Python 3, standard library; root on a box). It runs
+  the world itself for three boots, on a private IPC socket with a private gateway on
+  `127.0.0.1:<SSH_PORT + 20000>`, and types as #1 over SSH at that gateway's welcome screen:
+  1. the plain boot: the Republic, the three system accounts, the three Houses, the Basin
+     importer and its fitting shop, the Tether back room, the Registry, six service logins, and
+     each House's procurement agent, grants, faction membership and funded root-scope treasury;
+     then `launch.json` in mode `initialize`, with `hardware.ungovern` and three `procurement`
+     entries, and a render;
+  2. the Initialize boot: the seven Registry grants on the review scope to every operator, the
+     four initialize actions, the document's mode set to `active`;
+  3. the Active boot: `@mind/launch` must name every operator `ready`; the 18 major NPCs
+     enabled with `@agent/enable`, read from the cast packs in the tree (not by editing them);
+  4. the unit started, `@mind/launch` read again on it, and the LLM check;
+  5. on the running world: one line imported or copied, saved, rated, filed by #1 and listed
+     on the player market; three Drays lent to one House; the unit restarted (a House's month
+     that found an empty counter stays closed until a restart); the House's purchase read from
+     its procurement ledger in the store; the Drays handed back. `--seed-only` runs this step
+     alone and takes a stopped one up; `--no-seed` leaves it out.
+  A second run on a box that is already live stops nothing.
+- **The LLM check** (§8 step 8): #1 asks a major NPC a question and starts a simulator match
+  against an AI squad, then reads `@llm/log`. It passes only on an `ok` row for an
+  `npc_dialogue_*` route, an `ok` row for `tacsim_deliberate`, and an `@agent/show` that says the
+  NPC's last turn was the model's. `@llm/budget` and `@llm/dashboard` are written to
+  `<DATA_DIR>/bringup/llm-check.txt` (Q-44-48). `--llm-check` runs it alone.
+- **`scripts/launch-bringup-acceptance.sh`**: the proof below as one script, on a scratch
+  instance with its own Redis, driving the real `reset-instance.sh` and the real bring-up as
+  root over a `systemctl` shim. `scripts/tests/render-launch.sh` (in CI's script step) holds the
+  switch against the shipped template; `scripts/tests/reset-instance.sh` gains the launch line
+  and `--no-start`; `scripts/tests/llm-stub.py` answers the LLM routes for the acceptance run.
+- `deploy/README.md` describes the switch, the script, how its steps are typed as #1, how
+  players are kept off, what a rating costs, and what a House's purchase needs.
+
+**How players are kept off.** The instance's world unit is stopped before the first boot and
+started only after the Active boot's checks. With it stopped nothing answers on the instance's
+IPC socket, so the public gateway generations have no world to log in to or register on; the
+private gateway is on loopback. A stop on a refusal, or an interruption, leaves the unit
+stopped and the private boots stopped. Fresh store to players let in is about two minutes.
+
+**What the proof found that the runbook did not say**, each handled by the script and written
+into the README:
+
+- **The Roll's initialize action must be typed last.** Once `roll-initialize-commerce` has landed
+  the world boots only Active: the Initialize boot's preflight refuses
+  (`commerce initialization preflight: commercial records disagree`). The runbook and the tests
+  type it first. A bring-up interrupted between it and the three industry actions left a store
+  that booted in neither mode. The script types the three industry actions first, and treats
+  that refusal of the Initialize boot as "all four landed". The README's step 10 now says so.
+- **A typed line is flood-limited for #1 too** (ten a second, thirty in a burst), and the world
+  answers "busy" while the last action commits. The script paces itself and types a
+  turned-away line again.
+- **A boot more than 30 s after the store's last clock checkpoint runs the five-minute
+  post-outage countdown**, with every world action refused. A second run of the bring-up after a
+  pause meets it. The script waits it out and says so.
+- **A House's month that found nothing stays closed until a restart** (the flag is in memory),
+  and its first look is at an empty counter. Hence the restart in step 5.
+- **`@account/list` stops at twenty rows with no cursor**, so accounts are found by
+  `@account/show` one id at a time.
+- **A backgrounded shell hands a child SIGINT ignored**, and a closed terminal sends SIGHUP: the
+  script sets its own handlers for INT, TERM and HUP so its private boots are always stopped,
+  writes their pids down, and stops any a killed run left behind.
+
+**Tests.** The proof is `scripts/launch-bringup-acceptance.sh`, run as root on conclav.dev
+(Ubuntu 26.04, Redis 8.10 on a spare port, a release build of `mush-server` and `mush-gateway`
+at this branch), each run on its own scratch instance. Never on dev1 or dev2.
+
+- **The fast steps** (`SEED=0`), passed in five minutes:
+  - run 1, a fresh store, interrupted by SIGINT 40 s in. It was inside the Initialize boot,
+    with the first initialize action landed and three to go. Four attempts to register at the
+    public front door during it were all kept out, and no private boot was left running;
+  - run 2, the same store, to the end: it took up at the Initialize boot, landed the other
+    three actions, and `@mind/launch` read `Registry operators: #810 ready.` in the Active boot
+    and again on the started unit. Probes were kept out until the unit started, and one
+    registered once it had;
+  - the LLM check, with no provider answering, failed as it must;
+  - the real `reset-instance.sh --staff keeper --no-start`: the rendered config read
+    `# launch_path`, and the data directory held no document;
+  - run 3, the second bring-up on the reset store: plain, Initialize and Active boots (1.0 s,
+    1.5 s, 1.5 s to come up), `ready`, five probes kept out;
+  - `scripts/tests/render-launch.sh`: off, on without and with the document, the pulse, the
+    refusals, and the plain substitution byte for byte.
+- **The LLM check's passing path** (`LLM=stub`, the providers pointed at
+  `scripts/tests/llm-stub.py`): `npc_dialogue_major ok` for the first major NPC,
+  `@agent/show` "the model answered and did nothing", and `tacsim_deliberate ok` from a
+  simulator match #1 started and boarded against an AI squad. With no provider the same check
+  reads `disabled` or `error` rows and fails.
+- **The purchase, in the script's final shape** (the whole acceptance, the long step last, on
+  the second bring-up's running world): twice. At the defaults (50 ms): `Seedline@1`
+  rated in 1,949.2 s; listed as `59809cd4  Seedline Market  sealed  class I  400cr  90+28
+  days`; Meridiani lent Slack Water, Cold Comfort and Ninth Ledger; the unit restarted;
+  `Meridiani's agent #812 bought licence 2 of charter 828 for 40000 minor credits (15s after
+  the boot); the root treasury holds 160000 minor`, read from the procurement ledger; the three
+  Drays handed back, and `@tacsim/port status` read every programme's hulls ready;
+  `acceptance: PASSED`. At 10 ms the same, with the rating at 1,666.1 s.
+- **The purchase of a House source** (`--seed-line meridiani`, 50 ms): the Meridiani source
+  rated in 4,757.2 s and was listed as `a92edfa1  Meridiani Field Series M  sealed  class II
+  400cr  90+28 days`; Meridiani's agent bought it 15 s after the restart. This run was
+  stopped and taken up with `--seed-only` three times on the way (a name the holdings list
+  cuts at twenty characters, which the script now knows by its start; an older rig's shim), and
+  each time went on from where the line stood.
+- **After the hand-back**, on that running world, `@tacsim/port status` read `ceres_port hulls:
+  8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]`. The script now reads
+  that line itself and stops if any programme's hulls are not ready.
+- **Ratings timed** (queued to finished, release build, conclav.dev): a copy of Standard
+  Doctrine 1,948.3 s and 1,949.2 s at 50 ms, 1,666.1 s at 10 ms; the Meridiani source 4,757.2 s
+  at 50 ms and 4,084.3 s at 10 ms.
+- An earlier shape of the script, with the seed step inside the Active boot, kept 184 attempts
+  to register out over the 37 minutes of its rating.
+- Locally: `cargo test -p mush-config -j 2` (the new
+  `mw1_the_launch_switch_renders_the_path_only_beside_its_document` among the 15 of
+  `shipped_configs`) and `cargo test -p mush-contract-tests -j 2` green; `cargo fmt -p
+  mush-config --check` clean. On Linux: `scripts/tests/reset-instance.sh` (the launch line,
+  `--no-start`) and `scripts/tests/render-launch.sh` pass.
+
+**Divergences.**
+
+- **The seed line and the purchase come after the unit is started**, not in the Active boot
+  (first paragraph). The unit's row asks that no player can log in before the Active boot; that
+  holds. It does not hold players off for the hours a rating takes.
+- **The Houses are lent hulls, not given them** (second paragraph). `--keep-house-hulls` leaves
+  them, with enrolment closed.
+- **Byte for byte, precisely.** With `MINDS_LAUNCH` off and `REGISTRY_PULSE_MS` empty the render
+  is the plain token substitution of the template, byte for byte, and both the shell test and
+  `shipped_configs.rs` assert it. Against main's render of the same env the file differs by the
+  template's own additions: the `[tacsim.field]` block, the `content_assist` route, and comment
+  lines about the switch. No live line that main rendered is changed.
+- **The service characters each have a login of their own**, where the runbook hangs the clerk
+  and the operator off `LaunchAgent`'s login with `@newchar`. One `create` makes login and
+  character together, so no run stops with a login half made, and no password is kept: each is
+  random and thrown away. To play one, #1 types `@newpassword <name>=<password>`. (The first
+  draft kept the passwords in a state file; CodeQL flagged it, rightly.)
+- **The seed line is filed personally by #1**: by default charter `Seedline Market`, a copy of
+  Standard Doctrine named `Seedline` (`--seed-line standard`: the quickest to rate, and a House
+  buys it). `--seed-line meridiani`, `coprates` or `safe_conduct` imports that named source
+  instead, as the zero-player story does. Whether a House filing of the same revision is still
+  possible after #1 has filed it personally was not tried.
+- **Procurement policies name the Republic as `standing`** and a budget of 200,000 a month
+  (the config's default, written into the document so the grant's limit and the policy agree).
+  Each root-scope treasury is funded with one month's budget from `launch.faucet`.
+- `hardware.ungovern` carries no `fee_minor`: the catalogue's fee applies.
+- `deploy/instance/launch.json.example` is unchanged: it is the format-2 document two tests
+  read, and the dev launch's document is the one the script writes.
+
+**Defaults that would be costly to undo.** None. The switch's shape (a key `render.sh` reads,
+the document's fixed place in the data directory) is the one other units will lean on; changing
+it is an edit to `render.sh`, the contract test and three env files.
+
+**Not built.**
+
+- Hulls for the Houses (above).
+- Anything that makes a rating shorter. Below a second the pulse is not what paces it.
+- The House chain's own filings and counter listings of the three named sources. The runbook
+  does not list them, and procurement does not read the House counter.
+- A staff way to end the post-outage countdown early. A re-run after a pause waits five minutes.
+- The acceptance script is not in CI: it needs root and a Redis with the JSON module, and its
+  last step is hours. MW.19 stands the bring-up up in the bot's rig (`--no-systemd`).
+- Nothing was run on dev1 or dev2. MW.3 is the go-live.
+
+**Not pinned by a story.**
+
+- The LLM check against a real provider. The acceptance run proves it fails with no provider
+  and passes against a local stub that answers every request with one line; what a real model's
+  `ok` row and a real fallback look like on a box is MW.3's to see.
+- Co-op enrolment after the Drays go back: the port's readiness report reads the pool's hulls
+  ready again, and the script checks that line, but no player was enrolled afterwards in the
+  proof.
+- A House's purchase of the same line a second time, or by the other two Houses: one House,
+  one licence.
+- The all-in-one path (`mushd` alone, where the split is not built) and the two older unit
+  shapes: written, not run.
+- The script against a store that already has players.
 
 ## MW.2
 
