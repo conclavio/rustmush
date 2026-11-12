@@ -2137,8 +2137,17 @@ Answered, not changed:
 - **The evidence for `sfr13`**: the same prints on main's code (`0d52a87d2`) and on this
   unit, on conclav.dev, by a patch to the story that was never committed. The figures are
   in the table above.
-- **CI on the pull request's head, the dispatch-only jobs and the harness gate on
-  conclav.dev**: the pull request records the runs.
+- **Two of the unit's own tests raced, and CI's four-core runner found it** (run
+  43321942691, `test (tacsim-lib)`): the held-step test asserted that a worker had reached
+  its parked think without waiting for it, and the pool-worker test read the workers'
+  traces while the last step's thinks were still out. Both now wait for the worker. The
+  unit's tests and every test under `space::` then passed pinned to one core six times
+  running and to two cores three times, on conclav.dev (`taskset`).
+- **The harness gate on conclav.dev**, run 43320927299 on `1298949b0` (the code as it is;
+  the commits after it touch tests and this note): green, the timing gate live. No
+  baseline field moved, so nothing is re-blessed.
+- **CI on the pull request's head and the dispatch-only jobs**: the pull request records
+  the runs.
 
 **Not verified.**
 

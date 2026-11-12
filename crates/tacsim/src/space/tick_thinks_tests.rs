@@ -582,6 +582,15 @@ fn mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on() {
             &mut out
         ));
         let owed = run.active.thinks_owed.expect("the minds have thinks out");
+        // A worker is known to be parked on a think before the held ticks are counted. (The
+        // ticks below are held whether or not a worker has got that far; this makes the
+        // test's claim, that the thread goes on beside a parked worker, true on a runner
+        // whose few cores are slow to wake one.)
+        let woken = Instant::now() + Duration::from_secs(60);
+        while gate.arrived() < 1 {
+            assert!(Instant::now() < woken, "{name}: no worker reached the gate");
+            std::thread::yield_now();
+        }
         let before = run.clone();
         let started = Instant::now();
         for n in 0..200_i64 {
@@ -603,7 +612,6 @@ fn mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on() {
             spent < Duration::from_secs(10),
             "{name}: two hundred held ticks took {spent:?}"
         );
-        assert!(gate.arrived() >= 1, "{name}: a worker is parked on a think");
         // The step that fell due at second 102 is the one taken, whenever it is taken.
         let (owner, mark) = run.active.think_owner(owed);
         assert_eq!(
@@ -786,6 +794,18 @@ fn mw11_every_think_of_a_bubble_runs_on_a_pool_worker() {
         None,
         &never,
     );
+    // The tenth step's thinks are still out: nothing has asked for them. Wait for the
+    // workers before the traces are read.
+    let owed = run
+        .active
+        .thinks_owed
+        .expect("the tenth step's thinks are out");
+    let (owner, mark) = run.active.think_owner(owed);
+    let until = Instant::now() + Duration::from_secs(60);
+    while !host.is_answered(owner, mark) {
+        assert!(Instant::now() < until, "the last batch never answered");
+        std::thread::yield_now();
+    }
     let here = std::thread::current()
         .name()
         .unwrap_or("unnamed")
