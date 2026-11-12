@@ -6042,3 +6042,181 @@ fn m3_a_never_cored_mind_runs_the_rom_from_its_first_think_with_no_drop_line() {
     );
     assert_eq!(arena.minds.get(&RED).and_then(|state| state.dropped), None);
 }
+
+// ---------------------------------------------------------------------------
+// Doc 44 cut MW.7: the absent player's rule binds a sealed script
+// ---------------------------------------------------------------------------
+
+/// **A script written to fire first**: the armed red starts up, then at every think locks the
+/// hostile it has told apart, arms the cannon's S1 on the lock and fires it. It goes home when
+/// its order says so, to the cell the test writes in for `HOME`.
+const FIRES_FIRST: &str = r#"
+fn think(v, c) {
+    if v.unit != 4 { return; }
+    if !("k" in this) { this.k = 0; }
+    this.k += 1;
+    if this.k == 1 { startup(); return; }
+    if v.order != () && v.order.objective == "withdraw" { goto(HOME); }
+    let id = ();
+    for k in v.contacts { if k.identified && !k.friendly { id = k.id; } }
+    if id == () { return; }
+    arm("cannon", "lock", 100, 15, 0, 0, 4294967295);
+    lock(id);
+    fire("cannon", 1);
+}
+"#;
+
+/// The rounds the armed red fired, in `journal`.
+fn red_rounds(journal: &[LedgerEvent]) -> usize {
+    journal
+        .iter()
+        .filter(|line| {
+            matches!(&line.kind, tacsim::arena::ledger::EventKind::Fired { unit, .. } if *unit == RED)
+        })
+        .count()
+}
+
+/// How far the armed red stands from `cell`, in cells (Manhattan).
+fn red_cells_from(arena: &Arena, cell: (u16, u16)) -> u16 {
+    let here = arena
+        .unit(RED)
+        .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+        .expect("red stands on the ground");
+    here.0.abs_diff(cell.0) + here.1.abs_diff(cell.1)
+}
+
+/// **Doc 44 cut MW.7: a player's sealed mind is bound by the absent player's rule** (Q-44-38;
+/// the acceptance's second story, at the arena). A script written to fire first does, for a
+/// hull nobody has said is an absent player's. Flown for one, every shot it asks for is refused
+/// at the landing, though its view still holds the hostile and the script still asks; its view
+/// carries the go-home order and shows that hostile as one it may not answer. Once the
+/// hostile's fire has arrived on it, the same script's next shot leaves. And the script, which
+/// reads the order, drives the hull home, where the kernel lets it out at the ramp.
+#[test]
+fn mw7_a_sealed_mind_that_fires_first_is_refused_until_it_is_fired_on() {
+    use tacsim::arena::party::{EndCondition, Relation};
+    let probe = the_j_field(Controller::Mind);
+    let home = probe.entry_cell(RED).expect("red has a home");
+    let source = FIRES_FIRST.replace("HOME", &format!("[{}, {}]", home.0, home.1));
+    let runner = rhai(&probe, &source);
+
+    // Its player's: the script fires first.
+    let mut present = the_j_field(Controller::Mind);
+    present.mind_runner = runner.clone();
+    let mut present = Rig::new(present);
+    present.to(think_at(RED, 6));
+    assert!(
+        red_rounds(&present.journal()) > 0,
+        "the script opens fire when its player is not away"
+    );
+
+    // Flown for an absent player, in a field whose end is its host's.
+    let recorded = Recorded::on(runner);
+    let mut arena = the_j_field(Controller::Mind);
+    arena.mind_runner = recorded.clone();
+    arena.end = EndCondition::Host;
+    assert!(arena.set_absent(RED, true));
+    let start = red_cells_from(&arena, home);
+    let mut rig = Rig::new(arena);
+    rig.to(think_at(RED, 8));
+    assert_eq!(
+        red_rounds(&rig.journal()),
+        0,
+        "every shot the script asked for is refused"
+    );
+    let kept = recorded.think(RED, 6);
+    assert_eq!(kept.result.fault, None);
+    assert!(
+        kept.result
+            .intents
+            .iter()
+            .any(|intent| matches!(intent, IntentKind::Fire { .. })),
+        "the script still asks: {:?}",
+        kept.result.intents
+    );
+    assert_eq!(
+        kept.view.order.as_ref().map(|order| order.objective),
+        Some(MindObjective::Withdraw),
+        "the go-home order reaches a sealed mind"
+    );
+    assert!(
+        kept.view
+            .contacts
+            .iter()
+            .all(|row| row.relation != Relation::Hostile),
+        "nobody has fired on it, so it is shown nobody to answer: {:?}",
+        kept.view.contacts
+    );
+
+    // The hostile's fire arrives on it: the next shot the script asks for leaves.
+    if let Some(unit) = rig.arena.unit_mut(RED) {
+        unit.fired_on_by.insert(BLUE);
+    }
+    let now = rig.arena.now_ms;
+    rig.to(now + 4 * STOCK_THINK_MS);
+    assert!(
+        red_rounds(&rig.journal()) > 0,
+        "it answers the unit that fired on it"
+    );
+
+    // And it is taken home: the script obeys the order it was shown, and the kernel lets the
+    // hull out at the ramp it reaches.
+    rig.to(think_at(RED, 60));
+    assert!(
+        red_cells_from(&rig.arena, home) <= 1 && start > 1,
+        "the script drives it home: {} cells off, from {start}",
+        red_cells_from(&rig.arena, home)
+    );
+    let ramp = (
+        i64::from(home.0) * 1_000 + 500,
+        i64::from(home.1) * 1_000 + 500,
+    );
+    assert!(
+        rig.arena.withdraw(RED, Some(ramp)).is_ok(),
+        "the kernel lets it out at the ramp"
+    );
+}
+
+/// A script that faults at every think of the armed red.
+const ALWAYS_FAULTS: &str = "fn think(v, c) { if v.unit != 4 { return; } lock(999); }";
+
+/// **Doc 44 cut MW.7: a mind whose script faults falls to the house default and goes home**
+/// (the acceptance's fourth story, at the arena). Flown for an absent player, the script
+/// faults three thinks running and the hull is dropped to the ROM, the Standard Doctrine. The
+/// doctrine reads the go-home order the script never read, and drives the hull home.
+#[test]
+fn mw7_a_faulting_mind_falls_to_the_house_default_and_goes_home() {
+    use tacsim::arena::ledger::EventKind;
+    use tacsim::arena::party::EndCondition;
+    let probe = the_j_field(Controller::Mind);
+    let home = probe.entry_cell(RED).expect("red has a home");
+    let mut arena = the_j_field(Controller::Mind);
+    arena.mind_runner = rhai(&probe, ALWAYS_FAULTS);
+    arena.end = EndCondition::Host;
+    assert!(arena.set_absent(RED, true));
+    let start = red_cells_from(&arena, home);
+    assert!(start > 1, "red starts away from home");
+    let mut rig = Rig::new(arena);
+    rig.to(think_at(RED, 4));
+    let journal = rig.journal();
+    let faults = journal
+        .iter()
+        .filter(|line| matches!(&line.kind, EventKind::MindFault { unit, .. } if *unit == RED))
+        .count();
+    assert!(
+        faults >= 3
+            && journal.iter().any(|line| {
+                matches!(&line.kind, EventKind::MindDropped { unit, cause, .. }
+                    if *unit == RED && cause.as_str() == "strikes")
+            }),
+        "three faults drop it to the house default: {faults} fault(s)"
+    );
+    // The house default takes it home, firing on nobody on the way.
+    rig.to(think_at(RED, 60));
+    assert!(
+        red_cells_from(&rig.arena, home) <= 1,
+        "the house default drives it home: {} cells off, from {start}",
+        red_cells_from(&rig.arena, home)
+    );
+    assert_eq!(red_rounds(&rig.journal()), 0, "and it fires on nobody");
+}

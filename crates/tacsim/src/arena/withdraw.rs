@@ -52,6 +52,10 @@ pub enum WithdrawRefusal {
     /// The carrier it would board is a wreck or no longer in the field (this module's head):
     /// there is nothing to go aboard, so it stays in the field.
     CarrierLost,
+    /// **The ask was recalled** (doc 44 cut MW.7; Q-44-37): the host asked the unit out for a
+    /// player who was away, and that player took the controls back before the pulse that
+    /// would have let it go. Answered by the task, never by [`Arena::withdraw`].
+    Recalled,
 }
 
 impl WithdrawRefusal {
@@ -68,6 +72,9 @@ impl WithdrawRefusal {
             }
             WithdrawRefusal::CarrierLost => {
                 "That unit's carrier is lost; there is nothing to go aboard, so it stays in the field."
+            }
+            WithdrawRefusal::Recalled => {
+                "That unit's pilot is back at its controls; it stays in the field."
             }
         }
     }

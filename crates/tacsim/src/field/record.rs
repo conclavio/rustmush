@@ -153,6 +153,12 @@ pub struct FieldUnit {
     /// (`crate::surface::presence::publish`), where a carrier admitted at promotion is the pad.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub arrived: bool,
+    /// **Its player is not at its controls** (doc 44 cut MW.7; `super::absent`): why, since
+    /// when, and whether its mind has taken it. Omitted while its pilot flies it, so
+    /// [`FIELD_LIVE_FORMAT`] is unchanged; kept here so a restart resumes the mind and not the
+    /// seat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub away: Option<super::absent::Away>,
 }
 
 /// **A running field's live record** (`tacsim:field:live:<site>`).
@@ -500,6 +506,7 @@ mod tests {
                     epoch: None,
                     aboard: Vec::new(),
                     arrived: false,
+                    away: None,
                 },
                 FieldUnit {
                     unit: ObjId(9),
@@ -508,6 +515,7 @@ mod tests {
                     epoch: None,
                     aboard: vec![ObjId(3)],
                     arrived: false,
+                    away: None,
                 },
             ],
         }

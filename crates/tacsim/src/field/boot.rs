@@ -174,6 +174,13 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     let head = crate::arena::Snapshot::head(&document).map_err(|error| error.to_string())?;
     let mut arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit)
         .map_err(|error| error.to_string())?;
+    // Doc 44 cut MW.7 (the review's finding 1): the snapshot's word on which units are flown
+    // for an absent player may be older than the live record's, which is written at once. The
+    // record decides: a unit handed back after the snapshot is not left under the absent
+    // player's rule, and one handed over after it is under it from the first pulse.
+    for row in &live.units {
+        arena.set_absent(row.unit, row.away.is_some_and(|away| away.handed));
+    }
     // Doc 40 cut FR.4 (Q-38-28, Q-40-21): the resume rolls from the snapshot it rewinds to, onto
     // a segment past both the live record's and the snapshot's, so no opening writes to a log
     // another opening wrote; the `segment` line is the resume's first.
@@ -278,25 +285,32 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     }
     super::record::write_live(ctx, &live);
     super::boarding::seed(ctx.w, task, wrecks);
-    // The seats: a pilot still sitting in the unit is its pilot again. Focus never survives a
+    // The seats: a pilot still sitting in the unit is bound to it again. Focus never survives a
     // boot (mush-sim's D-E7-34), so the pilot is told how to take the cockpit back.
+    //
+    // Doc 44 cut MW.7 (Q-44-37; `super::absent`, "a restart"): only a pilot who is connected is
+    // handed the controls. A unit its mind held for an absent player is the mind's again, and a
+    // seated pilot who is not connected finds the seat `Linkdead`, the five minutes running.
     for row in &live.units {
         let Some((pilot, station)) = &row.pilot else {
             continue;
         };
         if super::parties::seated(ctx.w, row.unit).is_some_and(|(sat, _)| sat == *pilot) {
-            if let Some(registry) = ctx
-                .w
-                .module_state_mut::<crate::arena_bridge::ArenaRegistry>()
-            {
-                registry.bind_pilot(*pilot, task, row.unit);
-            }
             // A hired NPC's hull stays the doctrine's (doc 32 cut CF.6): bound for its frame,
             // never handed the seat's control.
             if super::orders::is_npc(ctx.w, *pilot) {
+                if let Some(registry) = ctx
+                    .w
+                    .module_state_mut::<crate::arena_bridge::ArenaRegistry>()
+                {
+                    registry.bind_pilot(*pilot, task, row.unit);
+                }
                 continue;
             }
-            crate::arena_bridge::reseat(ctx, row.unit, *pilot);
+            if row.away.is_some_and(|away| away.handed) {
+                continue;
+            }
+            super::absent::at_resume(ctx, task, row.unit, *pilot);
             ctx.out.sys_to_actor(
                 *pilot,
                 "tacsim.field",

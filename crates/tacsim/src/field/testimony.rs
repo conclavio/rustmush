@@ -170,6 +170,7 @@ mod tests {
             epoch: None,
             aboard: Vec::new(),
             arrived: false,
+            away: None,
         };
         let led = |n: usize, by: Option<u32>, key: u32| FieldParty {
             party: party(n),

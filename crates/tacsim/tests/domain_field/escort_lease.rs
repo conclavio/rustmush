@@ -162,7 +162,7 @@ fn hits(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
 }
 
 /// The rounds `shooter` fired, at anyone.
-fn fired(lines: &[LedgerEvent], shooter: ObjId) -> usize {
+pub(crate) fn fired(lines: &[LedgerEvent], shooter: ObjId) -> usize {
     lines
         .iter()
         .filter(|line| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == shooter))
@@ -170,12 +170,12 @@ fn fired(lines: &[LedgerEvent], shooter: ObjId) -> usize {
 }
 
 /// Whether `unit` is under a field's mark.
-fn in_field(rig: &Rig, unit: ObjId) -> bool {
+pub(crate) fn in_field(rig: &Rig, unit: ObjId) -> bool {
     mush_sim::deployed::mark_of(rig.tw.world(), unit).is_some_and(|mark| mark.field.is_some())
 }
 
 /// **The contact nearest a cell** on `pilot`'s cockpit frame, within two cells.
-fn contact_near(
+pub(crate) fn contact_near(
     rig: &Rig,
     pilot: ObjId,
     (cx, cy): (u16, u16),
@@ -195,7 +195,7 @@ fn contact_near(
 
 /// **The escort and the intruder on Ahuna Flank**, the escort launched and driven out beside a
 /// working prospector; answers (escort pilot, escort hull, intruder pilot, intruder hull).
-fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
+pub(crate) fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
     // A miner's prospector works the ground the escort is there for.
     let (miner, _, miner_tvs) = on_pad_as(rig, "Miner", 2, "Tally Moth", 1);
     let worker = miner_tvs[0];

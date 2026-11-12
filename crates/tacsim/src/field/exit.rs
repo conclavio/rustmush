@@ -123,6 +123,9 @@ pub(crate) struct Exiting {
     /// **The carrier it boards** (doc 40, the ramp exit's boarding window;
     /// `super::boarding::carrier_of`), when it boards one.
     pub carrier: Option<ObjId>,
+    /// **The host asked, for a unit nobody is flying** (doc 44 cut MW.7; `super::home::ask_out`):
+    /// neither the ask nor a refusal is said to anyone.
+    pub quiet: bool,
 }
 
 /// **The exits in flight**, by unit (module state).
@@ -176,6 +179,32 @@ pub(crate) fn request(
     unit: ObjId,
     ramp: Option<(i64, i64)>,
     then: Then,
+) -> Result<(), CmdError> {
+    request_as(ctx, unit, ramp, then, false)
+}
+
+/// **[`request`], made by the host and said to nobody** (doc 44 cut MW.7): the ask
+/// `super::home::ask_out` repeats once a world second for a unit under a WITHDRAW or one its
+/// mind flies home for an absent player.
+///
+/// # Errors
+///
+/// [`request`]'s.
+pub(crate) fn request_quiet(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    ramp: Option<(i64, i64)>,
+    then: Then,
+) -> Result<(), CmdError> {
+    request_as(ctx, unit, ramp, then, true)
+}
+
+fn request_as(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    ramp: Option<(i64, i64)>,
+    then: Then,
+    quiet: bool,
 ) -> Result<(), CmdError> {
     let site = super::field_of_unit(ctx.w, unit)
         .ok_or_else(|| CmdError::msg(WithdrawRefusal::NotHere.sentence()))?;
@@ -239,10 +268,13 @@ pub(crate) fn request(
                 then,
                 out: false,
                 carrier,
+                quiet,
             },
         );
     }
-    ctx.out.sys_to_actor(requester, "tacsim.field", line);
+    if !quiet {
+        ctx.out.sys_to_actor(requester, "tacsim.field", line);
+    }
     Ok(())
 }
 
@@ -323,6 +355,7 @@ pub(crate) fn request_coupled(
                     then,
                     out: false,
                     carrier,
+                    quiet: false,
                 },
             );
         }
@@ -394,6 +427,13 @@ pub(crate) fn on_withdrawn(
             // Doc 40 cut FR.5 (Q-40-25): a coupled pair is refused as one — its tug's answer
             // tells, with the tow's own not-at-ramp sentence.
             let line = match asked.as_ref().map(|asked| &asked.then) {
+                // Doc 44 cut MW.7: the host's own ask is tried again, never told; and a recall
+                // is the returning pilot's doing, who is told they are back.
+                _ if asked.as_ref().is_some_and(|asked| asked.quiet)
+                    || refusal == WithdrawRefusal::Recalled =>
+                {
+                    None
+                }
                 Some(Then::Towed { .. }) => None,
                 Some(Then::TowLoad { slot, .. }) if refusal == WithdrawRefusal::NotAtRamp => {
                     Some(crate::surface::tow::NOT_AT_RAMP.replace("{n}", &slot.to_string()))
@@ -427,6 +467,9 @@ pub(crate) fn on_withdrawn(
             )
         })
         .unwrap_or((None, Vec::new(), 0, None));
+    // Doc 44 cut MW.7: a unit its mind flew home for an absent player is the host's to put
+    // aboard, read here while its row still stands.
+    super::absent::on_out(ctx, &site, unit, asked.as_ref().map(|asked| &asked.then));
     // The check-in, at the field pose beside the ramp (Q-CF-36): a mobile unit leaves nothing on
     // the record's unit index. A departing carrier (F-6) checks its souls in aboard it, as its
     // demotion would.
@@ -786,6 +829,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         ctx.actor = asked.requester;
         let ran = continue_recover(ctx, unit, &asked.then, &asked.site);
         ctx.actor = saved;
+        // Doc 44 cut MW.7: an absent player's unit is tried again by its host, never told.
+        if ran.is_err() && super::absent::homebound(ctx.w, unit) {
+            continue;
+        }
         if let Err(error) = ran {
             let what = match asked.then {
                 Then::Lift { .. } => "departure did not file",
@@ -803,7 +850,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
 }
 
 /// The recover the player asked for, as the player (`ctx.actor`).
-fn continue_recover(
+pub(super) fn continue_recover(
     ctx: &mut Ctx<'_>,
     unit: ObjId,
     then: &Then,

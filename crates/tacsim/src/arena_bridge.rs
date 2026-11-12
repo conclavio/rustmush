@@ -4243,6 +4243,16 @@ impl mush_core::EventHook for SeatFacts {
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Live, actor);
+            // Doc 44 cut MW.7: an IC field's five minutes end with the pilot's return.
+            crate::field::absent::on_present(ctx, actor);
+            return;
+        }
+        // **Doc 44 cut MW.7** (Q-44-37; `crate::field::absent`): a pilot whose IC field unit
+        // passed to its mind is bound and seated again by the field host, at any time while
+        // the field runs. The simulator's reclaim below is unchanged (Q-44-19).
+        if crate::field::absent::on_present(ctx, actor) {
+            crate::detachment::live::sync(ctx);
+            flush_detachment_dispatches(ctx);
             return;
         }
         let dropped = crate::match_::lobby::centre(ctx.w)
@@ -4298,6 +4308,10 @@ impl mush_core::EventHook for SeatFacts {
             );
             ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
         }
+        // Doc 44 cut MW.7: an IC field's clock is cleared, and a unit its mind took while the
+        // session was still held (a pilot who is down, a server grace longer than the
+        // field's) is taken back.
+        crate::field::absent::on_present(ctx, actor);
         crate::detachment::live::sync(ctx);
         flush_detachment_dispatches(ctx);
     }
@@ -4307,6 +4321,8 @@ impl mush_core::EventHook for SeatFacts {
     fn linkdead(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Linkdead, actor);
+            // Doc 44 cut MW.7 (`FB.1`): in an IC field the five minutes start here.
+            crate::field::absent::on_link_lost(ctx, unit, actor);
         }
         crate::detachment::live::sync(ctx);
         flush_detachment_dispatches(ctx);
@@ -4338,9 +4354,15 @@ impl mush_core::EventHook for SeatFacts {
             unwatch(ctx, actor);
         }
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
-            let now_ms = ctx.w.now().saturating_mul(1_000);
-            crate::match_::lobby::slot_dropped(ctx, actor, now_ms);
-            control_all_channels(ctx, unit, ControlState::Released, actor);
+            // **Doc 44 cut MW.7** (Q-44-36, Q-44-46; `crate::field::absent`): an IC field's
+            // seat is its host's to release. A session that ends on a lost link leaves the
+            // field's own five minutes running; a clean QUIT hands the unit to its mind at
+            // once, as an absent player's. The simulator's drop is unchanged (Q-44-19).
+            if !crate::field::absent::on_session_gone(ctx, unit, actor) {
+                let now_ms = ctx.w.now().saturating_mul(1_000);
+                crate::match_::lobby::slot_dropped(ctx, actor, now_ms);
+                control_all_channels(ctx, unit, ControlState::Released, actor);
+            }
         }
         crate::detachment::live::sync(ctx);
         flush_detachment_dispatches(ctx);
