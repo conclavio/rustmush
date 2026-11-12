@@ -484,7 +484,7 @@ and two notes use that name for this path. Three test rigs stand a launch up thr
 | Rig | Where | Roster under the launch | Restart | A genuine rating |
 |---|---|---|---|---|
 | **P1**, the named launch | `crates/tacsim/src/hardware/flow/launch.rs` (`modules`, `reboot`) | tacsim's `domain_modules_with_launch` | `Rig::restart` over the kept store | about 55 min a story |
-| **P2**, the server | `crates/mush-server/src/world_task/submission_disposition/tests/player_market.rs` (`launch_world`, `initialized_launch_with`, `launch_active`), `Running::boot(config, store, None)` | **the server's own**: `game_modules`, `server_modules_with_launch`, the world task and the persist path | `server.stop()`, then `active(..)` over the same store | about 35 min at `MIND_PULSE_MS` unset |
+| **P2**, the server | the rig is `crates/mush-server/src/world_task/submission_disposition/tests/player_market.rs` (`launch_world`, `initialized_launch_with`, `launch_active`) over `Running::boot(config, store, None)`; its stories are `player_market_story.rs` and `player_market_typed.rs` beside it | **the server's own**: `game_modules`, `server_modules_with_launch`, the world task and the persist path | `server.stop()`, then `active(..)` over the same store | about 35 min at `MIND_PULSE_MS` unset |
 | **P3**, the combined M8 world | `crates/tacsim/tests/domain_field/m8_world.rs` (`factory`, `m8_world*`, `M8World::reboot`) | a test twin (`excursions::Roster::launch_modules`: `domain_modules_with_launch` over the test world's layer with the shipped content) | `reboot_with` over the rig's store | about 8 to 25 min a rating (CPU-bound; no wall-clock pulse) |
 
 Only P2 runs the server's roster. P1 and P3 run `prepare` under tacsim's own domain roster, so a
@@ -573,9 +573,12 @@ with nothing minted but credits:
    is the family's Class II, the dent and every cell and component outside the core are as
    they were, and the displaced core is back in the pilot's hands, titled to them,
    unencumbered;
-6. a core that has been mounted is refused a second fitting, the fitted one at the offer
-   and the displaced one at the acceptance, with nothing charged; a core fresh from the
-   shop goes into the second rig;
+6. a core is fitted once. The core fitted in the first rig is in that hull and not in the
+   pilot's hands, so the shop will not offer it for the second rig (the kernel's head for
+   it reads `mounted`). The displaced core is in the pilot's hands and the shop offers it,
+   and the kernel refuses the acceptance: its head reads `detached`. The story asserts both
+   heads and the step each refusal comes from; nothing is charged. A core fresh from the
+   shop goes into the second rig, so the second rig was never the reason;
 7. a second restart keeps both rigs.
 
 **What staff do in it**, none of it the thing under test: a wallet top-up; the two leased
@@ -599,10 +602,12 @@ on a launch world.
   **For the owner**: if a displaced core should go back into a hull (or be sold to someone
   who can fit it), the change is in that admission and in the `detached` head's meaning,
   and it is a kernel change, not a tuning.
-- **No route gives a player title to a rig.** A lease is the only way to hold one, and the
-  refit asks for the titleholder, so no player can have a core fitted today without staff.
-  The story titles the leased rigs to the pilot by staff, as every M8 hardware story does.
-  MW.1 found the same for a House's hulls. **Gap, no unit owns it.**
+- **The story's rigs are leased, and the refit asks for the titleholder.** So staff title
+  them to the pilot, as every M8 hardware story does. A rig a player holds title to comes
+  from the yard (`+yard/collect`, doc 39 cut IN.9, `port/commission.rs`), and a hull from
+  the Co-op buyout. No story builds a rig at the yard and then has a core fitted to it, and
+  whether the refit's roots (`payment.fits`: the line, rig and coreless-TV families) admit
+  a yard design is unchecked. **Left for the unit that joins the yard to the hardware.**
 - **The fitting shop is not a place.** The launch's `factory` is an object named in
   `launch.json`; the refit asks that the requester and the hull stand in it, and nothing in
   the game moves a rig there. The story stands them there by staff. On a dev box the
@@ -614,13 +619,21 @@ on a launch world.
   `c4_a_registry_trial_ends_the_same_on_every_host`, default sweep, 2 s). Four cases of the
   Duel trial at seed 1 run to their real terminals: a script that stands and fires by the
   stock rules (its fixed and its cycling variant), a script that closes on what it sees, and
-  the stock profile at Class II. Each case's pin holds the stop millisecond, the arena's
-  final state hash, the black box's digest and the SHA-256 of the case result's JSON (the
-  record a rating's page carries). Blessed on Linux (conclav.dev, x86-64) and run on Windows
+  the stock profile at Class II. The test asserts each case is conformant and that the
+  arena itself ended the match (a case stopped by a budget fault also answers a result, and
+  is not one). Each case's pin holds why the arena ended and what the Registry files that
+  as, the stop millisecond, the arena's final state hash, the black box's digest and the
+  SHA-256 of the case result's JSON (the record a rating's page carries). All four end by
+  elimination, the candidate lost, at 58,500 ms: the opponent's fire decides the moment,
+  and what the candidate did shows in the state and the black box, which differ case by
+  case. Blessed on Linux (conclav.dev, x86-64) and run on Windows
   (x86-64) at the same tree: all four rows equal. It is not `#[ignore]`d, so every pull
   request runs it on Linux and every local run of tacsim's library tests runs it on Windows.
-  A change that moves a row on purpose (a new mind ABI, a rule's numbers) re-blesses it from
-  the `C4_TRIAL_PIN` lines the test prints and runs it on the other host.
+  A change that moves a row on purpose (a new mind ABI, a rule's numbers, the proving
+  content) re-blesses it from the `C4_TRIAL_PIN` lines the test prints. CI has no Windows
+  lane, so the run on the other host is by hand and nothing enforces it; that is true of
+  D-UM-28's corpus as well. **A Windows lane for the two corpora is the missing piece, and
+  no unit owns it.**
 - **D-UM-28's corpus run on Windows at `api=8`.** On this Windows box at `9d8fc96b7`:
   `minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host` (the four rows and the float
   probe MW.9 re-pinned from Linux), `twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool`
