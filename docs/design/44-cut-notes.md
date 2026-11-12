@@ -909,10 +909,9 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
 
 **Left, and for which unit.**
 
-- **Return fire in space (Q-44-38).** Not built. The absent seat refuses every lock and shot.
-  The seam is `FireRule` in `applier.rs`; the follow-up adds the variant that asks MW.7's
-  rule, and a record of which unit fired on which in a bubble (`Relations::fired` is by
-  party). It follows MW.7.
+- **Return fire in space (Q-44-38).** Not built, and not in this unit. The absent seat
+  refuses every lock and shot. MW.7 is on main, so the follow-up can start; what it has to do
+  is the section below.
 - **MW.10** (a doctrine by digest): every seal is still built with the compiled digest. The
   unit test selects a revision by building the seal with another digest and handing the think
   a store that holds its source.
@@ -927,6 +926,45 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
   snapshot format move. Deferred, with no unit.
 - The view's mount rows are still placeholders (100 rounds, 850 per mille). They wait for the
   mounts' redesign.
+
+**Return fire in space: what the follow-up has to do** (written after MW.7 merged, #549;
+checked against `crates/tacsim/src/arena/absent.rs` and MW.7's "what a caller in space must
+provide" above). The rule is `arena::absent::permits`, generic over whatever id a caller's
+units go by, so space calls the field's rule and copies nothing. The seam left for it is
+`FireRule` in `applier.rs`, which `apply_intents` asks at two places, a `lock` and a `fire`.
+It still fits, with one change of shape (step 2).
+
+1. **The record, which is the work.** `LocalSpaceBubble` gains, for each ship, the set of
+   ships whose fire has arrived on her since the bubble opened, by ship id. It is written
+   where the bubble resolves an arrival, hit or miss alike, as the arena writes at every
+   impact: a beam's shot, the end of a slug's flight, the end of a torpedo's run. It is part
+   of the bubble's snapshot, so a restart keeps it (doc 35 §11 `B-7`). A stand-down does not
+   clear it: it is by unit, and what a stand-down clears is `Relations::fired`, which is by
+   party.
+2. **The seat.** `FireRule` gains a third variant that carries that set. `Seat` is `Copy` and
+   borrows nothing today, so either it takes a lifetime or the set is handed to
+   `apply_intents` beside it. `fly_in_bubble` passes `absent: true` (the seat is reached only
+   when `backup_has_helm()`), `holds_fire: false` (space has no hold a crew can leave; when
+   it has one, this is where it is read) and her set.
+3. **The two doors.** At a `fire`: `permits(&facts, &Ask::Fire { at: her lock })`, and act
+   only on `Ok`. At a `lock`: let through only a ship that is in the set. A lock is not a
+   shot, but the bubble's fire commands take their target from it, so a lock on a hull she
+   may not answer is the first half of one.
+4. **The view.** `space_mind_view` shows such a mind as hostile only the contacts she may
+   answer, and every other hostile as neutral, as `Arena::mind_view` does since MW.7.
+   Narrowed, never widened, and the doors do not depend on it.
+5. **Mining and trading.** The space seat has no intent that mines or trades. MW.12 gives a
+   drone's mind intents that work a rock; where one is accepted for a hull whose crew is
+   away it asks `permits(.., &Ask::Mine)`.
+6. **Stories**, each failing before it: a hull whose crew has no link, fired on by the
+   raider, answers the raider and nothing else; fired on by nobody, she answers nobody
+   though her party holds the raider hostile; a restart keeps the record.
+
+Two defaults it will have to take, flagged now. **What "arrived" means for a torpedo her
+point defence stops**: counted above, because the arena counts a miss. **Whether the house
+default asks to fire at all**: `linkdead_return.rhai` never does, so with the gate built the
+house mind still fires at nothing, and only a mind a player sealed on her (MW.13) would use
+it. That makes the follow-up worth building with MW.13 and not before.
 
 **The acceptance, and what holds each.**
 
@@ -1014,6 +1052,19 @@ run them).
   for it (`BurnRule`, `FireRule`) are pinned by the applier's unit tests only.
 - An interdictor bubble with three or more carriers, and a picket bubble where the corvette
   is lost while a carrier is hailed (the stop then reads `none`; not pinned).
+
+**Merged, after MW.7.** The owner merged main into the branch (`3b926fd35`: MW.7 #549, the
+claim fix #554, the release smoke fix #555) and merged PR #551 as `9d8fc96b7` on 2026-11-12.
+MW.7 landed first, and this unit's re-pins stood on the merged tree without another pass:
+MW.7 folds its new unit state (`absent`, `fired_on_by`) into the arena hash only when it is
+set, and no practice match sets it, so every pin this unit moved reads as it was re-pinned.
+On the merged head, main's own CI (run 43238006928) is green on all 25 jobs: `tacsim-lib`
+(the nine seal identities), `tacsim-minds` (the cross-platform corpus) and the ten
+integration shards, which hold the arena pins, MW.7's two arena tests in `minds_rhai.rs` and
+its stories in `domain_field/field_mw7.rs`, unchanged. The dispatch-only stories and the
+harness on the merged head are run 43243601962 and the gate's runs; this note does not say
+how they ended. The one conflict was in doc 35 §11.3, where MW.7's text stands for Q-35-B3
+and this unit's for Q-35-B4.
 
 ## MW.10
 
