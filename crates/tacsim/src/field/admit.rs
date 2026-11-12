@@ -15,10 +15,31 @@
 //! is durable from the batch that owes it: the site's closing tombstone
 //! ([`super::record::FieldClosing`]), written beside the check-ins and deleted with the forget,
 //! so a crash between the two lanes never re-admits a finished field (doc 32 §15).
+//!
+//! **Absent at admission** (doc 45 cut AP.5; Q-45-1, Q-45-2). Admission asks the connection as
+//! well as the seat ([`parties::at_controls`]). A unit whose seated player is not at its
+//! controls is an absent player's unit from the turn the field takes it in ([`seat_absent`]),
+//! through the one door a lost link and a quit already use (`super::absent::hand_over`), so the
+//! same record, the same go-home order and the same rule on its fire bind it, and the same way
+//! back seats its player again. The three delays are one rule, and the rule is the player's
+//! clock, never the field's:
+//!
+//! - **at once** for a player who is not connected (a quit, a session long ended), or who is
+//!   incapacitated or held;
+//! - **what is left of five minutes** for a player whose link was lost less than five minutes
+//!   before: the seat is theirs, link-dead, and the clock runs from the loss ([`LinksLost`]),
+//!   exactly as if the field had been running when the link dropped;
+//! - **nothing** for a player at the controls, who is admitted as before.
+//!
+//! The unit is still checked out as its pilot's seat ([`custody_unit`]), and the hand-over is
+//! made in the same world turn, ahead of the kernel's first stepping pulse. That order is on
+//! purpose: a seat nobody types at does nothing, where a unit checked out as a bare mind would
+//! be under no rule until the host's word reached the kernel (the seat's own hold on its fire
+//! binds a pilot's hull only: `crate::arena::conditions`).
 
 use std::collections::BTreeMap;
 
-use mush_core::{CanonicalId, Ctx, ObjId, PerceivedRef};
+use mush_core::{CanonicalId, Ctx, EventHook, ObjId, PerceivedRef};
 use serde_json::json;
 
 use super::parties::{self, Entrant};
@@ -539,6 +560,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         }
     }
     super::record::write_live(ctx, &live);
+    // Doc 45 cut AP.5 (Q-45-1, Q-45-2): the seats nobody is at pass to their minds now, on the
+    // record just written.
+    seat_absent(ctx, site, None);
     let line = super::FIELD_OPENED
         .replace("{n}", &field.ordinal.to_string())
         .replace("{site}", &site_name(ctx, site));
@@ -557,6 +581,169 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         "tacsim: an IC field opened"
     );
     Ok(())
+}
+
+/// **When each player's link was lost** (doc 45 cut AP.5; Q-45-1; RAM, module state): the wall
+/// second, by character, for a link lost and not yet back. The world keeps no such second, and a
+/// field that opens around a link-dead player's unit must run their five minutes from the loss
+/// and not from its own opening. Written by [`LinkWatch`]. A restart forgets every stamp: a
+/// session found link-dead with none is read as lost at that moment ([`link_lost_at`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LinksLost(BTreeMap<ObjId, i64>);
+
+impl LinksLost {
+    /// **The stamps nothing reads any more**: a loss the field's five minutes have run out on,
+    /// of a character whose session is over (`session_held` answers no). A session still held
+    /// link-dead past the five minutes keeps its stamp, so a server whose own grace is longer
+    /// never reads as a link lost just now.
+    fn stale(&self, now: i64, session_held: impl Fn(ObjId) -> bool) -> Vec<ObjId> {
+        self.0
+            .iter()
+            .filter(|(who, lost)| {
+                now.saturating_sub(**lost) >= super::absent::FIELD_LINKDEAD_GRACE_WALL_S
+                    && !session_held(**who)
+            })
+            .map(|(who, _)| *who)
+            .collect()
+    }
+}
+
+/// **The connection facts admission reads later** ([`LinksLost`]): a lost link is stamped, a
+/// return clears it, and a session that ends on a lost link keeps its stamp, since the field's
+/// five minutes are longer than a server's grace may be (doc 44 cut MW.7, `FB.1`). A clean
+/// `QUIT` has no stamp to keep.
+#[derive(Debug)]
+pub(crate) struct LinkWatch;
+
+impl LinkWatch {
+    fn back(ctx: &mut Ctx<'_>, actor: ObjId) {
+        if let Some(lost) = ctx.w.module_state_mut::<LinksLost>() {
+            lost.0.remove(&actor);
+        }
+    }
+
+    /// Forget the stamps nothing reads any more ([`LinksLost::stale`]).
+    fn prune(ctx: &mut Ctx<'_>) {
+        let now = ctx.w.now();
+        let stale = ctx
+            .w
+            .module_state::<LinksLost>()
+            .map(|lost| lost.stale(now, |who| ctx.w.is_connected(who)))
+            .unwrap_or_default();
+        if stale.is_empty() {
+            return;
+        }
+        if let Some(lost) = ctx.w.module_state_mut::<LinksLost>() {
+            for who in stale {
+                lost.0.remove(&who);
+            }
+        }
+    }
+}
+
+impl EventHook for LinkWatch {
+    fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        Self::back(ctx, actor);
+    }
+
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        Self::back(ctx, actor);
+    }
+
+    /// Every link-dead onset is a fresh loss: the kernel fires this point only when the last
+    /// live connection drops, so the player was back in between and the newer second is the
+    /// one their five minutes run from, whether or not a return was heard here.
+    fn linkdead(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        Self::prune(ctx);
+        let now = ctx.w.now();
+        if let Some(lost) = ctx.w.module_state_mut::<LinksLost>() {
+            lost.0.insert(actor, now);
+        }
+    }
+
+    fn disconnected(&self, ctx: &mut Ctx<'_>, _actor: ObjId) {
+        Self::prune(ctx);
+    }
+}
+
+/// **The wall second `who`'s link was lost**, while the field's five minutes from it still run
+/// (doc 45 cut AP.5). `None` for a player who quit, or whose five minutes are over, whether or
+/// not a server with a longer grace still holds their session. A link-dead session this boot
+/// never saw drop (no hook fired) reads as lost now, the rule a restart already takes for a
+/// pilot it finds away (`super::absent::at_resume`). A connected player's answer is not read
+/// ([`parties::at_controls`] asks the connection first).
+#[must_use]
+pub(crate) fn link_lost_at(w: &mush_core::World, who: ObjId) -> Option<i64> {
+    let now = w.now();
+    let stamped = w
+        .module_state::<LinksLost>()
+        .and_then(|lost| lost.0.get(&who).copied());
+    match stamped {
+        Some(lost) => {
+            (now.saturating_sub(lost) < super::absent::FIELD_LINKDEAD_GRACE_WALL_S).then_some(lost)
+        }
+        None => (w.is_connected(who) && !w.has_live_conns(who)).then_some(now),
+    }
+}
+
+/// **The seats nobody is at pass to their minds** (this module's head, "absent at admission";
+/// doc 45 cut AP.5): each unit of `site`'s running field, or `only` the one named, whose seated
+/// player is not at its controls ([`parties::at_controls`]) and whose row carries no presence
+/// record yet. A player who is gone, or not fit, is handed over at once; one whose link was
+/// lost inside the five minutes keeps the seat, link-dead, on the clock that started at the
+/// loss. A unit whose row already says its mind has it is told to the kernel again
+/// (`super::absent::tell_again`). Called once the live record is written and the task is open.
+pub(crate) fn seat_absent(ctx: &mut Ctx<'_>, site: &CanonicalId, only: Option<ObjId>) {
+    use super::absent::Why;
+    use parties::{AtControls, NotThere};
+    let seats: Vec<(ObjId, ObjId, Option<super::absent::Away>)> = ctx
+        .w
+        .module_state::<FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .map(|hosted| {
+            hosted
+                .live
+                .units
+                .iter()
+                .filter(|row| only.is_none_or(|unit| unit == row.unit))
+                .filter_map(|row| {
+                    let (pilot, _) = row.pilot.as_ref()?;
+                    Some((row.unit, *pilot, row.away))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (unit, pilot, away) in seats {
+        if let Some(away) = away {
+            if away.handed {
+                super::absent::tell_again(ctx, unit);
+            }
+            continue;
+        }
+        // The seat names them still: a pilot who has left the cab is not flown for.
+        if parties::seated(ctx.w, unit).is_none_or(|(sat, _)| sat != pilot) {
+            continue;
+        }
+        let lost = link_lost_at(ctx.w, pilot);
+        match parties::at_controls(ctx.w, Some(pilot), lost) {
+            AtControls::Pilot | AtControls::Mind => {}
+            AtControls::Away(NotThere::Unfit) => {
+                super::absent::hand_over(ctx, unit, pilot, Why::Incapacitated);
+            }
+            AtControls::Away(NotThere::LinkLost { since_wall_s }) => {
+                super::absent::admitted_link_lost(ctx, unit, pilot, since_wall_s);
+            }
+            AtControls::Away(NotThere::Gone) => {
+                // A join is not a field opening: a hull put back in is handed over for the
+                // reason its player was away when it left, and a launch as after a quit.
+                let why = match only {
+                    None => Why::AwayAtAdmission,
+                    Some(_) => super::absent::owed_why(ctx.w, unit).unwrap_or(Why::Quit),
+                };
+                super::absent::hand_over(ctx, unit, pilot, why);
+            }
+        }
+    }
 }
 
 /// **A casualty enters under its tug's party** (doc 40 cut FR.5, Q-40-7): each entrant `carried`
@@ -769,6 +956,12 @@ fn custody(
 /// **One entrant's check-out row** (doc 32 cut CF.2, factored out of the admission's check-out by
 /// doc 36 cut GC.1b, so an arrival joining a running field is built by the same path): its unit
 /// at `pose` under `party`, sealed on the ROM over its epoch, and its seated pilot.
+///
+/// **Doc 45 cut AP.5.** The row names the seat, whoever is at it: a seated player's unit is
+/// checked out as [`Controller::Pilot`] with their seat even when they are not connected, and
+/// the caller hands it to its mind in the same world turn ([`seat_absent`], at admission and at
+/// a join's answer). Until that word reaches the kernel the unit is a seat nobody types at,
+/// which does nothing; checked out as [`Controller::Mind`] it would be a mind under no rule.
 pub(super) fn custody_unit(
     ctx: &Ctx<'_>,
     entrant: &Entrant,
@@ -859,6 +1052,29 @@ pub(super) fn custody_unit(
 mod tests {
     use super::*;
     use crate::surface::site_record::{GroundKind, SitePose};
+
+    /// **Doc 45 cut AP.5** (Q-45-1): a stamp is forgotten only once its five minutes are over
+    /// and its session with them.
+    #[test]
+    fn ap5_a_lost_links_stamp_is_kept_while_anything_reads_it() {
+        let grace = super::super::absent::FIELD_LINKDEAD_GRACE_WALL_S;
+        let (early, late, held) = (ObjId(7), ObjId(8), ObjId(9));
+        let mut lost = LinksLost::default();
+        lost.0.insert(early, 1_000);
+        lost.0.insert(held, 1_000);
+        lost.0.insert(late, 1_200);
+        let session_held = |who: ObjId| who == held;
+        assert!(
+            lost.stale(1_000 + grace - 1, session_held).is_empty(),
+            "a second short of five minutes every stamp stands"
+        );
+        assert_eq!(
+            lost.stale(1_000 + grace, session_held),
+            vec![early],
+            "at five minutes a session that is over is forgotten; one still held link-dead \
+             keeps its stamp, and a later loss its own five minutes"
+        );
+    }
 
     /// **Doc 36 cut GC.1's licensed-mind gate** (Q-36-44): a held hull stands in the field's
     /// ground as a one-cell wall at its own cell, beside the record's own objects, and the record

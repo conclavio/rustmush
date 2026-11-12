@@ -694,6 +694,14 @@ pub(crate) fn relaunching(w: &World, site: &CanonicalId) -> Vec<ObjId> {
         .unwrap_or_default()
 }
 
+/// **Whether `unit` is a hull put back into a field whose join the kernel has not answered**
+/// ([`rejoin`]; doc 45 cut AP.5): the host's word on an absent player waits for the answer.
+#[must_use]
+pub(crate) fn rejoining_unit(w: &World, unit: ObjId) -> bool {
+    w.module_state::<FieldBook>()
+        .is_some_and(|book| book.rejoining.values().any(|hulls| hulls.contains(&unit)))
+}
+
 /// **Whether `unit` is a launch the field sent back aboard** (doc 40 cut FR.3): its flight is
 /// still on the surface, so the flights' tick must not read it home.
 #[must_use]
@@ -954,6 +962,8 @@ pub(crate) fn on_joined(
         Ok(name) if rejoin => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a hull out at the ramp is back in the field");
             seat_joined_pilot(ctx, task, unit, &live);
+            // Doc 45 cut AP.5: a join asks the connection as an admission does.
+            super::admit::seat_absent(ctx, &site, Some(unit));
             // Doc 40 (the 38b review's F-15): back in, so no longer boarding.
             if let Some(boarding) = ctx.w.module_state_mut::<super::boarding::Boarding>() {
                 boarding.0.remove(&unit);
@@ -962,6 +972,8 @@ pub(crate) fn on_joined(
         Ok(name) if launch => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a launch joined the field at its ramp");
             seat_joined_pilot(ctx, task, unit, &live);
+            // Doc 45 cut AP.5: a join asks the connection as an admission does.
+            super::admit::seat_absent(ctx, &site, Some(unit));
             let carrier = launch_flight(ctx, unit).map_or_else(
                 || "carrier".to_owned(),
                 |flight| crate::port::coop::name_of(ctx.w, flight.carrier),
