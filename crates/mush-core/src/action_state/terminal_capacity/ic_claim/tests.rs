@@ -908,6 +908,39 @@ fn transferred_owned_claim_keeps_exact_open_through_close_and_cold_hydration() -
     Ok(())
 }
 
+/// Doc 23 cut S.4c: the captured window is the licence's own term, bounded by the claim's
+/// kind. A claim dispatched under an owner licence may carry an owner term (a House's own
+/// licence runs 365 IC days, 17g C0); a claim on a paid seat carries a paid term of at most
+/// 90. Either kind keeps its Grace bound.
+#[test]
+fn the_captured_term_is_bounded_by_the_claims_kind() -> TestResult {
+    const DAY: i64 = 24 * 60 * 60;
+    let f = fixture(1, Config::default())?;
+    let window = |term_days: i64, grace_days: i64| {
+        json!({"format":1,"eligibility_start":0,"issued_at":0,
+            "term_end":term_days * DAY,"grace_end":(term_days + grace_days) * DAY})
+    };
+    let row = |kind: Value, term_days: i64, grace_days: i64| {
+        let mut row = open(&f.defs, token(1));
+        row["open"]["capacity"] = kind;
+        row["open"]["window"] = window(term_days, grace_days);
+        row
+    };
+    let owned = || json!({"kind":"owned_dispatch"});
+    let paid = || json!({"kind":"paid_seats","seats":1});
+    // A House's own owner licence: 365 days and its 28 days of Grace.
+    Claim::parse(row(owned(), 365, 28), token(1))?;
+    assert!(Claim::parse(row(owned(), 366, 28), token(1)).is_err());
+    assert!(Claim::parse(row(owned(), 365, 29), token(1)).is_err());
+    // A paid seat: 90 days, and no longer.
+    Claim::parse(row(paid(), 90, 28), token(1))?;
+    assert!(Claim::parse(row(paid(), 91, 28), token(1)).is_err());
+    assert!(Claim::parse(row(paid(), 365, 28), token(1)).is_err());
+    assert_eq!(crate::licence_term::MAX_OWNER_SECONDS, 365 * DAY);
+    assert_eq!(crate::licence_term::MAX_PAID_SECONDS, 90 * DAY);
+    Ok(())
+}
+
 #[test]
 fn charter_ownership_is_versioned_bounded_and_never_a_paid_claim_field() -> TestResult {
     let f = fixture(1, Config::default())?;

@@ -141,6 +141,7 @@ pub use action::{
     TriggerIdentity, TriggerWork,
 };
 pub use action_state::bay_refit_protocol;
+pub use action_state::licence_term;
 pub use action_state::player_wait;
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
