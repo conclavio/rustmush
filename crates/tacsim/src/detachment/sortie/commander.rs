@@ -157,11 +157,14 @@ fn owes(
     ctx: &Ctx<'_>,
     site: &mush_core::CanonicalId,
     roster: &DetachmentRoster,
-    book: &OrderBook<FieldPayload>,
+    (book, orders): (&OrderBook<FieldPayload>, Option<&field_orders::FieldOrders>),
     issuer: ObjId,
     member: &Member,
     wanted: &Directive<FieldPayload>,
 ) -> bool {
+    let lapsed = |slot: Slot, sequence: u64| {
+        orders.is_some_and(|orders| orders.lapse_of(slot, sequence).is_some())
+    };
     if !roster.member_available(member.slot)
         || crate::field::field_of_unit(ctx.w, member.unit).as_ref() != Some(site)
     {
@@ -172,8 +175,11 @@ fn owes(
             && pending.issuer == issuer
             && pending.command_term == roster.term()
     });
+    // Doc 45 unit AP.8: an order that lapsed with its leader's absence does not stand, whatever
+    // it said; the commander's own posture replaces it.
     let standing = book.delivered(member.slot).is_some_and(|delivered| {
         delivered.order.directive == *wanted
+            && !lapsed(member.slot, delivered.order.sequence)
             && delivered
                 .acknowledgement
                 .is_none_or(|answer| answer.response != Response::Negative)
@@ -208,7 +214,17 @@ pub(super) fn step(
     let owing: Vec<&Member> = roster
         .members()
         .iter()
-        .filter(|member| owes(ctx, &site, roster, &book, actor, member, &wanted))
+        .filter(|member| {
+            owes(
+                ctx,
+                &site,
+                roster,
+                (&book, op.orders.as_deref()),
+                actor,
+                member,
+                &wanted,
+            )
+        })
         .filter(|member| {
             sent.get(&(unit, member.slot.get()))
                 .is_none_or(|(order, until)| *order != wanted || *until <= now)

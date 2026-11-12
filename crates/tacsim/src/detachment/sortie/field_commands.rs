@@ -254,7 +254,7 @@ pub(crate) fn field_response(
 fn line(ctx: &mut Ctx<'_>, text: String) {
     ctx.out.sys_to_actor(ctx.actor, "tacsim.detachment", text)
 }
-fn directive_text(directive: &Directive<FieldPayload>) -> String {
+pub(super) fn directive_text(directive: &Directive<FieldPayload>) -> String {
     let Directive::Objective(payload) = directive else {
         return "RELEASE".into();
     };
@@ -351,10 +351,23 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
                     .strip_prefix(&prefix)
                     .and_then(|s| s.split_once(':'))
                     .unwrap_or(("?", "?"));
-                super::ORDER_SENT
+                // Doc 45 unit AP.8: an order that lapsed while its leader was away says so, in
+                // a sentence of its own after the line. The line itself is a constant a player
+                // client parses for the reply's word (`ORDER_SENT`), and reads as it always did.
+                let lapsed = sequence
+                    .parse::<u64>()
+                    .ok()
+                    .zip(slot.parse::<u16>().ok().and_then(|n| Slot::new(n).ok()))
+                    .is_some_and(|(sequence, slot)| orders.lapse_of(slot, sequence).is_some());
+                let sent = super::ORDER_SENT
                     .replace("{slot}", slot)
                     .replace("{sequence}", sequence)
-                    .replace("{status}", &status)
+                    .replace("{status}", &status);
+                if lapsed {
+                    format!("{sent} {}", super::ORDER_LAPSED_STATUS)
+                } else {
+                    sent
+                }
             })
             .collect::<Vec<_>>()
     } else {

@@ -662,6 +662,57 @@ mod tests {
         Ok(())
     }
 
+    /// Doc 45 unit AP.8 (Q-45-13): a leader who is waited for still leads; once
+    /// they are gone the next active player leads, ahead of the plan's NPC
+    /// commander, who leads only when no player is left.
+    #[test]
+    fn ap8_the_next_active_player_leads_before_the_plans_npc_commander() -> TestResult {
+        let mut roster = roster()?;
+        let mut facts = facts(&roster);
+        roster.reconcile(0, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(20))
+        );
+        // Away and waited for, with no deadline the host knows: the lead does not move.
+        change(&mut facts, 2, |fact| {
+            fact.connection = Connection::Linkdead {
+                grace_until_ms: u64::MAX,
+            };
+        });
+        roster.reconcile(1, &facts)?;
+        check_eq!(
+            roster.leader().map(|leader| leader.character),
+            Some(ObjId(20))
+        );
+        check_eq!(roster.term(), 1);
+        // Gone: the other player, not the commander.
+        change(&mut facts, 2, |fact| {
+            fact.connection = Connection::Disconnected;
+        });
+        roster.reconcile(2, &facts)?;
+        check_eq!(
+            roster
+                .leader()
+                .map(|leader| (leader.character, leader.kind)),
+            Some((ObjId(60), LeaderKind::Player))
+        );
+        check_eq!(roster.term(), 2);
+        // No player left: the commander.
+        change(&mut facts, 6, |fact| {
+            fact.connection = Connection::Disconnected;
+        });
+        roster.reconcile(3, &facts)?;
+        check_eq!(
+            roster
+                .leader()
+                .map(|leader| (leader.character, leader.kind)),
+            Some((ObjId(30), LeaderKind::Npc))
+        );
+        check_eq!(roster.term(), 3);
+        Ok(())
+    }
+
     #[test]
     fn grace_expiry_and_flapping_return_do_not_churn_terms() -> TestResult {
         let mut roster = roster()?;

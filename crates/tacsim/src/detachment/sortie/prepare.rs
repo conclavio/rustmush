@@ -48,6 +48,31 @@ impl Snapshot {
             transport: None,
         })
     }
+    /// **The lapses this write records for the first time** (doc 45 unit AP.8): the operation,
+    /// its roster's leader after the write, and each lapse with its order and who gave it.
+    pub(super) fn new_lapses(
+        &self,
+    ) -> Option<(
+        OperationId,
+        Option<mush_tactics::detachment::Leader>,
+        Vec<super::field_orders::NewLapse>,
+    )> {
+        let write = self.record.as_deref()?;
+        let before = write.before.as_ref().and_then(|op| op.orders.as_deref());
+        let lapses = super::field_orders::new_lapses(before, &write.after);
+        if lapses.is_empty() {
+            return None;
+        }
+        let leader = write
+            .after
+            .command
+            .as_deref()
+            .and_then(|saved| {
+                mush_tactics::detachment::roster::DetachmentRoster::restore(saved).ok()
+            })
+            .and_then(|roster| roster.leader());
+        Some((write.after.id, leader, lapses))
+    }
     pub fn generation(&self) -> u64 {
         let mut bytes = [0; 8];
         bytes.copy_from_slice(&self.hash.as_bytes()[..8]);
@@ -358,8 +383,30 @@ pub(super) fn snapshot(
                 return Err("Operation unavailable.".into());
             }
             let mut next = old.clone();
-            let (roster, observations) = super::field::reconcile(world, read, h, &old, facts)?;
+            let (roster, mut observations) = super::field::reconcile(world, read, h, &old, facts)?;
             next.command = Some(Box::new(roster.checkpoint()));
+            // Doc 45 unit AP.8 (Q-45-13): a refresh that saves the roster without a leader who
+            // is gone lapses that leader's ENGAGE and ADVANCE in the same write.
+            if let Some(orders) = next.orders.as_deref_mut() {
+                let now = u64::try_from(world.world_ic_now().at)
+                    .map_err(|_| "Field clock unavailable.")?
+                    .checked_mul(1000)
+                    .ok_or("Field clock exhausted.")?;
+                let mut book = mush_tactics::detachment::OrderBook::restore(&orders.book, &roster)
+                    .map_err(|e| e.to_string())?;
+                let recorded = super::field_orders::lapse_due(
+                    world,
+                    (&mut *read, h),
+                    &roster,
+                    orders,
+                    &mut book,
+                    now,
+                )?;
+                if !recorded.is_empty() {
+                    orders.book = book.checkpoint();
+                    observations.extend(recorded);
+                }
+            }
             let mut patch = Snapshot::new(*id)?;
             patch.observations = observations;
             patch.record = Some(Box::new(Write {
@@ -1220,6 +1267,20 @@ fn message(
             .iter()
             .any(|r| r.issuer == issuer && r.unit == unit && r.allowed)
     };
+    // Doc 45 unit AP.8 (Q-45-13): an ENGAGE or an ADVANCE whose leader is gone lapses in the
+    // write that saves the roster without them, whatever the message was. Before an issue or
+    // a reply, so the stand's sequences sit below the new leader's order; after a poll's
+    // deliveries, so an order the poll replaces is not lapsed first.
+    if !matches!(request.act, Act::Poll) {
+        patch.observations.extend(field_orders::lapse_due(
+            world,
+            (&mut *read, h),
+            &roster,
+            &mut orders,
+            &mut book,
+            now,
+        )?);
+    }
     match &request.act {
         Act::Issue {
             revision,
@@ -1414,6 +1475,18 @@ fn message(
             }));
         }
     }
+    if matches!(request.act, Act::Poll) {
+        patch.observations.extend(field_orders::lapse_due(
+            world,
+            (&mut *read, h),
+            &roster,
+            &mut orders,
+            &mut book,
+            now,
+        )?);
+    }
+    // A lapse belongs to the delivered order it names: one this message replaced goes with it.
+    orders.prune_lapsed(&book);
     orders.book = book.checkpoint();
     let mut next = old.clone();
     next.command = Some(Box::new(roster.checkpoint()));

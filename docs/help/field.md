@@ -204,6 +204,11 @@ holding where it stands. You see a reply only once it arrives.
 A hired pilot's doctrine fires on the parties its party holds Hostile, and only
 on them. Your marks are its targets.
 
+If you go away, an ENGAGE or an ADVANCE you gave lapses when your own unit
+passes to its mind (see *If you lose your link, or quit*). The hired unit stops
+where it is, holds its fire, and answers from where it stands only once it is
+hit. Any other order you left stands. `help detachments` has the whole rule.
+
 **A player who is given an order keeps control.** An order to a player's unit is
 advice. The player reads it in `+sortie/orders` and may answer `WILCO` or
 `NEGATIVE`, but the order never drives, locks or fires their unit.
