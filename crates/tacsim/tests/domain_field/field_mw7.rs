@@ -574,16 +574,11 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
         pilot,
         &format!("+focus #{}/cockpit", ward.0),
     );
-    // The hull is cold: the five and ten minutes were the world's, and the arena has had a few
-    // seconds of its own in which the mind, holding where it stood, started nothing.
-    let startup = run(&mut yard.rig.tw, pilot, "STARTUP");
+    // The cockpit answers from the seat's own frame, so the first frame of the new tenure is
+    // waited for; nothing is typed before the DRIVE.
     assert!(
-        yard.wait(60, |rig, _| frame(rig, pilot).is_some_and(|frame| frame
-            .power
-            == tacsim::arena::state::Power::Online))
-            .await,
-        "the pilot's STARTUP is taken: {startup}; {:?}",
-        frame(&yard.rig, pilot).map(|frame| frame.power)
+        yard.wait(30, |rig, _| frame(rig, pilot).is_some()).await,
+        "the returning pilot's cockpit frame arrives: {focus}"
     );
     let drive = run(&mut yard.rig.tw, pilot, "DRIVE 150,110");
     let driving = yard

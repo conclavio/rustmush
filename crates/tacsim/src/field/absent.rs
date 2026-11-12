@@ -9,28 +9,28 @@
 //!    keeps it). It is opened when the pilot's link is lost and carries the wall second it was
 //!    lost at: **one clock** (`FB.1`), cleared when the pilot is back. While it runs the seat is
 //!    `Linkdead` as before: the unit keeps its continuous orders and fires nothing.
-//! 2. **The hand-over** ([`hand_over`]). Five wall minutes after the link was lost
+//! 2. **The hand-over** (`hand_over`). Five wall minutes after the link was lost
 //!    ([`FIELD_LINKDEAD_GRACE_WALL_S`]), at once on a clean QUIT (Q-44-46) and at once when the
 //!    pilot is incapacitated while connected (Q-44-43), the unit passes to its mind as an absent
 //!    player's unit: the seat is released, and the arena is told the unit is flown for an
 //!    absent player (`crate::arena::absent`), which lays the go-home order every mind reads and
-//!    binds whatever mind flies it to the absent player's rule. [`hand_over`] is the one door,
+//!    binds whatever mind flies it to the absent player's rule. `hand_over` is the one door,
 //!    and link loss is only one way through it: admission of a pilot who is not there (doc 45
 //!    AP.5) and a posture (AP.3) call the same function with a [`Why`] of their own.
-//! 3. **Going home** ([`tick`]). Once a world second the host asks the field to let the unit
+//! 3. **Going home** (`tick`). Once a world second the host asks the field to let the unit
 //!    out at its carrier's ramp (`super::home::ask_out`), as it does for an NPC under a
 //!    WITHDRAW, and the kernel decides on the unit's own pose. No mind may board (D-UM-11), so
 //!    the host does: out, the unit's recover runs as its pilot, the rig's recover act or the
 //!    DT recover, and is tried again every [`RECOVER_RETRY_WALL_S`] until the unit is off the
 //!    ground. A unit whose party has no carrier on the site has no ramp to be asked out at and
 //!    holds where it stands (Q-44-42).
-//! 4. **The way back** ([`take_back`]). A pilot who reconnects, at any time while the field
+//! 4. **The way back** (`take_back`). A pilot who reconnects, at any time while the field
 //!    runs and the unit is in it, is bound and seated again, and the arena is told the player
 //!    is back: the mind's pending think and its order are dropped by the seat's own `Live`
 //!    control, and a ramp exit the host asked for and the kernel has not yet applied is
 //!    recalled (Q-44-37). What the mind already did stands: a unit already let out at the ramp
 //!    is out, and its pilot is told where it is.
-//! 5. **A restart** ([`at_resume`]). A unit the mind held is the mind's again. A seated pilot
+//! 5. **A restart** (`at_resume`). A unit the mind held is the mind's again. A seated pilot
 //!    who is not connected is not handed the controls: the seat is `Linkdead` and the clock
 //!    runs from the boot, or from the loss the record already carries.
 //!

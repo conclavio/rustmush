@@ -37,7 +37,7 @@
 //! detachment command that arrives meanwhile can only tighten it.
 //!
 //! **What the mind is shown.** While the flag stands, [`Arena::mind_view`] shows the mind as
-//! hostile only the contacts the rule would let it answer ([`Arena::answerable`]); every other
+//! hostile only the contacts the rule would let it answer (`Arena::answerable`); every other
 //! contact its party holds hostile reads neutral. So the stock mind's cornered stand, which
 //! stops for the best hostile in range, stops only for a unit that has fired on it, and a unit
 //! with a marked party in view drives on. The view is narrowed, never widened, and the gate

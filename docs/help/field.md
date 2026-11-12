@@ -461,6 +461,60 @@ organized. A player with nothing on the site is told nothing.
 
 A salvage claim on a hull of yours reaches you by IC mail as before.
 
+## If you lose your link, or quit
+
+Your unit always has a mind: the one you launched it with, or the house default
+every unit carries. While you are at the controls it does nothing. When you are
+not, it flies the unit home for you.
+
+- **A lost link.** For five minutes your unit is still yours. It keeps the
+  heading and speed you gave it and fires nothing. Reconnect inside the five
+  minutes and you hear "You are back at your station on ...; it held your orders
+  and fired nothing."
+- **After five minutes** the unit passes to its mind. It breaks off and drives
+  for your carrier's ramp. When it stands beside the ramp the field lets it out
+  and it is put aboard your carrier, as your own recover would. If the recover
+  is refused it is tried again. If no carrier of your party stands on the site,
+  the unit has nowhere to go and holds where it stands.
+- **A clean `QUIT`** passes the unit to its mind at once. There are no five
+  minutes to wait for someone who chose to leave.
+- **If you are knocked out** in the hull (its head, cockpit or bridge destroyed),
+  you stop flying it at once, connected or not. You hear "You cannot fly #123:
+  its mind has the controls and is taking it home. It fires only on a unit that
+  fires on it." A hull that has lost its controls cannot drive to the ramp, so
+  it holds. You get the controls back only when you are fit again.
+
+**What the mind will and will not do while you are away.** It never opens fire
+first. It fires only on a unit whose fire has arrived on your unit in this
+field, hit or miss. A party you or your leader marked Hostile is not enough, and
+neither is fire on a friend. This binds any mind, one you wrote and filed as
+much as the house default: a shot it asks for at anyone else is refused. If you
+left the seat at weapons hold (`FIRE HOLD`, where every seat in a field starts),
+the hold stays, and the unit answers nobody, even under fire. Set `FIRE FREE`
+before you go if you want it to defend itself. An order to advance or attack
+that stood on the unit lapses; a hold-fire order stays.
+
+**Those you were with are told.** The leader of your party, and the leaders of
+parties that stand as your friends, hear "#123 breaks off for its carrier's ramp
+under its mind: its pilot's link is lost. It will not fire first." A leader who
+is offline reads it at login.
+
+**Coming back.** Reconnect at any time while the field runs and your unit is
+still in it, and you are seated again: "You are back at the controls of #123;
+its mind stands down and what it had pending is dropped. +focus #123/cockpit
+takes your cockpit back." Take the focus the line names, and your next command
+is what the unit does. If the mind had already taken the unit out at the ramp,
+it stays out, and you hear "While you were away its mind took #123 out of the
+field at its carrier's ramp."
+
+**A server restart** does not put you back at the controls unless you are
+connected. A unit its mind was flying is still its mind's. A unit you were
+flying waits five minutes from the restart for you to reconnect, firing
+nothing, and then passes to its mind.
+
+The simulator is different: there a dropped pilot's unit goes to its mind and
+fights on (`help simulator`).
+
 ## Leaving units behind
 
 A carrier normally lifts only with every rig and detachment unit aboard. To go
