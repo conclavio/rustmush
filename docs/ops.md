@@ -889,6 +889,12 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
   its deadline; boot logs one warning naming the missing route.
 - **Workers.** `[llm].decision_workers` (default 8, at most 32; boot refuses
   0 or more).
+- **Charged to its NPC.** A decision's call is metered against the NPC it is
+  for: the per-NPC budget (`[llm.budgets].per_npc_default`, or the profile's
+  `daily_tokens`), the audit row (`@llm/log npc_decision` ends `npc=#<id>`),
+  and the park flag. The NPC's profile is read each time a lease is planned,
+  so `@llm/kill` stops a decision that was captured before it: the call is
+  refused as `disabled` and the decision reaches `npc_idle` at its deadline.
 - **Boot audit.** Every production boot audits every durable decision record
   before the world task exists. **A malformed pending record freezes the `npc`
   owner at boot** (the kernel's contract): fix or remove the record

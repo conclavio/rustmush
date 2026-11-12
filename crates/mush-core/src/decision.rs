@@ -1376,7 +1376,6 @@ impl DecisionLeaseTransition {
 
     /// Set who the planned lease's provider call is charged to. The post-image
     /// is untouched: an attribution is never durable state.
-    #[must_use]
     pub(crate) fn attributed(mut self, attribution: Option<DecisionAttribution>) -> Self {
         self.worker.attribution = attribution;
         self

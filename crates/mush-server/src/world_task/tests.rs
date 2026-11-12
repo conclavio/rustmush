@@ -10989,6 +10989,13 @@ async fn run_npc_decision_over(engine: Engine, llm: &Arc<LlmService>, npc: mush_
     stop_test_server(handles).await;
 }
 
+/// The deadline of a decision a test expects to be refused and then idled.
+/// The decision clock counts whole seconds and a lease is planned only
+/// while the clock reads before the deadline, so a one-second deadline is
+/// leased or not by where in the second the capture commits. Five leaves
+/// the lease no way to miss.
+const REFUSED_DECISION_DEADLINE_SECS: i64 = 5;
+
 /// The `npc_decision` rows of the audit, oldest first.
 fn decision_audit(llm: &LlmService) -> Vec<mush_llm::AuditRecord> {
     let mut rows = llm.audit_log().recent(64);
@@ -11040,7 +11047,7 @@ async fn mw17b_llm_kill_stops_a_decision_that_was_already_captured() {
         vec![Box::new(mush_worldgen::WorldgenModule::new(Arc::clone(
             &llm,
         )))],
-        1,
+        REFUSED_DECISION_DEADLINE_SECS,
         60,
     );
     let said: String = tw
@@ -11077,7 +11084,7 @@ async fn mw17b_llm_kill_stops_a_decision_that_was_already_captured() {
 #[tokio::test]
 async fn mw17b_an_npcs_own_daily_ceiling_holds_for_its_decisions() {
     let (llm, mock) = npc_decision_service();
-    let (mut tw, npc) = npc_decision_rig(Vec::new(), 1, 60);
+    let (mut tw, npc) = npc_decision_rig(Vec::new(), REFUSED_DECISION_DEADLINE_SECS, 60);
     let _ = tw.run(GOD, "@agent/set Bob/daily_tokens=1");
     mock.set_default(Ok(idle_tool_reply(tw.engine(), npc)));
     run_npc_decision_over(tw.into_engine(), &llm, npc).await;
