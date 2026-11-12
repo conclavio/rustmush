@@ -475,6 +475,10 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
   whether or not the model then speaks and whether or not a budget refuses the call, so
   it bounds calls and not only lines. Two majors in one room take the room's turns in
   rotation. Times are real seconds (`World::now`), never the IC clock.
+- **The NPC's own window** (`NpcRuntime::last_unprompted_at`): an NPC also takes at most
+  one unprompted turn in that window, wherever it walks. This is Q-44-31's "each", kept
+  beside Q-44-47's room cap, so a major that follows a player from room to room does not
+  speak in each.
 - **Quiet**: no NPC of the room, of any tier, is mid-turn, has a stimulus waiting, has a
   memory fold pending, or took a turn within the settle time. An unprompted line never
   talks over a conversation.
@@ -491,12 +495,15 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
   the call with `actor=-` and `npc=` the NPC (MW.17b).
 - **The switch that enables the majors: `[npc].wake_majors`** (default `false`). The
   shipped cast (`crates/tacsim/content/cast/*.json`) authors its eighteen majors
-  `"enabled": false`. With the key set, `content.rs` applies every cast pack's major NPCs
-  enabled, whatever the pack says. It acts when a pack is applied: at boot on a fresh
-  world, and at the next pack upgrade on an existing one. **For MW.3**: set it under
-  `[npc]` in the box's `mushd.toml` (the template is
-  `deploy/instance/mushd.toml.tmpl`, which this unit did not touch); on a world whose
-  packs are already latched, wake each major by hand with `@agent/enable <npc>` as well.
+  `"enabled": false`. With the key set, a cast pack CREATES its major NPCs enabled,
+  whatever the pack says, and a later upgrade of that pack keeps each major enabled or
+  parked as staff last left it (`content.rs`, `applied_enabled`). So it wakes the majors
+  of a fresh world at boot, and on a world that already exists it wakes nobody.
+  **For MW.3**: set it under `[npc]` in the box's `mushd.toml` (the template is
+  `deploy/instance/mushd.toml.tmpl`, which this unit did not touch). On a wiped and
+  reloaded box that is all. On a world whose cast is already there, also run
+  `@agent/enable <npc>` for each major; the key then keeps them woken across the next
+  pack upgrade.
 
 **What the survey had wrong, or left out.**
 
@@ -513,13 +520,16 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
   at Stickney and Voltaire, two at Ligeia, one in the Ceres Registry). With every one of
   those rooms attended that is at most six unprompted calls in 30 minutes for the whole
   game, which is the figure to hold against the day's budget (Q-44-48).
-- A pack re-apply writes the whole profile again and keeps only `public_faction`. So a
-  major woken by hand goes back to `enabled: false` at the next pack upgrade unless
-  `wake_majors` is set, and with it set a major that staff parked is woken again by a
-  pack upgrade. Both follow from the applier as it was; neither is changed here.
+- A pack re-apply writes the whole profile again and keeps only `public_faction`. So
+  without `wake_majors`, a major woken by hand goes back to `enabled: false` at the next
+  pack upgrade, and any other NPC that staff parked with `@llm/kill` is woken again by
+  one. That is the applier as it was, for every tier, and it is left alone here except
+  for majors under the key, which keep what staff left. The general case (a pack upgrade
+  quietly undoing a park) has no unit; it wants one.
 - Q-44-31 says "at most once every 30 real minutes each"; Q-44-47, the later ruling, says
-  a room hears at most one line in a window whichever NPC speaks. The room cap is the
-  one built. It is the stricter of the two wherever NPCs share a room.
+  a room hears at most one line in a window whichever NPC speaks. Both are built: the
+  room cap is the stricter where NPCs share a room, the NPC's own is the stricter for
+  one that walks.
 
 **Defaults taken** (none ruled; all cheap to change):
 
@@ -530,6 +540,13 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
 - **Rotation** by object id among the room's enabled majors.
 - **A restart forgets the windows** (runtime state, like the mailbox): a room may hear a
   second line inside 30 minutes across a restart, once its settle time has passed again.
+- **A clock that steps backwards fails closed**: scans stop until the clock passes the
+  last scan's second again, and a window or settle time measured across the step reads
+  as not yet passed. Nothing extra is spent.
+- **`wake_majors` keeps what staff left on an upgrade.** The first build woke every major
+  again at each pack upgrade, which undid `@llm/kill`; the outside read of this unit
+  caught it. The cost of the rule built instead is that the key alone does not wake an
+  existing world.
 - **Only majors**, as ruled; Q-44-47's alternative (the timer for minor NPCs) is not
   built and nothing here prepares it beyond the tier test in `ambient_speakers`.
 
@@ -544,8 +561,10 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
   `mw18_an_unprompted_turn_waits_for_quiet_and_says_nothing_when_it_degrades`;
   `mw18_a_zero_window_turns_the_ambient_timer_off`;
   `mw18_presence_is_read_from_the_engines_own_link_state` (real `ConnUp`, `BareUp`,
-  `Cmd` and a lost `ConnDown` through `Engine::step`).
-- `runtime::tests::mw18_a_rooms_window_is_due_once_and_rotates_its_speakers`.
+  `Cmd` and a lost `ConnDown` through `Engine::step`);
+  `mw18_an_npc_that_walks_to_another_room_keeps_its_own_window`.
+- `runtime::tests::mw18_a_rooms_window_is_due_once_and_rotates_its_speakers`;
+  `content::tests::mw18_wake_majors_creates_a_major_enabled_and_keeps_what_staff_left`.
 - `mush-config` `mw18_npc_ambient_keys_default_and_parse`.
 - `crates/tacsim/tests/domain_economy/stations.rs`
   `mw18_wake_majors_applies_the_shipped_principals_enabled`: the production roster with
@@ -562,9 +581,19 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
 - The stories drive the NPC module's tick by hand. No story runs the ambient timer
   through the production world task, and none flies it against the live cast.
 
-**Not pinned by a story.** A room over the 256-room table cap being served later; an NPC
-in an exclusive scene being passed over; the per-NPC ceiling refusing an unprompted turn
-(the global budget's refusal is the one flown).
+**Not pinned by a story.** A room over the 256-room table cap being served later (a room
+that has heard a line keeps its row for the whole window, so 256 such rooms keep a new
+one out for up to 30 minutes); an NPC in an exclusive scene being passed over; a speaker
+inside a cooldown longer than the settle time being passed over; the per-NPC ceiling
+refusing an unprompted turn (the global budget's refusal is the one flown); a real pack
+upgrade over a parked major (`applied_enabled` is pinned as a function, and the fresh
+boot is flown against the real cast).
+
+**Read from outside.** An independent read of both units (MW.17b and MW.18) checked the
+claims above against the code and found four things, all fixed in this unit: the
+`wake_majors` rule above, stray spaces in the staff line for a silent unprompted turn,
+the missing per-NPC window, and a help sentence that overstated what `@llm/kill` stops
+when a call is already under way.
 
 ## MW.19
 
@@ -967,3 +996,9 @@ registry attributes one.
 
 **Not pinned by a story.** A lease planned after a restart carrying a fresh attribution
 (the path is the same `plan_candidate`); a second owner's adapter.
+
+**Limits of the tests.** That the attribution never reaches the model is held by the
+shape of the code (`request_for` takes the prompt alone, and no provider is handed a
+`CallCtx`); the story's own probe only checks that the NPC's dbref string is absent from
+the request. The two refused-decision stories run the production world task on the real
+clock, with a five-second deadline and a twenty-second wait.

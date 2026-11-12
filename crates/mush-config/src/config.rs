@@ -1054,11 +1054,12 @@ pub struct NpcCfg {
     /// H2b: how long an NPC's scene turn may wait for its durable decision
     /// before the idle fallback fires, seconds (default 120).
     pub scene_turn_deadline_secs: u32,
-    /// Doc 44 MW.18 (Q-44-47): apply a cast pack's major NPCs enabled,
-    /// whatever the pack's `profile.enabled` says (default false: the pack
-    /// decides, and the shipped majors stay parked). It acts when a pack is
-    /// applied: at boot on a fresh world, at the next pack upgrade on an
-    /// existing one.
+    /// Doc 44 MW.18 (Q-44-47): a cast pack creates its major NPCs enabled,
+    /// whatever the pack's `profile.enabled` says, and a later upgrade of the
+    /// pack keeps each as staff last left it (default false: the pack
+    /// decides, and the shipped majors stay parked). It wakes the majors of a
+    /// fresh world at boot; on a world that already exists staff wake each
+    /// with `@agent/enable`.
     pub wake_majors: bool,
     /// MW.18 (Q-44-31): the least time between two unprompted NPC lines in
     /// one room, REAL seconds (default 1800). 0 turns the ambient timer off.

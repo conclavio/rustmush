@@ -297,6 +297,7 @@ An enabled **major** NPC may speak without being spoken to. No other tier does.
     never talks over a conversation.
   - A room hears at most one unprompted line in 30 minutes, whichever of its
     NPCs speaks. Two majors in one room take turns.
+  - An NPC speaks unprompted at most once in 30 minutes, wherever it walks.
 
 All of these are real minutes, whatever rate the game clock runs at. The turn
 is an ordinary dialogue turn on the `npc_dialogue_major` route, under the same
@@ -330,7 +331,7 @@ Parking an NPC stops its decisions as well as its dialogue. A decision is the
 turn an NPC takes when a scene hands it one (`+timestop/next`). If the NPC is
 parked while it holds one, the model is not asked: `@llm/log npc_decision` shows
 the refused call as `disabled` with `npc=` naming the NPC, and the turn passes
-as its idle action.
+as its idle action. A call already under way when the NPC is parked finishes.
 
 ## Informants (the intel loop)
 
@@ -390,7 +391,8 @@ They never move money or goods themselves — every purchase, sale and enrolment
 is a command you type, and with the model off their fallback lines name those
 commands. The principals behind the houses are on record and never wake: they
 are major NPCs that ship parked. A server whose `mushd.toml` sets
-`[npc].wake_majors = true` creates them enabled instead, and on a world that
+`[npc].wake_majors = true` creates them enabled instead and then leaves each
+as staff set it, so parking one holds across a pack upgrade. On a world that
 already exists staff wake one with `@agent/enable <npc>`. See "help ports".
 
 ## See also

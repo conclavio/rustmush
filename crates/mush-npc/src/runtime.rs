@@ -307,7 +307,8 @@ impl LastDecision {
             }
             DecisionResult::ModelSilent => "the model answered and did nothing".to_owned(),
             DecisionResult::Fallback { reason } if self.unprompted => format!(
-                "nothing said: the model was not reached, and an unprompted turn has no                  fallback line ({reason})"
+                "nothing said: the model was not reached, and an unprompted turn has no \
+                 fallback line ({reason})"
             ),
             DecisionResult::Fallback { reason } => {
                 format!("the profile's fallback line, not the model ({reason})")
@@ -362,6 +363,11 @@ pub struct NpcRuntime {
     pub dropped_stimuli: u64,
     /// The last dialogue turn this NPC began, for the staff view (doc 44 cut MW.17).
     pub last_decision: Option<LastDecision>,
+    /// When this NPC last began an unprompted turn, REAL unix seconds (doc 44 cut
+    /// MW.18). The room's window bounds a room; this bounds the NPC itself, so one that
+    /// walks to another room does not speak unprompted again inside the window
+    /// (Q-44-31's "each").
+    pub last_unprompted_at: Option<i64>,
 }
 
 impl NpcRuntime {

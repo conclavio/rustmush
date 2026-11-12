@@ -108,10 +108,11 @@ impl NpcModule {
         self
     }
 
-    /// Doc 44 cut MW.18 (Q-44-47): `[npc].wake_majors`. When set, a cast pack's major
-    /// NPCs are applied enabled whatever the pack's `profile.enabled` says. It acts when
-    /// a pack is applied, so on a fresh world at boot and on an existing one at its next
-    /// pack upgrade; it never touches an NPC staff have parked since.
+    /// Doc 44 cut MW.18 (Q-44-47): `[npc].wake_majors`. When set, a cast pack CREATES
+    /// its major NPCs enabled, whatever the pack's `profile.enabled` says, and a later
+    /// upgrade of that pack leaves each major enabled or parked as staff last left it.
+    /// So it wakes the majors of a fresh world at boot, and it never undoes a park
+    /// (`@llm/kill`) or a wake (`@agent/enable`) on a world that already exists.
     #[must_use]
     pub fn with_wake_majors(mut self, wake: bool) -> NpcModule {
         self.wake_majors = wake;
@@ -1502,12 +1503,17 @@ impl NpcTick {
                     continue;
                 }
                 // A speaker still inside its own cooldown (a profile may set one
-                // longer than the settle time) is passed over.
+                // longer than the settle time), or inside its own window (it spoke
+                // unprompted in another room and walked here), is passed over.
                 let ready: Vec<ObjId> = speakers
                     .iter()
                     .filter(|(npc, cooldown)| {
-                        h.runtime(*npc)
-                            .is_none_or(|rt| rt.cooldown_ok(now_millis, *cooldown, false))
+                        h.runtime(*npc).is_none_or(|rt| {
+                            rt.cooldown_ok(now_millis, *cooldown, false)
+                                && rt
+                                    .last_unprompted_at
+                                    .is_none_or(|at| now.saturating_sub(at) >= window)
+                        })
                     })
                     .map(|(npc, _)| *npc)
                     .collect();
@@ -1515,6 +1521,7 @@ impl NpcTick {
                     && h.enqueue(npc, Stimulus::AmbientTimer, now_millis)
                 {
                     h.ambient.spoke(*room, npc, now);
+                    h.runtime_mut(npc).last_unprompted_at = Some(now);
                     to_fire.push((*room, npc));
                 }
             }

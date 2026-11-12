@@ -531,10 +531,11 @@ scene_turn_deadline_secs = 120
 ambient_window_secs = 1800
 ambient_active_secs = 600
 # The shipped cast's major NPCs (the houses' principals) are authored
-# `"enabled": false` and never wake. `true` applies every cast pack's major NPCs
-# ENABLED instead. It acts when a pack is applied: at boot on a fresh world, at
-# the next pack upgrade on an existing one (wake those by hand with
-# `@agent/enable <npc>`). Each enabled major may then spend on the LLM.
+# `"enabled": false` and never wake. With `true`, a cast pack CREATES its major
+# NPCs enabled instead, and a later upgrade of the pack keeps each one enabled or
+# parked as staff last left it. So it wakes the majors of a fresh world at boot;
+# on a world that already exists, wake each by hand with `@agent/enable <npc>`.
+# Each enabled major may then spend on the LLM.
 wake_majors = false
 
 [llm]                              # (M7) LLM layer: worldgen (@gen), budgets, kill switch

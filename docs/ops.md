@@ -909,14 +909,17 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
   `[npc].ambient_active_secs`, default 600) and the room has been quiet for five
   minutes. A room gets at most one such turn in `[npc].ambient_window_secs`
   (default 1800; `0` turns the timer off). Both are real seconds whatever the
-  game clock's rate. The turn is an ordinary `npc_dialogue_major` call under the
-  existing budgets, and the window is not kept across a restart.
+  game clock's rate. One NPC also takes at most one such turn in that window,
+  wherever it walks. The turn is an ordinary `npc_dialogue_major` call under the
+  existing budgets, and the windows are not kept across a restart.
 - **Waking the majors.** The shipped cast's eighteen major NPCs are authored
-  parked. `[npc].wake_majors = true` applies every cast pack's majors enabled. It
-  acts when a pack is applied: at boot on a fresh world, at the next pack upgrade
-  on an existing one. On a world whose packs are already latched, also run
-  `@agent/enable <npc>` for each. A pack upgrade rewrites an NPC's profile, so
-  without the key a major woken by hand is parked again by the next upgrade.
+  parked. With `[npc].wake_majors = true` a cast pack creates its majors enabled,
+  and a later upgrade of the pack keeps each one enabled or parked as staff last
+  left it. So the key wakes the majors of a fresh world at boot. On a world that
+  already exists it wakes nobody: run `@agent/enable <npc>` for each, and set the
+  key as well so the next pack upgrade does not park them again. Without the key
+  a pack upgrade rewrites `enabled` to the pack's value for every NPC, which
+  parks a major woken by hand and wakes any other NPC that staff parked.
 - **Scene turns (H2b).** When `+timestop/next` hands the turn to an NPC agent,
   that turn is one durable decision: the NPC module requests it (cause
   `npc.scene_turn`, keyed on the scene, the round and the NPC), the agent tick

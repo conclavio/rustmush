@@ -4171,7 +4171,9 @@ async fn mw18_an_unprompted_turn_waits_for_quiet_and_says_nothing_when_it_degrad
     assert_eq!(rows[0].outcome, mush_llm::Outcome::Budget);
     let show = rig.staff(&format!("@agent/show #{}", holm.0));
     assert!(
-        show.contains("Last turn result: nothing said: the model was not reached"),
+        show.contains(
+            "nothing said: the model was not reached, and an unprompted turn has no fallback line (budget"
+        ),
         "{show}"
     );
 
@@ -4281,4 +4283,47 @@ fn mw18_presence_is_read_from_the_engines_own_link_state() {
         "a link-dead character is still connected"
     );
     assert!(!present(&rig), "link-dead is not presence");
+}
+
+/// Q-44-31's "each": the window is also the NPC's own. A major that speaks unprompted in
+/// one room and then walks, with the player, into a room that has never heard a line does
+/// not speak unprompted there until its own window has passed, though that room's settle
+/// time is long over.
+#[tokio::test]
+async fn mw18_an_npc_that_walks_to_another_room_keeps_its_own_window() {
+    let mut rig = Rig::new();
+    let window = mush_npc::DEFAULT_AMBIENT_WINDOW_SECS;
+    let settle = mush_npc::DEFAULT_AMBIENT_SETTLE_SECS;
+    rig.set_now(0);
+    let office = rig.room("Authority");
+    let hall = rig.room("Hall");
+    let holm = rig.npc("Dagny Holm", office, &profile(NpcTier::Major));
+    let alice = rig.present_player("Alice", office);
+
+    let _ = rig.step_clock(0, settle - 30, &[alice]);
+    rig.set_now(settle);
+    rig.types(alice);
+    let (npc, corr, payload) = rig.one_turn().expect("the office's unprompted turn");
+    assert_eq!(npc, holm);
+    let (svc, mock) = service();
+    mock.push_response(tool_resp(vec![say_tool("Shall we walk?")]));
+    let out = run_npc_turn_async(&svc, &payload).await;
+    let _ = rig.complete(holm, corr, &out).take();
+
+    // Both walk to the hall, which has no window of its own to enforce.
+    rig.engine.world.move_to(holm, hall).expect("the NPC walks");
+    rig.engine
+        .world
+        .move_to(alice, hall)
+        .expect("the player walks");
+    let began = rig.step_clock(settle + 30, settle + window - 30, &[alice]);
+    assert!(
+        began.is_empty(),
+        "the NPC spoke unprompted again inside its own window: {began:?}"
+    );
+    assert_eq!(rig.host().ambient.rooms[&hall].last_line_at, None);
+
+    // Its window has passed: the hall hears its first line.
+    let began = rig.step_clock(settle + window, settle + window, &[alice]);
+    assert_eq!(began, vec![(settle + window, holm)]);
 }
