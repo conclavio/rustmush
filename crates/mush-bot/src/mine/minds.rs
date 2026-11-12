@@ -1,11 +1,12 @@
 //! **The mind market's sentences, as the bot reads them** (doc 44 MW.5; doc 17g C4 item 3,
 //! "`cargo test -p mush-bot` green on every new sentence").
 //!
-//! One `pub const` needle per player-facing sentence of six game modules, grouped in one
-//! module per family and named exactly as the game's constant is named. A needle is a literal
-//! fragment of the game's sentence: it never crosses a `{placeholder}`, so it is found in the
-//! filled line whatever the fill, and it is chosen to tell its sentence from the rest of its
-//! family (the longest placeholder-free fragment, unless that fragment is shared).
+//! One `pub const` needle per player-facing sentence constant of six game modules, grouped in
+//! one module per family and named exactly as the game's constant is named. A needle is a
+//! literal fragment of the game's sentence: it never crosses a `{placeholder}`, so it is found
+//! in the filled line whatever the fill, and it is chosen to tell its sentence from every other
+//! sentence in the table (the longest placeholder-free fragment, unless that fragment is
+//! shared).
 //!
 //! This is the table only. No lane reads these yet (doc 44 MW.19 owns the bot's market lane),
 //! and nothing here is a game-crate dependency: the needles are the bot's own text. The tests
@@ -15,20 +16,39 @@
 //! * **in step**: every needle is a literal fragment of the game constant it names, so a
 //!   reworded sentence fails `cargo test -p mush-bot`;
 //! * **complete**: a census reads each game module's source (`include_str!`) and fails naming
-//!   any `&str` constant declared there with no row here and no listed exclusion, so a sentence
-//!   added to one of these modules fails the bot's tests until the bot learns it;
-//! * **distinct**: within a family no needle is found in another member's sentence, except
-//!   the pairs listed in the test module's overlap tables, each with its reason.
+//!   any `&str` constant declared there with no row here and no listed exclusion, and fails
+//!   naming any other `const` or `static` line whose type mentions `str` that it cannot
+//!   attribute (one in a function or an `impl`, two modules deep, a table of strings), so a
+//!   sentence constant added to one of these modules fails the bot's tests until the bot
+//!   learns it;
+//! * **distinct**: within a family and across all six, no needle is found in another row's
+//!   sentence, except the pairs listed in the test module's overlap tables, each with its
+//!   reason.
 //!
-//! Two sentences are the same text in two families: `dispatch::MIND_NO_LICENCE` and
-//! `market::NO_LICENCE` ("You hold no licence {licence}."), and `dispatch::MIND_NOT_FOR_ORG`,
-//! which the game re-exports from `market::NOT_FOR_ORG`. A reader that must tell them apart
-//! does it by the command it typed, not by the line.
+//! **What the census does not see.** It reads constants, not sentences a function builds. The
+//! known ones in these modules: `mind_renewal::player`'s status details (the `format!` in
+//! `personal_status_line` and `house_status_line`, "Price: … minor units of …") and
+//! `stop_reason`'s reasons, the fill of `RENEW_STOPPED`; `field::absent`'s `Why::clause`, the
+//! fill of `GONE_HOME`; `excursion`'s `word`/`words` renderings, which fill other modules'
+//! sentences. A new sentence written inline in a function, rather than as a constant, is not
+//! caught.
 //!
-//! Three needles keep a sentence's inner spacing, because the sentence is a table row whose
-//! only words are shared with the family's prose: `market::ROW`, `market::HOLD_OWNER` and
-//! `market::HOLD_PAID` match the row's two-space gaps, so a reader must not collapse runs of
-//! spaces before it looks for them.
+//! **Sentences that are the same text.** `dispatch::MIND_NO_LICENCE` and `market::NO_LICENCE`
+//! ("You hold no licence {licence}."), and `dispatch::MIND_NOT_FOR_ORG`, which the game
+//! re-exports from `market::NOT_FOR_ORG`. A reader that must tell them apart does it by the
+//! command it typed, not by the line.
+//!
+//! **Partial needles** ([`PARTIAL`]). Seven sentences have no placeholder-free fragment that
+//! is both long and their own: two staged lines that open with another's verb, three table
+//! rows, and two lines whose every fragment is short (`DETAIL`, `CLAIM_LINE`). Their needle alone does not identify the sentence; each needle's doc says
+//! what a reader must use beside it, and the rule for a reader (MW.19) is: test a longer
+//! sentence's needle before a partial one that it contains (`UPDATING` before `FILING`,
+//! `REVOKING` before `REVOKING_PRINCIPAL`), and never collapse runs of spaces in a line before
+//! looking for `ROW`, `HOLD_OWNER` or `HOLD_PAID`.
+//!
+//! One game constant has no row: `market::INSPECT_REFUSED` is the engine's generic refused line
+//! (`mush_core::action::SUBMISSION_REFUSED_LINE`, "That did not go through. Nothing changed."),
+//! printed for every refused submission, so no needle of it could name this family.
 
 /// `+enduser`, the Registry's Class III end-user registration (doc 44 MW.23):
 /// `tacsim::launch::end_user`.
@@ -86,6 +106,17 @@ pub mod renewal {
     pub const RENEW_DECLINING: &str = "Turning down the renewal offer on licence";
     /// `mush_market::mind_renewal::player::RENEW_STOPPED`.
     pub const RENEW_STOPPED: &str = "Nothing further will be tried.";
+    /// `mush_market::mind_renewal::player::STATUS_NONE`.
+    pub const STATUS_NONE: &str = "No renewal offer has been requested.";
+    /// `mush_market::mind_renewal::player::STATUS_DRAFTED`.
+    pub const STATUS_DRAFTED: &str = "A renewal offer awaits your explicit acceptance or decline.";
+    /// `mush_market::mind_renewal::player::STATUS_FUNDED`.
+    pub const STATUS_FUNDED: &str = "Payment is held; completion is pending.";
+    /// `mush_market::mind_renewal::player::STATUS_GRANTED`.
+    pub const STATUS_GRANTED: &str = "Renewal completed.";
+    /// `mush_market::mind_renewal::player::STATUS_CLOSED`.
+    pub const STATUS_CLOSED: &str =
+        "The last renewal closed without a new term. You may explicitly request a retry.";
 }
 
 /// A launch's mind claim (doc 23 S.4b): the claim sentences of
@@ -140,6 +171,9 @@ pub mod absent {
     pub const WENT_HOME: &str = "out of the field at its carrier's ramp.";
     /// `tacsim::field::absent::LEFT_AT_RAMP`.
     pub const LEFT_AT_RAMP: &str = "out of the field, but it could not be put aboard: it stands beside your carrier's ramp. Recover it yourself.";
+    /// `tacsim::field::absent::ADMITTED_AWAY` (doc 45 cut AP.5).
+    pub const ADMITTED_AWAY: &str =
+        "while you were away: its mind has the controls, makes for its carrier's ramp";
     /// `tacsim::field::absent::NOT_FIT`.
     pub const NOT_FIT: &str = "its mind keeps the controls.";
     /// `tacsim::field::absent::GONE_HOME`.
@@ -165,7 +199,8 @@ pub mod market {
     /// `tacsim::minds::words::RESERVING`.
     pub const RESERVING: &str =
         "Reserving a charter for this filing first. Once that is confirmed, type @mind/file";
-    /// `tacsim::minds::words::FILING`: shared with `UPDATING` (an allowed overlap).
+    /// `tacsim::minds::words::FILING`. Partial: also the opening of `UPDATING`; a reader takes
+    /// a line that starts with it, does not hold `UPDATING`'s needle, and has " as " after it.
     pub const FILING: &str = "Filing ";
     /// `tacsim::minds::words::NO_FILED`.
     pub const NO_FILED: &str = "You own no filed mind";
@@ -185,7 +220,8 @@ pub mod market {
     pub const EMPTY: &str = "No minds are for sale at this counter.";
     /// `tacsim::minds::words::HEAD`.
     pub const HEAD: &str = "Minds for sale here (term and Grace in IC days):";
-    /// `tacsim::minds::words::ROW`: the row's two-space gap before `class`, which `DETAIL` does not have.
+    /// `tacsim::minds::words::ROW`. Partial: a table row's gap before `class`; a reader takes it
+    /// only from a line after `HEAD`, and must not collapse runs of spaces first.
     pub const ROW: &str = "  class ";
     /// `tacsim::minds::words::FOOT`.
     pub const FOOT: &str =
@@ -196,14 +232,15 @@ pub mod market {
     pub const NO_LISTING: &str = "No listing here has the code";
     /// `tacsim::minds::words::AMBIGUOUS`.
     pub const AMBIGUOUS: &str = "use +actions and +act for these.";
-    /// `tacsim::minds::words::DETAIL`.
+    /// `tacsim::minds::words::DETAIL`. Partial: no longer fragment exists; a reader takes a line
+    /// that also starts with "Listing " and holds ", class ".
     pub const DETAIL: &str = "and above.";
     /// `tacsim::minds::words::TERMS_LINE`.
     pub const TERMS_LINE: &str = "days of Grace; the licence";
     /// `tacsim::minds::words::SPLIT`.
     pub const SPLIT: &str = "charter owner the rest.";
     /// `tacsim::minds::words::QUOTING`.
-    pub const QUOTING: &str = "shows it once it is confirmed.";
+    pub const QUOTING: &str = "Asking for a quote on listing";
     /// `tacsim::minds::words::PUBLISHING`.
     pub const PUBLISHING: &str = "Listing filed mind";
     /// `tacsim::minds::words::TERMS`.
@@ -217,7 +254,8 @@ pub mod market {
     pub const BAD_TRANSFER: &str = "transfer is yes or no.";
     /// `tacsim::minds::words::HOLD_HEAD`.
     pub const HOLD_HEAD: &str = "Your mind licences:";
-    /// `tacsim::minds::words::HOLD_OWNER`: the owner row's two-space indent.
+    /// `tacsim::minds::words::HOLD_OWNER`. Partial: a holdings row's indent; a reader takes it
+    /// only from a line that starts with it, after `HOLD_HEAD`, spaces not collapsed.
     pub const HOLD_OWNER: &str = "  filed ";
     /// `tacsim::minds::words::HOLD_MORE`.
     pub const HOLD_MORE: &str = "More: +minds/holdings";
@@ -242,7 +280,8 @@ pub mod market {
     pub const COMPLETING: &str = "Taking the licence from listing";
     /// `tacsim::minds::words::REFUNDING`.
     pub const REFUNDING: &str = "Asking for your payment on listing";
-    /// `tacsim::minds::words::HOLD_PAID`: the paid row's two-space indent.
+    /// `tacsim::minds::words::HOLD_PAID`. Partial: a holdings row's indent; a reader takes it
+    /// only from a line that starts with it, after `HOLD_HEAD`, spaces not collapsed.
     pub const HOLD_PAID: &str = "  licence ";
     /// `tacsim::minds::words::HOLD_WAIT_HEAD`.
     pub const HOLD_WAIT_HEAD: &str = "Purchases waiting:";
@@ -277,8 +316,6 @@ pub mod market {
     pub const INSPECTING: &str = "Inspecting hull #";
     /// `tacsim::minds::words::INSPECTION_OFF`.
     pub const INSPECTION_OFF: &str = "Registry inspection is not configured here.";
-    /// `tacsim::minds::words::INSPECT_REFUSED`: the driver's one refusal, `mush_core::action::SUBMISSION_REFUSED_LINE`.
-    pub const INSPECT_REFUSED: &str = "That did not go through.";
     /// `tacsim::minds::words::NO_SUCH_HULL`.
     pub const NO_SUCH_HULL: &str = "No such hull.";
     /// `tacsim::minds::words::FINING`.
@@ -295,7 +332,9 @@ pub mod market {
     pub const NO_FINE_HOLDER: &str = "That hull has no holder this Registry can fine.";
     /// `tacsim::minds::words::ALREADY_FINED`.
     pub const ALREADY_FINED: &str = "That inspection has already been fined.";
-    /// `tacsim::minds::words::REVOKING_PRINCIPAL`: shared with `REVOKING` (an allowed overlap).
+    /// `tacsim::minds::words::REVOKING_PRINCIPAL`. Partial: also the opening of `REVOKING`; a
+    /// reader takes a line that starts with it, does not hold `REVOKING`'s needle, and ends
+    /// " IC days.".
     pub const REVOKING_PRINCIPAL: &str = "Revoking ";
     /// `tacsim::minds::words::PRINCIPALS_BARRED`.
     pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licences until";
@@ -314,7 +353,8 @@ pub mod market {
     pub const CLAIMS_OFF: &str = "Registry claims are not configured here.";
     /// `tacsim::minds::words::NO_CLAIMS`.
     pub const NO_CLAIMS: &str = "No claims are filed with the Registry.";
-    /// `tacsim::minds::words::CLAIM_LINE`.
+    /// `tacsim::minds::words::CLAIM_LINE`. Partial: no longer fragment exists; a reader takes a
+    /// line that also holds ": hulls ", in the answer to `@registry/claims`.
     pub const CLAIM_LINE: &str = ") claim ";
     /// `tacsim::minds::words::CLAIM_WORDS`.
     pub const CLAIM_WORDS: &str = "In their words:";
@@ -368,6 +408,23 @@ pub mod market {
             "into escrow; the transfer settles once no sortie under it is out.";
     }
 }
+
+/// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
+/// sentence. Each needle's doc says what a reader must use beside it. A test holds this list to
+/// the table: every row whose needle is shorter than [`PARTIAL_BELOW`] characters (trimmed) is
+/// listed, and every listed row exists.
+pub const PARTIAL: &[&str] = &[
+    "market::FILING",
+    "market::ROW",
+    "market::DETAIL",
+    "market::HOLD_OWNER",
+    "market::HOLD_PAID",
+    "market::REVOKING_PRINCIPAL",
+    "market::CLAIM_LINE",
+];
+
+/// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
+pub const PARTIAL_BELOW: usize = 12;
 
 #[cfg(test)]
 mod tests {
@@ -426,6 +483,11 @@ mod tests {
             RENEW_PAYING,
             RENEW_DECLINING,
             RENEW_STOPPED,
+            STATUS_NONE,
+            STATUS_DRAFTED,
+            STATUS_FUNDED,
+            STATUS_GRANTED,
+            STATUS_CLOSED,
         )
     }
 
@@ -466,6 +528,7 @@ mod tests {
             WENT_HOME,
             LEFT_AT_RAMP,
             NOT_FIT,
+            ADMITTED_AWAY,
             GONE_HOME,
         )
     }
@@ -536,7 +599,6 @@ mod tests {
                 REGISTRY_OFF,
                 INSPECTING,
                 INSPECTION_OFF,
-                INSPECT_REFUSED,
                 NO_SUCH_HULL,
                 FINING,
                 FINE_OFF,
@@ -589,6 +651,27 @@ mod tests {
         rows
     }
 
+    /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
+    /// whole table.
+    fn all_rows() -> Vec<(String, &'static str, &'static str)> {
+        let families: [(&str, Vec<Row>); 6] = [
+            ("end_user", end_user_rows()),
+            ("renewal", renewal_rows()),
+            ("claim", claim_rows()),
+            ("dispatch", dispatch_rows()),
+            ("absent", absent_rows()),
+            ("market", market_rows()),
+        ];
+        families
+            .into_iter()
+            .flat_map(|(family, rows)| {
+                rows.into_iter().map(move |(name, sentence, needle)| {
+                    (format!("{family}::{name}"), sentence, needle)
+                })
+            })
+            .collect()
+    }
+
     // ---- What the census does not ask a row for, each with its reason.
 
     /// `end_user.rs`.
@@ -602,29 +685,60 @@ mod tests {
         ("TV_REC_PREFIX", "a store key prefix, never printed"),
     ];
     /// `words.rs`.
-    const WORDS_EXCLUDED: &[(&str, &str)] = &[(
-        "REFUSED",
-        "the typed refusal's code word for a usage refusal; the line prints the usage text, \
-         never this word",
-    )];
-
-    // ---- The pairs allowed to overlap within a family: (row, other row, why).
-
-    /// The market family's overlaps. Both are a staged request line that opens with the same
-    /// verb as another and has no other fragment of its own; a reader tells them apart by
-    /// testing the longer sentence's needle first.
-    const MARKET_OVERLAPS: &[(&str, &str, &str)] = &[
+    const WORDS_EXCLUDED: &[(&str, &str)] = &[
         (
-            "FILING",
-            "UPDATING",
-            "\"Filing {reference} as {charter}.\": its only other fragment is \"as\"; \
-             UPDATING's needle (\"on the line of filed mind\") is checked first",
+            "REFUSED",
+            "the typed refusal's code word for a usage refusal; the line prints the usage \
+             text, never this word",
         ),
         (
-            "REVOKING_PRINCIPAL",
-            "REVOKING",
+            "INSPECT_REFUSED",
+            "the engine's generic refused line (mush_core::action::SUBMISSION_REFUSED_LINE), \
+             printed for every refused submission; no needle of it names this family",
+        ),
+    ];
+
+    // ---- The pairs allowed to overlap: (row, other row, why), names as `family::NAME`.
+
+    /// Within the market family: a staged request line that opens with the same verb as
+    /// another and has no other fragment of its own. Both are in [`super::PARTIAL`]; the
+    /// reader's rule (the module doc) is to test the other row's needle first.
+    const MARKET_OVERLAPS: &[(&str, &str, &str)] = &[
+        (
+            "market::FILING",
+            "market::UPDATING",
+            "\"Filing {reference} as {charter}.\": its only other fragment is \"as\"",
+        ),
+        (
+            "market::REVOKING_PRINCIPAL",
+            "market::REVOKING",
             "\"Revoking {who} for {days} IC days.\": \"for\" and \"IC days.\" are shared too \
-             (SEIZED); REVOKING's needle (\"Revoking licence\") is checked first",
+             (SEIZED)",
+        ),
+    ];
+
+    /// Across families: the same sentence in two modules. A reader tells them apart by the
+    /// command it typed.
+    const CROSS_OVERLAPS: &[(&str, &str, &str)] = &[
+        (
+            "dispatch::MIND_NO_LICENCE",
+            "market::NO_LICENCE",
+            "the same text, \"You hold no licence {licence}.\", for a launch's mind= and for +minds",
+        ),
+        (
+            "market::NO_LICENCE",
+            "dispatch::MIND_NO_LICENCE",
+            "the same text, the other way round",
+        ),
+        (
+            "dispatch::MIND_NOT_FOR_ORG",
+            "market::NOT_FOR_ORG",
+            "the game re-exports market::NOT_FOR_ORG as dispatch::MIND_NOT_FOR_ORG",
+        ),
+        (
+            "market::NOT_FOR_ORG",
+            "dispatch::MIND_NOT_FOR_ORG",
+            "the same constant, the other way round",
         ),
     ];
 
@@ -669,46 +783,71 @@ mod tests {
         );
     }
 
-    /// **Distinct**: no needle is found in another member's sentence, but the listed pairs,
-    /// and every listed pair still overlaps.
-    fn distinct(family: &str, rows: &[Row], overlaps: &[(&str, &str, &str)]) {
+    /// **Distinct**: no needle is found in another row's sentence, but the listed pairs, and
+    /// every listed pair still overlaps. Names are as `rows` spells them.
+    fn distinct<N: AsRef<str>>(
+        rows: &[(N, &'static str, &'static str)],
+        overlaps: &[(&str, &str, &str)],
+    ) {
         let mut wrong = Vec::new();
-        for &(name, _, needle) in rows {
-            for &(other, sentence, _) in rows {
+        for (name, _, needle) in rows {
+            let name = name.as_ref();
+            for (other, sentence, _) in rows {
+                let other = other.as_ref();
                 let listed = overlaps.iter().any(|&(a, b, _)| a == name && b == other);
-                if other != name && sentence.contains(needle) && !listed {
+                if other != name && sentence.contains(*needle) && !listed {
                     wrong.push(format!(
-                        "{family}::{name}'s needle {needle:?} is in {family}::{other}'s sentence"
+                        "{name}'s needle {needle:?} is in {other}'s sentence {sentence:?}"
                     ));
                 }
             }
         }
         for &(a, b, _) in overlaps {
-            let needle = rows.iter().find(|row| row.0 == a).map(|row| row.2);
-            let sentence = rows.iter().find(|row| row.0 == b).map(|row| row.1);
+            let needle = rows.iter().find(|row| row.0.as_ref() == a).map(|row| row.2);
+            let sentence = rows.iter().find(|row| row.0.as_ref() == b).map(|row| row.1);
             match (needle, sentence) {
                 (Some(needle), Some(sentence)) if sentence.contains(needle) => {}
-                _ => wrong.push(format!(
-                    "{family}: listed overlap ({a}, {b}) no longer overlaps"
-                )),
+                _ => wrong.push(format!("listed overlap ({a}, {b}) no longer overlaps")),
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
-    /// `line` without a leading `pub`, `pub(crate)`, `pub(super)` or `pub(self)`.
-    fn without_visibility(line: &str) -> &str {
-        ["pub(crate) ", "pub(super) ", "pub(self) ", "pub "]
-            .iter()
-            .find_map(|prefix| line.strip_prefix(prefix))
-            .unwrap_or(line)
+    /// `family::NAME` rows of a family, for the per-family distinct checks.
+    fn qualified(family: &str, rows: Vec<Row>) -> Vec<(String, &'static str, &'static str)> {
+        rows.into_iter()
+            .map(|(name, sentence, needle)| (format!("{family}::{name}"), sentence, needle))
+            .collect()
     }
 
-    /// The name of a `mod name {` line (any visibility), else `None`.
+    // ---- The census reader.
+
+    /// What a census reads from a game module's source.
+    #[derive(Debug, Default, PartialEq)]
+    struct Declared {
+        /// The `&str` constants it attributes: `NAME` at column 0, `module::NAME` four columns
+        /// into a top-level inline module, and the constant names it re-exports.
+        names: Vec<String>,
+        /// Every other `const` or `static` line whose type mentions `str`, and every
+        /// re-export it cannot read, as `line N: text`. A census fails on any.
+        unread: Vec<String>,
+    }
+
+    /// `line` without a leading visibility: `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
+    /// `pub(in path)`.
+    fn without_visibility(line: &str) -> &str {
+        if let Some(rest) = line.strip_prefix("pub(") {
+            return rest.split_once(") ").map_or(line, |(_, rest)| rest);
+        }
+        line.strip_prefix("pub ").unwrap_or(line)
+    }
+
+    /// The name of a top-level `mod name {` line (any visibility, any trailing comment),
+    /// else `None`. `mod name;` is not inline.
     fn inline_module(line: &str) -> Option<&str> {
-        without_visibility(line)
-            .strip_prefix("mod ")?
-            .strip_suffix(" {")
+        let rest = without_visibility(line).strip_prefix("mod ")?;
+        let name = rest.split([' ', '{']).next()?;
+        rest.contains('{').then_some(name)
     }
 
     fn is_const_name(name: &str) -> bool {
@@ -718,32 +857,51 @@ mod tests {
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
     }
 
-    /// The name of a `const NAME: &str` (or `&'static str`) declaration, any visibility.
-    fn str_const(line: &str) -> Option<&str> {
-        let (name, ty) = without_visibility(line)
-            .strip_prefix("const ")?
-            .split_once(": ")?;
-        (is_const_name(name) && (ty.starts_with("&str") || ty.starts_with("&'static str")))
-            .then_some(name)
+    /// A `const` or `static` item line (after its indentation): its name and its type text up
+    /// to `=` (or the line's end). `const fn` is not an item of this kind.
+    fn item(line: &str) -> Option<(&str, &str)> {
+        let rest = without_visibility(line);
+        let rest = rest
+            .strip_prefix("const ")
+            .or_else(|| rest.strip_prefix("static mut "))
+            .or_else(|| rest.strip_prefix("static "))?;
+        if rest.starts_with("fn ") {
+            return None;
+        }
+        let (name, ty) = rest.split_once(':')?;
+        Some((name.trim(), ty.split('=').next().unwrap_or(ty).trim()))
     }
 
-    /// The name of a `pub use path::THING as NAME;` re-export of a constant.
-    fn reexport(line: &str) -> Option<&str> {
-        let (_, name) = line
-            .strip_prefix("pub use ")?
-            .strip_suffix(';')?
-            .rsplit_once(" as ")?;
-        is_const_name(name).then_some(name)
+    /// The constant names a `pub use` line re-exports (`path::NAME;`, `path::X as NAME;`,
+    /// `path::{A, B as C};`), or `None` when it is not one line ending `;`.
+    fn reexports(line: &str) -> Option<Vec<&str>> {
+        let body = line.strip_prefix("pub use ")?.strip_suffix(';')?;
+        let items: Vec<&str> = match body.split_once('{') {
+            Some((_, group)) => group.strip_suffix('}')?.split(',').collect(),
+            None => vec![body],
+        };
+        Some(
+            items
+                .into_iter()
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(|item| match item.rsplit_once(" as ") {
+                    Some((_, alias)) => alias,
+                    None => item.rsplit("::").next().unwrap_or(item),
+                })
+                .filter(|name| is_const_name(name))
+                .collect(),
+        )
     }
 
-    /// Every `&str` constant a game module's source declares at module level, and every
-    /// constant it re-exports under a new name: `NAME` at column 0, or `module::NAME` four
-    /// columns into a top-level inline module (`words.rs`' `named`). A `tests` module and a
-    /// constant local to a function body are not read.
-    fn declared(source: &str) -> Vec<String> {
-        let mut out = Vec::new();
+    /// Read a game module's source. A `tests` module is skipped on purpose (test fixtures are
+    /// not sentences); every other `const`/`static` whose type mentions `str` is either
+    /// attributed to a name or listed as unread.
+    fn declared(source: &str) -> Declared {
+        let mut out = Declared::default();
         let mut inner: Option<&str> = None;
-        for line in source.lines() {
+        for (index, line) in source.lines().enumerate() {
+            let number = index + 1;
             if line == "}" {
                 inner = None;
                 continue;
@@ -752,34 +910,64 @@ mod tests {
                 inner = Some(name);
                 continue;
             }
-            let (body, prefix) = match inner {
-                None => (line, String::new()),
-                Some("tests") => continue,
-                Some(module) => match line.strip_prefix("    ") {
-                    Some(body) => (body, format!("{module}::")),
-                    None => continue,
-                },
-            };
-            if body.starts_with(' ') {
+            if inner == Some("tests") {
                 continue;
             }
-            if let Some(name) = str_const(body).or_else(|| reexport(body)) {
-                out.push(format!("{prefix}{name}"));
+            let indent = line.len() - line.trim_start().len();
+            let body = line.trim_start();
+            let prefix = inner
+                .map(|module| format!("{module}::"))
+                .unwrap_or_default();
+            let depth = if inner.is_some() { 4 } else { 0 };
+            let attributable = indent == depth;
+            if body.starts_with("pub use ") {
+                match reexports(body) {
+                    Some(names) if attributable => {
+                        out.names
+                            .extend(names.into_iter().map(|n| format!("{prefix}{n}")));
+                    }
+                    Some(names) if names.is_empty() => {}
+                    // An indented re-export of a constant, or one this reader cannot parse (a
+                    // group across lines).
+                    _ => out.unread.push(format!("line {number}: {}", line.trim())),
+                }
+                continue;
+            }
+            let Some((name, ty)) = item(body) else {
+                continue;
+            };
+            if !ty.contains("str") {
+                continue;
+            }
+            let plain = ty == "&str" || ty == "&'static str";
+            let is_const = !without_visibility(body).starts_with("static");
+            if attributable && plain && is_const && is_const_name(name) {
+                out.names.push(format!("{prefix}{name}"));
+            } else {
+                out.unread.push(format!("line {number}: {}", line.trim()));
             }
         }
         out
     }
 
-    /// **Complete**: every constant `declared` finds in `source` has a row or an exclusion,
-    /// and every row and exclusion names a constant still declared there.
+    /// **Complete**: the census reads every `str` item line of `source`; every constant it
+    /// attributes has a row or an exclusion, and every row and exclusion names a constant
+    /// still declared there.
     fn census(file: &str, source: &str, rows: &[Row], excluded: &[(&str, &str)]) {
         let declared = declared(source);
+        assert!(
+            declared.unread.is_empty(),
+            "{file} declares string items the bot's census cannot attribute to a row: {:?}. \
+             Declare a sentence as a module-level `pub const NAME: &str`, or teach the census.",
+            declared.unread
+        );
         let known: BTreeSet<&str> = rows
             .iter()
             .map(|row| row.0)
             .chain(excluded.iter().map(|exclusion| exclusion.0))
             .collect();
         let missing: Vec<&str> = declared
+            .names
             .iter()
             .map(String::as_str)
             .filter(|name| !known.contains(name))
@@ -792,7 +980,7 @@ mod tests {
         let stale: Vec<&str> = known
             .iter()
             .copied()
-            .filter(|name| !declared.iter().any(|d| d == name))
+            .filter(|name| !declared.names.iter().any(|d| d == name))
             .collect();
         assert!(
             stale.is_empty(),
@@ -800,19 +988,69 @@ mod tests {
         );
     }
 
-    /// The census reader itself, on a made-up module.
+    /// The census reader itself, on a made-up module holding every shape it must read or
+    /// refuse.
     #[test]
-    fn the_census_reads_module_level_str_constants() {
-        let source = "pub const A: &str = \"a\";\n\
-                      pub(crate) const B_2: &'static str =\n    \"b\";\n\
-                      const C: &str = \"c\";\n\
-                      pub const N: u32 = 1;\n\
-                      pub use crate::x::A as D;\n\
-                      fn f() {\n    const LOCAL: &str = \"l\";\n}\n\
-                      pub(crate) mod named {\n    pub const E: &str = \"e\";\n}\n\
-                      /// pub const F: &str = \"f\";\n\
-                      #[cfg(test)]\nmod tests {\n    pub const G: &str = \"g\";\n}\n";
-        assert_eq!(declared(source), ["A", "B_2", "C", "D", "named::E"]);
+    fn the_census_reads_or_refuses_every_shape() {
+        let lines = [
+            "pub const A: &str = \"a\";",
+            "pub(crate) const B_2: &'static str =",
+            "    \"b\";",
+            "const C: &str = \"c\";",
+            "pub(in crate::x) const D: &str = \"d\";",
+            "pub const N: u32 = 1;",
+            "pub use crate::x::A as E;",
+            "pub use crate::x::F;",
+            "pub use crate::x::{G, H as I, Thing};",
+            "pub use crate::x::Type;",
+            "pub use crate::x::{",
+            "    J,",
+            "};",
+            "pub static S: &str = \"s\";",
+            "pub const T: &[&str] = &[\"t\"];",
+            "pub const U: [&str; 2] = [\"u\", \"v\"];",
+            "pub const fn word() -> &'static str {",
+            "    \"w\"",
+            "}",
+            "fn f() {",
+            "    const LOCAL: &str = \"l\";",
+            "}",
+            "impl X {",
+            "    pub const IMPLIED: &str = \"i\";",
+            "}",
+            "    pub const STRAY: &str = \"stray\";",
+            "pub mod named { // a comment",
+            "    pub const K: &str = \"k\";",
+            "    pub mod deeper {",
+            "        pub const DEEP: &str = \"d\";",
+            "    }",
+            "}",
+            "/// pub const DOC: &str = \"doc\";",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    pub const FIXTURE: &str = \"f\";",
+            "}",
+        ];
+        let read = declared(&lines.join("\n"));
+        assert_eq!(
+            read.names,
+            ["A", "B_2", "C", "D", "E", "F", "G", "I", "named::K"],
+            "{read:?}"
+        );
+        assert_eq!(
+            read.unread,
+            [
+                "line 11: pub use crate::x::{",
+                "line 14: pub static S: &str = \"s\";",
+                "line 15: pub const T: &[&str] = &[\"t\"];",
+                "line 16: pub const U: [&str; 2] = [\"u\", \"v\"];",
+                "line 21: const LOCAL: &str = \"l\";",
+                "line 24: pub const IMPLIED: &str = \"i\";",
+                "line 26: pub const STRAY: &str = \"stray\";",
+                "line 30: pub const DEEP: &str = \"d\";",
+            ],
+            "{read:?}"
+        );
         assert_eq!(literal_runs("{a} b {c:<4}d."), ["", " b ", "d."]);
     }
 
@@ -831,7 +1069,7 @@ mod tests {
     }
     #[test]
     fn end_user_needles_are_distinct() {
-        distinct("end_user", &end_user_rows(), &[]);
+        distinct(&qualified("end_user", end_user_rows()), &[]);
     }
 
     #[test]
@@ -844,7 +1082,7 @@ mod tests {
     }
     #[test]
     fn renewal_needles_are_distinct() {
-        distinct("renewal", &renewal_rows(), &[]);
+        distinct(&qualified("renewal", renewal_rows()), &[]);
     }
 
     #[test]
@@ -862,7 +1100,7 @@ mod tests {
     }
     #[test]
     fn claim_needles_are_distinct() {
-        distinct("claim", &claim_rows(), &[]);
+        distinct(&qualified("claim", claim_rows()), &[]);
     }
 
     #[test]
@@ -875,7 +1113,7 @@ mod tests {
     }
     #[test]
     fn dispatch_needles_are_distinct() {
-        distinct("dispatch", &dispatch_rows(), &[]);
+        distinct(&qualified("dispatch", dispatch_rows()), &[]);
     }
 
     #[test]
@@ -888,7 +1126,7 @@ mod tests {
     }
     #[test]
     fn absent_needles_are_distinct() {
-        distinct("absent", &absent_rows(), &[]);
+        distinct(&qualified("absent", absent_rows()), &[]);
     }
 
     #[test]
@@ -901,6 +1139,32 @@ mod tests {
     }
     #[test]
     fn market_needles_are_distinct() {
-        distinct("market", &market_rows(), MARKET_OVERLAPS);
+        distinct(&qualified("market", market_rows()), MARKET_OVERLAPS);
+    }
+
+    /// **Distinct across the table**: no needle of any family is found in another family's
+    /// sentence, but the listed cross-family pairs.
+    #[test]
+    fn needles_are_distinct_across_families() {
+        let overlaps: Vec<(&str, &str, &str)> = MARKET_OVERLAPS
+            .iter()
+            .chain(CROSS_OVERLAPS)
+            .copied()
+            .collect();
+        distinct(&all_rows(), &overlaps);
+    }
+
+    /// **Partial needles are listed**: every row with a short needle is in `PARTIAL`, and
+    /// every `PARTIAL` entry is a row.
+    #[test]
+    fn short_needles_are_listed_as_partial() {
+        let rows = all_rows();
+        let short: BTreeSet<&str> = rows
+            .iter()
+            .filter(|row| row.2.trim().chars().count() < super::PARTIAL_BELOW)
+            .map(|row| row.0.as_str())
+            .collect();
+        let listed: BTreeSet<&str> = super::PARTIAL.iter().copied().collect();
+        assert_eq!(short, listed, "short needles and `PARTIAL` differ");
     }
 }

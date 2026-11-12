@@ -875,12 +875,15 @@ mod tests {
                 bubble,
                 tape,
                 snapshots: vec![snap],
-                picket: Some(KirkwoodPicketState::new(
-                    mush_core::ObjId(9801),
-                    "ship.9801".to_owned(),
-                    interdictor,
-                    "ship.9901".to_owned(),
-                )),
+                picket: Some(
+                    KirkwoodPicketState::new(
+                        mush_core::ObjId(9801),
+                        "ship.9801".to_owned(),
+                        interdictor,
+                        "ship.9901".to_owned(),
+                    )
+                    .sealed_by_pack(),
+                ),
                 interdictor_memory: Vec::new(),
                 interdictor_think_seq: 0,
                 interdictor_seal: None,
