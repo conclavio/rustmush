@@ -481,12 +481,52 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
 - **CI** run 43142475684 on `23b4ffcae`, the code as it stands, on main at `330a8b249`: every
   job green, the ten `tacsim` integration shards and `tacsim-minds` among them.
 
+**The harness baseline, re-blessed by record** (doc 43 rule 8;
+`crates/tacsim/tests/harness_baseline/arena.linux.json`, `mw9_deterministic_update`). The
+dispatch-only harness job failed its delta on five fields of the deterministic block. A
+deterministic-only update, as CF.0's and CF.6b's were; TS.21's timings and host stand.
+
+| Field | Was | Is |
+|---|---|---|
+| `counters.ledger_bytes_streamed` | 1650150 | 1650916 |
+| `minds.fill_authored.final_substep_hash` | 11296100550182435994 | 5028223047829299195 |
+| `minds.stock_ci.final_substep_hash` | 10958828204349461749 | 2814354088987883261 |
+| `minds.stock_authored.final_substep_hash` | 11620081165489262692 | 1771993770098865287 |
+| `minds.ceiling_authored.final_substep_hash` | 13684314779734303388 | 1115581876497461230 |
+
+- **Why the hashes moved.** Each folds the seals, and a seal's digest covers the ABI and the
+  Standard source.
+- **Why the byte count moved, and that nothing else did.** A ledger line writes the state
+  hash as a decimal, and the hashes are different numbers with different lengths. Proved on
+  conclav.dev, the blessing host, by dumping the arena lane's streamed ledger at main
+  (`330a8b249`) and at this unit (`297e6161d`): 9,324 lines each, 9,323 hash values each, no
+  line differs once `hash` and the `mind_sealed` lines' `source` are taken out, and the 766
+  bytes are the digits of the hash values alone (180,132 to 180,898). The dump was a patch
+  to the harness that was never committed. No count, outcome or stopping time moved: the
+  other 101 fields of the deterministic block and every other field of the four minds
+  blocks read equal.
+- **Read on two hosts.** conclav.dev (by hand as `ghrunner`, nice 10, `HOSTNAME` unset) and
+  GitHub's runner (dispatch run 43146168987) read the same five values. Against the updated
+  file, on conclav.dev with the timing gate live: the deterministic block equal (106
+  fields), the four minds blocks equal, p50 −0.5%, p99 +4.6% and the window p99 +6.1%, and
+  the harness binary's 24 ordinary tests pass,
+  `every_committed_baseline_agrees_on_the_deterministic_block` among them.
+
+**The dispatch-only stories** (run 43146168987 on `297e6161d`; the pull-request CI does not
+run them).
+
+| Job | Result | Whose |
+|---|---|---|
+| 16b cut H TacSim harness | failed its delta | This unit's: the re-bless above |
+| M8 tier 2, held minds sealed aboard | failed: `close_ic_mind` "is not currently offered" | Not this unit's. Main's dispatch at `bc52bf278` fails the same story; PR #554 (open) fixes it, and its branch's dispatch passes it |
+| Release-profile build check (nightly) | failed: `deploy/instance/render.sh: INCOMPLETE … instance.env` | Not this unit's. Main's dispatch at `bc52bf278` fails with the same line; this unit touches nothing under `deploy/` |
+| The M6 replay and author story, the M7 stories, the other M8 stories, the leak battery, the House doctrines' trials, the bot's round and win rates | passed, or still running when this was written | See the PR for the run on the head commit |
+
 **Not verified.**
 
-- **The `#[ignore]`d tests that run only on the nightly** (the M6 replay, the M7 and M8
-  stories, the scale harness, the 16b harness and its baselines). Any of them that pins a
-  hash that folds a seal has moved with the ABI and is not re-pinned here. The three that
-  run on a pull request (`tacsim-minds`) were run: one was re-pinned, two passed.
+- **The `#[ignore]`d tests that no workflow runs** (the by-hand lanes: `minds_pool`'s gate
+  lane in release, the cost lane's cohort, the field pulse at scale). Any of them that pins
+  a hash that folds a seal has moved with the ABI and is not re-pinned here.
 - Nothing was run against a live server or over SSH. The stories drive commands in the test
   rig.
 - The think's cost. The raider's extra think a step is not measured; MW.11 measures.
