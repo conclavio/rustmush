@@ -118,4 +118,68 @@ bash "$root/scripts/reset-instance.sh" "$fixture/instance.env" --yes > "$fixture
 assert_clean
 printf 'stop\nflush\nstart\n' > "$fixture/expected-order"
 cmp "$fixture/expected-order" "$RESET_TEST_LOG"
-echo 'reset fixture: host identity, secret stdin, cleanup and restart ordering passed'
+
+# Doc 44 cut MW.1: a live launch_path is taken out with the world it named, and
+# before the bootstrap and the start, both of which a path with no file refuses.
+# The rest of the rendered config is untouched and keeps its mode.
+prepare
+printf '{}
+' > "$fixture/data/launch.json"
+cat > "$fixture/mushd.toml" <<EOF
+[server]
+[tacsim.command]
+max_span = 4
+[tacsim.minds]
+launch_path = "$fixture/data/launch.json"
+registry_pulse_ms = 50
+[tacsim.sensors]
+EOF
+chmod 640 "$fixture/mushd.toml"
+cat > "$fixture/expected-config" <<EOF
+[server]
+[tacsim.command]
+max_span = 4
+[tacsim.minds]
+# launch_path = "$fixture/data/launch.json"
+registry_pulse_ms = 50
+[tacsim.sensors]
+EOF
+cat > "$fixture/build/target/release/mush-server" <<'SH'
+#!/usr/bin/env bash
+case "${*: -1}" in
+--help) echo --bootstrap-staff ;;
+--check-config) exit 0 ;;
+Keeper)
+  IFS= read -r password
+  # What the real binary does with a live path whose file is gone.
+  if grep -q '^launch_path' "$2"; then echo 'launch deployment: No such file' >&2; exit 1; fi
+  printf 'bootstrap
+' >> "$RESET_TEST_LOG" ;;
+*) exit 1 ;;
+esac
+SH
+printf 'reset-test secret
+' | bash "$root/scripts/reset-instance.sh" "$fixture/instance.env" --yes --staff Keeper > "$fixture/output" 2>&1
+assert_clean
+cmp "$fixture/expected-config" "$fixture/mushd.toml"
+[ "$(stat -c %a "$fixture/mushd.toml")" = 640 ]
+printf 'stop
+flush
+bootstrap
+start
+' > "$fixture/expected-order"
+cmp "$fixture/expected-order" "$RESET_TEST_LOG"
+grep -q 'launch-bringup.py' "$fixture/output"
+
+# --no-start: the wipe and the bootstrap, and the unit left stopped.
+prepare
+printf 'reset-test secret
+' | bash "$root/scripts/reset-instance.sh" "$fixture/instance.env" --yes --staff Keeper --no-start > "$fixture/output" 2>&1
+assert_clean
+printf 'stop
+flush
+bootstrap
+' > "$fixture/expected-order"
+cmp "$fixture/expected-order" "$RESET_TEST_LOG"
+grep -q 'left STOPPED' "$fixture/output"
+echo 'reset fixture: host identity, secret stdin, cleanup, restart ordering, the launch line and --no-start passed'

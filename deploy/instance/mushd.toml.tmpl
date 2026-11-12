@@ -406,16 +406,19 @@ orders_per_minute = 12
 # [tacsim.minds]
 # (17g C1) the named launch: a format-2 deployment document (the House chain and the
 # player market; deploy/instance/launch.json.example). See deploy/README.md, "Named launch
-# and the player market". Left commented because a fresh store has none of the identities
-# it names, and a named identity that does not exist refuses the boot. To enable it,
-# uncomment the [tacsim.minds] header together with this line: the live table above is
-# [tacsim.command], which refuses unknown keys.
+# and the player market". Commented here because a fresh store has none of the identities
+# it names, and a named identity that does not exist refuses the boot. Never uncommented by
+# hand (the next deploy renders over it): instance.env's MINDS_LAUNCH=on has render.sh
+# write this header and this line live, naming <DATA_DIR>/launch.json, once that document
+# exists (doc 44 cut MW.1; deploy/instance/launch-bringup.py writes it). The header has to
+# go live with the line: the live table above is [tacsim.command], which refuses unknown keys.
 # launch_path = "/opt/rustmush/<instance>/data/launch.json"
 # odds_floor_permille = 100
 # (doc 44 cut MW.6, Q-44-41) the Registry's pulse, ms: the pace of every Registry lease,
 # so of a rating (about 1,070 leases). 1000 is production's real-time second, about
 # three hours a rating; a dev box that is wiped and brought up again may set it lower
-# (50 rates a mind in minutes). 10..60000.
+# (50 rates a mind in minutes). 10..60000. instance.env's REGISTRY_PULSE_MS, when it is
+# not empty, has render.sh write the header and this line live with that value.
 # registry_pulse_ms = 1000
 # (17b cut M4.3, doc 17 section 9) the class the AI fill (and every seated hull) is
 # sealed and admitted at: "0" (the drive ROM), "I", "II" or "III". The seal's class is
@@ -539,6 +542,15 @@ registry_interlock = true
 [tacsim.procurement]
 budget_minor_per_ic_month = 200000
 cap_permille = 400
+
+# The IC field (docs 32, 36, 40, 42). One key is written here because it is the one a box
+# chooses; every other key of the block keeps its compiled-in default, and the table at the
+# head of crates/mush-config/src/config.rs lists them. The raid director (doc 36 cut GC.11,
+# Q-36-41) seeds, launches and declares the content's raiders on the surface tick by each
+# one's schedule; off, raiders are staff-run only (@field/raiders). The dev boxes run it on
+# (doc 44, Q-44-7): with no staff watching, off means a field never meets a raider.
+[tacsim.field]
+raid_director = __RAID_DIRECTOR__
 
 # Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
 # bootstrap room the store seeds with God — it is reserved from housing, it is
@@ -680,6 +692,15 @@ model = "z-ai/glm-5.3-flash"
 max_tokens = 768
 timeout_s = 60
 reasoning = "off"
+
+# Doc 34 cut CS.0a (D-34-8): the staff Content Studio's co-authoring pass, one structured
+# reply of at most 2,048 tokens. Without this route content assist answers from its
+# templates and never calls a model (doc 44 cut MW.1 added the block).
+[llm.routes.content_assist]
+model = "z-ai/glm-5.3"
+max_tokens = 2048
+timeout_s = 60
+reasoning = "low"
 
 # The LLM Storyteller: st_adjudicate JUDGES a proposed working, st_interpret
 # narrates the engine's already-thrown result. The LLM never rolls and never

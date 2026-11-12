@@ -1241,6 +1241,8 @@ jobs:
           bash -n scripts/reset-instance.sh
           bash scripts/tests/reset-instance.sh
           bash -n deploy/instance/render.sh
+          # Doc 44 cut MW.1: the launch switch, against the shipped template.
+          bash scripts/tests/render-launch.sh
           bash -n deploy/dev1/deploy.sh
           bash -n deploy/dev1-split/deploy.sh
           bash -n deploy/dev2-split/deploy.sh
