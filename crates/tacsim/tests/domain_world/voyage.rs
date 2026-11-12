@@ -13997,7 +13997,7 @@ fn mw10_staff_publish_a_revision_and_select_it_and_the_next_interdictor_flies_it
     assert!(selected.contains(&b_text), "{selected}");
     let listing = run(&mut rig.tw, staff, "@mind/cast");
     assert!(
-        listing.contains(&format!("interdictor: {b_text} — selected by staff")),
+        listing.contains(&format!("interdictor: {b_text}, selected by staff")),
         "{listing}"
     );
     assert!(listing.contains("corvette: kirkwood_picket"), "{listing}");
@@ -14047,7 +14047,7 @@ fn mw10_staff_publish_a_revision_and_select_it_and_the_next_interdictor_flies_it
     assert_eq!((after.digest, after.selected), (b, true));
     let listing = run(&mut rig.tw, staff, "@mind/cast");
     assert!(
-        listing.contains(&format!("interdictor: {b_text} — selected by staff")),
+        listing.contains(&format!("interdictor: {b_text}, selected by staff")),
         "{listing}"
     );
     assert_eq!(

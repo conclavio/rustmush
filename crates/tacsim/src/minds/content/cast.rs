@@ -304,7 +304,8 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
         crate::store::put_doctrine_pointer(ctx, &actor.role(), None);
         let now = cast_doctrine(ctx.w.module_state::<TacsimStore>(), actor);
         let line = match (had, now) {
-            (_, Err(fault)) => format!("Selection cleared, and {fault}."),
+            (true, Err(fault)) => format!("Selection cleared, and {fault}."),
+            (false, Err(fault)) => format!("No selection stood, and {fault}."),
             (true, Ok(doctrine)) => format!(
                 "Selection cleared. The next {} to sail flies the pack's {} ({}); one already out \
                  keeps the doctrine she sailed with.",
@@ -397,19 +398,19 @@ fn listing(store: Option<&TacsimStore>) -> Vec<String> {
     for actor in CastActor::ALL {
         lines.push(match cast_doctrine(store, actor) {
             Ok(doctrine) if doctrine.selected => format!(
-                "  {}: {} — selected by staff (the pack's {} is {})",
+                "  {}: {}, selected by staff (the pack names {} {})",
                 actor.word(),
                 crate::arena::digest_text(&doctrine.digest),
                 doctrine.name,
                 crate::arena::digest_text(&doctrine.pack_digest)
             ),
             Ok(doctrine) => format!(
-                "  {}: {} {} — the pack's",
+                "  {}: {} {}, the pack's",
                 actor.word(),
                 doctrine.name,
                 crate::arena::digest_text(&doctrine.digest)
             ),
-            Err(fault) => format!("  {}: REFUSED — {fault}", actor.word()),
+            Err(fault) => format!("  {}: REFUSED: {fault}", actor.word()),
         });
     }
     lines
