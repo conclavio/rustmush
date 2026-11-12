@@ -987,16 +987,28 @@ async fn spa_if_built_and_healthz_are_served() {
     let api = client.get(rig.url("/api/nope")).send().await.unwrap();
     assert_eq!(api.status(), 404);
 
-    // /healthz answers with uptime.
-    let health: Value = client
-        .get(rig.url("/healthz"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(health["ok"], true);
+    // /healthz answers with uptime. `ok` needs the world loop's first
+    // heartbeat (`Metrics::health_json`: a loop that has never stamped an
+    // iteration is not healthy), and a rig asked within milliseconds of its
+    // boot on a loaded runner may not have stamped one yet: main's CI answered
+    // `ok: false` here on 2026-11-12. Wait for the first healthy answer,
+    // bounded, and show the whole answer if it never comes.
+    let mut health = Value::Null;
+    for _ in 0..100 {
+        health = client
+            .get(rig.url("/healthz"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if health["ok"] == true {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(health["ok"], true, "healthz never came up: {health}");
     assert!(health["uptime_s"].is_u64());
 }
 

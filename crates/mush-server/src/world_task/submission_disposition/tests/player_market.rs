@@ -825,7 +825,25 @@ pub(super) async fn acknowledged(
     line: String,
     expect: &str,
 ) -> TestResult<Vec<String>> {
-    let lines = staff(server, line.clone()).await?;
+    // A line the world refuses because it is committing another action, or
+    // was busy past the defer window, was not run: both refusals
+    // (`RefusalReason::CommitPending`, `CommitTimedOut`) end in the same
+    // phrase and neither stages anything, so saying the line again is exact.
+    // Retried within the step guard, as `create` retries its typed `Busy`. A
+    // loaded hosted runner refused `@create Basin die depot` this way on main
+    // (2026-11-12) and failed a story that had nothing to do with it.
+    let end = tokio::time::Instant::now() + STEP;
+    let lines = loop {
+        let lines = staff(server, line.clone()).await?;
+        let refused = !lines.iter().any(|text| text.contains(expect))
+            && lines
+                .iter()
+                .any(|text| text.ends_with("please retry in a moment."));
+        if !refused || tokio::time::Instant::now() >= end {
+            break lines;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     check!(
         lines.iter().any(|text| text.contains(expect)),
         "{line} is acknowledged with {expect:?}: {lines:?}"
