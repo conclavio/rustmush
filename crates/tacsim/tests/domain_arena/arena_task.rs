@@ -365,11 +365,13 @@ fn fast_arena() -> ArenaConfig {
     cfg
 }
 
-/// **The think pool every task here runs on** (17b cut M4.1): the process's
-/// one, at the stock two workers — the gate fixtures that run tasks at one,
-/// two and four workers build their own (`MindPool::new`).
+/// **The think pool every task here runs on** (17b cut M4.1): one for this
+/// file's tasks, at the stock two workers — the gate fixtures that run tasks
+/// at one, two and four workers build their own (`MindPool::new`).
 fn pool() -> std::sync::Arc<tacsim::minds::MindPool> {
-    tacsim::minds::MindPool::shared(2)
+    static POOL: std::sync::OnceLock<std::sync::Arc<tacsim::minds::MindPool>> =
+        std::sync::OnceLock::new();
+    std::sync::Arc::clone(POOL.get_or_init(|| tacsim::minds::MindPool::new(2)))
 }
 
 /// **`cfg` with the snapshot rule off** (16b cut AF.2): `snapshot_ms = 0`.

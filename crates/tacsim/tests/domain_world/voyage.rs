@@ -78,6 +78,9 @@ pub(crate) struct Roster {
     /// A lane booted instead of the shipped one (doc 19 cut A.8's `Throttle:`
     /// test), leaked so the roster stays `Copy`.
     seed_lane: Option<&'static str>,
+    /// `[tacsim.minds].workers`, where a story sets it (doc 44 unit MW.11); the stock two
+    /// otherwise.
+    mind_workers: Option<u32>,
 }
 
 impl Roster {
@@ -90,6 +93,9 @@ impl Roster {
             ..TacsimConfig::default()
         };
         cfg.time.ephemeris.rate = self.sky_rate;
+        if let Some(workers) = self.mind_workers {
+            cfg.minds.workers = workers;
+        }
         if let Some(lane) = self.seed_lane {
             cfg.seeds.push(tacsim::config::PackSource {
                 name: "ops/lane.json".to_owned(),
@@ -14304,4 +14310,102 @@ fn mw10_other_bytes_under_a_digest_are_refused_and_a_cast_the_store_cannot_serve
     assert!(cleared.contains(&a_text), "{cleared}");
     assert!(cast_doctrine(Some(store(&rig.tw)), CastActor::Interdictor).is_err());
     no_refused_writes(&rig.tw);
+}
+
+/// **Doc 44 unit MW.11 (Q-44-28): a server whose first think is in space thinks on the
+/// configured pool, and a space think lands one step after it was collected.**
+///
+/// The rig's `[tacsim.minds].workers` is three and nothing has thought when the interdictor's
+/// bubble opens, so its think is the server's first. The pool is then three workers, and it
+/// is the pool a match would be handed. Each step of the bubble hands the pool one batch,
+/// collected on the state that step left; the answer lands at the head of the next step, so
+/// the interdictor's record is always one landed think behind the bubble's steps. One runner
+/// is built for the interdictor's seal and kept. The rig's clock is moved by hand, so its
+/// host waits for its workers and no step is held.
+///
+/// Before the cut the pool was a process static sized by its first caller, space asked for
+/// one worker, the think ran on the world thread inside the step and landed in it, and a
+/// runner was built for every think.
+#[test]
+fn mw11_a_server_whose_first_think_is_in_space_has_the_configured_workers() {
+    use tacsim::space::thinks::ThinkStats;
+    let roster = Roster {
+        seed_lane: Some(lane_with_interdicted_kirkwood()),
+        mind_workers: Some(3),
+        ..Roster::default()
+    };
+    let mut rig = stocked_with(roster);
+    let host = store(&rig.tw).space_thinks();
+    assert_eq!(
+        host.stats(),
+        ThinkStats::default(),
+        "nothing has thought yet"
+    );
+    assert!(
+        !host.holds_late_steps(),
+        "a rig moves its clock by hand: its host waits for its workers"
+    );
+
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    load(&mut rig, &row, 53, 19);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, boundary);
+    at_the_interdictor(&rig.tw, hull).expect("the interdictor's bubble");
+
+    let record = |rig: &Rig| {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("still in the bubble");
+        (
+            active.steps,
+            active.interdictor_think_seq,
+            active.thinks_owed.map(|owed| owed.step),
+        )
+    };
+    for _ in 0..6 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+        let (steps, landed, owed) = record(&rig);
+        assert!(steps >= 1, "the bubble steps a second at a time");
+        assert_eq!(
+            owed,
+            Some(steps),
+            "each step leaves its minds' thinks out for the next"
+        );
+        assert_eq!(
+            u64::from(steps),
+            landed + 1,
+            "the think collected on a step lands at the head of the next"
+        );
+        let stats = host.stats();
+        assert_eq!(stats.batches, u64::from(steps), "one batch a step");
+        assert_eq!(
+            stats.thinks,
+            u64::from(steps),
+            "one think a step for the one mind"
+        );
+        assert_eq!(
+            stats.runners_built, 1,
+            "one runner for the interdictor's seal"
+        );
+        assert_eq!(stats.held, 0, "a rig's host never holds a step");
+    }
+
+    // The first think of this server was the interdictor's, and the pool is the configured
+    // three: the one the store holds, which is the one a match is handed.
+    assert_eq!(host.workers(), 3);
+    let pool = store(&rig.tw).mind_pool();
+    assert_eq!(pool.workers(), 3);
+    assert!(Arc::ptr_eq(
+        &pool,
+        &tacsim::minds::pool::of_world(rig.tw.world())
+    ));
 }

@@ -1378,6 +1378,54 @@ pub fn cluster_rock_tenure_word(
     "open".to_owned()
 }
 
+/// The mark of a hull's drones' thinks: a cluster session has one batch and no steps.
+const DRONE_THINKS: super::thinks::Mark = (0, 0);
+
+/// **The answers of the thinks `hull`'s drones owe** (doc 44 unit MW.11), by drone, each
+/// with the sequence number it was collected with; and whether the batch is still out,
+/// which a server's host answers without waiting.
+fn landed_drone_thinks(
+    host: &super::thinks::ThinkHost,
+    hull: ObjId,
+) -> (
+    BTreeMap<ObjId, (u64, crate::arena::mind::ThinkResult)>,
+    bool,
+) {
+    use super::thinks::{Due, Owed, Owner};
+    match host.settle(Owner::Cluster(hull), DRONE_THINKS, Due::default()) {
+        Owed::Held => (BTreeMap::new(), true),
+        Owed::Nothing => (BTreeMap::new(), false),
+        Owed::Ready { answers, .. } => (
+            answers
+                .into_iter()
+                .filter_map(|answer| Some((answer.unit, (answer.think_seq, answer.result?))))
+                .collect(),
+            false,
+        ),
+    }
+}
+
+/// **Write a drone's landed think into its record** (doc 44 unit MW.11): what it
+/// remembered and traced, and the next sequence number. An answer for a think the record
+/// has moved past is dropped. The intents are still discarded: the drone's yield is a
+/// timer until doc 44 unit MW.12.
+fn land_drone_think(
+    drone: &mut DroneSortieState,
+    thoughts: &mut BTreeMap<ObjId, (u64, crate::arena::mind::ThinkResult)>,
+) {
+    let Some((think_seq, result)) = thoughts.remove(&drone.excursion_id.tv) else {
+        return;
+    };
+    if think_seq != drone.mind_think_seq {
+        return;
+    }
+    drone.mind_think_seq = drone.mind_think_seq.saturating_add(1);
+    drone.mind_memory = result.memory;
+    if !result.trace.is_empty() {
+        drone.mind_last_trace = result.trace;
+    }
+}
+
 /// Step all laid-up orbital clusters and active cluster mining sessions on `space_tick`.
 pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
     let Some(industry) = ctx
@@ -1405,6 +1453,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         .module_state::<super::tick::SpaceBubbleBook>()
         .map(|b| b.cluster_sessions.keys().copied().collect())
         .unwrap_or_default();
+    // Doc 44 unit MW.11: the drones think on the server's pool, through the store's host.
+    let think_host = super::thinks::host_of(ctx.w);
 
     for hull in hulls {
         let mut in_tick_committed: BTreeMap<(VaultId, OreFamily), u64> = BTreeMap::new();
@@ -1528,6 +1578,15 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         }
 
         // Check active collector-drone sorties completion.
+        // Doc 44 unit MW.11: the thinks this hull's drones were collected on the last tick
+        // land here, and their next are collected for the pool. Nothing waits for a worker:
+        // while a batch is still out on a server's host, its drones think no further.
+        let (mut drone_thoughts, drones_thinking) = think_host
+            .as_deref()
+            .map_or((BTreeMap::new(), false), |host| {
+                landed_drone_thinks(host, hull)
+            });
+        let mut drone_asks = Vec::new();
         let mut remaining_drones = Vec::new();
         for drone in &session_snapshot.active_drones {
             if now.at >= drone.due_ic {
@@ -1555,23 +1614,27 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 }
             } else {
                 let mut updated = drone.clone();
-                if let Some(res) = super::picket::run_drone_rhai_think(
-                    ctx.w.module_state::<crate::store::TacsimStore>(),
-                    updated.excursion_id.tv,
-                    updated.mind_seal.as_ref(),
-                    session_snapshot.ship_pos_m,
-                    updated.mind_think_seq,
-                    &updated.mind_memory,
-                ) && res.fault.is_none()
-                {
-                    updated.mind_think_seq = updated.mind_think_seq.saturating_add(1);
-                    updated.mind_memory = res.memory;
-                    if !res.trace.is_empty() {
-                        updated.mind_last_trace = res.trace;
-                    }
+                land_drone_think(&mut updated, &mut drone_thoughts);
+                if !drones_thinking && let Some(host) = think_host.as_deref() {
+                    drone_asks.extend(super::picket::collect_drone_think(
+                        host,
+                        ctx.w.module_state::<crate::store::TacsimStore>(),
+                        updated.excursion_id.tv,
+                        updated.mind_seal.as_ref(),
+                        session_snapshot.ship_pos_m,
+                        updated.mind_think_seq,
+                        &updated.mind_memory,
+                    ));
                 }
                 remaining_drones.push(updated);
             }
+        }
+        if !drones_thinking && let Some(host) = think_host.as_deref() {
+            let _ = host.submit(
+                super::thinks::Owner::Cluster(hull),
+                DRONE_THINKS,
+                drone_asks,
+            );
         }
 
         let had_mining_activity = !completed_draws.is_empty()

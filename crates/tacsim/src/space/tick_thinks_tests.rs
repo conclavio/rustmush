@@ -1,0 +1,811 @@
+//! **Doc 44 unit MW.11's acceptance, on the bubble's own step** ([`super::step_bubble`], the
+//! function the space tick calls for each bubble): the same encounter, taken from before a
+//! decision and run on hosts whose workers answer at different times, gives the same
+//! commands, the same mind memory and the same outcome; and a step whose thinks have not
+//! answered is held without the stepping thread waiting.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use mush_testkit::TestWorld;
+
+use super::*;
+use crate::arena::mind::MindRunner;
+use crate::minds::MindPool;
+use crate::space::bubble::BubbleInputEntry;
+use crate::space::picket::{
+    CUSTOMS_CORVETTE_PARTY, KirkwoodPicketState, PicketInspectionOutcome, PicketInspectionStatus,
+};
+use crate::space::thinks::test_support::{Gate, Gated};
+
+const CARRIER: ObjId = ObjId(10);
+const ESCORT: ObjId = ObjId(20);
+const RUNNER: ObjId = ObjId(21);
+
+fn carrier_entry(hull: ObjId, party: PartyId) -> BubbleCarrierEntry {
+    BubbleCarrierEntry {
+        hull,
+        ship_id: format!("hull.{}", hull.0),
+        party,
+        leg_cursor: 1,
+        departed_at_ic_s: 1_000,
+        last_synced_propellant_kg: 0,
+        approaching_derelict: false,
+        holding_for_salvage: false,
+        holding_for_salvage_until_wall_s: None,
+    }
+}
+
+/// A bubble record over `bubble`, as a world opens one.
+fn active_over(
+    bubble: LocalSpaceBubble,
+    domain: DomainId,
+    carriers: BTreeMap<ObjId, BubbleCarrierEntry>,
+    picket: Option<KirkwoodPicketState>,
+    interdictor: (ObjId, String),
+) -> ActiveInterdictionBubble {
+    let first = carriers.keys().next().copied().unwrap_or(ObjId(0));
+    let tape = BubbleInputTape::new(&bubble);
+    let interdictor_seal = if picket.is_some() {
+        None
+    } else {
+        super::super::picket::pack_cast_seal(
+            crate::minds::content::cast::CastActor::Interdictor,
+            interdictor.0,
+        )
+    };
+    ActiveInterdictionBubble {
+        hull: first,
+        interdictor_hull: interdictor.0,
+        domain,
+        carrier_ship_id: format!("hull.{}", first.0),
+        interdictor_ship_id: interdictor.1,
+        leg_cursor: 1,
+        opened_ic_s: 1_000,
+        steps: 0,
+        cleared: false,
+        snapshots: vec![bubble.snapshot()],
+        bubble,
+        tape,
+        picket,
+        approaching_derelict: false,
+        holding_for_salvage: false,
+        last_stepped_wall_s: 0,
+        last_synced_propellant_kg: 0,
+        carriers,
+        ship_hulls: BTreeMap::new(),
+        interdictor_memory: Vec::new(),
+        interdictor_think_seq: 0,
+        interdictor_seal,
+        interdictor_contacts: super::super::view::ContactBook::default(),
+        stood_down: std::collections::BTreeSet::new(),
+        thinks_owed: None,
+    }
+}
+
+/// **A customs picket with three minds**: the corvette and the raider the cast names, and
+/// one Dray closing on the corvette whose crew has no link, so the backup mind flies her.
+fn picket_encounter() -> (
+    ActiveInterdictionBubble,
+    BTreeMap<ObjId, SpaceLinkdeadState>,
+) {
+    let mut bubble = LocalSpaceBubble::new(
+        "bubble.mw11.kirkwood",
+        "domain.7",
+        "Kirkwood Customs Picket Bubble",
+        1_000_000,
+    );
+    bubble.insert_ship(SpaceShipState::new_dray(
+        "hull.10",
+        "Salt Moth",
+        CARRIER_PARTY,
+        [0, 0, 0],
+        [25_000, 0, 0],
+    ));
+    let picket =
+        super::super::picket::build_kirkwood_picket_ships(&mut bubble, DomainId(7), 1, "hull.10")
+            .expect("the picket's ships build");
+    let interdictor = (picket.raider_hull, picket.raider_ship_id.clone());
+    let mut carriers = BTreeMap::new();
+    carriers.insert(CARRIER, carrier_entry(CARRIER, CARRIER_PARTY));
+    let active = active_over(bubble, DomainId(7), carriers, Some(picket), interdictor);
+    let mut linkdead = BTreeMap::new();
+    linkdead.insert(
+        CARRIER,
+        SpaceLinkdeadState {
+            hull: CARRIER,
+            grace_started_wall_s: 1,
+            grace_started_ic_s: 1,
+            pdc_held: true,
+            grace_expired: true,
+            queued_return_port: None,
+            mind_memory: Vec::new(),
+            mind_last_trace: None,
+            mind_contacts: super::super::view::ContactBook::default(),
+            mind_think_seq: 0,
+            backup_act: super::super::backup::BackupAct::Standby,
+            return_retry_at_wall_s: 0,
+            next_think_at_wall_s: 0,
+        },
+    );
+    (active, linkdead)
+}
+
+/// **An interdiction with no customs**: the interdictor, dark and at rest, an escort that
+/// is nearly hove to and a runner that is not, each hostile to it both ways.
+fn interdiction_encounter() -> (
+    ActiveInterdictionBubble,
+    BTreeMap<ObjId, SpaceLinkdeadState>,
+) {
+    const INTERDICTOR: &str = "interdictor.5.1";
+    let mut bubble = LocalSpaceBubble::new("bubble.mw11.int", "domain.5", "Test", 1_000);
+    let mut interdictor = SpaceShipState::new_corvette(
+        INTERDICTOR,
+        "Interdictor Picket",
+        INTERDICTOR_PARTY,
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    super::super::custody::apply_space_unit_overlay(
+        &mut interdictor,
+        &super::super::custody::space_unit_overlay_for_id("tacsim.unit.corvette_interdictor"),
+    );
+    interdictor.emcon = EmconPosture::Ghost;
+    bubble.insert_ship(interdictor);
+    let runner_party = admitted_party(3);
+    let mut carriers = BTreeMap::new();
+    for (hull, party, pos, vel) in [
+        (ESCORT, CARRIER_PARTY, [-12_000, 2_000, 0], [3_000, 0, 0]),
+        (RUNNER, runner_party, [-14_000, -2_000, 500], [25_000, 0, 0]),
+    ] {
+        let entry = carrier_entry(hull, party);
+        bubble.insert_ship(SpaceShipState::new_dray(
+            &entry.ship_id,
+            "Carrier",
+            party,
+            pos,
+            vel,
+        ));
+        bubble.set_party_relation(party, INTERDICTOR_PARTY, Some(Mark::Hostile));
+        bubble.set_party_relation(INTERDICTOR_PARTY, party, Some(Mark::Hostile));
+        carriers.insert(hull, entry);
+    }
+    bubble.set_party_relation(CARRIER_PARTY, runner_party, Some(Mark::Friendly));
+    bubble.set_party_relation(runner_party, CARRIER_PARTY, Some(Mark::Friendly));
+    let active = active_over(
+        bubble,
+        DomainId(5),
+        carriers,
+        None,
+        (ObjId(900), INTERDICTOR.to_owned()),
+    );
+    (active, BTreeMap::new())
+}
+
+/// **What the world does to the encounter from outside, keyed on the encounter's own
+/// state**, so it falls at the same point of every run: customs rule on a carrier that has
+/// hove to, fining and clearing her, as `+helm/submit` and the ruling do in a world.
+fn world_acts(active: &mut ActiveInterdictionBubble) {
+    let Some(picket) = active.picket.as_mut() else {
+        return;
+    };
+    if picket.inspection_status_for(CARRIER) == PicketInspectionStatus::HoveToReadyForInspection
+        && picket.inspection_outcome_for(CARRIER).is_none()
+    {
+        picket.set_inspection_status_for(CARRIER, PicketInspectionStatus::ClearedAfterFine);
+        picket.set_inspection_outcome_for(
+            CARRIER,
+            PicketInspectionOutcome::Fined {
+                contract_id: 42,
+                fine_minor: 200_000,
+                unlicensed_strategic_ore_kg: 4_000,
+                front_id: Some(1),
+            },
+        );
+        active.bubble.set_party_relation(
+            CUSTOMS_CORVETTE_PARTY,
+            CARRIER_PARTY,
+            Some(Mark::Friendly),
+        );
+    }
+}
+
+/// One run of an encounter: where it ended, and every command its tape took.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Run {
+    active: ActiveInterdictionBubble,
+    linkdead: BTreeMap<ObjId, SpaceLinkdeadState>,
+    log: Vec<BubbleInputEntry>,
+}
+
+/// What a run does while a step is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WhileHeld {
+    /// The host is a rig's and waits: no step is ever held.
+    NeverHeld,
+    /// The tick is fired again at the same wall second, as a rig that will not move its
+    /// clock past a held step does.
+    ClockStands,
+    /// The wall clock runs on, a second a tick, as the server's does.
+    ClockRuns,
+}
+
+/// The runner each digest of `digests` builds on `host`, put behind `gate`.
+fn gate_every_runner(host: &ThinkHost, digests: &[[u8; 32]], gate: &Arc<Gate>) {
+    let view = Arc::new(crate::space::picket::drone_view(ObjId(1), [0, 0, 0], 0));
+    for digest in digests {
+        let _ = host.job(None, ObjId(1), *digest, 0, &view, &[]);
+        let inner = host.kept_runner(digest).expect("the doctrine has a runner");
+        let gated: Arc<dyn MindRunner> = Arc::new(Gated {
+            inner,
+            gate: Arc::clone(gate),
+        });
+        host.install_runner(*digest, gated);
+    }
+}
+
+/// Every digest an encounter's minds think with.
+fn digests_of(active: &ActiveInterdictionBubble) -> Vec<[u8; 32]> {
+    let mut digests = vec![crate::minds::content::linkdead_return_digest().0];
+    if let Some(picket) = &active.picket {
+        digests.extend(picket.corvette_seal.iter().map(|seal| seal.source_sha256));
+        digests.extend(picket.raider_seal.iter().map(|seal| seal.source_sha256));
+    }
+    digests.extend(
+        active
+            .interdictor_seal
+            .iter()
+            .map(|seal| seal.source_sha256),
+    );
+    digests
+}
+
+/// **Drive `start` for `steps` more steps on `host`**, a tick a wall second from `wall`.
+/// With `gate`, each step's thinks are parked until the tick has found the step held
+/// `held_ticks(step)` times; what the clock does meanwhile is `while_held`.
+#[allow(clippy::too_many_arguments)]
+fn drive(
+    start: &Run,
+    host: &ThinkHost,
+    w: &World,
+    steps: u32,
+    mut wall: i64,
+    while_held: WhileHeld,
+    gate: Option<&Arc<Gate>>,
+    held_ticks: &dyn Fn(u32) -> u32,
+) -> Run {
+    let mut run = start.clone();
+    let paused = std::collections::BTreeSet::new();
+    let orders = mush_sim::tick::StandingOrderBook::default();
+    let until = Instant::now() + Duration::from_secs(120);
+    for _ in 0..steps {
+        wall += 1;
+        world_acts(&mut run.active);
+        let step = run.active.steps;
+        let mut held = 0_u32;
+        loop {
+            assert!(Instant::now() < until, "the encounter did not finish");
+            let tick = BubbleTick {
+                frozen: false,
+                wall_now_s: wall,
+                ic_now_s: 1_000 + wall * 24,
+                paused_hulls: &paused,
+                standing_orders: &orders,
+                host,
+                store: None,
+                w,
+            };
+            let before = (
+                run.active.bubble.state_hash(),
+                run.active.tape.entries.len(),
+            );
+            let mut out = BubbleTickOut::default();
+            // The gate is shut before the step that will be taken hands its next thinks
+            // over, so they park too.
+            if step_bubble(&mut run.active, &tick, &mut run.linkdead, &mut out) {
+                break;
+            }
+            assert_ne!(while_held, WhileHeld::NeverHeld, "a rig's host held a step");
+            assert_eq!(
+                before,
+                (
+                    run.active.bubble.state_hash(),
+                    run.active.tape.entries.len()
+                ),
+                "a held step leaves the bubble and its tape as they were"
+            );
+            held += 1;
+            if while_held == WhileHeld::ClockRuns {
+                wall += 1;
+            }
+            if held >= held_ticks(step)
+                && let (Some(gate), Some(owed)) = (gate, run.active.thinks_owed)
+            {
+                // Let the workers through, wait until the batch has answered, and shut the
+                // gate again for the thinks the step is about to collect.
+                gate.open();
+                let (owner, mark) = run.active.think_owner(owed);
+                while !host.is_answered(owner, mark) {
+                    assert!(Instant::now() < until, "the batch never answered");
+                    std::thread::yield_now();
+                }
+                gate.close();
+            }
+        }
+        assert_eq!(run.active.steps, step + 1);
+        // Keep every command, and restart the tape, so its own compaction never drops one.
+        run.log.append(&mut run.active.tape.entries);
+        run.active.tape = BubbleInputTape::new(&run.active.bubble);
+    }
+    run
+}
+
+/// `run` with what the wall clock alone decides taken out: the IC second each step was
+/// stamped with, the wall second of the last step, and the snapshots that fold them.
+fn without_the_clock(mut run: Run) -> Run {
+    for entry in &mut run.log {
+        if let BubbleInputCommand::StepWall { ic_now_s, .. } = &mut entry.command {
+            *ic_now_s = 0;
+        }
+    }
+    run.active.bubble.ic_timestamp_s = 0;
+    run.active.last_stepped_wall_s = 0;
+    run.active.snapshots.clear();
+    run.active.tape = BubbleInputTape::new(&run.active.bubble);
+    run
+}
+
+/// How many commands of `log` a mind issued: everything but the steps.
+fn mind_commands(log: &[BubbleInputEntry]) -> usize {
+    log.iter()
+        .filter(|entry| !matches!(entry.command, BubbleInputCommand::StepWall { .. }))
+        .count()
+}
+
+/// **The acceptance, for one encounter.** It is flown `lead_in` steps on a rig's host, to a
+/// point where its minds have thinks out; that point is "before a decision". From there it
+/// is run `steps` more on each host and every run is held to the first.
+fn same_whatever_the_workers_timing(
+    name: &str,
+    start: (
+        ActiveInterdictionBubble,
+        BTreeMap<ObjId, SpaceLinkdeadState>,
+    ),
+    lead_in: u32,
+    steps: u32,
+) -> Run {
+    let tw = TestWorld::new();
+    let w = tw.world();
+    let digests = digests_of(&start.0);
+    let fresh = Run {
+        active: start.0,
+        linkdead: start.1,
+        log: Vec::new(),
+    };
+    let never = |_: u32| 0_u32;
+    let before = drive(
+        &fresh,
+        &ThinkHost::on_pool(MindPool::new(2)),
+        w,
+        lead_in,
+        100,
+        WhileHeld::NeverHeld,
+        None,
+        &never,
+    );
+    assert!(
+        before.active.thinks_owed.is_some(),
+        "{name}: the minds have thinks out at the point the runs start from"
+    );
+    let wall = 100 + i64::from(lead_in);
+
+    // The reference: every think run on the stepping thread, at the moment it is collected.
+    let reference = drive(
+        &before,
+        &ThinkHost::inline(),
+        w,
+        steps,
+        wall,
+        WhileHeld::NeverHeld,
+        None,
+        &never,
+    );
+    assert!(
+        mind_commands(&reference.log) >= 4,
+        "{name}: the minds decided something: {} commands",
+        mind_commands(&reference.log)
+    );
+
+    // A rig's host, which waits for its workers: one worker, and four.
+    for workers in [1_u32, 4] {
+        let host = ThinkHost::on_pool(MindPool::new(workers));
+        let run = drive(
+            &before,
+            &host,
+            w,
+            steps,
+            wall,
+            WhileHeld::NeverHeld,
+            None,
+            &never,
+        );
+        assert_eq!(run, reference, "{name}: on {workers} waiting worker(s)");
+        assert_eq!(host.stats().held, 0);
+    }
+
+    // The server's host, which holds: every step's thinks are parked while the tick finds
+    // the step held nought to three times, and the tick is fired again at the same second.
+    for workers in [1_u32, 3] {
+        let host = ThinkHost::on_pool(MindPool::new(workers));
+        host.hold_late_steps();
+        let gate = Arc::new(Gate::default());
+        gate_every_runner(&host, &digests, &gate);
+        let pattern = |step: u32| (step.wrapping_mul(7).wrapping_add(workers)) % 4;
+        let run = drive(
+            &before,
+            &host,
+            w,
+            steps,
+            wall,
+            WhileHeld::ClockStands,
+            Some(&gate),
+            &pattern,
+        );
+        assert_eq!(
+            run, reference,
+            "{name}: held steps on {workers} worker(s), the clock standing"
+        );
+        assert!(
+            host.stats().held >= u64::from(steps),
+            "{name}: steps were held: {}",
+            host.stats().held
+        );
+    }
+
+    // The same, with the wall clock running on under the held steps as the server's does.
+    // Each held step is taken as it first fell due; every later step is stamped with a
+    // later IC second than the reference's, and nothing else differs.
+    let host = ThinkHost::on_pool(MindPool::new(2));
+    host.hold_late_steps();
+    let gate = Arc::new(Gate::default());
+    gate_every_runner(&host, &digests, &gate);
+    let pattern = |step: u32| 1 + step % 3;
+    let late = drive(
+        &before,
+        &host,
+        w,
+        steps,
+        wall,
+        WhileHeld::ClockRuns,
+        Some(&gate),
+        &pattern,
+    );
+    assert!(late.active.last_stepped_wall_s > reference.active.last_stepped_wall_s);
+    assert_eq!(
+        without_the_clock(late),
+        without_the_clock(reference.clone()),
+        "{name}: held steps with the clock running"
+    );
+    reference
+}
+
+/// **Doc 44 unit MW.11 (Q-44-28): the same encounter, run again from before a decision
+/// with the workers' timing varied, gives the same commands, the same mind memory and the
+/// same outcome.** A customs picket: the corvette hails, the backup mind of a hull with no
+/// crew heaves her to, customs clear her, the raider lights up and opens on her.
+#[test]
+fn mw11_a_picket_is_the_same_whatever_the_workers_timing() {
+    let reference = same_whatever_the_workers_timing("picket", picket_encounter(), 3, 28);
+    let picket = reference.active.picket.as_ref().expect("a picket");
+    assert!(picket.raider_ambush_launched, "the raider opened");
+    let backup = reference.linkdead.get(&CARRIER).expect("her record");
+    eprintln!(
+        "picket: corvette {} thinks, raider {} thinks, backup {} thinks ({:?}), {} mind commands",
+        picket.corvette_think_seq,
+        picket.raider_think_seq,
+        backup.mind_think_seq,
+        backup.backup_act,
+        mind_commands(&reference.log),
+    );
+    assert!(picket.corvette_think_seq >= 5 && picket.raider_think_seq >= 5);
+    assert!(!picket.corvette_memory.is_empty(), "the corvette remembers");
+    assert!(backup.mind_think_seq >= 5, "the backup mind thought");
+    assert_eq!(
+        backup.backup_act,
+        super::super::backup::BackupAct::HeavingTo,
+        "and hove her to"
+    );
+}
+
+/// **Doc 44 unit MW.11 (Q-44-28): the same, for an interdiction**: the interdictor hails,
+/// holds for the hull that is slowing and closes on the one that runs.
+#[test]
+fn mw11_an_interdiction_is_the_same_whatever_the_workers_timing() {
+    let reference =
+        same_whatever_the_workers_timing("interdiction", interdiction_encounter(), 2, 24);
+    eprintln!(
+        "interdiction: interdictor {} thinks, {} mind commands",
+        reference.active.interdictor_think_seq,
+        mind_commands(&reference.log),
+    );
+    assert!(reference.active.interdictor_think_seq >= 5);
+    assert!(
+        reference.active.stood_down.contains(&ESCORT),
+        "the escort that hove to was stood down"
+    );
+    assert!(!reference.active.stood_down.contains(&RUNNER));
+}
+
+/// **Doc 44 unit MW.11: no think blocks the stepping thread.** On the server's host, with
+/// every worker parked, a bubble whose step is due is asked two hundred times and each
+/// call returns without the step being taken or anything written; the thread is never
+/// waiting on a worker, so the calls are done in a fraction of the time one parked think
+/// would have cost it. When the workers are let through the step is taken, as it first
+/// fell due.
+#[test]
+fn mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on() {
+    let tw = TestWorld::new();
+    let w = tw.world();
+    for (name, (active, linkdead)) in [
+        ("picket", picket_encounter()),
+        ("interdiction", interdiction_encounter()),
+    ] {
+        let host = ThinkHost::on_pool(MindPool::new(2));
+        host.hold_late_steps();
+        let gate = Arc::new(Gate::default());
+        gate_every_runner(&host, &digests_of(&active), &gate);
+        let mut run = Run {
+            active,
+            linkdead,
+            log: Vec::new(),
+        };
+        let paused = std::collections::BTreeSet::new();
+        let orders = mush_sim::tick::StandingOrderBook::default();
+        let tick_at = |wall: i64| BubbleTick {
+            frozen: false,
+            wall_now_s: wall,
+            ic_now_s: 1_000 + wall * 24,
+            paused_hulls: &paused,
+            standing_orders: &orders,
+            host: &host,
+            store: None,
+            w,
+        };
+        // The first step owes nothing and is taken; its minds' thinks park at the gate.
+        let mut out = BubbleTickOut::default();
+        assert!(step_bubble(
+            &mut run.active,
+            &tick_at(101),
+            &mut run.linkdead,
+            &mut out
+        ));
+        let owed = run.active.thinks_owed.expect("the minds have thinks out");
+        let before = run.clone();
+        let started = Instant::now();
+        for n in 0..200_i64 {
+            let mut out = BubbleTickOut::default();
+            assert!(
+                !step_bubble(
+                    &mut run.active,
+                    &tick_at(102 + n),
+                    &mut run.linkdead,
+                    &mut out
+                ),
+                "{name}: the step is held while its thinks are out"
+            );
+        }
+        let spent = started.elapsed();
+        assert_eq!(run, before, "{name}: a held step writes nothing");
+        assert_eq!(host.stats().held, 200);
+        assert!(
+            spent < Duration::from_secs(10),
+            "{name}: two hundred held ticks took {spent:?}"
+        );
+        assert!(gate.arrived() >= 1, "{name}: a worker is parked on a think");
+        // The step that fell due at second 102 is the one taken, whenever it is taken.
+        let (owner, mark) = run.active.think_owner(owed);
+        assert_eq!(
+            host.held_step(owner, mark),
+            Some(Due {
+                dt_wall_ms: 1_000,
+                ic_now_s: 1_000 + 102 * 24,
+            })
+        );
+        gate.open();
+        let until = Instant::now() + Duration::from_secs(60);
+        while !host.is_answered(owner, mark) {
+            assert!(Instant::now() < until, "{name}: the batch never answered");
+            std::thread::yield_now();
+        }
+        let mut out = BubbleTickOut::default();
+        assert!(step_bubble(
+            &mut run.active,
+            &tick_at(400),
+            &mut run.linkdead,
+            &mut out
+        ));
+        let step = run
+            .active
+            .tape
+            .entries
+            .iter()
+            .rev()
+            .find_map(|entry| match entry.command {
+                BubbleInputCommand::StepWall {
+                    dt_wall_ms,
+                    ic_now_s,
+                } => Some((dt_wall_ms, ic_now_s)),
+                _ => None,
+            });
+        assert_eq!(
+            step,
+            Some((1_000, 1_000 + 102 * 24)),
+            "{name}: the held step is taken as it fell due, not as the 298 seconds since"
+        );
+        assert_eq!(run.active.last_stepped_wall_s, 400);
+    }
+}
+
+/// **Doc 44 unit MW.11: a bubble read back with thinks owed collects them again.** A
+/// restart loses the batch in flight and keeps the bubble's record; the bubble then thinks
+/// on the state it kept and goes on exactly as one that was never restarted.
+#[test]
+fn mw11_a_bubble_read_back_with_thinks_owed_collects_them_again() {
+    let tw = TestWorld::new();
+    let w = tw.world();
+    let (active, linkdead) = picket_encounter();
+    let fresh = Run {
+        active,
+        linkdead,
+        log: Vec::new(),
+    };
+    let never = |_: u32| 0_u32;
+    let host = ThinkHost::on_pool(MindPool::new(2));
+    let unbroken = drive(
+        &fresh,
+        &host,
+        w,
+        12,
+        100,
+        WhileHeld::NeverHeld,
+        None,
+        &never,
+    );
+
+    let host = ThinkHost::on_pool(MindPool::new(2));
+    let first = drive(&fresh, &host, w, 5, 100, WhileHeld::NeverHeld, None, &never);
+    assert!(first.active.thinks_owed.is_some());
+    // The record goes through its stored form, as a restart reads it, and meets a host
+    // that has never seen it.
+    let stored = serde_json::to_value(&first.active).expect("the record is stored");
+    let read_back: ActiveInterdictionBubble =
+        serde_json::from_value(stored).expect("the record is read back");
+    assert_eq!(read_back.thinks_owed, first.active.thinks_owed);
+    let restarted = Run {
+        active: read_back,
+        linkdead: first.linkdead.clone(),
+        log: first.log.clone(),
+    };
+    let host = ThinkHost::on_pool(MindPool::new(2));
+    let resumed = drive(
+        &restarted,
+        &host,
+        w,
+        7,
+        105,
+        WhileHeld::NeverHeld,
+        None,
+        &never,
+    );
+    assert_eq!(resumed.log, unbroken.log, "the same commands");
+    assert_eq!(
+        resumed.active.bubble, unbroken.active.bubble,
+        "the same outcome"
+    );
+    assert_eq!(
+        resumed.active.picket, unbroken.active.picket,
+        "the same memory"
+    );
+    assert_eq!(resumed.linkdead, unbroken.linkdead);
+}
+
+/// **Doc 44 Q-44-37, unit MW.11: a crew that takes the helm back discards the think the
+/// backup mind had out for her**, and the other minds' answers of the same batch still
+/// land.
+#[test]
+fn mw11_a_think_struck_from_a_batch_does_not_land_and_the_rest_do() {
+    let tw = TestWorld::new();
+    let w = tw.world();
+    let (active, linkdead) = picket_encounter();
+    let fresh = Run {
+        active,
+        linkdead,
+        log: Vec::new(),
+    };
+    let never = |_: u32| 0_u32;
+    let host = ThinkHost::on_pool(MindPool::new(2));
+    let mut run = drive(&fresh, &host, w, 4, 100, WhileHeld::NeverHeld, None, &never);
+    let seqs = |run: &Run| {
+        let picket = run.active.picket.as_ref().expect("a picket");
+        (
+            picket.corvette_think_seq,
+            picket.raider_think_seq,
+            run.linkdead.get(&CARRIER).map(|state| state.mind_think_seq),
+        )
+    };
+    let before = seqs(&run);
+    // Her crew is back while the bubble's batch is out: her answer is struck where it
+    // stands. (The tick's hook also drops her record; it is kept here to show that the
+    // strike alone is enough to stop the answer.)
+    host.forget(Owner::Bubble(run.active.domain), Thinker::Backup, CARRIER);
+    run = drive(&run, &host, w, 1, 104, WhileHeld::NeverHeld, None, &never);
+    let after = seqs(&run);
+    assert_eq!(after.0, before.0 + 1, "the corvette's answer landed");
+    assert_eq!(after.1, before.1 + 1, "the raider's answer landed");
+    assert_eq!(after.2, before.2, "the struck answer did not");
+}
+
+/// **Doc 44 unit MW.11: every think of a bubble runs on a pool worker, never on the thread
+/// that steps the bubble**, and one runner serves each seal for the whole encounter.
+#[test]
+fn mw11_every_think_of_a_bubble_runs_on_a_pool_worker() {
+    use crate::space::thinks::test_support::Traced;
+    let tw = TestWorld::new();
+    let w = tw.world();
+    let (active, linkdead) = picket_encounter();
+    let digests = digests_of(&active);
+    let host = ThinkHost::on_pool(MindPool::new(3));
+    assert_eq!(host.workers(), 3);
+    let view = Arc::new(crate::space::picket::drone_view(ObjId(1), [0, 0, 0], 0));
+    let mut traced = Vec::new();
+    for digest in &digests {
+        let _ = host.job(None, ObjId(1), *digest, 0, &view, &[]);
+        let inner = host.kept_runner(digest).expect("the doctrine has a runner");
+        let runner = Arc::new(Traced {
+            inner,
+            threads: std::sync::Mutex::new(Vec::new()),
+        });
+        traced.push(Arc::clone(&runner));
+        host.install_runner(*digest, runner);
+    }
+    let fresh = Run {
+        active,
+        linkdead,
+        log: Vec::new(),
+    };
+    let never = |_: u32| 0_u32;
+    let run = drive(
+        &fresh,
+        &host,
+        w,
+        10,
+        100,
+        WhileHeld::NeverHeld,
+        None,
+        &never,
+    );
+    let here = std::thread::current()
+        .name()
+        .unwrap_or("unnamed")
+        .to_owned();
+    let mut thinks = 0_usize;
+    for runner in &traced {
+        let threads = runner.threads.lock().expect("the trace");
+        for thread in threads.iter() {
+            assert!(
+                thread.starts_with("tacsim-mind-") && *thread != here,
+                "a think ran on {thread}"
+            );
+        }
+        thinks += threads.len();
+    }
+    // Three minds, a think each for each of the ten steps.
+    assert_eq!(thinks, 30, "one think a step for each mind");
+    assert_eq!(host.stats().thinks, 30);
+    assert_eq!(
+        host.stats().runners_built,
+        3,
+        "one runner for each of the three seals, for {} steps",
+        run.active.steps
+    );
+}

@@ -825,11 +825,12 @@ pub struct MindsConfig {
     #[serde(default = "default_pool_floor_ops_s")]
     pub pool_floor_ops_s: u64,
     /// **The think pool's worker threads** (17b cut M4.1; doc 17 §6
-    /// "Execution policy", D-UM-22): the process-wide
-    /// [`crate::minds::MindPool`] every sim task sends its collected thinks
-    /// to, sized ONCE per process from the first task's read
-    /// (`MindPool::shared`). Stock 2; 1 to 32 ([`MindsConfig::validate`]).
-    /// Never carried: a resumed match thinks on the process's pool.
+    /// "Execution policy", D-UM-22): the server's one
+    /// [`crate::minds::MindPool`], which every sim task and every space mind
+    /// sends its collected thinks to (doc 44 unit MW.11). The store builds it
+    /// with this figure the first time anything thinks, and no caller names a
+    /// size. Stock 2; 1 to 32 ([`MindsConfig::validate`]). Never carried: a
+    /// resumed match thinks on the server's pool.
     #[serde(default = "default_workers")]
     pub workers: u32,
     /// **The mind CPU lens, milliseconds per 500 ms window** (17b cut M4.2;

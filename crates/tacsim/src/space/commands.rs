@@ -6918,16 +6918,10 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "drone_mining",
             crate::minds::content::drone_mining_digest().0,
         );
-        let (mind_memory, mind_think_seq, mind_last_trace) = super::picket::run_drone_rhai_think(
-            ctx.w.module_state::<crate::store::TacsimStore>(),
-            drone_obj,
-            mind_seal.as_ref(),
-            session.ship_pos_m,
-            0,
-            &[],
-        )
-        .filter(|r| r.fault.is_none())
-        .map_or_else(|| (Vec::new(), 0, Vec::new()), |r| (r.memory, 1, r.trace));
+        // Doc 44 unit MW.11: a drone no longer thinks in the launching command. Its first
+        // think is collected by the next space tick and lands on the one after, off the
+        // world thread like every other.
+        let (mind_memory, mind_think_seq, mind_last_trace) = (Vec::new(), 0_u64, Vec::new());
         drone_excursions.push((drone_obj, slot, session.cluster.clone()));
         launched_ids.push((
             slot,

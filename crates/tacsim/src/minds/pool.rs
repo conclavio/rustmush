@@ -29,15 +29,20 @@
 //! the unwind boundary voids a panic inside `Arena::step` (where the inline
 //! path runs the same runner).
 //!
-//! **One per process** ([`MindPool::shared`]): sized once, from the first
-//! task's `[tacsim.minds].workers`; every later task shares it. A private
-//! pool ([`MindPool::new`]) is a test's — the gate runs real tasks at one,
-//! two and four workers in one process and holds them to the library.
+//! **One per server** ([`of_world`], `TacsimStore::mind_pool`; doc 44 unit
+//! MW.11): built once, the first time a match or a space mind asks the
+//! world's store for it, with the store's own `[tacsim.minds].workers`.
+//! Nobody who asks names a size, so whether the first think of a server is
+//! a match's or a bubble's the pool is the configured one. Until MW.11 the
+//! pool was a process static sized by its first caller, and space asked for
+//! one worker. A private pool ([`MindPool::new`]) is a test's — the gate
+//! runs real tasks at one, two and four workers in one process and holds
+//! them to the library.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
-use mush_core::ObjId;
+use mush_core::{ObjId, World};
 
 use crate::arena::mind::{CollectedThink, ThinkAnswer};
 
@@ -159,12 +164,36 @@ impl BatchHandle {
     }
 }
 
-/// The process's one pool ([`MindPool::shared`]).
-static SHARED: OnceLock<Arc<MindPool>> = OnceLock::new();
+/// **Where a store keeps the server's pool** (this module's head; doc 44
+/// unit MW.11): empty until the first think, then the one pool, shared by
+/// every clone of the store.
+#[derive(Clone, Debug, Default)]
+pub struct PoolSlot(Arc<OnceLock<Arc<MindPool>>>);
+
+impl PoolSlot {
+    /// The pool, built with `workers` threads the first time it is asked for.
+    /// `workers` is the store's configured figure and nothing else: the one
+    /// caller is `TacsimStore::mind_pool`.
+    pub(crate) fn get(&self, workers: u32) -> Arc<MindPool> {
+        Arc::clone(self.0.get_or_init(|| MindPool::new(workers)))
+    }
+}
+
+/// **The server's one pool** (this module's head; doc 44 unit MW.11): the
+/// store's, sized by its `[tacsim.minds].workers`. A world with no TacSim
+/// store opens no match and flies no bubble; it is answered a pool of the
+/// stock size so a caller never has to refuse.
+#[must_use]
+pub fn of_world(w: &World) -> Arc<MindPool> {
+    w.module_state::<crate::TacsimStore>().map_or_else(
+        || MindPool::new(crate::config::MindsConfig::default().workers),
+        crate::TacsimStore::mind_pool,
+    )
+}
 
 impl MindPool {
     /// **A private pool of `workers` threads** (at least one): a test's, or
-    /// what [`MindPool::shared`] builds once. A thread the host refuses to
+    /// what a store builds once ([`PoolSlot`]). A thread the host refuses to
     /// spawn is logged and the pool runs on the rest; with none at all a
     /// batch is run on the submitting thread ([`MindPool::submit`]), so a
     /// handle is always answered.
@@ -191,23 +220,6 @@ impl MindPool {
             shared,
             workers: spawned,
         })
-    }
-
-    /// **The process's one pool**, built on the first call with that call's
-    /// `workers` (`[tacsim.minds].workers` as the first task read it) and
-    /// shared by every later one, whatever size it names — sized ONCE per
-    /// process, as the module head says.
-    #[must_use]
-    pub fn shared(workers: u32) -> Arc<MindPool> {
-        let pool = SHARED.get_or_init(|| MindPool::new(workers));
-        if pool.workers() != usize::try_from(workers.max(1)).unwrap_or(usize::MAX) {
-            tracing::debug!(
-                asked = workers,
-                running = pool.workers(),
-                "the process's think pool is already sized; the later size is ignored"
-            );
-        }
-        Arc::clone(pool)
     }
 
     /// How many worker threads run.
@@ -526,11 +538,11 @@ mod tests {
         assert_eq!(answers.len(), 3);
     }
 
-    /// **17b cut M4.1: a pool dropped with a batch queued still answers it**,
-    /// and the process's shared pool is one `Arc` however often it is asked
-    /// for.
+    /// **17b cut M4.1: a pool dropped with a batch queued still answers it**;
+    /// and (doc 44 unit MW.11) a store's pool is one `Arc` however often it
+    /// is asked for, of the size its configuration names and no other.
     #[test]
-    fn m4_a_dropped_pool_answers_what_it_queued_and_the_shared_pool_is_one() {
+    fn m4_a_dropped_pool_answers_what_it_queued_and_a_stores_pool_is_one() {
         let runner: Arc<dyn MindRunner> = Arc::new(Ordered::default());
         let thinks = jobs(runner, 5);
         let pool = MindPool::new(2);
@@ -541,11 +553,21 @@ mod tests {
             Ok(5),
             "the workers drain the queue before they exit"
         );
-        let shared = MindPool::shared(2);
-        assert!(
-            Arc::ptr_eq(&shared, &MindPool::shared(4)),
-            "sized once per process"
-        );
-        assert!(shared.workers() >= 1);
+        for workers in [1_u32, 3, 5] {
+            let mut cfg = crate::TacsimConfig::default();
+            cfg.minds.workers = workers;
+            let store = crate::store::load(&[], cfg);
+            let first = store.mind_pool();
+            assert_eq!(
+                first.workers(),
+                usize::try_from(workers).unwrap_or(0),
+                "the configured size"
+            );
+            assert!(Arc::ptr_eq(&first, &store.mind_pool()), "built once");
+            assert!(
+                Arc::ptr_eq(&first, &store.clone().mind_pool()),
+                "and shared by a clone of the store"
+            );
+        }
     }
 }
