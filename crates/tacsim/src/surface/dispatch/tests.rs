@@ -445,12 +445,13 @@ fn s4b1_the_dispatch_seals_an_armed_rig_over_its_armament() -> TestResult {
     Ok(())
 }
 
-/// **Doc 23 cut S.4b-1 (D-23-22, Q-23-22): the untitled refusal guards the claim's Open.**
-/// Without the claim path (S.4a's dormant seal, every world today) no title is read and a
-/// leased hull flies a filed mind as built; with the claim path composed, a hull whose title the
-/// world does not show held by the operator is refused at `go` with the one sentence, naming
-/// the rig. The titled case (`title_owner == Object(actor)`, no scope) passes the Roll's own
-/// `TitleFence`, which reads the same two fields.
+/// **Doc 23 cuts S.4b-1 and S.4c (D-23-22, D-23-24): the untitled refusal guards the claim's
+/// Open.** Without the claim path (S.4a's dormant seal) no title is read and any hull flies a
+/// filed mind as built; with the claim path composed, a hull the world shows no title for is
+/// refused at `go` with the one sentence, naming the rig. The rule itself is the Roll's
+/// (`mush_roll::commerce::ic_claims::hull_authority`, pinned arm by arm in its own tests and
+/// over a real lease and a real grant in `domain_field::m8_world`); a world with no economy
+/// composed has no title to refuse on, and the claim's Open is what refuses there.
 #[test]
 fn s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open() -> TestResult {
     use crate::minds::ic_sortie::IcSorties;
@@ -462,30 +463,12 @@ fn s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open() -> TestResult 
     );
     world.module_state_insert(IcSorties::default());
     check!(crate::minds::ic_sortie::claim_path_composed(&world));
-    let line = untitled_refusal(&world, OPERATOR, TV).ok_or("refused")?;
     check_eq!(
-        line,
-        MIND_UNTITLED
-            .replace("{mark}", &format!("#{}", TV.0))
-            .replace("{owner}", "nobody")
+        untitled_refusal(&world, OPERATOR, TV),
+        None,
+        "no economy composed: nothing to name; the Open refuses"
     );
-    check!(line.ends_with("until the Roll admits a lease."));
-    check!(!line.contains("weapon"));
+    check!(MIND_UNTITLED.contains("titled to you, leased to you, or held by an organisation"));
+    check!(!MIND_UNTITLED.contains("weapon"));
     Ok(())
-}
-
-/// **The title rule's two fields** (S.4b-1, D-23-22): the actor's own unscoped title passes; a
-/// lessor organisation's (a leased rig, `port/vehicle.rs`), another character's, or the actor's
-/// under an organisation's scope does not.
-#[test]
-fn s4b1_the_title_rule() {
-    use mush_org::PrincipalId;
-    assert!(titled_to(&PrincipalId::Object(OPERATOR), true, OPERATOR));
-    assert!(!titled_to(&PrincipalId::Object(OPERATOR), false, OPERATOR));
-    assert!(!titled_to(&PrincipalId::Object(ObjId(11)), true, OPERATOR));
-    assert!(!titled_to(
-        &PrincipalId::Organization(mush_org::OrgId(3)),
-        true,
-        OPERATOR
-    ));
 }

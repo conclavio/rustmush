@@ -3,15 +3,23 @@
 //! socket — the two-halves shape this group's other IPC proofs use (two halves,
 //! one socket, no OS-process flakiness).
 //!
-//! - A **version-12 gateway**, one that sends no `ToServer::Hello` because no
-//!   build before 13 had one, is served: the server reads the first frame's
-//!   shape as the bootstrap rule says and records 12, and the session the
-//!   gateway holds is re-attached and shown its room (output), its barrier and
-//!   readiness probes are answered (requests), and its command under custody
-//!   runs (input).
-//! - A **version-13 gateway** announces itself first and is served the same.
-//! - A gateway **outside the window** (14, the step the one-direction window
-//!   never covers, because the server upgrades first) is refused: the server
+//! Written against the window, not against version numbers, since the bump to
+//! 14 (doc 44 unit MW.24), the first inside the window:
+//!
+//! - A gateway **one step behind** (13 under a 14 server) announces itself and
+//!   is served: the session it holds is re-attached and shown its room
+//!   (output), its barrier and readiness probes are answered (requests), and
+//!   its command under custody runs (input). This is the window's promise,
+//!   and the case a deploy meets every time the server goes first.
+//! - A gateway **at the server's version** announces itself and is served the
+//!   same.
+//! - A gateway **with no `ToServer::Hello`** is a version-12 one (no build
+//!   before 13 had a Hello). The bootstrap rule served it while 12 was inside
+//!   the window, which was version 13 only; now it is refused like any link
+//!   below the window.
+//! - A gateway **outside the window** (one step AHEAD, the step the
+//!   one-direction window never covers, because the server upgrades first) is
+//!   refused: the server
 //!   ends the link without answering anything the gateway sent on it. The
 //!   `IPC-VERSION-SKEW` marker on that refusal is pinned by `mush_server`'s own
 //!   unit test of `admit_gateway`; here the proof is the link ending unanswered.
@@ -262,29 +270,76 @@ async fn play_through(link: &mut Link, conn: u64) {
     );
 }
 
-/// A gateway from before the window: no `ToServer::Hello`, its first frame is
-/// its roster. The 13 server reads that as a 12 peer and serves it in full.
+/// Whether the server answered anything a gateway sent on a link: a reply, a
+/// disposition, or output for a connection.
+fn answered(seen: &[ToGateway]) -> bool {
+    seen.iter().any(|f| {
+        matches!(
+            f,
+            ToGateway::Reply { .. }
+                | ToGateway::Deliver {
+                    target: SendTarget::Conn(_) | SendTarget::Char(_),
+                    ..
+                }
+                | ToGateway::RequestDisposition { .. }
+        )
+    })
+}
+
+/// A gateway one step behind the server: the window's promise. It announces
+/// its own version (every build from 13 on does) and is served in full.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_version_12_gateway_is_served_by_a_13_server() {
-    let endpoint = boot_server("v12").await;
+async fn a_gateway_one_step_behind_is_served() {
+    let endpoint = boot_server("behind").await;
     let (mut link, window) = Link::connect(&endpoint).await;
     assert_eq!(
         window,
         (IPC_VERSION, IPC_MIN_PROTO),
         "the server announces the one-step window it serves"
     );
-    assert_eq!(
-        window.1, 12,
-        "12 is inside it: this is the bootstrap release"
-    );
+    link.send(&ToServer::Hello {
+        proto: IPC_MIN_PROTO,
+        min_proto: IPC_MIN_PROTO - 1,
+    })
+    .await;
     play_through(&mut link, 41).await;
 }
 
-/// A gateway at the server's own version announces itself first, as every
-/// build from 13 on does, and is served in full.
+/// A gateway from before the window: no `ToServer::Hello`, its first frame is
+/// its roster. The server reads that as a 12 peer, and 12 left the window at
+/// the bump to 14: the link is refused and nothing sent on it is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_version_13_gateway_announces_itself_and_is_served() {
-    let endpoint = boot_server("v13").await;
+async fn a_gateway_with_no_hello_is_below_the_window_and_refused() {
+    // The bootstrap rule has run out: checked where the constants are.
+    const { assert!(mush_ipc::IPC_PRE_HELLO_VERSION < IPC_MIN_PROTO) };
+    let endpoint = boot_server("nohello").await;
+    let (mut link, _window) = Link::connect(&endpoint).await;
+    // Either write may already fail (the server has closed its end).
+    let _ = write_frame(
+        &mut link.writer,
+        &ToServer::ReAnnounce(vec![held_session(43)]),
+    )
+    .await;
+    let _ = write_frame(
+        &mut link.writer,
+        &ToServer::Request {
+            id: 9,
+            req: ServiceReq::Barrier,
+        },
+    )
+    .await;
+    let seen = link.read_to_close().await;
+    assert!(
+        !answered(&seen),
+        "a refused link is answered nothing; seen: {seen:?}"
+    );
+}
+
+/// A gateway at the server's own version announces itself first and is served
+/// in full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gateway_at_the_servers_version_is_served() {
+    let endpoint = boot_server("current").await;
     let (mut link, _window) = Link::connect(&endpoint).await;
     link.send(&ToServer::Hello {
         proto: IPC_VERSION,
@@ -299,7 +354,7 @@ async fn a_version_13_gateway_announces_itself_and_is_served() {
 /// answers nothing on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_outside_the_window_is_refused() {
-    let endpoint = boot_server("v14").await;
+    let endpoint = boot_server("ahead").await;
     let (mut link, _window) = Link::connect(&endpoint).await;
     link.send(&ToServer::Hello {
         proto: IPC_VERSION + 1,
@@ -317,19 +372,8 @@ async fn a_gateway_outside_the_window_is_refused() {
     )
     .await;
     let seen = link.read_to_close().await;
-    let answered = seen.iter().any(|f| {
-        matches!(
-            f,
-            ToGateway::Reply { .. }
-                | ToGateway::Deliver {
-                    target: SendTarget::Conn(_) | SendTarget::Char(_),
-                    ..
-                }
-                | ToGateway::RequestDisposition { .. }
-        )
-    });
     assert!(
-        !answered,
+        !answered(&seen),
         "a refused link is answered nothing (no reply, no disposition, nothing to a connection); seen: {seen:?}"
     );
 }

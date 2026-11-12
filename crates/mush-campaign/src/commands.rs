@@ -774,6 +774,10 @@ fn op_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     let mut terms = doc.terms.clone();
+    // Doc 45 cut AP.1 (Q-45-15, Q-45-17): the notice is given when the terms freeze, which is
+    // when the eligible defenders are told. The stamp moves to now and the window with it, by
+    // the same amount, so the lead the issuer set is the lead a defender gets.
+    let lead = notice_from_now(&mut terms, &ctx.w.world_timeline().stamp_at(ctx.w.now()));
     if let Some(bond) = terms.bond.clone() {
         match crate::bond::place(ctx, &terms, &bond) {
             Ok(hold) => {
@@ -811,7 +815,32 @@ fn op_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.actor,
         format!("Operation {id} activated; its terms are frozen."),
     );
+    ctx.out.info(
+        ctx.actor,
+        format!(
+            "Notice runs from now: the window opens in {} IC days {} hours.",
+            lead.div_euclid(86_400),
+            lead.rem_euclid(86_400).div_euclid(3_600)
+        ),
+    );
     Ok(())
+}
+
+/// **Count `terms`' notice from `now`** (doc 45 cut AP.1; `@op/activate`): the stamp moves to
+/// `now` and the window by the same amount, and the hash is derived again. The lead, in IC
+/// seconds. Terms stamped on another clock generation, or after `now`, are left as they are: the
+/// tick pages a window on a retired clock.
+fn notice_from_now(terms: &mut OperationTerms, now: &mush_core::ClockStamp) -> i64 {
+    let lead = terms.window.0.at.saturating_sub(terms.notice.at);
+    if terms.notice.clock != now.clock || now.at <= terms.notice.at {
+        return lead;
+    }
+    let moved = now.at.saturating_sub(terms.notice.at);
+    terms.notice.at = now.at;
+    terms.window.0.at = terms.window.0.at.saturating_add(moved);
+    terms.window.1.at = terms.window.1.at.saturating_add(moved);
+    terms.consent_hash = operation_consent_hash(terms);
+    lead
 }
 
 /// `@op/join <id>=<#unit|fm<n>>` — **a unit is in at most one operation** (R1).
@@ -1478,7 +1507,10 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    only) · @op/activate <id> · @op/join <id>=<#unit|fm<n>> · @op/withdraw \
                    <id>=<#unit> · @op/show <id> · @op/resolve <id>=<outcome> · @op/consumers \
                    <id> (staff) · @op/list — declared operations. The terms freeze at \
-                   activation and the bond is a reservation on your own account."
+                   activation and the bond is a reservation on your own account. The notice \
+                   runs from the activation: the window moves to keep the lead you set, and \
+                   each eligible defender who may see the operation is told then, by a notice \
+                   that waits for their next login and by IC mail."
                 .into(),
             ..CommandSpec::default()
         },

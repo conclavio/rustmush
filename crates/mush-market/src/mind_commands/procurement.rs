@@ -8,7 +8,8 @@
 //! builds; nothing of them reaches a player surface (the tick prints nothing).
 //!
 //! - `ProcurementListings { after }`: the current listings, exactly as
-//!   `Listings` pages them (the same scan budget, the same "current" rule),
+//!   `Listings` pages them (the same scan budget, the same "current" rule,
+//!   which since doc 44 MW.2 leaves out a listing the Roll says cannot be sold),
 //!   without the counter check (the tick stands nowhere), each with the listed
 //!   revision and its rating reference, which the tick's score count needs.
 //!   Only listings: a filed mind nobody listed is never in the family, so it
@@ -23,7 +24,7 @@
 //! - `ProcurementOperation { operation }`: one funded purchase's phase, price,
 //!   listing, charter and reserved licence: whether the agent's Grant (or a
 //!   Refund) has landed, and the facts the procurement ledger row records.
-use super::{ListingSource, OwnSource, Protocol, PublicListingView, SCAN_ROWS, view};
+use super::{ListingSource, OwnSource, Protocol, PublicListingView, view};
 use crate::mind_entitlement::{EntitlementListingV1, EntitlementPurchaseV1, EntitlementQuoteV1};
 use mush_core::read_service::OwnerReadError;
 use mush_core::{CommitToken, GOD, ObjId};
@@ -223,49 +224,36 @@ pub(super) fn god(actor: ObjId) -> Result<(), OwnerReadError> {
     }
 }
 
-/// `ProcurementListings` (the module note): `listings`' scan, the rows
-/// mapped with their revision and rating.
+/// `ProcurementListings` (the module note): `Listings`' own page
+/// (`super::page`: the same scans, the same "current", the Roll's answer that
+/// the listing can still be sold included, so the House agent is never handed
+/// a withdrawn, recalled, lapsed or moved listing to quote; doc 44 MW.2), the
+/// rows mapped with their revision and rating.
 pub(super) fn listings<'a>(
     source: &impl ListingSource<'a>,
     after: Option<CommitToken>,
     scans: usize,
     current: impl Fn(&EntitlementListingV1) -> bool,
 ) -> Result<ProcurementListingsPage, OwnerReadError> {
-    let mut cursor = after.map(|t| t.to_string());
-    let mut last: Option<CommitToken> = None;
-    let mut rows: Vec<ProcurementListing> = Vec::new();
-    for _ in 0..scans {
-        let (scanned, more) = source.scan(cursor.as_deref(), SCAN_ROWS)?;
-        for row in &scanned {
-            if !current(row) {
-                continue;
-            }
-            if rows.len() == PROCUREMENT_LISTINGS_PER_PAGE {
-                return Ok(ProcurementListingsPage {
-                    next: rows.last().map(|r| r.view.publication()),
-                    rows,
-                });
-            }
-            let (revision, rating) = row.procurement_subject();
-            rows.push(ProcurementListing {
-                view: view(row)?,
-                revision,
-                rating,
-                instrument: row.instrument().clone(),
-            });
-        }
-        if !more {
-            return Ok(ProcurementListingsPage { rows, next: None });
-        }
-        match scanned.last() {
-            Some(row) => {
-                last = Some(row.publication());
-                cursor = Some(row.publication().to_string());
-            }
-            None => return Ok(ProcurementListingsPage { rows, next: None }),
-        }
+    let (found, next) = super::page(
+        source,
+        after.map(|t| t.to_string()),
+        scans,
+        &mut super::Budget::new(),
+        PROCUREMENT_LISTINGS_PER_PAGE,
+        current,
+    )?;
+    let mut rows = Vec::with_capacity(found.len());
+    for row in found {
+        let (revision, rating) = row.procurement_subject();
+        rows.push(ProcurementListing {
+            view: view(row)?,
+            revision,
+            rating,
+            instrument: row.instrument().clone(),
+        });
     }
-    Ok(ProcurementListingsPage { rows, next: last })
+    Ok(ProcurementListingsPage { rows, next })
 }
 
 /// `ProcurementOperation` (the module note); `None` for no such purchase.

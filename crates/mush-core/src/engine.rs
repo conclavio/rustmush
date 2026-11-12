@@ -494,6 +494,28 @@ pub enum Inbound {
         /// Why it went down.
         reason: DisconnectKind,
     },
+    /// A **bare connection** came up (doc 44 unit MW.24): one bound to an
+    /// actor so that an [`Inbound::Invoke`] on it runs as them and its result
+    /// reaches it, and carrying nothing else. It is not presence. The engine
+    /// does not count it among the actor's live connections, does not mark
+    /// the actor connected, announces nothing and fires no connection hook
+    /// and no world event, when it comes up or when it goes down. An offline
+    /// actor stays offline behind it and a link-dead one stays link-dead,
+    /// their grace untouched. The SSH `mind` exec is the one sender today.
+    BareUp {
+        /// The new connection.
+        conn: ConnId,
+        /// The actor its invokes run as.
+        actor: ObjId,
+    },
+    /// A bare connection ([`Inbound::BareUp`]) ended. Silent, like its
+    /// coming up; a connection the engine does not hold as bare is ignored.
+    BareDown {
+        /// The connection that went away.
+        conn: ConnId,
+        /// The actor it was bound to.
+        actor: ObjId,
+    },
     /// The session layer gave up on the actor entirely (linkdead grace
     /// expired). The actor fully disconnects — unless the engine currently
     /// tracks live connections for them, in which case the message is stale
@@ -558,6 +580,9 @@ struct ConnInfo {
     actor: ObjId,
     #[allow(dead_code)] // read by the session layer via caps negotiation later
     caps_structured: bool,
+    /// A bare connection ([`Inbound::BareUp`]): bound for invokes and their
+    /// replies, never counted in `conn_count` and never presence.
+    bare: bool,
 }
 
 /// Bookkeeping for one running per-scene tick.
@@ -3774,7 +3799,9 @@ impl Engine {
         self.world.set_now(unix_seconds);
     }
 
-    /// The actor a live connection is attached to.
+    /// The actor a connection is attached to: a live one, or a bare one
+    /// ([`Inbound::BareUp`]), which is bound to its actor without being one
+    /// of their live connections ([`connections_of`](Self::connections_of)).
     #[must_use]
     pub fn actor_of(&self, conn: ConnId) -> Option<ObjId> {
         self.conns.get(&conn).map(|c| c.actor)
@@ -3950,6 +3977,14 @@ impl Engine {
                 reason,
             } => {
                 self.conn_down(conn, actor, reason, out);
+                StepOutcome::Continue
+            }
+            Inbound::BareUp { conn, actor } => {
+                self.bare_up(conn, actor);
+                StepOutcome::Continue
+            }
+            Inbound::BareDown { conn, actor } => {
+                self.bare_down(conn, actor);
                 StepOutcome::Continue
             }
             Inbound::SessionGone { actor } => {
@@ -4229,9 +4264,13 @@ impl Engine {
             ConnInfo {
                 actor,
                 caps_structured,
+                bare: false,
             },
         );
-        if let Some(p) = prev {
+        // A bare connection was never counted, so an id it held is taken over
+        // as a new one would be (the transports never reuse an id; this is
+        // the recovery, as the branch below is).
+        if let Some(p) = prev.filter(|p| !p.bare) {
             if p.actor == actor {
                 // Duplicate ConnUp for a tracked connection: caps updated,
                 // nothing else to do.
@@ -4382,6 +4421,13 @@ impl Engine {
         };
         debug_assert_eq!(info.actor, actor, "ConnDown actor mismatch");
         let actor = info.actor; // trust our own bookkeeping over the message
+        if info.bare {
+            // A link that ended takes its connections down as `Lost` whatever
+            // they were (the server's link registry). A bare one was never
+            // presence, so its end is none either.
+            tracing::debug!(conn, %actor, %reason, "bare connection down");
+            return;
+        }
         let last = self.dec_conn_count(actor);
         self.world.set_live_conns(actor, self.connections_of(actor));
         tracing::info!(conn, %actor, %reason, last, "connection down");
@@ -4428,6 +4474,47 @@ impl Engine {
         }
     }
 
+    /// [`Inbound::BareUp`]: bind the connection to the actor and nothing
+    /// else. No count, no `connected`, no announcement, no hook.
+    fn bare_up(&mut self, conn: ConnId, actor: ObjId) {
+        if self.world.get(actor).is_none() {
+            tracing::warn!(%actor, conn, "BareUp for missing actor ignored");
+            return;
+        }
+        if self.conns.get(&conn).is_some_and(|info| !info.bare) {
+            // The id is a live, counted connection's. Taking it over would
+            // leave that actor's count one too high for ever.
+            tracing::warn!(conn, %actor, "BareUp on a live connection's id ignored");
+            return;
+        }
+        // As `conn_up`: a new connection starts with no reply brackets.
+        self.world.clear_output_brackets(conn);
+        self.world.bind_connection(conn, actor);
+        self.conns.insert(
+            conn,
+            ConnInfo {
+                actor,
+                caps_structured: true,
+                bare: true,
+            },
+        );
+        tracing::debug!(conn, %actor, "bare connection up");
+    }
+
+    /// [`Inbound::BareDown`]: forget a bare connection. A connection that is
+    /// not held as bare is left alone, so a stray frame can never take a
+    /// player's real connection down without its `ConnDown`.
+    fn bare_down(&mut self, conn: ConnId, actor: ObjId) {
+        if !self.conns.get(&conn).is_some_and(|info| info.bare) {
+            tracing::debug!(conn, %actor, "BareDown for a connection not held as bare ignored");
+            return;
+        }
+        self.conns.remove(&conn);
+        self.world.clear_output_brackets(conn);
+        self.world.unbind_connection(conn);
+        tracing::debug!(conn, %actor, "bare connection down");
+    }
+
     fn session_gone(&mut self, actor: ObjId, out: &mut Outbox) {
         // Re-validate (treaty ruling 3): the reaper's SessionGone is not
         // ordered against a concurrent reconnect's ConnUp. If the engine
@@ -4439,7 +4526,9 @@ impl Engine {
             return;
         }
         // Defensive: forget any connections still attached to the actor.
-        self.conns.retain(|_, i| i.actor != actor);
+        // A bare connection is not the session's: it ends with its own
+        // `BareDown`, and an exec that outlives the grace still gets its reply.
+        self.conns.retain(|_, i| i.actor != actor || i.bare);
         self.conn_count.remove(&actor);
         self.world.set_live_conns(actor, 0);
         if self.world.is_connected(actor) {
@@ -8748,6 +8837,64 @@ mod typed_invoke_tests {
                 "{family} is not a module's"
             );
         }
+    }
+
+    /// Doc 44 unit MW.24: an invoke on a bare connection runs as its actor
+    /// and answers that connection, with the actor offline throughout; after
+    /// the connection ends the same invoke is dropped.
+    #[test]
+    fn an_invoke_runs_over_a_bare_connection() {
+        let mut registry = Registry::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        crate::module::Registrar::new(&mut registry, "test")
+            .invoke_handler("mind", Arc::new(Handler(calls.clone())))
+            .expect("handler");
+        let mut engine = Engine::new(World::new_minimal(), registry);
+        let invoke = |engine: &mut Engine| {
+            let mut out = Outbox::new();
+            engine.step(
+                Inbound::Invoke {
+                    conn: 42,
+                    actor: crate::GOD,
+                    id: 1,
+                    request: mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::List {}),
+                },
+                &mut out,
+                &mut Effects::new(),
+            );
+            out
+        };
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::BareUp {
+                conn: 42,
+                actor: crate::GOD,
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        assert!(out.events().is_empty());
+        let out = invoke(&mut engine);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            out.events(),
+            [(
+                crate::Audience::Conn(42),
+                OutputEvent::InvokeResult { id: 1, .. }
+            )]
+        ));
+        assert!(!engine.world.is_connected(crate::GOD));
+        assert_eq!(engine.connections_of(crate::GOD), 0);
+        engine.step(
+            Inbound::BareDown {
+                conn: 42,
+                actor: crate::GOD,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        assert!(invoke(&mut engine).events().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -526,8 +526,8 @@ async fn typed_market_panels_are_closed_private_and_own_only() -> TestResult {
         let p = w.launch.principals;
         check_eq!(
             w.server.owner_read_counts(),
-            Some((41, 44)),
-            "the composed reads, including planning, unit authority, field crew control and movement guards"
+            Some((42, 45)),
+            "the composed reads, including planning, unit authority, field crew control, movement guards and, since doc 44 MW.0, the claim path's IC admission reader"
         );
         let known = known_accounts(&w).await?;
         let room = [p.author, p.buyer, w.alt, w.bystander];
@@ -608,7 +608,7 @@ async fn typed_market_panels_are_closed_private_and_own_only() -> TestResult {
                 other => return Err(format!("the room: {feed} {params}: {other:?}").into()),
             }
         }
-        check_eq!(w.server.owner_read_counts(), Some((41, 44)));
+        check_eq!(w.server.owner_read_counts(), Some((42, 45)));
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await;
@@ -1337,12 +1337,11 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         };
 
         // The author's typed withdrawal: the Registry stops new sales of the
-        // revision (a fresh quote on it is refused by the provider, as the
-        // command story's part 3 pins on the line), but the counter is
-        // policy-current only (17g C2e: `current_policy` reads the listing
-        // row, never the revision's status), so the panel reads the same rows
-        // after it. Hiding a withdrawn revision's listings is a C4 ledger item
-        // (17g section 7, C2e as built).
+        // revision, and since doc 44 MW.2 (Q-44-15) the counter asks the Roll
+        // whether a listing can still be sold, so the withdrawn revision's
+        // listing leaves the panel: no rows, no cursor, and the notice the
+        // empty counter prints (the command story's part 3 pins the same on
+        // the line).
         let listed =
             rows_of(&panel(&w.server, buyer, "mind.market", json!({"after": null})).await?)?;
         check!(
@@ -1357,7 +1356,15 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
             "{outcome:?}"
         );
         let after = panel(&w.server, buyer, "mind.market", json!({"after": null})).await?;
-        check_eq!(rows_of(&after)?, listed, "{after}");
+        check!(
+            rows_of(&after)?.is_empty(),
+            "the withdrawn listing left the counter: {after}"
+        );
+        check_eq!(
+            (after.get("notice"), after.get("after")),
+            (Some(&json!(EMPTY)), Some(&Value::Null)),
+            "{after}"
+        );
 
         // A restart: the holder's paid section reads the same bytes.
         let section = json!({"section": "paid", "after": null});

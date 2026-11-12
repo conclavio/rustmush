@@ -1780,7 +1780,7 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
 /// 17g C2c test 6 (C2 plan §2.1, the C2c brief; on the launch rig beside C2a's
 /// test 4, for the same reason: the providers project nothing unbooted). The
 /// format-2 Active launch registers the market's command read
-/// (`mind_market_commands` v2 since doc 17h M8f) and, since 17g C2e, grants it to TacSim (33
+/// (`mind_market_commands` v3 since doc 44 MW.2) and, since 17g C2e, grants it to TacSim (33
 /// services and 35 grants with the scoped passenger facts; the counts and the
 /// mechanics fingerprint are printed, the counts pinned). With the
 /// buyer at the counter, the parameter objects `@mind/publish` builds for
@@ -1825,10 +1825,11 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (40, 43),
-        "40 services and 43 grants: Sim's four movement readers and actual field-crew \
-         control reader each add a service and grant to the 35/38 DT.2b1 composition; \
-         the caps are 64/64"
+        (41, 44),
+        "41 services and 44 grants: Sim's four movement readers and actual field-crew \
+         control reader each add a service and grant to the 35/38 DT.2b1 composition, and \
+         the claim path every Active launch composes (doc 44 MW.0) adds the Roll's IC \
+         admission reader and Tacsim's grant to it; the caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
     check!(
@@ -1847,7 +1848,7 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
             key.owner.as_str() == "market"
                 && key.kind.as_str() == "owner_read"
                 && key.id.as_str() == "mind_market_commands"
-                && entry.reference().version() == 2
+                && entry.reference().version() == 3
         }),
         "the market's command read is registered"
     );

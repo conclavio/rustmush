@@ -66,8 +66,10 @@ fn version_is_present_and_travels_in_hello() {
     // fences (11) extend the closed vocabulary; 13 (doc 33 GG.0) opens the
     // one-step window, after which the server upgrades first and a gateway one
     // step behind is served (the golden suite holds the recorded contract).
-    assert_eq!(IPC_VERSION, 13, "the boundary protocol version is pinned");
-    assert_eq!(IPC_MIN_PROTO, 12, "the window is exactly one step");
+    // 14 (doc 44 unit MW.24) adds the bare connection's two lifecycle frames,
+    // the first bump inside the window.
+    assert_eq!(IPC_VERSION, 14, "the boundary protocol version is pinned");
+    assert_eq!(IPC_MIN_PROTO, 13, "the window is exactly one step");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -247,7 +249,7 @@ fn oversized_length_prefix_is_rejected() {
     assert!(matches!(err, mush_ipc::CodecError::FrameTooLarge(_)));
 }
 
-/// WireInbound is exactly the cross-boundary subset: the five gateway-origin
+/// WireInbound is exactly the cross-boundary subset: the gateway-origin
 /// variants convert both ways; Apply and Control are structurally excluded.
 #[test]
 fn wire_inbound_is_the_cross_boundary_subset() {
@@ -276,6 +278,14 @@ fn wire_inbound_is_the_cross_boundary_subset() {
             reason: DisconnectKind::Boot,
         },
         Inbound::SessionGone { actor: ObjId(2) },
+        Inbound::BareUp {
+            conn: 9,
+            actor: ObjId(2),
+        },
+        Inbound::BareDown {
+            conn: 9,
+            actor: ObjId(2),
+        },
     ];
     for inbound in cases {
         let wire = WireInbound::try_from(inbound.clone()).expect("crosses the boundary");
@@ -450,7 +460,7 @@ fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it
         serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
             .is_err()
     );
-    assert_eq!(IPC_VERSION, 13);
+    assert_eq!(IPC_VERSION, 14);
 }
 
 #[test]
@@ -488,6 +498,6 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
         serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
         reply
     );
-    assert_eq!(IPC_VERSION, 13);
+    assert_eq!(IPC_VERSION, 14);
     Ok(())
 }

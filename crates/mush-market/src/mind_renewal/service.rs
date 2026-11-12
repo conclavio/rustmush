@@ -4,7 +4,7 @@ use super::player::{
     FrontAnswer, FrontStep, RenewalOfferTerms, RenewalPlayerOutcome, RenewalPlayerStep,
     RenewalState, RenewalStatusView, Submission, Switches, front_bound, front_line,
     front_player_step, front_request, front_submitted, outcome_line, parse_front,
-    personal_status_line, sent_outcome,
+    personal_status_line, renew_stopped, sent_outcome,
 };
 use super::{Families, MindRenewalOperationV1, RenewalConfig};
 use mush_core::action::{AuthorityGuard, AuthorityGuardContext, IdempotencyKeyText, PerceivedRef};
@@ -17,6 +17,7 @@ use mush_core::{
     TickCadence, World,
 };
 use mush_economy::{EconomyStore, managed_renewal::RenewalServiceCloseReason as Reason};
+use mush_roll::commerce::renewal::reader::RenewalStop;
 use mush_roll::commerce::{
     LicenceId, TermGeneration,
     renewal::{
@@ -111,6 +112,12 @@ struct Service {
 }
 fn unavailable() -> CmdError {
     CmdError::msg("Renewal is unavailable or has changed.")
+}
+/// Doc 44 MW.2 (Q-44-14): the holder's line for a lasting refusal, in the
+/// owner's ruled words (`player::RENEW_STOPPED`). Every passing refusal, and
+/// every refusal this service cannot tell the cause of, stays `unavailable`.
+fn stopped(stop: RenewalStop) -> CmdError {
+    CmdError::msg(renew_stopped(stop))
 }
 fn live(world: &World, actor: ObjId) -> bool {
     world
@@ -446,7 +453,11 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         .map_err(|_| unavailable())?;
     r.due_after = inventory.next_after().map(ToString::to_string);
     for item in inventory.entries() {
+        // Doc 44 MW.2: a licence the Roll says can never be renewed is not
+        // work (its inventory leaves such a licence out; an entry is checked
+        // all the same, so the rule holds whatever page shape the Roll sends).
         if !item.attempted()
+            && item.stop().is_none()
             && ctx.w.world_ic_now().at >= item.term_end().get()
             && live(ctx.w, item.holder().acting_character())
         {
@@ -527,12 +538,24 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     if e.actor != ctx.actor || !live(ctx.w, ctx.actor) {
         return Err(unavailable());
     }
+    // Doc 44 MW.2 (Q-44-14): a lasting refusal ends a draft entry as a grant
+    // does. The verdict is the Roll's (`RenewalInventoryEntry::stop`), read
+    // again here, so an entry admitted before the recall or the withdrawal
+    // stops at its next turn, and nothing held in this map decides it: the
+    // next scan, and a restart's first scan, are told the same by the Roll
+    // and admit nothing. A funded entry is not a draft and runs on to its
+    // grant or refund.
     let complete = match e.selection {
-        Selection::Due(l, g, holder) => own(ctx, s, l)
-            .is_ok_and(|v| v.generation() != g || v.holder_generation() != holder || v.attempted()),
+        Selection::Due(l, g, holder) => own(ctx, s, l).is_ok_and(|v| {
+            v.generation() != g
+                || v.holder_generation() != holder
+                || v.attempted()
+                || v.stop().is_some()
+        }),
         Selection::Pending(op) => checked(ctx, s, op).is_ok_and(|v| !v.state().pending()),
-        Selection::Retry(l, g, previous) => own(ctx, s, l)
-            .is_ok_and(|v| v.generation() != g || v.last_operation() != Some(previous)),
+        Selection::Retry(l, g, previous) => own(ctx, s, l).is_ok_and(|v| {
+            v.generation() != g || v.last_operation() != Some(previous) || v.stop().is_some()
+        }),
     };
     if complete {
         r.entries.remove(&id);
@@ -751,6 +774,14 @@ fn step(
             row.as_ref(),
         )));
     }
+    // Doc 44 MW.2 (Q-44-14): nothing is asked for, paid or retried on a
+    // licence that can never be renewed; the holder is told why. Turning an
+    // open offer down still goes through.
+    if !sw.decline
+        && let Some(stop) = item.stop()
+    {
+        return Err(stopped(stop));
+    }
     let (selection, t, parameters) = if sw.request && !item.attempted() {
         (
             Selection::Due(licence, item.generation(), item.holder_generation()),
@@ -829,11 +860,20 @@ pub fn player_front_in(world: &World) -> Option<ContinuationHandle> {
 ///   frozen price, or `RENEW_DECLINING`.
 ///
 /// Every line prints AFTER the step, and only when it submitted; any other
-/// outcome is the uniform refusal.
+/// outcome is the uniform refusal, except a licence the Roll says can never
+/// be renewed (doc 44 MW.2, Q-44-14): `request` and `accept` then answer
+/// `RENEW_STOPPED` with the Registry's reason and submit nothing.
 fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     let (licence, kind) = parse_front(ctx.args.raw()).ok_or_else(unavailable)?;
     let shown = licence.get().to_string();
     let item = own(ctx, s, licence)?;
+    // Doc 44 MW.2 (Q-44-14): the lasting refusal's own line, before any
+    // offer is shown or asked for (a decline still closes an open offer).
+    if !matches!(kind, FrontStep::Decline(_))
+        && let Some(stop) = item.stop()
+    {
+        return Err(stopped(stop));
+    }
     let price_minor = match kind {
         FrontStep::Request => {
             let row = item

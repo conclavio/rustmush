@@ -277,6 +277,15 @@ struct ConnEntry {
     bucket: Mutex<FloodBucket>,
 }
 
+/// A **bare connection** (doc 44 unit MW.24): a transport bound to a
+/// character so that it can be sent to and can make a request as them, with no
+/// session behind it. See [`SessionManager::attach_bare`].
+struct BareEntry {
+    handle: Arc<ConnectionHandle>,
+    character: CharKey,
+    bucket: Mutex<FloodBucket>,
+}
+
 /// The invariant the interface plan I12 narrative backlog leans on: a
 /// `Narrative` reaches the resume ring only through the M11-gated resolved-Char
 /// fan-out (`send_to_char` / `send_event_to_char`), never a session- or
@@ -347,6 +356,10 @@ pub struct SessionManager {
     clock: EnvelopeClock,
     sessions: DashMap<SessId, SessEntry>,
     conns: DashMap<ConnId, ConnEntry>,
+    /// Bare connections, apart from `conns` on purpose: nothing that walks a
+    /// session, counts connections, lists `WHO` or re-announces the roster
+    /// can find one. Held alone, never with another map.
+    bare: DashMap<ConnId, BareEntry>,
     by_char: DashMap<CharKey, SessId>,
     /// Characters whose input currently bypasses the flood throttle (the
     /// world task marks actors sitting in an input context — multi-line
@@ -394,6 +407,7 @@ impl SessionManager {
             clock: Arc::new(clock),
             sessions: DashMap::new(),
             conns: DashMap::new(),
+            bare: DashMap::new(),
             by_char: DashMap::new(),
             flood_exempt: DashMap::new(),
             next_sess: AtomicU64::new(1),
@@ -553,6 +567,96 @@ impl SessionManager {
             },
         );
         sess
+    }
+
+    // ---- bare connections (doc 44 unit MW.24) ---------------------------
+
+    /// Register a **bare connection**: one bound to `character` and to no
+    /// session. It can be sent to by its id
+    /// ([`send_to_conn`](Self::send_to_conn)), it has a flood bucket, and
+    /// [`character_of_conn`](Self::character_of_conn) answers for it. That is
+    /// all. It creates no session and joins none; it does not revive a
+    /// linkdead session or move its epoch; it receives nothing addressed to
+    /// the character, to a session or to everyone; it is in no
+    /// [`who`](Self::who) row, no [`conns_of_session`](Self::conns_of_session)
+    /// and not in [`connection_count`](Self::connection_count); and its end
+    /// ([`detach_bare`](Self::detach_bare)) leaves nothing linkdead.
+    ///
+    /// The SSH `mind` exec is the one caller: it must run one request as a
+    /// character without logging them in, and without touching the grace of a
+    /// player whose link is down.
+    ///
+    /// Returns `false`, registering nothing, when the id is already attached
+    /// (bare or not).
+    pub fn attach_bare(&self, conn: ConnectionHandle, character: CharKey) -> bool {
+        let conn_id = conn.id;
+        if self.conns.contains_key(&conn_id) {
+            tracing::error!(conn = conn_id.0, "attach_bare: duplicate connection id");
+            return false;
+        }
+        let bucket = Mutex::new(FloodBucket::new(
+            self.config.flood_rate,
+            self.config.flood_burst,
+            conn.connected_at,
+        ));
+        match self.bare.entry(conn_id) {
+            Entry::Occupied(_) => {
+                tracing::error!(conn = conn_id.0, "attach_bare: duplicate connection id");
+                false
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(BareEntry {
+                    handle: Arc::new(conn),
+                    character,
+                    bucket,
+                });
+                true
+            }
+        }
+    }
+
+    /// Forget a bare connection, returning the character it was bound to.
+    /// `None` when `conn` is not one. No session is touched: dropping the
+    /// handle closes the transport's queue, and that is the whole of it.
+    pub fn detach_bare(&self, conn: ConnId) -> Option<CharKey> {
+        self.bare.remove(&conn).map(|(_, entry)| entry.character)
+    }
+
+    /// Every bare connection and its character, in id order. For the one
+    /// reader that must name them to a restarted server, which
+    /// [`who`](Self::who) cannot do.
+    #[must_use]
+    pub fn bare_conns(&self) -> Vec<(ConnId, CharKey)> {
+        let mut conns: Vec<(ConnId, CharKey)> = self
+            .bare
+            .iter()
+            .map(|entry| (*entry.key(), entry.character))
+            .collect();
+        conns.sort_unstable_by_key(|(conn, _)| *conn);
+        conns
+    }
+
+    /// Send to a bare connection. Its sink carries no session to stamp a
+    /// sequence from, so an envelope sink gets sequence 0, which no resume
+    /// reads (a bare connection has no ring to resume).
+    fn send_to_bare(&self, conn: ConnId, ev: Arc<OutputEvent>) -> SendToConn {
+        let Some(entry) = self.bare.get(&conn) else {
+            return SendToConn::Unknown;
+        };
+        let sent = if entry.handle.uses_envelopes() {
+            entry.handle.try_send_envelope(Arc::new(Envelope::new(
+                0,
+                (self.clock)(),
+                (*ev).clone(),
+            )))
+        } else {
+            entry.handle.try_send(ev)
+        };
+        if sent {
+            SendToConn::Delivered
+        } else {
+            SendToConn::Dropped
+        }
     }
 
     /// Detach a connection "now". See [`SessionManager::detach_at`].
@@ -791,7 +895,7 @@ impl SessionManager {
     /// seq gap this leaves in the ring is harmless.
     pub fn send_to_conn(&self, conn: ConnId, ev: Arc<OutputEvent>) -> SendToConn {
         let Some(e) = self.conns.get(&conn) else {
-            return SendToConn::Unknown;
+            return self.send_to_bare(conn, ev);
         };
         if !e.handle.uses_envelopes() {
             return if e.handle.try_send(ev) {
@@ -829,7 +933,8 @@ impl SessionManager {
         ev: Arc<OutputEvent>,
     ) -> SendToConn {
         let Some(entry) = self.conns.get(&conn) else {
-            return SendToConn::Unknown;
+            // A bare connection has no session to retain a receipt in.
+            return self.send_to_bare(conn, ev);
         };
         if !entry.handle.is_structured() {
             drop(entry);
@@ -1183,7 +1288,10 @@ impl SessionManager {
     /// so the strict bucket is testable with a manual clock like
     /// [`check_input_at`](Self::check_input_at).
     pub fn check_query_flood_at(&self, conn: ConnId, now: Instant) -> FloodVerdict {
-        match self.conns.get(&conn) {
+        if let Some(e) = self.conns.get(&conn) {
+            return locked(&e.bucket, "flood bucket").check(now);
+        }
+        match self.bare.get(&conn) {
             Some(e) => locked(&e.bucket, "flood bucket").check(now),
             None => FloodVerdict::Ok,
         }
@@ -1269,6 +1377,18 @@ impl SessionManager {
         self.conns.get(&conn).map(|e| e.sess)
     }
 
+    /// The character a connection is bound to: its session's, or a bare
+    /// connection's own ([`attach_bare`](Self::attach_bare)), which has no
+    /// session and so no [`session_of_conn`](Self::session_of_conn).
+    pub fn character_of_conn(&self, conn: ConnId) -> Option<CharKey> {
+        // One map at a time (see the struct docs).
+        let sess = self.conns.get(&conn).map(|e| e.sess);
+        match sess {
+            Some(sess) => self.character_of(sess),
+            None => self.bare.get(&conn).map(|e| e.character),
+        }
+    }
+
     /// The live (or linkdead) session for a character.
     pub fn session_of_char(&self, character: CharKey) -> Option<SessId> {
         self.by_char.get(&character).map(|r| *r)
@@ -1279,9 +1399,12 @@ impl SessionManager {
         self.sessions.get(&sess).map(|s| s.character)
     }
 
-    /// The shared handle for a connection.
+    /// The shared handle for a connection, bare ones included.
     pub fn conn_handle(&self, conn: ConnId) -> Option<Arc<ConnectionHandle>> {
-        self.conns.get(&conn).map(|e| Arc::clone(&e.handle))
+        if let Some(e) = self.conns.get(&conn) {
+            return Some(Arc::clone(&e.handle));
+        }
+        self.bare.get(&conn).map(|e| Arc::clone(&e.handle))
     }
 
     /// The live connection handles attached to a session, in attach order;
@@ -1327,7 +1450,8 @@ impl SessionManager {
         }
     }
 
-    /// Number of attached connections.
+    /// Number of attached connections. A bare connection
+    /// ([`attach_bare`](Self::attach_bare)) is not one.
     pub fn connection_count(&self) -> usize {
         self.conns.len()
     }

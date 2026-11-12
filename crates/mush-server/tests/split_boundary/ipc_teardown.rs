@@ -147,6 +147,17 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
     // Attach a connection playing God, then stop reading. A paced stream of
     // large replies fills the kernel send buffer without racing to overflow
     // the separate bounded frame queue (which is a different teardown path).
+    // The gateway's half of the handshake: a link with no Hello is a version-12
+    // peer, below the window since the bump to 14 (doc 44 unit MW.24).
+    write_frame(
+        &mut writer,
+        &ToServer::Hello {
+            proto: mush_ipc::IPC_VERSION,
+            min_proto: mush_ipc::IPC_MIN_PROTO,
+        },
+    )
+    .await
+    .expect("send Hello");
     write_frame(
         &mut writer,
         &ToServer::Inbound(WireInbound::ConnUp {

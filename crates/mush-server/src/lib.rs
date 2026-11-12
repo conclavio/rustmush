@@ -2364,7 +2364,11 @@ pub async fn reader_loop(
 fn is_lifecycle(inbound: &Inbound) -> bool {
     matches!(
         inbound,
-        Inbound::ConnUp { .. } | Inbound::ConnDown { .. } | Inbound::SessionGone { .. }
+        Inbound::ConnUp { .. }
+            | Inbound::ConnDown { .. }
+            | Inbound::SessionGone { .. }
+            | Inbound::BareUp { .. }
+            | Inbound::BareDown { .. }
     )
 }
 
@@ -2410,6 +2414,29 @@ fn bookkeep_inbound(link: &Link, inbound: &Inbound) -> bool {
             link.clear_linkdead(*actor);
             true
         }
+        // A bare connection (doc 44 unit MW.24) is owned by its link like any
+        // other, so its reply is routed and a duplicate id is refused; it
+        // touches no `SessionGone` debt in either direction.
+        Inbound::BareUp { conn, actor } => match link.claim_bare(*conn, *actor) {
+            Claim::Owned => true,
+            Claim::Duplicate { owner } => {
+                refuse_duplicate(link, *conn, *actor, owner);
+                false
+            }
+        },
+        Inbound::BareDown { conn, actor } => match link.release(*conn) {
+            Release::OtherLink(owner) => {
+                tracing::warn!(
+                    conn,
+                    %actor,
+                    link = link.id(),
+                    owner_link = owner,
+                    "BareDown for a connection another link owns; dropped"
+                );
+                false
+            }
+            Release::Owned | Release::Unknown => true,
+        },
         _ => true,
     }
 }
@@ -3468,9 +3495,16 @@ mod writer_tests {
             .expect("one step back, inside the window");
         assert_eq!(link.get(), Some(IPC_MIN_PROTO));
 
+        // The bootstrap rule has run out (doc 33 §4.1): a first frame that is
+        // not a Hello is a 12 peer, and since the bump to 14 (doc 44 unit
+        // MW.24) 12 is below the window, so such a link is refused like any
+        // other outside it.
+        assert_eq!(IPC_PRE_HELLO_VERSION, IPC_MIN_PROTO - 1);
         let link = LinkVersion::unknown();
-        admit_gateway(&link, IPC_PRE_HELLO_VERSION, None).expect("the bootstrap rule");
-        assert_eq!(link.get(), Some(IPC_PRE_HELLO_VERSION));
+        let err = admit_gateway(&link, IPC_PRE_HELLO_VERSION, None)
+            .expect_err("a gateway with no Hello is below the window");
+        assert!(err.to_string().contains(IPC_VERSION_SKEW_MARKER), "{err}");
+        assert_eq!(link.get(), None);
 
         for outside in [IPC_VERSION + 1, IPC_MIN_PROTO - 1] {
             let link = LinkVersion::unknown();

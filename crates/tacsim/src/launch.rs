@@ -162,10 +162,11 @@ impl LaunchComposition {
             // The paid-resale writer inherits `CopratesAdmission` from
             // `with_house_minds_and_admission` above (C1a), so a resold
             // Coprates Pin's buyer needs Republic membership, as a new
-            // buyer does. IC claims, hull cover and paid Follow are not
-            // composed (17g §4). `Initialize` composes none of this, because
-            // every owner here is Active-only, and a format-1 deployment
-            // composes exactly the House chain it did before C1.
+            // buyer does. Hull cover and paid Follow are not composed (17g
+            // §4); IC claims are, below (doc 44 MW.0). `Initialize` composes
+            // none of this, because every owner here is Active-only, and a
+            // format-1 deployment composes the House chain it did before C1
+            // and the claim path.
             if let Some(p) = market {
                 commerce = commerce
                     .with_original_source_purchases(p.quote)?
@@ -201,6 +202,20 @@ impl LaunchComposition {
                     .with_author_withdrawal()?
                     .with_owner_parent_qualification()?;
             }
+            // Doc 44 MW.0 (Q-44-39; doc 23 cut S.4b-2, D-23-11, D-23-21): the IC mind
+            // claims, opened in a rig's bay, composed by every Active launch. It is here,
+            // in the one function the production boot and every test rig prepare a launch
+            // through, so no world composes a launch without it: a licensed
+            // `+tv/<n> launch mind=filed:<n> go` opens its claim before the ramp, the
+            // field admits the claim's own seal, the licence's seat is counted and a
+            // pending resale refuses the Open. It is composed last, after the House chain
+            // and the market, the order the claim stories' rig proved (S.4b-2), with no
+            // fixed base: a bay is the hangar. Doc 17g §4 deferred it for want of an IC
+            // host; the surface excursion and the IC field are that host (doc 23 §17).
+            // It ships with doc 23 cut S.4c (MW.22): the claim's Open asks the hull's
+            // authority, and without the lease and office arms every chartered rig and
+            // every House hull would lose its filed mind.
+            commerce = commerce.with_ic_minds_in_bays(Vec::new())?;
         }
         let venue = deployment.venue.clone();
         let registration = Registration::new(deployment, admission)?;
@@ -211,17 +226,6 @@ impl LaunchComposition {
             registration,
             venue,
         })
-    }
-    /// **The launch with IC mind claims opened in a rig's bay** (doc 23 cut S.4b-2, D-23-11,
-    /// D-23-21): the Active commerce composed `with_ic_minds_in_bays` and no fixed base, so a
-    /// licensed `+tv/<n> launch mind=filed:<n> go` opens the claim before the ramp.
-    ///
-    /// # Errors
-    ///
-    /// The commerce is not Active, or already composes IC custody.
-    pub fn with_ic_minds_in_bays(mut self) -> Result<Self, ModError> {
-        self.commerce = self.commerce.with_ic_minds_in_bays(Vec::new())?;
-        Ok(self)
     }
     pub fn commerce(&self) -> &crate::composition::mind_commerce::MindCommerce {
         &self.commerce

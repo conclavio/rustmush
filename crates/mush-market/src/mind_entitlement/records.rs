@@ -271,6 +271,20 @@ impl EntitlementListingV1 {
     pub const fn publication(&self) -> CommitToken {
         self.publication
     }
+    /// Doc 44 MW.2: what this listing froze of its seller's standing, as the
+    /// Roll's `sellable` read takes it (`mind_commands::ListingSource`).
+    pub(crate) const fn listed_subject(&self) -> mush_roll::commerce::entitlement::ListedSubject {
+        mush_roll::commerce::entitlement::ListedSubject {
+            seller: self.subject.seller,
+            charter: self.subject.charter,
+            title_revision: self.subject.title_revision,
+            filed: self.subject.filed,
+            owner_licence: self.subject.owner_licence,
+            owner_term: self.subject.owner_term,
+            owner_window: self.subject.owner_window,
+            parent: self.subject.parent,
+        }
+    }
     /// Doc 17h §3 M8f: the listed revision and its rating, for the GOD-only
     /// procurement read (`mind_commands::procurement`); never a player's.
     pub(crate) const fn procurement_subject(&self) -> (RevisionIdentity, RatingRef) {

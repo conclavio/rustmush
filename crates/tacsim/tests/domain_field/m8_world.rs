@@ -328,28 +328,15 @@ fn deployment(rig: &mut Rig, hardware: HardwareCoordinates) -> (LaunchDeployment
     (deployment, operator)
 }
 
-/// **The launch prepared from `deployment` for each boot** (`excursions::LaunchFactory`).
+/// **The launch prepared from `deployment` for each boot** (`excursions::LaunchFactory`): the
+/// production composition, `LaunchComposition::prepare` and nothing after it, which is what
+/// `mush_server::boot` calls (doc 44 MW.0). An Active launch composes the IC mind claims in the
+/// rigs' bays itself, so every M8 world is a claims world.
 pub(crate) fn factory(deployment: &LaunchDeployment) -> crate::excursions::LaunchFactory {
-    factory_for(deployment, false)
-}
-
-/// [`factory`], with `claims` composing the IC mind claims in a rig's bay (doc 23 cut S.4b-2) once
-/// the launch is Active.
-pub(crate) fn factory_for(
-    deployment: &LaunchDeployment,
-    claims: bool,
-) -> crate::excursions::LaunchFactory {
     let deployment = deployment.clone();
     Arc::new(move || {
-        let launch = LaunchComposition::prepare(&launch_layer(), deployment.clone())
-            .expect("the launch composition prepares");
-        if claims && deployment.mode == LaunchMode::Active {
-            launch
-                .with_ic_minds_in_bays()
-                .expect("the IC claims compose in the bays")
-        } else {
-            launch
-        }
+        LaunchComposition::prepare(&launch_layer(), deployment.clone())
+            .expect("the launch composition prepares")
     })
 }
 
@@ -539,25 +526,18 @@ fn procuring_house(
 /// that House's procurement policy in the deployment ([`procuring_house`]) and titling it that
 /// many chartered hulls, before the launch boots.
 pub(crate) fn m8_world_with(procurement: Option<(&str, i64, usize)>) -> M8World {
-    m8_world_in(procurement, false, ("ahuna", "ahuna_port"), 1)
+    m8_world_in(procurement, ("ahuna", "ahuna_port"), 1)
 }
 
-/// **[`m8_world`] with the IC mind claims composed in the rigs' bays** (doc 23 cut S.4b-2): the
-/// Active launch `with_ic_minds_in_bays`, so a filed mind's `go` opens a claim.
-pub(crate) fn m8_world_with_claims() -> M8World {
-    m8_world_in(None, true, ("ahuna", "ahuna_port"), 1)
-}
-
-/// **The claims world on `site`, with `n_rigs` rigs** (doc 23 cut S.4b-3): [`m8_world_with_claims`]
-/// on any site (`(venue, entry)`). The field runs at the stock tempo: a tuned layer would also run
-/// the Registry's rating arenas at it, and a reboot to retune after the purchase loses it.
+/// **The M8 world on `site`, with `n_rigs` rigs** (doc 23 cut S.4b-3): [`m8_world`] on any site
+/// (`(venue, entry)`). The field runs at the stock tempo: a tuned layer would also run the
+/// Registry's rating arenas at it, and a reboot to retune after the purchase loses it.
 pub(crate) fn m8_world_field(site: (&str, &str), n_rigs: usize) -> M8World {
-    m8_world_in(None, true, site, n_rigs)
+    m8_world_in(None, site, n_rigs)
 }
 
 fn m8_world_in(
     procurement: Option<(&str, i64, usize)>,
-    claims: bool,
     site: (&str, &str),
     n_rigs: usize,
 ) -> M8World {
@@ -582,6 +562,12 @@ fn m8_world_in(
     }
     rig.launch = Some(factory(&deployment));
     let rig = reboot_with(rig, &[pilot]);
+    // Doc 44 MW.0: the claim path is the Active launch's alone. The `Initialize` boot, the
+    // runbook's first, composes none of it (every claim owner is Active-only).
+    assert!(
+        !tacsim::ic_claim_path_composed(rig.tw.world()),
+        "an Initialize launch composes no claim path"
+    );
     let mut world = M8World {
         rig,
         deployment: deployment.clone(),
@@ -623,7 +609,7 @@ fn m8_world_in(
     }
     deployment.mode = LaunchMode::Active;
     world.deployment = deployment.clone();
-    world.rig.launch = Some(factory_for(&deployment, claims));
+    world.rig.launch = Some(factory(&deployment));
     let M8World {
         rig,
         deployment,
@@ -962,7 +948,124 @@ fn m8g_the_combined_world_boots_active() {
     ));
     let out = run(&mut world.rig.tw, GOD, "@mind/launch");
     assert!(out.contains("Named launch"), "{out}");
+    // Doc 44 MW.0: the production composition composes the IC mind claims once it is Active;
+    // no rig asks for them. (The world's own `Initialize` boot asserted it composes none.)
+    assert!(
+        tacsim::ic_claim_path_composed(world.rig.tw.world()),
+        "an Active launch composes the claim path"
+    );
     let _ = (world.deployment.houses.coprates.treasury, world.serial);
+}
+
+/// The organisation `name`'s root scope.
+fn root_scope(rig: &Rig, name: &str) -> OrgScopeId {
+    let org = org(rig, name);
+    rig.tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("the Org owner")
+        .state()
+        .org(org)
+        .expect("the organisation")
+        .root_scope
+}
+
+/// **Title `tv` to the House `house`** on its root scope, by staff: the title's claims released
+/// first (a leased rig's lease claim among them), as [`title_hulls_to`] does for a hull. The rig
+/// and its lessee's record stay where they are; only the title moves.
+pub(crate) fn title_rig_to_house(world: &mut M8World, tv: ObjId, house: &str) {
+    let root = root_scope(&world.rig, house);
+    let claims = economy(&world.rig.tw)
+        .snapshot()
+        .asset(tv)
+        .map_or(0, |a| a.encumbrances.len());
+    for k in (1..=claims).rev() {
+        god(&mut world.rig, &format!("@asset/release #{}={k}", tv.0));
+    }
+    god(
+        &mut world.rig,
+        &format!("@asset/transfer #{}=org:{house} scope={}", tv.0, root.0),
+    );
+    assert_eq!(
+        title_of(world, tv).title_owner,
+        PrincipalId::Organization(org(&world.rig, house)),
+        "the rig is the House's"
+    );
+}
+
+/// **Doc 23 cut S.4c (D-23-24; doc 44 MW.22): the hull rule over the world's real records**
+/// (fast, not ignored). The rule the Roll's reader captures and the dispatch refuses by
+/// (`mush_roll::commerce::ic_claims::hull_authority`), asked of the production composition's
+/// own rig as its title changes hands:
+/// 1. the pilot's rig as `+tv/lease go` left it, titled to Occator under its lease: the
+///    pilot, its lessee, is admitted by the lease; a stranger is refused, the refusal naming
+///    Occator;
+/// 2. staff release the title's claims and title the rig to the Meridiani House: the lease's
+///    contract is still Active but the title no longer carries its claim, and the pilot holds
+///    no office, so the pilot is refused, the refusal naming the House;
+/// 3. the pilot is granted `roll.holder.org` on the House's root scope, the grant its licence
+///    use asks: admitted by the office, on the title's scope;
+/// 4. staff title the rig to the pilot: admitted by the title, and nobody else is.
+#[test]
+fn mw22_the_hull_rule_reads_a_real_lease_a_house_title_and_a_personal_title() {
+    use mush_roll::commerce::ic_claims::{HullAuthority, HullRefusal, hull_authority};
+    let mut world = m8_world();
+    let (pilot, tv) = (world.pilot, world.tvs[0]);
+    let stranger = world.rig.tw.spawn_player("Stranger");
+    let ask = |world: &M8World, who: ObjId| {
+        hull_authority(world.rig.tw.world(), tv, who).map(|admitted| admitted.authority)
+    };
+    // 1. The lease.
+    let occator = title_of(&world, tv).title_owner;
+    assert!(
+        matches!(occator, PrincipalId::Organization(_)),
+        "a leased rig is titled to its lessor's organisation: {occator:?}"
+    );
+    assert!(
+        matches!(ask(&world, pilot), Ok(HullAuthority::Lease { ref lessor, .. }) if *lessor == occator),
+        "the lessee flies the leased rig: {:?}",
+        ask(&world, pilot)
+    );
+    assert_eq!(
+        ask(&world, stranger),
+        Err(HullRefusal::Anothers {
+            owner: occator.clone()
+        })
+    );
+    // 2. The House's hull, and no office.
+    title_rig_to_house(&mut world, tv, "Meridiani");
+    let house = org(&world.rig, "Meridiani");
+    let root = root_scope(&world.rig, "Meridiani");
+    let refused = Err(HullRefusal::Anothers {
+        owner: PrincipalId::Organization(house),
+    });
+    assert_eq!(ask(&world, pilot), refused);
+    // 3. The office.
+    god(
+        &mut world.rig,
+        &format!("@org/grant #{}=Meridiani roll.holder.org", pilot.0),
+    );
+    assert_eq!(
+        ask(&world, pilot),
+        Ok(HullAuthority::Office {
+            org: house,
+            scope: Some(root),
+        })
+    );
+    assert_eq!(ask(&world, stranger), refused);
+    // 4. The pilot's own title.
+    god(
+        &mut world.rig,
+        &format!("@asset/transfer #{}=#{}", tv.0, pilot.0),
+    );
+    assert_eq!(ask(&world, pilot), Ok(HullAuthority::Title));
+    assert_eq!(
+        ask(&world, stranger),
+        Err(HullRefusal::Anothers {
+            owner: PrincipalId::Object(pilot)
+        })
+    );
+    crate::excursions::no_refused_writes(&world.rig.tw);
 }
 
 /// **The procuring world boots** (fast, not ignored): Meridiani's procurement policy, its agent
@@ -1081,9 +1184,20 @@ fn census(world: &M8World, prefix: &str) -> String {
 }
 
 /// Launch rig 1 with `line`, finish it, and return what the operator heard at the finish.
+///
+/// Doc 44 MW.0: the launch composes the claim path, so a filed mind that will fly opens its
+/// claim at `go` and the launch is queued behind it (doc 23 D-23-21): the surface tick's claim
+/// arm opens the claim in the bay and starts the launch, which is pumped here. Any other launch
+/// (no mind, a draft, a licence fallen to the ROM) starts its act at `go`, as before.
 pub(crate) fn launch(world: &mut M8World, line: &str) -> String {
     let (pilot, tv) = (world.pilot, world.tvs[0]);
     let _ = crate::excursions::act_go(&mut world.rig, pilot, line);
+    for _ in 0..12 {
+        if crate::excursions::record_of(&mut world.rig.tw, tv).is_some_and(|r| r.act.is_some()) {
+            break;
+        }
+        fires(world, 1);
+    }
     let act = crate::excursions::record_of(&mut world.rig.tw, tv).and_then(|record| record.act);
     eprintln!(
         "M8G_STORY launch {line}: act due {:?}, ic now {}",
@@ -1093,16 +1207,39 @@ pub(crate) fn launch(world: &mut M8World, line: &str) -> String {
     crate::excursions::finish(&mut world.rig, tv, pilot)
 }
 
-/// Recover rig 1 into the bay.
+/// Recover rig 1 into the bay; where it flew under a claim (doc 44 MW.0), the claim arm lands
+/// the Close the recover owes, so the rig's next launch is not held by a claim still closing.
 pub(crate) fn recover(world: &mut M8World) {
+    use tacsim::surface::excursion::ClaimCursor;
     let (pilot, tv) = (world.pilot, world.tvs[0]);
     let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/1 recover go");
     let _ = crate::excursions::finish(&mut world.rig, tv, pilot);
     assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
+    let owed = crate::excursions::record_of(&mut world.rig.tw, tv)
+        .and_then(|record| record.claim)
+        .and_then(|claim| match *claim {
+            ClaimCursor::Closing { open, .. } => Some(open),
+            _ => None,
+        });
+    if let Some(open) = owed {
+        for _ in 0..12 {
+            if tacsim::ic_claim_closed(world.rig.tw.world(), open).is_some() {
+                break;
+            }
+            fires(world, 1);
+        }
+        assert!(
+            tacsim::ic_claim_closed(world.rig.tw.world(), open).is_some(),
+            "the claim's Close landed"
+        );
+    }
 }
 
 /// **Doc 17h cut M8g G2 — M8e's owed tier-2 stories, over the combined world** (doc 23 §10 tier
-/// 2 as restated by Q-M8-1; the M8e ledger's six owed world tests). The pilot's leased rig,
+/// 2 as restated by Q-M8-1; the M8e ledger's six owed world tests). **Since doc 44 MW.0 the
+/// world composes the claim path**, so a filed mind that flies opens a claim (the seal on the
+/// open line is the claim's own), and since MW.22 (doc 23 cut S.4c) the pilot's leased rig is
+/// admitted by its lease. The pilot's leased rig,
 /// staff-bound to the governed Class II rig root (the named Houses' lines rate Class II, and a
 /// governed core refuses a mind over its class, D-UM-17), flies:
 /// 1. its own paid House Pin (`mind=filed:<paid>`): the open epoch seals the filed mind with
@@ -1114,7 +1251,7 @@ pub(crate) fn recover(world: &mut M8World) {
 ///    principal the pilot;
 /// 3. the paid licence resold to another player: the seller's launch is refused as a licence
 ///    not held, the rig left in the bay (a pending transfer, D-UM-40's sentence naming the
-///    mind, needs an open paid claim on the licence, S.4b's);
+///    mind, needs an open paid claim on the licence: the S.4b-2 story's step 3);
 /// 4. the paid licence past its grace (the IC clock past the term and its three days): the ROM
 ///    is sealed, the line names the licence `lapsed`, the operator alone hears the clause in the
 ///    launch's end, and the ring takes no mark for the fall.
@@ -1122,6 +1259,11 @@ pub(crate) fn recover(world: &mut M8World) {
 #[ignore = "M8 combined-world story: three genuine Registry ratings; the CI dispatch runs it"]
 async fn m8g_story_tier2_held_minds_seal_aboard() {
     use tacsim::minds::licence_state::SealLicenceState;
+    // The claim owners' refusal reasons, which the player never hears (`ic_claim` at debug).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
     let mut world = m8_world();
     let listed = rate_and_list(&mut world).await;
     let (coprates, owner_licence, listing) = listed[0].clone();
@@ -1211,8 +1353,8 @@ async fn m8g_story_tier2_held_minds_seal_aboard() {
 
     // 3. The paid licence resold: the seller holds it no more, and its launch is refused as a
     //    licence not held. (A pending transfer, a Funded resale head, needs an open paid claim
-    //    on the licence, which S.4b's claim Open brings; with none the Accept transfers outright,
-    //    so MIND_PENDING's refusal is owed to S.4b.)
+    //    on the licence; the rig is home and its claim closed, so the Accept transfers outright.
+    //    MIND_PENDING's refusal is the S.4b-2 story's step 3.)
     let buyer = world.rig.tw.spawn_player("Resale buyer");
     crate::excursions::with_account(&mut world.rig, buyer, "ResaleBuyer", 9_002);
     let faucet = account(&world.rig, &system("hardware.fixture"), None);
@@ -1393,7 +1535,7 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
         tracing_subscriber::fmt()
             .with_ansi(false)
             .with_env_filter(tracing_subscriber::EnvFilter::new(
-                "tacsim::procurement=info",
+                "tacsim::procurement=info,ic_claim=debug",
             ))
             .with_writer(std::io::stderr)
             .finish(),
@@ -2470,61 +2612,27 @@ async fn rate_and_publish(world: &mut M8World) -> Vec<(&'static str, String)> {
     published
 }
 
-/// **Doc 23 cut S.4b-2: a licensed rig's claim opens in its bay and closes at home** (§17.10;
-/// D-23-13, D-23-14, D-23-21, D-23-22, D-23-23 step 1). The combined world with the IC claims
-/// composed in the bays ([`m8_world_with_claims`]); the pilot's paid House Pin over the rig bound
-/// to the governed Class II root. Through the production command paths:
-/// 1. the leased rig (titled to Occator) is refused `mind=` at `go` with D-23-22's sentence,
-///    nothing filed;
-/// 2. the rig titled to the pilot (staff's buy-out stand-in, `on_leased_rig`): `go` lands, the
-///    record holds `Opening` and the launch queued behind it, the rig in its bay and no act;
-/// 3. the surface tick's claim arm opens the claim in the bay (the book's active row, the pilot
-///    its dispatcher), then starts the queued launch: the cursor reads `Open`, and the launch's
-///    finish opens the epoch with the claim's own seal (`seal_digest` equal by construction, the
-///    licence the paid Pin's, the seal's sortie the epoch's IC id);
-/// 4. `+tv/1 recover go` closes the epoch `ReturnedToBase` and owes the Close; the arm lands it
-///    (the book's row closed, no active claim), and a plain launch afterwards is not held by the
-///    spent cursor.
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
-async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
+/// **`go` a licensed launch of rig `n` and fly it out** (doc 23 cut S.4b-2's steps 2 and 3): the
+/// pilot's `line` lands, the record holds `Opening` under `licence` with the launch queued
+/// behind it and the rig in its bay; the surface tick's claim arm opens the claim in the bay
+/// (the book's active row, the pilot its dispatcher) and starts the queued launch; the launch
+/// finishes. Returns the claim's open token.
+fn claimed_launch(
+    world: &mut M8World,
+    n: usize,
+    line: &str,
+    licence: u64,
+) -> mush_core::CommitToken {
     use tacsim::surface::excursion::ClaimCursor;
-    // The owners' refusal reasons, which the player never hears (`ic_claim` at debug).
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,ic_claim=debug")
-        .with_test_writer()
-        .try_init();
-    let mut world = m8_world_with_claims();
-    let (_, _, listing) = rate_and_list_coprates(&mut world).await;
-    let paid = buy(&mut world, listing);
-    let (pilot, tv) = (world.pilot, world.tvs[0]);
-    crate::ic_sortie_surface::fit(
-        &mut world.rig,
-        tv,
-        tacsim::definitions::core_replacement::RIG_II,
-    );
-    let word = format!("+tv/1 launch mind=filed:{} go", paid.get());
-    // 1. D-23-22: a leased hull flies no licensed mind where claims open.
-    let refused = crate::ic_sortie_surface::start_refusal(&mut world.rig, pilot, &word)
-        .expect("the leased rig is refused");
-    assert!(
-        refused.contains("a licensed mind flies a hull titled to you"),
-        "{refused}"
-    );
-    assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
-    assert!(
-        crate::excursions::record_of(&mut world.rig.tw, tv)
-            .is_none_or(|record| record.claim.is_none())
-    );
-    // 2. Titled to the pilot: the claim is filed and the launch queued behind it.
-    let _ = on_leased_rig(&mut world, |_, _, tv| tv);
-    let (out, queued) = crate::excursions::command(&mut world.rig, pilot, &word);
+    let (pilot, tv) = (world.pilot, world.tvs[n - 1]);
+    let (out, queued) = crate::excursions::command(&mut world.rig, pilot, line);
     assert_eq!(queued.len(), 1, "one start: {out}");
-    crate::excursions::land(&mut world.rig, &queued[0]).expect("the go lands");
+    crate::excursions::land(&mut world.rig, &queued[0])
+        .unwrap_or_else(|refused| panic!("{line}: the go lands: {refused}"));
     let record = crate::excursions::record_of(&mut world.rig.tw, tv).expect("the record");
     assert!(
-        matches!(record.claim.as_deref(), Some(ClaimCursor::Opening { operator, licence, .. })
-            if *operator == pilot && *licence == paid.get()),
+        matches!(record.claim.as_deref(), Some(ClaimCursor::Opening { operator, licence: l, .. })
+            if *operator == pilot && *l == licence),
         "{:?}",
         record.claim
     );
@@ -2536,10 +2644,9 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
             .is_some_and(|queued| queued.launch.is_some())
     );
     assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
-    // 3. The claim arm: the Open in the bay, then the queued launch.
     let mut open = None;
     for _ in 0..12 {
-        fires(&mut world, 1);
+        fires(world, 1);
         if let tacsim::IcClaimRead::Active {
             open: token,
             dispatcher,
@@ -2552,7 +2659,12 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
             break;
         }
     }
-    let open = open.expect("the claim opened in the bay");
+    let Some(open) = open else {
+        panic!(
+            "{line}: the claim did not open in the bay: {:?}",
+            crate::excursions::record_of(&mut world.rig.tw, tv).and_then(|r| r.claim)
+        )
+    };
     let record = crate::excursions::record_of(&mut world.rig.tw, tv).expect("the record");
     assert!(
         matches!(record.claim.as_deref(), Some(ClaimCursor::Open { open: o, .. }) if *o == open),
@@ -2560,30 +2672,18 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         record.claim
     );
     let _ = crate::excursions::finish(&mut world.rig, tv, pilot);
-    let facts = open_seal(&mut world, tv);
-    let seal = tacsim::ic_claim_seal(world.rig.tw.world(), open).expect("the claim's seal");
-    assert_eq!(
-        facts.seal_digest,
-        tacsim::surface::black_box::SealFacts::of(
-            &seal,
-            tacsim::minds::licence_state::SealLicenceState::Active
-        )
-        .seal_digest,
-        "one seal: the claim's"
-    );
-    assert_eq!(facts.licence.as_str(), paid.get().to_string());
-    let launch_ic = crate::excursions::record_of(&mut world.rig.tw, tv)
-        .and_then(|record| record.excursion)
-        .expect("the rig is out")
-        .id
-        .launch_ic;
-    assert_eq!(
-        seal.sortie,
-        tacsim::arena::mind::SortieId::ic(tv, launch_ic),
-        "the claim seals the epoch's own id"
-    );
-    // 4. Home: the epoch closes and the claim's Close lands.
-    recover(&mut world);
+    open
+}
+
+/// **Bring rig `n` home and land its claim's Close** (doc 23 cut S.4b-2's step 4): the recover
+/// closes the epoch and owes the Close; the claim arm lands it (the book's row closed, no
+/// active claim on the rig).
+fn claimed_recover(world: &mut M8World, n: usize, open: mush_core::CommitToken) {
+    use tacsim::surface::excursion::ClaimCursor;
+    let (pilot, tv) = (world.pilot, world.tvs[n - 1]);
+    let _ = crate::excursions::act_go(&mut world.rig, pilot, &format!("+tv/{n} recover go"));
+    let _ = crate::excursions::finish(&mut world.rig, tv, pilot);
+    assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
     let record = crate::excursions::record_of(&mut world.rig.tw, tv).expect("the record");
     assert!(
         matches!(record.claim.as_deref(), Some(ClaimCursor::Closing { open: o, .. }) if *o == open),
@@ -2591,7 +2691,7 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         record.claim
     );
     for _ in 0..12 {
-        fires(&mut world, 1);
+        fires(world, 1);
         if tacsim::ic_claim_closed(world.rig.tw.world(), open).is_some() {
             break;
         }
@@ -2604,11 +2704,265 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
         tacsim::ic_claim_of(world.rig.tw.world(), tv),
         tacsim::IcClaimRead::None
     );
-    let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/1 launch go");
+}
+
+/// **Doc 23 cuts S.4b-2 and S.4c; doc 44 MW.0 and MW.22: on the production composition, a
+/// licensed rig's claim opens in its bay and closes at home, whoever's hull it is by right**
+/// (§17.10, §18; D-23-13, D-23-14, D-23-21, D-23-22, D-23-23 step 1, D-23-24). The combined
+/// world as the production boot composes it ([`m8_world_field`]: `LaunchComposition::prepare`
+/// and nothing after it), two rigs leased from Occator in the Dray-P's bay, both bound to the
+/// governed Class II root; one genuine rating; the pilot's paid one-seat House Pin and the
+/// Coprates House's own owner licence. Through the production command paths:
+/// 1. **a chartered pilot's leased rig** (titled to Occator, the pilot its lessee): `go` lands,
+///    the record holds `Opening` and the launch queued behind it, the rig in its bay and no act;
+///    the surface tick's claim arm opens the claim in the bay, then starts the queued launch;
+///    the launch's finish opens the epoch with the claim's own seal (`seal_digest` equal by
+///    construction, the licence the paid Pin's, the seal's sortie the epoch's IC id);
+/// 2. **the one seat** (D-23-16): the second leased rig's `go` under the same Pin is refused
+///    while the first is out, nothing filed;
+/// 3. **a resale pending** (D-UM-40): the pilot offers the Pin to a buyer, who accepts; with a
+///    claim open under it the acceptance is escrowed, not settled, and the second rig's `go`
+///    under the Pin is refused by the pending sentence, naming the mind;
+/// 4. `+tv/1 recover go` closes the epoch `ReturnedToBase` and owes the Close; the arm lands
+///    it (the book's row closed, no active claim);
+/// 5. **a hull the pilot has no authority over**: staff title the first rig to the Meridiani
+///    House. The pilot, granted to fly the Coprates House's licence, holds no office with
+///    Meridiani: the `go` is refused by D-23-22's sentence, naming the rig, nothing filed;
+/// 6. **a House's licence on a House's hull**: staff title the second rig to the Coprates
+///    House. The pilot's `go` under the House's owner licence (`org=Coprates`) opens the claim
+///    in the bay and launches; the open line names the House the holder with the pilot acting;
+///    the server restarts with that claim open and the claim history's audit admits it; the
+///    recover closes it, and a plain launch afterwards is not held by the spent cursor.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
+#[allow(clippy::too_many_lines)]
+async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
+    use mush_roll::commerce::ic_claims::{HullAuthority, hull_authority};
+    use tacsim::minds::licence_state::SealLicenceState;
+    // The owners' refusal reasons, which the player never hears (`ic_claim` at debug).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
+    let mut world = m8_world_field(("ahuna", "ahuna_port"), 2);
+    assert!(tacsim::ic_claim_path_composed(world.rig.tw.world()));
+    let (coprates, owner_licence, listing) = rate_and_list_coprates(&mut world).await;
+    let paid = buy(&mut world, listing);
+    let (pilot, tv, second) = (world.pilot, world.tvs[0], world.tvs[1]);
+    for rig_tv in [tv, second] {
+        crate::ic_sortie_surface::fit(
+            &mut world.rig,
+            rig_tv,
+            tacsim::definitions::core_replacement::RIG_II,
+        );
+    }
+    let pin = |n: usize| format!("+tv/{n} launch mind=filed:{} go", paid.get());
+    // A refused `go` files nothing: the rig is in its bay, the book holds no claim on it and
+    // its cursor owes no Open. (A rig home from an earlier claim keeps that claim's spent
+    // cursor until its next `go` replaces it.)
+    let nothing_filed = |world: &mut M8World, rig_tv: ObjId| {
+        use tacsim::surface::excursion::ClaimCursor;
+        assert!(crate::excursions::in_bay(&world.rig.tw, rig_tv, &world.row));
+        assert_eq!(
+            tacsim::ic_claim_of(world.rig.tw.world(), rig_tv),
+            tacsim::IcClaimRead::None,
+            "no claim on the rig"
+        );
+        let record = crate::excursions::record_of(&mut world.rig.tw, rig_tv);
+        assert!(
+            record.as_ref().is_none_or(|record| {
+                !matches!(record.claim.as_deref(), Some(ClaimCursor::Opening { .. }))
+                    && record.act.is_none()
+            }),
+            "nothing filed: {:?}",
+            record.map(|record| record.claim)
+        );
+    };
+
+    // 1. A chartered pilot's leased rig: the lease is the authority (doc 23 cut S.4c).
     assert!(
-        crate::excursions::record_of(&mut world.rig.tw, tv).is_some_and(|r| r.act.is_some()),
+        matches!(
+            hull_authority(world.rig.tw.world(), tv, pilot).map(|admitted| admitted.authority),
+            Ok(HullAuthority::Lease { .. })
+        ),
+        "the rig is the pilot's by lease, not by title"
+    );
+    let open = claimed_launch(&mut world, 1, &pin(1), paid.get());
+    let facts = open_seal(&mut world, tv);
+    let seal = tacsim::ic_claim_seal(world.rig.tw.world(), open).expect("the claim's seal");
+    assert_eq!(
+        facts.seal_digest,
+        tacsim::surface::black_box::SealFacts::of(&seal, SealLicenceState::Active).seal_digest,
+        "one seal: the claim's"
+    );
+    assert_eq!(facts.licence.as_str(), paid.get().to_string());
+    assert_eq!(facts.holder, Some(mush_economy::Holder::Character(pilot)));
+    let launch_ic = crate::excursions::record_of(&mut world.rig.tw, tv)
+        .and_then(|record| record.excursion)
+        .expect("the rig is out")
+        .id
+        .launch_ic;
+    assert_eq!(
+        seal.sortie,
+        tacsim::arena::mind::SortieId::ic(tv, launch_ic),
+        "the claim seals the epoch's own id"
+    );
+    eprintln!("M8G_STORY phase=s4c.leased event=complete");
+
+    // 2. D-23-16: the one-seat Pin's seat is held; the second leased rig is refused at `go`.
+    let refused = crate::ic_sortie_surface::start_refusal(&mut world.rig, pilot, &pin(2))
+        .expect("the second rig is refused");
+    assert!(
+        refused.contains(
+            &tacsim::surface::dispatch::MIND_SEATS_HELD
+                .replace("{licence}", &paid.get().to_string())
+                .replace("{held}", "1")
+                .replace("{seats}", "1")
+        ),
+        "{refused}"
+    );
+    nothing_filed(&mut world, second);
+    eprintln!("M8G_STORY phase=s4c.seat event=complete");
+
+    // 3. A resale pending: with the claim open under the Pin the buyer's acceptance is
+    //    escrowed (`ResaleStep::Fund`), and the Pin is not sealed aboard until it settles.
+    let buyer = world.rig.tw.spawn_player("Resale buyer");
+    crate::excursions::with_account(&mut world.rig, buyer, "ResaleBuyer", 9_002);
+    let faucet = account(&world.rig, &system("hardware.fixture"), None);
+    god(
+        &mut world.rig,
+        &format!("@account/open #{}=tacsim.credit", buyer.0),
+    );
+    let buyer_account = account(&world.rig, &PrincipalId::Object(buyer), None);
+    god(
+        &mut world.rig,
+        &format!("@econ/mint {}={} 100000", faucet.0, buyer_account.0),
+    );
+    let room = world.deployment.venue.room;
+    let aboard = world.rig.tw.world().get(pilot).and_then(|o| o.location);
+    for who in [pilot, buyer] {
+        world
+            .rig
+            .tw
+            .world_mut()
+            .move_to(who, room)
+            .expect("at the counter");
+    }
+    let (out, queued) = crate::excursions::command(
+        &mut world.rig,
+        pilot,
+        &format!("+minds/resell {}=Resale buyer price=1", paid.get()),
+    );
+    eprintln!("M8G_STORY resell -> {out}");
+    crate::excursions::land_all(&mut world.rig, &queued);
+    god(&mut world.rig, "@faction/add Republic=Resale buyer/level:1");
+    let (out, queued) = crate::excursions::command(
+        &mut world.rig,
+        buyer,
+        &format!("+minds/resell/accept {} price=1", paid.get()),
+    );
+    eprintln!("M8G_STORY resale accept -> {out}");
+    crate::excursions::land_all(&mut world.rig, &queued);
+    if let Some(aboard) = aboard {
+        world
+            .rig
+            .tw
+            .world_mut()
+            .move_to(pilot, aboard)
+            .expect("the pilot back aboard");
+    }
+    let refused = crate::ic_sortie_surface::start_refusal(&mut world.rig, pilot, &pin(2))
+        .expect("the second rig is refused while the Pin changes hands");
+    // The pending sentence, after the mind's name (the licence's own, whatever the counter
+    // calls the line).
+    let pending = tacsim::surface::dispatch::MIND_PENDING.replace("{mind}", "");
+    assert!(refused.contains(pending.as_str()), "{refused}");
+    nothing_filed(&mut world, second);
+    eprintln!("M8G_STORY phase=s4c.pending event=complete: {refused}");
+
+    // 4. Home: the epoch closes and the claim's Close lands.
+    claimed_recover(&mut world, 1, open);
+    eprintln!("M8G_STORY phase=s4c.home event=complete");
+
+    // 5. A hull the pilot has no authority over. The pilot may fly the Coprates House's
+    //    licence (the grants its licence use asks, on the root and the publication scopes);
+    //    the first rig is now the Meridiani House's, and the pilot holds no office there.
+    for line in [
+        format!("@org/grant #{}=Coprates roll.holder.org", pilot.0),
+        format!(
+            "@org/grant #{}=Coprates roll.holder.org scope=#{}",
+            pilot.0, coprates.scope.0
+        ),
+    ] {
+        god(&mut world.rig, &line);
+    }
+    let house = |n: usize| {
+        format!(
+            "+tv/{n} launch mind=filed:{} org=Coprates go",
+            owner_licence.get()
+        )
+    };
+    title_rig_to_house(&mut world, tv, "Meridiani");
+    let mark = world.rig.tw.world().get(tv).expect("the rig").name.clone();
+    let refused = crate::ic_sortie_surface::start_refusal(&mut world.rig, pilot, &house(1))
+        .expect("a hull with no title, lease or office is refused");
+    // The sentence names the rig and its title's holder as a player reads one: a House is no
+    // lane organisation, so it is "an organization" (`port::claims::holder_name`).
+    let sentence = tacsim::surface::dispatch::MIND_UNTITLED
+        .replace("{mark}", mark.as_str())
+        .replace("{owner}", "an organization");
+    assert!(refused.contains(sentence.as_str()), "{refused}");
+    nothing_filed(&mut world, tv);
+    eprintln!("M8G_STORY phase=s4c.refused event=complete");
+
+    // 6. A House's licence on a House's hull: the second rig is the Coprates House's, and the
+    //    pilot acts for Coprates.
+    title_rig_to_house(&mut world, second, "Coprates");
+    assert!(
+        matches!(
+            hull_authority(world.rig.tw.world(), second, pilot).map(|admitted| admitted.authority),
+            Ok(HullAuthority::Office { org, .. }) if org == coprates.organization
+        ),
+        "the rig is the pilot's by office"
+    );
+    let open = claimed_launch(&mut world, 2, &house(2), owner_licence.get());
+    let facts = open_seal(&mut world, second);
+    assert_eq!(facts.mind.as_str(), coprates.source_name.clone());
+    assert_eq!(facts.licence.as_str(), owner_licence.get().to_string());
+    assert_eq!(
+        facts.holder,
+        Some(mush_economy::Holder::Organization {
+            org: coprates.organization,
+            acting: pilot,
+        }),
+        "the House is the holder, the pilot acting"
+    );
+    let seal = tacsim::ic_claim_seal(world.rig.tw.world(), open).expect("the claim's seal");
+    assert_eq!(
+        facts.seal_digest,
+        tacsim::surface::black_box::SealFacts::of(&seal, SealLicenceState::Active).seal_digest,
+        "one seal: the claim's"
+    );
+    // A restart with the House's claim open: the claim history's audit admits a House
+    // charter's claim dispatched by a character acting for the House (the audit runs at boot),
+    // and the claim is still the rig's.
+    let mut world = world.reboot();
+    assert_eq!(
+        tacsim::ic_claim_of(world.rig.tw.world(), second),
+        tacsim::IcClaimRead::Active {
+            open,
+            dispatcher: pilot,
+        },
+        "the House's claim survives a restart"
+    );
+    claimed_recover(&mut world, 2, open);
+    let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/2 launch go");
+    assert!(
+        crate::excursions::record_of(&mut world.rig.tw, second).is_some_and(|r| r.act.is_some()),
         "a spent claim holds nothing"
     );
+    eprintln!("M8G_STORY phase=s4c.house event=complete");
+    crate::excursions::no_refused_writes(&world.rig.tw);
 }
 
 /// **Hand the M8 world's live world to the field harness** (doc 23 cut S.4b-3): the same

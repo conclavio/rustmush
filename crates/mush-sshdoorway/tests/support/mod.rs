@@ -79,6 +79,14 @@ impl Hooks {
     pub fn widths(&self) -> Vec<u16> {
         self.st().widths.clone()
     }
+    /// Queue one event for the `nth` connected session (in connect order),
+    /// as the game would. `false` when there is none or its queue is closed.
+    pub fn send(&self, nth: usize, event: OutputEvent) -> bool {
+        self.st()
+            .conns
+            .get(nth)
+            .is_some_and(|conn| conn.tx.try_send(Arc::new(event)).is_ok())
+    }
     /// `@boot` every connected session (drop its output queue).
     pub fn boot_all(&self) {
         self.st().conns.clear();

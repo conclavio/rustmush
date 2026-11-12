@@ -193,6 +193,17 @@ impl FakeGateway {
             matches!(hello, ToGateway::Hello { .. }),
             "first frame is Hello"
         );
+        // The gateway's half of the handshake: a link with no Hello is a version-12
+        // peer, below the window since the bump to 14 (doc 44 unit MW.24).
+        write_frame(
+            &mut writer,
+            &ToServer::Hello {
+                proto: mush_ipc::IPC_VERSION,
+                min_proto: mush_ipc::IPC_MIN_PROTO,
+            },
+        )
+        .await
+        .expect("send Hello");
         write_frame(
             &mut writer,
             &ToServer::Inbound(WireInbound::ConnUp {

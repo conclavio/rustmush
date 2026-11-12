@@ -1369,23 +1369,14 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // consent's deadline is the earlier of the term's end and the settle
     // delay, so Fund refuses an acceptance after it). `@mind/attest` is due
     // once the term has ended, within Grace, and is free: no balance moves.
-    check_eq!(
-        submitted(w, author, format!("@mind/attest {filed}")).await?,
-        vec![
-            format!("Renewing your owner's licence for filed mind {filed}."),
-            QUEUED.to_owned(),
-            "Done.".to_owned()
-        ]
-    );
-
-    // The author withdraws: the Registry stops new sales of the revision
-    // (`withdraw_authored_mind`; the entitlement reader refuses a quote on a
-    // withdrawn revision), but the counter is policy-current only (17g C2e:
-    // `current_policy` reads the listing row, never the revision's status),
-    // so both listings still read byte-for-byte, a fresh quote on the sealed
-    // one is refused by the provider (the driver's line) with no quote row
-    // added, and Cy still holds the licence. Hiding a withdrawn revision's
-    // listings is a C4 ledger item (17g section 7, C2e as built).
+    //
+    // Doc 44 MW.2 (Q-44-15): the counter asks the Roll whether each listing
+    // can still be sold. Within the owner term's Grace both listings still
+    // can, and read as they did. A listing names the owner term it was made
+    // under and a quote refuses any other, so once the attestation opens the
+    // owner's next term neither can be sold any more and both leave the
+    // counter: the sealed listing's code is no longer found (no quote is
+    // asked for, so no quote row is added).
     let counter = w.server.command(cy, "+minds".into()).await?;
     check!(
         counter.len() == 4
@@ -1397,6 +1388,37 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         .await?
         .len();
     check_eq!(
+        submitted(w, author, format!("@mind/attest {filed}")).await?,
+        vec![
+            format!("Renewing your owner's licence for filed mind {filed}."),
+            QUEUED.to_owned(),
+            "Done.".to_owned()
+        ]
+    );
+    let empty = vec!["No minds are for sale at this counter.".to_owned()];
+    check_eq!(
+        w.server.command(cy, "+minds".into()).await?,
+        empty,
+        "a listing made under the owner's earlier term left the counter"
+    );
+    let gone = format!("No listing here has the code {code}.");
+    for line in [format!("+minds {code}"), format!("+minds/buy {code}")] {
+        check_eq!(
+            w.server.command(cy, line.clone()).await?,
+            vec![gone.clone()],
+            "{line}"
+        );
+    }
+
+    // The author withdraws: the Registry stops new sales of the revision
+    // (`withdraw_authored_mind`). Its listings are off the counter and stay
+    // off (the typed story pins a withdrawal taking a live listing off the
+    // `mind.market` panel), and Cy still holds the licence. That licence can
+    // never be renewed now (a renewal is a fresh sale of the withdrawn
+    // revision): `+minds/renew` says so in the owner's ruled words (doc 44
+    // Q-44-14) and no renewal operation is opened, by Cy or by the renewal
+    // service.
+    check_eq!(
         submitted(w, author, format!("@mind/withdraw {filed}")).await?,
         vec![
             format!("Withdrawing filed revision {filed}."),
@@ -1404,16 +1426,14 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             "Done.".to_owned()
         ]
     );
-    check_eq!(w.server.command(cy, "+minds".into()).await?, counter);
     check_eq!(
-        submitted(w, cy, format!("+minds/buy {code}")).await?,
-        vec![
-            format!(
-                "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed."
-            ),
-            QUEUED.to_owned(),
-            DRIVER.to_owned()
-        ]
+        w.server.command(cy, "+minds".into()).await?,
+        empty,
+        "the withdrawn revision's listings are off the counter"
+    );
+    check_eq!(
+        w.server.command(cy, format!("+minds/buy {code}")).await?,
+        vec![gone.clone()]
     );
     check_eq!(
         rows(&w.launch.store, "market", "market_mind_entitlement_quote")
@@ -1423,6 +1443,18 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         "no quote row for a withdrawn revision"
     );
     check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
+    // The lasting refusal: the holder is told why, once, and nothing is
+    // submitted (the renewal operations are the ones the renewal above left).
+    let stopped = "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried.";
+    let renewals_before = renewals(w, sealed).await?;
+    settle(w, cy).await?;
+    let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == stopped).await?;
+    check_eq!(refused, vec![stopped.to_owned()], "{refused:?}");
+    check_eq!(
+        renewals(w, sealed).await?,
+        renewals_before,
+        "no renewal is opened on a withdrawn revision"
+    );
 
     // The charter: the author offers it to Cy at 1.00; Cy reads the offer
     // and accepts it; the clerk's service settles (no sortie is out). The
@@ -1566,6 +1598,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     );
 
     // Restart: every holdings view and balance is unchanged.
+    let renewals_before = renewals(w, sealed).await?;
     let views_before = views(w, &[author, buyer, cy]).await?;
     let money_before = (
         balances(w, author).await?,
@@ -1583,6 +1616,19 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             total(w).await?
         ),
         money_before
+    );
+    // Doc 44 MW.2 (Q-44-14): the revision is recalled now, and the Registry's
+    // act is told before the author's. The verdict is the Roll's own rows',
+    // so it is the same after the restart: the renewal service opened nothing
+    // across it, and the holder is told why, with nothing submitted.
+    let recalled = "This licence cannot be renewed: the Registry recalled this mind. Nothing further will be tried.";
+    settle(w, cy).await?;
+    let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == recalled).await?;
+    check_eq!(refused, vec![recalled.to_owned()], "{refused:?}");
+    check_eq!(
+        renewals(w, sealed).await?,
+        renewals_before,
+        "no renewal is opened on a recalled revision, before or after the restart"
     );
     Ok(())
 }

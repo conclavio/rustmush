@@ -50,6 +50,8 @@ struct ToyState {
     ev_connected: Vec<ObjId>,
     ev_disconnected: Vec<ObjId>,
     hook_connected: Vec<ObjId>,
+    hook_revived: Vec<ObjId>,
+    hook_linkdead: Vec<ObjId>,
     hook_disconnected: Vec<ObjId>,
     scenes_started: Vec<u64>,
     scenes_ended: Vec<u64>,
@@ -90,6 +92,14 @@ impl EventHook for ToyHook {
 
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         state(ctx).hook_connected.push(actor);
+    }
+
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        state(ctx).hook_revived.push(actor);
+    }
+
+    fn linkdead(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        state(ctx).hook_linkdead.push(actor);
     }
 
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
@@ -220,6 +230,7 @@ impl GameModule for ToyModule {
             HookPoint::MoveAttempt,
             HookPoint::LookRendered,
             HookPoint::Connected,
+            HookPoint::Linkdead,
             HookPoint::Disconnected,
             HookPoint::SceneStarted,
             HookPoint::SceneEnded,
@@ -2850,6 +2861,205 @@ fn connection_hooks_and_observers_fire_on_transitions() {
     );
     assert_eq!(toy(&engine).hook_disconnected, vec![nick]);
     assert_eq!(toy(&engine).ev_disconnected, vec![nick]);
+}
+
+/// Everything the toy has been told about connections, in one row: the
+/// `connected`, `revived`, `linkdead` and `disconnected` hooks and the two
+/// world events.
+fn presence_told(engine: &Engine) -> [Vec<ObjId>; 6] {
+    let toy = toy(engine);
+    [
+        toy.hook_connected.clone(),
+        toy.hook_revived.clone(),
+        toy.hook_linkdead.clone(),
+        toy.hook_disconnected.clone(),
+        toy.ev_connected.clone(),
+        toy.ev_disconnected.clone(),
+    ]
+}
+
+fn step(engine: &mut Engine, msg: Inbound) -> Outbox {
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(msg, &mut out, &mut fx);
+    out
+}
+
+/// Doc 44 unit MW.24: a bare connection is bound to its actor and is never
+/// presence. Behind it an offline actor stays offline and a link-dead one
+/// stays link-dead; no hook, no world event and no announcement fires when it
+/// comes up or goes down, however it goes down.
+#[test]
+fn a_bare_connection_is_never_presence() {
+    let (mut engine, nick) = setup();
+    let nobody: [Vec<ObjId>; 6] = Default::default();
+
+    // An offline actor: bound, and nothing else.
+    let out = step(
+        &mut engine,
+        Inbound::BareUp {
+            conn: 7,
+            actor: nick,
+        },
+    );
+    assert!(out.is_empty(), "a bare connection announces nothing");
+    assert_eq!(engine.actor_of(7), Some(nick));
+    assert!(
+        engine
+            .world
+            .connection_binding(7)
+            .is_some_and(|(actor, _)| actor == nick),
+        "an invoke on it runs as the actor"
+    );
+    assert_eq!(engine.connections_of(nick), 0, "not a live connection");
+    assert!(!engine.world.has_live_conns(nick));
+    assert!(!engine.world.is_connected(nick), "and not here");
+    assert_eq!(engine.world.connected().count(), 0, "WHO has no row for it");
+    assert!(engine.world.session_stat(nick).is_none());
+    assert_eq!(presence_told(&engine), nobody);
+    let out = step(
+        &mut engine,
+        Inbound::BareDown {
+            conn: 7,
+            actor: nick,
+        },
+    );
+    assert!(out.is_empty());
+    assert_eq!(engine.actor_of(7), None);
+    assert_eq!(engine.world.connection_binding(7), None);
+    assert!(!engine.world.is_connected(nick));
+    assert_eq!(presence_told(&engine), nobody);
+
+    // A link-dead actor: the bare connection neither revives them nor, when
+    // it ends, drops them a second time.
+    step(
+        &mut engine,
+        Inbound::ConnUp {
+            conn: 2,
+            actor: nick,
+            caps_structured: false,
+            from_linkdead: false,
+        },
+    );
+    step(
+        &mut engine,
+        Inbound::ConnDown {
+            conn: 2,
+            actor: nick,
+            reason: mush_core::DisconnectKind::Lost,
+        },
+    );
+    let linkdead = presence_told(&engine);
+    assert_eq!(linkdead[0], vec![nick]);
+    assert_eq!(linkdead[2], vec![nick]);
+    let connected_at = engine
+        .world
+        .session_stat(nick)
+        .map(|stat| stat.connect_time);
+    let out = step(
+        &mut engine,
+        Inbound::BareUp {
+            conn: 8,
+            actor: nick,
+        },
+    );
+    assert!(out.is_empty(), "nobody is told they reconnected");
+    assert_eq!(engine.connections_of(nick), 0);
+    assert!(!engine.world.has_live_conns(nick), "still link-dead");
+    assert!(engine.world.is_connected(nick));
+    assert_eq!(presence_told(&engine), linkdead, "no Revived, no Connected");
+    let out = step(
+        &mut engine,
+        Inbound::BareDown {
+            conn: 8,
+            actor: nick,
+        },
+    );
+    assert!(out.is_empty(), "nobody is told they went link-dead again");
+    assert_eq!(presence_told(&engine), linkdead);
+    assert_eq!(
+        engine
+            .world
+            .session_stat(nick)
+            .map(|stat| stat.connect_time),
+        connected_at
+    );
+
+    // The grace runs out while a bare connection is up: the actor is
+    // disconnected as they would have been, and the bare connection stays
+    // bound until its own end.
+    step(
+        &mut engine,
+        Inbound::BareUp {
+            conn: 9,
+            actor: nick,
+        },
+    );
+    let out = step(&mut engine, Inbound::SessionGone { actor: nick });
+    assert!(!out.is_empty(), "the disconnect is announced");
+    assert!(!engine.world.is_connected(nick));
+    let gone = presence_told(&engine);
+    assert_eq!(gone[3], vec![nick]);
+    assert_eq!(gone[5], vec![nick]);
+    assert_eq!(engine.actor_of(9), Some(nick));
+
+    // A link that ends takes every connection it owned down as `Lost`. For a
+    // bare one that is as silent as its own `BareDown`.
+    let out = step(
+        &mut engine,
+        Inbound::ConnDown {
+            conn: 9,
+            actor: nick,
+            reason: mush_core::DisconnectKind::Lost,
+        },
+    );
+    assert!(out.is_empty());
+    assert_eq!(engine.actor_of(9), None);
+    assert_eq!(engine.world.connection_binding(9), None);
+    assert!(!engine.world.is_connected(nick));
+    assert_eq!(presence_told(&engine), gone);
+}
+
+/// A bare frame can neither take a player's real connection down nor take
+/// its id over (doc 44 unit MW.24).
+#[test]
+fn a_bare_frame_never_touches_a_live_connection() {
+    let (mut engine, nick) = setup();
+    step(
+        &mut engine,
+        Inbound::ConnUp {
+            conn: 2,
+            actor: nick,
+            caps_structured: false,
+            from_linkdead: false,
+        },
+    );
+    for stray in [
+        Inbound::BareDown {
+            conn: 2,
+            actor: nick,
+        },
+        Inbound::BareUp {
+            conn: 2,
+            actor: GOD,
+        },
+    ] {
+        let out = step(&mut engine, stray);
+        assert!(out.is_empty());
+        assert_eq!(engine.actor_of(2), Some(nick));
+        assert_eq!(engine.connections_of(nick), 1);
+        assert!(engine.world.has_live_conns(nick));
+    }
+    // And the connection still ends as a connection does.
+    step(
+        &mut engine,
+        Inbound::ConnDown {
+            conn: 2,
+            actor: nick,
+            reason: mush_core::DisconnectKind::Quit,
+        },
+    );
+    assert!(!engine.world.is_connected(nick));
+    assert_eq!(toy(&engine).hook_disconnected, vec![nick]);
 }
 
 // ----------------------------------------------------------------------

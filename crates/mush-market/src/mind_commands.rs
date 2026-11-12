@@ -13,15 +13,24 @@
 //! - `AtCounter`: whether the actor stands at a venue the entitlement policy
 //!   admits, by exactly the gate the List, Quote, Fund and Grant offers use
 //!   (`EntitlementGuard::current`).
-//! - `Listings { after }`: up to `LISTINGS_PER_PAGE` (20) policy-current
-//!   listings of both protocols in key order, after an optional listing, and
-//!   the cursor of the next page. "Current" is `current_policy` only: the
-//!   price, cuts and policy are the deployment's now. It is not
-//!   seller-specific (a quote still runs the whole of `current_listing`
-//!   against Roll's facts). Away from a counter it is `Refused`.
+//! - `Listings { after }`: up to `LISTINGS_PER_PAGE` (20) current listings
+//!   of both protocols in key order, after an optional listing, and the
+//!   cursor of the next page. "Current" is two tests (doc 44 MW.2, Q-44-15):
+//!   `current_policy` (the price, cuts and policy are the deployment's now)
+//!   and the Roll's own answer that the listing can still be sold
+//!   (`EntitlementPurchaseWriter::sellable`: not withdrawn, not recalled, not
+//!   lapsed with its seller's or its parent's licence, not moved with its
+//!   charter), so a dead listing leaves the counter, its code stops
+//!   resolving, and the House agent's list (`ProcurementListings`) drops it.
+//!   The Roll's answer is slimmer than a quote's read (a quote still runs
+//!   the whole of `current_listing` against Roll's facts), and it is paid
+//!   for out of this read's own budget (`Budget`): a page that meets many
+//!   dead listings may come back short, or empty, with a cursor to go on
+//!   from. Away from a counter it is `Refused`.
 //! - `ListingByCode { code }`: exactly `CODE_CHARACTERS` (8) characters of a
 //!   publication token's text. One scan of `CODE_ROWS` (2) rows after the
-//!   code, in which only current rows count (17g C2e): no current key
+//!   code, in which only current rows count (17g C2e; current as `Listings`
+//!   means it, the Roll's answer included): no current key
 //!   starting with it is `Refused`; one current is `One`, whatever stale row
 //!   sits beside it; two current are `Ambiguous`. When both scanned rows
 //!   share the code and the family goes on, one probe of the next row tells
@@ -100,6 +109,8 @@ use mush_core::read_service::{
 };
 use mush_core::{CommitToken, DefinitionRef, ModError, ObjId, Registrar};
 use mush_economy::managed_entitlement::EntitlementProtocol;
+use mush_roll::commerce::entitlement::writer::EntitlementPurchaseWriter;
+use mush_roll::commerce::entitlement::{SELLABLE_READS, SELLABLE_SUBJECTS, Sellable};
 use mush_roll::commerce::paid::PaidForm;
 use mush_roll::commerce::purchase::PurchasePhase;
 use mush_roll::commerce::rating::RatingClass;
@@ -120,6 +131,40 @@ pub const CODE_ROWS: usize = 2;
 /// spends `CODE_ROWS` on its cursor first, so it pages with `SCANS - 1`.
 const SCAN_ROWS: usize = 64;
 const SCANS: usize = 8;
+/// Doc 44 MW.2: the fewest listings one question to the Roll asks about once
+/// a page is nearly full (a question costs its reads whatever its size, so
+/// asking one listing at a time would spend the read's reads on a run of
+/// dead listings).
+const SELLABLE_BATCH: usize = 8;
+
+/// Doc 44 MW.2: what one read may still spend. Core gives every owner read
+/// `MAX_OWNER_READS` reads and `MAX_OWNER_READ_ROWS` rows and fails the whole
+/// read past either, and the listing scans alone could spend every row
+/// (`SCAN_ROWS * SCANS`). The Roll's answer for each current listing comes
+/// out of the same allowance, so the page loop counts what it asks for and
+/// stops with a cursor before it would ask for more than is left.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Budget {
+    reads: usize,
+    rows: usize,
+}
+impl Budget {
+    pub(crate) const fn new() -> Self {
+        Self {
+            reads: mush_core::read_service::MAX_OWNER_READS as usize,
+            rows: mush_core::read_service::MAX_OWNER_READ_ROWS as usize,
+        }
+    }
+    /// Take `reads` reads and `rows` rows, or nothing when either is short.
+    const fn spend(&mut self, reads: usize, rows: usize) -> bool {
+        if self.reads < reads || self.rows < rows {
+            return false;
+        }
+        self.reads -= reads;
+        self.rows -= rows;
+        true
+    }
+}
 
 fn error(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
@@ -890,6 +935,8 @@ pub struct MarketCommandReader {
     resale: Option<crate::mind_paid_resale::Families>,
     guard: EntitlementGuard,
     config: EntitlementConfig,
+    /// Doc 44 MW.2: the Roll's writer, whose `sellable` the listing kinds ask.
+    writer: EntitlementPurchaseWriter,
 }
 impl MarketCommandReader {
     /// TacSim's grant, computed from its own frozen manifest; the market's
@@ -906,8 +953,9 @@ pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescripto
     DefinitionDescriptor::new(
         DefinitionKind::new("owner_read").map_err(error)?,
         DefinitionId::new("mind_market_commands").map_err(error)?,
-        // Doc 17h §3 M8f: 2 adds the GOD-only procurement kinds.
-        2,
+        // Doc 17h §3 M8f: 2 adds the GOD-only procurement kinds. Doc 44 MW.2:
+        // 3 makes "current" ask the Roll whether the listing can still be sold.
+        3,
         serde_json::json!({
             "format": 1,
             "listings_per_page": LISTINGS_PER_PAGE,
@@ -921,6 +969,14 @@ pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescripto
             // Doc 17h §3 M8f: the GOD-only procurement kinds, which carry the
             // listed revision and rating to the tick and to no player.
             "procurement": {"caller": "god", "revision": true, "rating": true, "instrument": true},
+            // Doc 44 MW.2: every listing kind leaves out a listing the Roll
+            // says cannot be sold, asked in batches inside this read's budget.
+            "sellable": {
+                "owner": "roll",
+                "batch": SELLABLE_BATCH,
+                "subjects": SELLABLE_SUBJECTS,
+                "reads": SELLABLE_READS,
+            },
             "manifest": manifest,
         }),
     )
@@ -963,6 +1019,7 @@ pub(crate) fn register(
             resale,
             guard: EntitlementGuard::new(config.clone(), gate)?,
             config: config.clone(),
+            writer: config.writer(),
         },
     )
 }
@@ -981,6 +1038,7 @@ impl OwnerReadService for MarketCommandReader {
             ctx,
             families: &self.families,
             resale: self.resale.as_ref(),
+            writer: &self.writer,
         };
         answer(
             &lens,
@@ -1006,7 +1064,9 @@ pub(crate) struct Own {
 
 /// The read's answer over `source`: `here` is the venue gate for the actor
 /// (`EntitlementGuard::current`), and "current" is `current_policy` against
-/// the deployment's `config`. `read` calls this with the owner lens; the
+/// the deployment's `config` and then the Roll's answer that the listing can
+/// still be sold (`ListingSource::sellable`; doc 44 MW.2). `read` calls this
+/// with the owner lens; the
 /// tests call it over an in-memory family, so the counter rule and the policy
 /// filter they check are the registered read's own. 17g C2g: the own kinds
 /// answer for `own.actor` only.
@@ -1083,11 +1143,18 @@ pub(crate) trait ListingSource<'a> {
         after: Option<&str>,
         limit: usize,
     ) -> Result<(Vec<&'a EntitlementListingV1>, bool), OwnerReadError>;
+    /// Doc 44 MW.2: whether each of `rows` can still be sold, by the Roll's
+    /// own rows (`EntitlementPurchaseWriter::sellable`), in order. At most
+    /// `SELLABLE_SUBJECTS` rows a call; each call costs at most
+    /// `SELLABLE_READS` reads and each row `ListedSubject::rows` rows of the
+    /// read's budget, which the caller has already taken (`Budget`).
+    fn sellable(&self, rows: &[&'a EntitlementListingV1]) -> Result<Vec<bool>, OwnerReadError>;
 }
 struct Lens<'c, 'a> {
     ctx: &'c OwnerReadContext<'a>,
     families: &'c Families,
     resale: Option<&'c crate::mind_paid_resale::Families>,
+    writer: &'c EntitlementPurchaseWriter,
 }
 impl<'a> ListingSource<'a> for Lens<'_, 'a> {
     fn scan(
@@ -1106,6 +1173,17 @@ impl<'a> ListingSource<'a> for Lens<'_, 'a> {
             rows.push(entry.value());
         }
         Ok((rows, page.next_after().is_some()))
+    }
+    fn sellable(&self, rows: &[&'a EntitlementListingV1]) -> Result<Vec<bool>, OwnerReadError> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let subjects: Vec<_> = rows.iter().map(|row| row.listed_subject()).collect();
+        let answers = self.writer.sellable(self.ctx, &subjects)?;
+        if answers.len() != rows.len() {
+            return Err(OwnerReadError::Integrity);
+        }
+        Ok(answers.into_iter().map(Sellable::is_sellable).collect())
     }
 }
 
@@ -1455,50 +1533,125 @@ fn view(row: &EntitlementListingV1) -> Result<PublicListingView, OwnerReadError>
     row.command_view().map_err(|_| OwnerReadError::Integrity)
 }
 
-/// Up to `LISTINGS_PER_PAGE` current listings after the key `after`, in key
-/// order, scanning at most `scans` pages of `SCAN_ROWS`. `next` is the last
-/// row's token when a further current listing was seen. When the scan budget
-/// ends before the family does, `next` is the last key scanned, current or
-/// not, so a long run of listings that are no longer current never ends the
-/// listings early or hides the ones after it (reviewer F4): the page may then
-/// be short, or empty, and still go on.
-pub(crate) fn listings<'a>(
+/// The current listings after the key `after`, in key order: up to
+/// `per_page` rows that pass `current` (the policy) and that the Roll says
+/// can still be sold, scanning at most `scans` pages of `SCAN_ROWS`, and
+/// where the next page starts. The cursor is the last row's token when a
+/// further current listing was seen. When the scan budget ends before the
+/// family does, it is the last key scanned, current or not, so a long run of
+/// listings that are no longer current never ends the listings early or
+/// hides the ones after it (reviewer F4): the page may then be short, or
+/// empty, and still go on.
+///
+/// Doc 44 MW.2: the Roll is asked in batches (`ListingSource::sellable`),
+/// only about rows the policy still admits, and every scan and every row
+/// asked about is taken from `budget` first. When what is left cannot pay for
+/// the next scan or the next row, the page ends there with the last row it
+/// decided as its cursor, exactly as when the scan budget ends, so the read
+/// never asks core for more than core allows.
+pub(crate) fn page<'a>(
     source: &impl ListingSource<'a>,
     after: Option<String>,
     scans: usize,
+    budget: &mut Budget,
+    per_page: usize,
     current: impl Fn(&EntitlementListingV1) -> bool,
-) -> Result<ListingsPage, OwnerReadError> {
+) -> Result<(Vec<&'a EntitlementListingV1>, Option<CommitToken>), OwnerReadError> {
     let mut cursor = after;
     let mut last: Option<CommitToken> = None;
-    let mut rows: Vec<PublicListingView> = Vec::new();
+    let mut rows: Vec<&'a EntitlementListingV1> = Vec::new();
     for _ in 0..scans {
+        if !budget.spend(1, SCAN_ROWS) {
+            return Ok((rows, last));
+        }
         let (scanned, more) = source.scan(cursor.as_deref(), SCAN_ROWS)?;
-        for row in &scanned {
-            if !current(row) {
-                continue;
+        let mut index = 0;
+        while index < scanned.len() {
+            // Enough to fill the page and see one listing past it, never
+            // fewer than `SELLABLE_BATCH` nor more than the Roll answers.
+            let want = per_page
+                .saturating_add(1)
+                .saturating_sub(rows.len())
+                .clamp(SELLABLE_BATCH, SELLABLE_SUBJECTS);
+            let mut batch: Vec<&'a EntitlementListingV1> = Vec::new();
+            let mut end = index;
+            let mut starved = false;
+            while let Some(row) = scanned.get(end) {
+                if batch.len() == want {
+                    break;
+                }
+                if current(row) {
+                    let reads = if batch.is_empty() { SELLABLE_READS } else { 0 };
+                    if !budget.spend(reads, row.listed_subject().rows()) {
+                        starved = true;
+                        break;
+                    }
+                    batch.push(row);
+                }
+                end = end.saturating_add(1);
             }
-            if rows.len() == LISTINGS_PER_PAGE {
-                return Ok(ListingsPage {
-                    next: rows.last().map(PublicListingView::publication),
-                    rows,
-                });
+            let answers = source.sellable(&batch)?;
+            if answers.len() != batch.len() {
+                return Err(OwnerReadError::Integrity);
             }
-            rows.push(view(row)?);
+            for (row, sellable) in batch.iter().zip(answers) {
+                if !sellable {
+                    continue;
+                }
+                if rows.len() == per_page {
+                    let next = rows.last().map(|r| r.publication());
+                    return Ok((rows, next));
+                }
+                rows.push(row);
+            }
+            if starved {
+                // The budget ended inside this scan: go on after the last
+                // listing decided (its key is its own token).
+                let decided = scanned
+                    .get(..end)
+                    .and_then(<[_]>::last)
+                    .map(|row| row.publication());
+                return Ok((rows, decided.or(last)));
+            }
+            index = end;
         }
         if !more {
-            return Ok(ListingsPage { rows, next: None });
+            return Ok((rows, None));
         }
         match scanned.last() {
             Some(row) => {
                 last = Some(row.publication());
                 cursor = Some(row.publication().to_string());
             }
-            None => return Ok(ListingsPage { rows, next: None }),
+            None => return Ok((rows, None)),
         }
     }
     // The budget ended with the family going on: continue after the last
     // listing scanned (its key is its own token, `Lens::scan` checks).
-    Ok(ListingsPage { rows, next: last })
+    Ok((rows, last))
+}
+
+/// `Listings`: one `page` of `LISTINGS_PER_PAGE` views on a whole budget.
+pub(crate) fn listings<'a>(
+    source: &impl ListingSource<'a>,
+    after: Option<String>,
+    scans: usize,
+    current: impl Fn(&EntitlementListingV1) -> bool,
+) -> Result<ListingsPage, OwnerReadError> {
+    listings_within(source, after, scans, &mut Budget::new(), current)
+}
+fn listings_within<'a>(
+    source: &impl ListingSource<'a>,
+    after: Option<String>,
+    scans: usize,
+    budget: &mut Budget,
+    current: impl Fn(&EntitlementListingV1) -> bool,
+) -> Result<ListingsPage, OwnerReadError> {
+    let (rows, next) = page(source, after, scans, budget, LISTINGS_PER_PAGE, current)?;
+    Ok(ListingsPage {
+        rows: rows.into_iter().map(view).collect::<Result<_, _>>()?,
+        next,
+    })
 }
 
 /// `ListingsAfter`: the first listing whose token starts with `code`, current
@@ -1512,13 +1665,18 @@ pub(crate) fn listings_after<'a>(
     if !is_code(code) {
         return Err(OwnerReadError::Refused);
     }
+    // The cursor's own scan comes out of the same budget as the page.
+    let mut budget = Budget::new();
+    if !budget.spend(1, CODE_ROWS) {
+        return Err(OwnerReadError::Limit);
+    }
     let (scanned, _) = source.scan(Some(code), CODE_ROWS)?;
     let start = scanned
         .into_iter()
         .map(|row| row.publication().to_string())
         .find(|key| key.starts_with(code))
         .ok_or(OwnerReadError::Refused)?;
-    listings(source, Some(start), SCANS - 1, current)
+    listings_within(source, Some(start), SCANS - 1, &mut budget, current)
 }
 
 /// Whether `code` is a listing code: exactly `CODE_CHARACTERS` characters of
@@ -1538,7 +1696,9 @@ pub fn is_code(code: &str) -> bool {
 /// toward ambiguity. Within the one scan, one current row beside any rows
 /// that are no longer current resolves to the current row; two current rows
 /// are `Ambiguous`; no current row (a stale exact match included) is
-/// `Refused`, the not-found answer. `CODE_ROWS` stays 2 because it is in the
+/// `Refused`, the not-found answer; a listing the Roll says cannot be sold
+/// any more (withdrawn, recalled, lapsed, moved; doc 44 MW.2) is not current
+/// either. `CODE_ROWS` stays 2 because it is in the
 /// read's descriptor (widening it would version the definition), so a
 /// current listing that sits beyond two stale rows sharing its prefix is
 /// still not found: a stated residual, since stale rows exist only after a
@@ -1566,9 +1726,20 @@ pub(crate) fn by_code<'a>(
     let (scanned, more) = source.scan(Some(code), CODE_ROWS)?;
     let saturated = more && scanned.len() == CODE_ROWS && scanned.iter().all(|row| shares(row));
     let last = scanned.last().map(|row| row.publication().to_string());
-    let matching: Vec<_> = scanned
+    // Doc 44 MW.2: current is the policy and then the Roll's answer, asked
+    // once about the (at most `CODE_ROWS`) rows the policy still admits.
+    let admitted: Vec<_> = scanned
         .into_iter()
         .filter(|row| shares(row) && current(row))
+        .collect();
+    let answers = source.sellable(&admitted)?;
+    if answers.len() != admitted.len() {
+        return Err(OwnerReadError::Integrity);
+    }
+    let matching: Vec<_> = admitted
+        .into_iter()
+        .zip(answers)
+        .filter_map(|(row, sellable)| sellable.then_some(row))
         .collect();
     match matching.as_slice() {
         [] => Err(OwnerReadError::Refused),
