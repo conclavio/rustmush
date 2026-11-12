@@ -10649,9 +10649,22 @@ impl DecisionProviderAdapter for IdleChoosingProvider {
 /// and one decision request queued for the tick — the capture already
 /// taken by the engine, ready for the loop.
 fn npc_decision_world(deadline_secs: i64, lease_secs: i64) -> (Engine, mush_core::ObjId) {
-    let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+    let (tw, npc) = npc_decision_rig(Vec::new(), deadline_secs, lease_secs);
+    (tw.into_engine(), npc)
+}
+
+/// [`npc_decision_world`] before it is handed to the world task, composed
+/// with `extra` modules after `npc`: a test may still run a command on it.
+fn npc_decision_rig(
+    extra: Vec<Box<dyn mush_core::GameModule>>,
+    deadline_secs: i64,
+    lease_secs: i64,
+) -> (mush_testkit::TestWorld, mush_core::ObjId) {
+    let mut modules: Vec<Box<dyn mush_core::GameModule>> = vec![Box::new(
         mush_npc::NpcModule::new().with_decision_lease_secs(lease_secs),
-    )]);
+    )];
+    modules.extend(extra);
+    let mut tw = mush_testkit::TestWorld::with_modules(modules);
     tw.engine_mut().set_decision_keys(
         DecisionKeyRing::new(DecisionSecret::new(1, [0x5a; 32]).unwrap(), []).unwrap(),
     );
@@ -10689,7 +10702,7 @@ fn npc_decision_world(deadline_secs: i64, lease_secs: i64) -> (Engine, mush_core
         tw.engine().has_decision_capture(),
         "the tick issued no capture"
     );
-    (tw.into_engine(), npc)
+    (tw, npc)
 }
 
 fn receipt_key(npc: mush_core::ObjId) -> String {
@@ -10888,6 +10901,194 @@ async fn h2a_a_restart_between_capture_and_lease_resumes_the_decision() {
     assert_eq!(receipt["value"]["outcome"], "idle");
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     stop_test_server(second).await;
+}
+
+// ---- MW.17b: an NPC decision's call carries its NPC -----------------
+
+/// A service over a tool-calling `MockProvider` behind the `npc_decision`
+/// route, with no budget configured: every scope counts and none refuses.
+fn npc_decision_service() -> (Arc<LlmService>, Arc<mush_llm::MockProvider>) {
+    let mock = Arc::new(mush_llm::MockProvider::new("openrouter").with_caps(
+        mush_llm::ProviderCaps {
+            tool_calling: true,
+            forced_tool_choice: true,
+            ..mush_llm::ProviderCaps::default()
+        },
+    ));
+    let provider: Arc<dyn mush_llm::LlmProvider> = mock.clone();
+    let llm = Arc::new(
+        LlmService::builder()
+            .provider("openrouter", provider)
+            .route(
+                mush_llm::LlmFeature::NpcDecision.route_key(),
+                mush_llm::RouteConfig {
+                    model: "mock-model".to_string(),
+                    max_tokens: 512,
+                    timeout_s: 30,
+                    reasoning: None,
+                    reasoning_max_tokens: None,
+                },
+            )
+            .global_enabled(true)
+            .build(),
+    );
+    (llm, mock)
+}
+
+/// The reply a model gives when it calls `npc`'s idle tool: the tool is
+/// named for the offer's place in the projection, which the lease repeats.
+fn idle_tool_reply(engine: &Engine, npc: mush_core::ObjId) -> mush_llm::CompletionResponse {
+    let query = engine
+        .legal_action_query(
+            PrincipalId::Object { id: npc },
+            npc,
+            mush_core::PerceivedRef::SelfActor,
+        )
+        .expect("the npc's offer query");
+    let (actions, _) = engine
+        .project_decision_offers(&query)
+        .expect("the npc's projected offers")
+        .into_parts();
+    let index = actions
+        .iter()
+        .position(|action| action.presentation().verb == mush_npc::IDLE_VERB)
+        .expect("idle is offered");
+    mush_llm::CompletionResponse {
+        content: vec![mush_llm::ContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: format!("{}_{index}", mush_npc::IDLE_VERB),
+            input: serde_json::json!({}),
+        }],
+        stop_reason: mush_llm::StopReason::ToolUse,
+        usage: mush_llm::Usage {
+            input_tokens: 40,
+            output_tokens: 2,
+            ..mush_llm::Usage::default()
+        },
+        model: "mock-model".to_string(),
+    }
+}
+
+/// Run `engine`'s one captured decision to its turn receipt over the
+/// production provider on `llm`.
+async fn run_npc_decision_over(engine: Engine, llm: &Arc<LlmService>, npc: mush_core::ObjId) {
+    let deps = ServerDeps::in_memory();
+    let store = Arc::clone(&deps.store);
+    let providers = production_decision_providers(&engine, Some(Arc::clone(llm))).unwrap();
+    let handles = spawn_persist_with_gateway_and_decisions(
+        engine,
+        deps,
+        DurableOutboxRegistry::new(),
+        providers,
+        1,
+        |_| Arc::new(BlackholeGateway),
+    )
+    .expect("decision runtime startup");
+    let receipt = wait_for_receipt(&store, npc, 20).await;
+    assert_eq!(receipt["value"]["outcome"], "idle");
+    stop_test_server(handles).await;
+}
+
+/// The `npc_decision` rows of the audit, oldest first.
+fn decision_audit(llm: &LlmService) -> Vec<mush_llm::AuditRecord> {
+    let mut rows = llm.audit_log().recent(64);
+    rows.retain(|row| row.feature == mush_llm::LlmFeature::NpcDecision.route_key());
+    rows.sort_by_key(|row| row.ts);
+    rows
+}
+
+/// A decision is charged to its NPC: the call the production provider
+/// makes for a leased NPC decision lands on that NPC's budget counter and
+/// its audit row names the NPC. Before MW.17b the call named nobody.
+#[tokio::test]
+async fn mw17b_a_decision_is_charged_to_its_npc_and_names_it_in_the_audit() {
+    let (engine, npc) = npc_decision_world(60, 60);
+    let (llm, mock) = npc_decision_service();
+    mock.push_response(idle_tool_reply(&engine, npc));
+    run_npc_decision_over(engine, &llm, npc).await;
+
+    assert_eq!(mock.call_count(), 1, "one lease, one call");
+    let spent = llm.ledger().npc(npc);
+    assert_eq!(
+        (spent.input_tokens, spent.output_tokens),
+        (40, 2),
+        "the decision's tokens are on the NPC's own counter"
+    );
+    let rows = decision_audit(&llm);
+    assert_eq!(rows.len(), 1, "one audit row: {rows:?}");
+    assert_eq!(rows[0].npc, Some(npc), "the row names its NPC");
+    assert_eq!(rows[0].outcome, mush_llm::Outcome::Ok);
+    // The attribution goes to the meter and never to the model.
+    let wire = serde_json::to_string(&mock.last_request().expect("the request")).unwrap();
+    assert!(
+        !wire.contains(&format!("#{}", npc.0)),
+        "the NPC's dbref reached the model: {wire}"
+    );
+}
+
+/// `@llm/kill` stops a decision as it stops dialogue. The decision here is
+/// already captured when staff park the NPC, which is the case nothing
+/// reached before MW.17b: the tick refuses a new request for a parked NPC,
+/// but a captured one was still leased and the provider still asked. Now
+/// the lease carries the NPC's standing, the service refuses the call
+/// before any provider is asked, the refusal is audited against the NPC,
+/// and the deadline hands the turn to `npc_idle`.
+#[tokio::test]
+async fn mw17b_llm_kill_stops_a_decision_that_was_already_captured() {
+    let (llm, mock) = npc_decision_service();
+    let (mut tw, npc) = npc_decision_rig(
+        vec![Box::new(mush_worldgen::WorldgenModule::new(Arc::clone(
+            &llm,
+        )))],
+        1,
+        60,
+    );
+    let said: String = tw
+        .run(GOD, "@llm/kill Bob")
+        .iter()
+        .map(|(_, event)| mush_testkit::text_of(event))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        said.contains("agent killed"),
+        "the kill did not land: {said}"
+    );
+    // Were the model asked, it would answer; it must never be asked.
+    mock.set_default(Ok(idle_tool_reply(tw.engine(), npc)));
+    run_npc_decision_over(tw.into_engine(), &llm, npc).await;
+
+    assert_eq!(
+        mock.call_count(),
+        0,
+        "a parked NPC's decision asked the model"
+    );
+    assert_eq!(llm.ledger().npc(npc).total_tokens(), 0, "and spent tokens");
+    let rows = decision_audit(&llm);
+    assert!(!rows.is_empty(), "the refusal left no audit row");
+    for row in &rows {
+        assert_eq!(row.npc, Some(npc), "the refusal names its NPC: {row:?}");
+        assert_eq!(row.outcome, mush_llm::Outcome::Disabled, "{row:?}");
+    }
+}
+
+/// The NPC's own daily ceiling (`@agent/set <npc>/daily_tokens`) holds for
+/// a decision as it holds for a dialogue turn: a decision that would pass
+/// it is refused up front as a budget trip against that NPC.
+#[tokio::test]
+async fn mw17b_an_npcs_own_daily_ceiling_holds_for_its_decisions() {
+    let (llm, mock) = npc_decision_service();
+    let (mut tw, npc) = npc_decision_rig(Vec::new(), 1, 60);
+    let _ = tw.run(GOD, "@agent/set Bob/daily_tokens=1");
+    mock.set_default(Ok(idle_tool_reply(tw.engine(), npc)));
+    run_npc_decision_over(tw.into_engine(), &llm, npc).await;
+
+    assert_eq!(mock.call_count(), 0, "the ceiling did not hold");
+    let rows = decision_audit(&llm);
+    assert!(!rows.is_empty(), "the trip left no audit row");
+    for row in &rows {
+        assert_eq!(row.npc, Some(npc));
+        assert_eq!(row.outcome, mush_llm::Outcome::Budget, "{row:?}");
+    }
 }
 
 /// The production spawn: a keyed composition starts the decision runtime

@@ -3848,3 +3848,41 @@ fn a_delayed_reply_does_not_steal_a_newer_speakers_conversation() {
     );
     assert!(user_prompt(&snap).contains("<conversation_partner>Bob</conversation_partner>"));
 }
+
+/// **Doc 44 cut MW.17b**: who a decision leased for an NPC is charged to. The source's
+/// attribution reads the profile as it stands at the lease: the NPC itself, under its own
+/// daily ceiling when staff set one, and withheld once the NPC is parked by either staff
+/// path or stops being an agent at all.
+#[test]
+fn mw17b_a_decision_is_attributed_to_its_npc_on_the_npcs_present_standing() {
+    let mut rig = Rig::new();
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let dbref = format!("#{}", npc.0);
+
+    let open = mush_npc::attribution_for(&rig.engine.world, npc);
+    assert_eq!(open.audit_subject(), npc);
+    assert_eq!(open.daily_tokens(), None, "no ceiling of its own");
+    assert!(!open.is_withheld());
+
+    let _ = rig.staff(&format!("@agent/set {dbref}/daily_tokens=750"));
+    let capped = mush_npc::attribution_for(&rig.engine.world, npc);
+    assert_eq!(capped.daily_tokens(), Some(750));
+    assert!(!capped.is_withheld());
+
+    let _ = rig.staff(&format!("@agent/set {dbref}/enabled=no"));
+    let parked = mush_npc::attribution_for(&rig.engine.world, npc);
+    assert_eq!(
+        parked.audit_subject(),
+        npc,
+        "a parked NPC is still the one named"
+    );
+    assert_eq!(parked.daily_tokens(), Some(750));
+    assert!(parked.is_withheld());
+
+    let _ = rig.staff(&format!("@agent/set {dbref}/enabled=yes"));
+    assert!(!mush_npc::attribution_for(&rig.engine.world, npc).is_withheld());
+
+    // An object that is no agent is withheld, never charged on an open standing.
+    assert!(mush_npc::attribution_for(&rig.engine.world, bar).is_withheld());
+}

@@ -136,7 +136,7 @@ pub use action::{
 pub use decision::{
     DECIDE_VERB, IDLE_VERB, MAX_DECISION_REQUESTS, NPC_CONTEXT_SCHEMA, NPC_CONTROLLER_KEY,
     NPC_DECISION_LEASE_SECS, NPC_WAKE_ADAPTER, NpcDecisionHandles, NpcDecisionRequest, TurnReceipt,
-    receipt_key, select_idle,
+    attribution_for, receipt_key, select_idle,
 };
 pub use experience::{
     Belief, Experience, ExperienceKind, PersonalMemoryRecord, PersonalMemoryStore, PersonalRecall,
