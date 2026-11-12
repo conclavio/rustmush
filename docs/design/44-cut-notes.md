@@ -932,6 +932,32 @@ reason and an owner for each missing piece. In short:
 | A displaced core's fate | the owner |
 | `certify_saved` failing fast on a rating that ends without a receipt | whoever next touches the M8 rig |
 
+### After the merges: the unit at `api=9` (2026-11-12, main `0d52a87d2`)
+
+#566 and #567 merged at 19:42Z in one batch with doc 45 cut AP.3 (#565), which moved the mind
+API to 9 (`MIND_ABI` is `rhai=1.26.0;api=9;stock=3`). Neither of this unit's two heads had
+AP.3 as an ancestor, so the pair first met `api=9` on main. Checked the same hour:
+
+- **Neither #566 nor #567 pins a literal that folds a seal.** The load story prints figures
+  and asserts none; the field story compares the field's seal line with the claim's own seal,
+  read at run time, and the hull's cells, out and home.
+- **The one pin this unit added is #558's**, the four `C4_TRIAL_PINS` rows
+  (`minds/registry/trials/physical_tests.rs`). AP.3 had #558 under it and re-blessed them
+  itself (`ed5593464`, "re-pin what folds a seal or the mind ABI"): each case still ends in
+  the same elimination at 58,500 ms, and the state hash, the black box digest and the filed
+  result's digest moved.
+- **Run at `0d52a87d2`.**
+  - This Windows box: `c4_a_registry_trial_ends_the_same_on_every_host` passes against
+    AP.3's rows, all four equal to the Linux values; D-UM-28's corpus as AP.3 re-pinned it
+    (`m2_the_twin_corpus_hashes_the_same_on_every_host`) and its pool and twin cases pass.
+    So both corpora hold on Windows at `api=9`.
+  - conclav.dev (Linux): the trial pin, story 4 (`c4_hardware`) and the house mind's field
+    entry pass; the filed-mind story passes (`--ignored`, 341 s: rated in 172 s, out of the
+    field at 74 s, the escort fired 5 rounds, all at the raider and all after the raider's
+    first arrival).
+- Nothing of this unit was committed after the two merged heads; there was nothing to
+  re-raise but this note.
+
 ## MW.6
 
 The Registry's pace as a file key, and the two notice drains that stopped on one bad holding
