@@ -5,15 +5,15 @@
 //! (or the rig's own cab), or over the comms relay, which jamming can stop; never from an OOC
 //! room. The unit's status and its carrier's roster show it.
 //!
-//! 1. [`ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room`]: an
+//! 1. `ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room`: an
 //!    operator with two rigs, aboard her carrier. She reads and sets each rig's, the roster
 //!    shows a line under the rig that holds one and none under a rig on `RETURN`, a second
 //!    set says nothing changed, and a word that is no posture is refused. From an OOC room
 //!    every set is refused and nothing changes; a read still answers.
-//! 2. [`ap4_a_posture_is_set_from_the_units_seat_in_a_field`]: a field of three parties
+//! 2. `ap4_a_posture_is_set_from_the_units_seat_in_a_field`: a field of three parties
 //!    (`field_mw7`'s yard). The ward's pilot reads and sets the posture from the cockpit; the
 //!    record, the hull's own frame and `STATUS` carry it; a word that is no posture is refused.
-//! 3. [`ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_relay`]:
+//! 3. `ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_relay`:
 //!    `escort_lease`'s ground, the lessee with a second rig. He is in his armed rig's cab on
 //!    open ground, off his carrier (he boarded it in the bay with `+tv/1 board` and drove it
 //!    out). His own rig's posture is set at once, interference or not. His order to the rig

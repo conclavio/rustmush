@@ -34,7 +34,7 @@ use crate::field_host_rig::{
     armed, egress, fragile, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
 
-/// The escort's own rig: the lessee's only live record, slot 1.
+/// The escort's own rig: the lessee's one live armed lease, slot 1.
 fn escort_rig(rig: &Rig, pilot: ObjId) -> ObjId {
     let store = rig
         .tw
@@ -43,9 +43,10 @@ fn escort_rig(rig: &Rig, pilot: ObjId) -> ObjId {
         .expect("the layer");
     let live: Vec<_> = store
         .tv_leases_of(pilot)
-        .filter(|record| record.live())
+        .filter(|record| record.live() && record.mark.starts_with("OWP-ES"))
         .collect();
-    assert_eq!(live.len(), 1, "one live lease: {live:?}");
+    assert_eq!(live.len(), 1, "one live escort lease: {live:?}");
+    assert_eq!(live[0].slot, 1, "the escort is leased first");
     live[0].tv
 }
 
