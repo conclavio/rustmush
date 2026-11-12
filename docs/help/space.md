@@ -129,3 +129,30 @@ When your carrier arrives at an orbital resource cluster, use `+mine` to prospec
 - `+mine/contest <rock>` contests an existing player claim within the 30-day Registry contest window.
 - `+mine/laser <rock> [<family>]` starts a timed 60 s mining-laser extraction cycle on rock `A`, `B`, or `C` into the hull's `stow.ore` hold.
 - `+mine/drones <rock> [<1..4>] [<family>]` launches up to 4 collector-drone sorties (`ExcursionId`) against rock `A`, `B`, or `C` into `stow.ore`.
+
+---
+
+## Staff: the doctrines the NPC ships fly (`@mind/cast`)
+
+The customs corvette, the raider that lurks beside it and the waypoint interdictor are each flown by a doctrine: a mind written in Rhai. The game's content names each one's doctrine together with its digest, the fingerprint of its exact text. Staff can publish other text and tell an actor to fly it. The verb is for staff with the simulator-admin power, and for Royalty.
+
+```text
+@mind/cast
+@mind/cast <corvette|raider|interdictor>=<your mind>@<revision>
+@mind/cast <corvette|raider|interdictor>=<digest>
+@mind/cast <corvette|raider|interdictor>=PACK
+```
+
+- `@mind/cast` lists the three actors: the doctrine each flies, its digest, and whether that is the content's own or one staff selected. An actor whose doctrine the server does not hold reads REFUSED, with the digest it is missing.
+- To change what an actor does, publish the new text as a mind of your own with the workshop (`@mind/new`, `@mind/paste`, `@mind/save`; see `help mindcraft`). `@mind/save` prints the revision number and its digest. Then select it: `@mind/cast interdictor=<your mind>@<revision>`. Any staff member can select a revision someone else saved by giving its digest in full. A digest selects whatever text the server holds under it, so check it is the doctrine you mean.
+- `@mind/cast <actor>=PACK` clears the selection, and the actor goes back to the doctrine the content names.
+
+What to expect:
+
+- **The next encounter flies it; one already under way does not change.** An encounter takes its ships' doctrines when it opens and keeps them until it closes, across a restart as well. Select a doctrine while a carrier is being stopped and that picket finishes as it began; the next carrier to cross meets the new one.
+- **A doctrine is never edited in place.** Changed text is new text with a new digest. The old text stays on the server under the old digest, and nothing can be saved over it.
+- **The selection is the world's, not the content's.** It survives a restart and a content upgrade. After an upgrade `@mind/cast` shows both the digest you selected and the one the content now names, so you can see whether to keep yours.
+- **An actor with no doctrine does not sail.** If the server does not hold the text an actor is to fly, the server says so in its log when it starts, `@mind/cast` shows the refusal, and carriers cross that actor's waypoint without being stopped until staff select a revision the server holds. It does not quietly fly something else. The same goes for a selection the server can no longer read: the actor stays in port until staff select again or clear it.
+- A revision that does not compile as a mind is refused when you select it. One that compiles and then does nothing useful is selected: the actor will do what the text says, so try a new doctrine on a quiet lane first.
+
+The collector drones' doctrine and the backup mind that flies a crewless ship home are not in this list.
