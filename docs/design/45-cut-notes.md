@@ -192,7 +192,304 @@ section, so two units' notes never touch the same lines.
 
 ## AP.3
 
-Not built.
+The posture record (doc 45 §7.1; Q-45-3, Q-45-4, Q-45-23). **Expensive to reverse**: every
+mind's view carries the field, so the mind API moved (`api=8` to `api=9`) and the frame with it
+(9 to 10). PR #565. Paths are under `crates/tacsim/src/` unless given.
+
+**Built.**
+
+- **The word** (`posture.rs`, new). `Posture` is `Return`, `Guard` or `Hold`, `Return` by
+  default. A mind reads it as `return`, `guard` or `hold`; a player reads `RETURN`, `GUARD`,
+  `HOLD`.
+- **The record, on the unit** (`posture/record.rs`, new). One attribute on the unit's own
+  object, `TACSIM.POSTURE`, owned by `GOD`: `{"posture": "guard"}`. A unit on `RETURN` has no
+  attribute, so every unit that existed before reads `RETURN` and no stored format moved.
+  `record::of(world, unit)` is the one reader and `record::set(ctx, unit, posture)` the one
+  writer. An attribute `GOD` does not own is not the record, so a player cannot forge one on a
+  hull they own; removing it sets the default they could always have.
+- **The arena's copy** (`arena/posture.rs`, new; `arena/state.rs`, `arena/hash.rs`).
+  `UnitState::posture`, written only by `Arena::set_posture`. It rides the snapshot and folds
+  into the state hash **only when it is not `RETURN`** (hash item 1, sub-item 26), as MW.7's
+  `absent` does, so `SNAPSHOT_FORMAT` stands at 19 and every match that never sets a posture
+  hashes as it did. Nothing in the arena acts on it: the absent player's gate, the stock mind
+  and the orders are untouched.
+- **The frame, the keyframe and the view.** `Frame::posture` (`arena/step/frames.rs`), the
+  keyframe's top-level `posture` (`match_/cockpit/frames.rs`, `FRAME_VERSION` 10), and
+  `MindView::posture` (`arena/mind.rs`), built from the frame like every other view field. A
+  changed posture is a changed frame (`Frame::same_as`), so a seat is sent it at once.
+- **The getter and the ABI** (`minds/api.rs`, `minds/mod.rs`). `View.posture`, with its row
+  in the parity table (151 rows), 286 names pinned, `API_VERSION` 9,
+  `MIND_ABI = rhai=1.26.0;api=9;stock=3`. A getter and not a kernel, because the doc's words
+  are "one more field in the view" and doc 17 D-UM-4's parity then gives the person in the
+  seat the same word on the keyframe, which AP.4's status needs.
+- **The field host** (`field/posture.rs`, new). The host copies each unit's record to its
+  arena: every unit once when a task first holds it, then whenever its record differs from
+  what the host last told, checked once a world second from the host's pass and at once when
+  the record is written; and before a resumed arena's task starts (`field/boot.rs`), where
+  the record decides over the snapshot's older word. The message is `ArenaMsg::Posture`
+  (`arena_task.rs`), latest-wins a unit, applied at a pulse's head after that head's joins;
+  a word for a unit whose join has not landed waits in the task for it. A task that is not a
+  field's ignores it. A demotion changes nothing: the arena's copy goes with the arena.
+- **Space** (`space/view.rs`, `space/backup.rs`). `space_mind_view` sets the view's posture
+  from `Situation::postures`, which the backup seat fills from the hull's record; a hull
+  outside every bubble (`tier1_view`) reads its record too. So a player's ship flown by the
+  backup seat already reads the word a rig's mind does, and AP.9 does not move the ABI again.
+  An NPC actor's hull (the corvette, the raider, the interdictor, a drone) has no row and
+  reads `return`. The space doctrines read nothing of it yet.
+- **The retained ABIs** (`minds/mod.rs` `RETAINED_ABIS`, `minds/metadata.rs`). See
+  "Conformance" below.
+- Doc 17 §3 and §24, and doc 45's AP.3 row, read as built.
+
+**Where the posture lives, and what was rejected.**
+
+| | Where | Verdict |
+|---|---|---|
+| Chosen | An attribute on the unit's object | Outside custody: a field, a bubble and a practice match check the unit out and in around it and never touch it. Present for every kind of unit (a rig, a carrier, a ship, a roster unit, a simulator hull all are objects). The precedent is the raider's standing withdrawal (`field/raiders.rs` `RAIDER_ATTR`), kept on the hull "so a restart keeps asking". No format version moves |
+| Rejected | The unit's `mush-tactics` record (`TacticalUnit`, as a capability, like `tacsim.space.subsystems`) | The record is closed exactly when a posture is set. A deployed unit refuses every rewrite but its check-in (`mush-tactics/src/module.rs`, `encode_unit_document`'s admission sites), and a check-in that voids restores the snapshot taken at check-out (`custody::check_in(.., None)`), so a posture set from a seat in a field would be refused, or lost when the field is voided. It would also bump the unit's `revision` for a fact that is no part of the machine, and teach a rules-neutral crate a game word |
+| Rejected | The host's own record (`FieldUnit` on the live record, the bubble's ship) | Q-45-23 rules it out: it would not survive the host |
+| Considered, not taken | A typed record family of its own, written by an authoritative action | It is the lane new player acts use (`RigRecord`), and the object's attribute rides the older object-persistence lane (`CommandCompatibility::LegacyPostImage`: `@field/raiders` is classed so for the same attribute write). It needs a provider, an offer, a definition and a `go`/`Queued.` round trip for one word, and the relay's delivery (AP.4) would need a second action. **Cheap to change later**: nothing reads the attribute but `record::of` and nothing writes it but `record::set`, so moving the record is those two functions and a one-time read of the old attribute |
+
+**The ABI move, and what was re-pinned.** One commit moves it (`b6d3fb7e5`; the re-pin is `ed5593464`, the baseline `644088223`). Then:
+
+| Pinned set | Where | What moved | Why nothing else did |
+|---|---|---|---|
+| The nine default seal identities | `match_/seal.rs` `m5rules_default_seal_identities_are_pinned` | 9 digests | The same test pins the API 4 projection of the same nine seals (ABI, source and stock provenance put back), and that half still passes: no custody moved |
+| The source identities | `minds/content.rs` `STANDARD_SHA256` (`42c694ed…` to `2bea2391…`), the five other stock doctrines' headers, the acceptance mind (`field_pilot`), three House envelopes and their manifests | the digest of each file whose header or envelope names the API | Each `.rhai` differs from main in the header's `api:` word and each envelope in its `mind_abi` string, and nothing else |
+| Arena state hashes | `tests/domain_arena/` `minds.rs` (`m1a5_the_production_hash_does_not_move`, 3), `motor.rs` (1), `reflex.rs` (2) | 6 values | They fold the seals; the same runs' ledger lines are the next row |
+| The `hash` of pinned ledger lines | `motor.rs` (34 lines), `reflex.rs` (50 lines) | 84 | A script over the diff: every changed line of the four files differs from main in a hash token alone (the `mind_sealed` lines also in their `source` prefix). No kind, unit, time, cell or count on any line moved |
+| The cross-platform mind corpus (D-UM-28) | `minds_rhai.rs` `M2_CROSS_PLATFORM_PINS`, an `#[ignore]`d test CI's `tacsim-minds` cell runs | 4 rows, 12 values | The stopping times (180,250, 177,500, 170,000, 900,000), the probe's 3,600 thinks and the 369098751 bitmask are as they were. Linux (conclav.dev) and Windows (this box) print the same four rows |
+| MW.5's Registry trial (doc 17g C4 item 4) | `minds/registry/trials/physical_tests.rs` `C4_TRIAL_PINS`; merged as #558 while this unit was in flight | 4 rows, 12 values | Every case still ends `Elimination { winner: Some(PartyId(66)) }/Loss` at 58,500 ms. The filed result of each case was dumped at main (`0bad68f0b`) and here: 31 fields each, and three differ, the end's state hash, the end's ledger digest and the coverage's witness (a rolling digest that folds each think's sealed program). The meter's figures and the think counts are equal. Linux and Windows read the same rows |
+| MW.10's space cast (doc 44 unit MW.10; merged as #562 while this unit was in flight) | `content/space/picket_cast.json`, three `doctrine_sha256` | 3 digests | Each is the SHA-256 of a shipped doctrine file, and those three files differ from main in their header's `api:` word alone. MW.10's cut note names this as the one pin that moves with the bytes; its test `the_packs_cast_names_each_shipped_doctrine_by_its_digest` holds it |
+| The harness baseline | `tests/harness_baseline/arena.linux.json`, `ap3_deterministic_update` | 5 fields (below) | The ledger dump (below) |
+
+58 values came from one Linux run of the whole of `tacsim`'s tests by the script MW.9 left
+(`mw9-rebless-pins.py`): 7 failed comparisons, 58 pinned values, the same seven tests MW.9
+re-pinned. The 12 corpus values and the 12 trial values were read from each test's own print.
+
+**The harness baseline, re-blessed by record** (doc 43 rule 8). A deterministic-only update;
+TS.21's timings and host stand.
+
+| Field | Was | Is |
+|---|---|---|
+| `counters.ledger_bytes_streamed` | 1650916 | 1651236 |
+| `minds.fill_authored.final_substep_hash` | 5028223047829299195 | 16090300274155741832 |
+| `minds.stock_ci.final_substep_hash` | 2814354088987883261 | 8502901592418194973 |
+| `minds.stock_authored.final_substep_hash` | 1771993770098865287 | 3144024366270822576 |
+| `minds.ceiling_authored.final_substep_hash` | 1115581876497461230 | 477923012376592334 |
+
+- **Why the byte count moved, and that nothing else did.** A ledger line writes the state hash
+  as a decimal, and the hashes are different numbers of different lengths. Proved on
+  conclav.dev by dumping the arena lane's streamed ledger at main (`668425fab`) and at this
+  unit: 9,323 lines each, 9,323 hash values each, 300 sealed-source prefixes each, **no line
+  differs once `hash` and the `mind_sealed` lines' `source` are taken out**, and the 320
+  bytes are the digits of the hash values alone (180,898 to 181,218). The dump was a patch to
+  the harness that was never committed (`Counts::absorb` appending each chunk to a file).
+- **Against the updated file**, on conclav.dev by hand as `ghrunner` (nice 10, `HOSTNAME`
+  unset) with the timing gate live, `scripts/harness-weekly.sh` whole: the deterministic
+  block equal (106 fields), the four minds blocks equal (102, 30, 30 and 34 fields), p50
+  −4.2%, p99 +0.9% and the window p99 −1.2%.
+- Every unit of the harness is on the default posture, which the snapshot and the hash spend
+  no byte on, so the snapshot's sizes did not move either.
+
+**Conformance: what "the Registry's existing path" is, and what it did when MW.9 moved the
+ABI.**
+
+- **The path.** The Registry's manifest digest covers the mind API's own source files
+  (`minds/registry/manifest.rs` `implementation`: `api.rs`, `mod.rs`, the kernels, the fees),
+  so any change to the API is a new compatibility. The automatic lane
+  (`minds/bulk/registry_service/reconformance.rs`) scans the filed revisions, and for each one
+  whose certificate is under an older compatibility prepares it as a re-conformance subject
+  (`registry/subject.rs` `PreparedSubject::prepare_reconformance`) and rates it again on the
+  engine as it stands; a subject that does not measure up is recalled with notice (doc 17
+  §16). Separately, every boot audits every saved revision as an archive (`store.rs`
+  `audit_mind_revisions`, through `authoring::RetainedRevisionRules`).
+- **What it did at MW.9, and before.** Both doors ask
+  `minds/metadata.rs` `validate_retained_registry` which ABI the revision's envelope names,
+  and that function knew two: `api=4;stock=2` and `api=5;stock=2`. The ABI has since been 6,
+  7 and 8, and nobody added a row. So when MW.9 moved `api=7` to `api=8`, a revision saved
+  under API 7 was (a) **quarantined at the next boot** ("unsupported retained Registry ABI",
+  its library reference disabled), and (b) **never conformed again**: `prepare_reconformance`
+  failed at every scan, and a preparation failure is by design neither a rejection nor a
+  recall, so the lane tried for ever. The same for API 6 at CF.0. Nothing was lost only
+  because no server holds a filed mind yet.
+- **What AP.3 built.** `RETAINED_ABIS` (`minds/mod.rs`) lists every ABI since the Registry
+  opened, API 4 to API 8, and `validate_retained_registry` admits exactly those. A test
+  (`every_abi_since_the_registry_opened_is_retained`) fails if `API_VERSION` is raised and the
+  ABI it replaces is not added, so the next move cannot repeat this. Nothing else about
+  retention moved: a retained revision is no fresh save, its header's `api` must be the one
+  its envelope names, and it runs again only if its unchanged source compiles and thinks on
+  the current sandbox.
+
+**Tests.**
+
+In source:
+
+- `posture::tests`, `posture::record::tests`: the word, the default, the record's shape; an
+  attribute `GOD` does not own, or one that is not the record's shape, is no record.
+- `arena::hash::tests::ap3_the_hash_folds_a_posture_only_when_it_is_not_return`,
+  `arena::posture::tests` (the snapshot carries it only off the default and round-trips; the
+  frame and the view carry it, and a changed posture is a changed frame),
+  `arena::snapshot` (`af1_a_unit_is_carried_whole_by_its_derive`, the field listed).
+- `field::posture::tests::ap3_a_resumed_arena_takes_each_units_posture_from_its_record`: the
+  record decides both ways.
+- `minds`: `every_abi_since_the_registry_opened_is_retained` (the table's own rule),
+  `authoring` (`every_abi_since_the_registry_opened_is_retained_and_none_is_a_fresh_save`,
+  `a_script_that_reads_the_posture_saves_under_the_current_api`), the getter's read and its
+  parity row (`api`), the 286 pinned names.
+- `minds::registry::tests`:
+  `ap3_a_mind_filed_under_any_abi_since_the_registry_opened_is_conformed_again` (for each of
+  API 4 to 8: not a fresh rating subject, a re-conformance subject, no byte of it moves, and
+  its unchanged source thinks on the current sandbox) and
+  `ap3_a_script_that_reads_the_posture_is_rated_and_reads_the_units_word` (rated under API 9;
+  its think answers `return`, `guard` or `hold` as the arena holds it).
+- `store::tests::ap3_a_source_saved_under_every_retained_abi_survives_the_cold_audit`: saved
+  through the real Roll and source union, then a cold boot: not quarantined, byte for byte.
+
+Arena (`tests/domain_arena/minds_rhai.rs`):
+`ap3_a_sealed_script_reads_its_posture_and_a_changed_posture_changes_what_it_does`. A sealed
+script that goes home on `return` and stays on any other word: on the default it reads
+`return` and drives home; set to `HOLD` it reads `hold` and never leaves its cell; set back
+mid-run it goes. The parity test reads `View.posture` against the keyframe with the other
+150 rows.
+
+Task (`arena_task`): `ap3_a_posture_told_before_its_units_join_is_applied_when_it_lands`.
+The word and the join at one head; the word a head early, kept, replaced by a later word and
+applied when the join lands; a practice match's task drops it and keeps none.
+
+Space, in source: `space::view` (a ship's view carries her own posture by her id in the
+bubble, and `return` without a row), `space::backup` (a hull outside every bubble reads the
+posture her seat hands the view).
+
+Story (`tests/domain_field/field_ap3.rs`, a field of three parties, about 85 s on
+conclav.dev): `ap3_a_units_posture_is_its_own_through_a_field_a_restart_and_a_demotion`. The
+ward is set to `GUARD` on the open surface; the site promotes around it and its frame reads
+`guard` while the raider's reads `return`; set to `HOLD` in the running field its frame
+reads `hold`; the story waits until the field's saved snapshot carries `HOLD` for the ward,
+sets the record back to `RETURN` and restarts at once, and the resumed field reads `return`;
+set to `GUARD` in the resumed field it reads `guard`; the field demotes on its idle bound
+and the record still says `GUARD`.
+
+Each acceptance clause failed on main: the story and the arena test cannot be compiled there
+(no record, no field), and the conformance tests fail there for API 6 and API 7 (main's list
+stops at 5; with the ABI at 9 they fail for API 8 too without the table).
+
+**What doc 45 had wrong, or left out.**
+
+- **"Filed minds are conformed again by the Registry's existing path."** The path exists and
+  could not do it: see "Conformance". The row's acceptance ("one sealed under the old version
+  is conformed again, not refused for ever") was failing on main for API 6 and API 7 before
+  this unit touched anything.
+- **"The unit's record in `crates/mush-tactics`"** cannot hold it: see the table above.
+- **`API_VERSION` is not the only version.** A field a mind reads is first a field of the
+  frame and the keyframe (doc 17 §3, D-UM-4), so `FRAME_VERSION` moved too (9 to 10) and the
+  three shared cockpit fixtures under `web/src/lib/fixtures/cockpit/` with it.
+- **The word "posture" was taken four times**: a pose's opaque driver blob (`Pose.posture`),
+  the mind card's section (`Stance`), a space hull's emission posture (`EmconPosture`,
+  `space(v).emcon`) and the detachment commander's decision (`detachment::commander::Posture`).
+  None is this. `crate::posture::Posture` is the only one a player sets on a unit, and
+  `View.posture` collides with no registered name.
+- **A resume across the ABI move** (doc 17 §13, unchanged): a practice match running at the
+  restart is voided by name, and an IC field keeps its sortie and drops each scripted mind to
+  the drive ROM. A deploy of this unit over a running field does that once.
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **The ABI moved to `rhai=1.26.0;api=9;stock=3`**, once, and the frame to 10 | **Expensive**, as ruled (Q-45-4): every sealed mind, compile key and resume check carries it |
+| 2 | The record is an attribute on the unit's object | Low: two functions (above) |
+| 3 | A getter, `v.posture`, answering a word, and the keyframe's `posture` key | Medium: it is API and frame. A kernel would have left the frame alone and given the seat nothing to show |
+| 4 | The host tells its arena by a message: every unit once when a task first holds it, then on a change, once a second and at once on a write; a unit off the default is told again every ten seconds. The task keeps a word for a unit whose join has not landed | Low. A unit that leaves at a ramp and joins again while its row stood in the live record starts on the default and is corrected within ten seconds |
+| 5 | The arena's copy is hashed and carried only off the default | Low; it is what kept every practice hash and `SNAPSHOT_FORMAT` |
+| 6 | Every ABI since API 4 is retained, API 6 and 7 among them though no revision is known to carry them | Low: a row each |
+| 7 | An NPC hull in a bubble (the corvette, the raider, the interdictor, a drone) reads `return` | Low: `Situation::postures` takes a row for any ship |
+
+**Not built, and where each lives.**
+
+- **Setting a posture** (the seat, the carrier, the relay; the status and the roster):
+  **AP.4**. Until then only `record::set` writes one, and no verb calls it.
+- **What a mind does with the word.** The field's mind on `GUARD` and `HOLD`, and the gate's
+  one widening: **AP.6** (`Arena::lay_go_home` lays `Withdraw` whatever the posture is, as
+  MW.7 built it). A rig on a plan and a carrier: **AP.7**. Space: **AP.9**; the view already
+  carries the word. No shipped doctrine reads `v.posture`.
+- **The simulator**: **AP.10**. `ArenaMsg::Posture` is ignored by a task that is not a
+  field's, and a practice match's posture would have to ride the input tape to replay.
+- **The clients** draw nothing for the keyframe's `posture`: **AP.4**, with the status.
+- **A typed record family** for the record: not taken (the table above); no unit.
+
+**Not pinned by a story.**
+
+- The object's attribute through a real store round trip. The story's restart carries the
+  world as the rig's reboot does (the objects in RAM, the typed records and module documents
+  from the store); that an object's attributes persist is `mush-core`'s own contract and is
+  not re-proved here.
+- The automatic re-conformance lane end to end over a revision filed under API 8
+  (`reconformance_lifecycle_integration_tests` drives it over a compatibility change with a
+  current revision). What is pinned is each door the lane goes through, for every retained
+  ABI: the cold audit, the preparation, and a think of the unchanged source.
+- A unit that leaves at a ramp and joins again inside one host pass (default 4 above).
+- A ship's record read inside a bubble by a story. The view's field is pinned in source for
+  a ship in a bubble and for one outside every bubble; the one line that reads the hull's
+  record into the bubble's situation (`space/backup.rs` `fly_in_bubble`) is not. AP.9's
+  stories fly it.
+
+**Reviewed.** A second agent read the diff adversarially (read-only). It found nothing in
+the determinism, the resume ordering, the record's ownership rule, the retained-ABI table or
+the re-pins (it checked that the changed pin lines differ in hash, digest and `source` tokens
+alone). It found three gaps, all fixed in `3436eacca`:
+
+- **A word that beat its unit's join was dropped.** A unit launching into a running field is
+  in the live record before its join lands; the host told the task its posture, the task
+  applied postures before joins and dropped the word, and the host believed it had told. The
+  unit read `return` until the ten-second refresh. The task now applies postures after the
+  head's joins and keeps a word for a unit it does not hold; the host tells every unit once
+  when a task first holds it. Pinned at the task.
+- **The story's restart step assumed the snapshot held the older word.** It now reads the
+  field's saved snapshot and waits until it carries `HOLD` for the ward before the restart.
+- **Nothing tested the space view's posture.** Two in-source tests.
+
+It also noted that the per-unit hash folds carry no terminator, so two crafted states could
+in principle fold the same bytes (an absent unit on `GUARD` against a unit with 258 entries
+in `fired_on_by`). That is the folds' standing shape, not this unit's; the posture's tag byte
+is its own. Not changed.
+
+**Verified, and how.**
+
+- **Mutation checks**, on Linux (conclav.dev), two builds of a throwaway clone, each
+  mutation caught by the test named for it:
+
+  | Mutation | What failed |
+  |---|---|
+  | The host never tells its arena | the story, at "the field reads the posture the unit came in with" |
+  | The getter answers `return` whatever the unit holds | the arena script test, the Registry's posture test, the getter's read |
+  | API 8 is not retained | the table's test, the audit test, the save test, the re-conformance test |
+  | The hash does not fold a posture | the hash test, the snapshot test |
+  | A resumed arena keeps the snapshot's word | the story, at "the resumed field reads the record, not the snapshot's older word: Some(Hold)" |
+  | A word for a unit the arena does not hold is dropped | the task's join-order test |
+
+- **The whole of `tacsim`'s tests**, on Linux (conclav.dev): on the first tree 4,516 run,
+  the only failures the eight pin tests re-pinned here and two tests of this unit since
+  fixed; on the pushed tree `4d0d78c3e`, 4,526 run and 4,526 passed; again on
+  the head with main at `d2be044c5` merged in (MW.5's trial rows and MW.10's cast re-pinned on top), 4,538 run and 4,538 passed.
+- **The cross-platform corpus** and **MW.5's Registry trial rows**: read on Linux
+  (conclav.dev) and on Windows (this box), the same rows byte for byte. The other two
+  `#[ignore]`d steps of CI's `tacsim-minds` cell pass on Linux unchanged.
+- **The harness**, whole, by hand on conclav.dev against the updated baseline, timing gate
+  live (above).
+- **`mush-contract-tests`**: 195 on Linux, and on Windows (203 with the eight Linux skips),
+  no budget re-blessed.
+- `cargo clippy --all-targets -D warnings` and `cargo doc -D warnings
+  --document-private-items` on `tacsim`, on Linux and Windows.
+- **CI**: the pull request's CI and a full dispatch (`gh workflow run ci.yml`) on the head commit; the runs and what each dispatch-only job answered are in the pull request's body, since a note cannot name the run of its own commit.
+
+**Not verified.**
+
+- **The `#[ignore]`d tests that no workflow runs** (the by-hand lanes: `minds_pool`'s gate
+  lane in release, the cost lane's cohort, the field pulse at scale). Any of them that pins
+  a hash that folds a seal has moved with the ABI and is not re-pinned here, as MW.9 left it.
+- Nothing was run against a live server or over SSH, and nothing was deployed.
+- The cost of the host's pass at a field of a hundred units (one attribute read a unit a
+  second, and a clone of the told map). Not measured; the reviewer judged it acceptable.
 
 ## AP.4
 
