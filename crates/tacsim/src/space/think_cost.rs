@@ -125,7 +125,7 @@ fn interdictor_bubble() -> (LocalSpaceBubble, String) {
     bubble.insert_ship(interdictor);
     for n in 0..2_u32 {
         bubble.insert_ship(SpaceShipState::new_dray(
-            &format!("hull.{}", 20 + n),
+            format!("hull.{}", 20 + n),
             "Carrier",
             CARRIER_PARTY,
             [-12_000, i64::from(n) * 2_000, 0],

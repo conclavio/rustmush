@@ -411,7 +411,7 @@ impl ThinkHost {
             lands_ms: t_ms.saturating_add(500),
             seed: u64::from(unit.0).wrapping_add(think_seq),
             dropped: false,
-            profile: kit.profile.clone(),
+            profile: kit.profile,
             view: Arc::clone(view),
             memory: memory.to_vec(),
             map: Arc::clone(&kit.map),
