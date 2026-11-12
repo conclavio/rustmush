@@ -99,12 +99,8 @@ fn end_session(rig: &mut Rig, who: ObjId) {
 
 /// What `who` hears when they connect.
 fn connect(rig: &mut Rig, who: ObjId) -> String {
-    rig.tw
-        .connect(who)
-        .into_iter()
-        .filter_map(|(_, event)| event.text().map(str::to_owned))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let events = rig.tw.connect(who);
+    crate::driving_rig::said(&rig.tw, &events, who)
 }
 
 /// `secs` world seconds, the arena's egress pumped as they pass.
@@ -252,7 +248,11 @@ async fn yard() -> Yard {
 
 impl Yard {
     /// Pump and tick until `done` holds or `secs` of wall time pass.
-    async fn wait(&mut self, secs: u64, done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool) -> bool {
+    async fn wait(
+        &mut self,
+        secs: u64,
+        done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
+    ) -> bool {
         until(&mut self.rig, &mut self.rx, &mut self.lines, secs, done).await
     }
 
@@ -263,7 +263,11 @@ impl Yard {
 
     /// **The raider's player keeps a lock on the ward and fires** until `done` holds or `secs`
     /// of wall time pass: the two lines a player types, once a wall second.
-    async fn raid(&mut self, secs: u64, mut done: impl FnMut(&Rig, &[LedgerEvent]) -> bool) -> bool {
+    async fn raid(
+        &mut self,
+        secs: u64,
+        mut done: impl FnMut(&Rig, &[LedgerEvent]) -> bool,
+    ) -> bool {
         let gun = weapon_of(&self.rig, self.raider);
         let at = (
             u16::try_from(WARD_AT.0).expect("a cell"),
@@ -271,7 +275,8 @@ impl Yard {
         );
         for _ in 0..secs {
             if let Some(contact) = contact_near(&self.rig, self.stranger, at)
-                && frame(&self.rig, self.stranger).is_some_and(|frame| frame.lock != Some(contact.id))
+                && frame(&self.rig, self.stranger)
+                    .is_some_and(|frame| frame.lock != Some(contact.id))
             {
                 let _ = run(
                     &mut self.rig.tw,
@@ -331,8 +336,7 @@ async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_firs
         "the field's task opens"
     );
     let live = tacsim::field::live_on(rig.tw.world(), &cid(AHUNA)).expect("the live record");
-    let parties: std::collections::BTreeSet<_> =
-        live.units.iter().map(|row| row.party).collect();
+    let parties: std::collections::BTreeSet<_> = live.units.iter().map(|row| row.party).collect();
     assert!(
         parties.len() >= 3,
         "the miner, the escort and the intruder are three parties: {parties:?}"
@@ -384,9 +388,8 @@ async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_firs
     assert!(
         out,
         "the mind takes the escort out at its carrier's ramp: pose {:?}, away {:?}",
-        mush_sim::pose_of(rig.tw.world(), hull).map(|(_, pose)| {
-            tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm)
-        }),
+        mush_sim::pose_of(rig.tw.world(), hull)
+            .map(|(_, pose)| { tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm) }),
         away_of(rig.tw.world(), hull)
     );
     let home = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
@@ -462,7 +465,11 @@ async fn mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it() {
         .raid(120, |_, lines| fired_at(lines, ward, raider) > 0)
         .await;
     yard.cease();
-    assert!(answered, "the mind answers the unit that fired on it: {}", yard.exchange());
+    assert!(
+        answered,
+        "the mind answers the unit that fired on it: {}",
+        yard.exchange()
+    );
     let first_arrival = yard.lines.iter().position(|line| {
         matches!(&line.kind, EventKind::Impact { unit, target, .. } if *unit == raider && *target == ward)
     });
@@ -503,7 +510,11 @@ async fn mw7_a_hold_fire_left_by_the_pilot_holds_through_an_attack() {
     let struck = yard
         .raid(120, |_, lines| arrived(lines, raider, ward) >= 3)
         .await;
-    assert!(struck, "the raider's fire arrives on the ward: {}", yard.exchange());
+    assert!(
+        struck,
+        "the raider's fire arrives on the ward: {}",
+        yard.exchange()
+    );
     let _ = yard.wait(10, |_, _| false).await;
     yard.cease();
     assert_eq!(
@@ -549,7 +560,11 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
         away_of(yard.rig.tw.world(), ward)
     );
     // Their first command is what the hull does.
-    let focus = run(&mut yard.rig.tw, pilot, &format!("+focus #{}/pilot", ward.0));
+    let focus = run(
+        &mut yard.rig.tw,
+        pilot,
+        &format!("+focus #{}/cockpit", ward.0),
+    );
     let drive = run(&mut yard.rig.tw, pilot, "DRIVE 150,110");
     let driving = yard
         .wait(60, |rig, _| {
