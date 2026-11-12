@@ -81,6 +81,51 @@ pub(super) struct Intent {
 }
 #[derive(Clone, Default)]
 struct Pending(BTreeMap<ObjId, Intent>);
+/// **The lapses already told** (doc 45 unit AP.8; RAM): operation, slot and order sequence. A
+/// submission that is refused at its final take is made again and tells nothing twice; a
+/// restart between the line and the write's commit tells it once more.
+#[derive(Clone, Default)]
+struct ToldLapses(std::collections::BTreeSet<(OperationId, u16, u64)>);
+
+/// **Tell the lapses a submission records** (doc 45 unit AP.8; Q-45-13): the leader who gave
+/// each order, on the reconnect queue when they are not on watch (the notices doc 45 unit AP.1
+/// uses), and the roster's leader after the write when that is another player.
+fn tell_lapses(ctx: &mut Ctx<'_>, snapshot: &prepare::Snapshot) {
+    use crate::port_tick::{NoticeLevel, notify_budget};
+    let Some((operation, leader, lapses)) = snapshot.new_lapses() else {
+        return;
+    };
+    let lead = leader
+        .filter(|leader| leader.kind == mush_tactics::detachment::LeaderKind::Player)
+        .map(|leader| leader.character);
+    for (slot, sequence, issuer, directive) in lapses {
+        let fresh = ctx.w.module_state_mut::<ToldLapses>().is_some_and(|told| {
+            if told.0.len() >= 256 {
+                told.0.clear();
+            }
+            told.0.insert((operation, slot.get(), sequence))
+        });
+        if !fresh {
+            continue;
+        }
+        let fill = |line: &str| {
+            line.replace(
+                "{order}",
+                &super::field_commands::directive_text(&directive),
+            )
+            .replace("{slot}", &slot.get().to_string())
+        };
+        notify_budget(ctx, issuer, &fill(super::ORDER_LAPSED), NoticeLevel::Trip);
+        if let Some(lead) = lead.filter(|lead| *lead != issuer) {
+            notify_budget(
+                ctx,
+                lead,
+                &fill(super::ORDER_LAPSED_LEAD),
+                NoticeLevel::Trip,
+            );
+        }
+    }
+}
 pub(super) fn pending(world: &World, actor: ObjId) -> Option<&Intent> {
     world.module_state::<Pending>()?.0.get(&actor)
 }
@@ -274,6 +319,7 @@ pub(crate) fn register(
         actions.get(crate::surface::act::SURFACE_ACT_ACTION),
     )?;
     reg.state(Pending::default());
+    reg.state(ToldLapses::default());
     reg.state(handles);
     super::tick::register(reg)
 }
@@ -656,6 +702,7 @@ pub(super) fn enqueue(ctx: &mut Ctx<'_>, actor: ObjId, command: Command) -> Resu
         super::commands::check_caller_rights(ctx, &intent.command)?;
     }
     let snapshot = prepare::snapshot(ctx.w, &mut &*ctx, &handles, actor, &intent)?;
+    tell_lapses(ctx, &snapshot);
     let digest = digest(actor, &intent).map_err(|e| e.to_string())?.to_hex();
     // A return/cancel/relaunch cycle can complete within one wall-clock second.
     // Its new owner preimages must not reuse the first departure's receipt.

@@ -267,17 +267,46 @@ const fn presence_of(
     }
 }
 
+/// **`unit`'s presence record, when `character` is the pilot it was opened for**: the record is
+/// its seated pilot's, and says nothing of anyone else who holds a station aboard.
+fn away_of_pilot(w: &World, unit: ObjId, character: ObjId) -> Option<super::absent::Away> {
+    let site = super::field_of_unit(w, unit)?;
+    w.module_state::<super::FieldBook>()?
+        .hosted(&site)?
+        .live
+        .units
+        .iter()
+        .find(|row| {
+            row.unit == unit
+                && row
+                    .pilot
+                    .as_ref()
+                    .is_some_and(|(pilot, _)| *pilot == character)
+        })?
+        .away
+}
+
 /// **How `character` stands to `unit`, their unit of a roster** (this module's head). One clock:
 /// while a running field holds the unit, the field's five minutes decide and the server's own
 /// link grace does not.
 #[must_use]
 pub(crate) fn presence(w: &World, unit: ObjId, character: ObjId) -> Presence {
     presence_of(
-        super::absent::away_of(w, unit),
+        away_of_pilot(w, unit, character),
         super::absent::homebound(w, unit),
         w.has_live_conns(character),
         w.is_connected(character),
     )
+}
+
+/// **Whether the field itself has `character` gone from `unit`**: the unit passed to its mind
+/// as an absent player's, in a running field or out at its ramp since. Narrower than
+/// [`presence`]: a session that is merely not there (a player who never sat in a field unit, or
+/// every player in the seconds after a restart) is not this.
+#[must_use]
+pub(crate) fn gone_from_field(w: &World, unit: ObjId, character: ObjId) -> bool {
+    away_of_pilot(w, unit, character).is_some_and(|away| away.handed)
+        || super::absent::homebound(w, unit)
 }
 
 /// **Whether an order presses**: an `ENGAGE` or an `ADVANCE`, the two orders that carry an
@@ -295,13 +324,16 @@ pub(crate) const fn presses(directive: &Directive<FieldPayload>) -> bool {
 }
 
 /// **Whether a delivered order lapses now** (this module's head; Q-45-13): it presses, a player
-/// gave it, and that player is gone. An NPC leader's order never lapses this way: an NPC is
-/// never absent.
+/// gave it, and the field has that player gone from the unit they gave it from
+/// ([`gone_from_field`]). The clock is the field's and no other: a leader who was never at a
+/// field unit's controls has no record to lapse on, so their orders stand (a restart, which
+/// ends every session for a moment, lapses nothing). An NPC leader's order never lapses this
+/// way: an NPC is never absent.
 #[must_use]
 pub(crate) fn lapses(w: &World, order: &OrderEnvelope<FieldPayload>) -> bool {
     presses(&order.directive)
         && !is_npc(w, order.issuer)
-        && presence(w, order.issuer_unit, order.issuer) == Presence::Gone
+        && gone_from_field(w, order.issuer_unit, order.issuer)
 }
 
 /// **Where a unit that answers fire faces**: the bearing of the nearest live contact its own
@@ -346,7 +378,8 @@ enum Stood {
 ///    halves (Q-44-18: the stricter order the leader left stays), so such a unit never answers.
 ///
 /// The stand is the crew's own act, not a message: it waits on no relay, it is answered to
-/// nobody, and its issuing unit is the recipient's own (the leader's may have left the field).
+/// nobody, and it is issued by the recipient's own operator from its own unit (the leader's
+/// may have left the field).
 /// The host decides on the recipient's own frame and on nothing the kernel knows beyond it.
 ///
 /// **A seam, named**: the doctrine has no order that stands and answers all round, or that
@@ -411,12 +444,15 @@ pub(crate) fn stand(
             (answer, Objective::Screen { facing_mdeg })
         }
     };
+    // Offered and not yet standing: the kernel is given the window any order has to stand,
+    // then offered it again. Its fence makes a duplicate harmless.
     let key = (task, fence, sequence);
-    if ctx
-        .w
-        .module_state::<Offered>()
-        .is_some_and(|offered| offered.0.get(&unit).is_some_and(|(at, _)| *at == key))
-    {
+    let now = ctx.w.now();
+    if ctx.w.module_state::<Offered>().is_some_and(|offered| {
+        offered.0.get(&unit).is_some_and(|(at, since)| {
+            *at == key && now.saturating_sub(*since) < ORDER_TAKE_WINDOW_S
+        })
+    }) {
         return Step::Waiting;
     }
     let authority = DetachmentAuthority {
@@ -433,7 +469,7 @@ pub(crate) fn stand(
         authority,
         authority_epoch: fence,
         sequence,
-        issuer: delivered.order.issuer,
+        issuer: operator,
         issuer_unit: unit,
         squad: crate::deliberation::SquadId {
             team: party,
@@ -448,7 +484,6 @@ pub(crate) fn stand(
         }),
         expires_at_ms: None,
     };
-    let now = ctx.w.now();
     if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
         && let Some(book) = ctx.w.module_state_mut::<Offered>()
     {

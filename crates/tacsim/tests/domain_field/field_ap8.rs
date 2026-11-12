@@ -8,8 +8,8 @@
 //!    leads a combat roster from a prospector with Rook Adeyemi hired into a leased escort tank.
 //!    The captain marks the intruder's party Hostile and orders `2 ENGAGE`; Adeyemi fires on the
 //!    intruder. The captain's link is lost. The server's own grace ends the session a minute
-//!    later and nothing changes: twenty seconds short of five minutes the captain still leads
-//!    and the order stands. At five minutes the captain's rig passes to its mind, the order
+//!    later, which gives up the helm and the lead, and the order still stands half a minute
+//!    short of five minutes. At five minutes the captain's rig passes to its mind, the order
 //!    lapses, and Adeyemi's tank holds: it fires nothing more at the party its leader marked.
 //!    The intruder's player fires on it; once a round hits, the tank answers from where it
 //!    stands. The captain reads the lapse at login and in `+sortie/orders`, and it is still
@@ -56,16 +56,16 @@ use tacsim::field::absent::{FIELD_LINKDEAD_GRACE_WALL_S, away_of, minded};
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving_rig::{
-    Rig, cid, command, crash, land, on_pad_as_at, run, said, site_domain, staff_hand,
-    stocked_tuned, warm,
+    Rig, cid, command, crash, land, land_composed, on_pad_as_at, run, said, site_domain,
+    staff_hand, stocked_tuned, warm,
 };
 use crate::field_host_rig::{
     armed_on, egress, frame, pump, seat, second_composed, task, until_composed, weapon_of,
 };
 use crate::grounds_rig::{AHUNA_FLANK, Ground, Placed};
 use crate::roster_rig::{
-    Billet, Flown, Plan, commit, delivered_to, fence, field_roster, fly_leased, operation,
-    orders_of,
+    Billet, Flown, Plan, apply_due, beat, commit, delivered_to, fence, field_roster, fly,
+    operation, orders_of, queued,
 };
 
 /// The shipped crew at Ceres (`content/crew/ceres.json`): the forewoman under a commander's
@@ -101,18 +101,45 @@ fn stand(rig: &mut Rig, entry: &str, unit: ObjId, (cell, heading): Placed) {
     });
 }
 
+/// **Refit `unit` as the armed escort rig** (a staff hand; `tacsim.unit.tv_escort`, the hull the
+/// armed lease signs).
+///
+/// A stand-in for a gap in the game: no hired NPC can be seated in an armed rig. `+sortie/seat`
+/// hands the helm over through Sim's hand-off, which takes a console of exactly one channel
+/// (`mush_sim::handoff`, `station_channel`), and the escort's one console carries the helm, the
+/// sensors and the fire channel. So the roster flies two prospectors as it can, and the hired
+/// one is refitted on the ground before the field opens: its object, its console and its place
+/// in the roster are what the production commands made them.
+fn arm(rig: &mut Rig, unit: ObjId) {
+    staff_hand(rig, |ctx| {
+        let spec = ctx
+            .w
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the layer")
+            .definitions()
+            .bindings
+            .get(&cid("tacsim.unit.tv_escort"))
+            .map(|binding| binding.spec.clone())
+            .expect("the escort design is bound");
+        mush_tactics::module::refit_unit(ctx, unit, &spec).expect("the rig is refitted");
+    });
+}
+
 /// **Fly `plan`'s roster onto Ahuna Flank and open a field over it** (MW.15's ground): the
 /// leader's rig on the miner's ground, the hired rig seven cells east of it, an escort from
 /// another captain and an intruder east of both; the escort fires on the intruder's bearing and
 /// the site promotes with three parties. The field holds through the stories' quiet stretches.
-async fn opened(plan: &Plan, leases: &[&str]) -> Field {
+async fn opened(plan: &Plan, armed: bool) -> Field {
     let at: &Ground = &AHUNA_FLANK;
     let mut rig = stocked_tuned(|cfg| {
         crate::field_host_rig::tune(cfg);
         cfg.field.disengage_s = 7_200;
         cfg.field.idle_demote_s = 7_200;
     });
-    let flown = fly_leased(&mut rig, at, plan, leases, |_, _| {});
+    let flown = fly(&mut rig, at, plan, |_, _| {});
+    if armed {
+        arm(&mut rig, flown.unit(2));
+    }
     stand(&mut rig, at.entry, flown.unit(1), (at.read, 0));
     stand(
         &mut rig,
@@ -269,6 +296,32 @@ impl Field {
     }
 }
 
+/// **The server goes down and comes up** (`driving_rig::crash`), `reconnect` back on.
+///
+/// A roster's journey lands comsys's and the transport's own documents on the composed path (a
+/// channel, an order's envelope), and the rig keeps every composed module write as typed action
+/// state for the next boot. Those documents are their modules' own and are no action state, so
+/// they are handed to the boot as module data, where their owners load them.
+async fn restart(mut rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Rig {
+    let own: Vec<(smol_str::SmolStr, smol_str::SmolStr)> = rig
+        .typed
+        .keys()
+        .filter(|(namespace, _)| matches!(namespace.as_str(), "comsys" | "propagation"))
+        .cloned()
+        .collect();
+    let mut ops = Vec::new();
+    for key in own {
+        if let Some(value) = rig.typed.remove(&key) {
+            ops.push(mush_core::ModuleOp {
+                ns: key.0,
+                op: mush_core::ModuleWrite::JsonSet { key: key.1, value },
+            });
+        }
+    }
+    crate::driving_rig::fold_module_ops_into(&mut rig.store, ops);
+    crash(rig, rx, reconnect).await
+}
+
 /// Drop every connection of `who` with `reason` (MW.7's helper).
 fn drop_conns(rig: &mut Rig, who: ObjId, reason: mush_core::DisconnectKind) {
     let mut out = mush_core::Outbox::new();
@@ -374,7 +427,7 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
             billets: vec![Billet::Leader, Billet::Hired(ADEYEMI)],
             commander: None,
         },
-        &["", "escort"],
+        true,
     )
     .await;
     let (captain, adeyemi) = (field.flown.organiser, field.flown.operator(2));
@@ -413,8 +466,9 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     let engage = delivered_to(&mut field.rig, field.flown.operation, 2).expect("the ENGAGE");
     assert_eq!((engage.issuer, engage.issuer_unit), (captain, lead_rig));
 
-    // The captain's link is lost. A minute on the server's own grace ends their session, and
-    // twenty seconds short of five minutes nothing has changed: one clock, the field's.
+    // The captain's link is lost. A minute on the server's own grace ends their session, which
+    // gives up their console and so the lead (Sim's rule for any billet). The order is another
+    // matter: half a minute short of five minutes it still stands. Its clock is the field's.
     lose_link(&mut field.rig, captain);
     let lost = away_of(field.rig.tw.world(), lead_rig)
         .expect("the clock runs")
@@ -429,13 +483,13 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     );
     assert!(
         away_of(field.rig.tw.world(), lead_rig).is_some_and(|away| !away.handed),
-        "the captain's rig is still theirs twenty seconds short of five minutes: {:?}",
+        "the captain's rig is still theirs short of five minutes: {:?}",
         away_of(field.rig.tw.world(), lead_rig)
     );
     assert_eq!(
         field.leader(),
-        Some((captain, LeaderKind::Player)),
-        "a leader who is waited for still leads"
+        None,
+        "the session's end gave up the helm, and with it the lead"
     );
     assert!(
         field.lapse(2).is_none()
@@ -492,16 +546,25 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     // stands.
     let cell = stood.expect("the escort's cell");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+    let before = fired_at(&field.lines, tank, intruder);
+    assert_eq!(
+        frame(&field.rig, adeyemi).and_then(|frame| frame.own_last_hit_ms),
+        None,
+        "nothing has hit the escort yet"
+    );
     let mut answered = false;
     while std::time::Instant::now() < deadline && !answered {
         field.fire_on(cell);
         answered = field
-            .until(1, |_, lines| {
-                fired_at(lines, tank, intruder) > 0 && fired(lines, tank) > spent
-            })
+            .until(1, |_, lines| fired_at(lines, tank, intruder) > before)
             .await;
     }
     field.cease();
+    assert!(
+        frame(&field.rig, adeyemi).is_some_and(|frame| frame.own_last_hit_ms.is_some()),
+        "the escort fired again only after a round hit it: {} rounds at it",
+        fired_at(&field.lines, intruder, tank)
+    );
     assert!(
         answered,
         "the escort answers the unit that hit it: order {:?}, hit {:?}, {} rounds at it",
@@ -556,7 +619,7 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
 /// **Story 2** (this module's head): the plan's NPC commander replaces a lapsed order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ap8_the_npc_commander_replaces_a_lapsed_advance() {
-    let mut field = opened(&mining(OKONKWO, Some(OKONKWO)), &[]).await;
+    let mut field = opened(&mining(OKONKWO, Some(OKONKWO)), false).await;
     let (captain, okonkwo) = (field.flown.organiser, field.flown.operator(2));
     let (lead_rig, hired_rig) = (field.flown.unit(1), field.flown.unit(2));
     let operation = field.flown.operation;
@@ -609,7 +672,8 @@ async fn ap8_the_npc_commander_replaces_a_lapsed_advance() {
         matches!(hers.objective, Some(FieldObjective::Advance { to }) if to != FAR),
         "to the work point, not the captain's cell: {hers:?}"
     );
-    // The lapse took the two sequences of the stand before her order took the next.
+    // The lapse was written with the write that made her the leader, and took the two
+    // sequences of the stand before her order took the next.
     assert!(
         hers.sequence >= theirs.sequence + 3,
         "the captain's order lapsed before hers was issued: {} then {}",
@@ -640,7 +704,7 @@ async fn ap8_the_npc_commander_replaces_a_lapsed_advance() {
 /// **Story 3** (this module's head): a `HOLD` the leader left is still held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ap8_a_hold_the_leader_left_is_still_held() {
-    let mut field = opened(&mining(MENDES, None), &[]).await;
+    let mut field = opened(&mining(MENDES, None), false).await;
     let (captain, mendes) = (field.flown.organiser, field.flown.operator(2));
     let lead_rig = field.flown.unit(1);
     let operation = field.flown.operation;
@@ -691,7 +755,7 @@ async fn ap8_a_hold_the_leader_left_is_still_held() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
-    let mut field = opened(&mining(MENDES, None), &[]).await;
+    let mut field = opened(&mining(MENDES, None), false).await;
     let (captain, mendes) = (field.flown.organiser, field.flown.operator(2));
     let lead_rig = field.flown.unit(1);
     let operation = field.flown.operation;
@@ -721,7 +785,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
         mut rx,
         ..
     } = field;
-    let mut rig = crash(rig, &mut rx, &[other, stranger]).await;
+    let mut rig = restart(rig, &mut rx, &[other, stranger]).await;
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     assert!(
@@ -794,7 +858,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
         mut rx,
         ..
     } = field;
-    let mut rig = crash(rig, &mut rx, &[other, stranger]).await;
+    let mut rig = restart(rig, &mut rx, &[other, stranger]).await;
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     assert!(
@@ -838,7 +902,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
 /// again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ap8_a_lapsed_order_stays_lapsed_until_its_leader_gives_it_again() {
-    let mut field = opened(&mining(MENDES, None), &[]).await;
+    let mut field = opened(&mining(MENDES, None), false).await;
     let (captain, mendes) = (field.flown.organiser, field.flown.operator(2));
     let lead_rig = field.flown.unit(1);
     let operation = field.flown.operation;
@@ -875,13 +939,46 @@ async fn ap8_a_lapsed_order_stays_lapsed_until_its_leader_gives_it_again() {
         .replace("{order}", &words)
         .replace("{slot}", "2");
     assert!(heard.contains(&told), "the captain is told: {heard}");
-    assert!(
-        field
-            .until(60, |rig, _| field_roster(rig, operation)
+    // Their session's end gave up the console (Sim's own rule for any billet): they take the
+    // focus and the helm back, as they took them before the launch.
+    let _ = run(
+        &mut field.rig.tw,
+        captain,
+        &format!("+focus #{}/pilot", lead_rig.0),
+    );
+    let asked = run(
+        &mut field.rig.tw,
+        captain,
+        &format!("@station/handoff #{}/pilot", lead_rig.0),
+    );
+    let landed: Vec<String> = queued(&mut field.rig)
+        .iter()
+        .map(|submit| {
+            format!(
+                "{}: {:?}",
+                submit.action.key().id,
+                land_composed(&mut field.rig, submit)
+            )
+        })
+        .collect();
+    for _ in 0..8 {
+        if apply_due(&mut field.rig, "control_handoff_apply") > 0 {
+            break;
+        }
+        let _ = beat(&mut field.rig);
+    }
+    let leads = field
+        .until(60, |rig, _| {
+            field_roster(rig, operation)
                 .and_then(|roster| roster.leader())
-                .is_some_and(|leader| leader.character == captain))
-            .await,
-        "the returning player takes the lead"
+                .is_some_and(|leader| leader.character == captain)
+        })
+        .await;
+    assert!(
+        leads,
+        "the returning player takes the lead: {:?}; hand-off {asked} / {landed:?}; away {:?}",
+        field_roster(&mut field.rig, operation).map(|roster| roster.checkpoint()),
+        away_of(field.rig.tw.world(), lead_rig)
     );
     // Back in command, the order is still lapsed: the rig holds, and the report says so.
     field.wait(4).await;
@@ -894,11 +991,6 @@ async fn ap8_a_lapsed_order_stays_lapsed_until_its_leader_gives_it_again() {
     );
 
     // Given again, it is an order like any other.
-    let _ = run(
-        &mut field.rig.tw,
-        captain,
-        &format!("+focus #{}/pilot", lead_rig.0),
-    );
     field.order(&words);
     let again = field
         .until(90, |rig, _| {
