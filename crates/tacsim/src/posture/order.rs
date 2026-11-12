@@ -17,7 +17,12 @@
 //! it. A posture in a practice match is doc 45 unit AP.10's.
 //!
 //! Every way ends in the record's one writer (`super::record::set`). A read (`MIND POSTURE`,
-//! `+tv/<n> posture` with no word) is answered anywhere.
+//! `+tv/<n> posture` with no word) is answered anywhere, and to a held character too.
+//!
+//! **Who may give it.** The seat that holds the hull's helm, for `MIND POSTURE`. For `+tv`,
+//! whoever `+tv` selects the rig for: its lessee or title holder at the helm hull, at once
+//! when aboard the carrier or in the rig's cab and over the relay otherwise; and a hired
+//! crew's operator, from aboard the rig only.
 
 use mush_core::{CmdError, Ctx, LIMBO, ObjId, ObjKind, World};
 
@@ -42,6 +47,8 @@ pub const POSTURE_JAMMED: &str =
     "Your order does not reach {unit}: the relay to it is jammed. It still holds {posture}.";
 /// A set to a unit the sender cannot reach at all: `{unit}`.
 pub const POSTURE_NO_PATH: &str = "Your order does not reach {unit}: you have no relay to where it is. Give it from aboard its carrier.";
+/// A hired crew's operator who is not aboard the rig.
+pub const POSTURE_CREW: &str = "A crew sets its rig's posture from aboard the rig.";
 /// What follows a `GUARD` or a `HOLD`, until the house mind flies them (doc 45 unit AP.6).
 pub const POSTURE_NOT_FLOWN_YET: &str = "The house mind does not fly GUARD or HOLD yet and still takes the unit home; a mind you filed reads the word.";
 /// The roster's and the status's line for a unit off the default: `{posture}`.
@@ -73,7 +80,8 @@ pub fn ooc(w: &World, actor: ObjId) -> bool {
         }
         at = object.location;
     }
-    false
+    // Deeper than anything the world nests: not somewhere an order is given from.
+    true
 }
 
 /// The posture `word` names.
@@ -153,6 +161,11 @@ pub fn tv(
     if ooc(ctx.w, ctx.actor) {
         return Err(CmdError::msg(POSTURE_OOC));
     }
+    // A hired crew works its rig from aboard it and by no other right: the relay is for the
+    // rig's own operator (the lessee or the title holder at the helm hull).
+    if rig.crew.is_some() {
+        return Err(CmdError::msg(POSTURE_CREW));
+    }
     match crate::field::orders::posture_order(ctx, ctx.actor, rig.tv, posture) {
         crate::field::orders::PostureOrder::Arrived => Ok(said(POSTURE_RELAYED, &name, posture)),
         crate::field::orders::PostureOrder::Jammed => Err(CmdError::msg(line(
@@ -216,6 +229,7 @@ mod tests {
             POSTURE_NO_PATH,
             POSTURE_NOT_FLOWN_YET,
             POSTURE_LINE,
+            super::POSTURE_CREW,
         ] {
             let said = line(template, "Rig 4", Posture::Return);
             assert!(said.chars().count() < 120, "{said}");

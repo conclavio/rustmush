@@ -196,14 +196,34 @@ pub(crate) fn contact_near(
 /// **The escort and the intruder on Ahuna Flank**, the escort launched and driven out beside a
 /// working prospector; answers (escort pilot, escort hull, intruder pilot, intruder hull).
 pub(crate) fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
+    let (escort, hull, intruder, hostile, _) = stand_up_with(rig, 0);
+    (escort, hull, intruder, hostile)
+}
+
+/// [`stand_up`], the escort's hull also carrying `prospectors` leased prospectors that stay in
+/// its bay (doc 45 unit AP.4: a lessee in one rig's cab with another rig of his own on the
+/// site); answers them last, by slot.
+pub(crate) fn stand_up_with(
+    rig: &mut Rig,
+    prospectors: usize,
+) -> (ObjId, ObjId, ObjId, ObjId, Vec<ObjId>) {
     // A miner's prospector works the ground the escort is there for.
     let (miner, _, miner_tvs) = on_pad_as(rig, "Miner", 2, "Tally Moth", 1);
     let worker = miner_tvs[0];
     launched(rig, miner, worker);
     to_cell(rig, worker, (140, 120));
     // (1) The escort's lease, signed at Ceres before the hull sails.
-    let (escort, _, tvs) = on_pad_with(rig, "Pilot", 1, "Salt Moth", lease_escort);
-    assert_eq!(tvs.len(), 1, "the escort is the hull's one rig");
+    let (escort, _, tvs) = on_pad_with(rig, "Pilot", 1, "Salt Moth", |rig, pilot| {
+        lease_escort(rig, pilot);
+        for _ in 0..prospectors {
+            crate::driving_rig::lease_one(rig, pilot);
+        }
+    });
+    assert_eq!(
+        tvs.len(),
+        1 + prospectors,
+        "the escort, in slot 1, and the prospectors after it"
+    );
     let hull = escort_rig(rig, escort);
     assert_eq!(tvs[0], hull);
     // (2) Aboard it in the bay, down the ramp, out beside the rig.
@@ -218,7 +238,13 @@ pub(crate) fn stand_up(rig: &mut Rig) -> (ObjId, ObjId, ObjId, ObjId) {
     let hostile = armed(rig, "Grey Hound", (146, 122), 270_000);
     seat(rig, hostile, intruder);
     warm(rig);
-    (escort, hull, intruder, hostile)
+    (
+        escort,
+        hull,
+        intruder,
+        hostile,
+        tvs.get(1..).unwrap_or_default().to_vec(),
+    )
 }
 
 /// **CF.6c's gate** (doc 32 §14): lease, fly out, fight from the line cockpit, withdraw, return.

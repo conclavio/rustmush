@@ -5,23 +5,25 @@
 //! (or the rig's own cab), or over the comms relay, which jamming can stop; never from an OOC
 //! room. The unit's status and its carrier's roster show it.
 //!
-//! 1. [`ap4_a_posture_is_set_from_aboard_the_carrier_and_over_the_relay`]: an operator with
-//!    two rigs. Aboard the carrier she reads and sets rig 1's, and the roster shows it. Out
-//!    on the site's ground, off her carrier and at neither rig's helm, her orders to both
-//!    rigs go over the relay and arrive. With interference declared where rig 2 stands the
-//!    order does not arrive and rig 2 holds what it held; with it cleared the order arrives.
-//!    From an OOC room every set is refused and nothing changes; a read still answers.
+//! 1. [`ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room`]: an
+//!    operator with two rigs, aboard her carrier. She reads and sets each rig's, the roster
+//!    shows a line under the rig that holds one and none under a rig on `RETURN`, a second
+//!    set says nothing changed, and a word that is no posture is refused. From an OOC room
+//!    every set is refused and nothing changes; a read still answers.
 //! 2. [`ap4_a_posture_is_set_from_the_units_seat_in_a_field`]: a field of three parties
 //!    (`field_mw7`'s yard). The ward's pilot reads and sets the posture from the cockpit; the
 //!    record, the hull's own frame and `STATUS` carry it; a word that is no posture is refused.
-//! 3. [`ap4_a_lessee_in_the_rigs_own_cab_sets_it_at_once`]: `escort_lease`'s ground. The
-//!    lessee flies an armed rig from its cab on open ground, off his carrier: his order to it
-//!    needs no relay.
+//! 3. [`ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_relay`]:
+//!    `escort_lease`'s ground, the lessee with a second rig. He is in his armed rig's cab on
+//!    open ground, off his carrier (he boarded it in the bay with `+tv/1 board` and drove it
+//!    out). His own rig's posture is set at once, interference or not. His order to the rig
+//!    in the carrier's bay goes over the relay and arrives; with interference declared where
+//!    that rig stands it does not arrive and the rig holds what it held; with it lifted the
+//!    same order arrives.
 //!
-//! What stands in: the operator of story 1 is put out on the ground by hand, and the
-//! interference is declared by a staff character with `@prop/jam`, as doc 15's stories do.
-//! That a seat in the simulator is refused is pinned in `domain_arena` (`cockpit`), where a
-//! practice match runs.
+//! What stands in: the interference is declared by a staff character with `@prop/jam`, as
+//! doc 15's stories declare it. That a seat in the simulator is refused is pinned in
+//! `domain_arena` (`cockpit`), where a practice match runs.
 
 use mush_core::{LIMBO, ObjId};
 use tacsim::posture::Posture;
@@ -30,7 +32,7 @@ use tacsim::posture::order::{
     POSTURE_RELAYED, POSTURE_SET, POSTURE_WORDS, line,
 };
 
-use crate::driving_rig::{Rig, launched, on_pad_as, run, stocked_tuned};
+use crate::driving_rig::{Rig, on_pad_as, run, stocked_tuned};
 use crate::field_host_rig::{armed, frame, seat, tune};
 use crate::field_mw7::{WARD_AT, quiet, yard_with};
 use crate::site_record_rig::staff_member;
@@ -49,10 +51,10 @@ fn place_of(rig: &Rig, obj: ObjId) -> ObjId {
     mush_propagation::context::place_of(spatial, world, obj).expect("it is somewhere")
 }
 
-/// **Story 1** (this module's head): the carrier, the relay, the jam and the OOC room.
+/// **Story 1** (this module's head): the carrier, its roster, and the OOC room.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn ap4_a_posture_is_set_from_aboard_the_carrier_and_over_the_relay() {
+fn ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room() {
     let mut rig = stocked_tuned(tune);
     let (operator, _, tvs) = on_pad_as(&mut rig, "Pilot", 1, "Salt Moth", 2);
     let (one, two) = (tvs[0], tvs[1]);
@@ -107,67 +109,15 @@ fn ap4_a_posture_is_set_from_aboard_the_carrier_and_over_the_relay() {
     );
     assert_eq!(held(&rig, one), Posture::Return);
 
-    // (2) Rig 1 goes down the ramp, and the operator stands out on the ground with it, off
-    // her carrier and at neither rig's helm: an order to either rig now goes over the relay.
-    launched(&mut rig, operator, one);
-    rig.tw
-        .world_mut()
-        .move_to(operator, one)
-        .expect("out on the ground with rig 1");
-    assert_eq!(
-        run(&mut rig.tw, operator, "+tv/1 posture hold"),
-        format!(
-            "{}
-{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_RELAYED, "Rig 1", Posture::Hold)
-        )
-    );
-    assert_eq!(held(&rig, one), Posture::Hold);
-
-    // (3) Rig 2 is in the carrier's bay: her order to it goes over the relay too.
-    assert_eq!(
-        run(&mut rig.tw, operator, "+tv/2 posture guard"),
-        format!(
-            "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_RELAYED, "Rig 2", Posture::Guard)
-        )
-    );
-    assert_eq!(held(&rig, two), Posture::Guard);
-
-    // (4) Interference is declared where rig 2 stands: the order does not arrive, and rig 2
-    // holds what it held.
-    let staff = staff_member(&mut rig);
-    let place = place_of(&rig, two);
-    let jammed = run(&mut rig.tw, staff, &format!("@prop/jam #{}=4", place.0));
-    assert!(jammed.contains("Interference at"), "{jammed}");
-    assert_eq!(
-        run(&mut rig.tw, operator, "+tv/2 posture hold"),
-        line(POSTURE_JAMMED, "Rig 2", Posture::Guard)
-    );
-    assert_eq!(
-        held(&rig, two),
-        Posture::Guard,
-        "a jammed order changes nothing"
-    );
-    assert_eq!(
-        run(&mut rig.tw, operator, "+tv/2 posture"),
-        line(POSTURE_READ, "Rig 2", Posture::Guard),
-        "the read is the operator's own book and needs no relay"
-    );
-    // The jam is lifted and the same order arrives.
-    let cleared = run(&mut rig.tw, staff, &format!("@prop/jam #{}=0", place.0));
-    assert!(cleared.contains("Interference at"), "{cleared}");
     assert_eq!(
         run(&mut rig.tw, operator, "+tv/2 posture hold"),
         format!(
             "{}\n{POSTURE_NOT_FLOWN_YET}",
-            line(POSTURE_RELAYED, "Rig 2", Posture::Hold)
+            line(POSTURE_SET, "Rig 2", Posture::Hold)
         )
     );
-    assert_eq!(held(&rig, two), Posture::Hold);
 
-    // (5) From an OOC room every set is refused, for a rig she could reach and one she could
-    // not, and nothing changes; the read still answers.
+    // (2) From an OOC room every set is refused and nothing changes; the read still answers.
     rig.tw
         .world_mut()
         .move_to(operator, LIMBO)
@@ -177,7 +127,7 @@ fn ap4_a_posture_is_set_from_aboard_the_carrier_and_over_the_relay() {
     }
     assert_eq!(
         (held(&rig, one), held(&rig, two)),
-        (Posture::Hold, Posture::Hold)
+        (Posture::Return, Posture::Hold)
     );
     assert_eq!(
         run(&mut rig.tw, operator, "+tv/2 posture"),
@@ -246,29 +196,83 @@ async fn ap4_a_posture_is_set_from_the_units_seat_in_a_field() {
     );
 }
 
-/// **Story 3** (this module's head): from the rig's own cab on open ground, at once.
+/// **Story 3** (this module's head): the rig's own cab, and the relay to another rig.
 #[test]
-fn ap4_a_lessee_in_the_rigs_own_cab_sets_it_at_once() {
+#[allow(clippy::too_many_lines)]
+fn ap4_from_a_rigs_cab_its_own_posture_is_set_at_once_and_another_rigs_over_the_relay() {
     let mut rig = stocked_tuned(tune);
-    // The lessee is in his armed rig's cab, out beside a working prospector, off his carrier.
-    let (escort, hull, _intruder, _hostile) = crate::escort_lease::stand_up(&mut rig);
-    assert_eq!(held(&rig, hull), Posture::Return);
-    // Interference where the rig stands would stop an order over the relay; his is not one.
-    let staff = staff_member(&mut rig);
-    let place = place_of(&rig, hull);
-    let jammed = run(&mut rig.tw, staff, &format!("@prop/jam #{}=4", place.0));
-    assert!(jammed.contains("Interference at"), "{jammed}");
+    // The lessee boarded his armed rig in the bay, took it down the ramp and drove it out
+    // beside a working prospector; a prospector of his own is still in his carrier's bay.
+    let (lessee, armed_rig, _intruder, _hostile, others) =
+        crate::escort_lease::stand_up_with(&mut rig, 1);
+    let prospector = others[0];
     assert_eq!(
-        run(&mut rig.tw, escort, "+tv/1 posture hold"),
+        (held(&rig, armed_rig), held(&rig, prospector)),
+        (Posture::Return, Posture::Return)
+    );
+    let staff = staff_member(&mut rig);
+    let jam = |rig: &mut Rig, unit: ObjId, level: u8| {
+        let place = place_of(rig, unit);
+        let said = run(
+            &mut rig.tw,
+            staff,
+            &format!("@prop/jam #{}={level}", place.0),
+        );
+        assert!(said.contains("Interference at"), "{said}");
+    };
+
+    // (1) The rig he sits in: set at once. Interference where it stands would stop an order
+    // over the relay; his is not one.
+    jam(&mut rig, armed_rig, 4);
+    assert_eq!(
+        run(&mut rig.tw, lessee, "+tv/1 posture hold"),
         format!(
-            "{}
-{POSTURE_NOT_FLOWN_YET}",
+            "{}\n{POSTURE_NOT_FLOWN_YET}",
             line(POSTURE_SET, "Rig 1", Posture::Hold)
         )
     );
-    assert_eq!(held(&rig, hull), Posture::Hold);
+    assert_eq!(held(&rig, armed_rig), Posture::Hold);
+    jam(&mut rig, armed_rig, 0);
+
+    // (2) His other rig is in the carrier's bay, and he is neither aboard the carrier nor in
+    // that rig's cab: his order to it goes over the relay, and arrives.
     assert_eq!(
-        run(&mut rig.tw, escort, "+tv/1 posture"),
-        line(POSTURE_READ, "Rig 1", Posture::Hold)
+        run(&mut rig.tw, lessee, "+tv/2 posture guard"),
+        format!(
+            "{}\n{POSTURE_NOT_FLOWN_YET}",
+            line(POSTURE_RELAYED, "Rig 2", Posture::Guard)
+        )
+    );
+    assert_eq!(held(&rig, prospector), Posture::Guard);
+
+    // (3) Interference is declared where that rig stands: the order does not arrive, and the
+    // rig holds what it held. The read is his own book and needs no relay.
+    jam(&mut rig, prospector, 4);
+    assert_eq!(
+        run(&mut rig.tw, lessee, "+tv/2 posture hold"),
+        line(POSTURE_JAMMED, "Rig 2", Posture::Guard)
+    );
+    assert_eq!(
+        held(&rig, prospector),
+        Posture::Guard,
+        "a jammed order changes nothing"
+    );
+    assert_eq!(
+        run(&mut rig.tw, lessee, "+tv/2 posture"),
+        line(POSTURE_READ, "Rig 2", Posture::Guard)
+    );
+
+    // (4) The interference is lifted and the same order arrives.
+    jam(&mut rig, prospector, 0);
+    assert_eq!(
+        run(&mut rig.tw, lessee, "+tv/2 posture hold"),
+        format!(
+            "{}\n{POSTURE_NOT_FLOWN_YET}",
+            line(POSTURE_RELAYED, "Rig 2", Posture::Hold)
+        )
+    );
+    assert_eq!(
+        (held(&rig, armed_rig), held(&rig, prospector)),
+        (Posture::Hold, Posture::Hold)
     );
 }

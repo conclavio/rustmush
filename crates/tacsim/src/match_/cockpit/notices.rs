@@ -2629,8 +2629,9 @@ pub(super) fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
 /// the unit's seat): the posture the hull holds, read with no word and set with one. It is
 /// the hull's own standing word (`crate::posture::record`), what its mind reads when its
 /// pilot is not at the controls, so it is written to the hull's record and not staged as an
-/// intent: it stands after the field is gone. Set only from a seat in the world: a pod in the
-/// simulator is an OOC room, and a posture there is doc 45 unit AP.10's.
+/// intent: it stands after the field is gone. Set only from a seat in the world (a pod in the
+/// simulator is an OOC room, and a posture there is doc 45 unit AP.10's) and only by the seat
+/// that holds the helm.
 pub(super) fn mind_posture(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result<(), CockpitError> {
     use crate::posture::order;
     let name = display_name(ctx.w, seat.unit);
@@ -2648,6 +2649,10 @@ pub(super) fn mind_posture(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result
         if crate::field::field_of_unit(ctx.w, seat.unit).is_none() {
             return Err(CockpitError::Refused(order::POSTURE_OOC.to_owned()));
         }
+        // The hull's standing word is its helm's to give: the check an intent on the helm
+        // takes (the station, its channel, the control lease), so a second berth, a gunner
+        // or a seat its mind has taken over does not set it.
+        crate::arena_bridge::authorise_seat(ctx, seat.driver, seat.unit, Channel::Helm)?;
         order::set_present(ctx, seat.unit, &name, posture).map_err(refused)?
     };
     for line in lines {

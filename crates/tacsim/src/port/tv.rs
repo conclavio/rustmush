@@ -2337,7 +2337,8 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(NOT_OPEN_HERE));
     }
     let (slot, act) = parse(ctx)?;
-    if !matches!(act, Act::Status) {
+    // Doc 45 unit AP.4: a posture's read is a read, as the status is.
+    if !matches!(act, Act::Status | Act::Posture { word: None }) {
         gate(ctx, Gate::Operate)?;
     }
     if let Some(n) = slot {

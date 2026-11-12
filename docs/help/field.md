@@ -562,14 +562,15 @@ for you never fires first.
 **Setting it.** A posture is an order to a unit, and it is given the way an
 order reaches one:
 
-- **From its seat**, in a field: `MIND POSTURE GUARD`. `MIND POSTURE` with no
-  word reads it.
+- **From its seat**, in a field: `MIND POSTURE GUARD`, from the seat that
+  holds the helm. `MIND POSTURE` with no word reads it.
 - **From aboard its carrier**, or from the rig's own cab on open ground:
   `+tv/2 posture hold` sets rig 2's. `+tv/2 posture` reads it.
 - **Over the relay.** If you are on the site but neither aboard the carrier
-  nor in that rig's cab (in another rig, say), the same `+tv/2 posture hold`
-  goes to rig 2 as an order over the comms relay. Jamming where the rig stands
-  stops it, and so does your carrier's relay when it reads jammed in a field.
+  nor in that rig's cab (in another rig's cab, say), the same
+  `+tv/2 posture hold` goes to rig 2 as an order over the comms relay. Jamming
+  where the rig stands stops it, and so does the carrier relay of the rig's
+  party when it reads jammed in a field.
   You hear "Your order does not reach Rig 2: the relay to it is jammed. It
   still holds RETURN." and nothing has changed; an order that does not arrive
   is not kept for later. From another site or a port you have no relay to the
