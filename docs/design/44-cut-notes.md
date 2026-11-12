@@ -553,6 +553,85 @@ The P3 field stories (`s4b3_*`) fly a House Pin on a prospector with nobody in i
 is not an absent player's unit (the gate binds a unit with a seated pilot; AP.5 and AP.7 own
 the empty cab). MW.23's refit and restart: item 2.
 
+### Built: item 2, story 4 on the launch (PR #558)
+
+`crates/tacsim/tests/domain_field/c4_hardware.rs`,
+`c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced`, in the default
+sweep (about 22 s). It is also MW.23's owed "refit and restart of a fitted Class III". On P3,
+with nothing minted but credits:
+
+1. the pilot registers as an end user by their own verb (`+enduser/apply go`);
+2. the importer's stock agent issues a certified Class III die and offers its integration,
+   the pilot pays the catalogue's price, the work runs its 96 hours, and the core is
+   delivered with a title born of that integration;
+3. the pilot's own coreless rig is fitted at the chartered shop: the root is the rig
+   family's governed Class III, and the fitting fee goes to the shop;
+4. the server restarts. The unit is the same unit; the Registry's inspection reads that
+   core, Class III, governed, certified by the importer; the rig's next launch seals over
+   it and the seal names the core and its class;
+5. with a dent in the plating, a Class II core is fitted in the first one's place: the root
+   is the family's Class II, the dent and every cell and component outside the core are as
+   they were, and the displaced core is back in the pilot's hands, titled to them,
+   unencumbered;
+6. a core that has been mounted is refused a second fitting, the fitted one at the offer
+   and the displaced one at the acceptance, with nothing charged; a core fresh from the
+   shop goes into the second rig;
+7. a second restart keeps both rigs.
+
+**What staff do in it**, none of it the thing under test: a wallet top-up; the two leased
+rigs titled to the pilot (`@asset/release`, `@asset/transfer`); the pilot and a rig stood in
+the fitting shop and back in the bay; the dent (`@unit/damage`).
+
+**Not in it.** Story 4's last clause, "existing OOC pods show no owned-hardware
+dependency": the M8 rig runs no simulator match. The hardware flow's own rig
+(`hardware/flow.rs`) and the simulator's reset stories cover the pods; nothing joins the two
+on a launch world.
+
+**Found.**
+
+- **A displaced core is never fitted again.** The kernel admits a core to a fitting only if
+  its head is absent or `released` (`mush-core`,
+  `action_state/terminal_capacity/core_refit/transition.rs`, `admission_heads`); a core
+  that has been mounted reads `mounted`, and one displaced by a later fitting reads
+  `detached`. Doc 17f §9 says "displaced core remains owned, and a second install cannot
+  reuse it", so this is the rule as written and the story pins it. It makes a displaced
+  Class III core, 25,000cr of hardware, an object its owner holds and can never use again.
+  **For the owner**: if a displaced core should go back into a hull (or be sold to someone
+  who can fit it), the change is in that admission and in the `detached` head's meaning,
+  and it is a kernel change, not a tuning.
+- **No route gives a player title to a rig.** A lease is the only way to hold one, and the
+  refit asks for the titleholder, so no player can have a core fitted today without staff.
+  The story titles the leased rigs to the pilot by staff, as every M8 hardware story does.
+  MW.1 found the same for a House's hulls. **Gap, no unit owns it.**
+- **The fitting shop is not a place.** The launch's `factory` is an object named in
+  `launch.json`; the refit asks that the requester and the hull stand in it, and nothing in
+  the game moves a rig there. The story stands them there by staff. On a dev box the
+  bring-up's shop is the same kind of object. **Gap, with the one above.**
+
+### Built: item 4, the cross-host cases (PR #558)
+
+- **A Registry trial pinned** (`crates/tacsim/src/minds/registry/trials/physical_tests.rs`,
+  `c4_a_registry_trial_ends_the_same_on_every_host`, default sweep, 2 s). Four cases of the
+  Duel trial at seed 1 run to their real terminals: a script that stands and fires by the
+  stock rules (its fixed and its cycling variant), a script that closes on what it sees, and
+  the stock profile at Class II. Each case's pin holds the stop millisecond, the arena's
+  final state hash, the black box's digest and the SHA-256 of the case result's JSON (the
+  record a rating's page carries). Blessed on Linux (conclav.dev, x86-64) and run on Windows
+  (x86-64) at the same tree: all four rows equal. It is not `#[ignore]`d, so every pull
+  request runs it on Linux and every local run of tacsim's library tests runs it on Windows.
+  A change that moves a row on purpose (a new mind ABI, a rule's numbers) re-blesses it from
+  the `C4_TRIAL_PIN` lines the test prints and runs it on the other host.
+- **D-UM-28's corpus run on Windows at `api=8`.** On this Windows box at `9d8fc96b7`:
+  `minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host` (the four rows and the float
+  probe MW.9 re-pinned from Linux), `twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool`
+  and `minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library` all pass. So
+  the pins MW.9 took on Linux hold on Windows, and MW.7 with MW.9 together on main moved
+  none of them.
+- **Not pinned:** a whole rating's receipt (a certificate takes about 1,070 leases; its
+  digest folds every case result, so one case result differing across hosts would move it,
+  and four are pinned), and a Conduct verdict. A third host family (aarch64) has never run
+  either corpus.
+
 ## MW.6
 
 The Registry's pace as a file key, and the two notice drains that stopped on one bad holding
