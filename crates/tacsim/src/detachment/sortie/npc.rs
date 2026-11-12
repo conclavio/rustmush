@@ -16,6 +16,9 @@ pub(crate) struct Walk {
     after: Option<ObjId>,
     /// Scheduling only: a congested reply never becomes an execution permit.
     replies: BTreeMap<ObjId, (u64, i64)>,
+    /// Scheduling only (doc 44 unit MW.14a): what an NPC commander last sent each slot and the
+    /// world second before which it does not send that again ([`super::commander::Sent`]).
+    sent: super::commander::Sent,
 }
 
 pub(crate) fn tick(ctx: &mut Ctx<'_>, fire: &mut Fire, walk: &mut Walk, budget: u32) -> u32 {
@@ -34,6 +37,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, fire: &mut Fire, walk: &mut Walk, budget: 
         return 0;
     }
     walk.replies.retain(|unit, _| index.units.contains(unit));
+    walk.sent.retain(|(unit, _), _| index.units.contains(unit));
     let mut units = index
         .units
         .iter()
@@ -104,6 +108,17 @@ fn visit(
         return Step::Idle;
     };
     let slot = member.slot;
+    // Doc 44 unit MW.14a: an NPC who leads the roster in a running field gives its posture
+    // first, one order a fire; with nothing owed it flies its own order like any other hull.
+    if let Some(step) = super::commander::step(
+        ctx,
+        fire,
+        &mut walk.sent,
+        (h, &op, &roster, &flight),
+        (unit, actor),
+    ) {
+        return step;
+    }
     let Some(orders) = op.orders.as_deref() else {
         return Step::Idle;
     };
@@ -468,7 +483,7 @@ fn answer(
     })
 }
 
-trait Submitted {
+pub(super) trait Submitted {
     fn submitted(self) -> bool;
 }
 impl Submitted for () {
@@ -481,7 +496,7 @@ impl Submitted for bool {
         self
     }
 }
-fn dispatch<T: Submitted>(
+pub(super) fn dispatch<T: Submitted>(
     ctx: &mut Ctx<'_>,
     fire: &mut Fire,
     unit: ObjId,

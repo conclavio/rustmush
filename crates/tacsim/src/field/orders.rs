@@ -164,6 +164,59 @@ pub(crate) fn surface_mark(
     Ok(true)
 }
 
+/// **The last frame `operator`'s seat was sent from the field `unit` stands in**: its own
+/// observation, never the kernel's truth (doc 16 §3.6). `None` outside a running field, before
+/// the first frame, and for a frame of another unit or another task.
+fn own_frame(w: &World, unit: ObjId, operator: ObjId) -> Option<&crate::arena::step::Frame> {
+    let site = super::field_of_unit(w, unit)?;
+    let task = w.module_state::<super::FieldBook>()?.hosted(&site)?.task;
+    let cockpit = w.module_state::<ArenaRegistry>()?.last_frame(operator)?;
+    (cockpit.match_id == task && cockpit.frame.unit == unit).then_some(&cockpit.frame)
+}
+
+/// **What a commander's own frame holds** (doc 44 unit MW.14a): the live contacts its party's
+/// book holds Hostile, as `operator`'s seat in `unit` last saw them. The compiled commander
+/// decides on this and on nothing the kernel knows that its hull has not seen. `None` until its
+/// frame has arrived.
+#[must_use]
+pub(crate) fn sight(
+    w: &World,
+    unit: ObjId,
+    operator: ObjId,
+) -> Option<crate::detachment::commander::Sight> {
+    let frame = own_frame(w, unit, operator)?;
+    let hostiles = frame
+        .contacts
+        .iter()
+        .filter(|contact| {
+            contact.relation == crate::arena::party::Relation::Hostile
+                && contact.reads_dead != Some(true)
+        })
+        .count();
+    Some(crate::detachment::commander::Sight {
+        hostiles: u16::try_from(hostiles).unwrap_or(u16::MAX),
+    })
+}
+
+/// **Whether `unit` is lost in the field it stands in** (doc 44 unit MW.14a): its operator's own
+/// frame shows it a wreck, or the field's kernel has named it destroyed
+/// ([`super::boarding::Destroyed`], which the ledger's chunks fill a little later). The world's
+/// unit record is checked out and stale while the field runs, so the roster's command facts
+/// read this beside it: a commander whose hull is lost stops leading at once, not at the
+/// field's close. `false` outside a running field.
+#[must_use]
+pub(crate) fn lost(w: &World, unit: ObjId, operator: ObjId) -> bool {
+    if own_frame(w, unit, operator).is_some_and(|frame| frame.wreck) {
+        return true;
+    }
+    super::field_of_unit(w, unit)
+        .and_then(|site| {
+            let task = w.module_state::<super::FieldBook>()?.hosted(&site)?.task;
+            w.module_state::<super::boarding::Destroyed>()?.0.get(&task)
+        })
+        .is_some_and(|units| units.contains(&unit))
+}
+
 /// **What [`step`] did** for one unit's delivered order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {

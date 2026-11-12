@@ -89,6 +89,8 @@ mod field_gc5;
 mod field_gc6;
 #[path = "domain_field/field_host.rs"]
 mod field_host;
+#[path = "domain_field/field_mw14a.rs"]
+mod field_mw14a;
 #[path = "domain_field/field_mw15.rs"]
 mod field_mw15;
 #[path = "domain_field/field_raiders.rs"]
