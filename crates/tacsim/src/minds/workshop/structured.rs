@@ -80,10 +80,25 @@ impl InvokeHandler for WorkshopCommands {
             if let MindRequest::Market { action } = request {
                 return Ok(crate::minds::market_commands::typed::submit(ctx, action));
             }
-            let principal = self.principal(ctx)?;
+            // Doc 44 MW.19: `conn` is bound to the actor (checked above), and for the SSH
+            // exec of a player who is not logged in it is a bare connection, never a live
+            // one (doc 44 MW.24).
+            let principal = self.principal_over(ctx, Some(conn))?;
             self.structured(ctx, principal, conn, lease, id, request)
         })();
+        self.release_offline(ctx, ctx.actor);
         InvokeResult::Mind(response.unwrap_or_else(refusal)).bounded()
+    }
+}
+
+impl WorkshopCommands {
+    /// **An offline author's session ends with their request** (doc 44 MW.19): no hook ends
+    /// it, because a bare connection fires none. A job still waiting keeps it, and
+    /// [`WorkshopCommands::poll_remote`] asks again once that job is answered or dropped.
+    fn release_offline(&self, ctx: &Ctx<'_>, actor: ObjId) {
+        if !ctx.w.has_live_conns(actor) {
+            self.executor.release_idle(actor);
+        }
     }
 }
 
@@ -429,11 +444,13 @@ impl WorkshopCommands {
             ctx.actor = binding.principal.actor();
             let live = ctx.w.connection_binding(binding.conn) == Some((ctx.actor, binding.lease))
                 && self
-                    .principal(ctx)
+                    .principal_over(ctx, Some(binding.conn))
                     .is_ok_and(|principal| principal == binding.principal);
             if !live || binding.started.elapsed() > REMOTE_TTL {
                 let _ = self.executor.cancel(binding.principal, id);
                 self.remove_remote(id);
+                // A job still running keeps the session until the actor's next logout.
+                self.release_offline(ctx, binding.principal.actor());
                 if live {
                     reply(
                         ctx,
@@ -452,6 +469,7 @@ impl WorkshopCommands {
                 Err(error) => {
                     self.remove_remote(id);
                     reply(ctx, &binding, refusal(error));
+                    self.release_offline(ctx, binding.principal.actor());
                     continue;
                 }
             };
@@ -529,6 +547,7 @@ impl WorkshopCommands {
                 }
             })();
             reply(ctx, &binding, result.unwrap_or_else(refusal));
+            self.release_offline(ctx, binding.principal.actor());
         }
         ctx.actor = caller;
     }
@@ -1355,6 +1374,123 @@ mod tests {
             "old source diagnostics cannot cross a connection lifetime"
         );
         assert!(service.executor.ready().is_empty(), "completion discarded");
+    }
+
+    /// Doc 44 MW.19 (the defect its lane found in MW.24): the SSH `mind push`, `pull` and
+    /// `check` of a player who is not logged in arrive over a bare connection, which is
+    /// bound to its character and is never a live connection. The workshop's author session
+    /// asked for a live one, so every such request read "No owned mind or authoring job is
+    /// available." This is the offline exec against the workshop itself: a create, a read, a
+    /// check answered on that connection, and no author session left behind.
+    #[test]
+    fn mw19_an_offline_authors_request_over_a_bare_connection_is_served() {
+        let (mut engine, service, _) = rig();
+        let offline = engine
+            .world
+            .create(
+                mush_core::ObjKind::Player,
+                "Offline",
+                GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("offline");
+        let session = |service: &WorkshopCommands| service.executor.has_session(offline);
+        engine.step(
+            Inbound::BareUp {
+                conn: 20,
+                actor: offline,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        assert!(
+            !engine.world.has_live_conns(offline),
+            "bare is not presence"
+        );
+        let created = invoke(
+            &mut engine,
+            20,
+            offline,
+            1,
+            MindRequest::Create {
+                name: "mine".into(),
+                from: None,
+            },
+        );
+        let MindResponse::Edited { base, .. } = created else {
+            panic!("an offline author's create is served: {created:?}");
+        };
+        assert!(!session(&service), "the create left no session");
+        let read = invoke(
+            &mut engine,
+            20,
+            offline,
+            2,
+            MindRequest::Read {
+                name: "mine".into(),
+                revision: None,
+            },
+        );
+        assert!(
+            matches!(read, MindResponse::Read { .. }),
+            "an offline author's read is served: {read:?}"
+        );
+        // A check is a job: its session lasts until the job is answered.
+        assert!(matches!(
+            invoke(
+                &mut engine,
+                20,
+                offline,
+                3,
+                MindRequest::Check {
+                    name: "mine".into(),
+                    base,
+                },
+            ),
+            MindResponse::Queued { .. }
+        ));
+        assert!(session(&service), "a waiting job keeps its session");
+        await_ready(&service);
+        let out = poll(&mut engine, &service);
+        assert!(
+            out.events().iter().any(|(audience, event)| {
+                *audience == Audience::Conn(20)
+                    && matches!(
+                        event,
+                        OutputEvent::InvokeResult {
+                            id: 3,
+                            result: InvokeResult::Mind(MindResponse::Checked { .. }),
+                        }
+                    )
+            }),
+            "the check is answered on the bare connection"
+        );
+        assert!(!session(&service), "the answered job released the session");
+        // Another character's mind stays out of reach on a bare connection too.
+        let foreign = invoke(
+            &mut engine,
+            7,
+            GOD,
+            4,
+            MindRequest::Read {
+                name: "mine".into(),
+                revision: None,
+            },
+        );
+        assert!(
+            matches!(&foreign, MindResponse::Error { code, .. } if code == "missing"),
+            "God holds no mind of that name: {foreign:?}"
+        );
+        // With the connection gone nothing is bound, and nothing is served.
+        engine.step(
+            Inbound::BareDown {
+                conn: 20,
+                actor: offline,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+        assert_eq!(engine.world.connection_binding(20), None);
     }
 
     #[test]
