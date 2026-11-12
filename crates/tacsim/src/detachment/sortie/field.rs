@@ -367,9 +367,12 @@ pub(super) fn reconcile(
                 && proof.controls
                 && proof.operate
                 && op.ended.is_none(),
+            // Doc 44 unit MW.14a: a hull destroyed in a running field is disabled for command at
+            // once. Its world record is checked out and stale until the field's close.
             unit_disabled: condition
                 .as_ref()
-                .is_none_or(|c| !c.has_power || !c.has_control || (!c.can_move && !c.can_fire)),
+                .is_none_or(|c| !c.has_power || !c.has_control || (!c.can_move && !c.can_fire))
+                || crate::field::orders::lost(world, member.unit, character),
             connection,
             command_authorized: proof.command_authorized && op.ended.is_none(),
         });
