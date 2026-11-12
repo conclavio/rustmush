@@ -21,8 +21,11 @@ not consolidate them into a shared agent implementation.
   for documentation and reference knowledge; do not maintain parallel executable
   Markdown formats or duplicate source records.
 - Game crates are allowed only in development dependencies for server-under-test
-  fixtures. The end-to-end tests launch the actual bot executable and drive the
-  public SSH interface. `mush-llm` mocks belong to the fixture's server-side
+  fixtures. They may also back sentence-contract tests: `#[cfg(test)]` code that
+  reads the game's own sentence constants to check the bot's needles against them
+  (`src/mine/lines.rs`' tests, and the mind market's table in `src/mine/minds.rs`).
+  The end-to-end tests launch the actual bot executable and drive the public SSH
+  interface. `mush-llm` mocks belong to the fixture's server-side
   generation, while the bot uses a separate HTTP model stub and its own client.
 - Compare the two approaches through common world fixtures, player-visible
   outcomes and evaluation criteria. Do not give the bot hidden engine state,
