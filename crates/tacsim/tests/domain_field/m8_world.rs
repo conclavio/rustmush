@@ -541,9 +541,21 @@ fn m8_world_in(
     site: (&str, &str),
     n_rigs: usize,
 ) -> M8World {
+    m8_world_manned(procurement, |rig| {
+        crate::excursions::on_pad_as_at(rig, ("Pilot", 1, "Salt Moth"), site, n_rigs)
+    })
+}
+
+/// **The M8 world over the port world `manned` leaves** (doc 44 unit MW.5): `manned` charters
+/// the pilot, signs their leases and sails them to a site before the launch's identities are
+/// made and the launch boots, and may stand other captains on the pad beside them. It answers
+/// the pilot, their hull's row and their rigs.
+pub(crate) fn m8_world_manned(
+    procurement: Option<(&str, i64, usize)>,
+    manned: impl FnOnce(&mut Rig) -> (ObjId, tacsim::port::HullRow, Vec<ObjId>),
+) -> M8World {
     let mut rig = stocked();
-    let (pilot, row, tvs) =
-        crate::excursions::on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), site, n_rigs);
+    let (pilot, row, tvs) = manned(&mut rig);
     crate::excursions::enable_account_captures(&rig);
     // GOD publishes the named Houses' sources and authors them, a player with an account.
     crate::excursions::with_account(&mut rig, GOD, "Publisher", 9_001);
@@ -1505,7 +1517,7 @@ fn title_hulls_to(rig: &mut Rig, house: &str, hulls: &[ObjId]) {
 
 /// Fire the world's ticks `n` times, landing every submission (the procurement agent's buys
 /// are its own submissions).
-fn fires(world: &mut M8World, n: usize) {
+pub(crate) fn fires(world: &mut M8World, n: usize) {
     for _ in 0..n {
         let (_, queued) = crate::excursions::fire(&mut world.rig);
         crate::excursions::land_all(&mut world.rig, &queued);
@@ -2219,6 +2231,15 @@ pub(crate) fn filed_of(world: &M8World, licence: mush_roll::commerce::LicenceId)
 fn inspect_leased(
     world: &mut M8World,
 ) -> mush_roll::commerce::registry_inspection::InspectionRecord {
+    let hull = world.tvs[0];
+    inspect(world, hull)
+}
+
+/// `@registry/inspect` `hull` as the Registry operator, landed; the record.
+pub(crate) fn inspect(
+    world: &mut M8World,
+    hull: ObjId,
+) -> mush_roll::commerce::registry_inspection::InspectionRecord {
     let operator = world
         .deployment
         .market
@@ -2226,7 +2247,6 @@ fn inspect_leased(
         .expect("format 2")
         .registry_authority
         .operators[0];
-    let hull = world.tvs[0];
     let (out, queued) = crate::excursions::command(
         &mut world.rig,
         operator,
@@ -2256,7 +2276,7 @@ fn operator_says(world: &mut M8World, line: &str) -> String {
 }
 
 /// The economy's title of `object`.
-fn title_of(world: &M8World, object: ObjId) -> mush_economy::EconomicAsset {
+pub(crate) fn title_of(world: &M8World, object: ObjId) -> mush_economy::EconomicAsset {
     economy(&world.rig.tw)
         .snapshot()
         .asset(object)
@@ -2618,7 +2638,7 @@ async fn rate_and_publish(world: &mut M8World) -> Vec<(&'static str, String)> {
 /// behind it and the rig in its bay; the surface tick's claim arm opens the claim in the bay
 /// (the book's active row, the pilot its dispatcher) and starts the queued launch; the launch
 /// finishes. Returns the claim's open token.
-fn claimed_launch(
+pub(crate) fn claimed_launch(
     world: &mut M8World,
     n: usize,
     line: &str,

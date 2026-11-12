@@ -48,7 +48,7 @@ fn holding(
         .map(|a| (a.id, a.posted_balance.minor(), a.status))
 }
 
-fn credit(world: &M8World, who: ObjId) -> (AccountId, i64) {
+pub(crate) fn credit(world: &M8World, who: ObjId) -> (AccountId, i64) {
     let (id, balance, _) = holding(world, &PrincipalId::Object(who), tacsim::economy::CREDIT)
         .expect("a credit account");
     (id, balance)
@@ -68,7 +68,7 @@ fn system(name: &str) -> PrincipalId {
 }
 
 /// Credits into `who`'s wallet from the world's faucet: a top-up, and the only thing minted.
-fn fund(world: &mut M8World, who: ObjId, minor: i64) {
+pub(crate) fn fund(world: &mut M8World, who: ObjId, minor: i64) {
     let (payer, _) = credit(world, who);
     let (faucet, _, _) = holding(world, &system("hardware.fixture"), tacsim::economy::CREDIT)
         .expect("the world's faucet");

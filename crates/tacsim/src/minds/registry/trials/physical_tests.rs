@@ -413,3 +413,76 @@ fn physical_loss_after_real_source_fault_does_not_erase_the_fault() -> TestResul
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Doc 44 unit MW.5 (doc 17g C4, item 4): a Registry trial ends the same on every host
+// ---------------------------------------------------------------------------
+
+/// A script that drives at whatever it has told apart, with the stock fire rules: movement,
+/// sensing, the dice and the damage pipeline all take part in how its trial ends.
+const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !k.friendly && k.cell != () { goto(k.cell); return; } } }";
+
+/// **The pinned ends** ([`c4_a_registry_trial_ends_the_same_on_every_host`]): for each case,
+/// the millisecond its arena stopped at, the arena's final state hash, the black box's digest
+/// and the SHA-256 of the case result the Registry would file (its JSON, the record a rating's
+/// page carries: the key, the binding, the meter's summary, the coverage, the outcome and the
+/// trial's own end).
+///
+/// Blessed on Linux (conclav.dev, x86-64) and run on Windows (x86-64) at the same commit; the
+/// cut note (`docs/design/44-cut-notes.md`, MW.5) records both runs. A change that moves a row
+/// on purpose (a new mind ABI, a rule's numbers, a trial's layout) re-blesses it from the
+/// `C4_TRIAL_PIN` lines the test prints, and runs it on the other host before it merges.
+const C4_TRIAL_PINS: [&str; 4] = [
+    "stands/I/fixed at_ms=58500 state=2ac0bb5770d49505 ledger=9adf3f2351084758a774f3ee83c8ef3d8974373801a187cd6d5213e7d4649f89 result=e7f18842334322008f5aa8e0549777d46b4d0301d43928773ae558c5286f838c",
+    "stands/I/cycle at_ms=58500 state=366ad86d479ee5d5 ledger=42f3888715bbf465e74e682e9e4face459e60ff14c45bcad2d5aa71ec56781f5 result=bc08d3501e32a8b64b79f4173c027189978159391e33bcf893c8f95675de93b7",
+    "closes/I/fixed at_ms=58500 state=f8d70307b1c6f298 ledger=1a4f042b377cf8d81033bacbbcd671bb023d70a9a501d5f472e4adeefd734b32 result=18020786323446b38988cbe48da6c3d078f0be3405b63b856b1d6abdf4ee9706",
+    "stock/II at_ms=58500 state=a1804cd413eba194 ledger=462bc14e1b6d950896415726d2c14d5aea91e819ed05a2119f7f13c85f88cadb result=b497f3b07b2699e436ab645e481bd57328941707ffb1d8c2429d0ec1f5d52311",
+];
+
+/// Lower-case base-16 of `bytes`.
+fn base16(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Run `trial` to its terminal and print what a pin holds.
+fn ended(label: &str, mut trial: Trial) -> Result<String, Box<dyn std::error::Error>> {
+    use sha2::{Digest as _, Sha256};
+    let limit = trial.case.maximum_ms / u64::from(trial.case.physics.native_ms) + 4;
+    let mut terminal = None;
+    for _ in 0..limit {
+        terminal = advance(&mut trial)?;
+        if terminal.is_some() {
+            break;
+        }
+    }
+    let result = terminal.ok_or("the trial reaches its bounded terminal")?;
+    let wire = serde_json::to_string(&result)?;
+    Ok(format!(
+        "{label} at_ms={} state={:016x} ledger={} result={}",
+        trial.arena.now_ms,
+        crate::arena::state_hash(&trial.arena),
+        base16(&trial.arena.ledger.digest()),
+        base16(&Sha256::digest(wire.as_bytes())),
+    ))
+}
+
+/// **Doc 17g C4, item 4: the Registry's trial of a source ends the same on every host.**
+/// D-UM-28's corpus pins what a mind does in a match; nothing pinned what the Registry makes
+/// of a mind, and a rating is filed, priced and bought on it. Four cases of the Duel trial at
+/// seed 1 are run to their real terminals: a script that stands and fires by the stock rules
+/// (its fixed and its cycling variant), a script that closes on what it sees, and the stock
+/// profile at Class II. Each case's end is compared with its pin, byte for byte.
+#[test]
+fn c4_a_registry_trial_ends_the_same_on_every_host() -> TestResult {
+    let lines = [
+        ended("stands/I/fixed", open(SOURCE, RatingClass::I, false)?.0)?,
+        ended("stands/I/cycle", open(SOURCE, RatingClass::I, true)?.0)?,
+        ended("closes/I/fixed", open(CLOSES, RatingClass::I, false)?.0)?,
+        ended("stock/II", open_stock(SOURCE, RatingClass::II)?.0)?,
+    ];
+    for line in &lines {
+        eprintln!("C4_TRIAL_PIN {line}");
+    }
+    check_eq!(lines.as_slice(), C4_TRIAL_PINS.as_slice());
+    Ok(())
+}
