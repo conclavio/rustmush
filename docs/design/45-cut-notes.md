@@ -1503,6 +1503,56 @@ and the harness set no absent flag, so nothing here is reached there.
 - A tug in tow that is an absent player's standing at the ramp (the guard is pinned by FR.5's
   two stories for the casualty).
 
+**Verified, and how** (Linux, conclav.dev, a throwaway clone at main `1a1c721de` with this
+unit's diff applied; Windows for the lints).
+
+- **Mutation checks.** Fourteen mutations, each a patch over the unit's diff made in a scratch
+  worktree and undone there by applying its own diff backwards, each built and run against
+  the unit's three stories (FR.5's pair for the tow guard; the in-source tests where named).
+  Every one fails the test named for it. The first ten ran before the second reader's fixes
+  and the last four after them; the lines the first ten mutate did not change in between.
+
+  | Mutation | What failed |
+  |---|---|
+  | The gate lets every shot through and the view is not narrowed (the rig may fire first) | all three stories; story 1 at "an unattended rig does not fire first": the armed rig fired 79 rounds at the declared intruder |
+  | A unit nobody sits in is not handed over (main's behaviour) | all three stories, at the record |
+  | A rig on `HOLD` goes home (every absent player's unit is flown as `RETURN`) | story 2, "a rig on HOLD is still on its cell at demotion"; six of AP.6's kernel tests |
+  | The recover out of a field does not park the plan | story 1, "the plan ends once its rig is aboard": the plan is still `Live` |
+  | The plan does not resume (a held start is held for ever) | story 2, "after the demotion the rig's next act is its plan's": none |
+  | The host asks an absent player's carrier to lift (two forms: at once, and once a rig of hers is aboard) | story 3, "the carrier is still in the field, on its pad"; story 1, whose prospector then has no ramp |
+  | An unarmed rig set to `GUARD` goes home (AP.6's default 6) | story 3, "it stays where it stood"; the kernel test |
+  | The host asks a towed casualty out | FR.5's two ramp stories, "the casualty's stand" |
+  | An absent word does not wait for a join | the arena task's test |
+  | A live plan holds its rig from the exit's recover | story 1: the prospector stands beside the ramp, out of the field, never aboard |
+  | A carrier's arena is told its record's `RETURN` | story 3: the snapshot holds the carrier on `RETURN` |
+  | A carrier is not handed to its mind | stories 1 and 3, at the carrier's record |
+
+  The stories cannot be compiled on main (they read `Why::Unattended`), so the second row
+  stands in for "fails on main today". With the plan's hold in place a rig on a live plan
+  could not be recovered out of a field at all, on main as here.
+- **The stories and the in-source tests on the final code**: the unit's three stories with
+  every story of AP.5, AP.6, MW.7, FR.5, GC.3, GC.4, RS.1, the carrier, boarding, crew-exit
+  and escort-lease files (57 run, 57 passed), and 121 in-source tests (`ap7_`, `ap6_`,
+  `mw7_`, `ap5_`, `ap3_`, the withdraw tests, the plan's). The whole `domain_field` binary
+  was run once before the fixes that followed it (281 run, 270 passed, the ten stories of
+  the table above and this unit's first story failing) and again on the final code; the
+  second figure is in the pull request.
+- Locally (Windows): `cargo fmt --check` and `cargo clippy --all-targets -D warnings` on
+  `tacsim` and `mush-bot`, CI's M7 memory-size clippy pass, `cargo doc
+  --document-private-items` under `-D warnings`, the bot's sentence census, and `cargo test
+  -p mush-contract-tests` (nothing re-blessed).
+- **CI**: the pull request's CI and a full dispatch on the head commit; the runs are in the
+  pull request's body.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
+  player reads were read in the test rig's line mode.
+- The whole `tacsim` suite was not run by hand: one attempt on conclav.dev was ended by a
+  signal that was not this session's. CI's shards run it on the pushed head.
+- The cost of the pass at a field of a hundred units. For a unit that is nobody's it is one
+  read of whose the unit is a second.
+
 **Reviewed.** A second agent (Opus) read the diff adversarially, read-only, with the row and
 the rulings and not this note's conclusions. It found the gate still one function, the mind
 API unmoved, a practice match unaffected, the restart sound, the bookkeeping of what the
