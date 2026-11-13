@@ -274,6 +274,16 @@ enum Admission {
     Base,
     Hangar,
     HangarUnconfigured,
+    /// Doc 23 cut S.4d: the hull lies `Direct` on the field's domain, a ship at her berth,
+    /// with the composition admitting berths.
+    Berth,
+    /// The same hull under the composition that admits bays alone.
+    BerthUnconfigured,
+}
+impl Admission {
+    fn at_berth(self) -> bool {
+        matches!(self, Admission::Berth | Admission::BerthUnconfigured)
+    }
 }
 fn setup_in(
     extra: Vec<(SmolStr, Value)>,
@@ -290,6 +300,8 @@ fn setup_in(
     let bay = world.create(ObjKind::Room, "IC carrier bay", GOD, None)?;
     let at = if admission == Admission::Base {
         base
+    } else if admission.at_berth() {
+        field
     } else {
         bay
     };
@@ -355,8 +367,11 @@ fn setup_in(
         reference("tacsim", &base_descriptor)?,
         space.clone(),
     )?];
-    let config = if admission == Admission::Hangar {
+    let config = if admission == Admission::Hangar || admission == Admission::BerthUnconfigured
+    {
         IcExclusionConfig::with_hangars(manifest.clone(), refs.clone(), bases)?
+    } else if admission == Admission::Berth {
+        IcExclusionConfig::with_hangars_and_berths(manifest.clone(), refs.clone(), bases)?
     } else {
         IcExclusionConfig::new(manifest.clone(), refs.clone(), bases)?
     };
@@ -422,9 +437,16 @@ fn setup_in(
     )?;
     let placement = crate::PlacementRecord {
         object: unit,
-        parent: crate::SpatialParent::Interior {
-            space: at,
-            slot: None,
+        parent: if admission.at_berth() {
+            crate::SpatialParent::Direct {
+                domain,
+                pose: crate::data::Pose::passive(crate::data::passive_rules_value(json!({}))?),
+            }
+        } else {
+            crate::SpatialParent::Interior {
+                space: at,
+                slot: None,
+            }
         },
         revision: 1,
         unplaced: None,
@@ -1059,5 +1081,207 @@ fn s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted() -> Result {
     let (_, value) = rows.first().ok_or("the base row")?;
     check!(value["open"].get("hangar").is_none(), "a base row's shape");
     check!(value["open"].get("base").is_some());
+    Ok(())
+}
+
+/// A placement of `unit` under `parent`, as a plan sets one.
+fn placed(unit: ObjId, parent: crate::SpatialParent) -> crate::PlacementRecord {
+    crate::PlacementRecord {
+        object: unit,
+        parent,
+        revision: 2,
+        unplaced: None,
+    }
+}
+/// `unit` unplaced as a carrier under way is, or (`quarantined`) as a quarantine leaves it.
+fn under_way(unit: ObjId, quarantined: bool) -> crate::PlacementRecord {
+    crate::PlacementRecord {
+        object: unit,
+        parent: crate::SpatialParent::Unplaced,
+        revision: 2,
+        unplaced: Some(crate::data::UnplacedInfo {
+            reason: "under way on a carrier journey".into(),
+            by: None,
+            at: 0,
+            previous: None,
+            quarantined,
+        }),
+    }
+}
+fn direct(domain: crate::DomainId) -> Result<crate::SpatialParent> {
+    Ok(crate::SpatialParent::Direct {
+        domain,
+        pose: crate::data::Pose::passive(crate::data::passive_rules_value(json!({}))?),
+    })
+}
+/// Whether the exclusion's plan check admits a plan that sets `unit`'s placement to `next`.
+fn plan_admits(f: &Fixture, next: crate::PlacementRecord) -> Result<bool> {
+    let plan = crate::transition::Plan {
+        set_placements: vec![next],
+        ..Default::default()
+    };
+    Ok(check_plan(
+        crate::state(f.world.world()).ok_or("spatial")?,
+        f.world.world(),
+        &plan,
+    )
+    .is_ok())
+}
+/// Install the fixture's Open and answer the row it persisted.
+fn install_open(f: &mut Fixture) -> Result<(SmolStr, Value)> {
+    let (p, o, inv) = prepare(f)?;
+    let row = row_writes(&p)?.into_iter().next().ok_or("the hold's row")?;
+    stage(f, p, o, &inv)?;
+    let (_, installation) = f
+        .world
+        .engine_mut()
+        .take_staged_action()?
+        .ok_or("staged image")?
+        .into_parts();
+    f.world.engine_mut().install_composed_action(installation)?;
+    Ok(row)
+}
+
+/// **Doc 23 cut S.4d (D-23-25; D-23-11, D-23-12, D-23-15): a port's berth is a ship's hangar.**
+/// Under the composition that admits berths a hull placed `Direct` on an active domain is
+/// admitted; its record names the berth's domain and host and no base or bay; the hull stays
+/// in the world's listings; and a reboot reconstructs the hold. The composition that admits
+/// bays alone refuses the same Open, as it did before the cut.
+///
+/// The freeze stays re-anchoring, with the movers of a ship's epoch admitted and nothing
+/// else: a pose on her domain; the undock, only with a journey of her own in the book; from
+/// under way, the dock on an active domain. A teleport from one domain to another, an
+/// interior, a bay and a quarantine are refused.
+#[test]
+fn s4d_a_port_berth_is_a_hangar_for_a_ship_where_berths_are_admitted() -> Result {
+    let mut refused = setup_in(vec![], true, false, Admission::BerthUnconfigured)?;
+    check!(
+        prepare(&mut refused).is_err(),
+        "the bays-only composition refuses a hull on a domain"
+    );
+    check!(identity_of(refused.world.world(), refused.unit).is_none());
+
+    let mut f = setup_in(vec![], true, false, Admission::Berth)?;
+    let (key, value) = install_open(&mut f)?;
+    check!(value["open"].get("base").is_none(), "no base image");
+    check!(value["open"].get("hangar").is_none(), "no bay image");
+    check_eq!(value["open"]["berth"]["domain"]["id"], json!(f.domain.0));
+    check_eq!(
+        identity_of(f.world.world(), f.unit).map(|i| i.open),
+        Some(token())
+    );
+    check_eq!(held_at_berth(f.world.world(), f.unit), Some(f.domain));
+    check_eq!(held_in_hangar(f.world.world(), f.unit), None);
+    check!(
+        !crate::deployed::excluded(f.world.world(), crate::deployed::Shown::Unit(f.unit)),
+        "a ship under her claim stays in the world's listings"
+    );
+    check!(
+        crate::deployed::is_custodied(f.world.world(), f.unit),
+        "and is still custodied: a staff placement and a refit are refused"
+    );
+
+    // What her berth admits.
+    check!(plan_admits(&f, placed(f.unit, direct(f.domain)?))?, "a pose");
+    check!(
+        !plan_admits(&f, placed(f.unit, direct(f.far)?))?,
+        "another domain, with no passage between, is a teleport"
+    );
+    check!(
+        !plan_admits(
+            &f,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: f.base,
+                    slot: None
+                }
+            )
+        )?,
+        "a fixed room"
+    );
+    check!(
+        !plan_admits(
+            &f,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: f.bay,
+                    slot: None
+                }
+            )
+        )?,
+        "a stranger's bay"
+    );
+    check!(
+        !plan_admits(&f, under_way(f.unit, false))?,
+        "she leaves her berth only on a journey of her own"
+    );
+    check!(!plan_admits(&f, under_way(f.unit, true))?, "a quarantine");
+    // Under way (as her own departure leaves her), she may be brought to rest on any active
+    // domain, and may not be put anywhere else.
+    {
+        let state = f
+            .world
+            .world_mut()
+            .module_state_mut::<crate::SpatialState>()
+            .ok_or("spatial")?;
+        state.placements.insert(f.unit, under_way(f.unit, false));
+    }
+    check!(plan_admits(&f, placed(f.unit, direct(f.far)?))?, "the dock");
+    check!(plan_admits(&f, placed(f.unit, direct(f.domain)?))?);
+    check!(plan_admits(&f, under_way(f.unit, false))?, "a re-stamp");
+    check!(!plan_admits(&f, under_way(f.unit, true))?);
+    check!(
+        !plan_admits(
+            &f,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: f.bay,
+                    slot: None
+                }
+            )
+        )?,
+        "loaded into a bay from under way"
+    );
+
+    // The record: a reboot keeps the hold, at her berth.
+    let cold = setup_in(vec![(key.clone(), value.clone())], true, false, Admission::Berth)?;
+    check_eq!(
+        identity_of(cold.world.world(), cold.unit).map(|i| i.open),
+        Some(token()),
+        "a reboot keeps the berth hold"
+    );
+    check_eq!(held_at_berth(cold.world.world(), cold.unit), Some(cold.domain));
+    // And the journey audit: a hull held at a berth may root a journey; held in a bay or a
+    // base she may not, as before the cut.
+    let berth: Record = serde_json::from_value(value)?;
+    check!(!hold_forbids_journey(&berth, f.unit));
+    check!(!hold_forbids_journey(&berth, f.carrier));
+    let mut bay = setup_in(vec![], true, false, Admission::Hangar)?;
+    let (_, value) = install_open(&mut bay)?;
+    check!(value["open"].get("berth").is_none(), "a bay row's shape");
+    let bay_hold: Record = serde_json::from_value(value)?;
+    check!(
+        hold_forbids_journey(&bay_hold, bay.unit),
+        "a rig's hull roots no journey"
+    );
+    check!(!hold_forbids_journey(&bay_hold, bay.carrier));
+    let mut based = setup(vec![], true, false)?;
+    let (_, value) = install_open(&mut based)?;
+    check!(value["open"].get("berth").is_none(), "a base row's shape");
+    let base_hold: Record = serde_json::from_value(value)?;
+    check!(hold_forbids_journey(&base_hold, based.unit));
+    check!(hold_forbids_journey(&base_hold, based.base));
+    // A rig's bay hold is frozen as it was: nothing the berth rule admits is admitted for it.
+    check!(
+        !plan_admits(&bay, under_way(bay.unit, false))?,
+        "a bay-held hull is never put under way"
+    );
+    check!(
+        !plan_admits(&bay, placed(bay.unit, direct(bay.far)?))?,
+        "nor onto a domain its carrier does not stand on"
+    );
     Ok(())
 }

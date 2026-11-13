@@ -302,11 +302,13 @@ pub fn excluded(w: &World, shown: Shown) -> bool {
     match shown {
         // Doc 38a F-04: an IC hold anchored in a hangar (a licensed rig's claim, D-23-15) is no
         // arena's custody: the hull flies on the world's surface for its whole excursion and
-        // stays listed. A hold in a fixed base hides it as a deployed unit is hidden.
+        // stays listed. So is a hold anchored at a berth (a ship's claim, doc 23 cut S.4d):
+        // she sails with it. A hold in a fixed base hides it as a deployed unit is hidden.
         Shown::Unit(unit) => {
             is_deployed(w, unit)
                 || (crate::ic_exclusion::identity_of(w, unit).is_some()
-                    && crate::ic_exclusion::held_in_hangar(w, unit).is_none())
+                    && crate::ic_exclusion::held_in_hangar(w, unit).is_none()
+                    && crate::ic_exclusion::held_at_berth(w, unit).is_none())
         }
         Shown::Domain(domain) => w.module_state::<DeployedUnits>().is_some_and(|index| {
             index

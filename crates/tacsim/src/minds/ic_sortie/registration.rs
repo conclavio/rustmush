@@ -61,7 +61,9 @@ impl Composition {
             .map(|b| b.registration_descriptor())
             .collect::<Result<Vec<_>, _>>()?;
         let exclusion = if hangars {
-            mush_sim::ic_exclusion::IcExclusionConfig::with_hangars(
+            // Doc 23 cut S.4d (D-23-25; doc 44 unit MW.13): the composition whose claims open
+            // in a bay opens a ship's at her berth as well.
+            mush_sim::ic_exclusion::IcExclusionConfig::with_hangars_and_berths(
                 claims.manifest().clone(),
                 claims.participants(),
                 bases,
