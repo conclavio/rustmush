@@ -2779,26 +2779,39 @@ mod tests {
         );
     }
 
-    /// **Doc 45 unit AP.6: staying, the leash, and when `GUARD` ends** (Q-45-7 to Q-45-9).
-    /// A unit left on `HOLD` or `GUARD` is laid a hold and not the way home, is kept by the
-    /// kernel at its ramp, and stands on the cell its mind took it on. A guard off its leash
-    /// answers for itself alone. A guard that can no longer defend itself is flown as
-    /// `RETURN`: the frame says so, the order is the way home, and the ramp lets it go. A
-    /// standing order's hold on its fire is kept. The player's return ends all of it.
+    /// The cell red stands on.
+    fn reds_cell(arena: &Arena) -> (u16, u16) {
+        arena
+            .unit(RED)
+            .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+            .expect("red stands on a cell")
+    }
+
+    /// Red's ramp, for the tests: the cell it stands on.
+    const REDS_RAMP: (i64, i64) = (1_500, 3_500);
+
+    /// [`a_guards_field`], red left on `GUARD` for its absent player, its mind standing the
+    /// posture, and blue's fire arrived on red's player's other unit.
+    fn a_standing_guard() -> Box<Arena> {
+        let mut guard = Box::new(a_guards_field());
+        assert!(guard.set_posture(RED, crate::posture::Posture::Guard));
+        assert!(guard.set_absent(RED, true));
+        guard.note_fired_on(BLUE, KIN);
+        guard.stand_posture(RED);
+        guard
+    }
+
+    /// **Doc 45 unit AP.6: staying** (Q-45-7). A unit left on `HOLD` or `GUARD` is laid a hold
+    /// and not the way home, is kept by the kernel at its ramp, and stands on the cell its
+    /// mind took it on. The player's return ends all of it, and a posture set to `RETURN`
+    /// while the mind flies sends the unit home at once. `RETURN` is as it was.
     #[test]
-    fn ap6_hold_and_guard_stay_and_a_guard_that_cannot_defend_itself_goes_home() {
-        use crate::arena::absent::GUARD_LEASH_CELLS;
+    fn ap6_hold_and_guard_stay_where_their_mind_took_them() {
         use crate::arena::perception::MindObjective;
         use crate::arena::withdraw::WithdrawRefusal;
         use crate::posture::Posture;
-        let mind = FiredBy::Mind { slot: Some(1) };
-        let ramp = (1_500, 3_500);
-        let here = |arena: &Arena| {
-            arena
-                .unit(RED)
-                .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
-                .expect("red stands on a cell")
-        };
+        let ramp = REDS_RAMP;
+        let here = reds_cell;
 
         for posture in [Posture::Guard, Posture::Hold] {
             let mut arena = a_guards_field();
@@ -2841,15 +2854,16 @@ mod tests {
         home.stand_posture(RED);
         assert_eq!(home.unit(RED).and_then(|state| state.stand_at), None);
         assert!(home.withdraw(RED, Some(ramp)).is_ok());
+    }
 
-        // The leash: off it, a guard answers for itself alone.
-        let mut guard = a_guards_field();
-        assert!(guard.set_posture(RED, Posture::Guard));
-        assert!(guard.set_absent(RED, true));
-        guard.note_fired_on(BLUE, KIN);
-        guard.stand_posture(RED);
+    /// **Doc 45 unit AP.6: the leash** (Q-45-8). Off it, a guard answers for itself alone.
+    #[test]
+    fn ap6_a_guard_past_its_leash_answers_for_itself_alone() {
+        use crate::arena::absent::GUARD_LEASH_CELLS;
+        let mind = FiredBy::Mind { slot: Some(1) };
+        let guard = a_standing_guard();
         assert_eq!(guard.clone().resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
-        let (x, y) = here(&guard);
+        let (x, y) = reds_cell(&guard);
         let mut edge = guard.clone();
         if let Some(state) = edge.unit_mut(RED) {
             state.stand_at = Some((x.saturating_add(GUARD_LEASH_CELLS), y));
@@ -2874,7 +2888,21 @@ mod tests {
             Ok(1),
             "and still answers for itself"
         );
+    }
 
+    /// **Doc 45 unit AP.6: when `GUARD` ends** (Q-45-9). A guard that can no longer defend
+    /// itself is flown as `RETURN`: the frame says so, the order is the way home, the widening
+    /// is gone and the ramp lets it go, with the player's word kept. A unit its player flies
+    /// reads the word they set. A standing order's hold on its fire is kept through the
+    /// posture's order.
+    #[test]
+    fn ap6_a_guard_that_cannot_defend_itself_goes_home() {
+        use crate::arena::perception::MindObjective;
+        use crate::arena::withdraw::WithdrawRefusal;
+        use crate::posture::Posture;
+        let mind = FiredBy::Mind { slot: Some(1) };
+        let ramp = REDS_RAMP;
+        let guard = a_standing_guard();
         // GUARD ends when the unit can no longer defend itself: its last round gone...
         let mut spent = guard.clone();
         if let Some(state) = spent.unit_mut(RED) {

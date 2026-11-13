@@ -1043,10 +1043,12 @@ In source:
     turned to a screen and the view showing blue. On `HOLD` and `RETURN` the same fire is not
     answered and each still answers for itself. A unit of the same player is never answered;
     a unit whose player is not named answers for nobody but itself.
-  - `ap6_hold_and_guard_stay_and_a_guard_that_cannot_defend_itself_goes_home`: the order
-    laid, the cell stood, the ramp's refusal, the player's return, a posture set to `RETURN`
-    mid-flight, the leash at ten cells and at eleven, a guard with no round left and one with
-    its motion disabled (flown, framed, ordered and let go as `RETURN`, the record still
+  - `ap6_hold_and_guard_stay_where_their_mind_took_them`: the order laid, the cell stood,
+    the ramp's refusal, the player's return, a posture set to `RETURN` mid-flight.
+  - `ap6_a_guard_past_its_leash_answers_for_itself_alone`: the leash at ten cells and at
+    eleven.
+  - `ap6_a_guard_that_cannot_defend_itself_goes_home`: a guard with no round left and one
+    with its motion disabled (flown, framed, ordered and let go as `RETURN`, the record still
     `GUARD`), a standing order's hold kept.
   - `ap6_what_another_unit_reads_of_it_is_byte_for_byte_what_it_was`: blue's whole frame and
     its mind's whole view, compared as text, for red on each posture, flown by its pilot and
@@ -1253,7 +1255,12 @@ unit's diff applied).
   restriction lints, the fiat budget), nothing re-blessed; run before the second reader's
   fixes, which touched no lint's input but the help page. CI runs it again.
 - **CI**: the pull request's CI and a full dispatch on the head commit; the runs are in the
-  pull request's body.
+  pull request's body. The first push failed one step, the lint job's M7 memory-size limits
+  (`clippy::large_stack_frames`): one in-source test held 75,878 bytes of arenas on its
+  frame, over the step's 64 KiB. It is three tests now (the stay, the leash, the guard that
+  cannot defend itself), and the step was run by hand on conclav.dev before the second push.
+  The mutation table above was taken before the split: where it says "the kernel's stay
+  test", the leash and the spent guard are now the second and third of those three.
 
 **Not verified.**
 
