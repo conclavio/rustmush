@@ -2973,3 +2973,181 @@ fn s4b2_an_open_refused_for_good_cancels_the_queued_launch() {
     );
     no_refused_writes(&rig.tw);
 }
+
+/// Staff file what a mind launch's `go` files on the rig in bay slot `slot`: an `Opening`
+/// cursor for licence 7, which the pilot does not hold, and the launch queued behind it, at the
+/// IC instant now (which is returned).
+fn file_an_unheld_claim(
+    rig: &mut crate::excursions::Rig,
+    (pilot, hull): (ObjId, ObjId),
+    (tv, slot): (ObjId, u8),
+) -> i64 {
+    use tacsim::surface::excursion::{ClaimCursor, Queued, QueuedLaunch};
+    let now = ic_now(rig);
+    let mut record =
+        record_of(&mut rig.tw, tv).unwrap_or_else(|| tacsim::surface::RigRecord::fresh_unread(tv));
+    record.claim = Some(Box::new(ClaimCursor::Opening {
+        operator: pilot,
+        licence: 7,
+        org: None,
+        launch_ic: now,
+        tries: 0,
+    }));
+    record.queued = Some(Queued {
+        kind: tacsim::surface::ActKind::Launch,
+        operator: pilot,
+        hull,
+        slot,
+        site: mush_core::CanonicalId::new("ahuna_port").expect("the site"),
+        after: record.ordinal,
+        at_ic: now,
+        excursion: None,
+        launch: Some(Box::new(QueuedLaunch {
+            launch_ic: now,
+            mind: "filed:7".into(),
+            org: None,
+            licence_state: tacsim::minds::licence_state::SealLicenceState::Active,
+        })),
+    });
+    crate::excursions::put_record(rig, record);
+    now
+}
+
+/// Fire the surface tick until `tv`'s claim cursor reads `Refused` (forty fires at most),
+/// landing what each fire queues (the owners refuse every Open: licence 7 is not held). How
+/// many Opens the arm submitted, and how many times the pilot heard `CLAIM_REFUSED`.
+fn until_refused_for_good(
+    rig: &mut crate::excursions::Rig,
+    pilot: ObjId,
+    tv: ObjId,
+) -> (usize, usize) {
+    use tacsim::surface::excursion::{CLAIM_REFUSED, ClaimCursor};
+    let (mut opens, mut heard) = (0, 0);
+    for _ in 0..40 {
+        let (events, queued) = fire(rig);
+        heard += count(&said(&rig.tw, &events, pilot), CLAIM_REFUSED);
+        for submit in &queued {
+            let open = submit.action.key().id.as_str() == "open_ic_mind";
+            opens += usize::from(open);
+            let landed = land(rig, submit);
+            assert!(landed.is_ok() || open, "{landed:?}");
+        }
+        if record_of(&mut rig.tw, tv)
+            .is_some_and(|r| matches!(r.claim.as_deref(), Some(ClaimCursor::Refused { .. })))
+        {
+            break;
+        }
+    }
+    (opens, heard)
+}
+
+/// **Doc 23 cut S.4b-2's follow-up (doc 44 MW.13's finding, by reading): a claim refused for
+/// good does not hold its operator's next claim.** The IC host keeps one Open pending an actor
+/// and drops it only when the book holds its claim, so the Open of a claim the arm gave up
+/// stayed there: the operator's next mind launch, on that rig or another, could not be enqueued
+/// ("host pending capacity or duplicate"), its Open was never submitted, and its cursor stayed
+/// `Opening` with the rig held in its bay until a restart.
+///
+/// The S.4b-2 rig with two rigs in the bay; the owners refuse every Open, for licence 7 is
+/// not held, so each claim here ends refused for good and what is watched is whether the arm
+/// could submit its Open at all.
+/// 1. Rig 1's claim is refused for good, as S.4b-2's is.
+/// 2. **Another rig**: the same pilot's claim on rig 2. The arm submits its Open, and it is
+///    refused for good in its turn, the pilot told a second time.
+/// 3. **The same rig**: rig 1 again, at a later instant. The same.
+/// 4. **Asked again at once**: before the tick fires again, rig 1's spent cursor is replaced
+///    by a new `Opening` (a `go` typed in the same second), and rig 2 is asked too. Rig 1's
+///    own turn waits out the tick's back-off for its launch, which is the tick's rule and not
+///    this story's; its ticket of step 3 is for another instant than its cursor now asks, so
+///    it is released all the same, and rig 2's claim is submitted and refused for good.
+///
+/// A plain launch afterwards is held by nothing. Whether a claim the Roll would admit *opens*
+/// behind one given up is the M8 world's story
+/// (`m8_world::s4b2_a_claim_given_up_does_not_hold_the_next`).
+#[test]
+fn s4b2_a_claim_refused_for_good_does_not_hold_its_operators_next_claim() {
+    use tacsim::surface::excursion::ClaimCursor;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
+    let mut rig = crate::excursions::stocked_fitted();
+    let (pilot, row, tvs) = on_pad(&mut rig, 2);
+    let (first, second) = (tvs[0], tvs[1]);
+    let (mut rig, _) = crate::excursions::reboot_with_claims(rig, pilot, &[pilot]);
+    for tv in [first, second] {
+        fit(&mut rig, tv, tacsim::definitions::core_replacement::RIG_I);
+    }
+    let who = (pilot, ObjId(row.hull));
+    let cursor = |rig: &mut crate::excursions::Rig, tv: ObjId| {
+        record_of(&mut rig.tw, tv).and_then(|record| record.claim)
+    };
+    let refused = |rig: &mut crate::excursions::Rig, tv: ObjId| {
+        matches!(
+            cursor(rig, tv).as_deref(),
+            Some(ClaimCursor::Refused { .. })
+        )
+    };
+
+    // 1. Rig 1: refused for good, the pilot told once.
+    let at = file_an_unheld_claim(&mut rig, who, (first, 1));
+    let (opens, heard) = until_refused_for_good(&mut rig, pilot, first);
+    assert!(
+        refused(&mut rig, first),
+        "rig 1's claim is refused for good"
+    );
+    assert!(opens > 0, "the arm submitted rig 1's Open");
+    assert_eq!(heard, 1, "the pilot is told once");
+
+    // 2. Rig 2, the same pilot: the claim given up is not in this one's way.
+    let _ = file_an_unheld_claim(&mut rig, who, (second, 2));
+    let (opens, heard) = until_refused_for_good(&mut rig, pilot, second);
+    assert!(
+        opens > 0,
+        "the arm submits the pilot's next claim's Open: {:?}",
+        cursor(&mut rig, second)
+    );
+    assert!(refused(&mut rig, second), "and it is refused in its turn");
+    assert_eq!(heard, 1, "the pilot is told of the second");
+
+    // 3. Rig 1 again, at a later instant: a new claim, not the one given up.
+    let again = file_an_unheld_claim(&mut rig, who, (first, 1));
+    assert!(again > at, "a later go: {again} after {at}");
+    let (opens, heard) = until_refused_for_good(&mut rig, pilot, first);
+    assert!(
+        opens > 0,
+        "the arm submits the same rig's next claim's Open: {:?}",
+        cursor(&mut rig, first)
+    );
+    assert!(refused(&mut rig, first), "and it is refused in its turn");
+    assert_eq!(heard, 1, "the pilot is told of the third");
+
+    // 4. Asked again at once: no fire since step 3's refusal landed. Rig 1's cursor asks a
+    //    new instant, so the ticket the arm kept for step 3 is not the one it asks.
+    let at_once = file_an_unheld_claim(&mut rig, who, (first, 1));
+    assert!(at_once > again, "another instant: {at_once} after {again}");
+    let _ = file_an_unheld_claim(&mut rig, who, (second, 2));
+    let (opens, _) = until_refused_for_good(&mut rig, pilot, second);
+    assert!(
+        opens > 0 && refused(&mut rig, second),
+        "rig 2's claim is submitted and refused behind rig 1's replaced cursor: {:?}",
+        cursor(&mut rig, second)
+    );
+
+    let record = record_of(&mut rig.tw, second).expect("the record");
+    assert!(record.queued.is_none(), "the launch is cancelled");
+    assert!(record.act.is_none() && record.excursion.is_none());
+    for tv in [first, second] {
+        assert!(in_bay(&rig.tw, tv, &row), "nothing left the bay");
+        assert_eq!(
+            tacsim::ic_claim_of(rig.tw.world(), tv),
+            tacsim::IcClaimRead::None
+        );
+    }
+    let _ = act_go(&mut rig, pilot, "+tv/2 launch go");
+    assert!(
+        record_of(&mut rig.tw, second).is_some_and(|r| r.act.is_some()),
+        "a refused claim holds nothing"
+    );
+    no_refused_writes(&rig.tw);
+}

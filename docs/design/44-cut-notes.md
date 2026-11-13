@@ -2649,7 +2649,8 @@ dispatch (`m8-gate-stories`).
   gives up, and `IcHost::acknowledge` drops only a claim the book holds. The host keeps one
   Open pending an actor, so that operator's next mind launch on any rig would not be enqueued
   until a restart. The ship's arm had the same fault until story C found it;
-  `withdraw_surface_open` is there for the rig's arm to call.
+  `withdraw_surface_open` is there for the rig's arm to call. **Run and fixed since**
+  (2026-11-13): [23-cut-notes.md](23-cut-notes.md), "S.4b-2 follow-up".
 
 - **The MW.5 field story fails about as often as it passes under load, on main**
   (`c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home`). Its escort never leaves

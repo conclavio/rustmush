@@ -173,6 +173,10 @@ jobs:
           # at home, over the world with the claims composed in the bays (one rating).
           - name: S.4b-2 a licensed rig's claim in the bay
             test: m8_world::s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home
+          # Doc 23 cut S.4b-2's follow-up: a claim the surface tick gave up does not hold the
+          # pilot's next claim, on another rig or on the same one (one rating).
+          - name: S.4b-2 a claim given up does not hold the next
+            test: m8_world::s4b2_a_claim_given_up_does_not_hold_the_next
           # Doc 23 cut S.4b-3: a licensed mind flies a field at 256 and at 512.
           - name: S.4b-3 a licensed mind flies a field at 256
             test: m8_world::s4b3_a_licensed_mind_flies_a_field_at_256
