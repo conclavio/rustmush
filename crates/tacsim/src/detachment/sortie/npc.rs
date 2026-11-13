@@ -16,6 +16,10 @@ pub(crate) struct Walk {
     after: Option<ObjId>,
     /// Scheduling only: a congested reply never becomes an execution permit.
     replies: BTreeMap<ObjId, (u64, i64)>,
+    /// Scheduling only (doc 45 unit AP.4a): the roster order whose posture this boot has
+    /// written to each player's unit, by sequence, so the write and its notice are made once
+    /// while the unit's answer is on its way.
+    postures: BTreeMap<ObjId, u64>,
     /// Scheduling only (doc 44 unit MW.14a): what an NPC commander last sent each slot and the
     /// world second before which it does not send that again ([`super::commander::Sent`]).
     sent: super::commander::Sent,
@@ -37,6 +41,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, fire: &mut Fire, walk: &mut Walk, budget: 
         return 0;
     }
     walk.replies.retain(|unit, _| index.units.contains(unit));
+    walk.postures.retain(|unit, _| index.units.contains(unit));
     walk.sent.retain(|(unit, _), _| index.units.contains(unit));
     let mut units = index
         .units
@@ -80,7 +85,9 @@ fn visit(
     }
     let actor = flight.operator;
     if !super::facts::live(ctx.w, actor, ObjKind::Npc) {
-        return Step::Idle;
+        // Doc 45 unit AP.4a: a player's unit is flown by its player and takes no order from
+        // this walk but one, a posture its leader set.
+        return posture_order(ctx, fire, walk, h, unit, &flight);
     }
     let Ok(op) = super::prepare::operation(&mut &*ctx, h, flight.operation) else {
         return Step::Idle;
@@ -414,6 +421,129 @@ fn visit(
             }
         }
     })
+}
+
+/// **A leader's posture, delivered to a player's unit** (doc 45 unit AP.4a; Q-45-26). A
+/// player's unit takes its orders as words its player reads and flies by hand, with this one
+/// exception: a `POSTURE` is the unit's own standing word, read by its mind when its player is
+/// away, so the host carries it out. Once the roster's order book has the order delivered to
+/// the unit's slot (the transport brought it: a jam on the way held it there), and inside a
+/// field once its party's carrier relay does not read jammed, the host writes the posture to
+/// the unit's record, tells the unit's player who set it and to what (queued for one who is
+/// away), and answers WILCO for the unit. The answer is the durable mark that the order was
+/// taken: an answered order is never applied again, so the player's own later set stands.
+/// Only the host answers a `POSTURE`: the player's own WILCO or NEGATIVE to one is refused
+/// (`super::field_commands::field_response`), so an answer always means it was carried out.
+/// Between the write and the answer landing the mark is this boot's own
+/// ([`Walk::postures`]): a restart in that window carries the order out once more.
+fn posture_order(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    walk: &mut Walk,
+    h: &SortieHandles,
+    unit: ObjId,
+    flight: &super::Flight,
+) -> Step {
+    use super::field_orders::FieldPayload;
+    if !matches!(flight.phase, Phase::Field | Phase::Returned) {
+        return Step::Idle;
+    }
+    let Ok(op) = super::prepare::operation(&mut &*ctx, h, flight.operation) else {
+        return Step::Idle;
+    };
+    if op.ended.is_some() {
+        return Step::Idle;
+    }
+    let Some(roster) = op
+        .command
+        .as_deref()
+        .and_then(|saved| DetachmentRoster::restore(saved).ok())
+    else {
+        return Step::Idle;
+    };
+    let Some((slot, owner)) = roster.members().iter().find_map(|m| match m.controller {
+        Controller::Player { character } if m.unit == unit => Some((m.slot, character)),
+        _ => None,
+    }) else {
+        return Step::Idle;
+    };
+    let Some(orders) = op.orders.as_deref() else {
+        return Step::Idle;
+    };
+    let Ok(book) = OrderBook::restore(&orders.book, &roster) else {
+        return Step::Idle;
+    };
+    let Some(delivered) = book.delivered(slot).cloned() else {
+        return Step::Idle;
+    };
+    let Directive::Objective(FieldPayload {
+        objective: FieldObjective::Posture { posture },
+        ..
+    }) = delivered.order.directive
+    else {
+        return Step::Idle;
+    };
+    let sequence = delivered.order.sequence;
+    let now = ctx.w.world_ic_now().at;
+    let current = delivered.acknowledgement.is_none()
+        && delivered.completed_at_ms.is_none()
+        && orders.lapse_of(slot, sequence).is_none()
+        && delivered.order.expires_at_ms.is_none_or(|end| {
+            u64::try_from(now)
+                .ok()
+                .and_then(|n| n.checked_mul(1000))
+                .is_some_and(|n| n < end)
+        })
+        && orders
+            .flights
+            .get(&slot)
+            .and_then(|f| f.standing.as_ref())
+            .is_some_and(|f| {
+                f.sequence == sequence && f.flight == flight.key && f.site == flight.site
+            });
+    if !current {
+        return Step::Idle;
+    }
+    if crate::field::orders::relay_jammed(ctx.w, unit) {
+        return Step::Held;
+    }
+    // The answer is submitted as the unit's player. One of their own acts in flight is
+    // theirs to finish first (as the host's recover for an absent pilot waits, doc 44 cut
+    // MW.7): the order is carried out at a later pass.
+    if ctx.authoritative_pending(owner) {
+        return Step::Held;
+    }
+    if walk.postures.get(&unit) != Some(&sequence) {
+        let changed = match crate::posture::record::set(ctx, unit, posture) {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::debug!(unit = unit.0, %error, "a leader's posture was not written");
+                return Step::Refused;
+            }
+        };
+        walk.postures.insert(unit, sequence);
+        let leader = delivered.order.issuer;
+        // Told only of a change: an order for the word the unit already holds says nothing.
+        if changed && leader != owner {
+            let name = ctx.w.get(leader).map_or_else(
+                || format!("#{}", leader.0),
+                |object| object.name.to_string(),
+            );
+            let line = crate::posture::order::POSTURE_ORDERED
+                .replace("{leader}", &name)
+                .replace("{unit}", &unit.0.to_string())
+                .replace("{posture}", posture.label());
+            crate::port_tick::notify_budget(ctx, owner, &line, crate::port_tick::NoticeLevel::Trip);
+        }
+    }
+    answer(
+        ctx,
+        fire,
+        walk,
+        (h, &op),
+        (unit, owner, slot, sequence),
+        Response::Wilco,
+    )
 }
 
 fn record_of(ctx: &Ctx<'_>, unit: ObjId) -> Option<crate::surface::excursion::RigRecord> {

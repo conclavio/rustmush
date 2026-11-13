@@ -197,6 +197,14 @@ pub enum FieldObjective {
     Mine {
         family: Option<crate::surface::geology::OreFamily>,
     },
+    /// **The standing word of a player's unit** (doc 45 unit AP.4a; Q-45-26): the leader sets
+    /// the posture a roster member's unit holds when its player is not at its controls. It is
+    /// no objective of the unit's: the host writes it to the unit's own record when the order
+    /// is delivered (`super::npc`, `posture_order`) and answers WILCO for the unit. Only a
+    /// player's slot takes one; a hired crew is not flown for an absent player (Q-45-13).
+    Posture {
+        posture: crate::posture::Posture,
+    },
 }
 /// **What an `ENGAGE` names** besides a campaign contact (doc 32 cut CF.6; Q-CF-7, Q-CF-15,
 /// §4a). Each is resolved by the recipient in its own observation when the order arrives, never

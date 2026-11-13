@@ -338,6 +338,7 @@ ORDER DT:12:1:3 2 SCREEN 90 HOLD FIRE
 ORDER DT:12:1:3 2 SUPPORT 1
 ORDER DT:12:1:3 2 WITHDRAW EXPIRES 60
 ORDER DT:12:1:3 2 MINE metals
+ORDER DT:12:1:3 2 POSTURE GUARD
 ORDER DT:12:1:3 2 RELEASE
 ```
 
@@ -346,6 +347,21 @@ field cell within the site (256 or 512 cells a side). SUPPORT takes an accepted 
 include a contact prefix from your own observation; a hint grants its recipient
 no contact knowledge or targeting permission. Orders stand until replaced,
 released or completed; an optional expiry suffix limits them in IC seconds.
+
+POSTURE sets the standing word of another player's unit on the roster: RETURN,
+GUARD or HOLD, what the unit's mind does when its player is not at its controls
+(`help field`, *Postures*). It takes a numbered slot a player flies; a hired
+crew's unit takes none. It travels like any other order, so a jammed relay holds
+it. When it arrives the unit's record is set and the unit answers WILCO by
+itself; the player cannot answer it for the unit, and a NEGATIVE is not a way
+to refuse it. Its player is told who set it and to what, at once or at their
+next login, when it changed the word the unit held. The player's own later set
+wins: an order the unit has answered is not applied again, and only a new order
+from you sets it again. An expiry on the order only limits how late it may
+arrive; a posture that has been set stays set. You can order it while that
+player holds the unit's seat, the five minutes after a lost link included. Once
+the unit has passed to its mind your command no longer reaches it. It is not
+given from an OOC room.
 
 Sending requires current leadership, physical station control and command rights
 for every selected unit. Admission checks the entire `ALL` set before sending.

@@ -615,6 +615,12 @@ order reaches one:
   still holds RETURN." and nothing has changed; an order that does not arrive
   is not kept for later. From another site or a port you have no relay to the
   rig at all: give the order from aboard its carrier.
+- **By your detachment's leader.** The leader of a roster you fly in may set
+  your unit's posture with a roster order (`help detachments`). You hear, or
+  read at your next login, "Vance, leading your detachment, ordered #123 to
+  GUARD: it holds that word until you set another." The unit answers that
+  order itself; you do not. Set the posture yourself, any of the ways above,
+  and yours stands until the leader orders it again.
 - **Never from an OOC room.** "A posture is an order to a unit in the world.
   It is not given from an OOC room." A seat in the simulator is an OOC room.
 

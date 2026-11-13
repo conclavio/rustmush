@@ -113,6 +113,54 @@ fn issue(
             },
         );
     }
+    // Doc 45 unit AP.4a (Q-45-26): `<slot> POSTURE <word>`, the standing word of a roster
+    // member's unit. An order like any other (the leader's authority, the relay, a jam), for a
+    // player's slot only, and never from an OOC room (Q-45-19).
+    let mut posture = text.split_whitespace();
+    if let (Some(target), Some(verb)) = (posture.next(), posture.next())
+        && verb.eq_ignore_ascii_case("POSTURE")
+    {
+        use crate::posture::order::{
+            POSTURE_OOC, POSTURE_ORDER_CREW, POSTURE_ORDER_USAGE, POSTURE_WORDS,
+        };
+        if crate::posture::order::ooc(ctx.w, ctx.actor) {
+            return Err(POSTURE_OOC.into());
+        }
+        let slot = Slot::new(target.parse().map_err(|_| POSTURE_ORDER_USAGE)?)
+            .map_err(|e| e.to_string())?;
+        let word = posture
+            .next()
+            .and_then(crate::posture::Posture::parse)
+            .ok_or(POSTURE_WORDS)?;
+        if posture.next().is_some() {
+            return Err(POSTURE_ORDER_USAGE.into());
+        }
+        let roster = op
+            .command
+            .as_deref()
+            .and_then(|saved| mush_tactics::detachment::DetachmentRoster::restore(saved).ok())
+            .ok_or("Refresh field command first.")?;
+        match roster.member(slot).map(|member| member.controller) {
+            Some(mush_tactics::detachment::Controller::Player { .. }) => {}
+            Some(_) => return Err(POSTURE_ORDER_CREW.into()),
+            None => return Err("No such slot in this detachment.".into()),
+        }
+        return submit(
+            ctx,
+            h,
+            op,
+            Act::Issue {
+                revision,
+                term,
+                target: OrderTarget::Slot(slot),
+                directive: Directive::Objective(FieldPayload {
+                    objective: FieldObjective::Posture { posture: word },
+                    hold_fire: false,
+                }),
+                expires_at_ms,
+            },
+        );
+    }
     let words = parse_order(text).map_err(|e| e.to_string())?;
     let target = match words.squad {
         SquadWord::All => OrderTarget::All,
@@ -240,6 +288,13 @@ pub(crate) fn field_response(
         .iter()
         .find(|s| s.controller.character() == Some(ctx.actor))
         .map(|s| s.slot)?;
+    // Doc 45 unit AP.4a: a POSTURE is set on the unit when it arrives and answered by the
+    // unit. Its player's own WILCO or NEGATIVE is not taken: an answer ahead of the host's
+    // would be read as the order already carried out, and a NEGATIVE would be a veto the
+    // ruling does not give (the player sets the posture back instead).
+    if posture_at(&op, slot, sequence) {
+        return Some(Err(crate::posture::order::POSTURE_ORDER_ANSWERED.into()));
+    }
     Some(submit(
         ctx,
         &h,
@@ -250,6 +305,30 @@ pub(crate) fn field_response(
             response,
         },
     ))
+}
+/// Whether the order delivered to `slot` under `sequence` is a `POSTURE` (doc 45 unit AP.4a).
+fn posture_at(op: &OperationRecord, slot: Slot, sequence: u64) -> bool {
+    let Some(roster) = op
+        .command
+        .as_deref()
+        .and_then(|saved| mush_tactics::detachment::DetachmentRoster::restore(saved).ok())
+    else {
+        return false;
+    };
+    op.orders
+        .as_deref()
+        .and_then(|orders| OrderBook::restore(&orders.book, &roster).ok())
+        .and_then(|book| book.delivered(slot).cloned())
+        .is_some_and(|delivered| {
+            delivered.order.sequence == sequence
+                && matches!(
+                    delivered.order.directive,
+                    Directive::Objective(FieldPayload {
+                        objective: FieldObjective::Posture { .. },
+                        ..
+                    })
+                )
+        })
 }
 fn line(ctx: &mut Ctx<'_>, text: String) {
     ctx.out.sys_to_actor(ctx.actor, "tacsim.detachment", text)
@@ -278,6 +357,7 @@ pub(super) fn directive_text(directive: &Directive<FieldPayload>) -> String {
         FieldObjective::Mine { family } => {
             family.map_or_else(|| "MINE".into(), |family| format!("MINE {}", family.id()))
         }
+        FieldObjective::Posture { posture } => format!("POSTURE {}", posture.label()),
     };
     if payload.hold_fire {
         text.push_str(" HOLD FIRE");
@@ -391,6 +471,16 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
                     directive_text(&delivered.order.directive)
                 ),
             );
+            // Doc 45 unit AP.4a: a POSTURE is the unit's to answer; no prefill is offered.
+            if matches!(
+                delivered.order.directive,
+                Directive::Objective(FieldPayload {
+                    objective: FieldObjective::Posture { .. },
+                    ..
+                })
+            ) {
+                continue;
+            }
             line(
                 ctx,
                 format!(
