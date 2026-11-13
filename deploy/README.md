@@ -796,7 +796,18 @@ store with no account the script bootstraps it). Then, in order:
    the four initialize actions. It sets the document's mode to `active`.
 3. **The Active boot.** `@mind/launch` must name every operator `ready`; an
    operator that `lacks` a grant is given the seven again and asked again, and
-   a second `lacks` stops the script. Then the 18 major NPCs of the cast packs
+   a second `lacks` stops the script. **The counter is given its door** (doc 44
+   unit MW.19): the counter is a room step 4 below digs, a dug room has no
+   exit, and the market's verbs (`@mind/publish`, `+minds`, `+minds/buy`) are
+   refused anywhere else, so until this no player could list a mind or buy
+   one. The script opens `Mind Counter <MC>` (also `mc`, `minds`) from the
+   Registry & Co-op Desk at Ceres Freeport into the counter, and `Registry <R>`
+   (also `out`) back, where the rooms do not already show them. It is the Active
+   boot's last step, after the NPCs and the hulls' return, so a world with no
+   such desk stops there with nothing else left undone. A second run on a box
+   that is already live hangs the door on its running world (written for boxes
+   brought up before the door existed; not yet run on one). `--llm-check`
+   opens nothing. The desk is a provisional place for the door. Then the 18 major NPCs of the cast packs
    are enabled with `@agent/enable` (Q-44-47; the shipped packs are not edited).
 4. **The unit is started**, and players are let in. On it the script reads
    `@mind/launch` again and runs the LLM check (below).
@@ -921,6 +932,11 @@ it stops after the Active boot, and the rig starts its own world).
 instance with its own Redis: an interrupted run and its second run, a reset
 and a second bring-up, and then the seed line and the purchase (`SEED=0`
 leaves the long step out).
+`scripts/bot-minds-lane.sh` is the bot's rig (doc 44 unit MW.19): a scratch
+instance rendered with the dev boxes' switches, brought up with `--no-systemd
+--no-seed`, and then played by two bots over SSH, one filing and listing a
+mind, the other buying a licence and flying it. It needs no root, and the
+nightly's `bot-minds-lane` job runs it.
 
 **A second run after a pause waits five minutes.** A world booted more than
 30 s after its store's last clock checkpoint runs the post-outage recovery

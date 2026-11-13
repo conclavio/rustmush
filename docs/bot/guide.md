@@ -1650,6 +1650,60 @@ Docked home is its success. It types no staff verb and no `FIRE … WHEN` rule. 
 cargo run -p mush-bot -- --config mush-bot.local.toml --field-escort ahuna --escort-for Fieldcap --headless --report escort.json
 ```
 
+### The mind market, walked by two bots
+
+`--headless --minds author --charter "<name>"` and `--headless --minds buyer --charter
+"<name>" [--minds-site <site>]` are the two halves of one walk of the mind market (doc 44
+unit MW.19): two bots, each on a login of its own, because the market refuses a sale between
+two characters of one login. Both need `[ssh].identity_file`: the author's mind goes over the
+SSH mind service, which takes a verified public key, and `account+character` as the username.
+The world must run the named launch (`@mind/launch` prints the player market's terms) and
+its counter must have a door (`deploy/instance/launch-bringup.py` opens `Mind Counter <MC>`
+from the Registry & Co-op Desk).
+
+The author:
+- pushes the bot's own source (`crates/mush-bot/src/mine/market_mind.rhai`) with `mind push`,
+  runs `mind check` over it and saves a revision, before the lane types a line (its line
+  session is already open; each reply is a `minds-exec` record in the transcript);
+- enrols with the Co-op (the stake pays the 100cr filing fee);
+- reserves a charter (`@mind/file <mind>@<rev>=<charter>`), asks for the rating
+  (`@mind/rate`), waits for `Registry work finished.`, and files with the same line again;
+- reads its filed number from `+minds/holdings`, walks through the counter's door, lists the
+  mind sealed (`@mind/publish <filed> form=sealed`) and reads its row on `+minds`.
+
+The buyer:
+- kits up as the escort pilot does (the armed rig is the one Occator leases with a core) and
+  bunkers for the hop;
+- reads `+minds` at the counter every 20 s until the author's charter is on it, then buys:
+  `+minds/buy <code>`, `+minds/buy/pay <code>`, `+minds/buy/complete <code>`, and its
+  licence number from `+minds/holdings`;
+- goes out of character to the simulator: `SIM TEAM red`, `SIM MIND filed:<licence>`, `SIM
+  START`, `BOARD` (the seat's `Sealed for this sortie:` line), `MIND`, and `EXIT`, which
+  hands the tank to the mind; it waits for the match's end and reads `SIM REPORT`'s `Your
+  mind:` line;
+- comes back, boards, hops to the site (`kerwan` unless `--minds-site` names another),
+  launches the rig from the bay with `+tv/1 launch mind=filed:<licence> go`, reads `+tv/1`
+  with the rig at its ramp, recovers it and sails home.
+
+A submitted step is done only on a `Done.` that follows the step's own sentence, and is
+read back by the step after it; a refused or busy answer is typed again. The rating is
+waited for ninety minutes at most, so `[agent].max_seconds` must be above that for the
+author, and above a hundred minutes of reading the counter for the buyer. Each role's success is its last read: the author's
+row on the counter, the buyer's hull docked at Ceres. The report's `mine.market` block
+holds the sentences each step was answered with, the rating's start and end, and
+`rating_unasked_lines`: how many `Queued.` and `Done.` lines the Registry sent the author
+during the rating for steps the author never typed. Neither role types a staff verb; the
+only lines beginning `@` are the player's own `@mind/file`, `@mind/rate` and
+`@mind/publish`.
+
+`scripts/bot-minds-lane.sh <binary dir>` stands a launch-composed instance up and runs
+both bots against it; the nightly's `bot-minds-lane` job runs that script.
+
+```powershell
+cargo run -p mush-bot -- --config author.toml --minds author --charter "Sentry Line" --headless --report author.json
+cargo run -p mush-bot -- --config buyer.toml --minds buyer --charter "Sentry Line" --headless --report buyer.json
+```
+
 ## Character, personality and voice
 
 The [character and cast studio](studio.md) develops JSON sheets from a concept:

@@ -117,7 +117,27 @@ impl WorkshopCommands {
     }
 
     pub(super) fn principal(&self, ctx: &Ctx<'_>) -> Result<Principal, RollError> {
-        if !ctx.w.has_live_conns(ctx.actor) {
+        self.principal_over(ctx, None)
+    }
+
+    /// **The author session of a typed request that arrived over `conn`** (doc 44 MW.19).
+    /// A line command's actor is typing, so it has a live connection. A typed request can
+    /// also come over a bare connection (doc 44 MW.24: the SSH `mind push`, `pull` and `check`
+    /// of a player who is not logged in), which is bound to its character and is never a
+    /// live connection. Until this, the live-connection rule refused every SSH mind request
+    /// of an offline player with the missing-mind sentence. A connection bound to the actor
+    /// stands in for the live one; nothing else about the session changes.
+    pub(super) fn principal_over(
+        &self,
+        ctx: &Ctx<'_>,
+        conn: Option<mush_core::output::ConnId>,
+    ) -> Result<Principal, RollError> {
+        let bound = conn.is_some_and(|conn| {
+            ctx.w
+                .connection_binding(conn)
+                .is_some_and(|(actor, _)| actor == ctx.actor)
+        });
+        if !ctx.w.has_live_conns(ctx.actor) && !bound {
             return Err(RollError::Missing);
         }
         let account = ctx
