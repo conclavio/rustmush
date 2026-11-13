@@ -27,7 +27,7 @@
 //!    by staff's hand, as every ship story's does.
 //!
 //! **What the story does by hand.** It drops and raises the players' connections, restarts
-//! the server over its kept store, and moves the clock: past the link-loss grace, to the
+//! the server over its kept store (three times), and moves the clock: past the link-loss grace, to the
 //! instant a leg of her passage ends, and a second at a time inside the bubble. It waits out
 //! no wall-clock window (doc 44 §7, "Time in a story").
 
@@ -448,6 +448,15 @@ impl Watch {
     }
 }
 
+/// Whether a mind has `hull`'s helm for her absent crew, in a bubble or out of one.
+fn mind_has_her(rig: &Rig, hull: ObjId) -> bool {
+    rig.tw
+        .world()
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.linkdead_state(hull))
+        .is_some_and(tacsim::space::SpaceLinkdeadState::backup_has_helm)
+}
+
 /// Drop every connection `who` holds as a clean QUIT: the presence hook reads a crew that
 /// has left, not a lost link.
 fn quit(rig: &mut Rig, who: ObjId) {
@@ -723,9 +732,10 @@ fn runs_then_brakes(took: &Reading, ran: &Reading, braked: &Reading) -> [i64; 3]
 ///    world moves, the author's and the buyer's among them, no row of the market, the Roll
 ///    or the economy moves, and the one inventory pool that does is her hold's reaction
 ///    mass, which is less.
-/// 6. *A restart while it has her helm.* The seal reads the same class, principal and claim
-///    from the claim book; the bubble reads back as it stood; the mind's next think is the
-///    brake it remembered, not a first think.
+/// 6. *A restart while it has her helm*, twice. On the corridor before the picket: the seal
+///    is the same and the picket still opens on her. Inside the bubble, six thinks in: the
+///    seal reads the same class, principal and claim from the claim book; the bubble reads
+///    back as it stood; the mind's next think is the brake it remembered, not a first think.
 /// 7. *She comes back with its next think on its way.* The hand-back cuts its burn. Her
 ///    first command clears its lock. For six steps nothing of the mind's lands: no lock, no
 ///    burn, her drift as it was. Then she quits, the mind has her at once, and the same
@@ -968,6 +978,20 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
         at_her_berth.stores,
         under_way.stores
     );
+    // 6 (the first of two). A restart on the corridor, the mind at her helm, before the
+    // picket: the seal is the same, and the picket still opens on her.
+    assert!(mind_has_her(&world.rig, hull));
+    let mut world = world.reboot_reconnecting(&[GOD]);
+    assert_eq!(
+        ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
+        Some(&sealed),
+        "a restart on her passage keeps the seal: class, principal and claim"
+    );
+    assert!(
+        mind_has_her(&world.rig, hull) && !world.rig.tw.world().is_connected(buyer),
+        "and the mind still has her helm, her buyer away"
+    );
+    assert_eq!(claim_rows(&world, hull), opened_rows);
     arrive_at_the_picket(&mut world.rig, hull, boundary);
     phase("picket");
 
