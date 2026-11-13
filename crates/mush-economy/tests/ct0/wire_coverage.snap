@@ -1,0 +1,69 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_coverage.snap
+
+[identities]
+namespace = tacsim.coverage.v1
+bind action = bind_hull_coverage
+claim action = claim_hull_coverage
+release action = release_hull_coverage
+max subject bytes = 8192
+max decision bytes = 4096
+max contract bytes = 16384
+max title bytes = 8192
+max correlation bytes = 32768
+max history bytes = 65536
+
+[digests | qualified]
+consent digest = "598b45a7ee9c9742cde78cd2fc70ba813b916b0f74b50bb33956efefa1ffa076"
+
+[digests | unqualified]
+consent digest = "1c6e524ab562107dbfe43c50269db6739260d37a1f0f874cfec316f56c3bb80d"
+
+[CoverageBasisV1]
+wire = {"format":1,"product":"c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8","product_digest":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","quote":"c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9","quote_digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","ic_open":"cacacacacacacacacacacacacacacaca","seal_digest":"2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f","admission_digest":"3030303030303030303030303030303030303030303030303030303030303030","departure_digest":"3131313131313131313131313131313131313131313131313131313131313131","hull":3,"hull_title_revision":1,"hull_revision":0,"hull_schema":{"key":{"owner":"tacsim","kind":"unit","id":"line_tank"},"version":1,"digest":"5d242108db657bc8cfc19c0e8f8580be83bf76eb572cf627973e0233ec1aaa3d"},"zone":{"key":{"owner":"tacsim","kind":"zone","id":"urvara_reach"},"version":1,"digest":"8a880a22c162e08838d81423e647754391bd99f2e4885e9104560e151c419f27"},"qualified_role":"3232323232323232323232323232323232323232323232323232323232323232"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `product`, `product_digest`, `quote`, `quote_digest`, `ic_open`, `seal_digest`, `admission_digest`, `departure_digest`, `hull`, `hull_title_revision`, `hull_revision`, `hull_schema`, `zone`, `qualified_role` at line 1 column 106
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+missing qualified_role refused = missing field `qualified_role`
+
+[CoverageQuoteTermsV1]
+wire = {"format":1,"buyer":4,"insurer":0,"scope":0,"treasury":3,"payer":1,"instrument":"cr","adjudicator":2,"insured_value":10000,"base_premium":100,"discount":10,"premium":90,"liability":8000,"duration_seconds":100,"claim_delay_seconds":10,"quoted_at_utc":100,"expires_at_utc":160}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `buyer`, `insurer`, `scope`, `treasury`, `payer`, `instrument`, `adjudicator`, `insured_value`, `base_premium`, `discount`, `premium`, `liability`, `duration_seconds`, `claim_delay_seconds`, `quoted_at_utc`, `expires_at_utc` at line 1 column 90
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+
+[CoverageMoneyTermsV1]
+wire = {"format":1,"buyer":4,"insurer":0,"scope":0,"treasury":3,"payer":1,"instrument":"cr","adjudicator":2,"insured_value":10000,"base_premium":100,"discount":10,"premium":90,"liability":8000,"starts_at":{"clock":{"kind":"world_ic","generation":1},"at":1000},"ends_at":{"clock":{"kind":"world_ic","generation":1},"at":1100},"claim_delay_seconds":10,"quoted_at_utc":100,"expires_at_utc":160}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `buyer`, `insurer`, `scope`, `treasury`, `payer`, `instrument`, `adjudicator`, `insured_value`, `base_premium`, `discount`, `premium`, `liability`, `starts_at`, `ends_at`, `claim_delay_seconds`, `quoted_at_utc`, `expires_at_utc` at line 1 column 90
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+
+[CoverageConsentV1]
+wire = {"format":1,"operation":"09090909090909090909090909090909","effect":{"key":{"owner":"tacsim","kind":"action","id":"bind_hull_coverage"},"version":1,"digest":"d7fa9839e61af2f24fecf07cfcf42ad0a36cce9c2c8fd9ad9dc2a70b61d5ef18"},"accepted_at_utc":110,"basis":{"format":1,"product":"c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8","product_digest":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","quote":"c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9","quote_digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","ic_open":"cacacacacacacacacacacacacacacaca","seal_digest":"2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f","admission_digest":"3030303030303030303030303030303030303030303030303030303030303030","departure_digest":"3131313131313131313131313131313131313131313131313131313131313131","hull":3,"hull_title_revision":1,"hull_revision":0,"hull_schema":{"key":{"owner":"tacsim","kind":"unit","id":"line_tank"},"version":1,"digest":"5d242108db657bc8cfc19c0e8f8580be83bf76eb572cf627973e0233ec1aaa3d"},"zone":{"key":{"owner":"tacsim","kind":"zone","id":"urvara_reach"},"version":1,"digest":"8a880a22c162e08838d81423e647754391bd99f2e4885e9104560e151c419f27"},"qualified_role":"3232323232323232323232323232323232323232323232323232323232323232"},"terms":{"format":1,"buyer":4,"insurer":0,"scope":0,"treasury":3,"payer":1,"instrument":"cr","adjudicator":2,"insured_value":10000,"base_premium":100,"discount":10,"premium":90,"liability":8000,"starts_at":{"clock":{"kind":"world_ic","generation":1},"at":1000},"ends_at":{"clock":{"kind":"world_ic","generation":1},"at":1100},"claim_delay_seconds":10,"quoted_at_utc":100,"expires_at_utc":160}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `effect`, `accepted_at_utc`, `basis`, `terms` at line 1 column 1066
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+
+[CoverageBasisV1]
+wire = {"format":1,"product":"c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8","product_digest":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","quote":"c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9","quote_digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","ic_open":"cacacacacacacacacacacacacacacaca","seal_digest":"2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f","admission_digest":"3030303030303030303030303030303030303030303030303030303030303030","departure_digest":"3131313131313131313131313131313131313131313131313131313131313131","hull":3,"hull_title_revision":1,"hull_revision":0,"hull_schema":{"key":{"owner":"tacsim","kind":"unit","id":"line_tank"},"version":1,"digest":"5d242108db657bc8cfc19c0e8f8580be83bf76eb572cf627973e0233ec1aaa3d"},"zone":{"key":{"owner":"tacsim","kind":"zone","id":"urvara_reach"},"version":1,"digest":"8a880a22c162e08838d81423e647754391bd99f2e4885e9104560e151c419f27"},"qualified_role":null}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `product`, `product_digest`, `quote`, `quote_digest`, `ic_open`, `seal_digest`, `admission_digest`, `departure_digest`, `hull`, `hull_title_revision`, `hull_revision`, `hull_schema`, `zone`, `qualified_role` at line 1 column 106
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+missing qualified_role refused = missing field `qualified_role`
+
+[CoverageQuoteTermsV1]
+wire = {"format":1,"buyer":4,"insurer":0,"scope":0,"treasury":3,"payer":1,"instrument":"cr","adjudicator":2,"insured_value":10000,"base_premium":100,"discount":0,"premium":100,"liability":8000,"duration_seconds":100,"claim_delay_seconds":10,"quoted_at_utc":100,"expires_at_utc":160}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `buyer`, `insurer`, `scope`, `treasury`, `payer`, `instrument`, `adjudicator`, `insured_value`, `base_premium`, `discount`, `premium`, `liability`, `duration_seconds`, `claim_delay_seconds`, `quoted_at_utc`, `expires_at_utc` at line 1 column 90
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+
+[CoverageMoneyTermsV1]
+wire = {"format":1,"buyer":4,"insurer":0,"scope":0,"treasury":3,"payer":1,"instrument":"cr","adjudicator":2,"insured_value":10000,"base_premium":100,"discount":0,"premium":100,"liability":8000,"starts_at":{"clock":{"kind":"world_ic","generation":1},"at":1000},"ends_at":{"clock":{"kind":"world_ic","generation":1},"at":1100},"claim_delay_seconds":10,"quoted_at_utc":100,"expires_at_utc":160}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `buyer`, `insurer`, `scope`, `treasury`, `payer`, `instrument`, `adjudicator`, `insured_value`, `base_premium`, `discount`, `premium`, `liability`, `starts_at`, `ends_at`, `claim_delay_seconds`, `quoted_at_utc`, `expires_at_utc` at line 1 column 90
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.
+
+[CoverageConsentV1]
+wire = {"format":1,"operation":"09090909090909090909090909090909","effect":{"key":{"owner":"tacsim","kind":"action","id":"bind_hull_coverage"},"version":1,"digest":"d7fa9839e61af2f24fecf07cfcf42ad0a36cce9c2c8fd9ad9dc2a70b61d5ef18"},"accepted_at_utc":110,"basis":{"format":1,"product":"c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8","product_digest":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","quote":"c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9","quote_digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","ic_open":"cacacacacacacacacacacacacacacaca","seal_digest":"2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f","admission_digest":"3030303030303030303030303030303030303030303030303030303030303030","departure_digest":"3131313131313131313131313131313131313131313131313131313131313131","hull":3,"hull_title_revision":1,"hull_revision":0,"hull_schema":{"key":{"owner":"tacsim","kind":"unit","id":"line_tank"},"version":1,"digest":"5d242108db657bc8cfc19c0e8f8580be83bf76eb572cf627973e0233ec1aaa3d"},"zone":{"key":{"owner":"tacsim","kind":"zone","id":"urvara_reach"},"version":1,"digest":"8a880a22c162e08838d81423e647754391bd99f2e4885e9104560e151c419f27"},"qualified_role":null},"terms":{"format":1,"buyer":4,"insurer":0,"scope":0,"treasury":3,"payer":1,"instrument":"cr","adjudicator":2,"insured_value":10000,"base_premium":100,"discount":0,"premium":100,"liability":8000,"starts_at":{"clock":{"kind":"world_ic","generation":1},"at":1000},"ends_at":{"clock":{"kind":"world_ic","generation":1},"at":1100},"claim_delay_seconds":10,"quoted_at_utc":100,"expires_at_utc":160}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `effect`, `accepted_at_utc`, `basis`, `terms` at line 1 column 1004
+invalid refused = owner participant refused preparation: The coverage terms or committed evidence are unavailable or have changed.

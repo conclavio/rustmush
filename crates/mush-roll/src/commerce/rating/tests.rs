@@ -583,3 +583,5 @@ fn a_passing_trial_always_carries_its_terminal() -> TestResult {
     );
     Ok(())
 }
+
+mod ct0_wire;

@@ -1,0 +1,203 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_paid_resale.snap
+
+[families]
+family roll_mind_paid_resales owner = roll
+family roll_mind_paid_resales record FAMILY = roll_mind_paid_resales
+family roll_mind_paid_resales key codec = roll_mind_paid_resales.key.v1
+family roll_mind_paid_resales value schema = roll_mind_paid_resales.value.v1
+family roll_mind_paid_resales schema version = 1
+family roll_mind_paid_resales decoder = roll_mind_paid_resales.strict_decode.v1
+family roll_mind_paid_resales validator = roll_mind_paid_resales.invariants.v1
+family roll_mind_paid_resales serializer = roll_mind_paid_resales.canonical.v1
+family roll_mind_paid_resales max key bytes = 192
+family roll_mind_paid_resales max record bytes = 40960
+family roll_mind_paid_resales record MAX_BYTES = 40960
+family roll_mind_paid_resale_heads owner = roll
+family roll_mind_paid_resale_heads record FAMILY = roll_mind_paid_resale_heads
+family roll_mind_paid_resale_heads key codec = roll_mind_paid_resale_heads.key.v1
+family roll_mind_paid_resale_heads value schema = roll_mind_paid_resale_heads.value.v1
+family roll_mind_paid_resale_heads schema version = 1
+family roll_mind_paid_resale_heads decoder = roll_mind_paid_resale_heads.strict_decode.v1
+family roll_mind_paid_resale_heads validator = roll_mind_paid_resale_heads.invariants.v1
+family roll_mind_paid_resale_heads serializer = roll_mind_paid_resale_heads.canonical.v1
+family roll_mind_paid_resale_heads max key bytes = 192
+family roll_mind_paid_resale_heads max record bytes = 4096
+family roll_mind_paid_resale_heads record MAX_BYTES = 4096
+family roll_mind_paid_holders owner = roll
+family roll_mind_paid_holders record FAMILY = roll_mind_paid_holders
+family roll_mind_paid_holders key codec = roll_mind_paid_holders.key.v1
+family roll_mind_paid_holders value schema = roll_mind_paid_holders.value.v1
+family roll_mind_paid_holders schema version = 1
+family roll_mind_paid_holders decoder = roll_mind_paid_holders.strict_decode.v1
+family roll_mind_paid_holders validator = roll_mind_paid_holders.invariants.v1
+family roll_mind_paid_holders serializer = roll_mind_paid_holders.canonical.v1
+family roll_mind_paid_holders max key bytes = 192
+family roll_mind_paid_holders max record bytes = 32768
+family roll_mind_paid_holders record MAX_BYTES = 32768
+
+[protocol]
+definition 0 kind = action
+definition 0 id = offer_paid_mind_resale
+definition 0 version = 1
+definition 0 payload = {"authority":"current_personal_paid_holder","existing_term":"unchanged","format":1,"named_buyer":true,"no_automatic_acceptance":true,"protocol":"personal_paid_resale_v1","source_free":true}
+definition 0 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 0 current = false
+definition 0 registered = {"key":{"owner":"market","kind":"action","id":"offer_paid_mind_resale"},"version":1,"digest":"ebdfdd282ec2e5fd21e8c006b63c9673732ef4cc95a72b886254b8d952df9bbf"}
+definition 1 kind = action
+definition 1 id = accept_paid_mind_resale
+definition 1 version = 1
+definition 1 payload = {"authority":"named_buyer","claims":"exact_zero","format":1,"holder":"same_ack","payment":"immediate_exact_gross_split","protocol":"personal_paid_resale_v1","term":"unchanged"}
+definition 1 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 1 current = false
+definition 1 registered = {"key":{"owner":"market","kind":"action","id":"accept_paid_mind_resale"},"version":1,"digest":"3678280b29db918e799400f71fa6052614a699a4ba48b7d8563f32e2a9fccfa5"}
+definition 2 kind = action
+definition 2 id = fund_paid_mind_resale
+definition 2 version = 1
+definition 2 payload = {"authority":"named_buyer","claims":"positive","format":1,"future_terminal_reserved":true,"hold":"single_real_gross_escrow","holder":"unchanged","protocol":"personal_paid_resale_v1"}
+definition 2 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 2 current = false
+definition 2 registered = {"key":{"owner":"market","kind":"action","id":"fund_paid_mind_resale"},"version":1,"digest":"909d745317e98cd33ed5e1d91fc1407d6412c9897521178ebd701efe2745a558"}
+definition 3 kind = action
+definition 3 id = settle_paid_mind_resale
+definition 3 version = 1
+definition 3 payload = {"authority":"registered_private_service_intent","format":1,"old_claims":"retained","protocol":"personal_paid_resale_v1","term":"unchanged","trigger":"last_paid_claim_close_or_same_clock_deadline"}
+definition 3 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 3 current = false
+definition 3 registered = {"key":{"owner":"market","kind":"action","id":"settle_paid_mind_resale"},"version":1,"digest":"821f93ff1113684c9896ba3208e935c4e1d4d90bfca744b035231148d78bcf6b"}
+definition 4 kind = action
+definition 4 id = refund_paid_mind_resale
+definition 4 version = 1
+definition 4 payload = {"authority":"registered_private_service_intent","causes":["registry_revoked","clock_changed","recipient_unavailable","monetary_binding_changed"],"format":1,"protocol":"personal_paid_resale_v1","source_rights":"not_required"}
+definition 4 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 4 current = false
+definition 4 registered = {"key":{"owner":"market","kind":"action","id":"refund_paid_mind_resale"},"version":1,"digest":"c3a91f5150ef64b153f2c7190a36deaf5aaf7cac1a13f7616bc7fcb18f76dfc8"}
+definition 5 kind = outcome
+definition 5 id = paid_mind_resale_offered
+definition 5 version = 1
+definition 5 payload = {"format":1}
+definition 5 current = false
+definition 5 registered = {"key":{"owner":"market","kind":"outcome","id":"paid_mind_resale_offered"},"version":1,"digest":"826f9f8d8dfd23ca5fcc69d8772f362a5329a30f4f76935af7f4d7f305ee28c5"}
+definition 6 kind = outcome
+definition 6 id = paid_mind_resale_accepted
+definition 6 version = 1
+definition 6 payload = {"format":1}
+definition 6 current = false
+definition 6 registered = {"key":{"owner":"market","kind":"outcome","id":"paid_mind_resale_accepted"},"version":1,"digest":"6bd93d9fbaaf6de8f971a2e8813c51303e8a00fb8275e08f6bed4fb9618a39bf"}
+definition 7 kind = outcome
+definition 7 id = paid_mind_resale_funded
+definition 7 version = 1
+definition 7 payload = {"format":1}
+definition 7 current = false
+definition 7 registered = {"key":{"owner":"market","kind":"outcome","id":"paid_mind_resale_funded"},"version":1,"digest":"e583f0866280c9a2e1ab8f566c9b602dbb1f9adff58baf6dd97c03af198623d7"}
+definition 8 kind = outcome
+definition 8 id = paid_mind_resale_settled
+definition 8 version = 1
+definition 8 payload = {"format":1}
+definition 8 current = false
+definition 8 registered = {"key":{"owner":"market","kind":"outcome","id":"paid_mind_resale_settled"},"version":1,"digest":"d0b3e6d28cc84e7024537a5729f5c6323bb462c3f21edf7a262e9c41e0249003"}
+definition 9 kind = outcome
+definition 9 id = paid_mind_resale_refunded
+definition 9 version = 1
+definition 9 payload = {"format":1}
+definition 9 current = false
+definition 9 registered = {"key":{"owner":"market","kind":"outcome","id":"paid_mind_resale_refunded"},"version":1,"digest":"4c0bfb3f108ad1c5d12afa35d247c7a80ef3cb57d1d406c2e908ed7718d1c8c1"}
+action 0 = {"key":{"owner":"market","kind":"action","id":"offer_paid_mind_resale"},"version":1,"digest":"ebdfdd282ec2e5fd21e8c006b63c9673732ef4cc95a72b886254b8d952df9bbf"}
+action 1 = {"key":{"owner":"market","kind":"action","id":"accept_paid_mind_resale"},"version":1,"digest":"3678280b29db918e799400f71fa6052614a699a4ba48b7d8563f32e2a9fccfa5"}
+action 2 = {"key":{"owner":"market","kind":"action","id":"fund_paid_mind_resale"},"version":1,"digest":"909d745317e98cd33ed5e1d91fc1407d6412c9897521178ebd701efe2745a558"}
+action 3 = {"key":{"owner":"market","kind":"action","id":"settle_paid_mind_resale"},"version":1,"digest":"821f93ff1113684c9896ba3208e935c4e1d4d90bfca744b035231148d78bcf6b"}
+action 4 = {"key":{"owner":"market","kind":"action","id":"refund_paid_mind_resale"},"version":1,"digest":"c3a91f5150ef64b153f2c7190a36deaf5aaf7cac1a13f7616bc7fcb18f76dfc8"}
+
+[holder]
+birth = {"route":"entitlement","operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"}
+holder key = roll/roll_mind_paid_holders/licence/0000000000000001/0000000000000002
+holder record = {"format":1,"licence":"1","generation":2,"holder":5,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"predecessor":{"generation":1,"operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"operation":"03030303030303030303030303030303","action":{"key":{"owner":"market","kind":"action","id":"accept_paid_mind_resale"},"version":1,"digest":"3678280b29db918e799400f71fa6052614a699a4ba48b7d8563f32e2a9fccfa5"},"acceptance":"03030303030303030303030303030303","offer":"02020202020202020202020202020202","offer_digest":"0202020202020202020202020202020202020202020202020202020202020202","term":{"generation":"1","operation":"01010101010101010101010101010101","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"accepted_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"economic_digest":"0404040404040404040404040404040404040404040404040404040404040404"}
+holder stored = {"acceptance":"03030303030303030303030303030303","accepted_at_ic":{"at":100,"clock":{"generation":1,"kind":"world_ic"}},"action":{"digest":"3678280b29db918e799400f71fa6052614a699a4ba48b7d8563f32e2a9fccfa5","key":{"id":"accept_paid_mind_resale","kind":"action","owner":"market"},"version":1},"birth":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","operation":"01010101010101010101010101010101","route":"entitlement"},"economic_digest":"0404040404040404040404040404040404040404040404040404040404040404","format":1,"generation":2,"holder":5,"licence":"1","offer":"02020202020202020202020202020202","offer_digest":"0202020202020202020202020202020202020202020202020202020202020202","operation":"03030303030303030303030303030303","predecessor":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","generation":1,"operation":"01010101010101010101010101010101"},"term":{"digest":"0303030303030303030303030303030303030303030303030303030303030303","generation":"1","operation":"01010101010101010101010101010101"}}
+holder digest = "af3a6062bab3152be62c61fa2731752ea05de2e34757721e31eca62a296069d5"
+holder ownership = {"generation":2,"operation":"03030303030303030303030303030303","digest":"af3a6062bab3152be62c61fa2731752ea05de2e34757721e31eca62a296069d5"}
+
+[binding]
+binding = {"licence":"1","charter":"2","line":"3","birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"ownership":{"generation":1,"operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"term":{"format":1,"licence":"1","generation":"1","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"terms":{"seats":1,"class":"I","form":{"kind":"open_resale"},"transferable":true},"revision":{"kind":"pin","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}},"operation":"01010101010101010101010101010101"},"term_clock":{"kind":"world_ic","generation":1},"economics_digest":"0808080808080808080808080808080808080808080808080808080808080808","royalty_chain_digest":"0909090909090909090909090909090909090909090909090909090909090909"}
+binding term digest = "da910d11634292c660dceb4af3526c088779dbc83f5e1d2171f68562098c63bf"
+binding native basis = {"licence":1,"charter":2,"line":3,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"holder":{"generation":1,"operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"term":{"generation":1,"operation":"01010101010101010101010101010101","digest":"da910d11634292c660dceb4af3526c088779dbc83f5e1d2171f68562098c63bf","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"terms_digest":"05c835fbb6bf5a34e879dbfe86c19bd1f3f95dcb2062fccb49b29166d99a5f03","policy_digest":"6e5f043766f30bb3aa788ba8abeec8af71d298a25c58877a4ad16012c5565709"},"economics_digest":"0808080808080808080808080808080808080808080808080808080808080808","royalty_chain_digest":"0909090909090909090909090909090909090909090909090909090909090909"}
+
+[heads]
+head 0 key = roll/roll_mind_paid_resale_heads/licence/0000000000000001
+head 0 record = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"funded"}}
+head 0 stored = {"current":{"digest":"0505050505050505050505050505050505050505050505050505050505050505","operation":"14141414141414141414141414141414","sequence":1},"format":1,"licence":"1","state":{"phase":"funded"}}
+head 1 key = roll/roll_mind_paid_resale_heads/licence/0000000000000001
+head 1 record = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"settled","terminal":"15151515151515151515151515151515","ownership":{"generation":2,"operation":"03030303030303030303030303030303","digest":"af3a6062bab3152be62c61fa2731752ea05de2e34757721e31eca62a296069d5"}}}
+head 1 stored = {"current":{"digest":"0505050505050505050505050505050505050505050505050505050505050505","operation":"14141414141414141414141414141414","sequence":1},"format":1,"licence":"1","state":{"ownership":{"digest":"af3a6062bab3152be62c61fa2731752ea05de2e34757721e31eca62a296069d5","generation":2,"operation":"03030303030303030303030303030303"},"phase":"settled","terminal":"15151515151515151515151515151515"}}
+head 2 key = roll/roll_mind_paid_resale_heads/licence/0000000000000001
+head 2 record = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"registry_revoked","sanction":"16161616161616161616161616161616","licence":1,"generation":1,"term_digest":"0606060606060606060606060606060606060606060606060606060606060606"}}}
+head 2 stored = {"current":{"digest":"0505050505050505050505050505050505050505050505050505050505050505","operation":"14141414141414141414141414141414","sequence":1},"format":1,"licence":"1","state":{"phase":"refunded","reason":{"generation":1,"kind":"registry_revoked","licence":1,"sanction":"16161616161616161616161616161616","term_digest":"0606060606060606060606060606060606060606060606060606060606060606"},"terminal":"16161616161616161616161616161616"}}
+head 3 key = roll/roll_mind_paid_resale_heads/licence/0000000000000001
+head 3 record = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"clock_changed"}}}
+head 3 stored = {"current":{"digest":"0505050505050505050505050505050505050505050505050505050505050505","operation":"14141414141414141414141414141414","sequence":1},"format":1,"licence":"1","state":{"phase":"refunded","reason":{"kind":"clock_changed"},"terminal":"16161616161616161616161616161616"}}
+head 4 key = roll/roll_mind_paid_resale_heads/licence/0000000000000001
+head 4 record = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"recipient_unavailable"}}}
+head 4 stored = {"current":{"digest":"0505050505050505050505050505050505050505050505050505050505050505","operation":"14141414141414141414141414141414","sequence":1},"format":1,"licence":"1","state":{"phase":"refunded","reason":{"kind":"recipient_unavailable"},"terminal":"16161616161616161616161616161616"}}
+head 5 key = roll/roll_mind_paid_resale_heads/licence/0000000000000001
+head 5 record = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"monetary_binding_changed"}}}
+head 5 stored = {"current":{"digest":"0505050505050505050505050505050505050505050505050505050505050505","operation":"14141414141414141414141414141414","sequence":1},"format":1,"licence":"1","state":{"phase":"refunded","reason":{"kind":"monetary_binding_changed"},"terminal":"16161616161616161616161616161616"}}
+
+[PaidResaleBinding]
+wire = {"licence":"1","charter":"2","line":"3","birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"ownership":{"generation":1,"operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"term":{"format":1,"licence":"1","generation":"1","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"terms":{"seats":1,"class":"I","form":{"kind":"open_resale"},"transferable":true},"revision":{"kind":"pin","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}},"operation":"01010101010101010101010101010101"},"term_clock":{"kind":"world_ic","generation":1},"economics_digest":"0808080808080808080808080808080808080808080808080808080808080808","royalty_chain_digest":"0909090909090909090909090909090909090909090909090909090909090909"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `licence`, `charter`, `line`, `birth`, `ownership`, `term`, `term_clock`, `economics_digest`, `royalty_chain_digest` at line 1 column 189
+invalid refused = commercial records disagree
+
+[PaidResaleRef]
+wire = {"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `sequence`, `operation`, `digest` at line 1 column 20
+invalid refused = invalid commercial record
+
+[ResaleClaimObservation]
+wire = {"generation":3,"next_transition":4,"open_paid":1}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `generation`, `next_transition`, `open_paid` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PaidResaleHead (0)]
+wire = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"funded"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `current`, `state` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PaidResaleHead (1)]
+wire = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"settled","terminal":"15151515151515151515151515151515","ownership":{"generation":2,"operation":"03030303030303030303030303030303","digest":"af3a6062bab3152be62c61fa2731752ea05de2e34757721e31eca62a296069d5"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `current`, `state` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PaidResaleHead (2)]
+wire = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"registry_revoked","sanction":"16161616161616161616161616161616","licence":1,"generation":1,"term_digest":"0606060606060606060606060606060606060606060606060606060606060606"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `current`, `state` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PaidResaleHead (3)]
+wire = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"clock_changed"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `current`, `state` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PaidResaleHead (4)]
+wire = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"recipient_unavailable"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `current`, `state` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PaidResaleHead (5)]
+wire = {"format":1,"licence":"1","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0505050505050505050505050505050505050505050505050505050505050505"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"monetary_binding_changed"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `current`, `state` at line 1 column 20
+invalid refused = invalid commercial record
+
+[HolderTerm]
+wire = {"generation":"1","operation":"01010101010101010101010101010101","digest":"0303030303030303030303030303030303030303030303030303030303030303"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `generation`, `operation`, `digest` at line 1 column 20
+
+[PaidHolderRecord]
+wire = {"format":1,"licence":"1","generation":2,"holder":5,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"predecessor":{"generation":1,"operation":"01010101010101010101010101010101","digest":"0101010101010101010101010101010101010101010101010101010101010101"},"operation":"03030303030303030303030303030303","action":{"key":{"owner":"market","kind":"action","id":"accept_paid_mind_resale"},"version":1,"digest":"3678280b29db918e799400f71fa6052614a699a4ba48b7d8563f32e2a9fccfa5"},"acceptance":"03030303030303030303030303030303","offer":"02020202020202020202020202020202","offer_digest":"0202020202020202020202020202020202020202020202020202020202020202","term":{"generation":"1","operation":"01010101010101010101010101010101","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"accepted_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"economic_digest":"0404040404040404040404040404040404040404040404040404040404040404"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `generation`, `holder`, `birth`, `predecessor`, `operation`, `action`, `acceptance`, `offer`, `offer_digest`, `term`, `accepted_at_ic`, `economic_digest` at line 1 column 465
+invalid refused = commercial records disagree

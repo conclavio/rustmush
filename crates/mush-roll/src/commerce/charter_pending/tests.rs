@@ -194,3 +194,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
 /// 17g C2f: the per-(buyer, charter) pending offer index (test 11).
 #[path = "buyer_offer_tests.rs"]
 pub(crate) mod buyer_offers;
+
+/// Doc 46 CT.0: the codec pins (`tests/ct0/wire_charter_pending.snap`).
+#[path = "ct0_wire.rs"]
+mod ct0_wire;

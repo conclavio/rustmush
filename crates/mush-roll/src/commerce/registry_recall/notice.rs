@@ -480,3 +480,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ct0_snapshot.rs"]
+mod ct0_snapshot; // Doc 46 CT.0

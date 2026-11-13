@@ -455,8 +455,9 @@ fn advance_with_service(
             "transaction":u64::from(byte),"journal_seq":u64::from(byte),"at_ic":{"clock":{"kind":"world_ic","generation":1},"at":at},
             "posted_at_utc":at,"issued_at_ic":if index==2{json!({"clock":{"kind":"world_ic","generation":1},"at":at})}else{Value::Null}}})
         }
-        4 => json!({"kind":"unfunded_closed","closure":{"commit":commit,"action":f.actions[index],
-            "at_ic":{"clock":{"kind":"world_ic","generation":1},"at":at},"posted_at_utc":at,"reason":"declined"}}),
+        // CT.0: a walk may pass its own closure (the `expired` reason).
+        4 => service_state.unwrap_or_else(|| json!({"kind":"unfunded_closed","closure":{"commit":commit,"action":f.actions[index],
+            "at_ic":{"clock":{"kind":"world_ic","generation":1},"at":at},"posted_at_utc":at,"reason":"declined"}})),
         5 => service_state.ok_or("service closure state")?,
         _ => return Err("advance action".into()),
     };

@@ -1,0 +1,174 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_conduct.snap
+
+[families]
+JOB_BYTES = 8192
+EXECUTION_BYTES = 4096
+RESULT_BYTES = 4096
+MAX_TRIALS = 4096
+family roll_conduct_trial_job owner = roll
+family roll_conduct_trial_job record FAMILY = roll_conduct_trial_job
+family roll_conduct_trial_job key codec = roll_conduct_trial_job.key.v1
+family roll_conduct_trial_job value schema = roll_conduct_trial_job.value.v1
+family roll_conduct_trial_job schema version = 1
+family roll_conduct_trial_job decoder = roll_conduct_trial_job.decode.v1
+family roll_conduct_trial_job validator = roll_conduct_trial_job.validate.v1
+family roll_conduct_trial_job serializer = roll_conduct_trial_job.canonical.v1
+family roll_conduct_trial_job max key bytes = 32
+family roll_conduct_trial_job max record bytes = 8192
+family roll_conduct_trial_job record MAX_BYTES = 8192
+family roll_conduct_trial_execution owner = roll
+family roll_conduct_trial_execution record FAMILY = roll_conduct_trial_execution
+family roll_conduct_trial_execution key codec = roll_conduct_trial_execution.key.v1
+family roll_conduct_trial_execution value schema = roll_conduct_trial_execution.value.v1
+family roll_conduct_trial_execution schema version = 1
+family roll_conduct_trial_execution decoder = roll_conduct_trial_execution.decode.v1
+family roll_conduct_trial_execution validator = roll_conduct_trial_execution.validate.v1
+family roll_conduct_trial_execution serializer = roll_conduct_trial_execution.canonical.v1
+family roll_conduct_trial_execution max key bytes = 32
+family roll_conduct_trial_execution max record bytes = 4096
+family roll_conduct_trial_execution record MAX_BYTES = 4096
+family roll_conduct_trial_result owner = roll
+family roll_conduct_trial_result record FAMILY = roll_conduct_trial_result
+family roll_conduct_trial_result key codec = roll_conduct_trial_result.key.v1
+family roll_conduct_trial_result value schema = roll_conduct_trial_result.value.v1
+family roll_conduct_trial_result schema version = 1
+family roll_conduct_trial_result decoder = roll_conduct_trial_result.decode.v1
+family roll_conduct_trial_result validator = roll_conduct_trial_result.validate.v1
+family roll_conduct_trial_result serializer = roll_conduct_trial_result.canonical.v1
+family roll_conduct_trial_result max key bytes = 32
+family roll_conduct_trial_result max record bytes = 4096
+family roll_conduct_trial_result record MAX_BYTES = 4096
+
+[protocol]
+manifest = {"key":{"owner":"tacsim","kind":"conduct_manifest","id":"safe_conduct"},"version":1,"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8"}
+transition admit action id = conduct_trial_admit
+action admit kind = action
+action admit id = conduct_trial_admit
+action admit version = 1
+action admit payload = {"format":1,"manifest":{"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8","key":{"id":"safe_conduct","kind":"conduct_manifest","owner":"tacsim"},"version":1},"protocol":"roll.conduct_trial.v1","transition":"admit"}
+action admit reference 0 = {"key":{"owner":"tacsim","kind":"conduct_manifest","id":"safe_conduct"},"version":1,"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8"}
+action admit current = false
+action admit registered = {"key":{"owner":"roll","kind":"action","id":"conduct_trial_admit"},"version":1,"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504"}
+transition grant action id = conduct_trial_grant
+action grant kind = action
+action grant id = conduct_trial_grant
+action grant version = 1
+action grant payload = {"format":1,"manifest":{"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8","key":{"id":"safe_conduct","kind":"conduct_manifest","owner":"tacsim"},"version":1},"protocol":"roll.conduct_trial.v1","transition":"grant"}
+action grant reference 0 = {"key":{"owner":"tacsim","kind":"conduct_manifest","id":"safe_conduct"},"version":1,"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8"}
+action grant current = false
+action grant registered = {"key":{"owner":"roll","kind":"action","id":"conduct_trial_grant"},"version":1,"digest":"f194dedb78c3273e537d1458dfc8bb2aecd3372455361cc665e4225b503ed503"}
+transition settle action id = conduct_trial_settle
+action settle kind = action
+action settle id = conduct_trial_settle
+action settle version = 1
+action settle payload = {"format":1,"manifest":{"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8","key":{"id":"safe_conduct","kind":"conduct_manifest","owner":"tacsim"},"version":1},"protocol":"roll.conduct_trial.v1","transition":"settle"}
+action settle reference 0 = {"key":{"owner":"tacsim","kind":"conduct_manifest","id":"safe_conduct"},"version":1,"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8"}
+action settle current = false
+action settle registered = {"key":{"owner":"roll","kind":"action","id":"conduct_trial_settle"},"version":1,"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a"}
+transition cancel action id = conduct_trial_cancel
+action cancel kind = action
+action cancel id = conduct_trial_cancel
+action cancel version = 1
+action cancel payload = {"cleanup":true,"format":1,"protocol":"roll.conduct_trial.v1","transition":"cancel"}
+action cancel current = false
+action cancel registered = {"key":{"owner":"roll","kind":"action","id":"conduct_trial_cancel"},"version":1,"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a"}
+transition recover action id = conduct_trial_recover
+action recover kind = action
+action recover id = conduct_trial_recover
+action recover version = 1
+action recover payload = {"cleanup":true,"format":1,"protocol":"roll.conduct_trial.v1","transition":"recover"}
+action recover current = false
+action recover registered = {"key":{"owner":"roll","kind":"action","id":"conduct_trial_recover"},"version":1,"digest":"57ba40fc98a8d5306cd2290d17732e78f56515780f218e9be72082abe391020d"}
+
+[job]
+job key = roll/roll_conduct_trial_job/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+job record = {"format":1,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_admit"},"version":1,"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504"},"manifest":{"key":{"owner":"tacsim","kind":"conduct_manifest","id":"safe_conduct"},"version":1,"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8"},"subject":{"charter":"9","line":"2","filed":"3","revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"worker":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"profile":"Line","role":"escort"},"admission":{"account_binding":"2828282828282828282828282828282828282828282828282828282828282828","character":1,"run":1,"nonce":1,"subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db","policy":"2929292929292929292929292929292929292929292929292929292929292929","schedule":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","budget":"2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","start":{"sha256":"2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c","bytes":100},"maximum_unit_ms":1000000},"at_utc":20}
+job stored = {"action":{"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504","key":{"id":"conduct_trial_admit","kind":"action","owner":"roll"},"version":1},"admission":{"account_binding":"2828282828282828282828282828282828282828282828282828282828282828","budget":"2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","character":1,"maximum_unit_ms":1000000,"nonce":1,"policy":"2929292929292929292929292929292929292929292929292929292929292929","run":1,"schedule":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","start":{"bytes":100,"sha256":"2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c"},"subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db"},"at_utc":20,"format":1,"manifest":{"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8","key":{"id":"safe_conduct","kind":"conduct_manifest","owner":"tacsim"},"version":1},"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","subject":{"charter":"9","filed":"3","line":"2","profile":"Line","rating":{"id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020","schema":1},"revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":7,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"role":"escort","worker":{"declared":"I","definition":"0404040404040404040404040404040404040404040404040404040404040404","envelope":"0303030303030303030303030303030303030303030303030303030303030303","expanded":"0505050505050505050505050505050505050505050505050505050505050505","revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":7,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"role":"combat","schema":"0909090909090909090909090909090909090909090909090909090909090909"}}}
+job digest = "52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed"
+subject worker digest = "e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db"
+
+[executions]
+queued execution key = roll/roll_conduct_trial_execution/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+queued execution record = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_admit"},"version":1,"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504"},"observation":{"phase":"queued","next_sequence":1,"cursor":{"index":0,"simulated_ms":0},"charged_unit_ms":0,"flight":null,"result":null}}
+queued execution stored = {"action":{"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504","key":{"id":"conduct_trial_admit","kind":"action","owner":"roll"},"version":1},"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","observation":{"charged_unit_ms":0,"cursor":{"index":0,"simulated_ms":0},"flight":null,"next_sequence":1,"phase":"queued","result":null},"updated_by":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"}
+queued execution digest = "ce8b7c0d9b7670120f799a4b590c43ae5da22e8bfd367ac119f736950ccd60e5"
+running execution key = roll/roll_conduct_trial_execution/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+running execution record = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_grant"},"version":1,"digest":"f194dedb78c3273e537d1458dfc8bb2aecd3372455361cc665e4225b503ed503"},"observation":{"phase":"running","next_sequence":2,"cursor":{"index":3,"simulated_ms":500},"charged_unit_ms":10,"flight":null,"result":null}}
+running execution stored = {"action":{"digest":"f194dedb78c3273e537d1458dfc8bb2aecd3372455361cc665e4225b503ed503","key":{"id":"conduct_trial_grant","kind":"action","owner":"roll"},"version":1},"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","observation":{"charged_unit_ms":10,"cursor":{"index":3,"simulated_ms":500},"flight":null,"next_sequence":2,"phase":"running","result":null},"updated_by":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"}
+running execution digest = "fc7a7d7da8eea528349e09fa2744cc18be56e605074aa2466d268b07a758e142"
+complete execution key = roll/roll_conduct_trial_execution/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+complete execution record = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_settle"},"version":1,"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a"},"observation":{"phase":"complete","next_sequence":3,"cursor":{"index":59,"simulated_ms":120000},"charged_unit_ms":1000,"flight":null,"result":{"sha256":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","bytes":200}}}
+complete execution stored = {"action":{"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a","key":{"id":"conduct_trial_settle","kind":"action","owner":"roll"},"version":1},"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","observation":{"charged_unit_ms":1000,"cursor":{"index":59,"simulated_ms":120000},"flight":null,"next_sequence":3,"phase":"complete","result":{"bytes":200,"sha256":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d"}},"updated_by":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"}
+complete execution digest = "74a2cb3e72cc2b46b31db55df691556d46d3ac22fd8d14357065dd919cf6aba0"
+cancelled execution key = roll/roll_conduct_trial_execution/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+cancelled execution record = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_cancel"},"version":1,"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a"},"observation":{"phase":"cancelled","next_sequence":3,"cursor":{"index":3,"simulated_ms":500},"charged_unit_ms":10,"flight":null,"result":null}}
+cancelled execution stored = {"action":{"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a","key":{"id":"conduct_trial_cancel","kind":"action","owner":"roll"},"version":1},"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","observation":{"charged_unit_ms":10,"cursor":{"index":3,"simulated_ms":500},"flight":null,"next_sequence":3,"phase":"cancelled","result":null},"updated_by":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"}
+cancelled execution digest = "86bdaf39807a512c7030c5a63d55edfed188fc442ca7de83f4db7aecb3a3f100"
+
+[results]
+passed result key = roll/roll_conduct_trial_result/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+passed result record = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","operation":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_settle"},"version":1,"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a"},"job_digest":"52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed","execution_digest":"74a2cb3e72cc2b46b31db55df691556d46d3ac22fd8d14357065dd919cf6aba0","phase":"complete","artifact":{"sha256":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","bytes":200},"measurement":{"digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","policy":"2929292929292929292929292929292929292929292929292929292929292929","subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db","charged_unit_ms":1000,"paired_cases":30,"passed":true}}
+passed result stored = {"action":{"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a","key":{"id":"conduct_trial_settle","kind":"action","owner":"roll"},"version":1},"artifact":{"bytes":200,"sha256":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d"},"execution_digest":"74a2cb3e72cc2b46b31db55df691556d46d3ac22fd8d14357065dd919cf6aba0","format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","job_digest":"52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed","measurement":{"charged_unit_ms":1000,"digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","paired_cases":30,"passed":true,"policy":"2929292929292929292929292929292929292929292929292929292929292929","subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db"},"operation":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","phase":"complete"}
+passed result digest = "87f97c39bf969ba81ecb7f461846e8ff2f081d3fad40fede88e42d13a3e48ed3"
+cancelled result key = roll/roll_conduct_trial_result/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+cancelled result record = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","operation":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_cancel"},"version":1,"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a"},"job_digest":"52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed","execution_digest":"86bdaf39807a512c7030c5a63d55edfed188fc442ca7de83f4db7aecb3a3f100","phase":"cancelled","artifact":null,"measurement":null}
+cancelled result stored = {"action":{"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a","key":{"id":"conduct_trial_cancel","kind":"action","owner":"roll"},"version":1},"artifact":null,"execution_digest":"86bdaf39807a512c7030c5a63d55edfed188fc442ca7de83f4db7aecb3a3f100","format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","job_digest":"52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed","measurement":null,"operation":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","phase":"cancelled"}
+cancelled result digest = "17a466cbe52791fe837d9a8a9d644050ceb5277daa4f1083f70ac64e0d9cb90e"
+
+[ConductSubject]
+wire = {"charter":"9","line":"2","filed":"3","revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"worker":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"profile":"Line","role":"escort"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `charter`, `line`, `filed`, `revision`, `rating`, `worker`, `profile`, `role` at line 1 column 34
+invalid refused = invalid commercial record
+
+[ConductAdmission]
+wire = {"account_binding":"2828282828282828282828282828282828282828282828282828282828282828","character":1,"run":1,"nonce":1,"subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db","policy":"2929292929292929292929292929292929292929292929292929292929292929","schedule":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","budget":"2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","start":{"sha256":"2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c","bytes":100},"maximum_unit_ms":1000000}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `account_binding`, `character`, `run`, `nonce`, `subject`, `policy`, `schedule`, `budget`, `start`, `maximum_unit_ms` at line 1 column 195
+invalid refused = invalid commercial record
+
+[ConductJob]
+wire = {"format":1,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_admit"},"version":1,"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504"},"manifest":{"key":{"owner":"tacsim","kind":"conduct_manifest","id":"safe_conduct"},"version":1,"digest":"5738c7fd8909a4f3ea737464aa5018447f8e983f0a641570650d696e0b6eb5c8"},"subject":{"charter":"9","line":"2","filed":"3","revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"worker":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"profile":"Line","role":"escort"},"admission":{"account_binding":"2828282828282828282828282828282828282828282828282828282828282828","character":1,"run":1,"nonce":1,"subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db","policy":"2929292929292929292929292929292929292929292929292929292929292929","schedule":"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","budget":"2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","start":{"sha256":"2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c","bytes":100},"maximum_unit_ms":1000000},"at_utc":20}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `manifest`, `subject`, `admission`, `at_utc` at line 1 column 759
+invalid refused = commercial records disagree
+
+[ConductExecution (queued)]
+wire = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_admit"},"version":1,"digest":"3e19849c06ea2fdb0b708330981b0d96857107773edfa3bdd6e0864acc384504"},"observation":{"phase":"queued","next_sequence":1,"cursor":{"index":0,"simulated_ms":0},"charged_unit_ms":0,"flight":null,"result":null}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `updated_by`, `action`, `observation` at line 1 column 185
+invalid refused = invalid commercial record
+
+[ConductExecution (running)]
+wire = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_grant"},"version":1,"digest":"f194dedb78c3273e537d1458dfc8bb2aecd3372455361cc665e4225b503ed503"},"observation":{"phase":"running","next_sequence":2,"cursor":{"index":3,"simulated_ms":500},"charged_unit_ms":10,"flight":null,"result":null}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `updated_by`, `action`, `observation` at line 1 column 185
+invalid refused = invalid commercial record
+
+[ConductExecution (complete)]
+wire = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_settle"},"version":1,"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a"},"observation":{"phase":"complete","next_sequence":3,"cursor":{"index":59,"simulated_ms":120000},"charged_unit_ms":1000,"flight":null,"result":{"sha256":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","bytes":200}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `updated_by`, `action`, `observation` at line 1 column 186
+invalid refused = invalid commercial record
+
+[ConductExecution (cancelled)]
+wire = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","updated_by":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_cancel"},"version":1,"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a"},"observation":{"phase":"cancelled","next_sequence":3,"cursor":{"index":3,"simulated_ms":500},"charged_unit_ms":10,"flight":null,"result":null}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `updated_by`, `action`, `observation` at line 1 column 186
+invalid refused = invalid commercial record
+
+[ConductMeasurement]
+wire = {"digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","policy":"2929292929292929292929292929292929292929292929292929292929292929","subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db","charged_unit_ms":1000,"paired_cases":30,"passed":true}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `digest`, `policy`, `subject`, `charged_unit_ms`, `paired_cases`, `passed` at line 1 column 43
+invalid refused = invalid commercial record
+
+[ConductResult (complete)]
+wire = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","operation":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_settle"},"version":1,"digest":"e446489ec1f4b1478c8c8a8ce635e1af453ed00c8985d98b02eba4179610b52a"},"job_digest":"52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed","execution_digest":"74a2cb3e72cc2b46b31db55df691556d46d3ac22fd8d14357065dd919cf6aba0","phase":"complete","artifact":{"sha256":"2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d","bytes":200},"measurement":{"digest":"2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e","policy":"2929292929292929292929292929292929292929292929292929292929292929","subject":"e6327dbf80783c85f571f5a7f8a6157abb05d156c0f53b2c99beca6fbc5987db","charged_unit_ms":1000,"paired_cases":30,"passed":true}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `operation`, `action`, `job_digest`, `execution_digest`, `phase`, `artifact`, `measurement` at line 1 column 287
+invalid refused = commercial records disagree
+
+[ConductResult (cancelled)]
+wire = {"format":1,"job":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","operation":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","action":{"key":{"owner":"roll","kind":"action","id":"conduct_trial_cancel"},"version":1,"digest":"ab6daa186e09704d2452db4f5d98ef78654109baabce20779371a6de1aaf354a"},"job_digest":"52d279960b16fd2457ec563375cf821207eee04f927f3da287ad007bb2afb5ed","execution_digest":"86bdaf39807a512c7030c5a63d55edfed188fc442ca7de83f4db7aecb3a3f100","phase":"cancelled","artifact":null,"measurement":null}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `operation`, `action`, `job_digest`, `execution_digest`, `phase`, `artifact`, `measurement` at line 1 column 202
+invalid refused = invalid commercial record

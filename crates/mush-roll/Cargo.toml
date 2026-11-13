@@ -20,6 +20,9 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Doc 46 cut CT.0: the committed snapshot of what the commerce families persist
+# (`mush_testkit::snapshot`, plain std).
+mush-testkit.workspace = true
 mush-proto.workspace = true
 
 [lints]

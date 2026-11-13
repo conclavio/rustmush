@@ -1,0 +1,48 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_charter_transfer.snap
+
+[identities]
+namespace = roll.charter_pending.v1
+offer action = offer_mind_charter_transfer
+fund action = fund_mind_charter_transfer
+settle action = settle_mind_charter_transfer
+refund action = refund_mind_charter_transfer
+max subject bytes = 4096
+max contract bytes = 8192
+max correlation bytes = 8192
+max history bytes = 32768
+max offer seconds = 86400
+max settlement seconds = 259200
+max ownership generation = 65537
+
+[digests]
+terms digest = "392f72d90416c7ea53514881ae81352cf6c12da44af3d042bdb1fdcd483b2fba"
+consent digest = "021f105cfdb3c31fb080b96607f1469402841f85ac5c665a39ef99f23db3c6aa"
+deadline = {"clock":{"kind":"world_ic","generation":1},"at":210}
+
+[CharterOwnershipBasisV1]
+wire = {"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `generation`, `operation`, `digest` at line 1 column 20
+invalid refused = owner participant refused preparation: The pending charter transfer is unavailable or has changed.
+
+[CharterTermBasisV1]
+wire = {"licence":1,"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","term_end":1000,"grace_end":2000}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `licence`, `generation`, `operation`, `digest`, `term_end`, `grace_end` at line 1 column 20
+invalid refused = owner participant refused preparation: The pending charter transfer is unavailable or has changed.
+
+[CharterPendingTermsV1]
+wire = {"format":1,"offer":"03030303030303030303030303030303","offer_action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"f1ddeb9877e4ca07078740d51e073dbade5b6062a74ac605d54fd3e4ee7fb009"},"offer_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","charter":8,"birth":"01010101010101010101010101010101","ownership":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":1,"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","term_end":1000,"grace_end":2000},"title_revision":1,"seller":1,"buyer":2,"seller_account":0,"instrument":"cr","price":1,"offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"offered_at_utc":100,"expires_at_utc":200,"settle_seconds":100}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `offer`, `offer_action`, `offer_digest`, `charter`, `birth`, `ownership`, `owner_term`, `title_revision`, `seller`, `buyer`, `seller_account`, `instrument`, `price`, `offered_at_ic`, `offered_at_utc`, `expires_at_utc`, `settle_seconds` at line 1 column 85
+invalid refused = owner participant refused preparation: The pending charter transfer is unavailable or has changed.
+
+[CharterPendingConsentV1]
+wire = {"format":1,"operation":"04040404040404040404040404040404","effect":{"key":{"owner":"roll","kind":"action","id":"fund_mind_charter_transfer"},"version":1,"digest":"0720b0a097dcdb5e8767cf798f7b128fec3ddf53765b4165f818b43e6dc05431"},"terms":{"format":1,"offer":"03030303030303030303030303030303","offer_action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"f1ddeb9877e4ca07078740d51e073dbade5b6062a74ac605d54fd3e4ee7fb009"},"offer_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","charter":8,"birth":"01010101010101010101010101010101","ownership":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":1,"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","term_end":1000,"grace_end":2000},"title_revision":1,"seller":1,"buyer":2,"seller_account":0,"instrument":"cr","price":1,"offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"offered_at_utc":100,"expires_at_utc":200,"settle_seconds":100},"payer":1,"accepted_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":110},"accepted_at_utc":110,"deadline":{"clock":{"kind":"world_ic","generation":1},"at":210}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `effect`, `terms`, `payer`, `accepted_at_ic`, `accepted_at_utc`, `deadline` at line 1 column 113
+invalid refused = owner participant refused preparation: The pending charter transfer is unavailable or has changed.

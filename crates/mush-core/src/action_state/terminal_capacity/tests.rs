@@ -757,3 +757,6 @@ fn production_has_no_reserve_authority_and_zero_metadata_preserves_legacy_writes
 
 /// 17g C2f: the closed owner-index admission, row by row.
 mod index_rows;
+
+/// Doc 46 CT.0: the shared snapshot recorder and the renewal twins' walk.
+pub(super) mod ct0_kit;

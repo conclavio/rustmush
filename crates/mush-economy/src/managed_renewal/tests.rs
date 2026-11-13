@@ -986,3 +986,6 @@ mod funded;
 
 #[path = "tests/output.rs"]
 mod output;
+
+#[path = "tests/ct0_snapshot.rs"]
+mod ct0_snapshot;

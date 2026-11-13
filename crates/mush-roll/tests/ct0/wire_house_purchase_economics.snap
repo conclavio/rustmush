@@ -1,0 +1,73 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_house_purchase_economics.snap
+
+[constants]
+MAX_ECONOMICS_BYTES = 8192
+family roll_mind_house_term_economics owner = roll
+family roll_mind_house_term_economics record FAMILY = roll_mind_house_term_economics
+family roll_mind_house_term_economics key codec = roll_mind_house_term_economics.key.v1
+family roll_mind_house_term_economics value schema = roll_mind_house_term_economics.value.v1
+family roll_mind_house_term_economics schema version = 1
+family roll_mind_house_term_economics decoder = roll_mind_house_term_economics.strict_decode.v1
+family roll_mind_house_term_economics validator = roll_mind_house_term_economics.invariants.v1
+family roll_mind_house_term_economics serializer = roll_mind_house_term_economics.canonical.v1
+family roll_mind_house_term_economics max key bytes = 192
+family roll_mind_house_term_economics max record bytes = 8192
+family roll_mind_house_term_economics record MAX_BYTES = 8192
+
+[HouseV1]
+format = 1
+version = 1
+seats = 1
+term economics key = roll/roll_mind_house_term_economics/licence/ffffffffffffffff/term/0000000000000003
+term economics record = {"format":1,"licence":"18446744073709551615","generation":"3","operation":"ffffffffffffffffffffffffffffffff","product_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","grant":{"format":1,"downstream":{"kind":"sealed"},"renewal":{"format":1,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":1,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":1,"digest":"429c62d3f5a2ea7599b21f9fff3742d4e993e2f2602c44bab04785a51fa6859c"}}}}
+term economics stored = {"format":1,"generation":"3","grant":{"downstream":{"kind":"sealed"},"format":1,"renewal":{"format":1,"grace_seconds":2419200,"instrument":"xx","policy":{"digest":"429c62d3f5a2ea7599b21f9fff3742d4e993e2f2602c44bab04785a51fa6859c","key":{"id":"house_personal","kind":"entitlement_policy","owner":"market"},"version":1},"price":9223372036854775807,"revision":{"filed":"18446744073709551615","kind":"pin","revision":{"format":1,"revision":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615}},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"term_seconds":7776000,"terms":{"class":"III","form":{"kind":"sealed"},"seats":1,"transferable":true}}},"licence":"18446744073709551615","operation":"ffffffffffffffffffffffffffffffff","product_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+term economics digest = "a5940b055f48587b7f02fa48f69f3409e2acee7333bfe5890dad6e320557ed5d"
+grant digest = "ac3192671fadd781fd10a401969ff66aa051d44cfb5920d7551cd4da23b956d1"
+
+[HouseRenewalTemplateV1 (HouseV1)]
+wire = {"format":1,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":1,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":1,"digest":"429c62d3f5a2ea7599b21f9fff3742d4e993e2f2602c44bab04785a51fa6859c"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `instrument`, `price`, `term_seconds`, `grace_seconds`, `terms`, `revision`, `policy` at line 1 column 20
+invalid refused = invalid commercial record
+
+[HouseGrantEconomicsV1 (HouseV1)]
+wire = {"format":1,"downstream":{"kind":"sealed"},"renewal":{"format":1,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":1,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":1,"digest":"429c62d3f5a2ea7599b21f9fff3742d4e993e2f2602c44bab04785a51fa6859c"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `downstream`, `renewal` at line 1 column 20
+invalid refused = invalid commercial record
+
+[HouseTermEconomicsV1 (HouseV1)]
+wire = {"format":1,"licence":"18446744073709551615","generation":"3","operation":"ffffffffffffffffffffffffffffffff","product_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","grant":{"format":1,"downstream":{"kind":"sealed"},"renewal":{"format":1,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":1,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":1,"digest":"429c62d3f5a2ea7599b21f9fff3742d4e993e2f2602c44bab04785a51fa6859c"}}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `generation`, `operation`, `product_digest`, `grant` at line 1 column 20
+invalid refused = invalid commercial record
+
+[HouseV2]
+format = 2
+version = 2
+seats = 2
+term economics key = roll/roll_mind_house_term_economics/licence/ffffffffffffffff/term/0000000000000003
+term economics record = {"format":2,"licence":"18446744073709551615","generation":"3","operation":"ffffffffffffffffffffffffffffffff","product_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","grant":{"format":2,"downstream":{"kind":"sealed"},"renewal":{"format":2,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":2,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":2,"digest":"8447899fabfacf6a412875a0d72c864bd9c947d000c8d9ac89e252c85d9666e5"}}}}
+term economics stored = {"format":2,"generation":"3","grant":{"downstream":{"kind":"sealed"},"format":2,"renewal":{"format":2,"grace_seconds":2419200,"instrument":"xx","policy":{"digest":"8447899fabfacf6a412875a0d72c864bd9c947d000c8d9ac89e252c85d9666e5","key":{"id":"house_personal","kind":"entitlement_policy","owner":"market"},"version":2},"price":9223372036854775807,"revision":{"filed":"18446744073709551615","kind":"pin","revision":{"format":1,"revision":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615}},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"term_seconds":7776000,"terms":{"class":"III","form":{"kind":"sealed"},"seats":2,"transferable":true}}},"licence":"18446744073709551615","operation":"ffffffffffffffffffffffffffffffff","product_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+term economics digest = "fa9a1ea06f1b7f701abe9196f303d910e3bd2284207b3e015b4a5a78d2aebc47"
+grant digest = "811ef68e10987e77f86ad5540198d935684eb7c149b74f1a31ebaa064465a9e1"
+
+[HouseRenewalTemplateV1 (HouseV2)]
+wire = {"format":2,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":2,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":2,"digest":"8447899fabfacf6a412875a0d72c864bd9c947d000c8d9ac89e252c85d9666e5"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `instrument`, `price`, `term_seconds`, `grace_seconds`, `terms`, `revision`, `policy` at line 1 column 20
+invalid refused = invalid commercial record
+
+[HouseGrantEconomicsV1 (HouseV2)]
+wire = {"format":2,"downstream":{"kind":"sealed"},"renewal":{"format":2,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":2,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":2,"digest":"8447899fabfacf6a412875a0d72c864bd9c947d000c8d9ac89e252c85d9666e5"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `downstream`, `renewal` at line 1 column 20
+invalid refused = invalid commercial record
+
+[HouseTermEconomicsV1 (HouseV2)]
+wire = {"format":2,"licence":"18446744073709551615","generation":"3","operation":"ffffffffffffffffffffffffffffffff","product_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","grant":{"format":2,"downstream":{"kind":"sealed"},"renewal":{"format":2,"instrument":"xx","price":9223372036854775807,"term_seconds":7776000,"grace_seconds":2419200,"terms":{"seats":2,"class":"III","form":{"kind":"sealed"},"transferable":true},"revision":{"kind":"pin","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},"policy":{"key":{"owner":"market","kind":"entitlement_policy","id":"house_personal"},"version":2,"digest":"8447899fabfacf6a412875a0d72c864bd9c947d000c8d9ac89e252c85d9666e5"}}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `generation`, `operation`, `product_digest`, `grant` at line 1 column 20
+invalid refused = invalid commercial record

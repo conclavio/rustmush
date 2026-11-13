@@ -437,3 +437,12 @@ fn a_term_window_carries_28_ic_days_of_grace() -> TestResult {
     }
     Ok(())
 }
+
+/// Doc 46 CT.0: the helpers the commerce snapshots share.
+pub(crate) mod ct0_rig;
+
+/// Doc 46 CT.0: the Conduct codec pins (`tests/ct0/wire_conduct.snap`).
+mod ct0_conduct;
+
+/// Doc 46 CT.0: the purchase twins (`tests/ct0/purchase_*.snap`).
+mod ct0_purchase;

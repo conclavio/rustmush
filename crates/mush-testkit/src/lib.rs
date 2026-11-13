@@ -42,6 +42,7 @@
 )]
 
 pub mod proc;
+pub mod snapshot;
 
 /// Explicit Store-acknowledged command driver for integration fixtures.
 #[cfg(feature = "authoritative-store")]
