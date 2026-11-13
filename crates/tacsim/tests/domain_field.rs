@@ -61,6 +61,8 @@ mod escort_lease;
 mod excursions;
 #[path = "domain_field/field_ap1.rs"]
 mod field_ap1;
+#[path = "domain_field/field_ap11.rs"]
+mod field_ap11;
 #[path = "domain_field/field_ap2.rs"]
 mod field_ap2;
 #[path = "domain_field/field_ap3.rs"]
@@ -135,6 +137,8 @@ mod m8_leaks;
 mod m8_world;
 #[path = "domain_field/mw13_ship_mind.rs"]
 mod mw13_ship_mind;
+#[path = "domain_field/mw21_completion.rs"]
+mod mw21_completion;
 #[path = "domain_field/one_picture.rs"]
 mod one_picture;
 #[path = "domain_field/review_36a.rs"]

@@ -11,6 +11,8 @@ use crate::core_production::refit::{
 };
 use crate::workorder::WorkOrderId;
 use mush_tactics::{CellAddr, CellId, ComponentId, UnitMutationOp, UnitMutationPlan};
+#[path = "ct0_refit_core.rs"]
+mod ct0_snapshot;
 struct Fitting {
     f: Box<FactoryRig>,
     hull: ObjId,

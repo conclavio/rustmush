@@ -957,6 +957,9 @@ mod paid_resale;
 #[path = "house_two_seat_tests.rs"]
 mod house_two_seat;
 
+#[path = "ct0_registration.rs"]
+mod ct0_registration;
+
 #[test]
 fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action() -> TestResult {
     check!(

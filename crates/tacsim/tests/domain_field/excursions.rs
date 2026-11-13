@@ -1049,7 +1049,16 @@ pub(crate) fn with_account(rig: &mut Rig, who: ObjId, name: &str, seed: i64) {
     }
 }
 
-fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
+/// **Whether `a` and `b` are characters of two gateway accounts** in the harness's oracle
+/// (doc 44 unit MW.21): each has one, and they are not the same account.
+pub(crate) fn two_accounts(rig: &Rig, a: ObjId, b: ObjId) -> bool {
+    rig.oracle
+        .0
+        .lock()
+        .is_ok_and(|map| matches!((map.get(&a), map.get(&b)), (Some(a), Some(b)) if a != b))
+}
+
+pub(crate) fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     let pilot = rig.tw.spawn_player(who);
     if let Ok(mut map) = rig.oracle.0.lock() {
         map.insert(
@@ -1127,7 +1136,7 @@ pub(crate) fn docked_dray(
     (pilot, row)
 }
 
-fn hold_vault(tw: &TestWorld, row: &HullRow) -> VaultId {
+pub(crate) fn hold_vault(tw: &TestWorld, row: &HullRow) -> VaultId {
     let stowage = ObjId(row.rooms[&cid("stowage")]);
     economy(tw)
         .snapshot()
@@ -1462,7 +1471,7 @@ fn take_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64) {
 }
 
 /// A pool's quantity, through the inventory's own read.
-fn pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
+pub(crate) fn pool(tw: &mut TestWorld, vault: VaultId, good: &str) -> u64 {
     let families = tw
         .world()
         .module_state::<InventoryHandles>()

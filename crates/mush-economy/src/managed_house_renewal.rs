@@ -456,3 +456,6 @@ fn contract(record: &history::OfferRecord) -> Result<EconomicContract, Participa
         paused_real_remaining_secs: None,
     })
 }
+
+#[cfg(test)]
+mod ct0_snapshot;

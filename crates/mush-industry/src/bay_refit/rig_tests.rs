@@ -38,6 +38,8 @@ use smol_str::SmolStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+mod ct0_snapshot;
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Prepared = (PreparedComposedTxn, PreparedAuthoritativeAction);
 type Boot = HashMap<SmolStr, ModuleBootData>;

@@ -3000,6 +3000,133 @@ async fn s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home() {
     crate::excursions::no_refused_writes(&world.rig.tw);
 }
 
+/// **Ask a mind launch of rig `n` and lose every Open the arm submits** (dropped, as a lost
+/// batch is), until the surface tick has given the claim up: the cursor reads `Refused`, the
+/// launch is cancelled with the rig in its bay and the pilot was told once. The arm has not
+/// fired since. The first Open it submitted, never landed.
+fn claim_given_up(world: &mut M8World, n: usize, line: &str) -> AuthoritativeSubmit {
+    use tacsim::surface::excursion::{CLAIM_REFUSED, ClaimCursor};
+    let (pilot, tv) = (world.pilot, world.tvs[n - 1]);
+    let (out, queued) = crate::excursions::command(&mut world.rig, pilot, line);
+    assert_eq!(queued.len(), 1, "one start: {out}");
+    crate::excursions::land(&mut world.rig, &queued[0])
+        .unwrap_or_else(|refused| panic!("{line}: the go lands: {refused}"));
+    let cursor = |world: &mut M8World| {
+        crate::excursions::record_of(&mut world.rig.tw, tv).and_then(|record| record.claim)
+    };
+    assert!(
+        matches!(cursor(world).as_deref(), Some(ClaimCursor::Opening { .. })),
+        "the claim is asked: {:?}",
+        cursor(world)
+    );
+    let mut held = None;
+    let mut heard = String::new();
+    for _ in 0..40 {
+        let (events, queued) = crate::excursions::fire(&mut world.rig);
+        heard.push_str(&crate::excursions::said(&world.rig.tw, &events, pilot));
+        heard.push('\n');
+        for submit in queued {
+            if submit.action.key().id.as_str() == "open_ic_mind" {
+                held.get_or_insert(submit);
+            } else {
+                crate::excursions::land_all(&mut world.rig, std::slice::from_ref(&submit));
+            }
+        }
+        world.pulse();
+        if matches!(cursor(world).as_deref(), Some(ClaimCursor::Refused { .. })) {
+            break;
+        }
+    }
+    assert!(
+        matches!(cursor(world).as_deref(), Some(ClaimCursor::Refused { .. })),
+        "the tick gave the claim up: {:?}",
+        cursor(world)
+    );
+    assert_eq!(
+        crate::excursions::count(&heard, CLAIM_REFUSED),
+        1,
+        "the pilot is told once: {heard}"
+    );
+    let record = crate::excursions::record_of(&mut world.rig.tw, tv).expect("the record");
+    assert!(record.queued.is_none(), "the launch is cancelled");
+    assert!(record.act.is_none() && record.excursion.is_none());
+    assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
+    held.expect("the arm submitted the Open")
+}
+
+/// **Doc 23 cut S.4b-2's follow-up (doc 44 MW.13's finding, by reading): a claim given up does
+/// not hold the pilot's next claim.** The IC host keeps one Open pending an actor and drops
+/// it only when the book holds its claim, so the Open of a claim the surface tick gave up
+/// stayed in the host: the pilot's next mind launch, on that rig or another, could not be
+/// enqueued, and its claim never opened until a restart.
+///
+/// The S.4b-2 world (two leased rigs in the Dray-P's bay, one genuine rating, the pilot's paid
+/// one-seat House Pin):
+/// 1. the pilot's `go` on rig 1 under the Pin, and every Open the arm submits is lost. The
+///    tick gives the claim up: the launch cancelled, the rig in its bay, the pilot told once;
+/// 2. **another rig**: the pilot's `go` on rig 2 under the same Pin opens its claim in the
+///    bay and launches, and its recover closes it. The arm withdrew rig 1's Open from the
+///    host on its next fire, so that Open, turning up now, finds no capability and opens
+///    nothing;
+/// 3. **the same rig**: rig 1's claim is given up a second time, and its next `go`, a tick
+///    later, opens its claim, launches, and closes it home; a plain launch afterwards is held
+///    by nothing.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "M8 combined-world story: a genuine Registry rating; the CI dispatch runs it"]
+async fn s4b2_a_claim_given_up_does_not_hold_the_next() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,ic_claim=debug")
+        .with_test_writer()
+        .try_init();
+    let mut world = m8_world_field(("ahuna", "ahuna_port"), 2);
+    assert!(tacsim::ic_claim_path_composed(world.rig.tw.world()));
+    let (_, _, listing) = rate_and_list_coprates(&mut world).await;
+    let paid = buy(&mut world, listing);
+    let (pilot, tv, second) = (world.pilot, world.tvs[0], world.tvs[1]);
+    for rig_tv in [tv, second] {
+        crate::ic_sortie_surface::fit(
+            &mut world.rig,
+            rig_tv,
+            tacsim::definitions::core_replacement::RIG_II,
+        );
+    }
+    let pin = |n: usize| format!("+tv/{n} launch mind=filed:{} go", paid.get());
+
+    // 1. Rig 1's claim is given up.
+    let lost = claim_given_up(&mut world, 1, &pin(1));
+    eprintln!("M8G_STORY phase=given_up.first event=complete");
+
+    // 2. Another rig, the same pilot and Pin: the claim given up is not in its way.
+    let open = claimed_launch(&mut world, 2, &pin(2), paid.get());
+    claimed_recover(&mut world, 2, open);
+    //    And the Open given up was withdrawn from the host: turning up now, it opens nothing.
+    assert!(
+        crate::excursions::land(&mut world.rig, &lost).is_err(),
+        "an Open that turns up after it was withdrawn opens nothing"
+    );
+    assert_eq!(
+        tacsim::ic_claim_of(world.rig.tw.world(), tv),
+        tacsim::IcClaimRead::None
+    );
+    eprintln!("M8G_STORY phase=given_up.another_rig event=complete");
+
+    // 3. The same rig: given up once more, then asked again a tick later. (A `go` typed
+    //    before the surface tick fires again waits out the tick's own back-off for the rig's
+    //    launch, a minute; that is the tick's rule, not the host's, and not this story's.)
+    let _ = claim_given_up(&mut world, 1, &pin(1));
+    fires(&mut world, 1);
+    let again = claimed_launch(&mut world, 1, &pin(1), paid.get());
+    assert_ne!(again, open, "a new claim");
+    claimed_recover(&mut world, 1, again);
+    let _ = crate::excursions::act_go(&mut world.rig, pilot, "+tv/1 launch go");
+    assert!(
+        crate::excursions::record_of(&mut world.rig.tw, tv).is_some_and(|r| r.act.is_some()),
+        "a spent claim holds nothing"
+    );
+    eprintln!("M8G_STORY phase=given_up.same_rig event=complete");
+    crate::excursions::no_refused_writes(&world.rig.tw);
+}
+
 /// **Hand the M8 world's live world to the field harness** (doc 23 cut S.4b-3): the same
 /// `TestWorld`, store and typed rows under a `driving_rig::Rig`, whose field helpers (the arena's
 /// egress pumped by hand, the composed tick, the raiders) run the field. The world is not

@@ -499,3 +499,6 @@ fn ud4b_install_consumes_the_part_and_returns_the_displaced_one() -> TestResult 
     );
     Ok(())
 }
+
+/// Doc 46 CT.0: the committed snapshot of the bay refit walk.
+mod ct0_snapshot;

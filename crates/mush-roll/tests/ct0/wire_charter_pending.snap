@@ -1,0 +1,201 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_charter_pending.snap
+
+[families]
+family roll_mind_charter_pending_offers owner = roll
+family roll_mind_charter_pending_offers record FAMILY = roll_mind_charter_pending_offers
+family roll_mind_charter_pending_offers key codec = roll_mind_charter_pending_offers.key.v1
+family roll_mind_charter_pending_offers value schema = roll_mind_charter_pending_offers.value.v1
+family roll_mind_charter_pending_offers schema version = 1
+family roll_mind_charter_pending_offers decoder = roll_mind_charter_pending_offers.strict_decode.v1
+family roll_mind_charter_pending_offers validator = roll_mind_charter_pending_offers.invariants.v1
+family roll_mind_charter_pending_offers serializer = roll_mind_charter_pending_offers.canonical.v1
+family roll_mind_charter_pending_offers max key bytes = 192
+family roll_mind_charter_pending_offers max record bytes = 8192
+family roll_mind_charter_pending_offers record MAX_BYTES = 8192
+family roll_mind_charter_pending_buyer_offers owner = roll
+family roll_mind_charter_pending_buyer_offers record FAMILY = roll_mind_charter_pending_buyer_offers
+family roll_mind_charter_pending_buyer_offers key codec = roll_mind_charter_pending_buyer_offers.key.v1
+family roll_mind_charter_pending_buyer_offers value schema = roll_mind_charter_pending_buyer_offers.value.v1
+family roll_mind_charter_pending_buyer_offers schema version = 1
+family roll_mind_charter_pending_buyer_offers decoder = roll_mind_charter_pending_buyer_offers.strict_decode.v1
+family roll_mind_charter_pending_buyer_offers validator = roll_mind_charter_pending_buyer_offers.invariants.v1
+family roll_mind_charter_pending_buyer_offers serializer = roll_mind_charter_pending_buyer_offers.canonical.v1
+family roll_mind_charter_pending_buyer_offers max key bytes = 192
+family roll_mind_charter_pending_buyer_offers max record bytes = 2048
+family roll_mind_charter_pending_buyer_offers record MAX_BYTES = 2048
+family roll_mind_charter_pending owner = roll
+family roll_mind_charter_pending record FAMILY = roll_mind_charter_pending
+family roll_mind_charter_pending key codec = roll_mind_charter_pending.key.v1
+family roll_mind_charter_pending value schema = roll_mind_charter_pending.value.v1
+family roll_mind_charter_pending schema version = 1
+family roll_mind_charter_pending decoder = roll_mind_charter_pending.strict_decode.v1
+family roll_mind_charter_pending validator = roll_mind_charter_pending.invariants.v1
+family roll_mind_charter_pending serializer = roll_mind_charter_pending.canonical.v1
+family roll_mind_charter_pending max key bytes = 192
+family roll_mind_charter_pending max record bytes = 40960
+family roll_mind_charter_pending record MAX_BYTES = 40960
+family roll_mind_charter_pending_head owner = roll
+family roll_mind_charter_pending_head record FAMILY = roll_mind_charter_pending_head
+family roll_mind_charter_pending_head key codec = roll_mind_charter_pending_head.key.v1
+family roll_mind_charter_pending_head value schema = roll_mind_charter_pending_head.value.v1
+family roll_mind_charter_pending_head schema version = 1
+family roll_mind_charter_pending_head decoder = roll_mind_charter_pending_head.strict_decode.v1
+family roll_mind_charter_pending_head validator = roll_mind_charter_pending_head.invariants.v1
+family roll_mind_charter_pending_head serializer = roll_mind_charter_pending_head.canonical.v1
+family roll_mind_charter_pending_head max key bytes = 192
+family roll_mind_charter_pending_head max record bytes = 4096
+family roll_mind_charter_pending_head record MAX_BYTES = 4096
+MAX_PENDING_HISTORY = 65536
+MAX_PENDING_ROW_BYTES = 40960
+MAX_BUYER_OFFERS = 8
+
+[protocol]
+definition 0 kind = action
+definition 0 id = offer_mind_charter_transfer
+definition 0 version = 2
+definition 0 payload = {"authority":"current_personal_seller","format":1,"named_buyer":true,"no_automatic_acceptance":true,"protocol":"personal_charter_pending_v1","settlement":"earlier_of_term_end_and_explicit_delay","source_free":true}
+definition 0 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 0 current = false
+definition 0 registered = {"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"}
+definition 1 kind = action
+definition 1 id = fund_mind_charter_transfer
+definition 1 version = 1
+definition 1 payload = {"authority":"named_buyer","format":1,"future_terminal_reserved":true,"hold":"single_real_escrow","protocol":"personal_charter_pending_v1","title":"unchanged"}
+definition 1 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 1 current = false
+definition 1 registered = {"key":{"owner":"roll","kind":"action","id":"fund_mind_charter_transfer"},"version":1,"digest":"b578affa30337b07e4bfd4850ff87762dc7065390eac939f6e2b1594278f6050"}
+definition 2 kind = action
+definition 2 id = settle_mind_charter_transfer
+definition 2 version = 1
+definition 2 payload = {"authority":"registered_private_service_intent","format":1,"old_claims":"retained","protocol":"personal_charter_pending_v1","trigger":"last_owned_claim_close_or_same_clock_deadline"}
+definition 2 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 2 current = false
+definition 2 registered = {"key":{"owner":"roll","kind":"action","id":"settle_mind_charter_transfer"},"version":1,"digest":"7a1eb68c6558dac4430e4c45d99da2a4d4e8efcc8e0d140686aa650c38304fdd"}
+definition 3 kind = action
+definition 3 id = refund_mind_charter_transfer
+definition 3 version = 1
+definition 3 payload = {"authority":"registered_private_service_intent","causes":["registry_revoked","clock_changed","recipient_unavailable"],"format":1,"protocol":"personal_charter_pending_v1","source_rights":"not_required"}
+definition 3 reference 0 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 3 current = false
+definition 3 registered = {"key":{"owner":"roll","kind":"action","id":"refund_mind_charter_transfer"},"version":1,"digest":"06ec6000be6147bcf0ffd73eef405feb0857f4bf3389decca4ca34594628ab3a"}
+definition 4 kind = outcome
+definition 4 id = mind_charter_pending_offered
+definition 4 version = 1
+definition 4 payload = {"format":1}
+definition 4 current = false
+definition 4 registered = {"key":{"owner":"roll","kind":"outcome","id":"mind_charter_pending_offered"},"version":1,"digest":"da5e58b57d77186c8649a3f3af1058a03b20562d81774bb004d856d2fbc6016a"}
+definition 5 kind = outcome
+definition 5 id = mind_charter_pending_funded
+definition 5 version = 1
+definition 5 payload = {"format":1}
+definition 5 current = false
+definition 5 registered = {"key":{"owner":"roll","kind":"outcome","id":"mind_charter_pending_funded"},"version":1,"digest":"5d46bfe6a3f737bcfb20b497fec14c0c61c1fef7849abf755b6a4ebd693b8e26"}
+definition 6 kind = outcome
+definition 6 id = mind_charter_pending_settled
+definition 6 version = 1
+definition 6 payload = {"format":1}
+definition 6 current = false
+definition 6 registered = {"key":{"owner":"roll","kind":"outcome","id":"mind_charter_pending_settled"},"version":1,"digest":"191d2cf4f87bcd0a59a83aa7e2dae47e7b8c462af095ca941e9a9dbbdb4e0b16"}
+definition 7 kind = outcome
+definition 7 id = mind_charter_pending_refunded
+definition 7 version = 1
+definition 7 payload = {"format":1}
+definition 7 current = false
+definition 7 registered = {"key":{"owner":"roll","kind":"outcome","id":"mind_charter_pending_refunded"},"version":1,"digest":"dffd74a6db778cc0bfede77ed49d54ff8c9c5490b7810a3c150bab4b857431ff"}
+offer action = {"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"}
+fund action = {"key":{"owner":"roll","kind":"action","id":"fund_mind_charter_transfer"},"version":1,"digest":"b578affa30337b07e4bfd4850ff87762dc7065390eac939f6e2b1594278f6050"}
+settle action = {"key":{"owner":"roll","kind":"action","id":"settle_mind_charter_transfer"},"version":1,"digest":"7a1eb68c6558dac4430e4c45d99da2a4d4e8efcc8e0d140686aa650c38304fdd"}
+refund action = {"key":{"owner":"roll","kind":"action","id":"refund_mind_charter_transfer"},"version":1,"digest":"06ec6000be6147bcf0ffd73eef405feb0857f4bf3389decca4ca34594628ab3a"}
+
+[owner term]
+owner term = {"format":1,"licence":"7","generation":"1","window":{"format":1,"eligibility_start":900,"issued_at":900,"term_end":1100,"grace_end":1200},"revision":{"kind":"follow","line":"2"},"operation":"01010101010101010101010101010101"}
+owner term digest = "8b88537563f2a295674043193e28a6cbf46d38593d772e0150b630daa5aa204f"
+
+[offers]
+wide offer key = roll/roll_mind_charter_pending_offers/fefefefefefefefefefefefefefefefe
+wide offer record = {"format":1,"operation":"fefefefefefefefefefefefefefefefe","action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"},"charter":"4294967295","birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","ownership":{"generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":4294967295,"buyer":4294967294,"seller_account":18446744073709551615,"instrument":"cr","price":9223372036854775807,"title_revision":18446744073709551614,"line":"18446744073709551615","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":"18446744073709551615","generation":"18446744073709551615","operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","window":{"format":1,"eligibility_start":9223372036854775607,"issued_at":9223372036854775607,"term_end":9223372036854775707,"grace_end":9223372036854775807}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":18446744073709551615},"at":9223372036854775607},"offered_at_utc":9223372036854689407,"expires_at_utc":9223372036854775807,"settle_seconds":259200}
+wide offer stored = {"action":{"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71","key":{"id":"offer_mind_charter_transfer","kind":"action","owner":"roll"},"version":2},"birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","buyer":4294967294,"charter":"4294967295","expires_at_utc":9223372036854775807,"filed":"18446744073709551615","format":1,"instrument":"cr","line":"18446744073709551615","offered_at_ic":{"at":9223372036854775607,"clock":{"generation":18446744073709551615,"kind":"world_ic"}},"offered_at_utc":9223372036854689407,"operation":"fefefefefefefefefefefefefefefefe","owner_term":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","generation":"18446744073709551615","licence":"18446744073709551615","operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","window":{"eligibility_start":9223372036854775607,"format":1,"grace_end":9223372036854775807,"issued_at":9223372036854775607,"term_end":9223372036854775707}},"ownership":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc"},"price":9223372036854775807,"revision":{"format":1,"revision":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615}},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":4294967295,"seller_account":18446744073709551615,"settle_seconds":259200,"title_revision":18446744073709551614}
+wide offer digest = "380b62c72b5ad8b5492f9d09b099177ab2cace6699c6d8dd4de241ba69700448"
+wide offer native terms = {"format":1,"offer":"fefefefefefefefefefefefefefefefe","offer_action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"},"offer_digest":"380b62c72b5ad8b5492f9d09b099177ab2cace6699c6d8dd4de241ba69700448","charter":4294967295,"birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","ownership":{"generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":18446744073709551615,"generation":18446744073709551615,"operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","term_end":9223372036854775707,"grace_end":9223372036854775807},"title_revision":18446744073709551614,"seller":4294967295,"buyer":4294967294,"seller_account":18446744073709551615,"instrument":"cr","price":9223372036854775807,"offered_at_ic":{"clock":{"kind":"world_ic","generation":18446744073709551615},"at":9223372036854775607},"offered_at_utc":9223372036854689407,"expires_at_utc":9223372036854775807,"settle_seconds":259200}
+plain offer key = roll/roll_mind_charter_pending_offers/0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+plain offer record = {"format":1,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"},"charter":"100","birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","ownership":{"generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":7,"buyer":8,"seller_account":18446744073709551615,"instrument":"cr","price":9223372036854775807,"title_revision":18446744073709551614,"line":"18446744073709551615","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":"18446744073709551615","generation":"18446744073709551615","operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","window":{"format":1,"eligibility_start":9223372036854775607,"issued_at":9223372036854775607,"term_end":9223372036854775707,"grace_end":9223372036854775807}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":18446744073709551615},"at":9223372036854775607},"offered_at_utc":1000,"expires_at_utc":2000,"settle_seconds":259200}
+plain offer stored = {"action":{"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71","key":{"id":"offer_mind_charter_transfer","kind":"action","owner":"roll"},"version":2},"birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","buyer":8,"charter":"100","expires_at_utc":2000,"filed":"18446744073709551615","format":1,"instrument":"cr","line":"18446744073709551615","offered_at_ic":{"at":9223372036854775607,"clock":{"generation":18446744073709551615,"kind":"world_ic"}},"offered_at_utc":1000,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","owner_term":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","generation":"18446744073709551615","licence":"18446744073709551615","operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","window":{"eligibility_start":9223372036854775607,"format":1,"grace_end":9223372036854775807,"issued_at":9223372036854775607,"term_end":9223372036854775707}},"ownership":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc"},"price":9223372036854775807,"revision":{"format":1,"revision":{"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615}},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":7,"seller_account":18446744073709551615,"settle_seconds":259200,"title_revision":18446744073709551614}
+plain offer digest = "d14853999df340fe8150044714feae9650e02bf3355f4fec5d8ccf3ea5967969"
+plain offer native terms = {"format":1,"offer":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","offer_action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"},"offer_digest":"d14853999df340fe8150044714feae9650e02bf3355f4fec5d8ccf3ea5967969","charter":100,"birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","ownership":{"generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":18446744073709551615,"generation":18446744073709551615,"operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","term_end":9223372036854775707,"grace_end":9223372036854775807},"title_revision":18446744073709551614,"seller":7,"buyer":8,"seller_account":18446744073709551615,"instrument":"cr","price":9223372036854775807,"offered_at_ic":{"clock":{"kind":"world_ic","generation":18446744073709551615},"at":9223372036854775607},"offered_at_utc":1000,"expires_at_utc":2000,"settle_seconds":259200}
+buyer offers key = roll/roll_mind_charter_pending_buyer_offers/00000000000000000008/charter/0000000000000064
+buyer offers record = {"format":1,"buyer":8,"charter":"100","offers":["0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"]}
+buyer offers stored = {"buyer":8,"charter":"100","format":1,"offers":["0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"]}
+
+[heads]
+head 0 key = roll/roll_mind_charter_pending_head/charter/0000000000000064
+head 0 record = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"funded"}}
+head 0 stored = {"charter":"100","current":{"digest":"0303030303030303030303030303030303030303030303030303030303030303","operation":"14141414141414141414141414141414","sequence":1},"format":1,"state":{"phase":"funded"}}
+head 1 key = roll/roll_mind_charter_pending_head/charter/0000000000000064
+head 1 record = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"settled","terminal":"15151515151515151515151515151515","transfer":{"generation":2,"operation":"15151515151515151515151515151515","digest":"0404040404040404040404040404040404040404040404040404040404040404"}}}
+head 1 stored = {"charter":"100","current":{"digest":"0303030303030303030303030303030303030303030303030303030303030303","operation":"14141414141414141414141414141414","sequence":1},"format":1,"state":{"phase":"settled","terminal":"15151515151515151515151515151515","transfer":{"digest":"0404040404040404040404040404040404040404040404040404040404040404","generation":2,"operation":"15151515151515151515151515151515"}}}
+head 2 key = roll/roll_mind_charter_pending_head/charter/0000000000000064
+head 2 record = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"clock_changed"}}}
+head 2 stored = {"charter":"100","current":{"digest":"0303030303030303030303030303030303030303030303030303030303030303","operation":"14141414141414141414141414141414","sequence":1},"format":1,"state":{"phase":"refunded","reason":{"kind":"clock_changed"},"terminal":"16161616161616161616161616161616"}}
+head 3 key = roll/roll_mind_charter_pending_head/charter/0000000000000064
+head 3 record = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"recipient_unavailable"}}}
+head 3 stored = {"charter":"100","current":{"digest":"0303030303030303030303030303030303030303030303030303030303030303","operation":"14141414141414141414141414141414","sequence":1},"format":1,"state":{"phase":"refunded","reason":{"kind":"recipient_unavailable"},"terminal":"16161616161616161616161616161616"}}
+head 4 key = roll/roll_mind_charter_pending_head/charter/0000000000000064
+head 4 record = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"registry_revoked","sanction":"16161616161616161616161616161616","licence":7,"generation":1,"term_digest":"0505050505050505050505050505050505050505050505050505050505050505"}}}
+head 4 stored = {"charter":"100","current":{"digest":"0303030303030303030303030303030303030303030303030303030303030303","operation":"14141414141414141414141414141414","sequence":1},"format":1,"state":{"phase":"refunded","reason":{"generation":1,"kind":"registry_revoked","licence":7,"sanction":"16161616161616161616161616161616","term_digest":"0505050505050505050505050505050505050505050505050505050505050505"},"terminal":"16161616161616161616161616161616"}}
+
+[PendingOwnerTerm]
+wire = {"licence":"7","generation":"1","operation":"01010101010101010101010101010101","digest":"8b88537563f2a295674043193e28a6cbf46d38593d772e0150b630daa5aa204f","window":{"format":1,"eligibility_start":900,"issued_at":900,"term_end":1100,"grace_end":1200}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `licence`, `generation`, `operation`, `digest`, `window` at line 1 column 20
+
+[PendingOffer (wide)]
+wire = {"format":1,"operation":"fefefefefefefefefefefefefefefefe","action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"},"charter":"4294967295","birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","ownership":{"generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":4294967295,"buyer":4294967294,"seller_account":18446744073709551615,"instrument":"cr","price":9223372036854775807,"title_revision":18446744073709551614,"line":"18446744073709551615","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":"18446744073709551615","generation":"18446744073709551615","operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","window":{"format":1,"eligibility_start":9223372036854775607,"issued_at":9223372036854775607,"term_end":9223372036854775707,"grace_end":9223372036854775807}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":18446744073709551615},"at":9223372036854775607},"offered_at_utc":9223372036854689407,"expires_at_utc":9223372036854775807,"settle_seconds":259200}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `charter`, `birth`, `ownership`, `seller`, `buyer`, `seller_account`, `instrument`, `price`, `title_revision`, `line`, `filed`, `revision`, `owner_term`, `offered_at_ic`, `offered_at_utc`, `expires_at_utc`, `settle_seconds` at line 1 column 278
+invalid refused = invalid commercial record
+
+[PendingOffer (plain)]
+wire = {"format":1,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","action":{"key":{"owner":"roll","kind":"action","id":"offer_mind_charter_transfer"},"version":2,"digest":"7228c189cdef266a44410214655a96081ff01b7b08af7c80928f92b32718ac71"},"charter":"100","birth":"fdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfd","ownership":{"generation":65536,"operation":"fcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":7,"buyer":8,"seller_account":18446744073709551615,"instrument":"cr","price":9223372036854775807,"title_revision":18446744073709551614,"line":"18446744073709551615","filed":"18446744073709551615","revision":{"format":1,"revision":{"key":{"character":4294967295,"mind":18446744073709551615,"number":18446744073709551615},"digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"source":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"owner_term":{"licence":"18446744073709551615","generation":"18446744073709551615","operation":"fbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","window":{"format":1,"eligibility_start":9223372036854775607,"issued_at":9223372036854775607,"term_end":9223372036854775707,"grace_end":9223372036854775807}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":18446744073709551615},"at":9223372036854775607},"offered_at_utc":1000,"expires_at_utc":2000,"settle_seconds":259200}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `charter`, `birth`, `ownership`, `seller`, `buyer`, `seller_account`, `instrument`, `price`, `title_revision`, `line`, `filed`, `revision`, `owner_term`, `offered_at_ic`, `offered_at_utc`, `expires_at_utc`, `settle_seconds` at line 1 column 262
+invalid refused = invalid commercial record
+
+[PendingBuyerOffers]
+wire = {"format":1,"buyer":8,"charter":"100","offers":["0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"]}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `buyer`, `charter`, `offers` at line 1 column 46
+invalid refused = invalid commercial record
+
+[ClaimObservation]
+wire = {"generation":3,"next_transition":4,"open_owned":1}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `generation`, `next_transition`, `open_owned` at line 1 column 20
+invalid refused = invalid commercial record
+
+[PendingHead (0)]
+wire = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"funded"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `charter`, `current`, `state` at line 1 column 36
+invalid refused = invalid commercial record
+
+[PendingHead (1)]
+wire = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"settled","terminal":"15151515151515151515151515151515","transfer":{"generation":2,"operation":"15151515151515151515151515151515","digest":"0404040404040404040404040404040404040404040404040404040404040404"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `charter`, `current`, `state` at line 1 column 36
+invalid refused = invalid commercial record
+
+[PendingHead (2)]
+wire = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"clock_changed"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `charter`, `current`, `state` at line 1 column 36
+invalid refused = invalid commercial record
+
+[PendingHead (3)]
+wire = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"recipient_unavailable"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `charter`, `current`, `state` at line 1 column 36
+invalid refused = invalid commercial record
+
+[PendingHead (4)]
+wire = {"format":1,"charter":"100","current":{"sequence":1,"operation":"14141414141414141414141414141414","digest":"0303030303030303030303030303030303030303030303030303030303030303"},"state":{"phase":"refunded","terminal":"16161616161616161616161616161616","reason":{"kind":"registry_revoked","sanction":"16161616161616161616161616161616","licence":7,"generation":1,"term_digest":"0505050505050505050505050505050505050505050505050505050505050505"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `charter`, `current`, `state` at line 1 column 36
+invalid refused = invalid commercial record

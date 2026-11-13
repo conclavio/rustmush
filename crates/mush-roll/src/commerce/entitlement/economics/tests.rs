@@ -283,3 +283,5 @@ fn existing_paid_term_wire_is_not_an_economics_record() -> TestResult {
     check_eq!(serde_json::to_vec(&decoded)?, before);
     Ok(())
 }
+
+mod ct0_wire;

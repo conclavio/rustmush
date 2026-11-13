@@ -345,3 +345,6 @@ fn house_native_payout_identity_cannot_be_hidden_by_rounding() -> TestResult {
 
 #[path = "two_seat_tests.rs"]
 mod two_seat;
+
+#[path = "ct0_snapshot.rs"]
+mod ct0_snapshot;

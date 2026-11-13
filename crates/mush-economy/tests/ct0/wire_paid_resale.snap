@@ -1,0 +1,84 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_paid_resale.snap
+
+[identities]
+namespace = market.paid_resale.v1
+offer action = offer_paid_mind_resale
+accept action = accept_paid_mind_resale
+fund action = fund_paid_mind_resale
+settle action = settle_paid_mind_resale
+refund action = refund_paid_mind_resale
+max subject bytes = 8192
+max correlation bytes = 16384
+max contract bytes = 16384
+max history bytes = 32768
+max offer seconds = 86400
+settlement seconds = 259200
+max holder generation = 65537
+
+[digests | pending]
+consent digest = "0106b1ba0879eb2d006b6037d4189a5105642192ac8c4fbe4bd20d013682960d"
+deadline = {"clock":{"kind":"world_ic","generation":1},"at":1000}
+payouts = 6
+
+[digests | immediate]
+consent digest = "57c289e3ff735bdb331cb603cab711ff64ebb83c0d2361363001ebe682f0b20c"
+deadline = {"clock":{"kind":"world_ic","generation":1},"at":1000}
+payouts = 5
+
+[PaidBirthRefV1]
+wire = {"route":"entitlement","operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `route`, `operation`, `digest` at line 1 column 20
+
+[PaidHolderRefV1]
+wire = {"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `generation`, `operation`, `digest` at line 1 column 20
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleWindowV1]
+wire = {"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `eligibility_start`, `issued_at`, `term_end`, `grace_end` at line 1 column 20
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleTermBasisV1]
+wire = {"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100},"terms_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","policy_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `generation`, `operation`, `digest`, `clock`, `window`, `terms_digest`, `policy_digest` at line 1 column 63
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleBasisV1]
+wire = {"licence":1,"charter":8,"line":1,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"holder":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"term":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100},"terms_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","policy_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"economics_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","royalty_chain_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `licence`, `charter`, `line`, `birth`, `holder`, `term`, `economics_digest`, `royalty_chain_digest` at line 1 column 187
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleClaimsV1]
+wire = {"next_transition":5,"open_paid":1}
+unknown field refused = unknown field `ct0_unknown_field`, expected `next_transition` or `open_paid` at line 1 column 20
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleTermsV1]
+wire = {"format":1,"offer":"03030303030303030303030303030303","offer_action":{"key":{"owner":"market","kind":"action","id":"offer_paid_mind_resale"},"version":1,"digest":"869e6c0cbb1e251d44ea3ac249e7aa859533fc2aefad8568c6b73cb6c8f02554"},"basis":{"licence":1,"charter":8,"line":1,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"holder":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"term":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100},"terms_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","policy_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"economics_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","royalty_chain_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":1,"buyer":2,"instrument":"cr","price":103,"registry":{"permille":50,"recipient":{"account":1,"owner":{"Object":9}}},"venue":{"permille":50,"recipient":{"account":2,"owner":{"Object":10}}},"parents":[{"charter":31,"permille":100,"title":{"title_revision":1,"recipient":{"account":3,"owner":{"Object":11}}}},{"charter":32,"permille":100,"title":{"title_revision":1,"recipient":{"account":4,"owner":{"Object":12}}}},{"charter":33,"permille":100,"title":{"title_revision":1,"recipient":{"account":5,"owner":{"Object":2}}}}],"remainder":{"account":0,"owner":{"Object":1}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"offered_at_utc":100,"expires_at_utc":200,"settle_seconds":259200}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `offer`, `offer_action`, `basis`, `seller`, `buyer`, `instrument`, `price`, `registry`, `venue`, `parents`, `remainder`, `offered_at_ic`, `offered_at_utc`, `expires_at_utc`, `settle_seconds` at line 1 column 999
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleConsentV1]
+wire = {"format":1,"operation":"04040404040404040404040404040404","effect":{"key":{"owner":"market","kind":"action","id":"fund_paid_mind_resale"},"version":1,"digest":"f4fc6eaa60fee38219a71dd60771af9bd21b4ffc5435282f2d3f9317bee953ef"},"offer_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","terms":{"format":1,"offer":"03030303030303030303030303030303","offer_action":{"key":{"owner":"market","kind":"action","id":"offer_paid_mind_resale"},"version":1,"digest":"869e6c0cbb1e251d44ea3ac249e7aa859533fc2aefad8568c6b73cb6c8f02554"},"basis":{"licence":1,"charter":8,"line":1,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"holder":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"term":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100},"terms_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","policy_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"economics_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","royalty_chain_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":1,"buyer":2,"instrument":"cr","price":103,"registry":{"permille":50,"recipient":{"account":1,"owner":{"Object":9}}},"venue":{"permille":50,"recipient":{"account":2,"owner":{"Object":10}}},"parents":[{"charter":31,"permille":100,"title":{"title_revision":1,"recipient":{"account":3,"owner":{"Object":11}}}},{"charter":32,"permille":100,"title":{"title_revision":1,"recipient":{"account":4,"owner":{"Object":12}}}},{"charter":33,"permille":100,"title":{"title_revision":1,"recipient":{"account":5,"owner":{"Object":2}}}}],"remainder":{"account":0,"owner":{"Object":1}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"offered_at_utc":100,"expires_at_utc":200,"settle_seconds":259200},"payer":5,"mode":"pending","accepted_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":110},"accepted_at_utc":110,"deadline":{"clock":{"kind":"world_ic","generation":1},"at":1000},"claims":{"next_transition":5,"open_paid":1}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `effect`, `offer_digest`, `terms`, `payer`, `mode`, `accepted_at_ic`, `accepted_at_utc`, `deadline`, `claims` at line 1 column 158
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleTermsV1]
+wire = {"format":1,"offer":"03030303030303030303030303030303","offer_action":{"key":{"owner":"market","kind":"action","id":"offer_paid_mind_resale"},"version":1,"digest":"869e6c0cbb1e251d44ea3ac249e7aa859533fc2aefad8568c6b73cb6c8f02554"},"basis":{"licence":1,"charter":8,"line":1,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"holder":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"term":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100},"terms_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","policy_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"economics_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","royalty_chain_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":1,"buyer":2,"instrument":"cr","price":103,"registry":{"permille":50,"recipient":{"account":1,"owner":{"Object":9}}},"venue":null,"parents":[{"charter":31,"permille":100,"title":{"title_revision":1,"recipient":{"account":3,"owner":{"Object":11}}}},{"charter":32,"permille":100,"title":{"title_revision":1,"recipient":{"account":4,"owner":{"Object":12}}}},{"charter":33,"permille":100,"title":{"title_revision":1,"recipient":{"account":5,"owner":{"Object":2}}}}],"remainder":{"account":0,"owner":{"Object":1}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"offered_at_utc":100,"expires_at_utc":200,"settle_seconds":259200}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `offer`, `offer_action`, `basis`, `seller`, `buyer`, `instrument`, `price`, `registry`, `venue`, `parents`, `remainder`, `offered_at_ic`, `offered_at_utc`, `expires_at_utc`, `settle_seconds` at line 1 column 999
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+
+[PaidResaleConsentV1]
+wire = {"format":1,"operation":"04040404040404040404040404040404","effect":{"key":{"owner":"market","kind":"action","id":"accept_paid_mind_resale"},"version":1,"digest":"88f3dbb93e62980a388661f0d9b8ec2392959200ef3837a61bf434e2f828d9ed"},"offer_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","terms":{"format":1,"offer":"03030303030303030303030303030303","offer_action":{"key":{"owner":"market","kind":"action","id":"offer_paid_mind_resale"},"version":1,"digest":"869e6c0cbb1e251d44ea3ac249e7aa859533fc2aefad8568c6b73cb6c8f02554"},"basis":{"licence":1,"charter":8,"line":1,"birth":{"route":"entitlement","operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"holder":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"term":{"generation":1,"operation":"01010101010101010101010101010101","digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","clock":{"kind":"world_ic","generation":1},"window":{"format":1,"eligibility_start":0,"issued_at":0,"term_end":1000,"grace_end":1100},"terms_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","policy_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"economics_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","royalty_chain_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"seller":1,"buyer":2,"instrument":"cr","price":103,"registry":{"permille":50,"recipient":{"account":1,"owner":{"Object":9}}},"venue":null,"parents":[{"charter":31,"permille":100,"title":{"title_revision":1,"recipient":{"account":3,"owner":{"Object":11}}}},{"charter":32,"permille":100,"title":{"title_revision":1,"recipient":{"account":4,"owner":{"Object":12}}}},{"charter":33,"permille":100,"title":{"title_revision":1,"recipient":{"account":5,"owner":{"Object":2}}}}],"remainder":{"account":0,"owner":{"Object":1}},"offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},"offered_at_utc":100,"expires_at_utc":200,"settle_seconds":259200},"payer":5,"mode":"immediate","accepted_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":110},"accepted_at_utc":110,"deadline":{"clock":{"kind":"world_ic","generation":1},"at":1000},"claims":{"next_transition":5,"open_paid":0}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `effect`, `offer_digest`, `terms`, `payer`, `mode`, `accepted_at_ic`, `accepted_at_utc`, `deadline`, `claims` at line 1 column 158
+invalid refused = owner participant refused preparation: The paid licence resale is unavailable or has changed.
+missing venue refused = missing field `venue`

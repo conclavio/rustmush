@@ -352,3 +352,5 @@ fn resale_widest_scalar_subject_and_grace_issue_stay_bounded() -> Result {
     check!(raw.len() < MAX_SUBJECT_BYTES);
     Ok(())
 }
+
+mod ct0_snapshot;

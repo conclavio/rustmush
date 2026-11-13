@@ -29,6 +29,15 @@
 //! inbox row. Before this the tickets were keyed by rig alone and a landed Close was never
 //! visited again, so a rig's second claim in a boot resubmitted the first claim's spent Close
 //! for ever: the claim stayed open and its licence's seat held until a restart.
+//!
+//! **An Open's ticket is released when its cursor no longer asks it** (doc 44 MW.13's finding;
+//! the ship's arm's `Owes::Stale`). The host keeps one Open pending an actor and drops it only
+//! when the book holds its claim (`IcHost::acknowledge`), and a claim refused for good never
+//! reaches the book. So the Open of a claim given up stayed in the host, and its operator's
+//! next mind launch, on that rig or another, could not be enqueued until a restart. Every fire
+//! now begins with [`release_stale`]: a ticket whose rig's cursor is no longer the `Opening` it
+//! was minted for is acknowledged, and where the book holds no claim for it, withdrawn
+//! (`IcHost::withdraw_surface_open`).
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -80,6 +89,62 @@ pub(crate) fn register(reg: &mut mush_core::Registrar<'_>, host: Option<IcHost>)
         host,
         ..ClaimArm::default()
     });
+}
+
+/// **Release an Open's ticket the arm no longer needs**: acknowledged when the book holds its
+/// claim (the host drops it), withdrawn when it does not (`IcHost::withdraw_surface_open`).
+fn release(w: &mush_core::World, host: &IcHost, tv: ObjId, ticket: &IcHostTicket) {
+    if matches!(host.acknowledge(w, ticket), Ok(Some(_))) {
+        return;
+    }
+    if let Err(error) = host.withdraw_surface_open(w, ticket) {
+        tracing::warn!(tv = tv.0, %error, "tacsim: a rig's mind claim's ticket was not released; its operator's next mind launch waits for a restart");
+    }
+}
+
+/// **Release every Open's ticket its rig's cursor no longer asks** (the module note), before
+/// the fire visits any claim. `records` is the fire's scan of the rig family and `complete`
+/// whether it read all of it: a ticket whose rig has no record in a capped scan is left for a
+/// later fire. A cursor still `Opening` at the ticket's instant keeps its ticket (its Open may
+/// be on its way, and the arm resubmits it); any other cursor has given the Open up (refused
+/// for good, cancelled, or replaced by a later `go`) or has seen it land.
+pub(crate) fn release_stale(w: &mut mush_core::World, records: &[RigRecord], complete: bool) {
+    let Some(arm) = w.module_state::<ClaimArm>() else {
+        return;
+    };
+    if arm.opens.is_empty() {
+        return;
+    }
+    let Some(host) = arm.host.clone() else {
+        return;
+    };
+    let stale: Vec<ObjId> = arm
+        .opens
+        .iter()
+        .filter(
+            |(tv, (mark, _))| match records.iter().find(|record| record.tv == **tv) {
+                Some(record) => !matches!(
+                    record.claim.as_deref(),
+                    Some(ClaimCursor::Opening { launch_ic, .. }) if launch_ic == mark
+                ),
+                None => complete,
+            },
+        )
+        .map(|(tv, _)| *tv)
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    let Some(arm) = w.module_state_mut::<ClaimArm>() else {
+        return;
+    };
+    let tickets: Vec<(ObjId, Arc<IcHostTicket>)> = stale
+        .into_iter()
+        .filter_map(|tv| arm.opens.remove(&tv).map(|(_, ticket)| (tv, ticket)))
+        .collect();
+    for (tv, ticket) in tickets {
+        release(w, &host, tv, &ticket);
+    }
 }
 
 /// **Whether `record` is owed a claim transition** (the tick's `claim` candidate reason): an
@@ -145,9 +210,11 @@ pub(crate) fn step(
                 let ticket = match arm.open_for(tv, *launch_ic) {
                     Some(ticket) => ticket,
                     None => {
-                        // A ticket kept for an earlier launch of this rig is not this claim's.
+                        // A ticket kept for an earlier launch of this rig is not this claim's
+                        // (`release_stale` has it first; this is the same rule where it is
+                        // needed, were a fire's scan ever capped).
                         if let Some((_, stale)) = arm.opens.remove(&tv) {
-                            let _ = host.acknowledge(ctx.w, &stale);
+                            release(ctx.w, &host, tv, &stale);
                         }
                         let minted = crate::minds::ic_sortie::surface::surface_start(
                             ctx.w, *operator, tv, *launch_ic,

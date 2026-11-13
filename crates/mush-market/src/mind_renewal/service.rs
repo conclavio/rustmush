@@ -913,4 +913,6 @@ fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
 }
 
 #[cfg(test)]
+pub(super) mod ct0_service;
+#[cfg(test)]
 mod tests;

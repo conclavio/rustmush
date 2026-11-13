@@ -14,6 +14,8 @@ pub use money::{RefitFundingOutput, RefitTerminalOutput};
 pub use receipt::{
     RefitFundingReceipt, RefitPaymentHistory, RefitTerminalReceipt, RefitTerminalResult,
 };
+#[cfg(test)]
+mod ct0_snapshot;
 mod subject;
 pub use authority::CoreRefitConfig;
 pub use consent::{RefitOfferAttribution, RefitOrderAttribution, RefitOwnerAuthority};

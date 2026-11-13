@@ -1,0 +1,58 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_capacity.snap
+
+[capacity metadata identity]
+metadata key prefix = action-state/capacity/v1/
+metadata path = action-state/capacity/v1/1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f
+is capacity key = true
+slot mode = "create"
+slot mode = "update_existing"
+slot mode = "industry_output"
+
+[Key]
+wire = {"owner":"market","family":"market_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `owner`, `family`, `encoded` at line 1 column 20
+invalid refused = canonical identifier contains invalid byte 0x20 at line 1 column 70
+
+[Target (create)]
+wire = {"key":{"owner":"market","family":"market_mind_renewal_receipt","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"market_mind_renewal_receipt.value.v1","schema_version":1,"ceiling":8192,"mode":"create"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `key`, `schema`, `schema_version`, `ceiling`, `mode` at line 1 column 35
+invalid refused = unknown variant `overwrite`, expected one of `create`, `update_existing`, `industry_output` at line 1 column 143
+
+[Target (update)]
+wire = {"key":{"owner":"market","family":"market_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"market_mind_renewal_operation.value.v1","schema_version":1,"ceiling":32768,"mode":"update_existing"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `key`, `schema`, `schema_version`, `ceiling`, `mode` at line 1 column 36
+invalid refused = unknown variant `overwrite`, expected one of `create`, `update_existing`, `industry_output` at line 1 column 146
+
+[Reservation (fingerprint)]
+wire = {"format":1,"funding":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","effect":{"key":{"owner":"market","kind":"action","id":"draft_mind_renewal"},"version":1,"digest":"0ced7b82c8d3e7c062c4d5558e803e2409634de333988590bd9bfbbbf3ccaba5"},"sponsor":{"owner":"market","family":"market_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"targets":[{"key":{"owner":"market","family":"market_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"market_mind_renewal_operation.value.v1","schema_version":1,"ceiling":32768,"mode":"update_existing"},{"key":{"owner":"market","family":"market_mind_renewal_receipt","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"market_mind_renewal_receipt.value.v1","schema_version":1,"ceiling":8192,"mode":"create"},{"key":{"owner":"roll","family":"roll_mind_paid_term","encoded":"licence/0000000000000001/term/0000000000000002"},"schema":"roll_mind_paid_term.value.v1","schema_version":1,"ceiling":8192,"mode":"create"},{"key":{"owner":"roll","family":"roll_mind_paid_term_economics","encoded":"licence/0000000000000001/term/0000000000000002"},"schema":"roll_mind_paid_term_economics.value.v1","schema_version":1,"ceiling":8192,"mode":"create"},{"key":{"owner":"roll","family":"roll_mind_personal_paid_licence","encoded":"licence/0000000000000001"},"schema":"roll_mind_personal_paid_licence.value.v1","schema_version":1,"ceiling":4096,"mode":"update_existing"},{"key":{"owner":"roll","family":"roll_mind_renewal_head","encoded":"licence/0000000000000001"},"schema":"roll_mind_renewal_head.value.v1","schema_version":1,"ceiling":4096,"mode":"update_existing"},{"key":{"owner":"roll","family":"roll_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"roll_mind_renewal_operation.value.v1","schema_version":1,"ceiling":16384,"mode":"update_existing"}],"protocol_fingerprint":"a805d3f925fedbc85115bb987be58b6f0d956dedc47698a537968fe3ee7fb758"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `funding`, `effect`, `sponsor`, `targets`, `protocol_fingerprint` at line 1 column 20
+invalid refused = canonical identifier contains invalid byte 0x20 at line 1 column 573
+
+[Reservation (no fingerprint)]
+wire = {"format":1,"funding":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","effect":{"key":{"owner":"market","kind":"action","id":"draft_mind_renewal"},"version":1,"digest":"0ced7b82c8d3e7c062c4d5558e803e2409634de333988590bd9bfbbbf3ccaba5"},"sponsor":{"owner":"market","family":"market_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"targets":[{"key":{"owner":"market","family":"market_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"market_mind_renewal_operation.value.v1","schema_version":1,"ceiling":32768,"mode":"update_existing"},{"key":{"owner":"market","family":"market_mind_renewal_receipt","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"market_mind_renewal_receipt.value.v1","schema_version":1,"ceiling":8192,"mode":"create"},{"key":{"owner":"roll","family":"roll_mind_paid_term","encoded":"licence/0000000000000001/term/0000000000000002"},"schema":"roll_mind_paid_term.value.v1","schema_version":1,"ceiling":8192,"mode":"create"},{"key":{"owner":"roll","family":"roll_mind_paid_term_economics","encoded":"licence/0000000000000001/term/0000000000000002"},"schema":"roll_mind_paid_term_economics.value.v1","schema_version":1,"ceiling":8192,"mode":"create"},{"key":{"owner":"roll","family":"roll_mind_personal_paid_licence","encoded":"licence/0000000000000001"},"schema":"roll_mind_personal_paid_licence.value.v1","schema_version":1,"ceiling":4096,"mode":"update_existing"},{"key":{"owner":"roll","family":"roll_mind_renewal_head","encoded":"licence/0000000000000001"},"schema":"roll_mind_renewal_head.value.v1","schema_version":1,"ceiling":4096,"mode":"update_existing"},{"key":{"owner":"roll","family":"roll_mind_renewal_operation","encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"},"schema":"roll_mind_renewal_operation.value.v1","schema_version":1,"ceiling":16384,"mode":"update_existing"}]}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `funding`, `effect`, `sponsor`, `targets`, `protocol_fingerprint` at line 1 column 20
+invalid refused = canonical identifier contains invalid byte 0x20 at line 1 column 303
+
+[Reservation encode]
+canonical = {"effect":{"digest":"0ced7b82c8d3e7c062c4d5558e803e2409634de333988590bd9bfbbbf3ccaba5","key":{"id":"draft_mind_renewal","kind":"action","owner":"market"},"version":1},"format":1,"funding":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","protocol_fingerprint":"a805d3f925fedbc85115bb987be58b6f0d956dedc47698a537968fe3ee7fb758","sponsor":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"market_mind_renewal_operation","owner":"market"},"targets":[{"ceiling":32768,"key":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"market_mind_renewal_operation","owner":"market"},"mode":"update_existing","schema":"market_mind_renewal_operation.value.v1","schema_version":1},{"ceiling":8192,"key":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"market_mind_renewal_receipt","owner":"market"},"mode":"create","schema":"market_mind_renewal_receipt.value.v1","schema_version":1},{"ceiling":8192,"key":{"encoded":"licence/0000000000000001/term/0000000000000002","family":"roll_mind_paid_term","owner":"roll"},"mode":"create","schema":"roll_mind_paid_term.value.v1","schema_version":1},{"ceiling":8192,"key":{"encoded":"licence/0000000000000001/term/0000000000000002","family":"roll_mind_paid_term_economics","owner":"roll"},"mode":"create","schema":"roll_mind_paid_term_economics.value.v1","schema_version":1},{"ceiling":4096,"key":{"encoded":"licence/0000000000000001","family":"roll_mind_personal_paid_licence","owner":"roll"},"mode":"update_existing","schema":"roll_mind_personal_paid_licence.value.v1","schema_version":1},{"ceiling":4096,"key":{"encoded":"licence/0000000000000001","family":"roll_mind_renewal_head","owner":"roll"},"mode":"update_existing","schema":"roll_mind_renewal_head.value.v1","schema_version":1},{"ceiling":16384,"key":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"roll_mind_renewal_operation","owner":"roll"},"mode":"update_existing","schema":"roll_mind_renewal_operation.value.v1","schema_version":1}]}
+document = {"effect":{"digest":"0ced7b82c8d3e7c062c4d5558e803e2409634de333988590bd9bfbbbf3ccaba5","key":{"id":"draft_mind_renewal","kind":"action","owner":"market"},"version":1},"format":1,"funding":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","protocol_fingerprint":"a805d3f925fedbc85115bb987be58b6f0d956dedc47698a537968fe3ee7fb758","sponsor":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"market_mind_renewal_operation","owner":"market"},"targets":[{"ceiling":32768,"key":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"market_mind_renewal_operation","owner":"market"},"mode":"update_existing","schema":"market_mind_renewal_operation.value.v1","schema_version":1},{"ceiling":8192,"key":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"market_mind_renewal_receipt","owner":"market"},"mode":"create","schema":"market_mind_renewal_receipt.value.v1","schema_version":1},{"ceiling":8192,"key":{"encoded":"licence/0000000000000001/term/0000000000000002","family":"roll_mind_paid_term","owner":"roll"},"mode":"create","schema":"roll_mind_paid_term.value.v1","schema_version":1},{"ceiling":8192,"key":{"encoded":"licence/0000000000000001/term/0000000000000002","family":"roll_mind_paid_term_economics","owner":"roll"},"mode":"create","schema":"roll_mind_paid_term_economics.value.v1","schema_version":1},{"ceiling":4096,"key":{"encoded":"licence/0000000000000001","family":"roll_mind_personal_paid_licence","owner":"roll"},"mode":"update_existing","schema":"roll_mind_personal_paid_licence.value.v1","schema_version":1},{"ceiling":4096,"key":{"encoded":"licence/0000000000000001","family":"roll_mind_renewal_head","owner":"roll"},"mode":"update_existing","schema":"roll_mind_renewal_head.value.v1","schema_version":1},{"ceiling":16384,"key":{"encoded":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","family":"roll_mind_renewal_operation","owner":"roll"},"mode":"update_existing","schema":"roll_mind_renewal_operation.value.v1","schema_version":1}]}
+refused format 2 = terminal capacity refused: metadata shape
+refused no targets = terminal capacity refused: metadata shape
+
+[DefinitionRef]
+wire = {"key":{"owner":"market","kind":"action","id":"draft_mind_renewal"},"version":1,"digest":"0ced7b82c8d3e7c062c4d5558e803e2409634de333988590bd9bfbbbf3ccaba5"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `key`, `version`, `digest` at line 1 column 20
+invalid refused = definition digest is 2 bytes; expected 64 lowercase hexadecimal digits at line 1 column 14
+
+[ClockStamp]
+wire = {"clock":{"kind":"world_ic","generation":1},"at":1031}
+unknown field refused = unknown field `ct0_unknown_field`, expected `clock` or `at` at line 1 column 73
+invalid refused = unknown variant `sundial`, expected one of `utc`, `world_ic`, `scene_turn`, `domain_tick`, `registered` at line 1 column 51

@@ -160,3 +160,7 @@ fn boundary(protocol: HouseProtocol) -> TestResult {
     }
     Ok(())
 }
+
+/// Doc 46 CT.0: the House economics codec pins.
+#[path = "ct0_economics_wire.rs"]
+mod ct0_wire;

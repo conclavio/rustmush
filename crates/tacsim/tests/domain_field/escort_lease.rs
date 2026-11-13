@@ -112,7 +112,7 @@ fn loan_submissions(rig: &mut Rig) -> Vec<mush_core::AuthoritativeSubmit> {
 
 /// **Board the leased hull from the carrier's hold** and take its controls: the bay, the cab,
 /// the focus and the handoff — the player's own commands, under the landed loan.
-fn board_escort(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
+pub(crate) fn board_escort(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
     // From the airlock to the hold, then the internal bay access.
     for step in ["inner", "hold"] {
         let _ = run(&mut rig.tw, pilot, step);

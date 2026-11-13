@@ -195,3 +195,7 @@ pub(super) fn verify(
     history::paired(view, &r, false)?;
     ready(view)
 }
+
+/// Doc 46 CT.0: the committed snapshot of the core refit walk.
+#[cfg(test)]
+mod ct0_snapshot;

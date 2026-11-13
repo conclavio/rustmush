@@ -906,3 +906,6 @@ fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     ctx.out.info(actor, line);
     Ok(())
 }
+
+#[cfg(test)]
+pub(super) mod ct0_service;

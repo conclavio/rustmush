@@ -902,6 +902,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     };
     let now = ctx.w.world_ic_now().at;
     let (records, complete) = scan(ctx, &handles, state);
+    // Doc 23 cut S.4b-2's follow-up: an Open's ticket its rig's cursor no longer asks (the claim
+    // refused for good, cancelled, or replaced) leaves the IC host before any claim is visited,
+    // so a claim given up never refuses its operator's next one.
+    crate::surface::mind_claim::release_stale(ctx.w, &records, complete);
     // Doc 32 cut CF.1 (Q-CF-15): the presence picture, from this scan, before the records move.
     state.presence = crate::surface::presence::publish(ctx.w, &records, now);
     // Doc 32 cut CF.1 (Q-CF-30): a promoted site's starts wait for its flag to clear.
