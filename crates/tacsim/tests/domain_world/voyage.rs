@@ -13945,9 +13945,17 @@ fn publish_revision(rig: &mut Rig, who: ObjId, name: &str, source: &str) -> (u64
             std::time::Instant::now() < deadline,
             "the author service did not save {name}"
         );
-        if let Some(when) = rig.tw.engine_mut().sched.next_due() {
-            let _ = rig.tw.fire_due(when);
-        }
+        // One real second on, the clock and the scheduler together, as [`one_second`] and
+        // [`fire`] step. The service's worker is a thread, so how many turns this loop takes
+        // is the machine's affair, and the story must come out the same whatever it is. A
+        // turn that fired the scheduler's next deadline and left the clock where it was put
+        // every tick's next deadline a second further past the clock. From the fifth turn
+        // the port's tick was no longer due in the six seconds a story steps after a burn,
+        // so that step launched nothing: the sweep to the boundary launched the passage
+        // instead, after the instant her first leg ended, and she met no interdictor.
+        let t = rig.tw.world().now().saturating_add(1);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
         let submitted = drain(&mut rig.tw);
         land_quietly(rig, &submitted);
         std::thread::sleep(std::time::Duration::from_millis(2));
