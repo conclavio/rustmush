@@ -1,0 +1,103 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/registry_recall.snap
+
+[registry recall: identity strings]
+capability = roll.registry.recall
+command = @mindrecall
+family roll_registry_revision_recalls owner = roll
+family roll_registry_revision_recalls record FAMILY = roll_registry_revision_recalls
+family roll_registry_revision_recalls key codec = roll_registry_revision_recalls.key.v1
+family roll_registry_revision_recalls value schema = roll_registry_revision_recalls.value.v1
+family roll_registry_revision_recalls schema version = 1
+family roll_registry_revision_recalls decoder = roll_registry_revision_recalls.strict_decode.v1
+family roll_registry_revision_recalls validator = roll_registry_revision_recalls.invariants.v1
+family roll_registry_revision_recalls serializer = roll_registry_revision_recalls.canonical.v1
+family roll_registry_revision_recalls max key bytes = 192
+family roll_registry_revision_recalls max record bytes = 16384
+family roll_registry_revision_recalls record MAX_BYTES = 16384
+family roll_mind_status owner = roll
+family roll_mind_status record FAMILY = roll_mind_status
+family roll_mind_status key codec = roll_mind_status.key.v1
+family roll_mind_status value schema = roll_mind_status.value.v1
+family roll_mind_status schema version = 1
+family roll_mind_status decoder = roll_mind_status.strict_decode.v1
+family roll_mind_status validator = roll_mind_status.invariants.v1
+family roll_mind_status serializer = roll_mind_status.canonical.v1
+family roll_mind_status max key bytes = 192
+family roll_mind_status max record bytes = 4096
+family roll_mind_status record MAX_BYTES = 4096
+
+[registry recall: protocol]
+definition 0 kind = registry_authority
+definition 0 id = mind_recall
+definition 0 version = 1
+definition 0 payload = {"format":1,"issuer":"roll.registry","operators":[7,8],"organization":4,"scope":6}
+definition 0 current = false
+definition 0 registered = {"key":{"owner":"roll","kind":"registry_authority","id":"mind_recall"},"version":1,"digest":"c9884d8b26bf9a29af17207a8d78ab0df13d511e571e3da0d991f145b13491e5"}
+definition 1 kind = action
+definition 1 id = registry_revision_recall
+definition 1 version = 1
+definition 1 payload = {"format":1,"protocol":"registry_exact_revision_recall_v1","reason":"registry_review","scope":"one_filed_revision","shared_rating":"unchanged"}
+definition 1 reference 0 = {"key":{"owner":"roll","kind":"registry_authority","id":"mind_recall"},"version":1,"digest":"c9884d8b26bf9a29af17207a8d78ab0df13d511e571e3da0d991f145b13491e5"}
+definition 1 reference 1 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 1 current = false
+definition 1 registered = {"key":{"owner":"roll","kind":"action","id":"registry_revision_recall"},"version":1,"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc"}
+definition 2 kind = outcome
+definition 2 id = registry_revision_recalled
+definition 2 version = 1
+definition 2 payload = {"format":1}
+definition 2 current = false
+definition 2 registered = {"key":{"owner":"roll","kind":"outcome","id":"registry_revision_recalled"},"version":1,"digest":"d1f4de562437a68c8904a903edccfcbe13f5cff976cb9203480fe3d477afbb14"}
+action = {"key":{"owner":"roll","kind":"action","id":"registry_revision_recall"},"version":1,"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc"}
+
+[registry recall: recalled]
+operation key = roll/roll_registry_revision_recalls/14141414141414141414141414141414
+operation record = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_revision_recall"},"version":1,"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","withdrawn_by":null,"reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+operation stored = {"action":{"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc","key":{"id":"registry_revision_recall","kind":"action","owner":"roll"},"version":1},"actor":7,"at_ic":{"at":100,"clock":{"generation":1,"kind":"world_ic"}},"authority":{"format":1,"issuer":"roll.registry","operators":[7,8],"organization":4,"scope":6},"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"revision":4,"tag":"delegation"},{"revision":5,"tag":"grant"}]},"filed":"3","format":1,"initial_issuer":"roll.registry","initial_operation":"01010101010101010101010101010101","operation":"14141414141414141414141414141414","rating":{"id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020","schema":1},"reason":"registry_review","revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":1,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"withdrawn_by":null}
+cause digest = "8fc9a424b673adb49b0cad1ee0c01aee5a0ccc16daf7a0d993fe9f5d639aa095"
+cause root = v1/registry_recall/14141414141414141414141414141414/8fc9a424b673adb49b0cad1ee0c01aee5a0ccc16daf7a0d993fe9f5d639aa095
+cause root identity = {"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}
+status key = roll/roll_mind_status/filed/0000000000000003
+status record = {"format":1,"filed":"3","withdrawn_by":null,"recalled_by":"14141414141414141414141414141414"}
+status stored = {"filed":"3","format":1,"recalled_by":"14141414141414141414141414141414","withdrawn_by":null}
+notice | 01 = Registry recall: your mind licence 9 selects filed revision 3, recalled by operation 14141414141414141414141414141414. New use of that revision is unavailable; running sorties retain their captured mind.
+
+[RecallOperation (recalled)]
+wire = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_revision_recall"},"version":1,"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","withdrawn_by":null,"reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `authority`, `actor`, `authorization`, `filed`, `revision`, `rating`, `initial_operation`, `initial_issuer`, `withdrawn_by`, `reason`, `at_ic` at line 1 column 504
+invalid refused = invalid commercial record
+
+[registry recall: recalled after withdrawal]
+operation key = roll/roll_registry_revision_recalls/14141414141414141414141414141414
+operation record = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_revision_recall"},"version":1,"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","withdrawn_by":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f","reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+operation stored = {"action":{"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc","key":{"id":"registry_revision_recall","kind":"action","owner":"roll"},"version":1},"actor":7,"at_ic":{"at":100,"clock":{"generation":1,"kind":"world_ic"}},"authority":{"format":1,"issuer":"roll.registry","operators":[7,8],"organization":4,"scope":6},"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"revision":4,"tag":"delegation"},{"revision":5,"tag":"grant"}]},"filed":"3","format":1,"initial_issuer":"roll.registry","initial_operation":"01010101010101010101010101010101","operation":"14141414141414141414141414141414","rating":{"id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020","schema":1},"reason":"registry_review","revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":1,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"withdrawn_by":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"}
+cause digest = "210ae96dcc7b8d05219d47b892177d71c9af7fe27bf838348abf9293da8e1f4f"
+cause root = v1/registry_recall/14141414141414141414141414141414/210ae96dcc7b8d05219d47b892177d71c9af7fe27bf838348abf9293da8e1f4f
+cause root identity = {"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}
+status key = roll/roll_mind_status/filed/0000000000000003
+status record = {"format":1,"filed":"3","withdrawn_by":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f","recalled_by":"14141414141414141414141414141414"}
+status stored = {"filed":"3","format":1,"recalled_by":"14141414141414141414141414141414","withdrawn_by":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"}
+notice | 01 = Registry recall: your mind licence 9 selects filed revision 3, recalled by operation 14141414141414141414141414141414. New use of that revision is unavailable; running sorties retain their captured mind.
+
+[RecallOperation (recalled after withdrawal)]
+wire = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_revision_recall"},"version":1,"digest":"c6296b013bf6e2356a205c0ff3cc48056df3428b58a445bd465109756ebffcdc"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"rating":{"job":"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e","id":"1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f","schema":1,"receipt_digest":"2020202020202020202020202020202020202020202020202020202020202020"},"initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","withdrawn_by":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f","reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `authority`, `actor`, `authorization`, `filed`, `revision`, `rating`, `initial_operation`, `initial_issuer`, `withdrawn_by`, `reason`, `at_ic` at line 1 column 504
+invalid refused = invalid commercial record
+
+[registry recall: refusal]
+unavailable | 01 = Mind recall status is unavailable or not held.
+
+[RegistryRecallPolicy]
+wire = {"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `issuer`, `organization`, `scope`, `operators` at line 1 column 20
+
+[Authorization]
+wire = {"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `at`, `organization_revision`, `scope_revision`, `sources` at line 1 column 29

@@ -76,6 +76,8 @@ pub mod bay_refit;
 pub mod commands;
 pub mod core_production;
 pub mod cost;
+#[cfg(test)]
+mod ct0_snapshot;
 pub mod custody;
 pub mod facility;
 pub mod facts;

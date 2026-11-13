@@ -1067,3 +1067,6 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
     );
     Ok(())
 }
+
+#[path = "ct0_snapshot.rs"]
+mod ct0_snapshot;

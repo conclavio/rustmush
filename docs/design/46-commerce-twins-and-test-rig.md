@@ -1,13 +1,16 @@
 # 46. Commerce twins and the test rig — a plan to remove the clones
 
-Draft 0.1, 2026-11-13, docs only. Surveyed against `origin/main` at `e4e2f6e8e`. Anchors are file
-and directory names; line numbers drift. §3's clone figures were measured for this draft on that
+Draft 0.2, 2026-11-13. Surveyed against `origin/main` at `e4e2f6e8e`. Anchors are file
+and directory names; line numbers drift. §3's clone figures were measured for Draft 0.1 on that
 commit. §4's similarity figures and file counts come from three read-only surveys of a checkout a
 few merges behind that commit, and were not each re-read; the two renewal twins were diffed by hand.
+Draft 0.1, the same day, was the plan. **Draft 0.2 records the owner's ruling of 2026-11-13: every
+proposed default, Q-46-1 to Q-46-8, is accepted as written** (§6), and that unit CT.0 is built
+([cut note](46-cut-notes.md#ct0)); the other units wait as Q-46-8 says.
 
 This is a plan in the form [doc 44](44-minds-wired-through-the-game.md) and
 [doc 45](45-the-absent-player.md) used: what exists, what is proposed, owner questions with a
-default each, and units of work. Nothing here is built.
+default each, and units of work. CT.0 is built; nothing else here is.
 
 ## 1. Why this document exists
 
@@ -35,7 +38,11 @@ or to the K3 kernel's contracts. This is a refactor that must be provably behavi
 
 Method, so it can be re-run: for each crate, every `.rs` file is split into lines, each line
 trimmed, blank lines dropped; a line counts as cloned when it sits inside an 8-line window that
-also occurs, exactly, in another file of the same crate. Both sides of a clone count.
+also occurs, exactly, in another file of the same crate. Both sides of a clone count. The measure
+is a script since CT.0, `node scripts/clone-yardstick.mjs` (the four roots below; `--stems` folds
+`renewal.rs` into `renewal/` for the kernel's rows of the second table). It reproduces both tables
+to the line on main at `2022eb974`. It is run by hand at each unit and recorded in the
+[cut notes](46-cut-notes.md); it is not a gate (Q-46-7).
 
 | Where | Cloned lines | Of | Rate |
 |---|---|---|---|
@@ -98,13 +105,19 @@ key prefixes and the protocol's JSON name are literals in each file, not shared 
 are taken over canonical JSON with sorted keys, so a struct's field order does not move a digest;
 it does decide the wire's byte order where the market checks that a re-encoding equals the stored
 bytes. **No test pins a digest as a literal**: tests recompute digests from the same strings, so
-nothing today would catch a refactor that changed a persisted byte.
+nothing today would catch a refactor that changed a persisted byte. *As found by CT.0:* the
+first half holds for `DefinitionDigest::for_canonical_value` only. Economy's consent hash and plan
+hash are taken over the typed value's own encoding, so there a field's order does move a persisted
+hash ([cut note](46-cut-notes.md#ct0)).
 
 **4.5 The wire structs are one macro, copied.** The same `macro_rules!` (named `checked!`,
 `record!` or `data!`) is pasted into at least 16 files across the three crates. It generates the
 domain struct, a private `deny_unknown_fields` wire struct, and a `Deserialize` that builds the
 domain struct and then validates. A few pairs are written by hand (`FundingWire`, `TerminalWire`,
-a parents list capped at three).
+a parents list capped at three). *As found by CT.0:* twenty files define it, under five names
+(`record!`, `closed!`, `checked!`, `strict!`, `data!`), and the copies differ in field visibility
+and in whether a field's attributes land on the wire struct, on both structs or nowhere; the cut
+note lists them.
 
 **4.6 The kernel's lists are closed by design.** `terminal_capacity.rs` says each family is a
 "closed, composition-checked protocol; modules cannot provide arbitrary target vectors, byte
@@ -182,49 +195,54 @@ existing shape is wanted; the three contract-shaped economy families (`managed_c
 
 ## 6. Owner survey
 
-**Q-46-1 — The scope.**
+**Ruled 2026-11-13: all eight proposed defaults accepted as written.** Each question below is
+ruled at its proposed default; the alternatives were not taken. Q-46-2 is the one flagged
+expensive to reverse, and CT.0's snapshot is its proof. Q-46-8 let CT.0 start at once; nothing
+else starts until doc 44's MW.13 has landed.
+
+**Q-46-1 — The scope.** *Ruled: the default.*
 - **Proposed default:** twins, the wire macro and the test kit, as §5.1 to §5.4. No generic engine.
 - **Alternative:** design the one engine first.
 - **Why:** §4.1 and §4.2: the copies are in the twins.
 
-**Q-46-2 — Bytes do not move. (expensive to reverse)**
+**Q-46-2 — Bytes do not move. (expensive to reverse)** *Ruled: the default.*
 - **Proposed default:** every identity string, key, persisted encoding and player-facing sentence
   is unchanged, and §5.4's snapshot proves it.
 - **Alternative:** rename while we are here (there are no players and no data).
 - **Why:** an unchanged snapshot is the only cheap proof a refactor of this size changed nothing.
 
-**Q-46-3 — Sealed and compile-time.**
+**Q-46-3 — Sealed and compile-time.** *Ruled: the default.*
 - **Proposed default:** a sealed trait with two implementations a family; no registration, no
   callback into the kernel.
 - **Alternative:** a runtime description of a protocol that an engine interprets.
 - **Why:** §4.6's rule stands as written.
 
-**Q-46-4 — The purchase twins.**
+**Q-46-4 — The purchase twins.** *Ruled: the default.*
 - **Proposed default:** after the renewal twins, take only the files that are 90% alike or more;
   leave the rest as they are and say which.
 - **Alternative:** collapse them fully, or leave them alone.
 - **Why:** at 70% to 88% the shared part is smaller and the hooks are more.
 
-**Q-46-5 — The refit pair.**
+**Q-46-5 — The refit pair.** *Ruled: the default.*
 - **Proposed default:** `bay_refit` and `core_refit` share `fold`, `install`, `money`, `receipt`
   and `plans` (89% to 96% alike); `core_integration` is left alone. `core_refit` gains the tests
   `bay_refit` has.
 - **Alternative:** leave the refit machines out.
 - **Why:** it is the one clone outside mind commerce, and `core_refit` is the least tested.
 
-**Q-46-6 — The pinned stories stay where they are.**
+**Q-46-6 — The pinned stories stay where they are.** *Ruled: the default.*
 - **Proposed default:** no test named in `test-tiers.toml` moves or is renamed, and the `M7_STORY`
   lines are unchanged.
 - **Alternative:** move them and re-point the pins.
 - **Why:** the pins are the contract; nothing here needs them moved.
 
-**Q-46-7 — A yardstick in CI.**
+**Q-46-7 — A yardstick in CI.** *Ruled: the default.*
 - **Proposed default:** §3's measure is a script in the repository, run by hand and recorded in
   the cut notes at each unit; not a gate.
 - **Alternative:** a ratchet that fails a pull request which raises a crate's rate.
 - **Why:** a ratchet on a crude measure invites gaming it; revisit once the rate is low.
 
-**Q-46-8 — When.**
+**Q-46-8 — When.** *Ruled: the default.*
 - **Proposed default:** CT.0 may start at once (it only adds a test). Nothing else starts until
   doc 44's MW.13 has landed, since it is writing in the registry and the claim path.
 - **Alternative:** wait for the minds and absent-player programmes to close.
@@ -236,7 +254,7 @@ existing shape is wanted; the three contract-shaped economy families (`managed_c
 
 | Unit | What it is | Mostly in | Waits on | Done when |
 |---|---|---|---|---|
-| **CT.0** | **The snapshot and the yardstick.** For each twin family, a test that walks the protocol to each terminal state and compares every persisted key, value and digest with a committed file; §3's measure as a script, with this baseline recorded | the four crates' tests; `scripts/` | — | the snapshot passes on Windows and Linux; changing one digest domain, one key prefix or one field's order fails it; the script reproduces §3 |
+| **CT.0** | **The snapshot and the yardstick.** For each twin family, a test that walks the protocol to each terminal state and compares every persisted key, value and digest with a committed file; §3's measure as a script, with this baseline recorded. **Built** ([cut note](46-cut-notes.md#ct0)): the snapshots are a crate's own, under `crates/<crate>/tests/ct0/`, compared by `mush_testkit::snapshot`; the refit pair's real path is walked in `mush-industry` and the composed registration in `tacsim`; the Roll's writers and the market's providers are pinned by their rows and checks, not on their real path, which the cut note owes to a second pull request | the four crates' tests; `scripts/` | — | the snapshot passes on Windows and Linux; changing one digest domain, one key prefix or one field's order fails it; the script reproduces §3 |
 | **CT.1** | **One wire macro.** `checked!` in `mush-core`; the copies deleted | `mush-core`; every `records.rs` that defines the macro | CT.0 | no copy of the macro is left; CT.0's snapshot is unchanged; a decode with an unknown field or a failed validation is refused as before |
 | **CT.2** | **The test kit.** The helpers, the cold restart, the funded accounts, the fixture receipt family and the mock-module builder in `mush-testkit`; one `test_checks` | `mush-testkit`; the test files of the three crates | CT.0 | the three `owner_tests.rs` share one skeleton; no test file defines its own cold restart; every test that passed still passes under its old name |
 | **CT.3** | **The renewal twin in the kernel.** One validator over a sealed issuer | `mush-core` `action_state/terminal_capacity/` | CT.1 | one implementation, two instantiations; the registry's family version strings unchanged; the twin's tests are one body run twice |

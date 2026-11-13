@@ -639,3 +639,5 @@ fn the_marked_licence_cannot_be_offered_for_resale() -> TestResult {
 mod capacity_tests;
 
 mod holder;
+
+mod ct0_snapshot;

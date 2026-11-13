@@ -9,6 +9,8 @@ description = "In-process world driver for integration tests"
 [dependencies]
 mush-core.workspace = true
 mush-proto.workspace = true
+# Doc 46 cut CT.0: `snapshot::Snapshot::codec` pins any `Serialize + DeserializeOwned` record.
+serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
 mush-store = { workspace = true, optional = true }
@@ -19,7 +21,6 @@ futures = { workspace = true, optional = true }
 mush-ruleset = { workspace = true, optional = true }
 mush-dice = { workspace = true, optional = true }
 mush-jobs = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 
@@ -32,7 +33,6 @@ toy-ruleset = [
     "dep:mush-ruleset",
     "dep:mush-dice",
     "dep:mush-jobs",
-    "dep:serde",
     "dep:rand",
     "dep:rand_chacha",
 ]

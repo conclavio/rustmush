@@ -550,3 +550,6 @@ fn receipt_wire_has_only_exact_fixed_terminal_fields_and_bounds() -> TestResult 
     check!(serde_json::to_vec(&r)?.len() < MindRenewalReceiptV1::MAX_BYTES);
     Ok(())
 }
+
+#[path = "ct0_snapshot.rs"]
+pub(crate) mod ct0_snapshot;

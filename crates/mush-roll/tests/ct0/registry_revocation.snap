@@ -1,0 +1,113 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/registry_revocation.snap
+
+[registry revocation: identity strings]
+capability = roll.registry.revoke
+command = @mindrevoke
+family roll_registry_term_revocations owner = roll
+family roll_registry_term_revocations record FAMILY = roll_registry_term_revocations
+family roll_registry_term_revocations key codec = roll_registry_term_revocations.key.v1
+family roll_registry_term_revocations value schema = roll_registry_term_revocations.value.v1
+family roll_registry_term_revocations schema version = 1
+family roll_registry_term_revocations decoder = roll_registry_term_revocations.strict_decode.v1
+family roll_registry_term_revocations validator = roll_registry_term_revocations.invariants.v1
+family roll_registry_term_revocations serializer = roll_registry_term_revocations.canonical.v1
+family roll_registry_term_revocations max key bytes = 192
+family roll_registry_term_revocations max record bytes = 32768
+family roll_registry_term_revocations record MAX_BYTES = 32768
+family roll_registry_revoked_terms owner = roll
+family roll_registry_revoked_terms record FAMILY = roll_registry_revoked_terms
+family roll_registry_revoked_terms key codec = roll_registry_revoked_terms.key.v1
+family roll_registry_revoked_terms value schema = roll_registry_revoked_terms.value.v1
+family roll_registry_revoked_terms schema version = 1
+family roll_registry_revoked_terms decoder = roll_registry_revoked_terms.strict_decode.v1
+family roll_registry_revoked_terms validator = roll_registry_revoked_terms.invariants.v1
+family roll_registry_revoked_terms serializer = roll_registry_revoked_terms.canonical.v1
+family roll_registry_revoked_terms max key bytes = 192
+family roll_registry_revoked_terms max record bytes = 4096
+family roll_registry_revoked_terms record MAX_BYTES = 4096
+
+[registry revocation: protocol]
+definition 0 kind = registry_authority
+definition 0 id = mind_revocation
+definition 0 version = 1
+definition 0 payload = {"format":1,"issuer":"roll.registry","operators":[7,8],"organization":4,"scope":6}
+definition 0 current = false
+definition 0 registered = {"key":{"owner":"roll","kind":"registry_authority","id":"mind_revocation"},"version":1,"digest":"e0a78557f1e99dd4ba72dff32bb4715efbaff86fbff77f6242db9c8b3e091171"}
+definition 1 kind = action
+definition 1 id = registry_term_revocation
+definition 1 version = 1
+definition 1 payload = {"duration":"original_grace_end","format":1,"later_terms":"fresh_admission","protocol":"registry_exact_term_revocation_v1","reason":"registry_review","scope":"one_accepted_term_generation","shared_rating":"unchanged"}
+definition 1 reference 0 = {"key":{"owner":"roll","kind":"registry_authority","id":"mind_revocation"},"version":1,"digest":"e0a78557f1e99dd4ba72dff32bb4715efbaff86fbff77f6242db9c8b3e091171"}
+definition 1 reference 1 = {"key":{"owner":"roll","kind":"owner_participant","id":"commercial_roots"},"version":1,"digest":"3e3ae389481fd9b1659a64906051dd90a93705eae3aa06e6449bc68b9332bf58"}
+definition 1 current = false
+definition 1 registered = {"key":{"owner":"roll","kind":"action","id":"registry_term_revocation"},"version":1,"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591"}
+definition 2 kind = outcome
+definition 2 id = registry_term_revoked
+definition 2 version = 1
+definition 2 payload = {"format":1}
+definition 2 current = false
+definition 2 registered = {"key":{"owner":"roll","kind":"outcome","id":"registry_term_revoked"},"version":1,"digest":"f685f3e84aca1e1c4e10ecfc44d3afd3ce1f54d79e58e9078003b3da9ff8e349"}
+action = {"key":{"owner":"roll","kind":"action","id":"registry_term_revocation"},"version":1,"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591"}
+
+[registry revocation: owner term revoked]
+operation key = roll/roll_registry_term_revocations/14141414141414141414141414141414
+operation record = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_term_revocation"},"version":1,"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"term":{"kind":"owner","term":{"format":1,"licence":"9","generation":"1","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"revision":{"kind":"follow","line":"2"},"operation":"02020202020202020202020202020202"}},"charter":"9","line":"2","birth_operation":"01010101010101010101010101010101","initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+operation stored = {"action":{"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591","key":{"id":"registry_term_revocation","kind":"action","owner":"roll"},"version":1},"actor":7,"at_ic":{"at":100,"clock":{"generation":1,"kind":"world_ic"}},"authority":{"format":1,"issuer":"roll.registry","operators":[7,8],"organization":4,"scope":6},"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"revision":4,"tag":"delegation"},{"revision":5,"tag":"grant"}]},"birth_operation":"01010101010101010101010101010101","charter":"9","filed":"3","format":1,"initial_issuer":"roll.registry","initial_operation":"01010101010101010101010101010101","line":"2","operation":"14141414141414141414141414141414","reason":"registry_review","revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":1,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"term":{"kind":"owner","term":{"format":1,"generation":"1","licence":"9","operation":"02020202020202020202020202020202","revision":{"kind":"follow","line":"2"},"window":{"eligibility_start":10,"format":1,"grace_end":130,"issued_at":10,"term_end":110}}}}
+cause digest = "123b2d166da12341a6e004e5af0eb014d08e5e7c01558a31e986b14296751e28"
+accepted term digest = "67cf58773580da491bb0e2569e6749115368dd94d252ac0bc0900ad5fce5db5e"
+status key = licence/0000000000000009/term/0000000000000001
+cause root = v1/registry_revocation/14141414141414141414141414141414/123b2d166da12341a6e004e5af0eb014d08e5e7c01558a31e986b14296751e28
+cause root identity = {"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}
+revoked term key = roll/roll_registry_revoked_terms/licence/0000000000000009/term/0000000000000001
+revoked term record = {"format":1,"licence":"9","generation":"1","operation":"14141414141414141414141414141414","term_digest":"67cf58773580da491bb0e2569e6749115368dd94d252ac0bc0900ad5fce5db5e","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130}}
+revoked term stored = {"format":1,"generation":"1","licence":"9","operation":"14141414141414141414141414141414","term_digest":"67cf58773580da491bb0e2569e6749115368dd94d252ac0bc0900ad5fce5db5e","window":{"eligibility_start":10,"format":1,"grace_end":130,"issued_at":10,"term_end":110}}
+notice | 01 = Registry revocation: your mind licence 9 term 1 is revoked through its original grace end 130 (operation 14141414141414141414141414141414). Running sorties retain their captured warrant. A later term requires normal fresh admission.
+
+[RevocationOperation (owner term revoked)]
+wire = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_term_revocation"},"version":1,"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"term":{"kind":"owner","term":{"format":1,"licence":"9","generation":"1","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"revision":{"kind":"follow","line":"2"},"operation":"02020202020202020202020202020202"}},"charter":"9","line":"2","birth_operation":"01010101010101010101010101010101","initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `authority`, `actor`, `authorization`, `term`, `charter`, `line`, `birth_operation`, `initial_operation`, `initial_issuer`, `filed`, `revision`, `reason`, `at_ic` at line 1 column 571
+invalid refused = invalid commercial record
+
+[RevokedTerm (owner term revoked)]
+wire = {"format":1,"licence":"9","generation":"1","operation":"14141414141414141414141414141414","term_digest":"67cf58773580da491bb0e2569e6749115368dd94d252ac0bc0900ad5fce5db5e","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `generation`, `operation`, `term_digest`, `window` at line 1 column 20
+invalid refused = invalid commercial record
+
+[registry revocation: paid term revoked]
+operation key = roll/roll_registry_term_revocations/14141414141414141414141414141414
+operation record = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_term_revocation"},"version":1,"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"term":{"kind":"paid","term":{"format":1,"licence":"9","generation":"1","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"terms":{"seats":1,"class":"I","form":{"kind":"sealed"},"transferable":false},"revision":{"kind":"pin","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}},"operation":"02020202020202020202020202020202"}},"charter":"9","line":"2","birth_operation":"01010101010101010101010101010101","initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+operation stored = {"action":{"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591","key":{"id":"registry_term_revocation","kind":"action","owner":"roll"},"version":1},"actor":7,"at_ic":{"at":100,"clock":{"generation":1,"kind":"world_ic"}},"authority":{"format":1,"issuer":"roll.registry","operators":[7,8],"organization":4,"scope":6},"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"revision":4,"tag":"delegation"},{"revision":5,"tag":"grant"}]},"birth_operation":"01010101010101010101010101010101","charter":"9","filed":"3","format":1,"initial_issuer":"roll.registry","initial_operation":"01010101010101010101010101010101","line":"2","operation":"14141414141414141414141414141414","reason":"registry_review","revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":1,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"term":{"kind":"paid","term":{"format":1,"generation":"1","licence":"9","operation":"02020202020202020202020202020202","revision":{"filed":"3","kind":"pin","revision":{"format":1,"revision":{"digest":"0101010101010101010101010101010101010101010101010101010101010101","key":{"character":1,"mind":1,"number":1}},"source":"0202020202020202020202020202020202020202020202020202020202020202"}},"terms":{"class":"I","form":{"kind":"sealed"},"seats":1,"transferable":false},"window":{"eligibility_start":10,"format":1,"grace_end":130,"issued_at":10,"term_end":110}}}}
+cause digest = "1b68bcdd24c1e54692e8089f88c3ecef8971ac573df2d0c31e0fdc2806555f22"
+accepted term digest = "1b79f28db304da465ac479392539276270cf0a3d1ec77e72e06feabe80ded516"
+status key = licence/0000000000000009/term/0000000000000001
+cause root = v1/registry_revocation/14141414141414141414141414141414/1b68bcdd24c1e54692e8089f88c3ecef8971ac573df2d0c31e0fdc2806555f22
+cause root identity = {"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}
+revoked term key = roll/roll_registry_revoked_terms/licence/0000000000000009/term/0000000000000001
+revoked term record = {"format":1,"licence":"9","generation":"1","operation":"14141414141414141414141414141414","term_digest":"1b79f28db304da465ac479392539276270cf0a3d1ec77e72e06feabe80ded516","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130}}
+revoked term stored = {"format":1,"generation":"1","licence":"9","operation":"14141414141414141414141414141414","term_digest":"1b79f28db304da465ac479392539276270cf0a3d1ec77e72e06feabe80ded516","window":{"eligibility_start":10,"format":1,"grace_end":130,"issued_at":10,"term_end":110}}
+notice | 01 = Registry revocation: your mind licence 9 term 1 is revoked through its original grace end 130 (operation 14141414141414141414141414141414). Running sorties retain their captured warrant. A later term requires normal fresh admission.
+
+[RevocationOperation (paid term revoked)]
+wire = {"format":1,"operation":"14141414141414141414141414141414","action":{"key":{"owner":"roll","kind":"action","id":"registry_term_revocation"},"version":1,"digest":"0aea76af50d7db438fa959db613ff9e4007b13138e857162b597b8cd7fb74591"},"authority":{"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]},"actor":7,"authorization":{"at":100,"organization_revision":2,"scope_revision":3,"sources":[{"tag":"delegation","revision":4},{"tag":"grant","revision":5}]},"term":{"kind":"paid","term":{"format":1,"licence":"9","generation":"1","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130},"terms":{"seats":1,"class":"I","form":{"kind":"sealed"},"transferable":false},"revision":{"kind":"pin","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"}},"operation":"02020202020202020202020202020202"}},"charter":"9","line":"2","birth_operation":"01010101010101010101010101010101","initial_operation":"01010101010101010101010101010101","initial_issuer":"roll.registry","filed":"3","revision":{"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"reason":"registry_review","at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `operation`, `action`, `authority`, `actor`, `authorization`, `term`, `charter`, `line`, `birth_operation`, `initial_operation`, `initial_issuer`, `filed`, `revision`, `reason`, `at_ic` at line 1 column 571
+invalid refused = invalid commercial record
+
+[RevokedTerm (paid term revoked)]
+wire = {"format":1,"licence":"9","generation":"1","operation":"14141414141414141414141414141414","term_digest":"1b79f28db304da465ac479392539276270cf0a3d1ec77e72e06feabe80ded516","window":{"format":1,"eligibility_start":10,"issued_at":10,"term_end":110,"grace_end":130}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `licence`, `generation`, `operation`, `term_digest`, `window` at line 1 column 20
+invalid refused = invalid commercial record
+
+[registry revocation: refusal]
+unavailable | 01 = Mind revocation status is unavailable or not held.
+
+[RegistryRevocationPolicy]
+wire = {"format":1,"issuer":"roll.registry","organization":4,"scope":6,"operators":[7,8]}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `issuer`, `organization`, `scope`, `operators` at line 1 column 20

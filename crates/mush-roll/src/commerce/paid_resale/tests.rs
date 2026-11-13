@@ -159,3 +159,5 @@ fn resale_buyer_admission_is_optional_and_configured_once() -> Result {
     );
     Ok(())
 }
+
+mod ct0_wire;

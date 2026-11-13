@@ -959,3 +959,6 @@ fn the_transfer_mark_narrows_and_never_widens() -> TestResult {
     check!(swapped.validate().is_err());
     Ok(())
 }
+
+#[path = "ct0_snapshot.rs"]
+mod ct0_snapshot;

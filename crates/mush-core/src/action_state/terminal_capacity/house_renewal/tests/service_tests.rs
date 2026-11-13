@@ -298,3 +298,6 @@ fn old_five_action_pending_reservation_can_upgrade_and_close_without_rewriting_c
     hydrate(&upgraded, &upgraded.disk)?;
     Ok(())
 }
+
+/// Doc 46 CT.0: the committed snapshot of this twin's walk.
+mod ct0_snapshot;

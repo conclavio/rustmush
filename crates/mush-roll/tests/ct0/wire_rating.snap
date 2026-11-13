@@ -1,0 +1,183 @@
+# Doc 46 CT.0 snapshot. Every line is something a store or a player sees: a persisted key,
+# a stored value, a digest, a family id, an action id, a protocol name, a printed sentence.
+#
+# NO UNIT OF DOC 46 MAY RE-BLESS THIS FILE (ruling Q-46-2: bytes do not move).
+# A diff in this file is a stopped unit: find the change that moved the byte and undo it.
+#
+# The walk that writes it is named below. Blessing is for the unit that adds a walk, once:
+#   COMMERCE_SNAPSHOT_BLESS=1 cargo test -p <crate> ct0_
+# File: tests/ct0/wire_rating.snap
+
+[constants]
+FORMAT = 1
+MAX_CASES = 1755
+MAX_PAGE_ROWS = 15
+MAX_PAGES = 117
+MAX_CASE_BYTES = 2048
+MAX_PAGE_BYTES = 32768
+MAX_RECEIPT_BYTES = 65536
+MAX_RESULT_BYTES = 8388608
+TYPED_ENVELOPE_RESERVE = 1024
+
+[digests and ids]
+subject digest = "a3d9243849e9e3b0785addc2ee909e0737beef33bfc2c41462ee86f4a95295d9"
+page content digest = "ecbbb4b32fea7e90e589b60611b8728c60c89de45d9d64f7d0f641504706912c"
+page ref digest = "ecbbb4b32fea7e90e589b60611b8728c60c89de45d9d64f7d0f641504706912c"
+result id = "f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3"
+class cases digest = "a8f0d5b4314ce035b958e24f52b4149441226861f60106001f8bbd47cdac622f"
+certificate id = "b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871"
+receipt id = "b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871"
+receipt reference = {"job":"01010101010101010101010101010101","id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","schema":1,"receipt_digest":"e95a0f89a34b37f3385bf93592671f791111ae666663e4048e0849ee012f0b47"}
+page key = 01010101010101010101010101010101/000
+receipt id text = b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871
+
+[RatingId / ResultId (digest_id!)]
+RatingId = "b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871"
+ResultId = "f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3"
+
+[RatingSubject]
+wire = {"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `revision`, `envelope`, `schema`, `definition`, `expanded`, `declared`, `role` at line 1 column 20
+
+[RatingCompatibility]
+wire = {"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"}
+unknown field refused = unknown field `ct0_unknown_field`, expected `manifest` or `digest` at line 1 column 20
+
+[CaseKey (probe)]
+wire = {"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected `class` or `case` at line 1 column 86
+invalid refused = Registry evidence exceeds its bounded representation
+
+[CaseKey (trial)]
+wire = {"class":"I","case":{"kind":"trial","variant":0,"layout":"duel","seed":1,"swapped":false}}
+unknown field refused = unknown field `ct0_unknown_field`, expected `class` or `case` at line 1 column 109
+invalid refused = Registry evidence exceeds its bounded representation
+
+[Peak]
+wire = {"ops":100,"fees":20,"unit":0,"think_seq":1}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `ops`, `fees`, `unit`, `think_seq` at line 1 column 20
+invalid refused = Registry evidence exceeds its bounded representation
+
+[MeterSummary]
+wire = {"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `thinks`, `max_ops`, `max_fees`, `peak`, `ops_faults`, `other_faults`, `dropped`, `unmeasured` at line 1 column 20
+invalid refused = invalid or unsupported Registry evidence
+
+[CaseBinding]
+wire = {"source":"0202020202020202020202020202020202020202020202020202020202020202","definition":"0404040404040404040404040404040404040404040404040404040404040404","card":"0404040404040404040404040404040404040404040404040404040404040404","program":"0404040404040404040404040404040404040404040404040404040404040404"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `source`, `definition`, `card`, `program` at line 1 column 94
+
+[Coverage]
+wire = {"applicability":"armed","required_thinks":1,"evaluated_thinks":1,"witness":"463bb510f2ec3de0efd50390fb44d79fd40f57a0d3d042fa071b5a368b8fc687"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `applicability`, `required_thinks`, `evaluated_thinks`, `witness` at line 1 column 44
+invalid refused = Registry evidence exceeds its bounded representation
+
+[TrialEnd]
+wire = {"at_ms":1000,"state_hash":"000000000000002a","ledger":"0909090909090909090909090909090909090909090909090909090909090909","outcome":"timeout"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `at_ms`, `state_hash`, `ledger`, `outcome` at line 1 column 33
+invalid refused = invalid or unsupported Registry evidence
+
+[CaseResult (probe, no terminal)]
+wire = {"key":{"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}},"binding":{"source":"0202020202020202020202020202020202020202020202020202020202020202","definition":"0404040404040404040404040404040404040404040404040404040404040404","card":"0404040404040404040404040404040404040404040404040404040404040404","program":"0404040404040404040404040404040404040404040404040404040404040404"},"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"coverage":{"applicability":"armed","required_thinks":1,"evaluated_thinks":1,"witness":"463bb510f2ec3de0efd50390fb44d79fd40f57a0d3d042fa071b5a368b8fc687"},"refusals":0,"outcome":{"kind":"conformant"},"terminal":null}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `key`, `binding`, `meter`, `coverage`, `refusals`, `outcome`, `terminal` at line 1 column 494
+invalid refused = invalid or unsupported Registry evidence
+
+[CaseResult (trial, terminal)]
+wire = {"key":{"class":"I","case":{"kind":"trial","variant":0,"layout":"duel","seed":1,"swapped":false}},"binding":{"source":"0202020202020202020202020202020202020202020202020202020202020202","definition":"0404040404040404040404040404040404040404040404040404040404040404","card":"0606060606060606060606060606060606060606060606060606060606060606","program":"0707070707070707070707070707070707070707070707070707070707070707"},"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":0},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"coverage":{"applicability":"armed","required_thinks":1,"evaluated_thinks":1,"witness":"0808080808080808080808080808080808080808080808080808080808080808"},"refusals":0,"outcome":{"kind":"conformant"},"terminal":{"at_ms":1000,"state_hash":"000000000000002a","ledger":"0909090909090909090909090909090909090909090909090909090909090909","outcome":"timeout"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `key`, `binding`, `meter`, `coverage`, `refusals`, `outcome`, `terminal` at line 1 column 494
+invalid refused = invalid or unsupported Registry evidence
+
+[PageContent]
+wire = {"format":1,"subject":"a3d9243849e9e3b0785addc2ee909e0737beef33bfc2c41462ee86f4a95295d9","compatibility":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","ordinal":0,"rows":[{"key":{"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}},"binding":{"source":"0202020202020202020202020202020202020202020202020202020202020202","definition":"0404040404040404040404040404040404040404040404040404040404040404","card":"0404040404040404040404040404040404040404040404040404040404040404","program":"0404040404040404040404040404040404040404040404040404040404040404"},"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"coverage":{"applicability":"armed","required_thinks":1,"evaluated_thinks":1,"witness":"463bb510f2ec3de0efd50390fb44d79fd40f57a0d3d042fa071b5a368b8fc687"},"refusals":0,"outcome":{"kind":"conformant"},"terminal":null}]}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `subject`, `compatibility`, `ordinal`, `rows` at line 1 column 103
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingPageRef]
+wire = {"ordinal":0,"digest":"ecbbb4b32fea7e90e589b60611b8728c60c89de45d9d64f7d0f641504706912c","rows":1}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `ordinal`, `digest`, `rows` at line 1 column 20
+invalid refused = Registry evidence exceeds its bounded representation
+
+[RatingResultRef]
+wire = {"id":"f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3","pages":[{"ordinal":0,"digest":"ecbbb4b32fea7e90e589b60611b8728c60c89de45d9d64f7d0f641504706912c","rows":1}],"cases":1}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `id`, `pages`, `cases` at line 1 column 30
+invalid refused = Registry evidence digest or key does not match
+
+[RatingPage]
+wire = {"job":"01010101010101010101010101010101","rating":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","result":"f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3","content":{"format":1,"subject":"a3d9243849e9e3b0785addc2ee909e0737beef33bfc2c41462ee86f4a95295d9","compatibility":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","ordinal":0,"rows":[{"key":{"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}},"binding":{"source":"0202020202020202020202020202020202020202020202020202020202020202","definition":"0404040404040404040404040404040404040404040404040404040404040404","card":"0404040404040404040404040404040404040404040404040404040404040404","program":"0404040404040404040404040404040404040404040404040404040404040404"},"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"coverage":{"applicability":"armed","required_thinks":1,"evaluated_thinks":1,"witness":"463bb510f2ec3de0efd50390fb44d79fd40f57a0d3d042fa071b5a368b8fc687"},"refusals":0,"outcome":{"kind":"conformant"},"terminal":null}]}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `job`, `rating`, `result`, `content` at line 1 column 995
+invalid refused = invalid or unsupported Registry evidence at line 1 column 975
+
+[VariantAlias]
+wire = {"kind":"profile","name":"StructuralFixture","variant":0}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `kind`, `name`, `variant` at line 1 column 20
+invalid refused = Registry evidence exceeds its bounded representation
+
+[ClassSummary]
+wire = {"class":"I","outcome":"passing","cases":1,"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"peak_case":{"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}},"cases_digest":"a8f0d5b4314ce035b958e24f52b4149441226861f60106001f8bbd47cdac622f"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `class`, `outcome`, `cases`, `meter`, `peak_case`, `cases_digest` at line 1 column 124
+invalid refused = invalid or unsupported Registry evidence
+
+[CertificateContent]
+wire = {"format":1,"subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","aliases":[{"kind":"profile","name":"StructuralFixture","variant":0}],"classes":[{"class":"I","outcome":"passing","cases":1,"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"peak_case":{"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}},"cases_digest":"a8f0d5b4314ce035b958e24f52b4149441226861f60106001f8bbd47cdac622f"}],"minimum":"I","result":{"id":"f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3","pages":[{"ordinal":0,"digest":"ecbbb4b32fea7e90e589b60611b8728c60c89de45d9d64f7d0f641504706912c","rows":1}],"cases":1}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `subject`, `compatibility`, `plan`, `aliases`, `classes`, `minimum`, `result` at line 1 column 585
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingPublication]
+wire = {"job":"01010101010101010101010101010101","issued":{"clock":{"kind":"world_ic","generation":1},"at":100}}
+unknown field refused = unknown field `ct0_unknown_field`, expected `job` or `issued` at line 1 column 20
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingReceipt]
+wire = {"format":1,"id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","content":{"format":1,"subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","aliases":[{"kind":"profile","name":"StructuralFixture","variant":0}],"classes":[{"class":"I","outcome":"passing","cases":1,"meter":{"thinks":1,"max_ops":100,"max_fees":20,"peak":{"ops":100,"fees":20,"unit":0,"think_seq":1},"ops_faults":0,"other_faults":0,"dropped":0,"unmeasured":0},"peak_case":{"class":"I","case":{"kind":"probe","pair":0,"name":"empty_armed"}},"cases_digest":"a8f0d5b4314ce035b958e24f52b4149441226861f60106001f8bbd47cdac622f"}],"minimum":"I","result":{"id":"f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3","pages":[{"ordinal":0,"digest":"ecbbb4b32fea7e90e589b60611b8728c60c89de45d9d64f7d0f641504706912c","rows":1}],"cases":1}},"publication":{"job":"01010101010101010101010101010101","issued":{"clock":{"kind":"world_ic","generation":1},"at":100}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `id`, `content`, `publication` at line 1 column 1484
+invalid refused = Registry evidence digest or key does not match
+
+[RatingRef]
+wire = {"job":"01010101010101010101010101010101","id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","schema":1,"receipt_digest":"e95a0f89a34b37f3385bf93592671f791111ae666663e4048e0849ee012f0b47"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `job`, `id`, `schema`, `receipt_digest` at line 1 column 20
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingJob (queued)]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","state":{"kind":"queued"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `plan`, `state` at line 1 column 137
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingJob (running)]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","state":{"kind":"running","lease_sequence":1}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `plan`, `state` at line 1 column 137
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingJob (completed)]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","state":{"kind":"completed","receipt":{"job":"01010101010101010101010101010101","id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","schema":1,"receipt_digest":"e95a0f89a34b37f3385bf93592671f791111ae666663e4048e0849ee012f0b47"}}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `plan`, `state` at line 1 column 137
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingJob (failed)]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","state":{"kind":"failed","reason":"execution"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `plan`, `state` at line 1 column 137
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingJob (interrupted)]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","state":{"kind":"interrupted"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `plan`, `state` at line 1 column 137
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingJob (cancelled)]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":{"revision":{"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":"0101010101010101010101010101010101010101010101010101010101010101"},"source":"0202020202020202020202020202020202020202020202020202020202020202"},"envelope":"0303030303030303030303030303030303030303030303030303030303030303","schema":"0909090909090909090909090909090909090909090909090909090909090909","definition":"0404040404040404040404040404040404040404040404040404040404040404","expanded":"0505050505050505050505050505050505050505050505050505050505050505","declared":"I","role":"combat"},"compatibility":{"manifest":"combat.v1","digest":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"},"plan":"1414141414141414141414141414141414141414141414141414141414141414","state":{"kind":"cancelled"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `plan`, `state` at line 1 column 137
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingCompletion]
+wire = {"format":1,"job":"01010101010101010101010101010101","subject":"a3d9243849e9e3b0785addc2ee909e0737beef33bfc2c41462ee86f4a95295d9","compatibility":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","result":"f569ddaadac3d32382c870a6e9e3289e6d6d3592b080d5b36cab98068e813ed3","receipt":{"job":"01010101010101010101010101010101","id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","schema":1,"receipt_digest":"e95a0f89a34b37f3385bf93592671f791111ae666663e4048e0849ee012f0b47"},"execution":"7705ff5886faa0ae83f9f4ef8f4261b46f9dc9eaac9b47ebf0dc77b8b3e518af"}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `job`, `subject`, `compatibility`, `result`, `receipt`, `execution` at line 1 column 103
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingStatus (active)]
+wire = {"format":1,"rating":{"job":"01010101010101010101010101010101","id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","schema":1,"receipt_digest":"e95a0f89a34b37f3385bf93592671f791111ae666663e4048e0849ee012f0b47"},"standing":{"kind":"active"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `rating`, `standing` at line 1 column 20
+invalid refused = invalid or unsupported Registry evidence
+
+[RatingStatus (recalled)]
+wire = {"format":1,"rating":{"job":"01010101010101010101010101010101","id":"b2d2efb46bb8dbf3958283f4f117948a05ceaf158efff0e61ed037577f8c6871","schema":1,"receipt_digest":"e95a0f89a34b37f3385bf93592671f791111ae666663e4048e0849ee012f0b47"},"standing":{"kind":"recalled","operation":"09090909090909090909090909090909"}}
+unknown field refused = unknown field `ct0_unknown_field`, expected one of `format`, `rating`, `standing` at line 1 column 20
+invalid refused = invalid or unsupported Registry evidence

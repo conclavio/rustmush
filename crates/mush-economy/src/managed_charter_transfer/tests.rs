@@ -310,3 +310,5 @@ fn retained_decision_keeps_deadline_clock_and_exact_term_refund_causes_separate(
     // capability or sanction: actual registered owner preparation must join it.
     Ok(())
 }
+
+mod ct0_snapshot;

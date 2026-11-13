@@ -253,3 +253,5 @@ fn ud4b_the_plans_hold_capture_and_release_the_quote() {
         "no install after the reservation lapses"
     );
 }
+
+mod ct0_snapshot;

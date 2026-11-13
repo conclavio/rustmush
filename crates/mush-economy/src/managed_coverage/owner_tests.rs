@@ -1357,3 +1357,5 @@ fn bind_reserves_future_title_width_before_charging_at_the_admitted_size_boundar
     check_eq!(f.state().coverage_histories()?.len(), 0);
     Ok(())
 }
+
+mod ct0_snapshot;

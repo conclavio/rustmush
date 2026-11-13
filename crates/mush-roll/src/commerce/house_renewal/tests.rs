@@ -559,3 +559,5 @@ fn exhausted_generation_refuses_before_any_new_offer_or_money() -> TestResult {
 mod capacity_tests;
 
 mod holder;
+
+mod ct0_snapshot;

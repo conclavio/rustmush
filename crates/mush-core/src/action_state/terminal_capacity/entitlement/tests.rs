@@ -1361,3 +1361,6 @@ pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() ->
     reboot(&f)?;
     Ok((f.store, f.handles, f.disk))
 }
+
+/// Doc 46 CT.0: the committed snapshot of this twin's purchase walk.
+mod ct0_snapshot;
