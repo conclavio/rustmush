@@ -2290,7 +2290,7 @@ mutation table below says what each rule's removal fails.
 | 8 | **`EXIT` while away ends the practice and the hull fights.** A pilot who wants to leave the pod and keep the hull on its posture cannot | Medium: a posture that outlives the seat is the world's rule brought into a match, against Q-44-19 |
 | 9 | **The board says nothing of a practice**: the slot reads `seated`, to both sides, as nothing an attacker reads changes in the world (Q-45-16) | Low |
 | 10 | **A practice posture is the match's.** It lasts the match and the next match opens on `RETURN`. A restart ends every practice; a pilot who was away reads their word back afterwards, one who had only set it reads `RETURN` (the word was on the mirror, which is RAM) | Low |
-| 11 | **`MIND AWAY` takes `EXIT`'s proxy guard**: a driver lent somebody else's crew member does not hand the unit to its mind | Low |
+| 11 | **`MIND AWAY` takes no proxy guard.** A driver lent somebody else's crew member may let go and take back like any pilot: they stay at the station, which is the tactical discretion a seat is lent (doc 10 §19 T11), where `EXIT` is its abandonment. The first build guarded it; hosted CI's census of the guard's call sites (`mush-campaign` `e7c11`, doc 10b §3.11) counted the new site, and the guard was taken out as not owed rather than recorded | Low: one call, one row of that census |
 | 12 | **The kernel tells a match from a field by the arena's end condition** when it ends a practice, as it does for the fire record | Low: a flag of its own on the arena, which would be one more hashed field |
 | 13 | **A practice's end stops the hull** and leaves its heading, as a release does | Low: one line in `end_practice` |
 | 14 | **What a practice leaves on the hull**: whose it is and the fire record kept since (they read nowhere without the flag, and serve the pilot's next practice in the match), and what the mind remembers of having flown | Low: clear them in `end_practice` |
@@ -2319,8 +2319,8 @@ mutation table below says what each rule's removal fails.
 - The leash and a guard that runs out of rounds, in a match: AP.6's kernel tests hold them,
   and nothing here changes them.
 - A second seat or a proxy driver in the practising hull (in source: a control naming
-  another seat ends the practice; `MIND BACK` and `MIND AWAY` take the helm's check), and
-  `Busy` when the arena will not take a word.
+  another seat ends the practice; `MIND BACK` and `MIND AWAY` take the helm's check and no
+  proxy guard), and `Busy` when the arena will not take a word.
 - A control the arena's inbox will not take. The world's half runs ahead of the offer, so
   after an undelivered control the mirror says the practice is over while the arena still
   holds it, and `MIND BACK` answers that the pilot holds the controls. It is the existing
@@ -2443,7 +2443,9 @@ unit's diff applied; Windows is this box.
   CI's M7 memory-size clippy pass, and `cargo doc` under `-D warnings` with and without
   `--document-private-items`: Linux and Windows.
 - **CI**: the branch's dispatch run and the pull request's CI on the head commit; the runs
-  are in the pull request's body, since a note cannot name the run of its own commit.
+  are in the pull request's body, since a note cannot name the run of its own commit. The
+  branch's first dispatch failed one test, `mush-campaign`'s census of the proxy guard's
+  call sites (default 11): no local run had covered that crate.
 
 **Not verified.**
 

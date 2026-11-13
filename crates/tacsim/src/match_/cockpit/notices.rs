@@ -2700,11 +2700,10 @@ pub(super) fn mind_practice(
         return Err(CockpitError::Refused(practice::PRACTICE_ONLY.to_owned()));
     }
     let name = display_name(ctx.w, seat.unit);
+    // No proxy guard: unlike `EXIT`, letting go keeps the driver at the station, able to take
+    // the controls back at a word. It is the tactical discretion a seat is lent (doc 10 §19
+    // T11), not an abandonment.
     let said = if form.eq_ignore_ascii_case("away") {
-        // The guard `EXIT` takes: a driver lent somebody else's crew member does not hand the
-        // unit they were lent to its mind.
-        mush_sim::seat_restriction(ctx.w, ctx.actor, mush_sim::ProxyAct::Abandonment)
-            .map_err(CockpitError::Guarded)?;
         practice::away(ctx, seat.driver, seat.unit, &name)?
     } else {
         practice::back(ctx, seat.driver, seat.unit, &name)?
