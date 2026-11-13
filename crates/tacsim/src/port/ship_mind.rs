@@ -1197,6 +1197,8 @@ fn status_line(w: &World, hull: ObjId, record: Option<&ShipEpochRecord>) -> Stri
         Some(ClaimCursor::Closing { open, .. }) if claim_closed(w, *open).is_none() => {
             MIND_CLOSING.replace("{name}", &name)
         }
+        // A claim the cursor does not name: the arm is closing it.
+        _ if claim_of(w, hull) != ClaimRead::None => MIND_CLOSING.replace("{name}", &name),
         Some(ClaimCursor::Refused { .. }) => format!(
             "{} {}",
             MIND_WAS_REFUSED.replace("{name}", &name),
@@ -1234,7 +1236,8 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .and_then(|state| state.epoch_action.clone())
         .filter(|_| crate::minds::ic_sortie::claim_path_composed(ctx.w));
     let cursor = record.as_ref().and_then(|record| record.claim.as_deref());
-    let live = cursor_live(ctx.w, cursor);
+    // A claim the cursor does not name stands in the way as well, until the arm closes it.
+    let live = cursor_live(ctx.w, cursor) || claim_of(ctx.w, hull) != ClaimRead::None;
     let now = ctx.w.world_ic_now().at;
     let attempt = record.as_ref().map_or(0, |record| record.attempts);
     let key = |op: MindOp| {

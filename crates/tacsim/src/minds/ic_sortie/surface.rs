@@ -236,3 +236,55 @@ pub(crate) fn surface_close(
         .map_err(bad)?,
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_sim::data::{PlacementRecord, Pose, passive_rules_value};
+    use mush_sim::{DomainId, SpatialParent, SpatialState};
+
+    fn world_with(unit: ObjId, parent: SpatialParent) -> World {
+        let mut world = World::new_minimal();
+        let mut spatial = SpatialState::default();
+        spatial.placements.insert(
+            unit,
+            PlacementRecord {
+                object: unit,
+                parent,
+                revision: 1,
+                unplaced: None,
+            },
+        );
+        world.module_state_insert(spatial);
+        world
+    }
+
+    /// **Doc 23 cut S.4d (D-23-25), the second reader's finding 4**: Sim admits a unit lying
+    /// directly on a domain as a berth hold. A rig stood on a site's ground lies on a domain
+    /// and has no berth, so no Open is minted for it; a rig in its bay is asked as it always
+    /// was. A rig's claim never opens under the berth rule.
+    #[test]
+    fn s4d_a_rig_on_the_ground_is_given_no_open_permit_and_a_rig_in_its_bay_is_asked() {
+        let rig = ObjId(41);
+        let posture = passive_rules_value(serde_json::json!({})).expect("posture");
+        let on_the_ground = world_with(
+            rig,
+            SpatialParent::Direct {
+                domain: DomainId(9),
+                pose: Pose::passive(posture),
+            },
+        );
+        assert!(on_a_domain_without_a_berth(&on_the_ground, rig));
+        assert!(surface_start(&on_the_ground, ObjId(3), rig, 100).is_err());
+
+        let in_its_bay = world_with(
+            rig,
+            SpatialParent::Interior {
+                space: ObjId(5),
+                slot: None,
+            },
+        );
+        assert!(!on_a_domain_without_a_berth(&in_its_bay, rig));
+        assert!(!on_a_domain_without_a_berth(&World::new_minimal(), rig));
+    }
+}
