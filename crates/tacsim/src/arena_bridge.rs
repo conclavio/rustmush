@@ -2031,10 +2031,10 @@ fn open_task(
     // 17b cut M4.3 to the fill decision (2026-10-09), when every production
     // seal was `scripted`.
     let sources = sealed_sources(ctx.w, custody.units.iter().map(|unit| &unit.seal));
-    // **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22): the process's
-    // one think pool, sized once from `[tacsim.minds].workers` by whichever
-    // match opens first.
-    let pool = crate::minds::MindPool::shared(minds_cfg.workers);
+    // **17b cut M4.1** (doc 17 §6 "Execution policy", D-UM-22; doc 44 unit
+    // MW.11): the server's one think pool, the store's, sized by its own
+    // `[tacsim.minds].workers` whoever thinks first.
+    let pool = crate::minds::pool::of_world(ctx.w);
     let carried = if terms.is_some() {
         carried_minds(ctx, &custody)
     } else {
@@ -2203,12 +2203,9 @@ pub fn resume_match(
     // record's seals name, keyed by each seal's digest — the decoded
     // `UnitState::seal` must be the record's for a source to be found.
     let sources = sealed_sources(ctx.w, live.record.minds.values().map(|row| &row.seal));
-    // 17b cut M4.1: a resumed match thinks on the process's one pool, sized
-    // by the server's `[tacsim.minds].workers` when it is the first to open.
-    let workers = crate::match_::lobby::minds_config(ctx.w)
-        .unwrap_or_default()
-        .workers;
-    let pool = crate::minds::MindPool::shared(workers);
+    // 17b cut M4.1, doc 44 unit MW.11: a resumed match thinks on the server's
+    // one pool, the store's.
+    let pool = crate::minds::pool::of_world(ctx.w);
     let tape_resume = crate::match_::mind_tape::resume(ctx, match_id, arena.tape_cursor);
     let (handle, join) = crate::arena_task::resume_arena_recorded(
         &runtime,
@@ -2303,10 +2300,7 @@ pub fn resume_field_task(
         .collect();
     let ground = Arc::clone(&arena.definition);
     arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
-    let workers = crate::match_::lobby::minds_config(ctx.w)
-        .unwrap_or_default()
-        .workers;
-    let pool = crate::minds::MindPool::shared(workers);
+    let pool = crate::minds::pool::of_world(ctx.w);
     let (handle, join) = crate::arena_task::resume_field(
         &runtime,
         task,

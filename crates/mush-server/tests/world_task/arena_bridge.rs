@@ -859,3 +859,58 @@ async fn an_observer_frame_reaches_its_watcher_and_no_pilot() {
     let _ = handles.writer_join.await;
     let _ = handles.outbox_join.await;
 }
+
+/// **Doc 44 unit MW.11 (Q-44-28): the world loop tells the space minds that this world runs
+/// on the wall clock.** A world no loop runs is a rig's, whose clock is moved by hand: its
+/// think host waits for its workers, so a story that counts ticks never sees a held step.
+/// The loop here is the server's. Once it runs, the same host holds a late step instead,
+/// and the world thread never waits for a think worker (`tacsim::space::thinks`).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_world_loop_tells_the_space_minds_to_hold_late_steps() {
+    let engine = Engine::with_modules(
+        World::new_minimal(),
+        world_task::base_registry(),
+        vec![
+            Box::new(tacsim::TacsimRuleset::default()),
+            Box::new(ArenaStarter),
+        ],
+    )
+    .expect("the arena-bridge test composition");
+    let host = tacsim::space::thinks::host_of(&engine.world).expect("the store has a think host");
+    assert!(
+        !host.holds_late_steps(),
+        "before any loop runs the world, its host waits for its workers"
+    );
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let gateway = Arc::new(RecordingGateway::default());
+    let handles = spawn_persist_with_gateway(
+        engine,
+        ServerDeps {
+            store,
+            guard: Arc::new(IpGuard::new()),
+            staff: Arc::new(StaffQueue::new()),
+            llm: None,
+            metrics: Arc::new(Metrics::new()),
+            quarantine_spool: QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
+        },
+        move |_| -> Gateway { gateway },
+    );
+    until(
+        Duration::from_secs(10),
+        "the world loop told the think host to hold",
+        || host.holds_late_steps(),
+    )
+    .await;
+
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Control(mush_core::ControlMsg::Shutdown))
+            .await
+    );
+    let _ = handles.world_join.await.expect("the world task joins");
+    world_task::arena_shutdown(handles.arenas).await;
+    let _ = handles.writer_join.await;
+    let _ = handles.outbox_join.await;
+}

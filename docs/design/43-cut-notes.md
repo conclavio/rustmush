@@ -772,3 +772,105 @@ add 3+ hours to landing any PR touching a nightly)."
   as optional. `--dispatch` fires the fast run for the current branch, and `--dispatch --real-pace-too` also
   fires the real-pace run, unwaited.
 - **The map's header and the lint step's comment** say "fast pace".
+
+## The RS.6c-2 resale stories' run time (2026-11-12) — idle turns, not work
+
+`tacsim::domain_economy house_resale_rs6c2::rs6c2_tycho_restores_and_sells_a_wreck_from_{ahuna_flank,urvara_reach}`
+were the long pole of every pull request: 1,417 s and 1,347 s on hosted cells (run 43332528656, main
+`cf9a036a`), which made `tacsim-integration-9` and `-6` the two longest test jobs at 31.8 and 30.0 minutes
+against 21.8 for the next. On conclav.dev they took 672 s and 675 s in a whole sweep (run 43332747562) and
+672 s and 663 s run alone.
+
+**The cause.** The story's main loop stepped the clock 300 s a turn while Tycho's lifter was under way and
+60 s a turn while the workshop's order was open. The supply leg (doc 41 cut RS.9b) is three long passages:
+Ceres to Luna (16.6 IC days), Luna to Deimos (10.9) and Stickney home (16.0). At 301 s a turn that is 12,501
+turns in which no arm has anything to do, and each turn is one whole fire of every module tick: 43 to 52 ms
+in a test build. The time is CPU, on one thread: 671.1 s of user time in 672.4 s of wall, 1.0 s of system
+time. There is no sleep and no wall-clock timer in the story.
+
+**Measured** on conclav.dev, the CI profile's build (`cargo nextest run -P ci --no-run`, tacsim at
+opt-level 0 over dependencies at 1), the test binary run alone with timed spans in the story and a timer
+round each tick handler. Ahuna Flank; Urvara Reach reads the same within a few seconds.
+
+| phase | before, s | turns | after, s | turns |
+|---|---:|---:|---:|---:|
+| world boot, ports stocked (`stocked_tuned`) | 4.5 | | 4.6 | |
+| the pilot chartered, leased, flown to the pad, the site warmed (`on_pad_as_at`) | 8.7 | | 9.0 | |
+| the wreck fixture, the house standing up | 0.1 | | 0.1 | |
+| the census's steady balance | 0.5 | | 0.5 | |
+| 57 IC days skipped (one jump, four fires) | 0.15 | | 0.15 | |
+| the sweep: out, launch, tow, load, home, berth, the award | 10.6 | 630 | 10.2 | 626 |
+| the supply leg's four passages | 609.9 | 12,541 | 2.4 | 52 |
+| the supply leg docked (Luna, Deimos, Stickney) | 4.9 | 258 | 4.1 | 258 |
+| the restoration (the order open eight hours) | 23.6 | 474 | 2.4 | 64 |
+| listing, preview, the mint, the buy | 0.003 | | 0.003 | |
+| the sale's settlement | 0.27 | 16 | 0.17 | 13 |
+| the final census | 0.006 | | 0.005 | |
+| **the story** | **663.5** | 13,904 | **33.7** | 1,001 |
+
+**The change** (the story only). `stride` in `house_resale_rs6c2.rs`: a passage's first hour is stepped 300 s
+a turn as before, so what follows a launch lands as it did; the rest is one stride that ends on the
+journey's arrival second (`JourneyBook`, `CarrierJourney::arrival_at`). An order's first hour is stepped 60 s
+a turn; the rest is one stride that ends on its `due_ic`. It is how the rig already crosses the pilot's own
+passage (`on_pad_loaded_at`: `to_ic(depart_ic + total_s)`). No assertion changed. The submissions the main
+loop lands are the same before and after, on both sites: 11 `market_lot`, 6 `tacsim_port_burn`, 10
+`tacsim_voyage_epoch`, 4 `tacsim_surface_act`, 4 `tacsim_surface_done`, 6 `tacsim_surface_tow`, 1
+`tacsim_bay_work`, all landed. The census balance, the listing's price and the order count are the same.
+What the story no longer does is fire the idle world 12,900 more times between the census's two reads:
+the clerks' ambient fires across those 43 IC days are now the 1,001 turns that remain.
+
+**Times.** conclav.dev, alone: 672.4 s to 34.5 s (Ahuna Flank), 662.9 s to 34.6 s (Urvara Reach). Twenty
+runs in a row of each after the change, other builds running on the box: all forty passed, 33.1 to 35.6 s
+and 33.4 to 37.1 s. Side by side under `cargo nextest run -P ci`: 33.7 s and 34.3 s. The hosted times after
+the change are in the pull request that carries this note.
+
+**The override is gone.** `.config/nextest.toml` gave these two tests forty minutes before termination in
+the `ci` profile (RS.9b; the profile's limit is twenty). It set nothing else: no thread count, no group. The
+stories were as slow alone as beside others.
+
+**Why the hosted cell took twice as long.** Same profile, same single thread of CPU. The same 13,105 tests
+sum to 39,327 s hosted and 22,315 s on conclav.dev. Clock-bound tests read the same on both (the bot
+stories, 0.99 to 1.01 times); CPU-bound ones read 2.0 to 2.8 times. The story did not slow down inside a
+32-thread sweep on conclav.dev, so it is not contention there. The hosted cell runs four tests on four
+vCPUs; which part of the factor is the core and which the sharing was not measured.
+
+**What an idle fire costs** (the first passage, 4,779 fires, nobody connected, no field, the lifter under
+way; 44.6 ms a fire):
+
+| tick | ms a fire | |
+|---|---:|---|
+| `tacsim.port` | 31.9 | the stock arm 20.0 (five clerks, 4.0 each), the site arm 10.1 (seven site clerks, 1.4 each), the house arm 0.8, the rest under 1 |
+| `industry.sweep` | 4.5 | |
+| `propagation.delivery` | 2.9 | |
+| `inventory.sweep` | 1.6 | |
+| `tacsim.surface` | 1.6 | |
+| the other ticks | 2.0 | none over 0.4 |
+
+The port tick's share grew through the story: 30.7 ms a fire on the first passage, 38.1 ms on the last. That
+is a test build; a release build was not measured, and production fires the port tick every five seconds.
+Nothing was changed in the game. It matters to tests: a story that fires the world N times pays about
+45 ms a fire here and twice that on a hosted cell, whatever happens in the fire.
+
+**The twins.** They differ only on the site: the crawler's drive, tow and load at 256 and at 512, about 7 s
+of each run. At 34 s each on conclav.dev both stay on every pull request; moving one to the nightly would
+save about a minute of one cell.
+
+**The slowest after them**, hosted run 43332528656 against the self-hosted sweep 43332747562, the same
+commit. The cause column is a reading of each test, not a measurement; the ratio agrees with it (about 1 is
+a real clock, 2 or more is CPU).
+
+| test | hosted, s | conclav.dev, s | the same cause? |
+|---|---:|---:|---|
+| `mush-bot::mining_cohort a_captain_and_its_escort_fight_the_raider_in_an_ic_field` | 576.5 | 579.6 | no: two bots over SSH on a live server, real time |
+| `mush-bot::mining_cohort a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment` | 493.9 | 491.3 | no: a bot over SSH, real time |
+| `mush-bot::mining_cohort the_mining_root_runs_under_the_bots_serde` | 363.4 | 358.6 | no: the bot's lane over SSH, real time |
+| `domain_economy drones::sm12b_the_drones_mine_deliver_and_never_sell` | 362.7 | 130.8 | yes, in part: 4,000 fixed six-second fires across 6.7 IC days; it asserts after every fire, so a stride needs those checks kept |
+| `domain_field field_story::s2_the_field_story_at_512` | 235.8 | 199.2 | no: the arena runs at the wall's pace; the last wait is a 30 s negative |
+| `domain_field field_gc4::gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift` | 215.0 | 198.9 | no: two fields each wait out a 90 s disengage in real time |
+| `domain_field field_story::gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark` | 170.5 | 154.6 | no: as `s2`, at 256 |
+| `domain_field escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back` | 151.4 | 120.2 | no: real-time arena waits, a 90 s disengage |
+| `domain_economy claims::sm10_the_registry_and_the_list_print_public_facts` | 142.0 | 54.4 | no: four worlds booted and set up; its voyages already jump |
+| `domain_arena match_lifecycle::af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason` | 134.5 | 69.7 | no: sixteen arms, 32 boots, a snapshot wait each |
+
+`drones::sm12b_the_restart_changes_nothing` (113.5 s hosted) steps the same way as its sibling: about 1,600
+six-second fires over two arms.

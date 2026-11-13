@@ -14,6 +14,14 @@
 //! **What is a fixture.** The rig's chassis destroyed and its row on the site's index as a wreck,
 //! by staff hand (GC.5's fixture); 57 IC days skipped; the pilot's money minted. Every act of
 //! Tycho's and the pilot's is the production path.
+//!
+//! **How the clock is stepped.** Second by second while the house acts. The lifter's passages
+//! (43 IC days of the supply leg: Ceres to Luna, Luna to Deimos, Stickney home) and the workshop's
+//! eight hours hold nothing for any arm to do, so after a passage's or an order's first
+//! [`SETTLE_S`] the rest is crossed in one stride to the journey's arrival or the order's due
+//! second ([`stride`]), as the rig crosses the pilot's own passage (`on_pad_loaded_at`). Stepped
+//! 300 s and 60 s a turn those waits were 13,045 of the story's 13,904 turns and 635 of its
+//! 663 s (conclav.dev, 2026-11-12), each turn one whole fire of every tick.
 
 use mush_core::{GOD, ObjId};
 use mush_org::PrincipalId;
@@ -35,6 +43,58 @@ fn quick(cfg: &mut tacsim::TacsimConfig) {
     cfg.recovery.attach_s = 30;
     cfg.recovery.load_s = 60;
     cfg.recovery.claim_window_ic_s = WINDOW;
+}
+
+/// **The stretch at the head of a passage and of an order that is stepped turn by turn**, IC
+/// seconds: what follows a launch (the epoch arm's open) and the taking of an order lands in it.
+const SETTLE_S: i64 = 3_600;
+
+/// Real seconds until the world's IC clock reads `target` (none when it already does).
+fn real_until(w: &mush_core::World, target: i64) -> i64 {
+    let rate = i64::from(w.world_timeline().current().rate.max(1));
+    (target.saturating_sub(w.world_ic_now().at).max(0) + rate - 1) / rate
+}
+
+/// **How far one turn of the story's loop moves the clock before its [`second`]**, real seconds.
+///
+/// Under way, `lifter`'s journey is stepped 300 s a turn for its first [`SETTLE_S`], then crossed
+/// in one stride that ends on its arrival second; a hull under way with no cruising journey in
+/// the book (a free flight, a bubble) keeps the 300. `wreck`'s open order is stepped 60 s a turn
+/// for its first [`SETTLE_S`], then crossed in one stride that ends on its due second. Otherwise
+/// one second: the house is acting. A stride never passes the instant it waits for, so the fire
+/// that follows it is the one that finds the arrival or the finished work.
+fn stride(w: &mush_core::World, lifter: ObjId, wreck: ObjId) -> i64 {
+    let ic = w.world_ic_now().at;
+    // `floor` inside the settle stretch that began at `since`; after it, the step that ends one
+    // second short of `target` (the turn's `second` is the last), one once `target` is behind.
+    let to = |since: i64, target: i64, floor: i64| {
+        if ic.saturating_sub(since) < SETTLE_S {
+            floor
+        } else {
+            real_until(w, target).saturating_sub(1).max(1)
+        }
+    };
+    if matches!(
+        tacsim::port::ship::berth_of(w, lifter),
+        tacsim::port::ship::Berth::UnderWay
+    ) {
+        return w
+            .module_state::<mush_sim::JourneyBook>()
+            .and_then(|book| book.get(lifter))
+            .filter(|journey| matches!(journey.state(), mush_sim::JourneyState::Cruising))
+            .and_then(|journey| Some((journey.departed().at, journey.arrival_at()?)))
+            .map_or(300, |(departed, arrival)| to(departed, arrival, 300));
+    }
+    match w
+        .module_state::<tacsim::TacsimStore>()
+        .and_then(|store| store.bay_hull(wreck))
+    {
+        Some(tacsim::port::bay_work::BayHullState::Present(row)) => row
+            .open()
+            .map_or(1, |order| to(order.started_ic, order.due_ic, 60)),
+        Some(tacsim::port::bay_work::BayHullState::Unreadable) => 60,
+        None => 1,
+    }
 }
 
 /// Move IC on to `target`, then fire a few times.
@@ -147,8 +207,8 @@ fn story(venue: &str, entry: &str) {
         &mut rig,
         now + (tacsim::port::house_sweep::SWEEP_IC_DAYS + 1) * 86_400,
     );
-    // The sweep, the supply leg and the restoration, second by second (faster while the lifter
-    // is under way or the work is open).
+    // The sweep, the supply leg and the restoration, second by second; a passage and the
+    // workshop's work in one stride each after their first hour ([`stride`]).
     let mut awarded = false;
     let mut kept = None;
     let mut supplied = false;
@@ -175,17 +235,7 @@ fn story(venue: &str, entry: &str) {
         {
             supplied = true;
         }
-        let step = if matches!(
-            tacsim::port::ship::berth_of(w, lifter),
-            tacsim::port::ship::Berth::UnderWay
-        ) {
-            300
-        } else if tacsim::port::bay_work::under_work(w, wreck) {
-            60
-        } else {
-            1
-        };
-        let t = w.now().saturating_add(step);
+        let t = w.now().saturating_add(stride(w, lifter, wreck));
         rig.tw.set_now(t);
         let _ = second(&mut rig);
     }

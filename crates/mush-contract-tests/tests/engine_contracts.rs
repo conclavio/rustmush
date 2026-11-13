@@ -56,6 +56,9 @@ mod player_wait_floors;
 mod sheet_write_republish;
 #[path = "engine_contracts/space_mind_memory.rs"]
 mod space_mind_memory;
+// Doc 44 unit MW.11: no space think runs on the world thread or makes it wait.
+#[path = "engine_contracts/space_thinks_off_thread.rs"]
+mod space_thinks_off_thread;
 #[path = "engine_contracts/state_slot_owners.rs"]
 mod state_slot_owners;
 #[path = "engine_contracts/typed_state_lens.rs"]

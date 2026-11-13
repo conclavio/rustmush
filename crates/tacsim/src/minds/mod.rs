@@ -182,7 +182,7 @@ pub use content::{
 /// (doc 44 MW.5) so the external bot's sentence table can test its needles against these
 /// constants; the command modules themselves stay crate-private.
 pub use market_commands::words;
-pub use pool::{BatchFailed, BatchHandle, MindPool};
+pub use pool::{BatchFailed, BatchHandle, MindPool, PoolSlot};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
 pub use sealed::{
     InstallError, install_sealed_runner, install_sealed_runners, install_sealed_runners_except,

@@ -101,13 +101,6 @@ slow-timeout = { period = "60s", terminate-after = 20 }
 # Failures and flaky passes at the end; slow tests are in the JUnit times.
 final-status-level = "flaky"
 
-# Doc 41 cut RS.9b: RS.6c-2's two resale stories fly the house's supply leg the lane's picket-free
-# way out (Ceres, Luna, Deimos, Stickney) and passed 1,105 s and 790 s on the hosted runner before
-# it; the profile's twenty minutes terminated them. Forty, for these two only.
-[[profile.ci.overrides]]
-filter = 'binary_id(tacsim::domain_economy) & test(/^house_resale_rs6c2::rs6c2_tycho_restores_and_sells_a_wreck_from_/)'
-slow-timeout = { period = "60s", terminate-after = 40 }
-
 [profile.ci.junit]
 # target/nextest/ci/junit.xml: one <testsuite> a binary, one <testcase> a
 # test with its time, <flakyFailure> for a pass on retry. Each shard uploads
