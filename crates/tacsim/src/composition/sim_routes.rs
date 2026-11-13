@@ -125,7 +125,17 @@ impl CarrierHooks for TacsimCarrierHooks {
                             })
                     })
                 });
-            if on_time_boundary && active_bridge_crew {
+            // A hull whose crew are away is flown too: her link-loss record stands from the
+            // moment the last of them lost the link, through the grace and under the backup
+            // mind, and is read back at boot (doc 35 §11 `B-7`). The seat "takes over only at
+            // a picket" (Q-35-B5), so the picket must open on her. `is_connected` alone lost
+            // it whenever the server had ended her crew's sessions, by its reaper or by a
+            // restart on the leg, which drops every session.
+            let crew_away_under_cover = ctx
+                .w
+                .module_state::<crate::space::SpaceBubbleBook>()
+                .is_some_and(|book| book.linkdead_state(hull).is_some());
+            if on_time_boundary && (active_bridge_crew || crew_away_under_cover) {
                 let dom_opt = ctx
                     .w
                     .module_state::<mush_sim::SpatialState>()

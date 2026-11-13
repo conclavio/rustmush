@@ -734,7 +734,8 @@ The story, on P3 (`m8_world_manned`), through the production command paths:
    its pilot seated. The pilot marks the raider's party Hostile, sets fire free, and quits.
    The unit passes to its mind at once (Q-44-46);
 5. for five seconds, with the raider Hostile in range and fire free, nothing happens. Then
-   the raider's captain fires on it for fifteen seconds;
+   the raider's captain puts one round on it (fifteen seconds of fire until 2026-11-13: "The
+   raid is one round", below);
 6. the unit goes home: its carrier's ramp, out of the field (at about 74 s), into the bay by
    the host's recover; the claim's Close lands;
 7. read from the field's black box once the field has closed, in order: the script had
@@ -805,6 +806,42 @@ the lease to the bay.
 the driving rig; `d23_18_*` has a restart between two fields for a licensed mind with nobody
 in the cab). The five-minute link loss, in place of the QUIT: the stock field would close
 during it. A bought mind, in place of the author's own: **MW.21**.
+
+**The raid is one round (2026-11-13).** The filed story failed about one run in three on
+main, under load and on the hosted runner alike, always at step 6: "the mind takes the escort
+out at its carrier's ramp", the escort still on the cell it was stood on. The cause was the
+story's own raid, not the game.
+
+- **What happened.** Step 5 was fifteen wall seconds of `FIRE` from eight cells behind the
+  escort, against the cannon's six-second cycle: two rounds or three, by how the lock and the
+  cycle fell against the wall clock. A 105 mm round does 120 and every round landed on the
+  rear band: the hull's rear plate (150) with the hull (200) or the engine (120) behind it,
+  or the turret's (140 over 150). Two rounds finish no section there. Three can: the hull
+  (`destroy_unit`), the engine (`disable_motion`) or the turret (`destroy_core`, the drop
+  the story's `troubled` already allows for), and the dice chose. A wreck thinks nothing, a hull with
+  no drive goes nowhere, and the kernel lets neither out at a ramp
+  (`WithdrawRefusal::NotUnderOwnPower`), so step 6 waited its 420 s for a unit that could
+  not come.
+- **Evidence.** Sixteen runs at main `f5b1efa68`, four at once on conclav.dev: five failed.
+  Two of the five were read in full from the black box, and were the same wreck: the first
+  round on the engine through the hull's rear plate (30 of plate left), the second through
+  the plate into the hull (110 left), the third `destroy_unit`, 23.3 s and 23.6 s into the
+  field. No run seen with two rounds failed. Seven of the eleven passing runs came home with
+  the engine at 30 of 120, one more round on it from stranded. The match seed differs run to
+  run (the same shot's facet draw does), so the rate is the dice's and moves between batches:
+  eight more runs at main `4efa11521`, unpatched, all passed, five on two rounds and three
+  on three, two of those with the hull at 110 of 200.
+- **The fix.** The raider's captain puts one round on the escort (`RAID_ROUNDS`), counted on
+  their own cockpit frame and not in wall seconds. One arrival is all the absent player's
+  rule asks before the unit may answer, and one round finishes no section on any band. The
+  story checks the bound on the box ("the raid kept to its bound") and its step 6 line now
+  says what the box holds of the unit's losses. No assertion was loosened and no wait
+  lengthened. With it: twelve of twelve at main `4efa11521`, four at once on the same box,
+  the raider's one round arriving in each.
+- **Not verified.** The other three failures were not read in full (the first probe's filter
+  matched nothing). Their field had closed `disengaged` 120 s after the escort's last shot
+  with the escort on its cell, which is what an engine shot out would leave; that reading
+  was not confirmed.
 
 ### Item 5: Registry load beside live arenas
 
@@ -2644,6 +2681,11 @@ dispatch (`m8-gate-stories`).
   server restarted between the link loss and the Kirkwood picket, Sim logs `an interdicted
   corridor leg presents into NO domain; no activation was raised` and the bubble never opens
   on her. It is not this unit's: a probe with nothing sealed aboard fails the same way (run on conclav.dev, 2026-11-13; in the story rig, not investigated further). The story restarts under way after the picket instead.
+  **Fixed since** (2026-11-13; doc 35's cut notes, "A crew that is away meets the picket"): the carrier hook
+  opened the waypoint's domain only for a hull with a connected player aboard, and a restart leaves a pilot
+  whose link was down not connected. It was production's, not the rig's. The restart before the picket is
+  flown with the house default in the voyage group; this unit's main story still restarts after it, with a
+  sealed mind.
 - **A rig's refused Open stays pending in the IC host** (by reading, not run). The rig's arm
   (`surface/mind_claim.rs`, `refuse`) neither acknowledges nor withdraws the Open of a claim it
   gives up, and `IcHost::acknowledge` drops only a claim the book holds. The host keeps one
@@ -2656,7 +2698,9 @@ dispatch (`m8-gate-stories`).
   its cell: "the mind takes the escort out at its carrier's ramp: last at Some((146, 114))",
   handed and still in the field. Four runs at once on conclav.dev at main `e4e2f6e8e` failed
   three; four at this branch's head passed four. It failed once in this branch's dispatch run
-  and once in another branch's (run 43461753678), and passed when run again. Not investigated.
+  and once in another branch's (run 43461753678), and passed when run again. Not investigated
+  in this cut. Run down and fixed afterwards: the story's own raid could wreck the escort
+  (MW.5's "The raid is one round").
 
 **Known limits.**
 
