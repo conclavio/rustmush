@@ -4315,8 +4315,14 @@ the Registry as fast as it lands. Repeats, all on conclav.dev: on the text befor
 four at once twice (the second time beside the six mutation runs), eight of eight in 166 to
 173 s; on the final text, four at once and then twelve at once, sixteen of sixteen in 167
 to 171 s. No run failed. The box's load average was 8 to 15 through them, so "under load"
-here is twelve copies of the story and not a saturated box. The CI dispatch on the branch:
-DISPATCH.
+here is twelve copies of the story and not a saturated box. The CI dispatch on the branch
+(run 43510830838, at `430a505b8`): the story's job, "M8 MW.21 a bought mind flies its
+buyer's ship", passed on the hosted runner, 250 s for the story (the rating 217 s) and 11
+min 47 s with its build. Every pull-request job of that run passed but one cell, `test
+(rest-server)`, red on mush-server's
+`player_market_commands::rate_queues_and_cancels_a_genuine_registry_preparation` (150 s, no
+assertion text in the log). That is the test MW.19's note records red once in its own
+dispatch: a story of the Registry's service, in a crate this unit does not touch.
 
 **Mutation checks** (conclav.dev, in the throwaway clone; each applied alone to the merged
 code, the story run, the edit dropped).
