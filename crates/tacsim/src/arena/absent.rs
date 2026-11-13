@@ -1,5 +1,6 @@
 //! **The absent player's rule** (doc 44 cut MW.7; Q-44-18, Q-44-22, Q-44-37, Q-44-38; doc 35
-//! §11.1 `B-4`).
+//! §11.1 `B-4`), **and the posture a mind flies under it** (doc 45 unit AP.6; Q-45-5 to
+//! Q-45-9, Q-45-12, Q-45-16).
 //!
 //! Every unit always has a mind, and presence decides who holds the controls (Q-44-22). While a
 //! mind flies a unit for a player who is not at them, three things are true of the unit whatever
@@ -7,34 +8,70 @@
 //!
 //! 1. **It never opens fire first** (Q-44-38). It may fire only at a unit whose fire has arrived
 //!    on **this** unit since the field or the bubble opened. A leader's hostile mark, a party
-//!    held hostile, or fire on a friend is not enough, and the doctrine's cornered stand is a
-//!    shot like any other.
-//! 2. **A stricter order the player left stays** (Q-44-18): a hold on its fire still holds, so
+//!    held hostile, a stance an organisation declared (Q-45-6), or fire on a friend is not
+//!    enough, and the doctrine's cornered stand is a shot like any other. **One widening, and
+//!    no other** (Q-45-8): a unit standing on `GUARD`, inside its leash, may also answer a unit
+//!    whose fire has arrived on another unit of the same player.
+//! 2. **A stricter order stays** (Q-44-18): a standing order's hold on its fire still holds, so
 //!    such a unit answers nobody.
-//! 3. **It neither mines nor trades** (Q-44-38).
+//! 3. **It neither mines nor trades** (Q-44-38), whatever its player left (Q-45-12).
 //!
 //! [`permits`] is that rule, and it is the only copy: the arena calls it where a mind's shot is
 //! resolved (`Arena::resolve_fire_by`, the one door every shot that no seat typed goes through:
 //! a mind's own, a standing fire rule's, a machine's), and a seat in space calls it with facts
 //! of its own. **What a caller must provide** is [`Facts`] and nothing else: whether the unit is
-//! flown for an absent player, whether a hold on its fire stands, and the set of units that have
-//! fired on it. The ids are whatever the caller's units are known by, as long as the target of
-//! the [`Ask`] and the set use the same ones. The rule reads no arena, no clock and no dice.
+//! flown for an absent player, whether a hold on its fire stands, the set of units that have
+//! fired on it, whether it stands guard, and the set of units that have fired on its player's
+//! other units. The ids are whatever the caller's units are known by, as long as the target of
+//! the [`Ask`] and the sets use the same ones. The rule reads no arena, no clock and no dice.
 //!
-//! **In the arena** the three facts are on the unit:
+//! **In the arena** the facts are on the unit:
 //! [`crate::arena::state::UnitState::absent`], written by the IC field host through
 //! [`Arena::set_absent`] and never by a practice match (Q-44-19);
 //! [`crate::arena::state::UnitState::fired_on_by`], written at every impact, hit or miss
-//! (`Arena::resolve_impact`), in a field whose end is its host's; and the hold, which is the
-//! seat's own master gate ([`crate::arena::state::UnitState::weapons_hold`], the hold the pilot
-//! left) or a standing order's `hold_fire` (`Arena::holds_fire`).
+//! (`Arena::resolve_impact`), in a field whose end is its host's; the hold, which is a standing
+//! order's `hold_fire` (`Arena::holds_fire`); the posture
+//! ([`crate::arena::state::UnitState::posture`]) with the cell the mind stands it on
+//! ([`crate::arena::state::UnitState::stand_at`]); and whose the unit is
+//! ([`crate::arena::state::UnitState::player`]).
 //!
-//! **Going home.** [`Arena::set_absent`] also lays the standing objective every mind reads as
-//! its order (`MindObjective::Withdraw`, no deadline): the stock mind obeys it as it obeys a
-//! leader's, driving for its party's home and never rallying while it stands, and a player's
-//! sealed mind reads it as `v.order`. An order to advance or attack that stood lapses with it;
-//! its `hold_fire` is kept (Q-44-18). The order is the unit's while the flag stands: a
-//! detachment command that arrives meanwhile can only tighten it.
+//! **The posture and the seat's fire hold** (Q-45-5, Q-45-7 to Q-45-9). The posture is the one
+//! word a player leaves standing. The seat's master switch (`FIRE HOLD`,
+//! [`crate::arena::state::UnitState::weapons_hold`]) is the pilot's own fire decision, made for
+//! a pilot who is watching: like the condition slots, which are cleared at the hand-over
+//! (`Arena::set_controller`), it binds the seat and never the mind that flies for an absent
+//! player. So a unit whose seat was left at hold, or was never touched because its player was
+//! away when the field opened, still answers a unit that fires on it, under every posture.
+//! Until this unit the switch did bind the mind (MW.7's default, flagged there for the owner).
+//!
+//! **Flying a posture.** [`Arena::flown_posture`] is what the unit's mind is held to:
+//!
+//! - `RETURN`, the default: **going home.** [`Arena::set_absent`] lays the standing objective
+//!   every mind reads as its order (`MindObjective::Withdraw`, no deadline): the stock mind
+//!   obeys it as it obeys a leader's, driving for its party's home and never rallying while it
+//!   stands, and a player's sealed mind reads it as `v.order`.
+//! - `HOLD` and `GUARD`: **staying.** The order laid is `Hold`: the unit parks where it stands.
+//!   At each think (`Arena::stand_posture`) the order is turned to a `Screen` that faces the
+//!   nearest contact the unit may answer, and back to `Hold` when it holds none, so the stock
+//!   mind stands, turns and returns fire without leaving its cell, by the orders it already
+//!   obeys. The kernel does not let such a unit out at its ramp
+//!   ([`crate::arena::withdraw::WithdrawRefusal::Standing`]).
+//! - `GUARD` **ends when the unit can no longer defend itself** (Q-45-9): no fire channel with
+//!   a round left, or its motion disabled. It is then flown as `RETURN`: the frame and the
+//!   view read `return`, the order is the go-home one, and the widening is gone. The player's
+//!   record is not rewritten.
+//!
+//! An order to advance or attack that stood lapses when either order is laid; its `hold_fire`
+//! is kept (Q-44-18). The order is the unit's while the flag stands: a detachment command that
+//! arrives meanwhile can only tighten it.
+//!
+//! **The leash** ([`GUARD_LEASH_CELLS`]). `GUARD` is stood where the mind took it
+//! (`stand_at`). The house mind stays on that cell while it has a round to fire: the kernel
+//! spends the doctrine's one retreat when the posture is first stood
+//! (`crate::arena::mind::seed_stay`), so a hurt unit does not break for home. A mind that
+//! moves (a player's sealed one) keeps the widening only inside the leash: past it the unit
+//! answers for itself alone, as on `HOLD`. A unit of the player's that has left the field
+//! (gone aboard) takes its fire record with it: a guard answers for the units still there.
 //!
 //! **What the mind is shown.** While the flag stands, [`Arena::mind_view`] shows the mind as
 //! hostile only the contacts the rule would let it answer (`Arena::answerable`); every other
@@ -45,13 +82,23 @@
 //!
 //! **Handing back** (Q-44-37): the host clears the flag when the player takes the controls
 //! again. The seat's `Live` control has by then discarded the mind's pending think and its held
-//! order (`Arena::suspend_mind`); clearing the flag ends the rule.
+//! order (`Arena::suspend_mind`); clearing the flag ends the rule. The posture stays the
+//! unit's (Q-45-18).
+//!
+//! **Nothing an attacker reads changes** (Q-45-16): no contact row, notice or presence row
+//! carries the flag, the posture, the cell stood on or the player.
 
 use std::collections::BTreeSet;
 
 use mush_core::ObjId;
 
-use crate::arena::state::{Arena, ContactId, Controller};
+use crate::arena::state::{Arena, ContactId, Controller, UnitState};
+use crate::posture::Posture;
+
+/// **How far from where it was set a unit on `GUARD` still answers for its player's other
+/// units**, cells, Chebyshev (doc 45 unit AP.6; Q-45-8). Provisional, as doc 45 §6 says of
+/// every tuning figure: ten.
+pub const GUARD_LEASH_CELLS: u16 = 10;
 
 /// **What a mind flying for an absent player asks to do.**
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,10 +119,16 @@ pub enum Ask<Id> {
 pub struct Facts<'a, Id: Ord> {
     /// A mind flies the unit for a player who is not at its controls.
     pub absent: bool,
-    /// A hold on its fire stands: one the player left, or a standing order's.
+    /// A hold on its fire stands: a standing order's.
     pub holds_fire: bool,
     /// The units whose fire has arrived on this one since the field or the bubble opened.
     pub fired_on_by: &'a BTreeSet<Id>,
+    /// It stands on `GUARD`, inside the leash of where it was set, and can still defend
+    /// itself (doc 45 unit AP.6; Q-45-8, Q-45-9).
+    pub guards: bool,
+    /// The units whose fire has arrived on **another unit of the same player** since the
+    /// field or the bubble opened. Read only while `guards` holds.
+    pub fired_on_kin: &'a BTreeSet<Id>,
 }
 
 /// **Why the rule refused.**
@@ -97,17 +150,20 @@ impl Denied {
     pub const fn sentence(self) -> &'static str {
         match self {
             Denied::FiredFirst => {
-                "Its player is away: it fires only on a unit that has fired on it."
+                "Its player is away: it fires only on a unit that has fired on it, or on GUARD on one that has fired on another unit of theirs."
             }
-            Denied::HeldFire => "Its player is away and left its fire held: it answers nobody.",
+            Denied::HeldFire => {
+                "Its player is away and an order holds its fire: it answers nobody."
+            }
             Denied::Mining => "Its player is away: it does not mine.",
             Denied::Trading => "Its player is away: it does not trade.",
         }
     }
 }
 
-/// **The absent player's rule** (this module's head): `Ok` for a unit its player flies, and for
-/// a shot at a unit that has fired on this one while no hold stands.
+/// **The absent player's rule** (this module's head): `Ok` for a unit its player flies, and,
+/// while no hold stands, for a shot at a unit that has fired on this one or, from a unit that
+/// stands guard, at one that has fired on another unit of the same player.
 ///
 /// # Errors
 ///
@@ -121,6 +177,7 @@ pub fn permits<Id: Ord>(facts: &Facts<'_, Id>, ask: &Ask<Id>) -> Result<(), Deni
         Ask::Trade => Err(Denied::Trading),
         Ask::Fire { .. } if facts.holds_fire => Err(Denied::HeldFire),
         Ask::Fire { at } if facts.fired_on_by.contains(at) => Ok(()),
+        Ask::Fire { at } if facts.guards && facts.fired_on_kin.contains(at) => Ok(()),
         Ask::Fire { .. } => Err(Denied::FiredFirst),
     }
 }
@@ -134,30 +191,73 @@ impl Arena {
 
     /// **The host says whether `unit` is flown for an absent player** (this module's head;
     /// `crate::arena_task::ArenaMsg::Absent`, applied at a pulse's head). Setting it lays the
-    /// go-home order on a hull a mind already flies; a hull still its pilot's gets the order at
-    /// the `Released` that hands it over (`crate::arena::intents::apply_control`). Clearing it
-    /// lifts the order if the hull is still a mind's. Answers whether the arena holds the unit.
+    /// standing order of the unit's posture on a hull a mind already flies; a hull still its
+    /// pilot's gets the order at the `Released` that hands it over
+    /// (`crate::arena::intents::apply_control`). Clearing it lifts the order if the hull is
+    /// still a mind's, and forgets where the posture was stood. Answers whether the arena
+    /// holds the unit.
     pub fn set_absent(&mut self, unit: ObjId, absent: bool) -> bool {
         let Some(state) = self.unit_mut(unit) else {
             return false;
         };
         let was = std::mem::replace(&mut state.absent, absent);
+        if !absent {
+            state.stand_at = None;
+        }
         let minded = state.controller == Controller::Mind;
         if absent && minded {
-            self.lay_go_home(unit);
+            self.lay_standing(unit);
         } else if was && !absent && minded {
             // A hand-back to a pilot has cleared the row already (`Arena::suspend_mind`); a
             // flag cleared on a hull still a mind's leaves it to its doctrine again.
-            self.clear_go_home(unit);
+            self.clear_standing(unit);
         }
         true
     }
 
-    /// **The standing objective of an absent player's unit** (this module's head, "going
-    /// home"): `Withdraw`, with no deadline, replacing whatever order stood and keeping that
-    /// order's `hold_fire`. Nothing for a hull with no mind row.
+    /// **The host says whose unit `unit` is** (this module's head;
+    /// `crate::arena_task::ArenaMsg::Posture`): the player `GUARD`'s widening reads. Answers
+    /// whether the arena holds the unit.
+    pub fn set_player(&mut self, unit: ObjId, player: Option<ObjId>) -> bool {
+        let Some(state) = self.unit_mut(unit) else {
+            return false;
+        };
+        state.player = player;
+        true
+    }
+
+    /// **The posture `unit`'s mind is held to** (this module's head, "flying a posture"): the
+    /// one its player left, except that a `GUARD` flown for an absent player by a unit that
+    /// can no longer defend itself is `RETURN` (Q-45-9). `RETURN` for a unit the arena does
+    /// not hold.
+    #[must_use]
+    pub fn flown_posture(&self, unit: ObjId) -> Posture {
+        self.unit(unit).map_or(Posture::Return, flown)
+    }
+
+    /// **The standing order of an absent player's unit, by its posture** (this module's
+    /// head): the go-home order on `RETURN`, a `Hold` where it stands on `GUARD` and `HOLD`,
+    /// which the unit's next think turns to face what it may answer
+    /// ([`Arena::stand_posture`]). Nothing for a hull with no mind row.
+    pub(crate) fn lay_standing(&mut self, unit: ObjId) {
+        if self.flown_posture(unit).is_return() {
+            self.lay_go_home(unit);
+        } else {
+            self.lay_order(unit, crate::deliberation::order::Objective::Hold);
+        }
+    }
+
+    /// **The standing objective of an absent player's unit on `RETURN`** (this module's head,
+    /// "going home"): `Withdraw`, with no deadline, replacing whatever order stood and keeping
+    /// that order's `hold_fire`. Nothing for a hull with no mind row.
     pub(crate) fn lay_go_home(&mut self, unit: ObjId) {
-        use crate::deliberation::order::{Constraints, Objective};
+        self.lay_order(unit, crate::deliberation::order::Objective::Withdraw);
+    }
+
+    /// Lay `objective` as `unit`'s standing order: no deadline, no issuer, the `hold_fire` of
+    /// the order it replaces kept (Q-44-18).
+    fn lay_order(&mut self, unit: ObjId, objective: crate::deliberation::order::Objective) {
+        use crate::deliberation::order::Constraints;
         let Some(team) = self.unit(unit).map(|state| state.team) else {
             return;
         };
@@ -171,7 +271,7 @@ impl Arena {
             None,
             crate::deliberation::SquadId { team, index: 1 },
             crate::arena::detachment::DetachmentObjective {
-                objective: Objective::Withdraw,
+                objective,
                 constraints: Constraints {
                     hold_fire: held,
                     ..Constraints::default()
@@ -187,14 +287,103 @@ impl Arena {
         }
     }
 
-    /// Lift [`Arena::lay_go_home`]'s order.
-    fn clear_go_home(&mut self, unit: ObjId) {
+    /// Lift the standing order [`Arena::lay_standing`] laid.
+    fn clear_standing(&mut self, unit: ObjId) {
         if let Some(row) = self.minds.get_mut(&unit) {
             row.order = None;
             row.order_issuer = None;
             row.order_charge = None;
         }
         self.clear_order_watch_member(unit);
+    }
+
+    /// **A mind's think begins on a unit that stands a posture** (this module's head, "flying
+    /// a posture"; `Arena::collect_think`, ahead of the view, with no think of the unit in
+    /// flight). For a unit a mind flies for an absent player:
+    ///
+    /// - on `RETURN`, or on a `GUARD` it can no longer defend, the go-home order is laid if it
+    ///   does not stand, and the cell stood on is forgotten;
+    /// - on `HOLD` and `GUARD`, at the first such think the cell the unit stands on is kept
+    ///   ([`UnitState::stand_at`]) and a Standard Doctrine memory is told to stay
+    ///   (`crate::arena::mind::seed_stay`: a drive home is stopped and the doctrine's one
+    ///   retreat is spent), so the unit stops where it is and does not break for home when it
+    ///   is hurt; then the order is a `Screen` onto the nearest contact the unit may answer
+    ///   ([`Arena::answerable`]) that its party holds hostile, kept while that contact is
+    ///   inside the screen's arc, and a `Hold` when there is none.
+    ///
+    /// Nothing for any other unit: a practice match never reaches past the first test.
+    pub(crate) fn stand_posture(&mut self, unit: ObjId) {
+        use crate::arena::doctrine::{SCREEN_HALF_ARC_MDEG, arc_between};
+        use crate::arena::party::Relation;
+        use crate::arena::perception::MindObjective;
+        use crate::deliberation::order::Objective;
+        let Some(state) = self
+            .unit(unit)
+            .filter(|state| state.absent && state.controller == Controller::Mind)
+        else {
+            return;
+        };
+        let doctrine = state.seal.doctrine;
+        let first = state.stand_at.is_none();
+        let standing = self
+            .minds
+            .get(&unit)
+            .and_then(|row| row.order.as_ref())
+            .map(|order| order.objective);
+        if flown(state).is_return() {
+            if let Some(state) = self.unit_mut(unit) {
+                state.stand_at = None;
+            }
+            if standing != Some(MindObjective::Withdraw) {
+                self.lay_go_home(unit);
+            }
+            return;
+        }
+        let Some(frame) = self.frame_for(unit, self.clock.tempo()) else {
+            return;
+        };
+        if first {
+            // A unit off the ground's window stands nowhere yet: it is laid its hold and
+            // asked again at its next think.
+            let Some(cell) = frame.cell else {
+                if !matches!(
+                    standing,
+                    Some(MindObjective::Hold | MindObjective::Screen { .. })
+                ) {
+                    self.lay_order(unit, Objective::Hold);
+                }
+                return;
+            };
+            if let Some(state) = self.unit_mut(unit) {
+                state.stand_at = Some(cell);
+            }
+            if doctrine && let Some(row) = self.minds.get_mut(&unit) {
+                row.memory = crate::arena::mind::seed_stay(&row.memory);
+                row.doctrine_state = crate::arena::mind::doctrine_state_of(&row.memory);
+            }
+        }
+        // The nearest contact it may answer, as its view will show it: held hostile by its
+        // party and let through by the rule. The bearing is the view's whole degrees.
+        let may = self.answerable(unit).unwrap_or_default();
+        let facing = frame
+            .contacts
+            .iter()
+            .filter(|held| held.relation == Relation::Hostile && may.contains(&held.id))
+            .min_by_key(|held| (held.range_cm, held.id))
+            .map(|held| (held.bearing_mdeg / 1_000).saturating_mul(1_000));
+        let objective = match (facing, standing) {
+            (Some(bearing), Some(MindObjective::Screen { facing_mdeg }))
+                if arc_between(bearing, facing_mdeg) <= SCREEN_HALF_ARC_MDEG =>
+            {
+                return;
+            }
+            (Some(bearing), _) => Objective::Screen {
+                facing_mdeg: bearing % 360_000,
+            },
+            (None, Some(MindObjective::Hold)) => return,
+            (None, _) => Objective::Hold,
+        };
+        self.lay_order(unit, objective);
     }
 
     /// **Whether the rule refuses `unit` a shot at `target`** (this module's head): the facts
@@ -206,12 +395,54 @@ impl Arena {
         if !state.absent {
             return None;
         }
+        let guards = self.guards(state);
+        let kin = if guards {
+            self.fired_on_kin(state)
+        } else {
+            BTreeSet::new()
+        };
         let facts = Facts {
             absent: true,
-            holds_fire: state.weapons_hold || self.holds_fire(unit),
+            holds_fire: self.holds_fire(unit),
             fired_on_by: &state.fired_on_by,
+            guards,
+            fired_on_kin: &kin,
         };
         permits(&facts, &Ask::Fire { at: target }).err()
+    }
+
+    /// **Whether `state` stands guard** (this module's head, "the leash"): flown on `GUARD`
+    /// for an absent player, on a cell its mind has stood, no further than
+    /// [`GUARD_LEASH_CELLS`] from it.
+    fn guards(&self, state: &UnitState) -> bool {
+        state.absent
+            && flown(state) == Posture::Guard
+            && state
+                .stand_at
+                .zip(self.definition.terrain.cell_of(&state.pose))
+                .is_some_and(|(stood, here)| {
+                    stood.0.abs_diff(here.0).max(stood.1.abs_diff(here.1)) <= GUARD_LEASH_CELLS
+                })
+    }
+
+    /// **The units whose fire has arrived on another unit of `state`'s player** (this
+    /// module's head; Q-45-8): every unit the host named the same player for, less this one,
+    /// and never a unit of that player's own. Empty for a unit whose player the host has not
+    /// named.
+    fn fired_on_kin(&self, state: &UnitState) -> BTreeSet<ObjId> {
+        let Some(player) = state.player else {
+            return BTreeSet::new();
+        };
+        let own = |unit: &ObjId| {
+            self.unit(*unit)
+                .is_some_and(|other| other.player == Some(player))
+        };
+        self.units
+            .iter()
+            .filter(|other| other.id != state.id && other.player == Some(player))
+            .flat_map(|other| other.fired_on_by.iter().copied())
+            .filter(|by| !own(by))
+            .collect()
     }
 
     /// **`shooter`'s fire has arrived on `target`** (this module's head), hit or miss: recorded
@@ -227,22 +458,49 @@ impl Arena {
     }
 
     /// **The contacts an absent player's `unit` may answer** (this module's head, "what the
-    /// mind is shown"): its own contact ids for the units that have fired on it, or none at all
-    /// while a hold on its fire stands. `None` for a unit its player flies.
+    /// mind is shown"): its own contact ids for the units that have fired on it and, while it
+    /// stands guard, for those that have fired on its player's other units; or none at all
+    /// while a standing order holds its fire. `None` for a unit its player flies.
     #[must_use]
     pub(crate) fn answerable(&self, unit: ObjId) -> Option<BTreeSet<ContactId>> {
         let state = self.unit(unit).filter(|state| state.absent)?;
-        if state.weapons_hold || self.holds_fire(unit) {
+        if self.holds_fire(unit) {
             return Some(BTreeSet::new());
         }
+        let kin = if self.guards(state) {
+            self.fired_on_kin(state)
+        } else {
+            BTreeSet::new()
+        };
         Some(
             state
                 .fired_on_by
                 .iter()
+                .chain(&kin)
                 .filter_map(|by| self.contacts.id_of(unit, *by))
                 .collect(),
         )
     }
+}
+
+/// **The posture `state`'s mind is held to** ([`Arena::flown_posture`]).
+pub(crate) fn flown(state: &UnitState) -> Posture {
+    match state.posture {
+        Posture::Guard if state.absent && !can_defend(state) => Posture::Return,
+        posture => posture,
+    }
+}
+
+/// **Whether `state` can still defend itself** (Q-45-9): not a wreck, its motion not
+/// disabled, and a fire channel with a round left.
+fn can_defend(state: &UnitState) -> bool {
+    !state.limits.wreck
+        && !state.limits.motion_disabled
+        && !state.disabled
+        && state
+            .weapons
+            .iter()
+            .any(|weapon| state.weapon_ammo(&weapon.id) > 0)
 }
 
 #[cfg(test)]
@@ -254,6 +512,8 @@ mod tests {
             absent,
             holds_fire,
             fired_on_by: by,
+            guards: false,
+            fired_on_kin: by,
         }
     }
 
@@ -283,7 +543,58 @@ mod tests {
         assert_eq!(
             permits(&held, &Ask::Fire { at: 7 }),
             Err(Denied::HeldFire),
-            "a hold the player left holds through an attack"
+            "a standing order's hold holds through an attack"
         );
+    }
+
+    /// **Doc 45 unit AP.6: the one widening** (Q-45-8). A unit that stands guard may also
+    /// answer a unit that fired on another unit of its player, and nothing else moves: one
+    /// that is not standing guard reads the second set for nothing, a unit in neither set is
+    /// still a first shot, a hold still holds, and mining and trading are still refused.
+    #[test]
+    fn ap6_a_guard_answers_for_its_players_other_units_and_for_nobody_else() {
+        let (on_it, on_kin) = (BTreeSet::from([7_u32]), BTreeSet::from([8_u32]));
+        let with = |guards: bool, holds_fire: bool| Facts {
+            absent: true,
+            holds_fire,
+            fired_on_by: &on_it,
+            guards,
+            fired_on_kin: &on_kin,
+        };
+        let guard = with(true, false);
+        assert_eq!(permits(&guard, &Ask::Fire { at: 7 }), Ok(()));
+        assert_eq!(
+            permits(&guard, &Ask::Fire { at: 8 }),
+            Ok(()),
+            "the unit that fired on its player's other unit"
+        );
+        assert_eq!(
+            permits(&guard, &Ask::Fire { at: 9 }),
+            Err(Denied::FiredFirst),
+            "a unit that fired on a stranger, or on nobody"
+        );
+        assert_eq!(permits(&guard, &Ask::Mine), Err(Denied::Mining));
+        assert_eq!(permits(&guard, &Ask::Trade), Err(Denied::Trading));
+        // HOLD and RETURN, and a guard off its leash or out of rounds: for itself alone.
+        let hold = with(false, false);
+        assert_eq!(permits(&hold, &Ask::Fire { at: 7 }), Ok(()));
+        assert_eq!(
+            permits(&hold, &Ask::Fire { at: 8 }),
+            Err(Denied::FiredFirst),
+            "only a guard answers for a neighbour"
+        );
+        // A standing order's hold holds for a guard too.
+        for at in [7, 8] {
+            assert_eq!(
+                permits(&with(true, true), &Ask::Fire { at }),
+                Err(Denied::HeldFire)
+            );
+        }
+        // A unit its player flies is not asked, whatever it holds.
+        let present = Facts {
+            absent: false,
+            ..guard
+        };
+        assert_eq!(permits(&present, &Ask::Fire { at: 9 }), Ok(()));
     }
 }

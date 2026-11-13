@@ -56,6 +56,11 @@ pub enum WithdrawRefusal {
     /// player who was away, and that player took the controls back before the pulse that
     /// would have let it go. Answered by the task, never by [`Arena::withdraw`].
     Recalled,
+    /// **Its mind stands a posture** (doc 45 unit AP.6; Q-45-7): the unit is flown for an
+    /// absent player on `GUARD` or `HOLD`, which stay where they stand and are never taken
+    /// home by the hand-over. Its player, back at the controls, recovers it as ever; a
+    /// posture set to `RETURN` sends it home.
+    Standing,
 }
 
 impl WithdrawRefusal {
@@ -75,6 +80,9 @@ impl WithdrawRefusal {
             }
             WithdrawRefusal::Recalled => {
                 "That unit's pilot is back at its controls; it stays in the field."
+            }
+            WithdrawRefusal::Standing => {
+                "That unit's mind stands its posture where it is while its player is away; RETURN brings it in."
             }
         }
     }
@@ -141,6 +149,17 @@ impl Arena {
         // its own power, so it is judged by its tug — the tug in the field, under its own power
         // and beside the ramp — and goes out in tow with its own check-in row. The task applies
         // a casualty's withdrawal before its tug's, so the tug still stands here to be read.
+        // **Doc 45 unit AP.6** (Q-45-7): a unit its mind stands on `GUARD` or `HOLD` for an
+        // absent player stays. The host asks every absent player's unit out once a second
+        // and the kernel decides here, on the posture the unit is flown on now: a `GUARD`
+        // that can no longer defend itself is `RETURN` and is let go like one. A casualty
+        // under tow is its tug's to take out.
+        if state.coupled_to.is_none()
+            && state.absent
+            && !crate::arena::absent::flown(state).is_return()
+        {
+            return Err(WithdrawRefusal::Standing);
+        }
         let judged = match state.coupled_to {
             Some(tug) => self.unit(tug).ok_or(WithdrawRefusal::NotUnderOwnPower)?,
             None => state,

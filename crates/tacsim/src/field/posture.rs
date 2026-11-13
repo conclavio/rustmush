@@ -24,6 +24,13 @@
 //!
 //! **A demotion** changes nothing: the arena's copy goes with the arena, and the record
 //! stands.
+//!
+//! **Whose unit it is** (doc 45 unit AP.6; Q-45-8). A unit on `GUARD` may answer fire on
+//! another unit of the same player, and the arena knows no players, so the word carries one
+//! ([`player_of`]): the player seated in the unit; for a unit nobody sits in, its carrier's
+//! commander if it is a carrier, else the operator who launched it. A unit a hired crew sits
+//! in has none: a crew is people in the world and not the player's unit (Q-45-13). It is told
+//! and told again exactly as the posture is.
 
 use std::collections::BTreeMap;
 
@@ -39,8 +46,8 @@ pub(crate) const REFRESH_WALL_S: i64 = 10;
 /// **What this boot's host has told each running field's arena** (RAM, module state).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Told {
-    /// The posture last accepted by the unit's task, and the task.
-    rows: BTreeMap<ObjId, (MatchId, Posture)>,
+    /// The posture and the player last accepted by the unit's task, and the task.
+    rows: BTreeMap<ObjId, (MatchId, Posture, Option<ObjId>)>,
     /// When every unit off the default was last told again.
     refreshed_wall_s: i64,
 }
@@ -50,10 +57,18 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
     let Some(book) = ctx.w.module_state::<FieldBook>() else {
         return;
     };
-    let units: Vec<(MatchId, ObjId)> = book
+    let units: Vec<(MatchId, ObjId, Option<ObjId>)> = book
         .live
         .values()
-        .flat_map(|hosted| hosted.live.units.iter().map(|row| (hosted.task, row.unit)))
+        .flat_map(|hosted| {
+            hosted.live.units.iter().map(|row| {
+                (
+                    hosted.task,
+                    row.unit,
+                    row.pilot.as_ref().map(|(pilot, _)| *pilot),
+                )
+            })
+        })
         .collect();
     let now = ctx.w.now();
     let (told, refresh) = ctx
@@ -74,18 +89,21 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
         return;
     };
     let mut rows = BTreeMap::new();
-    for (task, unit) in units {
-        let want = crate::posture::record::of(ctx.w, unit);
+    for (task, unit, pilot) in units {
+        let want = (
+            crate::posture::record::of(ctx.w, unit),
+            player_of(ctx, unit, pilot),
+        );
         let have = told
             .get(&unit)
-            .filter(|(told_task, _)| *told_task == task)
-            .map(|(_, posture)| *posture);
+            .filter(|(told_task, _, _)| *told_task == task)
+            .map(|(_, posture, player)| (*posture, *player));
         // A unit this host has not told this task of is told whatever it holds: the host
         // does not know what the arena has for it (a join, a resume).
         let stale = have != Some(want);
-        if !(stale || (refresh && !want.is_return())) {
-            if let Some(posture) = have {
-                rows.insert(unit, (task, posture));
+        if !(stale || (refresh && !want.0.is_return())) {
+            if let Some((posture, player)) = have {
+                rows.insert(unit, (task, posture, player));
             }
             continue;
         }
@@ -94,15 +112,16 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
                 task,
                 ArenaMsg::Posture {
                     unit,
-                    posture: want,
+                    posture: want.0,
+                    player: want.1,
                 },
             )
             .is_ok()
         {
-            rows.insert(unit, (task, want));
-        } else if let Some(posture) = have {
+            rows.insert(unit, (task, want.0, want.1));
+        } else if let Some((posture, player)) = have {
             // The task would not take the word now; the next pass offers it again.
-            rows.insert(unit, (task, posture));
+            rows.insert(unit, (task, posture, player));
         }
     }
     if let Some(told) = ctx.w.module_state_mut::<Told>() {
@@ -114,8 +133,26 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// **The player whose unit `unit` is** (this module's head, "whose unit it is"), `pilot`
+/// being who the field's row says sits in it.
+#[must_use]
+pub(crate) fn player_of(ctx: &Ctx<'_>, unit: ObjId, pilot: Option<ObjId>) -> Option<ObjId> {
+    let player = |who: ObjId| (!super::orders::is_npc(ctx.w, who)).then_some(who);
+    if let Some(pilot) = pilot {
+        return player(pilot);
+    }
+    if super::carrier::is_carrier(ctx.w, unit) {
+        return crate::port::coop::helm_holder(ctx.w, unit).and_then(player);
+    }
+    super::parties::rig_record(ctx, unit)
+        .and_then(|record| record.excursion.map(|out| out.operator))
+        .and_then(player)
+}
+
 /// **A resumed arena reads each unit's record** (this module's head, "a restart"): the
 /// snapshot's word on a posture may be older than the record's, which is written at once.
+/// Whose each unit is (doc 45 unit AP.6) is the snapshot's until the first pass tells it
+/// again, within a second.
 pub(crate) fn at_resume(
     w: &mush_core::World,
     arena: &mut crate::arena::state::Arena,

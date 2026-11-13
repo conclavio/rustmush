@@ -2441,8 +2441,10 @@ pub struct UnitState {
     /// **The posture its player left on it** (doc 45 unit AP.3; Q-45-4, Q-45-23): the host's
     /// copy of the unit's own record (`crate::posture::record`), which is the keeper. Written
     /// only by `Arena::set_posture` and `RETURN` for every unit until a host says otherwise.
-    /// Read by the unit's frame and so by whichever mind flies it (`View.posture`); nothing in
-    /// the arena acts on it (what a mind does with `GUARD` and `HOLD` is doc 45 unit AP.6's).
+    /// Read by the unit's frame and so by whichever mind flies it (`View.posture`), and, since
+    /// doc 45 unit AP.6, by the arena while a mind flies the unit for an absent player: it
+    /// decides the standing order the mind is laid and what the absent player's rule lets the
+    /// unit answer (`crate::arena::absent`, "flying a posture").
     ///
     /// Decoded by `serde` default and written only when it is not `RETURN`, so
     /// `SNAPSHOT_FORMAT` stands; folded into [`crate::arena::hash::state_hash`] **only when
@@ -2450,6 +2452,24 @@ pub struct UnitState {
     /// as it did.
     #[serde(default, skip_serializing_if = "crate::posture::Posture::is_return")]
     pub posture: crate::posture::Posture,
+    /// **The cell its mind stands its posture on** (doc 45 unit AP.6; Q-45-7, Q-45-8): where
+    /// the unit stood at the first think of a mind flying `GUARD` or `HOLD` for its absent
+    /// player. `GUARD`'s leash is measured from it (`crate::arena::absent::GUARD_LEASH_CELLS`).
+    /// `None` for a unit its player flies, for one on `RETURN`, and before that first think.
+    ///
+    /// Written only by `Arena::stand_posture` and cleared when the host says the player is
+    /// back or the posture changed. Carried and folded as [`UnitState::absent`] is: written
+    /// and folded only when set (sub-item 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stand_at: Option<(u16, u16)>,
+    /// **The player whose unit this is**, as its host tells it (doc 45 unit AP.6; Q-45-8):
+    /// what "another unit of the same player" reads. `None` for every unit of every practice
+    /// match, and for a unit no player stands behind (a hired crew's, a raider's).
+    ///
+    /// Written only by `Arena::set_player`. Carried and folded as [`UnitState::absent`] is:
+    /// written and folded only when set (sub-item 28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<ObjId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5382,6 +5402,10 @@ impl Arena {
             // Doc 45 unit AP.3: every unit checks out on the default; the host that keeps
             // its record says otherwise (`Arena::set_posture`).
             posture: crate::posture::Posture::Return,
+            // Doc 45 unit AP.6: no mind stands a posture on it yet, and no host has said
+            // whose it is.
+            stand_at: None,
+            player: None,
         };
         // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-3, Q-40-6): the rows a part's
         // condition word decides — the sight, the pod, the filter and the plant

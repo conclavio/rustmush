@@ -470,7 +470,9 @@ A salvage claim on a hull of yours reaches you by IC mail as before.
 
 Your unit always has a mind: the one you launched it with, or the house default
 every unit carries. While you are at the controls it does nothing. When you are
-not, it flies the unit home for you.
+not, it flies the unit by the posture you left on it. That is RETURN unless you
+set another, and RETURN takes the unit home; this section describes it. GUARD
+and HOLD keep the unit where it is (see *Postures* below).
 
 - **A lost link.** For five minutes your unit is still yours. It keeps the
   heading and speed you gave it and fires nothing. Reconnect inside the five
@@ -509,20 +511,26 @@ field as their unit's pilot, as always.
 
 **What the mind will and will not do while you are away.** It never opens fire
 first. It fires only on a unit whose fire has arrived on your unit in this
-field, hit or miss. A party you or your leader marked Hostile is not enough, and
-neither is fire on a friend. This binds any mind, one you wrote and filed as
-much as the house default: a shot it asks for at anyone else is refused. If you
-left the seat at weapons hold (`FIRE HOLD`, where every seat in a field starts),
-the hold stays, and the unit answers nobody, even under fire. Set `FIRE FREE`
-before you go if you want it to defend itself. A unit taken into a field while
-you were away starts at `FIRE HOLD` like every other seat, and nobody was there
-to change it: it goes home and answers nobody. An order to advance or attack
-that stood on the unit lapses; a hold-fire order stays.
+field, hit or miss. A party you or your leader marked Hostile is not enough, nor
+is one your organisation declared Hostile, and neither is fire on a friend. (A
+unit left on GUARD also answers for your other units: see *Postures*.) This
+binds any mind, one you wrote and filed as much as the house default: a shot it
+asks for at anyone else is refused. It never mines or trades for you.
+
+The seat's own switch (`FIRE HOLD`, where every seat in a field starts) is yours
+while you fly, and it does not bind the mind. A unit whose seat you left at
+`FIRE HOLD`, and a unit taken into a field while you were away, still return
+fire on a unit that fires on them. What you leave standing is the posture, not
+the switch. An
+order to advance or attack that stood on the unit lapses. A hold-fire order
+from your leader stays, and a unit under one answers nobody.
 
 **Those you were with are told.** The leader of your party, and the leaders of
 parties that stand as your friends, hear "#123 breaks off for its carrier's ramp
-under its mind: its pilot's link is lost. It will not fire first." A leader who
-is offline reads it at login.
+under its mind: its pilot's link is lost. It will not fire first." For a unit
+left on GUARD or HOLD they hear "#123 passes to its mind, which flies it on
+GUARD: its pilot's link is lost. It will not fire first." A leader who is
+offline reads it at login.
 
 **Coming back.** Reconnect at any time while the field runs and your unit is
 still in it, and you are seated again: "You are back at the controls of #123;
@@ -553,11 +561,43 @@ The posture belongs to the unit, not to the field around it. Set it on the open
 surface and it is still there when a field opens, after a restart, and when the
 field has settled.
 
-**What is flown today.** The house mind flies RETURN. It does not act on GUARD
-or HOLD yet: with either set it still takes the unit home, and you are told so
-when you set one. A mind you wrote and filed reads the word (`help minds`) and
-may act on it now. Whatever the posture, the limits above stand: a mind flying
-for you never fires first.
+**What each does while you are away.** Whichever mind holds the unit flies the
+posture, the house default and one you wrote and filed alike (`help minds`). The
+limits above stand under all three: it never fires first, and it never mines or
+trades.
+
+- **RETURN** takes the unit home, as the section above describes. It returns
+  fire on a unit that fires on it, on the way and beside the ramp.
+- **HOLD** keeps the unit on the cell where its mind took it. It turns to face
+  a unit that has fired on it and returns that unit's fire. It answers for
+  nobody else, and it is not taken home.
+- **GUARD** keeps the unit there too. It also returns fire on a unit that has
+  fired on another unit of yours in this field: a rig you launched and left,
+  the unit you sit in, the carrier you command. A quarrel between strangers
+  beside it is not its business, whoever you marked Hostile and whatever your
+  organisation declared. It answers for your units that are in the field: one
+  that has gone aboard is safe, and is no longer answered for. A mind of your
+  own may move, and it answers for your other units only within ten cells of
+  where it took the unit; past that it answers for itself alone.
+- **GUARD ends** when you are back at the controls, or when the unit can no
+  longer defend itself: no fire channel with a round left, or its motion
+  disabled. It is then flown as RETURN and goes home if it can. An unarmed rig
+  cannot guard, so GUARD on one is RETURN. The posture you set is kept, and
+  `+tv` and `MIND POSTURE` go on showing it: a unit that can defend itself
+  again guards again.
+
+A hired crew's unit is not yours for this rule: a unit on GUARD does not answer
+for it.
+
+If you were away when the mind took a unit left on GUARD or HOLD, you read at
+login "While you were away #123 passed to its mind, which flies it on GUARD and
+will not fire first." The unit stays in the field. When the field settles it is
+on the site where it stood, under the same posture for the next field.
+
+Under the house mind a unit on GUARD or HOLD stays on its cell however badly it
+is hurt. One that has nothing left to fire falls back to your carrier's ramp,
+as its doctrine has it. On GUARD it is taken aboard there; on HOLD it stands
+beside the ramp and is not.
 
 **Setting it.** A posture is an order to a unit, and it is given the way an
 order reaches one:

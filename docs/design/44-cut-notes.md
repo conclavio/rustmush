@@ -1174,6 +1174,9 @@ home only with the view narrowed. The stories cannot be compiled on main (they r
   read on the only hold a pilot has, and every IC seat starts there. If the owner would
   rather an absent player's unit always defend itself, it is one clause in
   `Arena::absent_denies_fire` and one in `Arena::answerable`. **For the owner.**
+  (Reversed by doc 45 unit AP.6, 2026-11-12, on Q-45-5 and Q-45-7 to Q-45-9: the posture is
+  what a player leaves standing and the seat's switch binds the seat alone. The third story
+  below is rewritten there as `ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind`.)
 - **The field's five minutes are a constant**, as space's are. `[game].linkdead_grace_s` no
   longer decides when a field unit is handed over. A story steps the world's wall second, so
   none waits five real minutes.

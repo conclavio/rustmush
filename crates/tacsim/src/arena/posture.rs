@@ -3,9 +3,10 @@
 //! The posture is the unit's own (`crate::posture::record`); a host that flies the unit
 //! tells the arena what it is, and the arena carries the word on the unit
 //! ([`UnitState::posture`](crate::arena::state::UnitState::posture)), on its frame and so
-//! in the view its mind reads. Nothing here acts on it: the arena's gates, its stock mind and
-//! every order stand as they were. What a mind does with `GUARD` and `HOLD` is doc 45 unit
-//! AP.6's.
+//! in the view its mind reads. What the arena does with it while a mind flies the unit for an
+//! absent player is doc 45 unit AP.6's (`crate::arena::absent`, "flying a posture"): the
+//! standing order the mind is laid, and the one case the absent player's rule is widened by.
+//! For a unit its player flies it is a word on the frame and nothing more.
 
 use mush_core::ObjId;
 
@@ -22,12 +23,22 @@ impl Arena {
 
     /// **The host says what posture `unit` holds** (this module's head;
     /// `crate::arena_task::ArenaMsg::Posture`, applied at a pulse's head, and a resume's
-    /// reconciliation with the unit's record). Answers whether the arena holds the unit.
+    /// reconciliation with the unit's record). A change on a unit a mind flies for an absent
+    /// player lays the new posture's standing order at once (doc 45 unit AP.6;
+    /// `Arena::lay_standing`) and forgets where the old one was stood. Answers whether the
+    /// arena holds the unit.
     pub fn set_posture(&mut self, unit: ObjId, posture: Posture) -> bool {
         let Some(state) = self.unit_mut(unit) else {
             return false;
         };
+        if state.posture == posture {
+            return true;
+        }
         state.posture = posture;
+        state.stand_at = None;
+        if state.absent && state.controller == crate::arena::state::Controller::Mind {
+            self.lay_standing(unit);
+        }
         true
     }
 }

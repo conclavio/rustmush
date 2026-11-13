@@ -1270,6 +1270,36 @@ pub fn seed_withdraw(memory: &[u8]) -> Vec<u8> {
     encode_memory(&Memory::from(stock))
 }
 
+/// **A standing memory told to stay** (doc 45 unit AP.6; Q-45-7): what the kernel writes when
+/// a Standard Doctrine mind begins to stand `GUARD` or `HOLD` for an absent player
+/// (`Arena::stand_posture`), once. Two things the doctrine would otherwise do take the hull off
+/// the cell it was told to stay on, and neither has an edge an order can move:
+///
+/// - **a hull already going home** (seeded `Withdraw` at a release, or under the go-home
+///   order) finishes its drive: so a state of `Withdraw` is set back to `Patrol`, with the
+///   target, the goal and the keys [`seed_withdraw`] clears dropped;
+/// - **a hull hurt past the doctrine's withdraw threshold** breaks for home whatever order
+///   stands (16b cut Q.7): so its one return is marked spent (`rallied`), which is the
+///   doctrine's own switch for "it stays and fights". A hull with nothing left to fire still
+///   falls back: that edge reads no switch.
+#[must_use]
+pub fn seed_stay(memory: &[u8]) -> Vec<u8> {
+    let mut stock = crate::arena::stock_mind::StockMemory::from(&decode_memory(memory));
+    if stock.state == crate::arena::doctrine::MachineState::Withdraw {
+        stock.state = crate::arena::doctrine::MachineState::Patrol;
+        stock.ordered = false;
+        stock.target = None;
+        stock.goal = None;
+        stock.stand_until_ms = None;
+        stock.quiet_since_ms = None;
+        stock.last_plot = None;
+        stock.unheld_since_ms = None;
+        stock.hunt = None;
+    }
+    stock.rallied = true;
+    encode_memory(&Memory::from(stock))
+}
+
 /// **A memory's canonical bytes** (D-UM-30): `mush_mind::memory::encode` —
 /// sorted compact JSON with only `"` and `\` escaped, what the arena stores
 /// and hashes. An empty map is `{}`.
@@ -2102,6 +2132,11 @@ impl Arena {
             let hash = self.think_line_hash();
             self.drop_for_core(unit, t_ms, hash);
         }
+        // **Doc 45 unit AP.6** (`crate::arena::absent`, "flying a posture"): a unit a mind
+        // flies for an absent player on `GUARD` or `HOLD` has its standing order turned to
+        // face what it may answer, before the view that carries the order is taken. No
+        // think of the hull is in flight here. Nothing for any other unit.
+        self.stand_posture(unit);
         // D-UM-9: the two writes `mind_view` makes — the range memory settled
         // and the notice buffer drained — are undone if the think faults, so the
         // range memory as it stood is kept to put back (the drained notices are

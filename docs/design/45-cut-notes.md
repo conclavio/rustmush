@@ -601,6 +601,7 @@ given.
   verb for it. **AP.7** (the carrier's mind) for the carrier, **AP.9** for a ship in space.
 - **What the house mind does with `GUARD` and `HOLD`**: **AP.6**. The line
   `POSTURE_NOT_FLOWN_YET` and the help's "What is flown today" paragraph go when it lands.
+  (They went with AP.6: see its note.)
 - **The simulator**: **AP.10**.
 - **The clients** (the web panel and the TUI) draw nothing for the keyframe's `posture`; the
   line client's `STATUS` and `+tv` show it. No unit names it; it is a renderer's change.
@@ -871,7 +872,8 @@ on, the order of `at_controls`, and the raid director's NPC crews sound.
   (doc 45's `HOLD` posture already "returns fire only at a unit that has fired on this
   one", so the posture, not the switch, would be the player's word), or the admission
   hand-over clears the switch. **For the owner, with MW.7's flagged default, and for AP.6.**
-  The help page says what happens today.
+  The help page says what happens today. (AP.6 took the first: the gate no longer reads the
+  switch. See its note, "the two seams".)
 
 **Defaults taken.** None needs a refactor to undo.
 
@@ -933,7 +935,342 @@ on, the order of `at_controls`, and the raid director's NPC crews sound.
 
 ## AP.6
 
-Not built.
+The field's mind flies the posture (doc 45 §7.1; Q-45-5 to Q-45-9, Q-45-12, Q-45-16). Built on
+MW.7's gate and door, AP.3's record and AP.4's verbs. Paths are under `crates/tacsim/src/`
+unless given.
+
+**Built.**
+
+- **The gate is still one function, widened by one case** (`arena/absent.rs`, `permits`).
+  `Facts` gains two fields: `guards` (the unit stands on `GUARD`, inside its leash, able to
+  defend itself) and `fired_on_kin` (the units whose fire has arrived on another unit of the
+  same player). A shot is let through at a unit that has fired on this one, as before, or,
+  from a unit that stands guard, at one in the second set. Nothing else moved: a hold still
+  refuses every shot, mining and trading are still refused, and a party that is only marked,
+  held or declared Hostile is still a first shot. No mind's script decides any of it: the
+  house default and a sealed mind come through the same door (`Arena::resolve_fire_by`).
+- **The posture decides the standing order** (`Arena::lay_standing`, where MW.7 laid the
+  go-home order). `RETURN` lays `Withdraw`, as MW.7 built it. `HOLD` and `GUARD` lay a `Hold`:
+  the unit parks. At each think of such a unit (`Arena::stand_posture`, called from
+  `Arena::collect_think` ahead of the view) the order is turned to a `Screen` that faces the
+  nearest contact the unit may answer and its party holds hostile, kept while that contact is
+  inside the screen's arc, and turned back to `Hold` when there is none. So the house mind
+  stands, turns and returns fire by two orders the doctrine already obeys. **No doctrine
+  source moved**: `STOCK_VERSION`, `MIND_ABI` and every seal are as they were.
+- **Where it is stood** (`UnitState::stand_at`). The cell the unit stands on at the first
+  think of a mind flying `HOLD` or `GUARD` for its absent player. At that think a Standard
+  Doctrine memory is told to stay (`arena/mind.rs`, `seed_stay`), once. A memory that was
+  driving home is set back to its patrol: the doctrine has no edge out of `Withdraw` for a
+  new order, so without it a unit told to stay would first finish its drive to the ramp. And
+  the doctrine's one retreat is marked spent (`rallied`), its own switch for "stay and
+  fight": without it a unit hurt past the withdraw threshold breaks for home under any
+  order. A `Released` that hands over a unit left on `HOLD` or `GUARD` no longer seeds
+  `Withdraw` (`arena/intents.rs`).
+- **The leash** (`GUARD_LEASH_CELLS`, ten, one constant). A guard answers for its player's
+  other units only within ten cells, Chebyshev, of where it was stood. The house mind stays
+  on its cell while it has a round to fire, so for it the leash does not bite. A mind that
+  moves (a player's sealed one) keeps the widening inside the leash and answers for itself
+  alone past it.
+- **Whose unit it is** (`UnitState::player`; `field/posture.rs`, `player_of`). The arena
+  knows no players, so the host's posture word now carries one (`ArenaMsg::Posture`): the
+  player seated in the unit; for a unit nobody sits in, the commander of a carrier, else the
+  operator who launched the rig. A unit a hired crew sits in has none (Q-45-13). A unit of
+  the same player that fired on its own is never the one answered.
+- **When `GUARD` ends** (Q-45-9; `arena/absent.rs`, `flown`, `can_defend`). When the player
+  returns, the flag is cleared and nothing of the posture is flown (`Arena::set_absent`).
+  When the field demotes, the arena goes and the record stands. When the unit can no longer
+  defend itself (a wreck, its motion disabled, or no fire channel with a round left) it is
+  flown as `RETURN`: its frame and its mind's view read `return`, the order is the go-home
+  one, and the widening is gone. The player's record is not rewritten, so a unit that can
+  defend itself again guards again.
+- **The ramp** (`arena/withdraw.rs`, `WithdrawRefusal::Standing`). MW.7's host asks every
+  absent player's unit out at its ramp once a second and the kernel decides. It now also
+  refuses a unit its mind stands on `HOLD` or `GUARD`, so a guard set beside its ramp is not
+  taken aboard, and lets a guard go once it is flown as `RETURN`. The host does not ask for a
+  unit on `HOLD` at all (`field/absent.rs`, `tick`). A casualty under tow is its tug's.
+- **The seat's fire hold no longer binds the mind** ("the seams", below).
+- **What the player and the leaders are told** (`field/absent.rs`). A unit left on `GUARD` or
+  `HOLD` does not "make for its carrier's ramp", so four lines say what it does:
+  `MIND_HAS_IT_ON`, `TAKEN_ON`, `ADMITTED_ON` (the pilot) and `STAYS_ON` (the leaders MW.7's
+  `GONE_HOME` goes to). Each names the word the unit is flown on and promises nothing the
+  host cannot know (the host holds no live rounds: a guard that cannot defend itself goes
+  home). Each has its row in the bot's sentence table (`crates/mush-bot/src/mine/minds.rs`).
+- **AP.4's note is gone**: `POSTURE_NOT_FLOWN_YET` and its line after every `GUARD` and
+  `HOLD` set, and the help's "What is flown today". `docs/help/field.md` says what each
+  posture does, when `GUARD` ends, and that the seat's switch is the seat's.
+- **Nothing an attacker reads changed** (Q-45-16). No contact row, notice or presence row
+  carries the flag, the posture, the cell stood on or the player.
+
+**The two seams earlier units left, and how the posture and the seat's fire hold relate.**
+
+MW.7 took as a default, flagged for the owner, that the seat's master switch (`FIRE HOLD`,
+where every IC seat opens) binds the mind: "a seat left at hold answers nobody even under
+fire". AP.5 found what that meant for a player who was away when a field opened: nobody was
+there to touch the switch, so the unit answers nobody.
+
+Doc 45 does not name the switch. What it does rule:
+
+- Q-45-4: the posture is what a player leaves standing, and the strictest of the three,
+  `HOLD`, is "stay, hold fire, return fire only under Q-44-38". No posture answers nobody.
+- Q-45-5: the pilot's condition slots are cleared at the hand-over, because they "are the
+  principal's own fire decisions and assume the principal is watching"; "the posture is what
+  stands".
+- Q-45-7 to Q-45-9: the posture, and nothing else, decides whether the unit stays and what it
+  may answer.
+
+**The reading built** is the one closest to those: the seat's switch is another of the
+pilot's own fire decisions for a pilot who is watching. It binds the seat and never the mind
+that flies for an absent player. A unit whose seat was left at hold, or never touched, still
+returns fire on a unit that fires on it, under every posture. A standing order's `HOLD FIRE`
+(a leader's, kept through the hand-over by Q-44-18) still holds, and a unit under one
+answers nobody. In the code it is the two clauses MW.7's note named: `weapons_hold` is no
+longer read by `Arena::absent_denies_fire` or `Arena::answerable`. **A default, for the
+owner.** The other reading (the switch binds unless a posture other than `RETURN` is set)
+would make `HOLD`, the posture that "holds fire", fire more than `RETURN`.
+
+**Tests.**
+
+In source:
+
+- `arena::absent::tests::ap6_a_guard_answers_for_its_players_other_units_and_for_nobody_else`:
+  the rule's arms with the widening.
+- `arena::weapons::tests`, in a field of four parties (red, blue, a second unit of red's
+  player in a party of its own, a stranger):
+  - `ap6_a_guard_answers_for_its_players_other_unit_and_holds_fire_on_a_strangers_quarrel`:
+    blue is held hostile by red's party throughout. On `GUARD` red's mind is refused its shot
+    at blue by every source no seat typed; still refused after blue fires on the stranger;
+    allowed after blue fires on the second unit and red's mind has stood, with the order
+    turned to a screen and the view showing blue. On `HOLD` and `RETURN` the same fire is not
+    answered and each still answers for itself. A unit of the same player is never answered;
+    a unit whose player is not named answers for nobody but itself.
+  - `ap6_hold_and_guard_stay_where_their_mind_took_them`: the order laid, the cell stood,
+    the ramp's refusal, the player's return, a posture set to `RETURN` mid-flight.
+  - `ap6_a_guard_past_its_leash_answers_for_itself_alone`: the leash at ten cells and at
+    eleven.
+  - `ap6_a_guard_that_cannot_defend_itself_goes_home`: a guard with no round left and one
+    with its motion disabled (flown, framed, ordered and let go as `RETURN`, the record still
+    `GUARD`), a standing order's hold kept.
+  - `ap6_what_another_unit_reads_of_it_is_byte_for_byte_what_it_was`: blue's whole frame and
+    its mind's whole view, compared as text, for red on each posture, flown by its pilot and
+    by its mind.
+  - `ap6_a_mind_driving_home_is_stopped_when_its_posture_stays`: the seed, once, and only
+    over a Standard Doctrine seal.
+  - MW.7's `mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it` now asserts
+    that the seat's switch does not bind the mind.
+- `arena::hash::tests::ap6_the_hash_folds_the_stood_cell_and_the_player_only_when_set`,
+  `arena::snapshot` (`af1_a_unit_is_carried_whole_by_its_derive`, the two fields listed),
+  `arena_task` (`ap3_a_posture_told_before_its_units_join_is_applied_when_it_lands`, the
+  player carried with the word and dropped by a practice match).
+
+Stories (`tests/domain_field/field_ap6.rs`), each typed by players who are not staff. The
+ground of the first four is `escort_lease`'s with one more rig (`stand_up_out`): a lessee in
+the cab of his armed rig, his own prospector launched and standing three cells off with
+nobody in it, a miner's prospector beside them, an intruder's armed hull ten cells east, and
+the three carriers: four parties among the units the stories name. The lessee sets the
+posture from his cab on open ground, marks the intruder's flight Hostile, which opens the
+field with no round fired, and quits. His seat is at weapons hold throughout.
+
+1. `ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strangers_quarrel`. The
+   presence picture the miner reads is the same before and after the posture is set. On
+   `GUARD` the rig fires nothing for twelve seconds with the marked intruder in range, and
+   the intruder's own row of it is what it was when its pilot flew it. The intruder's fire
+   lands on the miner's rig: nothing. It lands on the lessee's prospector: the rig fires on
+   the intruder, after that first arrival, and on nobody else. The intruder never fired on
+   the guard itself. The rig is still where it stood.
+2. `ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour`. The same fire on the
+   prospector is not answered. Fire on the rig itself is. It is not taken home, and its
+   player reads `TAKEN_ON` at login.
+3. `ap6_the_same_rig_on_return_goes_home`. It answers for nobody, is let out at its
+   carrier's ramp and put aboard.
+4. `ap6_a_guard_that_loses_its_last_fire_channel_goes_home`. One fire channel with two
+   rounds (a staff fixture on the open surface). The guard answers with both, is then let out
+   at the ramp and put aboard, and the record still says `GUARD`.
+5. `ap6_a_party_declared_hostile_by_stance_is_not_fired_on_first_under_any_posture`. Three
+   parties of one hull each. The ward's co-op declared the raider's Hostile with
+   `+faction/stance` before the field opened, and nobody marks anybody: the live record's
+   `stance_hostile` and the ward's own frame hold the raider Hostile. For `GUARD`, `HOLD` and
+   `RETURN` in turn the pilot sets the word from the seat and quits; twenty seconds, with the
+   doctrine's rally time cut to four, and the ward has fired nothing; the pilot returns.
+
+MW.7's third story asserted the rule this unit reverses and is rewritten in place
+(`field_mw7.rs`, `ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind`): the seat left at
+hold, the unit on `RETURN`, and it answers the raider once the raider's fire arrives.
+
+**Divergences from the row, and what doc 45 had wrong or left out.**
+
+- **"Stays within a leash" is two things.** The house mind does not move: a parked `Screen`
+  is the only order the doctrine has that stands and answers, and it stands on one cell. The
+  leash is built as the bound of the widening, which is what it has to be for a mind that
+  does move. The engine does not drive a unit back inside it (MW.7's default for a sealed
+  mind that ignores its order, kept).
+- **"Which turns it to `RETURN`" is not a write to the record.** The kernel is the only
+  holder of the unit's live rounds and damage while a field runs, and a host cannot read
+  another player's unit's frame once its seat is released. So the kernel flies the unit as
+  `RETURN` and the record keeps the player's word.
+- **The doctrine cannot be told to stop going home.** A hull released to a mind is seeded
+  `Withdraw`, and the Standard Doctrine leaves `Withdraw` only by its own rally. Hence the
+  seed above. The alternative was to change the doctrine's source, which moves
+  `STOCK_VERSION` and with it `MIND_ABI`, every seal and every pinned hash, for a rule that
+  belongs to the host of the posture and not to the doctrine.
+- **The doctrine retreats under any order.** A unit hurt past the doctrine's withdraw
+  threshold, or out of rounds, falls back to its party's home under a `Hold` or a `Screen`
+  as under any order (16b cut Q.7). The first build left both edges standing, and the
+  second reader traced what the hurt one did to a guard: it drove to the ramp with rounds
+  left, was refused there, was past its leash, and never came back. The hurt edge is now
+  spent by the seed. The out-of-rounds edge reads no switch and still fires: on `GUARD` that
+  is "can no longer defend itself", and the unit is taken aboard; on `HOLD` it stands beside
+  the ramp and is not. The help says so.
+- **"Never mining or trading"**: unchanged from MW.7. No intent in the arena does either.
+- **The row's "Mostly in" names `stock_mind.rs` and `field/home.rs`.** Neither is touched.
+  The files are `arena/absent.rs`, `arena/withdraw.rs`, `arena/mind.rs`, `arena/intents.rs`,
+  `arena/posture.rs`, `arena/state.rs`, `arena/hash.rs`, `arena/snapshot.rs`,
+  `arena/step/frames.rs`, `arena_task.rs`, `field/absent.rs`, `field/posture.rs` and
+  `posture/order.rs`.
+
+**The mind API did not move.** `MindView::posture` and the keyframe's `posture` are AP.3's.
+One thing about them changed in meaning and not in shape: for a unit a mind flies for an
+absent player on a `GUARD` it can no longer defend, they read `return`. No seat is sent
+that frame: the flag is only set while no pilot holds the seat. The record, the roster and
+`MIND POSTURE` go on saying `GUARD`, which the help states.
+
+**Defaults taken.** None needs a refactor to undo unless it says so.
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **The seat's `FIRE HOLD` does not bind the mind**; the posture is the standing word. Reverses MW.7's flagged default | Low: two clauses (`absent_denies_fire`, `answerable`) |
+| 2 | **Whose unit**: the seated player; else a carrier's commander; else the operator who launched the rig. A hired crew's unit is nobody's for this rule, and a unit another player sits in is that player's | Low: one function (`field::posture::player_of`) |
+| 3 | The posture is stood where the unit stands when its mind first thinks on it, not where the word was typed | Low |
+| 4 | The house mind does not move inside the leash; past the leash a moving mind loses the widening and is not driven back | Medium: a manoeuvring guard needs an order the doctrine does not have |
+| 5 | A guard that cannot defend itself is flown as `RETURN` and its record is kept. "Cannot defend itself" is a wreck, motion disabled, or no fire channel with a round left; a hull authored with no speed still guards | Low |
+| 6 | An unarmed rig set to `GUARD` is flown as `RETURN` at once (Q-45-10's "cannot guard") | Low |
+| 7 | The ramp is refused to anybody's ask while a mind stands the unit there; `RETURN` brings it in | Low |
+| 8 | The screen faces the nearest unit the mind may answer. One it may answer that stands behind it, outside the arc, is answered only when it becomes the nearest or the nearer one is lost | Medium: the same missing order as 4 |
+| 9 | `GUARD_LEASH_CELLS` is ten | A constant |
+| 10 | The player is not told separately when a guard turns to `RETURN`; AP.1's close line says where the unit ended | Low: the host would need the kernel to tell it |
+| 11 | A guard answers for its player's units that are still in the field. One that has gone aboard takes its fire record out with it, and the unit that fired on it is no longer answered for | Low: keep the record by player when a unit leaves |
+| 12 | A unit left on `HOLD` or `GUARD` under the house mind does not take the doctrine's retreat when hurt | Low: one line in `seed_stay` |
+| 13 | "The same player" (default 2) and the party's friendships (by owner or organisation, `field/parties.rs`) are two rules. Where they differ (a rig one player owns and another sits in), a guard may be let through the gate at a unit its own party does not hold hostile; the house mind then does not face it. Never a leak, sometimes a guard that does nothing | Medium: one ownership rule for both |
+
+**Not built, and where each lives.**
+
+- **A rig nobody sits in, on a fill plan or worked from its carrier, and a carrier.** Such a
+  unit is still admitted as a bare mind with no record and no flag: the rule does not bind it
+  and no posture is flown for it. It is "another unit of the same player" for a guard
+  (stories 1 and 4 fire on exactly such a rig), and is not itself a guard. **AP.7.**
+- **AP.8's stand** (`field/orders.rs`, `stand`) still answers in an arc by the host's hand.
+  The kernel's turning screen here is what its seam note asked for, and swapping it in is a
+  change to the detachment chain's file. **AP.8's chain; not done here.**
+- **Space** (AP.9) and **the simulator** (AP.10). `ArenaMsg::Posture` is still ignored by a
+  task that is not a field's, and nothing sets `absent` in a practice match.
+- **A manoeuvring guard** (defaults 4 and 8).
+- **A notice when a guard turns to `RETURN`** (default 10).
+- **A posture as a roster order**: the owner ruled yes on 2026-11-12; it is the next unit
+  (AP.4a), stacked on this one.
+
+**Not pinned by a story.**
+
+- **The gate alone, for `GUARD` and `HOLD`, in a story.** Three things keep such a unit from
+  firing first: the order (a `Hold` fires nothing), the view (nothing shown hostile) and the
+  gate. Story 5 fails when the view and the gate are both removed (mutation 2) and would
+  pass on the order alone if only the gate were. The gate by itself is pinned where a shot is
+  asked for directly: the in-source tests, and MW.7's sealed-script test in `domain_arena`.
+- A unit hurt past the doctrine's threshold staying on its cell (the seed is pinned in
+  source; no story wounds a guard that far and waits).
+- The leash with a mind that moves (in source only: no rig flies a sealed mind that drives).
+- A guard whose motion is disabled, and an unarmed rig set to `GUARD` (in source).
+- A posture changed over the relay while the mind flies the unit, and the stop of a unit
+  that was driving home (in source).
+- The lines `MIND_HAS_IT_ON`, `ADMITTED_ON` and `STAYS_ON` (story 2 reads `TAKEN_ON`).
+- A restart while a mind stands a posture: `stand_at` and `player` ride the snapshot, and
+  the host tells the player again within a second; no story restarts over one.
+- A guard answering for its player's carrier.
+
+**Pinned values moved.** No state hash, no ledger line, no seal identity and no harness
+baseline field: every unit of a practice match and of the harness has no absent flag, so
+`stand_posture`, the seed, the `Standing` refusal and the two new fields are never reached or
+written, and the hash folds no byte for them. What moved, each because this unit changed the
+rule it asserts and for no other reason:
+
+| Assertion | Was | Is | Why |
+|---|---|---|---|
+| `arena::weapons` `mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it`, the seat's gate | a mind's shot refused with the seat at hold | the shot fires | the seat's switch no longer binds the mind ("the two seams") |
+| `field_mw7.rs` story 3 | the unit fires nothing under three arrivals | the unit answers the raider after its first arrival, and nobody else | the same; renamed `ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind` |
+| `field_ap4.rs`, six answers to a `GUARD` or `HOLD` set, and `posture::order` `the_words_and_the_lines` | the line and AP.4's note | the line alone, compared whole | the note is removed |
+| `arena::snapshot` `every_unit_field` | 51 names | 53 | the two new fields, listed and decided |
+
+**Reviewed.** A second agent (Opus) read the diff adversarially, read-only, with the row and
+the rulings and not this note's conclusions. It found the gate sound: one function, one new
+arm after the hold; the widening cannot reach `HOLD`, `RETURN`, a guard past its leash or one
+that cannot defend itself; marks and stances are never read; nothing a practice match can
+reach changed; the snapshot and the hash carry the new fields only when set. Its findings:
+
+- **A hurt guard left its post for good** (confirmed by reading the doctrine's withdraw
+  edges). Fixed: the seed spends the doctrine's one retreat.
+- **The hand-over lines read the record, not the posture flown**: a guard that could not
+  defend itself was said to "stay on GUARD" and then went home. Fixed: the lines name the
+  word and promise nothing more, and the help says the roster goes on showing the word.
+- **A guard stops answering for a unit that has gone aboard.** Kept, and recorded as
+  default 11.
+- **Story 5 does not exercise the gate alone for `GUARD` and `HOLD`.** True; recorded under
+  "not pinned by a story" with what does pin it.
+- **The presence picture was read only before the hand-over.** Fixed: story 1 reads it
+  again, as the miner, with the mind standing the guard.
+- **A unit off the ground's window never got a stood cell**, so the seed would have run at
+  every think. Fixed.
+- New prose said "weapons hold". Reworded to the verb, `FIRE HOLD`.
+- Left as recorded: the two ownership rules (default 13); a posture changed from `RETURN`
+  to `HOLD` in the second its unit is let out at the ramp (the word is applied after that
+  head's withdrawals); a host's repeated word turning a standing screen back to a hold for
+  one think.
+
+**Verified, and how** (Linux, conclav.dev, a throwaway clone at main `63dbcb3f6` with this
+unit's diff applied).
+
+- **Mutation checks.** Ten mutations, each built and run against the unit's in-source tests,
+  its five stories and MW.7's (17 tests), each undone by applying its own diff backwards over
+  a WIP commit. Every one fails the test named for it:
+
+  | Mutation | What failed |
+  |---|---|
+  | `GUARD` answers for a stranger (every unit's fire record, whoever its player) | the kernel's guard test ("fire on a stranger is not a guard's to answer"); story 1 |
+  | A mind may fire first at a party its own holds hostile (the rule lets every shot through and the view is not narrowed) | 12 of 17: story 5 (the declared stance), stories 1 to 3, MW.7's three fire stories, the kernel tests |
+  | `HOLD` answers for a neighbour (any posture that stays stands guard) | the kernel's guard test; story 2 |
+  | The posture is not flown: every absent player's unit is laid the way home (main's behaviour) | stories 1, 2 and 4; four kernel tests |
+  | A guard that cannot defend itself still stands guard | story 4; the kernel's stay test |
+  | The seat's hold binds the mind again (MW.7's default) | stories 1, 2 and 4; the rewritten MW.7 story 3; MW.7's kernel test |
+  | No leash | the kernel's stay test, at eleven cells |
+  | The ramp lets a standing unit go | the kernel's stay test |
+  | The host never says whose a unit is | stories 1 and 4 |
+  | A mind driving home is not stopped | the kernel's seed test |
+
+  The stories cannot be compiled on main (they read `TAKEN_ON`), so the fourth row stands in
+  for "fails on main today".
+- **The whole of `tacsim`'s tests**: 4,562 run, 4,562 passed, on the tree before the second
+  reader's fixes. After them: the unit's tests with every MW.7, AP.3, AP.4, AP.5 and AP.8
+  test and story (55), passed.
+- `cargo clippy -p tacsim -p mush-bot --all-targets -- -D warnings`, `cargo doc -p tacsim
+  --document-private-items` under `-D warnings`, `cargo fmt --check` on both crates, and the
+  bot's sentence census (`cargo test -p mush-bot --lib mine::minds`, 21).
+- **`mush-contract-tests`** on Windows (the help lint, the census, the panic budget, the
+  restriction lints, the fiat budget), nothing re-blessed; run before the second reader's
+  fixes, which touched no lint's input but the help page. CI runs it again.
+- **CI**: the pull request's CI and a full dispatch on the head commit; the runs are in the
+  pull request's body. The first push failed one step, the lint job's M7 memory-size limits
+  (`clippy::large_stack_frames`): one in-source test held 75,878 bytes of arenas on its
+  frame, over the step's 64 KiB. It is three tests now (the stay, the leash, the guard that
+  cannot defend itself), and the step was run by hand on conclav.dev before the second push.
+  The mutation table above was taken before the split: where it says "the kernel's stay
+  test", the leash and the spent guard are now the second and third of those three.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
+  player reads were read in the test rig's line mode.
+- The whole `tacsim` suite was not run again after the second reader's fixes on this box;
+  CI's shards run it on the pushed head.
+- The cost of `stand_posture` at a field of a hundred units. For a unit that is not an
+  absent player's it is one field read a think; for one that stands a posture it builds the
+  unit's frame once more a think.
 
 ## AP.7
 
