@@ -345,7 +345,9 @@ pub(crate) fn thinker(w: &World, hull: ObjId) -> Option<Arc<crate::space::thinks
 /// ([`MIND_HOLDS_HER`]).
 #[must_use]
 pub(crate) fn holds(ctx: &Ctx<'_>, hull: ObjId) -> bool {
-    if claim_of(ctx.w, hull) != ClaimRead::None {
+    // A claim anchored at a berth is a ship's; a rig's, anchored in a bay, is not this
+    // module's and keeps the refusals it had.
+    if mush_sim::ic_exclusion::held_at_berth(ctx.w, hull).is_some() {
         return true;
     }
     matches!(
@@ -424,6 +426,12 @@ pub(crate) fn offers(
                 SmolStr::new_static(MindOp::Void.word()),
                 SmolStr::new_static(MindOp::Refuse.word()),
             ]);
+        } else if matches!(
+            claim_of(w, hull),
+            ClaimRead::Active { dispatcher, .. } if dispatcher == actor
+        ) {
+            // A claim of theirs the cursor does not name (the module note, "orphans").
+            ops.push(MindOp::Void.word().into());
         }
         if !ops.is_empty() {
             offers.insert(hull.0.to_string(), MindOffer { ops });
@@ -522,7 +530,7 @@ pub(crate) fn prepare(
     let unavailable = || refuse(crate::surface::dispatch::MIND_UNAVAILABLE);
     match op {
         MindOp::Seal => {
-            let (name, now) = {
+            let now = {
                 let world = context.world().map_err(|_| unavailable())?;
                 let name = name_of(world, hull);
                 if helm_of(world, actor).map(|helm| helm.hull) != Some(hull) {
@@ -531,7 +539,9 @@ pub(crate) fn prepare(
                         "that ship's mind is not yours to seal",
                     ));
                 }
-                if cursor_live(world, record.claim.as_deref()) {
+                if cursor_live(world, record.claim.as_deref())
+                    || claim_of(world, hull) != ClaimRead::None
+                {
                     return Err(refuse(MIND_ALREADY.replace("{name}", &name)));
                 }
                 if berth_host(world, hull).is_none() {
@@ -546,7 +556,7 @@ pub(crate) fn prepare(
                 {
                     return Err(refuse(MIND_NO_CORE.replace("{name}", &name)));
                 }
-                (name, world.world_ic_now().at)
+                world.world_ic_now().at
             };
             let (word, org) = mind_param(parameters)?;
             let dispatched = crate::surface::dispatch::dispatch(
@@ -588,7 +598,6 @@ pub(crate) fn prepare(
                     ));
                 }
             }
-            let _ = name;
             record.claim = Some(Box::new(ClaimCursor::Opening {
                 operator: actor,
                 licence,
@@ -597,7 +606,41 @@ pub(crate) fn prepare(
                 tries: 0,
             }));
         }
-        MindOp::Unseal | MindOp::Void | MindOp::Refuse => {
+        MindOp::Void => {
+            // The arm's: close a claim on this hull that should stand no longer. It is the
+            // cursor's own claim whose seal no longer fits, or a claim the cursor does not
+            // name at all (an Open that landed after its cursor was given up).
+            let world = context.world().map_err(|_| unavailable())?;
+            let ClaimRead::Active { open, dispatcher } = claim_of(world, hull) else {
+                return Err(conflict("that ship's mind claim has not opened"));
+            };
+            if dispatcher != actor {
+                return Err(port_error(
+                    ActionErrorCode::Unauthorized,
+                    "that ship's mind is not yours to unseal",
+                ));
+            }
+            match record.claim.as_deref() {
+                Some(ClaimCursor::Closing { open: closing, .. }) if *closing == open => {
+                    return Err(conflict("that ship's mind claim is closing"));
+                }
+                Some(ClaimCursor::Opening { operator, .. })
+                    if *operator == actor && standing(world, hull, &record, open).is_ok() =>
+                {
+                    return Err(conflict("that ship's mind still stands"));
+                }
+                _ => {}
+            }
+            let base = berth_host(world, hull)
+                .or_else(|| record.open.as_ref().map(|open| open.base))
+                .ok_or_else(|| conflict("that ship's mind claim has no base to close to"))?;
+            record.claim = Some(Box::new(ClaimCursor::Closing {
+                open,
+                kind: ClaimCloseKind::PoweredDownInBase { base },
+                operator: dispatcher,
+            }));
+        }
+        MindOp::Unseal | MindOp::Refuse => {
             let Some(ClaimCursor::Opening { operator, .. }) = record.claim.as_deref() else {
                 return Err(conflict("that ship has no mind claim standing"));
             };
@@ -612,9 +655,10 @@ pub(crate) fn prepare(
             let name = name_of(world, hull);
             let read = claim_of(world, hull);
             let berth = berth_host(world, hull);
-            let base = berth.or_else(|| record.open.as_ref().map(|open| open.base));
             let now = world.world_ic_now().at;
             record.claim = Some(Box::new(match (op, read) {
+                // An Open still on its way may land after this: the arm then closes the
+                // claim the cursor no longer names (`owes`).
                 (MindOp::Refuse, ClaimRead::None) => ClaimCursor::Refused {
                     reason: "the Registry did not admit the claim".into(),
                     at_ic: now,
@@ -622,24 +666,15 @@ pub(crate) fn prepare(
                 (MindOp::Refuse, ClaimRead::Active { .. }) => {
                     return Err(conflict("that ship's mind claim has opened"));
                 }
-                (MindOp::Unseal, _) if berth.is_none() || record.open.is_some() => {
-                    return Err(refuse(MIND_BERTH.replace("{name}", &name)));
+                (_, ClaimRead::None) => {
+                    return Err(refuse(MIND_NOT_YET.replace("{name}", &name)));
                 }
-                (MindOp::Unseal | MindOp::Void, ClaimRead::None) => {
-                    return Err(match op {
-                        MindOp::Unseal => refuse(MIND_NOT_YET.replace("{name}", &name)),
-                        _ => conflict("that ship's mind claim has not opened"),
-                    });
-                }
-                (MindOp::Unseal | MindOp::Void, ClaimRead::Active { open, dispatcher }) => {
+                (_, ClaimRead::Active { open, dispatcher }) => {
                     if dispatcher != operator {
                         return Err(conflict("that ship's mind claim is another's"));
                     }
-                    if op == MindOp::Void && standing(world, hull, &record, open).is_ok() {
-                        return Err(conflict("that ship's mind still stands"));
-                    }
-                    let Some(base) = base else {
-                        return Err(conflict("that ship's mind claim has no base to close to"));
+                    let Some(base) = berth.filter(|_| record.open.is_none()) else {
+                        return Err(refuse(MIND_BERTH.replace("{name}", &name)));
                     };
                     ClaimCursor::Closing {
                         open,
@@ -647,7 +682,6 @@ pub(crate) fn prepare(
                         operator,
                     }
                 }
-                (MindOp::Seal, _) => return Err(conflict("that ship's mind is being sealed")),
             }));
         }
     }
@@ -662,6 +696,9 @@ pub(crate) fn prepare(
     staged.map_err(|_| integrity("a ship's epoch record did not stage"))?;
     provider.output(invocation, (hull, op.word(), false))
 }
+
+/// Why the arm closes a claim its hull's cursor does not name.
+const ORPHANED: &str = "an earlier claim on her was left open";
 
 /// **Why a standing claim's seal should stand no longer**, or `Ok`: the seal does not fit the
 /// hull ([`fits`]), or the hull's epoch closed after the mind was sealed and the close did not
@@ -683,6 +720,9 @@ fn standing(
     let Some(seal) = claim_seal(w, open) else {
         return Ok(());
     };
+    if seal.sortie != crate::arena::mind::SortieId::ic(hull, *launch_ic) {
+        return Err(ORPHANED);
+    }
     fits(w, hull, &seal, *operator).map_err(Unfit::clause)?;
     let docked_since = record.open.is_none()
         && record.last.as_ref().is_some_and(|last| {
@@ -783,43 +823,55 @@ fn owes(
     record: &ShipEpochRecord,
 ) -> (Option<(ObjId, Owes)>, bool) {
     let arm = &state.mind_arm;
-    match record.claim.as_deref() {
-        Some(ClaimCursor::Opening {
-            operator,
-            launch_ic,
-            ..
-        }) => match claim_of(w, hull) {
-            ClaimRead::Active { open, dispatcher } if dispatcher == *operator => {
-                let owed = match standing(w, hull, record, open) {
-                    Err(why) => Some(Owes::Void(why)),
-                    Ok(()) if arm.opens.contains_key(&hull) => Some(Owes::Seen),
-                    Ok(()) => None,
-                };
-                (owed.map(|owed| (*operator, owed)), false)
-            }
-            // A claim on this hull that another character dispatched: nothing of this cursor's.
-            ClaimRead::Active { .. } => (None, false),
-            ClaimRead::None => {
-                let tried = arm
-                    .tries
-                    .get(&hull)
-                    .filter(|tried| tried.mark == *launch_ic);
-                let owed = match tried {
-                    Some(tried) if tried.submissions >= MAX_OPEN_TRIES => Some(Owes::GiveUp),
-                    Some(tried) if state.fires <= tried.last_fire => None,
-                    Some(_) | None => Some(Owes::Open),
-                };
-                (owed.map(|owed| (*operator, owed)), true)
-            }
-        },
-        Some(ClaimCursor::Closing { open, operator, .. }) => {
-            let owed = if claim_closed(w, *open).is_some() {
-                arm.closes.contains_key(&hull).then_some(Owes::Closed)
-            } else {
-                Some(Owes::Close)
+    let read = claim_of(w, hull);
+    match (record.claim.as_deref(), read) {
+        (Some(ClaimCursor::Opening { operator, .. }), ClaimRead::Active { open, dispatcher })
+            if dispatcher == *operator =>
+        {
+            let owed = match standing(w, hull, record, open) {
+                Err(why) => Some(Owes::Void(why)),
+                Ok(()) if arm.opens.contains_key(&hull) => Some(Owes::Seen),
+                Ok(()) => None,
             };
             (owed.map(|owed| (*operator, owed)), false)
         }
+        (Some(ClaimCursor::Closing { open, operator, .. }), _)
+            if claim_closed(w, *open).is_none() =>
+        {
+            (Some((*operator, Owes::Close)), false)
+        }
+        // **A claim the cursor does not name** (the second reader's finding 1): an Open that
+        // was still on its way when its cursor was given up or its passage ended, landed
+        // since. Left alone it would hold its licence's seat and fly her for ever; the arm
+        // closes it, as its dispatcher.
+        (_, ClaimRead::Active { dispatcher, .. }) => {
+            (Some((dispatcher, Owes::Void(ORPHANED))), false)
+        }
+        (
+            Some(ClaimCursor::Opening {
+                operator,
+                launch_ic,
+                ..
+            }),
+            ClaimRead::None,
+        ) => {
+            let tried = arm
+                .tries
+                .get(&hull)
+                .filter(|tried| tried.mark == *launch_ic);
+            let owed = match tried {
+                Some(tried) if tried.submissions >= MAX_OPEN_TRIES => Some(Owes::GiveUp),
+                Some(tried) if state.fires <= tried.last_fire => None,
+                Some(_) | None => Some(Owes::Open),
+            };
+            (owed.map(|owed| (*operator, owed)), true)
+        }
+        (Some(ClaimCursor::Closing { operator, .. }), ClaimRead::None) => (
+            arm.closes
+                .contains_key(&hull)
+                .then_some((*operator, Owes::Closed)),
+            false,
+        ),
         _ => (None, false),
     }
 }
@@ -891,10 +943,12 @@ fn submit_op(
     action: &mush_core::DefinitionRef,
     (hull, operator): (ObjId, ObjId),
     op: MindOp,
-    mark: i64,
+    (mark, fires): (i64, u64),
 ) -> Step {
+    // The fire is part of the key: an op refused on one fire (the world had not caught up)
+    // is a new submission on the next.
     let Ok(key) = IdempotencyKeyText::parse_canonical(format!(
-        "{EPOCH_KEY_PREFIX}{}/{mark}/{}/tick",
+        "{EPOCH_KEY_PREFIX}{}/{mark}/{}/tick{fires}",
         hull.0,
         op.word()
     )) else {
@@ -1029,14 +1083,19 @@ pub(crate) fn step(
             }
             Step::Worked
         }
-        (Owes::Void(why), Some(ClaimCursor::Opening { launch_ic, .. })) => {
+        (Owes::Void(why), cursor) => {
+            // An orphan's cursor is not an Opening for it: its mark is zero.
+            let mark = match cursor {
+                Some(ClaimCursor::Opening { launch_ic, .. }) => *launch_ic,
+                _ => 0,
+            };
             let step = submit_op(
                 ctx,
                 fire,
                 &action,
                 (hull, operator),
                 MindOp::Void,
-                *launch_ic,
+                (mark, state.fires),
             );
             if step == Step::Submitted {
                 let line = MIND_VOIDED.replace("{name}", &name).replace("{why}", why);
@@ -1051,7 +1110,7 @@ pub(crate) fn step(
                 &action,
                 (hull, operator),
                 MindOp::Refuse,
-                *launch_ic,
+                (*launch_ic, state.fires),
             );
             if step == Step::Submitted {
                 if let Some((_, ticket)) = state.mind_arm.opens.remove(&hull) {

@@ -465,48 +465,8 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
         "and opens no second claim"
     );
 
-    // 2. At the picket, with her link down, her own mind has her. She sails, loses her link
-    // on the corridor, and the server restarts with her under way: the boot admits a held
-    // ship on her passage, and the seal is the same.
-    let boundary = sail_and_lose_the_link(&mut world.rig, pilot, hull);
-    eprintln!(
-        "MW13 under way: ic {} of boundary {boundary}, rate {}",
-        crate::excursions::ic_now(&world.rig.tw),
-        world.rig.tw.world().world_timeline().current().rate
-    );
-    let mut world = world.reboot_reconnecting(&[mush_core::GOD]);
-    eprintln!(
-        "MW13 after the restart: ic {} of boundary {boundary}, rate {}, journey {:?}, linkdead {:?}",
-        crate::excursions::ic_now(&world.rig.tw),
-        world.rig.tw.world().world_timeline().current().rate,
-        world
-            .rig
-            .tw
-            .world()
-            .module_state::<mush_sim::JourneyBook>()
-            .and_then(|book| book.get(hull))
-            .map(|journey| (journey.state().clone(), journey.leg_due_at(0))),
-        world
-            .rig
-            .tw
-            .world()
-            .module_state::<SpaceBubbleBook>()
-            .and_then(|book| book.linkdead_state(hull))
-            .map(|state| (state.backup_has_helm(), state.backup_act)),
-    );
-    assert_eq!(
-        ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
-        Some(&sealed),
-        "a restart under way keeps the seal"
-    );
-    assert!(
-        matches!(
-            tacsim::port::ship::berth_of(world.rig.tw.world(), hull),
-            tacsim::port::ship::Berth::UnderWay
-        ),
-        "she is still under way"
-    );
-    arrive_at_the_picket(&mut world.rig, hull, boundary);
+    // 2. At the picket, with her link down, her own mind has her.
+    to_the_picket_with_no_link(&mut world.rig, pilot, hull);
     let locked = until_at_the_picket(&mut world.rig, hull, 30, |now| now.locks_the_corvette)
         .expect("she is at the picket");
     assert!(
@@ -554,6 +514,43 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
         "the resumed mind is hers: {hove:?}"
     );
     assert!(hove.locks_the_corvette, "and her lock stands: {hove:?}");
+
+    // She is cleared and leaves the picket. Under way on the corridor again, the server
+    // restarts: the boot admits a held ship on her passage, and the seal is the same. (A
+    // restart on the corridor *before* the picket is not flown here: after one, Sim warns that
+    // the interdicted leg presents into no domain and raises no picket, with or without a
+    // mind sealed aboard. It is in the cut note as found, not fixed.)
+    let mut left = false;
+    for _ in 0..1_800 {
+        if at_the_picket(&world.rig, hull).is_none() {
+            left = true;
+            break;
+        }
+        one_second(&mut world.rig);
+    }
+    assert!(
+        left,
+        "customs let her go: {:?}",
+        at_the_picket(&world.rig, hull)
+    );
+    let under_way = matches!(
+        tacsim::port::ship::berth_of(world.rig.tw.world(), hull),
+        tacsim::port::ship::Berth::UnderWay
+    );
+    let mut world = world.reboot_reconnecting(&[mush_core::GOD]);
+    assert_eq!(
+        ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
+        Some(&sealed),
+        "a restart on her passage keeps the seal"
+    );
+    assert!(
+        under_way
+            && matches!(
+                tacsim::port::ship::berth_of(world.rig.tw.world(), hull),
+                tacsim::port::ship::Berth::UnderWay
+            ),
+        "she was under way at the restart, and is after it"
+    );
 
     // 4. She makes Stickney, and the claim closes once.
     let stickney = crate::excursions::port_map(&world.rig.tw, "stickney_port")
@@ -729,6 +726,10 @@ fn until_closed(world: &mut M8World, claim: mush_core::CommitToken) -> String {
 ///    unseals her and the claim closes. Then the yard re-dresses her as a Dray-P, which
 ///    carries no core, and nothing of the old seal is left to seal again: a new `+ship/mind`
 ///    is resolved against the hull as she now is, and is refused for want of a core.
+/// C. *A claim the cursor no longer names.* She asks a seal again and the arm's Open is held
+///    back, as a batch still on its way is. The arm tries its five times, gives the claim up
+///    and tells her. Then the held Open lands: a claim stands on the hull that no cursor
+///    names. The arm closes it as its dispatcher and tells her why; nothing is left open.
 /// B. *A change of title.* Sealed again, her title's claims are released and she is titled
 ///    to a House the pilot holds no office with, as a sale or a sweep titles a hull to its new
 ///    holder. No owner of the claim sees that. The seat reads no mind aboard at once, the
@@ -833,9 +834,75 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
     assert!(back.contains("as a standard Dray"), "{back}");
     crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
 
+    // C. An Open that lands after its cursor was given up.
+    let (out, queued) = command(&mut world.rig, pilot, &seal_line);
+    assert_eq!(queued.len(), 1, "one submission: {out}");
+    crate::excursions::land(&mut world.rig, &queued[0])
+        .unwrap_or_else(|refused| panic!("+ship/mind: the go lands: {refused}"));
+    let mut held = None;
+    for _ in 0..40 {
+        let (_, queued) = crate::excursions::fire(&mut world.rig);
+        for submit in queued {
+            if submit.action.key().id.as_str() == "open_ic_mind" {
+                // Held back: the first is kept to land late, the arm's retries are lost.
+                held.get_or_insert(submit);
+            } else {
+                crate::excursions::land_all(&mut world.rig, std::slice::from_ref(&submit));
+            }
+        }
+        world.pulse();
+        if matches!(
+            cursor(&mut world.rig, hull),
+            Some(ClaimCursor::Refused { .. })
+        ) {
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            cursor(&mut world.rig, hull),
+            Some(ClaimCursor::Refused { .. })
+        ),
+        "the arm gave the claim up: {:?}",
+        cursor(&mut world.rig, hull)
+    );
+    let held = held.expect("the arm submitted the Open");
+    crate::excursions::land(&mut world.rig, &held)
+        .unwrap_or_else(|refused| panic!("the held Open lands late: {refused}"));
+    let tacsim::IcClaimRead::Active {
+        open: orphan,
+        dispatcher,
+    } = tacsim::ic_claim_of(world.rig.tw.world(), hull)
+    else {
+        panic!("the late Open opened a claim no cursor names")
+    };
+    assert_eq!(dispatcher, pilot);
+    assert_ne!(orphan, first.claim);
+    assert_eq!(
+        run(&mut world.rig.tw, pilot, &seal_line),
+        ship_mind::MIND_ALREADY.replace("{name}", "Salt Moth"),
+        "no second seal over a claim that stands"
+    );
+    let heard = until_closed(&mut world, orphan);
+    assert!(
+        heard.contains(
+            &ship_mind::MIND_VOIDED
+                .replace("{name}", "Salt Moth")
+                .replace("{why}", "an earlier claim on her was left open")
+        ),
+        "{heard}"
+    );
+    assert_eq!(
+        tacsim::ic_claim_of(world.rig.tw.world(), hull),
+        tacsim::IcClaimRead::None,
+        "the arm closed the claim no cursor named"
+    );
+    assert_eq!(ship_mind::aboard(world.rig.tw.world(), hull), None);
+
     // B. Her title passes to a holder the pilot does not act for.
     let second = seal_aboard(&mut world, licence);
     assert_ne!(second.claim, first.claim, "a new seal is a new claim");
+    assert_ne!(second.claim, orphan);
     crate::m8_world::title_rig_to_house(&mut world, hull, "Meridiani");
     assert_eq!(
         ship_mind::aboard(world.rig.tw.world(), hull),
@@ -870,7 +937,7 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
     // Each claim closed, and a restart opens none again.
     let mut world = world.reboot();
     fires(&mut world, 4);
-    for claim in [first.claim, second.claim] {
+    for claim in [first.claim, orphan, second.claim] {
         assert!(tacsim::ic_claim_closed(world.rig.tw.world(), claim).is_some());
     }
     assert_eq!(

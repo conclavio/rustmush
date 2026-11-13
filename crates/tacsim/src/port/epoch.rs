@@ -639,6 +639,9 @@ pub(crate) fn epoch_agents(
     state
         .epoch_tries
         .retain(|hull, tried| due_now.get(hull).is_some_and(|due| tried.is_for(due)));
+    // Doc 44 unit MW.13: every hull with an end due, held back or not. The mind arm offers
+    // none of them: `epoch_step` would take the offer for the end itself, past its caps.
+    let ends_due: BTreeSet<ObjId> = due_now.keys().map(|hull| ObjId(*hull)).collect();
     for (hull, due) in due_now {
         let ready = match state.epoch_tries.get(&hull) {
             None => true,
@@ -660,7 +663,7 @@ pub(crate) fn epoch_agents(
     }
     // Doc 44 unit MW.13: a hull whose mind claim owes a transition, when no end of its epoch
     // is due this fire (an end goes first: a close moves the claim's cursor itself).
-    let (minds, waiting) = ship_mind::agents(ctx, state, &withheld);
+    let (minds, waiting) = ship_mind::agents(ctx, state, &ends_due);
     offered.extend(minds);
     withheld.extend(waiting);
     (offered, withheld)
@@ -705,9 +708,10 @@ pub(crate) fn epoch_step(
     };
     let due = match epoch_due(ctx.w, hull, record.as_ref()) {
         Ok(Some(due)) if due.principal == principal => due,
-        // Doc 44 unit MW.13: no end is due; the hull was offered for its mind claim.
-        Ok(None) => return ship_mind::step(ctx, state, fire, hull, principal),
-        Ok(Some(_)) | Err(_) => return Step::Idle,
+        // Doc 44 unit MW.13: no end is due (or none can be read); the hull was offered for
+        // its mind claim, which the arm offers only for a hull with no end due.
+        Ok(None) | Err(_) => return ship_mind::step(ctx, state, fire, hull, principal),
+        Ok(Some(_)) => return Step::Idle,
     };
     let attempt = record
         .as_ref()

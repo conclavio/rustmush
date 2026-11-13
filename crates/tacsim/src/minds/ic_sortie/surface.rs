@@ -135,15 +135,24 @@ pub fn claim_closed(world: &World, open: CommitToken) -> Option<CommitToken> {
 /// stands in its bay, the operator, and the epoch's IC id `SortieId::ic(tv, launch_ic)` fixed
 /// at `go`.
 ///
+/// **Doc 23 cut S.4d (D-23-25)**: Sim admits a unit lying directly on a domain as a berth
+/// hold where berths are configured. Only a ship docked at a hangar port has a berth, so a
+/// unit placed on a domain anywhere else (a rig stood on a site's ground, a ship on a site's
+/// pad) is given no permit here: its claim is not asked, where before the cut Sim refused it
+/// as "not in a configured base". Both arms mint through this one function.
+///
 /// # Errors
 ///
-/// The rig has no tactical unit.
+/// The rig has no tactical unit, or it lies on a domain that is not a hangar port's berth.
 pub(crate) fn surface_start(
     world: &World,
     operator: ObjId,
     tv: ObjId,
     launch_ic: i64,
 ) -> Result<Arc<StartPermit>, ParticipantError> {
+    if on_a_domain_without_a_berth(world, tv) {
+        return Err(bad("a claim opens in a bay or at a hangar port's berth"));
+    }
     Ok(Arc::new(StartPermit {
         unit: mush_tactics::module::unit_of(world, tv)
             .ok_or_else(|| bad("surface unit"))?
@@ -152,6 +161,20 @@ pub(crate) fn surface_start(
         sortie: Some(SortieId::ic(tv, launch_ic)),
         _transition: HostTransition::surface(),
     }))
+}
+
+/// Whether `unit` lies directly on a domain that is not a hangar port's berth
+/// ([`surface_start`]).
+fn on_a_domain_without_a_berth(world: &World, unit: ObjId) -> bool {
+    world
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|spatial| {
+            matches!(
+                spatial.parent_of(unit),
+                mush_sim::SpatialParent::Direct { .. }
+            )
+        })
+        && crate::port::ship::hangar_port_of(world, unit).is_none()
 }
 
 /// **The four close kinds as the host event carries them**: `ReturnedToBase`,
