@@ -48,7 +48,9 @@ use crate::port::ship::{Berth, berth_of, hull_view, is_hangar_port};
 use crate::port::voyage::{LAUNCH_GRACE_FIRES, VoyageState, lane_ports};
 use crate::port_tick::{Fire, PortTickState, Step, SwapRefused, gone, port_error};
 use crate::store::TacsimStore;
+use crate::port::ship_mind::{self, MindOp};
 use crate::surface::black_box::{self, BlackBoxLine, BlackBoxParticipant, SealFacts};
+use crate::surface::excursion::ClaimCursor;
 
 /// The ship's epoch action (doc 23 cut S.2): submitted by the `tacsim.port` tick's epoch arm as
 /// the epoch's warrant principal; no verb reaches it.
@@ -175,6 +177,13 @@ pub struct ShipEpochRecord {
     /// **Ends committed for this hull** (R8): the next submission's idempotency attempt is this
     /// plus one, durable across reboots, so no key is ever reused for a later end.
     pub attempts: u32,
+    /// **The mind claim sealed aboard** (doc 44 unit MW.13; doc 23 D-23-11, D-23-12: a cored
+    /// ship's claim, its berth the hangar): the cursor of the Roll's claim over the mind her
+    /// holder sealed on her with `+ship/mind` ([`crate::port::ship_mind`]). `None` for a hull
+    /// that has never had one, and absent on the wire then, so every record written before the
+    /// unit decodes as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<Box<ClaimCursor>>,
 }
 
 impl ShipEpochRecord {
@@ -186,6 +195,7 @@ impl ShipEpochRecord {
             open: None,
             last: None,
             attempts: 0,
+            claim: None,
         }
     }
 
@@ -228,6 +238,13 @@ impl ShipEpochRecord {
                 return Err("a ship's record counts the ends it committed".to_owned());
             }
         }
+        if let Some(
+            ClaimCursor::Opening { operator, .. } | ClaimCursor::Closing { operator, .. },
+        ) = self.claim.as_deref()
+            && operator.0 == 0
+        {
+            return Err("a ship's mind claim names who sealed it".to_owned());
+        }
         Ok(())
     }
 }
@@ -251,7 +268,7 @@ pub(crate) fn open_id_in(engine: &mush_core::Engine, hull: ObjId) -> Option<Sort
 }
 
 /// A hull's epoch record through the tick's own typed-state lens; `Err` when the lens refuses.
-fn record_at(ctx: &Ctx<'_>, hull: ObjId) -> Result<Option<ShipEpochRecord>, ()> {
+pub(crate) fn record_at(ctx: &Ctx<'_>, hull: ObjId) -> Result<Option<ShipEpochRecord>, ()> {
     let handles = ctx.w.module_state::<PortHandles>().ok_or(())?;
     ctx.action_state(&handles.families.epochs, &EpochKey(hull))
         .map(|found| found.cloned())
@@ -642,6 +659,11 @@ pub(crate) fn epoch_agents(
             offered.push((ObjId(hull), due.principal));
         }
     }
+    // Doc 44 unit MW.13: a hull whose mind claim owes a transition, when no end of its epoch
+    // is due this fire (an end goes first: a close moves the claim's cursor itself).
+    let (minds, waiting) = ship_mind::agents(ctx, state, &withheld);
+    offered.extend(minds);
+    withheld.extend(waiting);
     (offered, withheld)
 }
 
@@ -684,7 +706,9 @@ pub(crate) fn epoch_step(
     };
     let due = match epoch_due(ctx.w, hull, record.as_ref()) {
         Ok(Some(due)) if due.principal == principal => due,
-        Ok(_) | Err(_) => return Step::Idle,
+        // Doc 44 unit MW.13: no end is due; the hull was offered for its mind claim.
+        Ok(None) => return ship_mind::step(ctx, state, fire, hull, principal),
+        Ok(Some(_)) | Err(_) => return Step::Idle,
     };
     let attempt = record
         .as_ref()
@@ -833,8 +857,18 @@ fn parameters_of(invocation: &ActionInvocation) -> Result<&Map<String, Value>, A
         .ok_or_else(|| invalid("a ship's epoch names a hull and an end"))
 }
 
+/// **What an invocation asks**: an end of the epoch, or (doc 44 unit MW.13) an act on the
+/// hull's mind claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asked {
+    /// Open or close the epoch.
+    End(EpochOp),
+    /// Seal, unseal, void or give up the mind claim.
+    Mind(MindOp),
+}
+
 /// The `hull` and `op` parameters.
-fn request(parameters: &Map<String, Value>) -> Result<(ObjId, EpochOp), ActionError> {
+fn request(parameters: &Map<String, Value>) -> Result<(ObjId, Asked), ActionError> {
     let hull = parameters
         .get("hull")
         .and_then(Value::as_str)
@@ -845,23 +879,27 @@ fn request(parameters: &Map<String, Value>) -> Result<(ObjId, EpochOp), ActionEr
     let op = parameters
         .get("op")
         .and_then(Value::as_str)
-        .and_then(EpochOp::parse)
+        .and_then(|word| {
+            EpochOp::parse(word)
+                .map(Asked::End)
+                .or_else(|| MindOp::parse(word).map(Asked::Mind))
+        })
         .ok_or_else(|| invalid("a ship's epoch opens or closes"))?;
     Ok((hull, op))
 }
 
 impl EpochProvider {
-    fn output(
+    pub(crate) fn output(
         &self,
         invocation: &ActionInvocation,
-        (hull, op, written): (ObjId, EpochOp, bool),
+        (hull, op, written): (ObjId, &str, bool),
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let outcome = RulesValue::new(
             self.outcome.clone(),
             json!({
                 "actor": invocation.actor().0,
                 "hull": hull.0,
-                "op": op.word(),
+                "op": op,
                 "written": written,
             }),
         )
@@ -908,31 +946,62 @@ impl ActionProvider for EpochProvider {
                 hulls.insert(hull.0.to_string(), offer_of(w, store, hull, &due));
             }
         }
-        if hulls.is_empty() {
+        // Doc 44 unit MW.13: the hulls whose mind claim the actor may act on. With none the
+        // offer is exactly what it was before the unit.
+        let minds = ship_mind::offers(engine, self, actor);
+        if hulls.is_empty() && minds.is_empty() {
             return Ok(None);
         }
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
-        let fixed = json!({
+        let mut fixed = json!({
             "now": w.world_ic_now().at,
             "hulls": serde_json::to_value(&hulls)
                 .map_err(|_| integrity("a ship's epoch facts do not encode"))?,
         });
-        let parameters = vec![
+        let mut choices: BTreeSet<String> = hulls.keys().cloned().collect();
+        let mut ops = vec!["open".to_owned(), "close".to_owned()];
+        if !minds.is_empty() {
+            choices.extend(minds.keys().cloned());
+            ops.extend(MindOp::WORDS.iter().map(|word| (*word).to_owned()));
+            if let Some(object) = fixed.as_object_mut() {
+                object.insert(
+                    "minds".to_owned(),
+                    serde_json::to_value(&minds)
+                        .map_err(|_| integrity("a ship's mind facts do not encode"))?,
+                );
+            }
+        }
+        let mut parameters = vec![
             crate::surface::act::parameter(
                 "hull",
                 true,
                 ProjectedParameterKind::Choice {
-                    choices: hulls.keys().cloned().collect(),
+                    choices: choices.into_iter().collect(),
                 },
             )?,
             crate::surface::act::parameter(
                 "op",
                 true,
-                ProjectedParameterKind::Choice {
-                    choices: vec!["open".to_owned(), "close".to_owned()],
-                },
+                ProjectedParameterKind::Choice { choices: ops },
             )?,
         ];
+        if !minds.is_empty() {
+            parameters.push(crate::surface::act::parameter(
+                "mind",
+                false,
+                ProjectedParameterKind::Text {
+                    maximum_bytes: crate::surface::dispatch::MAX_MIND_WORD_BYTES,
+                },
+            )?);
+            parameters.push(crate::surface::act::parameter(
+                "org",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 0,
+                    maximum: i64::MAX,
+                },
+            )?);
+        }
         crate::surface::act::offer_draft(
             action,
             engine,
@@ -958,6 +1027,11 @@ impl ActionProvider for EpochProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters = parameters_of(invocation)?;
         let (hull, op) = request(parameters)?;
+        let op = match op {
+            Asked::End(op) => op,
+            // Doc 44 unit MW.13: an act on the hull's mind claim.
+            Asked::Mind(op) => return ship_mind::prepare(self, invocation, txn, context, hull, op),
+        };
         let actor = invocation.actor();
         let offer: EpochOffer = parameters
             .get("hulls")
@@ -1062,6 +1136,20 @@ impl ActionProvider for EpochProvider {
                 // is the rig's; `@tacsim/port clear` stands down a filed clearance before any
                 // epoch and is not an end of one.
                 let base = offer.base;
+                // Doc 44 unit MW.13 (doc 23 D-23-11): the claim's lifetime is the epoch's. A
+                // mind sealed aboard closes with the passage, by the kind the epoch closes by,
+                // in this bundle.
+                ship_mind::close_with_epoch(
+                    context.world().ok(),
+                    hull,
+                    &mut record,
+                    if offer.recovered {
+                        crate::surface::excursion::ClaimCloseKind::RecoveredToBase { base }
+                    } else {
+                        crate::surface::excursion::ClaimCloseKind::ReturnedToBase { base }
+                    },
+                    offer.at_ic,
+                );
                 let line = BlackBoxLine::ship_closed(
                     hull,
                     &epoch,
@@ -1091,7 +1179,7 @@ impl ActionProvider for EpochProvider {
             txn.insert(&self.records, &key, record)
         };
         staged.map_err(|_| integrity("a ship's epoch record did not stage"))?;
-        self.output(invocation, (hull, op, written))
+        self.output(invocation, (hull, op.word(), written))
     }
 }
 
@@ -1146,6 +1234,7 @@ mod tests {
                 written: true,
             }),
             attempts: 1,
+            claim: None,
         };
         open.check().unwrap();
         let wire = serde_json::to_value(&open).unwrap();

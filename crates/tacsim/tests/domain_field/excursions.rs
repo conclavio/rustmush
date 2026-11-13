@@ -105,15 +105,15 @@ struct Roster {
     fitted: bool,
 }
 
-/// **The whole fitted catalog's tactics module** (doc 17h cut M8e E6a): the rig family over
-/// the line family over the fielded catalog, with the production sensor policy.
+/// **The whole fitted catalog's tactics module** (doc 17h cut M8e E6a; doc 44 unit MW.13): the
+/// ship family over the rig family over the line family over the fielded catalog, with the
+/// production sensor policy.
 fn fitted_tactics() -> mush_tactics::TacticsModule {
     use tacsim::definitions::Catalog;
-    use tacsim::definitions::core_replacement::{GovernedLineCores, SurfaceRigCores};
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded catalog builds");
-    let line = GovernedLineCores::build(fielded).expect("the line family builds");
-    let rig = SurfaceRigCores::build(line.catalog().clone()).expect("the rig family builds");
-    mush_tactics::TacticsModule::with_catalog(rig.catalog().units.clone())
+    let fitted = tacsim::definitions::core_replacement::fitted_catalog(fielded)
+        .expect("the fitted families build");
+    mush_tactics::TacticsModule::with_catalog(fitted.units.clone())
         .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy))
 }
 

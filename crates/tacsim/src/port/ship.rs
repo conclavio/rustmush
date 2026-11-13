@@ -782,6 +782,9 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         crate::field::crew::captives_cmd(ctx)
     } else if ctx.switches.has("release") {
         crate::field::crew::release_cmd(ctx)
+    } else if ctx.switches.has(crate::port::ship_mind::MIND_SWITCH) {
+        // Doc 44 unit MW.13 (Q-44-26): a mind sealed aboard.
+        crate::port::ship_mind::mind_cmd(ctx)
     } else {
         status(ctx)
     }

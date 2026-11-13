@@ -1684,6 +1684,9 @@ pub struct PortTickState {
     pub(crate) epoch_warned: BTreeSet<(u32, crate::port::epoch::EpochWarn)>,
     /// **Doc 23 cut S.2**: the epoch arm's pages this boot (a count, for tests).
     pub(crate) epoch_pages: u32,
+    /// **Doc 44 unit MW.13**: the ship mind claims in flight this boot, by hull
+    /// (`crate::port::ship_mind`): the tickets and the tries. A reboot owes each again.
+    pub(crate) mind_arm: crate::port::ship_mind::MindArm,
     /// **Doc 39 cut IN.5**: each works' house purchase in flight, by stores vault — re-derived
     /// every fire from its paid key and the works ledger (`crate::port::supply`), carried here
     /// only to the offer its move lands through.

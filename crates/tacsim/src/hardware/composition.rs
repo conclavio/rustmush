@@ -4,7 +4,7 @@ use super::{HardwareProcess, PublishedHardware};
 use crate::{
     TacsimRuleset,
     config::LoadedPack,
-    definitions::core_replacement::{GovernedLineCores, SurfaceRigCores},
+    definitions::core_replacement::{GovernedLineCores, ShipCores, SurfaceRigCores},
 };
 use mush_core::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, ModError, ObjId,
@@ -93,15 +93,19 @@ pub(crate) struct Registration {
     /// Doc 17h cut M8b C1: the rig's family, built over the line family's
     /// catalog, so its catalog is the whole fitted set.
     pub(crate) rig: Box<SurfaceRigCores>,
+    /// Doc 44 unit MW.13: the ship's family, built over the rig family's catalog, so its
+    /// catalog is the whole fitted set. No recipe fits one of its roots.
+    pub(crate) ship: Box<ShipCores>,
     content: DefinitionDescriptor,
     /// Doc 31 UD.4b: the bay recipe, registered beside the shipped hardware
     /// recipes when a bay is composed.
     pub(crate) bay_recipe: Option<DefinitionDescriptor>,
 }
 impl Registration {
-    /// The whole fitted catalog: the fielded units, the line roots, the rig roots.
+    /// The whole fitted catalog: the fielded units, the line roots, the rig roots and
+    /// (doc 44 unit MW.13) the ship roots.
     pub(crate) fn catalog(&self) -> &crate::definitions::Catalog {
-        self.rig.catalog()
+        self.ship.catalog()
     }
     pub(crate) fn register(&self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.definition_validator(
@@ -204,18 +208,28 @@ impl RosterPolicy {
         self.state.hardware.with_bay(module)
     }
 }
-/// **The two fitting families over `layer`'s fielded catalog** (doc 17h cut M8b C1): the line
-/// family, then the rig family built on its catalog. Each holds a whole catalog, so they are
-/// built here, boxed, off the caller's frame (the M7 memory-size gate).
+/// **The fitting families over `layer`'s fielded catalog** (doc 17h cut M8b C1; doc 44 unit
+/// MW.13): the line family, then the rig family built on its catalog, then the ship family
+/// built on the rig's. Each holds a whole catalog, so they are built here, boxed, off the
+/// caller's frame (the M7 memory-size gate).
 #[inline(never)]
+#[allow(clippy::type_complexity)]
 fn families(
     layer: &TacsimRuleset,
-) -> Result<(Box<GovernedLineCores>, Box<SurfaceRigCores>), ModError> {
+) -> Result<
+    (
+        Box<GovernedLineCores>,
+        Box<SurfaceRigCores>,
+        Box<ShipCores>,
+    ),
+    ModError,
+> {
     let catalog = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
         .map_err(bad)?;
     let family = Box::new(GovernedLineCores::build(catalog).map_err(bad)?);
     let rig = Box::new(SurfaceRigCores::build(family.catalog().clone()).map_err(bad)?);
-    Ok((family, rig))
+    let ship = Box::new(ShipCores::build(rig.catalog().clone()).map_err(bad)?);
+    Ok((family, rig, ship))
 }
 
 /// **The refit bay, when the deployment names one** (doc 31 UD.4b), and its
@@ -350,7 +364,7 @@ impl GovernedHardware {
             ));
         }
         let publication = PublishedHardware::shipped().map_err(bad)?;
-        let (family, rig) = families(layer)?;
+        let (family, rig, ship) = families(layer)?;
         let content = origin_content_descriptor(deployment.grades)?;
         let mut defs = DefinitionRegistryBuilder::new();
         let content_ref = defs
@@ -506,6 +520,7 @@ impl GovernedHardware {
                 registration: Registration {
                     family,
                     rig,
+                    ship,
                     content,
                     bay_recipe,
                 },
@@ -533,6 +548,10 @@ impl GovernedHardware {
     pub fn rig_family(&self) -> &SurfaceRigCores {
         &self.state.registration.rig
     }
+    /// The ship's fitting family (doc 44 unit MW.13).
+    pub fn ship_family(&self) -> &ShipCores {
+        &self.state.registration.ship
+    }
 
     /// Uses the normal acknowledged pack-load route. Preparing composition alone
     /// does not create a publication receipt or authorize either recipe callback.
@@ -542,8 +561,8 @@ impl GovernedHardware {
                 "governed hardware requires one explicitly enabled composition",
             ));
         }
-        let (_, rig) = families(&layer)?;
-        if rig.catalog().descriptors != self.state.registration.catalog().descriptors {
+        let (_, _, ship) = families(&layer)?;
+        if ship.catalog().descriptors != self.state.registration.catalog().descriptors {
             return Err(bad("hardware composition catalogue changed"));
         }
         let packs = layer.loaded.as_mut().map_err(|e| bad(e.as_str()))?;
