@@ -25,6 +25,10 @@
 //!    ([`mw14c_a_hull_that_does_not_hold_the_contact_keeps_its_order`]). The same roster with
 //!    the hired rig out of sight of the intruder and out of the leader's share range: it
 //!    answers NEGATIVE, the kernel is offered nothing, and its HOLD goes on standing.
+//!    **And the order under a `CONCENTRATE` lapses with its leader**
+//!    ([`mw14c_the_order_under_a_concentrate_lapses_with_its_leader`]): the same hull on its
+//!    leader's ADVANCE declines a `CONCENTRATE` and drives on; the leader quits, and the hull
+//!    holds: it does not go on pressing an attack for a leader who has gone.
 //! 5. **An NPC-led roster concentrates on the party that fired**
 //!    ([`mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired`]). Two hired crew in
 //!    armed rigs, no player in a unit. The intruder fires on the roster's carrier; the escort,
@@ -1164,6 +1168,99 @@ async fn mw14c_a_hull_that_does_not_hold_the_contact_keeps_its_order() {
         read.as_deref(),
         Some("NEGATIVE received"),
         "its leader reads the NEGATIVE once it arrives"
+    );
+}
+
+/// **Story 4, second half** (this module's head): the order under a `CONCENTRATE` lapses with
+/// its leader (doc 45 unit AP.8, Q-45-13; the second reader's finding). The lapse scan reads a
+/// slot's delivered order, which is the `CONCENTRATE` the hull declined; the order the hull is
+/// flying is the ADVANCE under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mw14c_the_order_under_a_concentrate_lapses_with_its_leader() {
+    let at = &AHUNA_FLANK;
+    let mut setup = close_in(escorted());
+    setup.armed = vec![2];
+    setup.stands = vec![
+        (1, (at.read, 0)),
+        (2, ((at.walker.0.0 - 67, at.walker.0.1), 270_000)),
+    ];
+    let mut field = open(setup).await;
+    let (captain, adeyemi) = (field.flown.organiser, field.flown.operator(2));
+    let tank = field.flown.unit(2);
+    let operation = field.flown.operation;
+    let designator = marked(&mut field).await;
+
+    // The hull is sent west, away from everyone, far enough to be driving through the story.
+    let far = (30, u16::try_from(at.walker.0.1).expect("a cell"));
+    field.order(&format!("ADVANCE {},{}", far.0, far.1));
+    assert!(
+        field
+            .until(60, |rig, _| standing(rig, adeyemi)
+                == Some(MindObjective::Advance { to: far }))
+            .await,
+        "the ADVANCE stands: {:?}",
+        orders_of(&mut field.rig, operation)
+    );
+    // A CONCENTRATE on a contact it does not hold: declined, and the ADVANCE goes on.
+    let sent = concentrate_all(&mut field, &designator);
+    assert!(
+        field
+            .until(90, |rig, _| operation_answer(rig, operation, 2)
+                == Some(Response::Negative))
+            .await,
+        "the hull declines the CONCENTRATE: {sent}; {:?}",
+        orders_of(&mut field.rig, operation)
+    );
+    assert_eq!(
+        standing(&field.rig, adeyemi),
+        Some(MindObjective::Advance { to: far }),
+        "and keeps its ADVANCE"
+    );
+    assert_eq!(
+        goes_back_to(&mut field, 2),
+        Some(Some(FieldObjective::Advance { to: far }))
+    );
+
+    // Its leader quits. The ADVANCE is no longer the slot's delivered order, and it lapses
+    // all the same: the hull holds.
+    quit(&mut field.rig, captain);
+    let held = field
+        .until(90, |rig, _| {
+            standing(rig, adeyemi) == Some(MindObjective::Hold)
+        })
+        .await;
+    assert!(
+        held,
+        "the order under the CONCENTRATE lapses with its leader and the hull holds: {:?}; \
+         record {:?}",
+        standing(&field.rig, adeyemi),
+        crate::roster_rig::operation(&mut field.rig, operation)
+            .and_then(|record| record.orders)
+            .map(|orders| orders.concentrating.clone())
+    );
+    assert_eq!(
+        goes_back_to(&mut field, 2),
+        Some(Some(FieldObjective::Hold)),
+        "the history turned the order it goes back to into a HOLD"
+    );
+    let stood = crate::roster_rig::operation(&mut field.rig, operation)
+        .and_then(|record| record.orders)
+        .and_then(|orders| {
+            orders
+                .concentrating
+                .get(&Slot::new(2).expect("a slot"))
+                .map(|record| (record.resume, record.stand))
+        })
+        .expect("the record");
+    assert!(
+        stood.1.is_some_and(|stand| stand > stood.0),
+        "under a sequence of its own, above the return's: {stood:?}"
+    );
+    assert_eq!(fired(&field.lines, tank), 0);
+    assert_eq!(
+        engagements_commanded(&field.lines, tank),
+        0,
+        "the kernel was offered no engagement for it"
     );
 }
 
