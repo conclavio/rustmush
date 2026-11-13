@@ -1354,4 +1354,26 @@ mod tests {
         assert!(bubble.torpedoes.is_empty());
         assert_eq!(bubble.fired_on_by("her"), Some(&set(&["raider"])));
     }
+
+    /// **Doc 45 unit AP.9 (Q-45-16): nothing an attacker reads carries the record.** The
+    /// holotank and the cockpit feeds of the ship that fired, and of a bystander, are the
+    /// same documents with the record of arrivals written as without it. The posture is
+    /// not on the bubble at all.
+    #[test]
+    fn ap9_nothing_another_ship_reads_carries_the_record_of_arrivals() {
+        let mut bubble = five_ships();
+        let read = |bubble: &LocalSpaceBubble| {
+            ["raider", "stranger", "customs"].map(|observer| {
+                (
+                    bubble.holotank_feed(observer),
+                    bubble.cockpit_feed(observer),
+                )
+            })
+        };
+        let before = read(&bubble);
+        arrived(&mut bubble, "raider", "her");
+        arrived(&mut bubble, "her", "raider");
+        arrived(&mut bubble, "raider", "stranger");
+        assert_eq!(read(&bubble), before);
+    }
 }

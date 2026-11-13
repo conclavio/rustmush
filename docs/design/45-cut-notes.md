@@ -2069,7 +2069,8 @@ no record of which ship had fired on which: `Relations::fired` is by party.
   `HOLD` or `GUARD` is shown as hostile only the contacts she may answer; every other
   contact her party holds hostile reads neutral, as on the ground since MW.7. Narrowed,
   never widened, and the seat's doors do not depend on it. On `RETURN` the view is the bytes
-  it was.
+  it was. A mind sealed aboard reads the same narrowed view on `HOLD` and `GUARD`; its rule
+  program's `LOCK NEAREST` reads the bubble's own relations and is not narrowed.
 - **`arena::absent::flown_as`** (`arena/absent.rs`): the rule that reads a `GUARD` over what
   a unit carries, lifted out of `flown` as a pure function so the bubble reads it too.
   `flown` calls it; nothing the arena does changed.
@@ -2133,7 +2134,7 @@ who is not staff. **No staff fiat is used**, and the stories write no module sta
 | The ship set to `GUARD` returns fire on the hull that hit her and not on one that hit a stranger | `ap9_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_by_her_posture` (her arm on `GUARD`: her fire arrives on the raider and on nobody else, with the corvette and a second pilot's ship beside her) and `ap9_a_ship_left_on_hold_or_guard_does_not_answer_for_a_stranger` (the second pilot runs the picket, the raider opens on them, and she locks nothing and fires on nobody). On the bubble's own step, with no world: `space::tick::thinks_tests::ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture` |
 | A ship on a plan, interdicted, complies under `HOLD` and is on her plan again after the bubble | The first story's `HOLD` arm: she hove to by her mind's own burn and customs cleared her before the raider lit, she never ran, and once the picket lets her go she is under way on her filed passage, and still is after a restart |
 | (§7) Changing the posture changes what the ship does | The same ship, hit by the same hull, answers on `GUARD` and on `HOLD` and not on `RETURN` (the first story, and the tick-level test); the same ship at the same cluster holds station on `HOLD` and `GUARD` and makes for port on `RETURN` |
-| (the brief) The contact picture, the presence picture, and a hull she cannot detect | `space::view::tests::ap9_a_hull_that_answers_is_shown_hostile_only_what_she_may_answer`: a ship her sensors do not hold, added to the bubble and to the set she may answer, leaves her view the same bytes; MW.9's own pin is untouched and passes. Nothing an attacker reads moved: no feed, panel, contact row or presence row carries the posture, the record of arrivals or what she may answer (`holotank_feed`, `cockpit_feed` and `surface/presence.rs` are not touched by this unit) |
+| (the brief) The contact picture, the presence picture, and a hull she cannot detect | `space::view::tests::ap9_a_hull_that_answers_is_shown_hostile_only_what_she_may_answer`: a ship her sensors do not hold, added to the bubble and to the set she may answer, leaves her view the same bytes; MW.9's own pin is untouched and passes. Nothing an attacker reads moved: `space::backup::tests::ap9_nothing_another_ship_reads_carries_the_record_of_arrivals` holds the holotank and cockpit feeds of the ship that fired and of a bystander to the same documents with the record written as without it; the posture is not on the bubble at all, and `surface/presence.rs` is not touched by this unit |
 
 What separates `GUARD` from `HOLD` in space, an answer for another hull of the same player,
 is pinned at the seat and not by a story: `space::backup::tests::ap9_what_a_hull_may_answer_is_read_off_the_bubbles_record_by_her_posture`,
@@ -2220,7 +2221,7 @@ read the posture, and the seat's rules hold it all the same.
 - **A hull left adrift on `HOLD` has nothing that brings her home** when her stores run low
   (default 11).
 
-**Verified, and how.** On Windows, at this branch's head: the thirteen `ap9_` unit tests
+**Verified, and how.** On Windows, at this branch's head: the fourteen `ap9_` unit tests
 with the space suite's `mw9_`, `mw11_` and `mw13_` tests beside them; the four stories (about
 twenty seconds together, no wall-clock window waited out: the link-loss grace is jumped and
 a bubble is stepped a second at a time, as it flies); `cargo clippy -p tacsim --all-targets`
