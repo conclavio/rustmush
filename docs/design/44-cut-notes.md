@@ -2345,12 +2345,37 @@ branch; each run on its own scratch instance and Redis):
 
 - **Run 1: PASSED in 2,295 s.** The figures above. The author typed 12 lines and the buyer
   152; the buyer read the counter 61 times before the row was on it.
+- **Run 2: PASSED in 2,285 s** (the rating 1,438 s), the same tree.
+- **Run 3: PASSED in 2,262 s** (the rating 1,440 s), after the second reader's fixes: the
+  registration that waits for each answer takes 2 s where the paced one took 22.
+- **The bring-up a second time over run 1's store:** the Active boot read "the counter
+  (#811) has its door from the Registry & Co-op Desk (#105)" and opened nothing.
 - By hand, before the lane existed, on two more scratch instances: the whole path walked
   line by line (the sentences in the lane's unit tests are those transcripts'), and the two
   ratings of the table above.
 
-The three dispatches of the nightly job are in the PR. The unit tests: `cargo test -p
-mush-bot --lib` (526 passed, the census among them), the workshop's
+**The nightly job, by dispatch, on GitHub's hosted runners** (`gh workflow run ci.yml`; the
+job builds the three debug binaries in 5 to 8 minutes, then runs the script):
+
+| Run | Head | The script | The rating | The job |
+|---|---|---|---|---|
+| 43329751649 | `8d05f8e31` (before the second reader's fixes) | PASSED, 2,243 s | 1,404 s | 43 min |
+| 43334739075 | `cfd93f5c1` | PASSED, 2,246 s | 1,410 s | 44 min |
+| 43334743232 | `cfd93f5c1` | PASSED, 2,422 s | 1,572 s | 49 min |
+| 43334747198 | `cfd93f5c1` | PASSED, 2,280 s | 1,447 s | 45 min |
+
+The three on `cfd93f5c1` were started together and ran side by side, each on its own
+runner; they are three green dispatches of one head, not three nights. A hosted runner
+rates no slower than conclav.dev: the rating is the Registry's pace, not the machine's.
+Every run counted 4,292 or 4,294 unasked lines. In run 43329751649 another job's cell was
+red once, `test (rest-server)`, on mush-server's
+`player_market_commands::rate_queues_and_cancels_a_genuine_registry_preparation` (141 s,
+no assertion text in the log); the same cell passed in the pull request's run and in all
+three dispatches of the final head. It is a story of the Registry's own service, which this
+unit does not touch; it was not run down.
+
+The unit tests: `cargo test -p
+mush-bot --lib` (529 passed, the census among them), the workshop's
 `mw19_an_offline_authors_request_over_a_bare_connection_is_served` (with the old gate put
 back it fails on "No owned mind or authoring job is available."), `shipped_configs`, and
 `cargo test -p mush-contract-tests`; clippy with warnings denied and rustdoc on `mush-bot`,
@@ -2390,16 +2415,17 @@ all walked by a player's own lines. What it does not do:
   does.
 - The site is Kerwan Floor (two real minutes out); `SITE=` or `--minds-site` names another.
 - The debug binaries, not a release build: the release build is half an hour of thin LTO on
-  a hosted runner and the lane is paced by the game's clocks. The rating's length on a
-  hosted runner is in the PR's dispatch runs; on conclav.dev it is 24 minutes.
+  a hosted runner and the lane is paced by the game's clocks. The rating took 23 to 26
+  minutes on the hosted runners and 24 on conclav.dev.
 - The known defect of item 3 passes the job. If the owner would rather the nightly be red
   until it is fixed, it is one line of the script.
 
 **Not built.**
 
 - **The three real nights.** The unit's row asks for three nights green. Three dispatches
-  are in the PR; the nights are observed after the merge, on the job `bot-minds-lane`
-  ("MW.19 the bot's minds lane (the mind market over SSH)").
+  of one head stand in for them (above); the nights are observed after the merge, on the
+  job `bot-minds-lane` ("MW.19 the bot's minds lane (the mind market over SSH)"). The
+  nightly-report job lists it by that id.
 - A fix for item 3, and a sentence for item 4.
 - The author told why a rating failed (MW.5 left it for this unit): the lane's author
   fails with "has no finished Registry rating" after the Registry's `finished`, which is all
