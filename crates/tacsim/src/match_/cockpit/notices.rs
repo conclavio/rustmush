@@ -2307,7 +2307,7 @@ pub(super) fn drive_goal(
 /// **`MIND`'s usage line** (17b cut M5.4), for a form it does not take — a
 /// word that is not `PROFILE`, `RULES` or `TRACE`, `PROFILE` with no name,
 /// `RULES` with a word after it.
-pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule or OFF>|TRACE [1..64]|POSTURE [word]]; bare MIND reads it.";
+pub const MIND_USAGE: &str = "MIND [PROFILE <name>|CARD|RULES [slot]|RULE <slot> <rule|OFF>|TRACE [1..64]|POSTURE [word]|AWAY|BACK]; bare MIND reads.";
 
 /// **What `MIND` says of a hull no seal reached** (17b cut M5.4): the frame
 /// carries no [`Frame::mind`]. Bare `MIND` and `MIND RULES` say it alone;
@@ -2602,7 +2602,7 @@ pub(super) fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
     match form.to_ascii_lowercase().as_str() {
         "" => {
             let held = last_frame(ctx.w, seat.driver);
-            let lines = match held.as_ref() {
+            let mut lines = match held.as_ref() {
                 None => vec![NO_FRAME_YET.to_owned()],
                 Some(held) => match held.frame.mind.as_ref() {
                     None => vec![NO_SEAL.to_owned()],
@@ -2613,6 +2613,15 @@ pub(super) fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
                     ),
                 },
             };
+            // Doc 45 unit AP.10: a pilot who has let go of the controls to practise a posture
+            // holds no channel, and the block says who does.
+            if crate::match_::practice::held(ctx.w, seat.unit).is_some_and(|(_, away)| away) {
+                for line in &mut lines {
+                    if line.starts_with("Channels: ") {
+                        crate::match_::practice::PRACTICE_CHANNELS.clone_into(line);
+                    }
+                }
+            }
             say_and_frame(ctx, held.as_ref(), lines);
             Ok(())
         }
@@ -2621,6 +2630,7 @@ pub(super) fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
         "card" if tail.is_empty() => mind_card(ctx, seat),
         "trace" => mind_trace(ctx, seat, tail),
         "posture" => mind_posture(ctx, seat, tail),
+        "away" | "back" if tail.is_empty() => mind_practice(ctx, seat, form),
         _ => Err(CockpitError::Usage(MIND_USAGE.to_owned())),
     }
 }
@@ -2629,23 +2639,37 @@ pub(super) fn mind(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
 /// the unit's seat): the posture the hull holds, read with no word and set with one. It is
 /// the hull's own standing word (`crate::posture::record`), what its mind reads when its
 /// pilot is not at the controls, so it is written to the hull's record and not staged as an
-/// intent: it stands after the field is gone. Set only from a seat in the world (a pod in the
-/// simulator is an OOC room, and a posture there is doc 45 unit AP.10's) and only by the seat
-/// that holds the helm.
+/// intent: it stands after the field is gone. Set only by the seat that holds the helm.
+///
+/// **In the simulator** (doc 45 unit AP.10; Q-45-25) the same form reads and sets the hull's
+/// **practice** posture, which is the running match's and no unit's record
+/// (`crate::match_::practice`): a pod is an OOC room, and nothing a player does there writes
+/// a word a unit holds in the world. A seat no arena holds a unit for is still refused as an
+/// OOC room.
 pub(super) fn mind_posture(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result<(), CockpitError> {
+    use crate::match_::practice;
     use crate::posture::order;
     let name = display_name(ctx.w, seat.unit);
+    let practising = practice::match_of(ctx.w, seat.unit).is_some();
     let lines = if tail.trim().is_empty() {
-        vec![order::line(
-            order::POSTURE_READ,
-            &name,
-            crate::posture::record::of(ctx.w, seat.unit),
-        )]
+        vec![if practising {
+            practice::read(ctx.w, seat.unit, &name)
+        } else {
+            order::line(
+                order::POSTURE_READ,
+                &name,
+                crate::posture::record::of(ctx.w, seat.unit),
+            )
+        }]
+    } else if practising {
+        let refused = |error: mush_core::CmdError| CockpitError::Refused(error.to_string());
+        let posture = order::word(tail).map_err(refused)?;
+        vec![practice::set(ctx, seat.driver, seat.unit, &name, posture)?]
     } else {
         let refused = |error: mush_core::CmdError| CockpitError::Refused(error.to_string());
         let posture = order::word(tail).map_err(refused)?;
-        // A practice match's seat is in the simulator centre whatever room the test of the
-        // room says: a unit no field holds is not set from a cockpit.
+        // A seat neither a field nor a practice match holds a unit for is not somewhere a
+        // posture is set from.
         if crate::field::field_of_unit(ctx.w, seat.unit).is_none() {
             return Err(CockpitError::Refused(order::POSTURE_OOC.to_owned()));
         }
@@ -2658,6 +2682,34 @@ pub(super) fn mind_posture(ctx: &mut Ctx<'_>, seat: &Seat, tail: &str) -> Result
     for line in lines {
         ctx.out.sys_to_actor(ctx.actor, NOTICE_CATEGORY, line);
     }
+    Ok(())
+}
+
+/// **`MIND AWAY` and `MIND BACK`** (doc 45 unit AP.10; Q-45-25): in a practice match, let
+/// go of the hull's controls so its mind flies it on its posture as an absent player's, and
+/// take them again (`crate::match_::practice`). The pilot stays in the pod and goes on being
+/// sent the cockpit. In an IC field both are refused in one line: there a unit's mind takes
+/// it when its player leaves the controls.
+pub(super) fn mind_practice(
+    ctx: &mut Ctx<'_>,
+    seat: &Seat,
+    form: &str,
+) -> Result<(), CockpitError> {
+    use crate::match_::practice;
+    if practice::match_of(ctx.w, seat.unit).is_none() {
+        return Err(CockpitError::Refused(practice::PRACTICE_ONLY.to_owned()));
+    }
+    let name = display_name(ctx.w, seat.unit);
+    let said = if form.eq_ignore_ascii_case("away") {
+        // The guard `EXIT` takes: a driver lent somebody else's crew member does not hand the
+        // unit they were lent to its mind.
+        mush_sim::seat_restriction(ctx.w, ctx.actor, mush_sim::ProxyAct::Abandonment)
+            .map_err(CockpitError::Guarded)?;
+        practice::away(ctx, seat.driver, seat.unit, &name)?
+    } else {
+        practice::back(ctx, seat.driver, seat.unit, &name)?
+    };
+    ctx.out.sys_to_actor(ctx.actor, NOTICE_CATEGORY, said);
     Ok(())
 }
 

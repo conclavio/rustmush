@@ -17763,15 +17763,10 @@ async fn m5_mind_profile_switches_a_sealed_profile_at_most_once_in_ten_seconds()
         rig.say(0, "mind trace 3"),
         "MIND TRACE refused. No mind trace is available."
     );
-    // Doc 45 unit AP.4 (Q-45-19): a pod in the simulator is an OOC room. The posture is read
-    // there and never set; a posture in a practice match is doc 45 unit AP.10's.
+    // Doc 45 unit AP.4 (Q-45-19): the posture reads in a pod. Doc 45 unit AP.10 (Q-45-25):
+    // and is set there as a practice posture, the match's own (the `ap10_` stories below).
     let read = rig.say(0, "mind posture");
     assert!(read.ends_with(" holds RETURN."), "{read}");
-    assert_eq!(
-        rig.say(0, "mind posture guard"),
-        tacsim::posture::order::POSTURE_OOC
-    );
-    assert_eq!(rig.say(0, "mind posture"), read, "nothing changed");
 
     // The switch, from the seat on helm.
     let mark = rig.log.len();
@@ -19463,4 +19458,972 @@ async fn wg4_rebuilt_ground_draft_moves_the_ford_and_range_reads_the_moved_spot(
         first(rig.say(0, "RANGE The Ford")),
         "Range to The Ford (A): 740 m."
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 45 unit AP.10: postures in the simulator (Q-45-25, with doc 44's Q-44-19)
+// ---------------------------------------------------------------------------
+
+/// [`y1_config`], with the doctrine's rally cut to two seconds so a dropped pilot's hull is
+/// fighting again well inside a story.
+fn ap10_config() -> TacsimConfig {
+    let mut cfg = y1_config();
+    cfg.arena.reflex.rally_ms = 2_000;
+    cfg
+}
+
+/// Where the practising hull is stood, and the hull that tries it: six cells apart on the
+/// open ground the range story fires across, facing each other.
+const AP10_HULL: (i64, i64) = (124, 97);
+const AP10_OTHER: (i64, i64) = (130, 97);
+
+/// Pump until `done` holds of the rig, or fail saying `what`: [`m5_until`] with room for a
+/// minute and a half of arena time.
+async fn ap10_until(rig: &mut Rig, what: &str, done: impl Fn(&Rig) -> bool) {
+    for _ in 0..9_000 {
+        rig.pump();
+        if done(rig) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let heard = rig.tw.seen_by(&rig.log, rig.pilot(0));
+    let tail = heard
+        .get(heard.len().saturating_sub(12)..)
+        .unwrap_or_default();
+    panic!(
+        "never: {what}; arena at {} ms; pilot 0 last heard {tail:#?}",
+        rig.staged_now_ms
+    );
+}
+
+/// Pump until the arena's clock has passed `t_ms`.
+async fn ap10_clock_past(rig: &mut Rig, t_ms: i64) {
+    ap10_until(rig, "the arena's clock moves on", |rig| {
+        rig.staged_now_ms >= t_ms
+    })
+    .await;
+}
+
+/// Pump until the ledger the arena has handed over reaches `t_ms`, so what the tape says of
+/// everything before it is whole.
+async fn ap10_tape_through(rig: &mut Rig, t_ms: i64) {
+    ap10_until(rig, "the ledger reaches that moment", |rig| {
+        rig.tape.last().is_some_and(|event| event.t_ms >= t_ms)
+    })
+    .await;
+}
+
+/// Every shot `unit` has fired, as the ledger has it: when, and at what.
+fn ap10_fired(rig: &Rig, unit: ObjId) -> Vec<(i64, ObjId)> {
+    rig.tape
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::Fired {
+                unit: by, target, ..
+            } if *by == unit => Some((event.t_ms, *target)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// When each of `shooter`'s rounds arrived on `target`, hit or miss.
+fn ap10_arrivals(rig: &Rig, shooter: ObjId, target: ObjId) -> Vec<i64> {
+    rig.tape
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::Impact {
+                unit, target: on, ..
+            } if *unit == shooter && *on == target => Some(event.t_ms),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The rounds a pilot's own cockpit shows aboard: what `WEAPONSTATUS` reads, and what a
+/// pilot watching their tank's mind sees move when it fires.
+fn ap10_rounds(rig: &Rig, n: usize) -> u32 {
+    rig.frame(n)
+        .map(|frame| frame.weapons.iter().map(|weapon| weapon.rounds).sum())
+        .unwrap_or_default()
+}
+
+/// Pilot `n` locks `target` once their own sensors have told it apart.
+async fn ap10_lock(rig: &mut Rig, n: usize, target: ObjId) {
+    let word = rig.callsign(target);
+    let seen = word.clone();
+    ap10_until(rig, "the shooter tells its target apart", move |rig| {
+        rig.frame(n).is_some_and(|frame| {
+            frame
+                .contacts
+                .iter()
+                .any(|contact| contact.designator.to_string() == seen)
+        })
+    })
+    .await;
+    let said = rig.say(n, &format!("lock {word}"));
+    assert!(said.contains(&format!("Locking {word}.")), "{said}");
+}
+
+/// Pilot `n` types `FIRE` about once an arena second until `done` holds.
+async fn ap10_fire_until(rig: &mut Rig, n: usize, what: &str, done: impl Fn(&Rig) -> bool) {
+    for tick in 0..12_000_u32 {
+        rig.pump();
+        if done(rig) {
+            return;
+        }
+        if tick % 100 == 0 {
+            rig.say(n, "fire");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("never: {what}; arena at {} ms", rig.staged_now_ms);
+}
+
+/// Whether a seat's pilot has let go of its hull's controls, and the posture practised on
+/// it, as the running match's mirror holds them.
+fn ap10_practice(rig: &Rig, unit: ObjId) -> (tacsim::posture::Posture, bool) {
+    let registry = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .expect("the arena registry is composed");
+    (
+        registry.practice_posture(unit),
+        registry.standing_back(unit),
+    )
+}
+
+/// **What the running match's last saved snapshot holds of `unit`**: whether its arena flies
+/// it for an absent player, the posture the arena was told, and who flies it (`pilot` or
+/// `mind`). `None` with no snapshot yet, or no such unit in it.
+fn ap10_saved(rig: &Rig, unit: ObjId) -> Option<(bool, tacsim::posture::Posture, String)> {
+    let match_id = rig.centre().match_id?;
+    let document = rig
+        .image
+        .get(tacsim::NS)?
+        .get(match_::snapshot_key(match_id).as_str())?;
+    // The state rides the document as a value or as its own text; read it either way.
+    let state = match document.get("state")? {
+        serde_json::Value::String(text) => serde_json::from_str(text).ok()?,
+        other => other.clone(),
+    };
+    let row =
+        state.get("units")?.as_array()?.iter().find(|row| {
+            row.get("id").and_then(serde_json::Value::as_u64) == Some(u64::from(unit.0))
+        })?;
+    let absent = row
+        .get("absent")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let posture = match row.get("posture") {
+        None => tacsim::posture::Posture::Return,
+        Some(word) => tacsim::posture::Posture::parse(word.as_str()?)?,
+    };
+    let controller = row.get("controller")?.as_str()?.to_owned();
+    Some((absent, posture, controller))
+}
+
+/// One of the practice's lines, filled for a hull.
+fn ap10_line(rig: &Rig, template: &str, unit: ObjId, posture: tacsim::posture::Posture) -> String {
+    tacsim::posture::order::line(
+        template,
+        &mush_core::output::display_name(rig.tw.world(), unit),
+        posture,
+    )
+}
+
+/// **Two pilots, one a side, six cells apart and facing each other, both started up.** Pilot
+/// 0 flies red's hull, the one that practises; pilot 1 flies blue's and never fires unless a
+/// story has them type it.
+async fn ap10_duel(cfg: TacsimConfig) -> Rig {
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let (red, blue) = (rig.tank(0), rig.slot_tank(PartyId::BLUE, 1));
+    rig.place(red, AP10_HULL, 90_000);
+    rig.place(blue, AP10_OTHER, 270_000);
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    for n in [0, 1] {
+        assert!(rig.frame_for(n).await, "the arena sends pilot {n} a frame");
+        rig.say(n, "startup");
+        assert!(rig.powered(n).await, "pilot {n} started up");
+    }
+    rig
+}
+
+/// **Doc 45 unit AP.10: in a practice match a hull set to `GUARD` and left behaves as AP.6
+/// has it** (Q-45-25), every command typed by a pilot who is not staff.
+///
+/// Red: pilot 0 leads the side and flies the hull that practises; the side's one machine is
+/// therefore pilot 0's other unit; pilot 1 flies a second red hull, a stranger's to pilot 0.
+/// Blue: pilot 2 flies the hull that tries it, six cells off, and pilots 3 and 4 sit cold at
+/// their muster so blue fields no machine. Red's machine is ordered to hold by its lead, so
+/// nothing fires that a pilot did not type or the practising hull's mind did not decide.
+///
+/// 1. The simulator is out of character. The hull's own posture record is written `GUARD` by
+///    hand before the match; the pod reads `RETURN`, the practice's own default, and the
+///    record is `GUARD` still, untouched, when the practice has set `GUARD` and `HOLD`.
+/// 2. `MIND POSTURE GUARD`, then `MIND AWAY`: the pilot stays in the pod and goes on being
+///    sent the cockpit, which shows the posture, the order the mind stands under and blue's
+///    hull held hostile. For ten seconds the hull fires nothing.
+/// 3. Blue's fire lands on the second pilot's hull: nothing, for eight seconds more.
+/// 4. Blue's fire lands on red's machine, the lead's own: the hull fires on blue's hull,
+///    after that first arrival, and on nobody else.
+/// 5. Set to `HOLD` from the seat while the mind flies it, the hull stops answering for the
+///    machine while blue's fire goes on landing on it, and answers once blue fires on the
+///    hull itself.
+/// 6. It never left its cell. The seat gives no order while its mind has the controls;
+///    `MIND BACK` takes them, and the pilot's next order is taken.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap10_a_hull_left_on_guard_in_a_practice_match_answers_only_for_its_pilots_units() {
+    use tacsim::arena::party::Relation;
+    use tacsim::arena::perception::MindObjective;
+    use tacsim::match_::practice;
+    use tacsim::posture::{Posture, order, record};
+
+    let mut rig = Rig::boot_with(5, ap10_config());
+    for n in [0, 1] {
+        rig.say(n, "sim team red");
+    }
+    for n in [2, 3, 4] {
+        rig.say(n, "sim team blue");
+    }
+    assert!(!rig.say(0, "sim ai 3").is_empty());
+    rig.say(0, "sim start");
+    for n in [0, 1] {
+        rig.walk_to(n, match_::RED_ROOM_ENTRY);
+    }
+    for n in [2, 3, 4] {
+        rig.walk_to(n, match_::BLUE_ROOM_ENTRY);
+    }
+    for n in [0, 1, 2, 3] {
+        rig.say(n, "board");
+    }
+    let hull = rig.tank(0);
+    let stranger = rig.tank(1);
+    let machine = rig.slot_tank(PartyId::RED, 3);
+    let other = rig.tank(2);
+    rig.place(hull, AP10_HULL, 90_000);
+    rig.place(other, AP10_OTHER, 270_000);
+    rig.place(machine, (124, 101), 90_000);
+    rig.place(stranger, (124, 93), 90_000);
+    // (1) The hull's own record, written by hand: the simulator must neither read it nor
+    // write it.
+    let wrote = rig.with_ctx_mut(0, |ctx| record::set(ctx, hull, Posture::Guard));
+    assert_eq!(wrote, Ok(true));
+    rig.say(4, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let roster = rig.record();
+    let reds = roster
+        .teams
+        .iter()
+        .find(|side| side.team == PartyId::RED)
+        .expect("red's roster");
+    assert_eq!(reds.units.len(), 3, "two pilots and one machine");
+    assert!(reds.units.contains(&machine));
+    assert!(reds.pilots.iter().all(|(_, unit)| *unit != machine));
+    for n in [0, 2] {
+        assert!(rig.frame_for(n).await, "the arena sends pilot {n} a frame");
+        rig.say(n, "startup");
+        assert!(rig.powered(n).await, "pilot {n} started up");
+    }
+    let said = rig.say(0, "order all hold");
+    assert!(
+        said.starts_with("Ordered red-1 to hold: it stops where it stands and fires nothing."),
+        "{said}"
+    );
+
+    // (1) The pod reads the practice's own word, not the record's.
+    assert_eq!(
+        rig.say(0, "mind posture"),
+        ap10_line(&rig, order::POSTURE_READ, hull, Posture::Return),
+        "the record says GUARD and the practice never read it"
+    );
+    assert_eq!(rig.held_frame(0).posture, Posture::Return);
+
+    // (2) The posture, then the controls.
+    assert_eq!(
+        rig.say(0, "mind posture guard"),
+        ap10_line(&rig, practice::PRACTICE_SET, hull, Posture::Guard)
+    );
+    assert_eq!(
+        rig.say(0, "mind posture"),
+        ap10_line(&rig, order::POSTURE_READ, hull, Posture::Guard)
+    );
+    assert_eq!(
+        rig.say(0, "mind posture guard"),
+        ap10_line(&rig, order::POSTURE_KEPT, hull, Posture::Guard)
+    );
+    assert_eq!(
+        rig.say(0, "mind posture flee"),
+        order::POSTURE_WORDS,
+        "a word that is no posture"
+    );
+    assert_eq!(
+        rig.say(0, "mind back"),
+        ap10_line(&rig, practice::PRACTICE_NOT_AWAY, hull, Posture::Return)
+    );
+    let full = ap10_rounds(&rig, 0);
+    assert!(full > 0, "the hull carries rounds");
+    assert!(m5_block_now(&rig, 0).is_empty(), "no debrief block yet");
+    let let_go_at = m5_arena_clock(&rig);
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Guard)
+    );
+    // The debrief will say when the mind flew the tank, and why.
+    assert_eq!(
+        m5_block_now(&rig, 0).get(1),
+        Some(&format!(
+            "  It flew your tank from {} to the end, while you had let go of the controls.",
+            stamp(let_go_at)
+        ))
+    );
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_ALREADY_AWAY, hull, Posture::Guard)
+    );
+    assert_eq!(ap10_practice(&rig, hull), (Posture::Guard, true));
+    // The pilot is in the pod, seated on the board, bound, and still sent the cockpit: it
+    // shows the word, the order the mind stands under and the hull across the way.
+    let callsign = rig.callsign(other);
+    ap10_until(
+        &mut rig,
+        "the watching pilot's cockpit shows the mind standing guard",
+        {
+            let callsign = callsign.clone();
+            move |rig| {
+                rig.frame(0).is_some_and(|frame| {
+                    frame.posture == Posture::Guard
+                        && frame.order.as_ref().map(|order| order.objective)
+                            == Some(MindObjective::Hold)
+                        && frame.contacts.iter().any(|contact| {
+                            contact.designator.to_string() == callsign
+                                && contact.relation == Relation::Hostile
+                        })
+                })
+            }
+        },
+    )
+    .await;
+    assert_eq!(rig.location(0), rig.pod(0), "still in the pod");
+    assert!(
+        y3_red_row(&rig).contains(", seated"),
+        "{}",
+        y3_red_row(&rig)
+    );
+    assert!(
+        cockpit::flying(rig.tw.world(), rig.pilot(0)).is_some(),
+        "still at the station"
+    );
+    let status = rig.say(0, "status");
+    assert!(status.contains("\n  posture GUARD\n"), "{status}");
+    assert!(
+        status.contains(practice::PRACTICE_STATUS_AWAY),
+        "the seat's status says who has the controls: {status}"
+    );
+    let block = rig.say(0, "mind");
+    assert!(
+        block.contains(practice::PRACTICE_CHANNELS) && !block.contains("dormant while you fly"),
+        "bare MIND says who holds the channels: {block}"
+    );
+    assert_eq!(
+        rig.say(0, "heading 90"),
+        format!("Refused: {}.", practice::PRACTICE_SEAT_REFUSED),
+        "the seat gives no order while its mind flies the hull"
+    );
+    let stood = rig.held_frame(0).cell;
+    let t0 = rig.staged_now_ms;
+    ap10_clock_past(&mut rig, t0 + 10_000).await;
+    ap10_tape_through(&mut rig, t0 + 10_000).await;
+    assert_eq!(
+        ap10_fired(&rig, hull),
+        Vec::new(),
+        "a hull left on GUARD does not fire first, with a hostile hull six cells off"
+    );
+    assert_eq!(ap10_rounds(&rig, 0), full);
+
+    // (3) A stranger's quarrel: blue fires on the second pilot's hull.
+    ap10_lock(&mut rig, 2, stranger).await;
+    ap10_fire_until(&mut rig, 2, "blue's fire arrives on the stranger", |rig| {
+        !ap10_arrivals(rig, other, stranger).is_empty()
+    })
+    .await;
+    let on_stranger = *ap10_arrivals(&rig, other, stranger)
+        .first()
+        .expect("an arrival");
+    ap10_clock_past(&mut rig, on_stranger + 8_000).await;
+    ap10_tape_through(&mut rig, on_stranger + 8_000).await;
+    assert_eq!(
+        ap10_fired(&rig, hull),
+        Vec::new(),
+        "fire on another pilot's hull is not a guard's to answer"
+    );
+    assert_eq!(ap10_rounds(&rig, 0), full);
+
+    // (4) Fire on the lead's own machine: the guard answers the hull that fired.
+    ap10_lock(&mut rig, 2, machine).await;
+    ap10_fire_until(
+        &mut rig,
+        2,
+        "the guard answers for its pilot's machine",
+        |rig| ap10_rounds(rig, 0) < full,
+    )
+    .await;
+    // (5) At once, from the seat, while the mind flies it: HOLD.
+    assert_eq!(
+        rig.say(0, "mind posture hold"),
+        ap10_line(&rig, practice::PRACTICE_SET_AWAY, hull, Posture::Hold)
+    );
+    let held_at = rig.staged_now_ms;
+    ap10_tape_through(&mut rig, held_at + 2_000).await;
+    let on_machine = *ap10_arrivals(&rig, other, machine)
+        .first()
+        .expect("blue's fire arrived on the machine");
+    let answers = ap10_fired(&rig, hull);
+    assert!(!answers.is_empty(), "the watched rounds are on the ledger");
+    for (at, target) in &answers {
+        assert_eq!(
+            *target, other,
+            "it fires on the hull that fired, and on nobody else"
+        );
+        assert!(
+            *at >= on_machine,
+            "and only after that fire arrived: {at} before {on_machine}"
+        );
+    }
+    assert!(
+        ap10_arrivals(&rig, other, hull).is_empty(),
+        "blue never fired on the guard itself"
+    );
+    assert_eq!(
+        record::of(rig.tw.world(), hull),
+        Posture::Guard,
+        "the hull's own record is as it was written before the match: the practice wrote HOLD nowhere"
+    );
+    for unit in [stranger, machine, other] {
+        assert_eq!(record::of(rig.tw.world(), unit), Posture::Return);
+    }
+
+    // (5) On HOLD it does not answer for the machine: blue's fire goes on landing there.
+    let quiet_from = held_at + 2_000;
+    ap10_fire_until(
+        &mut rig,
+        2,
+        "blue's fire lands on the machine again",
+        move |rig| {
+            ap10_arrivals(rig, other, machine)
+                .iter()
+                .any(|at| *at > quiet_from + 1_000)
+        },
+    )
+    .await;
+    let again = rig.staged_now_ms;
+    ap10_clock_past(&mut rig, again + 6_000).await;
+    ap10_tape_through(&mut rig, again + 6_000).await;
+    assert_eq!(
+        ap10_fired(&rig, hull)
+            .into_iter()
+            .filter(|(at, _)| *at > quiet_from)
+            .collect::<Vec<_>>(),
+        Vec::new(),
+        "HOLD does not answer for its neighbour"
+    );
+    ap10_until(&mut rig, "the watching pilot's cockpit reads HOLD", |rig| {
+        rig.frame(0)
+            .is_some_and(|frame| frame.posture == Posture::Hold)
+    })
+    .await;
+    // ...and answers for itself.
+    let before = ap10_rounds(&rig, 0);
+    ap10_lock(&mut rig, 2, hull).await;
+    ap10_fire_until(
+        &mut rig,
+        2,
+        "a hull on HOLD answers the hull that fired on it",
+        move |rig| ap10_rounds(rig, 0) < before,
+    )
+    .await;
+    let now = rig.staged_now_ms;
+    ap10_tape_through(&mut rig, now + 1_000).await;
+    let on_hull = *ap10_arrivals(&rig, other, hull)
+        .first()
+        .expect("blue's fire arrived on the hull");
+    assert!(
+        ap10_fired(&rig, hull)
+            .iter()
+            .any(|(at, target)| *target == other && *at >= on_hull && *at > quiet_from),
+        "the answer follows the fire that arrived on it"
+    );
+
+    // (6) It never left its cell, and the pilot takes it back.
+    assert_eq!(
+        rig.held_frame(0).cell,
+        stood,
+        "it stood where its mind took it"
+    );
+    let back_at = m5_arena_clock(&rig);
+    assert_eq!(
+        rig.say(0, "mind back"),
+        ap10_line(&rig, practice::PRACTICE_BACK, hull, Posture::Return)
+    );
+    assert_eq!(
+        m5_block_now(&rig, 0).get(1),
+        Some(&format!(
+            "  It flew your tank from {} to {}, while you had let go of the controls.",
+            stamp(let_go_at),
+            stamp(back_at)
+        )),
+        "the debrief's span closes where the pilot took the controls"
+    );
+    assert_eq!(ap10_practice(&rig, hull), (Posture::Hold, false));
+    ap10_until(&mut rig, "the pilot's order is taken again", |rig| {
+        rig.frame(0).is_some_and(|frame| frame.order.is_none())
+    })
+    .await;
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains("Steering to 90"), "{said}");
+    assert_eq!(
+        rig.say(0, "mind posture"),
+        ap10_line(&rig, order::POSTURE_READ, hull, Posture::Hold),
+        "the word is the hull's for the match"
+    );
+    rig.say(0, "sim abort");
+}
+
+/// **Doc 45 unit AP.10: a pilot whose link drops is flown by their sealed mind, and fights**
+/// (Q-45-25; doc 44 Q-44-19), whatever they were practising. Two pilots, six cells apart;
+/// blue's never fires.
+///
+/// Red's pilot sets `GUARD` and lets go of the controls, and for ten seconds the hull fires
+/// nothing at the hostile hull in front of it: that is the practice. Then the pilot's session
+/// ends. The board reads `flown by its mind`, the practice is over, and the hull fires on
+/// blue's hull, which never fired a round: the sealed mind, bound by nothing. The reconnect
+/// says what it always said, and `BOARD` takes the tank back where it stands.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap10_a_pilot_who_drops_while_practising_is_flown_by_their_sealed_mind_and_fights() {
+    use tacsim::match_::practice;
+    use tacsim::posture::Posture;
+    let mut rig = ap10_duel(ap10_config()).await;
+    let (pilot, hull, other) = (rig.pilot(0), rig.tank(0), rig.tank(1));
+    assert_eq!(
+        rig.say(0, "mind posture guard"),
+        ap10_line(&rig, practice::PRACTICE_SET, hull, Posture::Guard)
+    );
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Guard)
+    );
+    let t0 = rig.staged_now_ms;
+    ap10_clock_past(&mut rig, t0 + 10_000).await;
+    ap10_tape_through(&mut rig, t0 + 10_000).await;
+    assert_eq!(
+        ap10_fired(&rig, hull),
+        Vec::new(),
+        "practising GUARD, the hull does not fire first"
+    );
+
+    // The drop.
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+    let row = y3_red_row(&rig);
+    assert!(row.contains(", flown by its mind"), "{row}");
+    assert_eq!(
+        ap10_practice(&rig, hull),
+        (Posture::Guard, false),
+        "a drop is not a practice"
+    );
+    assert_eq!(y3_seat_of(&rig, pilot), None, "the registry kept the seat");
+    ap10_until(&mut rig, "a dropped pilot's hull fights", |rig| {
+        ap10_fired(rig, hull)
+            .iter()
+            .any(|(_, target)| *target == other)
+    })
+    .await;
+    assert_eq!(
+        ap10_fired(&rig, other),
+        Vec::new(),
+        "blue never fired: the sealed mind opened fire, as a dropped pilot's does"
+    );
+    // And what the arena itself holds of the hull is what it holds of any dropped pilot's:
+    // its mind's, no absent player's unit, on no posture.
+    let dropped_at = rig.af3_arena_ms();
+    rig.af3_snapshot_at_or_after(dropped_at + 1_000).await;
+    assert_eq!(
+        ap10_saved(&rig, hull),
+        Some((false, Posture::Return, "mind".to_owned())),
+        "the drop ended the practice in the arena"
+    );
+
+    // As today: the reconnect's line, and BOARD takes it back.
+    let events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(
+        said.contains(&format!(
+            "{} is flying on its mind; BOARD takes it back.",
+            mush_core::output::display_name(rig.tw.world(), hull)
+        )),
+        "{said}"
+    );
+    let now = rig.now;
+    rig.tick_to(now + 5);
+    let said = rig.say(0, "board");
+    assert!(said.contains("is yours again where it stands."), "{said}");
+    assert_eq!(y3_seat_of(&rig, pilot).map(|(_, unit)| unit), Some(hull));
+    assert!(rig.frame_for(0).await, "no frame after the reclaim");
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains("Steering to 90"), "{said}");
+    rig.say(0, "sim abort");
+}
+
+/// **Doc 45 unit AP.10: a posture set and never left changes nothing about a drop, and an
+/// `EXIT` ends a practice for good** (Q-45-25; doc 44 Q-44-19). Two runs of the same duel.
+///
+/// (a) The pilot sets `HOLD`, stays at the controls, and their session ends: the hull goes
+/// to its sealed mind and fires on the hostile hull that never fired.
+/// (b) The pilot sets `HOLD`, lets go, and climbs out: the leave is final as every `EXIT`
+/// is, the practice is over, and the hull fights.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap10_a_posture_never_left_changes_nothing_about_a_drop_and_exit_ends_a_practice() {
+    use tacsim::match_::practice;
+    use tacsim::posture::Posture;
+    for climbs_out in [false, true] {
+        let mut rig = ap10_duel(ap10_config()).await;
+        let (pilot, hull, other) = (rig.pilot(0), rig.tank(0), rig.tank(1));
+        assert_eq!(
+            rig.say(0, "mind posture hold"),
+            ap10_line(&rig, practice::PRACTICE_SET, hull, Posture::Hold)
+        );
+        if climbs_out {
+            assert_eq!(
+                rig.say(0, "mind away"),
+                ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Hold)
+            );
+            let t0 = rig.staged_now_ms;
+            ap10_clock_past(&mut rig, t0 + 6_000).await;
+            ap10_tape_through(&mut rig, t0 + 6_000).await;
+            assert_eq!(ap10_fired(&rig, hull), Vec::new(), "practising HOLD");
+            let said = rig.say(0, "exit");
+            assert!(said.contains("you cannot take it back"), "{said}");
+            let said = rig.say(0, "board");
+            assert!(said.contains("it cannot be taken back"), "{said}");
+        } else {
+            rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+            assert!(y3_red_row(&rig).contains(", flown by its mind"));
+        }
+        assert_eq!(ap10_practice(&rig, hull), (Posture::Hold, false));
+        // The arena holds it as it holds any dropped pilot's hull: the posture the pilot
+        // set was the match's, and no word of it is left on the hull its mind now flies.
+        let gone_at = rig.af3_arena_ms();
+        rig.af3_snapshot_at_or_after(gone_at + 1_000).await;
+        assert_eq!(
+            ap10_saved(&rig, hull),
+            Some((false, Posture::Return, "mind".to_owned())),
+            "climbs out: {climbs_out}"
+        );
+        ap10_until(&mut rig, "the hull fights under its sealed mind", |rig| {
+            ap10_fired(rig, hull)
+                .iter()
+                .any(|(_, target)| *target == other)
+        })
+        .await;
+        assert_eq!(
+            ap10_fired(&rig, other),
+            Vec::new(),
+            "blue never fired (climbs out: {climbs_out})"
+        );
+        rig.say(1, "sim abort");
+    }
+}
+
+/// **Doc 45 unit AP.10: `RETURN` in a practice match takes the hull to its side's entry
+/// zone** (Q-45-25; the nearest thing a match has to home), and a practice leaves no word
+/// behind it. The pilot never sets a posture: `MIND AWAY` on the default flies `RETURN`. The
+/// hull, stood fourteen cells out, drives into red's entry zone and stays, having fired
+/// nothing; the pilot watched it go and takes it back there. The match is called off, and
+/// the next match's pod reads `RETURN` for a hull the last one left on `HOLD`.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap10_return_takes_a_practising_hull_home_and_a_match_leaves_no_posture_behind() {
+    use tacsim::arena::perception::MindObjective;
+    use tacsim::match_::practice;
+    use tacsim::posture::{Posture, order, record};
+    let mut rig = Rig::boot_with(2, ap10_config());
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let hull = rig.tank(0);
+    rig.place(hull, (20, 97), 90_000);
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    let match_id = rig.centre().match_id.expect("a running match");
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "started up");
+    let home = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(match_id))
+        .and_then(|ground| {
+            ground
+                .entry_zones
+                .iter()
+                .find(|zone| zone.team == PartyId::RED)
+                .copied()
+        })
+        .expect("red has an entry zone");
+    // Home is the zone's nearest cell, and a machine driving to a cell has arrived when it
+    // stands on it or beside it: so home is the zone, or the cell at its edge.
+    let inside = move |cell: (u16, u16)| {
+        (home.x0..=home.x1.saturating_add(1)).contains(&cell.0)
+            && (home.y0..=home.y1).contains(&cell.1)
+    };
+    assert_eq!(rig.held_frame(0).cell, Some((20, 97)));
+    assert!(
+        !inside((20, 97)),
+        "the hull starts well outside its side's zone"
+    );
+
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Return)
+    );
+    ap10_until(
+        &mut rig,
+        "the watching pilot's cockpit shows the way home",
+        |rig| {
+            rig.frame(0).is_some_and(|frame| {
+                frame.order.as_ref().map(|order| order.objective) == Some(MindObjective::Withdraw)
+            })
+        },
+    )
+    .await;
+    let mut home_at = None;
+    for _ in 0..12_000 {
+        rig.pump();
+        if rig
+            .frame(0)
+            .is_some_and(|frame| frame.cell.is_some_and(inside) && frame.speed_cms == 0)
+        {
+            home_at = Some(rig.staged_now_ms);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        home_at.is_some(),
+        "the hull never came home to {home:?}: at {} ms it stands at {:?}",
+        rig.staged_now_ms,
+        rig.frame(0)
+            .map(|frame| (frame.cell, frame.speed_cms, frame.power, frame.order))
+    );
+    let arrived = rig.held_frame(0).cell;
+    let now = rig.staged_now_ms;
+    ap10_clock_past(&mut rig, now + 8_000).await;
+    ap10_tape_through(&mut rig, now + 8_000).await;
+    assert_eq!(rig.held_frame(0).cell, arrived, "and it stays there");
+    assert_eq!(ap10_fired(&rig, hull), Vec::new());
+    assert_eq!(
+        rig.say(0, "mind back"),
+        ap10_line(&rig, practice::PRACTICE_BACK, hull, Posture::Return)
+    );
+    assert_eq!(
+        rig.say(0, "mind posture hold"),
+        ap10_line(&rig, practice::PRACTICE_SET, hull, Posture::Hold)
+    );
+    assert_eq!(
+        record::of(rig.tw.world(), hull),
+        Posture::Return,
+        "nothing was written to the hull's own record"
+    );
+    assert!(
+        rig.tw.world().attr(hull, record::POSTURE_ATTR).is_none(),
+        "not even an attribute"
+    );
+
+    // The match is called off; the next one opens on RETURN.
+    rig.say(0, "sim abort");
+    o3_until_terminal(&mut rig).await;
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert!(rig.frame_for(0).await, "the next match sends a frame");
+    assert_eq!(rig.tank(0), hull, "the same hull, in the next match");
+    assert_eq!(
+        rig.say(0, "mind posture"),
+        ap10_line(&rig, order::POSTURE_READ, hull, Posture::Return),
+        "the last match's HOLD went with the match"
+    );
+    assert_eq!(rig.held_frame(0).posture, Posture::Return);
+    assert_eq!(record::of(rig.tw.world(), hull), Posture::Return);
+    rig.say(0, "sim abort");
+}
+
+/// **Doc 45 unit AP.10: a restart ends a practice** (Q-45-25; doc 44 Q-44-19; 16b cut AF.3).
+/// A boot's resume gives every seat to its sealed mind, and a pilot who was practising is one
+/// of them: the resumed hull is no longer held to the absent player's rule, though the
+/// snapshot it resumed from held it so. Red's pilot sets `GUARD` and lets go; a snapshot is
+/// taken with the hull standing guard; the server half restarts. The resumed match's hull
+/// fires on blue's hull, which never fired a round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ap10_a_restart_ends_a_practice_and_the_resumed_hull_fights() {
+    use tacsim::match_::practice;
+    use tacsim::posture::Posture;
+    let mut rig = ap10_duel(ap10_config()).await;
+    let (pilot, hull, other) = (rig.pilot(0), rig.tank(0), rig.tank(1));
+    let match_id = rig.centre().match_id.expect("a running match");
+    assert_eq!(
+        rig.say(0, "mind posture guard"),
+        ap10_line(&rig, practice::PRACTICE_SET, hull, Posture::Guard)
+    );
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Guard)
+    );
+    ap10_until(&mut rig, "the mind stands guard", |rig| {
+        rig.frame(0).is_some_and(|frame| frame.order.is_some())
+    })
+    .await;
+    let standing = rig.af3_arena_ms();
+    let head = rig.af3_snapshot_at_or_after(standing + 2_000).await;
+    ap10_tape_through(&mut rig, head.at_ms).await;
+    assert_eq!(
+        ap10_fired(&rig, hull),
+        Vec::new(),
+        "practising GUARD, the hull fired nothing before the restart"
+    );
+    assert_eq!(
+        ap10_saved(&rig, hull),
+        Some((true, Posture::Guard, "mind".to_owned())),
+        "the snapshot the restart resumes from holds the hull as an absent player's, on GUARD"
+    );
+
+    rig.reboot_mid_match().await;
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.tasks().is_live(match_id)),
+        "it resumed"
+    );
+    let slot = rig.centre().slot_of_pilot(pilot).cloned().expect("a slot");
+    assert!(slot.is_dropped() && slot.released_by_resume, "{slot:?}");
+    assert_eq!(
+        ap10_practice(&rig, hull),
+        (Posture::Guard, false),
+        "the resume's release ended the practice"
+    );
+    ap10_until(
+        &mut rig,
+        "the resumed hull fights under its sealed mind",
+        |rig| {
+            ap10_fired(rig, hull)
+                .iter()
+                .any(|(_, target)| *target == other)
+        },
+    )
+    .await;
+    // The restart gave blue's hull to its mind too, so who fired first says nothing here.
+    // What the resumed arena holds does: the hull is nobody's absent unit any more.
+    let resumed = rig.af3_arena_ms();
+    rig.af3_snapshot_at_or_after(resumed + 1_000).await;
+    assert_eq!(
+        ap10_saved(&rig, hull),
+        Some((false, Posture::Return, "mind".to_owned())),
+        "the resumed arena does not hold the hull to the absent player's rule"
+    );
+    // And the debrief tells the practice from the restart's drop: the span the practice
+    // opened closed where the restart released the seat, and the drop's own runs on.
+    let spans = m5_spans_now(&rig, 0);
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    assert!(
+        spans.first().is_some_and(|(_, to)| to.is_some()),
+        "the practice's span is closed: {spans:?}"
+    );
+    assert!(
+        spans.last().is_some_and(|(_, to)| to.is_none()),
+        "the drop's span is open: {spans:?}"
+    );
+    rig.say(1, "sim abort");
+}
+
+/// **Doc 45 unit AP.10: a link lost while practising is a link lost** (Q-45-25; doc 44
+/// Q-44-19; 16b cut K.2). The practice ends at the onset: the arena holds the hull as a
+/// link-dead pilot's, not as its mind's and not as an absent player's, so for the grace it
+/// holds its orders and fires nothing, as today. The pilot comes back inside the grace, is
+/// told what a revival always says, and their order is taken with no `MIND BACK`; letting go
+/// again starts a new practice.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ap10_a_link_lost_while_practising_leaves_a_link_dead_pilots_hull() {
+    use tacsim::match_::practice;
+    use tacsim::posture::Posture;
+    let mut rig = ap10_duel(ap10_config()).await;
+    let (pilot, hull) = (rig.pilot(0), rig.tank(0));
+    assert_eq!(
+        rig.say(0, "mind posture hold"),
+        ap10_line(&rig, practice::PRACTICE_SET, hull, Posture::Hold)
+    );
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Hold)
+    );
+    ap10_until(&mut rig, "the mind stands the posture", |rig| {
+        rig.frame(0).is_some_and(|frame| frame.order.is_some())
+    })
+    .await;
+    let standing = rig.af3_arena_ms();
+    rig.af3_snapshot_at_or_after(standing + 1_000).await;
+    assert_eq!(
+        ap10_saved(&rig, hull),
+        Some((true, Posture::Hold, "mind".to_owned())),
+        "the practice, as the arena holds it"
+    );
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Linkdead);
+    assert_eq!(
+        ap10_practice(&rig, hull),
+        (Posture::Hold, false),
+        "a lost link is not a practice"
+    );
+    let lost = rig.af3_arena_ms();
+    rig.af3_snapshot_at_or_after(lost + 1_000).await;
+    assert_eq!(
+        ap10_saved(&rig, hull),
+        Some((false, Posture::Return, "pilot".to_owned())),
+        "through the grace the hull is its link-dead pilot's"
+    );
+
+    let events = rig.fire_conn(pilot, mush_core::ConnTransition::Revived);
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    assert!(
+        said.contains("You are back at your station on"),
+        "the revival's own line: {said}"
+    );
+    assert_eq!(
+        rig.held_frame(0).speed_cms,
+        0,
+        "the hull stood still through the grace"
+    );
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains("Steering to 90"), "{said}");
+    let now = rig.staged_now_ms;
+    ap10_tape_through(&mut rig, now + 1_000).await;
+    assert_eq!(ap10_fired(&rig, hull), Vec::new());
+    assert_eq!(
+        rig.say(0, "mind away"),
+        ap10_line(&rig, practice::PRACTICE_AWAY, hull, Posture::Hold),
+        "the word is still the hull's, and a new practice starts"
+    );
+    rig.say(1, "sim abort");
 }

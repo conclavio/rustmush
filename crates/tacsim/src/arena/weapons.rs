@@ -2494,7 +2494,7 @@ mod tests {
     /// does not: since doc 45 unit AP.6 it is the seat's and never binds the mind
     /// (`crate::arena::absent`, "the posture and the seat's fire hold"). The go-home order
     /// stands with no deadline, and the mind is shown as hostile only what it may answer. A
-    /// practice match records no fire.
+    /// practice match records no fire on a hull nobody has named a player for.
     #[test]
     fn mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it() {
         use crate::arena::party::{EndCondition, Relation};
@@ -2603,13 +2603,298 @@ mod tests {
         assert!(back.minds.get(&RED).is_some_and(|row| row.order.is_none()));
         assert_eq!(back.resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
 
-        // A practice match keeps no record of who fired on whom.
+        // A practice match keeps no record of who fired on whom, for a hull nobody has set a
+        // posture on (doc 45 unit AP.10 keeps one for a hull a pilot has named a player for).
         let mut practice = base;
         practice.note_fired_on(BLUE, RED);
         assert!(
             practice
                 .unit(RED)
                 .is_some_and(|state| state.fired_on_by.is_empty())
+        );
+    }
+
+    /// [`a_guards_field`] as a practice match opens: the end is a match's own and no hull has
+    /// a player named.
+    fn a_practice_match() -> Box<Arena> {
+        let mut arena = Box::new(a_guards_field());
+        arena.end = crate::arena::party::EndCondition::Elimination;
+        for unit in [RED, KIN] {
+            assert!(arena.set_player(unit, None));
+        }
+        arena
+    }
+
+    /// **Doc 45 unit AP.10: a practising hull in a match is held to the one rule** (Q-45-25;
+    /// `crate::arena::absent::permits`, through the door every shot no seat typed takes). A
+    /// match records no fire and binds nobody until a pilot sets a posture: the words that
+    /// name whose the hull and the pilot's other hull are start the record on those two and
+    /// on no other. Left on `GUARD` with its pilot's hands off the controls, the hull is
+    /// refused the first shot at a side it holds hostile, is refused after fire on a
+    /// stranger, answers after fire on the pilot's other hull, and answers for itself.
+    #[test]
+    fn ap10_a_practising_hull_in_a_match_is_held_to_the_one_rule() {
+        use crate::arena::perception::MindObjective;
+        use crate::posture::Posture;
+        let mind = FiredBy::Mind { slot: Some(1) };
+        let mut practice = a_practice_match();
+        let opening = crate::arena::hash::state_hash(&practice);
+
+        // Nobody practises: nothing is bound, and fire leaves no record and no byte.
+        assert_eq!(
+            practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1),
+            "a hull's mind in a match fires on the side it holds hostile"
+        );
+        practice.note_fired_on(BLUE, RED);
+        practice.note_fired_on(BLUE, KIN);
+        assert_eq!(crate::arena::hash::state_hash(&practice), opening);
+
+        // The pilot sets GUARD: the host's word names the pilot for the hull and for the
+        // pilot's other hull, and the record starts on those two.
+        assert!(practice.set_player(RED, Some(OWNER)));
+        assert!(practice.set_player(KIN, Some(OWNER)));
+        assert!(practice.set_posture(RED, Posture::Guard));
+        assert_eq!(
+            practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1),
+            "a posture alone binds nothing: the pilot still holds the controls"
+        );
+        // The pilot lets go.
+        assert!(practice.set_absent(RED, true));
+        assert_eq!(objective_of(&practice), Some(MindObjective::Hold));
+        for by in [mind, FiredBy::Machine, FiredBy::Cond { slot: 1 }] {
+            assert_eq!(
+                practice.clone().resolve_fire_by(RED, "cannon", 0, by),
+                Err(Refusal::Unwarranted),
+                "{by:?} would open fire first"
+            );
+        }
+        practice.note_fired_on(BLUE, STRANGER);
+        assert!(
+            practice
+                .unit(STRANGER)
+                .is_some_and(|state| state.fired_on_by.is_empty()),
+            "no record on a hull no pilot named a player for"
+        );
+        practice.stand_posture(RED);
+        assert_eq!(
+            practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted),
+            "fire on a stranger is not a guard's to answer"
+        );
+        practice.note_fired_on(BLUE, KIN);
+        practice.stand_posture(RED);
+        assert_eq!(
+            practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1),
+            "the unit that fired on the pilot's other hull is answered"
+        );
+        assert!(matches!(
+            objective_of(&practice),
+            Some(MindObjective::Screen { .. })
+        ));
+
+        // The same match on HOLD: not for the other hull, and for itself.
+        assert!(practice.set_posture(RED, Posture::Hold));
+        practice.stand_posture(RED);
+        assert_eq!(
+            practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Err(Refusal::Unwarranted),
+            "HOLD does not answer for its neighbour"
+        );
+        practice.note_fired_on(BLUE, RED);
+        assert_eq!(
+            practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
+            Ok(1)
+        );
+    }
+
+    /// A control on red's helm.
+    fn reds_seat(
+        epoch: u64,
+        state: crate::arena::intents::ControlState,
+        pilot: Option<ObjId>,
+    ) -> crate::arena::intents::Control {
+        crate::arena::intents::Control {
+            unit: RED,
+            channel: crate::arena::state::Channel::Helm,
+            epoch,
+            state,
+            pilot,
+        }
+    }
+
+    /// [`a_practice_match`] with red's pilot in the seat, then letting go of the controls on
+    /// `GUARD`: the host's two words, the release that names nobody, and the mind's first
+    /// think on the posture.
+    fn a_practising_hull() -> Box<Arena> {
+        use crate::arena::intents::{ControlState, apply_control};
+        use crate::posture::Posture;
+        let mut arena = a_practice_match();
+        apply_control(&mut arena, &reds_seat(1, ControlState::Live, Some(OWNER)));
+        assert_eq!(
+            arena.unit(RED).map(|state| state.controller),
+            Some(Controller::Pilot)
+        );
+        assert!(arena.set_player(RED, Some(OWNER)));
+        assert!(arena.set_posture(RED, Posture::Guard));
+        assert!(arena.set_absent(RED, true));
+        apply_control(&mut arena, &reds_seat(2, ControlState::Released, None));
+        arena.stand_posture(RED);
+        assert!(arena.absent(RED));
+        assert_eq!(
+            arena.unit(RED).map(|state| state.controller),
+            Some(Controller::Mind)
+        );
+        assert!(
+            arena
+                .unit(RED)
+                .is_some_and(|state| state.stand_at.is_some()),
+            "its mind has stood the posture"
+        );
+        // And the mind's last order to the helm, as a mind driving home leaves one.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.desired_speed_cms = 300;
+        }
+        arena
+    }
+
+    /// **Doc 45 unit AP.10: a pilot who practised and then dropped is dropped as one who
+    /// never practised** (Q-45-25; doc 44 Q-44-19). A control that names a pilot ends the
+    /// practice before it applies (`Arena::end_practice`), whichever control it is. A
+    /// `Released` (the grace run out, a `QUIT`, an `EXIT`, a resume) leaves the hull its
+    /// mind's, seeded for home with its one retreat unspent, under no order and bound by no
+    /// rule. A `Live` (the pilot's `MIND BACK`) and a `Linkdead` leave it the pilot's,
+    /// stopped. A control naming another seat of the hull ends the practice too, and one
+    /// naming nobody does not.
+    #[test]
+    fn ap10_a_drop_ends_a_practice_and_leaves_the_hull_as_any_dropped_pilots() {
+        use crate::arena::doctrine::MachineState;
+        use crate::arena::intents::{ControlState, apply_control};
+        use crate::posture::Posture;
+
+        // Never practised: in the seat, then dropped.
+        let mut plain = a_practice_match();
+        apply_control(&mut plain, &reds_seat(1, ControlState::Live, Some(OWNER)));
+        apply_control(
+            &mut plain,
+            &reds_seat(2, ControlState::Released, Some(OWNER)),
+        );
+
+        // Practised GUARD, then dropped.
+        let mut dropped = a_practising_hull();
+        assert_ne!(
+            dropped.machine_state(RED),
+            Some(MachineState::Withdraw),
+            "its mind stands the posture: it is not going home"
+        );
+        let stood = dropped.minds.get(&RED).map(|row| row.memory.clone());
+        assert_ne!(
+            stood,
+            a_practice_match()
+                .minds
+                .get(&RED)
+                .map(|row| row.memory.clone()),
+            "and standing it wrote the mind's memory (its one retreat is spent)"
+        );
+        apply_control(
+            &mut dropped,
+            &reds_seat(3, ControlState::Released, Some(OWNER)),
+        );
+        for (arena, which) in [(&plain, "never practised"), (&dropped, "practised")] {
+            let state = arena.unit(RED).expect("red");
+            assert_eq!(state.controller, Controller::Mind, "{which}");
+            assert!(!state.absent, "{which}: bound by no rule");
+            assert_eq!(state.posture, Posture::Return, "{which}");
+            assert_eq!(state.stand_at, None, "{which}");
+            assert_eq!(state.desired_speed_cms, 0, "{which}");
+            assert_eq!(
+                arena.machine_state(RED),
+                Some(MachineState::Withdraw),
+                "{which}"
+            );
+            assert!(
+                arena.minds.get(&RED).is_some_and(|row| row.order.is_none()),
+                "{which}: under no standing order"
+            );
+        }
+        // The release's seed overwrites what standing the posture wrote: here, where the
+        // mind stood and never thought, the two memories are the same bytes. (What a mind
+        // remembers of thinks it made while flying is kept across a release, a practice's
+        // like any other's.)
+        assert_eq!(
+            dropped.minds.get(&RED).map(|row| row.memory.clone()),
+            plain.minds.get(&RED).map(|row| row.memory.clone()),
+            "the retreat GUARD had spent is unspent again"
+        );
+        assert_eq!(dropped.absent_denies_fire(RED, BLUE), None);
+
+        // `MIND BACK`: a `Live` naming the pilot. The hull is handed back standing.
+        let mut back = a_practising_hull();
+        apply_control(&mut back, &reds_seat(3, ControlState::Live, Some(OWNER)));
+        let state = back.unit(RED).expect("red");
+        assert_eq!(state.controller, Controller::Pilot);
+        assert!(!state.absent && !state.linkdead);
+        assert_eq!(state.posture, Posture::Return);
+        assert_eq!(
+            state.desired_speed_cms, 0,
+            "the mind's last order is nobody's"
+        );
+
+        // The link lost: the hull is a link-dead pilot's, stopped.
+        let mut linkdead = a_practising_hull();
+        apply_control(
+            &mut linkdead,
+            &reds_seat(3, ControlState::Linkdead, Some(OWNER)),
+        );
+        let state = linkdead.unit(RED).expect("red");
+        assert_eq!(state.controller, Controller::Pilot);
+        assert!(!state.absent && state.linkdead);
+        assert_eq!(state.desired_speed_cms, 0);
+
+        // A word about another seat of the hull moves who flies it, as it always did, and
+        // the practice does not outlive that: no hull is left its pilot's with the flag
+        // standing, nor its mind's under a rule nobody is practising.
+        for (state, flown_by) in [
+            (ControlState::Live, Controller::Pilot),
+            (ControlState::Released, Controller::Mind),
+        ] {
+            let mut other_seat = a_practising_hull();
+            apply_control(&mut other_seat, &reds_seat(3, state, Some(ObjId(777))));
+            let hull = other_seat.unit(RED).expect("red");
+            assert_eq!(hull.controller, flown_by, "{state:?}");
+            assert!(!hull.absent, "{state:?}");
+            assert_eq!(hull.posture, Posture::Return, "{state:?}");
+        }
+        // A control that names nobody is no word about a seat: the practice stands.
+        let mut nobody = a_practising_hull();
+        apply_control(&mut nobody, &reds_seat(3, ControlState::Released, None));
+        assert!(nobody.absent(RED));
+        assert_eq!(nobody.posture(RED), Posture::Guard);
+    }
+
+    /// **Doc 45 unit AP.10 leaves a field alone**: in a field whose end is its host's, a
+    /// `Released` that names the pilot is the host handing an absent player's unit to its
+    /// mind (doc 44 cut MW.7), and the flag the host set stands.
+    #[test]
+    fn ap10_a_fields_release_does_not_end_what_its_host_said() {
+        use crate::arena::intents::{ControlState, apply_control};
+        use crate::posture::Posture;
+        let mut field = Box::new(a_guards_field());
+        apply_control(&mut field, &reds_seat(1, ControlState::Live, Some(OWNER)));
+        assert!(field.set_posture(RED, Posture::Guard));
+        assert!(field.set_absent(RED, true));
+        apply_control(
+            &mut field,
+            &reds_seat(2, ControlState::Released, Some(OWNER)),
+        );
+        assert!(field.absent(RED), "the host's word stands");
+        assert_eq!(field.posture(RED), Posture::Guard);
+        assert_eq!(
+            objective_of(&field),
+            Some(crate::arena::perception::MindObjective::Hold),
+            "and the posture's order is laid at the hand-over"
         );
     }
 

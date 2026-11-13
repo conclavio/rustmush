@@ -2420,8 +2420,10 @@ pub struct UnitState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coupled_to: Option<ObjId>,
     /// **A mind flies this unit for a player who is not at its controls** (doc 44 cut MW.7;
-    /// Q-44-22, Q-44-38): the IC field host's fact, written only by `Arena::set_absent` and
-    /// `false` for every unit of every practice match (Q-44-19). While it stands the absent
+    /// Q-44-22, Q-44-38): the IC field host's fact, written only by `Arena::set_absent`. In
+    /// a practice match it is `false` for every unit but one whose pilot has let go of the
+    /// controls to practise a posture (doc 45 unit AP.10); a dropped pilot's unit is never
+    /// told absent (Q-44-19). While it stands the absent
     /// player's rule binds whatever mind flies the hull (`crate::arena::absent`).
     ///
     /// Decoded by `serde` default and written only when set, so `SNAPSHOT_FORMAT` stands;
@@ -2433,8 +2435,9 @@ pub struct UnitState {
     /// miss, since the field opened: what "it may answer a unit that has fired on it" reads.
     ///
     /// Written by `Arena::resolve_impact` in a field whose end is its host's
-    /// ([`crate::arena::party::EndCondition::Host`]) and never in a practice match, where no
-    /// unit is ever flown for an absent player. Carried and folded as [`UnitState::absent`]
+    /// ([`crate::arena::party::EndCondition::Host`]), and in a practice match only on a unit
+    /// a pilot has named a player for by setting a posture (doc 45 unit AP.10;
+    /// [`UnitState::player`]). Carried and folded as [`UnitState::absent`]
     /// is: written and folded only when not empty (sub-item 25).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub fired_on_by: BTreeSet<ObjId>,
@@ -2463,8 +2466,10 @@ pub struct UnitState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stand_at: Option<(u16, u16)>,
     /// **The player whose unit this is**, as its host tells it (doc 45 unit AP.6; Q-45-8):
-    /// what "another unit of the same player" reads. `None` for every unit of every practice
-    /// match, and for a unit no player stands behind (a hired crew's, a raider's).
+    /// what "another unit of the same player" reads. `None` for a unit no player stands
+    /// behind (a hired crew's, a raider's) and, in a practice match, for every unit until a
+    /// pilot sets a posture: the word names the pilot for their hull and, for a side's lead,
+    /// for the side's machines (doc 45 unit AP.10; `crate::match_::practice`).
     ///
     /// Written only by `Arena::set_player`. Carried and folded as [`UnitState::absent`] is:
     /// written and folded only when set (sub-item 28).

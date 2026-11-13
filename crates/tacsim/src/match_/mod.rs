@@ -86,6 +86,9 @@ pub mod seal;
 // picture of both sides, the replay documents, `SIM REPLAY` and the two queries'
 // reads. Documented by its own module doc, as `report` is.
 pub mod mind_tape;
+// Doc 45 unit AP.10: postures in the simulator — the practice posture, `MIND AWAY` and
+// `MIND BACK`, and how a practice is told from a drop. Documented by its own module doc.
+pub mod practice;
 pub mod replay;
 // 16b cut V.3: the debrief — the pure fold from the tape to one reader's report,
 // the report documents, `SIM REPORT`, `@arena/report` and the module's store-read

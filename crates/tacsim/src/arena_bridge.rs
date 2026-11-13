@@ -726,6 +726,21 @@ pub struct MatchMirror {
     /// card, and the read-back says so. The tape is read per closed chunk, so
     /// a line reaches the mirror when its chunk closes (the read-back's lag).
     pub cards: BTreeMap<ObjId, (StockCard, i64, CardSource)>,
+    /// **The postures practised in this match** (doc 45 unit AP.10; Q-45-25): per hull, the
+    /// word its pilot set from the simulator seat, when it is not `RETURN`. The world's copy
+    /// of what it told the arena (`crate::match_::practice`), and the only place a practice
+    /// posture is kept: no unit's own record (`crate::posture::record`) is read or written
+    /// for it, so it goes with the match. Empty for an IC field, whose postures are the
+    /// units' own. Rebuilt at a resume from the decoded arena.
+    pub postures: BTreeMap<ObjId, crate::posture::Posture>,
+    /// **The hulls whose pilots have let go of the controls to practise a posture** (doc 45
+    /// unit AP.10), each with the pilot who did: seated still, sent their frames still, the
+    /// hull flown by its mind as an absent player's. Written by `MIND AWAY`; cleared by
+    /// `MIND BACK` and by any word the world sends the arena about that pilot's seat
+    /// ([`send_control`]), whichever seat of the hull it names: a drop is never a practice
+    /// (Q-44-19). Rebuilt at a resume from the decoded arena, and emptied by the resume's own
+    /// release of every seat.
+    pub away: BTreeMap<ObjId, ObjId>,
 }
 
 /// **Where the world's copy of a mind's card came from** (17b cut M1b.5).
@@ -1379,6 +1394,71 @@ impl ArenaRegistry {
     #[must_use]
     pub fn mirror(&self, match_id: MatchId) -> Option<&MatchMirror> {
         self.matches.get(&match_id)
+    }
+
+    /// **The posture practised on `unit` in the match that holds it** (doc 45 unit AP.10;
+    /// [`MatchMirror::postures`]): `RETURN` for a hull nobody has set one on.
+    #[must_use]
+    pub fn practice_posture(&self, unit: ObjId) -> crate::posture::Posture {
+        self.match_of_unit(unit)
+            .and_then(|match_id| self.matches.get(&match_id))
+            .and_then(|mirror| mirror.postures.get(&unit).copied())
+            .unwrap_or_default()
+    }
+
+    /// **Whether `unit`'s pilot has let go of its controls to practise a posture** (doc 45
+    /// unit AP.10; [`MatchMirror::away`]).
+    #[must_use]
+    pub fn standing_back(&self, unit: ObjId) -> bool {
+        self.practising(unit).is_some()
+    }
+
+    /// **The pilot who has let go of `unit`'s controls to practise a posture** (doc 45 unit
+    /// AP.10; [`MatchMirror::away`]), when one has.
+    #[must_use]
+    pub fn practising(&self, unit: ObjId) -> Option<ObjId> {
+        self.match_of_unit(unit)
+            .and_then(|match_id| self.matches.get(&match_id))
+            .and_then(|mirror| mirror.away.get(&unit).copied())
+    }
+
+    /// Record the posture practised on `unit` ([`MatchMirror::postures`]), after the arena
+    /// took the word.
+    pub(crate) fn note_practice_posture(&mut self, unit: ObjId, posture: crate::posture::Posture) {
+        let Some(mirror) = self
+            .match_of_unit(unit)
+            .and_then(|match_id| self.matches.get_mut(&match_id))
+        else {
+            return;
+        };
+        if posture.is_return() {
+            mirror.postures.remove(&unit);
+        } else {
+            mirror.postures.insert(unit, posture);
+        }
+    }
+
+    /// Record which pilot stands back from `unit`'s controls, or that none does
+    /// ([`MatchMirror::away`]), answering whether that changed. A practice that ends leaves
+    /// the hull its pilot's on the mirror ([`MatchMirror::controllers`]), as the arena has
+    /// it (`Arena::end_practice`), until the control that ended it says otherwise.
+    pub(crate) fn note_standing_back(&mut self, unit: ObjId, pilot: Option<ObjId>) -> bool {
+        let Some(mirror) = self
+            .match_of_unit(unit)
+            .and_then(|match_id| self.matches.get_mut(&match_id))
+        else {
+            return false;
+        };
+        match pilot {
+            Some(pilot) => mirror.away.insert(unit, pilot) != Some(pilot),
+            None => {
+                let ended = mirror.away.remove(&unit).is_some();
+                if ended && let Some(held) = mirror.controllers.get_mut(&unit) {
+                    *held = Controller::Pilot;
+                }
+                ended
+            }
+        }
     }
 
     /// **Record the staff tempo floor a match's task accepted** (16b cut I.3):
@@ -2192,6 +2272,23 @@ pub fn resume_match(
         .filter(|unit| !unit.weapons.is_empty())
         .map(|unit| unit.id)
         .collect();
+    // Doc 45 unit AP.10: who was practising what, off the decoded arena (a match's arena
+    // holds a hull absent only for a practice, and the posture's word named the pilot). The
+    // resume releases every seat next: that control ends each practice in the arena
+    // (`Arena::end_practice`) as a drop does, and the world's half closes the pilot's
+    // debrief span, which the restored fold still holds open.
+    let away: BTreeMap<ObjId, ObjId> = arena
+        .units
+        .iter()
+        .filter(|unit| unit.absent)
+        .filter_map(|unit| Some((unit.id, unit.player?)))
+        .collect();
+    let postures: BTreeMap<ObjId, crate::posture::Posture> = arena
+        .units
+        .iter()
+        .filter(|unit| !unit.posture.is_return())
+        .map(|unit| (unit.id, unit.posture))
+        .collect();
     // 17b cut M2.2: the resumed arena's own `Arc` (`Arena.definition`), shared.
     let ground = Arc::clone(&arena.definition);
     // 16c N16: the snapshot carries no chunk bytes, and every chunk closed
@@ -2250,6 +2347,8 @@ pub fn resume_match(
         mirror.odds_floor_permille = odds_floor_permille;
         mirror.controllers = controllers;
         mirror.armed = armed;
+        mirror.postures = postures;
+        mirror.away = away;
     }
     Ok(roster)
 }
@@ -2543,6 +2642,12 @@ pub enum IntentRefusal {
     /// `Refused: no character entitled to order that squad gave that order.`
     #[error("no character entitled to order that squad gave that order")]
     NoCharacter,
+    /// **The seat has let go of the controls to practise a posture** (doc 45 unit AP.10;
+    /// `MIND AWAY` in the simulator): the hull's mind flies it, and no order is taken from
+    /// the seat until `MIND BACK`. Reads `Refused: ` and
+    /// [`crate::match_::practice::PRACTICE_SEAT_REFUSED`].
+    #[error("{}", crate::match_::practice::PRACTICE_SEAT_REFUSED)]
+    Away,
 }
 
 /// Why the world could not deliver an authority or lifecycle message.
@@ -2604,6 +2709,7 @@ pub fn forward_intent(
 ) -> Result<(), IntentRefusal> {
     let channel = kind.channel_required();
     let match_id = authorise_seat(ctx, actor, unit, channel)?;
+    hands_on(ctx.w, unit)?;
 
     // (5) The stamp, and the offer.
     let (intent, tasks) = {
@@ -2625,6 +2731,21 @@ pub fn forward_intent(
         Err(_) if tasks.is_live(match_id) => Err(IntentRefusal::Busy),
         Err(_) => Err(IntentRefusal::Gone),
     }
+}
+
+/// **Whether the seat of `unit` still holds its controls** (doc 45 unit AP.10): refused
+/// [`IntentRefusal::Away`] while its pilot has let go of them to practise a posture
+/// ([`MatchMirror::away`]). The hull is then its mind's, and an order typed in the seat would
+/// land beside the mind's own; `MIND BACK` takes the controls and the order is typed again.
+/// Asked by every door a seat's order goes through ([`forward_intent`], [`forward_order`],
+/// [`forward_release`]) after the seat is authorised.
+fn hands_on(w: &mush_core::World, unit: ObjId) -> Result<(), IntentRefusal> {
+    if w.module_state::<ArenaRegistry>()
+        .is_some_and(|registry| registry.standing_back(unit))
+    {
+        return Err(IntentRefusal::Away);
+    }
+    Ok(())
 }
 
 /// **Is `actor` at a seat of `unit` that carries `channel`?** — steps (1)–(4) of
@@ -2739,6 +2860,7 @@ pub fn forward_order(
     order: crate::deliberation::Order,
 ) -> Result<usize, IntentRefusal> {
     let match_id = authorise_seat(ctx, actor, own_unit, Channel::Helm)?;
+    hands_on(ctx.w, own_unit)?;
     let mut offered = 0_usize;
     for unit in units {
         if send_order(ctx, match_id, *unit, order.clone()).is_ok() {
@@ -2770,6 +2892,7 @@ pub fn forward_release(
     squad: crate::deliberation::SquadId,
 ) -> Result<usize, IntentRefusal> {
     let match_id = authorise_seat(ctx, actor, own_unit, Channel::Helm)?;
+    hands_on(ctx.w, own_unit)?;
     let mut offered = 0_usize;
     for unit in units {
         let kind = IntentKind::ReleaseOrder {
@@ -2827,6 +2950,14 @@ pub fn send_control(
     state: ControlState,
     pilot: Option<ObjId>,
 ) -> Result<(), ControlRefusal> {
+    // **Doc 45 unit AP.10** (Q-45-25, Q-44-19): a word about a pilot's seat ends that pilot's
+    // practice, whatever the word is. A link that drops, a `QUIT`, an `EXIT`, a resume and a
+    // pilot coming back all pass through here naming the pilot; `MIND AWAY`'s own hand-over
+    // names nobody. The arena ends it on the control itself (`Arena::end_practice`); this is
+    // the world's half, its mirror and the debrief's span.
+    if pilot.is_some() {
+        crate::match_::practice::ended_by_seat(ctx, unit);
+    }
     let (match_id, control, tasks, unbound) = {
         let registry = ctx
             .w

@@ -331,6 +331,22 @@ pub enum TapeEvent {
     DetachmentControl {
         control: super::detachment::DetachmentControl,
     },
+    /// **A practice posture** (doc 45 unit AP.10; Q-45-25): the word a pilot set on a hull
+    /// from its simulator seat and whose hull it is, applied at a pulse's head by
+    /// `Arena::set_player` and `Arena::set_posture`, before that pulse's controls. Recorded
+    /// only when it changes the arena, so a match nobody practises in records none.
+    Posture {
+        unit: ObjId,
+        posture: crate::posture::Posture,
+        player: Option<ObjId>,
+    },
+    /// **A pilot stands back from the controls to practise a posture, or takes them
+    /// again** (doc 45 unit AP.10): `Arena::set_absent`, at a pulse's head after that
+    /// head's [`TapeEvent::Posture`]s. Recorded only when it changes the arena.
+    Absent {
+        unit: ObjId,
+        absent: bool,
+    },
 }
 impl TapeEvent {
     pub fn validate(&self) -> Result<(), TapeError> {

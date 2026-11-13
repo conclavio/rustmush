@@ -716,6 +716,13 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
     if stale {
         return;
     }
+    // **Doc 45 unit AP.10** (Q-45-25, Q-44-19): a word about the seat of a pilot who was
+    // practising a posture ends the practice first, so what follows applies to a hull its
+    // pilot holds, as it does for a pilot who never practised. Nothing in an IC field, and
+    // nothing for a hull nobody practises on.
+    if c.pilot.is_some() {
+        arena.end_practice(c.unit);
+    }
     {
         let Some(unit) = arena.unit_mut(c.unit) else {
             return;
