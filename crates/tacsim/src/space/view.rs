@@ -356,6 +356,27 @@ fn weapon_rows(observer: &SpaceShipState) -> Vec<FrameWeapon> {
             u32::from(rail.rounds_remaining.max(24)),
         ));
     }
+    // Doc 44 unit MW.12 (Q-44-27): a collector drone's one mount is its collector, and the
+    // row is how its mind reads the hold. `rounds` is the lifts the hold still has room
+    // for and `rounds_max` the lifts a whole hold takes; it is ready when it has cycled and
+    // has room; its one band is its reach.
+    if let Some(kit) = &observer.collector {
+        weapons.push(FrameWeapon {
+            id: SmolStr::new(&kit.id),
+            ready: kit.ready(),
+            ready_in_ms: i64::from(kit.cooldown_remaining_ms),
+            rounds: kit.lifts_left(),
+            rounds_max: kit.hold_cap_kg / super::bubble::COLLECTOR_LIFT_KG,
+            range_band: None,
+            p_permille: Some(1_000),
+            bands_cm: vec![
+                u32::try_from(super::bubble::COLLECTOR_REACH_M.saturating_mul(100))
+                    .unwrap_or(u32::MAX),
+            ],
+            heat_per_shot: 0,
+            armed: None,
+        });
+    }
     weapons
 }
 
@@ -436,7 +457,8 @@ pub fn space_mind_view(
             fatal: Some(Vec::new()),
             aspect: Aspect::Front,
             odds: Vec::new(),
-            reads_dead: Some(other.status != HullStatus::Operational),
+            // Doc 44 unit MW.12: a rock that bears no ore reads as a hull that is done.
+            reads_dead: Some(other.status != HullStatus::Operational || other.is_spent_rock()),
         });
     }
     contacts.sort_by_key(|c| (c.range_m, c.id));

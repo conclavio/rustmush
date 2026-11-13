@@ -761,9 +761,11 @@ mod tests {
     use crate::arena::mind::MindRunner;
     use crate::minds::content::drone_mining_digest;
 
-    /// A drone's view, which needs no bubble.
+    /// A drone's view in its bay, with the clock a think `seq` reads.
     fn view(seq: u64) -> Arc<MindView> {
-        Arc::new(crate::space::picket::drone_view(ObjId(77), [1, 2, 3], seq))
+        let mut view = crate::space::sortie::rig::view(ObjId(77));
+        view.t_ms = i64::try_from(seq.saturating_mul(1_000)).unwrap_or(0);
+        Arc::new(view)
     }
 
     fn drone_ask(host: &ThinkHost, seq: u64, memory: &[u8]) -> Ask {

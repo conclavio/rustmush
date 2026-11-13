@@ -4381,7 +4381,8 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     );
     let drones_out = run(&mut rig.tw, pilot_actor, "+mine/drones A 4");
     assert!(
-        drones_out.contains("Launched 4 collector drone(s) onto Block A (S-TYPE) for 120s (4 t `metal_ore` each into `stow.ore`)"),
+        drones_out.contains("Launched 4 collector drone(s) onto Block A (S-TYPE) for `metal_ore`, from bay slot(s) 1, 2, 3, 4.")
+            && drones_out.contains("Each flies itself and brings back what it lifts, up to 4 t, into `stow.ore`."),
         "drones output: {drones_out}"
     );
     // Verify launching a 5th drone is refused (`MAX_EXCURSIONS_PER_OPERATOR = 4`, `35a` §3 #6).
@@ -4391,8 +4392,8 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
         "5th drone refused: {drone_cap}"
     );
 
-    // Advance 6 seconds of wall time (= 21,600 IC seconds at rate 3,600, past the 60s laser and
-    // 120s drone timers) so `space_tick` queues the 20 t `PendingSpaceMineDraw` and the cluster
+    // Advance 6 seconds of wall time (= 21,600 IC seconds at rate 3,600, past the 60s laser
+    // timer) so `space_tick` queues the laser's 4 t `PendingSpaceMineDraw` and the cluster
     // clerk submits `tacsim_site_work` in the same tick!
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
@@ -4402,9 +4403,25 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
         work_submits
             .iter()
             .any(|s| s.action.key().id.as_str() == "tacsim_site_work"),
-        "cluster clerk submitted tacsim_site_work for completed laser + drone extraction: {work_submits:?}"
+        "cluster clerk submitted tacsim_site_work for the completed laser extraction: {work_submits:?}"
     );
     land_all(&mut rig, &work_submits);
+    assert_eq!(
+        pool(&mut rig.tw, vault_id, "metal_ore"),
+        4,
+        "the laser's 4 t is in the hold; the drones are still out"
+    );
+    // Doc 44 unit MW.12: a drone is a sortie its mind flies, a wall second a step. Each of
+    // the four fills its hold of 4 t and brings it home.
+    let (_, told) = fly_drones_home(&mut rig, _hull, pilot_actor);
+    for slot in 1..=4 {
+        assert!(
+            told.contains(&format!(
+                "Collector drone {slot} is back aboard with 4 t of `metal_ore` from Block A."
+            )),
+            "drone {slot}: {told}"
+        );
+    }
 
     // Verify 20 t of conserved `metal_ore` moved from Block A's deposit vault into *Salt Moth*'s
     // `stow.ore` hold vault (`vault_id`), and `PocketCursor` in `tacsim.pockets` recorded 20 t!
@@ -14518,4 +14535,436 @@ fn mw11_a_server_whose_first_think_is_in_space_has_the_configured_workers() {
         &pool,
         &tacsim::minds::pool::of_world(rig.tw.world())
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Doc 44 unit MW.12: drones as mind-driven sorties
+// ---------------------------------------------------------------------------
+
+/// A chartered `Dray-P`, licensed, flown to `ceres_halo` and matched off Block A at the 1:1
+/// clock a sortie is read at: her pilot, her hull and her hold.
+fn dray_p_matched_at_ceres_halo(rig: &mut Rig) -> (ObjId, ObjId, VaultId) {
+    let (pilot, row) = chartered(rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(rig, vault, "propellant", 75, LotId(991));
+    seed_pool(rig, vault, "provisions", 45, LotId(992));
+    set_rate(&mut rig.tw, 3_600);
+    board(rig, pilot);
+
+    let _ = run(&mut rig.tw, pilot, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot, "+ship/undock ceres_halo throttle=500");
+    let burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &burn);
+    let _ = fire_quietly(rig);
+    let launch = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &launch);
+    let arrival_ic = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull]
+        .cluster_arrival_ic_s
+        .expect("she is bound for the cluster");
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let arrive = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(arrive);
+    let _ = rig.tw.fire_due(arrive.saturating_mul(1_000));
+    let opened = drain_space_and_industry(&mut rig.tw);
+    land_all(rig, &opened);
+    // The deposits open, the held blocks are seeded, and she closes on Block A: six seconds
+    // a fire, each fire a step of the approach.
+    let _ = fire_quietly(rig);
+    let _ = run(&mut rig.tw, pilot, "+helm/approach A");
+    for _ in 0..4 {
+        let submitted = drain_space_and_industry(&mut rig.tw);
+        land_quietly(rig, &submitted);
+        let _ = fire_quietly(rig);
+    }
+    let matched = run(&mut rig.tw, pilot, "+helm/match A");
+    assert!(matched.contains("RCS velocity match locked"), "{matched}");
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &submitted);
+    set_rate(&mut rig.tw, 1);
+    (pilot, hull, vault)
+}
+
+/// The vault of `hull`'s cluster's Block A deposit.
+fn block_a_vault(tw: &TestWorld, hull: ObjId) -> VaultId {
+    let book = tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook");
+    let cluster = &book.cluster_sessions[&hull].cluster;
+    book.cluster_sites[cluster].vaults[&'A']
+}
+
+/// Each drone `hull` has out: its bay slot, its sortie, the digest it is sealed with and the
+/// thinks it has landed.
+fn drones_out(
+    tw: &TestWorld,
+    hull: ObjId,
+) -> Vec<(
+    u8,
+    tacsim::surface::excursion::ExcursionId,
+    Option<[u8; 32]>,
+    u64,
+)> {
+    tw.world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .cluster_sessions
+        .get(&hull)
+        .map(|session| {
+            session
+                .active_drones
+                .iter()
+                .map(|drone| {
+                    (
+                        drone.slot,
+                        drone.excursion_id,
+                        drone.mind_seal.as_ref().map(|seal| seal.source_sha256),
+                        drone.mind_think_seq,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The sorties whose close the mining tick still owes the excursion book.
+fn sorties_to_close(tw: &TestWorld) -> usize {
+    tw.world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .sorties_to_close
+        .len()
+}
+
+/// The record the excursion book holds for the drone `tv`, if it holds one.
+fn excursion_record(rig: &Rig, tv: ObjId) -> Option<tacsim::surface::excursion::RigRecord> {
+    let raw = rig.typed.get(&(
+        SmolStr::new(tacsim::NS),
+        SmolStr::new(format!(
+            "action-state/v1/{}/{}",
+            tacsim::surface::excursion::EXCURSION_FAMILY,
+            tv.0
+        )),
+    ))?;
+    serde_json::from_value(raw["value"].clone()).ok()
+}
+
+/// One wall second on: the ticks that fall due, and what they submit landed. Answers what
+/// `who` was told.
+fn drone_second(rig: &mut Rig, who: ObjId) -> String {
+    let next = rig.tw.world().now().saturating_add(1);
+    rig.tw.set_now(next);
+    let events = rig.tw.fire_due(next.saturating_mul(1_000));
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &submitted);
+    said(&rig.tw, &events, who)
+}
+
+/// Fly `hull`'s drones until none is out, a wall second a tick, and then until the draws
+/// and the closes the landings filed have landed. Answers the ticks the sorties took and
+/// everything `who` was told.
+fn fly_drones_home(rig: &mut Rig, hull: ObjId, who: ObjId) -> (u32, String) {
+    let mut told = String::new();
+    let mut ticks = 0;
+    while !drones_out(&rig.tw, hull).is_empty() {
+        ticks += 1;
+        assert!(ticks < 400, "the drones never came home");
+        told.push_str(&drone_second(rig, who));
+        told.push('\n');
+    }
+    for _ in 0..4 {
+        told.push_str(&drone_second(rig, who));
+        told.push('\n');
+    }
+    (ticks, told)
+}
+
+/// **Doc 44 unit MW.12 (Q-44-27)** — a drone is a sortie its mind flies: one whose mind is
+/// changed to stop short brings back less, and the excursion book holds no drone after it
+/// lands.
+///
+/// The *Salt Moth*, a `Dray-P`, stands matched off Block A of `ceres_halo`. Staff have
+/// published revision `B` of the collector drone's doctrine, which is the house doctrine `A`
+/// with one line changed: where `A` goes home with a whole hold, `B` goes home with one
+/// lift.
+///
+/// She launches a drone. It is sealed `A`, by the digest the pack's cast names; its sortie
+/// is in the excursion book; and its mind flies it. While it is out staff select `B` for the
+/// cast's drone: the drone that is out keeps `A`. It lands with four tonnes, the four tonnes
+/// Block A's deposit lost, and the excursion book no longer holds it.
+///
+/// She launches again. That drone is sealed `B`. The server restarts while it is out, and
+/// again between its landing and the close of its record; it lands with one tonne, the book
+/// is closed once and the hold holds five tonnes, not six. Across both sorties the ore in
+/// the deposit and the ore in the hold add up to what the deposit held.
+///
+/// Before the cut a drone's mind thought and its intents were discarded: 120 IC seconds
+/// after the launch the hold was credited four tonnes whatever the doctrine said, no revision
+/// could be selected for a drone, and the record of every sortie stayed in the excursion
+/// book for ever.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mw12_a_drone_whose_doctrine_stops_short_brings_back_less_and_no_sortie_stays_in_the_book() {
+    use tacsim::minds::content::cast::{CastActor, cast_doctrine};
+
+    let roster = Roster::default();
+    let mut rig = stocked_with(roster);
+    let staff = doctrine_staff(&mut rig);
+
+    // The pack's cast names the drone's doctrine by digest, and the boot stored its source.
+    let house = tacsim::minds::content::drone_mining_source();
+    let a = source_digest(house);
+    let pack = cast_doctrine(Some(store(&rig.tw)), CastActor::Drone).expect("A is held");
+    assert_eq!((pack.digest, pack.selected), (a, false));
+    assert_eq!(pack.name, "drone_mining");
+    assert_eq!(store(&rig.tw).mind_source(&a), Some(house));
+
+    // Staff publish revision B: A, but it goes home with one lift.
+    let whole = "    let enough = tool.rounds_max;\n";
+    assert!(house.contains(whole), "A goes home with a whole hold");
+    let short = house.replace(whole, "    let enough = 1;\n");
+    let (number, b) = publish_revision(&mut rig, staff, "ShortHaul", &short);
+    assert_ne!(b, a, "other bytes are another digest");
+    assert!(store(&rig.tw).has_mind_source(&b), "the store holds B");
+
+    let (pilot, hull, hold) = dray_p_matched_at_ceres_halo(&mut rig);
+    let rock = block_a_vault(&rig.tw, hull);
+
+    // The first sortie, on A.
+    let launched = run(&mut rig.tw, pilot, "+mine/drones A 1");
+    assert!(
+        launched.contains("Launched 1 collector drone(s) onto Block A")
+            && launched.contains("from bay slot(s) 1.")
+            && launched.contains("brings back what it lifts, up to 4 t"),
+        "{launched}"
+    );
+    for line in launched.lines() {
+        assert!(
+            line.chars().count() <= 120,
+            "a line past 120 columns: {line}"
+        );
+    }
+    // The ore Block A bears, as the launch names it.
+    let ore = launched
+        .split('`')
+        .nth(1)
+        .expect("the launch names the ore")
+        .to_owned();
+    let ore = ore.as_str();
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &submitted);
+    let in_rock = pool(&mut rig.tw, rock, ore);
+    assert!(in_rock >= 10, "Block A bears {ore}: {in_rock} t");
+    assert_eq!(pool(&mut rig.tw, hold, ore), 0);
+    let out = drones_out(&rig.tw, hull);
+    assert_eq!(out.len(), 1);
+    let (slot, first, sealed, _) = out[0];
+    assert_eq!(slot, 1);
+    assert_eq!(
+        sealed,
+        Some(a),
+        "the drone is sealed with the digest the cast names"
+    );
+    let record = excursion_record(&rig, first.tv).expect("the sortie is in the excursion book");
+    assert_eq!(record.excursion.map(|open| open.id), Some(first));
+
+    // Its mind flies it; staff select B while it is out, and it keeps A.
+    for _ in 0..5 {
+        let _ = drone_second(&mut rig, pilot);
+    }
+    let selected = run(
+        &mut rig.tw,
+        staff,
+        &format!("@mind/cast drone=ShortHaul@{number}"),
+    );
+    assert!(selected.contains("Selected."), "{selected}");
+    let next = cast_doctrine(Some(store(&rig.tw)), CastActor::Drone).expect("B is held");
+    assert_eq!((next.digest, next.selected, next.pack_digest), (b, true, a));
+    let out = drones_out(&rig.tw, hull);
+    assert_eq!(out[0].2, Some(a), "a selection never changes a live seal");
+    assert!(out[0].3 >= 3, "its mind has thought: {} thinks", out[0].3);
+    // She holds her station while it is out: a drone flies home to where she stands.
+    for order in ["+helm/approach B", "+helm/match B"] {
+        let refused = run(&mut rig.tw, pilot, order);
+        assert!(
+            refused.contains(tacsim::space::commands::DRONES_OUT),
+            "{order}: {refused}"
+        );
+    }
+    // Nothing has been credited while it is out.
+    assert_eq!(pool(&mut rig.tw, hold, ore), 0);
+    assert_eq!(pool(&mut rig.tw, rock, ore), in_rock);
+
+    let (ticks_a, told) = fly_drones_home(&mut rig, hull, pilot);
+    assert!(
+        told.contains(&format!(
+            "Collector drone 1 is back aboard with 4 t of `{ore}` from Block A."
+        )),
+        "{told}"
+    );
+    assert_eq!(
+        pool(&mut rig.tw, hold, ore),
+        4,
+        "A fills its hold: four tonnes reach the hold"
+    );
+    assert_eq!(
+        pool(&mut rig.tw, rock, ore),
+        in_rock - 4,
+        "and four tonnes left the rock"
+    );
+    assert!(
+        excursion_record(&rig, first.tv).is_none(),
+        "the excursion book holds no drone after it lands"
+    );
+    assert_eq!(sorties_to_close(&rig.tw), 0);
+
+    // The second sortie, on B, across two restarts.
+    let launched = run(&mut rig.tw, pilot, "+mine/drones A 1");
+    assert!(
+        launched.contains("Launched 1 collector drone(s)"),
+        "{launched}"
+    );
+    let submitted = drain_space_and_industry(&mut rig.tw);
+    land_all(&mut rig, &submitted);
+    let out = drones_out(&rig.tw, hull);
+    let (_, second, sealed, _) = out[0];
+    assert_eq!(
+        sealed,
+        Some(b),
+        "the next drone is sealed with the revision staff selected"
+    );
+    assert_ne!(second, first, "another sortie of the same bay slot");
+    assert!(excursion_record(&rig, second.tv).is_some());
+    for _ in 0..8 {
+        let _ = drone_second(&mut rig, pilot);
+    }
+    assert_eq!(drones_out(&rig.tw, hull).len(), 1, "it is still out");
+
+    // A restart with the sortie open: it comes back sealed B, and flies on.
+    let mut rig = reboot_with(rig, roster);
+    set_rate(&mut rig.tw, 1);
+    let out = drones_out(&rig.tw, hull);
+    assert_eq!(out.len(), 1, "the sortie is read back open");
+    assert_eq!((out[0].1, out[0].2), (second, Some(b)));
+    assert!(excursion_record(&rig, second.tv).is_some());
+
+    // It lands. What the landing tick submits is lost with a second restart: the draw that
+    // landing filed is the book's, and so is the close its record is owed.
+    let mut ticks_b = 8;
+    while !drones_out(&rig.tw, hull).is_empty() {
+        ticks_b += 1;
+        assert!(ticks_b < 400, "the second drone never came home");
+        let next = rig.tw.world().now().saturating_add(1);
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next.saturating_mul(1_000));
+        if drones_out(&rig.tw, hull).is_empty() {
+            // The landing tick: nothing it submitted lands.
+            let _ = drain_space_and_industry(&mut rig.tw);
+        } else {
+            let submitted = drain_space_and_industry(&mut rig.tw);
+            land_quietly(&mut rig, &submitted);
+        }
+    }
+    assert_eq!(sorties_to_close(&rig.tw), 1, "the close is owed");
+    assert!(
+        excursion_record(&rig, second.tv).is_some(),
+        "and not yet made"
+    );
+    assert_eq!(pool(&mut rig.tw, hold, ore), 4, "the draw has not landed");
+
+    let mut rig = reboot_with(rig, roster);
+    set_rate(&mut rig.tw, 1);
+    assert!(drones_out(&rig.tw, hull).is_empty());
+    assert_eq!(
+        sorties_to_close(&rig.tw),
+        1,
+        "the close is still owed after the restart"
+    );
+    for _ in 0..6 {
+        let _ = drone_second(&mut rig, pilot);
+    }
+    assert_eq!(
+        pool(&mut rig.tw, hold, ore),
+        5,
+        "B went home with one lift: one tonne more, drawn once"
+    );
+    assert_eq!(pool(&mut rig.tw, rock, ore), in_rock - 5);
+    assert!(
+        excursion_record(&rig, second.tv).is_none(),
+        "the excursion book holds no drone after it lands, across a restart too"
+    );
+    assert_eq!(sorties_to_close(&rig.tw), 0, "and the close is made once");
+    // Nothing more moves: a sortie that is closed is not closed or drawn again.
+    for _ in 0..6 {
+        let _ = drone_second(&mut rig, pilot);
+    }
+    assert_eq!(pool(&mut rig.tw, hold, ore), 5);
+    assert_eq!(pool(&mut rig.tw, rock, ore), in_rock - 5);
+    assert!(
+        ticks_b < ticks_a,
+        "the sortie that stopped short was the shorter: {ticks_b} ticks against {ticks_a}"
+    );
+
+    // A third drone, and she flies on in the second she launched it, before the launch's
+    // own action has landed: the drone is left behind, and the record its launch is still
+    // to stage is not left in the book.
+    let launched = run(&mut rig.tw, pilot, "+mine/drones A 1");
+    assert!(
+        launched.contains("Launched 1 collector drone(s)"),
+        "{launched}"
+    );
+    let launch_not_landed = drain_space_and_industry(&mut rig.tw);
+    assert!(
+        launch_not_landed
+            .iter()
+            .any(|submit| submit.action.key().id.as_str() == tacsim::space::BUBBLE_INPUT_ACTION),
+        "the launch files its record"
+    );
+    let third = drones_out(&rig.tw, hull)[0].1;
+    assert!(excursion_record(&rig, third.tv).is_none(), "not staged yet");
+    let away = run(&mut rig.tw, pilot, "+helm/autopilot ceres");
+    assert!(away.contains("Autopilot engaged"), "{away}");
+    assert!(
+        drones_out(&rig.tw, hull).is_empty(),
+        "she has left the cluster, and her drone behind"
+    );
+    assert_eq!(sorties_to_close(&rig.tw), 1);
+    for _ in 0..3 {
+        let _ = drone_second(&mut rig, pilot);
+    }
+    assert_eq!(
+        sorties_to_close(&rig.tw),
+        1,
+        "a close whose record is not in the book yet waits for it"
+    );
+    land_all(&mut rig, &launch_not_landed);
+    assert!(
+        excursion_record(&rig, third.tv).is_some(),
+        "the launch lands late, and stages the record"
+    );
+    for _ in 0..3 {
+        let _ = drone_second(&mut rig, pilot);
+    }
+    assert!(
+        excursion_record(&rig, third.tv).is_none(),
+        "and the close that waited takes it out"
+    );
+    assert_eq!(sorties_to_close(&rig.tw), 0);
+    assert_eq!(
+        pool(&mut rig.tw, hold, ore),
+        5,
+        "a drone left behind brings nothing"
+    );
+    assert_eq!(pool(&mut rig.tw, rock, ore), in_rock - 5);
+    no_refused_writes(&rig.tw);
 }

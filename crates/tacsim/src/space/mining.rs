@@ -26,13 +26,16 @@
 //!    `+helm/match <rock>` never teleports the ship. It requires 3D Euclidean range `<= 2,000 m`
 //!    and 3D Euclidean relative speed `dvx² + dvy² + dvz² < 5,000²` in `(mm/s)²` (`|Δv| < 5.000 m/s`).
 //! 4. **Timed laser & 4 collector drones under [`ExcursionId`] into `stow.ore` (`35a` §3 #6, §5 #13)**:
-//!    `+mine/laser` and `+mine/drones` start timed cycles progressed by `space_tick` on
-//!    `WorldTimeline`. Up to [`crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR`] (`4`) collector drones per `Dray-P`
-//!    run under real [`ExcursionId`]s. Completed cycles submit `tacsim_site_work`
+//!    `+mine/laser` starts a timed cycle progressed by `space_tick` on `WorldTimeline`. Up to
+//!    [`crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR`] (`4`) collector drones per
+//!    `Dray-P` run under real [`ExcursionId`]s; each is a sortie its mind flies
+//!    ([`super::sortie`], doc 44 unit MW.12), and it brings back what it lifted and carried
+//!    home. A completed cycle and a landed drone each submit `tacsim_site_work`
 //!    ([`next_space_mine_work_row`]) to transfer conserved ore (`metal_ore`, `ice_ore`,
 //!    `carbon_ore`, `strategic_ore`) from the rock's deposit vault into the hull's hold vault
 //!    (`stow.ore`), respecting `dray_p.json`'s `86,000 kg` (`86 t`) hold capacity and updating
-//!    [`PocketCursor`] in `tacsim.pockets`.
+//!    [`PocketCursor`] in `tacsim.pockets`. A sortie's record leaves the excursion book when
+//!    the drone is back aboard ([`super::sortie::SortieClose`]).
 
 use std::collections::BTreeMap;
 
@@ -123,12 +126,6 @@ pub const LASER_CYCLE_IC_SECS: i64 = 60;
 
 /// Tonnes of ore cut per completed mining-laser cycle (`4 t`).
 pub const LASER_CYCLE_YIELD_T: u64 = 4;
-
-/// Timed collector-drone sortie duration in IC seconds (`120 s`).
-pub const DRONE_SORTIE_IC_SECS: i64 = 120;
-
-/// Tonnes of ore collected per completed collector-drone sortie (`4 t`, so 4 drones yield `16 t`).
-pub const DRONE_SORTIE_YIELD_T: u64 = 4;
 
 /// Engineering heat added per normal mining-laser cycle (`+6` heat).
 pub const LASER_BASE_HEAT: u16 = 6;
@@ -515,12 +512,21 @@ pub struct DroneSortieState {
     pub rock_letter: char,
     /// Target [`OreFamily`].
     pub family: OreFamily,
-    /// W-clock IC timestamp when the sortie completes and unloads into `stow.ore`.
-    pub due_ic: i64,
-    /// Tonnes of ore collected on completion.
-    pub yield_t: u64,
     /// Operator who launched the sortie.
     pub operator: ObjId,
+    /// **The sortie in flight** (doc 44 unit MW.12; Q-44-27): the drone's own bubble, which
+    /// its mind flies. `None` only on a record written while a drone was a timer; such a
+    /// drone is reeled in with nothing at the next step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flight: Option<super::sortie::DroneFlight>,
+    /// The drone's own contact numbers (doc 44 unit MW.9): the rock and the ship it left.
+    #[serde(default, skip_serializing_if = "super::view::ContactBook::is_empty")]
+    pub contacts: super::view::ContactBook,
+    /// Whether the batch of thinks its hull's drones have out asked this drone (doc 44
+    /// units MW.11 and MW.12): a session read back collects that batch again from the
+    /// drones it asked, and from no drone launched since.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub think_out: bool,
     /// Sealed mind attached to the collector drone (`drone_mining.rhai`, `SF.R14`, `D-35-13`, `D-35-17`).
     #[serde(default, with = "super::picket::compact_mind_seal")]
     pub mind_seal: Option<crate::arena::mind::MindSeal>,
@@ -573,6 +579,27 @@ pub struct ActiveClusterMiningSession {
     /// Last W-clock IC timestamp of mining/helm activity in this cluster session (`SF.R23`).
     #[serde(default)]
     pub last_activity_ic_s: i64,
+    /// The steps this hull's drones have flown in this session (doc 44 unit MW.12): the
+    /// mark of the thinks each step collects.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub drone_steps: u32,
+    /// The world's wall second at the drones' last step.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub drones_stepped_wall_s: i64,
+    /// **The thinks this hull's drones owe their next step** (doc 44 units MW.11 and
+    /// MW.12): set when a step collects them, cleared when their answers land at the head
+    /// of the next. The batch is in RAM ([`super::thinks::ThinkHost`]); a session read back
+    /// with this set and no batch in flight collects the thinks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drone_thinks_owed: Option<super::tick::ThinksOwed>,
+}
+
+const fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+const fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
 }
 
 impl ActiveClusterMiningSession {
@@ -594,7 +621,21 @@ impl ActiveClusterMiningSession {
             claim_jump_flagged: false,
             last_ic_s: now_ic,
             last_activity_ic_s: now_ic,
+            drone_steps: 0,
+            drones_stepped_wall_s: 0,
+            drone_thinks_owed: None,
         }
+    }
+
+    /// The bay slots, lowest first, that no drone of this session is out of (doc 44 unit
+    /// MW.12): a slot's drone is one object, so a slot is launched again only once its
+    /// drone is back.
+    #[must_use]
+    pub fn free_drone_slots(&self) -> Vec<u8> {
+        let cap = u8::try_from(crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR).unwrap_or(4);
+        (1..=cap)
+            .filter(|slot| !self.active_drones.iter().any(|drone| drone.slot == *slot))
+            .collect()
     }
 }
 
@@ -1255,8 +1296,40 @@ pub fn rock_pool_tonnes(ctx: &Ctx<'_>, rock_vault: VaultId, family: OreFamily) -
         .unwrap_or(0)
 }
 
+/// **What every drone that is out carries of `family` from `rock_vault`**, kilograms (doc 44
+/// unit MW.12), leaving out the drones of `except`. A drone's load is held against the
+/// deposit while it is carried, and is drawn from it when the drone lands.
+#[must_use]
+pub fn drones_carried_kg(
+    book: &super::tick::SpaceBubbleBook,
+    rock_vault: VaultId,
+    family: OreFamily,
+    except: Option<ObjId>,
+) -> u64 {
+    book.cluster_sessions
+        .iter()
+        .filter(|(hull, _)| Some(**hull) != except)
+        .map(|(_, session)| {
+            let Some(site) = book.cluster_sites.get(&session.cluster) else {
+                return 0;
+            };
+            session
+                .active_drones
+                .iter()
+                .filter(|drone| {
+                    drone.family == family
+                        && site.vaults.get(&drone.rock_letter) == Some(&rock_vault)
+                })
+                .filter_map(|drone| drone.flight.as_ref())
+                .map(super::sortie::DroneFlight::hold_kg)
+                .sum::<u64>()
+        })
+        .sum()
+}
+
 /// Read the remaining uncommitted `OreDeposit` pool tonnes in `rock_vault` for `family`,
-/// subtracting any unlanded draws already queued in `pending_space_mine_draws` (`SF.R23`, `35b` §5 #15).
+/// subtracting any unlanded draws already queued in `pending_space_mine_draws` (`SF.R23`, `35b` §5 #15)
+/// and what collector drones that are out carry from it (doc 44 unit MW.12).
 #[must_use]
 pub fn rock_uncommitted_pool_tonnes(ctx: &Ctx<'_>, rock_vault: VaultId, family: OreFamily) -> u64 {
     let pool_t = rock_pool_tonnes(ctx, rock_vault, family);
@@ -1287,7 +1360,60 @@ pub fn rock_uncommitted_pool_tonnes(ctx: &Ctx<'_>, rock_vault: VaultId, family: 
             committed_t = committed_t.saturating_add(unlanded);
         }
     }
-    pool_t.saturating_sub(committed_t)
+    let carried_t = drones_carried_kg(book, rock_vault, family, None).div_ceil(1_000);
+    pool_t.saturating_sub(committed_t).saturating_sub(carried_t)
+}
+
+/// The tonnes of ore on their way into `hold_vault` by draws that are filed and have not
+/// landed (doc 44 unit MW.12): room a later landing must not count as free.
+fn hold_incoming_tonnes(ctx: &Ctx<'_>, hold_vault: VaultId) -> u64 {
+    let Some(pockets) = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .map(|h| h.families.pockets.clone())
+    else {
+        return 0;
+    };
+    let Some(book) = ctx.w.module_state::<super::tick::SpaceBubbleBook>() else {
+        return 0;
+    };
+    book.pending_space_mine_draws
+        .iter()
+        .filter(|draw| draw.to_vault == hold_vault)
+        .map(|draw| {
+            let landed = ctx
+                .action_state(&pockets, &draw.deposit)
+                .ok()
+                .flatten()
+                .and_then(PocketCursor::drawn_total)
+                .unwrap_or(0);
+            draw.expected_total_t
+                .saturating_sub(landed)
+                .min(draw.worked_t)
+        })
+        .sum()
+}
+
+/// What the operator is told when a drone is back aboard with ore.
+fn drone_back_line(slot: u8, stowed_t: u64, left_t: u64, good: &str, letter: char) -> String {
+    match (stowed_t, left_t) {
+        (0, 0) => format!("[SPACE] Collector drone {slot} is back aboard with an empty hold."),
+        (stowed_t, 0) => format!(
+            "[SPACE] Collector drone {slot} is back aboard with {stowed_t} t of `{good}` from Block {letter}."
+        ),
+        (stowed_t, left_t) => format!(
+            "[SPACE] Collector drone {slot} is back: {stowed_t} t of `{good}` stowed; {left_t} t the hold had no room \
+             for stays at Block {letter}."
+        ),
+    }
+}
+
+/// What the operator is told when a drone did not make its bay.
+fn drone_reeled_line(slot: u8) -> String {
+    format!(
+        "[SPACE] Collector drone {slot} did not make its bay before its endurance ran down; it was reeled in with \
+         an empty hold."
+    )
 }
 
 /// Return whether `actor` holds a live registered claim on `(cluster, letter)` in
@@ -1378,51 +1504,114 @@ pub fn cluster_rock_tenure_word(
     "open".to_owned()
 }
 
-/// The mark of a hull's drones' thinks: a cluster session has one batch and no steps.
-const DRONE_THINKS: super::thinks::Mark = (0, 0);
-
-/// **The answers of the thinks `hull`'s drones owe** (doc 44 unit MW.11), by drone, each
-/// with the sequence number it was collected with; and whether the batch is still out,
-/// which a server's host answers without waiting.
-fn landed_drone_thinks(
-    host: &super::thinks::ThinkHost,
-    hull: ObjId,
-) -> (
-    BTreeMap<ObjId, (u64, crate::arena::mind::ThinkResult)>,
-    bool,
+/// **Take the records of sorties that are over out of the excursion book** (doc 44 unit
+/// MW.12; Q-44-27). Each entry of the book's [`super::sortie::SortieClose`] list is tried
+/// until the excursion book no longer holds that sortie: the drone itself files the close
+/// (`tacsim_space_bubble_input`, switch `drones_land`), one at a time, and the entry is
+/// dropped once the record is gone or names another launch. So a sortie that ended just
+/// before a restart is closed after it, and one that is closed is never closed again.
+///
+/// A record the book does not hold yet may still be on its way: the launch stages it, and
+/// a ship can fly on before that lands. Such an entry is kept for
+/// [`super::sortie::SORTIE_CLOSE_WAIT_TICKS`] ticks. A close that was filed and has not
+/// taken the record out is filed again after twice as long each time, so a close the book
+/// refuses does not fill the queue of bubble inputs.
+fn close_landed_sorties(
+    ctx: &mut Ctx<'_>,
+    excursions: &StateFamilyHandle<
+        crate::surface::excursion::RigKey,
+        crate::surface::excursion::RigRecord,
+    >,
 ) {
-    use super::thinks::{Due, Owed, Owner};
-    match host.settle(Owner::Cluster(hull), DRONE_THINKS, Due::default()) {
-        Owed::Held => (BTreeMap::new(), true),
-        Owed::Nothing => (BTreeMap::new(), false),
-        Owed::Ready { answers, .. } => (
-            answers
-                .into_iter()
-                .filter_map(|answer| Some((answer.unit, (answer.think_seq, answer.result?))))
-                .collect(),
-            false,
-        ),
-    }
-}
+    use super::sortie::{SORTIE_CLOSE_RETRY_MAX_S, SORTIE_CLOSE_WAIT_TICKS};
 
-/// **Write a drone's landed think into its record** (doc 44 unit MW.11): what it
-/// remembered and traced, and the next sequence number. An answer for a think the record
-/// has moved past is dropped. The intents are still discarded: the drone's yield is a
-/// timer until doc 44 unit MW.12.
-fn land_drone_think(
-    drone: &mut DroneSortieState,
-    thoughts: &mut BTreeMap<ObjId, (u64, crate::arena::mind::ThinkResult)>,
-) {
-    let Some((think_seq, result)) = thoughts.remove(&drone.excursion_id.tv) else {
-        return;
-    };
-    if think_seq != drone.mind_think_seq {
+    let closes = ctx
+        .w
+        .module_state::<super::tick::SpaceBubbleBook>()
+        .map(|book| book.sorties_to_close.clone())
+        .unwrap_or_default();
+    if closes.is_empty() {
         return;
     }
-    drone.mind_think_seq = drone.mind_think_seq.saturating_add(1);
-    drone.mind_memory = result.memory;
-    if !result.trace.is_empty() {
-        drone.mind_last_trace = result.trace;
+    let wall_now_s = ctx.w.now();
+    let mut kept = Vec::with_capacity(closes.len());
+    let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
+    for mut close in closes.iter().copied() {
+        let drone = close.id.tv;
+        let held = match ctx.action_state(excursions, &crate::surface::excursion::RigKey(drone)) {
+            Ok(Some(record)) => Some(
+                record
+                    .excursion
+                    .as_ref()
+                    .is_some_and(|open| open.id == close.id),
+            ),
+            Ok(None) => None,
+            // A book that will not read is tried again at the next tick.
+            Err(_) => {
+                kept.push(close);
+                continue;
+            }
+        };
+        match held {
+            // The book holds the drone's record, and it is not this sortie's: closed.
+            Some(false) => continue,
+            // The book holds nothing for the drone: closed, unless the launch that stages
+            // the record has not landed yet.
+            None => {
+                close.absent_ticks = close.absent_ticks.saturating_add(1);
+                if close.filed == 0 && close.absent_ticks < SORTIE_CLOSE_WAIT_TICKS {
+                    kept.push(close);
+                }
+                continue;
+            }
+            Some(true) => {}
+        }
+        if ctx.w.get(drone).is_none() {
+            // The drone's object is gone, so nothing can file its close. Said once, and
+            // not tried again.
+            tracing::warn!(
+                drone = drone.0,
+                launch_ic = close.id.launch_ic,
+                "tacsim: a collector drone is gone with its sortie's record still in the excursion book"
+            );
+            continue;
+        }
+        if wall_now_s >= close.retry_at_wall_s {
+            let hull = ctx
+                .w
+                .get(drone)
+                .and_then(|thing| thing.location)
+                .unwrap_or(drone);
+            // The drone files its own close, one at a time: a close that is still on its
+            // way is not filed again.
+            let filed = fire
+                .as_principal(ctx, drone, drone, |ctx| {
+                    super::tick::submit_drone_landing(ctx, hull, close.id)
+                })
+                .is_ok_and(|seq| seq.is_some());
+            if filed {
+                let wait_s = 1_i64
+                    .checked_shl(close.filed.min(16))
+                    .unwrap_or(SORTIE_CLOSE_RETRY_MAX_S)
+                    .min(SORTIE_CLOSE_RETRY_MAX_S);
+                close.filed = close.filed.saturating_add(1);
+                close.retry_at_wall_s = wall_now_s.saturating_add(wait_s);
+            }
+        }
+        kept.push(close);
+    }
+    if kept != closes
+        && let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
+    {
+        // What the tick's own pass added since the list was read stays on it.
+        let added: Vec<_> = book
+            .sorties_to_close
+            .iter()
+            .filter(|close| !closes.iter().any(|read| read.id == close.id))
+            .copied()
+            .collect();
+        kept.extend(added);
+        book.sorties_to_close = kept;
     }
 }
 
@@ -1462,6 +1651,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             super::thinks::Owner::Bubble(_) | super::thinks::Owner::Adrift(_) => true,
         });
     }
+    let wall_now_s = ctx.w.now();
+    let frozen = ctx.w.world_timeline().is_frozen();
 
     for hull in hulls {
         let mut in_tick_committed: BTreeMap<(VaultId, OreFamily), u64> = BTreeMap::new();
@@ -1479,9 +1670,8 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 if let Some(laser) = &mut s.active_laser {
                     laser.due_ic = laser.due_ic.saturating_add(dt_paused);
                 }
-                for drone in &mut s.active_drones {
-                    drone.due_ic = drone.due_ic.saturating_add(dt_paused);
-                }
+                // Her drones stand where they are while she docks. Their step is a second
+                // however long they stood, so nothing is owed back to them.
             }
             continue;
         }
@@ -1584,65 +1774,120 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
             }
         }
 
-        // Check active collector-drone sorties completion.
-        // Doc 44 unit MW.11: the thinks this hull's drones were collected on the last tick
-        // land here, and their next are collected for the pool. Nothing waits for a worker:
-        // while a batch is still out on a server's host, its drones think no further.
-        let (mut drone_thoughts, drones_thinking) = think_host
-            .as_deref()
-            .map_or((BTreeMap::new(), false), |host| {
-                landed_drone_thinks(host, hull)
-            });
-        let mut drone_asks = Vec::new();
-        let mut remaining_drones = Vec::new();
-        for drone in &session_snapshot.active_drones {
-            if now.at >= drone.due_ic {
-                if let Some(rock_vault) = site_snapshot.vaults.get(&drone.rock_letter).copied() {
-                    let uncommitted = rock_uncommitted_pool_tonnes(ctx, rock_vault, drone.family);
-                    let taken_this_tick = in_tick_committed
-                        .get(&(rock_vault, drone.family))
-                        .copied()
-                        .unwrap_or(0);
-                    let avail_t = uncommitted.saturating_sub(taken_this_tick);
-                    let take_t = drone.yield_t.min(hold_room_t).min(avail_t);
-                    if take_t > 0 {
-                        hold_room_t = hold_room_t.saturating_sub(take_t);
-                        *in_tick_committed
-                            .entry((rock_vault, drone.family))
-                            .or_insert(0) += take_t;
-                        completed_draws.push((
-                            drone.rock_letter,
-                            drone.family,
+        // The collector drones' sorties (doc 44 unit MW.12; Q-44-27; `super::sortie`): each
+        // drone's mind flies its own bubble, one step for each wall second, its thinks on
+        // the server's pool (doc 44 unit MW.11). A drone that lands brings what its hold
+        // holds; one that is reeled in brings nothing. Nothing waits for a worker: while a
+        // step's thinks are still out on a server's host, the drones stand where they are.
+        let mut flown = session_snapshot.clone();
+        flown.ship_pos_m = next_pos;
+        flown.ship_vel_mmps = next_vel;
+        let mut sorties_over: Vec<super::sortie::SortieClose> = Vec::new();
+        // While the world's timeline is frozen the drones stand where they are. Their step
+        // is a second however long they stood, so frozen time is not owed back to them.
+        if let Some(host) = think_host.as_deref().filter(|_| !frozen) {
+            // What each rock these drones work bears that they may lift or carry: the
+            // deposit, less every draw filed on it, less what this tick's laser took, less
+            // what other hulls' drones carry.
+            let mut free_t: BTreeMap<(char, OreFamily), u64> = BTreeMap::new();
+            for drone in &flown.active_drones {
+                let key = (drone.rock_letter, drone.family);
+                if free_t.contains_key(&key) {
+                    continue;
+                }
+                let Some(rock_vault) = site_snapshot.vaults.get(&drone.rock_letter).copied() else {
+                    continue;
+                };
+                let own_t = super::sortie::carried_kg(&flown, key).div_ceil(1_000);
+                let taken_this_tick = in_tick_committed
+                    .get(&(rock_vault, drone.family))
+                    .copied()
+                    .unwrap_or(0);
+                free_t.insert(
+                    key,
+                    rock_uncommitted_pool_tonnes(ctx, rock_vault, drone.family)
+                        .saturating_add(own_t)
+                        .saturating_sub(taken_this_tick),
+                );
+            }
+            let free_kg: BTreeMap<(char, OreFamily), u64> = free_t
+                .iter()
+                .map(|(key, tonnes)| (*key, tonnes.saturating_mul(1_000)))
+                .collect();
+            let rocks: BTreeMap<char, [i64; 3]> = resolved_cluster
+                .rocks()
+                .iter()
+                .map(|spec| (spec.letter, spec.vel_mmps))
+                .collect();
+            // The absent player's rule (doc 44 unit MW.7, `crate::arena::absent`): no mind
+            // mines for a crew that is away. Her drones keep their helm and come home.
+            let crew_away = ctx
+                .w
+                .module_state::<super::tick::SpaceBubbleBook>()
+                .and_then(|b| b.linkdead_state(hull))
+                .is_some_and(super::tick::SpaceLinkdeadState::backup_has_helm);
+            let ended = super::sortie::fly_drones(
+                &mut flown,
+                &super::sortie::DroneTick {
+                    host,
+                    store: ctx.w.module_state::<crate::store::TacsimStore>(),
+                    hull,
+                    wall_now_s,
+                    ic_now_s: now.at,
+                    seat: super::sortie::drone_seat(crew_away),
+                    rocks: &rocks,
+                    free_kg: &free_kg,
+                },
+            );
+            if let Some(hold_vault) = hold_vault {
+                hold_room_t = hold_room_t.saturating_sub(hold_incoming_tonnes(ctx, hold_vault));
+            }
+            let mut landed_t: BTreeMap<(char, OreFamily), u64> = BTreeMap::new();
+            for (drone, end) in ended {
+                sorties_over.push(super::sortie::SortieClose::of(drone.excursion_id));
+                let line = match end {
+                    super::sortie::Ended::Reeled => drone_reeled_line(drone.slot),
+                    super::sortie::Ended::Landed { hold_kg } => {
+                        let key = (drone.rock_letter, drone.family);
+                        let hold_t = hold_kg / 1_000;
+                        // What the deposit still has for this drone: what was free, less
+                        // what its sisters still carry and what landed before it this tick.
+                        let avail_t = free_t
+                            .get(&key)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_sub(super::sortie::carried_kg(&flown, key).div_ceil(1_000))
+                            .saturating_sub(landed_t.get(&key).copied().unwrap_or(0));
+                        let take_t = hold_t.min(hold_room_t).min(avail_t);
+                        if take_t > 0 {
+                            hold_room_t = hold_room_t.saturating_sub(take_t);
+                            *landed_t.entry(key).or_insert(0) += take_t;
+                            completed_draws.push((
+                                drone.rock_letter,
+                                drone.family,
+                                take_t,
+                                drone.operator,
+                                Some(drone.excursion_id),
+                            ));
+                        }
+                        drone_back_line(
+                            drone.slot,
                             take_t,
-                            drone.operator,
-                            Some(drone.excursion_id),
-                        ));
+                            hold_t.saturating_sub(take_t),
+                            ore_good(drone.family),
+                            drone.rock_letter,
+                        )
                     }
-                }
-            } else {
-                let mut updated = drone.clone();
-                land_drone_think(&mut updated, &mut drone_thoughts);
-                if !drones_thinking && let Some(host) = think_host.as_deref() {
-                    drone_asks.extend(super::picket::collect_drone_think(
-                        host,
-                        ctx.w.module_state::<crate::store::TacsimStore>(),
-                        updated.excursion_id.tv,
-                        updated.mind_seal.as_ref(),
-                        session_snapshot.ship_pos_m,
-                        updated.mind_think_seq,
-                        &updated.mind_memory,
-                    ));
-                }
-                remaining_drones.push(updated);
+                };
+                ctx.out.sys_to_actor(drone.operator, "tacsim.space", line);
             }
         }
-        if !drones_thinking && let Some(host) = think_host.as_deref() {
-            let _ = host.submit(
-                super::thinks::Owner::Cluster(hull),
-                DRONE_THINKS,
-                drone_asks,
-            );
+        if !sorties_over.is_empty()
+            && let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>()
+        {
+            book.sorties_to_close.extend(sorties_over);
         }
+        let remaining_drones = flown.active_drones;
 
         let had_mining_activity = !completed_draws.is_empty()
             || remaining_laser.is_some()
@@ -1786,7 +2031,7 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 ([414_000_000, 0, 0], [0, 17_900, 0])
             };
             if let Some(book) = ctx.w.module_state_mut::<super::tick::SpaceBubbleBook>() {
-                book.cluster_sessions.remove(&hull);
+                book.end_cluster_session(hull);
                 book.free_flights.insert(
                     hull,
                     super::tick::SpaceFreeFlightRecord {
@@ -1821,6 +2066,9 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 || reached_approach_standoff
                 || session.active_laser != remaining_laser
                 || session.active_drones != remaining_drones
+                || session.drone_steps != flown.drone_steps
+                || session.drones_stepped_wall_s != flown.drones_stepped_wall_s
+                || session.drone_thinks_owed != flown.drone_thinks_owed
                 || session.last_activity_ic_s != last_act;
             if moved {
                 session.ship_pos_m = next_pos;
@@ -1830,12 +2078,18 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
                 }
                 session.active_laser = remaining_laser;
                 session.active_drones = remaining_drones;
+                session.drone_steps = flown.drone_steps;
+                session.drones_stepped_wall_s = flown.drones_stepped_wall_s;
+                session.drone_thinks_owed = flown.drone_thinks_owed;
                 session.last_ic_s = now.at;
                 session.last_activity_ic_s = last_act;
             }
         }
         super::commands::push_space_panels(ctx, hull);
     }
+
+    // 1b. The sorties that are over leave the excursion book (doc 44 unit MW.12).
+    close_landed_sorties(ctx, &handles.families.excursions);
 
     // 2. For each laid-up cluster, let its dedicated deposit openers open any unopened
     //    `OreDeposit`, let its block places seed authored held tenure (`pallas_syndicate`),

@@ -18,6 +18,7 @@
 //! | `emcon(true)` | her posture is COMBAT |
 //! | `emcon(false)` | her posture is the quietest her seat allows ([`Seat::quietest`]) |
 //! | `fire(id, slot)` | the mount `id` fires at her lock; each `fire` of a tube is one torpedo of one salvo |
+//! | `fire(id, slot)`, `id` a drone's collector | the collector works her lock: one lift of ore from a rock in reach into the drone's hold ([`BubbleInputCommand::WorkRock`]; doc 44 unit MW.12) |
 //! | anything else | nothing: no other intent has a meaning in a bubble |
 //!
 //! A burn stands until a later think changes it, as a heading does on the ground. A shot with
@@ -35,6 +36,14 @@
 //! space half is [`FireRule`], which today has `Free` and `Never`. The follow-up adds the
 //! variant that asks MW.7's rule, and the record of who fired on whom in a bubble
 //! (`Relations::fired` is by party, and the rule is by unit).
+//!
+//! # A collector drone
+//!
+//! A drone's mind flies its sortie through this function and no other (doc 44 unit MW.12;
+//! Q-44-27): it locks the rock or the ship it left, burns toward its lock or along a helm
+//! word, and works the rock with its collector. Its seat is [`Seat::DRONE`]. A drone whose
+//! ship's crew is away keeps its helm and loses its collector ([`Seat::work`]): the absent
+//! player's rule (`crate::arena::absent`) lets no mind mine for a player who is not there.
 //!
 //! # What is still Rust's
 //!
@@ -108,6 +117,9 @@ pub struct Seat {
     pub into_reserve: bool,
     /// The quietest posture `emcon(false)` gives it.
     pub quietest: EmconPosture,
+    /// Whether its mind may work a rock with a collector (doc 44 unit MW.12). No seat but a
+    /// drone's carries one.
+    pub work: bool,
 }
 
 impl Seat {
@@ -117,6 +129,7 @@ impl Seat {
         burn: BurnRule::Free,
         into_reserve: false,
         quietest: EmconPosture::Standard,
+        work: false,
     };
 
     /// A raider: free to fire, burns what it has, and runs dark when it falls silent.
@@ -125,6 +138,7 @@ impl Seat {
         burn: BurnRule::Free,
         into_reserve: true,
         quietest: EmconPosture::Ghost,
+        work: false,
     };
 
     /// A hull flown for a crew with no link (doc 35 §11 `B-4`): it never locks or shoots, it
@@ -136,6 +150,18 @@ impl Seat {
         burn: BurnRule::Never,
         into_reserve: true,
         quietest: EmconPosture::Standard,
+        work: false,
+    };
+
+    /// A collector drone (doc 44 unit MW.12; Q-44-27): it locks what it flies to, burns
+    /// what it has and works a rock. It carries nothing but its collector, so its freedom
+    /// to lock gives it nothing to shoot.
+    pub const DRONE: Seat = Seat {
+        fire: FireRule::Free,
+        burn: BurnRule::Free,
+        into_reserve: true,
+        quietest: EmconPosture::Standard,
+        work: true,
     };
 }
 
@@ -150,6 +176,8 @@ pub struct Applied {
     pub fired_heavy: bool,
     /// Intents the seat dropped or that mean nothing in a bubble.
     pub dropped: u32,
+    /// The mind asked its collector to work its lock, and the seat let it.
+    pub asked_work: bool,
 }
 
 /// The families of mount a `fire` can name.
@@ -158,10 +186,14 @@ enum Mount {
     Laser,
     Railgun,
     Tube,
+    /// A drone's collector: it works a rock and shoots nothing.
+    Collector,
 }
 
 fn mount_of(ship: &SpaceShipState, weapon: &str) -> Option<Mount> {
-    if ship.lasers.iter().any(|mount| mount.id == weapon) {
+    if ship.collector.as_ref().is_some_and(|kit| kit.id == weapon) {
+        Some(Mount::Collector)
+    } else if ship.lasers.iter().any(|mount| mount.id == weapon) {
         Some(Mount::Laser)
     } else if ship.railguns.iter().any(|mount| mount.id == weapon) {
         Some(Mount::Railgun)
@@ -264,14 +296,19 @@ pub fn apply_intents(
             IntentKind::Heading { mdeg } => heading = Some(*mdeg),
             IntentKind::Speed { cms } => strength = Some(*cms),
             IntentKind::Goal(MotorGoal::Hold) => strength = Some(0),
-            IntentKind::Fire { weapon, .. } if seat.fire == FireRule::Free => {
+            IntentKind::Fire { weapon, .. } => {
+                // A collector is the seat's to work or not; every other mount is the seat's
+                // to fire or not.
                 match bubble
                     .ships
                     .get(ship_id)
                     .and_then(|ship| mount_of(ship, weapon))
                 {
-                    Some(mount) => shots.push(mount),
-                    None => applied.dropped += 1,
+                    Some(Mount::Collector) if seat.work => shots.push(Mount::Collector),
+                    Some(mount) if mount != Mount::Collector && seat.fire == FireRule::Free => {
+                        shots.push(mount);
+                    }
+                    _ => applied.dropped += 1,
                 }
             }
             _ => applied.dropped += 1,
@@ -332,10 +369,11 @@ pub fn apply_intents(
         applied.dropped += u32::try_from(shots.len()).unwrap_or(u32::MAX);
         return applied;
     };
-    if bubble
-        .ships
-        .get(ship_id)
-        .is_some_and(|ship| ship.heat_permille > BLOWDOWN_HEAT_PERMILLE)
+    if shots.iter().any(|mount| *mount != Mount::Collector)
+        && bubble
+            .ships
+            .get(ship_id)
+            .is_some_and(|ship| ship.heat_permille > BLOWDOWN_HEAT_PERMILLE)
     {
         command(
             bubble,
@@ -382,6 +420,16 @@ pub fn apply_intents(
                         shooter_id,
                         target_id,
                         count: salvo,
+                    },
+                );
+            }
+            Mount::Collector => {
+                applied.asked_work = true;
+                command(
+                    bubble,
+                    BubbleInputCommand::WorkRock {
+                        ship_id: shooter_id,
+                        rock_id: target_id,
                     },
                 );
             }
@@ -610,5 +658,132 @@ mod tests {
         );
         assert_eq!(applied.dropped, 1);
         assert!(events.is_empty(), "{events:?}");
+    }
+
+    /// Doc 44 unit MW.12 (Q-44-27): a `fire` that names a drone's collector works the rock
+    /// the drone has locked, as one command on the tape, and only for a seat that may work.
+    #[test]
+    fn a_collector_works_the_rock_its_drone_has_locked_for_a_seat_that_may_work() {
+        use super::super::sortie::{BAY_SHIP, COLLECTOR_ID, DRONE_SHIP, ROCK_SHIP, rig};
+
+        let mut bubble = rig::flight(1, 3).bubble;
+        // Beside the rock, at rest against it.
+        let rock_at = bubble.ships[ROCK_SHIP].pos_m;
+        if let Some(drone) = bubble.ships.get_mut(DRONE_SHIP) {
+            drone.pos_m = [rock_at[0] - 50, rock_at[1], rock_at[2]];
+        }
+        let mut tape = BubbleInputTape::new(&bubble);
+        let contacts = BTreeMap::from([
+            (ContactId(1), ROCK_SHIP.to_owned()),
+            (ContactId(2), BAY_SHIP.to_owned()),
+        ]);
+        let ask = [
+            IntentKind::Lock {
+                contact: ContactId(1),
+            },
+            IntentKind::Fire {
+                weapon: SmolStr::new_static(COLLECTOR_ID),
+                slot: Some(1),
+            },
+        ];
+        let hold_kg = |bubble: &LocalSpaceBubble| {
+            bubble.ships[DRONE_SHIP]
+                .collector
+                .as_ref()
+                .map_or(0, |kit| kit.hold_kg)
+        };
+        let mut events = Vec::new();
+
+        // A seat that may not work: the lock stands, the lift is dropped.
+        for seat in [
+            Seat {
+                work: false,
+                ..Seat::DRONE
+            },
+            Seat::PATROL,
+        ] {
+            let applied = apply_intents(
+                &mut bubble,
+                &mut tape,
+                DRONE_SHIP,
+                seat,
+                &contacts,
+                &ask,
+                &mut events,
+            );
+            assert!(!applied.asked_work);
+            assert_eq!(applied.dropped, 1);
+            assert_eq!(hold_kg(&bubble), 0);
+        }
+        assert_eq!(
+            bubble.ships[DRONE_SHIP].locked_target_id.as_deref(),
+            Some(ROCK_SHIP)
+        );
+        assert!(
+            !tape
+                .entries
+                .iter()
+                .any(|entry| matches!(entry.command, BubbleInputCommand::WorkRock { .. }))
+        );
+
+        // The drone's own seat: one lift, one command.
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            DRONE_SHIP,
+            Seat::DRONE,
+            &contacts,
+            &ask,
+            &mut events,
+        );
+        assert!(applied.asked_work);
+        assert_eq!(applied.dropped, 0);
+        assert_eq!(hold_kg(&bubble), 1_000);
+        assert_eq!(bubble.ships[ROCK_SHIP].ore_kg, Some(2_000));
+        assert_eq!(
+            tape.entries.last().map(|entry| entry.command.clone()),
+            Some(BubbleInputCommand::WorkRock {
+                ship_id: DRONE_SHIP.to_owned(),
+                rock_id: ROCK_SHIP.to_owned(),
+            })
+        );
+        assert!(events.is_empty(), "a lift is no combat event: {events:?}");
+        // The tape alone reproduces it.
+        assert_eq!(tape.replay().0, bubble);
+
+        // Locked on the ship it left, the collector has nothing to work.
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            DRONE_SHIP,
+            Seat::DRONE,
+            &contacts,
+            &[
+                IntentKind::Lock {
+                    contact: ContactId(2),
+                },
+                IntentKind::Fire {
+                    weapon: SmolStr::new_static(COLLECTOR_ID),
+                    slot: Some(1),
+                },
+            ],
+            &mut events,
+        );
+        assert!(applied.asked_work);
+        assert_eq!(hold_kg(&bubble), 1_000, "the ship is not a rock");
+        // A mount it does not carry is dropped, as on any hull.
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            DRONE_SHIP,
+            Seat::DRONE,
+            &contacts,
+            &[IntentKind::Fire {
+                weapon: SmolStr::new_static("laser_dorsal"),
+                slot: Some(1),
+            }],
+            &mut events,
+        );
+        assert_eq!(applied.dropped, 1);
     }
 }
