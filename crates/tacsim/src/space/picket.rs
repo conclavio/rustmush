@@ -969,6 +969,7 @@ pub(crate) fn collect_drone_think(
         think_seq,
         contacts,
         jobs: vec![job],
+        sealed: None,
     })
 }
 
@@ -993,13 +994,38 @@ pub(crate) fn collect_bubble_think(
     book: &mut ContactBook,
     situation: &Situation,
 ) -> Option<Ask> {
+    let sources: Vec<super::thinks::Source> = digests
+        .iter()
+        .map(|digest| super::thinks::Source::Doctrine(*digest))
+        .collect();
+    collect_bubble_think_on(
+        host, store, bubble, who, ship_id, unit_obj, &sources, think_seq, memory, book, situation,
+    )
+}
+
+/// **[`collect_bubble_think`] over sources of either kind** (doc 44 unit MW.13): a doctrine
+/// by its digest, or a mind sealed aboard on its own class row, card and rule program
+/// ([`super::thinks::Source`]). A sealed mind is only ever a seat's first source; the
+/// [`Ask`] carries it, so the answer says whether it was that mind that answered.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub(crate) fn collect_bubble_think_on(
+    host: &ThinkHost,
+    store: Option<&crate::store::TacsimStore>,
+    bubble: &LocalSpaceBubble,
+    who: Thinker,
+    ship_id: &str,
+    unit_obj: ObjId,
+    sources: &[super::thinks::Source],
+    think_seq: u64,
+    memory: &[u8],
+    book: &mut ContactBook,
+    situation: &Situation,
+) -> Option<Ask> {
     let (view, contacts) =
         super::view::space_mind_view(bubble, ship_id, unit_obj, book, situation)?;
     let view = Arc::new(view);
-    let jobs: Vec<_> = digests
-        .iter()
-        .filter_map(|digest| host.job(store, unit_obj, *digest, think_seq, &view, memory))
-        .collect();
+    let (jobs, sealed) = host.jobs_on(store, unit_obj, sources, think_seq, &view, memory);
     if jobs.is_empty() {
         return None;
     }
@@ -1009,6 +1035,7 @@ pub(crate) fn collect_bubble_think(
         think_seq,
         contacts,
         jobs,
+        sealed,
     })
 }
 

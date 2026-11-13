@@ -54,8 +54,8 @@ use smol_str::SmolStr;
 
 use crate::arena::mind::MindSeal;
 use crate::minds::ic_sortie::{
-    ClaimRead, IcHostTicket, SurfaceClose, active_under_licence, claim_closed, claim_of,
-    claim_seal, retained_source,
+    ClaimRead, IcHostTicket, SurfaceClose, active_under_licence, claim_closed, claim_execution,
+    claim_of, claim_seal,
 };
 use crate::port::coop::{helm_of, name_of, say};
 use crate::port::epoch::{EPOCH_KEY_PREFIX, EpochKey, EpochProvider, ShipEpochRecord};
@@ -226,36 +226,46 @@ pub(crate) fn fits(
     }
 }
 
-/// **A mind sealed aboard a hull, as the space seat reads it.**
-#[derive(Clone, Debug)]
-pub(crate) struct Sealed {
+/// **A mind sealed aboard a hull, as the space seat reads it**, borrowed from the claim book.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sealed<'w> {
     /// The claim's open token.
     pub(crate) open: CommitToken,
     /// Who sealed it: the claim's dispatcher, and the seal's principal.
     pub(crate) dispatcher: ObjId,
     /// The claim's own seal.
-    pub(crate) seal: MindSeal,
+    pub(crate) seal: &'w MindSeal,
     /// The source the claim retains.
-    pub(crate) source: String,
+    pub(crate) source: &'w str,
 }
 
 /// **The mind sealed aboard `hull`, if one still stands** (the module note): the claim book's
 /// active claim on the hull, its seal and its retained source, and only while the seal still
 /// fits her ([`fits`]). The one reader the space seat has.
 #[must_use]
-pub(crate) fn sealed(w: &World, hull: ObjId) -> Option<Sealed> {
-    let ClaimRead::Active { open, dispatcher } = claim_of(w, hull) else {
-        return None;
-    };
-    let seal = claim_seal(w, open)?;
-    fits(w, hull, &seal, dispatcher).ok()?;
-    let source = retained_source(w, &seal.source_sha256)?.to_owned();
+pub(crate) fn sealed(w: &World, hull: ObjId) -> Option<Sealed<'_>> {
+    let (open, dispatcher, seal, source) = claim_execution(w, hull)?;
+    fits(w, hull, seal, dispatcher).ok()?;
     Some(Sealed {
         open,
         dispatcher,
         seal,
         source,
     })
+}
+
+/// **The mind sealed aboard `hull`, made ready to think on `w`'s host**, if one stands
+/// ([`sealed`]): the space seat's first source (`crate::space::backup`).
+#[must_use]
+pub(crate) fn thinker(w: &World, hull: ObjId) -> Option<Arc<crate::space::thinks::SealedMind>> {
+    let sealed = sealed(w, hull)?;
+    let host = crate::space::thinks::host_of(w)?;
+    let classes = w
+        .module_state::<crate::store::TacsimStore>()
+        .map_or(crate::arena::core::ClassTable::STOCK, |store| {
+            store.cfg.minds.classes
+        });
+    host.sealed_mind(hull, sealed.seal, sealed.source, &classes)
 }
 
 /// Every ship hull the world holds: the programme ports' rows, the yards' and the owned-hull

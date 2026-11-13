@@ -59,6 +59,31 @@ pub fn claim_seal(world: &World, open: CommitToken) -> Option<crate::arena::Mind
         .map(|row| row.open.execution.seal.clone())
 }
 
+/// **The active claim on `unit`, with what it retains** (doc 44 unit MW.13): its open token,
+/// its dispatcher, its seal and its source, borrowed from the book. What a host that thinks
+/// with a claimed mind outside an arena reads (`crate::port::ship_mind::sealed`); `None`
+/// where the claim path is not composed or the unit has no active claim.
+#[must_use]
+pub fn claim_execution(
+    world: &World,
+    unit: ObjId,
+) -> Option<(CommitToken, ObjId, &crate::arena::MindSeal, &str)> {
+    let state = world.module_state::<IcSorties>()?;
+    state
+        .active
+        .get(&unit)
+        .and_then(|open| state.rows.get(open))
+        .filter(|row| row.closed.is_none())
+        .map(|row| {
+            (
+                row.open.operation,
+                row.open.dispatcher,
+                &row.open.execution.seal,
+                row.open.execution.source.as_str(),
+            )
+        })
+}
+
 /// **An active claim's retained source by its digest** (doc 23 cut S.4b-2, §17.10's `sources`
 /// seam): the text a field's arena installs the claim's runner from, which the store need not
 /// hold (the claim retains its source whole, D-23-14).

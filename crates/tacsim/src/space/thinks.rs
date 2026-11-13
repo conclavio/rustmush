@@ -100,6 +100,9 @@ pub struct Ask {
     pub contacts: BTreeMap<ContactId, String>,
     /// The job, once for each source to try, first choice first.
     pub jobs: Vec<CollectedThink>,
+    /// **The mind sealed aboard whose think `jobs[0]` is** (doc 44 unit MW.13), when the
+    /// seat's first source is one: the answer says whether it was that mind that answered.
+    pub sealed: Option<Arc<SealedMind>>,
 }
 
 /// **One actor's think, answered**: [`Ask`] without its jobs, and the first answer that
@@ -117,6 +120,9 @@ pub struct Answer {
     pub contacts: BTreeMap<ContactId, String>,
     /// The first clean answer.
     pub result: Option<ThinkResult>,
+    /// **The mind sealed aboard, when the clean answer is its own** (doc 44 unit MW.13):
+    /// `None` when a house default answered, or nothing did.
+    pub sealed: Option<Arc<SealedMind>>,
 }
 
 /// **A step as it fell due**: what the tick that first found it due would have stepped the
@@ -188,6 +194,8 @@ struct Asked {
     unit: ObjId,
     think_seq: u64,
     contacts: BTreeMap<ContactId, String>,
+    /// The mind sealed aboard whose think the ask's first job is ([`Ask::sealed`]).
+    sealed: Option<Arc<SealedMind>>,
     /// Struck ([`ThinkHost::forget`]): its answer is not to land.
     struck: bool,
 }
@@ -222,6 +230,10 @@ pub struct ThinkHost {
     /// Whether a late batch holds its owner's step (the server) or is waited for (a rig).
     hold: AtomicBool,
     runners: Mutex<BTreeMap<[u8; 32], Arc<dyn MindRunner>>>,
+    /// The mind sealed aboard each hull, as it was last made ready, with the sortie its
+    /// seal names: one for a hull, replaced when her next claim's seal is first thought
+    /// with.
+    sealed: Mutex<BTreeMap<ObjId, (crate::arena::mind::SortieId, Arc<SealedMind>)>>,
     flights: Mutex<BTreeMap<Owner, Flight>>,
     thinks: AtomicU64,
     batches: AtomicU64,
@@ -229,8 +241,87 @@ pub struct ThinkHost {
     runners_built: AtomicU64,
 }
 
-/// What every space think is held to, the same for each: the Class I row, a one-profile
-/// card, an empty rule program and a one-cell map. A space seal runs no rule program.
+/// **A mind sealed aboard a hull, made ready to think** (doc 44 unit MW.13; Q-44-26): what
+/// its seal says a think of it is held to. The class row is the seal's class (the hull's
+/// core, capped by the mind's rating), the card is the seal's opening card, and the rule
+/// program is the one the seal bound over the hull's own channels: the first space seal
+/// that runs one. The source is the text the mind's claim retains, which the store need
+/// not hold.
+#[derive(Debug)]
+pub struct SealedMind {
+    /// The SHA-256 of `source`: the runner's key.
+    source_sha256: [u8; 32],
+    source: String,
+    profile: CoreProfile,
+    card: RuntimeCard,
+    program: BoundProgram,
+}
+
+impl SealedMind {
+    /// `seal`'s think terms over `classes`, with the `source` its claim retains. `None` for
+    /// a seal that is not a scripted mind of this build's ABI, or whose cards do not
+    /// resolve: such a seal does not think, and its seat's next source does.
+    #[must_use]
+    pub fn of(
+        seal: &crate::arena::mind::MindSeal,
+        source: &str,
+        classes: &ClassTable,
+    ) -> Option<SealedMind> {
+        if seal.engine != crate::arena::mind::SealEngine::Scripted
+            || seal.abi != crate::minds::MIND_ABI
+        {
+            return None;
+        }
+        let mut catalog = CardCatalog::default();
+        catalog.admit(seal.cards.definition.clone()).ok()?;
+        let card = catalog.resolve(seal.cards.selected.key(0)?).ok()?;
+        let program = seal.cards.programs.first()?.clone();
+        Some(SealedMind {
+            source_sha256: seal.source_sha256,
+            source: source.to_owned(),
+            profile: classes.row(seal.class),
+            card,
+            program,
+        })
+    }
+
+    /// The rule program the seal bound.
+    #[must_use]
+    pub fn program(&self) -> &BoundProgram {
+        &self.program
+    }
+
+    /// The class row its thinks are held to.
+    #[must_use]
+    pub fn profile(&self) -> &CoreProfile {
+        &self.profile
+    }
+}
+
+/// **What one think is run with** (doc 44 unit MW.13).
+#[derive(Clone, Debug)]
+pub enum Source {
+    /// A doctrine the store, or the binary, holds under this digest: the Class I row, the
+    /// stock card and no rule program ([`ThinkHost::job`]).
+    Doctrine([u8; 32]),
+    /// A mind sealed aboard, on its own class row, card and rule program.
+    Sealed(Arc<SealedMind>),
+}
+
+impl Source {
+    /// The SHA-256 of the source it thinks with.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        match self {
+            Source::Doctrine(digest) => *digest,
+            Source::Sealed(mind) => mind.source_sha256,
+        }
+    }
+}
+
+/// What every doctrine's space think is held to, the same for each: the Class I row, a
+/// one-profile card, an empty rule program and a one-cell map. A doctrine's space seal runs
+/// no rule program; a mind sealed aboard runs its own ([`SealedMind`]).
 #[derive(Debug)]
 struct Kit {
     profile: CoreProfile,
@@ -285,6 +376,7 @@ impl ThinkHost {
             pool,
             hold: AtomicBool::new(false),
             runners: Mutex::new(BTreeMap::new()),
+            sealed: Mutex::new(BTreeMap::new()),
             flights: Mutex::new(BTreeMap::new()),
             thinks: AtomicU64::new(0),
             batches: AtomicU64::new(0),
@@ -332,6 +424,19 @@ impl ThinkHost {
         unit: ObjId,
         digest: [u8; 32],
     ) -> Option<Arc<dyn MindRunner>> {
+        self.runner_from(unit, digest, &|wanted| {
+            crate::minds::content::source_lookup(store, wanted).map(str::to_owned)
+        })
+    }
+
+    /// [`ThinkHost::runner`] over the source `sources` answers for `digest`: the store's for
+    /// a doctrine, the text its claim retains for a mind sealed aboard.
+    fn runner_from(
+        &self,
+        unit: ObjId,
+        digest: [u8; 32],
+        sources: &dyn Fn(&[u8; 32]) -> Option<String>,
+    ) -> Option<Arc<dyn MindRunner>> {
         let mut runners = self.runners.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(runner) = runners.get(&digest) {
             return Some(Arc::clone(runner));
@@ -340,7 +445,7 @@ impl ThinkHost {
             unit,
             &digest,
             &ArenaConfig::default(),
-            &|wanted| crate::minds::content::source_lookup(store, wanted).map(str::to_owned),
+            sources,
         );
         match built {
             Ok(runner) => {
@@ -429,6 +534,110 @@ impl ThinkHost {
         })
     }
 
+    /// **The mind sealed aboard `hull`, made ready to think** (doc 44 unit MW.13): built
+    /// from `seal` and the `source` its claim retains the first time this host thinks with
+    /// that seal, and kept while the hull's seal names the same sortie. `None` when the seal
+    /// cannot think ([`SealedMind::of`]).
+    #[must_use]
+    pub fn sealed_mind(
+        &self,
+        hull: ObjId,
+        seal: &crate::arena::mind::MindSeal,
+        source: &str,
+        classes: &ClassTable,
+    ) -> Option<Arc<SealedMind>> {
+        let mut sealed = self.sealed.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((sortie, mind)) = sealed.get(&hull)
+            && *sortie == seal.sortie
+            && mind.source_sha256 == seal.source_sha256
+        {
+            return Some(Arc::clone(mind));
+        }
+        let mind = Arc::new(SealedMind::of(seal, source, classes)?);
+        sealed.insert(hull, (seal.sortie, Arc::clone(&mind)));
+        Some(mind)
+    }
+
+    /// **One think on `source`, frozen** (doc 44 unit MW.13): a doctrine's as
+    /// [`ThinkHost::job`] freezes it, or a sealed mind's on its own class row, card and rule
+    /// program. `None` when the source has no runner.
+    #[must_use]
+    pub fn job_on(
+        &self,
+        store: Option<&TacsimStore>,
+        unit: ObjId,
+        source: &Source,
+        think_seq: u64,
+        view: &Arc<MindView>,
+        memory: &[u8],
+    ) -> Option<CollectedThink> {
+        let mind = match source {
+            Source::Doctrine(digest) => {
+                return self.job(store, unit, *digest, think_seq, view, memory);
+            }
+            Source::Sealed(mind) => mind,
+        };
+        let kit = KIT.as_ref()?;
+        let runner = self.runner_from(unit, mind.source_sha256, &|wanted| {
+            (*wanted == mind.source_sha256).then(|| mind.source.clone())
+        })?;
+        let t_ms = view.t_ms;
+        Some(CollectedThink {
+            epochs: [0, 0, 0],
+            unit,
+            think_seq,
+            t_ms,
+            lands_ms: t_ms.saturating_add(500),
+            seed: u64::from(unit.0).wrapping_add(think_seq),
+            dropped: false,
+            profile: mind.profile,
+            view: Arc::clone(view),
+            memory: memory.to_vec(),
+            map: Arc::clone(&kit.map),
+            wrecks: Vec::new(),
+            card: mind.card.clone(),
+            program: mind.program.clone(),
+            profile_token: ProfileToken {
+                unit,
+                generation: 0,
+                key: mind.card.key(),
+            },
+            runner,
+            substep_hash: None,
+            ranges_before: BTreeMap::new(),
+        })
+    }
+
+    /// **A seat's jobs over its `sources`, first choice first** (doc 44 unit MW.13), and the
+    /// mind sealed aboard whose think the first job is, if it is one's. A source with no
+    /// runner freezes no job; the sealed mind is named only when its own job was frozen, so
+    /// an answer is never read as the sealed mind's when a house default gave it.
+    #[must_use]
+    pub fn jobs_on(
+        &self,
+        store: Option<&TacsimStore>,
+        unit: ObjId,
+        sources: &[Source],
+        think_seq: u64,
+        view: &Arc<MindView>,
+        memory: &[u8],
+    ) -> (Vec<CollectedThink>, Option<Arc<SealedMind>>) {
+        let mut sealed = None;
+        let mut jobs = Vec::with_capacity(sources.len());
+        for (index, source) in sources.iter().enumerate() {
+            let Some(job) = self.job_on(store, unit, source, think_seq, view, memory) else {
+                continue;
+            };
+            if index == 0
+                && let Source::Sealed(mind) = source
+            {
+                sealed = Some(Arc::clone(mind));
+            }
+            jobs.push(job);
+        }
+        (jobs, sealed)
+    }
+
     /// **Hand `asks` to the pool as `owner`'s one batch** under `mark`, in place of any it
     /// had. Answers whether a batch is now in flight: `false` when nothing was asked.
     pub fn submit(&self, owner: Owner, mark: Mark, asks: Vec<Ask>) -> bool {
@@ -444,6 +653,7 @@ impl ThinkHost {
                 unit: ask.unit,
                 think_seq: ask.think_seq,
                 contacts: ask.contacts,
+                sealed: ask.sealed,
                 struck: false,
             });
             thinks = thinks.saturating_add(ask.jobs.len());
@@ -561,7 +771,8 @@ impl ThinkHost {
             .zip(answered)
             .map(|(asked, sources)| {
                 let mut result = None;
-                for answer in sources {
+                let mut by_sealed = false;
+                for (index, answer) in sources.into_iter().enumerate() {
                     if result.is_some() || asked.struck {
                         continue;
                     }
@@ -572,6 +783,7 @@ impl ThinkHost {
                             "tacsim: a space mind faulted; its next source is tried"
                         );
                     } else {
+                        by_sealed = index == 0;
                         result = Some(answer.result);
                     }
                 }
@@ -581,6 +793,7 @@ impl ThinkHost {
                     think_seq: asked.think_seq,
                     contacts: asked.contacts,
                     result,
+                    sealed: asked.sealed.filter(|_| by_sealed),
                 }
             })
             .collect();
@@ -785,6 +998,7 @@ mod tests {
             think_seq: seq,
             contacts: BTreeMap::new(),
             jobs: vec![job],
+            sealed: None,
         }
     }
 
@@ -969,6 +1183,7 @@ mod tests {
             think_seq: 0,
             contacts: BTreeMap::new(),
             jobs: vec![faulting.clone(), clean.jobs.first().expect("a job").clone()],
+            sealed: None,
         };
         let owner = Owner::Adrift(ObjId(77));
         assert!(host.submit(owner, (0, 0), vec![ask]));
@@ -988,6 +1203,7 @@ mod tests {
             think_seq: 0,
             contacts: BTreeMap::new(),
             jobs: vec![faulting.clone(), faulting],
+            sealed: None,
         };
         assert!(host.submit(owner, (0, 0), vec![ask]));
         let Owed::Ready { answers, .. } = host.settle(owner, (0, 0), Due::default()) else {
