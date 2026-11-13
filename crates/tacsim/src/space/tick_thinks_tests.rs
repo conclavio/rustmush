@@ -913,6 +913,7 @@ fn mind_has_helm(hull: ObjId) -> SpaceLinkdeadState {
 /// every mount it reads, which no seat of a sealed mind lets through. Its trace words are
 /// its own, so a record says whether it or the house default answered.
 const KEEPER: &str = r#"fn think(v, c) {
+    stock::rules();
     let s = space(v);
     if s == () { return; }
     for w in v.weapons { fire(w.id, 1); }
@@ -1073,6 +1074,37 @@ fn mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs() {
         lock_of(&sealed, ESCORT),
         None,
         "the same script with no rule program locks nothing"
+    );
+    // A row with a think term acts only when the think sampled that term for this program:
+    // the program the think was handed is the seal's own. One hostile is in the runner's
+    // view, so `HOSTILES >= 1` holds and `HOSTILES >= 9` does not.
+    drop(_aboard);
+    let gated = |at_least: u8| {
+        let seal = sealed_draft(
+            RUNNER,
+            vec![AuthoredRule {
+                rule: Rule::lock_rule(LockSelector::Nearest, None, Vec::new()),
+                think: vec![crate::arena::schema::ThinkPredicate::Hostiles { at_least }],
+            }],
+            KEEPER,
+        );
+        let mind = Arc::new(SealedMind::of(&seal, KEEPER, &ClassTable::STOCK).expect("it thinks"));
+        let _aboard = crate::port::ship_mind::test_support::seal_aboard(vec![
+            (RUNNER, mind),
+            (ESCORT, Arc::clone(&bare)),
+        ]);
+        fly(&start())
+    };
+    let met = gated(1);
+    assert_eq!(
+        lock_of(&met, RUNNER).as_deref(),
+        Some(met.active.interdictor_ship_id.as_str()),
+        "a think term the think sampled true lets the row lock"
+    );
+    assert_eq!(
+        lock_of(&gated(9), RUNNER),
+        None,
+        "and one it sampled false does not"
     );
     assert!(
         !fired(&sealed) && !fired(&house),

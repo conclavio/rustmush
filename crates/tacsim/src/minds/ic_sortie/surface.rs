@@ -256,6 +256,11 @@ mod tests {
             },
         );
         world.module_state_insert(spatial);
+        let mut units = mush_tactics::module::UnitStore::default();
+        units
+            .units
+            .insert(unit, crate::arena::test_support::tactical_unit(unit));
+        world.module_state_insert(units);
         world
     }
 
@@ -285,6 +290,8 @@ mod tests {
             },
         );
         assert!(!on_a_domain_without_a_berth(&in_its_bay, rig));
+        let permit = surface_start(&in_its_bay, ObjId(3), rig, 100).expect("asked in its bay");
+        assert_eq!(permit.sortie, Some(SortieId::ic(rig, 100)));
         assert!(!on_a_domain_without_a_berth(&World::new_minimal(), rig));
     }
 }
