@@ -371,11 +371,18 @@ mod tests {
         assert!(!cold.world().is_connected(player), "no session survives");
         assert!(cold.world().is_connected(GOD));
 
-        // A write the documents do not hold is not in the restarted world.
+        // A write the documents do not hold is not in the restarted world,
+        // even when the running world's own state holds it: the copy carries
+        // objects, not a module's slot.
+        if let Some(slot) = live.world_mut().module_state_mut::<ToyNote>() {
+            slot.0 = Some(json!("only in memory"));
+        }
+        assert_eq!(note(&live), Some(json!("only in memory")));
         let cold = live
             .cold_restart(toy(), Boot::new())
             .expect("an empty boot");
-        assert_eq!(note(&cold), None);
+        assert_eq!(note(&cold), None, "a dropped write is gone");
+        assert_eq!(note(&live), Some(json!("only in memory")));
 
         // The consuming form is the same restart.
         let cold = live.cold_reboot_into(toy(), boot).expect("the restart");

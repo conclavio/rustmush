@@ -68,14 +68,28 @@ impl fmt::Display for SetupRefused {
 impl Error for SetupRefused {}
 
 impl Funding {
-    /// Start with `@instrument/register <code>=<scale>`; the accounts after it
-    /// are opened in that instrument.
+    /// No line yet; the accounts opened later are in instrument `code`. For a
+    /// rig whose first lines are not the instrument's (an organisation made
+    /// first), followed by [`Funding::register`] in its place.
     #[must_use]
-    pub fn instrument(code: &str, scale: u8) -> Self {
+    pub fn of(code: &str) -> Self {
         Self {
             instrument: code.to_owned(),
-            lines: vec![format!("@instrument/register {code}={scale}")],
+            lines: Vec::new(),
         }
+    }
+
+    /// `@instrument/register <code>=<scale>`.
+    #[must_use]
+    pub fn register(self, scale: u8) -> Self {
+        let line = format!("@instrument/register {}={scale}", self.instrument);
+        self.line(line)
+    }
+
+    /// [`Funding::of`] then [`Funding::register`]: the usual first line.
+    #[must_use]
+    pub fn instrument(code: &str, scale: u8) -> Self {
+        Self::of(code).register(scale)
     }
 
     /// `@account/system <name>=<instrument>`: a system source or sink.
@@ -161,8 +175,9 @@ mod tests {
 
     #[test]
     fn the_lines_are_the_staff_verbs_in_the_order_given() {
-        let funding = Funding::instrument("cr", 0)
+        let funding = Funding::of("cr")
             .line("@org/create Underwriter")
+            .register(0)
             .system("faucet")
             .open(ObjId(3))
             .system("roll.registry")
@@ -172,8 +187,8 @@ mod tests {
         assert_eq!(
             funding.lines(),
             [
-                "@instrument/register cr=0",
                 "@org/create Underwriter",
+                "@instrument/register cr=0",
                 "@account/system faucet=cr",
                 "@account/open #3=cr",
                 "@account/system roll.registry=cr",
