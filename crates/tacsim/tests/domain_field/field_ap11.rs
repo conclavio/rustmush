@@ -16,15 +16,17 @@
 //!   While the owner is away her rig tows his casualty into her own carrier and she files a
 //!   salvage claim on it.
 //! - **The raider**: an armed hull ten cells east, whose player types every lock and every
-//!   shot. The raider's mark on the flight to the west opens the field with no round fired
-//!   (Q-45-14: an attacker may start a fight at any time, whoever is connected).
+//!   shot. The owner's co-op declared the raider's Hostile, by his own command, before he
+//!   left, so every unit of his holds the raider Hostile from the field's first pulse. The
+//!   raider's mark on the flight to the west opens the field with no round fired (Q-45-14:
+//!   an attacker may start a fight at any time, whoever is connected).
 //!
 //! **The walk, and what each step pins.**
 //!
 //! 1. *Admission.* The owner is not admitted as the armed rig's pilot: the rig is its mind's
 //!    from the turn the field takes it in, and so are his prospector and his carrier.
 //! 2. *A stranger's quarrel.* The raider's fire lands on the miner's rig beside the guard.
-//!    The guard fires nothing.
+//!    The guard fires nothing, with the raider declared Hostile and in range the whole time.
 //! 3. *`RETURN` goes home.* The prospector drives to the ramp and is put aboard the carrier,
 //!    by the host, as its operator, who sits in his other rig (the defect this story found:
 //!    `crate::field_ap7`'s story 4). The miner's prospector, the same design on `HOLD` on the
@@ -34,7 +36,8 @@
 //! 5. *The return.* The owner connects while the field runs. He reads what the game queued
 //!    for him: that the field opened, and what his mind was left to do with each rig. He is
 //!    seated again, and the first command he types is what the rig does: it leaves the cell
-//!    its mind was standing on and fires no more.
+//!    its mind was standing on, and when the raider fires on the carrier again, the fire its
+//!    mind answered, it fires nothing.
 //! 6. *The close.* The field settles with the owner connected, and he is told what became of
 //!    each unit: the guard holding, the prospector and the carrier home.
 //! 7. *The field's own record of fire*, read in order over the whole black box: the first
@@ -58,7 +61,8 @@
 //! under `HOLD` while the rigs here fly theirs.
 //!
 //! **What is a fixture** (each named in the cut note): the raider's hull is made and seated
-//! by a staff hand (CF.2's `armed` and `seat`); rigs are stood on their cells by staff
+//! by a staff hand (CF.2's `armed` and `seat`); the two co-ops are made and their officers
+//! named by staff (the stance is the owner's own command); rigs are stood on their cells by staff
 //! (`to_cell`); the casualty is a spare rig titled to the owner by `@asset/transfer`, its
 //! power destroyed and left on the site's index by staff (GC.6's precedent: a leased rig's
 //! title cannot move, and no verb disables a hull); the world's rate is set to the live
@@ -89,6 +93,7 @@ use crate::driving_rig::{
 };
 use crate::escort_lease::{board_escort, contact_near, fired, in_field, lease_escort, top_up};
 use crate::field_ap1::{Heard, Post, until};
+use crate::field_ap7::officer;
 use crate::field_gc4::{powerless, seconds_until, towing};
 use crate::field_host_rig::{
     AHUNA, armed, egress, frame, seat, second, site_record, task, tune, weapon_of,
@@ -330,6 +335,18 @@ async fn stand_up() -> Story {
     let (intruder, _, _) = on_pad_as(&mut rig, "Intruder", 3, "Lone Moth", 0);
     let hostile = armed(&mut rig, "Grey Hound", RAIDER_AT, 270_000);
     seat(&mut rig, hostile, intruder);
+    // The owner's co-op declares the raider's Hostile, by his own command, before any of it
+    // (doc 40 cut FR.1): each unit of his holds the raider Hostile from the field's first
+    // pulse. A mind fires only on what its party holds Hostile, so without this a guard's
+    // silence beside a stranger's quarrel would show nothing about its posture.
+    for faction in ["Concord", "Basin"] {
+        let out = run(&mut rig.tw, GOD, &format!("@faction/create {faction}"));
+        assert!(out.contains(faction), "{out}");
+    }
+    officer(&mut rig, "Concord", owner);
+    officer(&mut rig, "Basin", intruder);
+    let declared = run(&mut rig.tw, owner, "+faction/stance Concord=Basin/hostile");
+    assert!(declared.contains("Hostile"), "{declared}");
     warm(&mut rig);
     // The owner's casualty: a spare rig of Occator's pool, titled to him by staff (a leased
     // rig's title carries the lease's claim and cannot move), disabled and left on open ground.
@@ -446,6 +463,18 @@ async fn stand_up() -> Story {
         panic!("the claim is filed: {row:?}");
     };
     assert_eq!(row.told, vec![owner], "the title holder is who is told");
+    // And he is written to now, at the filing, while he is away: the one letter of the story.
+    let posted: Vec<Vec<ObjId>> = post
+        .lock()
+        .expect("the post")
+        .iter()
+        .map(|(to, _, _)| to.clone())
+        .collect();
+    assert_eq!(
+        posted,
+        vec![vec![owner]],
+        "one letter, the owner's, posted when the claim was filed"
+    );
     // Her prospector goes back to work beside the owner's armed rig, and she leaves it on
     // HOLD from aboard her carrier: it is to stand through whatever comes.
     to_cell(
@@ -673,6 +702,20 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         4,
         "the owner's two rigs, the miner's and the raider's are four parties"
     );
+    // His units hold the raider Hostile from the opening, by the stance he declared: what
+    // keeps their fire from here on is the rule for an absent player's unit and nothing else.
+    let theirs = live.party_of(hostile).expect("the raider's party");
+    for unit in [guard, homer, carrier] {
+        let ours = live.party_of(unit).expect("the unit's party");
+        assert!(
+            live.parties
+                .iter()
+                .any(|party| party.party == ours && party.stance_hostile.contains(&theirs)),
+            "the declared stance is #{}'s party's opening relation: {:?}",
+            unit.0,
+            live.parties
+        );
+    }
     assert_eq!(
         away_of(s.rig.tw.world(), guard).map(|away| (away.why, away.handed)),
         Some((Why::AwayAtAdmission, true)),
@@ -699,6 +742,7 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         .expect("the carrier's party")
         .letter()
         .to_string();
+    let ship_again = ship_letter.clone();
 
     // (2) A stranger's quarrel: the raider's fire lands on the miner's rig, beside the guard.
     let struck = s
@@ -731,7 +775,7 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         "a rig on HOLD is not taken home"
     );
     // And through all of it the guard fired nothing and stood where it was set: the raider
-    // its seat never marked, in range the whole time, and a stranger's rig under fire beside
+    // its party holds Hostile in range the whole time, and a stranger's rig under fire beside
     // it.
     assert_eq!(
         fired(&s.lines, guard),
@@ -795,13 +839,14 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         .replace("{unit}", &guard.0.to_string())
         .replace("{posture}", Posture::Guard.label());
     let homing = UNATTENDED.replace("{unit}", &homer.0.to_string());
-    for told in [&opened, &guarding, &homing] {
-        assert_eq!(
-            queued.iter().filter(|line| *line == told).count(),
-            1,
-            "queued once for the owner: {told}: {queued:?}"
-        );
-    }
+    // Each rig's line was queued at admission and the field's own at its first snapshot, so
+    // the rigs come first. Nothing else is queued: no line for his carrier, which stays
+    // where it is, and none for anybody else's unit.
+    assert_eq!(
+        queued,
+        vec![guarding.clone(), homing.clone(), opened.clone()],
+        "what is queued for the owner, each once"
+    );
     let back_at = s.rig.tw.world().now();
     let read = connect(&mut s.rig, owner);
     let rows: Vec<&str> = read.lines().map(str::trim).collect();
@@ -810,18 +855,18 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
             .position(|row| *row == text)
             .unwrap_or_else(|| panic!("the owner reads {text:?} at login: {read}"))
     };
-    // Each rig's line was queued at admission and the field's own at its first snapshot, so
-    // the rigs come first; all three stand under the one heading.
-    assert!(
-        row(NOTICE_HEADING) < row(&guarding)
-            && row(&guarding) < row(&homing)
-            && row(&homing) < row(&opened),
-        "under the heading: each rig, then the field: {read}"
+    // He reads exactly that under the one heading, and nothing after it.
+    assert_eq!(
+        rows[row(NOTICE_HEADING) + 1..],
+        [guarding.as_str(), homing.as_str(), opened.as_str()],
+        "under the heading: each rig, then the field, and no more: {read}"
     );
-    assert!(
-        !read.contains(&format!("#{}", worker.0)) && !read.contains(&format!("#{}", hostile.0)),
-        "nobody else's unit is in what he reads: {read}"
-    );
+    for other in [worker, hostile] {
+        assert!(
+            !read.contains(&format!("#{}", other.0)) && !read.contains(&name(&s.rig, other)),
+            "nobody else's unit is in what he reads: {read}"
+        );
+    }
     assert!(
         pending_notices(s.rig.tw.world(), owner).is_empty(),
         "read once"
@@ -875,10 +920,25 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         Some(false),
         "the kernel no longer flies it for an absent player"
     );
-    // And the mind's fire stops with its tenure: the seat is at FIRE HOLD, where every seat
-    // starts, and the rig fires nothing more.
+    // And the mind's fire stops with its tenure. The raider fires on the carrier again, the
+    // very fire the mind answered: the seat is at FIRE HOLD, where every seat starts, and in
+    // its pilot's hands the rig fires nothing.
     let _ = s.wait(3, |_, _| false).await;
     let spent = fired(&s.lines, guard);
+    let landed = arrived(&s.lines, hostile, carrier);
+    let again = s
+        .raid(
+            move |row| row.designator.to_string().starts_with(&ship_again),
+            90,
+            |_, lines| arrived(lines, hostile, carrier) > landed,
+        )
+        .await;
+    assert!(
+        again,
+        "the raider's fire arrives on the carrier again: {}; plot {}",
+        s.exchange(),
+        s.plot()
+    );
     let _ = s.wait(6, |_, _| false).await;
     assert_eq!(
         fired(&s.lines, guard),

@@ -187,8 +187,9 @@ pub(crate) fn recover_plan(
     // took out at the ramp for an absent player is run as that player, wherever they are
     // (`crate::field::absent`'s retry). Their place is not asked: the commonest absent
     // operator sits in the cab of their other rig, and the host's recover of the rig beside
-    // it was refused here thirty times and the rig left at the ramp.
-    if !rig.operator_present(w, actor) && !crate::field::absent::homebound(w, rig.tv) {
+    // it was refused here thirty times and the rig left at the ramp. Only that player passes:
+    // anyone else who can name the rig is still asked to be with it.
+    if !rig.operator_present(w, actor) && !crate::field::absent::homebound_as(w, rig.tv, actor) {
         return Err(Refusal::NotAboard { name });
     }
     let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);

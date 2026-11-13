@@ -83,7 +83,7 @@ struct Site {
 }
 
 /// `who` joins `faction` openly as an officer.
-fn officer(rig: &mut Rig, faction: &str, who: ObjId) {
+pub(crate) fn officer(rig: &mut Rig, faction: &str, who: ObjId) {
     let out = run(
         &mut rig.tw,
         GOD,
