@@ -180,7 +180,7 @@ fn stocked() -> Rig {
 }
 
 /// [`stocked`] on `roster`.
-fn stocked_with(roster: Roster) -> Rig {
+pub(crate) fn stocked_with(roster: Roster) -> Rig {
     let mut tw = TestWorld::with_modules(roster.modules());
     no_refused_writes(&tw);
     with_offer_keys(&mut tw);
@@ -431,7 +431,7 @@ pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
 }
 
 /// Land what lands (the port's own background work on a long sweep).
-fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         let _ = land(rig, submit);
     }
@@ -655,7 +655,7 @@ fn world_rate(tw: &TestWorld) -> u32 {
     tw.world().world_timeline().current().rate
 }
 
-fn set_rate(tw: &mut TestWorld, rate: u32) {
+pub(crate) fn set_rate(tw: &mut TestWorld, rate: u32) {
     if world_rate(tw) != rate {
         let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
         assert_eq!(world_rate(tw), rate, "{out}");
@@ -3045,6 +3045,131 @@ fn lane_with_interdicted_kirkwood() -> &'static str {
     Box::leak(signed.into_boxed_str())
 }
 
+/// **The venues a hull may clear Ceres for, and the route to each** (the shipped Ceres port's
+/// `routes`), Stickney first: the one whose first leg the shipped lane already interdicts at
+/// the Kirkwood picket.
+const PICKET_RUNS: [(&str, &str); 8] = [
+    ("stickney", "ceres_stickney"),
+    ("luna", "ceres_aitken"),
+    ("commons", "ceres_commons"),
+    ("kerwan", "ceres_kerwan"),
+    ("ahuna", "ceres_ahuna"),
+    ("juling", "ceres_juling"),
+    ("occator", "ceres_occator"),
+    ("urvara", "ceres_urvara"),
+];
+
+/// **The shipped lane with a customs picket on `count` routes out of Ceres** (doc 44 unit
+/// MW.20's space lane): the Stickney route keeps its Kirkwood leg, and each of the next
+/// `count - 1` routes of [`PICKET_RUNS`] is given the same two legs through a picket waypoint
+/// of its own (a depot at Kirkwood flagged `kirkwood_picket`, as the shipped depot is), so a
+/// hull on each route opens a picket bubble on its own domain. The shipped lane interdicts
+/// one leg, which is one bubble however many hulls fly it.
+fn lane_with_pickets(count: usize) -> &'static str {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    for (n, (_, route)) in PICKET_RUNS.iter().enumerate().take(count).skip(1) {
+        let waypoint = format!("picket_station_{n}");
+        doc["entries"][&waypoint] = serde_json::json!({
+            "kind": "location",
+            "def": {
+                "label": format!("Picket Station {n}"),
+                "role": "depot",
+                "body": "kirkwood",
+                "kirkwood_picket": true,
+            },
+        });
+        let to = doc["entries"][*route]["def"]["to"].clone();
+        doc["entries"][*route]["def"]["legs"] = serde_json::json!([
+            { "to": waypoint, "base_s": 61_776, "hazard": 4, "interdiction": 3 },
+            { "to": to, "base_s": 942_997 },
+        ]);
+    }
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    Box::leak(signed.into_boxed_str())
+}
+
+/// **`count` hulls flown from Ceres into `count` customs pickets at once** (doc 44 unit
+/// MW.20's space lane), on a world whose think pool has `workers` threads, all through the
+/// commands a player types: `count` pilots enrol and charter a hull each, load, board, and
+/// clear Ceres for `count` different venues in the same IC second, on [`lane_with_pickets`].
+/// Each crosses its route's picket waypoint on the same tick, so `count` picket bubbles open
+/// together, each on its own domain with its own corvette and raider. Nobody has braked: every
+/// picket waits for its hull to heave to. Answers the rig and each hull's pilot and hull.
+pub(crate) fn flown_into_pickets(workers: u32, count: usize) -> (Rig, Vec<(ObjId, ObjId)>) {
+    assert!(
+        (1..=PICKET_RUNS.len()).contains(&count),
+        "one to eight pickets: {count}"
+    );
+    let mut rig = stocked_with(Roster {
+        seed_lane: (count > 1).then(|| lane_with_pickets(count)),
+        mind_workers: Some(workers),
+        ..Roster::default()
+    });
+    let mut crews = Vec::with_capacity(count);
+    for n in 0..count {
+        let seed = i64::try_from(n).expect("small") + 1;
+        let skipper = pilot(&mut rig, &format!("Skipper{n}"), seed);
+        let name = format!("Picket Runner {n}");
+        let enrol = run(&mut rig.tw, skipper, &format!("+coop/enrol {name}"));
+        assert!(enrol.contains(&format!("now the {name}")), "{enrol}");
+        let charter = tacsim::port::live_charter(rig.tw.world(), skipper).expect("a charter");
+        let row = port_map(&rig.tw, "ceres_port")
+            .hulls
+            .into_iter()
+            .find(|row| row.hull == charter.hull.0)
+            .expect("the hull's row");
+        let vault = hold_vault(&rig.tw, &row);
+        let lot = 2_700 + 2 * u64::try_from(n).expect("small");
+        seed_pool(&mut rig, vault, "propellant", 75, LotId(lot));
+        seed_pool(&mut rig, vault, "provisions", 25, LotId(lot + 1));
+        crews.push((skipper, ObjId(row.hull), name));
+    }
+    set_rate(&mut rig.tw, 3_600);
+    let gallery = c01(&rig.tw);
+    for (skipper, _, name) in &crews {
+        teleport(&mut rig.tw, *skipper, gallery);
+        let boarded = run(&mut rig.tw, *skipper, "+ship/board");
+        assert!(
+            boarded.contains(&format!("You cycle the lock into the {name}.")),
+            "{boarded}"
+        );
+    }
+    let mut boundary = i64::MIN;
+    for ((skipper, hull, _), (venue, _)) in crews.iter().zip(PICKET_RUNS) {
+        let (out, queued) = undock(&mut rig, *skipper, &format!("+ship/undock {venue}"));
+        assert!(out.contains("Clearance filed for "), "{venue}: {out}");
+        let pending = voyage(&rig.tw, *hull)
+            .and_then(|v| v.pending)
+            .expect("a filed passage");
+        assert_eq!(queued.len(), 1, "one burn: {out}");
+        land_all(&mut rig, &queued);
+        boundary = boundary.max(pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs));
+    }
+    let _ = fire_quietly(&mut rig);
+    let _ = to_ic(&mut rig, boundary);
+    for (_, hull, name) in &crews {
+        assert_eq!(
+            picket_status(&rig.tw, *hull),
+            Some(tacsim::space::PicketInspectionStatus::AwaitingHeaveTo),
+            "a picket's bubble opens on the {name}"
+        );
+    }
+    let open = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .map_or(0, |book| book.by_domain.len());
+    assert_eq!(open, count, "{count} hulls, {count} bubbles");
+    (
+        rig,
+        crews
+            .into_iter()
+            .map(|(skipper, hull, _)| (skipper, hull))
+            .collect(),
+    )
+}
+
 /// **Doc 35 cut SF.R1 acceptance (`D-35-3`, `D-35-5`, `Q-35-4(1)`)** — a chartered pilot
 /// aboard the *Salt Moth* flies an interdicted `ceres_stickney` leg:
 /// 1. Crossing the Kirkwood waypoint boundary on the world tick raises
@@ -4171,7 +4296,7 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
     );
 }
 
-fn drain_space_and_industry(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
+pub(crate) fn drain_space_and_industry(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     let mut kept = Vec::new();
     while let Some(submit) = tw.engine_mut().take_authoritative_submit() {
         let owner = submit.action.key().owner.as_str();
@@ -11556,7 +11681,7 @@ fn sfr24_one_docking_kinematics_and_ephemeris_canopy() {
 
 /// Drop every connection `who` holds, uncleanly (`Inbound::ConnDown`, `DisconnectKind::Lost`), so
 /// the presence hook reads the player linkdead.
-fn drop_link(rig: &mut Rig, who: ObjId) -> Vec<u64> {
+pub(crate) fn drop_link(rig: &mut Rig, who: ObjId) -> Vec<u64> {
     let conns: Vec<u64> = (1..=64)
         .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(who))
         .collect();

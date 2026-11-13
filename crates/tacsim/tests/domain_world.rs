@@ -45,6 +45,8 @@ mod geology;
 mod ic_sortie_voyages;
 #[path = "domain_world/knowing.rs"]
 mod knowing;
+#[path = "domain_world/minds_at_size.rs"]
+mod minds_at_size;
 #[path = "domain_world/moon_ports.rs"]
 mod moon_ports;
 #[path = "domain_world/passage.rs"]

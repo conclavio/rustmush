@@ -1442,6 +1442,20 @@ jobs:
   # revision. By hand:
   # cargo test --release -p tacsim --lib mw11_what_a_space_think_costs_the_world_thread -- --ignored --nocapture
 
+  # Doc 44 unit MW.20 (Q-44-34, Q-44-48): minds measured at size
+  # (crates/tacsim/tests/domain_world/minds_at_size.rs): an IC field of 100 minds in three and six
+  # parties, native and on Rhai seats; eight picket bubbles thinking on the server's pool at three
+  # pool sizes; the two on one server; and an idle fire of each module tick. Measurements in
+  # release, never a gate, so no job runs them: they are run by hand on conclav.dev, and their
+  # figures and what misses are in doc 44's MW.20 cut note. Their tier is by-hand in
+  # crates/mush-contract-tests/test-tiers.toml, with their last run's revision. By hand (the
+  # MW20_* knobs are in the file's head):
+  # cargo test --release -p tacsim --test domain_world minds_at_size:: -- --ignored --nocapture --test-threads=1
+  # The simulator match's half is the harness's minds lane at 100 units, with its sizing variant
+  # for the Rhai seats, and the squads' count at the LLM is the cost run on the mock provider:
+  # TACSIM_UNITS=100 TACSIM_MINDS_VARIANTS=fill_authored,stock_authored,rhai_authored cargo test --release -p tacsim --test harness tacsim_harness_arena_minds -- --exact --ignored --nocapture
+  # TACSIM_LLM_COST_RUN=1 TACSIM_LLM_COST_MOCK=1 TACSIM_LLM_COST_UNITS=100 TACSIM_LLM_COST_MINUTES=15 cargo test --release -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
+
   # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
   # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
   # reinforcement, a tow struck and released under fire, a jammed sight, a segment rolled and

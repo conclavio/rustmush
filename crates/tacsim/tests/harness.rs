@@ -257,6 +257,20 @@
 //! the fill variants on sixteen hulls for five arena seconds with the
 //! deterministic checks asserted.
 //!
+//! **The Rhai seats, a sizing variant since doc 44 unit MW.20** (Q-44-34). The
+//! fill decision left no variant that seats a doctrine in Rhai below the
+//! ceiling's four heavies, so "the same on Rhai seats" had nothing to run.
+//! `rhai_authored` is the fill variant as it was before that decision: its
+//! slots a side at Class I on the scripted engine, Standard Doctrine, the
+//! rest the ROM, at the authored reach. It is **not** one of the weekly four
+//! ([`MINDS_VARIANTS`]): the lane runs it only when `TACSIM_MINDS_VARIANTS`
+//! names it, no baseline carries a block for it and the delta never reads
+//! its JSON. `TACSIM_MINDS_RHAI_SEATS` is its seats a side; unset is what
+//! admission admits at Class I, and a figure past that is fielded all the
+//! same (the arena does not count the pool; `match_::pool` does, at custody),
+//! so a sweep can find where the seats stop holding. Its verdict is a
+//! measurement and never a gate: doc 44's MW.20 cut note has the figures.
+//!
 //! **Every lane at the ROM since 17b cut M4.5** (the M4 row's (iv)). The
 //! arena lanes, the long run, the cost run and the lance lane field unit
 //! minds at the ROM ([`rom_terms`]: `Controller::Mind`, Class 0, native) where
@@ -6217,6 +6231,18 @@ const fn window_lens_ms(reach: Reach) -> f64 {
 // scripted `Usage`, so the table comes out with real arithmetic over fake tokens.
 // That is the run recorded in the cut's ledger row; the owner's run against
 // OpenRouter is theirs to make.
+//
+// **The prompts, sized** (doc 44 unit MW.20, Q-44-48). The mock's `Usage` is a
+// script, so its token columns say nothing about what a squad's request would
+// carry. The requests are real, though: each is the system prompt, the squad's
+// report and the order tool as `deliberate` built them, and the mock keeps
+// them. The mock lane prints one more line, `harness_cost_prompt`, of what
+// those requests come to by `mush-llm`'s own estimate for its budget
+// pre-check — the characters of the system prompt, the messages and each
+// tool's description and schema, over four — and the output ceiling the route
+// asks for beside it. That is the count a full match's squads would put to
+// the provider, taken without a call; the price is the reader's to put on it
+// (doc 44's MW.20 cut note does, and says what it assumed).
 
 /// Whether a cost run was asked for. **Exactly `"1"`** — a variable that is set to
 /// `true`, `yes` or the empty string is not a request, for the same reason
@@ -6602,6 +6628,47 @@ fn tacsim_harness_llm_cost_run() {
     for row in &table.rows {
         println!("harness_cost_row: {}", row.line());
     }
+    // Doc 44 unit MW.20: the requests the mock was handed, sized (this
+    // section's head). A live run has no copy of its requests and prints none.
+    let prompt = mock.as_ref().map(|mock| {
+        let calls = mock.calls();
+        let mut estimates: Vec<u64> = calls.iter().map(estimated_input_tokens).collect();
+        estimates.sort_unstable();
+        let total: u64 = estimates.iter().sum();
+        let at = |percent: usize| {
+            estimates
+                .get((estimates.len() * percent / 100).min(estimates.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0)
+        };
+        let max_tokens = calls.iter().map(|call| call.max_tokens).max().unwrap_or(0);
+        let calls = u64::try_from(calls.len()).unwrap_or(u64::MAX);
+        #[allow(clippy::cast_precision_loss)]
+        let per_squad_minute = if minutes > 0.0 && !squads.is_empty() {
+            calls as f64 / (squads.len() as f64 * minutes)
+        } else {
+            0.0
+        };
+        println!(
+            "harness_cost_prompt: calls={calls} squads={} arena_minutes={minutes:.3} \
+             calls_per_squad_minute={per_squad_minute:.3} est_input_tokens_p50={} p99={} max={} \
+             total={total} output_ceiling_per_call={max_tokens} \
+             budget_precheck_tokens_total={} (chars over four, mush-llm's own budget estimate; \
+             the ceiling is the route's max_tokens, which the pre-check adds to each call)",
+            squads.len(),
+            at(50),
+            at(99),
+            estimates.last().copied().unwrap_or(0),
+            total.saturating_add(calls.saturating_mul(u64::from(max_tokens))),
+        );
+        serde_json::json!({
+            "calls": calls,
+            "calls_per_squad_minute": num(per_squad_minute),
+            "est_input_tokens": { "p50": at(50), "p99": at(99),
+                                  "max": estimates.last().copied().unwrap_or(0), "total": total },
+            "output_ceiling_per_call": max_tokens,
+        })
+    });
     let path = cost_report_path(&knobs.json);
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -6619,6 +6686,8 @@ fn tacsim_harness_llm_cost_run() {
             "wall_seconds": num(wall_s),
             // 16b cut Y.2: W8's figures, reported and never asserted here.
             "command": command.json(),
+            // Doc 44 unit MW.20: the mock's requests, sized; null on a live run.
+            "prompt": prompt,
             "columns": tacsim::deliberation::CostRow::COLUMNS,
             "table": table,
         }))
@@ -6637,6 +6706,28 @@ fn tacsim_harness_llm_cost_run() {
         let spent = table.total().map_or(0.0, |row| row.cost_usd);
         assert!(spent <= cap, "the run spent {spent} past its cap of {cap}");
     }
+}
+
+/// **What a request comes to by `mush-llm`'s own budget estimate** (doc 44 unit
+/// MW.20): the characters of the system prompt, of every message block and of
+/// each tool's description and schema, over four —
+/// `mush_llm::service::estimate_input_tokens`, which is private to its crate
+/// and is what the budget's pre-check charges a request before it is sent.
+fn estimated_input_tokens(request: &mush_llm::CompletionRequest) -> u64 {
+    let mut chars = request.system.as_ref().map_or(0, String::len);
+    for message in &request.messages {
+        for block in &message.content {
+            chars += match block {
+                mush_llm::ContentBlock::Text { text } => text.len(),
+                mush_llm::ContentBlock::ToolResult { content, .. } => content.len(),
+                mush_llm::ContentBlock::ToolUse { input, .. } => input.to_string().len(),
+            };
+        }
+    }
+    for tool in &request.tools {
+        chars += tool.description.len() + tool.input_schema.to_string().len();
+    }
+    u64::try_from(chars).unwrap_or(u64::MAX) / 4
 }
 
 /// One scripted `issue_order` tool call, for the mock lane.
@@ -9585,7 +9676,8 @@ struct MindsKnobs {
     /// **`TACSIM_MINDS_VARIANTS`**, a sizing knob: a comma list of variant
     /// words to run, in the lane's order — the weekly run never sets it and
     /// runs all four, fill first; an unknown word is ignored, an empty list
-    /// is all four.
+    /// is all four. A sizing variant ([`MINDS_SIZING_VARIANTS`]) runs only
+    /// when it is named here, after the weekly ones.
     variants: Vec<MindsVariant>,
 }
 
@@ -9595,6 +9687,7 @@ impl MindsKnobs {
         let chosen = std::env::var("TACSIM_MINDS_VARIANTS").unwrap_or_default();
         let variants: Vec<MindsVariant> = MINDS_VARIANTS
             .iter()
+            .chain(MINDS_SIZING_VARIANTS.iter())
             .copied()
             .filter(|variant| chosen.split(',').any(|word| word.trim() == variant.word()))
             .collect();
@@ -9651,6 +9744,11 @@ enum MindsVariant {
     /// Two `heavy_mk1` a side at Class III on the load mind, the rest the
     /// ROM, at the authored reach: the pool's ceiling.
     CeilingAuthored,
+    /// **A sizing variant, never one of the weekly four** (doc 44 unit MW.20):
+    /// [`rhai_seats`] Class I hulls a side on the scripted engine, Standard
+    /// Doctrine, the rest the ROM, at the authored reach — the fill as it
+    /// was before the fill decision of 2026-10-09.
+    RhaiAuthored,
 }
 
 /// Fill first: its verdict was the decision (taken 2026-10-09: native), and
@@ -9661,6 +9759,25 @@ const MINDS_VARIANTS: [MindsVariant; 4] = [
     MindsVariant::StockAuthored,
     MindsVariant::CeilingAuthored,
 ];
+
+/// **The sizing variants** (doc 44 unit MW.20): run only when
+/// `TACSIM_MINDS_VARIANTS` names them, blessed into no baseline and read by
+/// no delta.
+const MINDS_SIZING_VARIANTS: [MindsVariant; 1] = [MindsVariant::RhaiAuthored];
+
+/// **`TACSIM_MINDS_RHAI_SEATS`**: the Rhai seats a side the `rhai_authored`
+/// variant fields; unset or unreadable is what admission admits.
+const RHAI_SEATS_KNOB: &str = "TACSIM_MINDS_RHAI_SEATS";
+
+/// **The Rhai seats a side** of the `rhai_authored` variant: what was asked
+/// for, never more than a side holds; with nothing asked, what admission
+/// admits at the variant's class. A figure past admission is fielded all the
+/// same and printed beside it (`admitted_per_side`, `fielded_per_side` on the
+/// `harness_minds_pool` line): the sweep's question is where the seats stop
+/// holding, and the pool's own check then says so.
+fn rhai_seats(asked: Option<u32>, admitted: u32, per_side: u32) -> u32 {
+    asked.unwrap_or(admitted).min(per_side)
+}
 
 /// The four words, for the delta ([`minds_delta`]).
 const MINDS_VARIANT_WORDS: [&str; 4] = [
@@ -9688,6 +9805,7 @@ impl MindsVariant {
             MindsVariant::StockCi => "stock_ci",
             MindsVariant::StockAuthored => "stock_authored",
             MindsVariant::CeilingAuthored => "ceiling_authored",
+            MindsVariant::RhaiAuthored => "rhai_authored",
         }
     }
 
@@ -9697,7 +9815,8 @@ impl MindsVariant {
             MindsVariant::StockCi => Reach::Ci,
             MindsVariant::FillAuthored
             | MindsVariant::StockAuthored
-            | MindsVariant::CeilingAuthored => Reach::Authored,
+            | MindsVariant::CeilingAuthored
+            | MindsVariant::RhaiAuthored => Reach::Authored,
         }
     }
 
@@ -9714,6 +9833,11 @@ impl MindsVariant {
                 class: CoreClass::III,
                 engine: tacsim::arena::SealEngine::Scripted,
                 heavy: true,
+            }),
+            MindsVariant::RhaiAuthored => Some(AuthoredSlots {
+                class: CoreClass::I,
+                engine: tacsim::arena::SealEngine::Scripted,
+                heavy: false,
             }),
             MindsVariant::StockCi | MindsVariant::StockAuthored => None,
         }
@@ -9823,7 +9947,14 @@ impl MindsPlan {
             }
             fielded
         } else {
-            let fielded = admitted.min(per_side);
+            let fielded = if variant == MindsVariant::RhaiAuthored {
+                let asked = std::env::var(RHAI_SEATS_KNOB)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u32>().ok());
+                rhai_seats(asked, admitted, per_side)
+            } else {
+                admitted.min(per_side)
+            };
             authored.extend(
                 placement
                     .iter()
@@ -12717,6 +12848,17 @@ fn m4_2_the_harness_s_three_hundred_admit_thirty_six_at_class_i_and_two_at_class
     assert_eq!((stock.fielded_per_side, stock.authored_fielded()), (0, 0));
     assert!(!stock.is_authored(0));
     assert_eq!(MindsVariant::StockCi.engine_word(), "rom");
+    // Doc 44 unit MW.20's sizing variant: scripted at Class I, outside the
+    // weekly four and so outside the delta's words; its seats a side are what
+    // was asked for, admission's figure when nothing was, never past a side.
+    assert_eq!(MindsVariant::RhaiAuthored.engine_word(), "scripted");
+    assert_eq!(MindsVariant::RhaiAuthored.reach(), Reach::Authored);
+    assert!(!MINDS_VARIANTS.contains(&MindsVariant::RhaiAuthored));
+    assert!(!MINDS_VARIANT_WORDS.contains(&MindsVariant::RhaiAuthored.word()));
+    assert_eq!(rhai_seats(None, 36, 150), 36);
+    assert_eq!(rhai_seats(Some(50), 36, 150), 50);
+    assert_eq!(rhai_seats(Some(400), 36, 150), 150);
+    assert_eq!(rhai_seats(None, 60, 50), 50);
     assert_eq!(MindsVariant::CeilingAuthored.engine_word(), "scripted");
     assert_eq!(
         MindsVariant::FillAuthored.engine_word(),
