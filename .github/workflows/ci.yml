@@ -197,6 +197,13 @@ jobs:
             test: mw13_ship_mind::mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_claim_closes_once
           - name: MW.13 a seal does not outlive its core or its holder
             test: mw13_ship_mind::mw13_a_seal_does_not_outlive_its_core_or_its_holder
+          # Doc 44 unit MW.21, the completion story: one player writes, files and lists a
+          # mind; another buys it, seals it aboard her ship and sails. With her link down it
+          # flies her at the Kirkwood picket, the server restarts under it, she comes back
+          # with its next think on its way, and the claim closes once when she docks (one
+          # rating).
+          - name: MW.21 a bought mind flies its buyer's ship
+            test: mw21_completion::mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain
