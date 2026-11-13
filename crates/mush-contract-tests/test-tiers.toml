@@ -284,6 +284,31 @@ id = "tacsim/src/space/think_cost.rs::mw11_what_a_space_think_costs_the_world_th
 tier = "by-hand"
 by_hand = "556a20a2"
 
+# Doc 44 unit MW.20 (Q-44-34, Q-44-48): minds measured at size, in release, on conclav.dev. Four
+# measurements and never a gate: an IC field of 100 minds in three and six parties (native and on
+# Rhai seats), eight picket bubbles thinking on the server pool at three pool sizes, the two on
+# one server, and an idle fire of each module tick. The figures and what misses are in doc 44's
+# MW.20 cut note. The simulator match's half is the harness's minds lane at TACSIM_UNITS=100.
+[[test]]
+id = "tacsim/tests::minds_at_size::mw20_a_field_of_minds_at_size"
+tier = "by-hand"
+by_hand = "fb39c2b5"
+
+[[test]]
+id = "tacsim/tests::minds_at_size::mw20_eight_bubbles_think_on_the_pool"
+tier = "by-hand"
+by_hand = "fb39c2b5"
+
+[[test]]
+id = "tacsim/tests::minds_at_size::mw20_a_field_and_eight_bubbles_on_one_server"
+tier = "by-hand"
+by_hand = "fb39c2b5"
+
+[[test]]
+id = "tacsim/tests::minds_at_size::mw20_an_idle_fire_by_tick"
+tier = "by-hand"
+by_hand = "fb39c2b5"
+
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
 [[test]]
@@ -564,7 +589,102 @@ note = "the minds lane's late wakes, per mille"
 [[knob]]
 name = "TACSIM_MINDS_VARIANTS"
 kind = "size"
-note = "a subset of the minds lane's four variants; unset is all four, as the baseline"
+note = "a subset of the minds lane's four variants; unset is all four, as the baseline. Doc 44 unit MW.20's sizing variant rhai_authored runs only when it is named here"
+
+[[knob]]
+name = "TACSIM_MINDS_RHAI_SEATS"
+kind = "size"
+note = "the rhai_authored sizing variant's Rhai seats a side (doc 44 unit MW.20); unset is what admission admits at Class I"
+
+[[knob]]
+name = "MW20_UNITS"
+kind = "size"
+note = "MW.20's field: hulls on the ground; default 100, the combat-scale target"
+
+[[knob]]
+name = "MW20_PARTIES"
+kind = "size"
+note = "MW.20's field: a comma list of party counts, 3 to 6; default 3,6"
+
+[[knob]]
+name = "MW20_RHAI"
+kind = "size"
+note = "MW.20's field: a comma list of Rhai seat counts; default 0, the native fill"
+
+[[knob]]
+name = "MW20_ARENA_S"
+kind = "size"
+note = "MW.20's field: arena seconds a run; default 120"
+
+[[knob]]
+name = "MW20_RUNS"
+kind = "size"
+note = "MW.20: runs of each configuration; default 3"
+
+[[knob]]
+name = "MW20_WORKERS"
+kind = "size"
+note = "MW.20's field: the think pool's threads; default the shipped [tacsim.minds].workers"
+
+[[knob]]
+name = "MW20_REAL"
+kind = "measurement"
+note = "MW.20's field: 1 paces the wakes in real time, as the task does"
+
+[[knob]]
+name = "MW20_LATE_PER_MILLE"
+kind = "size"
+note = "MW.20's field: the share of wakes one lattice interval late; default 0"
+
+[[knob]]
+name = "MW20_BUBBLES"
+kind = "size"
+note = "MW.20's space lane: bubbles open at once; default 8"
+
+[[knob]]
+name = "MW20_POOLS"
+kind = "size"
+note = "MW.20's space lane: a comma list of pool sizes, a world each; default 1,2,4"
+
+[[knob]]
+name = "MW20_TICKS"
+kind = "size"
+note = "MW.20's space lane: wall seconds ticked; default 120"
+
+[[knob]]
+name = "MW20_PACE_MS"
+kind = "size"
+note = "MW.20's space lane: wall milliseconds between ticks; default 1000, 0 is back to back"
+
+[[knob]]
+name = "MW20_BACKUP"
+kind = "size"
+note = "MW.20's space lane: 0 leaves the carrier's crew linked, so no backup mind flies her"
+
+[[knob]]
+name = "MW20_TOGETHER_S"
+kind = "size"
+note = "MW.20's lane of both at once: wall seconds; default 60"
+
+[[knob]]
+name = "MW20_TOGETHER_PARTIES"
+kind = "size"
+note = "MW.20's lane of both at once: the field's parties; default 3"
+
+[[knob]]
+name = "MW20_TOGETHER_RHAI"
+kind = "size"
+note = "MW.20's lane of both at once: the field's Rhai seats; default 0"
+
+[[knob]]
+name = "MW20_FIRES"
+kind = "size"
+note = "MW.20's idle-fire lane: seconds fired; default 600"
+
+[[knob]]
+name = "MW20_RATE"
+kind = "size"
+note = "MW.20's idle-fire lane: the world rate; default 24, the live game's"
 
 [[knob]]
 name = "TACSIM_PULSES"
