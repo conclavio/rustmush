@@ -82,7 +82,10 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      runs under your signature while you are off watch.\n+ship/captives  the people you hold \
      aboard: a crew taken in a hull your carrier loaded.\n+ship/release <who>  let one of them \
      go, for nothing: docked at a port they are set down in its arrivals; anywhere else they \
-     ride on as a passenger.";
+     ride on as a passenger.\n+ship/mind  the mind sealed aboard.\n+ship/mind filed:<licence> \
+     [org=<organisation>] [go]  at your berth in a port, on a hull that carries a core: seal a \
+     filed mind you hold a licence to. It has her helm and sensors while her crew has no link, \
+     until she next docks at a port.\n+ship/mind off [go]  unseal it at your berth.";
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";

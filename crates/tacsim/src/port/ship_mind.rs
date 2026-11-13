@@ -45,8 +45,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mush_core::{
-    ActionError, ActionErrorCode, ActionInvocation, ActionTxn, AuthoritativeActionOutput,
-    CmdError, CommitToken, Ctx, IdempotencyKeyText, ObjId, PerceivedRef, PrepareCtx, World,
+    ActionError, ActionErrorCode, ActionInvocation, ActionTxn, AuthoritativeActionOutput, CmdError,
+    CommitToken, Ctx, IdempotencyKeyText, ObjId, PerceivedRef, PrepareCtx, World,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -67,16 +67,18 @@ use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
 /// The switch.
 pub const MIND_SWITCH: &str = "mind";
 /// The grammar.
-pub const MIND_USAGE: &str =
-    "Usage: +ship/mind | +ship/mind filed:<licence> [org=<organisation>] [go] | +ship/mind off [go]";
+pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<licence> [org=<organisation>] [go] | +ship/mind off [go]";
 /// No mind aboard: `{name}`.
-pub const MIND_NONE: &str = "No mind is sealed aboard the {name}. If you lose your link, the house default takes her home.";
+pub const MIND_NONE: &str =
+    "No mind is sealed aboard the {name}. If you lose your link, the house default takes her home.";
 /// A claim on its way: `{name}`, `{licence}`.
-pub const MIND_ADMITTING: &str = "The Registry is admitting licence {licence}'s claim on the {name}.";
+pub const MIND_ADMITTING: &str =
+    "The Registry is admitting licence {licence}'s claim on the {name}.";
 /// A mind aboard: `{mind}`, `{name}`, `{licence}`, `{class}`.
 pub const MIND_ABOARD: &str = "{mind} is sealed aboard the {name} under licence {licence}, at Class {class}. It has her helm and sensors while her crew has no link, until she next docks at a port.";
 /// A mind aboard that no longer fits her: `{mind}`, `{name}`.
-pub const MIND_UNFIT: &str = "{mind} was sealed aboard the {name}, and no longer fits her; its claim is being closed.";
+pub const MIND_UNFIT: &str =
+    "{mind} was sealed aboard the {name}, and no longer fits her; its claim is being closed.";
 /// A claim closing: `{name}`.
 pub const MIND_CLOSING: &str = "The claim on the mind last sealed aboard the {name} is closing.";
 /// The last claim was refused: `{name}`.
@@ -102,7 +104,7 @@ pub const MIND_LAPSED: &str = "Licence {licence} is {state}; nothing is sealed a
 /// The preview: `{licence}`, `{name}`.
 pub const MIND_PREVIEW: &str = "Seal licence {licence} aboard the {name}: its mind takes her helm and sensors while her crew has no link, and holds a seat of the licence until she next docks at a port. Add go to seal it.";
 /// Nothing to unseal: `{name}`.
-pub const MIND_NOT_SEALED: &str = "No mind is sealed aboard the {name}.";
+pub const MIND_NOT_SEALED: &str = "The {name} has no mind sealed aboard to unseal.";
 /// Another's seal: `{name}`.
 pub const MIND_NOT_YOURS: &str =
     "The mind aboard the {name} was sealed by someone else; they unseal it.";
@@ -112,13 +114,13 @@ pub const MIND_NOT_YET: &str =
 /// The unseal's preview: `{name}`.
 pub const MIND_OFF_PREVIEW: &str = "Unseal the mind aboard the {name}: its claim closes and the licence's seat is free. Add go to unseal it.";
 /// The tick's word once the claim is open: `{mind}`, `{name}`, `{class}`.
-pub const MIND_SEALED: &str = "{mind} is sealed aboard the {name} at Class {class}.";
+pub const MIND_SEALED: &str =
+    "The Registry admits the claim: {mind} is sealed aboard the {name} at Class {class}.";
 /// The tick's word once the claim is refused: `{name}`.
 pub const MIND_REFUSED: &str =
-    "The Registry did not admit the mind's claim; nothing is sealed aboard the {name}.";
+    "The Registry would not admit her mind's claim: nothing is sealed aboard the {name}.";
 /// The tick's word once the claim is closed: `{name}`.
-pub const MIND_UNSEALED: &str =
-    "The mind aboard the {name} is unsealed and its claim is closed.";
+pub const MIND_UNSEALED: &str = "The mind aboard the {name} is unsealed and its claim is closed.";
 /// The tick's word when a seal no longer fits: `{name}`, `{why}`.
 pub const MIND_VOIDED: &str =
     "The mind aboard the {name} no longer fits her ({why}); its claim is being closed.";
@@ -143,8 +145,9 @@ pub(crate) enum MindOp {
 }
 
 impl MindOp {
-    /// Every op word.
-    pub(crate) const WORDS: [&'static str; 4] = ["mind", "unmind", "void", "refuse"];
+    /// Every op.
+    pub(crate) const ALL: [MindOp; 4] =
+        [MindOp::Seal, MindOp::Unseal, MindOp::Void, MindOp::Refuse];
 
     /// The word.
     pub(crate) fn word(self) -> &'static str {
@@ -251,6 +254,65 @@ pub(crate) fn sealed(w: &World, hull: ObjId) -> Option<Sealed<'_>> {
         dispatcher,
         seal,
         source,
+    })
+}
+
+/// **What is sealed aboard a hull, as a reader sees it** (a story; staff): the claim, who
+/// sealed it, the mind and its licence, the class it thinks at and the core it was taken
+/// over, its channels and how many rows its rule program binds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Aboard {
+    /// The claim's open token.
+    pub claim: CommitToken,
+    /// Who sealed it: the claim's dispatcher.
+    pub dispatcher: ObjId,
+    /// The seal's principal, when it is a character.
+    pub principal: Option<ObjId>,
+    /// The mind's name.
+    pub mind: SmolStr,
+    /// Its licence, as its seal's origin labels it.
+    pub licence: SmolStr,
+    /// The class it thinks at.
+    pub class: crate::arena::core::CoreClass,
+    /// The class of the core it was sealed over.
+    pub core_class: crate::arena::core::CoreClass,
+    /// Whether that core is governed.
+    pub governed: bool,
+    /// The channels the seal carries.
+    pub channels: Vec<crate::arena::state::Channel>,
+    /// The rows its opening profile's rule program binds.
+    pub rules: usize,
+    /// The SHA-256 of its source.
+    pub source_sha256: [u8; 32],
+    /// The seal's own digest.
+    pub seal_digest: [u8; 32],
+}
+
+/// **What is sealed aboard `hull`** ([`Aboard`]), if a mind still stands there ([`sealed`]).
+#[must_use]
+pub fn aboard(w: &World, hull: ObjId) -> Option<Aboard> {
+    let sealed = sealed(w, hull)?;
+    let seal = sealed.seal;
+    Some(Aboard {
+        claim: sealed.open,
+        dispatcher: sealed.dispatcher,
+        principal: match &seal.principal {
+            Some(crate::deliberation::order::CharacterRef::Character { id }) => Some(*id),
+            _ => None,
+        },
+        mind: seal.mind.clone(),
+        licence: seal.requested.origin.licence_label().into(),
+        class: seal.class,
+        core_class: seal.core_class,
+        governed: seal.governed,
+        channels: seal.channels.clone(),
+        rules: seal
+            .cards
+            .programs
+            .first()
+            .map_or(0, |program| program.rows.len()),
+        source_sha256: seal.source_sha256,
+        seal_digest: seal.digest(),
     })
 }
 
@@ -706,7 +768,10 @@ fn owes(
             // A claim on this hull that another character dispatched: nothing of this cursor's.
             ClaimRead::Active { .. } => (None, false),
             ClaimRead::None => {
-                let tried = arm.tries.get(&hull).filter(|tried| tried.mark == *launch_ic);
+                let tried = arm
+                    .tries
+                    .get(&hull)
+                    .filter(|tried| tried.mark == *launch_ic);
                 let owed = match tried {
                     Some(tried) if tried.submissions >= MAX_OPEN_TRIES => Some(Owes::GiveUp),
                     Some(tried) if state.fires <= tried.last_fire => None,
@@ -887,11 +952,12 @@ pub(crate) fn step(
                         ctx.w, operator, hull, *launch_ic,
                     )
                     .and_then(|permit| {
-                        let licence = mush_roll::commerce::LicenceId::new(*licence).map_err(|_| {
-                            mush_core::participant::ParticipantError::refused(
-                                "ship mind claim licence",
-                            )
-                        })?;
+                        let licence =
+                            mush_roll::commerce::LicenceId::new(*licence).map_err(|_| {
+                                mush_core::participant::ParticipantError::refused(
+                                    "ship mind claim licence",
+                                )
+                            })?;
                         host.enqueue_start(&permit, licence, vec![])
                     });
                     match minted {
@@ -941,9 +1007,7 @@ pub(crate) fn step(
                 *launch_ic,
             );
             if step == Step::Submitted {
-                let line = MIND_VOIDED
-                    .replace("{name}", &name)
-                    .replace("{why}", why);
+                let line = MIND_VOIDED.replace("{name}", &name).replace("{why}", why);
                 crate::port_tick::notify_budget(ctx, operator, &line, NoticeLevel::Trip);
             }
             step
@@ -1063,20 +1127,21 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let hull = helm.hull;
     let name = name_of(ctx.w, hull);
-    let record = crate::port::epoch::record_at(ctx, hull)
-        .map_err(|()| CmdError::msg(MIND_UNWIRED))?;
+    let record =
+        crate::port::epoch::record_at(ctx, hull).map_err(|()| CmdError::msg(MIND_UNWIRED))?;
     let (raw, go) = crate::surface::retrieval::split_go(ctx.args.raw());
     if raw.is_empty() && !go {
         let line = status_line(ctx.w, hull, record.as_ref());
         say(ctx, line);
         return Ok(());
     }
+    // Where the claim path is not composed nothing would carry a seal; said after the
+    // refusals a read of the hull settles, so a coreless hull is told she has no core.
     let action = ctx
         .w
         .module_state::<PortTickState>()
         .and_then(|state| state.epoch_action.clone())
-        .filter(|_| crate::minds::ic_sortie::claim_path_composed(ctx.w))
-        .ok_or_else(|| CmdError::msg(MIND_UNWIRED))?;
+        .filter(|_| crate::minds::ic_sortie::claim_path_composed(ctx.w));
     let cursor = record.as_ref().and_then(|record| record.claim.as_deref());
     let live = cursor.is_some_and(ClaimCursor::is_live);
     let now = ctx.w.world_ic_now().at;
@@ -1109,6 +1174,7 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             say(ctx, MIND_OFF_PREVIEW.replace("{name}", &name));
             return Ok(());
         }
+        let action = action.ok_or_else(|| CmdError::msg(MIND_UNWIRED))?;
         let key = key(MindOp::Unseal)?;
         ctx.submit_authoritative(
             action,
@@ -1167,12 +1233,11 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let licence = match &parsed {
         MindWord::Filed(licence) => licence.get(),
         MindWord::Draft(_) if core.governed => {
-            return Err(CmdError::msg(
-                crate::surface::dispatch::MIND_GOVERNED_DRAFT,
-            ));
+            return Err(CmdError::msg(crate::surface::dispatch::MIND_GOVERNED_DRAFT));
         }
         MindWord::Draft(_) => return Err(CmdError::msg(MIND_DRAFT)),
     };
+    let action = action.ok_or_else(|| CmdError::msg(MIND_UNWIRED))?;
     if let Some(line) = crate::surface::dispatch::untitled_refusal(ctx.w, actor, hull) {
         return Err(CmdError::msg(line));
     }
@@ -1250,9 +1315,8 @@ mod tests {
     /// The op words round-trip, and none is an end of the epoch.
     #[test]
     fn mw13_the_mind_ops_have_their_own_words() {
-        for op in [MindOp::Seal, MindOp::Unseal, MindOp::Void, MindOp::Refuse] {
+        for op in MindOp::ALL {
             assert_eq!(MindOp::parse(op.word()), Some(op));
-            assert!(MindOp::WORDS.contains(&op.word()));
         }
         assert_eq!(MindOp::parse("open"), None);
         assert_eq!(MindOp::parse("close"), None);

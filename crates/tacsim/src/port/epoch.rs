@@ -45,10 +45,10 @@ use crate::port::def::PortDef;
 use crate::port::families::PortHandles;
 use crate::port::map::PortMap;
 use crate::port::ship::{Berth, berth_of, hull_view, is_hangar_port};
+use crate::port::ship_mind::{self, MindOp};
 use crate::port::voyage::{LAUNCH_GRACE_FIRES, VoyageState, lane_ports};
 use crate::port_tick::{Fire, PortTickState, Step, SwapRefused, gone, port_error};
 use crate::store::TacsimStore;
-use crate::port::ship_mind::{self, MindOp};
 use crate::surface::black_box::{self, BlackBoxLine, BlackBoxParticipant, SealFacts};
 use crate::surface::excursion::ClaimCursor;
 
@@ -238,9 +238,8 @@ impl ShipEpochRecord {
                 return Err("a ship's record counts the ends it committed".to_owned());
             }
         }
-        if let Some(
-            ClaimCursor::Opening { operator, .. } | ClaimCursor::Closing { operator, .. },
-        ) = self.claim.as_deref()
+        if let Some(ClaimCursor::Opening { operator, .. } | ClaimCursor::Closing { operator, .. }) =
+            self.claim.as_deref()
             && operator.0 == 0
         {
             return Err("a ship's mind claim names who sealed it".to_owned());
@@ -962,7 +961,7 @@ impl ActionProvider for EpochProvider {
         let mut ops = vec!["open".to_owned(), "close".to_owned()];
         if !minds.is_empty() {
             choices.extend(minds.keys().cloned());
-            ops.extend(MindOp::WORDS.iter().map(|word| (*word).to_owned()));
+            ops.extend(MindOp::ALL.iter().map(|op| op.word().to_owned()));
             if let Some(object) = fixed.as_object_mut() {
                 object.insert(
                     "minds".to_owned(),

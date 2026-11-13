@@ -968,7 +968,7 @@ pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     }
 }
 
-fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+pub(crate) fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
         let _ = land(rig, submit);
     }
@@ -1080,6 +1080,34 @@ pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (Ob
     (pilot, row)
 }
 
+/// **A chartered Dray docked at Ceres, her pilot aboard** (doc 44 unit MW.13): chartered,
+/// `tank` t of reaction mass and `locker` crew-days loaded, boarded. Not refitted, no rig
+/// leased, not sailed: she is at her berth in a port.
+pub(crate) fn docked_dray(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (tank, locker): (u64, u64),
+) -> (ObjId, HullRow) {
+    let pilot = pilot(rig, who, seed);
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    assert!(out.contains(&format!("now the {name}")), "{out}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
+    let row = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|row| row.hull == charter.hull.0)
+        .expect("the hull's row");
+    load(
+        rig,
+        &row,
+        tank,
+        locker,
+        9_100 + u64::try_from(seed).unwrap_or(0) * 10,
+    );
+    board(rig, pilot);
+    (pilot, row)
+}
+
 fn hold_vault(tw: &TestWorld, row: &HullRow) -> VaultId {
     let stowage = ObjId(row.rooms[&cid("stowage")]);
     economy(tw)
@@ -1158,14 +1186,14 @@ fn world_rate(tw: &TestWorld) -> u32 {
     tw.world().world_timeline().current().rate
 }
 
-fn set_rate(tw: &mut TestWorld, rate: u32) {
+pub(crate) fn set_rate(tw: &mut TestWorld, rate: u32) {
     if world_rate(tw) != rate {
         let out = run(tw, GOD, &format!("@tacsim/time rate={rate}"));
         assert_eq!(world_rate(tw), rate, "{out}");
     }
 }
 
-fn ic_now(tw: &TestWorld) -> i64 {
+pub(crate) fn ic_now(tw: &TestWorld) -> i64 {
     tw.world().world_ic_now().at
 }
 
@@ -1187,7 +1215,7 @@ pub(crate) fn advance_to(
 }
 
 /// [`advance_to`], landing what it queued quietly.
-fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
+pub(crate) fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     let (events, queued) = advance_to(rig, target);
     land_quietly(rig, &queued);
     events
@@ -1221,7 +1249,7 @@ pub(crate) fn command(rig: &mut Rig, who: ObjId, line: &str) -> (String, Vec<Aut
 }
 
 /// File a passage with `line`, land its burn, launch it on the next fire; the ticket.
-fn file_and_launch(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> Ticket {
+pub(crate) fn file_and_launch(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> Ticket {
     let (out, queued) = command(rig, pilot, line);
     assert!(out.contains("Clearance filed for "), "{line}: {out}");
     assert_eq!(queued.len(), 1, "one burn: {out}");

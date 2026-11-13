@@ -441,12 +441,8 @@ impl ThinkHost {
         if let Some(runner) = runners.get(&digest) {
             return Some(Arc::clone(runner));
         }
-        let built = crate::minds::sealed::scripted_runner(
-            unit,
-            &digest,
-            &ArenaConfig::default(),
-            sources,
-        );
+        let built =
+            crate::minds::sealed::scripted_runner(unit, &digest, &ArenaConfig::default(), sources);
         match built {
             Ok(runner) => {
                 self.runners_built.fetch_add(1, Ordering::Relaxed);
@@ -911,7 +907,10 @@ pub(crate) mod test_support {
 
         let fielded = Catalog::build_fielded(&[], crate::NS).expect("the fielded content");
         let fitted = fitted_catalog(fielded).expect("the fitted families");
-        let spec = fitted.units.get(SHIP_II_UNGOVERNED).expect("the cored Dray");
+        let spec = fitted
+            .units
+            .get(SHIP_II_UNGOVERNED)
+            .expect("the cored Dray");
         let unit = mush_tactics::TacticalUnit::from_spec(spec, hull).expect("it instantiates");
         let reflex = ReflexConfig::default();
         let card = crate::arena::card::line(&reflex);

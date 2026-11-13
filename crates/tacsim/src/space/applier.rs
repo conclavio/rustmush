@@ -374,26 +374,24 @@ pub fn apply_intents(
                     );
                 }
             }
-            IntentKind::Lock { contact } if seat.lock => {
-                match contacts.get(contact) {
-                    Some(target) => {
-                        if bubble
-                            .ships
-                            .get(ship_id)
-                            .is_some_and(|ship| ship.locked_target_id.as_deref() != Some(target))
-                        {
-                            command(
-                                bubble,
-                                BubbleInputCommand::SetLockedTarget {
-                                    ship_id: ship_id.to_owned(),
-                                    target_id: Some(target.clone()),
-                                },
-                            );
-                        }
+            IntentKind::Lock { contact } if seat.lock => match contacts.get(contact) {
+                Some(target) => {
+                    if bubble
+                        .ships
+                        .get(ship_id)
+                        .is_some_and(|ship| ship.locked_target_id.as_deref() != Some(target))
+                    {
+                        command(
+                            bubble,
+                            BubbleInputCommand::SetLockedTarget {
+                                ship_id: ship_id.to_owned(),
+                                target_id: Some(target.clone()),
+                            },
+                        );
                     }
-                    None => applied.dropped += 1,
                 }
-            }
+                None => applied.dropped += 1,
+            },
             IntentKind::Heading { mdeg } => heading = Some(*mdeg),
             IntentKind::Speed { cms } => strength = Some(*cms),
             IntentKind::Goal(MotorGoal::Hold) => strength = Some(0),
@@ -726,7 +724,10 @@ mod tests {
             &mut events,
         );
         assert_eq!(
-            bubble.ships.get("dray").and_then(|ship| ship.locked_target_id.clone()),
+            bubble
+                .ships
+                .get("dray")
+                .and_then(|ship| ship.locked_target_id.clone()),
             None
         );
     }

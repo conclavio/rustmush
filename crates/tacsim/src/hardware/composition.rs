@@ -216,14 +216,7 @@ impl RosterPolicy {
 #[allow(clippy::type_complexity)]
 fn families(
     layer: &TacsimRuleset,
-) -> Result<
-    (
-        Box<GovernedLineCores>,
-        Box<SurfaceRigCores>,
-        Box<ShipCores>,
-    ),
-    ModError,
-> {
+) -> Result<(Box<GovernedLineCores>, Box<SurfaceRigCores>, Box<ShipCores>), ModError> {
     let catalog = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
         .map_err(bad)?;
     let family = Box::new(GovernedLineCores::build(catalog).map_err(bad)?);
