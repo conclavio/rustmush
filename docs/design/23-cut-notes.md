@@ -628,18 +628,25 @@ D-23-12 waited for. The mind's side is in `44-cut-notes.md`, MW.13. This note is
 ### The moves a berth hold admits, and who makes each
 
 Sim admits a move by its shape, not by who wrote it: it has no name for a host. The shapes
-are the ones her epoch's hosts make, and no other writer makes them today.
+are the ones her epoch's hosts make (§19.2's table).
 
-| The move | Its host | Admitted because |
+| The move | In Sim's terms | Its host |
 |---|---|---|
-| A pose on the domain she lies on | The port, a bubble's physics | Same domain |
-| From a domain to under way | The voyage's departure (`+ship/undock`, a queued or ordered departure; `port/voyage.rs`) | A journey rooted at her is in the book in the same plan |
-| Re-stamped under way | A voyage's leg; a bubble's check-out back onto the corridor | She is under way already and not quarantined |
-| From under way onto an active domain | A leg that presents her into a picket's or a waypoint's bubble (the space host's check-in); her arrival at a port, her own or another's | She was under way under a journey, and the domain is active |
+| A pose at her berth | `Direct` on the domain she lies on | The port |
+| The undock, the lift | Unplaced as a carrier under way, with a journey rooted at her in the book | The port tick's launch arm, by `mush_sim::depart` |
+| The legs of her passage | No placement moves | The journey tick |
+| A bubble, free flight, a cluster | No placement moves; the space host's field mark coexists with the hold | The space tick |
+| The dock, the settling on a pad | From under way, `Direct` on an active domain: her own port's, another port's, a site's | The journey's arrival, or the space host's docking |
 
-Refused: a staff placement on another domain or in a room or a bay; a transfer's, a sale's or
-a sweep's placement; a mount on another hull (a tow); an unplacing with no journey of her
-own; a quarantine; and retiring the domain she lies on.
+Refused: into a room or a bay; onto a mount on another hull; a quarantine; an unplacing with
+no journey of her own; from one domain straight to another (a staff teleport, a transfer's
+or a sale's placement); and retiring the domain she lies on. The staff verbs (`@spatial`)
+refuse any custodied hull before the rule is asked.
+
+**One thing the rule cannot refuse.** A hull that is already under way and is brought to rest
+on a domain by something other than her own drive (a tow delivered to a port) makes the shape
+of a dock, and is admitted. Her epoch then closes `recovered_to_base`, as a rig's does in a
+recoverer's bay (S.3's A5). Sim cannot tell that host from her own.
 
 ### Rigs did not move
 
