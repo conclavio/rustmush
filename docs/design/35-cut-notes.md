@@ -1468,3 +1468,53 @@ row shape; the bound of 16 rulings a hull and 32 pending; the three ticks and th
 **Not pinned by a story.** A restart with a ruling pending; a fine that cannot be collected; a clean clearance's
 row; a ruling that lands after the hull has left the bubble or after the picket has written her off as a runner;
 the bound of 32 pending; an officer who is not the captain.
+
+## A crew that is away meets the picket (2026-11-13; doc 35 §11 Q-35-B5)
+
+Found building doc 44 unit MW.13: a ship under way to the Kirkwood picket, her pilot's link down and the backup
+mind at her helm, raised no picket when the server had restarted earlier on that leg. Sim logged `an interdicted
+corridor leg presents into NO domain; no activation was raised` and she sailed past.
+
+**Cause.** The waypoint of an interdicted leg has no domain until a hull first reaches it: the carrier hook
+(`TacsimCarrierHooks::boundary`, `crates/tacsim/src/composition/sim_routes.rs`) opens one at the boundary, and
+Sim's `raise_interception` (`crates/mush-sim/src/journey.rs`) raises the interception only into a domain that is
+there. Since `SF.R14` the hook opened it only for a hull with a connected player in one of her rooms
+(`World::is_connected`). A player whose link is lost stays connected until the session manager ends the session
+(`Inbound::SessionGone`), and connection state is never persisted (`World::connected`), so a boot starts with
+nobody connected and only the links the gateway still holds come back. A pilot whose link was down before a
+restart is therefore not connected after it. Nothing was lost from the store: the journey, the link-loss record
+and the picket cast all read back.
+
+**It is production's, and not only a restart's.** The story rig's reboot and the server's boot agree: neither
+restores a connection. The same ship lost the picket with no restart once the session manager had ended her
+pilot's session, which it does on its own grace.
+
+**Fix.** The hook also opens the waypoint's domain for a hull whose link-loss record stands
+(`SpaceBubbleBook::linkdead_state`): the record is made when the last of her crew loses the link under way, is
+kept while the mind has her, and is read back at boot (§11 `B-7`). Q-35-B5 has the seat take over "only at a
+picket", so the picket has to open on her.
+
+**Tests** (`crates/tacsim/tests/domain_world/voyage.rs`; both fail on the code before, at "the Kirkwood picket's
+bubble opens on her"):
+
+- `a_restart_on_an_interdicted_leg_does_not_lose_the_picket`: link lost on the first leg, the grace waited out,
+  a reboot with nobody reconnecting; the record reads back equal, the picket opens, the mind heaves her to.
+- `a_ship_whose_crew_is_away_meets_the_picket`: the same with `SessionGone` in place of the restart; then a
+  pilot with a live link (a picket, no record), and a hull whose pilot's session ended at the berth before the
+  launch (no record, no picket, on her second leg), which is doc 18's unattended passage as it was.
+
+**Left as found.**
+
+- **A hull that sails with nobody linked and no link-loss record** (her pilot's session ended at the berth)
+  still opens no domain. Whether a picket meets her then depends on whether some earlier hull opened the
+  waypoint's domain on that world, since a domain once opened stays. A probe (not kept; conclav.dev, 2026-11-13)
+  gave Kirkwood's place a domain by staff command before such a hull arrived: the picket's bubble opened on
+  her, her journey was `Promoted`, she had no link-loss record, and 2,400 real seconds later she was still
+  `AwaitingHeaveTo` with the journey paused. So on a world where any hull has met the Kirkwood picket, doc 18's
+  unattended passage is held there with no mind to answer. Not fixed here. **Owner's call**: whether an
+  unattended passage is stopped by customs at all, and if it is, that she gets the cover a lost link gets.
+- **A boundary crossed while the server was down** runs no carrier hook (`Source::Boot`, doc 18 lead ruling
+  L8), so a waypoint with no domain raises nothing for a hull that crossed it during the downtime.
+- **A linked pilot across a restart** was not flown here. A boundary that falls after the boot and before the
+  gateway has given her connection back would find her not connected and with no record; whether the server's
+  order of work allows that gap was not traced.
