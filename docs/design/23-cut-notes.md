@@ -619,6 +619,27 @@ D-23-12 waited for. The mind's side is in `44-cut-notes.md`, MW.13. This note is
   claim path (`with_ic_minds_in_bays`, every Active launch) now admits bays and berths. No
   definition, descriptor or manifest moved: the flag is not part of any.
 - **The producer** is the ship's epoch arm, in `44-cut-notes.md`, MW.13.
+- **Only a hangar port's berth is asked** (`crates/tacsim/src/minds/ic_sortie/surface.rs`,
+  `surface_start`). Sim admits by where the hull lies and cannot tell a ship from a rig, so
+  the one function both arms mint an Open through gives no permit for a unit lying on a
+  domain that is not a hangar port's berth. A rig stood on a site's ground is not asked,
+  where Sim refused it before the cut.
+
+### The moves a berth hold admits, and who makes each
+
+Sim admits a move by its shape, not by who wrote it: it has no name for a host. The shapes
+are the ones her epoch's hosts make, and no other writer makes them today.
+
+| The move | Its host | Admitted because |
+|---|---|---|
+| A pose on the domain she lies on | The port, a bubble's physics | Same domain |
+| From a domain to under way | The voyage's departure (`+ship/undock`, a queued or ordered departure; `port/voyage.rs`) | A journey rooted at her is in the book in the same plan |
+| Re-stamped under way | A voyage's leg; a bubble's check-out back onto the corridor | She is under way already and not quarantined |
+| From under way onto an active domain | A leg that presents her into a picket's or a waypoint's bubble (the space host's check-in); her arrival at a port, her own or another's | She was under way under a journey, and the domain is active |
+
+Refused: a staff placement on another domain or in a room or a bay; a transfer's, a sale's or
+a sweep's placement; a mount on another hull (a tow); an unplacing with no journey of her
+own; a quarantine; and retiring the domain she lies on.
 
 ### Rigs did not move
 
@@ -636,3 +657,12 @@ listed; each admitted and each refused move; a reboot keeps the hold; the journe
 berth, a bay and a base hold; the shape of a bay row and a base row (no `berth` key).
 `s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted` and the four older tests of the
 owner pass as they were written.
+
+`minds::ic_sortie::surface::tests::s4d_a_rig_on_the_ground_is_given_no_open_permit_and_a_rig_in_its_bay_is_asked`
+(tacsim): the mint's guard.
+
+Mutation checks, each failing the test named: Sim admitting a berth where berths are not
+configured, a bay hold rooting a journey as a berth hold may, and a berth hold placed on
+another domain from her berth each fail the `s4d` test of the owner; an Open minted for a
+unit on a domain that is no berth fails the guard's test; the production composition without
+berths fails MW.13's main story at the seal.
