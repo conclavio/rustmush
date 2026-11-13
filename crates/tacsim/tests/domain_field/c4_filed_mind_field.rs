@@ -400,6 +400,74 @@ async fn raided(
     let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("FIRE {gun} OFF"));
 }
 
+/// **The lines that say the filed mind did not fly the unit to its answer**: any fault of
+/// `tv`'s mind, and any drop of it, with one exception. A hull whose core the raider's fire
+/// has destroyed drops its mind by the kernel's own rule (17b cut M3.4, cause `core`); once
+/// the script's own answer is on the box (`first_answer`, a line index), that is where the
+/// raider's rounds landed and no trouble of the script's. A full dispatch met it (run
+/// 43362346048: the raider's rounds took the escort's turret, and the core with it). A drop
+/// for `core` ahead of the answer, a drop for any other cause, and every fault are still
+/// trouble: the answer would not be the script's.
+fn troubled<'a>(
+    kinds: impl Iterator<Item = &'a EventKind>,
+    tv: ObjId,
+    first_answer: usize,
+) -> Vec<String> {
+    kinds
+        .enumerate()
+        .filter(|(at, kind)| match kind {
+            EventKind::MindFault { unit, .. } => *unit == tv,
+            EventKind::MindDropped { unit, cause, .. } => {
+                *unit == tv && (*at < first_answer || cause.as_str() != "core")
+            }
+            _ => false,
+        })
+        .map(|(_, kind)| format!("{kind:?}"))
+        .collect()
+}
+
+/// [`troubled`] still names everything but a core shot out after the script's answer.
+#[test]
+fn c4_only_a_core_shot_out_after_the_answer_is_not_the_scripts_trouble() {
+    let (tv, other) = (ObjId(572), ObjId(9));
+    let dropped = |unit: ObjId, cause: &str| EventKind::MindDropped {
+        unit,
+        cause: cause.into(),
+        fault: None,
+        ops: None,
+    };
+    let fault = EventKind::MindFault {
+        unit: tv,
+        think_seq: 3,
+        cause: "ops".into(),
+    };
+    // The answer is line 2; each case puts one line of interest before or after it.
+    let after = |kind: EventKind| vec![EventKind::Void, EventKind::Void, EventKind::Void, kind];
+    let before = |kind: EventKind| vec![EventKind::Void, kind, EventKind::Void, EventKind::Void];
+    assert!(
+        troubled(after(dropped(tv, "core")).iter(), tv, 2).is_empty(),
+        "a core shot out after the answer is the dice"
+    );
+    assert_eq!(
+        troubled(before(dropped(tv, "core")).iter(), tv, 2).len(),
+        1,
+        "a core lost ahead of the answer: the answer was not the script's"
+    );
+    for cause in ["strikes", "abi"] {
+        assert_eq!(
+            troubled(after(dropped(tv, cause)).iter(), tv, 2).len(),
+            1,
+            "{cause}"
+        );
+    }
+    assert_eq!(troubled(after(fault.clone()).iter(), tv, 2).len(), 1);
+    assert_eq!(troubled(before(fault).iter(), tv, 2).len(), 1);
+    assert!(
+        troubled(after(dropped(other, "strikes")).iter(), tv, 2).is_empty(),
+        "another unit's mind is not this story's"
+    );
+}
+
 /// **What the black box holds of the exchange, in order** (the story's steps 4 and 5): the
 /// raider's fire arrived on the escort; the escort fired at the raider, and its first round
 /// left after that first arrival; before that arrival the script had locked its target and no
@@ -448,20 +516,12 @@ fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, 
             .take(12)
             .collect::<Vec<_>>()
     );
-    // And it was the script that flew the unit throughout: a mind that faults three thinks
-    // running is dropped to the house default, which would answer the raider as well.
-    let troubled: Vec<String> = lines
-        .iter()
-        .filter(|line| {
-            matches!(&line.kind,
-                EventKind::MindDropped { unit, .. } | EventKind::MindFault { unit, .. }
-                    if *unit == tv)
-        })
-        .map(|line| format!("{:?}", line.kind))
-        .collect();
+    // And it was the script that flew the unit up to its answer: a mind that faults three
+    // thinks running is dropped to the house default, which would answer the raider as well.
+    let troubled = troubled(lines.iter().map(|line| &line.kind), tv, first_answer);
     assert!(
         troubled.is_empty(),
-        "the filed mind neither faulted nor was dropped: {troubled:?}"
+        "the filed mind neither faulted nor was dropped before its answer: {troubled:?}"
     );
     eprintln!("C4_FIELD the exchange: {exchange}");
 }
