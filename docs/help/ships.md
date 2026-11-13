@@ -216,6 +216,33 @@ hull whose title you hold, or the lines since your lease began on a hull you
 lease; staff read any. A hull you cannot read answers that it has no box you can
 read.
 
+## A mind sealed aboard
+
+A ship that carries a core can carry a mind of yours. A Dray as she is built
+carries none: her drive ROM flies a filed plan and decides nothing.
+
+  +ship/mind                          what is sealed aboard
+  +ship/mind filed:<licence> [go]     seal a filed mind you hold a licence to
+  +ship/mind filed:<licence> org=<organisation> [go]
+                                      one an organisation you act for holds
+  +ship/mind off [go]                 unseal it
+
+Seal it at your berth in a port, before you undock. The Registry admits the
+claim over her as she lies there, and the mind is sealed at the class her core
+gives it. It holds a seat of its licence until she next docks at a port, where
+the claim closes; to fly it again, seal it again. An unfiled draft is refused:
+only a filed mind is sealed aboard a ship.
+
+The mind flies her only while her crew has no link. If you lose yours, then
+after five minutes it has her helm and her sensors in place of the house
+default, and it is held to the same limits: it never fires, it burns only to
+heave to for a ship that stops her, and outside an encounter it may take her
+to port or hold her where she is. It may lock a contact, which the house
+default may not. Come back and the helm is yours at once.
+
+If her core is changed, or she is no longer yours to fly it on, the mind
+stands down and its claim is closed.
+
 To lift with a rig or a detachment unit still out on the ground, name it with
 `leave=` on a live `+ship/lift` or `+ship/undock` (`help field`).
 

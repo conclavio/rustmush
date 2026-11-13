@@ -560,7 +560,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             switches: [
                 "board", "leave", "hold", "plan", "undock", "lift", "orders", "order", "captives",
-                "release",
+                "release", "mind",
             ]
             .iter()
             .copied()

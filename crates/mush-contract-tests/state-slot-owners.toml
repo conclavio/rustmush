@@ -144,6 +144,20 @@ owner = ""
 reason = "Test-only observation fixture seeds authored TacticalUnit data in a bare World's UnitStore, establishing the unit-kind prerequisite without constructing unrelated world content."
 
 [[site]]
+path = "crates/tacsim/src/minds/ic_sortie/surface.rs"
+accessor = "World::module_state_insert"
+slot = "spatial"
+owner = ""
+reason = "Doc 23 cut S.4d in-source test: seeds one Sim placement (a rig on a domain, then in a bay) on a bare World to pin surface_start's guard, which gives no Open permit for a unit lying on a domain that is no hangar port's berth. No domain, journey or exclusion is built; production placements are written only through Sim's transitions."
+
+[[site]]
+path = "crates/tacsim/src/minds/ic_sortie/surface.rs"
+accessor = "World::module_state_insert"
+slot = "units"
+owner = ""
+reason = "Doc 23 cut S.4d in-source test: seeds one authored TacticalUnit in a bare World's UnitStore so surface_start has a unit to mint a permit over, which proves the guard and not the missing unit refuses a rig on the ground. No claim is opened."
+
+[[site]]
 path = "crates/tacsim/src/detachment/planning/projection_tests.rs"
 accessor = "World::module_state_insert"
 slot = "mush_tactics"

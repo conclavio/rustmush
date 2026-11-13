@@ -59,6 +59,31 @@ pub fn claim_seal(world: &World, open: CommitToken) -> Option<crate::arena::Mind
         .map(|row| row.open.execution.seal.clone())
 }
 
+/// **The active claim on `unit`, with what it retains** (doc 44 unit MW.13): its open token,
+/// its dispatcher, its seal and its source, borrowed from the book. What a host that thinks
+/// with a claimed mind outside an arena reads (`crate::port::ship_mind::sealed`); `None`
+/// where the claim path is not composed or the unit has no active claim.
+#[must_use]
+pub fn claim_execution(
+    world: &World,
+    unit: ObjId,
+) -> Option<(CommitToken, ObjId, &crate::arena::MindSeal, &str)> {
+    let state = world.module_state::<IcSorties>()?;
+    state
+        .active
+        .get(&unit)
+        .and_then(|open| state.rows.get(open))
+        .filter(|row| row.closed.is_none())
+        .map(|row| {
+            (
+                row.open.operation,
+                row.open.dispatcher,
+                &row.open.execution.seal,
+                row.open.execution.source.as_str(),
+            )
+        })
+}
+
 /// **An active claim's retained source by its digest** (doc 23 cut S.4b-2, §17.10's `sources`
 /// seam): the text a field's arena installs the claim's runner from, which the store need not
 /// hold (the claim retains its source whole, D-23-14).
@@ -110,15 +135,24 @@ pub fn claim_closed(world: &World, open: CommitToken) -> Option<CommitToken> {
 /// stands in its bay, the operator, and the epoch's IC id `SortieId::ic(tv, launch_ic)` fixed
 /// at `go`.
 ///
+/// **Doc 23 cut S.4d (D-23-25)**: Sim admits a unit lying directly on a domain as a berth
+/// hold where berths are configured. Only a ship docked at a hangar port has a berth, so a
+/// unit placed on a domain anywhere else (a rig stood on a site's ground, a ship on a site's
+/// pad) is given no permit here: its claim is not asked, where before the cut Sim refused it
+/// as "not in a configured base". Both arms mint through this one function.
+///
 /// # Errors
 ///
-/// The rig has no tactical unit.
+/// The rig has no tactical unit, or it lies on a domain that is not a hangar port's berth.
 pub(crate) fn surface_start(
     world: &World,
     operator: ObjId,
     tv: ObjId,
     launch_ic: i64,
 ) -> Result<Arc<StartPermit>, ParticipantError> {
+    if on_a_domain_without_a_berth(world, tv) {
+        return Err(bad("a claim opens in a bay or at a hangar port's berth"));
+    }
     Ok(Arc::new(StartPermit {
         unit: mush_tactics::module::unit_of(world, tv)
             .ok_or_else(|| bad("surface unit"))?
@@ -127,6 +161,20 @@ pub(crate) fn surface_start(
         sortie: Some(SortieId::ic(tv, launch_ic)),
         _transition: HostTransition::surface(),
     }))
+}
+
+/// Whether `unit` lies directly on a domain that is not a hangar port's berth
+/// ([`surface_start`]).
+fn on_a_domain_without_a_berth(world: &World, unit: ObjId) -> bool {
+    world
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|spatial| {
+            matches!(
+                spatial.parent_of(unit),
+                mush_sim::SpatialParent::Direct { .. }
+            )
+        })
+        && crate::port::ship::hangar_port_of(world, unit).is_none()
 }
 
 /// **The four close kinds as the host event carries them**: `ReturnedToBase`,
@@ -187,4 +235,63 @@ pub(crate) fn surface_close(
         )
         .map_err(bad)?,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_sim::data::{PlacementRecord, Pose, passive_rules_value};
+    use mush_sim::{DomainId, SpatialParent, SpatialState};
+
+    fn world_with(unit: ObjId, parent: SpatialParent) -> World {
+        let mut world = World::new_minimal();
+        let mut spatial = SpatialState::default();
+        spatial.placements.insert(
+            unit,
+            PlacementRecord {
+                object: unit,
+                parent,
+                revision: 1,
+                unplaced: None,
+            },
+        );
+        world.module_state_insert(spatial);
+        let mut units = mush_tactics::module::UnitStore::default();
+        units
+            .units
+            .insert(unit, crate::arena::test_support::tactical_unit(unit));
+        world.module_state_insert(units);
+        world
+    }
+
+    /// **Doc 23 cut S.4d (D-23-25), the second reader's finding 4**: Sim admits a unit lying
+    /// directly on a domain as a berth hold. A rig stood on a site's ground lies on a domain
+    /// and has no berth, so no Open is minted for it; a rig in its bay is asked as it always
+    /// was. A rig's claim never opens under the berth rule.
+    #[test]
+    fn s4d_a_rig_on_the_ground_is_given_no_open_permit_and_a_rig_in_its_bay_is_asked() {
+        let rig = ObjId(41);
+        let posture = passive_rules_value(serde_json::json!({})).expect("posture");
+        let on_the_ground = world_with(
+            rig,
+            SpatialParent::Direct {
+                domain: DomainId(9),
+                pose: Pose::passive(posture),
+            },
+        );
+        assert!(on_a_domain_without_a_berth(&on_the_ground, rig));
+        assert!(surface_start(&on_the_ground, ObjId(3), rig, 100).is_err());
+
+        let in_its_bay = world_with(
+            rig,
+            SpatialParent::Interior {
+                space: ObjId(5),
+                slot: None,
+            },
+        );
+        assert!(!on_a_domain_without_a_berth(&in_its_bay, rig));
+        let permit = surface_start(&in_its_bay, ObjId(3), rig, 100).expect("asked in its bay");
+        assert_eq!(permit.sortie, Some(SortieId::ic(rig, 100)));
+        assert!(!on_a_domain_without_a_berth(&World::new_minimal(), rig));
+    }
 }

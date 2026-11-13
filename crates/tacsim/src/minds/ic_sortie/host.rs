@@ -454,6 +454,45 @@ impl IcHost {
             pending: Some(pending),
         })
     }
+    /// **Withdraw a surface host's Open that was given up** (doc 44 unit MW.13). The surface
+    /// arms submit through [`Self::submit_as_host`], which observes no attempt, so
+    /// [`Self::discard_unadmitted_open`] (which asks a definitive non-dispatch observation)
+    /// can never return one; and a pending Open that is never admitted holds its actor's one
+    /// Open slot until a restart. This removes the pending capability when complete owner
+    /// readback holds no use of its request. A submission of it still on its way then finds
+    /// no capability at its preparation and is refused; one already past its preparation
+    /// lands, and the claim it opens is the caller's to close (`port::ship_mind`'s orphan).
+    ///
+    /// # Errors
+    ///
+    /// The ticket is not pending, is not an Open of this host's, was submitted through the
+    /// observed route, or its request is in the book.
+    pub fn withdraw_surface_open(
+        &self,
+        world: &World,
+        ticket: &IcHostTicket,
+    ) -> Result<(), ParticipantError> {
+        let state = audited_state(world, &self.writer)?;
+        if state.request_used(ticket.request) {
+            return Err(bad("request has actual installed history"));
+        }
+        let mut inbox = self.inbox.lock().map_err(bad)?;
+        let pending = inbox
+            .rows
+            .get(&ticket.request)
+            .ok_or_else(|| bad("pending"))?;
+        self.check_ticket(pending, ticket)?;
+        if pending.intent.closing() || !matches!(pending.attempt, Attempt::Unsubmitted) {
+            return Err(bad("only an unobserved surface Open is withdrawn"));
+        }
+        let remaining = inbox
+            .bytes
+            .checked_sub(pending.bytes)
+            .ok_or_else(|| bad("bytes"))?;
+        inbox.rows.remove(&ticket.request);
+        inbox.bytes = remaining;
+        Ok(())
+    }
     /// Restore that same capability, ticket, parameters and idempotency key.
     /// Capacity or readiness refusal leaves the capsule with its caller. No new
     /// permit or request identity is minted; a consumed capsule cannot reenter.

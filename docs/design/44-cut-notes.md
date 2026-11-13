@@ -2471,7 +2471,251 @@ Answered, not changed:
 
 ## MW.13
 
-Not built.
+A player's own mind sealed on a ship (doc 44 §7.1, §4 F; Q-44-26; first review finding 4,
+second review rows 17, 18 and 25). It is also doc 23's cut S.4d, the berth anchor a ship's
+claim needed (doc 23 §19, D-23-25; `23-cut-notes.md`). **The mind ABI did not move**: it is
+`rhai=1.26.0;api=9;stock=3`. Paths are under `crates/tacsim/src/` unless given.
+
+**Built.**
+
+- **`+ship/mind`** (`port/ship_mind.rs`; the switch on `+ship`). `+ship/mind filed:<n>
+  [org=<org>] go`, at the helm of a hull that lies at a port and carries a core, seals a
+  filed mind its holder may fly on her. Bare, it reads what is aboard. `+ship/mind off go`
+  unseals at her berth, before she sails. The refusals are the rig launch's own, from the
+  same function (`surface::dispatch::dispatch`): a licence not held, one changing hands, a
+  hull that is another's, a licence's seats all flying, and **an unfiled draft on a governed
+  core** (finding 4). A hull with no core is refused by that, and a lapsed or revoked
+  licence seals nothing.
+- **The seal is the Roll's claim, by the rig's path.** Nothing is sealed in the verb. Its one
+  submission files a claim cursor on the hull's `tacsim.ship_epoch` record
+  (`ShipEpochRecord::claim`); the port tick's epoch arm opens the claim on the next fire as
+  the operator, with the IC host, the `StartPermit` and the four owners a rig's launch uses,
+  and the claim's own capture is the one seal (D-23-14: `Execution::capture`, through
+  `seal_with_policy`). The launch arm is held off until the claim has opened.
+- **Class, principal and claim across a restart** (finding 4). They are the claim book's,
+  which the Roll and the four owners persist. `ship_mind::sealed` reads them from it. No
+  bubble record changed and `compact_mind_seal` is untouched: a cast actor's seal is still the
+  compact one, and a player's never goes through it.
+- **The claim closes once, when she docks.** The bundle that closes the ship's epoch at a
+  port moves the cursor to `Closing`, by the epoch's own kind, and the arm submits the Close
+  as the operator. One record's one cursor names one open token, and the book closes a token
+  once. A ship's cursor is never `Open`: the book says whether the claim is open.
+- **The sealed mind thinks on the one host** (`space/thinks.rs` `SealedMind`, `Source`,
+  `job_on`, `jobs_on`), with its seal's class row, its seal's card and **its seal's bound
+  rule program** (row 17: the first space seal that runs one). The source is the text the
+  claim retains. The backup seat's first source is that mind (`space/backup.rs` `sources`);
+  it no longer reads the hull's `tacsim:mind_seal` attribute, which only a cast hull or a
+  drone ever carried and which a salvaged hull kept.
+- **The seat: helm and sensors, and no fire** (`space/applier.rs`). `Seat` has `lock` apart
+  from `fire`. A sealed mind sits in the absent seat with one difference: it may lock. Every
+  shot it asks is dropped, its burns are held to the rule the house default's are (only a
+  burn that heaves her to), and it mines and trades nothing (the seat has no such act). A
+  `LOCK NEAREST` row of its rule program acts in a bubble (`program_lock`); `Fire` and
+  `HoldFire` rows bind inert, because a ship's seal carries no fire channel.
+- **A seal is checked again where it is used** (`ship_mind::fits`). The seat is answered a
+  seal only while the hull still carries a core of the class and governor the seal was
+  taken over, and its dispatcher still has authority over the hull by the Roll's rule
+  (`hull_authority`: a title, a lease, an office). A seal that no longer fits is not thought
+  with, the holder is told why, and the arm closes its claim (`void`).
+- **A claim given up, and a claim left behind.** The arm gives an Open five submissions, a
+  fire apart. Then it gives the claim up (`refuse`), tells the holder, and once the cursor
+  reads `Refused` withdraws the Open from the IC host (`IcHost::withdraw_surface_open`, new in
+  `minds/ic_sortie/host.rs`). The host keeps one Open pending an actor and drops it only on the
+  book's readback, so an Open that was never admitted would otherwise refuse that pilot's next
+  seal on any hull until a restart. A withdrawn Open that turns up later finds no capability
+  and is refused. One that lands in the gap between the give-up and the arm's next fire opens
+  a claim no cursor names: the arm closes any such claim as its dispatcher (`owes`), `+ship/mind`
+  reads it as closing, and a second seal is refused while it stands.
+- **One guard where every Open is minted** (`minds/ic_sortie/surface.rs`, `surface_start`): a
+  unit lying directly on a domain is given a permit only at a hangar port's berth. Sim's berth
+  admission cannot tell a ship from a rig, so without the guard a rig stood on a site's ground
+  would be admitted as berth-held, where Sim refused it before S.4d.
+- **The epoch arm's caps hold** (`port/epoch.rs`). The mind arm is offered no hull that has an
+  end of its epoch due, whether that end is ready or held back, so a visit for a mind never
+  submits an end past the arm's retry caps.
+- **A cored Dray** (`definitions/core_replacement.rs` `ShipCores`, `fitted_catalog`): six
+  roots, `tacsim.unit.dray_core_{i,ii,iii}` and an ungoverned twin of each, built by the
+  family builder the rig uses and registered with governed hardware. `surface_chassis` maps
+  them to the Dray, so every port verb reads her as one. **No recipe fits one.**
+- **The berth anchor** in Sim's exclusion: doc 23 §19 and `23-cut-notes.md`, S.4d.
+- Help: `docs/help/ships.md`, "A mind sealed aboard". The bot's sentence table has a seventh
+  family, `ship_mind` (24 rows, with its census).
+
+**What the survey and the brief did not see.**
+
+- **No ship carried a core**, and nothing in play fits one. The Dray is Class 0 by design
+  ("her drive ROM flies a filed plan and decides nothing"). Hence the family above.
+- **No ship could open a claim** (D-23-12), and the claim as S.4b built it forbade a held hull
+  a journey at three places: the Open's admission, the boot audit and the plan check. The
+  first rated run of the story read `sim: IC exclusion refused reason=not in a configured
+  base`. Hence S.4d.
+- **A core cannot be changed under a sealed mind at all.** The unit's owner fences a hull
+  under a claim (`mush_tactics::ic_custody::refuse_mutation`): the Co-op's re-dress, a
+  component's fitting or stripping, a core's fitting, a scrapping and staff's rebind are each
+  refused, and the claim's Close asks for the Open's unit definition. So the row's "a core
+  stripped after sealing leaves no seal of its class" is kept the stronger way: the strip is
+  refused until the mind is unsealed. Ruled by the programme lead on 2026-11-13 (the done-when
+  below is amended to say so).
+- **The backup seat thinks outside a bubble too** (MW.8's `step_adrift`): finding 18's
+  "nothing thinks in free flight" was true of the cast and is not true of the seat. A sealed
+  mind is its first source there as well, with the seat's two acts (make for port, hold).
+- **A sealed mind's rule program has one live action on a ship**: `Lock`. And a rule's
+  native predicates other than a range have no fact in a bubble (odds, bands, aspects, scans),
+  so such a row never acts there. A row with a think term acts only on a think whose script took
+  the sample (`stock::rules()`), as on the ground.
+- **A filed mind's class is its certificate's**, not the core's: `seal_with_policy` asks
+  that the sealed class equal the certificate's minimum, so a mind rated above the hull's
+  core is refused at the Open, as on the ground. The story's mind is rated Class I and sealed
+  at Class I over a Class II core.
+
+**Every route by which a hull's core or title changes, and what each does to a seal.**
+
+| Route | Where | With a mind sealed aboard |
+|---|---|---|
+| The Co-op's re-dress, `+coop/refit prospector|standard` | `port/refit.rs` | **Refused**, by `MIND_HOLDS_HER` ("unseal it first"); the unit's owner would refuse the write. Story A |
+| A bay's work on a hull: `+bay/order`, `/fit`, `/strip`, `/scrap`, `/return`, `/stow` | `port/bay_work/command.rs` | **Refused** by the same sentence, at the one place the verbs resolve their hull. Not reached by a story: a held ship cannot be berthed in a workshop either (Sim's freeze refuses the interior) |
+| The certified core fitting and the ungoverning fitting | `hardware/`, `mush-economy` `core_refit` | **Refused** by the unit's owner (`component_replacement.rs`). No ship can stand in the shop in any case. Not tested here |
+| Staff's rebind, `@unit/remove` then `@unit/create` | `mush-tactics` | **Refused** ("held by an IC sortie"). Story A |
+| Damage that lowers a core's class in a fight | `arena::core::read_core_under` | The seal no longer fits (`Unfit::Core`): **voided**. Not tested: no space fight degrades a core today |
+| A change of title the unit's owner does not see: `@asset/transfer`; a buyout's settlement (`port/buyout.rs`); a recovery house's sale (`port/house_sale.rs`) and sweep (`port/house_sweep.rs`); a salvage claim's award (`port/claims.rs`); a foreclosure on a lien or collateral | the economy | **Checked again**: the dispatcher's authority over the hull is asked at every think and every port fire. Lost, the seal is not thought with and its claim is closed (`void`). A buyout that titles the hull to the pilot who sealed it keeps it: her authority moves from the lease to the title. Story B does the transfer by staff; the sale, the sweep and the award are not flown |
+| A charter or a lease that ends; a recall (`port/recall.rs`) | the economy, the port tick | As a change of title: the lease arm of `hull_authority` stops answering, and the claim is closed. Not flown |
+| The hull docks at a port | `port/epoch.rs` | The claim **closes** with the epoch. The main story |
+
+**With no claim open nothing is kept to seal again.** There is no stored selection: a seal
+lasts one passage (D-UM-45), and a new `+ship/mind` is resolved against the hull's core and
+its holder at that `go`. Story A pins it: after the unseal the yard re-dresses her as a
+Dray-P, and the same licence is refused for want of a core. Story B: after the title has
+passed, the pilot's `+ship/mind` is refused because the hull is another's.
+
+**The acceptance, and what holds each.** The rated stories are in
+`crates/tacsim/tests/domain_field/mw13_ship_mind.rs`, on the combined M8 world (the
+production `LaunchComposition`); each takes one genuine Registry rating and runs on the CI
+dispatch (`m8-gate-stories`).
+
+| The row asks | Held by | Before the unit |
+|---|---|---|
+| On a governed hull a filed mind the player holds is sealed, and an unfiled draft is refused | The main story, step 1 (the claim opens at her berth; the seal reads her as principal, Class I over a governed Class II core, helm and sensors); the fast story `mw13_the_verb_refuses_a_draft_and_a_coreless_hull_and_the_house_default_locks_nothing` (the draft and the coreless hull) | No verb; no ship core; the Open refused |
+| With her link down, inside a bubble, that mind makes a helm or sensor choice the house default does not | The main story, step 2: at the Kirkwood picket her mind locks the corvette that hails her and heaves her to, by its own trace words. The fast story flies the same passage with nothing sealed: the house default heaves to and locks nothing | The seat read only the house default, and dropped every lock |
+| After a restart the seal reads the same class, principal and claim | The main story: a restart at her berth with the claim open, one inside the picket's bubble, one under way after the picket, and one between the dock and the Close; `aboard` is equal each time, and the mind flies on | No seal to read |
+| The claim closes once when she docks | The main story, step 4: the epoch's close moves the cursor by `returned_to_base`; the arm's first Close is dropped and the server restarts; the record owes it again; the book holds it closed, and six fires and another restart later holds the same close token. The arm's first Open is dropped as well | No claim |
+| A core stripped after sealing leaves no seal of its class (**amended**: refused while sealed) | Story A: the yard and staff's rebind are refused, her core and seal are as they were; unsealed, the re-dress lands and nothing seals again | The seal attribute stayed on the hull |
+| A hull sold or swept carries no seal to its new owner | Story B: her title passes; the seat reads no mind at once, the pilot is told, the claim closes, no claim stands on the hull, and the pilot can seal nothing more on her | The seal attribute stayed on the hull |
+| (the second reader) A claim given up leaves nothing behind | Story C: every Open lost, the claim is given up and the pilot told; the Open that turns up late is refused; she seals again; an Open that lands in the one gap left is closed by the arm, and she seals again after it | — |
+| Its rule program bound; a mind whose rule program differs behaves differently | `space/tick_thinks_tests.rs` `mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs`: two hulls in one interdiction bubble, one script sealed twice through the one seal entry, one with a `LOCK NEAREST` row; that hull holds the interdictor locked and the other holds no lock | `KIT` bound an empty program for every space think |
+| No fire channel: an intent on one is dropped | The same test (the script asks a shot of a real mount at every think, with a lock standing; nothing fires) and `space/applier.rs` `mw13_a_sealed_minds_seat_locks_and_never_shoots` | — |
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **The berth anchor** (doc 23 D-23-25): Sim's movement exclusion admits a ship, and the Open's record gains a field | **Expensive.** It is the movement-exclusion protocol |
+| 2 | **A seal lasts one passage**, port to port (D-UM-45, as a rig's lasts one excursion). She seals again to fly it again. The alternative, a standing choice that seals at every departure, needs a selection kept on the hull and cleared at every route above | Medium: a second verb and a stored choice |
+| 3 | **The seal is taken at her berth by its own verb**, not by a word on `+ship/undock`, so it holds for a queued or an ordered departure and for a lift off a pad alike | Low |
+| 4 | **The claim opens before the epoch and its sortie id is not the epoch's.** The ship epoch's id is the journey's `departed().at` (S.2's V1), unknown at `go`; the claim's is the IC instant of `go`. The epoch's black box lines are unchanged and do not name the claim's seal | Medium if an inspection must read the claim's seal on the ship's own line: `ship_sealed` then takes the claim's facts |
+| 5 | **A sealed mind in the absent seat may lock.** A lock is the sensors' act and the seal carries no fire channel. The house default still may not | Low: one field of `Seat` |
+| 6 | **A sealed mind flies only while her crew has no link.** A crew at its stations flies her itself, as a seated pilot does on the ground | Medium: handing a present crew's helm to a mind is a new seat |
+| 7 | **A draft on an ungoverned ship core is refused** as not built. A draft opens no claim, so nothing here would carry its seal | Low to add; it needs a seal kept outside the claim book |
+| 8 | **A seal that no longer fits closes `powered_down_in_base`**, at her berth's host or the port she left | Low |
+| 9 | **The Open is given five submissions**, a fire apart, before the claim is given up and the holder told | Low |
+| 10 | **The licence's seats are counted at `go` over the book's active claims** and not over claims still opening on other hulls (a rig's `go` counts both) | Low; two `go`s in the same two fires could both pass for a one-seat licence, and the second Open is then refused by its own hull's exclusion or stands |
+| 11 | **A mind rated above her core is refused at the Open**, after five tries, by the generic sentence; the verb does not read the certificate first | Low |
+| 12 | The six cored Dray roots are in every launch's catalogue, and only the Dray has them (not the Dray-P) | Low |
+| 13 | **A lock her mind set stays when her crew's link comes back.** The crew clears it or keeps it | Low |
+| 14 | **A claim left behind closes `powered_down_in_base`** at her berth, or at the port she left if she has sailed since | Low |
+| 15 | **The host keeps one Open pending an actor** (S.4b's rule, not this unit's). A pilot who seals on two hulls inside one fire has the second wait a fire, and each wait counts as one of its five tries | Low |
+
+**Not built, and for whom.**
+
+- **A route that fits a core to a ship.** The stories have staff bind the root
+  (`@unit/remove`, `@unit/create`), as doc 17h's stories bound a rig's. **A gap for the
+  owner**, beside MW.1's "no hulls for Houses": until something fits a core to a ship, no
+  player can seal a mind on one.
+- **Fire channels** (the ruling), and with them return fire in space (MW.9's follow-up).
+- **What a client shows of a mind on a ship** (doc 44 §7.1, "not units").
+- **The ship's black box naming the claim's seal** (default 4).
+- **AP.9** (space reads the posture) and **MW.21** (the completion story) are theirs. MW.21
+  can stand on `ship_mind::aboard` and the main story's helpers.
+- **The known late-launch defect** (PR #571) was not met: the story's launch runs on the
+  fire after the burn lands, inside the first leg.
+
+**Found, and not fixed.**
+
+- **A restart on the corridor before an interdicted waypoint raises no picket.** With the
+  server restarted between the link loss and the Kirkwood picket, Sim logs `an interdicted
+  corridor leg presents into NO domain; no activation was raised` and the bubble never opens
+  on her. It is not this unit's: a probe with nothing sealed aboard fails the same way (run on conclav.dev, 2026-11-13; in the story rig, not investigated further). The story restarts under way after the picket instead.
+- **A rig's refused Open stays pending in the IC host** (by reading, not run). The rig's arm
+  (`surface/mind_claim.rs`, `refuse`) neither acknowledges nor withdraws the Open of a claim it
+  gives up, and `IcHost::acknowledge` drops only a claim the book holds. The host keeps one
+  Open pending an actor, so that operator's next mind launch on any rig would not be enqueued
+  until a restart. The ship's arm had the same fault until story C found it;
+  `withdraw_surface_open` is there for the rig's arm to call.
+
+- **The MW.5 field story fails about as often as it passes under load, on main**
+  (`c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home`). Its escort never leaves
+  its cell: "the mind takes the escort out at its carrier's ramp: last at Some((146, 114))",
+  handed and still in the field. Four runs at once on conclav.dev at main `e4e2f6e8e` failed
+  three; four at this branch's head passed four. It failed once in this branch's dispatch run
+  and once in another branch's (run 43461753678), and passed when run again. Not investigated.
+
+**Known limits.**
+
+- **A claim whose dispatcher is gone, or whose hull has no unit, does not close.** Every
+  transition is submitted as the dispatcher, and a Close asks for the hull's unit. There is no
+  `destroyed` path for a ship (doc 23 keeps it reserved), and none was built here.
+- **A claim left behind flies until the arm's next fire.** `sealed` reads the claim book, not
+  the cursor, so for one port fire the seat would think with it. It arises at her berth.
+- **Costs.** Each port fire and each offer of the epoch action walks every ship hull once. The
+  think host keeps one compiled mind a hull and does not evict it.
+
+**Reviewed.** A second reader (given the diff, not the conclusions) raised ten points.
+
+| | Finding | Disposition |
+|---|---|---|
+| 1 | A give-up racing an Open still on its way leaves an open claim no cursor names, which never closes | **Fixed**: the withdrawal and the arm's close of a claim left behind, above; story C |
+| 2 | A dispatcher who is gone, or a hull with no unit, leaves a claim that never closes | Not fixed: a known limit, above |
+| 3 | The arm's tick keys repeated across fires, so an op refused once might never be asked again; a void under way closes `powered_down_in_base` | **Fixed**: the key carries the fire count. The kind is default 8 |
+| 4 | Sim's berth admission admits any unit on a domain, a rig included | **Fixed**: the guard in `surface_start`; `s4d_a_rig_on_the_ground_is_given_no_open_permit_and_a_rig_in_its_bay_is_asked` |
+| 5 | A hull with a held-back end of its epoch could be offered for its mind, and the visit then submitted the end past the arm's caps | **Fixed**: the mind arm skips every hull with an end due. No test pins it |
+| 6 | `+ship/mind` named the wrong mind over a claim left behind | **Fixed**: it reads as closing |
+| 7 | `holds` answered for a rig's claim, so a rig's refit was refused in a ship's words | **Fixed**: it answers only for a berth-anchored hold |
+| 8 | A walk of every hull each fire; a compiled mind a hull kept for ever | Not fixed: the costs, above |
+| 9 | An overflow in the lock's range sum | Not reachable: the sum is `i128` over `i64` differences |
+| 10 | A lock the mind set outlasts it | Default 13 |
+
+The same round found one more by running: the host's pending Open (story C's first half).
+
+**Mutation checks.** Each mutation was applied alone or with one that touches another story,
+the named test run, and the edit undone.
+
+| | Mutation | Fails |
+|---|---|---|
+| U1 | Sim admits a berth where berths are not configured | mush-sim `s4d_a_port_berth_is_a_hangar_for_a_ship_where_berths_are_admitted` |
+| U2 | A bay hold may root a journey as a berth hold may | The same |
+| U3 | A berth hold may be placed on another domain from her berth | The same |
+| U4 | An Open is minted for a unit on a domain that is no berth | `s4d_a_rig_on_the_ground_is_given_no_open_permit_and_a_rig_in_its_bay_is_asked` |
+| U5 | A sealed mind thinks with the empty rule program | `mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs` (its think-gated row) |
+| U6 | The sealed mind's seat may fire | The same (a shot is fired) |
+| U7 | The sealed mind's seat may not lock | The same |
+| U8 | The applier lets any seat lock | `the_absent_seat_drops_every_lock_and_every_shot_and_burns_only_to_heave_to`, `mw13_a_sealed_minds_seat_locks_and_never_shoots` |
+| U9 | A sealed mind thinks at Class III whatever its seal | `mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs` |
+| S1 | The verb does not name the governed-draft refusal | The fast story. The draft is still refused, in the other sentence: the verb has no path that submits a draft |
+| S2 | The epoch's close does not move the cursor | The main story: the claim closes `powered_down_in_base`, not `returned_to_base` |
+| S3 | `holds` answers no | Story A: the yard's own failure line, not "unseal it first" |
+| S4 | `fits` does not ask the holder's authority | Story B: the seal is still read after her title has passed |
+| S5 | A claim given up is not withdrawn from the host | Story C: the late Open lands |
+| S6 | The arm does not close a claim no cursor names | Story C: the claim does not close |
+| S7 | The seat does not take the sealed mind as its first source | The main story: `BACKUP_COAST` and no lock |
+| S9 | The production composition admits no berth | The main story: the Open does not land |
+
+U4 and U5 passed on their first run. The guard's test did not reach the call it guards, and
+no test had a rule row with a think term; both tests were strengthened and both mutations
+fail now.
+
+**Persisted records.** `ShipEpochRecord` gains `claim`, optional and absent on the wire when
+none: a record written before reads as it did (`mw13_the_epochs_close_leaves_a_cursor_it_cannot_read_for_the_arm`).
+Sim's `OpenImage` gains `berth` (S.4d). Nothing else. No definition, descriptor or manifest
+moved; no pin was re-pinned.
 
 ## MW.14a
 

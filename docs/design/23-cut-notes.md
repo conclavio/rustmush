@@ -591,3 +591,85 @@ Rule #13's harness kind is green on conclav-dev at the PR's branch (gate run `41
 - **Where it happened:** in the D-23-18 story's second field at 256, after the reboot, 18 to 24 periods running. The 512 story's first field also held no snapshot for 300 s.
 - **What it costs:** that field cannot resume from a snapshot, and the void rule has none to demote from.
 - **Why it is not this cut's:** the seed touches no detachment state, so the fix belongs to the detachment-control thread. The stories now read the check-in, not the snapshot.
+
+## S.4d (2026-11-13): a ship's claim, the port's berth as the hangar (§19; D-23-25, D-23-11, D-23-12, D-23-15)
+
+Built inside doc 44 unit MW.13 (a player's own mind sealed on a ship), which is the cut
+D-23-12 waited for. The mind's side is in `44-cut-notes.md`, MW.13. This note is the claim's.
+
+### Built
+
+- **A third anchor in Sim's exclusion** (`crates/mush-sim/src/ic_exclusion.rs`). `OpenImage`
+  gains `berth: Option<BerthImage>` (the domain's record at admission), `AnchorImage` gains
+  `Berth`, and exactly one of `base`, `hangar` and `berth` is present. `admit_berth` admits a
+  hull placed `Direct` on an active domain whose host is live; her own journey and any
+  ancestor's were refused before it, as for a bay. `IcExclusionConfig::with_hangars_and_berths`
+  is the composition that admits it; `new` and `with_hangars` admit what they admitted.
+- **The freeze for a berth hold** (`berth_move_admitted`, asked by `check_plan`): a pose on
+  her domain; unplaced as a carrier under way only with a journey rooted at her in the book;
+  from under way, `Direct` on an active domain. Everything else is refused, and retiring her
+  berth's domain while she lies on it is refused.
+- **The boot** (`check_boot_spatial`, `check_boot_journeys`, `hold_forbids_journey`). A
+  berth-held hull may root a journey. She is admitted at boot standing `Direct` on a domain
+  that is not retired, or under way and not quarantined; anywhere else the boot stops with
+  "held IC ship requires explicit recovery" and her hold is kept.
+- **The readers** (`held_at_berth`; `deployed::excluded`). A berth hold keeps its hull in the
+  world's listings, as a hangar hold does.
+- **The composition** (`crates/tacsim/src/minds/ic_sortie/registration.rs`). The production
+  claim path (`with_ic_minds_in_bays`, every Active launch) now admits bays and berths. No
+  definition, descriptor or manifest moved: the flag is not part of any.
+- **The producer** is the ship's epoch arm, in `44-cut-notes.md`, MW.13.
+- **Only a hangar port's berth is asked** (`crates/tacsim/src/minds/ic_sortie/surface.rs`,
+  `surface_start`). Sim admits by where the hull lies and cannot tell a ship from a rig, so
+  the one function both arms mint an Open through gives no permit for a unit lying on a
+  domain that is not a hangar port's berth. A rig stood on a site's ground is not asked,
+  where Sim refused it before the cut.
+
+### The moves a berth hold admits, and who makes each
+
+Sim admits a move by its shape, not by who wrote it: it has no name for a host. The shapes
+are the ones her epoch's hosts make (§19.2's table).
+
+| The move | In Sim's terms | Its host |
+|---|---|---|
+| A pose at her berth | `Direct` on the domain she lies on | The port |
+| The undock, the lift | Unplaced as a carrier under way, with a journey rooted at her in the book | The port tick's launch arm, by `mush_sim::depart` |
+| The legs of her passage | No placement moves | The journey tick |
+| A bubble, free flight, a cluster | No placement moves; the space host's field mark coexists with the hold | The space tick |
+| The dock, the settling on a pad | From under way, `Direct` on an active domain: her own port's, another port's, a site's | The journey's arrival, or the space host's docking |
+
+Refused: into a room or a bay; onto a mount on another hull; a quarantine; an unplacing with
+no journey of her own; from one domain straight to another (a staff teleport, a transfer's
+or a sale's placement); and retiring the domain she lies on. The staff verbs (`@spatial`)
+refuse any custodied hull before the rule is asked.
+
+**One thing the rule cannot refuse.** A hull that is already under way and is brought to rest
+on a domain by something other than her own drive (a tow delivered to a port) makes the shape
+of a dock, and is admitted. Her epoch then closes `recovered_to_base`, as a rig's does in a
+recoverer's bay (S.3's A5). Sim cannot tell that host from her own.
+
+### Rigs did not move
+
+The berth rule is asked only of a record whose anchor is a berth. For a bay hold `check_plan`
+takes the branch it took, and `hold_forbids_journey` answers what the inline rule answered.
+The in-source test holds both halves in one place: a bay-held hull is refused the undock and
+a domain its carrier does not stand on, and still roots no journey.
+
+### Tests
+
+`ic_exclusion::tests::s4d_a_port_berth_is_a_hangar_for_a_ship_where_berths_are_admitted`
+(mush-sim, default sweep): the bays-only composition refuses a hull on a domain; with berths
+it is admitted, the record names the berth and no base or bay, the hull is custodied and
+listed; each admitted and each refused move; a reboot keeps the hold; the journey rule for a
+berth, a bay and a base hold; the shape of a bay row and a base row (no `berth` key).
+`s4b1_a_carrier_bay_is_a_hangar_where_hangars_are_admitted` and the four older tests of the
+owner pass as they were written.
+
+`minds::ic_sortie::surface::tests::s4d_a_rig_on_the_ground_is_given_no_open_permit_and_a_rig_in_its_bay_is_asked`
+(tacsim): the mint's guard.
+
+Mutation checks, each failing the test named: Sim admitting a berth where berths are not
+configured, a bay hold rooting a journey as a berth hold may, and a berth hold placed on
+another domain from her berth each fail the `s4d` test of the owner; an Open minted for a
+unit on a domain that is no berth fails the guard's test; the production composition without
+berths fails MW.13's main story at the seal.

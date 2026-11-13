@@ -186,6 +186,18 @@ id = "tacsim/tests::c4_filed_mind_field::c4_a_filed_mind_flies_an_absent_pilots_
 tier = "nightly"
 job = "m8-gate-stories"
 
+# Doc 44 unit MW.13 and doc 23 cut S.4d: a filed mind sealed aboard a ship under a claim
+# anchored at her berth (one rating each).
+[[test]]
+id = "tacsim/tests::mw13_ship_mind::mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_claim_closes_once"
+tier = "nightly"
+job = "m8-gate-stories"
+
+[[test]]
+id = "tacsim/tests::mw13_ship_mind::mw13_a_seal_does_not_outlive_its_core_or_its_holder"
+tier = "nightly"
+job = "m8-gate-stories"
+
 # H3: the scale harness, against a disposable Redis.
 [[test]]
 id = "mush-contract-tests/tests::scale_harness::*"

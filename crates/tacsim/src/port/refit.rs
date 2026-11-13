@@ -137,6 +137,11 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
             return Err(refused(REFIT_NOT_HERE).replace("{port}", &port_label));
         }
     }
+    // Doc 44 unit MW.13: a mind sealed aboard holds her as she is. The unit's owner would
+    // refuse the re-dress; the yard says why first.
+    if crate::port::ship_mind::holds(ctx, hull) {
+        return Err(refused(crate::port::ship_mind::MIND_HOLDS_HER));
+    }
     let view: HullView<'_> = hull_view(w, hull).ok_or_else(|| refused(REFIT_FAILED))?;
     let vault =
         crate::port::coop::mining_hold(w, actor, &view).ok_or_else(|| refused(REFIT_HOLD_DARK))?;
