@@ -195,6 +195,66 @@ pub mod absent {
         "with nobody in its seat: its mind has the controls and flies it on ";
 }
 
+/// `+ship/mind`, a mind sealed aboard a ship (doc 44 MW.13): `tacsim::port::ship_mind`.
+pub mod ship_mind {
+    /// `tacsim::port::ship_mind::MIND_USAGE`.
+    pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<licence>";
+    /// `tacsim::port::ship_mind::MIND_NONE`.
+    pub const MIND_NONE: &str = "If you lose your link, the house default takes her home.";
+    /// `tacsim::port::ship_mind::MIND_ADMITTING`.
+    pub const MIND_ADMITTING: &str = "The Registry is admitting licence ";
+    /// `tacsim::port::ship_mind::MIND_ABOARD`.
+    pub const MIND_ABOARD: &str =
+        "It has her helm and sensors while her crew has no link, until she next docks at a port.";
+    /// `tacsim::port::ship_mind::MIND_UNFIT`.
+    pub const MIND_UNFIT: &str = ", and no longer fits her; its claim is being closed.";
+    /// `tacsim::port::ship_mind::MIND_CLOSING`.
+    pub const MIND_CLOSING: &str = "The claim on the mind last sealed aboard the ";
+    /// `tacsim::port::ship_mind::MIND_WAS_REFUSED`.
+    pub const MIND_WAS_REFUSED: &str =
+        "The Registry did not admit the last mind you asked to seal aboard the ";
+    /// `tacsim::port::ship_mind::MIND_BERTH`.
+    pub const MIND_BERTH: &str = " at her berth in a port, before she undocks.";
+    /// `tacsim::port::ship_mind::MIND_NO_CORE`.
+    pub const MIND_NO_CORE: &str =
+        " carries no core; her drive ROM flies a filed plan and decides nothing.";
+    /// `tacsim::port::ship_mind::MIND_ALREADY`.
+    pub const MIND_ALREADY: &str = "; +ship/mind off unseals it at her berth.";
+    /// `tacsim::port::ship_mind::MIND_PASSAGE`.
+    pub const MIND_PASSAGE: &str =
+        "'s last passage is still being written up; try again in a moment.";
+    /// `tacsim::port::ship_mind::MIND_DRAFT`.
+    pub const MIND_DRAFT: &str = "an unfiled draft cannot be sealed aboard a ship.";
+    /// `tacsim::port::ship_mind::MIND_LAPSED`.
+    pub const MIND_LAPSED: &str = "; nothing is sealed aboard.";
+    /// `tacsim::port::ship_mind::MIND_PREVIEW`.
+    pub const MIND_PREVIEW: &str =
+        "and holds a seat of the licence until she next docks at a port. Add go to seal it.";
+    /// `tacsim::port::ship_mind::MIND_NOT_SEALED`.
+    pub const MIND_NOT_SEALED: &str = " has no mind sealed aboard to unseal.";
+    /// `tacsim::port::ship_mind::MIND_NOT_YOURS`.
+    pub const MIND_NOT_YOURS: &str = " was sealed by someone else; they unseal it.";
+    /// `tacsim::port::ship_mind::MIND_NOT_YET`.
+    pub const MIND_NOT_YET: &str = "'s mind claim yet; try again in a moment.";
+    /// `tacsim::port::ship_mind::MIND_OFF_PREVIEW`.
+    pub const MIND_OFF_PREVIEW: &str =
+        ": its claim closes and the licence's seat is free. Add go to unseal it.";
+    /// `tacsim::port::ship_mind::MIND_SEALED`.
+    pub const MIND_SEALED: &str = "The Registry admits the claim: ";
+    /// `tacsim::port::ship_mind::MIND_REFUSED`.
+    pub const MIND_REFUSED: &str =
+        "The Registry would not admit her mind's claim: nothing is sealed aboard the ";
+    /// `tacsim::port::ship_mind::MIND_UNSEALED`.
+    pub const MIND_UNSEALED: &str = " is unsealed and its claim is closed.";
+    /// `tacsim::port::ship_mind::MIND_VOIDED`.
+    pub const MIND_VOIDED: &str = " no longer fits her (";
+    /// `tacsim::port::ship_mind::MIND_UNWIRED`.
+    pub const MIND_UNWIRED: &str = "Minds cannot be sealed aboard a ship here.";
+    /// `tacsim::port::ship_mind::MIND_HOLDS_HER`.
+    pub const MIND_HOLDS_HER: &str =
+        ", and she is held as she is until it is unsealed: +ship/mind off, at her berth.";
+}
+
 /// A posture practised in the simulator (doc 45 unit AP.10): `tacsim::match_::practice`.
 pub mod practice {
     /// `tacsim::match_::practice::PRACTICE_SET`.
@@ -543,6 +603,38 @@ mod tests {
     const ABSENT_RS: &str = include_str!("../../../tacsim/src/field/absent.rs");
     const PRACTICE_RS: &str = include_str!("../../../tacsim/src/match_/practice.rs");
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
+    const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
+
+    fn ship_mind_rows() -> Vec<Row> {
+        use super::ship_mind as bot;
+        use tacsim::port::ship_mind as game;
+        rows!("";
+            MIND_USAGE,
+            MIND_NONE,
+            MIND_ADMITTING,
+            MIND_ABOARD,
+            MIND_UNFIT,
+            MIND_CLOSING,
+            MIND_WAS_REFUSED,
+            MIND_BERTH,
+            MIND_NO_CORE,
+            MIND_ALREADY,
+            MIND_PASSAGE,
+            MIND_DRAFT,
+            MIND_LAPSED,
+            MIND_PREVIEW,
+            MIND_NOT_SEALED,
+            MIND_NOT_YOURS,
+            MIND_NOT_YET,
+            MIND_OFF_PREVIEW,
+            MIND_SEALED,
+            MIND_REFUSED,
+            MIND_UNSEALED,
+            MIND_VOIDED,
+            MIND_UNWIRED,
+            MIND_HOLDS_HER,
+        )
+    }
 
     fn end_user_rows() -> Vec<Row> {
         use super::end_user as bot;
@@ -771,13 +863,14 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 7] = [
+        let families: [(&str, Vec<Row>); 8] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
             ("dispatch", dispatch_rows()),
             ("absent", absent_rows()),
             ("market", market_rows()),
+            ("ship_mind", ship_mind_rows()),
             ("practice", practice_rows()),
         ];
         families
@@ -802,6 +895,11 @@ mod tests {
         ("EXCURSION_FAMILY", "a store family name, never printed"),
         ("TV_REC_PREFIX", "a store key prefix, never printed"),
     ];
+    /// `ship_mind.rs`.
+    const SHIP_MIND_EXCLUDED: &[(&str, &str)] = &[(
+        "MIND_SWITCH",
+        "the switch a player types (+ship/mind), not a sentence the game prints",
+    )];
     /// `words.rs`.
     const WORDS_EXCLUDED: &[(&str, &str)] = &[
         (
@@ -1245,6 +1343,24 @@ mod tests {
     #[test]
     fn absent_needles_are_distinct() {
         distinct(&qualified("absent", absent_rows()), &[]);
+    }
+
+    #[test]
+    fn ship_mind_needles_are_in_step() {
+        in_step("ship_mind", &ship_mind_rows());
+    }
+    #[test]
+    fn ship_mind_census() {
+        census(
+            "ship_mind.rs",
+            SHIP_MIND_RS,
+            &ship_mind_rows(),
+            SHIP_MIND_EXCLUDED,
+        );
+    }
+    #[test]
+    fn ship_mind_needles_are_distinct() {
+        distinct(&qualified("ship_mind", ship_mind_rows()), &[]);
     }
 
     #[test]

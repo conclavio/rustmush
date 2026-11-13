@@ -1,9 +1,10 @@
 //! The finite I/II/III fitting families and their pure fitting adapter: the
-//! governed line tanks (`GovernedLineCores`) and, since doc 17h cut M8b, the
-//! surface rig (`SurfaceRigCores`, the terrain vehicle's cored roots). Each
-//! family carries a governed root per class and, since M8b (doc 17 §10,
+//! governed line tanks (`GovernedLineCores`), since doc 17h cut M8b the
+//! surface rig (`SurfaceRigCores`, the terrain vehicle's cored roots) and,
+//! since doc 44 unit MW.13, the ship (`ShipCores`, the Dray's cored roots).
+//! Each family carries a governed root per class and, since M8b (doc 17 §10,
 //! D-UM-42), an **ungoverned twin** of each, which only the ungoverning recipe
-//! (`core_ungovern`) fits.
+//! (`core_ungovern`) fits. No recipe fits a ship's root yet.
 //! Explicit composition only: this does not alter the ordinary fielded catalog,
 //! register an action, grant economic authority, or write a World unit.
 
@@ -50,13 +51,39 @@ pub const RIG_II_UNGOVERNED: &str = "tacsim.unit.tv_prospector_core_ii_ungoverne
 /// The terrain vehicle's ungoverned Class III twin (doc 17h cut M8b C2).
 pub const RIG_III_UNGOVERNED: &str = "tacsim.unit.tv_prospector_core_iii_ungoverned";
 
+/// The Dray's Class I fitted root (doc 44 unit MW.13; Q-44-26): the shipped
+/// `tacsim.unit.dray` with a core in its hull section and every other component
+/// retained. The shipped Dray stays coreless (Class 0, the drive ROM of doc 17 §9).
+pub const SHIP_I: &str = "tacsim.unit.dray_core_i";
+/// The Dray's Class II fitted root (doc 44 unit MW.13).
+pub const SHIP_II: &str = "tacsim.unit.dray_core_ii";
+/// The Dray's Class III fitted root (doc 44 unit MW.13).
+pub const SHIP_III: &str = "tacsim.unit.dray_core_iii";
+/// The Dray's ungoverned Class I twin (doc 44 unit MW.13).
+pub const SHIP_I_UNGOVERNED: &str = "tacsim.unit.dray_core_i_ungoverned";
+/// The Dray's ungoverned Class II twin (doc 44 unit MW.13).
+pub const SHIP_II_UNGOVERNED: &str = "tacsim.unit.dray_core_ii_ungoverned";
+/// The Dray's ungoverned Class III twin (doc 44 unit MW.13).
+pub const SHIP_III_UNGOVERNED: &str = "tacsim.unit.dray_core_iii_ungoverned";
+
 /// **The chassis a fitted root is** (doc 17h cut M8b G1): a rig root (governed or twin) is
-/// the shipped terrain vehicle, a line root the shipped line tank; any other id is itself. A
-/// fitted root differs from its base only in the core mount, so every surface read (interior,
-/// logistics, drive rates) is the base's.
+/// the shipped terrain vehicle, a line root the shipped line tank, a ship root (doc 44 unit
+/// MW.13) the shipped Dray; any other id is itself. A fitted root differs from its base only
+/// in the core mount, so every surface read (interior, logistics, drive rates) is the base's.
 #[must_use]
 pub fn surface_chassis(id: &str) -> &str {
     if [
+        SHIP_I,
+        SHIP_II,
+        SHIP_III,
+        SHIP_I_UNGOVERNED,
+        SHIP_II_UNGOVERNED,
+        SHIP_III_UNGOVERNED,
+    ]
+    .contains(&id)
+    {
+        crate::definitions::content::DRAY
+    } else if [
         RIG_I,
         RIG_II,
         RIG_III,
@@ -161,6 +188,19 @@ const RIG: Chassis = Chassis {
     ],
 };
 
+const SHIP: Chassis = Chassis {
+    base: crate::definitions::content::DRAY,
+    mount: Mount::Add("hull"),
+    roots: [
+        (CoreClass::I, true, Some(SHIP_I)),
+        (CoreClass::II, true, Some(SHIP_II)),
+        (CoreClass::III, true, Some(SHIP_III)),
+        (CoreClass::I, false, Some(SHIP_I_UNGOVERNED)),
+        (CoreClass::II, false, Some(SHIP_II_UNGOVERNED)),
+        (CoreClass::III, false, Some(SHIP_III_UNGOVERNED)),
+    ],
+};
+
 /// One fitted root: its class, whether its core is governed, its reference.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Member {
@@ -191,6 +231,47 @@ pub struct GovernedLineCores(CoreFamily);
 /// carries the line family, so its catalog is the whole fitted set.
 #[derive(Clone, Debug)]
 pub struct SurfaceRigCores(CoreFamily);
+
+/// **The ship's fitting family** (doc 44 unit MW.13; Q-44-26: "the class comes from the
+/// hull's core as on the ground"): the exact shipped Dray with a core added in its hull
+/// section, one root per class and an ungoverned twin of each. Built on a catalog that
+/// already carries the line and rig families, so its catalog is the whole fitted set.
+///
+/// **No recipe fits one.** The chartered shop fits a hull that stands in it
+/// (`crate::hardware`), and a ship cannot; the roots are here so that a hull bound to one
+/// reads a core, and a mind can be sealed on it (`crate::port::ship_mind`).
+#[derive(Clone, Debug)]
+pub struct ShipCores(CoreFamily);
+
+impl ShipCores {
+    /// Extend a catalog with the Dray's cored roots. The base Dray must be the exact
+    /// shipped (fielded) shape.
+    pub fn build(catalog: Catalog) -> Result<Self, DefinitionError> {
+        let shipped = Catalog::build_fielded(&[], crate::NS)?;
+        CoreFamily::build(catalog, &shipped, &SHIP).map(Self)
+    }
+}
+
+impl std::ops::Deref for ShipCores {
+    type Target = CoreFamily;
+    fn deref(&self) -> &CoreFamily {
+        &self.0
+    }
+}
+
+/// **The whole fitted catalog over `fielded`** (doc 17h cut M8e E6a; doc 44 unit MW.13): the
+/// line roots, then the rig roots, then the ship roots, each family built on the last. What
+/// governed hardware registers, and what a test world registers in its place
+/// (`TacsimRuleset::with_fitted_catalog`).
+///
+/// # Errors
+///
+/// A family whose base chassis is not the exact shipped shape.
+pub fn fitted_catalog(fielded: Catalog) -> Result<Catalog, DefinitionError> {
+    let line = GovernedLineCores::build(fielded)?;
+    let rig = SurfaceRigCores::build(line.catalog().clone())?;
+    ShipCores::build(rig.catalog().clone()).map(|ship| ship.catalog().clone())
+}
 
 impl GovernedLineCores {
     /// Extend a catalog with the explicitly registered shapes, preserving all
@@ -711,6 +792,58 @@ mod tests {
             rig.catalog().units.len(),
             fielded.units.len() + 5 + 6,
             "the line family's five roots and the rig's six"
+        );
+    }
+
+    /// **The ship's family** (doc 44 unit MW.13; Q-44-26): the shipped Dray stays coreless
+    /// (Class 0, the drive ROM); each of its six roots carries a core of its class and
+    /// governor in the hull section, every other component, the sections and the mobility
+    /// retained; and each reads as the Dray wherever a hull's chassis is asked for.
+    #[test]
+    fn mw13_the_ship_family_cores_the_dray_and_leaves_the_shipped_one_coreless() {
+        let fielded = Catalog::build_fielded(&[], crate::NS).expect("the fielded content");
+        let line = GovernedLineCores::build(fielded.clone()).expect("the line family");
+        let rig = SurfaceRigCores::build(line.catalog().clone()).expect("the rig family");
+        let ship = ShipCores::build(rig.catalog().clone()).expect("the ship family");
+        let base = fielded
+            .units
+            .get(crate::definitions::content::DRAY)
+            .expect("the shipped Dray");
+        let shipped = TacticalUnit::from_spec(base, ObjId(4)).expect("instantiates");
+        assert_eq!(crate::arena::core::read_core(&shipped), None);
+        assert_eq!(
+            ship.catalog().units.get(crate::definitions::content::DRAY),
+            Some(base),
+            "the shipped Dray is byte-identical"
+        );
+        for class in [CoreClass::I, CoreClass::II, CoreClass::III] {
+            for governed in [true, false] {
+                let reference = ship.root(class, governed).expect("a root");
+                assert!(ship.contains(reference) && !rig.contains(reference));
+                let spec = ship.catalog().units.get_exact(reference).expect("its spec");
+                assert_eq!(spec.sections, base.sections);
+                assert_eq!(spec.mobility, base.mobility);
+                for component in &base.components {
+                    assert_eq!(
+                        spec.components.iter().find(|row| row.id == component.id),
+                        Some(component)
+                    );
+                }
+                let hardware = crate::arena::core::read_core(&instance(ship.catalog(), reference))
+                    .expect("a core");
+                assert_eq!((hardware.class, hardware.governed), (class, governed));
+                assert_eq!(
+                    surface_chassis(reference.key().id.as_str()),
+                    crate::definitions::content::DRAY,
+                    "a cored Dray reads as the Dray"
+                );
+            }
+        }
+        assert_eq!(ship.root(CoreClass::Zero, true), None);
+        assert_eq!(
+            ship.catalog().units.len(),
+            fielded.units.len() + 5 + 6 + 6,
+            "the line family's five roots, the rig's six and the ship's six"
         );
     }
 }

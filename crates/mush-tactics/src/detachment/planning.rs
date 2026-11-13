@@ -21,6 +21,11 @@ pub const MAX_PLAN_SLOTS: usize = 6;
 pub const MAX_MIND_PROFILES: usize = 8;
 pub const MAX_PLAN_BYTES: usize = 16 * 1024;
 pub const MAX_PLANNING_BOOK_BYTES: usize = 128 * 1024;
+/// **The widest field site's cells along one side** (doc 44 unit MW.14c): a plan's work point
+/// names a cell below this on each axis. A plan is made before its site is known, so the bound
+/// is the widest site's (512, tacsim's `MAX_SITE_CELLS`, which a tacsim test holds equal to
+/// this); a point off the site the roster then flies to is not advanced to.
+pub const MAX_WORK_POINT_CELLS: u16 = 512;
 const MAX_NAME_BYTES: usize = 64;
 const MAX_PROFILE_VALUE_BYTES: usize = 128;
 
@@ -158,6 +163,11 @@ pub struct Plan {
     pub slots: Vec<SlotPlan>,
     pub npc_commander: Option<ObjId>,
     pub financial_terms: Option<PlanHash>,
+    /// **The detachment's work point** (doc 44 unit MW.14c): the field cell an NPC commander
+    /// advances its roster to, `(column, row)`, each below [`MAX_WORK_POINT_CELLS`]. `None` when
+    /// the plan names none, which is every plan written before MW.14c: the key is absent from
+    /// the stored plan then, so such a plan reads, re-encodes and hashes exactly as it did.
+    pub work_point: Option<(u16, u16)>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -170,6 +180,10 @@ struct PlanWire {
     npc_commander: Option<ObjId>,
     #[serde(deserialize_with = "required_option")]
     financial_terms: Option<PlanHash>,
+    /// Absent on every plan written before doc 44 unit MW.14c, and on every plan that names
+    /// no work point since: the plan's stored bytes and its material hash are then unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_point: Option<(u16, u16)>,
 }
 
 impl Plan {
@@ -180,6 +194,7 @@ impl Plan {
             slots: Vec::new(),
             npc_commander: None,
             financial_terms: None,
+            work_point: None,
         }
     }
 
@@ -190,6 +205,14 @@ impl Plan {
         {
             return Err(PlanningError::Invalid(
                 "invalid plan identity or slot bound",
+            ));
+        }
+        if self
+            .work_point
+            .is_some_and(|(x, y)| x >= MAX_WORK_POINT_CELLS || y >= MAX_WORK_POINT_CELLS)
+        {
+            return Err(PlanningError::Invalid(
+                "the work point lies outside the widest field site",
             ));
         }
         let mut previous = 0;
@@ -249,6 +272,7 @@ impl TryFrom<PlanWire> for Plan {
             slots: value.slots,
             npc_commander: value.npc_commander,
             financial_terms: value.financial_terms,
+            work_point: value.work_point,
         };
         value.validate()?;
         Ok(value)
@@ -261,6 +285,7 @@ impl From<Plan> for PlanWire {
             slots: value.slots,
             npc_commander: value.npc_commander,
             financial_terms: value.financial_terms,
+            work_point: value.work_point,
         }
     }
 }

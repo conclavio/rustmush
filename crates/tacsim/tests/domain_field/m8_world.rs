@@ -1136,6 +1136,13 @@ impl M8World {
     /// **Reboot the combined world** from its store, the pilot and GOD reconnected (the launch
     /// rebooted as it was last prepared).
     pub(crate) fn reboot(self) -> M8World {
+        let pilot = self.pilot;
+        self.reboot_reconnecting(&[pilot, GOD])
+    }
+
+    /// **[`M8World::reboot`] with `reconnect` alone coming back** (doc 44 unit MW.13): a
+    /// restart drops every session, and a pilot whose link was down before it stays away.
+    pub(crate) fn reboot_reconnecting(self, reconnect: &[ObjId]) -> M8World {
         let M8World {
             rig,
             deployment,
@@ -1144,7 +1151,7 @@ impl M8World {
             tvs,
             serial,
         } = self;
-        let mut rig = reboot_with(rig, &[pilot, GOD]);
+        let mut rig = reboot_with(rig, reconnect);
         rig.tw
             .engine_mut()
             .set_submission_runtime(Arc::new(Runtime))

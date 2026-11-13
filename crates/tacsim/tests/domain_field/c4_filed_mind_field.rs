@@ -142,7 +142,7 @@ fn world() -> (M8World, ObjId, ObjId) {
 /// issued them. The workshop's verbs write the draft (`@mind/new`, `@mind/line`, `@mind/save`),
 /// the Registry rates the saved revision through its real trials (`@mind/rate`), and the pilot
 /// files it from their own wallet (`@mind/file`, twice: the charter's shell, then the filing).
-async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
+pub(crate) async fn file_own_mind(world: &mut M8World, name: &str, source: &str) -> u64 {
     use std::time::{Duration, Instant};
     let pilot = world.pilot;
     crate::m8_end_user::fund(world, pilot, 100_000);

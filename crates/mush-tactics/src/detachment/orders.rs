@@ -22,6 +22,11 @@ pub use checkpoint::OrderCheckpoint;
 pub enum OrderTarget {
     Slot(Slot),
     All,
+    /// **Every member the host's resolver admits** (doc 44 unit MW.14c), and an order to
+    /// nobody only when it admits none. `All` is refused whole when any member cannot take the
+    /// order; this is the tolerant form, and a host admits it only for an order that is meant
+    /// to reach whoever can take it (tacsim: a `CONCENTRATE`).
+    Able,
 }
 
 /// Cancellation travels through the same authority and delivery fences.
@@ -371,6 +376,11 @@ impl<P: Clone> OrderBook<P> {
         let recipients = match request.target {
             OrderTarget::Slot(slot) => vec![roster.member(slot).ok_or(OrderError::UnknownSlot)?],
             OrderTarget::All => roster.members().iter().collect(),
+            OrderTarget::Able => roster
+                .members()
+                .iter()
+                .filter(|member| authorize(member))
+                .collect(),
         };
         if recipients.is_empty() {
             return Err(OrderError::EmptyTarget);
@@ -616,6 +626,67 @@ mod tests {
         check_eq!(book, before);
         book.deliver(&roster, slot, issued.sequence, 2, |_| true)?;
         check_eq!(book.standing(&roster, slot, 10_000_000), Some(&"hold"));
+        Ok(())
+    }
+
+    /// **Doc 44 unit MW.14c**: the tolerant target reaches every member the resolver admits
+    /// and leaves the others' histories untouched; it is an order to nobody only when the
+    /// resolver admits none; and `All` is as strict as it was.
+    #[test]
+    fn mw14c_the_tolerant_target_reaches_whoever_can_take_the_order() -> TestResult {
+        let (roster, _) = fixture()?;
+        let mut book = OrderBook::new(roster.id());
+        let standing = book.issue(
+            &roster,
+            1,
+            request(&roster, OrderTarget::All, "hold"),
+            |_| true,
+        )?;
+        for member in roster.members() {
+            book.deliver(&roster, member.slot, standing.sequence, 2, |_| true)?;
+        }
+        let issued = book.issue(
+            &roster,
+            3,
+            request(&roster, OrderTarget::Able, "concentrate"),
+            |member| member.slot.get() != 4,
+        )?;
+        check_eq!(
+            issued
+                .recipients
+                .iter()
+                .map(|slot| slot.get())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let left = Slot::new(4)?;
+        check!(book.pending(left).is_none());
+        check_eq!(book.standing(&roster, left, 3), Some(&"hold"));
+        check_eq!(
+            book.pending(Slot::new(2)?)
+                .map(|order| order.directive.clone()),
+            Some(Directive::Objective("concentrate"))
+        );
+        let before = book.clone();
+        check_eq!(
+            book.issue(
+                &roster,
+                4,
+                request(&roster, OrderTarget::Able, "concentrate"),
+                |_| false
+            ),
+            Err(OrderError::EmptyTarget)
+        );
+        check_eq!(
+            book.issue(
+                &roster,
+                4,
+                request(&roster, OrderTarget::All, "advance"),
+                |member| member.slot.get() != 4
+            ),
+            Err(OrderError::Unauthorized)
+        );
+        check_eq!(book, before);
         Ok(())
     }
 

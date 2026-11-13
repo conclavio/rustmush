@@ -100,40 +100,78 @@ struct OpenImage {
         deserialize_with = "present"
     )]
     hangar: Option<HangarImage>,
+    /// **A port berth's image** (doc 23 cut S.4d, D-23-25; D-23-11, D-23-12): the berth a
+    /// ship's claim opened at. Absent on the wire for a base or a bay, so every record written
+    /// before the cut decodes, and digests, as it did.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    berth: Option<BerthImage>,
 }
 fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
-/// Where an Open was admitted: a configured fixed base or a carrier's bay (doc 23 cut
-/// S.4b-1). Never evidence of a later return.
+/// Where an Open was admitted: a configured fixed base, a carrier's bay (doc 23 cut
+/// S.4b-1) or a port's berth (cut S.4d). Never evidence of a later return.
 #[derive(Clone, Debug, PartialEq)]
 enum AnchorImage {
     Base(Box<BaseImage>),
     Hangar(Box<HangarImage>),
+    Berth(Box<BerthImage>),
 }
 impl OpenImage {
     fn anchor(&self) -> Result<AnchorImage, ParticipantError> {
-        match (&self.base, &self.hangar) {
-            (Some(base), None) => Ok(AnchorImage::Base(Box::new(base.clone()))),
-            (None, Some(hangar)) => Ok(AnchorImage::Hangar(Box::new(hangar.clone()))),
+        match (&self.base, &self.hangar, &self.berth) {
+            (Some(base), None, None) => Ok(AnchorImage::Base(Box::new(base.clone()))),
+            (None, Some(hangar), None) => Ok(AnchorImage::Hangar(Box::new(hangar.clone()))),
+            (None, None, Some(berth)) => Ok(AnchorImage::Berth(Box::new(berth.clone()))),
             _ => Err(error("exactly one admission anchor")),
         }
     }
-    /// The interior the hull was admitted in.
+    /// The interior the hull was admitted in: a base's or a bay's. A berth is no interior.
     fn space(&self) -> Option<&crate::data::InteriorSpaceRecord> {
         self.base
             .as_ref()
             .map(|b| &b.space)
             .or(self.hangar.as_ref().map(|h| &h.space))
     }
-    /// The object the admitting interior hangs on: a base domain's host or the carrier.
+    /// The object the admitting anchor hangs on: a base domain's host, the carrier, or the
+    /// host of the port's domain.
     fn host(&self) -> Option<ObjId> {
         self.base
             .as_ref()
             .map(|b| b.domain.host)
             .or(self.hangar.as_ref().map(|h| h.carrier))
+            .or(self.berth.as_ref().map(|b| b.domain.host))
+    }
+}
+/// **A port berth at admission** (doc 23 cut S.4d, D-23-25; D-23-11: "a ship's berth
+/// later"; D-23-12): the domain the ship lay on, placed `Direct`, when her claim opened. The
+/// claim's anchor is that berth by id (the domain and its host; her pose on it is the Open's
+/// `placement`); this image records where the Open was admitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BerthImage {
+    domain: crate::data::DomainRecord,
+}
+impl BerthImage {
+    fn validate(&self, placement: &crate::data::PlacementRecord) -> Result<(), ParticipantError> {
+        let crate::SpatialParent::Direct { domain, .. } = &placement.parent else {
+            return Err(error("not at a berth"));
+        };
+        if *domain != self.domain.id
+            || placement.unplaced.is_some()
+            || self.domain.status != crate::DomainStatus::Active
+            || self.domain.host.0 == 0
+            || self.domain.host == placement.object
+        {
+            return Err(error("berth identity"));
+        }
+        Ok(())
     }
 }
 /// **A carrier bay at admission** (doc 23 cut S.4b-1, D-23-11): the bay's live interior,
@@ -226,6 +264,7 @@ impl Record {
         match self.open.anchor()? {
             AnchorImage::Base(base) => base.validate(&self.open.placement)?,
             AnchorImage::Hangar(hangar) => hangar.validate(&self.open.placement)?,
+            AnchorImage::Berth(berth) => berth.validate(&self.open.placement)?,
         }
         if self.format != 1
             || self.open.dispatcher.0 == 0
@@ -399,6 +438,15 @@ pub fn held_in_hangar(world: &World, unit: ObjId) -> Option<ObjId> {
     let record = state.records.get(state.active.get(&unit)?)?;
     record.open.hangar.as_ref().map(|hangar| hangar.carrier)
 }
+/// **The domain whose berth a held ship's claim opened at** (doc 23 cut S.4d, D-23-25):
+/// `Some` for an active hold anchored at a berth (a ship's claim, which coexists with a space
+/// bubble's mark as a hangar hold does with a field's), `None` for any other hold or none.
+#[must_use]
+pub fn held_at_berth(world: &World, unit: ObjId) -> Option<crate::DomainId> {
+    let state = world.module_state::<IcExclusions>()?;
+    let record = state.records.get(state.active.get(&unit)?)?;
+    record.open.berth.as_ref().map(|berth| berth.domain.id)
+}
 /// Host-authored immutable base selection, not a player-supplied admission
 /// parameter. Its exact descriptor must be registered by Tacsim, and its live
 /// interior must still equal this authored image at preparation and custody.
@@ -476,6 +524,9 @@ pub struct IcExclusionConfig {
     /// **Carrier bays admit an Open** (doc 23 cut S.4b-1, D-23-15): a hull `Interior` to an
     /// interior anchored `MovingObject { host }` is admitted with the bay as its hangar.
     hangars: bool,
+    /// **Port berths admit an Open** (doc 23 cut S.4d, D-23-25): a hull placed `Direct` on an
+    /// active domain, and under no journey, is admitted with that berth as its hangar.
+    berths: bool,
     definitions: Arc<OnceLock<DefinitionRegistry>>,
 }
 pub fn participant_descriptor() -> Result<DefinitionDescriptor, ModError> {
@@ -487,7 +538,7 @@ impl IcExclusionConfig {
         participants: [DefinitionRef; 4],
         bases: Vec<ConfiguredIcBase>,
     ) -> Result<Self, ModError> {
-        Self::build(manifest, participants, bases, false)
+        Self::build(manifest, participants, bases, false, false)
     }
     /// **The composition that admits carrier bays** (doc 23 cut S.4b-1, D-23-11/D-23-15): as
     /// [`IcExclusionConfig::new`], and an Open is also admitted for a hull `Interior` to a
@@ -498,13 +549,27 @@ impl IcExclusionConfig {
         participants: [DefinitionRef; 4],
         bases: Vec<ConfiguredIcBase>,
     ) -> Result<Self, ModError> {
-        Self::build(manifest, participants, bases, true)
+        Self::build(manifest, participants, bases, true, false)
+    }
+    /// **The composition that admits carrier bays and port berths** (doc 23 cut S.4d,
+    /// D-23-25): as [`IcExclusionConfig::with_hangars`], and an Open is also admitted for a
+    /// hull placed `Direct` on an active domain and under no journey, recording the berth. A
+    /// berth-held hull may then be put under way, re-placed on a domain and brought to rest on
+    /// one by the hosts of her epoch (`berth_move_admitted`); a bay-held or base-held hull is
+    /// held exactly as before.
+    pub fn with_hangars_and_berths(
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 4],
+        bases: Vec<ConfiguredIcBase>,
+    ) -> Result<Self, ModError> {
+        Self::build(manifest, participants, bases, true, true)
     }
     fn build(
         manifest: DefinitionRef,
         participants: [DefinitionRef; 4],
         bases: Vec<ConfiguredIcBase>,
         hangars: bool,
+        berths: bool,
     ) -> Result<Self, ModError> {
         let mut spaces = BTreeSet::new();
         let mut references = BTreeSet::new();
@@ -558,6 +623,7 @@ impl IcExclusionConfig {
             actions,
             bases,
             hangars,
+            berths,
             definitions: Arc::new(OnceLock::new()),
         })
     }
@@ -761,6 +827,10 @@ fn admit_world(
         return Err(error("unit binding"));
     }
     let placement = current_placement(world, unit)?;
+    // Doc 23 cut S.4d (D-23-25): a ship at her berth lies `Direct` on the port's domain.
+    if config.berths && matches!(placement.parent, crate::SpatialParent::Direct { .. }) {
+        return admit_berth(world, state, &placement);
+    }
     let crate::SpatialParent::Interior { space, .. } = &placement.parent else {
         return Err(error("not in a configured base"));
     };
@@ -807,6 +877,32 @@ fn admit_world(
     };
     base.validate(&placement)?;
     Ok((placement, AnchorImage::Base(Box::new(base))))
+}
+/// **A ship at a port's berth** (doc 23 cut S.4d, D-23-25; D-23-11, D-23-12): admitted only
+/// where the composition admits berths, for a hull placed `Direct` on an active domain whose
+/// host is live. Her own journey, and any ancestor's, was refused above: she is at rest.
+fn admit_berth(
+    world: &World,
+    state: &crate::SpatialState,
+    placement: &crate::data::PlacementRecord,
+) -> Result<(crate::data::PlacementRecord, AnchorImage), ParticipantError> {
+    let crate::SpatialParent::Direct { domain, .. } = &placement.parent else {
+        return Err(error("not at a berth"));
+    };
+    let domain = state
+        .domains
+        .get(domain)
+        .ok_or_else(|| error("berth domain"))?
+        .clone();
+    if world
+        .get(domain.host)
+        .is_none_or(|row| row.flags.contains(Flags::GOING))
+    {
+        return Err(error("berth host"));
+    }
+    let berth = BerthImage { domain };
+    berth.validate(placement)?;
+    Ok((placement.clone(), AnchorImage::Berth(Box::new(berth))))
 }
 /// **A hull in a carrier's bay** (doc 23 cut S.4b-1, D-23-11): admitted only where the
 /// composition admits hangars, for a hull `Interior` to a live interior anchored `MovingObject
@@ -893,9 +989,10 @@ impl OwnerParticipant for IcExclusionParticipant {
                     ctx.invocation().actor(),
                     &self.config,
                 )?;
-                let (base_image, hangar) = match &base {
-                    AnchorImage::Base(b) => (Some((**b).clone()), None),
-                    AnchorImage::Hangar(h) => (None, Some((**h).clone())),
+                let (base_image, hangar, berth) = match &base {
+                    AnchorImage::Base(b) => (Some((**b).clone()), None, None),
+                    AnchorImage::Hangar(h) => (None, Some((**h).clone()), None),
+                    AnchorImage::Berth(b) => (None, None, Some((**b).clone())),
                 };
                 let record = Record {
                     format: 1,
@@ -906,6 +1003,7 @@ impl OwnerParticipant for IcExclusionParticipant {
                         placement: placement.clone(),
                         base: base_image,
                         hangar,
+                        berth,
                     },
                     closed: None,
                 };
@@ -1126,6 +1224,34 @@ pub(crate) fn check_boot_spatial(
             .get(operation)
             .ok_or_else(|| bad("IC exclusion index differs"))?;
         let open = &record.open;
+        // Doc 23 cut S.4d (D-23-25): a hold at a berth is moved by the ship's epoch's hosts,
+        // so her hull stands on a domain or is under way, never necessarily at the Open's
+        // image. Found anywhere no host could have put her (in an interior, on a mount,
+        // quarantined, or with no placement), the hold is kept for repair and the boot stops.
+        if open.berth.is_some() {
+            let placed = spatial.placements.get(&open.identity.unit);
+            let stands = placed.is_some_and(|placement| match &placement.parent {
+                crate::SpatialParent::Direct { domain, .. } => {
+                    placement.unplaced.is_none()
+                        && spatial
+                            .domains
+                            .get(domain)
+                            .is_some_and(|d| d.status != crate::DomainStatus::Retired)
+                }
+                crate::SpatialParent::Unplaced => placement
+                    .unplaced
+                    .as_ref()
+                    .is_some_and(|info| !info.quarantined),
+                _ => false,
+            });
+            if !stands
+                || spatial.held_placements.contains_key(&open.identity.unit)
+                || !spatial.unbound_placement_docs.is_empty()
+            {
+                return Err(bad("held IC ship requires explicit recovery"));
+            }
+            continue;
+        }
         let interior = open
             .space()
             .ok_or_else(|| bad("IC admission anchor missing"))?;
@@ -1205,17 +1331,30 @@ pub(crate) fn check_boot_journeys(
     }
     if journeys.journeys.iter().any(|j| {
         state.active.values().any(|open| {
-            state.records.get(open).is_none_or(|r| {
-                j.root() == r.open.identity.unit
-                    || (r.open.hangar.is_none()
-                        && (r.open.space().is_none_or(|s| j.root() == s.object)
-                            || r.open.host().is_none_or(|h| j.root() == h)))
-            })
+            state
+                .records
+                .get(open)
+                .is_none_or(|r| hold_forbids_journey(r, j.root()))
         })
     }) {
         return Err(bad("held IC hull carries a legacy journey"));
     }
     Ok(())
+}
+/// **Whether an active hold forbids a journey rooted at `root`** (the boot audit's rule).
+/// A hull held in a base or a bay roots none; nor, for a base, does its interior or that
+/// interior's host. **A hull held at a berth is a ship** (doc 23 cut S.4d, D-23-25): her
+/// epoch is her passage, so a journey rooted at her is what her hold exists to carry, and
+/// nothing about her berth's domain is frozen.
+fn hold_forbids_journey(record: &Record, root: ObjId) -> bool {
+    let open = &record.open;
+    if open.berth.is_some() {
+        return false;
+    }
+    root == open.identity.unit
+        || (open.hangar.is_none()
+            && (open.space().is_none_or(|s| root == s.object)
+                || open.host().is_none_or(|h| root == h)))
 }
 /// **A held hull's move its hangar admits** (doc 23 cut S.4b-2, D-23-15: "moved only by the
 /// epoch's hosts"): a pose on the domain it stands on; from its hangar, the ramp onto the domain
@@ -1269,6 +1408,70 @@ fn hangar_move_admitted(
     }
 }
 
+/// **A held ship's move her berth admits** (doc 23 cut S.4d, D-23-25; D-23-15: "moved only
+/// by the epoch's hosts"). A ship's epoch is her passage, and its hosts are the voyage and
+/// the space host. What they do to her placement, and nothing else, is admitted:
+///
+/// - a pose on the domain she lies on;
+/// - **the undock**: unplaced as a carrier under way, not quarantined, while the journey book
+///   holds a journey rooted at her (`crate::commands::depart` writes the journey before the
+///   move);
+/// - **the dock**, and the space host's re-placing of a hull it flies: from under way, placed
+///   `Direct` on an active domain (her own port's, another's, a site's pad, a bubble's).
+///
+/// Every other change of parent is refused: into an interior or a bay, onto a mount, a fixed
+/// room, a quarantine, and from one domain straight to another (a teleport: a hull that is
+/// not under way does not change domains).
+fn berth_move_admitted(
+    state: &crate::SpatialState,
+    world: &World,
+    unit: ObjId,
+    next: &crate::data::PlacementRecord,
+) -> bool {
+    let current = state.placements.get(&unit);
+    let under_way = current.is_some_and(|placement| {
+        matches!(placement.parent, crate::SpatialParent::Unplaced)
+            && placement
+                .unplaced
+                .as_ref()
+                .is_some_and(|info| !info.quarantined)
+    });
+    match &next.parent {
+        crate::SpatialParent::Direct { domain, .. } => {
+            if next.unplaced.is_some() {
+                return false;
+            }
+            match current.map(|placement| &placement.parent) {
+                Some(crate::SpatialParent::Direct { domain: now, .. }) => now == domain,
+                Some(crate::SpatialParent::Unplaced) => {
+                    under_way
+                        && state
+                            .domains
+                            .get(domain)
+                            .is_some_and(|d| d.status == crate::DomainStatus::Active)
+                }
+                _ => false,
+            }
+        }
+        crate::SpatialParent::Unplaced => {
+            let journeying = world
+                .module_state::<crate::JourneyBook>()
+                .is_some_and(|journeys| journeys.journeys.contains_key(&unit));
+            let lawful = next.unplaced.as_ref().is_some_and(|info| !info.quarantined);
+            // Already under way she may be re-stamped; from a domain she leaves only on a
+            // journey of her own.
+            lawful
+                && (under_way
+                    || (journeying
+                        && matches!(
+                            current.map(|placement| &placement.parent),
+                            Some(crate::SpatialParent::Direct { .. })
+                        )))
+        }
+        _ => false,
+    }
+}
+
 /// Common physical transition guard. Base presentation stays visible, but a
 /// transition cannot move/re-anchor a retained hull through an ancestor edit.
 pub(crate) fn check_plan(
@@ -1313,6 +1516,41 @@ pub(crate) fn check_plan(
                     placements = ?placed.iter().map(|p| &p.parent).collect::<Vec<_>>(),
                     current = ?spatial.placements.get(&unit).map(|p| &p.parent),
                     "sim: a hangar hold's freeze refused a plan"
+                );
+                return Err(crate::transition::SpatialError::IcCustody(unit));
+            }
+            continue;
+        }
+        // Doc 23 cut S.4d (D-23-25): a hold at a berth freezes re-anchoring too, with the
+        // ship's own movers admitted.
+        if row.open.berth.is_some() {
+            let placed = plan
+                .set_placements
+                .iter()
+                .filter(|p| p.object == unit)
+                .collect::<Vec<_>>();
+            let admitted = placed
+                .iter()
+                .all(|p| berth_move_admitted(spatial, world, unit, p));
+            let retired = row
+                .open
+                .berth
+                .as_ref()
+                .is_some_and(|berth| plan.retire.contains(&berth.domain.id))
+                && matches!(
+                    spatial.placements.get(&unit).map(|p| &p.parent),
+                    Some(crate::SpatialParent::Direct { domain, .. })
+                        if row.open.berth.as_ref().is_some_and(|b| b.domain.id == *domain)
+                );
+            if !admitted || retired {
+                tracing::debug!(
+                    target: "ic_claim",
+                    unit = unit.0,
+                    admitted,
+                    retired,
+                    placements = ?placed.iter().map(|p| &p.parent).collect::<Vec<_>>(),
+                    current = ?spatial.placements.get(&unit).map(|p| &p.parent),
+                    "sim: a berth hold's freeze refused a plan"
                 );
                 return Err(crate::transition::SpatialError::IcCustody(unit));
             }

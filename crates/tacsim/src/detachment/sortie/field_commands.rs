@@ -161,6 +161,44 @@ fn issue(
             },
         );
     }
+    // Doc 44 unit MW.14c: `<slot|ALL> CONCENTRATE <contact>`, the focus-fire order. An order
+    // like any other (the leader's authority, each unit's command right, the relay, a jam).
+    // `ALL` reaches every hull that can take it now and is not refused for one that cannot.
+    let mut concentrate = text.split_whitespace();
+    if let (Some(target), Some(verb)) = (concentrate.next(), concentrate.next())
+        && verb.eq_ignore_ascii_case("CONCENTRATE")
+    {
+        let target = if target.eq_ignore_ascii_case("ALL") {
+            OrderTarget::Able
+        } else {
+            OrderTarget::Slot(
+                Slot::new(target.parse().map_err(|_| super::CONCENTRATE_USAGE)?)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
+        let (Some(contact), None) = (concentrate.next(), concentrate.next()) else {
+            return Err(super::CONCENTRATE_USAGE.into());
+        };
+        if expires_at_ms.is_some() {
+            return Err(super::CONCENTRATE_NO_EXPIRY.into());
+        }
+        let objective = concentrate_on(ctx, op, contact)?;
+        return submit(
+            ctx,
+            h,
+            op,
+            Act::Issue {
+                revision,
+                term,
+                target,
+                directive: Directive::Objective(FieldPayload {
+                    objective,
+                    hold_fire: false,
+                }),
+                expires_at_ms,
+            },
+        );
+    }
     let words = parse_order(text).map_err(|e| e.to_string())?;
     let target = match words.squad {
         SquadWord::All => OrderTarget::All,
@@ -222,6 +260,41 @@ fn issue(
             expires_at_ms,
         },
     )
+}
+/// **What a `CONCENTRATE <word>` names** (doc 44 unit MW.14c): a contact of the leader's own
+/// cockpit inside a running field, by its designator, which the leader has identified. A
+/// contact still under a provisional number is named differently on every scope, so no other
+/// hull could find it in its own observation; the leader is told to identify it first.
+fn concentrate_on(
+    ctx: &Ctx<'_>,
+    op: &OperationRecord,
+    wanted: &str,
+) -> Result<FieldObjective, String> {
+    let unit = op
+        .roster
+        .plan
+        .slots
+        .iter()
+        .find(|s| s.controller.character() == Some(ctx.actor))
+        .and_then(|s| s.unit)
+        .ok_or("Own field unit unavailable.")?;
+    match crate::field::orders::leader_contact(ctx.w, ctx.actor, unit, wanted) {
+        Some(field_orders::EngageAt::Contact {
+            ordinal,
+            id,
+            designator,
+        }) => {
+            if !crate::field::orders::identified(ctx.w, ctx.actor, unit, id) {
+                return Err(super::CONCENTRATE_UNIDENTIFIED.into());
+            }
+            Ok(FieldObjective::Concentrate {
+                ordinal,
+                id,
+                designator,
+            })
+        }
+        _ => Err(super::CONCENTRATE_NO_CONTACT.into()),
+    }
 }
 /// **What an `ENGAGE <word>` names** (doc 32 cut CF.6): inside a field a contact of the leader's
 /// own cockpit by its designator; else a campaign contact by its key's prefix; else, on open
@@ -330,6 +403,86 @@ fn posture_at(op: &OperationRecord, slot: Slot, sequence: u64) -> bool {
                 )
         })
 }
+/// **The orders this roster's NPC leaders gave, as `+sortie/orders` shows them** (doc 44 unit
+/// MW.14c): a head line, then one line an order, oldest first, each within 120 columns.
+fn npc_orders(
+    ctx: &Ctx<'_>,
+    op: &OperationRecord,
+    orders: &field_orders::FieldOrders,
+) -> Vec<String> {
+    use mush_propagation::{EnvelopeState, record::DispatchKind};
+    if orders.given.is_empty() {
+        return Vec::new();
+    }
+    let store = ctx.w.module_state::<mush_propagation::PropagationStore>();
+    let mut lines = vec![super::NPC_ORDERS_HEAD.to_owned()];
+    for given in &orders.given {
+        let key = field_orders::message_key(op.id, given.sequence, given.slot);
+        let reply_prefix = format!("{key}:reply:");
+        let answer = store.and_then(|store| {
+            store
+                .envelopes()
+                .filter(|reply| {
+                    reply.kind() == DispatchKind::DetachmentReply
+                        && reply.recipient() == given.issuer
+                        && matches!(
+                            reply.state(),
+                            EnvelopeState::Delivered | EnvelopeState::Acknowledged
+                        )
+                        && reply
+                            .dispatch_ref()
+                            .is_some_and(|d| d.key.starts_with(&reply_prefix))
+                })
+                .max_by_key(|reply| reply.id())
+                .and_then(|reply| reply.dispatch_ref())
+                .and_then(|reply| reply.key.strip_prefix(&reply_prefix))
+                .map(str::to_ascii_uppercase)
+        });
+        let status = match answer {
+            Some(word) => format!("{word} received"),
+            None => "no reply confirmed".to_owned(),
+        };
+        let name = ctx.w.get(given.issuer).map_or_else(
+            || format!("#{}", given.issuer.0),
+            |object| object.name.to_string(),
+        );
+        lines.push(npc_order_line(
+            &name,
+            (given.slot.get(), given.sequence),
+            &directive_text(&given.directive),
+            &status,
+        ));
+    }
+    lines
+}
+/// **One of an NPC leader's orders** ([`super::NPC_ORDER`]), cut to 120 columns: the leader's
+/// name gives way first, then the order's words.
+fn npc_order_line(name: &str, (slot, sequence): (u16, u64), order: &str, status: &str) -> String {
+    let fill = |name: &str, order: &str| {
+        super::NPC_ORDER
+            .replace("{leader}", name)
+            .replace("{slot}", &slot.to_string())
+            .replace("{sequence}", &sequence.to_string())
+            .replace("{order}", order)
+            .replace("{status}", status)
+    };
+    let cut = |text: &str, keep: usize| -> String {
+        if text.chars().count() <= keep {
+            text.to_owned()
+        } else {
+            let mut short: String = text.chars().take(keep.saturating_sub(1)).collect();
+            short.push('~');
+            short
+        }
+    };
+    let whole = fill(name, order);
+    if whole.chars().count() <= 120 {
+        return whole;
+    }
+    let name = cut(name, 24);
+    let fixed = fill(&name, "").chars().count();
+    fill(&name, &cut(order, 120usize.saturating_sub(fixed).max(8)))
+}
 fn line(ctx: &mut Ctx<'_>, text: String) {
     ctx.out.sys_to_actor(ctx.actor, "tacsim.detachment", text)
 }
@@ -358,6 +511,7 @@ pub(super) fn directive_text(directive: &Directive<FieldPayload>) -> String {
             family.map_or_else(|| "MINE".into(), |family| format!("MINE {}", family.id()))
         }
         FieldObjective::Posture { posture } => format!("POSTURE {}", posture.label()),
+        FieldObjective::Concentrate { designator, .. } => format!("CONCENTRATE {designator}"),
     };
     if payload.hold_fire {
         text.push_str(" HOLD FIRE");
@@ -456,6 +610,14 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
     for message in outbox {
         line(ctx, message);
     }
+    // Doc 44 unit MW.14c: what the roster's NPC leader ordered, and how each was answered.
+    // The organiser and every player flying a slot may read it (`super::commands::read`
+    // refuses anyone else the whole report); the NPC is theirs, hired under the organiser's
+    // contract, and leads their units. As with a player's own outbox, an answer is shown only
+    // once its reply has reached the leader who gave the order.
+    for message in npc_orders(ctx, op, orders) {
+        line(ctx, message);
+    }
     for member in roster.members() {
         let Some(delivered) = book.delivered(member.slot) else {
             continue;
@@ -496,4 +658,49 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Doc 44 unit MW.14c**: each line `+sortie/orders` prints of an NPC leader's orders
+    /// fits 120 columns, whatever the leader is called and whatever the order says, and a
+    /// line that fits is printed whole.
+    #[test]
+    fn mw14c_an_npc_leaders_order_line_fits_120_columns() {
+        let whole = npc_order_line("Sana Okonkwo", (2, 7), "ADVANCE 128,118", "WILCO received");
+        assert_eq!(
+            whole,
+            "Sana Okonkwo to slot 2, order 7: ADVANCE 128,118; WILCO received."
+        );
+        let name = "A".repeat(64);
+        let order = format!("ENGAGE {} HOLD FIRE", "f".repeat(64));
+        for status in ["no reply confirmed", "NEGATIVE received", "WILCO received"] {
+            let line = npc_order_line(&name, (6, u64::MAX), &order, status);
+            assert!(line.chars().count() <= 120, "{line}");
+            assert!(line.ends_with(&format!("; {status}.")), "{line}");
+            assert!(line.contains("to slot 6, order 18446744073709551615: ENGAGE"));
+        }
+        assert!(super::super::NPC_ORDERS_HEAD.chars().count() <= 120);
+        for line in [
+            super::super::CONCENTRATE_USAGE,
+            super::super::CONCENTRATE_UNIDENTIFIED,
+            super::super::CONCENTRATE_NO_CONTACT,
+            super::super::CONCENTRATE_NO_EXPIRY,
+        ] {
+            assert!(line.chars().count() <= 120, "{line}");
+        }
+        assert_eq!(
+            directive_text(&Directive::Objective(FieldPayload {
+                objective: FieldObjective::Concentrate {
+                    ordinal: 1,
+                    id: 70,
+                    designator: smol_str::SmolStr::new("BK"),
+                },
+                hold_fire: false,
+            })),
+            "CONCENTRATE BK"
+        );
+    }
 }

@@ -1,7 +1,10 @@
 //! IC orders retain source history; Propagation owns their actual transport.
 use super::model::OperationId;
 use mush_core::{ContactId, ObjId};
-use mush_tactics::detachment::{DetachmentRoster, Directive, OrderBook, OrderCheckpoint, Slot};
+use mush_tactics::detachment::{
+    DeliveredOrder, DetachmentRoster, Directive, OrderBook, OrderCheckpoint, OrderEnvelope,
+    Response, Slot,
+};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
@@ -205,6 +208,23 @@ pub enum FieldObjective {
     Posture {
         posture: crate::posture::Posture,
     },
+    /// **Concentrate on one contact** (doc 44 unit MW.14c; the focus-fire order). The leader
+    /// names a contact of their own observation inside a field, as an `ENGAGE` does
+    /// ([`EngageAt::Contact`]), and every hull ordered that holds that contact itself engages
+    /// it. It differs from an `ENGAGE` in three ways (`crate::field::orders::concentrate`): it
+    /// may go to the whole roster and reach whoever can take it
+    /// ([`mush_tactics::detachment::OrderTarget::Able`]); a hull that does not hold the contact
+    /// answers NEGATIVE and keeps the order it had; and once the contact is destroyed or lost
+    /// to the hull, the hull goes back to the order it had before ([`Concentration`]).
+    Concentrate {
+        /// The field's ordinal on its site.
+        ordinal: u32,
+        /// The row key in the leader's scope.
+        id: u64,
+        /// The contact's designator in the leader's scope when issued: an identified
+        /// contact's is its own callsign, which every hull that has identified it reads too.
+        designator: SmolStr,
+    },
 }
 /// **What an `ENGAGE` names** besides a campaign contact (doc 32 cut CF.6; Q-CF-7, Q-CF-15,
 /// §4a). Each is resolved by the recipient in its own observation when the order arrives, never
@@ -302,6 +322,78 @@ pub struct Lapse {
     /// When, IC milliseconds.
     pub at_ms: u64,
 }
+/// **What a hull goes back to after a `CONCENTRATE`** (doc 44 unit MW.14c). Written once, by
+/// the poll that delivers the order, and kept while that order is the slot's delivered one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Concentration {
+    /// The delivered `CONCENTRATE`.
+    pub sequence: u64,
+    /// The sequence reserved for the hull's return to its earlier order: above the
+    /// `CONCENTRATE`'s own and below every order issued to the slot after it.
+    pub resume: u64,
+    /// The order that stood on the slot when the `CONCENTRATE` arrived, as it was admitted;
+    /// through an earlier `CONCENTRATE`, the order that one replaced. `None` when nothing
+    /// stood (no order, or one that had ended): the hull then goes back to no order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Box<OrderEnvelope<FieldPayload>>>,
+    /// Set once the order in `before` lapsed with its leader's absence (doc 45 unit AP.8;
+    /// Q-45-13) while this `CONCENTRATE` stood over it: `before` is then the `HOLD` that
+    /// order's stand begins with, and this is the sequence reserved for it, above `resume`. A
+    /// hull that had already gone back to the lapsed order is given the `HOLD` under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stand: Option<u64>,
+}
+
+impl Concentration {
+    /// **Turn the order this goes back to into the `HOLD` a lapsed order leaves** (doc 45 unit
+    /// AP.8), under the lapsed order's own `HOLD FIRE`, to be taken under `stand`. Whether
+    /// anything changed: nothing does when there is no order to go back to, or it is done.
+    pub(super) fn stand_down(&mut self, stand: u64) -> bool {
+        if self.stand.is_some() {
+            return false;
+        }
+        let Some(before) = self.before.as_deref_mut() else {
+            return false;
+        };
+        let hold_fire = matches!(
+            &before.directive,
+            Directive::Objective(payload) if payload.hold_fire
+        );
+        before.directive = Directive::Objective(FieldPayload {
+            objective: FieldObjective::Hold,
+            hold_fire,
+        });
+        self.stand = Some(stand);
+        true
+    }
+}
+
+/// **One order an NPC leader gave** (doc 44 unit MW.14c), kept so the roster's organiser and
+/// its players can read what their NPC commander ordered (`+sortie/orders`), and so the
+/// commander itself can read what it last ordered and when. The transport
+/// keeps a message's reference and not its words, and the book keeps one order a slot, so an
+/// NPC's superseded orders would otherwise be nowhere a player can read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Given {
+    /// The order's sequence in the roster's book.
+    pub sequence: u64,
+    /// The slot it went to.
+    pub slot: Slot,
+    /// The NPC who gave it.
+    pub issuer: ObjId,
+    /// What it said.
+    pub directive: Directive<FieldPayload>,
+    /// When it was admitted, IC milliseconds: what the commander's dwell is read from
+    /// (`super::commander`), so the dwell survives a restart with the history.
+    pub at_ms: u64,
+}
+
+/// **How many of an NPC leader's orders the roster's history keeps** (doc 44 unit MW.14c): the
+/// last sixteen, as many as `+sortie/orders` shows of a player's own.
+pub const GIVEN_KEPT: usize = 16;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldOrders {
@@ -319,6 +411,25 @@ pub struct FieldOrders {
     /// on every history written before AP.8.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lapsed: BTreeMap<Slot, Lapse>,
+    /// What each hull under a delivered `CONCENTRATE` goes back to (doc 44 unit MW.14c).
+    /// Absent on every history written before MW.14c.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub concentrating: BTreeMap<Slot, Concentration>,
+    /// The last [`GIVEN_KEPT`] orders an NPC leader gave, oldest first (doc 44 unit MW.14c).
+    /// Absent on every history written before MW.14c.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub given: Vec<Given>,
+}
+/// Whether `directive` is a `CONCENTRATE` (doc 44 unit MW.14c).
+#[must_use]
+pub fn concentrates(directive: &Directive<FieldPayload>) -> bool {
+    matches!(
+        directive,
+        Directive::Objective(FieldPayload {
+            objective: FieldObjective::Concentrate { .. },
+            ..
+        })
+    )
 }
 pub(super) fn message_key(id: OperationId, sequence: u64, slot: Slot) -> String {
     format!(
@@ -346,7 +457,129 @@ impl FieldOrders {
             replies: BTreeMap::new(),
             flights: BTreeMap::new(),
             lapsed: BTreeMap::new(),
+            concentrating: BTreeMap::new(),
+            given: Vec::new(),
         }
+    }
+    /// **What `slot` goes back to after its delivered `CONCENTRATE` `sequence`** (doc 44 unit
+    /// MW.14c), when that order is the one recorded.
+    #[must_use]
+    pub fn concentration_of(&self, slot: Slot, sequence: u64) -> Option<&Concentration> {
+        self.concentrating
+            .get(&slot)
+            .filter(|record| record.sequence == sequence)
+    }
+    /// Drop every concentration whose order is no longer its slot's delivered one.
+    pub(super) fn prune_concentrating(&mut self, book: &OrderBook<FieldPayload>) {
+        self.concentrating.retain(|slot, record| {
+            book.delivered(*slot)
+                .is_some_and(|delivered| delivered.order.sequence == record.sequence)
+        });
+    }
+    /// **The order a slot stands on, seen through a `CONCENTRATE`** (doc 44 unit MW.14c): the
+    /// delivered order, or, when that is a `CONCENTRATE`, the order the hull goes back to after
+    /// it. `None` when nothing was delivered, or a `CONCENTRATE` replaced nothing.
+    #[must_use]
+    pub fn underlying<'a>(
+        &'a self,
+        book: &'a OrderBook<FieldPayload>,
+        slot: Slot,
+    ) -> Option<&'a OrderEnvelope<FieldPayload>> {
+        let delivered = book.delivered(slot)?;
+        if concentrates(&delivered.order.directive) {
+            self.concentration_of(slot, delivered.order.sequence)?
+                .before
+                .as_deref()
+        } else {
+            Some(&delivered.order)
+        }
+    }
+    /// **Record a `CONCENTRATE` just delivered to `slot`** (doc 44 unit MW.14c), in the poll
+    /// that delivered it: what stood there before (`previous`, the slot's delivered order until
+    /// this delivery), and the sequence its hull returns to that under. An order of any other
+    /// kind clears the slot's record.
+    ///
+    /// What stood before is the earlier order while it still binds: one that had completed,
+    /// run out, been answered NEGATIVE or been a cancellation is nothing to go back to. An
+    /// order that had lapsed with its leader's absence (doc 45 unit AP.8) is gone back to as
+    /// the stand it left: a `HOLD`, under the lapsed order's own `HOLD FIRE`. Through an
+    /// earlier `CONCENTRATE`, what that one recorded.
+    pub(super) fn note_delivery(
+        &mut self,
+        book: &mut OrderBook<FieldPayload>,
+        slot: Slot,
+        previous: Option<DeliveredOrder<FieldPayload>>,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let Some(sequence) = book
+            .delivered(slot)
+            .filter(|delivered| concentrates(&delivered.order.directive))
+            .map(|delivered| delivered.order.sequence)
+        else {
+            self.concentrating.remove(&slot);
+            return Ok(());
+        };
+        let before = previous.and_then(|previous| {
+            if concentrates(&previous.order.directive) {
+                return self
+                    .concentration_of(slot, previous.order.sequence)
+                    .and_then(|record| record.before.clone());
+            }
+            let ended = previous.completed_at_ms.is_some()
+                || previous
+                    .order
+                    .expires_at_ms
+                    .is_some_and(|end| now_ms >= end)
+                || previous
+                    .acknowledgement
+                    .is_some_and(|answer| answer.response == Response::Negative);
+            let mut order = previous.order;
+            let lapsed = self.lapse_of(slot, order.sequence).is_some();
+            match &order.directive {
+                Directive::Objective(payload)
+                    if !ended && !matches!(payload.objective, FieldObjective::Posture { .. }) =>
+                {
+                    if lapsed {
+                        order.directive = Directive::Objective(FieldPayload {
+                            objective: FieldObjective::Hold,
+                            hold_fire: payload.hold_fire,
+                        });
+                    }
+                    Some(Box::new(order))
+                }
+                _ => None,
+            }
+        });
+        let resume = book.reserve_sequence(now_ms).map_err(|e| e.to_string())?;
+        self.concentrating.insert(
+            slot,
+            Concentration {
+                sequence,
+                resume,
+                before,
+                stand: None,
+            },
+        );
+        Ok(())
+    }
+    /// **Keep an order an NPC leader just gave** (doc 44 unit MW.14c), dropping the oldest
+    /// past [`GIVEN_KEPT`].
+    pub(super) fn note_given(
+        &mut self,
+        (sequence, slot): (u64, Slot),
+        issuer: ObjId,
+        directive: &Directive<FieldPayload>,
+        at_ms: u64,
+    ) {
+        self.given.push(Given {
+            sequence,
+            slot,
+            issuer,
+            directive: directive.clone(),
+            at_ms,
+        });
+        let over = self.given.len().saturating_sub(GIVEN_KEPT);
+        self.given.drain(..over);
     }
     /// **The lapse standing on `slot`'s delivered order**, if that order lapsed (doc 45 unit
     /// AP.8).
@@ -372,8 +605,40 @@ impl FieldOrders {
             || self.replies.len() > 6
             || self.flights.len() > 6
             || self.lapsed.len() > 6
+            || self.concentrating.len() > 6
+            || self.given.len() > GIVEN_KEPT
         {
             return Err("Invalid field message history.".into());
+        }
+        if self.concentrating.iter().any(|(slot, record)| {
+            record.resume <= record.sequence
+                || record.resume > book.sequence()
+                || record
+                    .stand
+                    .is_some_and(|stand| stand <= record.resume || stand > book.sequence())
+                || book.delivered(*slot).is_none_or(|delivered| {
+                    delivered.order.sequence != record.sequence
+                        || !concentrates(&delivered.order.directive)
+                })
+                || record.before.as_deref().is_some_and(|before| {
+                    before.sequence >= record.sequence
+                        || match &before.directive {
+                            Directive::Objective(payload) => payload
+                                .validate(roster, crate::surface::ground::MAX_SITE_CELLS)
+                                .is_err(),
+                            Directive::Cancel => true,
+                        }
+                })
+        }) {
+            return Err("A concentration differs from its delivered order.".into());
+        }
+        if self.given.iter().any(|given| {
+            given.sequence == 0 || given.sequence > book.sequence() || given.issuer.0 == 0
+        }) || self.given.windows(2).any(|pair| {
+            (pair[0].sequence, pair[0].slot) >= (pair[1].sequence, pair[1].slot)
+                || pair[0].at_ms > pair[1].at_ms
+        }) {
+            return Err("An NPC leader's order history is out of order.".into());
         }
         if self.lapsed.iter().any(|(slot, lapse)| {
             lapse.stand <= lapse.sequence
@@ -549,6 +814,25 @@ pub(super) fn lapsing(
         .collect()
 }
 
+/// **The slots whose `CONCENTRATE` stands over an order that lapses now** (doc 44 unit
+/// MW.14c; doc 45 unit AP.8): the order the hull goes back to presses, a player gave it, and
+/// the field has that player gone (`crate::field::orders::lapses`). The `CONCENTRATE`'s own
+/// lapse is [`lapsing`]'s; this is the order under it, which [`lapsing`] cannot see.
+pub(super) fn under_lapsing(world: &mush_core::World, orders: &FieldOrders) -> Vec<Slot> {
+    orders
+        .concentrating
+        .iter()
+        .filter(|(_, record)| {
+            record.stand.is_none()
+                && record
+                    .before
+                    .as_deref()
+                    .is_some_and(|before| crate::field::orders::lapses(world, before))
+        })
+        .map(|(slot, _)| *slot)
+        .collect()
+}
+
 /// **Record every lapse that is due** (doc 45 unit AP.8; Q-45-13), in whichever transaction
 /// saves the roster: an order's poll, an issue, a reply or a refresh. The lead passes and the
 /// order lapses in one write, so no successor ever leads over an order that is still pressing
@@ -567,6 +851,7 @@ pub(super) fn lapse_due(
     now_ms: u64,
 ) -> Result<Vec<serde_json::Value>, String> {
     orders.prune_lapsed(book);
+    orders.prune_concentrating(book);
     let mut recorded = Vec::new();
     for (slot, sequence, issuer) in lapsing(world, read, h, roster, orders, book, now_ms) {
         let stand = book.reserve_sequence(now_ms).map_err(|e| e.to_string())?;
@@ -583,6 +868,18 @@ pub(super) fn lapse_due(
         recorded.push(serde_json::json!({
             "slot": slot, "lapsed": sequence, "issuer": issuer, "stand": stand, "answer": answer,
         }));
+    }
+    // Doc 44 unit MW.14c: the order a hull goes back to after a CONCENTRATE lapses under it,
+    // by the same rule. It becomes the HOLD a lapsed order leaves, under a sequence of its own.
+    for slot in under_lapsing(world, orders) {
+        let stand = book.reserve_sequence(now_ms).map_err(|e| e.to_string())?;
+        if let Some(record) = orders.concentrating.get_mut(&slot)
+            && record.stand_down(stand)
+        {
+            recorded.push(serde_json::json!({
+                "slot": slot, "under": record.sequence, "stand": stand,
+            }));
+        }
     }
     Ok(recorded)
 }
@@ -653,7 +950,9 @@ pub(super) fn needs_poll(
         .unwrap_or(0)
         .saturating_mul(1000);
     // Doc 45 unit AP.8: an order whose leader is gone is the poll's to lapse.
-    if !lapsing(world, read, h, &roster, orders, &book, now).is_empty() {
+    if !lapsing(world, read, h, &roster, orders, &book, now).is_empty()
+        || !under_lapsing(world, orders).is_empty()
+    {
         return true;
     }
     roster.members().iter().any(|m| {
@@ -715,5 +1014,322 @@ mod tests {
                 .validate(&roster, crate::surface::ground::MAX_SITE_CELLS)
                 .is_err()
         );
+    }
+
+    /// A roster of two hired hulls, units 101 and 102 in slots 1 and 2, led by the NPC in
+    /// slot 1 (the plan's commander), reconciled at time nought.
+    fn led_roster() -> DetachmentRoster {
+        use mush_tactics::detachment::roster::{Connection, MemberFacts};
+        use mush_tactics::detachment::{Controller, DetachmentId, LeadershipPolicy, Member};
+        let members: Vec<Member> = (1..=2u16)
+            .map(|n| Member {
+                slot: Slot::new(n).expect("a slot"),
+                unit: ObjId(100 + u32::from(n)),
+                controller: Controller::Npc {
+                    character: ObjId(10 + u32::from(n)),
+                },
+            })
+            .collect();
+        let facts: Vec<MemberFacts> = members
+            .iter()
+            .map(|member| MemberFacts {
+                slot: member.slot,
+                capable: true,
+                controls_unit: true,
+                unit_disabled: false,
+                connection: Connection::Connected,
+                command_authorized: true,
+            })
+            .collect();
+        let mut roster = DetachmentRoster::new(
+            DetachmentId(7),
+            1,
+            members,
+            Some(ObjId(11)),
+            LeadershipPolicy::default(),
+        )
+        .expect("a roster");
+        roster.reconcile(0, &facts).expect("reconciled");
+        roster
+    }
+
+    fn payload(objective: FieldObjective) -> Directive<FieldPayload> {
+        Directive::Objective(FieldPayload {
+            objective,
+            hold_fire: false,
+        })
+    }
+
+    fn concentrate_on(id: u64) -> Directive<FieldPayload> {
+        payload(FieldObjective::Concentrate {
+            ordinal: 1,
+            id,
+            designator: SmolStr::new("BK"),
+        })
+    }
+
+    /// Issue `directive` to slot 2 as the roster's leader and deliver it, as a poll does:
+    /// the delivery noted in the history. The order's sequence.
+    fn deliver(
+        roster: &DetachmentRoster,
+        orders: &mut FieldOrders,
+        book: &mut OrderBook<FieldPayload>,
+        directive: Directive<FieldPayload>,
+        now_ms: u64,
+    ) -> u64 {
+        use mush_tactics::detachment::{OrderRequest, OrderTarget};
+        let slot = Slot::new(2).expect("a slot");
+        let issued = book
+            .issue(
+                roster,
+                now_ms,
+                OrderRequest {
+                    issuer: ObjId(11),
+                    roster_revision: roster.revision(),
+                    command_term: roster.term(),
+                    target: OrderTarget::Slot(slot),
+                    directive,
+                    expires_at_ms: None,
+                },
+                |_| true,
+            )
+            .expect("issued");
+        let previous = book.delivered(slot).cloned();
+        book.deliver(roster, slot, issued.sequence, now_ms, |_| true)
+            .expect("delivered");
+        orders
+            .note_delivery(book, slot, previous, now_ms)
+            .expect("noted");
+        orders.prune_lapsed(book);
+        orders.prune_concentrating(book);
+        orders.book = book.checkpoint();
+        orders.validate(roster).expect("a valid history");
+        issued.sequence
+    }
+
+    /// **Doc 44 unit MW.14c: a history written before the unit still loads.** The text is a
+    /// roster's message history as it was stored before `concentrating` and `given` existed;
+    /// it reads with neither, and a history that holds neither is stored without their keys.
+    #[test]
+    fn mw14c_a_history_written_before_the_unit_loads() {
+        let roster = led_roster();
+        let empty = FieldOrders::new(&roster);
+        let stored = serde_json::to_string(&empty).expect("encode");
+        assert!(
+            !stored.contains("concentrating") && !stored.contains("given"),
+            "{stored}"
+        );
+        let old: FieldOrders = serde_json::from_str(&stored).expect("an older history loads");
+        assert!(old.concentrating.is_empty() && old.given.is_empty());
+        old.validate(&roster).expect("and is valid");
+    }
+
+    /// **Doc 44 unit MW.14c: a delivered `CONCENTRATE` records what its hull goes back to.**
+    /// The order that stood; through a second `CONCENTRATE`, the order the first replaced; an
+    /// order the hull had refused is nothing to go back to; and any other order delivered
+    /// after it clears the record. The return's sequence sits above the `CONCENTRATE` and
+    /// below the next order.
+    #[test]
+    fn mw14c_a_delivered_concentrate_records_what_it_replaced() {
+        use mush_tactics::detachment::Response;
+        let roster = led_roster();
+        let slot = Slot::new(2).expect("a slot");
+        let mut orders = FieldOrders::new(&roster);
+        let mut book = OrderBook::restore(&orders.book, &roster).expect("a book");
+
+        let hold = deliver(
+            &roster,
+            &mut orders,
+            &mut book,
+            payload(FieldObjective::Hold),
+            1,
+        );
+        assert!(orders.concentrating.is_empty(), "a HOLD records nothing");
+        assert_eq!(
+            orders.underlying(&book, slot).map(|order| order.sequence),
+            Some(hold)
+        );
+
+        let first = deliver(&roster, &mut orders, &mut book, concentrate_on(70), 2);
+        let record = orders
+            .concentration_of(slot, first)
+            .expect("recorded")
+            .clone();
+        assert_eq!(
+            record.before.as_deref().map(|order| order.sequence),
+            Some(hold)
+        );
+        assert!(record.resume > first && record.resume <= book.sequence());
+        assert_eq!(
+            orders.underlying(&book, slot).map(|order| &order.directive),
+            Some(&payload(FieldObjective::Hold)),
+            "the slot stands on its HOLD, seen through the CONCENTRATE"
+        );
+
+        // A second CONCENTRATE goes back to what the first replaced, not to the first.
+        let second = deliver(&roster, &mut orders, &mut book, concentrate_on(71), 3);
+        assert!(second > record.resume, "the next order is above the return");
+        let chained = orders.concentration_of(slot, second).expect("recorded");
+        assert_eq!(
+            chained.before.as_deref().map(|order| order.sequence),
+            Some(hold)
+        );
+        assert!(orders.concentration_of(slot, first).is_none());
+        // The stored history round-trips with its record.
+        let text = serde_json::to_string(&orders).expect("encode");
+        let again: FieldOrders = serde_json::from_str(&text).expect("decode");
+        assert_eq!(again, orders);
+        again.validate(&roster).expect("valid");
+
+        // Any other order clears it.
+        let advance = deliver(
+            &roster,
+            &mut orders,
+            &mut book,
+            payload(FieldObjective::Advance { to: (4, 4) }),
+            4,
+        );
+        assert!(orders.concentrating.is_empty());
+
+        // An order the hull refused is nothing to go back to.
+        book.respond(slot, advance, ObjId(12), Response::Negative, 5)
+            .expect("answered");
+        let third = deliver(&roster, &mut orders, &mut book, concentrate_on(72), 6);
+        let record = orders.concentration_of(slot, third).expect("recorded");
+        assert!(record.before.is_none(), "{record:?}");
+        assert!(orders.underlying(&book, slot).is_none());
+    }
+
+    /// **Doc 44 unit MW.14c: a `CONCENTRATE` over an order that lapsed goes back to the stand
+    /// that order left**, a `HOLD` under the lapsed order's own `HOLD FIRE` (doc 45 unit AP.8),
+    /// and never to the attack that lapsed.
+    #[test]
+    fn mw14c_a_concentrate_over_a_lapsed_order_goes_back_to_a_hold() {
+        let roster = led_roster();
+        let slot = Slot::new(2).expect("a slot");
+        let mut orders = FieldOrders::new(&roster);
+        let mut book = OrderBook::restore(&orders.book, &roster).expect("a book");
+        let engage = deliver(
+            &roster,
+            &mut orders,
+            &mut book,
+            Directive::Objective(FieldPayload {
+                objective: FieldObjective::Engage {
+                    contact: None,
+                    at: None,
+                },
+                hold_fire: true,
+            }),
+            1,
+        );
+        let stand = book.reserve_sequence(2).expect("reserved");
+        let answer = book.reserve_sequence(2).expect("reserved");
+        orders.lapsed.insert(
+            slot,
+            Lapse {
+                sequence: engage,
+                stand,
+                answer,
+                at_ms: 2,
+            },
+        );
+        let concentrate = deliver(&roster, &mut orders, &mut book, concentrate_on(70), 3);
+        let record = orders
+            .concentration_of(slot, concentrate)
+            .expect("recorded");
+        assert_eq!(
+            record.before.as_deref().map(|order| &order.directive),
+            Some(&Directive::Objective(FieldPayload {
+                objective: FieldObjective::Hold,
+                hold_fire: true,
+            }))
+        );
+    }
+
+    /// **Doc 44 unit MW.14c: the order under a `CONCENTRATE` can lapse too.** Once its leader
+    /// is gone the hull is not to go back to the attack that leader started: the record's
+    /// earlier order becomes a `HOLD`, under that order's own `HOLD FIRE`, with a sequence of
+    /// its own above the return's; it is done once; and the history is still valid.
+    #[test]
+    fn mw14c_the_order_under_a_concentrate_stands_down_to_a_hold() {
+        let roster = led_roster();
+        let slot = Slot::new(2).expect("a slot");
+        let mut orders = FieldOrders::new(&roster);
+        let mut book = OrderBook::restore(&orders.book, &roster).expect("a book");
+        let advance = deliver(
+            &roster,
+            &mut orders,
+            &mut book,
+            Directive::Objective(FieldPayload {
+                objective: FieldObjective::Advance { to: (4, 4) },
+                hold_fire: true,
+            }),
+            1,
+        );
+        let concentrate = deliver(&roster, &mut orders, &mut book, concentrate_on(70), 2);
+        let resume = orders
+            .concentration_of(slot, concentrate)
+            .expect("recorded")
+            .resume;
+        let stand = book.reserve_sequence(3).expect("reserved");
+        let record = orders.concentrating.get_mut(&slot).expect("recorded");
+        assert!(record.stand_down(stand));
+        assert!(!record.stand_down(stand + 1), "once");
+        assert_eq!(record.stand, Some(stand));
+        assert!(stand > resume);
+        let before = record.before.as_deref().expect("an order to go back to");
+        assert_eq!(
+            before.sequence, advance,
+            "the same order's place in the book"
+        );
+        assert_eq!(
+            before.directive,
+            Directive::Objective(FieldPayload {
+                objective: FieldObjective::Hold,
+                hold_fire: true,
+            })
+        );
+        orders.book = book.checkpoint();
+        orders.validate(&roster).expect("valid");
+        let text = serde_json::to_string(&orders).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<FieldOrders>(&text).expect("decode"),
+            orders
+        );
+        // Nothing to go back to: nothing to stand down.
+        let mut bare = Concentration {
+            sequence: 9,
+            resume: 10,
+            before: None,
+            stand: None,
+        };
+        assert!(!bare.stand_down(11) && bare.stand.is_none());
+    }
+
+    /// **Doc 44 unit MW.14c: an NPC leader's orders are kept, the last sixteen**, oldest
+    /// first.
+    #[test]
+    fn mw14c_an_npc_leaders_last_orders_are_kept() {
+        let roster = led_roster();
+        let mut orders = FieldOrders::new(&roster);
+        let mut book = OrderBook::restore(&orders.book, &roster).expect("a book");
+        let slot = Slot::new(2).expect("a slot");
+        for n in 0..(GIVEN_KEPT as u64 + 4) {
+            let directive = payload(FieldObjective::Advance {
+                to: (u16::try_from(n).expect("small"), 4),
+            });
+            let sequence = deliver(&roster, &mut orders, &mut book, directive.clone(), n + 1);
+            orders.note_given((sequence, slot), ObjId(11), &directive, n + 1);
+            orders.validate(&roster).expect("valid");
+        }
+        assert_eq!(orders.given.len(), GIVEN_KEPT);
+        assert_eq!(orders.given.first().map(|given| given.sequence), Some(5));
+        assert_eq!(
+            orders.given.last().map(|given| given.sequence),
+            Some(GIVEN_KEPT as u64 + 4)
+        );
+        // A history whose kept orders are out of order is refused.
+        orders.given.swap(0, 1);
+        assert!(orders.validate(&roster).is_err());
     }
 }

@@ -31,6 +31,11 @@
 //! every shot, and every burn but one that heaves her to (doc 35 §11 `B-4`: she never runs a
 //! picket under power; [`BurnRule`]).
 //!
+//! **A mind her holder sealed aboard** (doc 44 unit MW.13; Q-44-26: "helm and sensors
+//! first ... the fire channels wait for the mounts' redesign") sits in the same seat with one
+//! difference: it may lock ([`Seat::lock`]). Every shot it asks is dropped, as the house
+//! default's is, and its burns are held to the same rule.
+//!
 //! **The seam for return fire.** Q-44-38 lets such a mind answer a unit that has fired on
 //! it, and nothing else. That rule is one gate, built in the arena by doc 44 unit MW.7; the
 //! space half is [`FireRule`], which today has `Free` and `Never`. The follow-up adds the
@@ -109,8 +114,13 @@ impl BurnRule {
 /// them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Seat {
-    /// Whether it may lock and shoot.
+    /// Whether it may shoot.
     pub fire: FireRule,
+    /// **Whether it may lock** (doc 44 unit MW.13): a lock is its sensors' act. A seat that
+    /// may shoot may lock. A hull flown for an absent crew may not, unless the mind that
+    /// flies her is one her holder sealed aboard, whose seal carries the sensors and no
+    /// fire channel: her lock is then no half of a shot.
+    pub lock: bool,
     /// Which burns it may fly.
     pub burn: BurnRule,
     /// Whether a burn it asks may be flown into the reserve the hull needs to make a port.
@@ -126,6 +136,7 @@ impl Seat {
     /// A customs or patrol hull: free to fire, keeps its reserve, never runs dark.
     pub const PATROL: Seat = Seat {
         fire: FireRule::Free,
+        lock: true,
         burn: BurnRule::Free,
         into_reserve: false,
         quietest: EmconPosture::Standard,
@@ -135,6 +146,7 @@ impl Seat {
     /// A raider: free to fire, burns what it has, and runs dark when it falls silent.
     pub const RAIDER: Seat = Seat {
         fire: FireRule::Free,
+        lock: true,
         burn: BurnRule::Free,
         into_reserve: true,
         quietest: EmconPosture::Ghost,
@@ -147,6 +159,7 @@ impl Seat {
     /// otherwise.
     pub const ABSENT: Seat = Seat {
         fire: FireRule::Never,
+        lock: false,
         burn: BurnRule::Never,
         into_reserve: true,
         quietest: EmconPosture::Standard,
@@ -158,11 +171,99 @@ impl Seat {
     /// to lock gives it nothing to shoot.
     pub const DRONE: Seat = Seat {
         fire: FireRule::Free,
+        lock: true,
         burn: BurnRule::Free,
         into_reserve: true,
         quietest: EmconPosture::Standard,
         work: true,
     };
+}
+
+/// **The lock a sealed mind's rule program asks on this think** (doc 44 unit MW.13; the
+/// first space seal that runs a rule program). A rule program has three native actions
+/// (`crate::arena::conditions::Rule`): `Fire` and `HoldFire` are the fire channel's, which a
+/// ship's seal does not carry, so their rows bind inert; `Lock` is the sensors'. In a bubble
+/// a `Lock` row acts when:
+///
+/// - it is not inert (the seal carries the sensors);
+/// - its think terms, if it has any, were sampled true by this think (`sample`, for this
+///   program);
+/// - its selector is `NEAREST` and every native predicate on it is a range. A predicate a
+///   bubble has no fact for (odds, a band, an aspect, a scan) is never satisfied, as in the
+///   arena.
+///
+/// It picks the nearest ship the think's view held (`contacts`) that still flies and whose
+/// party the hull's party holds hostile, the lowest contact id on a tie. Rows are tried in
+/// program order and the first that picks one stands.
+#[must_use]
+pub fn program_lock(
+    program: &crate::arena::profile_rules::BoundProgram,
+    sample: Option<&crate::arena::profile_rules::RuleSample>,
+    bubble: &LocalSpaceBubble,
+    ship_id: &str,
+    contacts: &BTreeMap<ContactId, String>,
+) -> Option<ContactId> {
+    use crate::arena::conditions::{Comparison, LockSelector, Rule, RulePredicate};
+    use crate::arena::party::Relation;
+    let ship = bubble.ships.get(ship_id)?;
+    for (index, row) in program.rows.iter().enumerate() {
+        if row.inert {
+            continue;
+        }
+        let Rule::Lock {
+            selector: LockSelector::Nearest,
+            predicates,
+            ..
+        } = &row.program.rule
+        else {
+            continue;
+        };
+        let sampled = sample.is_some_and(|sample| {
+            sample.program == program.digest && sample.truth.get(index).copied().unwrap_or(false)
+        });
+        if !row.program.think.is_empty() && !sampled {
+            continue;
+        }
+        let mut best: Option<(u64, ContactId)> = None;
+        for (id, other_id) in contacts {
+            let Some(other) = bubble.ships.get(other_id) else {
+                continue;
+            };
+            if other.status != HullStatus::Operational
+                || bubble.party_relation(ship.party, other.party) != Relation::Hostile
+            {
+                continue;
+            }
+            let range_m = u64::try_from(isqrt_i128(
+                (0..3)
+                    .map(|axis| {
+                        let d = i128::from(other.pos_m[axis]) - i128::from(ship.pos_m[axis]);
+                        d * d
+                    })
+                    .sum(),
+            ))
+            .unwrap_or(u64::MAX);
+            let holds = predicates.iter().all(|predicate| match predicate {
+                RulePredicate::Range { comparison, metres } => {
+                    let metres = u64::from(*metres);
+                    match comparison {
+                        Comparison::Less => range_m < metres,
+                        Comparison::Greater => range_m > metres,
+                        Comparison::AtLeast => range_m >= metres,
+                        Comparison::Equal => range_m == metres,
+                    }
+                }
+                _ => false,
+            });
+            if holds && best.is_none_or(|(range, at)| (range_m, *id) < (range, at)) {
+                best = Some((range_m, *id));
+            }
+        }
+        if let Some((_, id)) = best {
+            return Some(id);
+        }
+    }
+    None
 }
 
 /// **What one think's intents came to.**
@@ -273,26 +374,24 @@ pub fn apply_intents(
                     );
                 }
             }
-            IntentKind::Lock { contact } if seat.fire == FireRule::Free => {
-                match contacts.get(contact) {
-                    Some(target) => {
-                        if bubble
-                            .ships
-                            .get(ship_id)
-                            .is_some_and(|ship| ship.locked_target_id.as_deref() != Some(target))
-                        {
-                            command(
-                                bubble,
-                                BubbleInputCommand::SetLockedTarget {
-                                    ship_id: ship_id.to_owned(),
-                                    target_id: Some(target.clone()),
-                                },
-                            );
-                        }
+            IntentKind::Lock { contact } if seat.lock => match contacts.get(contact) {
+                Some(target) => {
+                    if bubble
+                        .ships
+                        .get(ship_id)
+                        .is_some_and(|ship| ship.locked_target_id.as_deref() != Some(target))
+                    {
+                        command(
+                            bubble,
+                            BubbleInputCommand::SetLockedTarget {
+                                ship_id: ship_id.to_owned(),
+                                target_id: Some(target.clone()),
+                            },
+                        );
                     }
-                    None => applied.dropped += 1,
                 }
-            }
+                None => applied.dropped += 1,
+            },
             IntentKind::Heading { mdeg } => heading = Some(*mdeg),
             IntentKind::Speed { cms } => strength = Some(*cms),
             IntentKind::Goal(MotorGoal::Hold) => strength = Some(0),
@@ -548,6 +647,182 @@ mod tests {
         assert!(!applied.asked_burn);
         assert_eq!(applied.dropped, 1);
         assert_eq!(thrust(&bubble, "patrol"), [0, 0, 0]);
+    }
+
+    /// **Doc 44 unit MW.13 (Q-44-26): a mind sealed aboard has the helm and the sensors and
+    /// no fire channel.** In the absent seat with its lock let through, its `lock` lands and
+    /// its `fire` is dropped, with a mount to fire and a lock to fire it at; its burns are
+    /// held to the rule every source is held to.
+    #[test]
+    fn mw13_a_sealed_minds_seat_locks_and_never_shoots() {
+        let (mut bubble, mut tape, _) = field();
+        let contacts = BTreeMap::from([(ContactId(1), "patrol".to_owned())]);
+        if let Some(ship) = bubble.ships.get_mut("dray") {
+            ship.lasers
+                .push(super::super::weapons::LaserMount::standard_turret(
+                    "laser_1",
+                ));
+        }
+        let sealed = Seat {
+            lock: true,
+            burn: BurnRule::Toward([1_000, 0, 0]),
+            ..Seat::ABSENT
+        };
+        assert_eq!(sealed.fire, FireRule::Never);
+        let mut events = Vec::new();
+        let asks = [
+            IntentKind::Lock {
+                contact: ContactId(1),
+            },
+            IntentKind::Fire {
+                weapon: SmolStr::new_static("laser_1"),
+                slot: Some(1),
+            },
+            IntentKind::Heading { mdeg: 180_000 },
+            IntentKind::Speed { cms: 5 },
+        ];
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            sealed,
+            &contacts,
+            &asks,
+            &mut events,
+        );
+        let dray = bubble.ships.get("dray").expect("the dray");
+        assert_eq!(
+            dray.locked_target_id.as_deref(),
+            Some("patrol"),
+            "her sensors are the mind's: the lock lands"
+        );
+        assert_eq!(
+            applied.dropped, 2,
+            "the shot is dropped, and the burn that would add to her drift"
+        );
+        assert!(!applied.fired_heavy);
+        assert!(events.is_empty(), "nothing was fired: {events:?}");
+        assert!(
+            !tape.entries.iter().any(|entry| matches!(
+                entry.command,
+                BubbleInputCommand::FireOffensiveLasers { .. }
+                    | BubbleInputCommand::FireRailgun { .. }
+                    | BubbleInputCommand::FireTorpedoSalvo { .. }
+            )),
+            "no fire command reached the tape"
+        );
+        assert_eq!(dray.thrust_mmps2, [0, 0, 0]);
+        // The house default in the same seat, with the same asks: no lock either.
+        let (mut bubble, mut tape, _) = field();
+        let _ = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            Seat::ABSENT,
+            &contacts,
+            &asks,
+            &mut events,
+        );
+        assert_eq!(
+            bubble
+                .ships
+                .get("dray")
+                .and_then(|ship| ship.locked_target_id.clone()),
+            None
+        );
+    }
+
+    /// **Doc 44 unit MW.13: what a bound rule program does in a bubble.** A `LOCK NEAREST`
+    /// row picks the nearest hostile the view held; a fire row binds inert on a seal with no
+    /// fire channel; a range predicate is weighed; a predicate a bubble has no fact for is
+    /// never satisfied; a row with a think term acts only on a think that sampled it true.
+    #[test]
+    fn mw13_a_lock_row_of_a_rule_program_picks_the_nearest_hostile() {
+        use crate::arena::conditions::{Comparison, LockSelector, Rule, RulePredicate};
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::profile_rules::{BoundProgram, RuleSample};
+        use crate::arena::schema::{AuthoredRule, ThinkPredicate};
+        use crate::arena::state::Channel;
+
+        let (mut bubble, _, _) = field();
+        bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, Some(Mark::Hostile));
+        let contacts = BTreeMap::from([(ContactId(1), "patrol".to_owned())]);
+        let class = ClassTable::STOCK.row(CoreClass::II);
+        let bind = |rules: Vec<AuthoredRule>| {
+            BoundProgram::bind(&rules, &[], &[Channel::Helm, Channel::Sensors], &class, 100)
+                .expect("the program binds")
+        };
+        let lock = |predicates: Vec<RulePredicate>, think: Vec<ThinkPredicate>| AuthoredRule {
+            rule: Rule::lock_rule(LockSelector::Nearest, None, predicates),
+            think,
+        };
+        let asked = |program: &BoundProgram, sample: Option<&RuleSample>| {
+            program_lock(program, sample, &bubble, "dray", &contacts)
+        };
+
+        assert_eq!(asked(&bind(Vec::new()), None), None, "no row, no lock");
+        assert_eq!(
+            asked(&bind(vec![lock(Vec::new(), Vec::new())]), None),
+            Some(ContactId(1)),
+            "LOCK NEAREST picks the hostile"
+        );
+        // The corvette is 50 km off.
+        let near = RulePredicate::Range {
+            comparison: Comparison::Less,
+            metres: 10_000,
+        };
+        let far = RulePredicate::Range {
+            comparison: Comparison::Greater,
+            metres: 10_000,
+        };
+        assert_eq!(asked(&bind(vec![lock(vec![near], Vec::new())]), None), None);
+        assert_eq!(
+            asked(&bind(vec![lock(vec![far], Vec::new())]), None),
+            Some(ContactId(1))
+        );
+        let unknowable = RulePredicate::Aspect { mask: 1 };
+        assert_eq!(
+            asked(&bind(vec![lock(vec![unknowable], Vec::new())]), None),
+            None,
+            "a bubble has no fact for an aspect"
+        );
+        // A fire row is inert on a seal with no fire channel, and is no lock.
+        let hold = AuthoredRule {
+            rule: Rule::hold_rule(SmolStr::new_static("cannon"), Vec::new()),
+            think: Vec::new(),
+        };
+        let program = bind(vec![hold]);
+        assert!(program.rows.iter().all(|row| row.inert));
+        assert_eq!(asked(&program, None), None);
+        // A think term: unsampled it holds the row; sampled true it lets it act.
+        let program = bind(vec![lock(
+            Vec::new(),
+            vec![ThinkPredicate::Hostiles { at_least: 1 }],
+        )]);
+        assert_eq!(asked(&program, None), None);
+        let sample = |truth: bool| RuleSample {
+            program: program.digest,
+            generation: 0,
+            sampled_ms: 0,
+            lands_ms: 0,
+            expires_ms: 1_000,
+            truth: vec![truth],
+        };
+        assert_eq!(asked(&program, Some(&sample(false))), None);
+        assert_eq!(asked(&program, Some(&sample(true))), Some(ContactId(1)));
+        // A ship that is not held hostile is not locked by a rule.
+        let mut neutral = bubble.clone();
+        neutral.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, None);
+        assert_eq!(
+            program_lock(
+                &bind(vec![lock(Vec::new(), Vec::new())]),
+                None,
+                &neutral,
+                "dray",
+                &contacts
+            ),
+            None
+        );
     }
 
     #[test]

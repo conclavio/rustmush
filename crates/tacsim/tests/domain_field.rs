@@ -111,6 +111,8 @@ mod field_gc6;
 mod field_host;
 #[path = "domain_field/field_mw14a.rs"]
 mod field_mw14a;
+#[path = "domain_field/field_mw14c.rs"]
+mod field_mw14c;
 #[path = "domain_field/field_mw15.rs"]
 mod field_mw15;
 #[path = "domain_field/field_mw7.rs"]
@@ -133,6 +135,8 @@ mod m8_end_user;
 mod m8_leaks;
 #[path = "domain_field/m8_world.rs"]
 mod m8_world;
+#[path = "domain_field/mw13_ship_mind.rs"]
+mod mw13_ship_mind;
 #[path = "domain_field/one_picture.rs"]
 mod one_picture;
 #[path = "domain_field/review_36a.rs"]

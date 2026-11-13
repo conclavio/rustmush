@@ -627,9 +627,10 @@ impl TacsimRuleset {
     }
 
     /// **Register the whole fitted catalog on a test world** (doc 17h cut M8e E6a, the
-    /// hardware-configured excursion roster): the fielded units, the line roots and the rig
-    /// roots ([`definitions::core_replacement::SurfaceRigCores`]' catalog, the one governed
-    /// hardware registers), so staff may bind a rig to a cored root; the caller composes the
+    /// hardware-configured excursion roster): the fielded units, the line roots, the rig
+    /// roots and (doc 44 unit MW.13) the ship roots
+    /// ([`definitions::core_replacement::fitted_catalog`], the one governed hardware
+    /// registers), so staff may bind a rig or a ship to a cored root; the caller composes the
     /// tactics module over the same catalog. No hardware deployment, refit or recipe is composed.
     ///
     /// # Errors
@@ -747,10 +748,8 @@ impl TacsimRuleset {
                 }
                 // Doc 17h cut M8e E6a: the rig family over the line family, as
                 // `hardware::composition`'s `families` builds them.
-                let line = definitions::core_replacement::GovernedLineCores::build(fielded)
-                    .map_err(|e| ModError::msg(e.to_string()))?;
-                definitions::core_replacement::SurfaceRigCores::build(line.catalog().clone())
-                    .map(|rig| rig.catalog().clone())
+                // Doc 44 unit MW.13: and the ship family over the rig family.
+                definitions::core_replacement::fitted_catalog(fielded)
                     .map_err(|e| ModError::msg(e.to_string()))
             }
         }

@@ -152,6 +152,7 @@ impl Fixture {
             }],
             npc_commander: None,
             financial_terms: None,
+            work_point: None,
         };
         let draft = Draft {
             id: PlanId(1),

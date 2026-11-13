@@ -888,3 +888,226 @@ fn mw11_a_replay_of_the_tape_reproduces_the_bubble_and_runs_no_think() {
         "the tape alone reproduces the bubble"
     );
 }
+
+/// The link-loss record of a hull whose backup mind has her helm.
+fn mind_has_helm(hull: ObjId) -> SpaceLinkdeadState {
+    SpaceLinkdeadState {
+        hull,
+        grace_started_wall_s: 1,
+        grace_started_ic_s: 1,
+        pdc_held: true,
+        grace_expired: true,
+        queued_return_port: None,
+        mind_memory: Vec::new(),
+        mind_last_trace: None,
+        mind_contacts: super::super::view::ContactBook::default(),
+        mind_think_seq: 0,
+        backup_act: super::super::backup::BackupAct::Standby,
+        return_retry_at_wall_s: 0,
+        next_think_at_wall_s: 0,
+    }
+}
+
+/// **A script a player might seal aboard**: it heaves to as hard as her drive gives when it
+/// is told to, and stands otherwise. It asks no lock, and at every think it asks a shot of
+/// every mount it reads, which no seat of a sealed mind lets through. Its trace words are
+/// its own, so a record says whether it or the house default answered.
+const KEEPER: &str = r#"fn think(v, c) {
+    stock::rules();
+    let s = space(v);
+    if s == () { return; }
+    for w in v.weapons { fire(w.id, 1); }
+    if s.stop == "hailed" && s.stop_by != () {
+        let by = space_contact(v, s.stop_by);
+        if by != () {
+            let dx = by.vx_cms - s.vx_cms;
+            let dy = by.vy_cms - s.vy_cms;
+            let dz = by.vz_cms - s.vz_cms;
+            if isqrt(dx * dx + dy * dy + dz * dz) > 0 {
+                helm(course_of(dx, dy, dz));
+                speed(max(s.accel_cms2, 1));
+                trace("KEEPER_HEAVE_TO");
+                return;
+            }
+        }
+    }
+    hold();
+    trace("KEEPER_STAND");
+}"#;
+
+/// **Doc 44 unit MW.13 (Q-44-26; second review, row 17): a sealed mind's rule program is
+/// bound, and a mind whose rule program differs behaves differently.**
+///
+/// Two hulls cross an interdictor with nobody at their helms. Each carries a mind its holder
+/// sealed aboard: the same script, sealed through the one seal entry over a Class II core,
+/// the runner's with a `LOCK NEAREST` row in its rule program and the escort's with none.
+/// Each think runs on its seal's own class row and program, on the one host. The runner
+/// comes to hold the interdictor locked; the escort holds no lock; neither fires. Flown by
+/// the house default the same two hulls lock nothing, and their records carry its words.
+/// (The runner carries the rule because the escort, nearly at rest, is stood down within a
+/// step or two, and a hull that is stood down holds nobody hostile.)
+///
+/// Before the unit a space think was handed an empty program whatever its seal held, and no
+/// seat let a hull flown for an absent crew lock.
+#[test]
+fn mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs() {
+    use crate::arena::conditions::{LockSelector, Rule};
+    use crate::arena::core::{ClassTable, CoreClass};
+    use crate::arena::schema::AuthoredRule;
+    use crate::space::thinks::{SealedMind, test_support::sealed_draft};
+
+    let tw = TestWorld::new();
+    let never = |_: u32| 0_u32;
+    let start = || {
+        let (mut active, mut linkdead) = interdiction_encounter();
+        // Each hull carries a mount, so a shot a mind asked would have something to fire.
+        for hull in [ESCORT, RUNNER] {
+            if let Some(ship) = active.bubble.ships.get_mut(&format!("hull.{}", hull.0)) {
+                ship.lasers
+                    .push(super::super::weapons::LaserMount::standard_turret(
+                        "laser_1",
+                    ));
+            }
+        }
+        active.tape = BubbleInputTape::new(&active.bubble);
+        active.snapshots = vec![active.bubble.snapshot()];
+        linkdead.insert(ESCORT, mind_has_helm(ESCORT));
+        linkdead.insert(RUNNER, mind_has_helm(RUNNER));
+        Run {
+            active,
+            linkdead,
+            log: Vec::new(),
+        }
+    };
+    let fly = |run: &Run| {
+        drive(
+            run,
+            &ThinkHost::on_pool(MindPool::new(2)),
+            tw.world(),
+            10,
+            100,
+            WhileHeld::NeverHeld,
+            None,
+            &never,
+        )
+    };
+    let lock_of = |run: &Run, hull: ObjId| {
+        run.active
+            .bubble
+            .ships
+            .get(&format!("hull.{}", hull.0))
+            .and_then(|ship| ship.locked_target_id.clone())
+    };
+    let trace_of = |run: &Run, hull: ObjId| {
+        run.linkdead
+            .get(&hull)
+            .and_then(|state| state.mind_last_trace.clone())
+            .unwrap_or_default()
+    };
+    let fired = |run: &Run| {
+        run.log.iter().any(|entry| match &entry.command {
+            BubbleInputCommand::FireOffensiveLasers { shooter_id, .. }
+            | BubbleInputCommand::FireRailgun { shooter_id, .. }
+            | BubbleInputCommand::FireTorpedoSalvo { shooter_id, .. } => {
+                shooter_id.starts_with("hull.")
+            }
+            _ => false,
+        })
+    };
+
+    // The house default: no lock, and its own words.
+    let house = fly(&start());
+    assert_eq!(lock_of(&house, ESCORT), None);
+    assert_eq!(lock_of(&house, RUNNER), None);
+    assert!(trace_of(&house, ESCORT).starts_with("BACKUP_"));
+    assert!(trace_of(&house, RUNNER).starts_with("BACKUP_"));
+
+    // The same hulls, each with the same script sealed aboard; only the rule programs differ.
+    let ruled = sealed_draft(
+        RUNNER,
+        vec![AuthoredRule {
+            rule: Rule::lock_rule(LockSelector::Nearest, None, Vec::new()),
+            think: Vec::new(),
+        }],
+        KEEPER,
+    );
+    let bare = sealed_draft(ESCORT, Vec::new(), KEEPER);
+    assert_eq!(ruled.source_sha256, bare.source_sha256, "one script");
+    assert_eq!(
+        (ruled.class, ruled.core_class, ruled.governed),
+        (CoreClass::II, CoreClass::II, false),
+        "the class is the hull's core's, under the mind's rating"
+    );
+    assert!(
+        !ruled.channels.contains(&crate::arena::state::Channel::Fire),
+        "a ship's seal carries the helm and the sensors"
+    );
+    let ruled = Arc::new(SealedMind::of(&ruled, KEEPER, &ClassTable::STOCK).expect("it thinks"));
+    let bare = Arc::new(SealedMind::of(&bare, KEEPER, &ClassTable::STOCK).expect("it thinks"));
+    assert_eq!(ruled.program().rows.len(), 1, "the seal's own program");
+    assert!(!ruled.program().rows[0].inert, "its lock row is live");
+    assert!(bare.program().rows.is_empty());
+    assert_ne!(ruled.program().digest, bare.program().digest);
+    assert_eq!(
+        *ruled.profile(),
+        ClassTable::STOCK.row(CoreClass::II),
+        "its thinks are held to its class row, not the doctrine's Class I"
+    );
+    let _aboard = crate::port::ship_mind::test_support::seal_aboard(vec![
+        (RUNNER, Arc::clone(&ruled)),
+        (ESCORT, Arc::clone(&bare)),
+    ]);
+    let sealed = fly(&start());
+    assert!(
+        trace_of(&sealed, ESCORT).starts_with("KEEPER_")
+            && trace_of(&sealed, RUNNER).starts_with("KEEPER_"),
+        "the sealed script answered for both: {:?}, {:?}",
+        trace_of(&sealed, ESCORT),
+        trace_of(&sealed, RUNNER)
+    );
+    assert_eq!(
+        lock_of(&sealed, RUNNER).as_deref(),
+        Some(sealed.active.interdictor_ship_id.as_str()),
+        "the rule program's LOCK NEAREST row locked the interdictor"
+    );
+    assert_eq!(
+        lock_of(&sealed, ESCORT),
+        None,
+        "the same script with no rule program locks nothing"
+    );
+    // A row with a think term acts only when the think sampled that term for this program:
+    // the program the think was handed is the seal's own. One hostile is in the runner's
+    // view, so `HOSTILES >= 1` holds and `HOSTILES >= 9` does not.
+    drop(_aboard);
+    let gated = |at_least: u8| {
+        let seal = sealed_draft(
+            RUNNER,
+            vec![AuthoredRule {
+                rule: Rule::lock_rule(LockSelector::Nearest, None, Vec::new()),
+                think: vec![crate::arena::schema::ThinkPredicate::Hostiles { at_least }],
+            }],
+            KEEPER,
+        );
+        let mind = Arc::new(SealedMind::of(&seal, KEEPER, &ClassTable::STOCK).expect("it thinks"));
+        let _aboard = crate::port::ship_mind::test_support::seal_aboard(vec![
+            (RUNNER, mind),
+            (ESCORT, Arc::clone(&bare)),
+        ]);
+        fly(&start())
+    };
+    let met = gated(1);
+    assert_eq!(
+        lock_of(&met, RUNNER).as_deref(),
+        Some(met.active.interdictor_ship_id.as_str()),
+        "a think term the think sampled true lets the row lock"
+    );
+    assert_eq!(
+        lock_of(&gated(9), RUNNER),
+        None,
+        "and one it sampled false does not"
+    );
+    assert!(
+        !fired(&sealed) && !fired(&house),
+        "neither hull fired, though the sealed script asked a shot at every think and the          runner held a lock"
+    );
+}

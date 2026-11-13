@@ -860,6 +860,31 @@ pub const LEAVE_HINT: &str = "To lift without them, add leave=";
 /// The party letters a field draws (`tacsim::arena::party::LETTERS`).
 pub const PARTY_LETTERS: &str = "ABCDEFGHJKLMNPQRSTUVWYZ";
 
+// Doc 44 unit MW.14c: the sentences the commander's gaps and the focus-fire order added. No
+// lane reads them yet; each is held to the game's own text below, so a lane that does starts
+// from a needle that matches.
+/// `tacsim::detachment::sortie::NPC_ORDERS_HEAD`'s head: `+sortie/orders` over the orders a
+/// roster's NPC leader gave.
+pub const NPC_ORDERS_HEAD: &str = "Orders your NPC leader gave";
+/// `tacsim::detachment::sortie::NPC_ORDER`'s middle, between the leader's name and the slot.
+pub const NPC_ORDER_TO: &str = " to slot ";
+/// `tacsim::detachment::sortie::CONCENTRATE_USAGE`'s middle.
+pub const CONCENTRATE_USAGE: &str = "CONCENTRATE <contact>";
+/// `tacsim::detachment::sortie::CONCENTRATE_UNIDENTIFIED`'s head.
+pub const CONCENTRATE_UNIDENTIFIED: &str = "CONCENTRATE needs a contact you have identified";
+/// `tacsim::detachment::sortie::CONCENTRATE_NO_CONTACT`'s head.
+pub const CONCENTRATE_NO_CONTACT: &str = "No such contact in your own scope.";
+/// `tacsim::detachment::sortie::CONCENTRATE_NO_EXPIRY`'s head.
+pub const CONCENTRATE_NO_EXPIRY: &str = "CONCENTRATE takes no EXPIRES";
+/// `tacsim::detachment::planning::commands::WORK_POINT_NAMED`'s head, before the cell.
+pub const WORK_POINT_NAMED: &str = "Work point: cell ";
+/// `tacsim::detachment::planning::commands::WORK_POINT_NONE`'s head.
+pub const WORK_POINT_NONE: &str = "Work point: none named.";
+/// `tacsim::detachment::planning::commands::WORK_POINT_USAGE`'s head.
+pub const WORK_POINT_USAGE: &str = "Use +sortie/workpoint ";
+/// `tacsim::detachment::planning::commands::WORK_POINT_OFF`'s head.
+pub const WORK_POINT_OFF: &str = "A work point is a field cell x,y";
+
 /// **The field that opened on `site`** in `window` (normalised): its ordinal, from
 /// `Field {n} is open on {site}: …`.
 pub fn field_opened(window: &str, site: &str) -> Option<u32> {
@@ -1804,6 +1829,46 @@ mod tests {
         assert!(back.starts_with(RIG_BACK), "{back}");
         assert!(!has(&normalise(&back), BACK_IN_BAY), "{back}");
         assert!(cycle.contains(RUN_DONE_HEAD), "{cycle}");
+    }
+
+    /// **Doc 44 unit MW.14c's sentences read as tacsim prints them**: an NPC leader's orders
+    /// in `+sortie/orders`, the focus-fire order's refusals, and a plan's work point. An NPC
+    /// leader's line is never mistaken for one of the reader's own sent orders.
+    #[test]
+    fn mw14c_lines_read_the_games_own_sentences() {
+        use tacsim::detachment::planning::commands as planning;
+        use tacsim::detachment::sortie;
+        assert!(sortie::NPC_ORDERS_HEAD.starts_with(NPC_ORDERS_HEAD));
+        let given = sortie::NPC_ORDER
+            .replace("{leader}", "Sana Okonkwo")
+            .replace("{slot}", "2")
+            .replace("{sequence}", "7")
+            .replace("{order}", "CONCENTRATE BK")
+            .replace("{status}", "WILCO received");
+        assert_eq!(
+            given,
+            "Sana Okonkwo to slot 2, order 7: CONCENTRATE BK; WILCO received."
+        );
+        assert!(has(&normalise(&given), NPC_ORDER_TO), "{given}");
+        let window = normalise(&format!("{} {given}", sortie::NPC_ORDERS_HEAD));
+        assert!(
+            order_replies(&window, 2).is_empty(),
+            "an NPC leader's order is not one the reader sent: {window}"
+        );
+        assert!(sortie::CONCENTRATE_USAGE.contains(CONCENTRATE_USAGE));
+        assert!(sortie::CONCENTRATE_UNIDENTIFIED.starts_with(CONCENTRATE_UNIDENTIFIED));
+        assert!(sortie::CONCENTRATE_NO_CONTACT.starts_with(CONCENTRATE_NO_CONTACT));
+        assert!(sortie::CONCENTRATE_NO_EXPIRY.starts_with(CONCENTRATE_NO_EXPIRY));
+        let named = planning::WORK_POINT_NAMED
+            .replace("{x}", "140")
+            .replace("{y}", "118");
+        assert!(
+            named.starts_with(&format!("{WORK_POINT_NAMED}140,118.")),
+            "{named}"
+        );
+        assert!(planning::WORK_POINT_NONE.starts_with(WORK_POINT_NONE));
+        assert!(planning::WORK_POINT_USAGE.starts_with(WORK_POINT_USAGE));
+        assert!(planning::WORK_POINT_OFF.starts_with(WORK_POINT_OFF));
     }
 
     /// **The tow's lines read as tacsim prints them** (doc 36 cut GC.4).

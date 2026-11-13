@@ -9,8 +9,9 @@
 //! A Rhai doctrine like the picket's, thought once a space tick while there is something to
 //! decide. Which source flies, first that resolves and thinks without a fault:
 //!
-//! 1. the mind sealed on the hull ([`super::picket::space_mind_seal_of`]), when the store
-//!    holds its source;
+//! 1. the mind her holder sealed aboard (doc 44 unit MW.13; `crate::port::ship_mind`), while
+//!    its seal still fits her core and her holder: a filed mind under the Roll's claim, on
+//!    its own class row and with its own rule program;
 //! 2. the house default the store names (`tacsim:doctrine:linkdead_return`, a pointer to a
 //!    `tacsim:mindsrc:` document: [`house_doctrine_documents`]);
 //! 3. the house default compiled in (`content/minds/linkdead_return.rhai`).
@@ -27,7 +28,14 @@
 //! | `speed(n)`, n above nought | the return passage, by the ruled order | while a stop holds her, a burn of that strength along its `helm(word)` if it takes her drift against the stopping ship off; any other burn is dropped and she coasts |
 //! | `hold()` | she holds where she is | her drive is cut; hove to under a customs hail, she is submitted to inspection |
 //! | `emcon(on)` | nothing | her emission posture, COMBAT or STANDARD |
-//! | `lock`, `fire`, `arm` | dropped | dropped |
+//! | `lock` | dropped | dropped for a house default; her lock, for a mind sealed aboard |
+//! | `fire`, `arm` | dropped | dropped |
+//!
+//! A mind sealed aboard sits in the same seat as the house default, with one difference
+//! (doc 44 unit MW.13; Q-44-26, "helm and sensors"): its sensors' act, a lock, is let
+//! through, by its own `lock` intent or by a `LOCK NEAREST` row of its rule program
+//! ([`super::applier::program_lock`]). It has no fire channel, so a lock of its is no half
+//! of a shot. Its burns are held to the rule every source is held to.
 //!
 //! The return is `execute_linkdead_return_journey` (`commands.rs`): the filed port, then
 //! every open port nearest first, each through the planner with its tank and locker checks and
@@ -49,14 +57,14 @@ use smol_str::SmolStr;
 use super::applier::{BurnRule, Seat};
 use super::bubble::HullStatus;
 use super::picket::{CARRIER_PARTY, HEAVE_TO_REL_VEL_MMPS};
-use super::thinks::{Answer, Ask, Due, Owed, Owner, ThinkHost, Thinker};
+use super::thinks::{Answer, Ask, Due, Owed, Owner, Source, ThinkHost, Thinker};
 use super::tick::{ActiveInterdictionBubble, SpaceBubbleBook, SpaceLinkdeadState};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{MindView, ThinkResult};
 use crate::arena::perception::{DriveOutcome, Receiver as FrameReceiver};
 use crate::arena::state::{Designator, MatchMode, Power};
 use crate::arena::step::FrameMotor;
-use crate::minds::content::{LINKDEAD_RETURN_ROLE, linkdead_return_digest, source_lookup};
+use crate::minds::content::{LINKDEAD_RETURN_ROLE, linkdead_return_digest};
 use crate::store::TacsimStore;
 
 /// Real seconds the seat waits, after every open port's passage was refused, before it asks
@@ -128,22 +136,28 @@ pub fn house_doctrine_documents(role: &str, source: &str) -> [(SmolStr, serde_js
     ]
 }
 
-/// **The sources the seat tries for `hull`, first choice first** (doc 35 §11 `B-3`): her own
-/// sealed mind where the store holds its source, the store's house default, and the compiled
-/// house default. One think is collected on each ([`super::thinks::Ask::jobs`]) and the first
-/// that answers without a fault is hers; until doc 44 unit MW.11 they were tried one after
-/// another on the world thread.
-fn sources(w: &World, hull: ObjId) -> Vec<[u8; 32]> {
+/// **The sources the seat tries for `hull`, first choice first** (doc 35 §11 `B-3`): the
+/// mind her holder sealed aboard, the store's house default, and the compiled house default.
+/// One think is collected on each ([`super::thinks::Ask::jobs`]) and the first that answers
+/// without a fault is hers; until doc 44 unit MW.11 they were tried one after another on the
+/// world thread.
+///
+/// **The sealed mind is the Roll's claim** (doc 44 unit MW.13): `crate::port::ship_mind`'s
+/// reader answers it only while the seal still fits the hull's core and its dispatcher still
+/// has authority over the hull. Until that unit this read the hull's `tacsim:mind_seal`
+/// attribute, which only a cast hull or a drone ever carried, and which a salvaged hull kept;
+/// the seat no longer reads it.
+fn sources(w: &World, hull: ObjId) -> Vec<Source> {
     let store = w.module_state::<TacsimStore>();
-    let sealed = super::picket::space_mind_seal_of(w, hull)
-        .map(|seal| seal.source_sha256)
-        .filter(|digest| source_lookup(store, digest).is_some());
     let house = store.and_then(|store| store.house_doctrine(LINKDEAD_RETURN_ROLE));
     let compiled = linkdead_return_digest().0;
-    let mut tried: Vec<[u8; 32]> = Vec::new();
-    for digest in [sealed, house, Some(compiled)].into_iter().flatten() {
-        if !tried.contains(&digest) {
-            tried.push(digest);
+    let mut tried: Vec<Source> = Vec::new();
+    if let Some(mind) = crate::port::ship_mind::thinker(w, hull) {
+        tried.push(Source::Sealed(mind));
+    }
+    for digest in [house, Some(compiled)].into_iter().flatten() {
+        if !tried.iter().any(|source| source.digest() == digest) {
+            tried.push(Source::Doctrine(digest));
         }
     }
     tried
@@ -382,25 +396,21 @@ fn collect_adrift(ctx: &Ctx<'_>, host: &ThinkHost, state: &SpaceLinkdeadState) {
         crate::posture::record::of(ctx.w, hull),
     ));
     let store = ctx.w.module_state::<TacsimStore>();
-    let jobs: Vec<_> = sources(ctx.w, hull)
-        .into_iter()
-        .filter_map(|digest| {
-            host.job(
-                store,
-                hull,
-                digest,
-                state.mind_think_seq,
-                &view,
-                &state.mind_memory,
-            )
-        })
-        .collect();
+    let (jobs, sealed) = host.jobs_on(
+        store,
+        hull,
+        &sources(ctx.w, hull),
+        state.mind_think_seq,
+        &view,
+        &state.mind_memory,
+    );
     let ask = Ask {
         who: Thinker::Backup,
         unit: hull,
         think_seq: state.mind_think_seq,
         contacts: std::collections::BTreeMap::new(),
         jobs,
+        sealed,
     };
     let _ = host.submit(Owner::Adrift(hull), adrift_mark(state), vec![ask]);
 }
@@ -564,7 +574,7 @@ pub(crate) fn collect_in_bubble(
     situation
         .postures
         .insert(ship_id.to_owned(), crate::posture::record::of(w, hull));
-    super::picket::collect_bubble_think(
+    super::picket::collect_bubble_think_on(
         host,
         w.module_state::<TacsimStore>(),
         &active.bubble,
@@ -609,7 +619,23 @@ pub(crate) fn land_in_bubble(
         );
         return flown;
     };
-    let thought = read(result, state);
+    // Doc 44 unit MW.13: a mind sealed aboard brings its rule program. A `LOCK NEAREST` row
+    // of it that holds asks a lock ahead of the think's own intents, so a `lock` the script
+    // asks this think is the one that stands.
+    let sealed = answer.sealed.as_ref();
+    let rule_lock = sealed.and_then(|mind| {
+        super::applier::program_lock(
+            mind.program(),
+            result.rule_sample.as_ref(),
+            &active.bubble,
+            ship_id,
+            &answer.contacts,
+        )
+    });
+    let mut thought = read(result, state);
+    if let Some(contact) = rule_lock {
+        thought.intents.insert(0, IntentKind::Lock { contact });
+    }
     let situation = active.situation(dt_wall_ms);
     let stop = situation.stop_of(ship_id);
     let customs_holds = active.picket.is_some() && stop.holds();
@@ -636,6 +662,8 @@ pub(crate) fn land_in_bubble(
         ship_id,
         Seat {
             burn,
+            // Doc 44 unit MW.13 (Q-44-26): her own sealed mind has her sensors.
+            lock: sealed.is_some(),
             ..Seat::ABSENT
         },
         &answer.contacts,
