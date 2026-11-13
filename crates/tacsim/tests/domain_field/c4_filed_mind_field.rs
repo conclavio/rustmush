@@ -14,7 +14,7 @@
 //! in the bay and launches it with `mind=filed:<licence>`. MW.22 admits the filed mind on the
 //! leased hull by its lease. The two other parties are the field stories' usual stand-ins: a
 //! fixture hull each, a second and a third captain seated in them by staff (CF.2's `armed` and
-//! `seat`), and the raider's captain types every shot.
+//! `seat`), and the raider's captain types their own shot: one round (`RAID_ROUNDS`).
 //!
 //! What is not play's: staff top the pilot's wallet up for the filing fee and stand the escort
 //! at its cell on the ground (the combined world carries no geology key, so no rig drives in
@@ -355,6 +355,33 @@ fn last_cell(lines: &[LedgerEvent], unit: ObjId) -> Option<(i64, i64)> {
     })
 }
 
+/// **What the black box says `unit` lost**: each section destroyed with what followed from it,
+/// and whether the unit was disabled or destroyed. It is the first thing to ask of a unit
+/// that does not come home.
+fn losses(lines: &[LedgerEvent], unit: ObjId) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| match &line.kind {
+            EventKind::SectionDestroyed {
+                unit: of,
+                section,
+                consequences,
+                ..
+            } if *of == unit => Some(format!(
+                "{} ms: {section} destroyed {consequences:?}",
+                line.t_ms
+            )),
+            EventKind::UnitDisabled { unit: of } if *of == unit => {
+                Some(format!("{} ms: disabled", line.t_ms))
+            }
+            EventKind::UnitDestroyed { unit: of, .. } if *of == unit => {
+                Some(format!("{} ms: destroyed", line.t_ms))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether the arena's registry holds a seat for `who`.
 fn bound(rig: &crate::driving_rig::Rig, who: ObjId) -> bool {
     rig.tw
@@ -363,19 +390,56 @@ fn bound(rig: &crate::driving_rig::Rig, who: ObjId) -> bool {
         .is_some_and(|registry| registry.seat_of_pilot(who).is_some())
 }
 
-/// **The raider's captain fires on the escort for `secs` seconds** (the story's step 5): a
-/// lock kept on the escort, the contact on their own frame nearest where it stands, and a shot
-/// a wall second. What came of it is read from the black box at the story's end
-/// ([`answered_in_order`]): the box reaches the host in batches, so nothing here waits on it.
+/// **The rounds the raider's captain puts on the escort** (the story's step 5): one.
+///
+/// One arrival is all the absent player's rule asks before the unit may answer, and a round
+/// more adds nothing the story reads. It can take away step 6. The raider stands eight cells
+/// behind the escort, so its rounds land on the rear band: the hull's rear plate (150) with
+/// the hull (200) or the engine (120) behind it, or the turret's (140 over 150). A 105 mm
+/// round does 120. One finishes no section, on any band. Three can: 150 and 200 are under
+/// 360, so three on the hull wreck it, and the engine goes the same way with the drive. A
+/// wreck thinks nothing and a hull with no drive goes nowhere, and neither is let out at a
+/// ramp (`WithdrawRefusal::NotUnderOwnPower`), so step 6 then waits for a unit that cannot
+/// come.
+///
+/// Until this bound the raid was fifteen wall seconds of `FIRE` against a six-second cycle:
+/// two rounds or three by how the lock and the cycle fell against the wall clock, and with
+/// three the dice decided whether the unit under test still stood.
+const RAID_ROUNDS: u32 = 1;
+
+/// **The raider's captain puts [`RAID_ROUNDS`] on the escort** (the story's step 5): a lock
+/// kept on the escort, the contact on their own frame nearest where it stands, and `FIRE`
+/// typed a wall second apart until their own cockpit shows the round gone from the gun. The
+/// bound is counted in rounds and read from the captain's frame, never in wall seconds: the
+/// arena's clock, not the story's, says when a gun has cycled. What came of it is read from
+/// the black box at the story's end ([`answered_in_order`]): the box reaches the host in
+/// batches, so nothing here waits on it.
 async fn raided(
     rig: &mut crate::driving_rig::Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
     (raider, stranger): (ObjId, ObjId),
-    secs: u32,
 ) {
     let gun = weapon_of(rig, raider);
-    for _ in 0..secs {
+    // The rounds gone from the gun, on the captain's own frame.
+    let spent = |rig: &crate::driving_rig::Rig| {
+        frame(rig, stranger)
+            .and_then(|frame| {
+                frame
+                    .weapons
+                    .iter()
+                    .find(|weapon| weapon.id.as_str() == gun)
+                    .map(|weapon| weapon.rounds_max.saturating_sub(weapon.rounds))
+            })
+            .unwrap_or(0)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut told = String::new();
+    while spent(rig) < RAID_ROUNDS {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the raider's captain put a round on the escort: last told {told:?}"
+        );
         let escort = frame(rig, stranger).and_then(|frame| {
             let lock = frame.lock;
             frame
@@ -394,10 +458,9 @@ async fn raided(
         {
             let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("LOCK {designator}"));
         }
-        let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("FIRE {gun}"));
-        let _ = until_composed(rig, rx, lines, 1, |_, _| false).await;
+        told = crate::driving_rig::run(&mut rig.tw, stranger, &format!("FIRE {gun}"));
+        let _ = until_composed(rig, rx, lines, 1, |rig, _| spent(rig) >= RAID_ROUNDS).await;
     }
-    let _ = crate::driving_rig::run(&mut rig.tw, stranger, &format!("FIRE {gun} OFF"));
 }
 
 /// **The lines that say the filed mind did not fly the unit to its answer**: any fault of
@@ -489,6 +552,10 @@ fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, 
         })
         .unwrap_or_else(|| panic!("the raider's fire arrived on the escort: {exchange}"));
     assert!(
+        fired(lines, raider) <= RAID_ROUNDS as usize,
+        "the raid kept to its bound of {RAID_ROUNDS}: {exchange}"
+    );
+    assert!(
         fired_at(lines, tv, raider) > 0,
         "it answers the unit that fired on it: {exchange}"
     );
@@ -539,8 +606,8 @@ fn answered_in_order(lines: &[LedgerEvent], (tv, raider, third): (ObjId, ObjId, 
 ///    its mind at once.
 /// 4. With the raider held Hostile in range and fire free, the mind's unit fires nothing. The
 ///    filed script has locked its target and asks at every think; the shot is what is refused.
-/// 5. The raider's captain fires on it. From the first arrival the unit answers the raider, and
-///    never the third party.
+/// 5. The raider's captain puts one round on it (`RAID_ROUNDS`). From its arrival the unit
+///    answers the raider, and never the third party.
 /// 6. It goes home: to its carrier's ramp, out of the field, into the bay by the host's
 ///    recover. With a filed mind the claim's Close then lands.
 async fn story(script: Option<&str>) {
@@ -676,12 +743,12 @@ async fn story(script: Option<&str>) {
         opened.elapsed().as_secs()
     );
 
-    // 5. The raider's captain fires on it for fifteen seconds; from the first arrival it
-    // answers the raider (read from the black box at the end). The filed script stands for
-    // this; the house mind is already on its way home, and MW.7's own story of an answer
-    // (`field_mw7`) is a unit with no carrier to go to.
+    // 5. The raider's captain puts one round on it; from its arrival the unit answers the
+    // raider (read from the black box at the end). The filed script stands for this; the
+    // house mind is already on its way home, and MW.7's own story of an answer (`field_mw7`)
+    // is a unit with no carrier to go to.
     if script.is_some() {
-        raided(&mut rig, &mut rx, &mut lines, (raider, stranger), 15).await;
+        raided(&mut rig, &mut rx, &mut lines, (raider, stranger)).await;
     }
 
     eprintln!("C4_FIELD t+{} s: going home", opened.elapsed().as_secs());
@@ -694,10 +761,12 @@ async fn story(script: Option<&str>) {
     .await;
     assert!(
         out,
-        "the mind takes the escort out at its carrier's ramp: last at {:?}, away {:?}, in the field {}",
+        "the mind takes the escort out at its carrier's ramp: last at {:?}, away {:?}, in the \
+         field {}, lost {:?}",
         last_cell(&lines, tv),
         away_of(rig.tw.world(), tv),
-        in_field(&rig, tv)
+        in_field(&rig, tv),
+        losses(&lines, tv)
     );
     let home = until_composed(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
         let due = {

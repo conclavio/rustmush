@@ -517,9 +517,10 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
 
     // She is cleared and leaves the picket. Under way on the corridor again, the server
     // restarts: the boot admits a held ship on her passage, and the seal is the same. (A
-    // restart on the corridor *before* the picket is not flown here: after one, Sim warns that
-    // the interdicted leg presents into no domain and raises no picket, with or without a
-    // mind sealed aboard. It is in the cut note as found, not fixed.)
+    // restart on the corridor *before* the picket is not flown here. It used to raise no
+    // picket, with or without a mind sealed aboard; the voyage group's
+    // `a_restart_on_an_interdicted_leg_does_not_lose_the_picket` flies it with the house
+    // default, doc 35's cut notes.)
     let mut left = false;
     for _ in 0..1_800 {
         if at_the_picket(&world.rig, hull).is_none() {

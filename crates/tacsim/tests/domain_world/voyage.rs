@@ -13638,6 +13638,136 @@ fn sfr32b_only_helm_crew_keep_her_crewed_the_window_runs_from_the_last_and_a_res
     );
 }
 
+/// **Sail for Stickney on the shipped lane, lose the pilot's link on the first leg, and wait
+/// the grace out**: the backup mind has her helm on the corridor (doc 35 §11 `B-1`,
+/// Q-35-B5). The rig, the pilot, the hull and the IC instant her first leg ends, which is the
+/// Kirkwood picket. No hull has passed Kirkwood on this world before her.
+fn under_way_with_the_mind_at_her_helm() -> (Rig, ObjId, ObjId, i64) {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    assert!(journey(&rig.tw, hull).is_some(), "launched");
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    drop_link(&mut rig, pilot);
+    wait_out_the_grace(&mut rig);
+    assert!(ic_now(&rig.tw) < boundary, "she is still on her first leg");
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| ld.backup_has_helm()),
+        "past the grace the mind has her helm"
+    );
+    (rig, pilot, hull, boundary)
+}
+
+/// Come to the end of her first leg and see the picket's bubble open on her; then the backup
+/// mind heaves her to for customs (doc 35 §11 `B-5`) and she is not recorded as having run.
+fn she_meets_the_picket(rig: &mut Rig, pilot: ObjId, hull: ObjId, boundary: i64) {
+    use tacsim::space::PicketInspectionStatus;
+    let _ = to_ic(rig, boundary);
+    assert!(
+        picket_status(&rig.tw, hull).is_some(),
+        "the Kirkwood picket's bubble opens on her"
+    );
+    assert!(
+        linkdead_of(&rig.tw, hull).is_some_and(|ld| ld.backup_has_helm()),
+        "and the mind still has her helm"
+    );
+    let mut status = PicketInspectionStatus::AwaitingHeaveTo;
+    for _ in 0..600 {
+        let (_, submitted) = one_second(rig, pilot);
+        land_quietly(rig, &submitted);
+        match picket_status(&rig.tw, hull) {
+            Some(now) => status = now,
+            None => break,
+        }
+        if status != PicketInspectionStatus::AwaitingHeaveTo {
+            break;
+        }
+    }
+    assert!(
+        !matches!(
+            status,
+            PicketInspectionStatus::AwaitingHeaveTo | PicketInspectionStatus::RanThePicket
+        ),
+        "the mind heaves her to: {status:?}"
+    );
+}
+
+/// **A restart on an interdicted leg does not lose the picket.** A ship whose pilot's link is
+/// down, the backup mind at her helm, is under way to the Kirkwood picket when the server
+/// restarts. A restart drops every session and her pilot does not come back, so nobody aboard
+/// is connected when she reaches the waypoint. The picket's bubble opens on her all the same
+/// (doc 35 §11 Q-35-B5: the seat takes over "only at a picket"), and the mind heaves her to.
+///
+/// On the code before, the carrier hook opened the waypoint's domain only for a hull with a
+/// connected player aboard. On a world where no hull had yet passed Kirkwood she raised no
+/// picket: Sim warned that the leg "presents into NO domain" and she sailed past.
+#[test]
+fn a_restart_on_an_interdicted_leg_does_not_lose_the_picket() {
+    let (rig, pilot, hull, boundary) = under_way_with_the_mind_at_her_helm();
+    let before = linkdead_of(&rig.tw, hull).expect("her record");
+    let mut rig = reboot_with(rig, Roster::default());
+    assert!(
+        !rig.tw.world().is_connected(pilot),
+        "a restart drops every session, and hers does not come back"
+    );
+    assert_eq!(
+        linkdead_of(&rig.tw, hull),
+        Some(before),
+        "her link-loss record is read back as it was (doc 35 §11 `B-7`)"
+    );
+    she_meets_the_picket(&mut rig, pilot, hull, boundary);
+}
+
+/// **The same with no restart.** The session manager ends the lost pilot's session while she
+/// is on the leg (`Inbound::SessionGone`), which is all a restart did to her: she meets the
+/// picket. And two hulls nothing has changed for: a pilot with a live link meets the picket
+/// with no mind aboard, and a hull that sailed with her pilot's session already ended at the
+/// berth (no link-loss record; doc 18's unattended passage) passes Kirkwood as she did.
+#[test]
+fn a_ship_whose_crew_is_away_meets_the_picket() {
+    let (mut rig, pilot, hull, boundary) = under_way_with_the_mind_at_her_helm();
+    end_session(&mut rig, pilot);
+    assert!(!rig.tw.world().is_connected(pilot), "her session is ended");
+    assert!(linkdead_of(&rig.tw, hull).is_some_and(|ld| ld.backup_has_helm()));
+    she_meets_the_picket(&mut rig, pilot, hull, boundary);
+
+    // A pilot at her helm, her link live.
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, boundary);
+    assert!(picket_status(&rig.tw, hull).is_some());
+    assert!(linkdead_of(&rig.tw, hull).is_none());
+
+    // A hull whose pilot's session ended at the berth, the burn landed and the launch owed.
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    disconnect(&mut rig.tw, pilot);
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig);
+    }
+    assert!(journey(&rig.tw, hull).is_some(), "launched");
+    assert!(
+        linkdead_of(&rig.tw, hull).is_none(),
+        "no crew lost a link under way"
+    );
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, boundary);
+    assert!(
+        picket_status(&rig.tw, hull).is_none(),
+        "no picket opens on her"
+    );
+    assert_eq!(
+        journey(&rig.tw, hull).map(|j| j.cursor()),
+        Some(1),
+        "and she is on her second leg"
+    );
+}
+
 /// **Doc 35 cut SF.R30 (doc 35d §6.6, `D-35-17`)** — a world whose packs author no orbital
 /// clusters has none: the lookup no longer falls back to the lane compiled into the binary. The
 /// shipped picket cast parses (a cast that did not would now be logged, and the built-in cast
