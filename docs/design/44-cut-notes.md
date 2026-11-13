@@ -2644,6 +2644,11 @@ dispatch (`m8-gate-stories`).
   server restarted between the link loss and the Kirkwood picket, Sim logs `an interdicted
   corridor leg presents into NO domain; no activation was raised` and the bubble never opens
   on her. It is not this unit's: a probe with nothing sealed aboard fails the same way (run on conclav.dev, 2026-11-13; in the story rig, not investigated further). The story restarts under way after the picket instead.
+  **Fixed since** (2026-11-13; doc 35's cut notes, "A crew that is away meets the picket"): the carrier hook
+  opened the waypoint's domain only for a hull with a connected player aboard, and a restart leaves a pilot
+  whose link was down not connected. It was production's, not the rig's. The restart before the picket is
+  flown with the house default in the voyage group; this unit's main story still restarts after it, with a
+  sealed mind.
 - **A rig's refused Open stays pending in the IC host** (by reading, not run). The rig's arm
   (`surface/mind_claim.rs`, `refuse`) neither acknowledges nor withdraws the Open of a claim it
   gives up, and `IcHost::acknowledge` drops only a claim the book holds. The host keeps one
