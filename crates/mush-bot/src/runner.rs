@@ -109,6 +109,11 @@ pub struct Options {
     pub escort_for: Option<String>,
     /// `--escorted-by <character>`: the escort the field captain pages its own party.
     pub escorted_by: Option<String>,
+    /// `--minds <author|buyer>` (doc 44 unit MW.19): walk the mind market in that role. It
+    /// plays on the mining lane, so `mine` is set beside it (the buyer's site).
+    pub minds: Option<crate::mine::MarketRole>,
+    /// `--charter <name>`: the charter the author files under and the buyer looks for.
+    pub charter: Option<String>,
 }
 
 pub enum Control {
@@ -906,7 +911,13 @@ pub async fn run_controlled(
         app.arena_start(side, arena_matches)?;
     }
     if let Some(site) = app.options.mine {
-        app.mine_start(site)?;
+        // Doc 44 unit MW.19: the author's mind is written over the SSH mind service before
+        // the lane types its first line.
+        let written = match app.options.minds {
+            Some(crate::mine::MarketRole::Author) => Some(app.minds_write().await?),
+            _ => None,
+        };
+        app.mine_start(site, written)?;
     }
     let result = app.drive().await;
     // The one `SIM LEAVE`, when it is due, before the session closes.
@@ -1958,7 +1969,11 @@ impl App {
     /// Start the mining lane for `site` (`--mine`): the hull's name from the
     /// SSH username, the epoch of the lane's clock in unix milliseconds, and
     /// the character's name as [`arena_me`] reads it.
-    fn mine_start(&mut self, site: crate::mine::Site) -> Result<()> {
+    fn mine_start(
+        &mut self,
+        site: crate::mine::Site,
+        written: Option<crate::mine::lane::market::Written>,
+    ) -> Result<()> {
         let hull = crate::mine::hull_name(&self.config.ssh.username)?;
         let epoch_unix_ms = unix_now_ms().saturating_sub(self.elapsed_ms());
         let me = arena_me(&self.config.ssh.username, &self.character);
@@ -1979,10 +1994,107 @@ impl App {
         if self.options.field_escort {
             lane = lane.with_escort(self.options.escort_for.clone());
         }
+        if let Some(role) = self.options.minds {
+            let charter = self
+                .options
+                .charter
+                .clone()
+                .ok_or("--minds takes --charter <name>")?;
+            lane = match (role, written) {
+                (crate::mine::MarketRole::Author, Some(written)) => {
+                    lane.with_author(written.name, written.revision, charter)
+                }
+                (crate::mine::MarketRole::Author, None) => {
+                    return Err("the author's mind was not written".into());
+                }
+                (crate::mine::MarketRole::Buyer, _) => lane.with_buyer(charter),
+            };
+        }
         let events = lane.events();
         self.mine = Some(lane);
         self.mine_reported = false;
         self.mine_events(events)
+    }
+
+    /// **Write the author's mind over the SSH mind service** (doc 44 unit MW.19; `help
+    /// mindcraft`, "Source over SSH"): `mind push` creates the draft and replaces its source
+    /// with the bot's own, `mind check` runs the game's six pictures over it, and `mind push`
+    /// saves the revision the lane then files. Each request's reply goes to the transcript as
+    /// a `minds-exec` record as it arrives, so a run that stops here keeps what it was told; a
+    /// step the service refuses ends the run with the service's own words.
+    ///
+    /// The line session is already open when this runs, so these requests come from a player
+    /// who is logged in. The same service for a player who is not is the rig's to hold
+    /// (`scripts/bot-minds-lane.sh`).
+    async fn minds_write(&mut self) -> Result<crate::mine::lane::market::Written> {
+        use crate::mine::lane::market::{self, Written};
+        use crate::transport::MindExec;
+        let name = market::MIND_NAME;
+        // A run taken up again finds the draft there, and the create is refused: the read
+        // decides whether there is a draft to write.
+        self.minds_exec(MindExec::Push, "create", &market::create_request(name))
+            .await?;
+        let read = self
+            .minds_exec(MindExec::Pull, "read", &market::read_request(name))
+            .await?;
+        let (mut base, draft) = market::read_reply(&read)?;
+        if market::draft_source(&draft) != Some(market::MIND_SOURCE) {
+            let request = market::replace_request(name, &base, &draft, market::MIND_SOURCE);
+            let replaced = self.minds_exec(MindExec::Push, "replace", &request).await?;
+            base = market::edited_reply(&replaced)?;
+        }
+        let checked = self
+            .minds_exec(
+                MindExec::Check,
+                "check",
+                &market::check_request(name, &base),
+            )
+            .await?;
+        let pictures = market::checked_reply(&checked)?;
+        let saved = self
+            .minds_exec(MindExec::Push, "save", &market::save_request(name, &base))
+            .await?;
+        let (revision, digest) = market::saved_reply(&saved)?;
+        self.log.event(
+            "mine",
+            &format!(
+                "Wrote {name} over the SSH mind service: {pictures} pictures checked, saved as \
+                 revision {revision} ({digest})."
+            ),
+        )?;
+        Ok(Written {
+            name: name.to_owned(),
+            revision,
+            digest,
+            pictures,
+        })
+    }
+
+    /// One request to the SSH mind service, its reply's status recorded as it arrives (the
+    /// service's message too, when it refused).
+    async fn minds_exec(
+        &mut self,
+        exec: crate::transport::MindExec,
+        op: &str,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let reply = crate::transport::mind_exec(&self.config.ssh, exec, request).await;
+        let record = match &reply {
+            Ok(reply) => json!({
+                "exec": exec.command(),
+                "op": op,
+                "status": reply.get("status").cloned().unwrap_or(serde_json::Value::Null),
+                "message": reply.get("message").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+            Err(error) => json!({
+                "exec": exec.command(),
+                "op": op,
+                "status": "transport",
+                "message": error.to_string(),
+            }),
+        };
+        self.log.record("minds-exec", record)?;
+        reply
     }
 
     /// Whether this tick is the mining lane's: it plays and the run is

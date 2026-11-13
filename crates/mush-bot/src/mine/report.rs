@@ -65,6 +65,9 @@ pub struct Report {
     /// The escort pilot's IC field (doc 32 G-4), present only for --field-escort.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escort: Option<super::lane::escort::Evidence>,
+    /// The mind market's walk (doc 44 unit MW.19), present only for --minds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market: Option<super::lane::market::Evidence>,
 }
 
 /// One beat: when its first line went and its last answer was read.

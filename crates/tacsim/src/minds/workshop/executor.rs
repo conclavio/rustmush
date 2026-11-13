@@ -529,6 +529,35 @@ impl WorkshopExecutor {
         Ok(())
     }
 
+    /// **End the author session of an actor who holds no job** (doc 44 MW.19). A session is
+    /// ended by the link-dead and disconnect hooks, and a bare connection fires neither
+    /// (doc 44 MW.24), so the session an offline player's SSH request opened would stay until
+    /// their next logout and count against [`MAX_SESSIONS`]. The adapter calls this when such
+    /// a request is answered; a job still held keeps the session, and its completion asks
+    /// again.
+    pub(super) fn release_idle(&self, actor: ObjId) {
+        let Ok(mut state) = self.shared.state.lock() else {
+            return;
+        };
+        if state
+            .jobs
+            .values()
+            .any(|entry| entry.principal.actor == actor)
+        {
+            return;
+        }
+        state.sessions.remove(&actor);
+    }
+
+    /// Whether `actor` holds an author session.
+    #[cfg(test)]
+    pub(super) fn has_session(&self, actor: ObjId) -> bool {
+        self.shared
+            .state
+            .lock()
+            .is_ok_and(|state| state.sessions.contains_key(&actor))
+    }
+
     pub(crate) fn cancel_character(&self, actor: ObjId) {
         let Ok(mut state) = self.shared.state.lock() else {
             return;

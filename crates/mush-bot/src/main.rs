@@ -26,6 +26,7 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
                 [--test-controls] [--isolate-memory <new-directory>]\n\
                 [--arena <red|blue> [--matches <n>]]\n\
                 [--mine <site> | --mine-detachment <site>] [--mine-field <site> [--escorted-by <character>]] [--field-escort <site> [--escort-for <character>]]\n\
+                [--minds <author|buyer> --charter <name> [--minds-site <site>]]\n\
        mush-bot --config <file> --replay <capture.json> --report <new.json> [--model <profile>]\n\
        mush-bot --config <file> --studio <concept.json> --output <new-directory> [--tui | --headless]\n\
        mush-bot --config <file> --studio-session <session.json> --output <new-directory> [--tui]\n\
@@ -141,6 +142,7 @@ fn launch() -> Result<u8> {
     let mut check_regression = None;
     let mut compare_runs = None;
     let mut login = None;
+    let mut minds_site = None;
     let mut studio = None;
     let mut studio_session = None;
     while let Some(arg) = args.next() {
@@ -435,6 +437,22 @@ fn launch() -> Result<u8> {
                 let word = args.next().ok_or(mush_bot::mine::MINE_SITE_USAGE)?;
                 options.mine = Some(mush_bot::mine::Site::parse(&word)?);
             }
+            // Doc 44 unit MW.19: walk the mind market, as its author or its buyer.
+            "--minds" => {
+                let word = args.next().ok_or(mush_bot::mine::MINDS_ROLE_USAGE)?;
+                options.minds = Some(mush_bot::mine::MarketRole::parse(&word)?);
+            }
+            "--charter" => {
+                let name = args.next().ok_or(mush_bot::mine::CHARTER_RULE)?;
+                if !mush_bot::mine::lane::market::charter_ok(&name) {
+                    return Err(mush_bot::mine::CHARTER_RULE.into());
+                }
+                options.charter = Some(name);
+            }
+            "--minds-site" => {
+                let word = args.next().ok_or(mush_bot::mine::MINE_SITE_USAGE)?;
+                minds_site = Some(mush_bot::mine::Site::parse(&word)?);
+            }
             "--matches" => {
                 options.matches = Some(
                     args.next()
@@ -484,6 +502,19 @@ fn launch() -> Result<u8> {
                     .into(),
             );
         }
+    }
+    // Doc 44 unit MW.19: the market's walk plays on the mining lane, so it takes the mining
+    // lane's refusals below; the site is the buyer's (the author sails nowhere).
+    if options.minds.is_some() {
+        if options.mine.is_some() {
+            return Err("--minds and --mine are two lanes; choose one".into());
+        }
+        if options.charter.is_none() {
+            return Err("--minds takes --charter <name>".into());
+        }
+        options.mine = Some(minds_site.unwrap_or(mush_bot::mine::Site::Kerwan));
+    } else if options.charter.is_some() || minds_site.is_some() {
+        return Err("--charter and --minds-site go with --minds".into());
     }
     // Doc 20 cut SM.12c-bot: the mining lane's refusals. The session sentence
     // repeats `runner.rs`'s `MINE_SESSION` byte for byte, as the arena's

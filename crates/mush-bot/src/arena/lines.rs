@@ -333,8 +333,9 @@ pub struct BoardPilot {
     pub unit_type: Option<String>,
     /// **The game's 17b cut M5.1**: `, a mind` after the bracket — another
     /// pilot's slot chose a mind with `SIM MIND` during selection (the board
-    /// never names it to anyone but that pilot). This bot never chooses one,
-    /// so its own row never carries the named form.
+    /// never names it to anyone but that pilot). The arena pilot never chooses
+    /// one, so its own row never carries the named form; the minds lane's
+    /// buyer does (doc 44 unit MW.19) and does not read the board.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mind: bool,
     pub pod: Option<String>,
