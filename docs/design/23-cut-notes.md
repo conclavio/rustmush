@@ -673,3 +673,116 @@ configured, a bay hold rooting a journey as a berth hold may, and a berth hold p
 another domain from her berth each fail the `s4d` test of the owner; an Open minted for a
 unit on a domain that is no berth fails the guard's test; the production composition without
 berths fails MW.13's main story at the seal.
+
+## S.4b-2 follow-up (2026-11-13): a claim given up leaves the IC host (§17.3; D-23-13, D-23-21)
+
+Doc 44 unit MW.13 found this fault in the ship's arm by running a story, fixed it there
+(`IcHost::withdraw_surface_open`, `Owes::Stale`), and recorded that the rig's arm had it too
+"by reading, not run". This cut ran it, then fixed it.
+
+### The fault, as run
+
+The IC host keeps one Open pending an actor (`IcHost::insert` refuses "host pending capacity
+or duplicate") and `IcHost::acknowledge` drops a pending row only when the claim book holds
+its claim. The surface tick's claim arm (`surface/mind_claim.rs`) kept the ticket of a claim
+it gave up (`refuse`, D-23-21) and released it nowhere: a claim refused for good never
+reaches the book. So after one refused claim the operator's next mind launch, on that rig or
+on any other, could not be enqueued. The arm logged "a rig's mind claim could not be
+enqueued; it waits" on every fire and submitted no Open.
+
+The effect was worse than the reading said. A launch the arm cannot enqueue is deferred, and
+a deferral is not counted as a try, so the launch was never refused either: its cursor stayed
+`Opening`, the pilot was told nothing, and the rig was held in its bay by the claim's
+relaunch guard until a restart.
+
+Both stories below failed on main `4efa11521` before the code changed: the fast one with the
+second claim's cursor still `Opening` after forty fires and no Open submitted, the M8 world's
+with a held licence at "the claim did not open in the bay", the owner's reason in the log
+"host pending capacity or duplicate".
+
+### What changed
+
+- **`mind_claim::release_stale`**, called by the surface tick at the head of every fire, from
+  the fire's own scan of the rig family and before any claim is visited. For each Open ticket
+  the arm holds: if the rig's cursor is no longer the `Opening` the ticket was minted for (the
+  same `launch_ic`), the ticket is released. A cursor that still asks keeps its ticket; the
+  arm resubmits it as before. A rig with no record is released only when the scan read the
+  whole family.
+- **`release`** is the ship's arm's: `acknowledge`, and where the book holds no claim for the
+  ticket, `withdraw_surface_open`. A withdrawal that fails is logged at `warn`.
+- The arm's own stale-ticket step (a ticket kept for an earlier launch of the same rig, found
+  when the next Open is minted) now releases through the same function. Before, it
+  acknowledged only, which dropped the ticket from the arm and left its row in the host.
+- It is a sweep and not a visit because the tick visits a rig for its claim only while the
+  cursor is `Opening` or `Closing`, and a claim given up reads `Refused`. The sweep costs one
+  read of the arm's slot a fire while the arm holds no Open, which is nearly always.
+
+Nothing else of the rig's claim moved: when an Open is minted, submitted, counted or refused
+for good, what the pilot is told, the Close.
+
+### Tests
+
+- `ic_sortie_surface::s4b2_a_claim_refused_for_good_does_not_hold_its_operators_next_claim`
+  (default sweep, 8 s). The S.4b-2 rig with two rigs in the bay; the owners refuse every Open
+  (licence 7 is not held), so what is watched is whether the arm could submit one at all.
+  Rig 1 is refused for good; then the same pilot's claim on rig 2 is submitted and refused in
+  its turn; then rig 1 again at a later instant; then both asked at once, rig 1's cursor
+  replaced before the tick fires again, where rig 2's claim is submitted behind a ticket
+  whose rig's cursor is `Opening` at another instant.
+- `m8_world::s4b2_a_claim_given_up_does_not_hold_the_next` (ignored; one genuine rating; a
+  row of the `m8-gate-stories` dispatch job). The S.4b-2 world, the pilot's paid one-seat
+  Pin. Every Open of rig 1's claim is lost and the tick gives it up. The pilot's `go` on rig 2
+  under the same Pin opens its claim in the bay, launches and closes home; rig 1's Open,
+  turning up afterwards, is refused, for it was withdrawn. Rig 1's claim is given up a second
+  time and its next `go`, a tick later, opens, launches and closes home.
+
+### Mutation checks
+
+Each run against the stories on conclav.dev, in a throwaway copy of the tree.
+
+| The mutation | The fast story | The M8 world's story |
+|---|---|---|
+| `release` acknowledges and never withdraws | fails at rig 2: no Open submitted | fails: rig 2's claim did not open in the bay |
+| The tick never calls `release_stale` | fails at rig 2: no Open submitted | fails: rig 2's claim did not open in the bay |
+| The sweep keeps any ticket whose cursor is `Opening`, whatever its instant | fails at the fourth step | not run |
+
+### Runs
+
+All on conclav.dev (Linux), in a throwaway clone of main `4efa11521` with the cut applied as
+a patch; nothing was built or run on the Windows box but `cargo fmt -p tacsim`.
+
+- **Before the fix** (the stories alone): both new stories fail as "The fault, as run" says.
+  The fast one failed twice, the M8 world's once in its final form.
+- **With the fix**: both new stories pass (the fast one three times, the M8 world's once in
+  its final form, 611 s).
+- **The existing claim stories, with the fix**, each once, by its exact name with `--ignored`,
+  four at a time: `s4b2_a_licensed_rig_opens_its_claim_in_the_bay_and_closes_it_home`, S.4b-3
+  at 256 and 512, D-23-18 at 256 and 512, the three M8 world stories (combined world, tier 2,
+  zero-PC procurement), MW.5's filed-mind story (passed on its first run), MW.13's two ship
+  stories, and the three `m8_leaks` stories. All passed.
+- **tacsim's default sweep, with the fix**: `domain_field` 296 passed; the lib with
+  `domain_economy`, `domain_world`, `domain_arena` and `cost_lane` 4,328 passed.
+- **Lints, with the fix**: `cargo clippy -p tacsim --all-targets -- -D warnings`, the M7
+  memory-size clippy pass, rustdoc for `tacsim` with and without private items under
+  `-D warnings`, `cargo fmt -p tacsim -- --check`, and `mush-contract-tests`' `ci_policy`
+  (80 passed).
+- **Not run**: the other crates' tests, and the new row of the `m8-gate-stories` job on a
+  hosted runner (its exact command ran on conclav.dev).
+
+### Found, not fixed
+
+- **A `go` typed in the same second as its rig's refusal waits a minute.** The tick's retry
+  bookkeeping for a claim is keyed by the rig and the ordinal its launch will take, and is
+  cleared when the key falls out of the due set at a fire. A claim refused for good pages and
+  backs off sixty fires. If the pilot's next `go` on that rig lands before the tick fires
+  again (a second), the key never leaves the due set, so the new claim inherits the old one's
+  back-off: its first Open is submitted a minute later. If the Roll admits it, it opens then.
+  If the Roll refuses it, it is tried once a minute and never refused for good, since a key
+  pages once a boot while it stays due. Reached in the M8 world's story as first written (a
+  second give-up, then `go` at once) and stepped around there with one fire. A person is
+  unlikely to type inside the second; a script is not.
+- **A rig has no step that closes a claim its cursor does not name**, where the ship's arm
+  has (`owes`'s orphan). By reading, the surface tick cannot make one: it gives a claim up
+  only on a visit that finds nothing of the operator's queued, so an Open is never still on
+  its way when its cursor is refused. A story can make one by holding an Open back and
+  landing it after the refusal and before the next fire; none does.
