@@ -319,9 +319,18 @@ fn rejoin_refused(
         .into_iter()
         .filter(|hull| *hull != carrier && raiders::carrier_of(ctx.w, *hull) == Some(carrier))
         .collect();
-    let turned = hulls
-        .iter()
-        .any(|hull| raiders::withdrawing(ctx.w, *hull) || record.exited(*hull));
+    // **A hull on its way out has turned** (found by doc 45 unit AP.7's runs). A hull let out
+    // at the ramp goes aboard in the batch that lets it go, which spends its WITHDRAW mark
+    // (`raiders::board`), and the record names its exit only once that write lands. Between
+    // the two it read here as a hull the kernel had refused at the join, was landed again and
+    // joined with no order: its WITHDRAW's one sequence is spent, so the kernel refuses the
+    // order a second time and the hull fights until the field ends. `exit::leaving` holds
+    // from the ask until the record names the exit, which closes the gap.
+    let turned = hulls.iter().any(|hull| {
+        raiders::withdrawing(ctx.w, *hull)
+            || record.exited(*hull)
+            || crate::field::exit::leaving(ctx.w, &def.site, *hull)
+    });
     if turned {
         return Ok(());
     }

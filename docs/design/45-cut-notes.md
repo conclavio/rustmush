@@ -1411,6 +1411,28 @@ co-op declared Hostile before the field. The second miner's mark opens the field
   nor the tug that tows it. This was reachable before for a seated pilot's unit and is fixed
   for both.
 
+**Found by hosted CI on the first push, and fixed here.**
+
+- **The raid director put a hull that had just boarded back into the field with no order**
+  (`surface/raid.rs`, `rejoin_refused`). A raider's hull let out at its ramp goes aboard in
+  the batch that lets it go, which spends its WITHDRAW mark, and the site's record names its
+  exit only when that write lands. In between the director's "land the hulls the kernel
+  refused" check read the hull as refused, landed it again and joined it. Its WITHDRAW's one
+  sequence was spent, so the kernel refused the order a second time and the hull fought until
+  the field ended: in `field_director`'s barge story it destroyed the miner's carrier, guard
+  and a rig, and never went home. The window is on main. The check now also counts a hull
+  whose exit is in flight (`field::exit::leaving`, the test the launches already use).
+  Evidence, the story run pinned to one core on conclav.dev: main, six of six pass; this unit
+  without the guard, between four of six and four of four fail, each with the kill list
+  hosted CI printed; with the guard, eight of eight pass. The kernel's log of a failing run
+  shows the hull's last think under its order at 14.8 s, no think at 15.8 s, and a fresh
+  mind row with no order at 16.8 s. Why this unit makes a slow runner fall into the window
+  more often was not established: it adds work to the host's passes and tells the kernel of
+  three more units, and switching either off made the failures stop.
+- **Two stories the default run ignores** (`m8_world`, D-23-18 at 256 and at 512; they run
+  only in the dispatch) had a rig nobody sits in that was to stand: the last rows of the
+  table below.
+
 **Pinned outcomes moved, each because of this unit and for no other reason.** The first whole
 run failed ten older stories; `domain_field` was otherwise green (270 of 281). All ten had a
 rig nobody sits in that the story expected to stand where it was put, and under this unit
@@ -1427,6 +1449,7 @@ carrier, the answer compared whole), or takes the rig's console.
 | `field_gc3` `gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed` | remains at (116, 124), not (114, 124) | the prospector drove two cells toward its ramp before the field settled | its operator leaves rig 1 on `HOLD` |
 | `field_rs1` `rs1_ahuna_`/`rs1_urvara_the_tender_works_through_fields_and_the_tow_counts_her_laden` | "the jam is cleared" | the escort the tender works on left its side, and the stranger's pair left theirs | the captain leaves rig 1 on `HOLD`, the stranger rigs 1 and 2 |
 | `crew_exit` `cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extracted` | the preview read "Rig 1 is climbing the stern ramp" | the prospector on the ramp was let out by its mind before its operator typed the recover | the operator holds the prospector's console (`seat`), so the recover is theirs, as the gate has it |
+| `m8_world` `d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256`/`_at_512` (dispatch-only), and the ground they share with S.4b-3's two | "the second promotion: You see no flight there." | rig 1, flown by its licensed mind with nobody in it, drove off toward home in the first field, so the raiders' second mark found nothing where it had stood | its pilot leaves rig 1 on `HOLD` (`licensed_field_story`); the four pass |
 | `field_ap6` story 1, and the ground of stories 1 to 4 | "a guard returns fire on the unit that hit its owner's other rig": no fire arrived on the lessee's prospector | both prospectors, nobody in either, had gone home | the lessee leaves his on `HOLD` from aboard the carrier (`escort_lease::stand_up_out`), the miner hers (`field_ap6::ground`) |
 
 No state hash, ledger line, seal identity or harness baseline field moved: a practice match
@@ -1548,6 +1571,10 @@ unit's diff applied; Windows for the lints).
 
 - Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
   player reads were read in the test rig's line mode.
+- **The stories the default run ignores were not run before the first push**, which is how
+  the D-23-18 pair reached hosted CI failing. Of the field suite's twelve, the four
+  licensed-mind stories were then run by hand on the fixed code; the other eight
+  (`c4_filed_mind_field`, `m8_leaks`' three, `m8g`'s three, S.4b-2) passed in the dispatch.
 - The whole `tacsim` suite was not run by hand: one attempt on conclav.dev was ended by a
   signal that was not this session's. CI's shards run it on the pushed head.
 - The cost of the pass at a field of a hundred units. For a unit that is nobody's it is one
