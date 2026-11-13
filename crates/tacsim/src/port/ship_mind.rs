@@ -124,6 +124,10 @@ pub const MIND_UNSEALED: &str = "The mind aboard the {name} is unsealed and its 
 /// The tick's word when a seal no longer fits: `{name}`, `{why}`.
 pub const MIND_VOIDED: &str =
     "The mind aboard the {name} no longer fits her ({why}); its claim is being closed.";
+/// A refit, a strip, a fitting or a scrapping asked of a hull with a mind sealed aboard:
+/// `{name}`. The unit's owner holds a hull under a claim as she is (`mush_tactics`'
+/// `ic_custody`), so the yard says why before it tries.
+pub const MIND_HOLDS_HER: &str = "A mind is sealed aboard the {name}, and she is held as she is until it is unsealed: +ship/mind off, at her berth.";
 /// The verb is not wired on this roster.
 pub const MIND_UNWIRED: &str = "Minds cannot be sealed aboard a ship here.";
 
@@ -332,6 +336,22 @@ pub(crate) fn thinker(w: &World, hull: ObjId) -> Option<Arc<crate::space::thinks
             store.cfg.minds.classes
         });
     host.sealed_mind(hull, sealed.seal, sealed.source, &classes)
+}
+
+/// **Whether a mind claim holds `hull` as she is** (doc 44 unit MW.13): the claim book holds
+/// an active claim on her, or her cursor has asked for one that is on its way. While it does
+/// the unit's owner refuses her every change of fit (a refit, a component's fitting or
+/// stripping, a core's, a scrapping), so the routes a player reaches say so first
+/// ([`MIND_HOLDS_HER`]).
+#[must_use]
+pub(crate) fn holds(ctx: &Ctx<'_>, hull: ObjId) -> bool {
+    if claim_of(ctx.w, hull) != ClaimRead::None {
+        return true;
+    }
+    matches!(
+        crate::port::epoch::record_at(ctx, hull),
+        Ok(Some(record)) if matches!(record.claim.as_deref(), Some(ClaimCursor::Opening { .. }))
+    )
 }
 
 /// Every ship hull the world holds: the programme ports' rows, the yards' and the owned-hull

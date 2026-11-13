@@ -367,8 +367,7 @@ fn setup_in(
         reference("tacsim", &base_descriptor)?,
         space.clone(),
     )?];
-    let config = if admission == Admission::Hangar || admission == Admission::BerthUnconfigured
-    {
+    let config = if admission == Admission::Hangar || admission == Admission::BerthUnconfigured {
         IcExclusionConfig::with_hangars(manifest.clone(), refs.clone(), bases)?
     } else if admission == Admission::Berth {
         IcExclusionConfig::with_hangars_and_berths(manifest.clone(), refs.clone(), bases)?
@@ -1182,7 +1181,10 @@ fn s4d_a_port_berth_is_a_hangar_for_a_ship_where_berths_are_admitted() -> Result
     );
 
     // What her berth admits.
-    check!(plan_admits(&f, placed(f.unit, direct(f.domain)?))?, "a pose");
+    check!(
+        plan_admits(&f, placed(f.unit, direct(f.domain)?))?,
+        "a pose"
+    );
     check!(
         !plan_admits(&f, placed(f.unit, direct(f.far)?))?,
         "another domain, with no passage between, is a teleport"
@@ -1247,13 +1249,21 @@ fn s4d_a_port_berth_is_a_hangar_for_a_ship_where_berths_are_admitted() -> Result
     );
 
     // The record: a reboot keeps the hold, at her berth.
-    let cold = setup_in(vec![(key.clone(), value.clone())], true, false, Admission::Berth)?;
+    let cold = setup_in(
+        vec![(key.clone(), value.clone())],
+        true,
+        false,
+        Admission::Berth,
+    )?;
     check_eq!(
         identity_of(cold.world.world(), cold.unit).map(|i| i.open),
         Some(token()),
         "a reboot keeps the berth hold"
     );
-    check_eq!(held_at_berth(cold.world.world(), cold.unit), Some(cold.domain));
+    check_eq!(
+        held_at_berth(cold.world.world(), cold.unit),
+        Some(cold.domain)
+    );
     // And the journey audit: a hull held at a berth may root a journey; held in a bay or a
     // base she may not, as before the cut.
     let berth: Record = serde_json::from_value(value)?;

@@ -373,7 +373,8 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
     eprintln!("MW13 sealed {sealed:?}");
     assert_eq!(sealed.dispatcher, pilot);
     assert_eq!(sealed.principal, Some(pilot), "she is the seal's principal");
-    assert_eq!(sealed.mind.as_str(), "Keeper");
+    // The Registry files a mind under its name in lower case.
+    assert_eq!(sealed.mind.as_str(), "keeper");
     assert_eq!(
         (sealed.core_class, sealed.governed),
         (tacsim::arena::core::CoreClass::II, true),
@@ -399,7 +400,7 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
     assert_eq!(
         read,
         ship_mind::MIND_ABOARD
-            .replace("{mind}", "Keeper")
+            .replace("{mind}", "keeper")
             .replace("{name}", "Salt Moth")
             .replace("{licence}", &licence.to_string())
             .replace("{class}", sealed.class.as_str())
@@ -625,25 +626,23 @@ fn until_closed(world: &mut M8World, claim: mush_core::CommitToken) -> String {
 }
 
 /// **Doc 44 unit MW.13 (second review, row 25): a seal does not outlive its core or its
-/// holder.** One filed mind, sealed three times on the pilot's Dray at her berth; each time
-/// something of hers changes while the claim stands, and each time the seat reads no mind
-/// aboard at once, the pilot is told why, and the arm closes the claim.
+/// holder.** One filed mind, sealed twice on the pilot's Dray at her berth.
 ///
-/// A. *A refit.* The Co-op's yard re-dresses her as a Dray-P, which carries no core. A core
-///    stripped after sealing leaves no seal of its class.
-/// B. *Another core.* Staff bind her to the Class I root in the Class II's place (no route in
-///    play fits a core to a ship; this stands in for a fitting). The seal was taken over a
-///    Class II core and does not fit.
-/// C. *A change of title.* Staff release her title's claims and title her to a House the
-///    pilot holds no office with, as a sale or a sweep titles a hull to its new holder. The
-///    pilot no longer has authority over her, so the seal she took carries nothing to the
-///    new owner: nothing is aboard, and no claim stands on the hull.
+/// A. *Her fit cannot change under a sealed mind.* With the claim open the Co-op's yard
+///    refuses to re-dress her, by a sentence that says to unseal first, and the unit's owner
+///    refuses staff's rebind; her core and her seal are as they were. `+ship/mind off go`
+///    unseals her and the claim closes. Then the yard re-dresses her as a Dray-P, which
+///    carries no core, and nothing of the old seal is left to seal again: a new `+ship/mind`
+///    is resolved against the hull as she now is, and is refused for want of a core.
+/// B. *A change of title.* Sealed again, her title's claims are released and she is titled
+///    to a House the pilot holds no office with, as a sale or a sweep titles a hull to its new
+///    holder. No owner of the claim sees that. The seat reads no mind aboard at once, the
+///    pilot is told why, the arm closes the claim, and no claim stands on the hull for the new
+///    holder to inherit. The pilot can no longer seal a mind on her.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "MW.13 story: one genuine Registry rating; the CI dispatch runs it"]
 #[allow(clippy::too_many_lines)]
 async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
-    use tacsim::definitions::core_replacement::SHIP_I;
-
     let _log = claim_log();
     // No provisions aboard: the yard refits a hull whose hold is empty but for her tank.
     let mut world = m8_world_manned(None, |rig| {
@@ -653,79 +652,108 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
     let (pilot, hull) = (world.pilot, ObjId(world.row.hull));
     crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
     let licence = crate::c4_filed_mind_field::file_own_mind(&mut world, "Keeper", &keeper()).await;
-    let none = ship_mind::MIND_NONE.replace("{name}", "Salt Moth");
-    let unfit = ship_mind::MIND_UNFIT
-        .replace("{mind}", "Keeper")
-        .replace("{name}", "Salt Moth");
-    let voided = |why: &str| {
-        ship_mind::MIND_VOIDED
-            .replace("{name}", "Salt Moth")
-            .replace("{why}", why)
+    let seal_line = format!("+ship/mind filed:{licence} go");
+    let core_of = |world: &M8World| {
+        mush_tactics::module::unit_of(world.rig.tw.world(), hull)
+            .and_then(tacsim::arena::core::read_core)
+            .map(|core| (core.class, core.governed))
     };
+    let class_two = Some((tacsim::arena::core::CoreClass::II, true));
 
-    // A. The Co-op's refit strips her core.
+    // A. Her fit cannot change under a sealed mind.
     let first = seal_aboard(&mut world, licence);
     let desk = crate::excursions::station_room(&world.rig.tw, "ceres_port", "room.c05_registry");
     crate::excursions::teleport(&mut world.rig.tw, pilot, desk);
+    let held = ship_mind::MIND_HOLDS_HER.replace("{name}", "Salt Moth");
+    assert_eq!(
+        run(&mut world.rig.tw, pilot, "+coop/refit prospector"),
+        held,
+        "the yard says to unseal first"
+    );
+    let removed = run(
+        &mut world.rig.tw,
+        mush_core::GOD,
+        &format!("@unit/remove #{}", hull.0),
+    );
+    assert!(
+        removed.contains("held by an IC sortie"),
+        "the unit's owner holds her as she is: {removed}"
+    );
+    assert_eq!(core_of(&world), class_two, "her core is as it was");
+    assert_eq!(
+        ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
+        Some(&first),
+        "and so is her seal"
+    );
+    // Unsealed at her berth, the claim closes.
+    assert_eq!(
+        run(&mut world.rig.tw, pilot, "+ship/mind off"),
+        ship_mind::MIND_OFF_PREVIEW.replace("{name}", "Salt Moth")
+    );
+    let (out, queued) = command(&mut world.rig, pilot, "+ship/mind off go");
+    assert_eq!(queued.len(), 1, "one submission: {out}");
+    crate::excursions::land(&mut world.rig, &queued[0])
+        .unwrap_or_else(|refused| panic!("+ship/mind off: the go lands: {refused}"));
+    assert!(
+        matches!(
+            cursor(&mut world.rig, hull),
+            Some(ClaimCursor::Closing { open, kind: tacsim::surface::excursion::ClaimCloseKind::PoweredDownInBase { .. }, .. })
+                if open == first.claim
+        ),
+        "{:?}",
+        cursor(&mut world.rig, hull)
+    );
+    let heard = until_closed(&mut world, first.claim);
+    assert!(
+        heard.contains(&ship_mind::MIND_UNSEALED.replace("{name}", "Salt Moth")),
+        "{heard}"
+    );
+    assert_eq!(ship_mind::aboard(world.rig.tw.world(), hull), None);
+    assert_eq!(
+        run(&mut world.rig.tw, pilot, "+ship/mind"),
+        ship_mind::MIND_NONE.replace("{name}", "Salt Moth")
+    );
+    // Now the yard re-dresses her, and nothing of the old seal seals again.
     let refit = run(&mut world.rig.tw, pilot, "+coop/refit prospector");
     assert!(refit.contains("as a Dray-P"), "{refit}");
-    assert!(
-        mush_tactics::module::unit_of(world.rig.tw.world(), hull)
-            .and_then(tacsim::arena::core::read_core)
-            .is_none(),
-        "the Dray-P carries no core"
-    );
+    assert_eq!(core_of(&world), None, "the Dray-P carries no core");
     assert_eq!(
-        ship_mind::aboard(world.rig.tw.world(), hull),
-        None,
-        "a core stripped after sealing leaves no seal of its class"
+        run(&mut world.rig.tw, pilot, &seal_line),
+        ship_mind::MIND_NO_CORE.replace("{name}", "Salt Moth"),
+        "a new seal is asked of the hull as she is"
     );
-    assert_eq!(run(&mut world.rig.tw, pilot, "+ship/mind"), unfit);
-    let heard = until_closed(&mut world, first.claim);
-    assert!(heard.contains(&voided("she carries no core")), "{heard}");
+    fires(&mut world, 4);
     assert_eq!(
         tacsim::ic_claim_of(world.rig.tw.world(), hull),
-        tacsim::IcClaimRead::None
-    );
-    assert_eq!(run(&mut world.rig.tw, pilot, "+ship/mind"), none);
-    let coreless = run(
-        &mut world.rig.tw,
-        pilot,
-        &format!("+ship/mind filed:{licence} go"),
-    );
-    assert_eq!(
-        coreless,
-        ship_mind::MIND_NO_CORE.replace("{name}", "Salt Moth"),
-        "and nothing is sealed on her now"
+        tacsim::IcClaimRead::None,
+        "and no claim opens on her"
     );
     let back = run(&mut world.rig.tw, pilot, "+coop/refit standard");
     assert!(back.contains("as a standard Dray"), "{back}");
     crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
 
-    // B. Another core in the first one's place.
+    // B. Her title passes to a holder the pilot does not act for.
     let second = seal_aboard(&mut world, licence);
     assert_ne!(second.claim, first.claim, "a new seal is a new claim");
-    crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_I);
-    assert_eq!(
-        ship_mind::aboard(world.rig.tw.world(), hull),
-        None,
-        "the seal was taken over a Class II core"
-    );
-    let heard = until_closed(&mut world, second.claim);
-    assert!(heard.contains(&voided("her core has changed")), "{heard}");
-    crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
-
-    // C. Her title passes to a holder the pilot does not act for.
-    let third = seal_aboard(&mut world, licence);
     crate::m8_world::title_rig_to_house(&mut world, hull, "Meridiani");
     assert_eq!(
         ship_mind::aboard(world.rig.tw.world(), hull),
         None,
         "a hull under a new title carries no seal of her last holder's"
     );
-    let heard = until_closed(&mut world, third.claim);
+    assert_eq!(
+        run(&mut world.rig.tw, pilot, "+ship/mind"),
+        ship_mind::MIND_UNFIT
+            .replace("{mind}", "keeper")
+            .replace("{name}", "Salt Moth")
+    );
+    let heard = until_closed(&mut world, second.claim);
     assert!(
-        heard.contains(&voided("she is no longer yours to fly it on")),
+        heard.contains(
+            &ship_mind::MIND_VOIDED
+                .replace("{name}", "Salt Moth")
+                .replace("{why}", "she is no longer yours to fly it on")
+        ),
         "{heard}"
     );
     assert_eq!(
@@ -733,10 +761,15 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
         tacsim::IcClaimRead::None,
         "no claim stands on the hull for her new holder to inherit"
     );
+    let again = run(&mut world.rig.tw, pilot, &seal_line);
+    assert!(
+        again.contains("a licensed mind flies a hull titled to you"),
+        "the pilot seals nothing on a hull that is another's: {again}"
+    );
     // Each claim closed, and a restart opens none again.
     let mut world = world.reboot();
     fires(&mut world, 4);
-    for claim in [first.claim, second.claim, third.claim] {
+    for claim in [first.claim, second.claim] {
         assert!(tacsim::ic_claim_closed(world.rig.tw.world(), claim).is_some());
     }
     assert_eq!(

@@ -250,6 +250,9 @@ pub mod ship_mind {
     pub const MIND_VOIDED: &str = " no longer fits her (";
     /// `tacsim::port::ship_mind::MIND_UNWIRED`.
     pub const MIND_UNWIRED: &str = "Minds cannot be sealed aboard a ship here.";
+    /// `tacsim::port::ship_mind::MIND_HOLDS_HER`.
+    pub const MIND_HOLDS_HER: &str =
+        ", and she is held as she is until it is unsealed: +ship/mind off, at her berth.";
 }
 
 /// The `+minds`, `@mind/*` and `@registry/*` command family (17g C2, doc 17h M8):
@@ -597,6 +600,7 @@ mod tests {
             MIND_UNSEALED,
             MIND_VOIDED,
             MIND_UNWIRED,
+            MIND_HOLDS_HER,
         )
     }
 

@@ -1457,10 +1457,7 @@ fn berth_move_admitted(
             let journeying = world
                 .module_state::<crate::JourneyBook>()
                 .is_some_and(|journeys| journeys.journeys.contains_key(&unit));
-            let lawful = next
-                .unplaced
-                .as_ref()
-                .is_some_and(|info| !info.quarantined);
+            let lawful = next.unplaced.as_ref().is_some_and(|info| !info.quarantined);
             // Already under way she may be re-stamped; from a domain she leaves only on a
             // journey of her own.
             lawful

@@ -442,6 +442,17 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(BAY_USAGE));
     }
     let run = |ctx: &mut Ctx<'_>| -> Result<(), String> {
+        // Doc 44 unit MW.13: a hull with a mind sealed aboard is held as she is; every act
+        // of the bay on her is refused with the sentence that says so. The quote reads.
+        let acting = ctx.switches.iter().any(|switch| switch != "quote");
+        let hull_named = |ctx: &Ctx<'_>, word: &str| -> Result<ObjId, String> {
+            let hull = hull_named(ctx, word)?;
+            if acting && crate::port::ship_mind::holds(ctx, hull) {
+                return Err(crate::port::ship_mind::MIND_HOLDS_HER
+                    .replace("{name}", &crate::port::coop::name_of(ctx.w, hull)));
+            }
+            Ok(hull)
+        };
         if ctx.switches.has("order") {
             let (hull, work) = raw.split_once('=').ok_or(BAY_USAGE)?;
             let hull = hull_named(ctx, hull)?;

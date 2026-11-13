@@ -189,6 +189,14 @@ jobs:
           # field of three parties (one rating, of the story's own script).
           - name: MW.5 a filed mind flies an absent pilot's escort
             test: c4_filed_mind_field::c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home
+          # Doc 44 unit MW.13 and doc 23 cut S.4d: a player's filed mind sealed aboard her
+          # ship under a claim anchored at her berth. She sails, loses her link, and her mind
+          # flies her at the Kirkwood picket; the claim closes once when she docks (one
+          # rating). And the routes by which her core or her title would change under it.
+          - name: MW.13 a filed mind sealed aboard a ship
+            test: mw13_ship_mind::mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_claim_closes_once
+          - name: MW.13 a seal does not outlive its core or its holder
+            test: mw13_ship_mind::mw13_a_seal_does_not_outlive_its_core_or_its_holder
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain
