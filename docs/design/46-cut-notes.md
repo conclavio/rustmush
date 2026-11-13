@@ -445,6 +445,11 @@ second figure is its seven integration test binaries. The test times are the `fi
 0.10 and 0.21 s for the four crates, 1.6 s for the refit walks and 11 s for the registration
 snapshot, which is 25 engine boots (the widest chain, two baselines, 21 configurations). Nothing
 was added to a pull-request cell that did not already build and run these crates' unit tests.
+In branch CI (run 43504818193, the hosted Linux runners, one process a test under nextest) the
+33 tests of the five crates sum to 8.9 s in the `rest-libs` cell and the registration snapshot
+takes 30 s in `tacsim-lib`, from the cells' JUnit reports. The run was dispatched, so the
+nightly-tier jobs ran on the branch too (doc 43 rule 2.3): the M7 and M8 stories, the bot's minds
+lane, the scale harness and the release-profile build all finished green.
 
 The files are 5.0 MB of text together, which is large (the kernel's two renewal files are 0.45 MB
 each), because a line holds a whole stored record and a walk repeats the record at every step.
