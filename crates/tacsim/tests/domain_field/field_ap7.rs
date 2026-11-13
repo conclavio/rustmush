@@ -29,6 +29,11 @@
 //!    on its pad, in the field, with nothing having asked it out. The prospector, set to
 //!    `GUARD`, has nothing to fire: in that time, long enough for story 1's prospector to
 //!    have gone home from the same cell, it is never let out.
+//! 4. [`ap7_a_rig_whose_operator_sits_in_his_other_rig_is_still_put_aboard`] (found by doc
+//!    45 unit AP.11's story; `escort_lease`'s ground): the operator is at the controls of his
+//!    armed rig, and his prospector stands beside it on `RETURN` with nobody in its cab. Its
+//!    mind takes it to the ramp, and the host puts it aboard as its operator, who is neither
+//!    aboard the carrier nor in that rig.
 
 use mush_core::{GOD, ObjId};
 use tacsim::arena::ledger::LedgerEvent;
@@ -46,7 +51,7 @@ use crate::driving_rig::{
     on_ground_at, on_pad_as, on_pad_with, parent, record_of, run, stocked_tuned, to_cell, to_ic,
     warm,
 };
-use crate::escort_lease::{contact_near, fired, in_field, lease_escort, top_up};
+use crate::escort_lease::{contact_near, fired, in_field, lease_escort, stand_up_out, top_up};
 use crate::field_host_rig::{
     AHUNA, armed, egress, frame, seat, second, site_record, task, tune, until, weapon_of,
 };
@@ -708,4 +713,95 @@ async fn ap7_a_carrier_with_nobody_aboard_stays_on_its_pad_and_takes_its_rigs_ab
         "its commander is still away"
     );
     assert_eq!(fired(&s.lines, escort), 0, "{}", s.exchange());
+}
+
+/// **Story 4** (this module's head; doc 45 unit AP.11's finding): a rig nobody sits in is put
+/// aboard when its operator sits in the cab of his other rig. The recover is a hand act its
+/// operator gives from aboard the carrier or from that rig's own cab; the host's recover of
+/// a unit it took out for an absent player is run as that operator, wherever he is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ap7_a_rig_whose_operator_sits_in_his_other_rig_is_still_put_aboard() {
+    let mut rig = stocked_tuned(quiet);
+    // The lessee in his armed rig's cab; his prospector three cells off, nobody in it, five
+    // cells from the ramp.
+    let (lessee, hull, _, _, others) = stand_up_out(&mut rig, 1, Some((133, 125)));
+    let kin = others[0];
+    let _ = rig.tw.connect(lessee);
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    // `stand_up_out` left the prospector on HOLD. From the armed rig's cab he gives it RETURN
+    // again, over the relay (doc 45 unit AP.4).
+    let set = run(&mut rig.tw, lessee, "+tv/2 posture return");
+    assert_eq!(
+        tacsim::posture::record::of(rig.tw.world(), kin),
+        Posture::Return,
+        "{set}"
+    );
+    let seated = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|state| state.assignments.get(&hull))
+        .and_then(|host| host.seats.values().next())
+        .map(|seat| seat.actor);
+    assert_eq!(
+        seated,
+        Some(lessee),
+        "the operator sits in his armed rig, not aboard the carrier"
+    );
+    let mut rx = egress(&mut rig);
+    let mut lines = Vec::new();
+    // His own mark opens the field, and he stays at his controls.
+    let (out, queued) = command(&mut rig, lessee, "+field/mark E=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 15, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field's task opens"
+    );
+    assert_eq!(
+        away_of(rig.tw.world(), kin).map(|away| (away.why, away.handed)),
+        Some((Why::Unattended, true)),
+        "the prospector is its mind's from admission"
+    );
+    assert_eq!(
+        away_of(rig.tw.world(), hull),
+        None,
+        "its operator holds his own rig's seat"
+    );
+    // Its mind takes it to the ramp, and the host puts it aboard.
+    let out = until(&mut rig, &mut rx, &mut lines, 240, |rig, _| {
+        !in_field(rig, kin) && site_record(rig).is_some_and(|record| record.exited(kin))
+    })
+    .await;
+    assert!(out, "the prospector is let out at its carrier's ramp");
+    let home = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+        let due = record_of(&mut rig.tw, kin)
+            .and_then(|record| record.act)
+            .map(|act| act.due_ic);
+        if let Some(due) = due {
+            to_ic(rig, due);
+        }
+        matches!(
+            parent(&rig.tw, kin),
+            mush_sim::SpatialParent::Interior { .. }
+        )
+    })
+    .await;
+    let record = record_of(&mut rig.tw, kin);
+    assert!(
+        home,
+        "the host puts it aboard as its operator, who sits in his other rig: last {:?}",
+        record.and_then(|record| record.last.map(|last| (last.kind, last.result)))
+    );
+    assert!(
+        matches!(
+            tacsim::surface::act::where_is(rig.tw.world(), kin),
+            tacsim::surface::act::Where::Bay { .. }
+        ),
+        "it is in its carrier's bay"
+    );
 }

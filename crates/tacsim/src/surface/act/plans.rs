@@ -149,7 +149,8 @@ pub(crate) fn lease_gate(w: &World, record: &TvLease) -> Result<(), LeaseBar> {
 }
 
 /// **The recover's world-side gate, in order** (the brief's 3.3; §7.1's placement half): the
-/// layer, the view, under way, not at a site, not aboard as the launch; then the rig: in this
+/// layer, the view, under way, not at a site, not aboard as the launch (save for a unit the
+/// field host owes its recover, doc 45 unit AP.11); then the rig: in this
 /// hull's bay → `Ok` with `from_bay` (the command and the prepare refuse `RECOVER_IN_BAY`
 /// unless an excursion is still open, which this recover closes — decision 21); on another
 /// domain, another hull's bay or elsewhere → `RECOVER_ELSEWHERE`; on the hull's site domain
@@ -182,7 +183,12 @@ pub(crate) fn recover_plan(
         return Err(Refusal::UnderWay { name });
     }
     let berth = site_berth(w, &view)?;
-    if !rig.operator_present(w, actor) {
+    // Doc 45 unit AP.11 (found by its story): the recover the field host owes a unit its mind
+    // took out at the ramp for an absent player is run as that player, wherever they are
+    // (`crate::field::absent`'s retry). Their place is not asked: the commonest absent
+    // operator sits in the cab of their other rig, and the host's recover of the rig beside
+    // it was refused here thirty times and the rig left at the ramp.
+    if !rig.operator_present(w, actor) && !crate::field::absent::homebound(w, rig.tv) {
         return Err(Refusal::NotAboard { name });
     }
     let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);

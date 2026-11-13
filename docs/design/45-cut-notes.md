@@ -1573,6 +1573,10 @@ co-op declared Hostile before the field. The second miner's mark opens the field
    on the record. The carrier's last three facts hold on main too, where nothing ever asked a
    carrier out: what this unit adds for a carrier, and what the story pins, is the record,
    the kernel's flag and word, and the rig in its bay.
+4. `ap7_a_rig_whose_operator_sits_in_his_other_rig_is_still_put_aboard`. Added by unit AP.11,
+   whose story found that the host's recover was refused when the rig's operator was in the
+   cab of his other rig (AP.11's note has the account and the fix). The three stories above
+   all have the operator aboard the carrier.
 
 **Found by the first whole run of `domain_field`, and fixed here.**
 
@@ -2006,7 +2010,9 @@ passing back.
 
 ## AP.9
 
-Not built.
+Not built. The closing story (AP.11, below) holds a ship's posture record only, staged by
+hand because no verb sets one, and marks the two places in `field_ap11.rs` where this unit
+adds the ship's arm: the owner's own command, and what the ship did on her word.
 
 ## AP.10
 
@@ -2458,4 +2464,182 @@ unit's diff applied; Windows is this box.
 
 ## AP.11
 
-Not built.
+The closing story (doc 45 §7.1; Q-45-14, Q-45-18, Q-45-22, with §7's own rules). Tests, one
+small fix the story found, and this note. Paths are under `crates/tacsim/` unless given.
+
+**Found, and fixed here: a rig on `RETURN` was left at the ramp when its operator sat in his
+other rig.** The first run of the story stopped at "the `RETURN` rig is aboard its carrier".
+The prospector's mind drove it to the ramp and the kernel let it out; the host then ran the
+rig's recover as its operator (`src/field/absent.rs`, `retry_recovers`), and the recover
+refused it thirty times with the line a player reads, "You work the rigs from aboard the Salt
+Moth." The owner was in the cab of his armed rig, which is neither aboard the carrier nor in
+the prospector's own cab (`src/surface/act.rs`, `RigAt::operator_present`). After the
+thirtieth try the host gave up and queued "it could not be put aboard: it stands beside your
+carrier's ramp. Recover it yourself." Units AP.6 and AP.7 did not meet it: in AP.6's `RETURN`
+story the absent player sits in the rig that goes home, and in AP.7's stories the operator
+logged off aboard the carrier. A player in one rig with a second rig beside it is the outfit
+the armed lease was built for (CF.6c), and it does not need the player to be away: an
+operator at the controls of his armed rig had his `RETURN` prospector left at the ramp in the
+same way.
+
+- **The fix** (`src/surface/act/plans.rs`, `recover_plan`, one condition): the place of the
+  operator is not asked for a unit the field host owes its recover
+  (`field::absent::homebound`). The host's first try and every retry pass through the
+  command and the start's prepare, and both read this one function.
+- **What it widens, and by how much.** While the host owes a unit its recover, that unit's
+  own operator may also type `+tv/<n> recover go` from anywhere on the site. It is the act
+  the host is running in their name every ten seconds. Nothing else about the hand acts
+  moved: a launch, a dump, an unload and a recover of any other rig still ask for the
+  operator aboard.
+- **The unit-level test that would have caught it** (`tests/domain_field/field_ap7.rs`, story
+  4, `ap7_a_rig_whose_operator_sits_in_his_other_rig_is_still_put_aboard`): `escort_lease`'s
+  ground, the lessee connected and seated in his armed rig, his prospector set back to
+  `RETURN` over the relay from that cab. The field opens by his own mark; the prospector is
+  its mind's from admission, is let out at the ramp and is in the bay.
+- **Mutation.** With the condition taken out again both stories fail where they should
+  (the table under "Verified").
+
+**The story** (`tests/domain_field/field_ap11.rs`,
+`ap11_an_absent_players_outfit_through_a_raid_and_their_return`). One field of four parties
+on Ahuna Flank, every command typed by a player who is not staff.
+
+- **The cast.** The owner: a carrier on the pad, the leased armed rig he sits in, set to
+  `GUARD` from its cab (`+tv/1 posture guard`), and a prospector out on the ground on
+  `RETURN`, which he reads from aboard and never sets. He quits in the armed rig's seat. The
+  miner, connected throughout: a prospector on `HOLD` near the guard. The raider: an armed
+  hull ten cells east whose player types every `LOCK` and `FIRE`. The raider's
+  `+field/mark W=hostile` opens the field with no round fired (Q-45-14).
+- **The walk.** Admission; the raider's fire on the miner's rig; the prospector's trip home;
+  the raider's fire on the owner's carrier and the guard's answer; the owner's reconnect, his
+  read, his seat and his first command; the close; the black box read in order; the records
+  after the demotion and after a restart; the claim.
+
+**Each clause of the row, and the assertion that holds it.**
+
+| "Done when" | Read from | The assertion |
+|---|---|---|
+| No unit of theirs fired first | The field's black box, in order, over the whole field | The first `Fired` line of the field is the raider's; the first `Impact` of the raider on a unit of the owner's comes before the first `Fired` of any unit of his; every round of each unit of his was at the raider; the prospector fired none |
+| The `RETURN` rig is aboard its carrier | The site's record and the world | The kernel let it out, the record names its exit, and `surface::act::where_is` reads the owner's carrier's bay; still there after the demotion. The miner's prospector, the same design on `HOLD`, was never let out |
+| The `GUARD` rig answered only for its owner's units | The black box | It fired nothing while the raider's fire arrived on the miner's rig beside it and the prospector drove home. Its first round follows the first arrival on the owner's carrier. The raider's fire never arrived on the guard itself. It stood on its cell, as the raider's own cockpit plotted it |
+| Not admitted as a pilot while away | The field's presence record and the arena's registry | `field::absent::away_of` reads `AwayAtAdmission`, handed, for the armed rig; the registry holds no seat for the owner; the field's snapshot holds the rig as an absent player's on `GUARD`. His prospector and his carrier read `Unattended` |
+| Re-seated on return | What he is sent, the record, the registry | "You are back at the controls of #n" with the `+focus` to type, in what the connect sends him; the presence record is gone and the registry holds his seat; his frame arrives, on the cell the mind stood, still on `GUARD` (Q-45-18) |
+| Their first command wins | His own frame, then the black box | After `DRIVE 132,119` the frame carries no order, the goal is his, and the rig has left the cell its mind stood on; the snapshot no longer flies it for an absent player; and over the next nine seconds it fires nothing more |
+| At login they read what happened to each unit | The reconnect queue, then the text of the connect | Queued once each and read under "While you were off watch:": the armed rig's line ("its mind has the controls and flies it on GUARD"), the prospector's ("makes for its carrier's ramp"), the field's opening. Nothing names the miner's or the raider's unit. The queue is empty after the read |
+| The same, at the close | What he was sent while connected | The settling, once; "After field 1 on Ahuna Flank, holding on the site: OWP-ES-01."; a "home" line naming the Salt Moth and OWP-TV-02; no line for any other fate; nothing queued. Both fate lines are under 120 columns |
+| The ship and the rigs obeyed the same words | Each unit's own posture record | `GUARD`, `RETURN` and `HOLD` read back off the armed rig, the prospector and the carrier after the demotion and after a restart. **The ship's half is the record only**: see below |
+| A casualty's salvage window is the 48 IC days it was | The claim's economy contract | The configured window is 48 × 86,400 IC seconds; at 24:1 that is 172,800 real seconds; the contract's effective end is the filing second plus that, the filing being before the owner's return; it is the same after his return and after a restart; the contract is active and the title has not moved. One letter went to him at the filing, naming the hull and "48 real hours". `+salvage` lists the claim for him and `+salvage/contest` still previews |
+
+**Where the story departs from the row, and why.**
+
+- **The guard answers for the owner's carrier, not for his other rig.** The row's other rig
+  is on `RETURN` and is on its way home from the field's first second, and a Dray-P berths
+  two rigs, so there is no third to stand beside the guard. The carrier is a unit of the same
+  player (`src/field/posture.rs`, `player_of`: its commander) and stands on its pad for the
+  whole field. Unit AP.6's first story holds the rig-for-rig case.
+- **The casualty is not a loss of this field.** The claim has to be filed while the title
+  holder is away, and he returns while the field runs. So the casualty is a hull of his that
+  lies disabled before any of it; the miner's rig tows it into her carrier and she files,
+  after he has quit and before the raid. No unit of his meets a fate worth a letter in the
+  field: lost, captured, taken in tow and down are AP.1's story.
+- **He reads the fates at the close, not at login.** He returns while the field runs, so what
+  the reconnect queue holds is the opening and what each rig's mind was left to do. The close
+  tells him what became of each, live.
+
+**Each use of staff fiat.** No `module_state_mut` is added to a test file, so the fiat
+budget is not re-blessed.
+
+| What | How | Why no route in play reaches it |
+|---|---|---|
+| The raider's hull and its seat | `field_host_rig::armed` and `seat` (CF.2's fixture) | No route in this rig gives a second party an armed hull; every lock and shot is the player's own |
+| Rigs stood on their cells | `driving_rig::to_cell` | A drive is in play (the armed rig is driven out by its player); the placements save the walk |
+| The casualty | A spare rig of Occator's pool titled to the owner by `@asset/transfer`, its power set destroyed, and `@tacsim/site … leave … casualty` (GC.6's fixture) | A leased rig's title cannot move and a written-off lease rig is refused at filing; no verb disables a hull |
+| The second lease's money | `escort_lease::top_up` (`@econ/mint`) | The armed lease's deposit leaves too little for a prospector |
+| The world's rate | `@tacsim/time rate=24`, where the rig is not already there | The live game's rate, so the window reads as a player would wait it |
+| The ship's posture | `posture::record::set` under a staff context, as AP.3's story wrote it | No verb sets a ship's posture outside a field. Owed to AP.9 |
+| The mail | A recorder in the seam `surface::claim::install_claim_mail` fills | This crate's test world composes no mail module |
+| The tow's stage lengths | `[tacsim.recovery]` 30, 30 and 60 IC seconds | Tempo only; the claim's window is left as shipped, and asserted so |
+
+**The ship arm: what is pinned, and what it owes AP.9.**
+
+- **Pinned.** The owner's ship here is his carrier. Her posture is the one record a rig's is
+  (AP.3), written `HOLD` before he leaves; it reads `HOLD` after the field has promoted and
+  demoted around her and after a restart. She is where she was settled, her returned rig is
+  in her bay, and she fired nothing.
+- **Not pinned, because it is not built.**
+  1. *The same words.* No verb sets a ship's posture outside a field. `+tv[/<n>] posture`
+     addresses rigs; `MIND POSTURE` is a seat's word inside an IC field (AP.4's cut note says
+     a carrier's helm takes it there, and no story holds that either). This unit's brief took
+     the words to exist; they do not, so the story stages the record and says so.
+  2. *What she does on her word.* A carrier on her pad is flown as `HOLD` whatever her record
+     says (AP.7), so nothing in this field tells her `HOLD` from a `RETURN`. A ship flies no
+     posture in a bubble (AP.9).
+- **How AP.9 adds its arm to this story.** Two comments in `field_ap11.rs` begin `AP.9`: in
+  `stand_up`, where the staged write stands in for the owner's command, and after the
+  demotion, where the ship's record is read. AP.9 replaces the first with the verb it builds
+  and puts what the ship did beside the second. This rig's world has ships under way on filed
+  passages and no bubble; if AP.9's ship has to be interdicted, the bubble comes into this
+  rig with it.
+
+**Raised for the owner, none blocking.**
+
+- **A player who returns mid-field is not told that a `RETURN` rig nobody sat in is already
+  aboard** until the close says "home". A unit nobody sat in has no "went home" line (MW.7's
+  `WENT_HOME` is a seated pilot's). A queued line at the recover's finish would close it.
+  Small; not built here.
+- **The reconnect queue reads the rigs before the field.** Each rig's line is queued at
+  admission and the field's own line at its first snapshot (AP.1's default), so a returning
+  player reads "A field opened around #n" for each rig and then "Field 1 is open on Ahuna
+  Flank". The story pins the order as it is.
+- **The absent-unit lines are 120 to 196 characters** and wrap on a 120-column terminal.
+  They are prose notices under the reconnect heading, not cockpit rows; noted because this
+  story asserts on them.
+
+**Tier, and run time.** Not gated: one `mod` line in `tests/domain_field.rs`, so the pull
+request's `tacsim-integration` cells run it by nextest's hash partition and it needs no row
+in `test-tiers.toml`. Alone, in a test build, the story takes 112 s on Linux (conclav.dev:
+111.5, 111.7 and 112.0 s over three runs) and 112 s on Windows; story 4 of `field_ap7.rs`
+takes 47 s on Linux and 45 s on Windows. Of the story's 112 s the staging is about 15 s
+(three hulls sailed to the pad, the leases, the tow) and the close is the field's idle bound,
+60 s of arena time with no shot fired. The idle bound is three times the longest quiet stretch the story needs (the
+prospector's trip home after the raider's first fire, about 19 s) and is what a real field
+would wait; a field runs at the wall's pace. No other window is waited out: the owner quits,
+so the five minutes of a lost link are not in it; the recover's instant is jumped to; and the
+48 IC days are read off the contract, never waited.
+
+**Verified.**
+
+- **Linux** (conclav.dev, a throwaway clone at main `2022eb974` with this branch's patch):
+  the story, four runs out of four; story 4 of `field_ap7.rs`, four out of four (three
+  before its prospector was stood nearer the ramp, at 89 s, and one after); and the stories
+  that go through a field's exit and the host's recover, run four at a time on the final
+  tree (`field_ap1`, `field_ap4`, `field_ap4a`, `field_ap5`, `field_ap6`, `field_ap7`,
+  `field_mw7`, `escort_lease`): 32 passed, none failed.
+- **Mutations** (Linux, each applied, run and undone by exact text):
+
+  | Mutation | What fails |
+  |---|---|
+  | `recover_plan` asks where the operator is again (the fix taken out) | this story at "a rig on RETURN is let out at its carrier's ramp and put aboard", the rig beside the ramp and "Recover it yourself" in the owner's queue; story 4 at "the host puts it aboard as its operator, who sits in his other rig" |
+  | The gate's widening for a guard taken out (`arena/absent.rs`, `permits`: a guard answers for its own hull only, as a unit on `HOLD` does) | this story at "a guard returns fire on the unit that hit its owner's carrier": ten of the raider's rounds arrived on the carrier and the guard fired none |
+
+- **Windows** (this worktree): the story, three passing runs, and story 4; `cargo fmt`;
+  `cargo clippy -p tacsim --all-targets -- -D warnings`; CI's M7 memory-size clippy pass on
+  `tacsim`; `cargo doc -p tacsim --no-deps` under `-D warnings`; `cargo test -p
+  mush-contract-tests` (the fiat budget, the census, the panic budget and the restriction
+  lints among them), nothing re-blessed.
+- **CI**: the branch's dispatch run and the pull request's own run are named in the pull
+  request's body, since a note cannot name the run of its own commit.
+
+**Not verified, and not covered.**
+
+- Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
+  player reads were read in the test rig's line mode.
+- The ship's flown behaviour, and a ship's verb: not built (above).
+- A loss, a capture, a tow and a casualty of the field itself, with their letter: AP.1's
+  story holds them; this one has none.
+- The five minutes after a lost link, and a restart while the mind holds the unit: MW.7's
+  and AP.5's stories. This story's restart is after the demotion.
+- A sealed mind of the player's own flying the guard: the house mind flies it here (MW.5's
+  filed-mind story holds a filed mind under the gate).
+- `GUARD` against `HOLD` on the same hull in one field: AP.6's stories 1 and 2. Here the
+  contrast is by hand (the mutation table).
+- The 512 site: the story runs on Ahuna Flank (256) only.
