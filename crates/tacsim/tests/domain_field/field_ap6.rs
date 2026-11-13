@@ -184,6 +184,10 @@ async fn ground(posture: Posture, prepare: impl FnOnce(&mut Rig, ObjId)) -> Grou
         .expect("the miner launched it")
     };
     prepare(&mut rig, hull);
+    // Doc 45 unit AP.7: the miner's prospector has nobody in it either, and would go home when
+    // the field opens. It is to stand beside the lessee's rigs, so the miner leaves it on HOLD
+    // (the lessee's own prospector is left on HOLD by `stand_up_out`).
+    crate::field_host_rig::left_on_hold(&mut rig, miner, 1);
     let _ = rig.tw.connect(lessee);
     for _ in 0..3 {
         let _ = second(&mut rig);

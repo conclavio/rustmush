@@ -60,6 +60,10 @@
 //!   a round left, or its motion disabled. It is then flown as `RETURN`: the frame and the
 //!   view read `return`, the order is the go-home one, and the widening is gone. The player's
 //!   record is not rewritten.
+//! - **A unit that carries nothing to fire cannot guard** (doc 45 unit AP.7; Q-45-10): it
+//!   never could defend itself, so its `GUARD` did not end, it never began. The player's word
+//!   was to stay, and the unit stays: it is flown as `HOLD`, and reads `hold`. (Until AP.7 it
+//!   was flown as `RETURN` at once, AP.6's default 6.)
 //!
 //! An order to advance or attack that stood lapses when either order is laid; its `hold_fire`
 //! is kept (Q-44-18). The order is the unit's while the flag stands: a detachment command that
@@ -228,8 +232,9 @@ impl Arena {
 
     /// **The posture `unit`'s mind is held to** (this module's head, "flying a posture"): the
     /// one its player left, except that a `GUARD` flown for an absent player by a unit that
-    /// can no longer defend itself is `RETURN` (Q-45-9). `RETURN` for a unit the arena does
-    /// not hold.
+    /// can no longer defend itself is `RETURN` (Q-45-9), and by a unit that carries nothing
+    /// to fire is `HOLD` (doc 45 unit AP.7; Q-45-10). `RETURN` for a unit the arena does not
+    /// hold.
     #[must_use]
     pub fn flown_posture(&self, unit: ObjId) -> Posture {
         self.unit(unit).map_or(Posture::Return, flown)
@@ -486,6 +491,8 @@ impl Arena {
 /// **The posture `state`'s mind is held to** ([`Arena::flown_posture`]).
 pub(crate) fn flown(state: &UnitState) -> Posture {
     match state.posture {
+        // Doc 45 unit AP.7 (Q-45-10): nothing to fire, so no guard to stand or to lose.
+        Posture::Guard if state.absent && state.weapons.is_empty() => Posture::Hold,
         Posture::Guard if state.absent && !can_defend(state) => Posture::Return,
         posture => posture,
     }

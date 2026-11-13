@@ -31,6 +31,13 @@
 //! commander if it is a carrier, else the operator who launched it. A unit a hired crew sits
 //! in has none: a crew is people in the world and not the player's unit (Q-45-13). It is told
 //! and told again exactly as the posture is.
+//!
+//! **A carrier is home** (doc 45 unit AP.7; Q-45-11). `RETURN` means go home, and a carrier
+//! on its pad is there: for it the word means stay. So the arena of a carrier whose record
+//! says `RETURN` is told `HOLD` ([`flown_by`]): its mind stands where it is and answers only a
+//! unit that has fired on it, by the orders `HOLD` already lays, and the kernel is never asked
+//! to drive an immobile hull anywhere. The record, and everything a player reads of it, still
+//! says `RETURN`. No verb sets a carrier's posture today, so this is every carrier.
 
 use std::collections::BTreeMap;
 
@@ -90,10 +97,7 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
     };
     let mut rows = BTreeMap::new();
     for (task, unit, pilot) in units {
-        let want = (
-            crate::posture::record::of(ctx.w, unit),
-            player_of(ctx, unit, pilot),
-        );
+        let want = (flown_by(ctx.w, unit), player_of(ctx, unit, pilot));
         let have = told
             .get(&unit)
             .filter(|(told_task, _, _)| *told_task == task)
@@ -133,6 +137,16 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// **The posture `unit`'s arena is told** (this module's head, "a carrier is home"): the
+/// unit's own record, except that a carrier on `RETURN` is told `HOLD`.
+#[must_use]
+pub(crate) fn flown_by(w: &mush_core::World, unit: ObjId) -> Posture {
+    match crate::posture::record::of(w, unit) {
+        Posture::Return if super::carrier::is_carrier(w, unit) => Posture::Hold,
+        posture => posture,
+    }
+}
+
 /// **The player whose unit `unit` is** (this module's head, "whose unit it is"), `pilot`
 /// being who the field's row says sits in it.
 #[must_use]
@@ -159,7 +173,7 @@ pub(crate) fn at_resume(
     units: impl Iterator<Item = ObjId>,
 ) {
     for unit in units {
-        arena.set_posture(unit, crate::posture::record::of(w, unit));
+        arena.set_posture(unit, flown_by(w, unit));
     }
 }
 
@@ -203,5 +217,24 @@ mod tests {
         super::at_resume(&w, &mut arena, [older, newer, ObjId(9_999)].into_iter());
         assert_eq!(arena.posture(older), Posture::Return);
         assert_eq!(arena.posture(newer), Posture::Guard);
+    }
+
+    /// **Doc 45 unit AP.7: a unit that is no carrier is told its own word** (Q-45-11): only
+    /// a carrier's `RETURN` is told as `HOLD`, and a Thing with no hull row is no carrier.
+    #[test]
+    fn ap7_only_a_carriers_return_is_told_as_hold() {
+        let mut w = World::new_minimal();
+        let rig = w
+            .create(ObjKind::Thing, "Rig", GOD, None)
+            .expect("a thing is made");
+        assert!(!crate::field::carrier::is_carrier(&w, rig));
+        assert_eq!(super::flown_by(&w, rig), Posture::Return);
+        w.set_attr(
+            rig,
+            POSTURE_ATTR,
+            Attr::json(serde_json::json!({ "posture": "guard" }), GOD),
+        )
+        .expect("the record is written");
+        assert_eq!(super::flown_by(&w, rig), Posture::Guard);
     }
 }

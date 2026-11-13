@@ -1908,7 +1908,10 @@ pub(crate) fn file_due(
     match plan.state {
         FillState::Live | FillState::Parking { .. } => FileDue::Never,
         FillState::Ended { why, at_ic } => match why {
-            PlanEnd::HoldFull | PlanEnd::Bound => after(at_ic),
+            // Doc 45 unit AP.7: a plan a field cut short was not worked out, so it is filed
+            // again like one that ran out of time. (No house rig is flown home by a mind today:
+            // its dispatcher is no player.)
+            PlanEnd::HoldFull | PlanEnd::Bound | PlanEnd::Field => after(at_ic),
             PlanEnd::WorkedOut if fair_left && plan.tally.cycles >= 1 => after(at_ic),
             PlanEnd::WorkedOut
             | PlanEnd::Cleared
@@ -2874,7 +2877,8 @@ fn dispatch_line_read(
             ) => return DispatchRead::Stopped { n, mark, why },
             Some(PlanEnd::Cleared) => return DispatchRead::Held { n, mark },
             _ if *stalled => return DispatchRead::Stalled { n, mark },
-            Some(PlanEnd::WorkedOut | PlanEnd::HoldFull | PlanEnd::Bound) | None => {}
+            Some(PlanEnd::WorkedOut | PlanEnd::HoldFull | PlanEnd::Bound | PlanEnd::Field)
+            | None => {}
         }
     }
     // 6. The site not open.

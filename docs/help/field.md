@@ -509,6 +509,42 @@ its controls, and five minutes after your link drops, or at once if you quit or
 were not there to begin with, its mind has it. A connected pilot is taken into a
 field as their unit's pilot, as always.
 
+**A rig nobody sits in.** A rig you launched and work from your carrier, or left
+on a fill plan, has nobody at its controls. A field that opens around it takes
+it in as its mind's from the first moment, whether or not you are connected,
+and you are told "A field opened around #123 with nobody in its seat: its mind
+has the controls, makes for its carrier's ramp and fires only on a unit that
+fires on it. A plan it was working ends once it is aboard." It flies its
+posture like any unit:
+
+- On **RETURN**, which every rig holds until you set another, it drives to your
+  carrier's ramp, is let out of the field and is put aboard, into the bay slot
+  it launched from. **Its fill plan ends when it comes aboard**, and you read
+  "Rig 2's plan at Ahuna Flank ended: a field opened around it and it was taken
+  home." with what it mined. Ore in its hopper is unloaded once the field has
+  settled. A rig you sit at the console of and recover out of the field
+  yourself (`+tv/<n> recover`) ends its plan the same way. File the plan again
+  when the site is quiet. A rig that cannot move, or is in tow, stays where it
+  is whatever its posture.
+- On **HOLD** it stays on its cell. Its plan starts nothing while the field
+  runs and goes on from where it stopped when the field settles. You are told
+  "... its mind has the controls and flies it on HOLD. It will not fire first.
+  A plan it was working runs on once the field has closed."
+- A rig with nothing to fire cannot guard. Set to **GUARD** it stays, as on
+  HOLD.
+
+Set the posture from aboard the carrier before you leave (`+tv/<n> posture
+hold`); see *Postures*. To fly such a rig yourself, board it before the field
+opens.
+
+**Your carrier.** Nobody flies a carrier in a field, so its mind holds it too.
+A carrier on its pad is home: it stays where it is, fires only on a unit that
+fires on it, and takes your rigs into its bay as their minds bring them to the
+ramp. Its mind never lifts it. The only way a carrier leaves a field, and
+leaves rigs behind, is your own live `+ship/lift` naming every unit you have
+out (`help ships`). A carrier that is wrecked wrecks the rigs in its bay, so a
+rig sent home is as safe as the carrier is.
+
 **What the mind will and will not do while you are away.** It never opens fire
 first. It fires only on a unit whose fire has arrived on your unit in this
 field, hit or miss. A party you or your leader marked Hostile is not enough, nor
@@ -581,10 +617,12 @@ trades.
   where it took the unit; past that it answers for itself alone.
 - **GUARD ends** when you are back at the controls, or when the unit can no
   longer defend itself: no fire channel with a round left, or its motion
-  disabled. It is then flown as RETURN and goes home if it can. An unarmed rig
-  cannot guard, so GUARD on one is RETURN. The posture you set is kept, and
-  `+tv` and `MIND POSTURE` go on showing it: a unit that can defend itself
-  again guards again.
+  disabled. It is then flown as RETURN and goes home if it can. The posture
+  you set is kept, and `+tv` and `MIND POSTURE` go on showing it: a unit that
+  can defend itself again guards again.
+- **A unit with nothing to fire cannot guard.** A prospector set to GUARD stays
+  where it stands and answers nobody, exactly as on HOLD, and is not taken
+  home. Set RETURN to bring it in.
 
 A hired crew's unit is not yours for this rule: a unit on GUARD does not answer
 for it.

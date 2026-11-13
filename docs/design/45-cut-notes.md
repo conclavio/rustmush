@@ -1446,7 +1446,344 @@ unit's diff applied).
 
 ## AP.7
 
-Not built.
+Rigs on a plan, and carriers (doc 45 §7.1; Q-45-1, Q-45-10, Q-45-11; doc 27 Q-H10). Built on
+MW.7's door, AP.5's admission and AP.6's posture. Paths are under `crates/tacsim/src/` unless
+given.
+
+**Built.**
+
+- **A unit nobody sits in is an absent player's unit from the turn a field takes it in**
+  (`field/absent.rs`, `unattended`; Q-45-1). In a field the player who counts is the seated
+  pilot (Q-44-35), and a rig worked from its carrier, a rig on a fill plan and a carrier on
+  its pad have none. Each row of the live record with no pilot, whose unit is some player's
+  (`field/posture.rs`, `player_of`: the operator who launched the rig, the carrier's
+  commander), gets MW.7's presence record with a reason of its own (`Why::Unattended`),
+  written handed, and the kernel is told. There is no seat to release, no five minutes to
+  wait and nobody to take the unit back, so the rest of MW.7's pass applies unchanged: the
+  kernel's rule (`arena/absent.rs`, `permits`), the standing order of the unit's posture, the
+  narrowed view, the ask at the ramp once a second, the recover the host runs and tries
+  again. A unit that is nobody's (a raider's fixture carrier, a fixture hull, a hull a hired
+  crew launched) is left as it was. It is called at admission in the turn the task opens
+  (`field/admit.rs`), at every join's answer (`field/carrier.rs`, `on_joined`) and once a
+  second by the pass for whatever neither reached (a resumed field).
+- **The gate is still one function.** Nothing was added to `arena/absent.rs`'s rule. A rig
+  nobody sits in and a carrier come through `Arena::resolve_fire_by` and `permits` exactly as
+  a seated absent pilot's unit does.
+- **An absent word waits for its unit's join** (`arena_task.rs`, `apply_field_acts`). A word
+  that sets the flag on a unit the arena does not hold yet used to be dropped; it is now kept
+  and applied after that head's joins, as a posture word is, so a hull joining with nobody
+  at its controls is bound from the pulse that takes it in. A word that clears the flag never
+  waits.
+- **A rig flies its posture** (Q-45-10), by AP.6's kernel and MW.7's host with nothing new
+  between them. On `RETURN` its mind drives it to its carrier's ramp, the kernel lets it out,
+  and the host runs its recover as its operator into the bay slot it launched from. On `HOLD`
+  it stands, and is never asked out.
+- **The plan ends when the rig comes aboard** (`surface/plan.rs`, `PlanEnd::Field`;
+  `surface/act/providers.rs`). The start of a recover whose rig left a running field at its
+  carrier's ramp (the site record names the exit: `SiteRecord::exited`) parks the record's
+  live plan in the same write. The finish that puts the rig in the bay ends a plan so parked,
+  with one `Ended` note, and counts the trip if the hopper came home loaded. Only the plan
+  of whoever runs the recover is parked: a former lessee's plan still on the record is not
+  theirs to end. That recover is also the one hand act a live plan does not hold its rig
+  from (`surface/act/commands.rs`, `left_a_field`, and the same test in the start's prepare):
+  without the exemption the host's recover of a planned rig was refused `PLAN_LIVE` at every
+  try, and the rig stood beside the ramp. The surface tick
+  tells the note as it tells every plan's end: said to a connected author, queued at trip
+  level for one who is not (`surface/tick.rs`, `tell_plan`; `port/tv.rs`, `END_FIELD`). A
+  recover that does not land leaves the plan parking, and once the site demotes the plan
+  brings the rig home by itself and ends from the bay, by the interpreter's existing parking
+  arm. A plan already parking keeps its own reason.
+- **A rig that holds resumes its plan** by the rule that was already there: a promoted site's
+  starts wait and go on when the flag clears (`surface/tick.rs`, Q-CF-30). Nothing parks the
+  plan of a rig that stays, so nothing was needed but the posture being flown.
+- **A carrier is home** (Q-45-11; `field/posture.rs`, `flown_by`). The host tells the arena
+  of a carrier whose record says `RETURN` the word `HOLD`: its mind stands where it is, turns
+  to and answers only a unit that has fired on it, by the orders `HOLD` already lays. The
+  record, and what a player reads, still says `RETURN`. **No mind lifts a carrier**: the
+  host's pass skips a carrier outright (`field/absent.rs`, `tick`), a carrier has no recover
+  for it to ask with, and the kernel's lift (`Arena::withdraw_to` with no ramp) is reached
+  only from `field/exit.rs`'s `Then::Lift`, the commander's live `+ship/lift` with its
+  leave-behind confirmation, and the raid director's own carrier. When the commander does
+  lift, the host's retry list does not take the carrier (`on_out`): the departure is filed
+  once, as they typed it, and its refusal is told to them. A wrecked carrier still wrecks the
+  rigs in its bay (`field/carrier.rs`, unchanged). Its rigs come aboard by their own
+  recovers.
+- **The host puts a unit nobody sits in aboard only when the host asked it out** (`on_out`).
+  Its record stands for the whole field while its player may be connected: an exit that
+  player typed is theirs, told to them, and never tried again behind them.
+- **A unit with nothing to fire cannot guard, and stays** (`arena/absent.rs`, `flown`): a
+  unit that carries no fire channel at all and is set to `GUARD` is flown as `HOLD`. One that
+  had something to fire and has spent it still goes home, as AP.6 built it.
+- **The host asks neither half of a tow out** (`field/absent.rs`, `in_tow`): found by this
+  unit's first whole run (below). And the kernel judges a casualty in tow by its tug's
+  posture as well as its pose (`arena/withdraw.rs`): a tug standing on `HOLD` or `GUARD` keeps
+  the pair, so a load typed by its player never lets the casualty out and keeps the tug.
+- **A refused join takes its waiting word back** (`field/absent.rs`, `join_refused`).
+- **What the player is told** (`field/absent.rs`): `UNATTENDED` and `UNATTENDED_ON`, to the
+  rig's operator at admission, through the reconnect queue at trip level; MW.7's `GONE_HOME`
+  and AP.6's `STAYS_ON` to the leaders the rig was with, with the clause "nobody is in its
+  seat". Nothing is said of a carrier: it stays where it is. Both lines have their rows in
+  the bot's sentence table (`crates/mush-bot/src/mine/minds.rs`).
+- `docs/help/field.md`: "A rig nobody sits in" and "Your carrier" under *If you lose your
+  link, or quit*; the unarmed guard under *Postures*.
+
+**The mind API did not move.** `MIND_ABI` is still `rhai=1.26.0;api=9;stock=3`; no doctrine
+source, no `MindView` field and no seal changed. One meaning moved: for a unit with no fire
+channel flown for an absent player on `GUARD`, `MindView::posture` and the frame read `hold`
+where they read `return`. A carrier's read `hold` while a mind flies it.
+
+**Tests.**
+
+In source:
+
+- `arena::weapons::tests::ap7_a_unit_with_nothing_to_fire_set_to_guard_stays_as_on_hold`:
+  flown, framed, ordered and kept at the ramp as `HOLD`, the word kept; a lift with no ramp
+  is never refused; the same unit with a spent magazine still goes home.
+- `arena_task::tests::ap7_an_absent_word_told_before_its_units_join_is_applied_when_it_lands`:
+  the word and the join at one head, the word a head early, a clearing word, a practice match.
+- `field::absent::tests::ap7_a_unit_nobody_sits_in_is_recorded_as_its_minds_from_the_start`,
+  `field::posture::tests::ap7_only_a_carriers_return_is_told_as_hold`,
+  `surface::plan::tests::ap7_a_plan_ended_by_a_field_is_stored_and_worded`.
+
+Stories (`tests/domain_field/field_ap7.rs`), each a field of four parties, every command
+typed by a player who is not staff. The ground is one operator's whole outfit left to
+itself: his carrier on the pad, his leased armed rig launched and stood off with nobody in
+its cab, and his prospector on a pocket it has sounded, with a fill plan he filed by `+tv/2
+plan <pocket> go`. He logs off aboard his carrier. A second miner's prospector stands beside
+them on `HOLD`, and an intruder's armed hull sits ten cells east, whose co-op the operator's
+co-op declared Hostile before the field. The second miner's mark opens the field.
+
+1. `ap7_an_unattended_rig_on_a_raided_site_goes_home_and_its_operator_reads_the_plans_end`.
+   Both rigs, the second miner's and the carrier carry the record from admission. The
+   intruder's fire lands on the second miner's rig. The armed rig fires nothing. Both rigs
+   are let out at the ramp and put aboard. The plan is `Ended { why: Field }`. At login the
+   operator reads `UNATTENDED` for each rig and `PLAN_ENDED` with `END_FIELD`, and nothing
+   about the carrier.
+2. `ap7_the_same_rig_on_hold_is_still_there_at_demotion_and_its_plan_runs_on`. The plan
+   starts nothing while the field runs. At demotion the prospector is on its cell, on the
+   ground, the plan live at step 0. The rig's next act is started by the surface tick with
+   `by: Plan { no: 1 }`, its author still away. He reads `UNATTENDED_ON` at login and no
+   plan's end.
+3. `ap7_a_carrier_with_nobody_aboard_stays_on_its_pad_and_takes_its_rigs_aboard`. The carrier
+   carries the record. The armed rig comes home and is in its bay. The field's own snapshot
+   holds the carrier as an absent player's unit on `HOLD`, its record still `RETURN`. A
+   minute and a half on, the prospector set to `GUARD` has not been let out (story 1's goes
+   home from the same cell in less), is plotted on its cell by the intruder, and the snapshot
+   holds its word as `GUARD`; and the carrier is in the field, at its pad pose, with no exit
+   on the record. The carrier's last three facts hold on main too, where nothing ever asked a
+   carrier out: what this unit adds for a carrier, and what the story pins, is the record,
+   the kernel's flag and word, and the rig in its bay.
+
+**Found by the first whole run of `domain_field`, and fixed here.**
+
+- **The host asked a towed casualty out from behind its tug.** The kernel judges a casualty
+  in tow by its tug, so the pass's ask for the casualty alone, made once the tug stood beside
+  the ramp, took it out of the field and left the tug's load with nothing to load (FR.5's two
+  ramp stories failed at "the casualty's stand"). The pass now asks neither a casualty in tow
+  nor the tug that tows it. This was reachable before for a seated pilot's unit and is fixed
+  for both.
+
+**Found by hosted CI on the first push, and fixed here.**
+
+- **The raid director put a hull that had just boarded back into the field with no order**
+  (`surface/raid.rs`, `rejoin_refused`). A raider's hull let out at its ramp goes aboard in
+  the batch that lets it go, which spends its WITHDRAW mark, and the site's record names its
+  exit only when that write lands. In between the director's "land the hulls the kernel
+  refused" check read the hull as refused, landed it again and joined it. Its WITHDRAW's one
+  sequence was spent, so the kernel refused the order a second time and the hull fought until
+  the field ended: in `field_director`'s barge story it destroyed the miner's carrier, guard
+  and a rig, and never went home. The window is on main. The check now also counts a hull
+  whose exit is in flight (`field::exit::leaving`, the test the launches already use).
+  Evidence, the story run pinned to one core on conclav.dev: main, six of six pass; this unit
+  without the guard, between four of six and four of four fail, each with the kill list
+  hosted CI printed; with the guard, eight of eight pass. The kernel's log of a failing run
+  shows the hull's last think under its order at 14.8 s, no think at 15.8 s, and a fresh
+  mind row with no order at 16.8 s. Why this unit makes a slow runner fall into the window
+  more often was not established: it adds work to the host's passes and tells the kernel of
+  three more units, and switching either off made the failures stop.
+- **Two stories the default run ignores** (`m8_world`, D-23-18 at 256 and at 512; they run
+  only in the dispatch) had a rig nobody sits in that was to stand: the last rows of the
+  table below.
+
+**Pinned outcomes moved, each because of this unit and for no other reason.** The first whole
+run failed ten older stories; `domain_field` was otherwise green (270 of 281). All ten had a
+rig nobody sits in that the story expected to stand where it was put, and under this unit
+such a rig goes home on `RETURN`. No assertion was weakened. Two were the tow defect above
+and pass with the fix alone. In the others the rig's operator now says what the story needs
+by their own command (`field_host_rig::left_on_hold`: `+tv/<n> posture hold` from aboard the
+carrier, the answer compared whole), or takes the rig's console.
+
+| Story | What failed | Why | What changed |
+|---|---|---|---|
+| `field_fr5` `fr5_ahuna_`/`fr5_urvara_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded` | "the casualty's stand" | the pass took the casualty out from behind its tug | the tow guard; the stories are untouched |
+| `field_gc4` `lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable`, `gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift` | "Nothing rig 2 could tow lies within a cell of it" | the escort, to lie a casualty beside the wingman, had moved off under its mind | its captain leaves rig 1 on `HOLD` |
+| `field_gc4` `lane3_a_loaded_combat_casualty_never_darkens_the_lift` | the tow start: `tow_rig_busy` | the tug stood beside the ramp, was let out at the field's opening and was in its recover | its captain leaves rig 1 on `HOLD` |
+| `field_gc3` `gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed` | remains at (116, 124), not (114, 124) | the prospector drove two cells toward its ramp before the field settled | its operator leaves rig 1 on `HOLD` |
+| `field_rs1` `rs1_ahuna_`/`rs1_urvara_the_tender_works_through_fields_and_the_tow_counts_her_laden` | "the jam is cleared" | the escort the tender works on left its side, and the stranger's pair left theirs | the captain leaves rig 1 on `HOLD`, the stranger rigs 1 and 2 |
+| `crew_exit` `cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extracted` | the preview read "Rig 1 is climbing the stern ramp" | the prospector on the ramp was let out by its mind before its operator typed the recover | the operator holds the prospector's console (`seat`), so the recover is theirs, as the gate has it |
+| `m8_world` `d23_18_a_licensed_mind_carries_its_memory_between_fields_at_256`/`_at_512` (dispatch-only), and the ground they share with S.4b-3's two | "the second promotion: You see no flight there." | rig 1, flown by its licensed mind with nobody in it, drove off toward home in the first field, so the raiders' second mark found nothing where it had stood | its pilot leaves rig 1 on `HOLD` (`licensed_field_story`); the four pass |
+| `field_ap6` story 1, and the ground of stories 1 to 4 | "a guard returns fire on the unit that hit its owner's other rig": no fire arrived on the lessee's prospector | both prospectors, nobody in either, had gone home | the lessee leaves his on `HOLD` from aboard the carrier (`escort_lease::stand_up_out`), the miner hers (`field_ap6::ground`) |
+
+No state hash, ledger line, seal identity or harness baseline field moved: a practice match
+and the harness set no absent flag, so nothing here is reached there.
+
+**Divergences from the row, and what doc 45 had wrong or left out.**
+
+- **"A carrier on its pad is home: `RETURN` means stay" is built as `HOLD` told to the
+  kernel.** The alternative, the go-home order on a hull that cannot move, leaves the house
+  mind plotting a drive it cannot make and firing only in its cornered stand.
+- **The row says "a carrier with nobody aboard".** The rule built does not read who is
+  aboard: a carrier is nobody's to fly in a field, so it is its mind's whoever is aboard and
+  connected (default 1 below).
+- **Row 4 of §3 said a destroyed rig's plan is cleared and nothing else touches a plan.** A
+  plan now also ends when its rig leaves a field by the ramp.
+- **Q-45-10 says an unarmed rig "cannot guard" and does not say what `GUARD` on one does.**
+  AP.6 flew it as `RETURN`; this unit flies it as `HOLD` (default 3).
+- **Files outside the row**: `arena_task.rs` (the waiting word), `arena/absent.rs` (the
+  unarmed guard), `arena/withdraw.rs` (the tug's posture), `field/absent.rs`,
+  `field/posture.rs`, `field/admit.rs` (one call), `surface/act/providers.rs`, `fixed.rs`
+  and `commands.rs` (the park, the end, the exemption, the end's sentence), `port/tv.rs`
+  (one sentence), `port/yard.rs` (two matches), `crates/mush-bot/src/mine/minds.rs` (two
+  rows). Of the row's own files, `surface/tick.rs` is not touched (its hold and its tell
+  already did what the unit needs) and `field/exit.rs` only passes `on_out` one more fact.
+
+**Defaults taken.** None needs a refactor to undo unless it says so.
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **Every unit nobody sits in is its mind's in a field, whether or not its player is connected** (Q-45-1 as written: in a field it is the seated pilot). A connected operator's unseated rig goes home on `RETURN` like an absent one's, and never fires first. The other reading, absent only while the operator is offline, needs the operator's presence followed through the field (a grace, a way back with no seat to take) | Medium: a presence rule for a player who holds no seat |
+| 2 | **A plan ends when its rig leaves a field by the ramp, whoever asked**: its mind on `RETURN`, or its operator's own `+tv/<n> recover` out of the field | Low: one clause at the recover's start |
+| 3 | **An unarmed rig set to `GUARD` is flown as `HOLD`**: it stays and answers nobody. This replaces AP.6's default 6 (flown as `RETURN` at once). "Unarmed" is no fire channel on the unit; a unit that has spent its rounds still goes home | Low: one arm of `flown` |
+| 4 | **A carrier's arena is told `HOLD`** whatever its record says, and a carrier is never asked out. No verb sets a carrier's posture today | Low: `field/posture.rs`, `flown_by` |
+| 5 | **The carrier's commander is told nothing** when its mind takes it; AP.1's opening line already names the field | Low |
+| 6 | **The operator's own recover, and their load of a pair whose tug stands, are refused for a rig standing on `HOLD` or `GUARD`** (AP.6's default 7, unchanged): setting `RETURN` brings it in. On `RETURN` the mind is at the ramp before the operator can ask, so an operator's typed recover of a rig nobody sits in has no story any more; CF.5's story now recovers from the rig's console. The kernel's sentence, and MW.7's `LEFT_AT_RAMP`, say "while its player is away" and "while you were away", which is loose for a connected operator | Low: let a typed ask through the kernel's check; reword two lines |
+| 7 | **Neither half of a tow is asked out.** An absent player's tug in tow stands beside the ramp with its casualty until its player loads it | Low |
+| 8 | A house rig's plan ended by a field is filed again by its yard like one that ran out of time (`port/yard.rs`). No house rig is flown home today: its dispatcher is no player | Low |
+| 9 | The hopper's ore is unloaded by SM.8's queued unload once the field settles, as after any recover on a promoted site | None: existing rule |
+
+**Not built, and where each lives.**
+
+- **A launch into a running field with nobody in it.** If such a hull is some player's, the
+  join's answer hands it to its mind, and on `RETURN` it is asked straight back out at the
+  ramp it stands beside; its operator hears only the exit's line. FR.3's launches are a
+  roster's flights, normally crewed; whether one can go down with an empty cab and a player
+  for its operator was not established here. Read in the code, and not built for.
+- **The admission's line promises "makes for its carrier's ramp" for every rig on `RETURN`**,
+  including one that cannot move or is in tow, which stays.
+- **A notice when the plan parks.** Only its end is told. A recover that never lands (the
+  carrier lifted, the operator ashore) leaves a live plan and MW.7's `LEFT_AT_RAMP` line.
+- **A rig whose operator is not aboard its carrier.** The recover runs as the operator and
+  is refused while they are ashore, as their own would be; MW.7's thirty tries then leave the
+  rig beside the ramp.
+- **A manoeuvring carrier, or a posture verb for one.** A carrier has no verb that sets its
+  posture; one set to `GUARD` by a future verb would answer for its commander's rigs if it
+  carried anything to fire.
+- **A player who boards a rig mid-field.** The live row's pilot is read at admission; a rig
+  boarded later stays its mind's until the field closes.
+- **Space** (AP.9), **the simulator** (AP.10), **the closing story** (AP.11).
+
+**Not pinned by a story.**
+
+- A carrier returning fire: no shipped carrier carries a fire channel. The gate binding a
+  unit with nobody in it is pinned by story 1's armed rig and in source.
+- The commander's live lift of a carrier its mind holds (the lift's own stories run with the
+  record on the carrier and pass; none asserts the host's retry list stays empty), the tug's
+  posture judging its casualty, a refused join's word taken back, and the park's author
+  test: read in the code after the second reader's findings, no test of their own.
+- The join paths (`on_joined`'s three arms) and a resumed field: read in the code; the
+  waiting word is pinned in source.
+- The fallback of a parked plan whose recover did not land (it brings the rig home after the
+  demotion).
+- The leaders' lines for a rig nobody sits in, and `UNATTENDED` said to a connected operator.
+- A tug in tow that is an absent player's standing at the ramp (the guard is pinned by FR.5's
+  two stories for the casualty).
+
+**Verified, and how** (Linux, conclav.dev, a throwaway clone at main `1a1c721de` with this
+unit's diff applied; Windows for the lints).
+
+- **Mutation checks.** Fourteen mutations, each a patch over the unit's diff made in a scratch
+  worktree and undone there by applying its own diff backwards, each built and run against
+  the unit's three stories (FR.5's pair for the tow guard; the in-source tests where named).
+  Every one fails the test named for it. The first ten ran before the second reader's fixes
+  and the last four after them; the lines the first ten mutate did not change in between.
+
+  | Mutation | What failed |
+  |---|---|
+  | The gate lets every shot through and the view is not narrowed (the rig may fire first) | all three stories; story 1 at "an unattended rig does not fire first": the armed rig fired 79 rounds at the declared intruder |
+  | A unit nobody sits in is not handed over (main's behaviour) | all three stories, at the record |
+  | A rig on `HOLD` goes home (every absent player's unit is flown as `RETURN`) | story 2, "a rig on HOLD is still on its cell at demotion"; six of AP.6's kernel tests |
+  | The recover out of a field does not park the plan | story 1, "the plan ends once its rig is aboard": the plan is still `Live` |
+  | The plan does not resume (a held start is held for ever) | story 2, "after the demotion the rig's next act is its plan's": none |
+  | The host asks an absent player's carrier to lift (two forms: at once, and once a rig of hers is aboard) | story 3, "the carrier is still in the field, on its pad"; story 1, whose prospector then has no ramp |
+  | An unarmed rig set to `GUARD` goes home (AP.6's default 6) | story 3, "it stays where it stood"; the kernel test |
+  | The host asks a towed casualty out | FR.5's two ramp stories, "the casualty's stand" |
+  | An absent word does not wait for a join | the arena task's test |
+  | A live plan holds its rig from the exit's recover | story 1: the prospector stands beside the ramp, out of the field, never aboard |
+  | A carrier's arena is told its record's `RETURN` | story 3: the snapshot holds the carrier on `RETURN` |
+  | A carrier is not handed to its mind | stories 1 and 3, at the carrier's record |
+
+  The stories cannot be compiled on main (they read `Why::Unattended`), so the second row
+  stands in for "fails on main today". With the plan's hold in place a rig on a live plan
+  could not be recovered out of a field at all, on main as here.
+- **The stories and the in-source tests on the final code**: the unit's three stories with
+  every story of AP.5, AP.6, MW.7, FR.5, GC.3, GC.4, RS.1, the carrier, boarding, crew-exit
+  and escort-lease files (57 run, 57 passed), and 121 in-source tests (`ap7_`, `ap6_`,
+  `mw7_`, `ap5_`, `ap3_`, the withdraw tests, the plan's). The whole `domain_field` binary
+  was run once before the fixes that followed it (281 run, 270 passed, the ten stories of
+  the table above and this unit's first story failing) and again on the final code; the
+  second figure is in the pull request.
+- Locally (Windows): `cargo fmt --check` and `cargo clippy --all-targets -D warnings` on
+  `tacsim` and `mush-bot`, CI's M7 memory-size clippy pass, `cargo doc
+  --document-private-items` under `-D warnings`, the bot's sentence census, and `cargo test
+  -p mush-contract-tests` (nothing re-blessed).
+- **CI**: the pull request's CI and a full dispatch on the head commit; the runs are in the
+  pull request's body.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
+  player reads were read in the test rig's line mode.
+- **The stories the default run ignores were not run before the first push**, which is how
+  the D-23-18 pair reached hosted CI failing. Of the field suite's twelve, the four
+  licensed-mind stories were then run by hand on the fixed code; the other eight
+  (`c4_filed_mind_field`, `m8_leaks`' three, `m8g`'s three, S.4b-2) passed in the dispatch.
+- The whole `tacsim` suite was not run by hand: one attempt on conclav.dev was ended by a
+  signal that was not this session's. CI's shards run it on the pushed head.
+- The cost of the pass at a field of a hundred units. For a unit that is nobody's it is one
+  read of whose the unit is a second.
+
+**Reviewed.** A second agent (Opus) read the diff adversarially, read-only, with the row and
+the rulings and not this note's conclusions. It found the gate still one function, the mind
+API unmoved, a practice match unaffected, the restart sound, the bookkeeping of what the
+kernel was told sound, and no assertion weakened in the older stories. Its findings, and
+what was done:
+
+- **The commander's own live lift put the carrier on the host's retry list**, which would
+  have filed the departure again as the commander every ten seconds and swallowed its
+  refusal. Fixed: `on_out` takes a unit nobody sits in only for the host's own quiet ask, and
+  never a carrier.
+- **A tug nobody sits in, standing on `HOLD` or `GUARD`, split its pair** when its player
+  loaded it in a field: the casualty was let out on the tug's pose and the tug kept. Fixed
+  in the kernel: the casualty is judged by its tug's posture too.
+- **The park ignored the plan's author.** Fixed.
+- **A stale waiting word could outlive a refused join** and bind a later join of the same
+  hull. Fixed: the refusal takes the word back. Two comments the waiting word made false are
+  corrected.
+- **Story 3's carrier checks would pass on main, and the carrier's `HOLD` word was not
+  tested.** The story now reads the field's snapshot for the carrier's flag and word, and
+  says in its head and here which of its facts are new.
+- **Story 3's `GUARD` check was read too early to tell a rig that stays from one still on its
+  way** (this session's own mutation run found the same). It now waits a minute and a half.
+- **The help said an operator's own recover out of a field ends the plan**, which for a rig
+  nobody sits in happens only by beating the mind to the ramp. Reworded; the lost story is
+  default 6.
+- **The pass walked every unit that is nobody's twice a second.** It now asks whose the unit
+  is once and hands over only a player's.
+- A seated rejoin could be handed over for an empty seat's reason. Fixed in `owed_why`.
+- Left as recorded: story 1's "does not fire first" rests on the mutation run for its
+  control (with the gate off the same rig fires 79 rounds in the same story); a launch into
+  a field with nobody in it; the two loose sentences; AP.8's readers of the retry list by
+  unit (whether a roster unit can be a player's unit nobody sits in was not established).
 
 ## AP.8
 

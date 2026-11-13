@@ -25,6 +25,12 @@
 //! - **It departs mid-field only live, on the leave-behind confirmation** (Q-H10; doc 32 F-6,
 //!   ruled 2026-10-31): a live `+ship/lift` naming every unit out removes it from the field
 //!   outright (`crate::field::exit`); [`departure_refusal`] is a queued departure's gate.
+//! - **Its mind never lifts it** (doc 45 unit AP.7; Q-45-11): nobody sits in a carrier in a
+//!   field, so it is an absent player's unit from admission (`super::absent`, "a unit nobody
+//!   sits in"). It is home where it stands: the host flies it on `HOLD` whatever its record
+//!   says (`super::posture`), it answers only a unit that has fired on it, and nothing but
+//!   the live lift above ever asks the kernel to let it go. Its rigs come aboard by their own
+//!   recovers as their minds bring them to the ramp.
 //! - **It launches into the running field** (doc 40 cut FR.3; Q-38-25, Q-40-19, §4.4): a
 //!   `+sortie/launch` from its pad — there at promotion or arrived by F-6 — is accepted under the
 //!   cap over the one count and its launch cycle (the prepare), lands at its ramp on the IC clock
@@ -964,6 +970,8 @@ pub(crate) fn on_joined(
             seat_joined_pilot(ctx, task, unit, &live);
             // Doc 45 cut AP.5: a join asks the connection as an admission does.
             super::admit::seat_absent(ctx, &site, Some(unit));
+            // Doc 45 unit AP.7: and so does a hull nobody sits in.
+            super::absent::unattended(ctx, &site, Some(unit));
             // Doc 40 (the 38b review's F-15): back in, so no longer boarding.
             if let Some(boarding) = ctx.w.module_state_mut::<super::boarding::Boarding>() {
                 boarding.0.remove(&unit);
@@ -974,6 +982,8 @@ pub(crate) fn on_joined(
             seat_joined_pilot(ctx, task, unit, &live);
             // Doc 45 cut AP.5: a join asks the connection as an admission does.
             super::admit::seat_absent(ctx, &site, Some(unit));
+            // Doc 45 unit AP.7: and so does a hull nobody sits in.
+            super::absent::unattended(ctx, &site, Some(unit));
             let carrier = launch_flight(ctx, unit).map_or_else(
                 || "carrier".to_owned(),
                 |flight| crate::port::coop::name_of(ctx.w, flight.carrier),
@@ -986,6 +996,9 @@ pub(crate) fn on_joined(
         }
         Ok(name) => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: an arriving carrier joined the field");
+            // Doc 45 unit AP.7 (Q-45-11): a carrier is nobody's to fly, so its mind holds it
+            // on its pad as an absent player's unit from the pulse that took it in.
+            super::absent::unattended(ctx, &site, Some(unit));
             let line = ARRIVED_IN_FIELD
                 .replace("{name}", &crate::port::coop::name_of(ctx.w, unit))
                 .replace("{n}", &live.field.ordinal.to_string());
@@ -993,6 +1006,8 @@ pub(crate) fn on_joined(
         }
         Err(why) => {
             tracing::warn!(site = %site, hull = unit.0, reason = %why, "tacsim: the field refused an arriving carrier; it stands outside the field");
+            // Doc 45 unit AP.7: an absent word that waited for this join is taken back.
+            super::absent::join_refused(ctx, task, unit);
             let _ = mush_tactics::custody::check_in(ctx, unit, None);
             let mut live = live;
             let party = live.party_of(unit);

@@ -47,6 +47,29 @@
 //! who is not connected. For a unit left on `GUARD` or `HOLD` they hear the word it is
 //! flown on instead ([`STAYS_ON`]).
 //!
+//! **A unit nobody sits in** (doc 45 unit AP.7; Q-45-1, Q-45-10, Q-45-11): a rig worked from
+//! its carrier or left on a fill plan, and a carrier on its pad. In a field the player who
+//! counts is the seated pilot, and such a unit has none, so it is an absent player's unit
+//! from the turn the field takes it in, whether or not its operator is connected
+//! (`unattended`). Its player is whoever `super::posture::player_of` names: the operator
+//! who launched the rig, the carrier's commander. A unit that is nobody's (a raider's fixture
+//! carrier, a hull a hired crew launched) is left as it was. There is no seat to release and
+//! none to take back, so the record is written handed, the kernel is told, and the rest is
+//! the pass above:
+//!
+//! - **a rig** flies its posture. On `RETURN` its mind drives it to its carrier's ramp, the
+//!   kernel lets it out and the host runs its recover as its operator, into the bay slot it
+//!   launched from. The surface ends the plan it was working once it is aboard
+//!   (`crate::surface::plan::PlanEnd::Field`). On `HOLD` it stays, and its plan, which the
+//!   field paused, runs on when the site demotes. A rig that carries nothing to fire cannot
+//!   guard: set to `GUARD` it is flown as `HOLD` (`crate::arena::absent`).
+//! - **a carrier** is home where it stands. The host tells its arena `HOLD` for a carrier
+//!   whose record says `RETURN` (`super::posture`), so its mind stays, turns to and answers
+//!   only a unit that has fired on it, and this pass never asks it out: **no mind lifts a
+//!   carrier**. A lift leaves its rigs behind, and that stays the live leave-behind
+//!   confirmation alone (doc 27 Q-H10; `super::exit`, `Then::Lift`). Its rigs come aboard
+//!   by their own recovers, above.
+//!
 //! **The simulator is unchanged** (Q-44-19): nothing here acts on a unit no field hosts.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,6 +125,12 @@ pub const ADMITTED_ON: &str = "A field opened around #{unit} while you were away
 pub const STAYS_ON: &str =
     "#{unit} passes to its mind, which flies it on {posture}: {why}. It will not fire first.";
 
+/// The operator, when a field takes in a rig of theirs that nobody sits in (doc 45 unit
+/// AP.7), said to one who is connected and queued for one who is not: `{unit}`.
+pub const UNATTENDED: &str = "A field opened around #{unit} with nobody in its seat: its mind has the controls, makes for its carrier's ramp and fires only on a unit that fires on it. A plan it was working ends once it is aboard.";
+/// [`UNATTENDED`] for a rig left on `GUARD` or `HOLD`: `{unit}`, `{posture}`.
+pub const UNATTENDED_ON: &str = "A field opened around #{unit} with nobody in its seat: its mind has the controls and flies it on {posture}. It will not fire first. A plan it was working runs on once the field has closed.";
+
 /// **Why a unit's player is not at its controls.**
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -115,6 +144,9 @@ pub enum Why {
     /// The pilot sat in the unit and was not connected when the field took it in (doc 45 cut
     /// AP.5; Q-45-1, Q-45-2).
     AwayAtAdmission,
+    /// Nobody sits in the unit (doc 45 unit AP.7; Q-45-1): a rig worked from its carrier or
+    /// on a fill plan, a carrier on its pad.
+    Unattended,
 }
 
 impl Why {
@@ -126,6 +158,7 @@ impl Why {
             Why::Quit => "its pilot has left",
             Why::Incapacitated => "its pilot is down",
             Why::AwayAtAdmission => "its pilot was away when the field opened",
+            Why::Unattended => "nobody is in its seat",
         }
     }
 }
@@ -149,8 +182,11 @@ pub struct Away {
 struct Homebound {
     /// The site it left.
     site: CanonicalId,
-    /// Its pilot, as whom the recover runs.
+    /// Its pilot, as whom the recover runs; for a unit nobody sits in, its player.
     pilot: ObjId,
+    /// Whether `pilot` sits in it: a seated pilot who comes back takes it where it stands
+    /// ([`on_present`]); a unit nobody sits in is put aboard whoever is connected.
+    seated: bool,
     /// The recover.
     then: Then,
     /// The wall second before which it is not tried again.
@@ -209,6 +245,43 @@ fn row_of(w: &World, unit: ObjId) -> Option<Row> {
     rows(w).into_iter().find(|row| row.unit == unit)
 }
 
+/// One unit nobody sits in, in a running field (doc 45 unit AP.7).
+#[derive(Clone, Debug)]
+struct Bare {
+    site: CanonicalId,
+    task: MatchId,
+    unit: ObjId,
+    away: Option<Away>,
+}
+
+/// Every unit of every running field that nobody sits in, with its presence record.
+fn bare_rows(w: &World) -> Vec<Bare> {
+    let Some(book) = w.module_state::<FieldBook>() else {
+        return Vec::new();
+    };
+    book.live
+        .iter()
+        .flat_map(|(site, hosted)| {
+            hosted
+                .live
+                .units
+                .iter()
+                .filter(|row| row.pilot.is_none())
+                .map(move |row| Bare {
+                    site: site.clone(),
+                    task: hosted.task,
+                    unit: row.unit,
+                    away: row.away,
+                })
+        })
+        .collect()
+}
+
+/// `unit`'s row, when a running field holds it with nobody in its seat.
+fn bare_of(w: &World, unit: ObjId) -> Option<Bare> {
+    bare_rows(w).into_iter().find(|row| row.unit == unit)
+}
+
 /// Write `away` on `unit`'s row of `site`'s live record.
 fn set_away(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, away: Option<Away>) {
     let live = ctx.w.module_state_mut::<FieldBook>().and_then(|book| {
@@ -245,7 +318,14 @@ pub fn minded(w: &World, unit: ObjId) -> bool {
 /// controls.
 #[must_use]
 pub fn away_of(w: &World, unit: ObjId) -> Option<Away> {
-    row_of(w, unit).and_then(|row| row.away)
+    let site = super::field_of_unit(w, unit)?;
+    w.module_state::<FieldBook>()?
+        .hosted(&site)?
+        .live
+        .units
+        .iter()
+        .find(|row| row.unit == unit)?
+        .away
 }
 
 /// **The pilot's link was lost** (the seat's `Linkdead` hook): the clock starts, once.
@@ -287,9 +367,33 @@ pub(crate) fn admitted_link_lost(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, s
 
 /// **The kernel has just taken `unit` into a running field** (doc 45 cut AP.5; a hull put back
 /// in after its carrier was lost at the ramp, a launch): the host's word on an absent player is
-/// owed again. A word offered before the join was applied named a unit the arena did not hold
-/// yet and was dropped there, so [`tick`] tells the task again.
+/// owed again, so [`tick`] tells the task again. Before doc 45 unit AP.7 a word offered
+/// ahead of the join was dropped by the arena; it now waits there for the unit, and telling
+/// again is harmless.
 pub(crate) fn tell_again(ctx: &mut Ctx<'_>, unit: ObjId) {
+    if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+        minding.told.remove(&unit);
+    }
+}
+
+/// **The kernel refused `unit`'s join** (`super::carrier::on_joined`; doc 45 unit AP.7): a
+/// word that set the absent flag ahead of the join waits in the task for the unit, and would
+/// bind a later join of the same hull whoever then sits in it. The host takes it back: a
+/// clearing word never waits, and replaces the kept one.
+pub(crate) fn join_refused(ctx: &mut Ctx<'_>, task: MatchId, unit: ObjId) {
+    if let Some(tasks) = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+    {
+        let _ = tasks.offer(
+            task,
+            ArenaMsg::Absent {
+                unit,
+                absent: false,
+            },
+        );
+    }
     if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
         minding.told.remove(&unit);
     }
@@ -336,7 +440,7 @@ pub(crate) fn on_present(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
             minding
                 .homebound
                 .iter()
-                .filter(|(_, owed)| owed.pilot == pilot)
+                .filter(|(_, owed)| owed.seated && owed.pilot == pilot)
                 .map(|(unit, _)| *unit)
                 .collect()
         })
@@ -422,13 +526,112 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, why: Why) 
     true
 }
 
+/// **The units nobody sits in pass to their minds** (this module's head, "a unit nobody sits
+/// in"; doc 45 unit AP.7): each unit of `site`'s running field, or `only` the one named, that
+/// the live record holds with no pilot, that is some player's
+/// ([`super::posture::player_of`]) and whose row carries no record yet. The record is written
+/// handed, since there is no seat to wait five minutes for, and the kernel is told. A unit
+/// whose row already says its mind has it is told to the kernel again.
+///
+/// Called at admission in the turn the task opens (`only` is `None`: the rig's operator is
+/// told, and those it was with), at a join's answer, and by [`tick`] for whatever neither
+/// reached (a resumed field, a hull whose player was named after it came in), which tells
+/// nobody. The kernel keeps a word for a unit whose join it has not applied yet
+/// (`crate::arena_task::ArenaMsg::Absent`), so the word may be offered ahead of the answer.
+pub(crate) fn unattended(ctx: &mut Ctx<'_>, site: &CanonicalId, only: Option<ObjId>) {
+    let bare: Vec<Bare> = bare_rows(ctx.w)
+        .into_iter()
+        .filter(|row| row.site == *site && only.is_none_or(|unit| unit == row.unit))
+        .collect();
+    for row in bare {
+        if let Some(away) = row.away {
+            if away.handed {
+                tell_again(ctx, row.unit);
+            }
+            continue;
+        }
+        let Some(player) = super::posture::player_of(ctx, row.unit, None) else {
+            continue;
+        };
+        let away = Away {
+            why: Why::Unattended,
+            since_wall_s: ctx.w.now(),
+            handed: true,
+        };
+        set_away(ctx, &row.site, row.unit, Some(away));
+        tell_bare(ctx, &row);
+        tracing::info!(site = %row.site, unit = row.unit.0, player = player.0, "tacsim: a field unit nobody sits in passed to its mind as an absent player's");
+        // A carrier stays where it is and was never anybody's to fly: nobody is told. A
+        // join is not a field opening: the rig's operator was told when it opened.
+        if only.is_some() || super::carrier::is_carrier(ctx.w, row.unit) {
+            continue;
+        }
+        let posture = crate::posture::record::of(ctx.w, row.unit);
+        let line = if posture.is_return() {
+            UNATTENDED
+        } else {
+            UNATTENDED_ON
+        };
+        notify_budget(
+            ctx,
+            player,
+            &line
+                .replace("{unit}", &row.unit.0.to_string())
+                .replace("{posture}", posture.label()),
+            NoticeLevel::Trip,
+        );
+        let line = if posture.is_return() {
+            GONE_HOME
+        } else {
+            STAYS_ON
+        }
+        .replace("{unit}", &row.unit.0.to_string())
+        .replace("{posture}", posture.label())
+        .replace("{why}", Why::Unattended.clause());
+        for lead in leads_of(ctx.w, &row.site, row.unit, player) {
+            notify_budget(ctx, lead, &line, NoticeLevel::Trip);
+        }
+    }
+}
+
+/// **Tell the arena `row`'s unit is flown for an absent player** ([`tell_arena`], for a unit
+/// nobody sits in): the host's word alone, since there is no seat to release. Nothing when
+/// the field will not take the word now; [`tick`] offers again.
+fn tell_bare(ctx: &mut Ctx<'_>, row: &Bare) {
+    let Some(tasks) = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone())
+    else {
+        return;
+    };
+    if tasks
+        .offer(
+            row.task,
+            ArenaMsg::Absent {
+                unit: row.unit,
+                absent: true,
+            },
+        )
+        .is_ok()
+        && let Some(minding) = ctx.w.module_state_mut::<Minding>()
+    {
+        minding.told.insert(row.unit, row.task);
+    }
+}
+
 /// **Who is told a unit has gone home**: its own party's leader and the leader of every party
 /// that stands a friend of its party, less its own pilot.
 fn leads(w: &World, row: &Row) -> BTreeSet<ObjId> {
-    let Some(live) = super::live_on(w, &row.site) else {
+    leads_of(w, &row.site, row.unit, row.pilot)
+}
+
+/// [`leads`], for `unit` on `site`, less `its` player.
+fn leads_of(w: &World, site: &CanonicalId, unit: ObjId, its: ObjId) -> BTreeSet<ObjId> {
+    let Some(live) = super::live_on(w, site) else {
         return BTreeSet::new();
     };
-    let Some(own) = live.party_of(row.unit) else {
+    let Some(own) = live.party_of(unit) else {
         return BTreeSet::new();
     };
     let friends = super::parties::friends_of(w, &live.parties);
@@ -441,7 +644,7 @@ fn leads(w: &World, row: &Row) -> BTreeSet<ObjId> {
                     .any(|(a, b)| (*a, *b) == (own, party.party) || (*b, *a) == (own, party.party))
         })
         .filter_map(|party| party.leader)
-        .filter(|lead| *lead != row.pilot && !super::orders::is_npc(w, *lead))
+        .filter(|lead| *lead != its && !super::orders::is_npc(w, *lead))
         .collect()
 }
 
@@ -576,13 +779,43 @@ pub(crate) fn at_resume(ctx: &mut Ctx<'_>, task: MatchId, unit: ObjId, pilot: Ob
 
 /// **The kernel let an absent player's unit out at its ramp** (`super::exit::on_withdrawn`,
 /// called before the row leaves the live record): the recover is the host's to run and to try
-/// again.
-pub(crate) fn on_out(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, then: Option<&Then>) {
-    let Some(row) = row_of(ctx.w, unit).filter(|row| row.away.is_some_and(|away| away.handed))
-    else {
+/// again. `then` is what the exit runs, and whether the host asked for it quietly.
+///
+/// **A unit nobody sits in** (doc 45 unit AP.7) is the host's to put aboard only when the host
+/// itself asked it out. Its record stands for the whole field while its player may be
+/// connected and typing: an exit that player asked for is theirs, told to them and never tried
+/// again behind them. A carrier is never the host's: the only exit it has is its commander's
+/// live lift (doc 27 Q-H10), and the host files no departure.
+pub(crate) fn on_out(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    unit: ObjId,
+    then: Option<(&Then, bool)>,
+) {
+    let handed = |away: Option<Away>| away.filter(|away| away.handed);
+    // Its pilot; or, for a unit nobody sits in, its player.
+    let (pilot, seated, away) = match row_of(ctx.w, unit) {
+        Some(row) => (Some(row.pilot), true, handed(row.away)),
+        None => match bare_of(ctx.w, unit) {
+            Some(row) => {
+                let hosts = then.is_some_and(|(_, quiet)| quiet)
+                    && !super::carrier::is_carrier(ctx.w, unit);
+                if !hosts {
+                    return;
+                }
+                (
+                    super::posture::player_of(ctx, unit, None),
+                    false,
+                    handed(row.away),
+                )
+            }
+            None => return,
+        },
+    };
+    let (Some(pilot), Some(away)) = (pilot, away) else {
         return;
     };
-    let Some(then) = then.cloned() else {
+    let Some(then) = then.map(|(then, _)| then.clone()) else {
         return;
     };
     let now = ctx.w.now();
@@ -592,10 +825,11 @@ pub(crate) fn on_out(ctx: &mut Ctx<'_>, site: &CanonicalId, unit: ObjId, then: O
             unit,
             Homebound {
                 site: site.clone(),
-                pilot: row.pilot,
+                pilot,
+                seated,
                 then,
                 retry_at_wall_s: now.saturating_add(RECOVER_RETRY_WALL_S),
-                why: row.away.map_or(Why::LinkLost, |away| away.why),
+                why: away.why,
                 tries: 0,
             },
         );
@@ -610,6 +844,9 @@ pub(crate) fn owed_why(w: &World, unit: ObjId) -> Option<Why> {
     w.module_state::<Minding>()
         .and_then(|minding| minding.homebound.get(&unit))
         .map(|owed| owed.why)
+        // A hull that left with nobody in it and comes back with a pilot is that pilot's
+        // absence, not an empty seat's (doc 45 unit AP.7).
+        .filter(|why| *why != Why::Unattended)
 }
 
 /// **Whether the host owes `unit` its recover** ([`on_out`]): its refusals are tried again,
@@ -670,11 +907,51 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         // `GUARD` is asked like one on `RETURN`, and the kernel keeps it while it can still
         // defend itself (`crate::arena::withdraw::WithdrawRefusal::Standing`): only the
         // kernel holds the unit's live damage and its rounds.
-        if crate::posture::record::of(ctx.w, row.unit) == crate::posture::Posture::Hold {
+        if crate::posture::record::of(ctx.w, row.unit) == crate::posture::Posture::Hold
+            || in_tow(ctx, &row.site, row.unit)
+        {
             continue;
         }
         if let Some(then) = recover_of(ctx, row.unit) {
             super::home::ask_out(ctx, row.unit, row.pilot, then);
+        }
+    }
+    // Doc 45 unit AP.7: and the units nobody sits in. Nobody takes such a unit back, so
+    // there is no presence to read: the record is opened where no hook opened it, the task is
+    // told, and a rig is asked out at its ramp exactly as above.
+    for row in bare_rows(ctx.w) {
+        let Some(away) = row.away else {
+            // Most units with no pilot are nobody's (a fixture, a casualty, a hired crew's
+            // launch): asked once here, and handed over only when some player's.
+            if super::posture::player_of(ctx, row.unit, None).is_some() {
+                unattended(ctx, &row.site, Some(row.unit));
+            }
+            continue;
+        };
+        if !away.handed {
+            continue;
+        }
+        let told = ctx
+            .w
+            .module_state::<Minding>()
+            .is_some_and(|minding| minding.told.get(&row.unit) == Some(&row.task));
+        if !told {
+            tell_bare(ctx, &row);
+            continue;
+        }
+        // **No mind lifts a carrier** (Q-45-11; doc 27 Q-H10): it is home where it stands,
+        // and the one way it leaves its rigs behind is its commander's live lift.
+        if super::carrier::is_carrier(ctx.w, row.unit)
+            || crate::posture::record::of(ctx.w, row.unit) == crate::posture::Posture::Hold
+            || in_tow(ctx, &row.site, row.unit)
+        {
+            continue;
+        }
+        let Some(player) = super::posture::player_of(ctx, row.unit, None) else {
+            continue;
+        };
+        if let Some(then) = recover_of(ctx, row.unit) {
+            super::home::ask_out(ctx, row.unit, player, then);
         }
     }
     retry_recovers(ctx, now);
@@ -691,6 +968,19 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             minding.told.remove(&unit);
         }
     }
+}
+
+/// **Whether `unit` is half of a tow on `site`'s record** (doc 36 cut GC.4; doc 40 cut FR.5,
+/// Q-40-25): a casualty in tow, or the tug that tows one. Neither is the host's to ask out.
+/// The kernel judges a casualty in tow by its tug, so an ask for the casualty alone, made
+/// while its tug stands beside the ramp, takes it out from behind the tug; and a tug in tow
+/// leaves only with its casualty, by its player's own load (`crate::surface::tow`). Found by
+/// doc 45 unit AP.7, whose units nobody sits in are the first absent players' units that are
+/// commonly in tow; it holds for a seated pilot's unit too.
+fn in_tow(ctx: &Ctx<'_>, site: &CanonicalId, unit: ObjId) -> bool {
+    super::close::site_record(ctx, site).is_some_and(|record| {
+        record.tows.towing(unit).is_some() || record.tows.towed(unit).is_some()
+    })
 }
 
 /// **A recover that was refused is tried again** (this module's head, 3): each unit out at a
@@ -724,9 +1014,10 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
         // (their return clears this list), so the unit passes to its mind again.
         //
         // Doc 45 cut AP.5 (its review): not before the kernel has answered the join. A word
-        // offered ahead of it names a unit the arena does not hold yet and is dropped there,
-        // while the release that follows it lands after the join, and would leave the hull a
-        // mind under no rule. The join's answer hands it over
+        // offered ahead of it named a unit the arena did not hold yet and was dropped there
+        // (since doc 45 unit AP.7 it waits for the unit), while the release that follows it
+        // lands after the join, and would leave the hull a mind under no rule. The seat's
+        // release still must not run ahead of the join, so the join's answer hands it over
         // (`super::admit::seat_absent`), and until then it is a seat nobody types at.
         if row_of(ctx.w, unit).is_some() {
             if super::carrier::rejoining_unit(ctx.w, unit) {
@@ -736,6 +1027,15 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
                 minding.homebound.remove(&unit);
             }
             hand_over(ctx, unit, owed.pilot, owed.why);
+            continue;
+        }
+        // Doc 45 unit AP.7: and a unit nobody sits in, which the join's answer or this
+        // pass hands to its mind again ([`unattended`]).
+        if let Some(row) = bare_of(ctx.w, unit) {
+            if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+                minding.homebound.remove(&unit);
+            }
+            unattended(ctx, &row.site, Some(unit));
             continue;
         }
         // A recover that never lands is given up: the carrier lifted, or the unit can no
@@ -798,5 +1098,32 @@ mod tests {
         let text = serde_json::to_string(&handed).expect("it encodes");
         assert!(text.contains(r#""handed":true"#), "{text}");
         assert_eq!(serde_json::from_str::<Away>(&text).ok(), Some(handed));
+    }
+
+    /// **Doc 45 unit AP.7: a unit nobody sits in has a record of its own reason**, written
+    /// handed from the start, and its lines name the unit and promise what its posture does.
+    #[test]
+    fn ap7_a_unit_nobody_sits_in_is_recorded_as_its_minds_from_the_start() {
+        let bare = Away {
+            why: Why::Unattended,
+            since_wall_s: 40,
+            handed: true,
+        };
+        let text = serde_json::to_string(&bare).expect("it encodes");
+        assert_eq!(
+            text,
+            r#"{"why":"unattended","since_wall_s":40,"handed":true}"#
+        );
+        assert_eq!(serde_json::from_str::<Away>(&text).ok(), Some(bare));
+        assert_eq!(Why::Unattended.clause(), "nobody is in its seat");
+        for line in [UNATTENDED, UNATTENDED_ON] {
+            assert!(
+                line.contains("#{unit}")
+                    && line.contains("will not fire first")
+                        != line.contains("fires only on a unit that fires on it")
+            );
+        }
+        assert!(UNATTENDED.contains("ends once it is aboard") && !UNATTENDED.contains("{posture}"));
+        assert!(UNATTENDED_ON.contains("{posture}") && UNATTENDED_ON.contains("runs on"));
     }
 }

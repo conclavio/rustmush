@@ -3210,6 +3210,10 @@ async fn licensed_field_story(at: &FieldSite, carry: bool) {
         crate::field_raiders_rig::seed_and_launch(&mut rig).0
     };
     let leader = tacsim::field::raiders::leader_of(rig.tw.world(), raiders[0]).expect("a leader");
+    // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its operator
+    // left it on HOLD. Rig 1 is to stand where the raiders mark it, through this field and,
+    // for D-23-18, into a second one on the same epoch.
+    crate::field_host_rig::left_on_hold(&mut rig, pilot, 1);
     let mut rx = crate::field_host_rig::egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     for _ in 0..3 {

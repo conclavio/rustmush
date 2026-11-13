@@ -341,6 +341,13 @@ pub enum ArenaMsg {
     /// [`crate::arena::withdraw::WithdrawRefusal::Recalled`]: the player is back, and a ramp
     /// exit the host asked for while they were away is not theirs. Only the IC field host
     /// sends it, and a task with no [`FieldTerms`] ignores it.
+    ///
+    /// **A word that sets the flag on a unit the arena does not hold yet waits for it** (doc
+    /// 45 unit AP.7; Q-45-1), as a posture word does: it is offered again after that head's
+    /// joins and at every head until the unit is there, so a hull joining a running field
+    /// with nobody at its controls is bound by the rule from the pulse that takes it in, and
+    /// the host need not time its word to the join's answer. A word that clears the flag
+    /// never waits.
     Absent {
         /// The unit.
         unit: ObjId,
@@ -2115,7 +2122,11 @@ impl Task {
         // returning pilot's own and is decided below like any other.
         if self.terms.is_some() {
             for (unit, absent) in std::mem::take(&mut waiting.absences) {
-                self.arena.set_absent(unit, absent);
+                // Doc 45 unit AP.7: a word that sets the flag on a unit not yet here is kept
+                // for the joins below.
+                if !self.arena.set_absent(unit, absent) && absent {
+                    waiting.absences.insert(unit, true);
+                }
             }
             for unit in std::mem::take(&mut waiting.recalled) {
                 self.queue_withdrawn(unit, Err(crate::arena::withdraw::WithdrawRefusal::Recalled));
@@ -2165,6 +2176,14 @@ impl Task {
                 );
             }
             self.queue_joined(unit, outcome);
+        }
+        // Doc 45 unit AP.7 (Q-45-1): the absent words kept above, for a unit that joined at
+        // this head. One still not here waits for the next head; a later word for the same
+        // unit replaces it, and the set is bounded by the units the host names.
+        if self.terms.is_some() {
+            waiting
+                .absences
+                .retain(|unit, absent| !(*absent && self.arena.set_absent(*unit, true)));
         }
         // Doc 45 unit AP.3: the posture each unit's player left on it, for its mind's next
         // think. After the joins, so a unit that joined at this head starts on its own word;
@@ -4542,6 +4561,84 @@ mod tests {
         assert_eq!(task.arena.unit(RED).map(|state| state.player), Some(None));
         assert_eq!(crate::arena::hash::state_hash(&task.arena), hash);
         assert!(waiting.postures.is_empty(), "dropped, not kept");
+    }
+
+    /// **Doc 45 unit AP.7: an absent word waits for its unit's join** (Q-45-1). A hull that
+    /// joins a running field with nobody at its controls is an absent player's from the pulse
+    /// that takes it in: the host's word, offered with the join or a head before it, is kept
+    /// and applied once the unit is there. A word that clears the flag never waits, a later
+    /// word replaces a kept one, and a practice match keeps none.
+    #[test]
+    fn ap7_an_absent_word_told_before_its_units_join_is_applied_when_it_lands() {
+        let arrival = ObjId(77);
+        let field = || {
+            let mut arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+            arena.end = crate::arena::party::EndCondition::Host;
+            let (mut task, world) = af2_task(arena, 2, 5_000);
+            task.terms = Some(fr5_terms());
+            (task, world)
+        };
+        let join = |waiting: &mut PrePulse| {
+            waiting.joins.insert(
+                arrival,
+                (
+                    Box::new(tank(arrival, PartyId::RED, pose(4_500, 4_500))),
+                    None,
+                    fr5_host(),
+                    8,
+                    None,
+                    None,
+                ),
+            );
+        };
+
+        // The word and the join at one head: the joined unit is bound from that head.
+        let (mut task, _world) = field();
+        let mut waiting = PrePulse::default();
+        waiting.absences.insert(arrival, true);
+        waiting.absences.insert(RED, true);
+        join(&mut waiting);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.absent(arrival) && task.arena.absent(RED));
+        assert!(waiting.absences.is_empty(), "both were applied");
+
+        // The word a head early: kept until the join lands.
+        let (mut task, _world) = field();
+        let mut waiting = PrePulse::default();
+        waiting.absences.insert(arrival, true);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.unit(arrival).is_none());
+        assert_eq!(
+            waiting.absences.get(&arrival),
+            Some(&true),
+            "the word waits for the unit"
+        );
+        join(&mut waiting);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.absent(arrival));
+        assert!(waiting.absences.is_empty());
+
+        // A kept word replaced by one that clears the flag is dropped with it: the unit joins
+        // as its player's.
+        let (mut task, _world) = field();
+        let mut waiting = PrePulse::default();
+        waiting.absences.insert(arrival, true);
+        task.apply_field_acts(&mut waiting);
+        waiting.absences.insert(arrival, false);
+        join(&mut waiting);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.unit(arrival).is_some() && !task.arena.absent(arrival));
+        assert!(waiting.absences.is_empty(), "a clearing word never waits");
+
+        // A practice match takes no word and keeps none.
+        let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
+        let (mut task, _world) = af2_task(arena, 2, 5_000);
+        let mut waiting = PrePulse::default();
+        waiting.absences.insert(arrival, true);
+        waiting.absences.insert(RED, true);
+        task.apply_field_acts(&mut waiting);
+        assert!(!task.arena.absent(RED));
+        assert!(waiting.absences.is_empty(), "dropped, not kept");
     }
 
     /// **Doc 38a F-01: a claimed rig's join resumes its carried mind.** A scripted seal joined

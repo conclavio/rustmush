@@ -130,6 +130,20 @@ pub(crate) fn seat(rig: &mut Rig, unit: ObjId, pilot: ObjId) {
     });
 }
 
+/// **`operator` leaves their rig in bay slot `slot` on `HOLD`**, by their own command from
+/// aboard its carrier (doc 45 units AP.4 and AP.7). A rig nobody sits in is its mind's in a
+/// field and goes home on `RETURN`, the posture every rig holds until its player sets
+/// another. A story whose rig is to stand where it was left says so, as its player would.
+pub(crate) fn left_on_hold(rig: &mut Rig, operator: ObjId, slot: u8) {
+    use tacsim::posture::Posture;
+    use tacsim::posture::order::{POSTURE_SET, line};
+    assert_eq!(
+        run(&mut rig.tw, operator, &format!("+tv/{slot} posture hold")),
+        line(POSTURE_SET, &format!("Rig {slot}"), Posture::Hold),
+        "rig {slot} is left on HOLD"
+    );
+}
+
 /// **Make `unit` fragile**: every armour plate at its floor and every section's internals one
 /// above it, so the next hits that land wreck it (a fixture, so the gate fights in seconds).
 pub(crate) fn fragile(rig: &mut Rig, unit: ObjId) {

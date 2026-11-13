@@ -288,6 +288,13 @@ async fn tender_on(ground: &Ground) {
     let _ = finish(&mut rig, tug, b);
     to_cell_on(&mut rig, ground.entry, casualty, (ramp.0 + 2, ramp.1));
     to_cell_on(&mut rig, ground.entry, tug, (ramp.0 + 1, ramp.1));
+    // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its operator
+    // left it on HOLD. The escort is to stand beside the tender through each
+    // field, and the stranger's pair where they were put.
+    crate::field_host_rig::left_on_hold(&mut rig, a, 1);
+    for slot in [1, 2] {
+        crate::field_host_rig::left_on_hold(&mut rig, b, slot);
+    }
     let hopper = tacsim::port::vehicle::hopper_of(rig.tw.world(), casualty).expect("a hopper");
     seed_pool(
         &mut rig,
