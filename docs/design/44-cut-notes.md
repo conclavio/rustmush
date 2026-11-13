@@ -2173,7 +2173,301 @@ Answered, not changed:
 
 ## MW.12
 
-Not built.
+Drones as mind-driven sorties (doc 44 §7.1, §4 F; Q-44-27; doc 35d §9, SF.R30's row). A
+collector drone is flown by its mind: what it brings back is what it lifted and carried home,
+and its sortie's record leaves the excursion book when it is back aboard. **The mind ABI did
+not move**: it is `rhai=1.26.0;api=9;stock=3` as before. Paths are under
+`crates/tacsim/src/space/` unless given.
+
+**Built.**
+
+- **A drone flies a bubble of its own** (`sortie.rs`, new; `DroneFlight`). `+mine/drones`
+  opens, for each drone, a `LocalSpaceBubble` of three ships: the ship it left (`bay`), the
+  rock it was sent to (`rock`) and itself (`drone`), in the frame that moves with the rock.
+  The flight is kept on the drone's record in the cluster session
+  (`mining.rs` `DroneSortieState::flight`) and is persisted with it; its tape is not, and is
+  begun again on the bubble it kept, as a tape that has grown long is.
+- **The view is the one view** (`view.rs` `space_mind_view`, through `picket.rs`
+  `collect_drone_think`). Nothing was added to what a view exposes. The rock is a contact
+  that is not friendly: its range, bearing, elevation and velocity, and `reads_dead` once it
+  bears no ore. The ship is the contact that is friendly. The hold is the drone's one mount
+  row, its collector: `rounds` is the lifts the hold still has room for, `rounds_max` the
+  lifts a whole hold takes, `ready` whether it has cycled and has room, and its one band its
+  reach. The drone's own velocity, drive and step are `space(v)`, as for every hull.
+- **The intents go through the one applier** (`applier.rs` `apply_intents`, seat
+  `Seat::DRONE`). `lock`, `helm`, `speed` and `hold` are the rows every hull has. One row is
+  new: a `fire(id, slot)` that names a drone's collector is one command on the tape,
+  `BubbleInputCommand::WorkRock`, which lifts a tonne from the rock the drone has locked.
+  `Seat` gains `work`; no seat but a drone's has it. No intent kind was added.
+- **The bubble's rules** (`bubble.rs`). `work_rock`: a lift needs the drone within 150 m of
+  the rock and under 5 m/s against it, the collector cycled (3 s) and room in the hold; what
+  leaves the rock's `ore_kg` is what enters the kit's `hold_kg`. `settle_drones`, in the
+  step: a drone that has been more than 60 m from the ship it left and is back inside 60 m
+  under 8 m/s lands, rides with her and does nothing more. A drone has a drive of 5 m/s² and
+  400 kg of reaction mass, which bounds how long it can steer. A ship that is neither a
+  drone nor a rock mixes nothing new into `state_hash`, and writes nothing new in its
+  document.
+- **The host's words are on the tape.** The ship is flown by her cluster session, and the
+  deposit is the world's. Before a drone's think lands, the tick tells its bubble where the
+  ship is (`PlaceShip`) and what the rock bears (`SetOre`), each as a command when it has
+  changed. So a tape replays the whole sortie, the lifts and the landing included, with no
+  world and no think.
+- **The step** (`sortie.rs` `fly_drones`, called from `mining.rs` `step_clusters_on_tick`).
+  A hull's drones step together, one second of bubble time for each space tick that finds a
+  wall second gone. A late tick is one step, not a long one. In order: the answers of the
+  thinks the last step collected are taken from the host; drone by drone, its bubble is told
+  the ship and the ore and its answer lands; every bubble flies its second; the sorties that
+  ended leave the session; the next thinks are collected on the state the step left. The
+  held-step rule MW.11 left owed is the bubble's own: the step is not taken until its thinks
+  have answered, on the server the tick goes on without it, and a session read back with
+  thinks owed collects them again (`ActiveClusterMiningSession::drone_thinks_owed`).
+- **The yield** (`mining.rs`). A drone that lands files one draw of what its hold holds,
+  through the path a laser cycle uses (`tacsim_site_work`, deposit vault to hold vault). A
+  drone still out after 240 steps is reeled in and files nothing. The tonnes a drone carries
+  are held against the deposit while it carries them (`rock_uncommitted_pool_tonnes` now
+  subtracts `drones_carried_kg`), so a laser or another hull cannot draw them; the deposit
+  itself is debited once, by the landing's draw. A tonne lifted and not brought home never
+  left the deposit. A landing also counts the draws already on their way into the hold as
+  room taken (`hold_incoming_tonnes`).
+- **The record closes** (`tick.rs` `SpaceBubbleBook::sorties_to_close`,
+  `BubbleInputProvider`; `mining.rs` `close_landed_sorties`). A sortie that is over, by a
+  landing, a reel-in or the ship flying on (`SpaceBubbleBook::end_cluster_session`, which
+  every place that dropped a session now calls), is put on a list the book persists. Each
+  tick the drone itself files `tacsim_space_bubble_input` with the switch `drones_land`,
+  whose prepare removes the `tacsim.excursion` record only while it still names that sortie.
+  The entry leaves the list when the book no longer holds the record. So a restart between
+  the landing and the close closes it afterwards, and a close that lands twice removes
+  nothing.
+- **The doctrine is the cast's** (`content/space/picket_cast.json`, `picket.rs`
+  `DroneCastEntry`, `crates/tacsim/src/minds/content/cast.rs` `CastActor::Drone`). The cast
+  has a fourth row, `drone`, with the doctrine's name and digest. `+mine/drones` resolves it
+  as every seal site does (staff's selection, else the pack's, from the store) before it
+  makes anything, and refuses the launch in words if the store does not hold it. `@mind/cast
+  drone=…` selects a revision. A drone that is out keeps its seal, and a reload takes the
+  seal its record names (`reloaded_seal`), where it used to seal the compiled digest again.
+- **The house doctrine** (`crates/tacsim/content/minds/drone_mining.rhai`), rewritten. It
+  flies to the rock, lifts until its hold is full or the rock reads done, and flies home;
+  after five lifts asked for and not given it goes home with what it has. It burns in
+  pulses, a think on and a think off (see "what the survey did not see"). One line says
+  when it has enough, `let enough = tool.rounds_max;`, which is the line the stories change.
+- **A bay slot is launched again only when its drone is back**
+  (`ActiveClusterMiningSession::free_drone_slots`). The slot of a new drone was the count
+  of drones out plus one, so after one of two landed the next launch reused the slot, and
+  the object, of the drone still out.
+- **The absent player's rule** (`sortie.rs` `drone_seat`). The seat of a hull's drones is
+  `Seat::DRONE`, without its collector while her crew is away: `arena::absent::permits` is
+  asked to mine, as MW.9's note said this unit must.
+
+**The mind ABI did not move, and why it did not have to.** The row asks for "a view of the
+rock and the hold". Every fact the house doctrine needs was already exposed: a contact's
+range, relation, velocity and `reads_dead`; a mount's `ready`, `rounds` and `rounds_max`; the
+hull's own velocity and drive. What a move would have bought is the rock's ore as a number
+and a `hold` with its own name. A move re-pins every sealed mind's identity, the arena's
+state hashes and ledger lines, the cross-platform corpus and the retained-ABI table, and the
+mining station of doc 17, which will define what a player's mining mind reads, has not been
+designed. So the rows are reused, the reuse is said in the doctrine's header and in
+`sortie.rs`, and the station can name them properly when it moves the API for its own
+reasons.
+
+**What moved, and why.** No seal identity, arena state hash, ledger line, corpus row or
+harness baseline field moved. One digest is pinned for the first time, and one player-facing
+sentence changed:
+
+| What | Was | Is | Why, and the evidence |
+|---|---|---|---|
+| `drone_mining.rhai`'s digest | `95b4127f…ca3099d5`, named nowhere (every seal took `drone_mining_digest()`, the hash of the compiled bytes) | `0af0a496…6d6910b1`, named by `picket_cast.json`'s new `drone` row | The doctrine's bytes changed: it is rewritten. `minds/content/cast.rs` `the_packs_cast_names_each_shipped_doctrine_by_its_digest` holds the row to the file, and now covers the drone |
+| `+mine/drones`' answer | `Launched N collector drone(s) onto Block A (S-TYPE) for 120s (4 t … each into stow.ore): …` | `Launched N collector drone(s) onto Block A (S-TYPE) for … ; each brings back what it lifts, up to 4 t, into stow.ore: …` | There is no timer and no fixed yield to state |
+| Story `sfr5` | one six-second step after the launch lands 20 t (4 t laser, 16 t drones) | the step lands the laser's 4 t; the four drones are then flown home, a wall second a tick, and each is told back aboard with 4 t; the 20 t and every later assertion stand | The drones are sorties |
+
+`sfr14` and `sfr22` pass as they were written: a drone still lands think `n - 1` after `n`
+ticks, and a launch still stages its `RigRecord`.
+
+**What the survey had wrong, and what it did not see.**
+
+- **"The excursion book holds no drone" was not only tidiness.** `tacsim.excursion` is the
+  surface's book too, and the surface's launch counts an operator's open excursions against
+  `MAX_EXCURSIONS_PER_OPERATOR` (four). A prospector who had launched four drones, ever, had
+  four records that nothing closed.
+- **The bay slot was reused while its drone was out** (above). With timers that all ran 120
+  IC seconds it could not happen; with sorties of different lengths it would have.
+- **A drone's sortie was shorter than a tick.** 120 IC seconds is five wall seconds at the
+  live rate of 24:1 and a thirtieth of a second at the stories' 3,600:1, so in every story a
+  drone's sortie was over before its mind had landed a think. A mind cannot decide a yield
+  on a clock it never thinks inside. The sortie is therefore on the bubble's clock, wall
+  time, as every Tier-2 bubble is.
+- **A changed burn takes effect twice.** MW.9's note has it: a changed burn is an impulse of
+  one second on the command and then the thrust the step integrates. A burn that stands
+  gives its strength for the step; one that changed gives it twice. A controller cannot be
+  sized on that unless it knows which it will get, so the doctrine cuts its drive on the
+  think after every pulse: each pulse follows a cut drive, is always a changed one, and
+  gives `n` for a second and `n` for the step. The bubble's rule was not changed.
+- **Two drones could lift the same tonne**, in this unit's first draft: the rock's ore was
+  told to each bubble after the answers had landed, so two drones whose bubbles both showed
+  the last tonne both lifted it. The unit test for it failed, on both platforms at the same
+  step. The ore is now told before each drone's answer lands, drone by drone.
+- **The reload sealed a drone again with the compiled digest** when its attribute was
+  missing (`tick.rs` `boot_read`), over whatever the record held: MW.10 fixed this for the
+  cast's hulls and left the drone.
+- **A drone's objects are made anew at each visit to a cluster.** `drone_things` is the
+  session's, and the session is dropped when the ship leaves, so the next visit makes four
+  more DARK objects in the hull. Not changed. See "Left".
+- The crew is rarely away while a drone is out: the link-loss grace is 300 s and a drone's
+  endurance 240 steps. It takes steps that are not taken (held for a late think, a docking
+  pause, a frozen timeline) for the grace to run out first. The rule is wired for those, and
+  for the day either figure moves.
+
+**Defaults taken.** Every figure is a named constant.
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **A sortie runs on wall time, a second a step, and takes about a minute.** The house drone's whole sortie from the 600 m standoff is 53 steps (44 with one lift). At the live rate that is 21 IC minutes, where it was two | **Medium.** It is the unit's shape: every drone story is counted in steps. The figures inside it are low |
+| 2 | **The laser is now far quicker than the drones.** `+mine/laser` is still 4 t in 60 IC seconds (2.5 wall seconds at 24:1); four drones bring 16 t in about a minute. Not rebalanced here: the laser's timer is doc 35's and is as provisional | Low, and **the owner's to tune**: it is which tool a prospector reaches for |
+| 3 | A hold of 4 t (`DRONE_HOLD_T`), a lift of 1 t, a collector cycle of 3 s, a reach of 150 m at under 5 m/s | Low |
+| 4 | A drone drive of 5 m/s² and 400 kg of reaction mass, refilled at each launch and charged to nobody | Low; charging the ship's tank for it is a ledger debit |
+| 5 | A drone lands inside 60 m of the ship under 8 m/s, once it has been further out | Low |
+| 6 | **A drone still out after 240 steps is reeled in with nothing**, and the tonnes it held stay with the rock. The alternative, to land what it holds, makes the flight home optional | Low |
+| 7 | **A ship that leaves the cluster leaves her drones behind**: their sorties end, they bring nothing, and their records close. Nothing refuses the departure, because the backup mind must be able to take a ship home | Low |
+| 7a | **Inside the cluster she holds her station while a drone is out.** `+helm/approach`, and `+helm/match` on another rock, are refused (`commands.rs` `DRONES_OUT`): the cluster's approach moves her most of two kilometres a tick, and a drone could never make its bay | Low |
+| 7b | **She launches from 250 m or more off the rock** (`DRONE_LAUNCH_STANDOFF_M`; an approach leaves her at 600 m). Nearer, her drones would lift without leaving the bay's reach and could not land | Low |
+| 8 | The drone's row in the cast names a doctrine and a digest and nothing else, in the cast file with the three hulls | Low |
+| 9 | **The hold and the rock are read through rows that already exist** (above). A script reads `v.weapons[0].rounds`, not a `hold` | Medium: it is what a drone doctrine is written against until doc 17's station |
+| 10 | The rock tells a mind that it bears ore or does not, not how much | Low |
+| 11 | A drone's doctrine is selected for the cast's drone, for every ship's drones at once | Low |
+| 12 | The operator is told when each drone is back aboard, and when one is reeled in | Low |
+| 13 | A landing whose tonnes the hold has no room for stows what fits; the rest never leaves the deposit | Low |
+| 14 | A close whose record the book does not hold yet waits 30 ticks for it (`SORTIE_CLOSE_WAIT_TICKS`), and a close that did not land is filed again after 1, 2, 4 … 64 s. A launch that lands later than the wait leaves its record open | Low |
+
+**Left, and for which unit.**
+
+- **MW.13** (a player's mind on a ship): nothing here. A drone's seal is still class I with
+  no principal.
+- **A player-authored mining mind** is doc 17's first non-combat station (Q-44-27). It is
+  where the hold and the rock's ore get names of their own, by an API move.
+- **AP.9** (space reads the posture): a drone's view reads `RETURN`. A drone is nobody's
+  standing order.
+- **The drones' objects** (above). Deferred, with no unit: it wants the bay's drones kept on
+  the hull, not on the session.
+- **The laser against the drones** (default 2).
+- **A drone is not a contact to anyone.** Its bubble holds three ships. A picket, a raider
+  or another prospector cannot see or stop it. SF.R30's row did not ask for it.
+- **The known defect** the brief named (a passage whose launch runs after its first leg's
+  frozen end passes an interdicted waypoint unmet, PR #571) was not met: this unit does not
+  touch the passage or the promotion.
+
+**The acceptance, and what holds each.** The unit tests are in `sortie.rs` and `applier.rs`;
+the story is in `crates/tacsim/tests/domain_world/voyage.rs`.
+
+| The row asks | Held by | Before the cut |
+|---|---|---|
+| A drone whose mind is changed to stop short brings back less | The story `mw12_a_drone_whose_doctrine_stops_short_brings_back_less_and_no_sortie_stays_in_the_book`: staff publish revision B with `@mind/new`, `@mind/paste`, `@mind/save` and select it with `@mind/cast drone=`; the drone that is out keeps A and lands 4 t; the next is sealed B and lands 1 t. And `mw12_a_doctrine_changed_to_stop_short_brings_back_less` (4, 3, 2 and 1 lifts, each a shorter sortie) | Four tonnes at 120 IC seconds whatever the doctrine; no revision could be selected |
+| The excursion book holds no drone after it lands | The same story: the record is in the book while the drone is out and gone when it is back, and the list of closes owed is empty | Every launch left a record for ever |
+| Across a restart too, once and not twice | The same story: a restart with the sortie open, then a restart between the landing and the close with everything the landing tick submitted lost. The hold holds five tonnes, the record is gone, and six more ticks change nothing. `mw12_a_session_read_back_mid_sortie_ends_as_the_one_that_was_not` (read back after steps 1, 2, 9, 30 and two before the end) | — |
+| The yield is what the drone did | `mw12_the_house_drone_fills_its_hold_and_lands_with_it`; `mw12_a_drone_that_does_not_come_home_is_reeled_in_with_nothing` (one that never asks; one that fills its hold and stays); `mw12_a_rock_that_runs_out_sends_the_drone_home_with_what_it_has` | A timer |
+| Matter is conserved | The story: the deposit and the hold add up to what the deposit held, after each sortie and after both restarts, and nothing is credited while a drone is out. `mw12_two_drones_on_one_rock_never_lift_the_same_tonne` | The draw was conserved; the yield was not the drone's |
+| The intents go through the one applier, the think through the one host | `a_collector_works_the_rock_its_drone_has_locked_for_a_seat_that_may_work`; the contract tests of MW.11 (`space_thinks_off_thread`) and MW.9 (`space_mind_memory`), unchanged and passing | The intents were dropped |
+| The held-step rule | `mw12_a_step_whose_thinks_are_out_holds_the_drones` | Owed by MW.11 |
+| A replay runs no think | `mw12_a_replay_of_the_tape_reproduces_the_sortie_and_runs_no_think`, after every step of a sortie | Held by construction |
+| A late tick is not a long step | `mw12_drones_take_one_step_a_wall_second_and_a_late_tick_is_not_a_long_step` | — |
+
+**A second reader** (an Opus agent, the range and the unit's brief only, nothing run) found no
+loss or duplication of ore and no record closed twice, and eleven other things. Fixed:
+
+- **A close could be dropped before its launch had staged the record.** A ship that launched
+  and flew on in the same second put the close on the list; the next tick found no record,
+  took the sortie for closed and dropped the entry; the launch then landed and staged a
+  record nothing would close. The entry now waits for the record (default 14), and the story
+  flies on before the launch lands.
+- **Moving the ship inside the cluster stranded her drones silently.** Refused now (default
+  7a). The story asks for both orders while a drone is out.
+- **A drone launched while a batch was out thought a step sooner after a restart**, because
+  the session read back collected for every drone it then held. A drone's record now says
+  whether the batch that is out asked it (`DroneSortieState::think_out`), and a batch is
+  collected again from those drones alone.
+  `mw12_a_drone_launched_while_thinks_are_out_thinks_no_sooner_for_a_restart`.
+- **A ship standing inside her drones' reach of the rock**: they lifted in the bay, never
+  left it and could not land. The launch is refused there (default 7b).
+- **A session was rewritten every tick while the timeline was frozen or she was docking**,
+  by a wall-second stamp that did not need writing: a drone's step is a second however long
+  it stood.
+- **Two lines were past 120 columns**: the launch's answer, which is now two lines and no
+  longer prints each sortie's id, and the line for a hold with no room.
+- **A close the book refused was filed again every tick**, each filing one more entry in the
+  bounded queue of bubble inputs that crews' helm orders share. It now backs off (default 14).
+- Three slips in this note and one misplaced doc comment.
+
+Answered, not changed:
+
+- **A crash between the launch's action landing and the session's document being written**
+  leaves a record with no drone and no close owed. True, and it is the window every module
+  write beside an action has. Not reconciled.
+- **A tape begins again every 64 entries**, so a replay covers the commands since it was
+  last begun, not the whole sortie. As a bubble's does.
+
+**Verified, and how.**
+
+- **Mutation checks**, on Linux (conclav.dev), each putting one behaviour back or taking
+  one rule out, as a one-file patch over the unit's own, against the unit tests of
+  `sortie.rs` and `applier.rs` and, for the six that reach the world, the story with `sfr5`,
+  `sfr14` and `sfr22`. All eighteen were caught. "The story" is
+  `mw12_a_drone_whose_doctrine_stops_short_brings_back_less_and_no_sortie_stays_in_the_book`.
+
+  | Mutation | Caught by |
+  |---|---|
+  | The yield ignores the mind: a landing files the whole hold whatever was lifted | The story: "B went home with one lift: one tonne more, drawn once" (8 t against 5) |
+  | A think's intents are discarded, as before the unit | Nine unit tests, `mw12_the_house_drone_fills_its_hold_and_lands_with_it` first |
+  | The sortie's record is left open (no close is filed) | The story: "the excursion book holds no drone after it lands" |
+  | The selection is not read: a launch seals the compiled digest | The story: "the next drone is sealed with the revision staff selected" |
+  | The closes owed are not persisted | The story: "the close is still owed after the restart" |
+  | A held step is taken without its thinks | `mw12_a_step_whose_thinks_are_out_holds_the_drones`: "a held step moves nothing and writes nothing" |
+  | A late tick is a long step | `mw12_drones_take_one_step_a_wall_second_and_a_late_tick_is_not_a_long_step` (7,000 ms against 2,000) |
+  | The rock's ore is told after the answers land | `mw12_two_drones_on_one_rock_never_lift_the_same_tonne` (6,000 kg carried of 5,000) |
+  | A reeled drone lands its hold | `mw12_a_drone_that_does_not_come_home_is_reeled_in_with_nothing` |
+  | The seat of a crew that is away still works | `mw12_a_drone_whose_crew_is_away_lifts_nothing_and_comes_home` |
+  | A collector works for any seat | `a_collector_works_the_rock_its_drone_has_locked_for_a_seat_that_may_work`, and the test above |
+  | The ore is told to the bubble off the tape | `mw12_a_replay_of_the_tape_reproduces_the_sortie_and_runs_no_think` (step 25, slot 2) |
+  | A drone lands without having left its bay | Eleven unit tests, `mw12_a_lift_needs_reach_and_a_cycled_collector_and_a_landing_needs_a_slow_return` among them |
+  | A landed drone stays in the session | The story, `sfr5` and `sfr14` |
+  | A close is dropped before its record is staged | The story: "a close whose record is not in the book yet waits for it" |
+  | A session read back asks every drone | `mw12_a_drone_launched_while_thinks_are_out_thinks_no_sooner_for_a_restart` (step 58 against 57) |
+  | The ship may move with drones out | The story: `+helm/approach B` is taken |
+  | A launch from inside the drones' reach is allowed | `mw12_a_ship_inside_her_drones_reach_of_the_rock_does_not_launch_them` |
+
+- **On Linux (conclav.dev), on the unit as it is**: every unit test of `tacsim` and all 267
+  stories of `tests/domain_world/` (2,568 run, 7 skipped; one failed, the unit's own story,
+  on an assertion about which refusal `+helm/match B` gives first, since corrected and run
+  again with the space unit tests and the drone stories: 85 passed). On the unit before the
+  second reader's fixes, `cost_lane`, `domain_arena` (1,127), `domain_economy` (588) and the
+  first 296 of `domain_field` passed; that run was stopped there to free the box.
+- **The memory-size clippy** CI's lint shard runs (`.github/clippy-m7`), on conclav.dev:
+  clean.
+- **On Windows**: `cargo fmt --check`, `cargo clippy --all-targets -D warnings` and
+  `cargo doc -D warnings --document-private-items` on `tacsim`; the 80 unit tests under
+  `space::` and `minds::content`; `mush-contract-tests`, 199 passed and 8 ignored, no budget
+  re-blessed. The two unit tests that failed in the first draft failed at the same step, with
+  the same figures, on Windows and on Linux.
+- **`cargo test -p mush-bot`** on Windows: no failure in the part of its output that was
+  kept. The pull request's `test (bot)` job is the check.
+- **CI on the pull request's head and the dispatch-only jobs**: the pull request records the
+  runs.
+
+**Not verified.**
+
+- **Nothing was run against a live server or over SSH.** The story drives the production
+  commands on the test world; no drone has flown on a box.
+- **The crew-away rule's wiring.** `drone_seat` is tested, and so is a drone flown on the seat
+  it answers. The line in the mining tick that reads the hull's link state and asks it is
+  reached by no test: see what the survey did not see.
+- **The refusal of `+mine/drones` when the store does not hold the drone's doctrine**, and the
+  refusal when she stands too near the rock. The first calls MW.10's resolution, which is
+  tested for the three hulls; the second calls `too_close_to_launch`, which is tested, from a
+  command no story reaches at that range.
+- **A close that waits out its thirty ticks and is dropped**, and a close filed more than
+  once. The story's close lands at its first filing.
+- **The tonnes a drone carries against another hull's laser.** `rock_uncommitted_pool_tonnes`
+  subtracts them and two drones of one hull are tested; two hulls on one rock are not.
+- **The laser against the drones** (default 2) is not balanced, and nobody has played either.
+- The `#[ignore]`d measurement lane (`think_cost.rs`) compiles and was not run; its drone row
+  now measures a view of three ships where it measured an empty one.
 
 ## MW.13
 

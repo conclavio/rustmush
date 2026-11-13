@@ -153,6 +153,41 @@ fn interdictor_bubble() -> (LocalSpaceBubble, String) {
     (bubble, id)
 }
 
+/// A drone in its bay, as a launch leaves it (doc 44 unit MW.12): its bubble and its seal.
+fn drone_in_its_bay() -> (
+    crate::space::sortie::DroneFlight,
+    Option<crate::arena::mind::MindSeal>,
+) {
+    (
+        crate::space::sortie::rig::flight(1, 8),
+        pack_cast_seal(CastActor::Drone, ObjId(77)),
+    )
+}
+
+/// One think of that drone, collected on the one view.
+fn drone_ask(
+    host: &ThinkHost,
+    drone: &(
+        crate::space::sortie::DroneFlight,
+        Option<crate::arena::mind::MindSeal>,
+    ),
+    seq: u64,
+    memory: &[u8],
+) -> Ask {
+    collect_drone_think(
+        host,
+        None,
+        ObjId(77),
+        drone.1.as_ref(),
+        &drone.0.bubble,
+        &mut ContactBook::default(),
+        1_000,
+        seq,
+        memory,
+    )
+    .expect("the drone's think is collected")
+}
+
 /// A host on a pool of two workers that holds late steps, as the server's does.
 fn server_host() -> ThinkHost {
     let host = ThinkHost::on_pool(MindPool::new(2));
@@ -284,8 +319,7 @@ fn held_cost() -> String {
     let host = server_host();
     let digest = crate::minds::content::drone_mining_digest().0;
     let owner = Owner::Cluster(ObjId(1));
-    let ask = collect_drone_think(&host, None, ObjId(77), None, [1, 2, 3], 0, &[])
-        .expect("the drone's think is collected");
+    let ask = drone_ask(&host, &drone_in_its_bay(), 0, &[]);
     let inner = host.kept_runner(&digest).expect("the runner is kept");
     let gate = std::sync::Arc::new(Gate::default());
     host.install_runner(
@@ -296,8 +330,7 @@ fn held_cost() -> String {
         }),
     );
     drop(ask);
-    let ask = collect_drone_think(&host, None, ObjId(77), None, [1, 2, 3], 0, &[])
-        .expect("the drone's think is collected");
+    let ask = drone_ask(&host, &drone_in_its_bay(), 0, &[]);
     assert!(host.submit(owner, (0, 0), vec![ask]));
     let mut held_ns = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
@@ -380,12 +413,11 @@ fn mw11_what_a_space_think_costs_the_world_thread() {
         let mut memory: Vec<u8> = Vec::new();
         let mut collect_ns = Vec::with_capacity(SAMPLES);
         let mut land_ns = Vec::with_capacity(SAMPLES);
+        let drone = drone_in_its_bay();
         for n in 0..WARM + SAMPLES {
             let seq = u64::try_from(n).unwrap_or(0);
             let started = Instant::now();
-            let ask =
-                collect_drone_think(&host, None, ObjId(77), None, [100, 200, 300], seq, &memory)
-                    .expect("the drone's think is collected");
+            let ask = drone_ask(&host, &drone, seq, &memory);
             assert!(host.submit(owner, (0, 0), vec![ask]));
             let collected = nanos(started);
             let (mut answers, landed) = land(&host, owner);

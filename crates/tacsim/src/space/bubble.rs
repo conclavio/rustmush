@@ -487,6 +487,79 @@ pub struct SpaceShipState {
     /// Sub-$\text{m/s}$ $\Delta v$ remainder in $\text{mm/s}$ accumulated across `250 ms` substeps (`SF.R11`).
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub dv_rem_mmps: i64,
+    /// **A collector drone's kit** (doc 44 unit MW.12; Q-44-27): its collector, its hold and
+    /// the ship it lands on. `None` for every other ship, and absent from her document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collector: Option<CollectorKit>,
+    /// **The ore a rock still bears**, kilograms (doc 44 unit MW.12): what a collector in
+    /// reach can lift from it. `Some` marks the ship as a rock; `None` for every other ship.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ore_kg: Option<u64>,
+}
+
+/// How far from a rock a collector can lift from it, metres (doc 44 unit MW.12). Provisional.
+pub const COLLECTOR_REACH_M: i64 = 150;
+
+/// The most a collector may be moving against a rock to lift from it, mm/s. Provisional.
+pub const COLLECTOR_MATCH_MMPS: i64 = 5_000;
+
+/// What one lift moves from the rock to the drone's hold, kilograms: a tonne, the unit an
+/// ore draw is counted in.
+pub const COLLECTOR_LIFT_KG: u32 = 1_000;
+
+/// How long a collector cycles between two lifts, wall milliseconds. Provisional.
+pub const COLLECTOR_CYCLE_MS: u32 = 3_000;
+
+/// How far from the ship it left a drone is still in her bay's reach, metres: a drone that
+/// has been further out and comes back inside it, slowly enough, lands. Provisional.
+pub const DRONE_BAY_RANGE_M: i64 = 60;
+
+/// The most a drone may be moving against the ship it lands on, mm/s. Provisional.
+pub const DRONE_DOCK_MMPS: i64 = 8_000;
+
+/// What a collector drone's drive gives, mm/s². Provisional.
+pub const DRONE_ACCEL_MMPS2: i64 = 5_000;
+
+/// The reaction mass a collector drone leaves the bay with, kilograms. A burn costs at
+/// least a kilogram for each second it stands and for each change of it, so this bounds how
+/// long a drone can steer. Provisional.
+pub const DRONE_PROPELLANT_KG: u32 = 400;
+
+/// **A collector drone's kit** (doc 44 unit MW.12; Q-44-27): the one mount a drone's mind
+/// can name, the hold it fills, and where it lands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectorKit {
+    /// The collector's id, as a mind's `fire(id, slot)` names it.
+    pub id: String,
+    /// The ship the drone left and lands on, by her id in the bubble.
+    pub home: String,
+    /// The ore in its hold, kilograms.
+    pub hold_kg: u32,
+    /// What its hold takes, kilograms.
+    pub hold_cap_kg: u32,
+    /// Wall milliseconds until the collector can lift again.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub cooldown_remaining_ms: u32,
+    /// Whether it has been outside the bay's reach since it left.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub away: bool,
+    /// Whether it is back aboard: it no longer moves, lifts or burns.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landed: bool,
+}
+
+impl CollectorKit {
+    /// How many more lifts the hold has room for.
+    #[must_use]
+    pub const fn lifts_left(&self) -> u32 {
+        self.hold_cap_kg.saturating_sub(self.hold_kg) / COLLECTOR_LIFT_KG
+    }
+
+    /// Whether the collector can lift now: it is out, cycled and has room.
+    #[must_use]
+    pub const fn ready(&self) -> bool {
+        !self.landed && self.cooldown_remaining_ms == 0 && self.lifts_left() > 0
+    }
 }
 
 impl SpaceShipState {
@@ -596,6 +669,8 @@ impl SpaceShipState {
             active_decoy_ms: 0,
             non_prop_payload_kg: 0,
             dv_rem_mmps: 0,
+            collector: None,
+            ore_kg: None,
         };
         if let Some(spec) = super::custody::unit_spec_for_id("tacsim.unit.dray") {
             super::custody::apply_unit_spec_to_space_ship(&mut ship, spec);
@@ -713,6 +788,115 @@ impl SpaceShipState {
             &super::custody::space_unit_overlay_for_id("tacsim.unit.corvette"),
         );
         ship
+    }
+
+    /// A bare body with no drive, no mount and nothing to launch: what a rock, a drone and
+    /// the ship a drone lands on are each built from (doc 44 unit MW.12).
+    fn new_body(
+        id: impl Into<String>,
+        callsign: impl Into<String>,
+        hull_class: &str,
+        party: PartyId,
+        pos_m: [i64; 3],
+        vel_mmps: [i64; 3],
+    ) -> Self {
+        let mut ship = Self::new_dray(id, callsign, party, pos_m, vel_mmps);
+        hull_class.clone_into(&mut ship.hull_class);
+        ship.sections.retain(|id, _| *id == ShipSectionId::Hull);
+        ship.max_accel_mps2 = 0;
+        ship.max_accel_mmps2 = 0;
+        ship.propellant_cap_kg = 0;
+        ship.propellant_kg = 0;
+        ship.delta_v_mps = 0;
+        ship.return_reserve_dv_mps = 0;
+        ship.pdc_auto = false;
+        ship.lasers.clear();
+        ship.pdcs.clear();
+        ship.torpedo_tubes.clear();
+        ship.railguns.clear();
+        ship.decoys_remaining = 0;
+        ship
+    }
+
+    /// **A rock a collector can work** (doc 44 unit MW.12; Q-44-27): a body that bears
+    /// `ore_kg` of ore, does not move under power and reads as worked out when it bears
+    /// none.
+    #[must_use]
+    pub fn new_rock(
+        id: impl Into<String>,
+        callsign: impl Into<String>,
+        party: PartyId,
+        pos_m: [i64; 3],
+        vel_mmps: [i64; 3],
+        ore_kg: u64,
+    ) -> Self {
+        let mut ship = Self::new_body(id, callsign, "tacsim.space.rock", party, pos_m, vel_mmps);
+        ship.ore_kg = Some(ore_kg);
+        ship
+    }
+
+    /// **The ship a drone left and lands on, as its sortie's bubble holds her** (doc 44
+    /// unit MW.12): where she is and how she moves, and nothing she could fire or burn. She
+    /// is flown by her cluster session, not by this bubble
+    /// ([`BubbleInputCommand::PlaceShip`]).
+    #[must_use]
+    pub fn new_drone_bay(
+        id: impl Into<String>,
+        callsign: impl Into<String>,
+        party: PartyId,
+        pos_m: [i64; 3],
+        vel_mmps: [i64; 3],
+    ) -> Self {
+        Self::new_body(id, callsign, "tacsim.unit.dray_p", party, pos_m, vel_mmps)
+    }
+
+    /// **A collector drone** (doc 44 unit MW.12; Q-44-27): a small body with a drive, a
+    /// collector named `collector_id`, and a hold of `hold_cap_kg` that it brings back to
+    /// `home`.
+    #[must_use]
+    pub fn new_collector_drone(
+        id: impl Into<String>,
+        callsign: impl Into<String>,
+        party: PartyId,
+        home: impl Into<String>,
+        collector_id: impl Into<String>,
+        hold_cap_kg: u32,
+        pos_m: [i64; 3],
+    ) -> Self {
+        let mut ship = Self::new_body(
+            id,
+            callsign,
+            "tacsim.space.collector_drone",
+            party,
+            pos_m,
+            [0, 0, 0],
+        );
+        "drone".clone_into(&mut ship.pixel_model);
+        ship.dry_mass_t = 1;
+        ship.hit_radius_m = 1;
+        ship.max_accel_mmps2 = DRONE_ACCEL_MMPS2;
+        ship.max_accel_mps2 = DRONE_ACCEL_MMPS2 / 1_000;
+        ship.propellant_cap_kg = DRONE_PROPELLANT_KG;
+        ship.propellant_kg = DRONE_PROPELLANT_KG;
+        // A burn is refused once the change of speed is spent. The reaction mass is what
+        // bounds a drone, so this is held well above what that mass can buy.
+        ship.delta_v_mps = 1_000_000;
+        ship.collector = Some(CollectorKit {
+            id: collector_id.into(),
+            home: home.into(),
+            hold_kg: 0,
+            hold_cap_kg,
+            cooldown_remaining_ms: 0,
+            away: false,
+            landed: false,
+        });
+        ship
+    }
+
+    /// Whether this ship is a rock that bears no ore.
+    #[must_use]
+    pub const fn is_spent_rock(&self) -> bool {
+        matches!(self.ore_kg, Some(0))
     }
 
     /// Overall hull integrity percentage (`0..=100`).
@@ -1864,6 +2048,111 @@ impl LocalSpaceBubble {
         Ok(next_thrust_mmps2)
     }
 
+    /// **One lift of ore from the rock `rock_id` into the hold of the collector drone
+    /// `ship_id`** (doc 44 unit MW.12; Q-44-27). Answers the kilograms moved: nothing unless
+    /// the drone is out with its collector cycled and room in its hold, the rock bears ore,
+    /// and the drone is within [`COLLECTOR_REACH_M`] of it and under
+    /// [`COLLECTOR_MATCH_MMPS`] against it. What leaves the rock is what enters the hold.
+    pub fn work_rock(&mut self, ship_id: &str, rock_id: &str) -> u32 {
+        let Some(rock) = self.ships.get(rock_id) else {
+            return 0;
+        };
+        let (Some(ore_kg), rock_pos_m, rock_vel_mmps) = (rock.ore_kg, rock.pos_m, rock.vel_mmps)
+        else {
+            return 0;
+        };
+        let Some(drone) = self.ships.get_mut(ship_id) else {
+            return 0;
+        };
+        if drone.status != HullStatus::Operational {
+            return 0;
+        }
+        let in_reach = separation_m(drone.pos_m, rock_pos_m) <= COLLECTOR_REACH_M
+            && separation_m(drone.vel_mmps, rock_vel_mmps) <= COLLECTOR_MATCH_MMPS;
+        let Some(kit) = drone.collector.as_mut().filter(|kit| kit.ready()) else {
+            return 0;
+        };
+        if !in_reach {
+            return 0;
+        }
+        // A lift is a whole one or none: the hold is counted in lifts, and so is the draw
+        // its landing files.
+        let lift_kg = COLLECTOR_LIFT_KG;
+        if ore_kg < u64::from(lift_kg) {
+            return 0;
+        }
+        kit.hold_kg = kit.hold_kg.saturating_add(lift_kg);
+        kit.cooldown_remaining_ms = COLLECTOR_CYCLE_MS;
+        if let Some(rock) = self.ships.get_mut(rock_id) {
+            rock.ore_kg = Some(ore_kg.saturating_sub(u64::from(lift_kg)));
+        }
+        lift_kg
+    }
+
+    /// **Where the host says `ship_id` is** (doc 44 unit MW.12): a ship flown outside this
+    /// bubble, the ship a drone lands on, whose cluster session moves her.
+    pub fn place_ship(&mut self, ship_id: &str, pos_m: [i64; 3], vel_mmps: [i64; 3]) {
+        if let Some(ship) = self.ships.get_mut(ship_id) {
+            ship.pos_m = pos_m;
+            ship.pos_rem_um = [0, 0, 0];
+            ship.vel_mmps = vel_mmps;
+        }
+    }
+
+    /// **What the host says the rock `ship_id` bears now** (doc 44 unit MW.12): the deposit
+    /// is the world's, and others draw on it. A ship that is not a rock is left as it is.
+    pub fn set_ore(&mut self, ship_id: &str, ore_kg: u64) {
+        if let Some(rock) = self.ships.get_mut(ship_id)
+            && rock.ore_kg.is_some()
+        {
+            rock.ore_kg = Some(ore_kg);
+        }
+    }
+
+    /// **The drones of this bubble take their bays** (doc 44 unit MW.12; Q-44-27): a drone
+    /// that has been outside [`DRONE_BAY_RANGE_M`] of the ship it left is away; one that is
+    /// away and back inside it, under [`DRONE_DOCK_MMPS`] against her, lands. A drone that
+    /// has not been away is still in its bay and has not left. A landed drone rides with her
+    /// and does nothing more.
+    fn settle_drones(&mut self) {
+        if !self.ships.values().any(|ship| ship.collector.is_some()) {
+            return;
+        }
+        let homes: BTreeMap<String, ([i64; 3], [i64; 3])> = self
+            .ships
+            .values()
+            .filter_map(|ship| ship.collector.as_ref())
+            .filter_map(|kit| {
+                let home = self.ships.get(&kit.home)?;
+                Some((kit.home.clone(), (home.pos_m, home.vel_mmps)))
+            })
+            .collect();
+        for ship in self.ships.values_mut() {
+            let (pos_m, vel_mmps) = (ship.pos_m, ship.vel_mmps);
+            let Some(kit) = ship.collector.as_mut() else {
+                continue;
+            };
+            let Some(&(home_pos_m, home_vel_mmps)) = homes.get(&kit.home) else {
+                continue;
+            };
+            if !kit.landed {
+                let in_bay = separation_m(pos_m, home_pos_m) <= DRONE_BAY_RANGE_M;
+                if !in_bay {
+                    kit.away = true;
+                } else if kit.away && separation_m(vel_mmps, home_vel_mmps) <= DRONE_DOCK_MMPS {
+                    kit.landed = true;
+                }
+            }
+            if kit.landed {
+                ship.pos_m = home_pos_m;
+                ship.pos_rem_um = [0, 0, 0];
+                ship.vel_mmps = home_vel_mmps;
+                ship.thrust_mps2 = [0, 0, 0];
+                ship.thrust_mmps2 = [0, 0, 0];
+            }
+        }
+    }
+
     /// Launch a torpedo salvo from `shooter_id` at `target_id` (`D-35-8`).
     ///
     /// Each launched torpedo inherits `shooter`'s exact 3D velocity `vel_mmps` at launch.
@@ -2200,7 +2489,11 @@ impl LocalSpaceBubble {
 
         // 1. Step ship kinematics, propellant debit (`D-35-6`), linkdead cut (`D-35-7`), and cooling
         for ship in self.ships.values_mut() {
-            if ship.crew_linkdead || ship.docking_hold || ship.status != HullStatus::Operational {
+            if ship.crew_linkdead
+                || ship.docking_hold
+                || ship.status != HullStatus::Operational
+                || ship.collector.as_ref().is_some_and(|kit| kit.landed)
+            {
                 ship.thrust_mps2 = [0, 0, 0];
                 ship.thrust_mmps2 = [0, 0, 0];
             }
@@ -2276,6 +2569,9 @@ impl LocalSpaceBubble {
             for p in &mut ship.pdcs {
                 p.cooldown_remaining_ms = p.cooldown_remaining_ms.saturating_sub(step_ms);
             }
+            if let Some(kit) = ship.collector.as_mut() {
+                kit.cooldown_remaining_ms = kit.cooldown_remaining_ms.saturating_sub(step_ms);
+            }
 
             let base_cooling = if ship.crits.contains(&SubsystemCrit::RadiatorDamaged) {
                 ship.cooling_rate_permille_s / 2
@@ -2291,6 +2587,8 @@ impl LocalSpaceBubble {
             ship.heat_permille = ship.heat_permille.saturating_sub(cooled);
             ship.active_decoy_ms = ship.active_decoy_ms.saturating_sub(step_ms);
         }
+        // Doc 44 unit MW.12: a drone that is back in its bay's reach lands.
+        self.settle_drones();
 
         // 2. Step guided torpedoes (`D-35-8`): proportional navigation + ballistic coast + defensive screen
         let old_torpedoes = std::mem::take(&mut self.torpedoes);
@@ -2627,6 +2925,16 @@ impl LocalSpaceBubble {
             for sec in ship.sections.values() {
                 mix(&sec.internals.to_le_bytes());
             }
+            // Doc 44 unit MW.12: what a drone holds and what a rock bears. A ship that is
+            // neither mixes nothing here, so every other bubble's hash is as it was.
+            if let Some(kit) = &ship.collector {
+                mix(&kit.hold_kg.to_le_bytes());
+                mix(&kit.cooldown_remaining_ms.to_le_bytes());
+                mix(&[u8::from(kit.away), u8::from(kit.landed)]);
+            }
+            if let Some(ore_kg) = ship.ore_kg {
+                mix(&ore_kg.to_le_bytes());
+            }
         }
         for torp in &self.torpedoes {
             mix(&torp.id.to_le_bytes());
@@ -2929,8 +3237,33 @@ impl LocalSpaceBubble {
                 dt_wall_ms,
                 ic_now_s,
             } => self.step_wall_ms_at(*dt_wall_ms, *ic_now_s).events,
+            BubbleInputCommand::WorkRock { ship_id, rock_id } => {
+                let _ = self.work_rock(ship_id, rock_id);
+                Vec::new()
+            }
+            BubbleInputCommand::PlaceShip {
+                ship_id,
+                pos_m,
+                vel_mmps,
+            } => {
+                self.place_ship(ship_id, *pos_m, *vel_mmps);
+                Vec::new()
+            }
+            BubbleInputCommand::SetOre { ship_id, ore_kg } => {
+                self.set_ore(ship_id, *ore_kg);
+                Vec::new()
+            }
         }
     }
+}
+
+/// The length of the vector from `a` to `b`, in the unit they are given in.
+fn separation_m(a: [i64; 3], b: [i64; 3]) -> i64 {
+    let square = |axis: usize| -> i128 {
+        let part = i128::from(a[axis]) - i128::from(b[axis]);
+        part * part
+    };
+    i64::try_from(isqrt_i128(square(0) + square(1) + square(2))).unwrap_or(i64::MAX)
 }
 
 /// Serializable snapshot of a [`LocalSpaceBubble`] (`D-35-1`, `35a` §8.2).
@@ -3000,6 +3333,25 @@ pub enum BubbleInputCommand {
     StepWall {
         dt_wall_ms: u32,
         ic_now_s: i64,
+    },
+    /// **A collector drone works its lock** (doc 44 unit MW.12; Q-44-27): one lift from the
+    /// rock into its hold ([`LocalSpaceBubble::work_rock`]).
+    WorkRock {
+        ship_id: String,
+        rock_id: String,
+    },
+    /// **The host's word for where a ship flown outside the bubble is** (doc 44 unit
+    /// MW.12): the ship a drone lands on, whose cluster session moves her.
+    PlaceShip {
+        ship_id: String,
+        pos_m: [i64; 3],
+        vel_mmps: [i64; 3],
+    },
+    /// **The host's word for what a rock bears** (doc 44 unit MW.12): the deposit is the
+    /// world's, and other hulls draw on it.
+    SetOre {
+        ship_id: String,
+        ore_kg: u64,
     },
 }
 

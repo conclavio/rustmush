@@ -111,7 +111,8 @@ pub const MINE_HELP: &str = "\
 +mine/contest <rock>                  Contest a player claim within the 30-day Registry contest window.
 +mine/laser <rock> [<family>]         Start a timed 60s mining-laser extraction cycle into the hull's stow.ore hold.
 +mine/drones <rock> [<1..4>] [<family>]
-                                      Launch up to 4 collector-drone sorties (`ExcursionId`) into stow.ore.";
+                                      Launch up to 4 collector drones (`ExcursionId`): each flies to the rock,
+                                      works it and brings what it holds back into stow.ore.";
 
 /// The tactical command verb (`+tac`).
 pub const TAC_VERB: &str = "+tac";
@@ -2961,7 +2962,7 @@ pub(crate) fn promote_departed_hull_to_space_free_flight(
         prepaid_unflown_t: plan.burn_t,
     };
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-        book.cluster_sessions.remove(&hull);
+        book.end_cluster_session(hull);
         book.free_flights.insert(hull, record);
         let _ = book
             .propellant_ledger_mut(hull)
@@ -3152,7 +3153,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             prepaid_unflown_t: 0,
         };
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-            book.cluster_sessions.remove(&hull);
+            book.end_cluster_session(hull);
             book.free_flights.insert(hull, record);
             book.propellant_ledger_mut(hull)
                 .record_passage_burn_t(basis.tank, burn_t);
@@ -3318,7 +3319,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             prepaid_unflown_t: 0,
         };
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-            book.cluster_sessions.remove(&hull);
+            book.end_cluster_session(hull);
             book.free_flights.insert(hull, record);
             book.propellant_ledger_mut(hull)
                 .record_passage_burn_t(basis.tank, burn_t);
@@ -3622,7 +3623,7 @@ pub(crate) fn engage_port_autopilot(
 
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         book.free_flights.remove(&hull);
-        book.cluster_sessions.remove(&hull);
+        book.end_cluster_session(hull);
         book.propellant_ledger_mut(hull)
             .record_passage_burn_t(basis.tank, charge_burn_t);
     }
@@ -4465,6 +4466,9 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ))
     })?;
 
+    // Doc 44 unit MW.12: her drones fly home to where she stands, so she holds her station
+    // while any is out.
+    refuse_while_drones_are_out(ctx.w, hull, None)?;
     let burned_kg = debit_hull_propellant_for_dv(ctx, hull, 12, true)?;
 
     let now_ic = ctx.w.world_ic_now().at;
@@ -4533,6 +4537,8 @@ fn helm_match(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ))
     })?;
 
+    // Doc 44 unit MW.12: matching another rock moves her off the one her drones work.
+    refuse_while_drones_are_out(ctx.w, hull, Some(spec.letter))?;
     // Strict 3D Euclidean range (`<= 2,000 m`) and 3D relative speed (`< 5,000 mm/s = 5.0 m/s`)
     // check — never teleports from arbitrary distance (`35a` §5 #11)!
     let (dist_m, rel_speed_mmps) = super::mining::check_velocity_match_gate(
@@ -6762,6 +6768,35 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// What a helm order that would move the ship inside a cluster answers while her collector
+/// drones are out (doc 44 unit MW.12).
+pub const DRONES_OUT: &str =
+    "Collector drones are out: she holds her station until they are back aboard (`+mine/status`).";
+
+/// **Refuse to move `hull` inside her cluster while a drone of hers is out** (doc 44 unit
+/// MW.12; Q-44-27). A drone flies home to where the ship stands, and the cluster's approach
+/// moves her most of two kilometres a tick: a drone could never make its bay. `staying_on`
+/// is the rock a match would hold her on; a match on the rock she is already matched to
+/// moves nothing and is let through. Leaving the cluster is not refused: the drones are left
+/// behind, and their sorties end.
+fn refuse_while_drones_are_out(
+    w: &World,
+    hull: ObjId,
+    staying_on: Option<char>,
+) -> Result<(), CmdError> {
+    let moves = w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.cluster_sessions.get(&hull))
+        .is_some_and(|session| {
+            !session.active_drones.is_empty()
+                && (staying_on.is_none() || session.matched_rock != staying_on)
+        });
+    if moves {
+        return Err(CmdError::msg(DRONES_OUT));
+    }
+    Ok(())
+}
+
 fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, role) = require_aboard_and_seat(ctx, None)?;
     if !role.grants_channel("flight_ops") {
@@ -6842,8 +6877,22 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )
     .map_err(CmdError::msg)?;
 
+    // Doc 44 unit MW.12: a drone lands by leaving its bay's reach and coming back, so she
+    // launches from outside her drones' reach of the rock.
+    if let Some(range_m) = super::sortie::too_close_to_launch(session.ship_pos_m, spec.pos_m) {
+        return Err(CmdError::msg(format!(
+            "Too close to Block {} to launch collector drones ({range_m} m): stand off {} m or more (`+helm/approach {}`).",
+            spec.letter,
+            super::sortie::DRONE_LAUNCH_STANDOFF_M,
+            spec.letter
+        )));
+    }
+
+    // Doc 44 unit MW.12: a bay slot's drone is one object, so a slot is launched again only
+    // once its drone is back. The drones go out of the lowest free slots.
     let active_count = session.active_drones.len();
-    if active_count + count > max_drones {
+    let free_slots = session.free_drone_slots();
+    if count > free_slots.len() {
         return Err(CmdError::msg(format!(
             "Drone bay cap exceeded: {active_count} collector drone(s) already in flight (max {} under `MAX_EXCURSIONS_PER_OPERATOR`).",
             crate::surface::excursion::MAX_EXCURSIONS_PER_OPERATOR
@@ -6900,11 +6949,26 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.actor,
             now_ic,
         );
-    let due_ic = now_ic.saturating_add(super::mining::DRONE_SORTIE_IC_SECS);
+    // Doc 44 units MW.10 and MW.12 (Q-44-25, Q-44-27): the doctrine the drones fly is the
+    // cast's, or the revision staff selected, from the store by its digest. It is resolved
+    // before anything is made, so a refusal launches nothing.
+    if let Some(store) = ctx.w.module_state_mut::<crate::store::TacsimStore>() {
+        crate::minds::content::ensure_space_mind_sources_installed(store);
+    }
+    let doctrine = crate::minds::content::cast::cast_doctrine(
+        ctx.w.module_state::<crate::store::TacsimStore>(),
+        crate::minds::content::cast::CastActor::Drone,
+    )
+    .map_err(|fault| CmdError::msg(format!("No collector drone is launched: {fault}.")))?;
+    let hull_name = display_name(ctx.w, hull);
+    let bay_vel_mmps = [
+        session.ship_vel_mmps[0].saturating_sub(spec.vel_mmps[0]),
+        session.ship_vel_mmps[1].saturating_sub(spec.vel_mmps[1]),
+        session.ship_vel_mmps[2].saturating_sub(spec.vel_mmps[2]),
+    ];
     let mut launched_ids = Vec::new();
     let mut drone_excursions = Vec::new();
-    for idx in 0..count {
-        let slot = u8::try_from(active_count + idx + 1).unwrap_or(1);
+    for slot in free_slots.into_iter().take(count) {
         let drone_obj =
             super::mining::ensure_drone_thing(ctx, hull, slot).map_err(CmdError::msg)?;
         let excursion_id = crate::surface::excursion::ExcursionId {
@@ -6915,22 +6979,26 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx,
             drone_obj,
             crate::arena::mind::SortieId::ic(drone_obj, now_ic.max(1)),
-            "drone_mining",
-            crate::minds::content::drone_mining_digest().0,
+            doctrine.name.as_str(),
+            doctrine.digest,
         );
-        // Doc 44 unit MW.11: a drone no longer thinks in the launching command. Its first
-        // think is collected by the next space tick and lands on the one after, off the
-        // world thread like every other.
-        let (mind_memory, mind_think_seq, mind_last_trace) = (Vec::new(), 0_u64, Vec::new());
-        drone_excursions.push((drone_obj, slot, session.cluster.clone()));
-        launched_ids.push((
+        // Doc 44 unit MW.12: the drone's sortie is a bubble of its own, which its mind
+        // flies. Doc 44 unit MW.11: it does not think in this command; its first think is
+        // collected by the drones' first step and lands on the one after.
+        let flight = super::sortie::DroneFlight::open(&super::sortie::Launch {
+            hull,
+            hull_name: &hull_name,
             slot,
-            excursion_id,
-            mind_seal,
-            mind_memory,
-            mind_think_seq,
-            mind_last_trace,
-        ));
+            cluster: session.cluster.as_str(),
+            letter: spec.letter,
+            bay_pos_m: session.ship_pos_m,
+            bay_vel_mmps,
+            rock_pos_m: spec.pos_m,
+            ore_kg: avail_t.saturating_mul(1_000),
+            ic_now_s: now_ic,
+        });
+        drone_excursions.push((drone_obj, slot, session.cluster.clone()));
+        launched_ids.push((slot, excursion_id, mind_seal, flight));
     }
     let _ = super::tick::submit_drone_excursions(ctx, hull, drone_excursions);
 
@@ -6946,9 +7014,7 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             if is_frontier_unleased {
                 sess_mut.claim_jump_flagged = true;
             }
-            for (slot, excursion_id, mind_seal, mind_memory, mind_think_seq, mind_last_trace) in
-                &launched_ids
-            {
+            for (slot, excursion_id, mind_seal, flight) in &launched_ids {
                 sess_mut
                     .active_drones
                     .push(super::mining::DroneSortieState {
@@ -6956,34 +7022,42 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         excursion_id: *excursion_id,
                         rock_letter: spec.letter,
                         family,
-                        due_ic,
-                        yield_t: super::mining::DRONE_SORTIE_YIELD_T,
                         operator: ctx.actor,
+                        flight: Some(flight.clone()),
+                        contacts: super::view::ContactBook::default(),
+                        think_out: false,
                         mind_seal: mind_seal.clone(),
-                        mind_memory: mind_memory.clone(),
-                        mind_think_seq: *mind_think_seq,
-                        mind_last_trace: mind_last_trace.clone(),
+                        mind_memory: Vec::new(),
+                        mind_think_seq: 0,
+                        mind_last_trace: Vec::new(),
                     });
             }
         }
     }
 
-    let exc_summary: Vec<String> = launched_ids
+    // Two lines, each inside the 120-column floor: what was launched, and what to expect.
+    let slots: Vec<String> = launched_ids
         .iter()
-        .map(|(slot, exc, ..)| format!("slot {slot} (#{exc})"))
+        .map(|(slot, ..)| slot.to_string())
         .collect();
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
         format!(
-            "Launched {} collector drone(s) onto Block {} ({}) for {}s ({} t `{}` each into `stow.ore`): {}.",
+            "Launched {} collector drone(s) onto Block {} ({}) for `{}`, from bay slot(s) {}.",
             launched_ids.len(),
             spec.letter,
             spec.spectral.code(),
-            super::mining::DRONE_SORTIE_IC_SECS,
-            super::mining::DRONE_SORTIE_YIELD_T,
             crate::surface::opening::ore_good(family),
-            exc_summary.join(", ")
+            slots.join(", ")
+        ),
+    );
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "tacsim.space",
+        format!(
+            "Each flies itself and brings back what it lifts, up to {} t, into `stow.ore`.",
+            super::sortie::DRONE_HOLD_T
         ),
     );
     Ok(())

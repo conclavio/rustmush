@@ -52,12 +52,8 @@ use super::thinks::{Answer, Ask, ThinkHost, Thinker};
 use super::view::{ContactBook, Situation, Stop};
 use super::weapons::isqrt_i128;
 use crate::arena::intents::IntentKind;
-use crate::arena::mind::MindView;
 use crate::arena::party::{Mark, PartyId};
-use crate::arena::perception::{FrameNotice, Receiver as FrameReceiver};
-use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, Designator, MatchMode, Power, TerrainCell, Waypoints,
-};
+use crate::arena::state::{ArenaDefinition, ArenaTerrain, TerrainCell, Waypoints};
 use crate::port::apply::{credit_scale, minor_of};
 use crate::port::licence::{LICENCE_SETTLE_WINDOW_SECS, licence_gate, licence_port};
 
@@ -937,81 +933,41 @@ pub(super) fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
     })
 }
 
-/// **The view a collector drone thinks on** (`drone_mining.rhai`, `SF.R14`, `D-35-13`): where
-/// its carrier is, and nothing of the rock or the hold yet (doc 44 unit MW.12 gives it those).
+/// **Collect one think of a collector drone** (doc 44 units MW.11 and MW.12; Q-44-27): the
+/// job for the pool, on the mind it was sealed with at launch and on the one view every
+/// space mind reads ([`super::view::space_mind_view`]) of its own bubble: the rock and the
+/// ship it left are its contacts, and its collector's row is its hold
+/// ([`super::sortie`]). `book` is the drone's own contact numbers. A drone with no seal does
+/// not think. Nothing is thought here; the answer lands at the head of the drones' next
+/// step, through the one applier.
 #[must_use]
-pub(crate) fn drone_view(drone_obj: ObjId, pos_m: [i64; 3], think_seq: u64) -> MindView {
-    let t_ms = i64::try_from(think_seq.saturating_mul(1_000)).unwrap_or(0);
-    MindView {
-        unit: drone_obj.0,
-        callsign: Designator::Unit {
-            party: CARRIER_PARTY,
-            letter: 'A',
-        },
-        party: CARRIER_PARTY,
-        cell: Some((8, 8)),
-        mode: MatchMode::Skirmish,
-        own_last_hit_ms: None,
-        objective: None,
-        motor: None,
-        x_cm: pos_m[0].saturating_mul(100),
-        y_cm: pos_m[1].saturating_mul(100),
-        z_cm: pos_m[2].saturating_mul(100),
-        heading_mdeg: 0,
-        speed_cms: 0,
-        power: Power::Online,
-        held: false,
-        wreck: false,
-        immobile: false,
-        sight_m: 10_000,
-        ecm: Some(false),
-        receiver: Some(FrameReceiver {
-            budget: 100,
-            budget_max: 100,
-            reach_permille: 1_000,
-        }),
-        heat: None,
-        sections: Vec::new(),
-        lock: None,
-        weapons: Vec::new(),
-        rules: Vec::new(),
-        order: None,
-        t_ms,
-        notices: Vec::<FrameNotice>::new(),
-        contacts: Vec::new(),
-        scan_tables: Vec::new(),
-        odds_floor_permille: 0,
-        space: None,
-        // Doc 45 unit AP.3: a collector drone is nobody's standing order; the default.
-        posture: crate::posture::Posture::Return,
-    }
-}
-
-/// **Collect one think of a collector drone** (doc 44 unit MW.11): the job for the pool, on
-/// the mind it was sealed with at launch (the compiled drone doctrine when it holds no seal).
-/// Nothing is thought here; the answer is written by the mining tick that finds it
-/// ([`super::mining`]).
-#[must_use]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_drone_think(
     host: &ThinkHost,
     store: Option<&crate::store::TacsimStore>,
     drone_obj: ObjId,
     seal: Option<&crate::arena::mind::MindSeal>,
-    pos_m: [i64; 3],
+    bubble: &LocalSpaceBubble,
+    book: &mut super::view::ContactBook,
+    step_ms: u32,
     think_seq: u64,
     memory: &[u8],
 ) -> Option<Ask> {
-    let digest = seal.map_or_else(
-        || crate::minds::content::drone_mining_digest().0,
-        |seal| seal.source_sha256,
-    );
-    let view = Arc::new(drone_view(drone_obj, pos_m, think_seq));
+    let digest = seal?.source_sha256;
+    let (view, contacts) = super::view::space_mind_view(
+        bubble,
+        super::sortie::DRONE_SHIP,
+        drone_obj,
+        book,
+        &super::view::Situation::open(step_ms),
+    )?;
+    let view = Arc::new(view);
     let job = host.job(store, drone_obj, digest, think_seq, &view, memory)?;
     Some(Ask {
         who: Thinker::Drone,
         unit: drone_obj,
         think_seq,
-        contacts: BTreeMap::new(),
+        contacts,
         jobs: vec![job],
     })
 }
@@ -1676,12 +1632,33 @@ impl PicketCastEntry {
     }
 }
 
-/// Authored NPC cast table for the Kirkwood Customs Picket and deep-space interdiction (`SF.R22`, `D-35-17`).
+/// **The collector drone's row of the cast** (doc 44 unit MW.12; Q-44-27): the doctrine a
+/// drone flies and its digest. A drone is a `Dray-P`'s own, launched from her bay, so the
+/// row names no hull, commander or station.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DroneCastEntry {
+    /// The doctrine it flies, by name: its seal's `mind`.
+    pub doctrine: String,
+    /// That doctrine's digest: the SHA-256 of its source, 64 lowercase base-16 characters.
+    pub doctrine_sha256: String,
+}
+
+impl DroneCastEntry {
+    /// [`Self::doctrine_sha256`] as bytes, when it is a digest.
+    #[must_use]
+    pub fn doctrine_digest(&self) -> Option<[u8; 32]> {
+        crate::arena::digest_from_text(&self.doctrine_sha256)
+    }
+}
+
+/// Authored NPC cast table for the Kirkwood Customs Picket and deep-space interdiction (`SF.R22`, `D-35-17`),
+/// and the collector drone's doctrine (doc 44 unit MW.12).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PicketCastBook {
     pub corvette: PicketCastEntry,
     pub raider: PicketCastEntry,
     pub interdictor: PicketCastEntry,
+    pub drone: DroneCastEntry,
 }
 
 const PICKET_CAST_JSON: &str = include_str!("../../content/space/picket_cast.json");
@@ -1712,6 +1689,14 @@ static PICKET_CAST: std::sync::LazyLock<Option<PicketCastBook>> = std::sync::Laz
             );
             return None;
         }
+    }
+    if book.drone.doctrine_digest().is_none() {
+        tracing::error!(
+            actor = "drone",
+            doctrine = %book.drone.doctrine,
+            "tacsim: content/space/picket_cast.json names a doctrine_sha256 that is not 64 lowercase base-16 characters; no picket or interdictor sails and no drone flies"
+        );
+        return None;
     }
     Some(book)
 });

@@ -165,7 +165,7 @@ All mined matter enters **`stow.ore`** (measured in `kg` and `L` using `goods.js
 2. **Velocity Match (`+helm/match <rock_id>`)**: The pilot flies within **$2{,}000\text{ m}$** of the target asteroid pocket and nulls 3D Euclidean relative speed to **$|\Delta \mathbf{v}| < 5\text{ m/s}$** (`5,000 mm/s`).
 3. **Extraction (`+mine/laser <rock_id>` or `+mine/drones launch`)**:
    - **Ship Mining Laser**: Direct extraction over a timed run; generates high **thermal/IR bloom** visible across the cluster bubble and risks volatile outgassing $\Delta \mathbf{v}$ kicks if overheated.
-   - **Collector Drones (`doc 20 §17`)**: Up to **4 drones per `Dray-P`** (`maximum_items = 4`), launched and sealed from bay to bay under a real `ExcursionId`, running the stock `mining` doctrine (`scan()`, `sound()`, `goto()`, `mine()`, `recover()`).
+   - **Collector Drones (`doc 20 §17`)**: Up to **4 drones per `Dray-P`** (`maximum_items = 4`), launched and sealed from bay to bay under a real `ExcursionId`, running the stock `mining` doctrine (`scan()`, `sound()`, `goto()`, `mine()`, `recover()`). **As built (doc 44 unit MW.12, Q-44-27):** each drone's sortie is a small bubble of its own that its mind flies with the intents every space mind has (`lock`, `helm`, `speed`, `hold`, and `fire` on its collector, which lifts a tonne from the rock it has locked). It brings back what it lifted and carried home, and its record leaves the excursion book when it is back aboard. The house doctrine is `drone_mining`, the fourth actor of the space cast; the surface verbs named above are not a space mind's.
 
 ---
 

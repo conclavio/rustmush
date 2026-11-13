@@ -28,10 +28,15 @@
 //! them under their own digest, and select that digest for an actor here. The old bytes stay
 //! under the old digest, which every seal taken before the selection still names.
 //!
+//! # The collector drone
+//!
+//! The fourth actor (doc 44 unit MW.12; Q-44-27). A drone is sealed when it is launched, by
+//! the same resolution; a drone that is out keeps the seal it launched with. A drone with no
+//! doctrine is not launched, and `+mine/drones` says why.
+//!
 //! # What this module leaves alone
 //!
-//! The collector drone's doctrine (`drone_mining`) is not a cast actor and is still sealed with
-//! the digest compiled in (doc 44 unit MW.12). The link-loss backup mind reads its own pointer,
+//! The link-loss backup mind reads its own pointer,
 //! `tacsim:doctrine:linkdead_return`, on every think ([`crate::space`]'s `backup` module, doc
 //! 35 §11 `B-3`); nothing here writes it. A House's policy and a port's arms are compiled
 //! (Q-44-32, deferred); when one becomes a doctrine it is named the same way, by a role under
@@ -51,11 +56,13 @@ pub enum CastActor {
     Raider,
     /// The interdictor of a waypoint interdiction.
     Interdictor,
+    /// A collector drone of a `Dray-P` at an orbital cluster (doc 44 unit MW.12).
+    Drone,
 }
 
 impl CastActor {
     /// Every actor, in the cast file's order.
-    pub const ALL: [Self; 3] = [Self::Corvette, Self::Raider, Self::Interdictor];
+    pub const ALL: [Self; 4] = [Self::Corvette, Self::Raider, Self::Interdictor, Self::Drone];
 
     /// The actor's key in the cast file, and her name in `@mind/cast`.
     #[must_use]
@@ -64,6 +71,7 @@ impl CastActor {
             Self::Corvette => "corvette",
             Self::Raider => "raider",
             Self::Interdictor => "interdictor",
+            Self::Drone => "drone",
         }
     }
 
@@ -81,11 +89,16 @@ impl CastActor {
         format!("cast.{}", self.word())
     }
 
-    fn entry(self, book: &crate::space::PicketCastBook) -> &crate::space::PicketCastEntry {
+    /// The doctrine the cast names for this actor, and its digest when it is one.
+    fn entry(self, book: &crate::space::PicketCastBook) -> (&str, Option<[u8; 32]>) {
+        let hull = |entry: &'_ crate::space::PicketCastEntry| -> Option<[u8; 32]> {
+            entry.doctrine_digest()
+        };
         match self {
-            Self::Corvette => &book.corvette,
-            Self::Raider => &book.raider,
-            Self::Interdictor => &book.interdictor,
+            Self::Corvette => (&book.corvette.doctrine, hull(&book.corvette)),
+            Self::Raider => (&book.raider.doctrine, hull(&book.raider)),
+            Self::Interdictor => (&book.interdictor.doctrine, hull(&book.interdictor)),
+            Self::Drone => (&book.drone.doctrine, book.drone.doctrine_digest()),
         }
     }
 }
@@ -184,9 +197,9 @@ impl std::fmt::Display for CastFault {
 /// [`CastFault::NoCast`] when the cast file did not load or its digest does not parse.
 pub fn pack_doctrine(actor: CastActor) -> Result<(SmolStr, [u8; 32]), CastFault> {
     let book = crate::space::picket_cast_book().ok_or(CastFault::NoCast { actor })?;
-    let entry = actor.entry(book);
-    let digest = entry.doctrine_digest().ok_or(CastFault::NoCast { actor })?;
-    Ok((SmolStr::new(&entry.doctrine), digest))
+    let (doctrine, digest) = actor.entry(book);
+    let digest = digest.ok_or(CastFault::NoCast { actor })?;
+    Ok((SmolStr::new(doctrine), digest))
 }
 
 /// **The doctrine `actor`'s next seal names**: staff's selection if the world holds one, else
@@ -266,7 +279,7 @@ pub fn boot(ctx: &mut Ctx<'_>) {
 }
 
 /// `@mind/cast`'s usage.
-pub(crate) const USAGE: &str = "@mind/cast (the space cast: each actor's doctrine and its digest)\n@mind/cast <corvette|raider|interdictor>=<owned mind>@<revision> | <64-character digest> | PACK";
+pub(crate) const USAGE: &str = "@mind/cast (the space cast: each actor's doctrine and its digest)\n@mind/cast <corvette|raider|interdictor|drone>=<owned mind>@<revision> | <64-character digest> | PACK";
 
 fn refuse(text: impl Into<String>) -> CmdError {
     CmdError::msg(text.into())
@@ -306,7 +319,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let (actor, what) = text.split_once('=').ok_or_else(|| refuse(USAGE))?;
     let actor = CastActor::parse(actor).ok_or_else(|| {
         refuse(format!(
-            "No such actor in the space cast: {}. They are corvette, raider and interdictor.",
+            "No such actor in the space cast: {}. They are corvette, raider, interdictor and drone.",
             actor.trim()
         ))
     })?;
@@ -462,6 +475,11 @@ mod tests {
                 "interdictor_patrol",
                 crate::minds::content::interdictor_patrol_source(),
             ),
+            (
+                CastActor::Drone,
+                "drone_mining",
+                crate::minds::content::drone_mining_source(),
+            ),
         ] {
             let (cast_name, cast_digest) = pack_doctrine(actor).expect("the cast loads");
             assert_eq!(cast_name, name);
@@ -486,6 +504,7 @@ mod tests {
         }
         assert_eq!(CastActor::parse("escort"), None);
         assert_eq!(CastActor::Interdictor.role(), "cast.interdictor");
+        assert_eq!(CastActor::Drone.role(), "cast.drone");
     }
 
     /// A store that holds the shipped sources resolves every actor to the pack's digest; a

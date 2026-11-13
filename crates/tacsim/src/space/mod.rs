@@ -19,6 +19,7 @@ pub mod customs;
 pub mod docking;
 pub mod mining;
 pub mod picket;
+pub mod sortie;
 pub mod thinks;
 pub mod tick;
 pub mod view;
@@ -69,14 +70,13 @@ pub use docking::{
 pub use docking::{solve_docking_tape, solve_hard_bounce_tape};
 pub use mining::{
     ActiveClusterMiningSession, CLUSTER_SESSION_IDLE_TIMEOUT_IC_SECS, ClusterRockSpec,
-    ClusterSiteState, ClusterTenureOrder, ClusterZone, DRONE_SORTIE_IC_SECS, DRONE_SORTIE_YIELD_T,
-    DroneSortieState, FRONTIER_LASER_BLOOM_HEAT, LASER_CYCLE_IC_SECS, LASER_CYCLE_YIELD_T,
-    LaserExtractionCycle, MAX_MINING_MATCH_RANGE_M, MAX_VELOCITY_MATCH_SPEED_MMPS,
-    PendingSpaceMineDraw, ResolvedOrbitalCluster, SpectralClass, actor_holds_cluster_block_claim,
-    all_orbital_clusters, build_updated_pocket_cursor, check_velocity_match_gate, cluster_by_id,
-    hull_hold_capacity_kg, hull_hold_capacity_tonnes, lookup_orbital_cluster,
-    ore_specific_volume_l_per_t, resolve_cluster_host_room, rock_uncommitted_pool_tonnes,
-    unit_hold_capacity_kg, unit_hold_capacity_tonnes,
+    ClusterSiteState, ClusterTenureOrder, ClusterZone, DroneSortieState, FRONTIER_LASER_BLOOM_HEAT,
+    LASER_CYCLE_IC_SECS, LASER_CYCLE_YIELD_T, LaserExtractionCycle, MAX_MINING_MATCH_RANGE_M,
+    MAX_VELOCITY_MATCH_SPEED_MMPS, PendingSpaceMineDraw, ResolvedOrbitalCluster, SpectralClass,
+    actor_holds_cluster_block_claim, all_orbital_clusters, build_updated_pocket_cursor,
+    check_velocity_match_gate, cluster_by_id, hull_hold_capacity_kg, hull_hold_capacity_tonnes,
+    lookup_orbital_cluster, ore_specific_volume_l_per_t, resolve_cluster_host_room,
+    rock_uncommitted_pool_tonnes, unit_hold_capacity_kg, unit_hold_capacity_tonnes,
 };
 #[cfg(test)]
 pub use picket::build_kirkwood_picket_ships;

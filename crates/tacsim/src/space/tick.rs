@@ -1039,6 +1039,10 @@ pub struct PendingBubbleInput {
     /// Optional collector drone sortie excursions `(drone_obj, slot, site)` staged by `+mine/drones` (`SF.R22`, `D-35-13`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drone_excursions: Vec<(ObjId, u8, mush_core::CanonicalId)>,
+    /// The collector drone sorties that are over, whose records leave `tacsim.excursion`
+    /// (doc 44 unit MW.12; Q-44-27): filed by the drone itself when it is back aboard.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drone_landings: Vec<crate::surface::excursion::ExcursionId>,
 }
 
 /// World-state registry of active and completed space interdiction bubbles,
@@ -1133,6 +1137,11 @@ pub struct SpaceBubbleBook {
     /// Queued radio hails awaiting one-way light-lag (`d / c`) delivery (`SF.R23`, `D-35-10`).
     #[serde(default)]
     pub pending_light_lag_hails: Vec<super::picket::PendingLightLagHail>,
+    /// **The collector drone sorties that are over and whose records the excursion book
+    /// still holds** (doc 44 unit MW.12; Q-44-27): each is closed by the mining tick and
+    /// dropped from here once the book no longer holds it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sorties_to_close: Vec<super::sortie::SortieClose>,
     /// Bubble domains quarantined at boot due to an unreadable `tacsim:space:bubble:{domain}` document (`SF.R21`, `35c` §6.3).
     #[serde(default, skip)]
     pub quarantined_bubbles: std::collections::BTreeSet<DomainId>,
@@ -1158,6 +1167,21 @@ impl SpaceBubbleBook {
         aux.quarantined_bubbles.clear();
         aux.quarantined_hulls.clear();
         aux
+    }
+
+    /// **End `hull`'s cluster session** (doc 44 unit MW.12): she has flown on, or the session
+    /// has lapsed. Every drone she left out is left behind: its sortie is over, it brings
+    /// nothing, and its record is queued to leave the excursion book
+    /// ([`Self::sorties_to_close`]).
+    pub fn end_cluster_session(&mut self, hull: ObjId) {
+        if let Some(session) = self.cluster_sessions.remove(&hull) {
+            self.sorties_to_close.extend(
+                session
+                    .active_drones
+                    .iter()
+                    .map(|drone| super::sortie::SortieClose::of(drone.excursion_id)),
+            );
+        }
     }
 
     /// Borrow the linkdead state for `hull`, if any (`SF.R13`, `D-35-7`).
@@ -2164,20 +2188,15 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
             );
         }
     }
+    // Doc 44 units MW.10 and MW.12: a drone that is out comes back with the seal its record
+    // names. The drone's object is reused by its bay slot, so the attribute is taken only
+    // when it is that same seal; a record with no seal is left with none and does not think.
     for sess in state.book.cluster_sessions.values_mut() {
         for d in &mut sess.active_drones {
-            d.mind_seal =
-                super::picket::space_mind_seal_of(ctx.w, d.excursion_id.tv).or_else(|| {
-                    super::picket::build_space_mind_seal(
-                        d.excursion_id.tv,
-                        crate::arena::mind::SortieId::ic(
-                            d.excursion_id.tv,
-                            d.excursion_id.launch_ic,
-                        ),
-                        "drone_mining",
-                        crate::minds::content::drone_mining_digest().0,
-                    )
-                });
+            d.mind_seal = super::picket::reloaded_seal(
+                d.mind_seal.take(),
+                super::picket::space_mind_seal_of(ctx.w, d.excursion_id.tv),
+            );
         }
     }
     mush_sim::tick::restore_standing_orders(ctx.w, state.standing_orders.clone());
@@ -2362,7 +2381,19 @@ pub fn submit_bubble_input(
     {
         return None;
     }
-    submit_bubble_input_with_drones(ctx, hull, switch, cmd, Vec::new())
+    submit_bubble_input_with_drones(ctx, hull, switch, cmd, Vec::new(), Vec::new())
+}
+
+/// **File the close of a collector drone's sortie** (doc 44 unit MW.12; Q-44-27): the
+/// acting object, the drone itself, submits [`BUBBLE_INPUT_ACTION`] with the switch
+/// `drones_land`, and the provider's prepare takes the sortie's record out of
+/// `tacsim.excursion` if the book still holds it.
+pub fn submit_drone_landing(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    sortie: crate::surface::excursion::ExcursionId,
+) -> Option<u64> {
+    submit_bubble_input_with_drones(ctx, hull, "drones_land", None, Vec::new(), vec![sortie])
 }
 
 /// Submit collector drone sortie [`crate::surface::excursion::RigRecord`]s into `tacsim.excursion`
@@ -2375,7 +2406,14 @@ pub fn submit_drone_excursions(
     if drone_excursions.is_empty() {
         return None;
     }
-    submit_bubble_input_with_drones(ctx, hull, "drones_launch", None, drone_excursions)
+    submit_bubble_input_with_drones(
+        ctx,
+        hull,
+        "drones_launch",
+        None,
+        drone_excursions,
+        Vec::new(),
+    )
 }
 
 fn submit_bubble_input_with_drones(
@@ -2384,6 +2422,7 @@ fn submit_bubble_input_with_drones(
     switch: &str,
     cmd: Option<BubbleInputCommand>,
     drone_excursions: Vec<(ObjId, u8, mush_core::CanonicalId)>,
+    drone_landings: Vec<crate::surface::excursion::ExcursionId>,
 ) -> Option<u64> {
     let at_ic = ctx.w.world_ic_now().at;
     let actor = ctx.actor;
@@ -2408,6 +2447,7 @@ fn submit_bubble_input_with_drones(
             at_ic,
             cmd,
             drone_excursions,
+            drone_landings,
         });
         if handles.pending_bubble_inputs.len() > 64 {
             let excess = handles.pending_bubble_inputs.len() - 64;
@@ -2685,6 +2725,34 @@ impl mush_core::ActionProvider for BubbleInputProvider {
                     "the collector drone excursion record did not stage",
                 )
             })?;
+        }
+        // Doc 44 unit MW.12 (Q-44-27): a sortie that is over leaves the book. The record is
+        // removed only while it still names that sortie, so a close that lands twice, or
+        // after the slot's drone was launched again, removes nothing.
+        for sortie in &pending.drone_landings {
+            let key = crate::surface::excursion::RigKey(sortie.tv);
+            let open = txn
+                .get(&self.excursions, &key)
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the excursion family cannot be read",
+                    )
+                })?
+                .is_some_and(|record| {
+                    record
+                        .excursion
+                        .as_ref()
+                        .is_some_and(|open| open.id == *sortie)
+                });
+            if open {
+                txn.remove(&self.excursions, &key).map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the collector drone excursion record did not close",
+                    )
+                })?;
+            }
         }
         let outcome = mush_core::RulesValue::new(
             self.outcome.clone(),
@@ -4691,6 +4759,8 @@ fn step_free_flight_records(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 .get(&hull)
                 .map(|s| s.drone_things.clone())
                 .unwrap_or_default();
+            // Doc 44 unit MW.12: a session this arrival replaces leaves its drones behind.
+            book.end_cluster_session(hull);
             let mut session =
                 super::mining::ActiveClusterMiningSession::new(hull, cluster.id.clone(), now.at);
             session.drone_things = existing_drones;

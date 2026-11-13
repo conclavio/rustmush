@@ -234,7 +234,7 @@ enum WhileHeld {
 
 /// The runner each digest of `digests` builds on `host`, put behind `gate`.
 fn gate_every_runner(host: &ThinkHost, digests: &[[u8; 32]], gate: &Arc<Gate>) {
-    let view = Arc::new(crate::space::picket::drone_view(ObjId(1), [0, 0, 0], 0));
+    let view = Arc::new(crate::space::sortie::rig::view(ObjId(1)));
     for digest in digests {
         let _ = host.job(None, ObjId(1), *digest, 0, &view, &[]);
         let inner = host.kept_runner(digest).expect("the doctrine has a runner");
@@ -766,7 +766,7 @@ fn mw11_every_think_of_a_bubble_runs_on_a_pool_worker() {
     let digests = digests_of(&active);
     let host = ThinkHost::on_pool(MindPool::new(3));
     assert_eq!(host.workers(), 3);
-    let view = Arc::new(crate::space::picket::drone_view(ObjId(1), [0, 0, 0], 0));
+    let view = Arc::new(crate::space::sortie::rig::view(ObjId(1)));
     let mut traced = Vec::new();
     for digest in &digests {
         let _ = host.job(None, ObjId(1), *digest, 0, &view, &[]);
