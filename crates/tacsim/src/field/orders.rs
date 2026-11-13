@@ -604,6 +604,23 @@ fn relay_passes(
     }
 }
 
+/// **Whether `unit`'s party's carrier relay reads jammed in a running field** (doc 45 unit
+/// AP.4a): the jammed half of the rule [`relay_passes`] holds a roster's orders to, asked for
+/// an order that never reaches the kernel (a posture: the player's own over the relay,
+/// [`posture_order`], and a leader's roster order). A damaged relay, which delays a kernel
+/// order, lets a posture through (AP.4's default 4). `false` off a field and for a party with
+/// no relay.
+#[must_use]
+pub(crate) fn relay_jammed(w: &World, unit: ObjId) -> bool {
+    super::field_of_unit(w, unit)
+        .and_then(|site| super::live_on(w, &site))
+        .and_then(|live| {
+            let party = live.party_of(unit)?;
+            carrier_relay(w, &live, party)
+        })
+        .is_some_and(|(_, word)| word == mush_tactics::field_ops::ComponentCondition::Jammed)
+}
+
 /// **How long an offered order may take to stand**, world seconds. The kernel refuses an order
 /// it cannot take without a word — its issuer's unit wrecked or gone from the field, the fence
 /// moved, the deadline past — so an order the recipient's own frame does not show standing
@@ -663,8 +680,11 @@ fn objective(
             target_hint: Some(ContactId(*id)),
         },
         // A campaign contact, a presence row or another field's contact names nothing in this
-        // field's observation; a mining run is not a field's work.
-        FieldObjective::Engage { .. } | FieldObjective::Mine { .. } => return Err(()),
+        // field's observation; a mining run is not a field's work; a posture is the unit's
+        // own standing word and no objective (doc 45 unit AP.4a).
+        FieldObjective::Engage { .. }
+        | FieldObjective::Mine { .. }
+        | FieldObjective::Posture { .. } => return Err(()),
     })
 }
 
@@ -841,14 +861,7 @@ pub(crate) fn posture_order(
     let Some(delivery) = delivery else {
         return PostureOrder::NoPath;
     };
-    let relay_jammed = super::field_of_unit(w, unit)
-        .and_then(|site| super::live_on(w, &site))
-        .and_then(|live| {
-            let party = live.party_of(unit)?;
-            carrier_relay(w, &live, party)
-        })
-        .is_some_and(|(_, word)| word == mush_tactics::field_ops::ComponentCondition::Jammed);
-    if !delivery.is_reachable() || relay_jammed {
+    if !delivery.is_reachable() || relay_jammed(w, unit) {
         return PostureOrder::Jammed;
     }
     match crate::posture::record::set(ctx, unit, posture) {

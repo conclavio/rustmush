@@ -80,17 +80,17 @@ const ADEYEMI: &str = "Rook Adeyemi";
 const FAR: (u16, u16) = (170, 100);
 
 /// **A field with a roster in it**: the roster, the two other parties and the arena's egress.
-struct Field {
-    rig: Rig,
-    flown: Flown,
+pub(crate) struct Field {
+    pub(crate) rig: Rig,
+    pub(crate) flown: Flown,
     /// The escort's player and hull: the third party.
-    other: ObjId,
-    escort: ObjId,
+    pub(crate) other: ObjId,
+    pub(crate) escort: ObjId,
     /// The intruder's player and hull.
-    stranger: ObjId,
-    intruder: ObjId,
-    rx: Receiver<ArenaOut>,
-    lines: Vec<LedgerEvent>,
+    pub(crate) stranger: ObjId,
+    pub(crate) intruder: ObjId,
+    pub(crate) rx: Receiver<ArenaOut>,
+    pub(crate) lines: Vec<LedgerEvent>,
 }
 
 /// Stand `unit` on `entry`'s ground at `cell`, facing `heading` (a staff hand).
@@ -131,7 +131,7 @@ fn arm(rig: &mut Rig, unit: ObjId) {
 /// leader's rig on the miner's ground, the hired rig seven cells east of it, an escort from
 /// another captain and an intruder east of both; the escort fires on the intruder's bearing and
 /// the site promotes with three parties. The field holds through the stories' quiet stretches.
-async fn opened(plan: &Plan, armed: bool) -> Field {
+pub(crate) async fn opened(plan: &Plan, armed: bool) -> Field {
     let at: &Ground = &AHUNA_FLANK;
     let mut rig = stocked_tuned(|cfg| {
         crate::field_host_rig::tune(cfg);
@@ -203,7 +203,7 @@ async fn opened(plan: &Plan, armed: bool) -> Field {
 
 impl Field {
     /// Pump and tick until `done` holds or `secs` of wall time pass.
-    async fn until(
+    pub(crate) async fn until(
         &mut self,
         secs: u64,
         done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
@@ -212,7 +212,7 @@ impl Field {
     }
 
     /// Pump and tick for `secs` of wall time.
-    async fn wait(&mut self, secs: u64) {
+    pub(crate) async fn wait(&mut self, secs: u64) {
         let _ = self.until(secs, |_, _| false).await;
     }
 
@@ -229,13 +229,13 @@ impl Field {
     }
 
     /// World seconds until the world's wall second is `wall_s` ([`Field::pass`]).
-    fn pass_to(&mut self, wall_s: i64) {
+    pub(crate) fn pass_to(&mut self, wall_s: i64) {
         let left = wall_s.saturating_sub(self.rig.tw.world().now());
         self.pass(left.max(0));
     }
 
     /// The roster's leader, as its last saved reconciliation has it.
-    fn leader(&mut self) -> Option<(ObjId, LeaderKind)> {
+    pub(crate) fn leader(&mut self) -> Option<(ObjId, LeaderKind)> {
         field_roster(&mut self.rig, self.flown.operation)
             .and_then(|roster| roster.leader())
             .map(|leader| (leader.character, leader.kind))
@@ -252,14 +252,14 @@ impl Field {
     }
 
     /// The leader's own order line to slot 2, under the fence `+sortie/orders` prints for them.
-    fn order(&mut self, words: &str) {
+    pub(crate) fn order(&mut self, words: &str) {
         let leader = self.flown.organiser;
         let fenced = fence(&mut self.rig, leader, &self.flown);
         let _ = commit(&mut self.rig, leader, &format!("ORDER {fenced} 2 {words}"));
     }
 
     /// What `+sortie/orders` prints for the organiser.
-    fn report(&mut self) -> String {
+    pub(crate) fn report(&mut self) -> String {
         let leader = self.flown.organiser;
         let line = format!(
             "+sortie/orders {}:{}",
@@ -271,7 +271,7 @@ impl Field {
 
     /// **`who`, at `hull`'s controls, keeps a lock on the contact within two cells of `cell` and
     /// fires**, one pass of the two lines a player types.
-    fn fire_on(&mut self, (who, hull): (ObjId, ObjId), cell: (u16, u16)) {
+    pub(crate) fn fire_on(&mut self, (who, hull): (ObjId, ObjId), cell: (u16, u16)) {
         let gun = weapon_of(&self.rig, hull);
         let near = frame(&self.rig, who).and_then(|frame| {
             frame
@@ -293,7 +293,7 @@ impl Field {
     }
 
     /// `who`, at `hull`'s controls, ceases fire.
-    fn cease(&mut self, (who, hull): (ObjId, ObjId)) {
+    pub(crate) fn cease(&mut self, (who, hull): (ObjId, ObjId)) {
         let gun = weapon_of(&self.rig, hull);
         let _ = run(&mut self.rig.tw, who, &format!("FIRE {gun} OFF"));
     }
@@ -347,17 +347,17 @@ fn drop_conns(rig: &mut Rig, who: ObjId, reason: mush_core::DisconnectKind) {
 }
 
 /// `who`'s link is lost: the server's own grace starts, and the field's.
-fn lose_link(rig: &mut Rig, who: ObjId) {
+pub(crate) fn lose_link(rig: &mut Rig, who: ObjId) {
     drop_conns(rig, who, mush_core::DisconnectKind::Lost);
 }
 
 /// `who` quits.
-fn quit(rig: &mut Rig, who: ObjId) {
+pub(crate) fn quit(rig: &mut Rig, who: ObjId) {
     drop_conns(rig, who, mush_core::DisconnectKind::Quit);
 }
 
 /// The server's grace runs out for `who`: their session ends.
-fn end_session(rig: &mut Rig, who: ObjId) {
+pub(crate) fn end_session(rig: &mut Rig, who: ObjId) {
     let mut out = mush_core::Outbox::new();
     let mut fx = mush_core::Effects::new();
     rig.tw.engine_mut().step(
@@ -368,7 +368,7 @@ fn end_session(rig: &mut Rig, who: ObjId) {
 }
 
 /// What `who` hears when they connect.
-fn connect(rig: &mut Rig, who: ObjId) -> String {
+pub(crate) fn connect(rig: &mut Rig, who: ObjId) -> String {
     let events = rig.tw.connect(who);
     said(&rig.tw, &events, who)
 }
@@ -379,7 +379,7 @@ fn standing(rig: &Rig, who: ObjId) -> Option<MindObjective> {
 }
 
 /// The rounds `shooter` fired at `target`.
-fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
+pub(crate) fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
     lines
         .iter()
         .filter(|line| {
@@ -390,7 +390,7 @@ fn fired_at(lines: &[LedgerEvent], shooter: ObjId, target: ObjId) -> usize {
 }
 
 /// The rounds `shooter` fired, at anyone.
-fn fired(lines: &[LedgerEvent], shooter: ObjId) -> usize {
+pub(crate) fn fired(lines: &[LedgerEvent], shooter: ObjId) -> usize {
     lines
         .iter()
         .filter(|line| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == shooter))

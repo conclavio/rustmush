@@ -595,7 +595,7 @@ given.
   leader to set the posture of an absent member's unit. It needs a decision this unit should
   not take alone: whether a leader may set another player's unit's standing word, and a
   place in the order book that is not the slot's objective. **Deferred, for the owner**;
-  AP.8's chain is where it would be built.
+  AP.8's chain is where it would be built. (Ruled yes on 2026-11-12 and built as AP.4a, below.)
 - **A carrier's own posture, and a ship's.** `+tv` addresses rigs. A carrier in a field is
   set from its seat by `MIND POSTURE` like any hull; on its pad with no field there is no
   verb for it. **AP.7** (the carrier's mind) for the carrier, **AP.9** for a ship in space.
@@ -669,6 +669,178 @@ held-character gate, as the status does.
 - The story's OOC step with the OOC rule alone removed (the mutation that removed it also
   removed the roster's line, which fails the same story earlier); the in-source test and the
   practice match's seat hold the rule.
+
+## AP.4a
+
+A leader sets a roster member's posture (doc 45 §5 Q-45-26, the owner's ruling of 2026-11-12
+on the one thing AP.4 deferred; Q-45-19, Q-45-13). Stacked on AP.6. Paths are under
+`crates/tacsim/src/` unless given.
+
+**Built.**
+
+- **The order** (`detachment/sortie/field_orders.rs`, `FieldObjective::Posture`;
+  `detachment/sortie/field_commands.rs`). `ORDER DT:<id>:<rev>:<term> <slot> POSTURE
+  RETURN|GUARD|HOLD`. It is issued through the same act every roster order is
+  (`Act::Issue`), so the leader's authority, the command rights over the unit, the order
+  book, the transport and its jams are the ones a `HOLD` or an `ENGAGE` meets. Three
+  refusals of its own at the issue: from an OOC room (`posture::order::ooc`, AP.4's rule);
+  for a slot a hired crew flies (`POSTURE_ORDER_CREW`: a crew is not flown for an absent
+  player, Q-45-13); and for anything but one numbered slot and one posture word
+  (`ALL` is not taken).
+- **Carrying it out** (`detachment/sortie/npc.rs`, `posture_order`, called from the flight
+  tick's walk for a unit a player flies). A player's unit takes its orders as words its
+  player reads; a posture is the exception, because it is the unit's own standing word.
+  Once the order book has the order delivered to the unit's slot on its current flight, and
+  inside a field once its party's carrier relay does not read jammed
+  (`field::orders::relay_jammed`, the rule a roster's kernel orders are held to), the host
+  writes the word to the unit's record (`posture::record::set`, the one writer), tells the
+  unit's player, and answers WILCO as the unit's player. The answer is the durable mark: an
+  answered order is not applied again. Between the write and the answer landing, this
+  boot's walk remembers the sequence it wrote, so the write and its notice are made once.
+  The host waits while the player has an act of their own in flight
+  (`ctx.authoritative_pending`), as MW.7's recover for an absent pilot does. The write and
+  the answer are two passes of the walk: the record is an object write on the older
+  persistence lane and the answer is a prepared action, and the world task does not take
+  both in one step (main's #574 met that refusal in a story's rig).
+- **Only the unit answers it** (`field_commands.rs`, `field_response`, `posture_at`). The
+  player's own `WILCO` or `NEGATIVE` to a `POSTURE` order is refused
+  (`POSTURE_ORDER_ANSWERED`), and their `+sortie/orders` shows the order with no reply
+  prefill. So an answer on the leader's report always means the word was written, and a
+  NEGATIVE is not a veto: the player sets the posture back instead.
+- **The player is told** (`posture::order::POSTURE_ORDERED`, through
+  `port_tick::notify_budget` at trip level, the queue AP.1 uses): "{leader}, leading your
+  detachment, ordered #N to GUARD: it holds that word until you set another." Said at once
+  to a connected player, queued for one who is away, and only when the order changed the
+  word the unit held. A leader ordering their own unit is not told.
+- **What flies it** is AP.6's, untouched: the record is the unit's, the field's host copies
+  it to the arena within a second, and a mind flying the unit lays the posture's order.
+- `docs/help/detachments.md` and `docs/help/field.md` say it. Doc 45 has Q-45-26 and the
+  AP.4a row.
+- **The roster test rig flies a second player** (`tests/support/field/roster_rig.rs`,
+  `Billet::Member`): a guest lent the slot's rig under the organiser's own operational loan,
+  who boards its cab, takes its console and accepts the plan by their own commands. No story
+  flew two players on one roster before.
+
+**What the code said about the ruling.**
+
+- **A leader cannot order a unit whose player has already gone.** The roster's command
+  rights are read per unit at every issue, and a unit that has passed to its mind (a quit,
+  or five minutes after a lost link) is no longer covered: the order book answers "command
+  authority does not cover the target unit". AP.4's note imagined the order "for a leader to
+  set the posture of an absent member's unit". As the roster is built, the leader sets it
+  while the member still holds the seat, which includes the five minutes after their link
+  drops, and the word is then flown when the member is gone. The story pins both halves.
+  Widening the roster's command to an absent member's unit is a change to the detachment's
+  authority rule, not to this order. **For the owner.**
+- **AP.4's objection to the order book** was that a book order replaces the slot's standing
+  objective. It does: a `POSTURE` to a player's slot replaces whatever the leader last sent
+  that slot. A player's slot holds only advice (nothing executes a player's order), so what
+  is lost is a line in the leader's own report.
+
+**Defaults taken** (the owner ruled the principle). None needs a refactor to undo.
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | The unit's player is told who set it and to what, at trip level, queued when away | Low |
+| 2 | The player's own later set wins: an answered order is never applied again. A new order from the leader is a new order and is applied | Low |
+| 3 | A hired crew's slot is refused, and `ALL` is not taken | Low |
+| 4 | The plan's NPC commander (MW.14a) does not issue it: nothing in `commander.rs` names it | Low |
+| 5 | The unit answers WILCO for itself, as its player, whether or not that player is connected | Low |
+| 6 | The order needs no field: on open ground it is applied when delivered | Low |
+| 7 | A leader may order their own slot (it is a player's unit); they are not sent the notice | Low |
+| 8 | The sentences are in `posture/order.rs`, which the bot's census does not read, so they have no row in the bot's table | Low: rows, if the census is widened to that module |
+| 9 | Only the unit answers a `POSTURE`; its player's `WILCO` or `NEGATIVE` is refused | Low: one check in `field_response` |
+| 10 | An expiry on the order limits how late it may arrive; a posture that was set stays set | Low |
+| 11 | A damaged carrier relay, which delays a kernel order, lets a posture through; a jammed one holds it (AP.4's default 4, the same function now) | Low |
+
+**Tests.** Stories (`tests/domain_field/field_ap4a.rs`), on AP.8's scaffold with the roster
+flown by `roster_rig::fly`:
+
+1. `ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_back`: a field of
+   three parties (the roster, an escort, an intruder); the roster is two players. The member
+   typing the order is refused ("the issuer is not this detachment's current leader"). With
+   the roster's comms jammed (`@prop/jam`, as MW.14a's story jams a roster) the captain's
+   order is issued and not delivered, and the rig holds `RETURN`. The member's link drops;
+   the jam lifts; the order arrives inside the five minutes, the record reads `GUARD`, and
+   the leader's report shows WILCO. Five minutes after the loss the rig is its mind's: it
+   fires on nobody, the escort's player fires on it and it answers, and it is still in the
+   field. The captain's second order is refused by the roster's authority rule. The member
+   logs in, reads `POSTURE_ORDERED`, takes the seat, sets `RETURN`, and thirty seconds later
+   it is still `RETURN`.
+2. `ap4a_a_hired_crews_slot_takes_no_posture_order`: the order to a hired crew's slot is
+   refused with `POSTURE_ORDER_CREW` and nothing is issued; a word that is no posture and
+   `ALL` are refused.
+
+**Not pinned by a story.** The OOC refusal at the issue (the rule is AP.4's function, pinned
+there). The carrier relay's jam inside a field holding a posture (`relay_jammed`; the
+declared-interference jam is pinned). A restart between the write and the answer: the order
+is carried out once more, and if the player had set the posture back in that window their
+set is overwritten and they are told again. The durable mark across a restart (the answer):
+step 7 would also pass on this boot's own memory of the write. An expiry on the order. A
+leader ordering their own slot. The host waiting on the player's own act in flight.
+
+**Reviewed.** A second agent (Opus) read this branch's diff over AP.6's adversarially,
+read-only, with the ruling and not this note's conclusions. It found the authority sound
+(the book's own leader, revision, term and command-right checks; a poll throws out an order
+from an old term, a former leader or another flight; the host requires the slot's standing
+order on the current flight and site), every other reader of `FieldObjective` sound (the
+kernel's objectives refuse it, an NPC that somehow received one answers NEGATIVE, it never
+lapses, the commander never issues it), and no scheduling change. Its findings:
+
+- **A player who answered the order first stopped it being carried out** (confirmed by
+  reading: their `WILCO` or `NEGATIVE` recorded an acknowledgement, and the host skipped an
+  acknowledged order). A NEGATIVE was a silent veto. Fixed: only the unit answers a
+  `POSTURE`.
+- **"The owner's later set wins" has a window**: between the write and the answer landing
+  only this boot's memory guards it, so a restart there re-applies the order. Kept, and the
+  help no longer says "not applied twice"; recorded above.
+- **The host now submits as a live player**, and a submission by the same principal in the
+  same slice from outside the tick can be voided as a fan-out. Mitigated by waiting on the
+  player's pending act; the same-slice case is not traced and stands as a risk. The host
+  already submits as a player for MW.7's recover.
+- **The jam step could have passed on the transport's own pace.** Fixed: the story holds the
+  jam forty-five seconds and requires the same order to arrive within thirty once it lifts.
+- The WILCO check read the whole report: it now reads slot 2's own reply line. Story 2's
+  refusals now assert their sentences. The notice is sent only for a change. The new
+  sentence is in the 120-column test. `relay_jammed` is now the one copy AP.4's relay order
+  uses too.
+- Left as recorded: the player-only rule is checked where the order is parsed and not again
+  where it is admitted (a controller change bumps the revision and the book refuses the
+  stale recipient; an NPC that received one would answer NEGATIVE); the notice names the
+  order's issuer as leading, which is true when it was issued.
+
+**Verified, and how** (Linux, conclav.dev, a throwaway clone at main `63dbcb3f6` with AP.6's
+and this unit's diff applied).
+
+- The two stories, with every AP.3, AP.4, AP.5, AP.6, AP.8, MW.7, MW.14a and MW.15 test and
+  story (65: every story that flies `roster_rig`, which this unit changed), passed.
+- **Mutation checks**, four, each built and run against the two stories, each undone by
+  applying its own diff backwards over a WIP commit (taken before the second reader's
+  fixes; the checked lines stand):
+
+  | Mutation | What failed |
+  |---|---|
+  | The host never carries the order out | story 1, at "the leader's order sets the member's rig to GUARD" |
+  | An answered order is applied again at every pass | story 1, at "the owner's own later set wins": `GUARD` where `RETURN` was due |
+  | The unit's player is not told | story 1, at "the owner reads who set it and to what" |
+  | A hired crew's slot takes the order | story 2: `Queued.` where the refusal was due |
+
+  "Stopped by jamming" and "a player who is not the leader is refused" are the transport's
+  and the order book's own rules, which this unit did not write: the story exercises them
+  and no mutation of this unit's code removes them.
+- CI's M7 memory-size clippy step, `cargo clippy -p tacsim -p mush-bot --all-targets -- -D
+  warnings`, `cargo doc -p tacsim --document-private-items` under `-D warnings`, `cargo fmt
+  --check`, and the bot's sentence census.
+- **CI**: the pull request's CI and a full dispatch on the head commit; the runs are in the
+  pull request's body.
+
+**Not verified.**
+
+- The whole `tacsim` suite was not run on conclav.dev for this unit (AP.6's run of 4,562
+  was on the tree below it); CI's shards run it on the pushed head.
+- `mush-contract-tests` was run on Windows for AP.6's tree, not again for this one; the help
+  lint's input changed (two help pages). CI runs it.
+- Nothing was run against a live server or over SSH, and nothing was deployed.
 
 ## AP.5
 
@@ -1164,8 +1336,8 @@ that frame: the flag is only set while no pilot holds the seat. The record, the 
   task that is not a field's, and nothing sets `absent` in a practice match.
 - **A manoeuvring guard** (defaults 4 and 8).
 - **A notice when a guard turns to `RETURN`** (default 10).
-- **A posture as a roster order**: the owner ruled yes on 2026-11-12; it is the next unit
-  (AP.4a), stacked on this one.
+- **A posture as a roster order**: the owner ruled yes on 2026-11-12; it is unit AP.4a,
+  stacked on this one.
 
 **Not pinned by a story.**
 

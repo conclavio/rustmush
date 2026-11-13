@@ -49,6 +49,17 @@ pub const POSTURE_JAMMED: &str =
 pub const POSTURE_NO_PATH: &str = "Your order does not reach {unit}: you have no relay to where it is. Give it from aboard its carrier.";
 /// A hired crew's operator who is not aboard the rig.
 pub const POSTURE_CREW: &str = "A crew sets its rig's posture from aboard the rig.";
+/// A roster order's refusal for a slot a hired crew flies (doc 45 unit AP.4a).
+pub const POSTURE_ORDER_CREW: &str =
+    "A posture is ordered for a player's unit. A hired crew's unit takes none.";
+/// The unit's player answering a leader's `POSTURE` order themselves.
+pub const POSTURE_ORDER_ANSWERED: &str =
+    "A POSTURE order is answered by the unit itself. Set its posture yourself to change it.";
+/// A roster order's usage.
+pub const POSTURE_ORDER_USAGE: &str = "Use <slot> POSTURE RETURN, GUARD or HOLD.";
+/// The unit's player, when a leader's roster order sets its posture: `{leader}`, `{unit}`,
+/// `{posture}`.
+pub const POSTURE_ORDERED: &str = "{leader}, leading your detachment, ordered #{unit} to {posture}: it holds that word until you set another.";
 /// The roster's and the status's line for a unit off the default: `{posture}`.
 pub const POSTURE_LINE: &str = "  posture {posture}";
 
@@ -223,6 +234,11 @@ mod tests {
             POSTURE_JAMMED,
             POSTURE_NO_PATH,
             POSTURE_LINE,
+            super::POSTURE_ORDER_CREW,
+            super::POSTURE_ORDER_USAGE,
+            super::POSTURE_ORDER_ANSWERED,
+            // With a leader's name of twenty characters in place of the placeholder.
+            &super::POSTURE_ORDERED.replace("{leader}", "Twenty Characters Xx"),
             super::POSTURE_CREW,
         ] {
             let said = line(template, "Rig 4", Posture::Return);

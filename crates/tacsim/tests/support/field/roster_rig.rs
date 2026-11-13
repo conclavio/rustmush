@@ -54,6 +54,11 @@ pub(crate) enum Billet {
     Leader,
     /// A shipped crew member, by name (`content/crew/ceres.json`).
     Hired(&'static str),
+    /// **A second player**, by name (doc 45 unit AP.4a): a guest aboard the organiser's
+    /// carrier, lent the slot's rig under the organiser's own operational loan, who boards its
+    /// cab, takes its console and accepts the plan by their own commands. They come aboard
+    /// the carrier by a staff hand (the story's stand-in for a walk up the ramp at Ceres).
+    Member(&'static str),
 }
 
 /// **The roster a story asks for**: slot `n` is `billets[n - 1]`, each in a leased prospector.
@@ -549,10 +554,11 @@ pub(crate) fn fly(
         .billets
         .iter()
         .map(|billet| match billet {
-            Billet::Leader => None,
+            Billet::Leader | Billet::Member(_) => None,
             Billet::Hired(name) => Some(npc_named(rig, name)),
         })
         .collect();
+    let mut members: Vec<Option<ObjId>> = vec![None; plan.billets.len()];
     let commander = plan.commander.map(|name| npc_named(rig, name));
     assert!(
         commander.is_none_or(|npc| hired.contains(&Some(npc))),
@@ -577,7 +583,15 @@ pub(crate) fn fly(
         let units = rigs_of(&rig.tw, organiser);
         assert_eq!(units.len(), slots, "one leased rig a slot");
         embark_two(rig, organiser, &hired);
-        planned(rig, organiser, ObjId(row.hull), &units, plan, &hired, None);
+        planned(
+            rig,
+            organiser,
+            ObjId(row.hull),
+            &units,
+            plan,
+            (&hired, &members),
+            None,
+        );
         // The second slot's NPC takes its cab and frees a berth; the organiser steps out of
         // rig 1 into it; the first slot's NPC takes rig 1's cab.
         seat(rig, organiser, 2);
@@ -614,6 +628,39 @@ pub(crate) fn fly(
             }
         });
         assert_eq!(units.len(), slots, "one leased rig a slot");
+        // Doc 45 unit AP.4a: a second player comes aboard where the organiser stands, is lent
+        // their slot's rig, and boards its cab by their own commands.
+        let lock = rig
+            .tw
+            .world()
+            .get(organiser)
+            .and_then(|object| object.location)
+            .expect("the organiser is aboard");
+        for (index, billet) in plan.billets.iter().enumerate() {
+            let Billet::Member(name) = billet else {
+                continue;
+            };
+            let member = crate::driving_rig::pilot(rig, name, 7);
+            let _ = rig.tw.connect(member);
+            let loan = crew_loan(rig, organiser, units[index]);
+            let _ = commit(
+                rig,
+                organiser,
+                &format!(
+                    "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
+                    units[index].0, member.0
+                ),
+            );
+            teleport(&mut rig.tw, member, lock);
+            into_cab(rig, member, index + 1);
+            let focus = run(
+                &mut rig.tw,
+                member,
+                &format!("+focus #{}/pilot", units[index].0),
+            );
+            assert!(!focus.contains("Usage"), "{focus}");
+            members[index] = Some(member);
+        }
         // (4) A player leader boards their own rig in the bay and takes its console.
         let own = plan
             .billets
@@ -628,7 +675,15 @@ pub(crate) fn fly(
             );
             assert!(!focus.contains("Usage"), "{focus}");
         }
-        planned(rig, organiser, ObjId(row.hull), &units, plan, &hired, own);
+        planned(
+            rig,
+            organiser,
+            ObjId(row.hull),
+            &units,
+            plan,
+            (&hired, &members),
+            own,
+        );
         // (6) Each NPC seated.
         for (index, npc) in hired.iter().enumerate() {
             if npc.is_some() {
@@ -638,7 +693,11 @@ pub(crate) fn fly(
         (organiser, row, units)
     };
     let carrier = ObjId(row.hull);
-    let crew: Vec<ObjId> = hired.iter().map(|npc| npc.unwrap_or(organiser)).collect();
+    let crew: Vec<ObjId> = hired
+        .iter()
+        .zip(&members)
+        .map(|(npc, member)| npc.or(*member).unwrap_or(organiser))
+        .collect();
     let operation = OperationId {
         organizer: organiser,
         draft: PlanId(1),
@@ -791,7 +850,7 @@ fn planned(
     carrier: ObjId,
     units: &[ObjId],
     plan: &Plan,
-    hired: &[Option<ObjId>],
+    (hired, members): (&[Option<ObjId>], &[Option<ObjId>]),
     own: Option<usize>,
 ) {
     // (3) Each NPC is lent its rig under the organiser's own operational loan.
@@ -816,8 +875,8 @@ fn planned(
             "slot": index + 1,
             "unit": units[index].0,
             "controller": {
-                "kind": if *billet == Billet::Leader { "player" } else { "npc" },
-                "character": hired[index].unwrap_or(organiser).0,
+                "kind": if matches!(billet, Billet::Hired(_)) { "npc" } else { "player" },
+                "character": hired[index].or(members[index]).unwrap_or(organiser).0,
             },
             "role": "scout",
             "mind": null,
@@ -836,6 +895,24 @@ fn planned(
         );
         handoff(rig);
         let _ = commit(rig, organiser, &declaration("ready", &selected));
+    }
+    // Doc 45 unit AP.4a: each second player accepts, takes their rig's helm and is ready.
+    for (index, member) in members.iter().enumerate() {
+        let Some(member) = member else {
+            continue;
+        };
+        let accepted = commit(rig, *member, &declaration("accept", &selected));
+        let _ = commit(
+            rig,
+            *member,
+            &format!("@station/handoff #{}/pilot", units[index].0),
+        );
+        handoff(rig);
+        let ready = commit(rig, *member, &declaration("ready", &selected));
+        assert!(
+            !accepted.contains("Usage") && !ready.contains("Usage"),
+            "the member accepts and is ready: {accepted} / {ready}"
+        );
     }
     let _ = commit(
         rig,
