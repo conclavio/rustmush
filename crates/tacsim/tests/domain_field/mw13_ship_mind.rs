@@ -146,10 +146,10 @@ fn at_the_picket(rig: &Rig, hull: ObjId) -> Option<AtThePicket> {
     })
 }
 
-/// **File for Stickney, lose the link on the corridor and come to the Kirkwood picket with a
-/// mind at the helm**: the IC instant the first leg ends, which is where the picket's bubble
-/// opens on her.
-fn to_the_picket_with_no_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) {
+/// **File for Stickney and lose the link on the corridor**: past the grace a mind has her
+/// helm. Answers the IC instant her first leg ends, which is where the Kirkwood picket's
+/// bubble opens on her.
+fn sail_and_lose_the_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> i64 {
     crate::excursions::set_rate(&mut rig.tw, 3_600);
     let ticket = crate::excursions::file_and_launch(rig, pilot, hull, "+ship/undock stickney");
     let boundary = ticket.plan.depart_ic + i64::from(ticket.plan.legs[0].secs);
@@ -163,11 +163,22 @@ fn to_the_picket_with_no_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) {
         .cloned()
         .expect("her link-loss record");
     assert!(held.backup_has_helm(), "past the grace a mind has her helm");
+    boundary
+}
+
+/// Come to the end of her first leg, where the picket's bubble opens on her.
+fn arrive_at_the_picket(rig: &mut Rig, hull: ObjId, boundary: i64) {
     let _ = crate::excursions::to_ic(rig, boundary);
     assert!(
         at_the_picket(rig, hull).is_some(),
         "the Kirkwood picket's bubble opens on her"
     );
+}
+
+/// [`sail_and_lose_the_link`], then [`arrive_at_the_picket`].
+fn to_the_picket_with_no_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) {
+    let boundary = sail_and_lose_the_link(rig, pilot, hull);
+    arrive_at_the_picket(rig, hull, boundary);
 }
 
 /// Step a second at a time until `done` reads true of her at the picket, or she has left it.
@@ -294,6 +305,12 @@ fn world() -> M8World {
 /// **Seal `licence` aboard the pilot's hull and see the claim open at her berth**: the verb's
 /// one submission landed, the cursor filed, and the port tick's arm opening the Roll's claim.
 fn seal_aboard(world: &mut M8World, licence: u64) -> Aboard {
+    seal_aboard_losing(world, licence, false)
+}
+
+/// [`seal_aboard`]; with `lose_the_first_open`, the arm's first submission of the Open is
+/// dropped as a lost batch is, and the arm has to submit it again from the cursor.
+fn seal_aboard_losing(world: &mut M8World, licence: u64, lose_the_first_open: bool) -> Aboard {
     let (pilot, hull) = (world.pilot, ObjId(world.row.hull));
     let (out, queued) = command(
         &mut world.rig,
@@ -311,6 +328,21 @@ fn seal_aboard(world: &mut M8World, licence: u64) -> Aboard {
         "the cursor is filed: {:?}",
         cursor(&mut world.rig, hull)
     );
+    if lose_the_first_open {
+        let (_, queued) = crate::excursions::fire(&mut world.rig);
+        assert!(
+            queued
+                .iter()
+                .any(|submit| submit.action.key().id.as_str() == "open_ic_mind"),
+            "the arm submitted the Open: {queued:?}"
+        );
+        drop(queued);
+        assert_eq!(
+            tacsim::ic_claim_of(world.rig.tw.world(), hull),
+            tacsim::IcClaimRead::None,
+            "the lost Open opened nothing"
+        );
+    }
     for _ in 0..12 {
         fires(world, 1);
         if let Some(aboard) = ship_mind::aboard(world.rig.tw.world(), hull) {
@@ -369,7 +401,8 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
             .replace("{licence}", &licence.to_string())
             .replace("{name}", "Salt Moth")
     );
-    let sealed = seal_aboard(&mut world, licence);
+    // The arm's first Open is lost, as a batch is; it submits the Open again from the cursor.
+    let sealed = seal_aboard_losing(&mut world, licence, true);
     eprintln!("MW13 sealed {sealed:?}");
     assert_eq!(sealed.dispatcher, pilot);
     assert_eq!(sealed.principal, Some(pilot), "she is the seal's principal");
@@ -415,8 +448,41 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
         ship_mind::MIND_ALREADY.replace("{name}", "Salt Moth")
     );
 
-    // 2. At the picket, with her link down, her own mind has her.
-    to_the_picket_with_no_link(&mut world.rig, pilot, hull);
+    // A restart at her berth, the claim open and she not yet sailed: the same seal.
+    let mut world = world.reboot();
+    assert_eq!(
+        ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
+        Some(&sealed),
+        "a restart at her berth keeps the seal"
+    );
+    fires(&mut world, 3);
+    assert_eq!(
+        tacsim::ic_claim_of(world.rig.tw.world(), hull),
+        tacsim::IcClaimRead::Active {
+            open: sealed.claim,
+            dispatcher: pilot
+        },
+        "and opens no second claim"
+    );
+
+    // 2. At the picket, with her link down, her own mind has her. She sails, loses her link
+    // on the corridor, and the server restarts with her under way: the boot admits a held
+    // ship on her passage, and the seal is the same.
+    let boundary = sail_and_lose_the_link(&mut world.rig, pilot, hull);
+    let mut world = world.reboot_reconnecting(&[mush_core::GOD]);
+    assert_eq!(
+        ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
+        Some(&sealed),
+        "a restart under way keeps the seal"
+    );
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(world.rig.tw.world(), hull),
+            tacsim::port::ship::Berth::UnderWay
+        ),
+        "she is still under way"
+    );
+    arrive_at_the_picket(&mut world.rig, hull, boundary);
     let locked = until_at_the_picket(&mut world.rig, hull, 30, |now| now.locks_the_corvette)
         .expect("she is at the picket");
     assert!(
@@ -667,6 +733,12 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
 
     // A. Her fit cannot change under a sealed mind.
     let first = seal_aboard(&mut world, licence);
+    // She goes ashore to the Co-op's desk: out through her lock, as a pilot does.
+    let ashore = run(&mut world.rig.tw, pilot, "+ship/leave");
+    assert!(
+        tacsim::space::hull_aboard_for_actor(world.rig.tw.world(), pilot) != Some(hull),
+        "she is ashore: {ashore}"
+    );
     let desk = crate::excursions::station_room(&world.rig.tw, "ceres_port", "room.c05_registry");
     crate::excursions::teleport(&mut world.rig.tw, pilot, desk);
     let held = ship_mind::MIND_HOLDS_HER.replace("{name}", "Salt Moth");
