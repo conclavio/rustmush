@@ -1220,9 +1220,11 @@ fn cockpit_help(verb: &str) -> String {
                    profiles and the one it will fly when you leave the seat, and who holds each \
                    channel; it is dormant while you fly. MIND PROFILE <name> switches to another \
                    sealed profile, once in ten seconds. MIND RULES [slot] reads live pilot rules; \
-                   MIND RULE <slot> <rule or OFF> replaces or removes one. In an IC field, \
+                   MIND RULE <slot> <rule or OFF> replaces or removes one. \
                    MIND POSTURE [RETURN|GUARD|HOLD] reads or sets the posture the hull holds \
-                   when you are not at its controls (help field)."
+                   when you are not at its controls (help field). In the simulator the \
+                   posture is practice: MIND AWAY lets go of the controls so you can watch \
+                   the mind fly it, and MIND BACK takes them again (help simulator)."
             .to_owned(),
         // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to

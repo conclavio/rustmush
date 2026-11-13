@@ -3992,6 +3992,31 @@ pub(crate) fn slot_reclaimed(
     Ok(())
 }
 
+/// **A pilot let go of the controls to practise a posture, or the practice ended** (doc 45
+/// unit AP.10; Q-45-25): the `Your mind` block's span for it opens
+/// ([`crate::match_::report::Fold::released`], [`HandOver::LetGo`]) or closes
+/// ([`crate::match_::report::Fold::reclaimed`]), on [`slot_left`]'s clock. The slot itself
+/// does not move: the pilot is in the pod and seated throughout. Without the span the
+/// debrief would count what the mind fired during the practice as the pilot's own shots.
+pub(crate) fn practice_span(ctx: &mut Ctx<'_>, pilot: ObjId, open: bool) {
+    let Some(match_id) = centre(ctx.w).and_then(|centre| centre.match_id) else {
+        return;
+    };
+    let Some(at_ms) = arena_now_ms(ctx.w, match_id) else {
+        return;
+    };
+    let Some(book) = ctx.w.module_state_mut::<MatchBook>() else {
+        return;
+    };
+    if let Some(fold) = pilot_fold_mut(book, match_id, pilot) {
+        if open {
+            fold.released(at_ms, HandOver::LetGo);
+        } else {
+            fold.reclaimed(at_ms);
+        }
+    }
+}
+
 /// **`pilot`'s debrief fold in match `match_id`** (17b cut M5.6): the one
 /// whose roster seats the pilot (`Fold::pilot`), where [`slot_left`] opens
 /// and [`slot_reclaimed`] closes the `Your mind` block's spans.

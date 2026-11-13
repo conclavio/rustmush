@@ -26,10 +26,14 @@
 //! the [`Ask`] and the sets use the same ones. The rule reads no arena, no clock and no dice.
 //!
 //! **In the arena** the facts are on the unit:
-//! [`crate::arena::state::UnitState::absent`], written by the IC field host through
-//! [`Arena::set_absent`] and never by a practice match (Q-44-19);
+//! [`crate::arena::state::UnitState::absent`], written through [`Arena::set_absent`] by the
+//! IC field host and, in a practice match, only for a pilot who lets go of the controls in
+//! the pod to practise a posture (doc 45 unit AP.10; `crate::match_::practice`), never for
+//! a pilot who drops (Q-44-19): there any control that names the practising pilot ends the
+//! practice before it applies (`Arena::end_practice`);
 //! [`crate::arena::state::UnitState::fired_on_by`], written at every impact, hit or miss
-//! (`Arena::resolve_impact`), in a field whose end is its host's; the hold, which is a standing
+//! (`Arena::resolve_impact`), in a field whose end is its host's and, in a practice match,
+//! on a hull a pilot has named a player for; the hold, which is a standing
 //! order's `hold_fire` (`Arena::holds_fire`); the posture
 //! ([`crate::arena::state::UnitState::posture`]) with the cell the mind stands it on
 //! ([`crate::arena::state::UnitState::stand_at`]); and whose the unit is
@@ -219,6 +223,56 @@ impl Arena {
         true
     }
 
+    /// **A pilot's practice ends** (doc 45 unit AP.10; Q-45-25, with doc 44's Q-44-19):
+    /// called by `crate::arena::intents::apply_control` for every control that names a
+    /// pilot, before the control's own state is applied. In a match (never in a field
+    /// whose end is its host's, where the host alone says who is absent), a hull flown for
+    /// an absent player **is** a pilot practising a posture, and a word about that pilot's
+    /// seat is the pilot at the controls again or gone from them: the practice is over
+    /// either way. The absent player's rule is lifted, the posture the arena was told goes
+    /// back to `RETURN`, and the hull is handed from its mind to the pilot, exactly as a
+    /// `Live` hands one over. The control then applies to a hull its pilot holds, so a
+    /// `Released` (a drop, an `EXIT`, a resume) hands it to the sealed mind seeded as every
+    /// release seeds it, and a `Linkdead` leaves it a link-dead pilot's.
+    ///
+    /// It is here, on the control, and not a message of its own, because the task keeps one
+    /// control a channel a pulse and the latest stands: a hand-back sent ahead of a release
+    /// would be collapsed away and the release would meet a hull its mind already held.
+    ///
+    /// **Whichever seat the control names.** A hull's controller is the hull's and not a
+    /// seat's: any pilot's `Live` takes a hull from its mind and any pilot's `Released` gives
+    /// it one (`apply_control`), so a word about a second seat of a practising hull moves who
+    /// flies it as it always did, and the practice cannot outlive that.
+    ///
+    /// **The hull is stopped**, as a `Released` stops one: the speed its mind last ordered is
+    /// nobody's order once the mind is off the controls, and a hull handed back or held
+    /// through a lost link's grace must not drive on by it. Its heading is left, as there.
+    ///
+    /// What is left of the practice on the hull is what reads nowhere without the flag:
+    /// whose it is ([`UnitState::player`]) and the fire record kept since
+    /// ([`UnitState::fired_on_by`]), for the pilot's next practice in the match; and what
+    /// the mind remembers of having flown, which a release adopts again as it adopts any
+    /// dormant mind's memory. Answers whether a practice was ended.
+    pub(crate) fn end_practice(&mut self, unit: ObjId) -> bool {
+        if self.end == crate::arena::party::EndCondition::Host {
+            return false;
+        }
+        if !self.unit(unit).is_some_and(|state| state.absent) {
+            return false;
+        }
+        self.set_absent(unit, false);
+        self.set_posture(unit, Posture::Return);
+        self.set_controller(
+            unit,
+            Controller::Pilot,
+            crate::arena::doctrine::MachineState::Withdraw,
+        );
+        if let Some(state) = self.unit_mut(unit) {
+            state.desired_speed_cms = 0;
+        }
+        true
+    }
+
     /// **The host says whose unit `unit` is** (this module's head;
     /// `crate::arena_task::ArenaMsg::Posture`): the player `GUARD`'s widening reads. Answers
     /// whether the arena holds the unit.
@@ -316,7 +370,8 @@ impl Arena {
     ///   ([`Arena::answerable`]) that its party holds hostile, kept while that contact is
     ///   inside the screen's arc, and a `Hold` when there is none.
     ///
-    /// Nothing for any other unit: a practice match never reaches past the first test.
+    /// Nothing for any other unit: a match nobody practises a posture in (doc 45 unit
+    /// AP.10) never reaches past the first test.
     pub(crate) fn stand_posture(&mut self, unit: ObjId) {
         use crate::arena::doctrine::{SCREEN_HALF_ARC_MDEG, arc_between};
         use crate::arena::party::Relation;
@@ -451,13 +506,19 @@ impl Arena {
     }
 
     /// **`shooter`'s fire has arrived on `target`** (this module's head), hit or miss: recorded
-    /// on the target in a field whose end is its host's, and nowhere else, so a practice match
-    /// carries and hashes no byte of it. A unit's own fire on itself records nothing.
+    /// on the target in a field whose end is its host's, and in a practice match on a target
+    /// a pilot has named a player for by setting a posture (doc 45 unit AP.10: the practising
+    /// hull and the player's other hulls, from the pulse the word lands), and nowhere else, so
+    /// a match nobody practises in carries and hashes no byte of it. A unit's own fire on
+    /// itself records nothing.
     pub(crate) fn note_fired_on(&mut self, shooter: ObjId, target: ObjId) {
-        if shooter == target || self.end != crate::arena::party::EndCondition::Host {
+        if shooter == target {
             return;
         }
-        if let Some(state) = self.unit_mut(target) {
+        let host = self.end == crate::arena::party::EndCondition::Host;
+        if let Some(state) = self.unit_mut(target)
+            && (host || state.player.is_some())
+        {
             state.fired_on_by.insert(shooter);
         }
     }

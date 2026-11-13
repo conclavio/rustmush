@@ -14,7 +14,9 @@
 //!    does not arrive changes nothing.
 //!
 //! **Never from an OOC room** ([`ooc`]): Limbo, the OOC area and the simulator centre inside
-//! it. A posture in a practice match is doc 45 unit AP.10's.
+//! it. In a practice match `MIND POSTURE` sets a practice posture instead, which is the
+//! match's and never a unit's record (doc 45 unit AP.10; `crate::match_::practice`): none
+//! of the three ways above is taken, and [`set_present`] is not called.
 //!
 //! Every way ends in the record's one writer (`super::record::set`). A read (`MIND POSTURE`,
 //! `+tv/<n> posture` with no word) is answered anywhere, and to a held character too.

@@ -660,7 +660,13 @@ order reaches one:
   order itself; you do not. Set the posture yourself, any of the ways above,
   and yours stands until the leader orders it again.
 - **Never from an OOC room.** "A posture is an order to a unit in the world.
-  It is not given from an OOC room." A seat in the simulator is an OOC room.
+  It is not given from an OOC room." Nothing you do in the simulator sets a
+  posture on a unit in the world.
+
+**Trying one first.** In the simulator `MIND POSTURE` sets a practice posture
+on the tank you fly, for that match only, and `MIND AWAY` lets go of its
+controls so you can watch its mind fly it under the rules above (`help
+simulator`, *Practising a posture*).
 
 **Reading it.** `STATUS` in the seat and `+tv` aboard the carrier each show a
 line "posture GUARD" for a unit that holds one other than RETURN. A unit on

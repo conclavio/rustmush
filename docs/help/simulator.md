@@ -497,6 +497,61 @@ not recorded.` On both, `u` moves the focus to the next tank and `x` closes.
 The next `SIM TEAM` clears the board, puts every tank back at spec, back at
 muster and back to their own types, and opens selection again.
 
+## Practising a posture
+
+A unit in the world holds a posture, RETURN, GUARD or HOLD: what its mind does
+with it when you are not at its controls (`help field`, *Postures*). A match is
+where to see one flown before you trust a rig to it.
+
+  MIND POSTURE GUARD   set the practice posture of the tank you fly
+  MIND AWAY            let go of the controls
+  MIND BACK            take them again
+
+`MIND POSTURE GUARD` answers "Red Tank 1 now holds GUARD for this match. MIND
+AWAY lets its mind fly it on that word while you watch." The word is practice:
+it belongs to this match, it is gone when the match is, and it sets nothing on
+any unit of yours in the world. Until you let go it changes nothing about how
+your tank is flown.
+
+`MIND BACK` hands you the tank stopped, wherever its mind had taken it.
+
+`MIND AWAY` hands the tank to its mind exactly as a rig is handed over when its
+player is away. You stay in the pod and your cockpit goes on reading: `STATUS`
+shows "posture GUARD" and "its mind has the controls; MIND BACK takes them
+again", bare `MIND` says the mind holds every channel, and `VIEW`, `CONTACTS`,
+`WEAPONSTATUS` and `WATCH` read as they always do. Until `MIND BACK` the seat
+gives no order: "Refused: the seat gives no order while the mind flies the
+hull; MIND BACK takes the controls." `MIND POSTURE` still works, so you can
+change the word and watch what changes.
+
+While you are away the tank is held to the rule a unit in the world is held
+to. It never fires first, whoever is in range. On RETURN it drives to your
+side's entry zone, which is home in a match, and stays there. On HOLD it stays
+where its mind took it and returns fire only on a tank that has fired on it. On
+GUARD it stays, and also returns fire on a tank that has fired on another unit
+of yours.
+
+Your other units in a match are the machines your side's lead fields. If you
+lead your side when you let go, they are yours and your guard answers for
+them. If you do not, they are your lead's, and fire on them is a stranger's
+quarrel to your guard, as another player's rigs are in the world. A second
+pilot's tank is never yours. The tank counts fire from the first time you let
+go in the match: a tank that fired on you before that is not answered for it.
+
+On a range nothing shoots, so a tank left there on GUARD or HOLD stands and
+fires nothing.
+
+`SIM REPORT` tells the two apart afterwards: its `Your mind` block says "It
+flew your tank from 0:42 to 1:10, while you had let go of the controls." and
+counts the mind's shots apart from yours.
+
+**Losing your link is not practice.** If your link drops, or you `QUIT`, or
+you `EXIT`, the practice ends there and the tank is handled as any pilot's
+is: for the grace after a lost link it stands still and fires nothing, and
+once you are gone it goes to its mind and fights for your side, bound by no
+posture. `BOARD` takes it back after a drop as before. Coming back inside the
+grace gives you the controls; type `MIND AWAY` to practise again.
+
 ## Hints
 
 The first time an account plays, the simulator says one line at six points —

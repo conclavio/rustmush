@@ -74,9 +74,13 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
                       seconds; MIND RULES reads live pilot rules, and MIND RULE
                       replaces or removes one numbered slot.
   MIND POSTURE [RETURN|GUARD|HOLD]
-                      in an IC field only: read, or set, the posture your unit
-                      holds when you are not at its controls. See "Postures"
-                      in help field.
+                      read, or set, the posture your unit holds when you are
+                      not at its controls. See "Postures" in help field. In
+                      the simulator it is practice and lasts the match.
+  MIND AWAY           in the simulator only: let go of the controls and watch
+                      your tank's mind fly it on its posture, as it would with
+                      you away. See "Practising a posture" in help simulator.
+  MIND BACK           in the simulator only: take the controls again.
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.

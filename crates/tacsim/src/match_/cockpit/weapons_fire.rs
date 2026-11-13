@@ -984,11 +984,19 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
             // **Doc 45 unit AP.4** (Q-45-19): the posture the hull holds, off its own record
             // and only when it is not the default — what its mind is told when its pilot is
             // not at the controls. `MIND POSTURE` reads it always and sets it.
-            let posture = crate::posture::record::of(ctx.w, seat.unit);
+            //
+            // **Doc 45 unit AP.10**: in a practice match it is the match's practice posture,
+            // and no unit's record is read; a pilot who has let go of the controls to watch
+            // it flown reads that too.
+            let (posture, away) = crate::match_::practice::held(ctx.w, seat.unit)
+                .unwrap_or_else(|| (crate::posture::record::of(ctx.w, seat.unit), false));
             if !posture.is_return() {
                 lines.push(
                     crate::posture::order::POSTURE_LINE.replace("{posture}", posture.label()),
                 );
+            }
+            if away {
+                lines.push(crate::match_::practice::PRACTICE_STATUS_AWAY.to_owned());
             }
             // **16b cut F.2**: doc 16 §5's *armor and internals per section as
             // current over max*, one line per section and wrapped to eighty

@@ -339,8 +339,15 @@ pub enum ArenaMsg {
     /// next pulse's head, ahead of the withdrawals and of the pulse's controls. Clearing it
     /// also recalls a withdrawal of that unit offered before it and still waiting, answered
     /// [`crate::arena::withdraw::WithdrawRefusal::Recalled`]: the player is back, and a ramp
-    /// exit the host asked for while they were away is not theirs. Only the IC field host
-    /// sends it, and a task with no [`FieldTerms`] ignores it.
+    /// exit the host asked for while they were away is not theirs.
+    ///
+    /// **Two hosts send it.** The IC field host, for a player who is not at a unit's
+    /// controls. And, since doc 45 unit AP.10, the simulator (`crate::match_::practice`),
+    /// for a pilot who lets go of the controls in the pod to watch the hull's mind fly its
+    /// posture: a task with no [`FieldTerms`] applies the word through
+    /// `Task::apply_practice_words` and records it on its input tape. There the word only
+    /// ever sets the flag: the practice ends on the seat's own control
+    /// (`Arena::end_practice`), and a dropped pilot is never told absent (Q-44-19).
     ///
     /// **A word that sets the flag on a unit the arena does not hold yet waits for it** (doc
     /// 45 unit AP.7; Q-45-1), as a posture word does: it is offered again after that head's
@@ -358,8 +365,13 @@ pub enum ArenaMsg {
     /// host's word from the unit's own record (`crate::posture::record`). Latest-wins per unit
     /// and applied by `Arena::set_posture` at the next pulse's head, after that head's joins,
     /// so the unit's mind reads it at its next think; a word for a unit whose join has not
-    /// landed waits for it. Only the IC field host sends it, and a task with no
-    /// [`FieldTerms`] ignores it.
+    /// landed waits for it.
+    ///
+    /// The IC field host sends it from the unit's own record. Since doc 45 unit AP.10 the
+    /// simulator sends it too (`crate::match_::practice`), for the word a pilot set from a
+    /// pod: a task with no [`FieldTerms`] applies it at once through
+    /// `Task::apply_practice_words`, records it on its input tape, and keeps no word for a
+    /// unit it does not hold.
     ///
     /// It carries whose unit it is too (doc 45 unit AP.6; Q-45-8; `Arena::set_player`): the
     /// player a `GUARD` answers for, told with the posture so the two never arrive apart.
@@ -2056,7 +2068,8 @@ async fn arena_loop(mut task: Task) {
                 // awaited and its answers written HERE, ahead of the head's field acts, so a
                 // join (or a withdrawal) encodes an arena whose answers have landed and never
                 // meets `SnapshotError::Awaiting`. The pulse's own await below then finds
-                // nothing in flight. An OOC match has no field acts, so its order is unchanged.
+                // nothing in flight. An OOC match's only head acts are a practice's two words
+                // (doc 45 unit AP.10), which the same order serves: settle, the words, the pulse.
                 if let Err(reason) = task.await_thinks().await {
                     let _ = task.void_now(wall, &reason).await;
                     return;
@@ -2132,9 +2145,8 @@ impl Task {
                 self.queue_withdrawn(unit, Err(crate::arena::withdraw::WithdrawRefusal::Recalled));
             }
         } else {
-            waiting.absences.clear();
             waiting.recalled.clear();
-            waiting.postures.clear();
+            self.apply_practice_words(waiting);
         }
         for tug in std::mem::take(&mut waiting.tow_releases) {
             let outcome = self.release(tug);
@@ -2194,6 +2206,50 @@ impl Task {
                 // Whose it is first, so a posture that lays an order reads the right player.
                 !(self.arena.set_player(*unit, *player) && self.arena.set_posture(*unit, *posture))
             });
+        }
+    }
+
+    /// **A practice match's posture words** (doc 45 unit AP.10; Q-45-25), at the pulse's head
+    /// and ahead of its controls: the word a pilot set from a simulator seat, with whose each
+    /// named hull is ([`ArenaMsg::Posture`]), then whether the pilot stands back from the
+    /// controls to watch the hull's mind fly it ([`ArenaMsg::Absent`]). They are the IC field
+    /// host's two words, applied by the same two calls, so a practising hull is held to the
+    /// one rule an absent player's is (`crate::arena::absent`).
+    ///
+    /// **Each word that changes the arena is recorded on the input tape first**, as its own
+    /// event ahead of the pulse's, so a replay applies it at the same boundary. A word that
+    /// changes nothing, or names a unit the arena does not hold, is dropped and records
+    /// nothing: a match never takes a unit in, so no word waits, and a match nobody practises
+    /// in carries no byte of this. The practice's **end** is no word: it rides the control
+    /// that names the pilot (`Arena::end_practice`), which the pulse's own event records.
+    fn apply_practice_words(&mut self, waiting: &mut PrePulse) {
+        for (unit, (posture, player)) in std::mem::take(&mut waiting.postures) {
+            let moves = self
+                .arena
+                .unit(unit)
+                .is_some_and(|state| state.posture != posture || state.player != player);
+            if !moves {
+                continue;
+            }
+            self.record(TapeEvent::Posture {
+                unit,
+                posture,
+                player,
+            });
+            // Whose it is first, so a posture that lays an order reads the right player.
+            self.arena.set_player(unit, player);
+            self.arena.set_posture(unit, posture);
+        }
+        for (unit, absent) in std::mem::take(&mut waiting.absences) {
+            // Only the hand-over is a word. A practice ends on the seat's own control
+            // (`Arena::end_practice`), which is on the tape with its pulse, so a word that
+            // clears the flag has no sender in a match and is dropped.
+            let moves = absent && self.arena.unit(unit).is_some_and(|state| !state.absent);
+            if !moves {
+                continue;
+            }
+            self.record(TapeEvent::Absent { unit, absent });
+            self.arena.set_absent(unit, absent);
         }
     }
 
@@ -4487,7 +4543,8 @@ mod tests {
     /// unit's posture as soon as the unit's row is in the live record, which can be before
     /// its join has landed. The word is applied after the head's joins, so a unit that joins
     /// at the same head starts on it; a word that arrives a head early is kept until the unit
-    /// is in; a later word replaces a kept one; and a task that is not a field's drops them.
+    /// is in; a later word replaces a kept one. A practice match (doc 45 unit AP.10) takes a
+    /// word for a unit it holds and keeps none for one it does not: nothing joins a match.
     #[test]
     fn ap3_a_posture_told_before_its_units_join_is_applied_when_it_lands() {
         use crate::posture::Posture;
@@ -4548,26 +4605,216 @@ mod tests {
         assert_eq!(task.arena.posture(arrival), Posture::Hold);
         assert!(waiting.postures.is_empty());
 
-        // A practice match takes no word and keeps none.
+        // Doc 45 unit AP.10: a practice match takes the word for a unit it holds, and keeps
+        // none for a unit it does not hold: nothing joins a match, so no word waits.
         let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         let (mut task, _world) = af2_task(arena, 2, 5_000);
         let hash = crate::arena::hash::state_hash(&task.arena);
         let mut waiting = PrePulse::default();
-        waiting
-            .postures
-            .insert(RED, (Posture::Hold, Some(ObjId(501))));
+        waiting.postures.insert(arrival, (Posture::Guard, owner));
         task.apply_field_acts(&mut waiting);
-        assert_eq!(task.arena.posture(RED), Posture::Return);
-        assert_eq!(task.arena.unit(RED).map(|state| state.player), Some(None));
         assert_eq!(crate::arena::hash::state_hash(&task.arena), hash);
         assert!(waiting.postures.is_empty(), "dropped, not kept");
+        waiting.postures.insert(RED, (Posture::Hold, owner));
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(task.arena.posture(RED), Posture::Hold);
+        assert_eq!(task.arena.unit(RED).map(|state| state.player), Some(owner));
+        assert!(waiting.postures.is_empty());
+    }
+
+    /// **Doc 45 unit AP.10: a practice match takes its pilot's two words** (Q-45-25), the
+    /// ones the IC field host tells a field: the posture with whose the hull is, then that
+    /// the pilot has let go of the controls. A match nobody practises in is not moved by a
+    /// word that changes nothing; a word that does is applied posture first, so the order laid
+    /// when the hull is handed over is its posture's.
+    #[test]
+    fn ap10_a_practice_match_takes_the_posture_and_the_absent_word() {
+        use crate::arena::perception::MindObjective;
+        use crate::posture::Posture;
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 1_500));
+        red.controller = crate::arena::state::Controller::Mind;
+        let arena = arena_at_epoch(vec![red, tank(BLUE, PartyId::BLUE, pose(6_500, 1_500))], 1);
+        let (mut task, _world) = af2_task(arena, 2, 5_000);
+        assert!(task.terms.is_none(), "a match, not a field");
+        let untouched = crate::arena::hash::state_hash(&task.arena);
+
+        // Words that say what already stands move nothing.
+        let mut waiting = PrePulse::default();
+        waiting.postures.insert(RED, (Posture::Return, None));
+        waiting.absences.insert(RED, false);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(crate::arena::hash::state_hash(&task.arena), untouched);
+        assert!(waiting.postures.is_empty() && waiting.absences.is_empty());
+
+        // The posture and the hand-over at one head: the order laid is the posture's.
+        let pilot = Some(ObjId(501));
+        waiting.postures.insert(RED, (Posture::Guard, pilot));
+        waiting.absences.insert(RED, true);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.absent(RED));
+        assert_eq!(task.arena.posture(RED), Posture::Guard);
+        assert_eq!(task.arena.unit(RED).map(|state| state.player), Some(pilot));
+        assert_eq!(
+            task.arena
+                .minds
+                .get(&RED)
+                .and_then(|row| row.order.as_ref())
+                .map(|order| order.objective),
+            Some(MindObjective::Hold),
+            "a guard is laid a hold where it stands"
+        );
+        assert!(!task.arena.absent(BLUE), "nobody else is bound");
+
+        // A word that clears the flag has no sender in a match and is dropped: a practice
+        // ends on the seat's own control, which the task buffers with every other control.
+        waiting.absences.insert(RED, false);
+        task.apply_field_acts(&mut waiting);
+        assert!(task.arena.absent(RED), "the word did not end the practice");
+        assert!(waiting.absences.is_empty());
+
+        // The pilot's hand-back and a drop in one pulse: the task keeps one control a
+        // channel, the latest, so the arena sees the `Released` alone. It still ends the
+        // practice, and the hull goes to its mind as a pilot's does who never practised.
+        let pilot_id = ObjId(501);
+        let control = |epoch: u64, state: ControlState| Control {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch,
+            state,
+            pilot: Some(pilot_id),
+        };
+        let (mut controls, mut releases) = (Controls::new(), Releases::new());
+        buffer_control(&mut controls, &mut releases, control(2, ControlState::Live));
+        buffer_control(
+            &mut controls,
+            &mut releases,
+            control(3, ControlState::Released),
+        );
+        let standing: Vec<Control> = controls.values().copied().collect();
+        assert_eq!(
+            standing.iter().map(|c| c.state).collect::<Vec<_>>(),
+            vec![ControlState::Released],
+            "the hand-back was collapsed away"
+        );
+        for c in &standing {
+            crate::arena::intents::apply_control(&mut task.arena, c);
+        }
+        assert!(!task.arena.absent(RED), "the drop ended the practice");
+        assert_eq!(task.arena.posture(RED), Posture::Return);
+        assert_eq!(
+            task.arena.unit(RED).map(|state| state.controller),
+            Some(crate::arena::state::Controller::Mind)
+        );
+        assert_eq!(
+            task.arena.machine_state(RED),
+            Some(crate::arena::doctrine::MachineState::Withdraw),
+            "seeded as every release seeds a hull"
+        );
+        assert!(
+            task.arena
+                .minds
+                .get(&RED)
+                .is_some_and(|row| row.order.is_none()),
+            "and under no standing order"
+        );
+    }
+
+    /// **Doc 45 unit AP.10: a practice word is on the match's input tape when it moves the
+    /// arena, and only then.** The task records each word as its own event at the head it
+    /// applies it, in the order it applies them (the posture, then the hand-over), so a replay
+    /// meets them at the same boundary. A word that says what already stands, and one for a
+    /// unit the match does not hold, record nothing.
+    #[test]
+    fn ap10_a_practice_word_is_recorded_when_it_moves_the_arena_and_only_then() {
+        use crate::arena::input_tape::{DEFAULT_MAX_BYTES, TapeEvent, TapeWrite};
+        use crate::posture::Posture;
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 1_500));
+        red.controller = crate::arena::state::Controller::Mind;
+        let blue = tank(BLUE, PartyId::BLUE, pose(6_500, 1_500));
+        let seals = vec![red.seal.clone(), blue.seal.clone()];
+        let mut arena = arena_at_epoch(vec![red, blue], 1);
+        let (recorder, opening) = tape::fresh(
+            &mut arena,
+            MatchId(11),
+            seals,
+            &BTreeMap::new(),
+            DEFAULT_MAX_BYTES,
+        );
+        assert!(
+            recorder.is_some(),
+            "the fixture opens a tape: {:?}",
+            opening.iter().find_map(|write| match write {
+                TapeWrite::Mark(mark) => Some(mark.status.clone()),
+                _ => None,
+            })
+        );
+        let (mut task, _world) = af2_task(arena, 8, 5_000);
+        task.tape = recorder;
+        let recorded = |task: &mut Task| -> Vec<TapeEvent> {
+            let (_, writes) = task
+                .tape
+                .as_mut()
+                .expect("the tape is open")
+                .checkpoint()
+                .expect("it checkpoints");
+            writes
+                .iter()
+                .filter_map(|write| match write {
+                    TapeWrite::Chunk(chunk) => Some(chunk.events.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        };
+
+        // Nothing moves: nothing is recorded.
+        let mut waiting = PrePulse::default();
+        waiting.postures.insert(RED, (Posture::Return, None));
+        waiting.postures.insert(ObjId(77), (Posture::Guard, None));
+        waiting.absences.insert(RED, false);
+        waiting.absences.insert(ObjId(77), true);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(recorded(&mut task), Vec::new());
+
+        // The posture and the hand-over at one head: two events, the posture first.
+        let pilot = Some(ObjId(501));
+        waiting.postures.insert(RED, (Posture::Guard, pilot));
+        waiting.absences.insert(RED, true);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(
+            recorded(&mut task),
+            vec![
+                TapeEvent::Posture {
+                    unit: RED,
+                    posture: Posture::Guard,
+                    player: pilot,
+                },
+                TapeEvent::Absent {
+                    unit: RED,
+                    absent: true,
+                },
+            ]
+        );
+
+        // Said again, they move nothing and record nothing; and a word that clears the flag
+        // is no word of a match's (the practice ends on the seat's control, which the
+        // pulse's own event records).
+        waiting.postures.insert(RED, (Posture::Guard, pilot));
+        waiting.absences.insert(RED, true);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(recorded(&mut task), Vec::new());
+        waiting.absences.insert(RED, false);
+        task.apply_field_acts(&mut waiting);
+        assert_eq!(recorded(&mut task), Vec::new());
+        assert!(task.arena.absent(RED));
     }
 
     /// **Doc 45 unit AP.7: an absent word waits for its unit's join** (Q-45-1). A hull that
     /// joins a running field with nobody at its controls is an absent player's from the pulse
     /// that takes it in: the host's word, offered with the join or a head before it, is kept
     /// and applied once the unit is there. A word that clears the flag never waits, a later
-    /// word replaces a kept one, and a practice match keeps none.
+    /// word replaces a kept one, and a practice match keeps none for a unit it does not hold
+    /// (doc 45 unit AP.10: it takes the word for one it does).
     #[test]
     fn ap7_an_absent_word_told_before_its_units_join_is_applied_when_it_lands() {
         let arrival = ObjId(77);
@@ -4630,12 +4877,11 @@ mod tests {
         assert!(task.arena.unit(arrival).is_some() && !task.arena.absent(arrival));
         assert!(waiting.absences.is_empty(), "a clearing word never waits");
 
-        // A practice match takes no word and keeps none.
+        // Doc 45 unit AP.10: a practice match keeps no word for a unit it does not hold.
         let arena = arena_at_epoch(vec![tank(RED, PartyId::RED, pose(1_500, 1_500))], 1);
         let (mut task, _world) = af2_task(arena, 2, 5_000);
         let mut waiting = PrePulse::default();
         waiting.absences.insert(arrival, true);
-        waiting.absences.insert(RED, true);
         task.apply_field_acts(&mut waiting);
         assert!(!task.arena.absent(RED));
         assert!(waiting.absences.is_empty(), "dropped, not kept");
