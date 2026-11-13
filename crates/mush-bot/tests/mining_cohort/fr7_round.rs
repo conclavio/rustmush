@@ -746,6 +746,13 @@ async fn tow_struck_before_field(
     let from = cap.seen.len();
     cap.send(tow).await;
     let mut attached = None;
+    // The engine's back-pressure (`lines::ENGINE_BUSY`; dispatch 43351423354 at 512): the
+    // world's own submission in the captain's name (the roster's launch is still landing its
+    // steps as the captain) can be committing when the line goes. The line's filed sentence is
+    // printed all the same, nothing is staged, and nothing attaches. A player reads the
+    // refusal and types the line again, as the bot's lane does; so does the captain here,
+    // once for each refusal read.
+    let mut typed = 1;
     for _ in 0..90 {
         cap.idle(Duration::from_secs(1)).await;
         let since = cap.seen.get(from..).unwrap_or("").to_owned();
@@ -760,6 +767,15 @@ async fn tow_struck_before_field(
                 .any(|line| matches!(line, lines::TowLine::Refused | lines::TowLine::Nothing)),
             "the tow is refused:\n{since}"
         );
+        let pushed_back = since
+            .lines()
+            .filter(|line| lines::ENGINE_BUSY.contains(&line.trim()))
+            .count();
+        if pushed_back >= typed && typed < 5 {
+            println!("fr7: captain> {tow} (typed again: the engine pushed the last one back)");
+            cap.send(tow).await;
+            typed += 1;
+        }
     }
     let since = attached.unwrap_or_else(|| {
         panic!(
