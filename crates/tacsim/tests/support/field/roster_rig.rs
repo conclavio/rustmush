@@ -550,6 +550,21 @@ pub(crate) fn fly(
     plan: &Plan,
     at_ceres: impl FnOnce(&mut Rig, ObjId),
 ) -> Flown {
+    fly_to(rig, at, plan, None, at_ceres)
+}
+
+/// **[`fly`], with the plan's work point named** (doc 44 unit MW.14c): after the draft is made
+/// the organiser names `work` on it by `+sortie/workpoint`, which is an edit of the draft (its
+/// revision moves), and the declarations and the activation are made on that revision. With
+/// `None` the plan is drafted exactly as it was before MW.14c: its JSON carries no
+/// `work_point` key, so every story flown by [`fly`] is a plan in the older stored format.
+pub(crate) fn fly_to(
+    rig: &mut Rig,
+    at: &Ground,
+    plan: &Plan,
+    work: Option<(u16, u16)>,
+    at_ceres: impl FnOnce(&mut Rig, ObjId),
+) -> Flown {
     let hired: Vec<Option<ObjId>> = plan
         .billets
         .iter()
@@ -588,7 +603,7 @@ pub(crate) fn fly(
             organiser,
             ObjId(row.hull),
             &units,
-            plan,
+            (plan, work),
             (&hired, &members),
             None,
         );
@@ -680,7 +695,7 @@ pub(crate) fn fly(
             organiser,
             ObjId(row.hull),
             &units,
-            plan,
+            (plan, work),
             (&hired, &members),
             own,
         );
@@ -849,7 +864,7 @@ fn planned(
     organiser: ObjId,
     carrier: ObjId,
     units: &[ObjId],
-    plan: &Plan,
+    (plan, work): (&Plan, Option<(u16, u16)>),
     (hired, members): (&[Option<ObjId>], &[Option<ObjId>]),
     own: Option<usize>,
 ) {
@@ -885,6 +900,37 @@ fn planned(
         "financial_terms": null,
     });
     let _ = commit(rig, organiser, &format!("+sortie/draft {payload}"));
+    // Doc 44 unit MW.14c: the organiser names the plan's work point by its own command. The
+    // draft above is in the format every plan had before the unit (no `work_point` key).
+    if let Some((x, y)) = work {
+        let before = draft(rig, organiser, 1);
+        assert_eq!(
+            before.plan.work_point, None,
+            "a new draft names no work point"
+        );
+        let shown = run(&mut rig.tw, organiser, "+sortie/plan 1");
+        assert!(
+            shown.contains(tacsim::detachment::planning::commands::WORK_POINT_NONE),
+            "{shown}"
+        );
+        let _ = commit(
+            rig,
+            organiser,
+            &format!("+sortie/workpoint 1:{}={x},{y}", before.revision),
+        );
+        let after = draft(rig, organiser, 1);
+        assert_eq!(
+            after.plan.work_point,
+            Some((x, y)),
+            "the work point is named"
+        );
+        assert!(after.revision > before.revision, "naming it is an edit");
+        let shown = run(&mut rig.tw, organiser, "+sortie/plan 1");
+        let line = tacsim::detachment::planning::commands::WORK_POINT_NAMED
+            .replace("{x}", &x.to_string())
+            .replace("{y}", &y.to_string());
+        assert!(shown.contains(&line), "the plan shows it: {shown}");
+    }
     let selected = draft(rig, organiser, 1);
     if let Some(index) = own {
         let _ = commit(rig, organiser, &declaration("accept", &selected));
@@ -917,7 +963,7 @@ fn planned(
     let _ = commit(
         rig,
         organiser,
-        &format!("+sortie/activate 1:1={}", plan.duty),
+        &format!("+sortie/activate 1:{}={}", selected.revision, plan.duty),
     );
     // An NPC commander leads under each unit's mission-role grant (doc 27 Q-F2), which the
     // organiser issues from the lines `+sortie/command-grants` prints once the roster is

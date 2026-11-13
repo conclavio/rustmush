@@ -94,7 +94,7 @@ pub(crate) struct Field {
 }
 
 /// Stand `unit` on `entry`'s ground at `cell`, facing `heading` (a staff hand).
-fn stand(rig: &mut Rig, entry: &str, unit: ObjId, (cell, heading): Placed) {
+pub(crate) fn stand(rig: &mut Rig, entry: &str, unit: ObjId, (cell, heading): Placed) {
     let domain = site_domain(&rig.tw, entry);
     staff_hand(rig, |ctx| {
         let pose =
@@ -112,7 +112,7 @@ fn stand(rig: &mut Rig, entry: &str, unit: ObjId, (cell, heading): Placed) {
 /// sensors and the fire channel. So the roster flies two prospectors as it can, and the hired
 /// one is refitted on the ground before the field opens: its object, its console and its place
 /// in the roster are what the production commands made them.
-fn arm(rig: &mut Rig, unit: ObjId) {
+pub(crate) fn arm(rig: &mut Rig, unit: ObjId) {
     staff_hand(rig, |ctx| {
         let spec = ctx
             .w
@@ -218,7 +218,7 @@ impl Field {
 
     /// `secs` world seconds, every tick's submissions landed and the arena's egress pumped as
     /// they pass. The arena's own clock is real time and barely moves meanwhile.
-    fn pass(&mut self, secs: i64) {
+    pub(crate) fn pass(&mut self, secs: i64) {
         for n in 0..secs {
             let _ = second_composed(&mut self.rig);
             if n % 10 == 0 {
@@ -305,7 +305,7 @@ impl Field {
 /// channel, an order's envelope), and the rig keeps every composed module write as typed action
 /// state for the next boot. Those documents are their modules' own and are no action state, so
 /// they are handed to the boot as module data, where their owners load them.
-async fn restart(mut rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Rig {
+pub(crate) async fn restart(mut rig: Rig, rx: &mut Receiver<ArenaOut>, reconnect: &[ObjId]) -> Rig {
     let own: Vec<(smol_str::SmolStr, smol_str::SmolStr)> = rig
         .typed
         .keys()
@@ -374,7 +374,7 @@ pub(crate) fn connect(rig: &mut Rig, who: ObjId) -> String {
 }
 
 /// The order `who`'s own frame shows standing.
-fn standing(rig: &Rig, who: ObjId) -> Option<MindObjective> {
+pub(crate) fn standing(rig: &Rig, who: ObjId) -> Option<MindObjective> {
     frame(rig, who).and_then(|frame| frame.order.map(|order| order.objective))
 }
 
@@ -398,7 +398,7 @@ pub(crate) fn fired(lines: &[LedgerEvent], shooter: ObjId) -> usize {
 }
 
 /// How many live Hostile contacts `who`'s own frame holds.
-fn hostiles(rig: &Rig, who: ObjId) -> usize {
+pub(crate) fn hostiles(rig: &Rig, who: ObjId) -> usize {
     frame(rig, who).map_or(0, |frame| {
         frame
             .contacts

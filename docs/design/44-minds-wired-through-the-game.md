@@ -25,7 +25,9 @@ decision lease (now MW.17b), and MW.24 was sized: it is a presence-free connecti
 engine, the session manager and the gateway protocol, not an edit to the SSH server alone.
 **Draft 0.7, the same day: the owner accepted Q-44-39 to Q-44-48 at their defaults**, Q-44-39 at
 the default Draft 0.6 gave it. Every question in this document is ruled. Doc 44, MW.6, MW.8 and
-MW.17 are merged (PRs #530, #534, #531, #535).
+MW.17 are merged (PRs #530, #534, #531, #535). **Draft 0.8, 2026-11-13, records the owner's
+ruling of that day on the commander (Q-44-49, §5.13):** MW.14b, the Rhai commander, is
+deferred; the compiled commander is kept and extended by a new unit, MW.14c.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) used: it asks the
 owner questions, each with a proposed default, an alternative and a reason. "Provisional" marks a
@@ -425,6 +427,8 @@ defaults the same day (Draft 0.4). Draft 0.5 adds Q-44-39 to Q-44-48 (§5.12), r
 second review; the owner accepted all ten at their defaults the same day (Draft 0.7), Q-44-39
 at the default Draft 0.6 gave it. Two of them reopen a
 ruled answer: Q-44-42 withdraws half of Q-44-17, and Q-44-44 changes the order of Q-44-20's work.
+Draft 0.8 adds Q-44-49 (§5.13), the owner's ruling of 2026-11-13, which defers the second half of
+Q-44-44.
 
 ### 5.1 Order and shape
 
@@ -797,6 +801,8 @@ Draft 0.6 changed it: MW.0 and MW.22 are built in order and merged together.
 - **Alternative:** design the commander ABI first and build once.
 - **Why:** Q-44-20 ruled a Rhai doctrine, and the mind ABI is one hull that may not order. The
   direction stands; the order of work changes.
+- **Its second step is deferred** (the owner, 2026-11-13; Q-44-49): MW.14b is not built, and
+  MW.14c extends the compiled commander instead.
 
 **Q-44-45 — A hull on an offline plan.**
 - **Proposed default:** she keeps her plan when her link drops. The backup mind takes her only
@@ -826,6 +832,26 @@ Draft 0.6 changed it: MW.0 and MW.22 are built in order and merged together.
 - **Alternative:** raise the day's budget now (provisional: $25).
 - **Why:** spending is the owner's to set, and there is no measurement yet to set it from.
 
+### 5.13 The commander, ruled again (Draft 0.8)
+
+**Q-44-49 — The Rhai commander is deferred; the compiled commander is extended.**
+- **Ruled 2026-11-13, by the owner**, in his words: "lets defer the rhai, and fix the gaps with
+  the hard-coded solution, and add a focus fire order".
+- **What it changes.** MW.14b (Q-44-44's second step: a commander ABI with its own view and an
+  order channel, D-UM-11 lifted for that class of mind, MW.14a's rules written as a house
+  doctrine) is deferred, with no unit and no date. The compiled commander MW.14a built is the
+  commander. A new unit, MW.14c, fixes the gaps MW.14a's cut note listed (no damping, no way for
+  the organiser to read its orders, no objective on the plan) and adds a focus-fire order that a
+  player leader can give and the commander gives through the same delivery.
+- **What it does not change.** Q-44-20's reasons stand: the commander is deterministic, makes
+  no LLM call, and gives only the roster orders a player leader can give. Doc 17's rule that a
+  mind never orders (D-UM-11) is untouched: nothing in `mush-mind` moves, and the commander stays
+  a compiled rule on the host, outside the mind ABI. The rule keeps the shape a doctrine takes (a
+  plain view in, a plain decision out), so a Rhai commander can still be written against it if
+  one is ever ruled.
+- **Why:** the compiled commander already leads a detachment end to end; what it lacked was
+  small and known, and a commander ABI is a design of its own that nothing waits on.
+
 ## 6. Which category gets which document
 
 | Document | Categories | Shape |
@@ -839,7 +865,7 @@ Draft 0.6 changed it: MW.0 and MW.22 are built in order and merged together.
 
 ## 7. Units of work (Draft 0.5)
 
-Twenty-seven units: `MW.0` to `MW.24`, with MW.14 and MW.17 each in two parts. They are cut from the rulings and
+Twenty-eight units: `MW.0` to `MW.24`, with MW.14 in three parts (MW.14b deferred, Q-44-49) and MW.17 in two. They are cut from the rulings and
 tightened by two reviews. "Waits on" is a unit that must be merged first. Every acceptance is
 through registered commands with a non-GOD actor. **A unit that wires a mind is done only when
 changing the mind changes what happens in play**; a script that thinks, traces and is overruled is
@@ -870,7 +896,8 @@ an in-process rig for a timer (doc 43c, TS.10), and uses the Registry's pulse ke
 | **MW.12** | F | Drones as mind-driven sorties: a view of the rock and the hold, intents that move and work, the yield from what the drone did, the sortie record closed (Q-44-27). **Built** (cut note: the mind ABI did not move; the drone is the cast's fourth actor; what a sortie takes; the defaults) | `space/mining.rs`, the drone think in `space/picket.rs`, `drone_mining.rhai` | MW.9, MW.11 | a drone whose mind is changed to stop short brings back less; the excursion book holds no drone after it lands |
 | **MW.13** | F | A player's own mind sealed on a ship: helm and sensors, the class from the hull's core (Q-44-26), under a licence or the owner's licence; its rule program bound, which no space seal does today; the seal keeps its class, principal and claim across a restart, and is cleared or checked again at a refit, a strip and a change of title | `space/` seal sites and `compact_mind_seal`, `crates/tacsim/src/minds/sealed.rs`, the registry, `crates/tacsim/src/port/` (refit, strip, sweep and sale) | MW.0, MW.1, MW.8, MW.9, MW.10, MW.22 | on a governed hull a filed mind the player holds is sealed, and an unfiled draft is refused; with her link down, inside a bubble, that mind makes a helm or sensor choice the house default does not; after a restart the seal reads the same class, principal and claim, and the claim closes once when she docks; a core stripped after sealing leaves no seal of its class; a hull sold or swept carries no seal to its new owner |
 | **MW.14a** | D | The compiled commander (Q-44-44): a host-side issuer for the plan's `npc_commander`, giving the roster orders a player leader can through the same delivery (authority, the comms path, the recipient's own contacts), yielding to an eligible player who returns (doc 27 FO-15), with a successor when its hull is lost | `crates/tacsim/src/detachment/`, `field/orders.rs`, `crates/tacsim/src/arena/detachment.rs` | — | a detachment with no player in its units advances, holds and withdraws on its commander's orders; with its comms jammed an order does not arrive; when the commander's hull is lost the next NPC gives the orders; the same run twice from before an order gives the same orders |
-| **MW.14b** | D | The Rhai commander (Q-44-20, Q-44-44): a commander ABI with its own view and an order channel, D-UM-11 lifted for that class of mind, and MW.14a's rules written as its house doctrine | `crates/mush-mind`, `crates/tacsim/src/minds/`, the doctrine library | MW.14a; a design section and its ruling | changing the commander doctrine changes the orders a detachment gets |
+| **MW.14b** | D | The Rhai commander (Q-44-20, Q-44-44): a commander ABI with its own view and an order channel, D-UM-11 lifted for that class of mind, and MW.14a's rules written as its house doctrine. **Deferred by the owner, 2026-11-13 (Q-44-49):** the compiled commander is kept and MW.14c extends it. Not built, and not scheduled | `crates/mush-mind`, `crates/tacsim/src/minds/`, the doctrine library | a ruling that reopens it, then a design section | (deferred) changing the commander doctrine changes the orders a detachment gets |
+| **MW.14c** | D | The compiled commander's gaps, and a focus-fire order (Q-44-49). A posture stands for a dwell before the commander may change it, read from the roster's order book, a withdrawal after a loss exempt. The organiser and the players flying a slot read what their NPC commander ordered and how each order was answered. A plan may name its work point by a planning command; the commander advances there, and to the default when none is named or the point is off the site. `CONCENTRATE`, a roster order by which a leader names one contact and every hull that holds it itself engages it: it goes to the whole roster in one command and reaches the hulls that can take it; a hull that does not hold the contact keeps its order; when the contact is destroyed or lost the hull returns to the order it had. The commander gives it while it holds, on a contact of a party its book already holds Hostile | `crates/tacsim/src/detachment/` (`commander.rs`, `sortie/`, `planning/commands.rs`), `crates/tacsim/src/field/orders.rs`, `crates/mush-tactics/src/detachment/` (`orders.rs`, `planning.rs`) | MW.14a | each by a story with three parties in the field: a Hostile crossing in and out of the commander's sight does not flip the posture inside the dwell, and a loss still withdraws at once; the organiser reads the commander's orders and their answers by their own command, and a stranger cannot; a plan's work point is advanced to, and a plan written before the unit loads and advances to the default; a player leader's `CONCENTRATE` puts every hull that holds the contact on it and leaves one that does not on its order, a jam stops it, and each hull is on its earlier order once the contact is destroyed; an NPC-led roster fired on by one of two other parties concentrates on one contact of that party and never fires on the third; an absent player's unit on that roster does not fire first; a restart with the NPC leading gives the same next order; the same run twice gives the same orders |
 | **MW.15** | D | The story doc 36 still owes for SCREEN and SUPPORT. Corrected in Draft 0.6: the two gate tests exist since GC.0 (`field::orders::gc0_a_screen_in_a_field_holds_its_bearing`, `gc0_a_support_in_a_field_binds_to_its_partys_unit_only`); what is not built is a story that flies them as delivered orders, which needs a detachment's roster flown into a field in a test rig, and no tacsim test does that yet | `crates/tacsim/tests/domain_field/` | — | a roster's SCREEN and SUPPORT, given by its leader in a running field, are delivered and obeyed: the screening unit holds its bearing and the supporting unit keeps to its charge |
 | **MW.16** | E | Doc 45: the survey of asynchronous attack and defence, on one concept (Q-44-22, Q-44-23). It takes up what the second review asked of that concept: an absent defender who is evacuated never defends a site | `docs/design/` | — | the survey open for rulings. Its plan and its cuts are doc 45's own, cut there after it is ruled, as §7 was here; this unit does not close the category |
 | **MW.17** | G | The last decision in the staff view (Q-44-30): a turn records which stimulus woke it; `@agent/show` gains that, how many public facts and memories the model was shown, and whether its line came from the model or from the profile's fallback, within the audit's rule that a prompt is kept by hash and summary only. **Built, PR #535** | `crates/mush-npc` (`runtime.rs`, `module.rs`) | — | staff read, for a station NPC that has just spoken, the stimulus and "model" or "fallback"; with the provider cut the same view reads "fallback"; a player is refused |
@@ -917,7 +944,7 @@ and MW.18 may start from MW.17's branch.
 | **Deploy** | MW.1 → MW.3 | `deploy/`, `mushd.toml.example` |
 | **Market** | MW.6 → MW.2 → MW.5 | the Roll's `commerce/` (notices, withdrawal, renewal) and `crates/mush-market` |
 | **Space** | MW.8 → MW.9 → MW.10 → MW.11 → MW.12 → MW.13 | `space/picket.rs` and `space/tick.rs`; every unit of the chain edits both |
-| **Field** | MW.15 → MW.14a → MW.7, then MW.14b | `field/orders.rs`, `detachment/`; MW.7 also holds `arena_bridge.rs` and the arena's intent gate alone |
+| **Field** | MW.15 → MW.14a → MW.7, then MW.14c (MW.14b deferred, Q-44-49) | `field/orders.rs`, `detachment/`; MW.7 also holds `arena_bridge.rs` and the arena's intent gate alone |
 | **NPC** | MW.17 → MW.17b → MW.18 | `crates/mush-npc/src/module.rs`; MW.17b also edits the decision lease in `mush-core` |
 | **SSH** | MW.24 | `crates/mush-net-ssh`, `crates/mush-gateway`, `crates/mush-sshdoorway` |
 | **Docs** | MW.4, MW.16 | no shared file |
@@ -970,7 +997,7 @@ not write a space book directly (`arena_library.rs`); it goes through commands.
 - **Wave 1:** MW.2 (after MW.6), MW.7 (after MW.0 with MW.22, and the field section), MW.9
   (after MW.8), MW.18.
 - **Wave 2:** MW.3 (after MW.0, MW.1, MW.2 and MW.6), MW.23, MW.10, then MW.11 and MW.12.
-- **Wave 3:** MW.5, MW.13, MW.19, MW.20; MW.14b once it is designed and ruled.
+- **Wave 3:** MW.5, MW.13, MW.19, MW.20, MW.14c. MW.14b is deferred (Q-44-49).
 - **Wave 4:** MW.21.
 
 ## 8. The dev-box list (dev1 and dev2)

@@ -170,6 +170,7 @@ A roster's leader orders hired NPC escorts with the same fenced lines as any
 detachment order (`help detachments`). `+sortie/orders` prints the prefill.
 
   ORDER DT:<detachment>:<revision>:<term> <slot>|ALL ENGAGE [<target>]
+  ORDER DT:<detachment>:<revision>:<term> <slot>|ALL CONCENTRATE <contact>
   ORDER DT:<detachment>:<revision>:<term> <slot>|ALL HOLD HOLD FIRE
   ORDER DT:<detachment>:<revision>:<term> <slot>|ALL WITHDRAW [HOLD FIRE]
 
@@ -177,6 +178,13 @@ detachment order (`help detachments`). `+sortie/orders` prints the prefill.
   its designator. On open ground, `ENGAGE NE` or `ENGAGE NE-near` names a flight
   on the presence picture. That order is your Hostile mark on its party and opens
   the field.
+- **CONCENTRATE** is the focus-fire order. `ALL CONCENTRATE BK` names one contact
+  you have identified in your own cockpit, and every hired unit that holds that
+  contact itself engages it. A unit that does not hold it answers `NEGATIVE` and
+  keeps the order it had. When the contact is destroyed, or a unit loses it, that
+  unit goes back to the order it had before. `ALL` reaches the units that can
+  take the order and is not refused for one that cannot. An NPC who leads a
+  roster gives the same order while it holds (`help detachments`).
 - **HOLD FIRE** is a tail on another order, never an order alone:
   `HOLD HOLD FIRE` stands the unit where it is and holds its fire, and
   `SCREEN 90 HOLD FIRE` screens without shooting. A hired pilot's doctrine stops
@@ -204,7 +212,7 @@ holding where it stands. You see a reply only once it arrives.
 A hired pilot's doctrine fires on the parties its party holds Hostile, and only
 on them. Your marks are its targets.
 
-If you go away, an ENGAGE or an ADVANCE you gave lapses when your own unit
+If you go away, an ENGAGE, a CONCENTRATE or an ADVANCE you gave lapses when your own unit
 passes to its mind (see *If you lose your link, or quit*). The hired unit stops
 where it is, holds its fire, and answers from where it stands only once it is
 hit. Any other order you left stands. `help detachments` has the whole rule.
