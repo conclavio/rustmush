@@ -526,7 +526,12 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
     // The passage's close moves the cursor in its own bundle.
     let mut closing = None;
     for _ in 0..12 {
-        if let Some(ClaimCursor::Closing { open, .. }) = cursor(&mut world.rig, hull) {
+        if let Some(ClaimCursor::Closing { open, kind, .. }) = cursor(&mut world.rig, hull) {
+            assert_eq!(
+                kind,
+                tacsim::surface::excursion::ClaimCloseKind::ReturnedToBase { base: stickney },
+                "the claim closes by the kind her passage closed by, in the epoch's own bundle"
+            );
             closing = Some(open);
             break;
         }

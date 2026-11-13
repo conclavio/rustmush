@@ -1171,7 +1171,10 @@ fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
 fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64, lot: u64) {
     let vault = hold_vault(&rig.tw, row);
     seed_pool(rig, vault, "propellant", tank, LotId(lot));
-    seed_pool(rig, vault, "provisions", locker, LotId(lot + 1));
+    // A hull loaded with no provisions (doc 44 unit MW.13's refit story) seeds none.
+    if locker > 0 {
+        seed_pool(rig, vault, "provisions", locker, LotId(lot + 1));
+    }
 }
 
 /// Board from C01.

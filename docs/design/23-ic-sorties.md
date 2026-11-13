@@ -1849,3 +1849,100 @@ is acknowledged and replaced, and a landed Close gets one more visit that releas
 | D-23-24 | A claim's Open is admitted on a hull titled to the dispatcher, leased to them by its titled owner under a live lease contract, or titled to an organisation they act for under `roll.holder.org` on the title's scope; one function in the Roll decides it for the reader and for the refusal at `go`; an organisation's owner licence opens a claim through the same reader; the claim row does not record the arm | built with doc 44 MW.22 under Q-44-39 (ruled 2026-11-11); widens D-23-22 |
 
 *As built: [44-cut-notes.md](44-cut-notes.md), MW.0 and MW.22.*
+
+## 19. S.4d — a ship's claim: the port's berth as the hangar
+
+**Draft 0.13, 2026-11-13.** Built with doc 44 unit MW.13 (a player's own mind sealed on a
+ship, Q-44-26), which is the cut D-23-12 waited for: "the ship's epoch seals the ROM and
+carries no claim until a cut cores a ship; when one does, D-23-11 holds unchanged with the
+port's berth as the hangar". This section says what "unchanged" turned out to need.
+
+### 19.1 What S.4b built, and why a ship did not fit it
+
+A claim is four owners in one commit: the Roll's row, TacSim's seal, Tactics' custody and
+Sim's exclusion. The Sim owner (`crates/mush-sim/src/ic_exclusion.rs`) is D-23-15's freeze
+"on re-anchoring", and as S.4b built it for a rig it had three rules a ship breaks:
+
+- **Admission.** The hull had to be placed `Interior` to a configured base or to a carrier's
+  bay. A ship at her berth is placed `Direct` on the port's domain. Her Open was refused:
+  `sim: IC exclusion refused reason=not in a configured base` (measured on the MW.13 story).
+- **The boot audit.** A held hull that roots a journey failed the boot ("held IC hull
+  carries a legacy journey"). A ship's passage is a journey rooted at her hull.
+- **The plan check.** A held hull could take a pose on its domain, go down its carrier's
+  ramp, or go into a bay. A departure unplaces the hull as a carrier under way, and an
+  arrival places her on another domain: both were refused.
+
+D-23-11's sentence is true of the anchor: a berth "moves less than a bay". It says nothing of
+the hull, and the held hull is the thing that sails.
+
+### 19.2 The rule — D-23-25
+
+**A claim's Open is admitted for a hull placed `Direct` on an active domain and under no
+journey, where the composition admits berths; its hangar is that berth, by id (the domain
+and its host; her pose on it is the Open's placement). A berth-held hull is moved only by
+the hosts of a ship's epoch, which are the voyage and the space host.** The freeze stays
+D-23-15's: it is on re-anchoring, and it admits exactly what those hosts do:
+
+| The move | What it is in Sim's terms | The host that makes it |
+|---|---|---|
+| A pose at her berth | `Direct` on the domain she lies on | the port |
+| The undock, the lift | unplaced as a carrier under way (not quarantined), with a journey rooted at her in the journey book | the port tick's launch arm, by `mush_sim::depart` |
+| The legs of her passage | no placement moves; the journey's cursor | the journey tick |
+| A bubble, free flight, a cluster | no placement moves: she stays under way while the space host flies her, under a field mark that coexists with the hold (`mush_tactics::custody::check_out`, as a field's does with a rig's) | the space tick |
+| The dock, the settling on a pad | from under way, placed `Direct` on an active domain: her own port's, another port's, a site's | the journey's arrival, or the space host's docking |
+
+Everything else is refused, as it is for a rig: into an interior or a bay, onto a mount, a
+fixed room, a quarantine, and from one domain straight to another with no passage between
+(a teleport). The staff verbs (`@spatial`) and the typed physical transitions refuse any
+custodied hull before the rule is asked, as before. A hull brought in by another's drive
+(a tow delivered to a port) is a dock from under way and is admitted; her epoch then closes
+`recovered_to_base`, as a rig's does in a recoverer's bay (S.3's A5).
+
+**A bay-held or base-held hull is held exactly as before.** The berth rule is asked only of
+a record whose anchor is a berth. A rig's hull still roots no journey, is never unplaced and
+is put on no domain but the one its carrier stands on.
+
+**The boot.** A berth-held hull may root a journey, and nothing about her berth's domain is
+frozen. A berth-held hull found anywhere no host could have put her (in an interior, on a
+mount, quarantined, or with no placement at all) stops the boot, with the hold kept for
+repair: "held IC ship requires explicit recovery". That is the rule a bay hold already has.
+
+**The record.** The Open's image gains one optional field, `berth`, beside `base` and
+`hangar`; exactly one of the three is present. A record written before the cut carries no
+`berth` key and reads, and digests, as it did.
+
+**What else the hold does for a ship.** The hull stays in the world's listings, as a hangar
+hold's does (doc 38a F-04). Tactics' fence (`ic_custody::refuse_mutation`) holds her fit as
+it is while the claim stands: a re-dress, a component's fitting or stripping, a core's, a
+scrapping and a staff rebind are each refused. So a core cannot change under a sealed mind;
+the routes a player reaches say so and tell her to unseal first (`+coop/refit`, the acting
+`+bay` verbs). The claim's Close asks for the Open's unit definition, so this fence is also
+what keeps a claim closable.
+
+### 19.3 Who opens and closes it
+
+The surface host does not: a ship has no rig record. The ship's own epoch arm on the
+`tacsim.port` tick does (`port/epoch.rs`, `port/ship_mind.rs`), by the same protocol
+(D-23-13, D-23-21: the claim first), the same `StartPermit` and `CloseEvent`, the same IC
+host and the same four owners. The cursor rides the hull's `tacsim.ship_epoch` record.
+
+- **The Open** is asked by `+ship/mind filed:<n> go` at her berth and submitted on the next
+  fire as the operator. Its sortie is `SortieId::ic(hull, <the IC instant of go>)`. The launch
+  arm is held off while the claim has not opened, so the Open is over the hull at rest.
+- **The Close** is owed by the bundle that closes the ship's epoch at a port (the epoch's own
+  kind, `returned_to_base` or `recovered_to_base`), by `+ship/mind off go` at her berth before
+  she sails (`powered_down_in_base`), or by the arm when the seal no longer fits her holder
+  (`powered_down_in_base`). The arm submits it as the operator. One record's one cursor names
+  one open token, and the book closes a token once.
+
+The claim opens before the epoch, as a rig's does, and the claim's sortie id is not the
+ship epoch's id: the epoch's is the journey's `departed().at` (S.2's V1), which is not known
+at `go`. The epoch's own black box lines are unchanged.
+
+### 19.4 Decision
+
+| # | Decision | Status |
+|---|---|---|
+| D-23-25 | A ship's claim is anchored at the port berth she lay at when it opened (D-23-11, D-23-12), and the freeze of D-23-15 admits, for a berth-held hull alone, the moves the voyage and the space host make: the undock, the passage, and the dock on a domain. A rig's hold is unchanged. **Expensive to reverse**: it is the movement-exclusion protocol, and the Open's record format. | built 2026-11-13 on the programme lead's reading that D-23-11, D-23-12 and D-23-15, accepted by the owner 2026-11-03, already rule it; for the owner to confirm |
+
+*As built: [23-cut-notes.md](23-cut-notes.md), S.4d, and [44-cut-notes.md](44-cut-notes.md), MW.13.*

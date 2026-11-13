@@ -909,11 +909,13 @@ fn mind_has_helm(hull: ObjId) -> SpaceLinkdeadState {
 }
 
 /// **A script a player might seal aboard**: it heaves to as hard as her drive gives when it
-/// is told to, and stands otherwise. It asks no lock. Its trace words are its own, so a
-/// record says whether it or the house default answered.
+/// is told to, and stands otherwise. It asks no lock, and at every think it asks a shot of
+/// every mount it reads, which no seat of a sealed mind lets through. Its trace words are
+/// its own, so a record says whether it or the house default answered.
 const KEEPER: &str = r#"fn think(v, c) {
     let s = space(v);
     if s == () { return; }
+    for w in v.weapons { fire(w.id, 1); }
     if s.stop == "hailed" && s.stop_by != () {
         let by = space_contact(v, s.stop_by);
         if by != () {
@@ -956,7 +958,18 @@ fn mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs() {
     let tw = TestWorld::new();
     let never = |_: u32| 0_u32;
     let start = || {
-        let (active, mut linkdead) = interdiction_encounter();
+        let (mut active, mut linkdead) = interdiction_encounter();
+        // Each hull carries a mount, so a shot a mind asked would have something to fire.
+        for hull in [ESCORT, RUNNER] {
+            if let Some(ship) = active.bubble.ships.get_mut(&format!("hull.{}", hull.0)) {
+                ship.lasers
+                    .push(super::super::weapons::LaserMount::standard_turret(
+                        "laser_1",
+                    ));
+            }
+        }
+        active.tape = BubbleInputTape::new(&active.bubble);
+        active.snapshots = vec![active.bubble.snapshot()];
         linkdead.insert(ESCORT, mind_has_helm(ESCORT));
         linkdead.insert(RUNNER, mind_has_helm(RUNNER));
         Run {
@@ -1061,5 +1074,8 @@ fn mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs() {
         None,
         "the same script with no rule program locks nothing"
     );
-    assert!(!fired(&sealed) && !fired(&house), "neither hull fired");
+    assert!(
+        !fired(&sealed) && !fired(&house),
+        "neither hull fired, though the sealed script asked a shot at every think and the          runner held a lock"
+    );
 }
