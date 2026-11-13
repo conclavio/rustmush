@@ -12,8 +12,16 @@
 //! `SIM START`, `BOARD`, `STARTUP` and `SIM LEAVE`. It can never type `SIM AI`,
 //! `SIM UNIT`, `SIM CONCEDE`, `SIM MODE`, `SIM RANGE`, `SIM ABORT`, `ORDER` or
 //! `EXIT` (16c Q-AJ2, Q-AJ3), nor `SIM MIND` or `MIND` (the game's 17b cut M5.1
-//! and M5.4: the bot never chooses, reads or switches a mind) — the list
-//! `tests/arena_e2e.rs`' `forbidden` enforces. `SIM START` goes out only while
+//! and M5.4: the arena pilot never chooses, reads or switches a mind) — the list
+//! `tests/arena_e2e.rs`' `forbidden` enforces.
+//!
+//! **`SIM MIND` is in the vocabulary and not in this machine** (doc 44 unit
+//! MW.19). [`LobbyLine::SimMind`] is `SIM MIND filed:<licence>`, the choice of a
+//! mind held under a licence. [`Lobby`] never queues it: the pilot flies its own
+//! tank and a mind would only fly it after the pilot left. The minds lane
+//! (`crate::mine::lane::market`) types it, for the buyer of a licence who then
+//! leaves the seat so that the mind flies; that lane builds its simulator lines
+//! here, so the centre's words stay in one place. `SIM START` goes out only while
 //! the machine believes the pilot leads its side and stands at [`Step::Start`]
 //! (cut AM.2: checked in [`Lobby::poll`] and again in [`Lobby::due`], so a lead
 //! lost to a line read in between never starts a match). `SIM LEAVE` goes
@@ -112,6 +120,10 @@ pub enum LobbyLine {
     TeamRoom(Side),
     SimStatus,
     SimTeam(Side),
+    /// `SIM MIND filed:<licence>` (doc 44 unit MW.19): the slot chooses the mind
+    /// the character holds under that licence (`help simulator`, "Choosing a
+    /// mind"). The minds lane's line; [`Lobby`] never types it.
+    SimMind(u64),
     SimStart,
     Board,
     Startup,
@@ -128,6 +140,7 @@ impl LobbyLine {
             LobbyLine::TeamRoom(side) => side.as_str().into(),
             LobbyLine::SimStatus => "SIM STATUS".into(),
             LobbyLine::SimTeam(side) => format!("SIM TEAM {}", side.as_str()),
+            LobbyLine::SimMind(licence) => format!("SIM MIND filed:{licence}"),
             LobbyLine::SimStart => "SIM START".into(),
             LobbyLine::Board => "BOARD".into(),
             LobbyLine::Startup => "STARTUP".into(),
@@ -2733,6 +2746,11 @@ mod tests {
         ] {
             assert!(VOCABULARY.contains(&line.line().as_str()));
         }
+        // Doc 44 unit MW.19: the one line of the vocabulary this machine never types (it is
+        // the minds lane's), so no walk above reached it and `VOCABULARY` does not list it.
+        assert_eq!(LobbyLine::SimMind(7).line(), "SIM MIND filed:7");
+        assert!(!LobbyLine::SimMind(7).is_walk());
+        assert!(all.iter().all(|line| !line.starts_with("SIM MIND")));
     }
 
     #[test]

@@ -2203,7 +2203,284 @@ when a call is already under way.
 
 ## MW.19
 
-Not built.
+The bot's minds lane on the nightly (doc 44 §7.1; Q-44-33; §4c row 20). Built on main
+`63dbcb3f6`. Q-44-33 is ruled at its default.
+
+**Four things the owner should read first.** The lane is the first player to walk the
+market's whole path on a world brought up by the runbook, and it met these on the way.
+
+1. **The counter had no door.** The bring-up digs the venue room (`@dig Named launch
+   counter`) and a dug room has no exit. `@mind/publish`, `+minds`, `+minds/buy` and its two
+   steps are refused anywhere else ("Listing and buying minds happen at a market counter."),
+   and every story and the bring-up's own seed line reach the room by `@teleport`. So on a
+   world brought up for dev1 or dev2, no player could list a mind or buy one. **Fixed here,
+   in the bring-up:** the Active boot's last step (and a second run on a box that is already
+   live) opens `Mind Counter <MC>` (`mc`, `minds`) from the Registry & Co-op Desk at Ceres
+   Freeport into the counter, and `Registry <R>` (`out`) back. **The place is a default the owner should rule on**: the
+   desk is where a new captain already stands to enrol, and the room's text has the
+   Registry's half of it. The counter itself is still an undescribed room.
+2. **Since MW.24, an offline player's `mind push`, `pull` and `check` were refused.** MW.24
+   made the SSH exec a bare connection, which is never a live one. The workshop's author
+   session asked for a live connection (`WorkshopCommands::principal`), so every typed mind
+   request from a player with no shell open read "No owned mind or authoring job is
+   available.", a create included. MW.24's own story could not see it: it drives a toy
+   service, not the workshop. With a shell also connected the exec worked. **Fixed here**
+   (`minds/workshop/`): a connection bound to the actor stands in for the live one, and the
+   session such a request opens is ended when it is answered, since no hook ends it. The
+   lane holds it from outside: the rig runs `mind push`, `mind pull` and `mind check` (a job)
+   for a login with no session open before either bot connects. The author bot's own five
+   requests do not hold it: its line session is open when it makes them. **One sibling is
+   not served:** a check or a save of a forked mind (one the character did not write) from
+   an offline player. Its result is delivered through the line session's author session, so
+   it was queued, held the account's one job slot and then answered "unavailable"; it is now
+   refused at once, in words ("a forked mind is checked and saved from a logged-in
+   session"). Serving it is not built.
+3. **A rating talks to its author all the way through.** MW.5 read this in the code and did
+   not see it on a connection. It is real: the author's session receives the engine's
+   `Queued.` and `Done.` for every step the Registry takes on its behalf, 4,294 lines over
+   the lane's 24-minute rating. **Not fixed** (the engine's submit path and the world task's commit
+   line, for a continuation the player did not type). The lane counts them and holds the
+   truth as an expected failure: the job says `KNOWN DEFECT (expected to fail)` while they
+   come, and fails the day they stop, until the marker is taken out. The launch under a
+   licence and the recover print the same pairs for the claim's steps.
+4. **An IC launch tells the operator nothing about the mind.** `+tv/1 launch
+   mind=filed:<licence> go` answers as a plain launch does. No line names the mind sealed
+   aboard, `+tv` does not, and the licence's row in `+minds/holdings` reads the same with the
+   rig out as with it home. Only a refusal, or a lapsed licence falling to the stock
+   doctrine, is spoken. With no field on the site the mind never thinks either. So the
+   lane's "flies it on an IC sortie" is: the launch under the licence is not refused and
+   does not fall to the doctrine, the rig stands at its ramp, comes home, and the hull sails
+   home. **A sentence for the operator is the gap; no unit owns it.**
+
+**Built.**
+
+- **The lane** (`crates/mush-bot/src/mine/market.rs`, a sub-machine of the mining lane as
+  the escort's is): two roles, two bots, two logins.
+  - `--minds author --charter <name>`: the runner writes the bot's own mind over the SSH
+    mind service before the lane types a line (`mind push` create and replace, `mind check`,
+    `mind push` save; `transport::mind_exec`, the bot's own JSON from `help mindcraft`). The
+    lane enrols with the Co-op (the only way a new character has a credit account; the stake
+    pays the filing fee), reserves the charter, asks for the rating, waits for `Registry
+    work finished.`, files, reads its filed number from `+minds/holdings`, walks through the
+    counter's door, lists the mind sealed and reads its own row on `+minds`.
+  - `--minds buyer --charter <name> [--minds-site <site>]`: the escort's kit-up and the
+    bunkers (the armed rig is the one Occator leases with a core; a prospector carries
+    none), then the counter, read every 20 s until the charter is on it; the purchase in
+    its three confirmed steps and the licence number from `+minds/holdings`; the simulator
+    (`SIM TEAM red`, `SIM MIND filed:<licence>`, `SIM START`, `BOARD`, `MIND`, `EXIT`, the
+    match's end, `SIM REPORT`); then aboard, the hop, `+tv/1 launch mind=filed:<licence>
+    go`, `+tv/1` at the ramp, the recover, and the hop home.
+  - A submitted step is done only on a `Done.` that follows its own sentence in the window
+    (the engine names no step on its `Done.`, so that is as near as a reader can hold it),
+    and every such step is read back by the next one: the holdings, the counter's row. A
+    refused or busy answer is typed again; a refusal that is the game's ruling (the counter rule, a
+    licence the centre does not know, any of the launch's nine refusals, a licence fallen
+    to the doctrine) ends the lane quoting it.
+- **The lobby's vocabulary** (`arena/lobby.rs`): `LobbyLine::SimMind(licence)`, `SIM MIND
+  filed:<licence>`. The arena pilot's machine never queues it; the market lane builds its
+  simulator lines from `LobbyLine`. `MIND`, `EXIT` and `SIM REPORT` are the market lane's own
+  three and stay out of the arena pilot's reach (`tests/arena_e2e.rs`' `forbidden` is
+  unchanged).
+- **The sentence table read at last** (`mine/minds.rs`): the lane reads the `market`,
+  `dispatch` and `claim` families, and a new `walk` family holds fifteen sentences the six
+  censused modules do not: the engine's `Queued.`, `Done.` and its refusal, the Registry's
+  five notices about a rating, the simulator's four about a chosen mind and `SIM REPORT`'s
+  two, and the doctrine fallback. Most are written inline where the game prints them, so
+  each needle is held to the game's own source text (`include_str!`) or to its constant.
+  The same way, tests hold the mind service's JSON to `mush_proto`'s own types (the bot
+  writes it by hand; it may not depend on the game), and the lane's rooms and exit words to
+  the bring-up's constants and the shipped out-of-character area.
+- **The rig** (`scripts/bot-minds-lane.sh`): a scratch instance rendered by the deploy's
+  `render.sh` from an `instance.env` with dev2's switches (`MINDS_LAUNCH=on`,
+  `REGISTRY_PULSE_MS=50`, `RAID_DIRECTOR=true`, `IC_RATIO=24`, the LLM off), its own Redis,
+  the split pair, and the launch brought up by `launch-bringup.py --no-systemd --no-seed
+  --no-llm-check`. The two logins are registered at the front door with `create` and each
+  adds its own SSH key with `@sshkey/add`: the player's hand, which the bot is forbidden.
+  After the bring-up no line is typed by staff. It needs no root.
+- **The nightly job** `bot-minds-lane` (`.github/workflows/ci.yml`): its own job, runner,
+  instance, ports and Redis container; nightly and on a dispatch; the bots' transcripts,
+  reports and the instance's logs uploaded. `.github/nightly-paths.txt` maps it;
+  `shipped_configs.rs` holds the script's `instance.env` to the template's keys.
+- The game: the workshop fix and its test
+  (`mw19_an_offline_authors_request_over_a_bare_connection_is_served`), and the counter's
+  door in `deploy/instance/launch-bringup.py` with the README's step.
+
+**The mind and the pace, and why.** The rating is the lane's length, so both were chosen
+for it and measured on conclav.dev (debug build, `REGISTRY_PULSE_MS=50`):
+
+| Mind | Rating, asked to finished |
+|---|---|
+| A copy of Standard Doctrine (`@mind/new … FROM Standard`) | about 36.5 min (182 unit-minutes) |
+| The lane's own (`mine/market_mind.rhai`: stand, and answer fire by the stock rules) | about 24.3 min (130 unit-minutes) |
+
+The lane's mind is the second: a script of the bot's own, the quickest that the Registry
+rates, and one that never asks its hull for what the hull cannot do. The pulse is the dev
+boxes' 50 ms, because the rig is meant to be what a dev box is; MW.1 measured 10 ms at 15%
+less, which is not worth leaving the dev boxes' value for.
+
+**Rates.** The instance runs the live game's 24:1 (`IC_RATIO=24`) from boot to the end:
+the Co-op's readiness, the site's pad, both hops, the launch and the recover are all the
+game's own clock at that rate. Nothing in the lane runs at 3,600:1. The Registry's trials
+run at the Registry's own pace (the pulse above), and the simulator's match on its own arena
+clock; neither is the IC clock.
+
+**Time, and where it goes** (conclav.dev, the script's own log and the bots' milestones):
+
+| Part | Seconds | Paced by |
+|---|---|---|
+| The launch's three boots | 61 | the bring-up |
+| The world, its front door, two logins and their keys | 25 | the script |
+| The author's mind over SSH (five requests), then the Co-op's enrolment | 84 | the Co-op's readiness after a fresh boot, at 24:1 |
+| The charter's reservation and the rating | 1,448 | the Registry's pulse; the rating alone is 1,446 |
+| The filing, the holdings, the counter's door, the listing and its row | 6 | the engine's commits |
+| The buyer's purchase, from the row to the licence in its holdings | 23 | the engine's commits |
+| The simulator: out of character, the claim, the pod, the match, the report, back | 285 | the match's own arena clock (4:33 until the machine won) |
+| Aboard and the hop to Kerwan Floor | 162 | 24:1 |
+| The site map, the launch, the rig at its ramp, the recover | 38 | 24:1 (a launch and a recover are 300 IC s each) |
+| The plan, the hop home, the dock | 159 | 24:1 |
+| **The whole script** | **2,295** (38 min) | |
+
+The buyer's kit-up (94 s) and bunkers (190 s, most of it waiting for Kerwan's pad to open)
+run beside the rating and add nothing. Two thirds of the lane is the rating.
+
+**Runs.** On conclav.dev (Linux, 32 cores, shared with other sessions; debug binaries of this
+branch; each run on its own scratch instance and Redis):
+
+- **Run 1: PASSED in 2,295 s.** The figures above. The author typed 12 lines and the buyer
+  152; the buyer read the counter 61 times before the row was on it.
+- **Run 2: PASSED in 2,285 s** (the rating 1,438 s), the same tree.
+- **Run 3: PASSED in 2,262 s** (the rating 1,440 s), after the second reader's fixes: the
+  registration that waits for each answer takes 2 s where the paced one took 22.
+- **The bring-up a second time over run 1's store:** the Active boot read "the counter
+  (#811) has its door from the Registry & Co-op Desk (#105)" and opened nothing.
+- By hand, before the lane existed, on two more scratch instances: the whole path walked
+  line by line (the sentences in the lane's unit tests are those transcripts'), and the two
+  ratings of the table above.
+
+**The nightly job, by dispatch, on GitHub's hosted runners** (`gh workflow run ci.yml`; the
+job builds the three debug binaries in 5 to 8 minutes, then runs the script):
+
+| Run | Head | The script | The rating | The job |
+|---|---|---|---|---|
+| 43329751649 | `8d05f8e31` (before the second reader's fixes) | PASSED, 2,243 s | 1,404 s | 43 min |
+| 43334739075 | `cfd93f5c1` | PASSED, 2,246 s | 1,410 s | 44 min |
+| 43334743232 | `cfd93f5c1` | PASSED, 2,422 s | 1,572 s | 49 min |
+| 43334747198 | `cfd93f5c1` | PASSED, 2,280 s | 1,447 s | 45 min |
+
+The three on `cfd93f5c1` were started together and ran side by side, each on its own
+runner; they are three green dispatches of one head, not three nights. A hosted runner
+rates no slower than conclav.dev: the rating is the Registry's pace, not the machine's.
+Every run counted 4,292 or 4,294 unasked lines. In run 43329751649 another job's cell was
+red once, `test (rest-server)`, on mush-server's
+`player_market_commands::rate_queues_and_cancels_a_genuine_registry_preparation` (141 s,
+no assertion text in the log); the same cell passed in the pull request's run and in all
+three dispatches of the final head. It is a story of the Registry's own service, which this
+unit does not touch; it was not run down.
+
+The unit tests: `cargo test -p
+mush-bot --lib` (529 passed, the census among them), the workshop's
+`mw19_an_offline_authors_request_over_a_bare_connection_is_served` (with the old gate put
+back it fails on "No owned mind or authoring job is available."), `shipped_configs`, and
+`cargo test -p mush-contract-tests`; clippy with warnings denied and rustdoc on `mush-bot`,
+`mush-config` and `tacsim`. All on Linux; the bot's library and tacsim's were type-checked
+on Windows.
+
+**What the lane leaves out.** Nothing of the unit's list is left out for want of a launch
+route: write, file, rate, list, buy, fly in the simulator and launch on an IC sortie are
+all walked by a player's own lines. What it does not do:
+
+- **The mind does not think on the IC sortie** (item 4 above): no field opens. A field
+  needs a second party on the site; MW.5's filed-mind story and MW.21 hold a mind in a
+  field.
+- **No restart.** Q-44-33's reason names "five modules and a restart"; the lane restarts
+  nothing. A restart in the middle of a rating, or with a claim open, on the split pair is
+  not walked by any bot.
+- **The author's own licence is not flown**, a renewal, a resale and a fork are not walked.
+
+**Found, beyond the four above.**
+
+- **The Co-op is not enrolling for about 80 s after a fresh boot**, and a site's pad is
+  closed for about 3 min. Both are the game's own readiness and the lane waits them out
+  as the mining pilot does; they are part of the lane's length.
+- **`mind pull` and `mind push` refuse `list`** ("Operation does not match the SSH command.")
+  though the request type has it: no exec command carries a library listing.
+- **A logout while the hull is under way hands it to the space backup mind at once**
+  (`[SPACE] Bridge link restored; the backup mind stands down` on return). Met by hand, not
+  by the bot, which stays connected; noted because a player who types `QUIT` in a two-minute
+  hop reads it.
+
+**Defaults taken, for the owner.**
+
+- The counter's door and its place (item 1). Moving it is the three constants at the head
+  of `launch-bringup.py` and the bot's walk to it (`market.rs`, `Route`); a bot test fails
+  if the two disagree.
+- The lane's mind is not a copy of Standard Doctrine. A House would not buy it; a player
+  does.
+- The site is Kerwan Floor (two real minutes out); `SITE=` or `--minds-site` names another.
+- The debug binaries, not a release build: the release build is half an hour of thin LTO on
+  a hosted runner and the lane is paced by the game's clocks. The rating took 23 to 26
+  minutes on the hosted runners and 24 on conclav.dev.
+- The known defect of item 3 passes the job. If the owner would rather the nightly be red
+  until it is fixed, it is one line of the script.
+
+**Not built.**
+
+- **The three real nights.** The unit's row asks for three nights green. Three dispatches
+  of one head stand in for them (above); the nights are observed after the merge, on the
+  job `bot-minds-lane` ("MW.19 the bot's minds lane (the mind market over SSH)"). The
+  nightly-report job lists it by that id.
+- A fix for item 3, and a sentence for item 4.
+- The author told why a rating failed (MW.5 left it for this unit): the lane's author
+  fails with "has no finished Registry rating" after the Registry's `finished`, which is all
+  the game says. The trial's diagnostic is still test-only.
+- More modules in the census. The `walk` family is held to source text, not censused.
+- A field in the IC half, and a restart (above).
+
+**Not pinned by a story.** The door on a box that is already live: the second-run path
+hangs it on the running world through the same function, and it was run only by the
+bring-up's own Active boot (twice over one store, the second finding the door there). The
+workshop's session release when an exec is abandoned with its job still running (the
+session then lasts until the character's next logout; bounded by `MAX_SESSIONS`). The
+refusal of an offline fork's check (no fixture makes a forked mind in the workshop's unit
+rig).
+
+**Read from outside.** A second reader was given the diff and the house rules, not this
+note, and asked to break it. It found no way for a request to reach another character's or
+another account's session, job, draft or reply, and nothing wrong in the closed vocabulary,
+the row readers or the job's wiring. What it did find, and what was done:
+
+- *A forked mind's offline check was queued and then always failed, holding a job slot and
+  leaving a session.* Refused at the door now (item 2).
+- *The lane never drove the fixed path for a job:* the author's requests come from a
+  logged-in bot. The rig's offline probe now runs a `mind check` as well, and the note says
+  which requests prove what.
+- *The unit test claimed more than it showed* (its "foreign" read went over a live
+  connection; after the bare connection closed it asked nothing). It now reads as a second
+  offline character on its own bare connection, asks as that character on the first one's
+  connection, and asks again after the close.
+- *The door could stop the Active boot before the NPCs were enabled and the lent hulls
+  returned, and `--llm-check` had begun to write to the world.* The door is the boot's last
+  step; `--llm-check` opens nothing; only a box that is already live gets the door on its
+  running unit. The "already there" test no longer depends on the Exits line not wrapping.
+- *`Done.` was taken from anywhere in a step's window.* It now has to follow the step's own
+  sentence, with a test; the docs say what that does and does not prove.
+- *Room names, the door's word and the mind service's JSON were tied to nothing.* Three
+  tests tie them (above); `.github/nightly-paths.txt` gained the wire types, the engine and
+  the world task.
+- *The time bounds contradicted each other* (a two-hour wait under a hundred-minute run).
+  The rating is waited ninety minutes, the author runs a hundred at most, the buyer a
+  hundred and forty, inside the job's hundred and eighty.
+- *The script* resolved its paths after changing directory, could exit silently on an
+  unreadable host key, did not stop the bots on an early exit, and paced the registration
+  with fixed sleeps. All four fixed; the registration now waits for each answer.
+- *The runner lost its records of the mind service's replies when a step failed.* Each is
+  written as it arrives.
+- *The docs claimed dispatches that did not exist yet and an IC flight the lane does not
+  show.* The row and this note now say what was run and what the IC half is.
+
+Left as found: `confirmed` cannot attribute a `Done.` to a step beyond its order (the engine
+gives nothing to attribute by); the buyer reads the counter for up to a hundred minutes with
+a leased rig and bunkers aboard, which cost it nothing in the two runs.
 
 ## MW.20
 

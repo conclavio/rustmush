@@ -8,8 +8,9 @@
 //! sentence in the table (the longest placeholder-free fragment, unless that fragment is
 //! shared).
 //!
-//! This is the table only. No lane reads these yet (doc 44 MW.19 owns the bot's market lane),
-//! and nothing here is a game-crate dependency: the needles are the bot's own text. The tests
+//! This is the table. The market's walk reads it (doc 44 MW.19: `super::lane::market`, with the
+//! [`walk`] family for what no censused constant holds), and nothing here is a game-crate
+//! dependency: the needles are the bot's own text. The tests
 //! below hold the table to the game through the crate's development dependencies (`tacsim`,
 //! `mush-market`), in the role [`super::lines`]' tests play for the mining loop:
 //!
@@ -415,6 +416,52 @@ pub mod market {
         pub const FUNDING_CHARTER: &str =
             "into escrow; the transfer settles once no sortie under it is out.";
     }
+}
+
+/// **What the market's walk reads that the six families do not hold** (doc 44 unit MW.19): the
+/// engine's two words for a submitted step, the Registry's notices about a rating, the
+/// simulator's words about a chosen mind, and the launch's word for a licence that did not
+/// seal. Most of these are written inline where the game prints them and are not constants, so
+/// no census can see them; the test below holds each needle to the game's own source text (or
+/// to its constant, where it has one), so a reworded sentence still fails `cargo test -p
+/// mush-bot`.
+pub mod walk {
+    /// The engine's answer to a line it took for the world to commit: `mush-core`,
+    /// `engine.rs`. A whole line; a reader takes a line that is exactly it.
+    pub const QUEUED: &str = "Queued.";
+    /// The world task's answer when that commit landed: `mush-server`, `world_task.rs`. A
+    /// whole line; a reader takes a line that is exactly it.
+    pub const DONE: &str = "Done.";
+    /// `mush_core::action::SUBMISSION_REFUSED_LINE`: the commit was refused.
+    pub const REFUSED: &str = "That did not go through. Nothing changed.";
+    /// `@mind/rate`'s answer: `tacsim`, `minds/bulk/registry_service.rs`.
+    pub const RATING_QUEUED: &str = "Registry preparation queued.";
+    /// The Registry admitted the rating: the same file.
+    pub const RATING_RETAINED: &str = "Registry work retained and queued.";
+    /// The Registry's last word on a rating, the same for one that left a rating and one that
+    /// failed: the same file.
+    pub const RATING_FINISHED: &str = "Registry work finished.";
+    /// The Registry refused to prepare the rating: the same file (its reason follows).
+    pub const RATING_REFUSED: &str = "Registry preparation refused";
+    /// The Registry did not admit the rating: the same file.
+    pub const RATING_NOT_ADMITTED: &str = "Registry preparation was not admitted.";
+    /// `SIM MIND`'s answer to a choice: `tacsim`, `match_/lobby.rs`.
+    pub const SIM_CARRY: &str = "Your slot will carry ";
+    /// The seat's line naming the mind sealed for the match, before `Good hunting.`: the same
+    /// file.
+    pub const SIM_SEALED: &str = "Sealed for this sortie: ";
+    /// The cockpit's `MIND` head for a core that thinks: `tacsim`, `match_/cockpit/notices.rs`.
+    pub const COCKPIT_MIND: &str = ", sealed for this sortie; it thinks at Class ";
+    /// `EXIT` from a running match: the same file (`EXIT_FINAL`).
+    pub const SIM_ON_ITS_OWN: &str =
+        "is on its own for the rest of the match; you cannot take it back.";
+    /// `SIM REPORT`'s line for the pilot's own mind: `tacsim`, `match_/report.rs`.
+    pub const SIM_YOUR_MIND: &str = "Your mind: ";
+    /// `SIM REPORT`'s line under it, when the mind flew the tank: the same file.
+    pub const SIM_IT_FLEW: &str = "It flew your tank";
+    /// `tacsim::port::tv::LAUNCHED_DOCTRINE`: the licence named at the launch had lapsed or
+    /// been revoked, and the rig flies the ROM.
+    pub const LAUNCHED_DOCTRINE: &str = "flies Standard Doctrine sealed aboard.";
 }
 
 /// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
@@ -1164,6 +1211,136 @@ mod tests {
             .copied()
             .collect();
         distinct(&all_rows(), &overlaps);
+    }
+
+    /// **The walk's needles are the game's words** (doc 44 unit MW.19): each is found, as
+    /// written, in the game source that prints it, or in the game's constant where there is
+    /// one. A needle that is a whole line is looked for as a whole string literal.
+    #[test]
+    fn walk_needles_are_in_the_games_own_text() {
+        use super::walk;
+        const ENGINE_RS: &str = include_str!("../../../mush-core/src/engine.rs");
+        const WORLD_TASK_RS: &str = include_str!("../../../mush-server/src/world_task.rs");
+        const REGISTRY_RS: &str =
+            include_str!("../../../tacsim/src/minds/bulk/registry_service.rs");
+        const LOBBY_RS: &str = include_str!("../../../tacsim/src/match_/lobby.rs");
+        const NOTICES_RS: &str = include_str!("../../../tacsim/src/match_/cockpit/notices.rs");
+        const REPORT_RS: &str = include_str!("../../../tacsim/src/match_/report.rs");
+        let whole = |needle: &str| format!("\"{needle}\"");
+        let rows: [(&str, &str, String, &str); 14] = [
+            ("QUEUED", "engine.rs", whole(walk::QUEUED), ENGINE_RS),
+            ("DONE", "world_task.rs", whole(walk::DONE), WORLD_TASK_RS),
+            (
+                "RATING_QUEUED",
+                "registry_service.rs",
+                whole(walk::RATING_QUEUED),
+                REGISTRY_RS,
+            ),
+            (
+                "RATING_RETAINED",
+                "registry_service.rs",
+                whole(walk::RATING_RETAINED),
+                REGISTRY_RS,
+            ),
+            (
+                "RATING_FINISHED",
+                "registry_service.rs",
+                whole(walk::RATING_FINISHED),
+                REGISTRY_RS,
+            ),
+            (
+                "RATING_REFUSED",
+                "registry_service.rs",
+                format!("\"{}: ", walk::RATING_REFUSED),
+                REGISTRY_RS,
+            ),
+            (
+                "RATING_NOT_ADMITTED",
+                "registry_service.rs",
+                whole(walk::RATING_NOT_ADMITTED),
+                REGISTRY_RS,
+            ),
+            (
+                "SIM_CARRY",
+                "lobby.rs",
+                format!("\"{}", walk::SIM_CARRY),
+                LOBBY_RS,
+            ),
+            (
+                "SIM_SEALED",
+                "lobby.rs",
+                format!("\"{}", walk::SIM_SEALED),
+                LOBBY_RS,
+            ),
+            (
+                "COCKPIT_MIND",
+                "notices.rs",
+                walk::COCKPIT_MIND.to_owned(),
+                NOTICES_RS,
+            ),
+            (
+                "SIM_ON_ITS_OWN",
+                "notices.rs",
+                whole(walk::SIM_ON_ITS_OWN),
+                NOTICES_RS,
+            ),
+            (
+                "SIM_YOUR_MIND",
+                "report.rs",
+                format!("\"{}", walk::SIM_YOUR_MIND),
+                REPORT_RS,
+            ),
+            (
+                "SIM_IT_FLEW",
+                "report.rs",
+                format!("\"  {}\"", walk::SIM_IT_FLEW),
+                REPORT_RS,
+            ),
+            (
+                "REFUSED",
+                "action.rs",
+                walk::REFUSED.to_owned(),
+                mush_core::action::SUBMISSION_REFUSED_LINE,
+            ),
+        ];
+        for (name, file, text, source) in &rows {
+            assert!(
+                source.contains(text.as_str()),
+                "walk::{name}: `{text}` is no longer in the game's {file}"
+            );
+        }
+        assert!(
+            tacsim::port::tv::LAUNCHED_DOCTRINE.contains(walk::LAUNCHED_DOCTRINE),
+            "walk::LAUNCHED_DOCTRINE"
+        );
+        assert_eq!(
+            mush_core::action::SUBMISSION_REFUSED_LINE,
+            walk::REFUSED,
+            "walk::REFUSED is the engine's whole line"
+        );
+        // No needle of the walk is found inside another of its own.
+        let needles = [
+            walk::QUEUED,
+            walk::DONE,
+            walk::REFUSED,
+            walk::RATING_QUEUED,
+            walk::RATING_RETAINED,
+            walk::RATING_FINISHED,
+            walk::RATING_REFUSED,
+            walk::RATING_NOT_ADMITTED,
+            walk::SIM_CARRY,
+            walk::SIM_SEALED,
+            walk::COCKPIT_MIND,
+            walk::SIM_ON_ITS_OWN,
+            walk::SIM_YOUR_MIND,
+            walk::SIM_IT_FLEW,
+            walk::LAUNCHED_DOCTRINE,
+        ];
+        for (i, a) in needles.iter().enumerate() {
+            for (j, b) in needles.iter().enumerate() {
+                assert!(i == j || !b.contains(a), "`{a}` is inside `{b}`");
+            }
+        }
     }
 
     /// **Partial needles are listed**: every row with a short needle is in `PARTIAL`, and

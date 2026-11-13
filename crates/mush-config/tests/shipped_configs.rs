@@ -841,6 +841,8 @@ fn the_unresolved_deploy_time_marker_reaches_the_listeners() {
 const SCRIPT_ENVS: &[&str] = &[
     "scripts/release-smoke.sh",
     "scripts/launch-bringup-acceptance.sh",
+    // Doc 44 unit MW.19: the bot's minds lane stands its own instance up.
+    "scripts/bot-minds-lane.sh",
 ];
 
 /// A key added to the template needs a line in every script that renders it,
