@@ -2019,43 +2019,42 @@ impl App {
     /// **Write the author's mind over the SSH mind service** (doc 44 unit MW.19; `help
     /// mindcraft`, "Source over SSH"): `mind push` creates the draft and replaces its source
     /// with the bot's own, `mind check` runs the game's six pictures over it, and `mind push`
-    /// saves the revision the lane then files. Each request and its reply's status go to the
-    /// transcript as a `minds-exec` record; a step the service refuses ends the run with the
-    /// service's own words.
+    /// saves the revision the lane then files. Each request's reply goes to the transcript as
+    /// a `minds-exec` record as it arrives, so a run that stops here keeps what it was told; a
+    /// step the service refuses ends the run with the service's own words.
+    ///
+    /// The line session is already open when this runs, so these requests come from a player
+    /// who is logged in. The same service for a player who is not is the rig's to hold
+    /// (`scripts/bot-minds-lane.sh`).
     async fn minds_write(&mut self) -> Result<crate::mine::lane::market::Written> {
         use crate::mine::lane::market::{self, Written};
-        use crate::transport::{MindExec, mind_exec};
-        let ssh = self.config.ssh.clone();
+        use crate::transport::MindExec;
         let name = market::MIND_NAME;
-        let mut steps = Vec::new();
-        let mut note = |exec: MindExec, op: &str, reply: &serde_json::Value| {
-            steps.push(json!({
-                "exec": exec.command(),
-                "op": op,
-                "status": reply.get("status").cloned().unwrap_or(serde_json::Value::Null),
-            }));
-        };
-        // A run taken up again finds the draft there: the read decides, not the create.
-        let created = mind_exec(&ssh, MindExec::Push, &market::create_request(name)).await?;
-        note(MindExec::Push, "create", &created);
-        let read = mind_exec(&ssh, MindExec::Pull, &market::read_request(name)).await?;
-        note(MindExec::Pull, "read", &read);
+        // A run taken up again finds the draft there, and the create is refused: the read
+        // decides whether there is a draft to write.
+        self.minds_exec(MindExec::Push, "create", &market::create_request(name))
+            .await?;
+        let read = self
+            .minds_exec(MindExec::Pull, "read", &market::read_request(name))
+            .await?;
         let (mut base, draft) = market::read_reply(&read)?;
         if market::draft_source(&draft) != Some(market::MIND_SOURCE) {
             let request = market::replace_request(name, &base, &draft, market::MIND_SOURCE);
-            let replaced = mind_exec(&ssh, MindExec::Push, &request).await?;
-            note(MindExec::Push, "replace", &replaced);
+            let replaced = self.minds_exec(MindExec::Push, "replace", &request).await?;
             base = market::edited_reply(&replaced)?;
         }
-        let checked = mind_exec(&ssh, MindExec::Check, &market::check_request(name, &base)).await?;
-        note(MindExec::Check, "check", &checked);
+        let checked = self
+            .minds_exec(
+                MindExec::Check,
+                "check",
+                &market::check_request(name, &base),
+            )
+            .await?;
         let pictures = market::checked_reply(&checked)?;
-        let saved = mind_exec(&ssh, MindExec::Push, &market::save_request(name, &base)).await?;
-        note(MindExec::Push, "save", &saved);
+        let saved = self
+            .minds_exec(MindExec::Push, "save", &market::save_request(name, &base))
+            .await?;
         let (revision, digest) = market::saved_reply(&saved)?;
-        for record in steps {
-            self.log.record("minds-exec", record)?;
-        }
         self.log.event(
             "mine",
             &format!(
@@ -2069,6 +2068,33 @@ impl App {
             digest,
             pictures,
         })
+    }
+
+    /// One request to the SSH mind service, its reply's status recorded as it arrives (the
+    /// service's message too, when it refused).
+    async fn minds_exec(
+        &mut self,
+        exec: crate::transport::MindExec,
+        op: &str,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let reply = crate::transport::mind_exec(&self.config.ssh, exec, request).await;
+        let record = match &reply {
+            Ok(reply) => json!({
+                "exec": exec.command(),
+                "op": op,
+                "status": reply.get("status").cloned().unwrap_or(serde_json::Value::Null),
+                "message": reply.get("message").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+            Err(error) => json!({
+                "exec": exec.command(),
+                "op": op,
+                "status": "transport",
+                "message": error.to_string(),
+            }),
+        };
+        self.log.record("minds-exec", record)?;
+        reply
     }
 
     /// Whether this tick is the mining lane's: it plays and the run is

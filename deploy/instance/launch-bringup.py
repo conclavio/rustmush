@@ -1044,7 +1044,8 @@ def readiness(staff, document):
 def counter_door(staff, document):
     """A way to the counter on foot, and back: an exit from the Registry's desk
     at Ceres Freeport into the venue room, and one out of it. Made only where
-    the room's own `Exits` line does not already show it."""
+    the room does not already show an exit of that name. #1 is walked through
+    both rooms to read them, and is left in Limbo."""
     counter = document["venue"]["room"]
     desk = staff.find(COUNTER_DESK)
     if desk is None:
@@ -1054,7 +1055,9 @@ def counter_door(staff, document):
     for room, names, to in ((desk, COUNTER_DOOR, counter), (counter, COUNTER_BACK, desk)):
         view = staff.s.ask(f"@teleport #{room}")
         label = names.split(";")[0]
-        if re.search(rf"^Exits\s.*{re.escape(label)}", view, re.M):
+        # The label is in the room's view only as an exit's name, on the Exits
+        # line or on a line it wrapped onto.
+        if label in view:
             continue
         staff.s.do(f"@open {names}=#{to}", r"Opened\. \(#\d+\)")
         opened += 1
@@ -1508,13 +1511,15 @@ def bring_up(box, password):
     try:
         registry_grants(staff, document)
         ready = readiness(staff, document)
-        counter_door(staff, document)
         if not args.no_npcs:
             enable_npcs(box, staff)
         # A run that stopped while a House held lent hulls: they go back before
         # anybody is let in, so enrolment is never left closed.
         if not args.keep_house_hulls:
             return_hulls(box, staff)
+        # Last, so that a world with no desk to hang the door on stops here with
+        # the NPCs enabled and every lent hull back.
+        counter_door(staff, document)
     finally:
         staff.close()
         box.stop_private()
@@ -1540,10 +1545,18 @@ def checks_on_the_unit(box, password):
     staff = staff_on_the_unit(box, password)
     try:
         readiness(staff, box.read_document())
-        # A box brought up before the counter had a door gets it here.
-        counter_door(staff, box.read_document())
         if not box.args.no_llm_check:
             llm_check(box, staff)
+    finally:
+        staff.close()
+
+
+def door_on_the_unit(box, password):
+    """A box that was brought up before the counter had a door: hang it on the
+    running world. The one step a second run on a live box writes."""
+    staff = staff_on_the_unit(box, password)
+    try:
+        counter_door(staff, box.read_document())
     finally:
         staff.close()
 
@@ -1654,6 +1667,7 @@ def main():
             # A second run on a box that is already live: nothing is stopped.
             say(f"the launch is Active and {box.unit} is running: nobody is put off; "
                 "checking it where it runs")
+            door_on_the_unit(box, password)
         else:
             ready = bring_up(box, password)
             say("the Active boot passed: " + ready)

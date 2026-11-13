@@ -386,6 +386,17 @@ impl WorkshopCommands {
             .require_original_access()
             .is_err()
         {
+            // Doc 44 MW.19: a forked mind's job is answered through the line session's author
+            // session (`authored_jobs.rs`, `fresh_authored`), which a player who is not logged
+            // in does not have. Queued, it would hold the account's one job slot and then
+            // answer "unavailable". It is refused here instead, in words, and nothing is held.
+            // Serving it over a bare connection is not built.
+            if !ctx.w.has_live_conns(principal.actor()) {
+                return Err(invalid(
+                    "draft",
+                    "a forked mind is checked and saved from a logged-in session",
+                ));
+            }
             let id = self.submit_authored(
                 ctx,
                 principal,
@@ -804,6 +815,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(responses.len(), 1);
         responses.into_iter().next().expect("response")
+    }
+    /// Every mind response the engine sent for one invoke, to anyone: none when the engine
+    /// did not take the request for that connection and actor.
+    fn served(
+        engine: &mut Engine,
+        conn: u64,
+        actor: ObjId,
+        id: u64,
+        request: MindRequest,
+    ) -> Vec<MindResponse> {
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Invoke {
+                conn,
+                actor,
+                id,
+                request: InvokeRequest::Mind(request),
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        out.events()
+            .iter()
+            .filter_map(|(_, event)| match event {
+                OutputEvent::InvokeResult {
+                    result: InvokeResult::Mind(response),
+                    ..
+                } => Some(response.clone()),
+                _ => None,
+            })
+            .collect()
     }
     fn poll(engine: &mut Engine, service: &WorkshopCommands) -> Outbox {
         let mut out = Outbox::new();
@@ -1466,11 +1508,31 @@ mod tests {
             "the check is answered on the bare connection"
         );
         assert!(!session(&service), "the answered job released the session");
-        // Another character's mind stays out of reach on a bare connection too.
+        // The library is still the character's own. A second offline character, on a bare
+        // connection of its own, reads no mind of that name; and the first one's connection
+        // cannot be used to ask as the second (the engine answers nothing for a connection
+        // that is not the actor's).
+        let stranger = engine
+            .world
+            .create(
+                mush_core::ObjKind::Player,
+                "Stranger",
+                GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("stranger");
+        engine.step(
+            Inbound::BareUp {
+                conn: 21,
+                actor: stranger,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
         let foreign = invoke(
             &mut engine,
-            7,
-            GOD,
+            21,
+            stranger,
             4,
             MindRequest::Read {
                 name: "mine".into(),
@@ -1479,7 +1541,16 @@ mod tests {
         );
         assert!(
             matches!(&foreign, MindResponse::Error { code, .. } if code == "missing"),
-            "God holds no mind of that name: {foreign:?}"
+            "the stranger holds no mind of that name: {foreign:?}"
+        );
+        assert!(!service.executor.has_session(stranger));
+        let read = MindRequest::Read {
+            name: "mine".into(),
+            revision: None,
+        };
+        assert!(
+            served(&mut engine, 20, stranger, 5, read.clone()).is_empty(),
+            "the stranger is not served on the offline author's connection"
         );
         // With the connection gone nothing is bound, and nothing is served.
         engine.step(
@@ -1491,6 +1562,13 @@ mod tests {
             &mut Effects::new(),
         );
         assert_eq!(engine.world.connection_binding(20), None);
+        assert!(
+            served(&mut engine, 20, offline, 6, read)
+                .iter()
+                .all(|response| !matches!(response, MindResponse::Read { .. })),
+            "a closed bare connection reads nothing"
+        );
+        assert!(!session(&service), "and opens no session");
     }
 
     #[test]

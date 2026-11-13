@@ -2211,9 +2211,9 @@ market's whole path on a world brought up by the runbook, and it met these on th
    steps are refused anywhere else ("Listing and buying minds happen at a market counter."),
    and every story and the bring-up's own seed line reach the room by `@teleport`. So on a
    world brought up for dev1 or dev2, no player could list a mind or buy one. **Fixed here,
-   in the bring-up:** the Active boot (and a second run on a live box) opens `Mind Counter
-   <MC>` (`mc`, `minds`) from the Registry & Co-op Desk at Ceres Freeport into the counter,
-   and `Registry <R>` (`out`) back. **The place is a default the owner should rule on**: the
+   in the bring-up:** the Active boot's last step (and a second run on a box that is already
+   live) opens `Mind Counter <MC>` (`mc`, `minds`) from the Registry & Co-op Desk at Ceres
+   Freeport into the counter, and `Registry <R>` (`out`) back. **The place is a default the owner should rule on**: the
    desk is where a new captain already stands to enrol, and the room's text has the
    Registry's half of it. The counter itself is still an undescribed room.
 2. **Since MW.24, an offline player's `mind push`, `pull` and `check` were refused.** MW.24
@@ -2224,8 +2224,14 @@ market's whole path on a world brought up by the runbook, and it met these on th
    service, not the workshop. With a shell also connected the exec worked. **Fixed here**
    (`minds/workshop/`): a connection bound to the actor stands in for the live one, and the
    session such a request opens is ended when it is answered, since no hook ends it. The
-   lane holds it from outside: the rig runs `mind push` and `mind pull` for a login with no
-   session open before either bot connects.
+   lane holds it from outside: the rig runs `mind push`, `mind pull` and `mind check` (a job)
+   for a login with no session open before either bot connects. The author bot's own five
+   requests do not hold it: its line session is open when it makes them. **One sibling is
+   not served:** a check or a save of a forked mind (one the character did not write) from
+   an offline player. Its result is delivered through the line session's author session, so
+   it was queued, held the account's one job slot and then answered "unavailable"; it is now
+   refused at once, in words ("a forked mind is checked and saved from a logged-in
+   session"). Serving it is not built.
 3. **A rating talks to its author all the way through.** MW.5 read this in the code and did
    not see it on a connection. It is real: the author's session receives the engine's
    `Queued.` and `Done.` for every step the Registry takes on its behalf, 4,294 lines over
@@ -2261,8 +2267,10 @@ market's whole path on a world brought up by the runbook, and it met these on th
     (`SIM TEAM red`, `SIM MIND filed:<licence>`, `SIM START`, `BOARD`, `MIND`, `EXIT`, the
     match's end, `SIM REPORT`); then aboard, the hop, `+tv/1 launch mind=filed:<licence>
     go`, `+tv/1` at the ramp, the recover, and the hop home.
-  - A submitted step is done only on the engine's `Done.` after its own sentence. A refused
-    or busy answer is typed again; a refusal that is the game's ruling (the counter rule, a
+  - A submitted step is done only on a `Done.` that follows its own sentence in the window
+    (the engine names no step on its `Done.`, so that is as near as a reader can hold it),
+    and every such step is read back by the next one: the holdings, the counter's row. A
+    refused or busy answer is typed again; a refusal that is the game's ruling (the counter rule, a
     licence the centre does not know, any of the launch's nine refusals, a licence fallen
     to the doctrine) ends the lane quoting it.
 - **The lobby's vocabulary** (`arena/lobby.rs`): `LobbyLine::SimMind(licence)`, `SIM MIND
@@ -2276,6 +2284,9 @@ market's whole path on a world brought up by the runbook, and it met these on th
   five notices about a rating, the simulator's four about a chosen mind and `SIM REPORT`'s
   two, and the doctrine fallback. Most are written inline where the game prints them, so
   each needle is held to the game's own source text (`include_str!`) or to its constant.
+  The same way, tests hold the mind service's JSON to `mush_proto`'s own types (the bot
+  writes it by hand; it may not depend on the game), and the lane's rooms and exit words to
+  the bring-up's constants and the shipped out-of-character area.
 - **The rig** (`scripts/bot-minds-lane.sh`): a scratch instance rendered by the deploy's
   `render.sh` from an `instance.env` with dev2's switches (`MINDS_LAUNCH=on`,
   `REGISTRY_PULSE_MS=50`, `RAID_DIRECTOR=true`, `IC_RATIO=24`, the LLM off), its own Redis,
@@ -2372,8 +2383,9 @@ all walked by a player's own lines. What it does not do:
 
 **Defaults taken, for the owner.**
 
-- The counter's door and its place (item 1). Changing it is the three constants at the head
-  of `launch-bringup.py`.
+- The counter's door and its place (item 1). Moving it is the three constants at the head
+  of `launch-bringup.py` and the bot's walk to it (`market.rs`, `Route`); a bot test fails
+  if the two disagree.
 - The lane's mind is not a copy of Standard Doctrine. A House would not buy it; a player
   does.
 - The site is Kerwan Floor (two real minutes out); `SITE=` or `--minds-site` names another.
@@ -2395,13 +2407,51 @@ all walked by a player's own lines. What it does not do:
 - More modules in the census. The `walk` family is held to source text, not censused.
 - A field in the IC half, and a restart (above).
 
-**Not pinned by a story.** The door on a box that is already live (the second-run path
-calls the same function; it was run only on fresh stores). The workshop's session release
-when an exec is abandoned with its job still running (the session then lasts until the
-character's next logout; bounded by `MAX_SESSIONS`). An authored fork's check or save over
-an offline exec (`authored_jobs.rs` still asks for the line session).
+**Not pinned by a story.** The door on a box that is already live: the second-run path
+hangs it on the running world through the same function, and it was run only by the
+bring-up's own Active boot (twice over one store, the second finding the door there). The
+workshop's session release when an exec is abandoned with its job still running (the
+session then lasts until the character's next logout; bounded by `MAX_SESSIONS`). The
+refusal of an offline fork's check (no fixture makes a forked mind in the workshop's unit
+rig).
 
-**Read from outside.** Owed at this commit: the second reader's findings are added before the PR is marked ready.
+**Read from outside.** A second reader was given the diff and the house rules, not this
+note, and asked to break it. It found no way for a request to reach another character's or
+another account's session, job, draft or reply, and nothing wrong in the closed vocabulary,
+the row readers or the job's wiring. What it did find, and what was done:
+
+- *A forked mind's offline check was queued and then always failed, holding a job slot and
+  leaving a session.* Refused at the door now (item 2).
+- *The lane never drove the fixed path for a job:* the author's requests come from a
+  logged-in bot. The rig's offline probe now runs a `mind check` as well, and the note says
+  which requests prove what.
+- *The unit test claimed more than it showed* (its "foreign" read went over a live
+  connection; after the bare connection closed it asked nothing). It now reads as a second
+  offline character on its own bare connection, asks as that character on the first one's
+  connection, and asks again after the close.
+- *The door could stop the Active boot before the NPCs were enabled and the lent hulls
+  returned, and `--llm-check` had begun to write to the world.* The door is the boot's last
+  step; `--llm-check` opens nothing; only a box that is already live gets the door on its
+  running unit. The "already there" test no longer depends on the Exits line not wrapping.
+- *`Done.` was taken from anywhere in a step's window.* It now has to follow the step's own
+  sentence, with a test; the docs say what that does and does not prove.
+- *Room names, the door's word and the mind service's JSON were tied to nothing.* Three
+  tests tie them (above); `.github/nightly-paths.txt` gained the wire types, the engine and
+  the world task.
+- *The time bounds contradicted each other* (a two-hour wait under a hundred-minute run).
+  The rating is waited ninety minutes, the author runs a hundred at most, the buyer a
+  hundred and forty, inside the job's hundred and eighty.
+- *The script* resolved its paths after changing directory, could exit silently on an
+  unreadable host key, did not stop the bots on an early exit, and paced the registration
+  with fixed sleeps. All four fixed; the registration now waits for each answer.
+- *The runner lost its records of the mind service's replies when a step failed.* Each is
+  written as it arrives.
+- *The docs claimed dispatches that did not exist yet and an IC flight the lane does not
+  show.* The row and this note now say what was run and what the IC half is.
+
+Left as found: `confirmed` cannot attribute a `Done.` to a step beyond its order (the engine
+gives nothing to attribute by); the buyer reads the counter for up to a hundred minutes with
+a leased rig and bunkers aboard, which cost it nothing in the two runs.
 
 ## MW.20
 

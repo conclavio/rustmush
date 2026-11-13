@@ -61,6 +61,12 @@ bot-minds-lane nightly crates/mush-market/src/
 bot-minds-lane nightly crates/mush-roll/src/
 bot-minds-lane nightly crates/mush-net-ssh/src/
 bot-minds-lane nightly crates/mush-gateway/src/
+# The typed mind service's wire form, the engine's `Queued.` and the bare connection, and
+# the world task's `Done.`: the lane reads all three.
+bot-minds-lane nightly crates/mush-proto/src/
+bot-minds-lane nightly crates/mush-core/src/engine.rs
+bot-minds-lane nightly crates/mush-server/src/world_task.rs
+bot-minds-lane nightly crates/mush-atlas/content/neighborhood.ooc_area.json
 
 # The 16b cut H harness (rule #13 already binds its hash-pinned files).
 tacsim-harness nightly crates/tacsim/tests/harness.rs

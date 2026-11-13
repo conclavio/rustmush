@@ -147,7 +147,9 @@ pub async fn mind_exec(
         failure: failure.clone(),
     };
     let body = serde_json::to_vec(request)?;
-    let result = tokio::time::timeout(Duration::from_secs(config.timeout_secs.max(120)), async {
+    // The service answers a job by its own bound (two minutes, then "expired"): wait past it,
+    // so that a slow check ends with the service's reason and not with this timeout.
+    let result = tokio::time::timeout(Duration::from_secs(config.timeout_secs.max(150)), async {
         let handle = authenticated(config, handler).await?;
         let mut channel = handle.channel_open_session().await?;
         channel.exec(true, exec.command()).await?;

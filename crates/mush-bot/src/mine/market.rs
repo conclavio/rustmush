@@ -78,11 +78,13 @@ pub const POLL_MS: u64 = 3_000;
 pub const SUBMIT_TRIES: u32 = 10;
 /// The buyer reads the counter this often while the author's line is not on it.
 pub const BROWSE_EVERY_MS: u64 = 20_000;
-/// **The longest a rating is waited for**, and so the longest the buyer reads the counter:
-/// two hours. A rating is about half an hour on a dev box's pulse.
-pub const RATING_MS: u64 = 2 * 60 * 60_000;
-/// The buyer's reads of the counter inside [`RATING_MS`].
-pub const BROWSE_TRIES: u32 = 400;
+/// **The longest a rating is waited for**: ninety minutes. A rating of the lane's mind is
+/// about twenty-five minutes on a dev box's pulse. A run's own bound (`[agent].max_seconds`)
+/// has to sit above it, or the run ends first with the runner's sentence and not the lane's.
+pub const RATING_MS: u64 = 90 * 60_000;
+/// **The buyer's reads of the counter**: a hundred minutes of them, the rating's bound and
+/// the author's steps either side of it.
+pub const BROWSE_TRIES: u32 = 300;
 /// The filing typed again while the Registry still holds its finished job (a pulse or two).
 pub const FILE_TRIES: u32 = 20;
 /// A pod's boarding window (two minutes when nobody else is to be seated) and slack.
@@ -542,9 +544,21 @@ pub fn in_vocabulary(line: &str) -> bool {
         )
 }
 
-/// A line that is exactly the engine's `Done.`: the confirmation of a submitted step.
-fn confirmed(raw: &[String]) -> bool {
-    raw.iter().any(|line| line.trim() == walk::DONE)
+/// **A submitted step's confirmation**: the step's own sentence (`request`), and after it a
+/// line that is exactly the engine's `Done.`. A `Done.` that arrived before the sentence
+/// answers something else (an earlier step's commit landing late, or one of the Registry's own
+/// steps) and confirms nothing. The engine names no step on its `Done.`, so "after the
+/// sentence" is as near as a reader can hold it; every submitted step is read back by the
+/// step that follows it (the holdings, the counter's row).
+fn confirmed(raw: &[String], request: &str) -> bool {
+    let Some(said) =
+        (0..raw.len()).find(|&end| lines::has(&lines::normalise(&raw[..=end].join(" ")), request))
+    else {
+        return false;
+    };
+    raw[said.saturating_add(1)..]
+        .iter()
+        .any(|line| line.trim() == walk::DONE)
 }
 
 /// A line that is exactly `Queued.` or `Done.`.
@@ -824,7 +838,7 @@ impl Lane {
             } else if lines::has(text, words::BUSY) {
                 poll(words::BUSY, POLL_MS, SUBMIT_TRIES)
             } else {
-                done_if(lines::has(text, request) && confirmed(raw))
+                done_if(confirmed(raw, request))
             }
         };
         match task.phase {
@@ -846,7 +860,7 @@ impl Lane {
                 // The request is the author's own submitted step: its sentence and the engine's
                 // `Done.` for it. Not `quiet`: the Registry's own steps follow at once, about one
                 // a second, and every line after this pair is one the author did not ask for.
-                if lines::has(text, walk::RATING_QUEUED) && confirmed(raw) {
+                if confirmed(raw, walk::RATING_QUEUED) {
                     Verdict::Done
                 } else if lines::has(text, walk::REFUSED) {
                     poll(walk::REFUSED, POLL_MS, SUBMIT_TRIES)
@@ -876,7 +890,7 @@ impl Lane {
                     poll(words::NOT_RATED, POLL_MS, FILE_TRIES)
                 } else if lines::has(text, words::RESERVING) {
                     // The reservation had not landed when the rating was asked for.
-                    if confirmed(raw) {
+                    if confirmed(raw, words::RESERVING) {
                         poll(words::RESERVING, POLL_MS, SUBMIT_TRIES)
                     } else {
                         Verdict::Wait
@@ -1336,7 +1350,7 @@ impl Lane {
                 self.market_send(Phase::Aground, "+tv/1", 0);
             }
             Phase::Aground => {
-                let aground = line_with(raw, "Rig 1");
+                let aground = line_with(raw, lines::RIG_ONE);
                 if let Some(evidence) = self.market_evidence() {
                     evidence.aground = aground;
                 }
@@ -1344,7 +1358,7 @@ impl Lane {
             }
             Phase::Recover => self.market_send(Phase::InBay, "+tv/1", 0),
             Phase::InBay => {
-                let in_bay = line_with(raw, "Rig 1");
+                let in_bay = line_with(raw, lines::RIG_ONE);
                 if let Some(evidence) = self.market_evidence() {
                     evidence.in_bay = in_bay;
                 }
@@ -2110,6 +2124,189 @@ mod tests {
             "{}",
             result.outcome
         );
+    }
+
+    /// A `Done.` confirms a step only after the step's own sentence.
+    #[test]
+    fn a_done_before_the_steps_sentence_confirms_nothing() {
+        let own = |lines: &[&str]| {
+            lines
+                .iter()
+                .map(|line| (*line).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let late = own(&["Done.", "Listing filed mind 1 here as sealed.", "Queued."]);
+        assert!(!confirmed(&late, words::PUBLISHING));
+        let whole = own(&[
+            "Done.",
+            "Listing filed mind 1 here as sealed.",
+            "Queued.",
+            "Done.",
+        ]);
+        assert!(confirmed(&whole, words::PUBLISHING));
+        // The sentence wrapped at the terminal's width is still the sentence.
+        let wrapped = own(&[
+            "Reserving a charter for this filing first. Once that is confirmed, type",
+            "@mind/file sentry@1=Sentry Line again.",
+            "Queued.",
+            "Done.",
+        ]);
+        assert!(confirmed(&wrapped, words::RESERVING));
+        assert!(!confirmed(&own(&["Queued.", "Done."]), words::RESERVING));
+
+        // The author's listing step, with an earlier commit's `Done.` landing first.
+        let mut rig = Rig::author();
+        let mut script = author_answers(0, 0);
+        rig.play(
+            600_000,
+            |line, nth| match line {
+                "@mind/publish 1 form=sealed" if nth == 0 => now(&["Done."]),
+                other => script(other, nth),
+            },
+            |_| false,
+        );
+        let result = rig.lane.result().cloned().expect("the lane ended");
+        assert_eq!(result.status, "blocked", "{}", result.outcome);
+        assert!(
+            result.outcome.contains("@mind/publish 1 form=sealed"),
+            "{}",
+            result.outcome
+        );
+    }
+
+    /// The bot writes the mind service's JSON itself (it may not depend on the game), so the
+    /// game's own wire types hold it here: every request the runner sends parses as the
+    /// service's request, and the replies the runner reads are read from the service's own
+    /// serialisation.
+    #[test]
+    fn the_mind_services_json_is_the_games_wire_form() {
+        use mush_proto::{InvokeResult, MindDraft, MindEditBase, MindRequest, MindResponse};
+        let base = serde_json::json!({"edit": 3, "revision": null});
+        let draft = serde_json::json!({
+            "source": "fn think(view, card) {\n}\n",
+            "schema": {"sections": []},
+            "presets": {},
+            "profiles": {"Default": {}},
+            "rules": {},
+            "declared_class": "I",
+            "mind_abi": "rhai=1.26.0;api=9;stock=3"
+        });
+        serde_json::from_value::<MindDraft>(draft.clone()).expect("the draft the test replaces");
+        let requests = [
+            ("create", create_request(MIND_NAME)),
+            ("read", read_request(MIND_NAME)),
+            (
+                "replace",
+                replace_request(MIND_NAME, &base, &draft, MIND_SOURCE),
+            ),
+            ("check", check_request(MIND_NAME, &base)),
+            ("save", save_request(MIND_NAME, &base)),
+        ];
+        for (op, request) in requests {
+            let parsed = serde_json::from_value::<MindRequest>(request.clone())
+                .unwrap_or_else(|error| panic!("{op} is not the service's request: {error}"));
+            let named = match (op, &parsed) {
+                ("create", MindRequest::Create { name, from }) => {
+                    name == MIND_NAME && from.is_none()
+                }
+                ("read", MindRequest::Read { name, revision }) => {
+                    name == MIND_NAME && revision.is_none()
+                }
+                ("replace", MindRequest::Replace { name, draft, .. }) => {
+                    name == MIND_NAME && draft.source == MIND_SOURCE
+                }
+                ("check", MindRequest::Check { name, base }) => name == MIND_NAME && base.edit == 3,
+                ("save", MindRequest::Save { name, version, .. }) => {
+                    name == MIND_NAME && version.is_none()
+                }
+                _ => false,
+            };
+            assert!(named, "{op} parsed as {parsed:?}");
+        }
+        let reply = |response: MindResponse| {
+            let record = serde_json::to_value(InvokeResult::Mind(response)).expect("a record");
+            assert_eq!(record["service"], "mind");
+            record["result"].clone()
+        };
+        let next = MindEditBase {
+            edit: 4,
+            revision: None,
+        };
+        let edited = reply(MindResponse::Edited {
+            name: MIND_NAME.to_owned(),
+            base: next,
+        });
+        assert_eq!(edited_reply(&edited).expect("an edit")["edit"], 4);
+        let saved = reply(MindResponse::Saved {
+            job: 9,
+            revision: 2,
+            digest: "ab12".to_owned(),
+            base: MindEditBase {
+                edit: 5,
+                revision: Some(2),
+            },
+        });
+        assert_eq!(saved_reply(&saved), Ok((2, "ab12".to_owned())));
+        let checked = reply(MindResponse::Checked {
+            job: 8,
+            reports: Vec::new(),
+            diagnostics: Vec::new(),
+        });
+        assert!(checked_reply(&checked).unwrap_err().contains("no picture"));
+        let refused = reply(MindResponse::Error {
+            code: "missing".to_owned(),
+            message: "No owned mind or authoring job is available.".to_owned(),
+        });
+        assert!(read_reply(&refused).unwrap_err().contains("No owned mind"));
+        let read = reply(MindResponse::Read {
+            name: MIND_NAME.to_owned(),
+            revision: None,
+            base: next,
+            draft: Box::new(serde_json::from_value(draft).expect("the draft")),
+            rules_text: std::collections::BTreeMap::new(),
+            rules_source: std::collections::BTreeMap::new(),
+            diagnostics: Vec::new(),
+        });
+        let (base, draft) = read_reply(&read).expect("a read");
+        assert_eq!(base["edit"], 4);
+        assert_eq!(draft_source(&draft), Some("fn think(view, card) {\n}\n"));
+    }
+
+    /// The lane's walks are the world's own: the counter's room, its door's word and the
+    /// desk it hangs off are the bring-up's, and the out-of-character rooms and exits are the
+    /// shipped area's. Moving the door means the bring-up's constants and [`Route`] together.
+    #[test]
+    fn the_walks_are_the_worlds_rooms_and_exits() {
+        const BRINGUP_PY: &str = include_str!("../../../../deploy/instance/launch-bringup.py");
+        const OOC_JSON: &str =
+            include_str!("../../../mush-atlas/content/neighborhood.ooc_area.json");
+        const CERES_JSON: &str =
+            include_str!("../../../tacsim/content/atlas/neighborhood.ceres_freeport.json");
+        assert!(BRINGUP_PY.contains(&format!("staff.room(\"{COUNTER_ROOM}\")")));
+        assert!(BRINGUP_PY.contains(&format!("COUNTER_DESK = \"{}\"", lines::ROOM_REGISTRY)));
+        assert!(BRINGUP_PY.contains(&format!(
+            "COUNTER_DOOR = \"Mind Counter <MC>;{COUNTER_DOOR};"
+        )));
+        // The way back out of the counter is `out`, as the lane types it.
+        assert!(BRINGUP_PY.contains("COUNTER_BACK = \"Registry <R>;r;registry;out;o\""));
+        for needle in [
+            format!("\"name\": \"{ROOM_HALL}\""),
+            format!("\"name\": \"{ROOM_SIMULATOR}\""),
+            format!("\"name\": \"{ROOM_POD}\""),
+            "\"OOC Area <O>;o;ooc\"".to_owned(),
+            "\"Limbo <X>;x;limbo\"".to_owned(),
+            "\"Simulator Lobby <SIMULATOR>;simulator;annexe\"".to_owned(),
+            "\"Welcome Hall <W>;w;hall;west\"".to_owned(),
+            "\"Red Room <R>;r;red;north;n\"".to_owned(),
+            "\"Simulator Lobby <LOBBY>;lobby;out;south;s\"".to_owned(),
+        ] {
+            assert!(
+                OOC_JSON.contains(&needle),
+                "the shipped OOC area has no {needle}"
+            );
+        }
+        assert!(CERES_JSON.contains("\"Ceres Freeport <C>;c;ceres\""));
+        assert!(CERES_JSON.contains("\"Limbo <X>;x;limbo;ooc\""));
     }
 
     /// The rows the walk reads, as the game prints them.

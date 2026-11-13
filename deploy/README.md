@@ -802,9 +802,12 @@ store with no account the script bootstraps it). Then, in order:
    refused anywhere else, so until this no player could list a mind or buy
    one. The script opens `Mind Counter <MC>` (also `mc`, `minds`) from the
    Registry & Co-op Desk at Ceres Freeport into the counter, and `Registry <R>`
-   (also `out`) back, where the room's own exits do not already show them; a
-   second run on a live box hangs the door on a counter that has none. The
-   desk is a provisional place for it. Then the 18 major NPCs of the cast packs
+   (also `out`) back, where the rooms do not already show them. It is the Active
+   boot's last step, after the NPCs and the hulls' return, so a world with no
+   such desk stops there with nothing else left undone. A second run on a box
+   that is already live hangs the door on its running world (written for boxes
+   brought up before the door existed; not yet run on one). `--llm-check`
+   opens nothing. The desk is a provisional place for the door. Then the 18 major NPCs of the cast packs
    are enabled with `@agent/enable` (Q-44-47; the shipped packs are not edited).
 4. **The unit is started**, and players are let in. On it the script reads
    `@mind/launch` again and runs the LLM check (below).

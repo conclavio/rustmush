@@ -32,10 +32,15 @@
 # for a look by hand); KEEP=1 (leave the scratch directory after a pass).
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-tree="$PWD"
+# The two paths are the caller's, read before the script moves to the tree.
 bin="$(realpath "${1:?usage: bot-minds-lane.sh <binary dir> [<work dir>]}")"
 given_work="${2:-}"
+if [ -n "$given_work" ]; then
+  mkdir -p "$given_work"
+  given_work="$(realpath "$given_work")"
+fi
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+tree="$PWD"
 work="${given_work:-$(mktemp -d "${TMPDIR:-/tmp}/minds-lane.XXXXXX")}"
 redis_port="${REDIS_PORT:-6396}"
 ssh_port="${SSH_PORT:-16995}"
@@ -155,31 +160,76 @@ log "the world is up on 127.0.0.1:$ssh_port after $(since)"
 # --- two players: a login each, registered at the front door, each with its
 # own SSH key. This is the player's own hand, not the bot's and not staff's.
 register() {
-  # The login's password is made here and kept nowhere: the bot connects by its
-  # key, and the front door's echo of the line is taken out of the kept log.
-  local account="$1" out password
+  # `create`, then `@sshkey/add`, each typed once the front door has answered
+  # the line before it. The login's password is made in the helper and kept
+  # nowhere: the bot connects by its key, and the helper prints the session
+  # with the password taken out.
+  local account="$1"
   ssh-keygen -q -t ed25519 -N '' -C "$account@minds-lane" -f "$work/bots/$account.key"
-  password="$(head -c 18 /dev/urandom | base64 | tr -d '/+=')"
-  out="$({
-    sleep 2
-    printf 'create %s %s\r\n' "$account" "$password"
-    sleep 4
-    printf '@sshkey/add %s\r\n' "$(cat "$work/bots/$account.key.pub")"
-    sleep 3
-    printf 'QUIT\r\n'
-    sleep 2
-  } | timeout 60 ssh -tt -p "$ssh_port" -o BatchMode=yes -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR play@127.0.0.1 2>&1 || true)"
-  out="${out//"$password"/[password]}"
-  printf '%s\n' "$out" > "$work/bots/$account.register.log"
-  grep -q 'Connected as ' <<< "$out" ||
+  python3 - "$ssh_port" "$account" "$work/bots/$account.key.pub" \
+    > "$work/bots/$account.register.log" 2>&1 << 'PY' ||
+import fcntl, os, pty, re, secrets, select, struct, subprocess, sys, termios, time
+
+port, account, public = sys.argv[1], sys.argv[2], open(sys.argv[3], encoding="utf-8").read().strip()
+password = secrets.token_urlsafe(18)
+master, slave = pty.openpty()
+settings = termios.tcgetattr(slave)
+settings[3] &= ~termios.ECHO
+termios.tcsetattr(slave, termios.TCSANOW, settings)
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 500, 0, 0))
+
+
+def tty():
+    os.setsid()
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
+door = subprocess.Popen(
+    ["ssh", "-tt", "-p", port, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+     "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "play@127.0.0.1"],
+    stdin=slave, stdout=slave, stderr=slave, preexec_fn=tty, close_fds=True)
+os.close(slave)
+seen = ""
+
+
+def wait(pattern, seconds, what):
+    global seen
+    end = time.monotonic() + seconds
+    start = len(seen)
+    while not re.search(pattern, seen[start:]):
+        if time.monotonic() >= end:
+            print(seen.replace(password, "[password]"))
+            sys.exit(f"the front door did not answer with {what} within {seconds}s")
+        if select.select([master], [], [], 0.2)[0]:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                print(seen.replace(password, "[password]"))
+                sys.exit(f"the front door closed before {what}")
+            seen += chunk.decode("utf-8", "replace")
+
+
+def type_line(line):
+    os.write(master, line.encode("utf-8") + b"\r")
+
+
+wait(r"(?i)create <account>", 60, "its welcome screen")
+type_line(f"create {account} {password}")
+wait(r"Connected as ", 60, "the new login")
+type_line(f"@sshkey/add {public}")
+wait(r"SHA256:\S+ added", 60, "the key's fingerprint")
+type_line("QUIT")
+time.sleep(1)
+door.terminate()
+print(seen.replace(password, "[password]"))
+PY
     { echo "minds-lane: $account could not register at the front door" >&2; tail -20 "$work/bots/$account.register.log" >&2; exit 1; }
-  grep -q 'SHA256:' <<< "$out" ||
-    { echo "minds-lane: $account's key was not taken" >&2; tail -20 "$work/bots/$account.register.log" >&2; exit 1; }
 }
 register lathe
 register tally
-host_key="$(ssh-keyscan -p "$ssh_port" -t ed25519 127.0.0.1 2> /dev/null | ssh-keygen -lf - | awk '{print $2}')"
+host_key="$(ssh-keyscan -p "$ssh_port" -t ed25519 127.0.0.1 2> /dev/null | ssh-keygen -lf - 2> /dev/null | awk '{print $2}' || true)"
 [ -n "$host_key" ] || { echo "minds-lane: the front door's host key could not be read" >&2; exit 1; }
 log "two logins registered (lathe the author, tally the buyer); host key $host_key"
 
@@ -193,8 +243,11 @@ fi
 
 # --- the SSH mind service, for a player who is not logged in (doc 44 unit
 # MW.24's promise, held here against the workshop itself on the split pair): the
-# buyer's login, with no session open, makes a draft with `mind push` and reads
-# it back with `mind pull`. Until MW.19 the workshop refused every such request.
+# buyer's login, with no session open, makes a draft with `mind push`, reads it
+# back with `mind pull`, and has it checked with `mind check` (a job, answered
+# on the same connection once the workshop's worker has run it). Until MW.19
+# the workshop refused every such request. The author's own requests cannot
+# hold this: its bot is logged in when it makes them.
 mind_exec() {
   local account="$1" verb="$2" request="$3"
   printf '%s' "$request" | timeout 60 ssh -i "$work/bots/$account.key" -o IdentitiesOnly=yes \
@@ -203,13 +256,17 @@ mind_exec() {
 }
 pushed="$(mind_exec tally push '{"op":"create","name":"offline","from":null}')"
 pulled="$(mind_exec tally pull '{"op":"read","name":"offline","revision":null}')"
-printf '%s\n%s\n' "$pushed" "$pulled" > "$work/bots/offline-exec.log"
-if ! grep -q '"status":"edited"' <<< "$pushed" || ! grep -q '"status":"read"' <<< "$pulled"; then
-  echo "minds-lane: an offline player's SSH mind push and pull were not served:" >&2
+base="$(python3 -c 'import json, sys
+print(json.dumps(json.loads(sys.stdin.read().strip().splitlines()[-1])["result"]["base"]))' <<< "$pulled" 2> /dev/null || true)"
+checked="$(mind_exec tally check "{\"op\":\"check\",\"name\":\"offline\",\"base\":${base:-null}}")"
+printf '%s\n%s\n%s\n' "$pushed" "$pulled" "$checked" > "$work/bots/offline-exec.log"
+if ! grep -q '"status":"edited"' <<< "$pushed" || ! grep -q '"status":"read"' <<< "$pulled" ||
+  ! grep -q '"status":"checked"' <<< "$checked"; then
+  echo "minds-lane: an offline player's SSH mind push, pull and check were not all served:" >&2
   cat "$work/bots/offline-exec.log" >&2
   exit 1
 fi
-log "an offline player's mind push and mind pull are served"
+log "an offline player's mind push, mind pull and mind check are served"
 
 # --- the two bots. Each is the bot's own binary, headless, with a config that
 # names its login's key and the front door's pinned host key, and an empty .env
@@ -248,21 +305,24 @@ EOF
       > "$work/bots/$account.out" 2>&1 < /dev/null
   ) &
 }
-# The author's bound is the rating's (about half an hour at this pulse; the
-# lane itself waits two hours at most); the buyer waits for the author and then
-# flies, so its bound is the author's and forty minutes.
+# Each bot's bound sits above its lane's own: the author's lane waits ninety
+# minutes for a rating (about twenty-five at this pulse), so the author runs a
+# hundred at most; the buyer reads the counter for a hundred minutes at most and
+# then flies, so it runs a hundred and forty. A bound reached is a failure.
 bots_s="$(date +%s)"
 bot lathe "${AUTHOR_SECONDS:-6000}" --minds author --charter "$charter"
 author_pid=$!
+pids+=("$author_pid")
 bot tally "${BUYER_SECONDS:-8400}" --minds buyer --charter "$charter" --minds-site "$site"
 buyer_pid=$!
+pids+=("$buyer_pid")
 log "the author (lathe) and the buyer (tally) are playing; charter '$charter', site $site"
 author_status=0
 buyer_status=0
 wait "$author_pid" || author_status=$?
 log "the author ended (exit $author_status) after $(( $(date +%s) - bots_s ))s"
 if [ "$author_status" -ne 0 ]; then
-  # The buyer would read an empty counter for two hours: stop it now.
+  # The buyer would read an empty counter for a hundred minutes: stop it now.
   kill -TERM "$buyer_pid" 2> /dev/null || true
 fi
 wait "$buyer_pid" || buyer_status=$?

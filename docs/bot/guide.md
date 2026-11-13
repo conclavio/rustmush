@@ -1663,7 +1663,8 @@ from the Registry & Co-op Desk).
 
 The author:
 - pushes the bot's own source (`crates/mush-bot/src/mine/market_mind.rhai`) with `mind push`,
-  runs `mind check` over it and saves a revision, before the lane types a line;
+  runs `mind check` over it and saves a revision, before the lane types a line (its line
+  session is already open; each reply is a `minds-exec` record in the transcript);
 - enrols with the Co-op (the stake pays the 100cr filing fee);
 - reserves a charter (`@mind/file <mind>@<rev>=<charter>`), asks for the rating
   (`@mind/rate`), waits for `Registry work finished.`, and files with the same line again;
@@ -1684,8 +1685,10 @@ The buyer:
   launches the rig from the bay with `+tv/1 launch mind=filed:<licence> go`, reads `+tv/1`
   with the rig at its ramp, recovers it and sails home.
 
-A submitted step is done only on the engine's own `Done.` after the step's sentence; a
-refused or busy answer is typed again. Each role's success is its last read: the author's
+A submitted step is done only on a `Done.` that follows the step's own sentence, and is
+read back by the step after it; a refused or busy answer is typed again. The rating is
+waited for ninety minutes at most, so `[agent].max_seconds` must be above that for the
+author, and above a hundred minutes of reading the counter for the buyer. Each role's success is its last read: the author's
 row on the counter, the buyer's hull docked at Ceres. The report's `mine.market` block
 holds the sentences each step was answered with, the rating's start and end, and
 `rating_unasked_lines`: how many `Queued.` and `Done.` lines the Registry sent the author
