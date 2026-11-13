@@ -20,7 +20,10 @@ pub(crate) use commands::{
 };
 pub use field::mission_binding;
 pub(crate) use field_commands::{field_order, field_response};
-pub use field_orders::{EngageAt, FieldObjective, FieldOrders, FieldPayload, Lapse};
+pub use field_orders::{
+    Concentration, EngageAt, FieldObjective, FieldOrders, FieldPayload, GIVEN_KEPT, Given, Lapse,
+    concentrates,
+};
 pub use model::{Flight, FlightClose, FlightKey, OperationId, OperationRecord, Phase, UnitHead};
 pub use runtime::SortieHandles;
 pub use runtime::transport_action_ref;
@@ -30,6 +33,25 @@ pub(crate) use runtime::{
 pub(crate) use runtime::{availability_key, ctx_available, offer_available, require_available};
 pub use surface::SurfaceCrew;
 pub use work::{FieldStep, FieldWork};
+
+/// **The focus-fire order's usage** (doc 44 unit MW.14c).
+pub const CONCENTRATE_USAGE: &str =
+    "Use <slot|ALL> CONCENTRATE <contact>: one contact of your own scope, by its designator.";
+/// A `CONCENTRATE` naming a contact its leader has not identified (doc 44 unit MW.14c).
+pub const CONCENTRATE_UNIDENTIFIED: &str = "CONCENTRATE needs a contact you have identified: a provisional number is yours alone, and no other unit could find it.";
+/// A `CONCENTRATE` naming nothing in its leader's own scope, or given off a running field (doc
+/// 44 unit MW.14c).
+pub const CONCENTRATE_NO_CONTACT: &str =
+    "No such contact in your own scope. CONCENTRATE names a contact inside a running field.";
+/// A `CONCENTRATE` given an `EXPIRES` (doc 44 unit MW.14c).
+pub const CONCENTRATE_NO_EXPIRY: &str = "CONCENTRATE takes no EXPIRES: it ends when its contact is destroyed or lost, or when you order otherwise.";
+/// **`+sortie/orders`' head line over an NPC leader's orders** (doc 44 unit MW.14c).
+pub const NPC_ORDERS_HEAD: &str =
+    "Orders your NPC leader gave, oldest first (a reply shows once it has reached the leader):";
+/// **One order an NPC leader gave, in `+sortie/orders`** (doc 44 unit MW.14c): `{leader}` the
+/// NPC's name, `{slot}`, `{sequence}`, `{order}` as a leader types it, `{status}` `no reply
+/// confirmed` or the reply's word upper-cased and `received`.
+pub const NPC_ORDER: &str = "{leader} to slot {slot}, order {sequence}: {order}; {status}.";
 
 /// **`+sortie/orders`' head line** (`{term}` the command term; `{roster}`, `{revision}` the
 /// fence's other two numbers): the prefill a leader copies to issue an order. A player client

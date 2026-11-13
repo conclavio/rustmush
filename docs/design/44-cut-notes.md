@@ -2622,7 +2622,329 @@ as sent. The fifth is the missing damping above. The sixth was two doc comments.
 
 ## MW.14b
 
-Not built.
+Not built. **Deferred by the owner on 2026-11-13 (Q-44-49)**: the compiled commander is kept, and
+MW.14c below extends it.
+
+## MW.14c
+
+The compiled commander's gaps, and a focus-fire order (doc 44 §7.1, §5.13; Q-44-49, the owner's
+ruling of 2026-11-13: "lets defer the rhai, and fix the gaps with the hard-coded solution, and add
+a focus fire order"). No Rhai, no LLM, and nothing in `crates/mush-mind` moved: `MIND_ABI` is
+still `rhai=1.26.0;api=9;stock=3`. The kernel did not move either: `crates/tacsim/src/arena/` is
+untouched, and a `CONCENTRATE` reaches a hull as the `MindObjective::Engage { target }` an
+`ENGAGE` naming a contact already was.
+
+**Built.**
+
+- **The dwell** (`crates/tacsim/src/detachment/commander.rs`, `DWELL_S`, 30). A posture the
+  commander ordered less than thirty wall seconds ago is kept, whatever its sight says now. A
+  loss is exempt: the WITHDRAW is never delayed, and a roster ordered home is never turned
+  round. The rule's input gained what the roster's history records its NPC leader last ordered
+  and for how long (`Held`, `Named`). The host reads it from the orders the history keeps of
+  its NPC leaders (`sortie/commander.rs`, `remembered`; `FieldOrders::given`, below), each
+  stamped when it was admitted: a posture's spell began at the earliest order saying the same
+  since the last order that said another. That record is written in the transaction that
+  admits an order and nowhere else, and nothing new is kept in RAM, so a restart reads the
+  same and decides the same. A successor reads the posture of the commander it succeeds, so
+  it inherits the dwell. (The order book alone cannot say when a spell began: it holds one
+  order a slot, and an order of an earlier spell left on a hull the later orders never
+  reached made the posture look old. The second reader found it.)
+  **Wall time, read off IC stamps.** The history stamps an order in IC milliseconds; the host
+  divides the IC time since by the world's rate now. At 24:1 an IC-second dwell would be a
+  twenty-fourth as long, and a principal acts once a world second, so that would be no damping
+  (MW.14a's review found the same of the resend pacing). A change of rate inside a dwell
+  stretches or shortens that one dwell.
+- **The organiser reads their NPC commander's orders** (`sortie/field_orders.rs`, `Given`,
+  `GIVEN_KEPT`; `sortie/field_commands.rs`, `npc_orders`). The roster's history keeps the last
+  sixteen orders an NPC leader gave: the slot, the sequence, who gave it, what it said and
+  when. The
+  transport keeps a message's reference and not its words, and the book keeps one order a slot,
+  so before this a superseded order of an NPC's was nowhere a player could read.
+  `+sortie/orders` prints them after the reader's own, oldest first, one line an order inside
+  120 columns (`NPC_ORDER`: `Sana Okonkwo to slot 2, order 7: CONCENTRATE BK; WILCO received.`),
+  each with its answer once the reply has reached the leader who gave the order, the rule a
+  player's own outbox follows.
+  **Who may read them: the organiser and every player flying a slot on that roster**, which is
+  who could read `+sortie/orders` for the operation at all (`sortie/commands.rs`, `readable`).
+  The NPC is hired under the organiser's contract and leads their units. Anyone else is refused
+  the whole report, as before.
+- **A plan names its work point** (`crates/mush-tactics/src/detachment/planning.rs`,
+  `Plan::work_point`; `crates/tacsim/src/detachment/planning/commands.rs`, `+sortie/workpoint`).
+  `+sortie/workpoint <draft>:<revision>=<x>,<y>` names the field cell, `=none` clears it, and
+  `"work_point": [x, y]` in the plan's JSON does the same; `+sortie/plan` shows it in words. It
+  is an edit of the draft: the revision moves and declarations are made again. A cell is valid
+  below 512 on each axis (the widest site; a plan is made before its site is known). The
+  commander advances there when the cell is on the site the roster flew to, and to MW.14a's
+  default (six cells out from the ramp) when the plan names none or the cell is off the site.
+- **`CONCENTRATE`, the focus-fire order** (`FieldObjective::Concentrate`;
+  `crates/tacsim/src/field/orders.rs`, `concentrate`). `ORDER DT:… ALL CONCENTRATE BK`, or a
+  numbered slot. It is issued through `field_orders::Act::Issue` like every roster order: the
+  leader's authority and term, each unit's command right, the order book, the IC transport and
+  its jamming, the party's carrier relay. A player leader types it and the commander gives it
+  through the same act.
+- **The commander concentrates** (`commander.rs`, `Decision::concentrate`). While it holds it
+  names one contact for the roster and keeps to it until the contact is destroyed or out of
+  its sight, then names the next; a contact merely out of sight keeps its name for the dwell,
+  and a destroyed one is replaced at once. It names only a contact its own frame holds Hostile
+  (`field/orders.rs`, `hostile_contact`). It still marks nobody and sets no player's POSTURE,
+  so an NPC-led roster concentrates only on a party that fired on it or on a friend. **It
+  concentrates the hulls that carry something to fire** and leaves a mining rig on its HOLD
+  (`sortie/commander.rs`, `can_fire`, the unit's own record): an engagement would send a hull
+  with nothing to fire at the Hostile it was told to hold for, and a roster of prospectors is
+  led exactly as MW.14a led it. The posture goes out first, one slot a fire as before; a
+  `CONCENTRATE` that every hull it can reach still owes goes to all of them in one order, and
+  one that only some owe goes slot by slot.
+
+**What an `ENGAGE` naming a contact does today, and what `CONCENTRATE` adds.** Established in
+the tree before building (`arena/detachment.rs`, `apply_detachment_command`; `arena/intents.rs`,
+`rekey_objective`; `field/orders.rs`, `step`): `<slot> ENGAGE BK` carries the contact's row key
+in the leader's own scope. The host offers it to the kernel unconditionally. The kernel drops
+the hull's standing order, then re-keys the contact into the recipient's own classified rows.
+If the recipient holds it, the hull flies `Engage { target: Some(row) }` and answers WILCO. If
+it does not, the hull is left on `Engage { target: None }`, an engagement of any Hostile on
+doctrine, and answers NEGATIVE: its earlier order is gone. Either way the engagement stands
+until another order replaces it; nothing ends it when the contact dies. `ALL ENGAGE BK` is
+refused whole when any slot is unavailable. `CONCENTRATE` adds four things:
+
+1. **It reaches the hulls that can take it.** `ALL CONCENTRATE` is admitted for every hull the
+   leader holds a command right over that is available and on its field flight on the site,
+   and refused only when there is none. That is a new order target in the book
+   (`mush_tactics::detachment::OrderTarget::Able`), which the issue path admits for a
+   `CONCENTRATE` and nothing else; `ALL` is as strict as it was for every other order, and for
+   an `ENGAGE`.
+2. **A hull that does not hold the contact keeps the order it had.** Before the kernel is
+   offered anything, the host looks for the named contact on the recipient's own frame: a row
+   it has identified, under the designator the leader read, not read destroyed. An identified
+   contact's designator is its own callsign, the same on every scope that has identified it,
+   so this is the hull finding the contact in its own observation. Not there: NEGATIVE, the
+   kernel is offered nothing, and the earlier order goes on standing untouched.
+3. **A hull that holds it engages that contact** through the existing kernel path, and
+   answers WILCO once its own frame shows the engagement standing on a held row.
+4. **When the contact is destroyed or lost the hull goes back to its earlier order, by
+   itself.** The poll that delivers a `CONCENTRATE` records what stood on the slot
+   (`Concentration::before`) and reserves a sequence for the return above the order's own. Each
+   visit reads the recipient's own frame; once the row the engagement stands on reads destroyed
+   or is held no longer, the host offers the kernel the earlier order again under the reserved
+   sequence. It waits on no relay and is answered to nobody, like a lapsed order's stand (doc 45
+   unit AP.8). Through a second `CONCENTRATE` the hull goes back to what the first replaced. An
+   earlier order that had ended (completed, expired, refused) is nothing to go back to, and the
+   hull is left with no order; one that had lapsed with its leader is gone back to as the HOLD
+   its stand was. "The order it had" is the order the book had delivered to the hull: if that
+   order had not yet reached the kernel when the `CONCENTRATE` arrived (a damaged relay's
+   delay, a visit not yet made) and the hull declines the `CONCENTRATE`, the host offers it
+   under the return's sequence, through the relay it had still to pass.
+
+It hands nobody a contact and grants no permission: the doctrine still fires only on parties
+its own party holds Hostile. A leader may name only a contact they have identified; a
+provisional number is refused by name (`CONCENTRATE_UNIDENTIFIED`).
+
+**The absent-player rules.** A `CONCENTRATE` presses (`field/orders.rs`, `presses`), so one a
+player gave lapses when that player is gone exactly as an `ENGAGE` does (AP.8), and the hull
+takes the same stand. **The order under a `CONCENTRATE` lapses too** (`field_orders.rs`,
+`under_lapsing`, `Concentration::stand_down`): an `ENGAGE` or an `ADVANCE` a player gave, with a
+`CONCENTRATE` delivered over it, is an order the lapse scan could not see, and a hull that
+declined the `CONCENTRATE` or came back from it would have gone on pressing for a leader who
+had gone. In the write that finds that leader gone the record's earlier order becomes a HOLD
+(under the lapsed order's own HOLD FIRE) with a sequence of its own; a hull on the contact
+stays on it, and any other hull is offered the HOLD at once. It is a plain HOLD: it does not
+take the second half of AP.8's stand (answering a hit). A player's unit is never flown by a roster order, a `CONCENTRATE`
+included: the NPC walk executes orders for hired crew only, an absent player's slot is not
+available and the tolerant target leaves it out, and `arena::absent` was not touched.
+
+**The order word: `CONCENTRATE`. Flagged for the owner.** The owner asked for "a focus fire
+order". `FOCUS` was not used because `+focus` is the command that takes a console, and
+`ORDER … ALL FOCUS BK` beside `+focus #12/pilot` reads as the same thing. It is a word of its
+own and not a form of `ENGAGE` because what it does to a hull that cannot find the contact, and
+what it does when the contact dies, are different, and `ALL ENGAGE BK` already means the strict
+thing. Renaming the word is one match arm in `field_commands.rs`, one in `directive_text` and
+the help text; the stored variant is `concentrate`, which a rename would leave alone.
+
+**The plan's stored format. The one piece here that is expensive to reverse.** `Plan` gained
+`work_point: Option<(u16, u16)>`, written as `"work_point": [x, y]`. The key is optional on read
+and is not written when no point is named, so every plan stored before this unit loads, reads as
+naming none, re-encodes byte for byte, and keeps its material hash; a stored draft's `plan_hash`
+and every consent on it still match. A plan that names a point hashes differently, as any
+material edit does. The other two option keys of a plan are required on read; this one is not,
+which is what keeps older records loading. A reader older than this unit refuses a plan that
+names a point (`deny_unknown_fields`); there is no such reader to keep, the project being
+pre-launch. Two other stored records grew the same way, optional on read and absent when empty:
+the roster's message history gained `concentrating` and `given`, and `FieldObjective` gained
+the `concentrate` variant.
+
+**Defaults taken**, each provisional, with what it costs to change:
+
+| Default | Value | To change |
+|---|---|---|
+| The dwell | `DWELL_S` 30 wall seconds, for a posture and for a contact out of sight | one constant |
+| What the dwell exempts | a withdrawal after a loss; a new name once the named contact is destroyed | one arm each in `decide` and `target` |
+| Which contact | the nearest Hostile in the commander's own sight not read destroyed, the lower row key between two at one range | `target`, one function |
+| Orders kept for reading | `GIVEN_KEPT` 16, NPC leaders' only | one constant; a player leader's orders are not kept |
+| Who reads them | the organiser and the roster's players | `readable`, one function |
+| A work point's bound | below 512 on each axis | one constant, held equal to the widest site by a test |
+| A leader's contact | must be identified | one check in `concentrate_on` |
+| The tolerant target | `CONCENTRATE` only | one check in the issue path |
+| Who is concentrated | by the commander, hulls that carry something to fire; by a player leader, whoever they order | `can_fire`, one function |
+| An expiry | a `CONCENTRATE` takes no `EXPIRES` | one check at the parse and one at the issue |
+| The order word | `CONCENTRATE` | two match arms and the help |
+| The plan's format | an optional `work_point` key | **expensive**: stored plans, presets and accepted rosters carry it once written |
+
+"The Hostile that last fired on the roster" was the brief's example of a target rule. The
+commander's own frame does not say which contact fired, and the rule decides on that frame
+alone, so it could not be written without handing the commander the kernel's record. Nearest
+was taken instead.
+
+**Divergences.**
+
+- **A hull that lost the contact is not ordered onto it again** until the commander names
+  another, or the hull had answered NEGATIVE (which is re-sent at the resend guard's pace, as a
+  refused posture is). The book cannot tell the commander that a hull has gone back to its
+  earlier order, and the commander does not read another hull's frame.
+- **A commander in a hull that carries nothing to fire reads no contact destroyed.** It goes on
+  holding for a wreck until its own frame drops the plot (the sensor does not see wrecks, so
+  that is a few seconds; story 1 waits it out).
+- **A `CONCENTRATE` takes no `EXPIRES`** (`CONCENTRATE_NO_EXPIRY`). An expiry ends the
+  engagement in the kernel with nothing to take the hull back to its order.
+- **A successor names the commander's contact again**, once: a contact's row key is its
+  leader's own scope's, so the successor cannot read which contact the roster is on.
+- **An earlier `ENGAGE` naming a contact is gone back to from its own leader's unit**, in
+  whose scope the contact was named; if that unit has been lost the kernel refuses the return
+  and the hull stays on the engagement until it is ordered otherwise.
+- **Only inside a running field**, as MW.14a: on open ground an NPC leader gives nothing, and a
+  `CONCENTRATE` there is refused at issue (it names a contact of a field's cockpit).
+- **`ALL CONCENTRATE` includes the leader's own slot** when the leader holds the command right
+  over their own unit, as `ALL` does. To a player it is the advice every order is.
+
+**Tests.** In-source: the rule's dwell, its exemption and the named contact
+(`detachment::commander`, two tests beside MW.14a's two); the history's posture and when its
+spell began, a posture as a roster order, a named work point used only on its site
+(`detachment::sortie::commander`); a history written before the unit loading, what a
+delivered `CONCENTRATE` records, the lapsed order under one, the stand-down, the kept orders
+(`detachment::sortie::field_orders`, five tests); an NPC leader's line inside 120 columns
+(`detachment::sortie::field_commands`); a work point's cell (`detachment::planning::commands`);
+`CONCENTRATE` pressing (`field::orders`, AP.8's test extended); the tolerant target and the
+plan's format, old and new (`mush_tactics::detachment`, three tests); the sentences as the game
+prints them (`mush-bot`, `mine::lines`). Stories in `domain_field`
+(`crates/tacsim/tests/domain_field/field_mw14c.rs`), every field with three parties in it;
+times are conclav.dev's, each run in a batch of four:
+
+- `mw14c_a_posture_stands_for_the_dwell_and_a_loss_withdraws_at_once` (93 s). Two hired crew
+  under Okonkwo's command advance and reach the work point. The escort fires on the roster's
+  carrier: a Hostile is in her sight and, the advance being older than the dwell, she orders
+  HOLD at once. The intruder's player destroys the escort and her frame drops the contact:
+  second by second to the dwell's end she orders nothing, and then she orders the ADVANCE. The
+  intruder's player destroys the roster's other hull a few seconds into that dwell: the
+  WITHDRAW is ordered inside it. The organiser then reads her advance, her hold and her
+  withdrawal in `+sortie/orders`, each line inside 120 columns, with WILCO where the answer
+  reached her; the third party's player is refused the report.
+- `mw14c_a_plans_work_point_is_advanced_to` (34 s) and `…_at_512` (17 s). The organiser names
+  the work point with `+sortie/workpoint`, the plan shows it, the draft's revision moves, and
+  both hulls' ADVANCE is to that cell: the miner's unread pocket on Ahuna Flank, where a rig
+  drives for it, and `(262, 268)` on Urvara Reach, a cell no 256 site holds. **The plan written
+  before the unit** is MW.14a's acceptance, unchanged: `roster_rig::fly` drafts its plan with no
+  `work_point` key, and those two stories still advance to the default six cells off the ramp.
+- `mw14c_a_leaders_concentrate_puts_a_hull_that_holds_the_contact_on_it` (33 s). A captain
+  leads with Rook Adeyemi in an armed rig on HOLD, marks the intruder's party Hostile and
+  orders `ALL CONCENTRATE` on it with the crew's comms jammed: the order is in flight and does
+  not arrive, and the hull holds and fires nothing. The jam lifts: the hull stands on an
+  engagement of that contact and fires on it. The intruder is destroyed: the hull's own frame
+  shows its HOLD again, the delivered order is still the `CONCENTRATE` (nothing was sent to
+  bring it back), it fired on nothing else, and on HOLD it fires nothing.
+- `mw14c_a_hull_that_does_not_hold_the_contact_keeps_its_order` (27 s). The same roster with
+  the hired rig 67 cells from the intruder and 54 from its leader, past its own sight and past
+  the range a party shares contacts over. It answers NEGATIVE; its order row is the same HOLD
+  row byte for byte; the field's ledger holds no engagement commanded for it; it fires nothing.
+- `mw14c_the_order_under_a_concentrate_lapses_with_its_leader` (22 s). The same far hull on
+  its leader's ADVANCE declines a `CONCENTRATE` and drives on. The leader quits: the history
+  turns the order the hull goes back to into a HOLD under a sequence of its own, and the hull
+  holds. The kernel was offered no engagement for it and it fired nothing.
+- `mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired` (40 s). Two hired crew in
+  armed rigs, no player in a unit. The intruder fires on the roster's carrier; the escort,
+  nearer, never fires on the roster. The commander holds and names the intruder for both hulls
+  in one order (one sequence, the tolerant target); both fire on it, every round either fires
+  is at it, the nearest contact in her sight is not Hostile and is not the one she named, and
+  the organiser reads the order with both WILCOs.
+- `mw14c_an_absent_players_unit_is_sent_no_concentrate_and_does_not_fire_first` (30 s). A
+  captain leaves their armed rig on HOLD and quits; the plan's commander leads, is fired on,
+  and concentrates her own hull on the intruder. Every order she gave went to her own slot, and
+  the captain's rig, its mind's, in the field, with the Hostile in sight, fires nothing.
+- `mw14c_a_restart_with_the_npc_leading_gives_the_same_next_order` (22 s). The world is
+  stepped a second at a time to the second her first order is admitted (the ADVANCE to her own
+  hull), and the server restarts there. On the next boot the next order in the book is the
+  same ADVANCE to the other hull, next in sequence; her own is the order given before the
+  restart, with the same stamp.
+- `mw14c_the_same_run_gives_the_same_orders_twice` (46 s). The script to the commander's
+  `CONCENTRATE` on two fresh worlds delivers the same orders, with the same sequences, from
+  the same slot.
+
+MW.14a's four stories, MW.15's two, AP.4a's two and AP.8's five pass unchanged beside them.
+
+**What the stories stand in for**, beyond MW.14a's and AP.8's list: a hired NPC sits in an
+armed rig by a refit (no shipped command seats one, AP.8's gap); a hull is made fragile by a
+staff hand so a kill takes seconds; and where a dwell is measured the story steps the world's
+clock itself, the arena running in real time beside it.
+
+**Mutations.** Each was applied over the unit in a second clone on conclav.dev and the test
+named for it run; every one failed that test.
+
+| Mutation | Test it fails |
+|---|---|
+| no dwell (a posture may change at once) | story 1: "5 s after the HOLD, inside the dwell, the posture is not changed" |
+| `+sortie/orders` shows a stranger the report | story 1: "a stranger is refused the roster's orders" |
+| the plan's work point ignored | story 2, at 256 and at 512 |
+| a `CONCENTRATE` offered to a hull that does not hold the contact | story 4: "its HOLD goes on standing, untouched" |
+| the earlier order not gone back to | story 3: "once the contact is destroyed the hull stands on its earlier order" |
+| the commander reads and names contacts its book does not hold Hostile | story 5: the roster never advances, holding for a contact that is not Hostile |
+| the commander orders an absent player's unit, and the issue admits it | story 6: "every order the commander gave went to her own slot" |
+| an order in flight remembered only in RAM | story 7: "the same next order as the book owed before the restart" |
+| the order under a `CONCENTRATE` does not lapse | "the order under the CONCENTRATE lapses with its leader and the hull holds" |
+| unarmed hulls concentrated | story 1: a `CONCENTRATE` reaches two mining rigs inside the dwell |
+| a `CONCENTRATE` does not press | `field::orders`, AP.8's pressing test |
+| the plan's new key required on read | `mush_tactics`, the older-plan test |
+| `ALL` made tolerant for every order | `mush_tactics`, the atomic-`ALL` test and the tolerant-target test |
+
+**An absent player's unit firing first** could not be produced by any one edit in this unit:
+the NPC walk never executes a roster order for a player's unit, the kernel takes no objective
+for a unit flown for an absent player, and the mind is shown as hostile only what has fired on
+it. Story 6 pins the outcome and that no order reaches the unit; the mutation shown for it is
+the nearest one this unit owns.
+
+**Not built.** MW.14b. A `CONCENTRATE` on open ground. Sub-leaders (Q-44-21). A commander's
+SCREEN, SUPPORT or MINE. A player-held jammer.
+
+**Not pinned by a story.** A Hostile that leaves the commander's sight by driving out of it
+(the story's Hostile is destroyed, and the commander's frame drops the wreck). The name kept
+for the dwell while a live contact is out of sight (the rule's unit test has it). A declined
+`CONCENTRATE` over an order that had not reached the kernel (the second reader's first point:
+the executor's path has no test of its own). The order under a `CONCENTRATE` lapsing while
+the hull is on the contact, or after it came back from it (the story flies the declined
+case). The tolerant target refused for an order that is
+not a `CONCENTRATE` (no typed line can ask for it; the check is the issue path's own). A
+successor inheriting the dwell (unit test only). A `CONCENTRATE` chained over another in a
+field. A work point named on a preset.
+
+**Reviewed.** A second reader was given the engine diff and the requirements, not the
+conclusions, and reported five points, all checked in the tree and all fixed before the PR:
+
+1. a declined `CONCENTRATE` dropped an earlier order that the book had delivered and the
+   kernel had not yet been offered (a relay's delay): the hull kept advancing while the book
+   said HOLD. The executor now offers that order under the return's sequence;
+2. the lapse scan could not see the order under a `CONCENTRATE`, so a hull that declined one,
+   or came back from one, went on pressing for a leader who had gone. `under_lapsing` and the
+   stand-down are the fix, and a story flies the declined case;
+3. the dwell was read off the book's standing orders, and an order of an earlier spell left on
+   an unreachable hull made the posture look old. It is now read from the kept orders, which
+   are stamped and in order;
+4. a successor started with no dwell. It now reads the posture of the commander it succeeds;
+5. a `CONCENTRATE` given an expiry ended in the kernel with nothing to take the hull back.
+   It takes no `EXPIRES` now.
+
+It checked and found sound: the sequence fencing of the return against earlier and later
+orders and against a lapse's reserved numbers; every state `validate` can be handed; the
+tolerant target's limits; who may read an NPC leader's orders and when an answer shows; the
+plan's bytes and hash for an older plan; that no contact knowledge passes to a recipient.
+Building the stories then found one more thing the rule needed: a commander concentrating a
+roster of mining rigs would have sent hulls with nothing to fire at the Hostile it was holding
+for, so it concentrates armed hulls only.
 
 ## MW.15
 

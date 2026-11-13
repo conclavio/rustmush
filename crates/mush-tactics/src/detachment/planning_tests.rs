@@ -27,6 +27,7 @@ fn plan() -> Plan {
         )],
         npc_commander: None,
         financial_terms: None,
+        work_point: None,
     }
 }
 fn book_with_draft() -> (PlanningBook, PlanId) {
@@ -451,6 +452,72 @@ fn material_hash_is_canonical_and_excludes_record_identity_and_declarations() {
     let (book, id) = book_with_draft();
     let original_hash = book.drafts[&id].plan_hash.clone();
     assert_eq!(ready(book, id).drafts[&id].plan_hash, original_hash);
+}
+
+/// **Doc 44 unit MW.14c: a plan written before the work point existed still loads**, reads as
+/// naming none, and is the same plan: the text below is a stored plan exactly as it was written
+/// before the unit. It re-encodes to the same value, so its material hash is the hash of that
+/// value and every stored draft's `plan_hash` and consent still match; a whole planning book
+/// holding such a draft restores.
+#[test]
+fn mw14c_a_plan_written_before_the_work_point_loads_as_naming_none() {
+    let stored = r#"{"carrier":20,"slots":[{"slot":1,"unit":30,"controller":{"kind":"npc","character":40},"role":"scout","mind":null}],"npc_commander":40,"financial_terms":null}"#;
+    let plan: Plan = serde_json::from_str(stored).expect("an older plan loads");
+    assert_eq!(plan.work_point, None, "it names no work point");
+    let raw: serde_json::Value = serde_json::from_str(stored).expect("the stored text");
+    assert_eq!(
+        serde_json::to_value(&plan).expect("encode"),
+        raw,
+        "it re-encodes to what was stored"
+    );
+    let stored_hash = mush_core::CanonicalHash::for_canonical_value(
+        "tactics.detachment.plan.v1",
+        1,
+        &raw,
+        MAX_PLAN_BYTES * 2,
+    )
+    .expect("the stored value hashes")
+    .to_hex();
+    assert_eq!(
+        plan.material_hash().expect("hash").as_str(),
+        stored_hash,
+        "its hash is the hash of what was stored"
+    );
+    // A book written before the unit: no key of its plans is the work point's.
+    let (book, id) = book_with_draft();
+    let text = serde_json::to_string(&book).expect("book");
+    assert!(!text.contains("work_point"), "{text}");
+    let restored: PlanningBook = serde_json::from_str(&text).expect("an older book restores");
+    assert_eq!(restored.drafts[&id].plan.work_point, None);
+}
+
+/// **Doc 44 unit MW.14c: a plan may name its work point**, a field cell of the widest site:
+/// it round-trips, it is material (naming one changes the plan's hash, so consents are asked
+/// again), and a cell off the widest site is refused.
+#[test]
+fn mw14c_a_plan_names_a_work_point_inside_the_widest_site() {
+    let bare = plan();
+    let mut named = plan();
+    named.work_point = Some((140, 118));
+    named.validate().expect("a cell of a 256 site");
+    let text = serde_json::to_string(&named).expect("encode");
+    assert!(text.contains(r#""work_point":[140,118]"#), "{text}");
+    let decoded: Plan = serde_json::from_str(&text).expect("decode");
+    assert_eq!(decoded, named);
+    assert_ne!(
+        named.material_hash().expect("hash"),
+        bare.material_hash().expect("hash"),
+        "the work point is material"
+    );
+    named.work_point = Some((511, 511));
+    named.validate().expect("the last cell of a 512 site");
+    for off in [(512, 0), (0, 512), (u16::MAX, u16::MAX)] {
+        named.work_point = Some(off);
+        assert!(named.validate().is_err(), "{off:?} is off every site");
+        let mut value = serde_json::to_value(&bare).expect("encode");
+        value["work_point"] = serde_json::json!([off.0, off.1]);
+        assert!(serde_json::from_value::<Plan>(value).is_err());
+    }
 }
 
 #[test]

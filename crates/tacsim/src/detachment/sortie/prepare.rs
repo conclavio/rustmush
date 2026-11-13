@@ -1292,6 +1292,31 @@ fn message(
             if let Directive::Objective(payload) = directive {
                 payload.validate(&roster, field_side(world, read, h, &roster))?;
             }
+            // Doc 44 unit MW.14c: the tolerant target is a CONCENTRATE's and no other
+            // order's. It reaches every hull that can take the order now: one the issuer
+            // holds a command right over, available, and on its field flight on the site. An
+            // `ALL` stays refused whole when any hull cannot.
+            let tolerant = *target == mush_tactics::detachment::OrderTarget::Able;
+            if tolerant && !field_orders::concentrates(directive) {
+                return Err("Only a CONCENTRATE goes to whoever can take it.".into());
+            }
+            // It ends with its contact and not with a clock: an expiry would end the
+            // engagement in the kernel with nothing to take the hull back to its order.
+            if field_orders::concentrates(directive) && expires_at_ms.is_some() {
+                return Err(super::CONCENTRATE_NO_EXPIRY.into());
+            }
+            let mut afield = std::collections::BTreeSet::new();
+            if tolerant {
+                for member in roster.members() {
+                    if current(read, h, member.unit).is_ok_and(|(_, flight)| {
+                        membership(&old, &flight).is_ok()
+                            && flight.phase == Phase::Field
+                            && facts::on_site(world, &flight)
+                    }) {
+                        afield.insert(member.slot);
+                    }
+                }
+            }
             let issued = book
                 .issue(
                     &roster,
@@ -1304,9 +1329,25 @@ fn message(
                         directive: directive.clone(),
                         expires_at_ms: *expires_at_ms,
                     },
-                    |m| allowed(actor, m.unit) && roster.member_available(m.slot),
+                    |m| {
+                        allowed(actor, m.unit)
+                            && roster.member_available(m.slot)
+                            && (!tolerant || afield.contains(&m.slot))
+                    },
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| match e {
+                    mush_tactics::detachment::OrderError::EmptyTarget if tolerant => {
+                        "No unit of this detachment can take that order now.".to_owned()
+                    }
+                    other => other.to_string(),
+                })?;
+            // Doc 44 unit MW.14c: what an NPC leader orders is kept for its organiser and its
+            // players to read.
+            if crate::field::orders::is_npc(world, actor) {
+                for slot in &issued.recipients {
+                    orders.note_given((issued.sequence, *slot), actor, directive, now);
+                }
+            }
             let mut messages = Vec::new();
             for slot in issued.recipients {
                 let order = book.pending(slot).ok_or("Admitted message unavailable.")?;
@@ -1430,10 +1471,13 @@ fn message(
                         continue;
                     }
                 }
+                let previous = book.delivered(member.slot).cloned();
                 book.deliver(&roster, member.slot, pending.sequence, now, |m| {
                     allowed(pending.issuer, m.unit)
                 })
                 .map_err(|e| e.to_string())?;
+                // Doc 44 unit MW.14c: a CONCENTRATE records what its hull goes back to.
+                orders.note_delivery(&mut book, member.slot, previous, now)?;
                 orders.received.insert(member.slot, envelope.id());
                 orders.outbound.remove(&member.slot);
                 orders.replies.remove(&member.slot);
@@ -1487,6 +1531,7 @@ fn message(
     }
     // A lapse belongs to the delivered order it names: one this message replaced goes with it.
     orders.prune_lapsed(&book);
+    orders.prune_concentrating(&book);
     orders.book = book.checkpoint();
     let mut next = old.clone();
     next.command = Some(Box::new(roster.checkpoint()));

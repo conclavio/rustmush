@@ -18,6 +18,7 @@ fn plan(player: ObjId) -> Result<Plan, Box<dyn std::error::Error>> {
         }],
         npc_commander: None,
         financial_terms: None,
+        work_point: None,
     })
 }
 

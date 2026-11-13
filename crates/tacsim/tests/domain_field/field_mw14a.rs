@@ -165,7 +165,7 @@ fn cell_of(rig: &Rig, unit: ObjId) -> Option<(u16, u16)> {
 /// **The cell the roster's carrier stands on in the field**, as `who`'s own frame holds it: the
 /// contact of its own party that is none of the roster's `rigs`. Several hulls settle on one pad
 /// and the field stands each on a cell of its own, so the carrier is named by its exact cell.
-fn carrier_cell(rig: &Rig, who: ObjId, rigs: &[ObjId]) -> Option<(u16, u16)> {
+pub(crate) fn carrier_cell(rig: &Rig, who: ObjId, rigs: &[ObjId]) -> Option<(u16, u16)> {
     let own: Vec<(u16, u16)> = rigs
         .iter()
         .filter_map(|operator| frame(rig, *operator).and_then(|frame| frame.cell))

@@ -22,7 +22,36 @@ pub const SWITCHES: &[&str] = &[
     "accept",
     "ready",
     "decline",
+    "workpoint",
 ];
+/// **`+sortie/workpoint`'s usage** (doc 44 unit MW.14c).
+pub const WORK_POINT_USAGE: &str = "Use +sortie/workpoint <draft>:<revision>=<x>,<y> to name the cell an NPC commander advances to, or =none.";
+/// **A draft's work point, on `+sortie/plan`** (doc 44 unit MW.14c): `{x}`, `{y}` the cell.
+pub const WORK_POINT_NAMED: &str = "Work point: cell {x},{y}. An NPC commander advances the detachment there if the cell is on the site.";
+/// **A draft that names no work point, on `+sortie/plan`** (doc 44 unit MW.14c).
+pub const WORK_POINT_NONE: &str = "Work point: none named. An NPC commander advances to a default, six cells out from the carrier's ramp.";
+/// A work point off every site (doc 44 unit MW.14c).
+pub const WORK_POINT_OFF: &str =
+    "A work point is a field cell x,y, each from 0 to 511 (a 256-cell site takes 0 to 255).";
+
+/// **The cell a `+sortie/workpoint` names** (doc 44 unit MW.14c): `x,y` inside the widest
+/// site, or `none`.
+fn work_point(text: &str) -> Result<Option<(u16, u16)>, CmdError> {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let cell = |word: &str| {
+        word.trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|n| *n < mush_tactics::detachment::planning::MAX_WORK_POINT_CELLS)
+    };
+    text.split_once(',')
+        .and_then(|(x, y)| Some((cell(x)?, cell(y)?)))
+        .map(Some)
+        .ok_or_else(|| CmdError::msg(WORK_POINT_OFF))
+}
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const UNAVAILABLE: &str = "That plan or selection is unavailable. Read +sortie/plans or +sortie/invitations for current commands.";
 
@@ -107,6 +136,16 @@ fn show(ctx: &mut Ctx<'_>, draft: &Draft) -> Result<(), CmdError> {
             serde_json::to_string(&draft.consents).map_err(|_| fail())?
         ),
     );
+    // Doc 44 unit MW.14c: the plan's work point, in words.
+    line(
+        ctx,
+        match draft.plan.work_point {
+            Some((x, y)) => WORK_POINT_NAMED
+                .replace("{x}", &x.to_string())
+                .replace("{y}", &y.to_string()),
+            None => WORK_POINT_NONE.to_owned(),
+        },
+    );
     if draft.organizer == ctx.actor {
         line(
             ctx,
@@ -118,6 +157,13 @@ fn show(ctx: &mut Ctx<'_>, draft: &Draft) -> Result<(), CmdError> {
         line(
             ctx,
             format!("Discard: +sortie/discard {}:{}", draft.id.0, draft.revision),
+        );
+        line(
+            ctx,
+            format!(
+                "Work point: +sortie/workpoint {}:{}=<x>,<y> (or =none)",
+                draft.id.0, draft.revision
+            ),
         );
     }
     if draft.plan.slots.iter().any(|slot| {
@@ -227,6 +273,33 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             expected_revision,
             plan: plan(value.trim())?,
         }
+    } else if ctx.switches.has("workpoint") {
+        // Doc 44 unit MW.14c: the organiser names the plan's work point. It is an edit of the
+        // draft like any other: the revision moves and every declaration is asked again.
+        let (fence, value) = raw
+            .split_once('=')
+            .ok_or_else(|| CmdError::msg(WORK_POINT_USAGE))?;
+        let (id, expected_revision) =
+            revision(fence.trim()).map_err(|_| CmdError::msg(WORK_POINT_USAGE))?;
+        let named = work_point(value)?;
+        let ReadResponse::Draft(draft) = super::read(
+            ctx,
+            ReadRequest::Draft {
+                organizer: ctx.actor,
+                id,
+            },
+        )
+        .map_err(|_| fail())?
+        else {
+            return Err(fail());
+        };
+        let mut plan = draft.plan;
+        plan.work_point = named;
+        PlanningOperation::EditDraft {
+            id,
+            expected_revision,
+            plan,
+        }
     } else if ctx.switches.has("copy") || ctx.switches.has("save") {
         let (fence, name) = raw.split_once('=').ok_or_else(fail)?;
         let (id, expected_revision) = revision(fence.trim())?;
@@ -307,6 +380,25 @@ mod tests {
             "2:3:4:short".to_owned(),
         ] {
             assert!(consent_fence(&invalid).is_err(), "{invalid}");
+        }
+    }
+
+    /// **Doc 44 unit MW.14c**: a work point is `x,y` inside the widest site, or `none`.
+    #[test]
+    fn mw14c_a_work_point_is_a_cell_of_the_widest_site_or_none() {
+        assert_eq!(work_point("140,118").expect("a cell"), Some((140, 118)));
+        assert_eq!(work_point(" 0 , 511 ").expect("a cell"), Some((0, 511)));
+        assert_eq!(work_point("NONE").expect("none"), None);
+        for invalid in ["", "140", "140,", "512,0", "0,512", "-1,4", "a,b", "1,2,3"] {
+            assert!(work_point(invalid).is_err(), "{invalid}");
+        }
+        for line in [
+            WORK_POINT_USAGE,
+            WORK_POINT_NAMED,
+            WORK_POINT_NONE,
+            WORK_POINT_OFF,
+        ] {
+            assert!(line.chars().count() <= 120, "{line}");
         }
     }
 

@@ -47,6 +47,13 @@
 //! recipient then does: it stops where it is and fires
 //! nothing, and once its own hull is hit it answers from where it stands. A `HOLD FIRE` the
 //! lapsed order carried is kept. A new leader's order replaces the stand like any other.
+//!
+//! **Concentrating on one contact** (doc 44 unit MW.14c; the focus-fire order). A `CONCENTRATE`
+//! is an `ENGAGE` naming a contact, with three differences, all in [`concentrate`]: a hull
+//! that does not hold the named contact itself is never offered the order and keeps the one it
+//! had; a hull that takes it engages that contact; and when its own frame shows the contact
+//! destroyed, or holds it no longer, the hull goes back to the order it had before. It presses
+//! ([`presses`]), so it lapses with a leader who is gone exactly as an `ENGAGE` does.
 
 use std::collections::BTreeMap;
 
@@ -192,10 +199,11 @@ fn own_frame(w: &World, unit: ObjId, operator: ObjId) -> Option<&crate::arena::s
     (cockpit.match_id == task && cockpit.frame.unit == unit).then_some(&cockpit.frame)
 }
 
-/// **What a commander's own frame holds** (doc 44 unit MW.14a): the live contacts its party's
-/// book holds Hostile, as `operator`'s seat in `unit` last saw them. The compiled commander
-/// decides on this and on nothing the kernel knows that its hull has not seen. `None` until its
-/// frame has arrived.
+/// **What a commander's own frame holds** (doc 44 units MW.14a and MW.14c): the contacts its
+/// party's book holds Hostile, as `operator`'s seat in `unit` last saw them, each with its row
+/// key, how far off its plot is and whether the hull reads it destroyed. The compiled
+/// commander decides on this and on nothing the kernel knows that its hull has not seen. `None`
+/// until its frame has arrived.
 #[must_use]
 pub(crate) fn sight(
     w: &World,
@@ -206,14 +214,59 @@ pub(crate) fn sight(
     let hostiles = frame
         .contacts
         .iter()
-        .filter(|contact| {
-            contact.relation == crate::arena::party::Relation::Hostile
-                && contact.reads_dead != Some(true)
+        .filter(|contact| contact.relation == crate::arena::party::Relation::Hostile)
+        .map(|contact| crate::detachment::commander::Hostile {
+            key: contact.id.0,
+            range_cm: contact.range_cm,
+            destroyed: contact.reads_dead == Some(true),
         })
-        .count();
-    Some(crate::detachment::commander::Sight {
-        hostiles: u16::try_from(hostiles).unwrap_or(u16::MAX),
+        .collect();
+    Some(crate::detachment::commander::Sight { hostiles })
+}
+
+/// **The contact a commander names, as a `CONCENTRATE`** (doc 44 unit MW.14c): the row `key` of
+/// `operator`'s own frame in `unit`, when that frame holds it Hostile. The commander orders a
+/// roster onto a contact of a party its book already holds Hostile and onto nothing else: it
+/// marks nobody.
+#[must_use]
+pub(crate) fn hostile_contact(
+    w: &World,
+    unit: ObjId,
+    operator: ObjId,
+    key: u64,
+) -> Option<FieldObjective> {
+    let site = super::field_of_unit(w, unit)?;
+    let ordinal = ordinal(w, &site)?;
+    let contact = own_frame(w, unit, operator)?
+        .contacts
+        .iter()
+        .find(|contact| {
+            contact.id.0 == key && contact.relation == crate::arena::party::Relation::Hostile
+        })?;
+    Some(FieldObjective::Concentrate {
+        ordinal,
+        id: key,
+        designator: SmolStr::new(contact.designator.to_string()),
     })
+}
+
+/// **Whether `leader` has identified the contact `id` of their own cockpit in `unit`** (doc 44
+/// unit MW.14c): the row is classified, so its designator is the contact's own callsign and
+/// reads the same on every scope that has identified it.
+#[must_use]
+pub(crate) fn identified(w: &World, leader: ObjId, unit: ObjId, id: u64) -> bool {
+    w.module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(leader))
+        .filter(|cockpit| cockpit.frame.unit == unit)
+        .is_some_and(|cockpit| {
+            cockpit.frame.contacts.iter().any(|contact| {
+                contact.id.0 == id
+                    && matches!(
+                        contact.class,
+                        crate::arena::state::Classification::Classified { .. }
+                    )
+            })
+        })
 }
 
 /// **Whether `unit` is lost in the field it stands in** (doc 44 unit MW.14a): its operator's own
@@ -311,15 +364,18 @@ pub(crate) fn gone_from_field(w: &World, unit: ObjId, character: ObjId) -> bool 
         || super::absent::homebound(w, unit)
 }
 
-/// **Whether an order presses**: an `ENGAGE` or an `ADVANCE`, the two orders that carry an
-/// attack forward (Q-45-13). A `HOLD`, a `SCREEN`, a `SUPPORT`, a `WITHDRAW`, a mining run and a
-/// release do not, and stand whoever is away.
+/// **Whether an order presses**: an `ENGAGE`, a `CONCENTRATE` or an `ADVANCE`, the orders that
+/// carry an attack forward (Q-45-13; a `CONCENTRATE` is an `ENGAGE` for this rule, doc 44 unit
+/// MW.14c). A `HOLD`, a `SCREEN`, a `SUPPORT`, a `WITHDRAW`, a mining run and a release do not,
+/// and stand whoever is away.
 #[must_use]
 pub(crate) const fn presses(directive: &Directive<FieldPayload>) -> bool {
     matches!(
         directive,
         Directive::Objective(FieldPayload {
-            objective: FieldObjective::Engage { .. } | FieldObjective::Advance { .. },
+            objective: FieldObjective::Engage { .. }
+                | FieldObjective::Concentrate { .. }
+                | FieldObjective::Advance { .. },
             ..
         })
     )
@@ -679,10 +735,19 @@ fn objective(
         } if *ordinal == live.field.ordinal => Objective::Engage {
             target_hint: Some(ContactId(*id)),
         },
+        // Doc 44 unit MW.14c: a CONCENTRATE is an ENGAGE on the contact it names, re-keyed by
+        // the kernel into the recipient's own observation. [`concentrate`] decides whether it
+        // is offered at all.
+        FieldObjective::Concentrate { ordinal, id, .. } if *ordinal == live.field.ordinal => {
+            Objective::Engage {
+                target_hint: Some(ContactId(*id)),
+            }
+        }
         // A campaign contact, a presence row or another field's contact names nothing in this
         // field's observation; a mining run is not a field's work; a posture is the unit's
         // own standing word and no objective (doc 45 unit AP.4a).
         FieldObjective::Engage { .. }
+        | FieldObjective::Concentrate { .. }
         | FieldObjective::Mine { .. }
         | FieldObjective::Posture { .. } => return Err(()),
     })
@@ -815,6 +880,312 @@ pub(crate) fn step(
     })
 }
 
+/// **Where a hull under a `CONCENTRATE` stands**, off its own frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Concentrating {
+    /// Neither the order nor its return stands on the hull's order row.
+    Not,
+    /// The order stands and the hull's own frame holds the contact, not read destroyed.
+    On,
+    /// The order stands and the contact is destroyed, or the hull holds it no longer.
+    Over,
+    /// The return stands: the hull is back on the order it had before.
+    Returned,
+}
+
+/// **[`concentrate`]'s reading of the recipient's own frame**: which of the order (`taken`)
+/// and its return (`returned`) stands on the hull's order row, and, while the order stands,
+/// whether the row the kernel re-keyed its contact to is still held and not read destroyed.
+fn concentrating(
+    frame: &crate::arena::step::Frame,
+    (taken, returned): (&str, &str),
+) -> Concentrating {
+    let Some(row) = frame.order.as_ref() else {
+        return Concentrating::Not;
+    };
+    match row.identity.as_deref() {
+        Some(identity) if identity == returned => Concentrating::Returned,
+        Some(identity) if identity == taken => {
+            let held = match row.objective {
+                MindObjective::Engage { target } => target,
+                _ => None,
+            }
+            .and_then(|id| frame.contacts.iter().find(|contact| contact.id == id))
+            .is_some_and(|contact| contact.reads_dead != Some(true));
+            if held {
+                Concentrating::On
+            } else {
+                Concentrating::Over
+            }
+        }
+        _ => Concentrating::Not,
+    }
+}
+
+/// **Whether the order admitted under `sequence` stands on `unit`'s order row**, as its
+/// operator's own frame shows it.
+#[must_use]
+pub(crate) fn on_order(
+    w: &World,
+    (unit, operator): (ObjId, ObjId),
+    roster: &DetachmentRoster,
+    sequence: u64,
+) -> bool {
+    own_frame(w, unit, operator)
+        .and_then(|frame| frame.order.as_ref())
+        .and_then(|row| row.identity.as_deref())
+        == Some(identity(roster, sequence).as_str())
+}
+
+/// **Whether a hull's own frame holds the contact a `CONCENTRATE` names** (doc 44 unit
+/// MW.14c): a row it has identified, under the designator the leader read, that it does not
+/// read destroyed. An identified contact's designator is the contact's own callsign, the same
+/// on every scope that has identified it, so this is the hull finding the named contact in
+/// its own observation, as a pilot told a callsign over the comms would. The order hands it
+/// nothing: a hull that holds no such row is not on the contact, whatever its leader sees.
+fn holds_named(frame: &crate::arena::step::Frame, designator: &str) -> bool {
+    frame.contacts.iter().any(|contact| {
+        matches!(
+            contact.class,
+            crate::arena::state::Classification::Classified { .. }
+        ) && contact.reads_dead != Some(true)
+            && contact
+                .designator
+                .to_string()
+                .eq_ignore_ascii_case(designator)
+    })
+}
+
+/// **One NPC unit's delivered `CONCENTRATE`, in the field on `site`** (doc 44 unit MW.14c; the
+/// focus-fire order). `record` is what the roster's history recorded when the order was
+/// delivered (`crate::detachment::sortie::Concentration`): the order the hull goes back to,
+/// and the sequence reserved for that return.
+///
+/// 1. **A hull that does not hold the contact keeps the order it had.** Before anything
+///    reaches the kernel the host looks for the named contact on the recipient's own frame
+///    ([`holds_named`]). Not there: the answer is NEGATIVE and the kernel is offered no
+///    engagement. (An `ENGAGE` naming a contact the hull cannot resolve replaces its order
+///    with an engagement on doctrine, and then answers NEGATIVE.) "The order it had" is the
+///    order the roster's book had delivered to it: if that order had not yet reached the
+///    kernel when the `CONCENTRATE` arrived (a relay's delay, a visit not yet made), it is
+///    offered now under the return's sequence, through the relay it had still to pass, so a
+///    declined `CONCENTRATE` never costs a hull the order under it.
+/// 2. **A hull that holds it concentrates on it.** The order is offered to the kernel as an
+///    `ENGAGE` on that contact, from the leader's own unit, through the party's carrier relay
+///    as any order is ([`relay_passes`]); the kernel re-keys the contact into the recipient's
+///    own classified rows, and the mind flies `MindObjective::Engage` on that row. Once the
+///    recipient's frame shows it standing on a held row the answer is WILCO. If the kernel
+///    found no row after all (the contact was lost between the two looks), the answer is
+///    NEGATIVE and the hull returns as in 3.
+/// 3. **When the contact is destroyed or lost, the hull returns to its earlier order.** Each
+///    visit reads the recipient's own frame; once the row the order stands on reads destroyed,
+///    or is held no longer, the host offers the kernel the earlier order again under the
+///    reserved sequence (a cancellation when nothing stood before). The return is the crew's
+///    own act, as a lapsed order's stand is ([`stand`]): it waits on no relay and is answered
+///    to nobody, and it is issued from the recipient's own unit, so it does not hang on a
+///    leader whose hull has since been lost (an earlier `ENGAGE` naming a contact keeps its
+///    own leader's unit, in whose scope that contact was named).
+/// 4. **An earlier order whose leader has gone is not gone back to.** When the order under a
+///    `CONCENTRATE` lapses with its leader's absence the history turns it into a `HOLD` and
+///    reserves a later sequence (`Concentration::stand`): a hull that is on the contact stays
+///    on it, and any other hull is offered that `HOLD` at once, whatever it had gone back to.
+///
+/// The host decides on the recipient's own frame and on nothing the kernel knows beyond it,
+/// and keeps nothing but the pacing of what it has offered ([`Offered`]): after a restart the
+/// frame says where the hull stands, and an offer made twice is refused by the kernel's fence.
+pub(crate) fn concentrate(
+    ctx: &mut Ctx<'_>,
+    site: &CanonicalId,
+    (unit, operator): (ObjId, ObjId),
+    roster: &DetachmentRoster,
+    delivered: &DeliveredOrder<FieldPayload>,
+    record: &crate::detachment::sortie::Concentration,
+) -> Step {
+    let Some((task, live)) = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.hosted(site))
+        .map(|hosted| (hosted.task, hosted.live.clone()))
+    else {
+        return Step::Idle;
+    };
+    let Some(party) = live.party_of(unit) else {
+        return Step::Idle;
+    };
+    let order = &delivered.order;
+    let Directive::Objective(payload) = &order.directive else {
+        return Step::Idle;
+    };
+    let FieldObjective::Concentrate { designator, .. } = &payload.objective else {
+        return Step::Idle;
+    };
+    let unanswered = delivered.acknowledgement.is_none();
+    // A contact of another field names nothing here.
+    let Ok(engage) = objective(payload, roster, &live, unit) else {
+        return if unanswered {
+            Step::Reply(Response::Negative)
+        } else {
+            Step::Idle
+        };
+    };
+    let before = record.before.as_deref();
+    let back = record.stand.unwrap_or(record.resume);
+    let Some((stands, holds, earlier_stood)) = own_frame(ctx.w, unit, operator).map(|frame| {
+        let row = frame.order.as_ref().and_then(|row| row.identity.as_deref());
+        (
+            concentrating(
+                frame,
+                (
+                    identity(roster, order.sequence).as_str(),
+                    identity(roster, back).as_str(),
+                ),
+            ),
+            holds_named(frame, designator),
+            before.is_some_and(|earlier| row == Some(identity(roster, earlier.sequence).as_str())),
+        )
+    }) else {
+        return Step::Waiting;
+    };
+    let fence = epoch(roster);
+    let authority = DetachmentAuthority {
+        detachment: roster.id().0,
+        revision: roster.revision(),
+        term: roster.term(),
+    };
+    let control = DetachmentControl {
+        unit,
+        epoch: fence,
+        authority: Some(authority),
+    };
+    let squad = crate::deliberation::SquadId {
+        team: party,
+        index: 1,
+    };
+    let offered = ctx
+        .w
+        .module_state::<Offered>()
+        .and_then(|offered| offered.0.get(&unit).copied());
+    let now = ctx.w.now();
+    // Whether the hull is owed its return: the contact is over; or the order under the
+    // CONCENTRATE lapsed with its leader (the HOLD the history left is owed whatever the hull
+    // went back to); or the hull declined and the order under it never reached the kernel.
+    let (owed, through_relay) = match stands {
+        Concentrating::Returned | Concentrating::On => (false, false),
+        Concentrating::Over => (!unanswered, false),
+        Concentrating::Not if unanswered => (false, false),
+        Concentrating::Not if record.stand.is_some() => (true, false),
+        Concentrating::Not => (before.is_some() && !earlier_stood, true),
+    };
+    if owed {
+        let key = (task, fence, back);
+        if offered
+            .is_some_and(|(at, since)| at == key && now.saturating_sub(since) < ORDER_TAKE_WINDOW_S)
+        {
+            return Step::Waiting;
+        }
+        if through_relay && !relay_passes(ctx, &live, party, unit, key) {
+            return Step::Waiting;
+        }
+        // The earlier order, while it still binds; nothing otherwise.
+        let now_ic_ms = u64::try_from(ctx.w.world_ic_now().at)
+            .unwrap_or(0)
+            .saturating_mul(1_000);
+        let earlier =
+            before.filter(|earlier| earlier.expires_at_ms.is_none_or(|end| now_ic_ms < end));
+        let directive = earlier.and_then(|earlier| match &earlier.directive {
+            Directive::Objective(payload) => {
+                objective(payload, roster, &live, unit)
+                    .ok()
+                    .map(|objective| DetachmentObjective {
+                        objective,
+                        constraints: Constraints {
+                            hold_fire: payload.hold_fire,
+                            ..Constraints::default()
+                        },
+                    })
+            }
+            Directive::Cancel => None,
+        });
+        // An earlier ENGAGE naming a contact is re-keyed in its own leader's scope.
+        let issuer_unit = earlier
+            .filter(|_| {
+                directive.is_some_and(|directive| {
+                    matches!(
+                        directive.objective,
+                        Objective::Engage {
+                            target_hint: Some(_)
+                        }
+                    )
+                })
+            })
+            .map_or(unit, |earlier| earlier.issuer_unit);
+        let command = DetachmentCommand {
+            authority,
+            authority_epoch: fence,
+            sequence: back,
+            issuer: operator,
+            issuer_unit,
+            squad,
+            directive,
+            expires_at_ms: arena_deadline(
+                ctx.w,
+                task,
+                earlier.and_then(|earlier| earlier.expires_at_ms),
+            ),
+        };
+        if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+            && let Some(book) = ctx.w.module_state_mut::<Offered>()
+        {
+            book.0.insert(unit, (key, now));
+        }
+        return Step::Waiting;
+    }
+    match stands {
+        Concentrating::On if unanswered => Step::Reply(Response::Wilco),
+        // Taken, and the kernel found no row: it never concentrated. Say so, then return.
+        Concentrating::Over if unanswered => Step::Reply(Response::Negative),
+        Concentrating::Not if unanswered => {
+            let key = (task, fence, order.sequence);
+            match offered {
+                Some((at, since)) if at == key => {
+                    if now.saturating_sub(since) >= ORDER_TAKE_WINDOW_S {
+                        Step::Reply(Response::Negative)
+                    } else {
+                        Step::Waiting
+                    }
+                }
+                _ if !holds => Step::Reply(Response::Negative),
+                _ => {
+                    if !relay_passes(ctx, &live, party, unit, key) {
+                        return Step::Waiting;
+                    }
+                    let command = DetachmentCommand {
+                        authority,
+                        authority_epoch: fence,
+                        sequence: order.sequence,
+                        issuer: order.issuer,
+                        issuer_unit: order.issuer_unit,
+                        squad,
+                        directive: Some(DetachmentObjective {
+                            objective: engage,
+                            constraints: Constraints::default(),
+                        }),
+                        expires_at_ms: None,
+                    };
+                    if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+                        && let Some(book) = ctx.w.module_state_mut::<Offered>()
+                    {
+                        book.0.insert(unit, (key, now));
+                    }
+                    Step::Waiting
+                }
+            }
+        }
+        // On and answered; back on the earlier order; or declined with that order standing.
+        _ => Step::Idle,
+    }
+}
+
 /// **What became of a posture sent to a unit over the relay** (doc 45 unit AP.4; Q-45-19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PostureOrder {
@@ -944,6 +1315,15 @@ mod tests {
             )));
             assert!(presses(&order(
                 FieldObjective::Advance { to: (4, 4) },
+                hold_fire
+            )));
+            // Doc 44 unit MW.14c: a CONCENTRATE is an ENGAGE for this rule.
+            assert!(presses(&order(
+                FieldObjective::Concentrate {
+                    ordinal: 1,
+                    id: 70,
+                    designator: SmolStr::new("BK"),
+                },
                 hold_fire
             )));
             for stays in [

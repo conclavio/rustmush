@@ -60,6 +60,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/plan <draft>` | Read your draft and current preparation report |
 | `+sortie/plan <organizer>:<draft>` | Read a draft that assigns you a player slot |
 | `+sortie/edit <draft>:<revision>=<plan JSON>` | Replace your draft's material selections |
+| `+sortie/workpoint <draft>:<revision>=<x>,<y>` | Name the field cell an NPC commander advances the detachment to (`=none` names none) |
 | `+sortie/save <draft>:<revision>=<name>` | Save a private preset copy |
 | `+sortie/discard <draft>:<revision>` | Discard your draft and its invitations |
 | `+sortie/drop-preset <preset>:<revision>` | Delete your private preset |
@@ -79,7 +80,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/operation <draft>:<activation revision>` | Read the operation's saved progress and flight references |
 | `+sortie/field <draft>:<activation revision>` | Read the last saved field leadership identity and command term |
 | `+sortie/refresh <draft>:<activation revision>` | Recheck the operation's current field leadership |
-| `+sortie/orders <draft>:<activation revision>` | Read your sent field messages, arrived replies and personally received orders |
+| `+sortie/orders <draft>:<activation revision>` | Read your sent field messages, arrived replies and personally received orders, and the orders your roster's NPC leader gave |
 | `+sortie/command-grants <draft>:<activation revision>` | Print grants that a unit's owner or authorized lender can issue to this mission's current leader role |
 | `+sortie/recover <draft>:<activation revision>=<slot>` | Bring a unit physically beside the ramp back into the carrier |
 | `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
@@ -198,6 +199,16 @@ optional fields as `null` when no selection is made.
 }
 ```
 
+A plan may also name its **work point**, the field cell an NPC commander
+advances the detachment to: `"work_point": [140, 118]`, a column and a row, each
+from 0 to 511 (a 256-cell site takes 0 to 255). Leave the key out to name none.
+`+sortie/workpoint <draft>:<revision>=140,118` sets it on a draft without
+retyping the plan, and `=none` clears it. Like any edit it moves the draft's
+revision, so declarations are made again. `+sortie/plan` shows the work point in
+words. A plan is made before its site is known, so a cell that turns out to lie
+off the site the detachment flies to is not used, and the commander falls back
+to its default.
+
 A missing unit may be `null`; an unassigned controller is
 `{"kind":"unassigned"}`. A real NPC preference uses
 `{"kind":"npc","character":43}`; an automated preference uses
@@ -293,19 +304,40 @@ reconnect timers, then rechecks current sessions and control.
 
 An NPC who leads commands. Inside a running field, with no player leading, the
 plan's NPC commander gives the roster one posture at a time, as ordinary roster
-orders on the same transport yours use: ADVANCE to a work point six cells out from
-the carrier's ramp while nothing Hostile is in the commander's own sight, HOLD
-while something is, and WITHDRAW once the roster has lost a unit. Each order goes
+orders on the same transport yours use: ADVANCE to the work point while nothing
+Hostile is in the commander's own sight, HOLD while something is, and WITHDRAW
+once the roster has lost a unit. The work point is the cell the plan names
+(`+sortie/workpoint`), or, when the plan names none or names a cell off the
+site, a default six cells out from the carrier's ramp. A posture stands for at
+least thirty seconds before the commander changes it, so a Hostile passing in
+and out of its sight does not turn the roster back and forth; a loss is the
+exception, and the WITHDRAW that follows it is never delayed. Each posture goes
 to one slot at a time and can be delayed or stopped by interference like any
-other. If the commander's own unit is destroyed or disabled, the first other hired NPC
+other order.
+
+While it holds, the commander also names one contact for the roster's armed
+units to concentrate on (CONCENTRATE, below): the nearest Hostile in its own
+sight. A unit that carries nothing to fire, a mining rig, is left holding. It
+keeps to that contact until the contact is destroyed or out of its sight, then
+names the next. It concentrates only on a contact of a party the roster already
+holds Hostile. An NPC leader marks nobody Hostile and never sets a player's
+POSTURE, so a roster it leads fights only a party that has fired on the roster
+or on a friend.
+
+The organiser, and any player flying a slot, can read what the NPC leader
+ordered: `+sortie/orders` lists its last sixteen orders, oldest first, each with
+the slot, the order as a leader would type it, and the answer once that answer
+has reached the leader. Nobody outside the roster can read them.
+
+If the commander's own unit is destroyed or disabled, the first other hired NPC
 in slot order leads in its place under a new term; the role grants from
 `+sortie/command-grants` follow whoever leads. A player who becomes active again
 takes the lead back after the usual settling, and the NPC gives no further order.
 A roster with no nominated commander is never led by an NPC. On open ground an
 NPC leader gives no orders.
 
-If the leader goes away inside a running field, an ENGAGE or an ADVANCE they
-gave a hired crew lapses when their own unit passes to its mind: five minutes
+If the leader goes away inside a running field, an ENGAGE, a CONCENTRATE or an
+ADVANCE they gave a hired crew lapses when their own unit passes to its mind: five minutes
 after a lost link, at once on a quit or a knock-out. A hired crew is not flown
 for you while you are away and keeps its own doctrine, but the attack you
 started does not run on without you. The unit stops where it is and holds its
@@ -334,6 +366,7 @@ numbered slot or `ALL`, using the same line vocabulary as practice:
 ORDER DT:12:1:3 ALL HOLD
 ORDER DT:12:1:3 2 ADVANCE 40,50
 ORDER DT:12:1:3 2 ENGAGE
+ORDER DT:12:1:3 ALL CONCENTRATE BK
 ORDER DT:12:1:3 2 SCREEN 90 HOLD FIRE
 ORDER DT:12:1:3 2 SUPPORT 1
 ORDER DT:12:1:3 2 WITHDRAW EXPIRES 60
@@ -347,6 +380,25 @@ field cell within the site (256 or 512 cells a side). SUPPORT takes an accepted 
 include a contact prefix from your own observation; a hint grants its recipient
 no contact knowledge or targeting permission. Orders stand until replaced,
 released or completed; an optional expiry suffix limits them in IC seconds.
+
+CONCENTRATE is the focus-fire order: you name one contact, and every unit
+ordered concentrates on it. `ALL CONCENTRATE BK` goes to the whole roster in one
+line, and a numbered slot takes it too. The contact is one in your own cockpit
+inside a running field, by its designator, and you must have identified it: a
+provisional number such as X2 is yours alone, and no other unit could find it.
+It differs from `ENGAGE BK` in three ways. `ALL` reaches every unit that can take
+the order now, and is not refused because one slot cannot (every other order to
+`ALL` still is). A hired unit that does not hold that contact in its own
+observation answers NEGATIVE and keeps the order it had, where an ENGAGE it
+cannot resolve leaves it fighting on doctrine. And when the contact is destroyed,
+or the unit loses it, the unit goes back by itself to the order it had before:
+a unit that was holding holds again. The order hands nobody a contact: each unit
+finds the named contact in what it sees itself. It takes no HOLD FIRE and no
+EXPIRES: it ends with its contact, or when you order otherwise. If the leader
+who gave the order a unit goes back to has since gone away, the unit goes back
+to a HOLD instead. The word
+is CONCENTRATE and not FOCUS because `+focus` is the command that takes a
+console.
 
 POSTURE sets the standing word of another player's unit on the roster: RETURN,
 GUARD or HOLD, what the unit's mind does when its player is not at its controls
@@ -364,7 +416,9 @@ the unit has passed to its mind your command no longer reaches it. It is not
 given from an OOC room.
 
 Sending requires current leadership, physical station control and command rights
-for every selected unit. Admission checks the entire `ALL` set before sending.
+for every selected unit. Admission checks the entire `ALL` set before sending;
+`ALL CONCENTRATE` alone is sent to the units that pass and refused only when none
+does.
 For the usual mission lending arrangement, use `+sortie/command-grants` after
 activation. Each printed `@unitgrant/json` command lends command permission for
 one accepted unit to this exact mission's current leader. The unit's owner can

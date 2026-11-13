@@ -207,6 +207,57 @@ fn visit(
     // Doc 32 cut CF.6: a unit standing in a field flies the doctrine under its order; the
     // field's executor offers it to the kernel and reads the answer off the NPC's own frame.
     if let Some(site) = crate::field::field_of_unit(ctx.w, unit) {
+        // Doc 44 unit MW.14c: a CONCENTRATE has its own executor, which is visited whatever
+        // the answer was: a hull that declined keeps the order it had, and one that took it
+        // goes back to that order when the contact is destroyed or lost.
+        if valid
+            && field_orders::concentrates(&delivered.order.directive)
+            && let Some(record) = orders.concentration_of(slot, sequence)
+        {
+            // The order it goes back to is still its own to carry out: a WITHDRAW that stands
+            // on its order row again (never left, or back from the contact) still asks its
+            // way out at the ramp.
+            let back = record.stand.unwrap_or(record.resume);
+            if record.before.as_deref().is_some_and(|earlier| {
+                matches!(
+                    &earlier.directive,
+                    Directive::Objective(payload)
+                        if matches!(payload.objective, FieldObjective::Withdraw)
+                ) && [earlier.sequence, back].into_iter().any(|sequence| {
+                    crate::field::orders::on_order(ctx.w, (unit, actor), &roster, sequence)
+                })
+            }) {
+                crate::field::home::ask_out(
+                    ctx,
+                    unit,
+                    actor,
+                    crate::field::exit::Then::Sortie {
+                        operation: flight.operation,
+                        slot: slot.into(),
+                    },
+                );
+            }
+            let step = crate::field::orders::concentrate(
+                ctx,
+                &site,
+                (unit, actor),
+                &roster,
+                &delivered,
+                record,
+            );
+            return match step {
+                crate::field::orders::Step::Idle => Step::Idle,
+                crate::field::orders::Step::Waiting => Step::Held,
+                crate::field::orders::Step::Reply(response) => answer(
+                    ctx,
+                    fire,
+                    walk,
+                    (h, &op),
+                    (unit, actor, slot, sequence),
+                    response,
+                ),
+            };
+        }
         if !valid || negative {
             return Step::Idle;
         }
