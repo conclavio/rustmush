@@ -2651,6 +2651,13 @@ dispatch (`m8-gate-stories`).
   until a restart. The ship's arm had the same fault until story C found it;
   `withdraw_surface_open` is there for the rig's arm to call.
 
+- **The MW.5 field story fails about as often as it passes under load, on main**
+  (`c4_a_filed_mind_flies_an_absent_pilots_escort_and_is_taken_home`). Its escort never leaves
+  its cell: "the mind takes the escort out at its carrier's ramp: last at Some((146, 114))",
+  handed and still in the field. Four runs at once on conclav.dev at main `e4e2f6e8e` failed
+  three; four at this branch's head passed four. It failed once in this branch's dispatch run
+  and once in another branch's (run 43461753678), and passed when run again. Not investigated.
+
 **Known limits.**
 
 - **A claim whose dispatcher is gone, or whose hull has no unit, does not close.** Every
