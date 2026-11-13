@@ -477,6 +477,28 @@ impl ReplaySession {
                             .ok_or_else(|| incomplete("ready replay arena unavailable"))?
                             .apply_detachment_control(*control);
                     }
+                    // Doc 45 unit AP.10: a practice posture and a pilot standing back,
+                    // as the live task applied them at this pulse's head.
+                    TapeEvent::Posture {
+                        unit,
+                        posture,
+                        player,
+                    } => {
+                        let arena = self
+                            .state
+                            .arena
+                            .as_mut()
+                            .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
+                        arena.set_player(*unit, *player);
+                        arena.set_posture(*unit, *posture);
+                    }
+                    TapeEvent::Absent { unit, absent } => {
+                        self.state
+                            .arena
+                            .as_mut()
+                            .ok_or_else(|| incomplete("ready replay arena unavailable"))?
+                            .set_absent(*unit, *absent);
+                    }
                     TapeEvent::Pulse { .. } => return Err(incomplete("unexpected nested pulse")),
                 }
             }
@@ -1001,6 +1023,129 @@ pub(crate) mod tests {
             }
         }
     }
+    /// **Doc 45 unit AP.10: a recorded practice replays** (Q-45-25). A pilot's practice
+    /// reaches a match's arena as two words at a pulse's head, and each is its own event on
+    /// the input tape ahead of that pulse's. The replay applies them at the same boundary
+    /// and reproduces every recorded hash to the end, with the hull still held to the absent
+    /// player's rule; and the same match with nobody practising ends on another hash, so the
+    /// words are what the replay had to apply.
+    #[test]
+    fn ap10_a_recorded_practice_replays_through_its_two_words() {
+        use crate::posture::Posture;
+        fn run(
+            arena: &mut Arena,
+            recorder: &mut TapeRecorder,
+            writes: &mut Vec<TapeWrite>,
+            wall: &mut i64,
+            until: i64,
+        ) {
+            while arena.now_ms < until {
+                assert!(arena.ended.is_none(), "the fixture outlives the practice");
+                let (_, new) =
+                    recorded_step_settled(arena, recorder, *wall, &[], &[], vec![]).unwrap();
+                writes.extend(new);
+                *wall += 500;
+            }
+        }
+        let record = |practise: bool| {
+            let (mut arena, header) = opening(2);
+            let mut recorder = TapeRecorder::open(&header).unwrap();
+            arena.tape_cursor = Some(recorder.cursor());
+            arena.tape_witnesses.enable();
+            let (mut writes, mut wall) = (Vec::new(), 0);
+            run(&mut arena, &mut recorder, &mut writes, &mut wall, 1_000);
+            if practise {
+                let (unit, pilot) = (ObjId(1), Some(ObjId(1000)));
+                let word = TapeEvent::Posture {
+                    unit,
+                    posture: Posture::Hold,
+                    player: pilot,
+                };
+                writes.extend(recorder.push(word).unwrap());
+                assert!(arena.set_player(unit, pilot));
+                assert!(arena.set_posture(unit, Posture::Hold));
+                writes.extend(
+                    recorder
+                        .push(TapeEvent::Absent { unit, absent: true })
+                        .unwrap(),
+                );
+                assert!(arena.set_absent(unit, true));
+            }
+            run(&mut arena, &mut recorder, &mut writes, &mut wall, 6_000);
+            writes.extend(
+                recorder
+                    .push(TapeEvent::Stop {
+                        reason: StopReason::Abort,
+                    })
+                    .unwrap(),
+            );
+            arena.stop(StopReason::Abort);
+            let (_, new) =
+                recorded_step_settled(&mut arena, &mut recorder, wall, &[], &[], vec![]).unwrap();
+            writes.extend(new);
+            let final_hash = state_hash(&arena);
+            writes.extend(
+                recorder
+                    .finish(arena.now_ms, final_hash, arena.ended.unwrap())
+                    .unwrap(),
+            );
+            let chunks = writes
+                .iter()
+                .filter_map(|w| match w {
+                    TapeWrite::Chunk(c) => Some(c.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let mark = writes
+                .iter()
+                .rev()
+                .find_map(|w| match w {
+                    TapeWrite::Mark(m) => Some(m.clone()),
+                    _ => None,
+                })
+                .unwrap();
+            let words = chunks
+                .iter()
+                .flat_map(|c| &c.events)
+                .filter(|event| {
+                    matches!(event, TapeEvent::Posture { .. } | TapeEvent::Absent { .. })
+                })
+                .count();
+            (
+                Arc::new(VerifiedTape::verify(header, &chunks, mark).unwrap()),
+                final_hash,
+                words,
+            )
+        };
+        let (plain, plain_hash, plain_words) = record(false);
+        let (practice, practice_hash, practice_words) = record(true);
+        assert_eq!((plain_words, practice_words), (0, 2));
+        assert_ne!(
+            plain_hash, practice_hash,
+            "a hull held to the absent player's rule ends the match somewhere else"
+        );
+        for (tape, hash, practised) in [(plain, plain_hash, false), (practice, practice_hash, true)]
+        {
+            let mut replay = ReplaySession::new(tape).unwrap();
+            let mut turns = 0;
+            while !replay.advance_substep().unwrap().complete {
+                turns += 1;
+                assert!(turns < 2_000);
+            }
+            let arena = replay.arena().unwrap();
+            assert_eq!(state_hash(arena), hash);
+            assert_eq!(arena.absent(ObjId(1)), practised);
+            assert_eq!(
+                arena.posture(ObjId(1)),
+                if practised {
+                    Posture::Hold
+                } else {
+                    Posture::Return
+                }
+            );
+        }
+    }
+
     #[test]
     fn m7_old_tape_engine_and_snapshot_refuse_before_replay_starts() {
         let (_, header) = opening(2);

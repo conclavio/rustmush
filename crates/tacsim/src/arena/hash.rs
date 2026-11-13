@@ -1278,13 +1278,15 @@ pub fn state_hash(arena: &Arena) -> u64 {
             }
         }
         // **Doc 45 unit AP.3** (sub-item 26): the posture, only when it is not `RETURN` —
-        // no byte for a unit on the default, which is every unit of every practice match.
+        // no byte for a unit on the default, which is every unit of a practice match nobody
+        // sets a posture in (doc 45 unit AP.10).
         if !unit.posture.is_return() {
             fold.bytes(&[2_u8, unit.posture.fold_byte()]);
         }
         // **Doc 45 unit AP.6** (sub-items 27 and 28): the cell a mind stands its posture on
         // and the player whose unit it is, each only when set, each under its own tag byte:
-        // no byte for a unit of a practice match, where neither is ever written.
+        // no byte for a unit of a practice match nobody sets a posture in (doc 45 unit
+        // AP.10), where neither is written.
         if let Some((x, y)) = unit.stand_at {
             fold.bytes(&[3_u8]);
             fold.bytes(&x.to_le_bytes());

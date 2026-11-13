@@ -483,6 +483,11 @@ pub enum HandOver {
     /// before its `Released` marks the slot: the pilot's line was down, and
     /// a `BOARD` may take the tank back.
     Dropped,
+    /// **`MIND AWAY`** (doc 45 unit AP.10; Q-45-25): the pilot let go of the controls in
+    /// the pod to practise a posture and watched the mind fly the tank. `MIND BACK`, or any
+    /// word the world sends about the pilot's seat, closes the span
+    /// (`crate::match_::lobby::practice_span`).
+    LetGo,
 }
 
 /// **One stretch of the match the mind flew the pilot's tank** (17b cut
@@ -739,6 +744,8 @@ const SUBSTITUTED_LINE: &str = "  Sealed in place of your choice, for humans on 
 fn span_line(spans: &[Span]) -> String {
     const LEAD: &str = "  It flew your tank";
     const LINE_DOWN: &str = ", while your line was down";
+    // Doc 45 unit AP.10: a practice, `MIND AWAY` to `MIND BACK`.
+    const LET_GO: &str = ", while you had let go of the controls";
     match spans {
         [] => "  It never flew: you flew the tank the whole match.".to_owned(),
         [only] => match (only.by, only.to_ms) {
@@ -752,6 +759,7 @@ fn span_line(spans: &[Span]) -> String {
                 stamp(to_ms)
             ),
             (HandOver::Dropped, _) => format!("{LEAD} {}{LINE_DOWN}.", only.stretch()),
+            (HandOver::LetGo, _) => format!("{LEAD} {}{LET_GO}.", only.stretch()),
         },
         [first, second] => {
             let cause = if first.by == HandOver::Dropped && second.by == HandOver::Dropped {
@@ -4128,6 +4136,15 @@ mod tests {
                 vec![(42_000, drop)],
                 "  It flew your tank from 0:42 to the end, while your line was down.",
             ),
+            // Doc 45 unit AP.10: a practice, one span, closed and open.
+            (
+                vec![(42_000, Some(HandOver::LetGo)), (70_000, None)],
+                "  It flew your tank from 0:42 to 1:10, while you had let go of the controls.",
+            ),
+            (
+                vec![(42_000, Some(HandOver::LetGo))],
+                "  It flew your tank from 0:42 to the end, while you had let go of the controls.",
+            ),
             (
                 vec![(42_000, drop), (70_000, None), (125_000, drop)],
                 "  It flew your tank from 0:42 to 1:10 and from 2:05 to the end, while your \
@@ -4314,12 +4331,12 @@ mod tests {
             };
             lines.extend(track.block().map(|block| block.lines).unwrap_or_default());
         }
-        for by in [HandOver::Dropped, HandOver::ClimbedOut] {
+        for by in [HandOver::Dropped, HandOver::ClimbedOut, HandOver::LetGo] {
             for count in [1, 2] {
                 lines.push(span_line(&spans(count, by)));
             }
         }
-        for by in [HandOver::Dropped, HandOver::ClimbedOut] {
+        for by in [HandOver::Dropped, HandOver::ClimbedOut, HandOver::LetGo] {
             let closed: Vec<Span> = spans(1, by)
                 .into_iter()
                 .map(|span| Span {

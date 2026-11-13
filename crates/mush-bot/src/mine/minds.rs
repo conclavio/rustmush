@@ -1,7 +1,7 @@
 //! **The mind market's sentences, as the bot reads them** (doc 44 MW.5; doc 17g C4 item 3,
 //! "`cargo test -p mush-bot` green on every new sentence").
 //!
-//! One `pub const` needle per player-facing sentence constant of six game modules, grouped in
+//! One `pub const` needle per player-facing sentence constant of seven game modules, grouped in
 //! one module per family and named exactly as the game's constant is named. A needle is a
 //! literal fragment of the game's sentence: it never crosses a `{placeholder}`, so it is found
 //! in the filled line whatever the fill, and it is chosen to tell its sentence from every other
@@ -22,7 +22,7 @@
 //!   attribute (one in a function or an `impl`, two modules deep, a table of strings), so a
 //!   sentence constant added to one of these modules fails the bot's tests until the bot
 //!   learns it;
-//! * **distinct**: within a family and across all six, no needle is found in another row's
+//! * **distinct**: within a family and across all seven, no needle is found in another row's
 //!   sentence, except the pairs listed in the test module's overlap tables, each with its
 //!   reason.
 //!
@@ -193,6 +193,37 @@ pub mod absent {
     /// `tacsim::field::absent::UNATTENDED_ON` (doc 45 unit AP.7).
     pub const UNATTENDED_ON: &str =
         "with nobody in its seat: its mind has the controls and flies it on ";
+}
+
+/// A posture practised in the simulator (doc 45 unit AP.10): `tacsim::match_::practice`.
+pub mod practice {
+    /// `tacsim::match_::practice::PRACTICE_SET`.
+    pub const PRACTICE_SET: &str =
+        "for this match. MIND AWAY lets its mind fly it on that word while you watch.";
+    /// `tacsim::match_::practice::PRACTICE_SET_AWAY`.
+    pub const PRACTICE_SET_AWAY: &str = ": its mind flies it on that word from its next think.";
+    /// `tacsim::match_::practice::PRACTICE_READ_AWAY`.
+    pub const PRACTICE_READ_AWAY: &str =
+        ", and its mind is flying it on that word. MIND BACK takes the controls again.";
+    /// `tacsim::match_::practice::PRACTICE_AWAY`.
+    pub const PRACTICE_AWAY: &str = "as if you were away. MIND BACK takes the controls again.";
+    /// `tacsim::match_::practice::PRACTICE_ALREADY_AWAY`.
+    pub const PRACTICE_ALREADY_AWAY: &str =
+        "'s mind already has the controls. MIND BACK takes them again.";
+    /// `tacsim::match_::practice::PRACTICE_BACK`.
+    pub const PRACTICE_BACK: &str = "You take the controls again: ";
+    /// `tacsim::match_::practice::PRACTICE_NOT_AWAY`.
+    pub const PRACTICE_NOT_AWAY: &str = "You already hold ";
+    /// `tacsim::match_::practice::PRACTICE_ONLY`.
+    pub const PRACTICE_ONLY: &str = "MIND AWAY and MIND BACK are the simulator's.";
+    /// `tacsim::match_::practice::PRACTICE_CHANNELS`.
+    pub const PRACTICE_CHANNELS: &str =
+        "Channels: the mind holds every one and flies the hull on its posture;";
+    /// `tacsim::match_::practice::PRACTICE_SEAT_REFUSED`.
+    pub const PRACTICE_SEAT_REFUSED: &str =
+        "the seat gives no order while the mind flies the hull;";
+    /// `tacsim::match_::practice::PRACTICE_STATUS_AWAY`.
+    pub const PRACTICE_STATUS_AWAY: &str = "its mind has the controls; MIND BACK takes them again";
 }
 
 /// The `+minds`, `@mind/*` and `@registry/*` command family (17g C2, doc 17h M8):
@@ -510,6 +541,7 @@ mod tests {
     const EXCURSION_RS: &str = include_str!("../../../tacsim/src/surface/excursion.rs");
     const DISPATCH_RS: &str = include_str!("../../../tacsim/src/surface/dispatch.rs");
     const ABSENT_RS: &str = include_str!("../../../tacsim/src/field/absent.rs");
+    const PRACTICE_RS: &str = include_str!("../../../tacsim/src/match_/practice.rs");
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
 
     fn end_user_rows() -> Vec<Row> {
@@ -597,6 +629,24 @@ mod tests {
             STAYS_ON,
             UNATTENDED,
             UNATTENDED_ON,
+        )
+    }
+
+    fn practice_rows() -> Vec<Row> {
+        use super::practice as bot;
+        use tacsim::match_::practice as game;
+        rows!("";
+            PRACTICE_SET,
+            PRACTICE_SET_AWAY,
+            PRACTICE_READ_AWAY,
+            PRACTICE_AWAY,
+            PRACTICE_ALREADY_AWAY,
+            PRACTICE_BACK,
+            PRACTICE_NOT_AWAY,
+            PRACTICE_ONLY,
+            PRACTICE_STATUS_AWAY,
+            PRACTICE_CHANNELS,
+            PRACTICE_SEAT_REFUSED,
         )
     }
 
@@ -721,13 +771,14 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 6] = [
+        let families: [(&str, Vec<Row>); 7] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
             ("dispatch", dispatch_rows()),
             ("absent", absent_rows()),
             ("market", market_rows()),
+            ("practice", practice_rows()),
         ];
         families
             .into_iter()
@@ -1194,6 +1245,19 @@ mod tests {
     #[test]
     fn absent_needles_are_distinct() {
         distinct(&qualified("absent", absent_rows()), &[]);
+    }
+
+    #[test]
+    fn practice_needles_are_in_step() {
+        in_step("practice", &practice_rows());
+    }
+    #[test]
+    fn practice_census() {
+        census("practice.rs", PRACTICE_RS, &practice_rows(), &[]);
+    }
+    #[test]
+    fn practice_needles_are_distinct() {
+        distinct(&qualified("practice", practice_rows()), &[]);
     }
 
     #[test]

@@ -2010,7 +2010,451 @@ Not built.
 
 ## AP.10
 
-Not built.
+Postures in the simulator (doc 45 §7.1; Q-45-25, with doc 44's Q-44-19). The last link of
+the posture chain, built on AP.3's word, AP.4's seat form and AP.6's kernel. Paths are under
+`crates/tacsim/src/` unless given.
+
+**What a simulator unit could do with a posture before this unit.** Read it, and nothing
+else. `MIND POSTURE` in a pod answered "holds RETURN" off the hull's own record, which no
+verb could write for a hull in the centre; a set was refused as from an OOC room (AP.4's
+default 7). The keyframe carried `posture: return`. A match's task dropped both of the host's
+words (`ArenaMsg::Posture`, `ArenaMsg::Absent`), so no hull in a match was ever flown for an
+absent player, and the kernel kept no record there of who had fired on whom.
+
+**Built.**
+
+- **Three forms of the seat's `MIND` verb, in a pod** (`match_/practice.rs`, new;
+  `match_/cockpit/notices.rs`).
+  - `MIND POSTURE [RETURN|GUARD|HOLD]` reads the hull's **practice posture**, or sets it. Set
+    only by the seat that holds the helm, as in a field. The word is kept on the running
+    match's mirror and the arena is told nothing until the pilot lets go. A set while the
+    mind flies the hull is told at once, so a pilot can change the word and watch what
+    changes.
+  - `MIND AWAY` lets go of the controls. The pilot stays in the pod, seated on the board,
+    bound in the registry and on the arena's frame roster, so the cockpit goes on reading.
+    The hull is handed to its sealed mind as an absent player's.
+  - `MIND BACK` takes the controls again where the hull stands.
+  In an IC field `MIND AWAY` and `MIND BACK` are refused in one line; there a unit's mind
+  takes it when its player leaves the controls. `MIND POSTURE` in a field is AP.4's,
+  untouched.
+- **The practice reaches the kernel by the field host's own two words**, and by nothing new
+  (`arena_task.rs`, `Task::apply_practice_words`). At `MIND AWAY` the simulator sends
+  `ArenaMsg::Posture` (the word, and whose the hull is) and `ArenaMsg::Absent`; a task with
+  no field terms now applies them at the pulse's head by the calls a field's does
+  (`Arena::set_player`, `Arena::set_posture`, `Arena::set_absent`). The hand-over itself is
+  the seat's `Released` on each channel **naming no pilot** (`arena_bridge::send_control`):
+  the kernel hands the hull to its mind and lays the posture's standing order
+  (`arena/intents.rs`, `apply_control`'s existing arm), and because the control names nobody
+  the arena drops no pilot from its frame roster, the registry keeps the binding and the
+  board keeps the slot seated.
+- **One gate.** Nothing was added to `arena/absent.rs`'s rule: `permits` is untouched, and a
+  practising hull comes to it through `Arena::resolve_fire_by` as every absent player's unit
+  does, because the practice sets the same flag. One line beside the rule moved:
+  `Arena::note_fired_on` kept its fire record only in a field whose end is its host's, so in
+  a match the rule would have had nothing to read and a practising hull could never answer.
+  It now also records on a hull **a pilot has named a player for** (the practising hull and
+  the pilot's other units, from the pulse the word lands). A match nobody practises in
+  records nothing, carries no byte of it and hashes as it did.
+- **The standing orders are AP.6's** (`Arena::lay_standing`, `Arena::stand_posture`), reached
+  with no change: `GUARD` and `HOLD` park the hull and turn it to face what it may answer;
+  `RETURN` lays the go-home order.
+- **A practice ends on the seat's own control** (`arena/absent.rs`, `Arena::end_practice`;
+  `arena/intents.rs`, `apply_control`). See "How a practice is told from a drop".
+- **The input tape** (`arena/input_tape.rs`, `minds/resimulation.rs`). AP.3's note said a
+  practice posture "would have to ride the input tape to replay". It does: two event kinds,
+  `TapeEvent::Posture` and `TapeEvent::Absent`, recorded by the task at the head it applies
+  each word and only when the word moves the arena, ahead of that pulse's own event; the
+  replay applies them at the same boundary. The hand-over's control, and the control that
+  ends a practice, were already on the tape with their pulse.
+- **The seat gives no order while its mind has the controls** (`arena_bridge.rs`, `hands_on`;
+  `IntentRefusal::Away`). The arena takes a seat's `HEADING` on a hull its mind flies, so
+  without this a watching pilot's order would land beside the mind's. Every door a seat's
+  order goes through (`forward_intent`, `forward_order`, `forward_release`) refuses with
+  "Refused: the seat gives no order while the mind flies the hull; MIND BACK takes the
+  controls."
+- **What the watching pilot reads.** The cockpit keyframe, sent as before: the hull's pose,
+  speed, rounds and contacts, `posture`, and `order`, which is the standing order the mind
+  is under (a pilot's own hull carried none; a hull its mind flies does). `STATUS` adds
+  "its mind has the controls; MIND BACK takes them again" under the posture line. Bare
+  `MIND` replaces "you hold helm, sensors and fire; the mind is dormant while you fly" with
+  "the mind holds every one and flies the hull on its posture". `VIEW`, `CONTACTS`,
+  `WEAPONSTATUS` and `WATCH` read as they did.
+- **The debrief** (`match_/report.rs`, `HandOver::LetGo`; `match_/lobby.rs`,
+  `practice_span`). `SIM REPORT`'s `Your mind` block says when the mind flew the tank and
+  counts the mind's shots apart from the pilot's, by spans the world opens and closes. A
+  practice opens one at `MIND AWAY` and closes it where the practice ends: "It flew your
+  tank from 0:42 to 1:10, while you had let go of the controls." Without it the rounds the
+  mind fired on `GUARD` would have been reported as the pilot's own.
+- **Help**: `docs/help/simulator.md` has a new section, "Practising a posture";
+  `cockpit.md` lists the three forms; `field.md`'s "Never from an OOC room" points at the
+  practice. `MIND`'s own help line and usage line name the forms (the usage line was reworded
+  to stay inside 120 columns).
+- **The bot's sentence table** (`crates/mush-bot/src/mine/minds.rs`): a seventh family,
+  `practice`, eleven rows, with its census over `match_/practice.rs`.
+- `crates/mush-contract-tests/legacy-handlers.toml`: the `mind` note is refreshed. No new
+  verb, switch or family.
+
+**How a practice is told from a drop.** By who said it, and the arena decides it on the
+control.
+
+- **A practice is an act typed in the seat** by a pilot who is connected and stays in the
+  pod: `MIND AWAY`. Its hand-over reaches the arena as a `Released` that names no pilot, with
+  the absent word ahead of it.
+- **A drop is a fact about the pilot's seat that the world tells the arena**: the link lost,
+  the grace run out, a `QUIT`, an `EXIT`, a boot's resume, and a pilot coming back. Every one
+  is a control that **names the pilot**.
+- **In a match, a control that names the practising pilot ends the practice before it
+  applies** (`Arena::end_practice`, called at the head of `apply_control`). The rule is
+  lifted, the arena's copy of the posture goes back to `RETURN`, and the hull is handed from
+  its mind to the pilot exactly as a `Live` hands one over. The control then does what it
+  always did, to a hull its pilot holds. So:
+  - a `Released` hands the hull to its sealed mind seeded as every release seeds it
+    (`Withdraw`, the doctrine's one retreat unspent, the seat's slots cleared, the motor let
+    go, no standing order, no rule). What else the mind remembers of the thinks it made
+    while it flew the practice it keeps, as a mind's memory is kept across any reclaim and
+    drop;
+  - a `Linkdead` leaves a link-dead pilot's hull: for the grace it stands still and fires
+    nothing;
+  - a `Live` is the pilot back: `MIND BACK` sends exactly that.
+- **The hull is stopped when a practice ends**, as a `Released` stops one: the speed its mind
+  last ordered is nobody's order once the mind is off the controls, so a hull handed back by
+  `MIND BACK`, or held through a lost link's grace, does not drive on by it.
+- **Never in an IC field.** There a `Released` naming the pilot is the host handing an
+  absent player's unit to its mind (MW.7), with the flag the host set standing. The kernel
+  tells the two by the arena's end condition (`EndCondition::Host` is the field's), as it
+  already does for the fire record and the sortie's close.
+- **Whichever seat the control names.** A hull's controller is the hull's and not a seat's:
+  any pilot's `Live` takes a hull from its mind and any pilot's `Released` gives it one, so
+  a word about a second seat of a practising hull moves who flies it, as it always did, and
+  the practice does not outlive that. A control naming nobody (the practice's own
+  hand-over) ends nothing. No pod of the centre has a second seat today.
+
+**Why it is on the control and not a message of its own** (the first build's mistake, found
+by the second reader). The first build ended a practice from the world: a `Live` on every
+channel, a word clearing the flag, then the caller's own control. The arena task keeps one
+control a channel a pulse and the latest stands (`arena_task.rs`, `buffer_control`), so a
+`Live` sent ahead of a `Released` in one world step was collapsed away and the `Released`
+met a hull its mind already held: `set_controller` does nothing for a hull already under
+that controller, so the dropped hull kept the practice's memory (told to stay, its retreat
+spent) and was not seeded for home. It fought, so every story passed. Ending the practice
+where the control is applied makes the result the same however the task buffers, and it
+needs no message that could be refused or arrive apart.
+
+A restart: the snapshot holds the flag and the player. The resume's own release of every
+seat is a `Released` naming the pilot, which ends the practice in the arena; the resumed
+match's mirror is rebuilt from the decoded arena so that the world's half runs too and
+closes the debrief's span, which the restored fold still held open.
+
+**The simulator is out of character.** The practice posture is kept on the running match's
+mirror (`MatchMirror::postures`, `MatchMirror::away`) and, while the pilot is away, in that
+match's arena, and nowhere else. `crate::posture::record` is neither read nor written by any
+of the three forms, and `posture::order::set_present` is not called. The story writes
+`GUARD` into the practising hull's own record by hand before the match: the pod reads
+`RETURN`, and the record is still `GUARD` after the practice has set `GUARD` and `HOLD`. A
+second story shows the next match opens on `RETURN` for a hull the last one left on `HOLD`,
+with no attribute on the hull.
+
+**The mind API did not move.** `MIND_ABI` is `rhai=1.26.0;api=9;stock=3`; no `MindView`
+field, no getter, no doctrine source, no seal. `FRAME_VERSION` is 10 and `SNAPSHOT_FORMAT`
+19. `TAPE_FORMAT` stays 2 and `REPLAY_ENGINE` stays `tacsim-engine-cf0-v1`: a tape recorded
+before this unit holds neither new event and no practising hull, so it replays byte for
+byte; and one that holds the new events cannot be read by an older engine at all (an unknown
+event kind is refused at decode), so no tape can replay to a different answer under the same
+stamp. One meaning widened, as AP.6 and AP.7 widened it: the keyframe's `posture` and
+`order` are now also sent to a seated pilot whose mind is flying a posture, where AP.6 could
+say "no seat is sent that frame". For a `GUARD` the hull can no longer defend, that frame
+reads `return` while `MIND POSTURE` and `STATUS` go on saying `GUARD`, as the help says of a
+field. A sealed mind that reads `v.posture` reads the practice word only while the practice
+runs: a posture set and never left, and a hull after a drop, read `return` as they did.
+
+**Which matches take a posture.** Any match with a pilot in a pod: a skirmish, a hold match
+and a range. A range's targets never fire, so a hull left there on `GUARD` or `HOLD` stands
+and fires nothing, and on `RETURN` drives home. A match of machines only (a staff
+`@arena/start`, a proving run, the harness) has no seat to set one from and takes none. An
+IC field is AP.4's and AP.6's and is not touched.
+
+**Tests.**
+
+In source:
+
+- `arena::weapons::tests`:
+  - `ap10_a_practising_hull_in_a_match_is_held_to_the_one_rule`: a match records no fire and
+    binds nobody until a pilot is named; the words that name a player start the record on
+    those hulls and on no other; a posture alone binds nothing; with the pilot's hands off,
+    the hull is refused the first shot by every source no seat typed, refused after fire on a
+    stranger, let through after fire on the pilot's other hull; `HOLD` does not answer for
+    the neighbour and does for itself.
+  - `ap10_a_drop_ends_a_practice_and_leaves_the_hull_as_any_dropped_pilots`: a hull whose
+    pilot practised `GUARD` (the mind stood, told to stay, its helm left at speed) and one
+    whose pilot never let go, each given the same `Released`: the same controller, flag,
+    posture, order, speed, doctrine state and, in this fixture where the mind stood and
+    never thought, the same memory bytes (the release's seed overwrites what standing the
+    posture wrote). A `Live` and a `Linkdead` leave the pilot's hull, stopped. A control
+    naming another seat ends the practice too; one naming nobody does not.
+  - `ap10_a_fields_release_does_not_end_what_its_host_said`: the same control in a field
+    leaves the host's flag, the posture and its order.
+- `arena_task::tests`:
+  - `ap10_a_practice_match_takes_the_posture_and_the_absent_word`: the two words applied by
+    a match's task, posture first; a word that says what stands moves nothing; a word that
+    clears the flag is dropped; then the pilot's `Live` and `Released` are put through the
+    task's own buffer, which keeps the `Released` alone, and that one control ends the
+    practice and seeds the hull for home.
+  - `ap10_a_practice_word_is_recorded_when_it_moves_the_arena_and_only_then`: each word that
+    moves the arena is one tape event, in order; nothing else records.
+- `minds::resimulation::tests::ap10_a_recorded_practice_replays_through_its_two_words`: a
+  recorded match with a practice replays to its recorded hash with the hull still absent on
+  `HOLD`; the same match with nobody practising ends on another hash.
+- `match_::practice::tests`: the lines, and every line inside 120 columns with a hull's name
+  of twenty characters.
+- `match_::cockpit::tests` (`MIND`'s help and usage as reworded, the usage inside 120) and
+  `match_::report::tests` (the span line for a practice, open and closed, and its width).
+
+Stories (`tests/domain_arena/cockpit.rs`, over the production composition; every command
+is typed by a pilot who is not staff, and the set-up stands the hulls with the staff
+placement verb the arena's other stories use; five of the six run under paused time):
+
+1. `ap10_a_hull_left_on_guard_in_a_practice_match_answers_only_for_its_pilots_units`. Red:
+   the lead in the hull that practises, the side's one machine (the lead's other unit), and
+   a second pilot's hull (a stranger's). Blue: a pilot six cells off, and two more cold at
+   their muster so blue fields no machine. The hull's own record is written `GUARD` by hand
+   first and the pod reads `RETURN`. `MIND POSTURE GUARD`, `MIND AWAY`: the pilot is still in
+   the pod and seated on the board; the cockpit shows `guard`, the `Hold` the mind stands
+   under and blue's hull held hostile; `STATUS` and bare `MIND` say who has the controls;
+   the debrief's block opens its span; a typed `HEADING` is refused. Ten seconds: nothing
+   fired. Blue's fire lands on the second pilot's hull: nothing, eight seconds more. Blue's
+   fire lands on the machine: the hull fires on blue's hull, after that first arrival and on
+   nobody else; blue never fired on the guard. `MIND POSTURE HOLD` from the seat while the
+   mind flies it: no shot after the word, while blue's fire goes on landing on the machine;
+   then blue fires on the hull and it answers. It never left its cell. `MIND BACK`: the
+   span closes, and the pilot's `HEADING` is taken. The record still reads `GUARD` as
+   written by hand, and every other hull's reads `RETURN`.
+2. `ap10_a_pilot_who_drops_while_practising_is_flown_by_their_sealed_mind_and_fights`. `GUARD`
+   and `MIND AWAY`; ten seconds, nothing fired. The session ends: the board reads `flown by
+   its mind`, the practice is over, the registry holds no seat, and the hull fires on blue's
+   hull, which never fired a round. The match's saved snapshot then holds the hull as any
+   dropped pilot's: its mind's, not absent, on no posture. The reconnect's line is what it
+   was, and `BOARD` takes the tank back.
+3. `ap10_a_posture_never_left_changes_nothing_about_a_drop_and_exit_ends_a_practice`. Twice:
+   `HOLD` set and the pilot at the controls when the session ends; `HOLD` set, `MIND AWAY`,
+   six quiet seconds, then `EXIT` (final, and `BOARD` is refused). Both snapshots hold the
+   hull its mind's, not absent, on `RETURN`; both hulls fire on a hull that never fired.
+4. `ap10_return_takes_a_practising_hull_home_and_a_match_leaves_no_posture_behind`. No
+   posture is set: `MIND AWAY` on the default. The cockpit shows the go-home order; the hull
+   drives from fourteen cells out to its side's entry zone, stops at its edge and stays,
+   having fired nothing. `MIND BACK`; `HOLD` is set; the hull's record is `RETURN` and it
+   carries no attribute. The match is called off and the next one's pod reads `RETURN`.
+5. `ap10_a_restart_ends_a_practice_and_the_resumed_hull_fights`. `GUARD` and `MIND AWAY`; the
+   saved snapshot holds the hull absent on `GUARD`; the server half restarts; the resumed
+   match's own snapshot holds it its mind's, not absent, on `RETURN`; the pod reads `GUARD`
+   back, the hull fights, and the debrief's fold holds two spans: the practice's, closed
+   where the restart released the seat, and the drop's, open.
+6. `ap10_a_link_lost_while_practising_leaves_a_link_dead_pilots_hull`. `HOLD` and `MIND
+   AWAY`; the link is lost: the snapshot holds the hull the pilot's, not absent. The pilot
+   revives inside the grace, reads the revival's own line, finds the hull standing still,
+   and their `HEADING` is taken with no `MIND BACK`. The hull fired nothing. `MIND AWAY`
+   starts a new practice on the same word.
+
+Each acceptance clause fails without the unit: on main `MIND POSTURE GUARD` in a pod is
+refused and `MIND AWAY` is the usage line, so every story stops at its first line. The
+mutation table below says what each rule's removal fails.
+
+**Divergences from the row, and what doc 45 had wrong or left out.**
+
+- **"Set a posture and left" needed a way to leave that is not a drop.** The simulator had
+  two ways out of a cockpit, `EXIT` and a drop, and Q-44-19 rules both: the hull fights. A
+  third was needed, and it had to keep the pilot watching, which neither does (`EXIT` puts
+  the pilot in the team room with a cleared panel; nothing there shows a hull). Hence `MIND
+  AWAY`: the row's "watch its mind fly it" is the pilot's own cockpit, kept.
+- **`GUARD` answers for "another unit of the same player", and a pilot in the simulator has
+  one.** See default 1.
+- **The kernel kept no fire record in a match.** Not in the row; without it `GUARD` and
+  `HOLD` in a match would have answered nobody, ever.
+- **The row's "Mostly in" is `match_/`.** The practice is there (`match_/practice.rs`, the
+  cockpit, the debrief's span). Outside it: `arena_bridge.rs` (the mirror, the refusal, the
+  door), `arena_task.rs` (the words applied), `arena/input_tape.rs` and
+  `minds/resimulation.rs` (the tape), `arena/absent.rs` (the fire record and the practice's
+  end), `arena/intents.rs` (one call), comments in `arena/state.rs`, `arena/hash.rs` and
+  `posture/order.rs`. `minds/sealed.rs`, `space/` and `port/` are not touched.
+
+**Defaults taken.** None needs a refactor to undo unless it says so.
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **A side's lead owns the side's machines, for `GUARD`.** The fill is fielded by the lead (`SIM AI`, `SIM AI MIND`; the lead is already its warrant principal, `lobby::lead_character_of`), so a lead's guard answers for it; to every other pilot the fill is a stranger's, as another player's rigs are in the world. A second pilot's hull is never anybody else's. The other readings: nobody has other units in a match (then `GUARD` reads as `HOLD` and cannot be practised), or every hull of the side is one's own (then `GUARD` in the simulator answers for more than it does in the world). **For the owner.** | Low: one function, `practice::other_units` |
+| 2 | **The verbs are `MIND AWAY` and `MIND BACK`**, forms of `MIND` beside `MIND POSTURE` | Low: words |
+| 3 | **`RETURN` goes to the side's entry zone** and stops at its edge, which is where a machine ordered to withdraw goes in a match; there is no carrier, and nothing takes the hull out of the match | None to keep: it is the kernel's existing home for a party with a zone. A different home needs a new order |
+| 4 | **The fire record starts the first time the pilot lets go in the match**, not at the match's opening: a hull that fired on the tank before that is not held to it | Low: record for every hull of a match from the opening, at the price of every match's hash moving |
+| 5 | **The pilot's other units are named at `MIND AWAY`** (and at a set while away). A side whose lead changes mid-match keeps the old naming until the new lead lets go | Low |
+| 6 | **Any word about a seat of the hull ends the practice**, a link lost and regained inside the grace included: the pilot reads "You are back at your station" and types `MIND AWAY` again. During the grace the hull is a link-dead pilot's, standing still. The revival's line ("it held your orders and fired nothing") is the engine's for every revival and is said here of a hull that held still | Low: let `Linkdead` pass `end_practice` |
+| 7 | **The seat is refused every order while away**; the pilot types `MIND BACK` first. The world's rule is "their first command wins"; here it would have meant every cockpit verb taking the controls as a side effect | Low: `hands_on` could take the controls instead of refusing |
+| 8 | **`EXIT` while away ends the practice and the hull fights.** A pilot who wants to leave the pod and keep the hull on its posture cannot | Medium: a posture that outlives the seat is the world's rule brought into a match, against Q-44-19 |
+| 9 | **The board says nothing of a practice**: the slot reads `seated`, to both sides, as nothing an attacker reads changes in the world (Q-45-16) | Low |
+| 10 | **A practice posture is the match's.** It lasts the match and the next match opens on `RETURN`. A restart ends every practice; a pilot who was away reads their word back afterwards, one who had only set it reads `RETURN` (the word was on the mirror, which is RAM) | Low |
+| 11 | **`MIND AWAY` takes no proxy guard.** A driver lent somebody else's crew member may let go and take back like any pilot: they stay at the station, which is the tactical discretion a seat is lent (doc 10 §19 T11), where `EXIT` is its abandonment. The first build guarded it; hosted CI's census of the guard's call sites (`mush-campaign` `e7c11`, doc 10b §3.11) counted the new site, and the guard was taken out as not owed rather than recorded | Low: one call, one row of that census |
+| 12 | **The kernel tells a match from a field by the arena's end condition** when it ends a practice, as it does for the fire record | Low: a flag of its own on the arena, which would be one more hashed field |
+| 13 | **A practice's end stops the hull** and leaves its heading, as a release does | Low: one line in `end_practice` |
+| 14 | **What a practice leaves on the hull**: whose it is and the fire record kept since (they read nowhere without the flag, and serve the pilot's next practice in the match), and what the mind remembers of having flown | Low: clear them in `end_practice` |
+
+**Not built, and where each lives.**
+
+- **Watching from outside the pod.** A pilot who has climbed out, and anybody in the team
+  room or the lobby, sees the board and nothing of a hull. Staff have `@arena/watch`.
+- **The clients.** The web panel and the TUI draw nothing for the keyframe's `posture` (AP.4
+  left it so) and nothing new for `order` on a watched hull; the line client's `STATUS`,
+  `MIND` and `WATCH` say it. A renderer's change; no unit names it.
+- **A pilot who is not the lead has no other unit**, so their `GUARD` behaves as `HOLD`. They
+  see the half of the rule that says a stranger's quarrel is not theirs.
+- **A practice in a detachment's practice roster** (`detachment/live.rs`). A pilot there may
+  type the three forms; what a roster's command does to a hull its mind flies on a posture
+  is AP.6's rule in the kernel (a command can only tighten the order) and was not exercised.
+- **AP.11**, the closing story.
+
+**Not pinned by a story.**
+
+- A pilot who is not the lead (their guard holding fire while the fill is hit). Story 1 pins
+  the stranger's quarrel on a second pilot's hull; the kernel test pins it on a hull with no
+  player named.
+- A lead that changes mid-match (default 5), a range, a hold match, an unarmed hull and a
+  wreck (`MIND AWAY` is refused on a wreck, as every order is).
+- The leash and a guard that runs out of rounds, in a match: AP.6's kernel tests hold them,
+  and nothing here changes them.
+- A second seat or a proxy driver in the practising hull (in source: a control naming
+  another seat ends the practice; `MIND BACK` and `MIND AWAY` take the helm's check and no
+  proxy guard), and `Busy` when the arena will not take a word.
+- A control the arena's inbox will not take. The world's half runs ahead of the offer, so
+  after an undelivered control the mirror says the practice is over while the arena still
+  holds it, and `MIND BACK` answers that the pilot holds the controls. It is the existing
+  failure of an undelivered control (the world's epoch is ahead of the arena's either way);
+  the next control that names the pilot ends the practice in the arena.
+- An order to the practising hull from another pilot. Read in the code: a pilot's hull is
+  in no squad of the match's record, so no `ORDER` reaches it; if one did, AP.6's rule keeps
+  its `HOLD FIRE` (Q-44-18).
+- The live task's tape replayed end to end from a story. The task's recording and the
+  replay's reading are each pinned in source.
+
+**Pinned values moved.** No state hash, ledger line, seal identity, corpus row or harness
+baseline field: a match nobody lets go in sends no word, records no fire and reaches none of
+the new arms. What moved, each because this unit changed the rule it asserts:
+
+| Assertion | Was | Is | Why |
+|---|---|---|---|
+| `tests/domain_arena/cockpit.rs` `m5_mind_profile_switches_...`, the pod's `MIND POSTURE GUARD` | refused, `POSTURE_OOC` | not asserted there; the `ap10_` stories set it | a pod sets a practice posture |
+| `arena_task` `ap3_a_posture_told_...` and `ap7_an_absent_word_...`, their last block | a practice match drops every word | it takes a word for a unit it holds and keeps none for one it does not | the same |
+| `match_::cockpit::tests` `m5_mind_is_the_seventeenth_selector_...` | the help and usage lines as AP.4 left them | the two forms named; `<rule or OFF>` is `<rule|OFF>` and "reads it" is "reads" in the usage line, to stay under 120 columns | two forms added |
+| `arena::weapons` `mw7_an_absent_players_mind_...`, its last block | "a practice match keeps no record" | the same assertion, said of a hull nobody named a player for | the record's new second case |
+| `match_::report::tests`, the span line's cases and its width test | two ways a mind comes to fly a tank | three | `HandOver::LetGo` |
+
+**Reviewed.** A second agent (Opus) read the diff adversarially, read-only, with the row and
+the rulings and not this note's conclusions, and a second pass read the fix that followed.
+Found sound, both times: one gate (`permits` untouched, no second gate); no read or write of
+`posture::record` and no call of `set_present`; a match nobody practises in sends no word,
+records no fire and keeps its hash and tape; the tape's boundary (settle, the words, the
+pulse) is the same live and in replay; IC fields are untouched (every field arena's end is
+its host's); every cockpit order goes through a door `hands_on` guards; the mind API and
+MW.13's files are not touched; no stale control can be the one that should end a practice;
+the kernel ends a practice in every same-pulse buffering it traced (letting go and a drop,
+letting go and taking back, a drop and a reclaim, a lost link and its release). Its findings:
+
+- **A drop while practising was not a drop as today.** The first build ended a practice from
+  the world; the task's buffer collapsed the hand-back under the release ("Why it is on the
+  control", above). Confirmed by reading `buffer_control`, and reproduced as mutation 21.
+  Fixed: `Arena::end_practice`. The stories only asserted "fires on a hull that never
+  fired", which passed either way; they now read the arena's own snapshot, and the kernel
+  test compares a practised hull with a never-practised one.
+- **`MIND BACK` took no helm check**, and any pilot-named control for the hull ended a
+  practice and reseated whoever it named. Fixed: both forms take the helm's check, and the
+  second pass's finding below settled the second seat.
+- **A second seat's `Live` left a practising hull its pilot's with the flag standing** (the
+  second pass; the first fix ended a practice only for the pilot who let go). Fixed: a
+  control naming any seat of the hull ends the practice, since any seat's control moves who
+  flies the hull.
+- **The posture stayed on the dropped hull**, where a mind a player wrote reads it
+  (`v.posture`). Fixed: the arena is told the word only while the pilot is away, and the
+  practice's end puts it back to `RETURN`.
+- **After a restart the debrief put the drop inside the practice's span** (the second pass:
+  the resumed mirror did not know who was practising, so the span was never closed). Fixed:
+  the mirror is rebuilt from the decoded arena, and story 5 reads the two spans.
+- **A hull handed back, or held through a lost link's grace, drove on by its mind's last
+  order** (the second pass). Fixed: the practice's end stops it.
+- **The refusal sentence had no row in the bot's table and contained another row's needle.**
+  Fixed: it is a constant of `practice.rs` with a row and words of its own.
+- **The help's new section sat inside "The match, and afterwards"**, so the paragraphs after
+  it read as the practice's. Fixed: a section of its own.
+- **"The same memory byte for byte" overclaimed** (the second pass). The seed a release
+  writes is the same; what the mind remembers of thinks it made while flying is kept, as
+  across any reclaim and drop. The note and the test say so now.
+- Left as recorded: the fire record and whose the hull is run on after a practice (default
+  14); a lead that changes keeps the old naming (default 5); a control the inbox refuses
+  after the world's half has run ("not pinned by a story"); an `ORDER` cannot reach a
+  pilot's hull (read in the code).
+
+**Verified, and how.** Linux is conclav.dev, a throwaway clone at main `e4e2f6e8e` with this
+unit's diff applied; Windows is this box.
+
+- **Mutation checks.** Twenty-two mutations, each one text replacement in a scratch copy of
+  the clone, built and run against the unit's in-source tests (`ap10_`) or its six stories or
+  both, then undone by writing the original text back. Every one fails the test named for
+  it:
+
+  | Mutation | What failed |
+  |---|---|
+  | `MIND AWAY` does not tell the arena the hull is an absent player's (the gate never reaches it) | all six stories; story 2 at "practising GUARD, the hull does not fire first" |
+  | A control naming a pilot does not end the practice in the arena | the drop-parity kernel test and the task's test; stories 2, 3, 5 and 6 (in story 2 the dropped hull never fires) |
+  | A practice set also writes the hull's own posture record | stories 1 and 4, at the record |
+  | The pod reads the hull's own posture record | story 1, at its first read |
+  | The kernel keeps no fire record in a match (main's rule) | the kernel's rule test; story 1, "the guard answers for its pilot's machine" |
+  | A lead's machines are not named as the lead's other units | story 1, the same line |
+  | Every hull of the side is named as the pilot's other unit | story 1, "fire on another pilot's hull is not a guard's to answer" |
+  | The seat's orders are taken while its mind has the controls | story 1, at the `HEADING` that should be refused |
+  | The replay does not apply a recorded absent word | the replay test |
+  | The task does not record the absent word on its tape | the task's recording test |
+  | A match's task drops the practice words (main's rule) | both of the task's tests; all six stories |
+  | A resumed match's mirror does not know who was practising | story 5, at the debrief's two spans |
+  | `MIND AWAY`'s hand-over names the pilot (it is a drop) | all six stories |
+  | The posture's word does not name the pilot | story 1 (the guard never answers) and story 5 |
+  | `MIND AWAY` opens no span on the pilot's debrief | stories 1 and 5, at the debrief |
+  | The world's mirror does not hear a practice end | all six stories ("a drop is not a practice", "a lost link is not a practice") |
+  | A practice's end leaves the posture on the hull its mind then flies | the drop-parity kernel test and the task's test; stories 2, 3, 5 and 6, at the snapshot |
+  | A practice's end leaves the hull driving on its mind's last order | the drop-parity kernel test |
+  | The rule that ends a practice runs in an IC field too | the field's kernel test |
+  | A posture set from a seat that holds the controls is told to the arena | story 3, at the dropped hull's snapshot |
+  | A practice's end does not hand the hull back to its pilot before the control applies (the first build's defect) | the drop-parity kernel test and the task's test |
+  | A control naming nobody ends a practice | the drop-parity kernel test; all six stories |
+
+- **The unit's own tests on the final tree** (Linux): the six stories, and 82 in-source
+  tests (`ap10_`, `ap3_`, `ap6_`, `ap7_`, `mw7_`, `m5_`).
+- **The whole of `domain_arena` and of `tacsim`'s in-source tests** (Linux, `cargo nextest
+  run -P ci`): 1,132 run and 1,132 passed; 2,314 run and 2,314 passed.
+- **The `#[ignore]`d tests that fly a match or replay a tape** (Linux, on the final tree):
+  the 24-mind 900 s tape replay (`m6_real_24_class_iii_...`), and the three steps of CI's
+  `tacsim-minds` cell (the twin corpus's pinned rows, the twin's whole-match hashes, the
+  pool's thirty). All pass with no pin moved. MW.5's filed-mind field story
+  (`c4_filed_mind_field`) passes; it failed once when run beside three mutation builds
+  (the escort was out of the field and the site record did not name its exit inside the
+  story's 420 s), and passed alone before and after on the same code.
+- **The bot's job** (`cargo nextest run -P ci -p mush-bot`, the two long binaries left out
+  as CI leaves them; Linux): 780 passed, on the tree before the second pass's fixes, which
+  touch nothing the bot reads. Its sentence census was run again on the final tree
+  (Windows): 25 passed.
+- **`mush-contract-tests`** on Linux and on Windows (the help lint, the command allowlist,
+  the census, the panic budget, the restriction lints, the fiat budget): 199 passed each,
+  nothing re-blessed.
+- `cargo fmt --check`, `cargo clippy --all-targets -D warnings` on `tacsim` and `mush-bot`,
+  CI's M7 memory-size clippy pass, and `cargo doc` under `-D warnings` with and without
+  `--document-private-items`: Linux and Windows.
+- **CI**: the branch's dispatch run and the pull request's CI on the head commit; the runs
+  are in the pull request's body, since a note cannot name the run of its own commit. The
+  branch's first dispatch failed one test, `mush-campaign`'s census of the proxy guard's
+  call sites (default 11): no local run had covered that crate.
+
+**Not verified.**
+
+- Nothing was run against a live server or over SSH, and nothing was deployed. The lines a
+  player reads were read in the test rig's line mode, not in the TUI or the web client.
+- The dispatch-only field stories other than MW.5's (`m8_world`, `m8_leaks`, the licensed
+  field pair) were not run by hand; the branch's dispatch runs them.
+- No harness baseline field moves, so the harness was not run.
+- The cost of `end_practice` is one comparison a control; it was not measured.
 
 ## AP.11
 
