@@ -4281,7 +4281,161 @@ At the target, on this box: nothing. Past it, or on another box:
 
 ## MW.21
 
-Not built.
+The completion story, with two accounts (doc 44 §7.1; first review, finding 9; second
+review, row 18). **Tests only**: no code under `src/` moved, no persisted record, verb,
+sentence, pin or ABI. One story,
+`crates/tacsim/tests/domain_field/mw21_completion.rs`,
+`mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins`, on the combined M8
+world (the production `LaunchComposition`).
+
+**What the story walks.**
+
+1. Two players, each a character on a gateway account of their own, each chartered by the
+   Co-op (the charter opens a player's wallet, 25,000cr). Neither is staff: a staff verb
+   typed by either answers `Permission denied.`
+2. The author writes a script with the workshop's verbs (`@mind/new`, `@mind/line`,
+   `@mind/save`), has the Registry rate it through its real trials (`@mind/rate`), files it
+   (`@mind/file`, twice: the charter's shell, then the filing) and lists it sealed at the
+   counter (`@mind/publish <filed> form=sealed`). The fee, 100cr, leaves the author's wallet.
+3. The buyer leaves her ship (`+ship/leave`), reads the counter's list (`+minds`, `+minds
+   <code>`), asks a quote (`+minds/buy`), pays it into escrow (`+minds/buy/pay`) and takes
+   the licence (`+minds/buy/complete`). 400cr leave her wallet, 380cr reach the author's,
+   and `+minds/holdings` reads her licence. She boards again (`+ship/board`).
+4. She seals it (`+ship/mind filed:<her licence> go`): the Roll opens one claim at her
+   berth. She files for Stickney (`+ship/undock stickney`) and her link is lost; past the
+   grace a mind has her helm.
+5. The server restarts with her on the corridor, the mind at her helm. At the Kirkwood
+   picket the mind she bought flies her for ten thinks, with a second restart after the
+   sixth. She reconnects with the eleventh on the host and types
+   `+tac/lock off`. Six steps later she quits. The mind has her at once, heaves her to,
+   stands her for customs, and she is cleared.
+6. She makes Stickney with nobody aboard connected. The claim closes. Six fires, a restart
+   and six fires later the Roll's book is the same. The buyer, back aboard, reads no mind
+   sealed.
+
+**The script** ("Warden") is written so that each thing the row asks is visible on the
+bubble's tape. Under the hail it locks the ship that hails her. Its first think asks a burn
+that would run the picket, with all her drive gives; from its second it brakes, shedding her
+drift over 24 equal burns it works out from her drift and keeps in its memory (the house
+default brakes with everything at once). Every think it asks a shot of each of her lasers.
+Hove to, it cuts her drive, which is the seat's word to submit her to customs. A cold hull
+it leaves cold, so the Registry's trials rate it Class I in 145 s.
+
+**The eight clauses, and the assertion that holds each.**
+
+| | The row asks | Held by |
+|---|---|---|
+| 1 | Two accounts, neither staff, by registered commands | `excursions::two_accounts` (two entries of the rig's account oracle, not equal); both connected; `@econ/mint` refused both; every submission a line stages is asserted to be its typist's and is landed on the composed path (`types`). The filing row's `requester` is the author; the author's wallet reads the fee less, then the price less the Registry's 5% more; the buyer's reads the price less; the one `roll_mind_personal_paid_licence` row whose `holder` is the buyer is not the owner's licence, and her `+minds/holdings` line names it |
+| 2 | She fits it and takes her out | `ship_mind::aboard`: dispatcher and principal the buyer, the mind `warden`, the licence her own, Class I over a governed Class II core, helm and sensors only. The Roll's `roll_mind_ic_claim` family holds one row for her hull, open, whose `open.operation` is the seal's claim, `open.dispatcher` the buyer and `open.licence` hers |
+| 3 | A choice the house default would not make | Two differences, both read off the bubble's tape. The story first flies **the same passage with nothing sealed** (`house_default_at_the_picket`: the same world, hull, core, berth, filed passage and link loss): the house default writes one burn of 820 mm/s², has her hove to in one step, locks nothing in any reading, traces only `BACKUP_` words and is cleared in three steps. The bought mind's first think writes `SetLockedTarget` on the corvette and no burn; its second writes one burn of 70 mm/s², which is what the script's arithmetic gives her 11.2 m/s of drift, and an eighth or less of the house default's; and at the step where the house default had her hove to she is still under the hail |
+| 4 | The absent-player limits | From the readings of the whole bubble, in order (`Watch::log`, 60-odd readings, each holding what the tape gained that names her ship): every entry is the lock on the corvette, a `CommandBurnMmps2`, or (while her crew has her) her own lock-off; no shot, no decoy, no rock worked. The run the first think asks is not written and her drift is unchanged after it (twice: each time a mind takes her). Between two readings with a mind at her helm her drift never grows and her reaction mass never rises. She never reads `RanThePicket`. Her posture stays STANDARD. Mining and trading: no row of the market moved (clause 5) |
+| 5 | Only the ship's own stores | `Books`, read when the mind takes her, at the reconnect and at her berth in Stickney: **every account in the world** has the same posted balance at all three (the author's and the buyer's are asserted again by name); the only typed rows that moved are under `tacsim/` and `inventory/`, so nothing of the market, the Roll or the economy; at most one inventory pool moved; her hold's provisions are as they were and her reaction mass is less. The buyer's licence row is byte for byte as it was |
+| 6 | A restart while it has her helm | Twice. **On the corridor before the picket** (main's fix of that leg, doc 35's "A crew that is away meets the picket", merged while this was built; no story flew it with a sealed mind): `aboard` is equal, the mind still has her helm with her buyer not connected, the Roll's claim rows are equal, and the picket's bubble opens on her at the end of the leg. **Inside the bubble, six thinks in**: `aboard` is equal to the seal read at her berth (class, principal, claim, digests) before and after; the Roll's claim rows are equal; the bubble reads back with the same step, lock, thrust, drift, status, think count, trace word and reaction mass, the mind at her helm, and no think in flight. The first step after it lands think seven: `WARDEN_HEAVE_TO` with the same thrust and nothing new on the tape. A mind that had lost its memory would have traced `WARDEN_RUN` |
+| 7 | She reconnects with its next action pending | Before: ten thinks landed, the brake on, the lock standing, `ThinkHost::in_flight` true for the bubble's batch at the step its record says it owes, and that step handed the host as many thinks as every step before it. At the reconnect, before any step: the helm is hers, the thrust is nought, the tape gained nothing, she hears the hand-back line. Her first command: `Target lock cleared.`, the tape gains exactly `SetLockedTarget { None }`, and `tacsim.space_bubble_tape` holds one row. Then six steps, each asserted: nothing on the tape for her, no lock, no thrust, her drift to the millimetre a second what it was, and fewer thinks handed to the host than a step with her mind took. **That the struck think would have acted** is shown in place: she quits, the mind has her on the instant, and the same script's first think in the same position writes the lock on the corvette again and its second a burn. **The blink** (see the mutation checks): back and gone inside one step, and the think that was on the host when she came back does not land in the next seat |
+| 8 | The claim closes exactly once when she docks | Docked at Stickney with her buyer not connected. Until the Close lands the book's row is the open row. After: one row for her hull, its `open` part unchanged, `closed.operation` the token `ic_claim_closed` answers, `closed.kind` `returned_to_base` at Stickney's host. After six fires, a restart and six more: the rows are equal, the same close token, no active claim, nothing aboard, the cursor resting on the closed claim. `+ship/mind` reads `MIND_NONE` |
+
+**What staff do** (the story's header says the same).
+
+| | Fiat | Why |
+|---|---|---|
+| 1 | Staff bind her hull to `tacsim.unit.dray_core_ii` (`ic_sortie_surface::fit`) | No ship carries a core and no route in play fits one (MW.13, "Not built"). **The one the gap forces** |
+| 2 | Staff carry the author to the counter, and the buyer there and back to the berth gallery (`@teleport`) | The M8 rig's counter is a room staff made, with no door. A rig gap, not the game's. The buyer leaves and boards her ship by her own verbs (a staff teleport of a character aboard a ship is refused) |
+| 3 | Her tank and locker are stowed by staff's hand (`excursions::docked_dray`) | Every ship story's rig. A pilot buys them at the chandlery; `cost_lane.rs` flies that |
+
+Nothing is minted. MW.5's and MW.13's stories top their pilot's wallet up for the filing
+fee (`c4_filed_mind_field::file_own_mind`); this story's author files from the wallet the
+charter opened, so that top-up is not needed there either. The story has its own copy of
+that helper for a named author (`writes_rates_and_files`), because the helper's file
+is held by another session (the fix of MW.5's flaky field story).
+
+The story itself drops and raises connections (a lost link, a reconnect, a clean QUIT),
+restarts the server over its kept store three times (`M8World::reboot_reconnecting`), and moves the
+clock: past the link-loss grace in one jump, to the instant each leg of her passage ends,
+and a second at a time inside the bubble. No wall-clock window is waited out.
+
+**Run time and tier.** 166 to 168 s on conclav.dev (Linux, unoptimized test build), of
+which the rating is 145 s, the house default's flight 7 s and everything after the filing
+about 7 s. Tier: nightly, in the `m8-gate-stories` job with the other one-rating stories
+(`test-tiers.toml`; `ci.yml`). It needs no pulse knob and no checkpoint: the M8 rig pumps
+the Registry as fast as it lands.
+
+**Repeats**, all on conclav.dev, each a batch run at once:
+
+| Text | Base | Batch | Passed | Wall |
+|---|---|---|---|---|
+| before the blink | `4efa11521` | four | 4 of 4 | 167 to 168 s |
+| before the blink | `4efa11521` | four, beside the six mutation runs | 4 of 4 | 170 to 173 s |
+| with the blink | `4efa11521` | four, beside one mutation run | 4 of 4 | 167 to 168 s |
+| with the blink | `4efa11521` | twelve | 12 of 12 | 167 to 171 s |
+| final: the corridor restart, main `1c96e57c1` merged | `1c96e57c1` | four | 4 of 4 | 166 to 168 s |
+
+No run failed. The box's load average was 2 to 15 through them, so "under load" here is up
+to twelve copies of the story at once and not a saturated box.
+
+**The CI dispatch.** At the first text (run 43510830838, `430a505b8`, before main moved):
+the story's job, "M8 MW.21 a bought mind flies its buyer's ship", passed on the hosted
+runner, 250 s for the story (the rating 217 s) and 11 min 47 s with its build. Every
+pull-request job of that run passed but one cell, `test (rest-server)`, red on mush-server's
+`player_market_commands::rate_queues_and_cancels_a_genuine_registry_preparation` (150 s, no
+assertion text in the log). That is the test MW.19's note records red once in its own
+dispatch: a story of the Registry's service, in a crate this unit does not touch. The run
+was cancelled with its long weekly jobs still going when main moved under it. The dispatch
+of the final head is named in the pull request.
+
+**Mutation checks** (conclav.dev, in the throwaway clone; each applied alone to the merged
+code, the story run, the edit dropped). M2 to M6 were run on the text before the blink, over
+`4efa11521`; nothing they touch, in the code or the story, has moved since. M1 and M7 were
+run on the final text over `1c96e57c1`.
+
+| | Mutation | The story |
+|---|---|---|
+| M1 | The hand-back does not strike the think in flight (`tick.rs`, `ThinkHost::forget`) | **fails** at the blink: the think collected for the seat she took back lands in the next seat (`WARDEN_RUN`, the lock, think one) where nothing should |
+| M2 | A sealed mind's seat may fire (`backup.rs`, `land_in_bubble`) | **fails** at its first think: the tape gains `FireOffensiveLasers` at the corvette |
+| M3 | A sealed mind's burns are free | **fails** at its first think: a burn of 820 mm/s² away from the corvette, her drift 12.84 m/s |
+| M4 | The seat does not take the sealed mind as a source (`backup.rs`, `sources`) | **fails**: `BACKUP_HEAVE_TO`, and no lock |
+| M5 | The hand-back does not cut the mind's burn | **fails** at the reconnect: thrust -70 with the helm hers |
+| M6 | A crew that quits is not handed over at once | **fails**: `Grace` where the mind should have her |
+| M7 | A hull whose crew is away does not meet the picket (`sim_routes.rs`: main's fix of the restart on an interdicted leg, undone) | **fails** after the restart on the corridor: "the Kirkwood picket's bubble opens on her" |
+
+M1 **passed** the story's first draft, which had the reconnect, the six quiet steps and
+the quit, and no blink. The pending think is kept from landing twice in the code: the
+hand-back strikes it from the bubble's batch, and the landing drops a backup mind's answer
+when no link-loss record with the helm stands on the hull (`tick.rs`, `land_bubble_think`),
+or when the record's think number is not the answer's. With the strike removed the second
+keeps her. The strike alone is what holds only when a new seat with the same think number
+stands on her by the next step, which is a link that comes back and drops again inside one
+step. The story now flies that: after the quit and one step, with the new seat's first
+think on the host, she connects and quits again; the next step lands nothing, and the step
+after lands a think collected after she left.
+
+**Found, not fixed.** None is a defect in a merged unit that the story had to work round.
+
+- **A burn of three kilograms costs her hold a tonne.** In the bubble her reaction mass
+  goes from 9,000 kg to 8,997 kg over both of the mind's tenures; her hold's pool, which is
+  in whole tonnes, reads 9 before the picket and 8 by the time she reconnects. The story asserts "less", not
+  a figure. By reading the numbers, not the code; not investigated.
+- **`+ship/mind` on a sealed hull answers one sentence of 154 columns** (`MIND_ABOARD`, for
+  this ship and licence). The story reads the seal from the claim book and does not assert
+  that line; every client line it does assert is checked under 120 columns (`fits`).
+- **A player needs staff to reach the M8 rig's counter.** The rig's, as above.
+
+**Not in it.**
+
+- **A second passage and a second dock.** The only passage out of Stickney is back through
+  the picket. "Closes nothing more" is held by six fires, a restart and six more fires.
+- **The mind outside a bubble.** She is on the corridor she filed from the link loss to her
+  berth, so the seat's two acts adrift (make for port, hold) are not asked of this mind.
+  MW.8's stories fly them for the house default.
+- **A rule program.** The script binds no rule row; MW.13's
+  `mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs` holds that.
+- **The story over SSH**, which waits on the space journey over SSH (doc 44 §7.1, "not
+  units").
+- **A shot that would land.** A sealed ship mind has no fire channel, so "never first" is
+  "never" here. Mutation M2 shows the story would see a shot if the seat let one through.
+
+**Test support that moved** (additive): in `domain_field/mw13_ship_mind.rs` eight helpers
+became `pub(crate)`; in `domain_field/excursions.rs` `pilot`, `hold_vault` and `pool` became
+`pub(crate)` and `two_accounts` is new.
 
 ## MW.22
 

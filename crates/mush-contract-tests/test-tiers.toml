@@ -198,6 +198,13 @@ id = "tacsim/tests::mw13_ship_mind::mw13_a_seal_does_not_outlive_its_core_or_its
 tier = "nightly"
 job = "m8-gate-stories"
 
+# Doc 44 unit MW.21: the completion story, two accounts from the workshop to her berth (one
+# rating).
+[[test]]
+id = "tacsim/tests::mw21_completion::mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins"
+tier = "nightly"
+job = "m8-gate-stories"
+
 # H3: the scale harness, against a disposable Redis.
 [[test]]
 id = "mush-contract-tests/tests::scale_harness::*"

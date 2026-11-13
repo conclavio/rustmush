@@ -135,6 +135,8 @@ mod m8_leaks;
 mod m8_world;
 #[path = "domain_field/mw13_ship_mind.rs"]
 mod mw13_ship_mind;
+#[path = "domain_field/mw21_completion.rs"]
+mod mw21_completion;
 #[path = "domain_field/one_picture.rs"]
 mod one_picture;
 #[path = "domain_field/review_36a.rs"]

@@ -55,12 +55,12 @@ fn record(rig: &mut Rig, hull: ObjId) -> Option<ShipEpochRecord> {
 }
 
 /// The hull's claim cursor.
-fn cursor(rig: &mut Rig, hull: ObjId) -> Option<ClaimCursor> {
+pub(crate) fn cursor(rig: &mut Rig, hull: ObjId) -> Option<ClaimCursor> {
     record(rig, hull).and_then(|record| record.claim.map(|claim| *claim))
 }
 
 /// Drop every connection `who` holds, uncleanly, so the presence hook reads a lost link.
-fn drop_link(rig: &mut Rig, who: ObjId) {
+pub(crate) fn drop_link(rig: &mut Rig, who: ObjId) {
     let conns: Vec<u64> = (1..=64)
         .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(who))
         .collect();
@@ -79,7 +79,7 @@ fn drop_link(rig: &mut Rig, who: ObjId) {
 }
 
 /// One wall second on, everything due fired and what it queued landed.
-fn one_second(rig: &mut Rig) {
+pub(crate) fn one_second(rig: &mut Rig) {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -89,7 +89,7 @@ fn one_second(rig: &mut Rig) {
 
 /// Wait the link-loss grace out at the play rate, and one second more for the mind's first
 /// think to land (doc 44 unit MW.11), then go back to the stories' rate.
-fn wait_out_the_grace(rig: &mut Rig) {
+pub(crate) fn wait_out_the_grace(rig: &mut Rig) {
     crate::excursions::set_rate(&mut rig.tw, 24);
     let past = rig
         .tw
@@ -149,7 +149,7 @@ fn at_the_picket(rig: &Rig, hull: ObjId) -> Option<AtThePicket> {
 /// **File for Stickney and lose the link on the corridor**: past the grace a mind has her
 /// helm. Answers the IC instant her first leg ends, which is where the Kirkwood picket's
 /// bubble opens on her.
-fn sail_and_lose_the_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> i64 {
+pub(crate) fn sail_and_lose_the_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> i64 {
     crate::excursions::set_rate(&mut rig.tw, 3_600);
     let ticket = crate::excursions::file_and_launch(rig, pilot, hull, "+ship/undock stickney");
     let boundary = ticket.plan.depart_ic + i64::from(ticket.plan.legs[0].secs);
@@ -167,7 +167,7 @@ fn sail_and_lose_the_link(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> i64 {
 }
 
 /// Come to the end of her first leg, where the picket's bubble opens on her.
-fn arrive_at_the_picket(rig: &mut Rig, hull: ObjId, boundary: i64) {
+pub(crate) fn arrive_at_the_picket(rig: &mut Rig, hull: ObjId, boundary: i64) {
     let _ = crate::excursions::to_ic(rig, boundary);
     assert!(
         at_the_picket(rig, hull).is_some(),
@@ -284,7 +284,7 @@ fn mw13_the_verb_refuses_a_draft_and_a_coreless_hull_and_the_house_default_locks
 
 /// Print why the claim's owners refuse a transition (their `ic_claim` target says so at debug
 /// and the player's sentence is generic), with the story's own log.
-fn claim_log() -> tracing::subscriber::DefaultGuard {
+pub(crate) fn claim_log() -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(
         tracing_subscriber::fmt()
             .with_ansi(false)
@@ -304,7 +304,7 @@ fn world() -> M8World {
 
 /// **Seal `licence` aboard the pilot's hull and see the claim open at her berth**: the verb's
 /// one submission landed, the cursor filed, and the port tick's arm opening the Roll's claim.
-fn seal_aboard(world: &mut M8World, licence: u64) -> Aboard {
+pub(crate) fn seal_aboard(world: &mut M8World, licence: u64) -> Aboard {
     seal_aboard_losing(world, licence, false)
 }
 
