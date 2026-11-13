@@ -2229,10 +2229,11 @@ with warnings denied; the lint job's memory-size pass; rustdoc with warnings den
 private items; `cargo test -p mush-contract-tests`; `cargo test -p mush-bot`. The
 memory-size pass failed once: one more field on the bubble took an older test's frame
 (`mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on`) from under 64 KiB to
-66,213 bytes, and its saved copy of the run is now kept on the heap. **Not run on this
-machine**: the rest of the tacsim suite, `domain_world`'s space stories among them
-(`voyage.rs`, which flies `RETURN` at the picket and at a cluster); they are the branch's CI
-run's. conclav.dev was not used: a gate run held it.
+66,213 bytes, and its saved copy of the run is now kept on the heap. Also here: the whole
+`domain_world` binary (267 passed), whose `voyage.rs` flies `RETURN` at the picket, at an
+interdictor and at a cluster, untouched by this unit. The rest of the tacsim suite and the
+dispatch-only stories are the branch's CI run's (below). conclav.dev was not used: a gate
+run held it.
 
 ## AP.10
 
