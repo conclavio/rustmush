@@ -195,6 +195,14 @@ pub struct Situation {
     /// read off the hull's own record (`crate::posture::record`) by the host that flies her,
     /// and `RETURN` for a ship with no row. The same word a unit on the ground reads.
     pub postures: BTreeMap<String, crate::posture::Posture>,
+    /// **The ships each hull that only answers fire may answer** (doc 45 unit AP.9; Q-44-38,
+    /// Q-45-8), by the hull's id in the bubble: a row for a hull flown on `HOLD` or `GUARD`
+    /// for an absent player, laid by the backup seat. Her view shows as hostile only the
+    /// contacts in her row; every other contact her party holds hostile reads neutral, as a
+    /// unit's does on the ground (`crate::arena::absent`). A hull with no row reads every
+    /// relation as her party holds it. The view is narrowed by this and never widened, and
+    /// the seat's own doors do not depend on it.
+    pub answerable: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 impl Situation {
@@ -206,6 +214,7 @@ impl Situation {
             stops: BTreeMap::new(),
             stopper: None,
             postures: BTreeMap::new(),
+            answerable: BTreeMap::new(),
         }
     }
 
@@ -406,6 +415,16 @@ pub fn space_mind_view(
         contact_map.insert(cid, other.id.clone());
 
         let rel = bubble.party_relation(observer.party, other.party);
+        // Doc 45 unit AP.9: a hull that only answers fire is shown as hostile only what
+        // she may answer.
+        let rel = match situation.answerable.get(ship_id) {
+            Some(may)
+                if rel == crate::arena::party::Relation::Hostile && !may.contains(&other.id) =>
+            {
+                crate::arena::party::Relation::Neutral
+            }
+            _ => rel,
+        };
         let rel_speed_mmps = relative_speed_3d_mmps(observer.vel_mmps, other.vel_mmps);
         let offset = [
             i128::from(other.pos_m[0]) - i128::from(observer.pos_m[0]),
@@ -771,5 +790,109 @@ mod tests {
         let kept: ContactBook =
             serde_json::from_value(serde_json::to_value(&book).expect("encodes")).expect("decodes");
         assert_eq!(kept, book);
+    }
+
+    /// **Doc 45 unit AP.9: a hull that only answers fire is shown as hostile only what she
+    /// may answer, and a ship she cannot detect still moves no byte of her view.** With a
+    /// row laid for her, a contact her party holds hostile reads neutral unless it is in the
+    /// row; a hull with no row reads it hostile as before. A ship her sensors do not hold,
+    /// added to the bubble and to her row, leaves her view the same bytes.
+    #[test]
+    fn ap9_a_hull_that_answers_is_shown_hostile_only_what_she_may_answer() {
+        use crate::arena::party::{Mark, Relation};
+        use crate::space::picket::{BELT_RAIDER_PARTY, CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY};
+
+        let mut bubble = LocalSpaceBubble::new("bubble.test.answerable", "domain.4", "Test", 1_000);
+        bubble.insert_ship(SpaceShipState::new_dray(
+            "hull.10",
+            "Salt Moth",
+            CARRIER_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        ));
+        for (id, party, at) in [
+            ("raider.1", BELT_RAIDER_PARTY, [8_000, 0, 0]),
+            ("customs.1", CUSTOMS_CORVETTE_PARTY, [-8_000, 0, 0]),
+        ] {
+            let mut ship = SpaceShipState::new_corvette(id, id, party, at, [0, 0, 0]);
+            ship.emcon = EmconPosture::ActiveCombat;
+            bubble.insert_ship(ship);
+        }
+        bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
+        bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, Some(Mark::Hostile));
+
+        let relations = |bubble: &LocalSpaceBubble, situation: &Situation| {
+            let mut book = ContactBook::default();
+            let (view, map) = space_mind_view(bubble, "hull.10", ObjId(7), &mut book, situation)
+                .expect("her view");
+            let by_ship: BTreeMap<String, Relation> = view
+                .contacts
+                .iter()
+                .filter_map(|row| map.get(&row.id).map(|ship| (ship.clone(), row.relation)))
+                .collect();
+            (by_ship, format!("{view:?}"))
+        };
+        let open = Situation::open(1_000);
+        let (as_held, _) = relations(&bubble, &open);
+        assert_eq!(as_held.get("raider.1"), Some(&Relation::Hostile));
+        assert_eq!(as_held.get("customs.1"), Some(&Relation::Hostile));
+
+        // A row with only the raider in it: customs read neutral, the raider hostile.
+        let mut answering = Situation::open(1_000);
+        answering.answerable.insert(
+            "hull.10".to_owned(),
+            std::collections::BTreeSet::from(["raider.1".to_owned()]),
+        );
+        let (narrowed, bytes) = relations(&bubble, &answering);
+        assert_eq!(narrowed.get("raider.1"), Some(&Relation::Hostile));
+        assert_eq!(narrowed.get("customs.1"), Some(&Relation::Neutral));
+        // An empty row: nobody reads hostile. The row never makes a contact hostile.
+        let mut nobody = Situation::open(1_000);
+        nobody
+            .answerable
+            .insert("hull.10".to_owned(), std::collections::BTreeSet::new());
+        let (none, _) = relations(&bubble, &nobody);
+        assert!(none.values().all(|relation| *relation == Relation::Neutral));
+        let mut widened = Situation::open(1_000);
+        bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, None);
+        widened.answerable.insert(
+            "hull.10".to_owned(),
+            std::collections::BTreeSet::from(["customs.1".to_owned()]),
+        );
+        let (not_widened, _) = relations(&bubble, &widened);
+        assert_eq!(
+            not_widened.get("customs.1"),
+            Some(&Relation::Neutral),
+            "a ship in her row that her party does not hold hostile is not shown hostile"
+        );
+        bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, Some(Mark::Hostile));
+
+        // A dark ship far off that she cannot detect, sorting first, and in her row.
+        let mut unseen = SpaceShipState::new_corvette(
+            "a.unseen",
+            "Unseen",
+            BELT_RAIDER_PARTY,
+            [0, 150_000, 0],
+            [0, 0, 0],
+        );
+        unseen.emcon = EmconPosture::Ghost;
+        unseen.heat_permille = 0;
+        let observer = bubble.ships.get("hull.10").expect("her").clone();
+        assert!(
+            !crate::space::commands::is_bubble_ship_detected(
+                &observer,
+                &unseen,
+                bubble.ic_timestamp_s
+            ),
+            "the rig's unseen ship is one she cannot detect"
+        );
+        bubble.insert_ship(unseen);
+        answering
+            .answerable
+            .get_mut("hull.10")
+            .expect("her row")
+            .insert("a.unseen".to_owned());
+        let (_, with_unseen) = relations(&bubble, &answering);
+        assert_eq!(with_unseen, bytes, "her view is the same bytes");
     }
 }

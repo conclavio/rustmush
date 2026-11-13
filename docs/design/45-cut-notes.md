@@ -2006,7 +2006,232 @@ passing back.
 
 ## AP.9
 
-Not built.
+Space reads the same posture (doc 45 §7.1; Q-45-23, Q-45-24, with Q-45-7, Q-45-8, Q-45-12
+and doc 44's Q-44-38). It is also the follow-up doc 44's MW.9 note left as "return fire in
+space". **The mind ABI did not move**: it is `rhai=1.26.0;api=9;stock=3`. Paths are under
+`crates/tacsim/src/` unless given.
+
+**What a ship could do with a posture before this unit.** Read it, and nothing else. AP.3
+put the word in a space mind's view (`v.posture`, off the hull's own record), no verb set it
+on a ship, the house default did not read it, and the backup seat dropped every lock and
+every shot whatever had been fired at her (`Seat::ABSENT`, `FireRule::Never`). A bubble kept
+no record of which ship had fired on which: `Relations::fired` is by party.
+
+**Built.**
+
+- **One record, the same words, and a verb** (`posture/order.rs` `ship`, `port/ship.rs`).
+  A ship's posture is the attribute every unit's is (`posture::record`, AP.3). No second
+  record was grown. `+ship/posture` reads it anywhere, and to a held character too;
+  `+ship/posture return|guard|hold` sets it at once for whoever commands her (`helm_of`),
+  from aboard her, through the record's one writer. It is refused from an OOC room by AP.4's
+  sentence, and off her by "A posture is an order to a ship in the world. Set The <name>'s
+  from aboard her." `+ship` shows it when it is not the default. Help: `docs/help/ships.md`,
+  "Her posture", and a line in `docs/help/field.md`, "Postures".
+- **The bubble records whose fire has arrived on whom, by ship**
+  (`space/bubble.rs`, `LocalSpaceBubble::fired_on`, `fired_on_by`). Written where a shot's
+  flight ends on its target, hit or miss, as the arena writes at an impact: a beam's shot; a
+  slug at the end of its flight, struck or dodged; a torpedo that strikes, or that her side
+  stops short of her (a defensive beam, a point-defence burst, a decoy). It is part of the
+  bubble's document, absent while nobody has fired, so a restart reads it back, and it is
+  folded into the bubble's state hash when it is not empty. A stand-down does not clear it.
+- **One gate** (`space/applier.rs`). `FireRule` has a third variant, `Answer`, and the seat
+  hands the applier `Answers`: the ships whose fire has arrived on her, whether she stands
+  guard, and the ships whose fire has arrived on another unit of her player. `Answers::permits`
+  calls `arena::absent::permits`, the ground's rule, with those facts and nothing else; no
+  second rule was written. The applier asks it at its two doors. A `lock` on a ship she may
+  not answer is dropped, because a bubble's fire commands take their target from the lock.
+  A shot at a lock she may not answer is dropped whoever set that lock (a crew's lock left
+  standing is not a target). The seat has no act that mines or trades.
+- **The seat reads the posture** (`space/backup.rs`, module head "the posture her player
+  left on her"; `standing`, `answers_of`, `flown`, `complying_with`, `player_of`,
+  `stand_guard`).
+  - `RETURN` is what it was: the filed-port return outside a bubble; inside one she heaves
+    to when stopped and never locks or fires (`FireRule::Never`).
+  - `HOLD` and `GUARD` outside a bubble: she holds where she is. The seat reads a passage
+    asked for as a hold, so no source can take her home against the word, and says once
+    "[SPACE] Backup mind: holding station where she is; her posture is HOLD."
+  - `HOLD` inside a bubble: the same helm as `RETURN` (the one burn let through is the one
+    that heaves her to; hove to under a customs hail she is submitted to inspection), and
+    the house default may answer a ship whose fire has arrived on her.
+  - `GUARD` inside a bubble: as `HOLD`, and the house default may also answer a ship whose
+    fire has arrived on another hull of her player in the bubble (AP.6's one widening).
+  - The first time she answers, her crew are told "[SPACE] Backup mind: returning fire."
+    Her own shots go with the step's events, so the black box has them.
+- **Who asks to fire: the house default** (`content/minds/linkdead_return.rhai`). On the
+  ground a posture lays a standing order the stock mind already obeys. A bubble has no
+  orders, and the house default never asked to fire, so with the gate alone nothing would
+  have answered. The doctrine now reads `v.posture`, which AP.3 gave it: on `HOLD` and
+  `GUARD` inside a bubble it locks the nearest contact its view shows hostile and fires what
+  is ready, then flies its helm as before; outside one it asks to hold. It is a source
+  change and not an API change: no getter, intent or kernel moved, and the doctrine's digest
+  is pinned nowhere.
+- **What the mind is shown** (`space/view.rs`, `Situation::answerable`). A hull flown on
+  `HOLD` or `GUARD` is shown as hostile only the contacts she may answer; every other
+  contact her party holds hostile reads neutral, as on the ground since MW.7. Narrowed,
+  never widened, and the seat's doors do not depend on it. On `RETURN` the view is the bytes
+  it was.
+- **`arena::absent::flown_as`** (`arena/absent.rs`): the rule that reads a `GUARD` over what
+  a unit carries, lifted out of `flown` as a pure function so the bubble reads it too.
+  `flown` calls it; nothing the arena does changed.
+- **A carrier on her pad is told `HOLD` whatever her record says** (`field/posture.rs`,
+  `flown_by`). Until this unit no verb could set a carrier's posture, so only `RETURN` was
+  mapped. A carrier is a ship, and `+ship/posture` can now leave `GUARD` on her record.
+
+**What was settled from the code.**
+
+- **Holding station, for a hull under way when the bubble opens.** She is on a passage, and
+  a passage is her player's own act (Q-44-45): the seat never thinks for a hull on a
+  corridor, under any posture, so she keeps it. Inside the bubble her drive is cut and she
+  keeps the way she had; the seat lets through the burn that heaves her to and no other.
+  She does not brake to rest of her own accord: a Dray's drive gives under 1 m/s² and she
+  enters a picket's bubble 25 m/s off it, and a hull that stopped for nobody would never
+  leave. When the bubble lets her go she is on her passage again, at the leg she left.
+- **`HOLD` and customs.** While a picket's or an interdictor's stop on her stands, and
+  after it has cleared her, the ship that stopped her is not one she answers, whatever
+  arrived from it (`complying_with`). A hull that ran is past that. Without this rule a
+  `GUARD` hull would take up the fight with an interdictor that fired on her player's other
+  hull, be stood down when she hove to, and take it up again from the ship-by-ship record,
+  which a stand-down does not clear.
+- **A hull that cannot defend herself.** Read as on the ground: on `GUARD` with nothing to
+  fire she is flown as `HOLD`; on `GUARD` with her drive section destroyed, or with no beam
+  and no round left, as `RETURN`. Her record is kept. Outside a bubble the seat reads the
+  record alone, where `HOLD` and `GUARD` do the same thing.
+- **Presence** is MW.8's rule and was not touched.
+- **Each carrier is a party of its own in a bubble, and carriers are marked Friendly to each
+  other when they join.** So a `GUARD` hull's party does not hold hostile a ship that fired
+  on her player's other hull, and the bubble would refuse the shot the gate lets through.
+  When she stands guard the seat marks that ship's party hostile in her own party's book
+  and no other (`stand_guard`). The mark is made on the bubble, not through the tape, as a
+  clearance and a stand-down are.
+- **No leash in space.** A guard that may not burn cannot leave where it stands.
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **A mind sealed aboard keeps the helm and the sensors under every posture, and nothing answers fire for her.** By ruling a ship's seal carries no fire channel (Q-44-26), and the seat lands one think, the first source's. So a player who seals a mind of their own on a ship gives up the return fire `HOLD` and `GUARD` give the house default. The other reading is that the house default's think is landed beside the sealed mind's and answers under the gate | **Medium.** `space/thinks.rs` answers one think a hull: it would have to hand back the house default's as well, and the seat would have to rule whose lock stands, the sealed mind's sensor lock or the answering lock. No record moves |
+| 2 | **On `RETURN` she still never fires**, in a bubble, though Q-44-38 would let her answer a ship that fired on her. It is doc 35 §11 `B-4` as it was built, and it keeps the three words different: `RETURN` runs home, `HOLD` and `GUARD` stay and answer | Low: one arm in `backup.rs` (`answers_of` answers `None` on `RETURN`) and one test in the doctrine |
+| 3 | **She never answers the ship she has hove to for**, while its stop stands or after it cleared her | Low: one filter (`complying_with`) |
+| 4 | **Holding station inside a bubble is a cut drive, not a stop.** She keeps her drift | Low: `BurnRule` for a hull with no stop on her |
+| 5 | **What "arrived" means.** A torpedo her side stops short of her counts; one that burns out and is lost does not | Low: one call in `bubble.rs` |
+| 6 | **Whose a ship is**: whoever commands her by charter or title (`port::coop::helm_holder`), if a player. A cast hull and a hull a non-player commands are nobody's | Low |
+| 7 | **A ship's posture is set from aboard her and by no relay.** A rig's goes over the field's comms relay; nothing carries an order to a ship | Medium: a relay for ships is a new transport |
+| 8 | **Only her commander sets it** (the helm `+ship` reads), not a crew member or a passenger aboard | Low |
+| 9 | **A carrier on her pad is told `HOLD` whatever her record says.** A carrier that stood guard over her player's rigs from the pad is not built | Low to map `GUARD` through; what a guarding carrier does on the ground is AP.7's question |
+| 10 | **The record is folded into the bubble's state hash** when it is not empty. No bubble hash is pinned by value anywhere; the replay tests compare a bubble with its own replay | Low |
+| 11 | **A hull left adrift on `HOLD` or `GUARD` stays until her player comes back.** Nothing sends her home when her stores run low | Low: a floor in `land_adrift` |
+
+**The acceptance, and what holds each.** The stories are in
+`crates/tacsim/tests/domain_field/space_ap9.rs`, on the fitted excursions rig (the shipped
+lane: a passage from Ceres to Stickney crosses the Kirkwood picket, whose bubble holds the
+customs corvette and the belt raider). Every act is a registered command typed by a player
+who is not staff. **No staff fiat is used**, and the stories write no module state.
+
+| The row asks | Held by |
+|---|---|
+| A ship and a rig of one player, both set to `HOLD`, both stay and both hold fire | **The record half**: `ap9_one_player_sets_a_ship_and_a_rig_to_hold_by_the_same_word_on_the_same_record`: one player on a pad sets the Dray-P by `+ship/posture hold` and her rig by `+tv/1 posture hold`, and `posture::record::of` reads `HOLD` for both, across a restart. **The rig's flying** is AP.6's and AP.7's, asserted through that record and not flown again here: `field_ap6::ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour`, `field_ap7::ap7_the_same_rig_on_hold_is_still_there_at_demotion_and_its_plan_runs_on`. **The ship's**: she stays (`ap9_a_ship_left_at_a_cluster_holds_station_on_hold_and_guard_and_makes_for_port_on_return`) and she holds fire (the picket story below: before the raider's fire arrives she has locked and fired on nobody, though her party holds the raider hostile from the bubble's opening) |
+| The ship set to `GUARD` returns fire on the hull that hit her and not on one that hit a stranger | `ap9_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_by_her_posture` (her arm on `GUARD`: her fire arrives on the raider and on nobody else, with the corvette and a second pilot's ship beside her) and `ap9_a_ship_left_on_hold_or_guard_does_not_answer_for_a_stranger` (the second pilot runs the picket, the raider opens on them, and she locks nothing and fires on nobody). On the bubble's own step, with no world: `space::tick::thinks_tests::ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture` |
+| A ship on a plan, interdicted, complies under `HOLD` and is on her plan again after the bubble | The first story's `HOLD` arm: she hove to by her mind's own burn and customs cleared her before the raider lit, she never ran, and once the picket lets her go she is under way on her filed passage, and still is after a restart |
+| (§7) Changing the posture changes what the ship does | The same ship, hit by the same hull, answers on `GUARD` and on `HOLD` and not on `RETURN` (the first story, and the tick-level test); the same ship at the same cluster holds station on `HOLD` and `GUARD` and makes for port on `RETURN` |
+| (the brief) The contact picture, the presence picture, and a hull she cannot detect | `space::view::tests::ap9_a_hull_that_answers_is_shown_hostile_only_what_she_may_answer`: a ship her sensors do not hold, added to the bubble and to the set she may answer, leaves her view the same bytes; MW.9's own pin is untouched and passes. Nothing an attacker reads moved: no feed, panel, contact row or presence row carries the posture, the record of arrivals or what she may answer (`holotank_feed`, `cockpit_feed` and `surface/presence.rs` are not touched by this unit) |
+
+What separates `GUARD` from `HOLD` in space, an answer for another hull of the same player,
+is pinned at the seat and not by a story: `space::backup::tests::ap9_what_a_hull_may_answer_is_read_off_the_bubbles_record_by_her_posture`,
+`ap9_standing_guard_marks_only_the_party_that_fired_on_her_players_unit` and
+`space::applier::tests::ap9_a_guard_answers_for_her_players_other_unit_and_a_hold_does_not`.
+No route in play puts two hulls one player commands into one bubble: a player commands the
+hull `+ship` reads, and a second hull of theirs has no crew to lose a link.
+
+**For AP.11.** `space_ap9::left_on_posture_to_the_picket(rig, pilot, hull, posture,
+not_before)` has the ship's commander set the posture from aboard her, files her passage
+for Stickney, drops their link, jumps the grace and brings her into the picket's bubble
+with the corvette and the raider (and any pilot the story sailed first, whose first leg
+ends at `not_before`). `space_ap9::ship_at_the_picket(rig, hull)` reads what she did: her
+lock, the ships her fire has arrived on (`answered`), the ships whose fire has arrived on
+her (`fired_on_by`), what customs made of her, her thrust, her mind's last word and the
+seat's last act. `space_ap9::until_ship` steps a second at a time until a reading holds.
+They take `excursions::Rig`, which the combined M8 world carries as `world.rig`.
+
+**Not built, and for whom.**
+
+- **Return fire for a hull with a mind sealed aboard** (default 1). The owner's call.
+- **A relay that carries a posture to a ship** (default 7).
+- **A carrier that guards from her pad** (default 9).
+- **Stances in space** (Q-45-24): not in this design.
+- **A story for `GUARD`'s widening**, and for the two readings of a hull that cannot defend
+  herself: unit tests only, for the reason above and because no story disarms a ship.
+- **Nothing an attacker reads says she is flown by a mind**, as on the ground (Q-45-16).
+- **A leash**: none in space.
+
+**Mutation checks.** Each was applied by an edit over a WIP commit, in batches of mutations
+that fail different tests, the `ap9_` unit tests or the four stories run, and the edit
+undone by the reverse edit. All were caught.
+
+| | Mutation | Fails |
+|---|---|---|
+| U1 | The first door lets a seat that answers lock any ship | `space::applier` `ap9_a_seat_that_answers_locks_and_fires_only_on_a_ship_that_fired_on_her` |
+| U2 | The second door trusts the lock that stands | `ap9_a_shot_at_a_lock_she_may_not_answer_is_dropped_and_return_never_fires` |
+| U3 | `RETURN` is given something to answer | `space::backup` `ap9_what_a_hull_may_answer_is_read_off_the_bubbles_record_by_her_posture` |
+| U4 | She answers the ship she complies with | The same |
+| U5 | `HOLD` is given `GUARD`'s widening | The same |
+| U6 | Her player's own unit may be answered | The same |
+| U7 | A beam's shot is not recorded | `ap9_the_bubble_records_whose_fire_arrived_on_whom_and_a_snapshot_keeps_it` |
+| U8 | A slug's arrival is not recorded | `ap9_a_slug_and_a_torpedo_are_on_her_record_when_their_flight_ends` (its slug half) |
+| U9 | A torpedo is recorded neither when it strikes nor when it is stopped | The same (its torpedo half) |
+| U10 | The view is not narrowed | `space::view` `ap9_a_hull_that_answers_is_shown_hostile_only_what_she_may_answer` |
+| U11 | Standing guard marks both parties' books | `ap9_standing_guard_marks_only_the_party_that_fired_on_her_players_unit` |
+| U12 | Outside a bubble the seat does not hold her to her posture | `ap9_a_passage_asked_for_on_hold_or_guard_is_a_hold` |
+| U13 | A mind sealed aboard is given the answering seat | `ap9_a_mind_sealed_aboard_is_never_given_the_answering_seat` |
+| U14 | An unarmed `GUARD` is not flown as `HOLD` | `ap9_a_guard_that_cannot_defend_herself_is_flown_as_on_the_ground` |
+| U15 | A `GUARD` that cannot defend herself is not flown as `RETURN` | The same |
+| U16 | The house default does not ask to answer | `space::tick::thinks_tests::ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture` |
+| S1 | The verb sets a posture from off the ship | The record story |
+| S2 | The house default does not ask to hold station (the seat still holds her) | The cluster story: her mind's word is not `BACKUP_HOLD_STATION` |
+| S3 | The seat never answers | The picket story: on `GUARD` her fire arrives on nobody |
+| S4 | The seat lets her answer any ship her party holds hostile, with U10 | The stranger story: she locks and fires on the raider |
+
+U1 with U10 also fails the tick-level test, where she locks the raider before it has fired.
+S4 alone changes nothing a story can see: the doors and the narrowed view each stop the house
+default by themselves, which is why the doors are pinned at the applier with a mind that asks
+anyway.
+
+**Not pinned by a test.** That a carrier's arena is told `HOLD` when her record says
+`GUARD` (`field/posture.rs`; the function is `pub(crate)` and no story opens a field round a
+carrier set to `GUARD`). That `+ship/posture` with no word is answered to a held character.
+The two lines her crew are told.
+
+**Persisted records.** `LocalSpaceBubble` gains `fired_on`, absent on the wire when empty: a
+bubble written before reads as it did. `BackupAct` gains two words, `holding_station` and
+`returning_fire`; a server older than this unit would not read a record that holds one. No
+definition, descriptor, manifest or seal moved, and no pin was re-pinned. The house
+default's source changed, so its digest did: a store that names an operator's own house
+default by digest (`tacsim:doctrine:linkdead_return`) still flies that one, which does not
+read the posture, and the seat's rules hold it all the same.
+
+**Found, and not fixed.**
+
+- **No carrier can fire on another carrier in a bubble, by any command** (by reading, not
+  run). A carrier that joins a bubble is marked Friendly with every carrier in it, both ways
+  (`space/tick.rs`, the join), a mark stands ahead of `Relations::fired`, and no `+tac` or
+  `+helm` switch marks a party. So `+tac/beam` at another player's ship is always refused as
+  "Cannot fire on a friendly contact." The only ships a carrier can fire on are the raider,
+  an interdictor, and the corvette once she has run. It is why a stranger's ship cannot be
+  the hull that fires in these stories.
+- **A hull left adrift on `HOLD` has nothing that brings her home** when her stores run low
+  (default 11).
+
+**Verified, and how.** On Windows, at this branch's head: the thirteen `ap9_` unit tests
+with the space suite's `mw9_`, `mw11_` and `mw13_` tests beside them; the four stories (about
+twenty seconds together, no wall-clock window waited out: the link-loss grace is jumped and
+a bubble is stepped a second at a time, as it flies); `cargo clippy -p tacsim --all-targets`
+with warnings denied; the lint job's memory-size pass; rustdoc with warnings denied and
+private items; `cargo test -p mush-contract-tests`; `cargo test -p mush-bot`. The
+memory-size pass failed once: one more field on the bubble took an older test's frame
+(`mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on`) from under 64 KiB to
+66,213 bytes, and its saved copy of the run is now kept on the heap. **Not run on this
+machine**: the rest of the tacsim suite, `domain_world`'s space stories among them
+(`voyage.rs`, which flies `RETURN` at the picket and at a cluster); they are the branch's CI
+run's. conclav.dev was not used: a gate run held it.
 
 ## AP.10
 

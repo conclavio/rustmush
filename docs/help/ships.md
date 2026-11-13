@@ -243,6 +243,42 @@ default may not. Come back and the helm is yours at once.
 If her core is changed, or she is no longer yours to fly it on, the mind
 stands down and its claim is closed.
 
+## Her posture
+
+A ship holds a posture, as every unit does: the standing word a mind reads when
+her crew has no link (`help field`, *Postures*). It is the same record and the
+same three words.
+
+  +ship/posture                       the posture she holds
+  +ship/posture return|guard|hold     set it, from aboard her
+
+Set it from aboard her before you leave her: no relay carries an order to a
+ship. It is refused from an OOC room. `+ship` shows it when it is not RETURN.
+
+- **RETURN**, the default. Five minutes after her last crew link drops (at once
+  if you QUIT away from port) a mind makes for the port she filed for. In an
+  encounter she heaves to for a ship that stops her, and she never fires.
+- **HOLD**. She stays. Adrift or at a cluster she holds where she is and makes
+  for no port. In an encounter she heaves to and submits to customs as on
+  RETURN, and she returns fire on a ship that has fired on her and on no other.
+- **GUARD**. As HOLD, and she also returns fire on a ship that has fired on
+  another ship of yours in the same encounter. A ship with nothing to fire
+  flies GUARD as HOLD; one whose drive is destroyed flies it as RETURN. The
+  word you set is kept.
+
+Under every posture she never fires first, never fires on a ship that is only
+marked hostile, and never fires on the customs or picket ship she has hove to
+for. She does not mine or trade. A ship on a filed passage keeps it: if an
+encounter opens on her way she flies her posture inside it, and she is on her
+passage again when it lets her go.
+
+If you have sealed a mind of your own aboard (above), it keeps her helm and
+her sensors under every posture and has no fire channel, so nothing returns
+fire for her.
+
+On the ground she is your carrier, and on her pad she stays whatever her
+posture (`help field`).
+
 To lift with a rig or a detachment unit still out on the ground, name it with
 `leave=` on a live `+ship/lift` or `+ship/undock` (`help field`).
 

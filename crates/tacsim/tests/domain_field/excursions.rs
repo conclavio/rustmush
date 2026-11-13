@@ -1080,6 +1080,25 @@ pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (Ob
     (pilot, row)
 }
 
+/// **A Dray-P docked at Ceres, her pilot aboard** (doc 45 unit AP.9): [`prospector`], then
+/// `tank` t of reaction mass and `locker` crew-days loaded, and boarded. Not sailed.
+pub(crate) fn docked_prospector(
+    rig: &mut Rig,
+    (who, seed, name): (&str, i64, &str),
+    (tank, locker): (u64, u64),
+) -> (ObjId, HullRow) {
+    let (pilot, row) = prospector(rig, who, seed, name);
+    load(
+        rig,
+        &row,
+        tank,
+        locker,
+        9_300 + u64::try_from(seed).unwrap_or(0) * 10,
+    );
+    board(rig, pilot);
+    (pilot, row)
+}
+
 /// **A chartered Dray docked at Ceres, her pilot aboard** (doc 44 unit MW.13): chartered,
 /// `tank` t of reaction mass and `locker` crew-days loaded, boarded. Not refitted, no rig
 /// leased, not sailed: she is at her berth in a port.

@@ -7,9 +7,37 @@
 // What it may ask: `helm(word)` with `speed(n)` (a burn; outside a bubble `speed(n)` above
 // nought makes for port by the ruled order), `hold()` (cut the drive; hove to under a customs
 // hail, submit to inspection; outside a bubble, hold where she is), `emcon(on)` and
-// `trace(word)`. `lock`, `fire` and `arm` are refused by the seat.
+// `trace(word)`. `arm` is refused by the seat, and so are `lock` and `fire` on RETURN.
+//
+// The posture her player left on her (doc 45 AP.9), `v.posture`: on RETURN she makes for
+// port. On HOLD and GUARD she holds where she is, and inside a bubble answers the nearest
+// ship her view shows hostile. The seat shows her as hostile only a ship the absent
+// player's rule lets her answer, and drops any other lock or shot.
 fn think(v, c) {
     let s = space(v);
+    let stays = v.posture != "return";
+    if s != () && stays {
+        let at = ();
+        let at_range = 0;
+        for row in v.contacts {
+            if row.relation != "hostile" || row.reads_dead == true {
+                continue;
+            }
+            if at == () || row.range_m < at_range {
+                at = row.id;
+                at_range = row.range_m;
+            }
+        }
+        if at != () {
+            lock(at);
+            for w in v.weapons {
+                if w.ready_in_ms == 0 {
+                    fire(w.id, 1);
+                }
+            }
+            trace("BACKUP_ANSWER");
+        }
+    }
     if s != () && s.stop == "hailed" {
         // She is told to heave to: end her drift against the ship that told her, by a burn
         // along the way that ship is moving against her, sized to end it in the step ahead.
@@ -43,6 +71,12 @@ fn think(v, c) {
         // Inside a bubble with nobody stopping her: cut whatever burn stands, and coast.
         hold();
         trace("BACKUP_COAST");
+        return;
+    }
+    if stays {
+        // Outside a bubble, left on HOLD or GUARD: she stays where she is.
+        hold();
+        trace("BACKUP_HOLD_STATION");
         return;
     }
     let motor = v.motor;

@@ -652,6 +652,10 @@ order reaches one:
   holds the helm. `MIND POSTURE` with no word reads it.
 - **From aboard its carrier**, or from the rig's own cab on open ground:
   `+tv/2 posture hold` sets rig 2's. `+tv/2 posture` reads it.
+- **A ship's, from aboard her**: `+ship/posture hold`. It is the same record
+  and the same words, and it is what a mind flies her on in space when her
+  crew has no link (`help ships`, *Her posture*). On her pad she is your
+  carrier and stays, whatever the word.
 - **Over the relay.** If you are on the site but neither aboard the carrier
   nor in that rig's cab (in another rig's cab, say), the same
   `+tv/2 posture hold` goes to rig 2 as an order over the comms relay. Jamming

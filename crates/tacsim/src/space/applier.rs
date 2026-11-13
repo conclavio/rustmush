@@ -36,11 +36,16 @@
 //! difference: it may lock ([`Seat::lock`]). Every shot it asks is dropped, as the house
 //! default's is, and its burns are held to the same rule.
 //!
-//! **The seam for return fire.** Q-44-38 lets such a mind answer a unit that has fired on
-//! it, and nothing else. That rule is one gate, built in the arena by doc 44 unit MW.7; the
-//! space half is [`FireRule`], which today has `Free` and `Never`. The follow-up adds the
-//! variant that asks MW.7's rule, and the record of who fired on whom in a bubble
-//! (`Relations::fired` is by party, and the rule is by unit).
+//! **Return fire** (doc 45 unit AP.9; Q-44-38, Q-45-8, Q-45-23). The absent player's rule is
+//! one gate, `crate::arena::absent::permits`, and the bubble calls it: a seat whose
+//! [`FireRule`] is `Answer` is handed [`Answers`], the facts the gate reads (the ships whose
+//! fire has arrived on this one, whether she stands guard, and the ships whose fire has
+//! arrived on another unit of her player), and the applier asks the gate at its two doors, a
+//! `lock` and a `fire`. A lock on a ship she may not answer is dropped, because a bubble's
+//! fire commands take their target from the lock; a shot at a lock she may not answer is
+//! dropped whoever set the lock. The backup seat gives `Answer` to the house default of a
+//! hull her player left on `HOLD` or `GUARD` (`super::backup`), and `Never` on `RETURN` and
+//! to every mind sealed aboard.
 //!
 //! # A collector drone
 //!
@@ -55,7 +60,7 @@
 //! One reflex, the same for every seat that may fire: a hull over [`BLOWDOWN_HEAT_PERMILLE`]
 //! vents coolant before she shoots. No intent names it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::bubble::{
     BubbleInputCommand, BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble,
@@ -72,13 +77,63 @@ pub const BLOWDOWN_HEAT_PERMILLE: u16 = 650;
 /// The most torpedoes one think's `fire` calls put in one salvo.
 pub const SALVO_MAX: u8 = 8;
 
-/// **Whether a seat's mind may lock and shoot** (the file head has the seam for Q-44-38).
+/// **Whether a seat's mind may lock and shoot** (the file head, "return fire").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FireRule {
     /// Its doctrine decides.
     Free,
     /// Every lock and every shot is dropped, whatever source asked.
     Never,
+    /// **The absent player's rule decides** (doc 45 unit AP.9): a lock or a shot is let
+    /// through only at a ship the rule lets her answer, by the [`Answers`] the seat hands
+    /// [`apply_intents_answering`]. Applied with no [`Answers`] it is `Never`.
+    Answer,
+}
+
+/// **What a hull flown for an absent player may answer** (doc 45 unit AP.9): the facts
+/// `crate::arena::absent::permits` reads, by ship id in the bubble.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Answers {
+    /// The ships whose fire has arrived on her since the bubble opened.
+    pub fired_on_by: BTreeSet<String>,
+    /// She stands on `GUARD` and can still defend herself.
+    pub guards: bool,
+    /// The ships whose fire has arrived on another unit of her player in the bubble. Read
+    /// only while `guards` holds.
+    pub fired_on_kin: BTreeSet<String>,
+}
+
+impl Answers {
+    /// **Whether the absent player's rule lets her fire on `target`**: the one gate
+    /// (`crate::arena::absent::permits`), asked with these facts. Space has no hold on her
+    /// fire a crew can leave standing, so the gate is told none stands.
+    #[must_use]
+    pub fn permits(&self, target: &str) -> bool {
+        use crate::arena::absent::{Ask, Facts, permits};
+        permits(
+            &Facts {
+                absent: true,
+                holds_fire: false,
+                fired_on_by: &self.fired_on_by,
+                guards: self.guards,
+                fired_on_kin: &self.fired_on_kin,
+            },
+            &Ask::Fire {
+                at: target.to_owned(),
+            },
+        )
+        .is_ok()
+    }
+
+    /// Every ship she may answer.
+    #[must_use]
+    pub fn all(&self) -> BTreeSet<String> {
+        let mut all = self.fired_on_by.clone();
+        if self.guards {
+            all.extend(self.fired_on_kin.iter().cloned());
+        }
+        all
+    }
 }
 
 /// **Which burns a seat's mind may fly.** Cutting the drive is always allowed.
@@ -275,6 +330,9 @@ pub struct Applied {
     pub asked_burn: bool,
     /// A torpedo or a railgun round was fired.
     pub fired_heavy: bool,
+    /// A mount was told to fire at her lock: a beam, a railgun or a tube (doc 45 unit
+    /// AP.9). Whether it had a round ready is the bubble's.
+    pub fired: bool,
     /// Intents the seat dropped or that mean nothing in a bubble.
     pub dropped: u32,
     /// The mind asked its collector to work its lock, and the seat let it.
@@ -337,6 +395,31 @@ pub fn apply_intents(
     intents: &[IntentKind],
     events: &mut Vec<SpaceCombatEvent>,
 ) -> Applied {
+    apply_intents_answering(bubble, tape, ship_id, seat, None, contacts, intents, events)
+}
+
+/// **[`apply_intents`] for a seat that may answer fire** (doc 45 unit AP.9; the file head,
+/// "return fire"): `answers` is what a [`FireRule::Answer`] seat's hull may answer. No other
+/// seat reads it.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_intents_answering(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    ship_id: &str,
+    seat: Seat,
+    answers: Option<&Answers>,
+    contacts: &BTreeMap<ContactId, String>,
+    intents: &[IntentKind],
+    events: &mut Vec<SpaceCombatEvent>,
+) -> Applied {
+    // The absent player's rule at its two doors: whether this seat may lock or fire on
+    // `target`. A seat free to fire may; one that never fires may not; one that answers
+    // asks the gate.
+    let may_fire_on = |target: &str| match seat.fire {
+        FireRule::Free => true,
+        FireRule::Never => false,
+        FireRule::Answer => answers.is_some_and(|answers| answers.permits(target)),
+    };
     let mut applied = Applied::default();
     if bubble
         .ships
@@ -374,24 +457,31 @@ pub fn apply_intents(
                     );
                 }
             }
-            IntentKind::Lock { contact } if seat.lock => match contacts.get(contact) {
-                Some(target) => {
-                    if bubble
-                        .ships
-                        .get(ship_id)
-                        .is_some_and(|ship| ship.locked_target_id.as_deref() != Some(target))
-                    {
-                        command(
-                            bubble,
-                            BubbleInputCommand::SetLockedTarget {
-                                ship_id: ship_id.to_owned(),
-                                target_id: Some(target.clone()),
-                            },
-                        );
+            IntentKind::Lock { contact } if seat.lock || seat.fire == FireRule::Answer => {
+                // A seat with the sensors locks what it likes. One that only answers locks
+                // a ship it may answer and no other: its lock is half of a shot.
+                match contacts
+                    .get(contact)
+                    .filter(|target| seat.lock || may_fire_on(target))
+                {
+                    Some(target) => {
+                        if bubble
+                            .ships
+                            .get(ship_id)
+                            .is_some_and(|ship| ship.locked_target_id.as_deref() != Some(target))
+                        {
+                            command(
+                                bubble,
+                                BubbleInputCommand::SetLockedTarget {
+                                    ship_id: ship_id.to_owned(),
+                                    target_id: Some(target.clone()),
+                                },
+                            );
+                        }
                     }
+                    None => applied.dropped += 1,
                 }
-                None => applied.dropped += 1,
-            },
+            }
             IntentKind::Heading { mdeg } => heading = Some(*mdeg),
             IntentKind::Speed { cms } => strength = Some(*cms),
             IntentKind::Goal(MotorGoal::Hold) => strength = Some(0),
@@ -404,7 +494,7 @@ pub fn apply_intents(
                     .and_then(|ship| mount_of(ship, weapon))
                 {
                     Some(Mount::Collector) if seat.work => shots.push(Mount::Collector),
-                    Some(mount) if mount != Mount::Collector && seat.fire == FireRule::Free => {
+                    Some(mount) if mount != Mount::Collector && seat.fire != FireRule::Never => {
                         shots.push(mount);
                     }
                     _ => applied.dropped += 1,
@@ -468,6 +558,17 @@ pub fn apply_intents(
         applied.dropped += u32::try_from(shots.len()).unwrap_or(u32::MAX);
         return applied;
     };
+    // The second door (the file head, "return fire"): a shot at a lock the rule does not
+    // let her answer is dropped, whoever set that lock. A collector shoots nothing and is
+    // the seat's to work or not.
+    if !may_fire_on(&target) {
+        let before = shots.len();
+        shots.retain(|mount| *mount == Mount::Collector);
+        applied.dropped += u32::try_from(before - shots.len()).unwrap_or(u32::MAX);
+        if shots.is_empty() {
+            return applied;
+        }
+    }
     if shots.iter().any(|mount| *mount != Mount::Collector)
         && bubble
             .ships
@@ -494,14 +595,18 @@ pub fn apply_intents(
         let shooter_id = ship_id.to_owned();
         let target_id = target.clone();
         match mount {
-            Mount::Laser => command(
-                bubble,
-                BubbleInputCommand::FireOffensiveLasers {
-                    shooter_id,
-                    target_id,
-                },
-            ),
+            Mount::Laser => {
+                applied.fired = true;
+                command(
+                    bubble,
+                    BubbleInputCommand::FireOffensiveLasers {
+                        shooter_id,
+                        target_id,
+                    },
+                );
+            }
             Mount::Railgun => {
+                applied.fired = true;
                 applied.fired_heavy = true;
                 command(
                     bubble,
@@ -512,6 +617,7 @@ pub fn apply_intents(
                 );
             }
             Mount::Tube => {
+                applied.fired = true;
                 applied.fired_heavy = true;
                 command(
                     bubble,
@@ -1060,5 +1166,258 @@ mod tests {
             &mut events,
         );
         assert_eq!(applied.dropped, 1);
+    }
+
+    /// A bubble of three parties for the answering seat: the Dray, a raider that her party
+    /// has marked hostile, and a second raider marked the same. Every ship is a contact of
+    /// the Dray's. The Dray carries one beam, `laser_1`.
+    fn three_parties() -> (
+        LocalSpaceBubble,
+        BubbleInputTape,
+        BTreeMap<ContactId, String>,
+    ) {
+        use super::super::picket::BELT_RAIDER_PARTY;
+        let other = super::super::bubble::admitted_party(4);
+        let mut bubble = LocalSpaceBubble::new("bubble.test.answer", "domain.3", "Test", 1_000);
+        let mut dray =
+            SpaceShipState::new_dray("dray", "Dray", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        dray.lasers.clear();
+        dray.lasers
+            .push(super::super::weapons::LaserMount::standard_turret(
+                "laser_1",
+            ));
+        bubble.insert_ship(dray);
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "raider",
+            "Raider",
+            BELT_RAIDER_PARTY,
+            [0, 3_000, 4_000],
+            [0, 0, 0],
+        ));
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "second",
+            "Second",
+            other,
+            [0, -3_000, 4_000],
+            [0, 0, 0],
+        ));
+        bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
+        bubble.set_party_relation(CARRIER_PARTY, other, Some(Mark::Hostile));
+        let tape = BubbleInputTape::new(&bubble);
+        let contacts = BTreeMap::from([
+            (ContactId(1), "raider".to_owned()),
+            (ContactId(2), "second".to_owned()),
+        ]);
+        (bubble, tape, contacts)
+    }
+
+    fn lock_and_fire(contact: u64) -> [IntentKind; 2] {
+        [
+            IntentKind::Lock {
+                contact: ContactId(contact),
+            },
+            IntentKind::Fire {
+                weapon: SmolStr::new_static("laser_1"),
+                slot: Some(1),
+            },
+        ]
+    }
+
+    fn beams_fired(tape: &BubbleInputTape) -> Vec<String> {
+        tape.entries
+            .iter()
+            .filter_map(|entry| match &entry.command {
+                BubbleInputCommand::FireOffensiveLasers { target_id, .. } => {
+                    Some(target_id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    const ANSWERING: Seat = Seat {
+        fire: FireRule::Answer,
+        ..Seat::ABSENT
+    };
+
+    /// **Doc 45 unit AP.9: a seat that answers asks the absent player's rule at a lock and
+    /// at a shot.** With the raider's fire arrived on her, her lock on the raider lands and
+    /// her beam fires on it; the same asks at the second ship, which her party marks hostile
+    /// and which has fired on nobody, are dropped at both doors. With nothing arrived on her
+    /// she answers nobody, though her party holds both hostile.
+    #[test]
+    fn ap9_a_seat_that_answers_locks_and_fires_only_on_a_ship_that_fired_on_her() {
+        let hit_by_raider = Answers {
+            fired_on_by: BTreeSet::from(["raider".to_owned()]),
+            ..Answers::default()
+        };
+        // The raider fired on her: she answers it.
+        let (mut bubble, mut tape, contacts) = three_parties();
+        let mut events = Vec::new();
+        let applied = apply_intents_answering(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            ANSWERING,
+            Some(&hit_by_raider),
+            &contacts,
+            &lock_and_fire(1),
+            &mut events,
+        );
+        assert!(applied.fired, "{applied:?}");
+        assert_eq!(applied.dropped, 0);
+        assert_eq!(
+            bubble
+                .ships
+                .get("dray")
+                .and_then(|ship| ship.locked_target_id.clone())
+                .as_deref(),
+            Some("raider")
+        );
+        assert_eq!(beams_fired(&tape), vec!["raider".to_owned()]);
+        assert!(
+            events.iter().any(
+                |event| matches!(event, SpaceCombatEvent::LaserHit { shooter_id, target_id, .. }
+                    if shooter_id == "dray" && target_id == "raider")
+            ),
+            "her beam lands on the raider: {events:?}"
+        );
+        assert!(
+            bubble
+                .fired_on_by("raider")
+                .is_some_and(|by| by.contains("dray")),
+            "and her own fire is on the bubble's record"
+        );
+
+        // The second ship is only marked hostile: the lock and the shot are both dropped.
+        let (mut bubble, mut tape, contacts) = three_parties();
+        let mut events = Vec::new();
+        let applied = apply_intents_answering(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            ANSWERING,
+            Some(&hit_by_raider),
+            &contacts,
+            &lock_and_fire(2),
+            &mut events,
+        );
+        assert!(!applied.fired);
+        assert_eq!(applied.dropped, 2, "the lock, and the shot with no lock");
+        assert_eq!(
+            bubble
+                .ships
+                .get("dray")
+                .and_then(|ship| ship.locked_target_id.clone()),
+            None
+        );
+        assert!(beams_fired(&tape).is_empty() && events.is_empty());
+
+        // Nothing has arrived on her: she answers nobody, and an `Answer` seat handed no
+        // facts at all is a seat that never fires.
+        for answers in [Some(Answers::default()), None] {
+            let (mut bubble, mut tape, contacts) = three_parties();
+            let mut events = Vec::new();
+            let applied = apply_intents_answering(
+                &mut bubble,
+                &mut tape,
+                "dray",
+                ANSWERING,
+                answers.as_ref(),
+                &contacts,
+                &lock_and_fire(1),
+                &mut events,
+            );
+            assert!(!applied.fired, "{answers:?}");
+            assert!(beams_fired(&tape).is_empty() && events.is_empty());
+            assert_eq!(
+                bubble
+                    .ships
+                    .get("dray")
+                    .and_then(|ship| ship.locked_target_id.clone()),
+                None
+            );
+        }
+    }
+
+    /// **Doc 45 unit AP.9: the second door does not trust the lock.** A lock her crew left
+    /// standing on a ship she may not answer is not a target: the shot is dropped. The same
+    /// asks on `RETURN`'s seat, which never fires, are dropped whatever has arrived on her.
+    #[test]
+    fn ap9_a_shot_at_a_lock_she_may_not_answer_is_dropped_and_return_never_fires() {
+        let hit_by_raider = Answers {
+            fired_on_by: BTreeSet::from(["raider".to_owned()]),
+            ..Answers::default()
+        };
+        let fire = [IntentKind::Fire {
+            weapon: SmolStr::new_static("laser_1"),
+            slot: Some(1),
+        }];
+        let (mut bubble, mut tape, contacts) = three_parties();
+        assert!(bubble.set_locked_target("dray", Some("second".to_owned())));
+        let mut events = Vec::new();
+        let applied = apply_intents_answering(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            ANSWERING,
+            Some(&hit_by_raider),
+            &contacts,
+            &fire,
+            &mut events,
+        );
+        assert!(!applied.fired);
+        assert_eq!(applied.dropped, 1);
+        assert!(beams_fired(&tape).is_empty() && events.is_empty());
+
+        // `RETURN`: the absent seat as it was, with the raider's fire arrived on her.
+        let (mut bubble, mut tape, contacts) = three_parties();
+        let applied = apply_intents_answering(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            Seat::ABSENT,
+            Some(&hit_by_raider),
+            &contacts,
+            &lock_and_fire(1),
+            &mut events,
+        );
+        assert!(!applied.fired);
+        assert_eq!(applied.dropped, 2);
+        assert!(beams_fired(&tape).is_empty() && events.is_empty());
+    }
+
+    /// **Doc 45 unit AP.9 (Q-45-8): `GUARD` widens the rule by one case.** A ship whose fire
+    /// has arrived on another unit of her player is answered by a hull that stands guard and
+    /// by no other; the facts are the same but for the one word.
+    #[test]
+    fn ap9_a_guard_answers_for_her_players_other_unit_and_a_hold_does_not() {
+        for (guards, answers_it) in [(true, true), (false, false)] {
+            let facts = Answers {
+                fired_on_by: BTreeSet::new(),
+                guards,
+                fired_on_kin: BTreeSet::from(["raider".to_owned()]),
+            };
+            assert_eq!(facts.permits("raider"), answers_it);
+            assert!(
+                !facts.permits("second"),
+                "never a ship that fired on nobody"
+            );
+            assert_eq!(facts.all().contains("raider"), answers_it);
+            let (mut bubble, mut tape, contacts) = three_parties();
+            let mut events = Vec::new();
+            let applied = apply_intents_answering(
+                &mut bubble,
+                &mut tape,
+                "dray",
+                ANSWERING,
+                Some(&facts),
+                &contacts,
+                &lock_and_fire(1),
+                &mut events,
+            );
+            assert_eq!(applied.fired, answers_it, "guards {guards}");
+            assert_eq!(beams_fired(&tape).len(), usize::from(answers_it));
+        }
     }
 }

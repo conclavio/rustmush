@@ -220,6 +220,11 @@ struct Run {
     log: Vec<BubbleInputEntry>,
 }
 
+/// A copy of `run`, kept off the caller's frame.
+fn kept(run: &Run) -> Box<Run> {
+    Box::new(run.clone())
+}
+
 /// What a run does while a step is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WhileHeld {
@@ -591,7 +596,9 @@ fn mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on() {
             assert!(Instant::now() < woken, "{name}: no worker reached the gate");
             std::thread::yield_now();
         }
-        let before = run.clone();
+        // On the heap: the lint job holds a test's frame under 64 KiB, and this one holds
+        // both encounters and the run already.
+        let before = kept(&run);
         let started = Instant::now();
         for n in 0..200_i64 {
             let mut out = BubbleTickOut::default();
@@ -606,7 +613,7 @@ fn mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on() {
             );
         }
         let spent = started.elapsed();
-        assert_eq!(run, before, "{name}: a held step writes nothing");
+        assert_eq!(run, *before, "{name}: a held step writes nothing");
         assert_eq!(host.stats().held, 200);
         assert!(
             spent < Duration::from_secs(10),
@@ -1110,4 +1117,172 @@ fn mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs() {
         !fired(&sealed) && !fired(&house),
         "neither hull fired, though the sealed script asked a shot at every think and the          runner held a lock"
     );
+}
+
+/// A world in which `hull` is a real object whose own record holds `posture`: the record
+/// the backup seat reads (`crate::posture::record`).
+fn world_with_posture(hull: ObjId, posture: crate::posture::Posture) -> TestWorld {
+    use mush_core::{Attr, GOD, ObjKind};
+    let mut tw = TestWorld::new();
+    let w = tw.world_mut();
+    for _ in 0..64 {
+        if w.get(hull).is_some() {
+            break;
+        }
+        let _ = w.create(ObjKind::Thing, "Hull", GOD, None);
+    }
+    assert!(w.get(hull).is_some(), "the rig's hull is an object");
+    if !posture.is_return() {
+        w.set_attr(
+            hull,
+            crate::posture::record::POSTURE_ATTR,
+            Attr::json(serde_json::json!({ "posture": posture.as_str() }), GOD),
+        )
+        .expect("the record is written");
+    }
+    assert_eq!(crate::posture::record::of(tw.world(), hull), posture);
+    tw
+}
+
+/// **Doc 45 unit AP.9: on the bubble's own step, the house default answers the raider that
+/// fired on her on `HOLD` and on `GUARD`, and not on `RETURN`; under every posture she
+/// fires on nobody before she is fired on, and never on the corvette that stopped her.**
+///
+/// The picket encounter of doc 44 unit MW.11: one Dray whose crew has no link, the customs
+/// corvette and the belt raider, which her party holds hostile from the opening. Her mind
+/// heaves her to, customs clear her, the raider lights and opens on her. The three runs
+/// differ in the one word on her hull's record. The whole path is flown: the view narrowed
+/// to what she may answer, the doctrine's own lock and shot, the seat's gate, the bubble's
+/// record of the arrival.
+#[test]
+fn ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture() {
+    use crate::posture::Posture;
+
+    let fly = |posture: Posture| {
+        let tw = world_with_posture(CARRIER, posture);
+        let (active, linkdead) = picket_encounter();
+        let raider = active
+            .picket
+            .as_ref()
+            .map(|picket| picket.raider_ship_id.clone())
+            .expect("a picket");
+        let corvette = active
+            .picket
+            .as_ref()
+            .map(|picket| picket.corvette_ship_id.clone())
+            .expect("a picket");
+        let mut run = Run {
+            active,
+            linkdead,
+            log: Vec::new(),
+        };
+        let host = ThinkHost::inline();
+        let never = |_: u32| 0_u32;
+        let arrived_on = |run: &Run, target: &str, shooter: &str| {
+            run.active
+                .bubble
+                .fired_on_by(target)
+                .is_some_and(|by| by.contains(shooter))
+        };
+        let beams = |run: &Run| -> Vec<String> {
+            run.log
+                .iter()
+                .filter_map(|entry| match &entry.command {
+                    BubbleInputCommand::FireOffensiveLasers {
+                        shooter_id,
+                        target_id,
+                    } if shooter_id == "hull.10" => Some(target_id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Until the raider's fire arrives on her.
+        let mut wall = 100;
+        let mut fired_first = false;
+        for _ in 0..400 {
+            if arrived_on(&run, "hull.10", &raider) {
+                break;
+            }
+            run = drive(
+                &run,
+                &host,
+                tw.world(),
+                1,
+                wall,
+                WhileHeld::NeverHeld,
+                None,
+                &never,
+            );
+            wall += 1;
+            if !arrived_on(&run, "hull.10", &raider)
+                && (!beams(&run).is_empty()
+                    || run
+                        .active
+                        .bubble
+                        .ships
+                        .get("hull.10")
+                        .is_some_and(|ship| ship.locked_target_id.is_some()))
+            {
+                fired_first = true;
+            }
+        }
+        assert!(
+            arrived_on(&run, "hull.10", &raider),
+            "{posture}: the raider's fire arrives on her"
+        );
+        assert!(
+            !fired_first,
+            "{posture}: she locked and fired on nobody before she was fired on"
+        );
+        // Ten steps more.
+        let run = drive(
+            &run,
+            &host,
+            tw.world(),
+            10,
+            wall,
+            WhileHeld::NeverHeld,
+            None,
+            &never,
+        );
+        let lock = run
+            .active
+            .bubble
+            .ships
+            .get("hull.10")
+            .and_then(|ship| ship.locked_target_id.clone());
+        let trace = run.linkdead.get(&CARRIER).map(|state| state.backup_act);
+        (
+            beams(&run),
+            lock,
+            arrived_on(&run, &raider, "hull.10"),
+            arrived_on(&run, &corvette, "hull.10"),
+            trace,
+            raider,
+        )
+    };
+
+    let (beams, lock, on_raider, on_corvette, act, _) = fly(Posture::Return);
+    assert!(
+        beams.is_empty() && lock.is_none() && !on_raider && !on_corvette,
+        "on RETURN she answers nobody: {beams:?} {lock:?}"
+    );
+    assert_ne!(act, Some(super::super::backup::BackupAct::ReturningFire));
+
+    for posture in [Posture::Hold, Posture::Guard] {
+        let (beams, lock, on_raider, on_corvette, act, raider) = fly(posture);
+        assert!(!beams.is_empty(), "{posture}: she fires");
+        assert!(
+            beams.iter().all(|target| *target == raider),
+            "{posture}: on the raider and on nobody else: {beams:?}"
+        );
+        assert_eq!(lock.as_deref(), Some(raider.as_str()), "{posture}");
+        assert!(on_raider, "{posture}: her fire arrives on the raider");
+        assert!(!on_corvette, "{posture}: never on the corvette");
+        assert_eq!(
+            act,
+            Some(super::super::backup::BackupAct::ReturningFire),
+            "{posture}"
+        );
+    }
 }

@@ -85,7 +85,13 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      ride on as a passenger.\n+ship/mind  the mind sealed aboard.\n+ship/mind filed:<licence> \
      [org=<organisation>] [go]  at your berth in a port, on a hull that carries a core: seal a \
      filed mind you hold a licence to. It has her helm and sensors while her crew has no link, \
-     until she next docks at a port.\n+ship/mind off [go]  unseal it at your berth.";
+     until she next docks at a port.\n+ship/mind off [go]  unseal it at your berth.\n\
+     +ship/posture [return|guard|hold]  read, or from aboard her set, the posture she holds \
+     when her crew has no link: RETURN makes for her filed port, HOLD and GUARD stay where she \
+     is (help ships).";
+
+/// **`+ship/posture`'s switch** (doc 45 unit AP.9).
+pub const POSTURE_SWITCH: &str = "posture";
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";
@@ -761,7 +767,10 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // operates the hull. The two reads, the bare status and `/orders`, pass.
     if ctx.switches.has("board") || ctx.switches.has("leave") {
         crate::field::crew::gate(ctx, crate::field::crew::Gate::Move)?;
-    } else if ctx.switches.iter().any(|switch| switch != "orders") {
+    } else if ctx.switches.iter().any(|switch| switch != "orders")
+        // Doc 45 unit AP.9: a posture's read is a read, as the status is.
+        && !(ctx.switches.has(POSTURE_SWITCH) && ctx.args.raw().trim().is_empty())
+    {
         crate::field::crew::gate(ctx, crate::field::crew::Gate::Operate)?;
     }
     // Doc 18 cut IC11: the sailing plan's read and its edits, ahead of the rest.
@@ -788,6 +797,8 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has(crate::port::ship_mind::MIND_SWITCH) {
         // Doc 44 unit MW.13 (Q-44-26): a mind sealed aboard.
         crate::port::ship_mind::mind_cmd(ctx)
+    } else if ctx.switches.has(POSTURE_SWITCH) {
+        posture(ctx)
     } else {
         status(ctx)
     }
@@ -933,9 +944,31 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         lines.extend(stores);
         lines.push(programme);
+        // Doc 45 unit AP.9: the posture she holds, when it is not the default.
+        let held = crate::posture::record::of(ctx.w, charter.hull);
+        if !held.is_return() {
+            lines.push(crate::posture::order::POSTURE_SHIP_LINE.replace("{posture}", held.label()));
+        }
         lines
     };
     for line in lines {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+/// **`+ship/posture [return|guard|hold]`** (doc 45 unit AP.9; Q-45-23): the posture the
+/// actor's ship holds, read anywhere, and set from aboard her
+/// (`crate::posture::order::ship`).
+fn posture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let Some(helm) = helm_of(ctx.w, actor) else {
+        return Err(no_charter(ctx.w, actor));
+    };
+    let name = format!("The {}", name_of(ctx.w, helm.hull));
+    let aboard = crate::port::voyage::aboard(ctx.w, helm.hull, actor);
+    let typed = ctx.args.raw().to_owned();
+    for line in crate::posture::order::ship(ctx, helm.hull, &name, aboard, &typed)? {
         say(ctx, line);
     }
     Ok(())

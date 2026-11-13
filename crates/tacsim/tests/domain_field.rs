@@ -143,6 +143,8 @@ mod review_36a;
 mod salvage_close;
 #[path = "domain_field/site_record.rs"]
 mod site_record;
+#[path = "domain_field/space_ap9.rs"]
+mod space_ap9;
 #[path = "domain_field/story_d_rs9.rs"]
 mod story_d_rs9;
 #[path = "domain_field/surrender.rs"]

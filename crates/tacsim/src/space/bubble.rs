@@ -1668,7 +1668,29 @@ pub struct LocalSpaceBubble {
     /// Celestial bodies visible in the bridge canopy (`SF.R13`, `SF.R16`, `D-35-15`).
     #[serde(default)]
     pub bodies: Vec<CanopyBodyProjection>,
+    /// **Whose fire has arrived on each ship since the bubble opened** (doc 45 unit AP.9;
+    /// doc 44 Q-44-38): by the target's ship id, the ids of the ships that fired. Written
+    /// where a shot's flight ends on its target, hit or miss ([`Self::fired_on_by`] has the
+    /// list). It is by ship, where [`crate::arena::party::Relations`] remembers fire by
+    /// party, and a stand-down does not clear it. Absent from the document while nobody has
+    /// fired, and kept by a snapshot, so a restart reads it back.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fired_on: BTreeMap<String, BTreeSet<String>>,
     next_ordnance_id: u64,
+}
+
+/// `shooter`'s fire has arrived on `target` ([`LocalSpaceBubble::fired_on`]). A free function
+/// over the one field, so it can be called while the ordnance lists are being walked.
+fn fire_arrived(fired_on: &mut BTreeMap<String, BTreeSet<String>>, shooter: &str, target: &str) {
+    if shooter == target {
+        return;
+    }
+    if !fired_on.get(target).is_some_and(|by| by.contains(shooter)) {
+        fired_on
+            .entry(target.to_owned())
+            .or_default()
+            .insert(shooter.to_owned());
+    }
 }
 
 impl LocalSpaceBubble {
@@ -1695,8 +1717,21 @@ impl LocalSpaceBubble {
             torpedoes: Vec::new(),
             railgun_slugs: Vec::new(),
             bodies,
+            fired_on: BTreeMap::new(),
             next_ordnance_id: 1,
         }
+    }
+
+    /// **The ships whose fire has arrived on `ship_id` since the bubble opened** (doc 45
+    /// unit AP.9; [`Self::fired_on`]). An arrival is the end of a shot's flight on its
+    /// target, hit or miss, as the arena counts an impact
+    /// (`crate::arena::absent`): a beam's shot; a slug at the end of its flight, struck or
+    /// dodged; a torpedo that strikes, or that the target's side stops short of her (a
+    /// defensive beam, a point-defence burst, a decoy). A torpedo that burns out and is
+    /// lost before it reaches her has not arrived.
+    #[must_use]
+    pub fn fired_on_by(&self, ship_id: &str) -> Option<&BTreeSet<String>> {
+        self.fired_on.get(ship_id)
     }
 
     /// Insert or update a ship in the bubble and admit its [`PartyId`].
@@ -2300,6 +2335,9 @@ impl LocalSpaceBubble {
             }
         }
 
+        if !shots.is_empty() {
+            fire_arrived(&mut self.fired_on, shooter_id, target_id);
+        }
         for (dmg, shooter_heat) in shots {
             if let Some(target_mut) = self.ships.get_mut(target_id) {
                 let prev_status = target_mut.status;
@@ -2785,12 +2823,15 @@ impl LocalSpaceBubble {
             }
 
             if intercepted {
+                // Doc 45 unit AP.9: a torpedo her side stopped short of her was fired on her.
+                fire_arrived(&mut self.fired_on, &torp.shooter_id, &torp.target_id);
                 continue;
             }
 
             // Check terminal impact
             let impact_threshold_m = ((closing_mps * step_i64) / 1_000).max(500);
             if new_dist_m <= impact_threshold_m {
+                fire_arrived(&mut self.fired_on, &torp.shooter_id, &torp.target_id);
                 if let Some(target_mut) = self.ships.get_mut(&torp.target_id) {
                     let prev_status = target_mut.status;
                     let facet = target_mut.select_facet_for_attack(torp.pos_m);
@@ -2833,6 +2874,10 @@ impl LocalSpaceBubble {
             slug.remaining_flight_ms -= dt;
 
             if slug.remaining_flight_ms == 0 {
+                if self.ships.contains_key(&slug.target_id) {
+                    // Doc 45 unit AP.9: the end of its flight, struck or dodged.
+                    fire_arrived(&mut self.fired_on, &slug.shooter_id, &slug.target_id);
+                }
                 if let Some(target_mut) = self.ships.get_mut(&slug.target_id) {
                     let overstep_ms = i128::from(step_ms.saturating_sub(dt));
                     let target_impact_x_um = i128::from(target_mut.pos_m[0]) * 1_000_000
@@ -2955,6 +3000,16 @@ impl LocalSpaceBubble {
                 mix(&r.to_le_bytes());
             }
             mix(&slug.remaining_flight_ms.to_le_bytes());
+        }
+        // Doc 45 unit AP.9: whose fire has arrived on whom. A bubble nobody has fired in
+        // mixes nothing here, so its hash is as it was.
+        for (target, by) in &self.fired_on {
+            mix(&[0xfe]);
+            mix(target.as_bytes());
+            for shooter in by {
+                mix(&[0xff]);
+                mix(shooter.as_bytes());
+            }
         }
         h
     }
