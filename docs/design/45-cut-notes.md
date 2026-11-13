@@ -698,7 +698,10 @@ on the one thing AP.4 deferred; Q-45-19, Q-45-13). Stacked on AP.6. Paths are un
   answered order is not applied again. Between the write and the answer landing, this
   boot's walk remembers the sequence it wrote, so the write and its notice are made once.
   The host waits while the player has an act of their own in flight
-  (`ctx.authoritative_pending`), as MW.7's recover for an absent pilot does.
+  (`ctx.authoritative_pending`), as MW.7's recover for an absent pilot does. The write and
+  the answer are two passes of the walk: the record is an object write on the older
+  persistence lane and the answer is a prepared action, and the world task does not take
+  both in one step (main's #574 met that refusal in a story's rig).
 - **Only the unit answers it** (`field_commands.rs`, `field_response`, `posture_at`). The
   player's own `WILCO` or `NEGATIVE` to a `POSTURE` order is refused
   (`POSTURE_ORDER_ANSWERED`), and their `+sortie/orders` shows the order with no reply

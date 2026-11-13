@@ -535,6 +535,11 @@ fn posture_order(
                 .replace("{posture}", posture.label());
             crate::port_tick::notify_budget(ctx, owner, &line, crate::port_tick::NoticeLevel::Trip);
         }
+        // The write is the unit's own object record, which rides the older persistence
+        // lane, and the answer is a prepared action. The world task does not take both in
+        // one step ("prepared action cannot share a step with legacy module persistence"),
+        // so the answer is submitted at the unit's next visit.
+        return Step::Held;
     }
     answer(
         ctx,
