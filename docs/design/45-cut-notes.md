@@ -2482,15 +2482,21 @@ the armed lease was built for (CF.6c), and it does not need the player to be awa
 operator at the controls of his armed rig had his `RETURN` prospector left at the ramp in the
 same way.
 
-- **The fix** (`src/surface/act/plans.rs`, `recover_plan`, one condition): the place of the
-  operator is not asked for a unit the field host owes its recover
-  (`field::absent::homebound`). The host's first try and every retry pass through the
-  command and the start's prepare, and both read this one function.
-- **What it widens, and by how much.** While the host owes a unit its recover, that unit's
-  own operator may also type `+tv/<n> recover go` from anywhere on the site. It is the act
-  the host is running in their name every ten seconds. Nothing else about the hand acts
-  moved: a launch, a dump, an unload and a recover of any other rig still ask for the
-  operator aboard.
+- **The fix** (`src/surface/act/plans.rs`, `recover_plan`, one condition; `src/field/absent.rs`,
+  `homebound_as`, the read it asks): the place of the operator is not asked when the field
+  host owes the unit its recover **and the actor is the player the host runs that recover
+  as**. The host's first try and every retry pass through the command and the start's
+  prepare, and both read this one function.
+- **What it widens, and by how much.** While the host owes a unit its recover, that one
+  player may also type `+tv/<n> recover go` for it from wherever they are, and the other
+  readers of `recover_plan` run in their name pass too (the surface tick's idle return, a
+  fill plan's own recover, the parked-short check). It is the act the host is running for
+  them every ten seconds. Anyone else who can name the rig is still asked to be with it, and
+  a launch, a dump, an unload and the recover of any other rig are as they were. The host's
+  debt lasts until the unit is aboard or the thirty tries are spent; for a unit nobody sat
+  in it is not cleared by the player's return, and it can outlive the field. It is RAM: a
+  restart forgets it, as before this unit (MW.7's cut note has "the recover owed across a
+  restart" as not built).
 - **The unit-level test that would have caught it** (`tests/domain_field/field_ap7.rs`, story
   4, `ap7_a_rig_whose_operator_sits_in_his_other_rig_is_still_put_aboard`): `escort_lease`'s
   ground, the lessee connected and seated in his armed rig, his prospector set back to
@@ -2507,7 +2513,9 @@ on Ahuna Flank, every command typed by a player who is not staff.
   `GUARD` from its cab (`+tv/1 posture guard`), and a prospector out on the ground on
   `RETURN`, which he reads from aboard and never sets. He quits in the armed rig's seat. The
   miner, connected throughout: a prospector on `HOLD` near the guard. The raider: an armed
-  hull ten cells east whose player types every `LOCK` and `FIRE`. The raider's
+  hull ten cells east whose player types every `LOCK` and `FIRE`. Before he leaves, the
+  owner's co-op declares the raider's Hostile by his own command (`+faction/stance`), so
+  each unit of his holds the raider Hostile from the field's first pulse. The raider's
   `+field/mark W=hostile` opens the field with no round fired (Q-45-14).
 - **The walk.** Admission; the raider's fire on the miner's rig; the prospector's trip home;
   the raider's fire on the owner's carrier and the guard's answer; the owner's reconnect, his
@@ -2520,14 +2528,14 @@ on Ahuna Flank, every command typed by a player who is not staff.
 |---|---|---|
 | No unit of theirs fired first | The field's black box, in order, over the whole field | The first `Fired` line of the field is the raider's; the first `Impact` of the raider on a unit of the owner's comes before the first `Fired` of any unit of his; every round of each unit of his was at the raider; the prospector fired none |
 | The `RETURN` rig is aboard its carrier | The site's record and the world | The kernel let it out, the record names its exit, and `surface::act::where_is` reads the owner's carrier's bay; still there after the demotion. The miner's prospector, the same design on `HOLD`, was never let out |
-| The `GUARD` rig answered only for its owner's units | The black box | It fired nothing while the raider's fire arrived on the miner's rig beside it and the prospector drove home. Its first round follows the first arrival on the owner's carrier. The raider's fire never arrived on the guard itself. It stood on its cell, as the raider's own cockpit plotted it |
+| The `GUARD` rig answered only for its owner's units | The live record, then the black box | Its party holds the raider Hostile from the opening, by the declared stance. It fired nothing while the raider's fire arrived on the miner's rig beside it and the prospector drove home. Its first round follows the first arrival on the owner's carrier. The raider's fire never arrived on the guard itself. It stood on its cell, as the raider's own cockpit plotted it |
 | Not admitted as a pilot while away | The field's presence record and the arena's registry | `field::absent::away_of` reads `AwayAtAdmission`, handed, for the armed rig; the registry holds no seat for the owner; the field's snapshot holds the rig as an absent player's on `GUARD`. His prospector and his carrier read `Unattended` |
 | Re-seated on return | What he is sent, the record, the registry | "You are back at the controls of #n" with the `+focus` to type, in what the connect sends him; the presence record is gone and the registry holds his seat; his frame arrives, on the cell the mind stood, still on `GUARD` (Q-45-18) |
-| Their first command wins | His own frame, then the black box | After `DRIVE 132,119` the frame carries no order, the goal is his, and the rig has left the cell its mind stood on; the snapshot no longer flies it for an absent player; and over the next nine seconds it fires nothing more |
-| At login they read what happened to each unit | The reconnect queue, then the text of the connect | Queued once each and read under "While you were off watch:": the armed rig's line ("its mind has the controls and flies it on GUARD"), the prospector's ("makes for its carrier's ramp"), the field's opening. Nothing names the miner's or the raider's unit. The queue is empty after the read |
+| Their first command wins | His own frame, then the black box | After `DRIVE 132,119` the frame carries no order, the goal is his, and the rig has left the cell its mind stood on; the snapshot no longer flies it for an absent player. The raider then fires on the carrier again, the fire the mind answered, and with that round arrived and six seconds more the rig has fired nothing since its pilot took it |
+| At login they read what happened to each unit | The reconnect queue, then the text of the connect | The queue is exactly three lines, and what he reads under "While you were off watch:" is exactly those three and nothing after: the armed rig's line ("its mind has the controls and flies it on GUARD"), the prospector's ("makes for its carrier's ramp"), the field's opening. Nothing names the miner's or the raider's unit, by number or by name, and his carrier has no line. The queue is empty after the read |
 | The same, at the close | What he was sent while connected | The settling, once; "After field 1 on Ahuna Flank, holding on the site: OWP-ES-01."; a "home" line naming the Salt Moth and OWP-TV-02; no line for any other fate; nothing queued. Both fate lines are under 120 columns |
 | The ship and the rigs obeyed the same words | Each unit's own posture record | `GUARD`, `RETURN` and `HOLD` read back off the armed rig, the prospector and the carrier after the demotion and after a restart. **The ship's half is the record only**: see below |
-| A casualty's salvage window is the 48 IC days it was | The claim's economy contract | The configured window is 48 × 86,400 IC seconds; at 24:1 that is 172,800 real seconds; the contract's effective end is the filing second plus that, the filing being before the owner's return; it is the same after his return and after a restart; the contract is active and the title has not moved. One letter went to him at the filing, naming the hull and "48 real hours". `+salvage` lists the claim for him and `+salvage/contest` still previews |
+| A casualty's salvage window is the 48 IC days it was | The claim's economy contract | The configured window is 48 × 86,400 IC seconds; at 24:1 that is 172,800 real seconds; the contract's effective end is the filing second plus that, the filing being before the owner's return; it is the same after his return and after a restart; the contract is active and the title has not moved. One letter went to him, read off the post in the turn the claim landed, while he was away; it names the hull and "48 real hours". `+salvage` lists the claim for him and `+salvage/contest` still previews |
 
 **Where the story departs from the row, and why.**
 
@@ -2553,7 +2561,9 @@ budget is not re-blessed.
 | The raider's hull and its seat | `field_host_rig::armed` and `seat` (CF.2's fixture) | No route in this rig gives a second party an armed hull; every lock and shot is the player's own |
 | Rigs stood on their cells | `driving_rig::to_cell` | A drive is in play (the armed rig is driven out by its player); the placements save the walk |
 | The casualty | A spare rig of Occator's pool titled to the owner by `@asset/transfer`, its power set destroyed, and `@tacsim/site … leave … casualty` (GC.6's fixture) | A leased rig's title cannot move and a written-off lease rig is refused at filing; no verb disables a hull |
+| The two co-ops and their officers | `@faction/create` and `@faction/add`, by staff (AP.7's fixture) | No player route founds a co-op in this rig; the stance itself is the owner's own `+faction/stance` |
 | The second lease's money | `escort_lease::top_up` (`@econ/mint`) | The armed lease's deposit leaves too little for a prospector |
+| The three carriers' stores for the passage out | `driving_rig::on_pad_as` and `on_pad_with` seed each hold's propellant and provisions and move each pilot between counters | The shared rig's staging, as every field story on it has; the charter, the refit, the licence, the leases and the passage are each player's own commands |
 | The world's rate | `@tacsim/time rate=24`, where the rig is not already there | The live game's rate, so the window reads as a player would wait it |
 | The ship's posture | `posture::record::set` under a staff context, as AP.3's story wrote it | No verb sets a ship's posture outside a field. Owed to AP.9 |
 | The mail | A recorder in the seam `surface::claim::install_claim_mail` fills | This crate's test world composes no mail module |
@@ -2596,36 +2606,74 @@ budget is not re-blessed.
 
 **Tier, and run time.** Not gated: one `mod` line in `tests/domain_field.rs`, so the pull
 request's `tacsim-integration` cells run it by nextest's hash partition and it needs no row
-in `test-tiers.toml`. Alone, in a test build, the story takes 112 s on Linux (conclav.dev:
-111.5, 111.7 and 112.0 s over three runs) and 112 s on Windows; story 4 of `field_ap7.rs`
-takes 47 s on Linux and 45 s on Windows. Of the story's 112 s the staging is about 15 s
-(three hulls sailed to the pad, the leases, the tow) and the close is the field's idle bound,
-60 s of arena time with no shot fired. The idle bound is three times the longest quiet stretch the story needs (the
-prospector's trip home after the raider's first fire, about 19 s) and is what a real field
-would wait; a field runs at the wall's pace. No other window is waited out: the owner quits,
-so the five minutes of a lost link are not in it; the recover's instant is jumped to; and the
-48 IC days are read off the contract, never waited.
+in `test-tiers.toml`. Alone, in a test build, the story takes 119 s on Linux
+(conclav.dev, twice) and 120 s on Windows; story 4 of `field_ap7.rs` takes 47 s on Linux and
+45 s on Windows. Of the story's two minutes the staging is about 15 s (three hulls sailed to
+the pad, the leases, the tow) and the close is the field's idle bound, 60 s of arena time
+with no shot fired. The idle bound is about three times the longest quiet stretch the story
+needs (the prospector's trip home after the raider's first fire, about 19 s) and is what a
+real field would wait: a field runs at the wall's pace. No other window is waited out. The
+owner quits, so the five minutes of a lost link are not in it; the recover's instant is
+jumped to; and the 48 IC days are read off the contract, never waited.
+
+**Reviewed.** A second agent (Opus) read the diff adversarially, read-only, with the row, this
+note and the helpers the story stands on. What it found, and what was done:
+
+- **The fix let anyone through who could name the rig.** The first build asked only whether
+  the host owed the unit its recover. It now asks whether the actor is the player the host
+  runs it as (`homebound_as`), and "what it widens" above says what is still wider.
+- **Nothing proved the guard would have answered for the stranger had the rule let it.** It
+  would not have, and the first build's "a guard holds its fire on a stranger's quarrel"
+  held nothing: a mind fires only on a contact its own party holds Hostile, and the owner
+  had marked nobody. Two mutations that should have failed that line passed. The owner's
+  co-op now declares the raider's Hostile by his own command before he leaves (AP.7's and
+  AP.6's fifth story's way), the story asserts the stance is each of his units' opening
+  relation, and the mutation fails where it should (the table below).
+- **"Fires nothing more" could pass on a mind that chose not to fire.** Nothing provoked the
+  rig in the seconds measured. The raider now fires on the carrier again, the fire the mind
+  answered, before the count is read.
+- **"Written to at the filing" was read after the close.** The post is now read in the turn
+  the claim lands.
+- **The login read looked for the three lines and for unit numbers.** It is now exact: the
+  queue is those three lines and no other, the text under the heading is those three and
+  nothing after, and no other party's unit is named by number or by name.
+- **Left as it is, and why.** The idle bound against a loaded machine: the quiet stretches
+  are the prospector's trip home and the owner's reconnect, each a third of the bound or
+  less. A machine slow enough to triple one would fail the story at "the field still runs"
+  or at the carrier's raid; it would not pass it wrongly. And no test names a second actor
+  reaching the owed rig, so `homebound_as`'s comparison is held by reading, not by a
+  mutation.
+- **Read and found sound**: the black box is whole and in order when the story reads it (the
+  last chunk arrives before the task leaves, and neither ordering check can pass on an empty
+  side); `bound` reads the registry's seat and not the presence record; the snapshot's
+  default cannot satisfy the "no longer flown for an absent player" check, which needs `true`
+  first; a hired crew's rig and a roster's unit never reach the fix; the start's prepare
+  reads the same function.
 
 **Verified.**
 
-- **Linux** (conclav.dev, a throwaway clone at main `2022eb974` with this branch's patch):
-  the story, four runs out of four; story 4 of `field_ap7.rs`, four out of four (three
-  before its prospector was stood nearer the ramp, at 89 s, and one after); and the stories
-  that go through a field's exit and the host's recover, run four at a time on the final
-  tree (`field_ap1`, `field_ap4`, `field_ap4a`, `field_ap5`, `field_ap6`, `field_ap7`,
-  `field_mw7`, `escort_lease`): 32 passed, none failed.
-- **Mutations** (Linux, each applied, run and undone by exact text):
+- **Linux** (conclav.dev, a throwaway clone at main `4efa11521` with this branch's patch, the
+  final tree): the story twice and story 4 of `field_ap7.rs` twice, all passing; and the
+  stories that go through a field's exit and the host's recover, run four at a time
+  (`field_ap1`, `field_ap4`, `field_ap4a`, `field_ap5`, `field_ap6`, `field_ap7`,
+  `field_mw7`, `escort_lease`): 32 passed, none failed. On earlier trees of this branch the story
+  passed six more runs out of six and the same eight files 32 out of 32, twice.
+- **Mutations** (Linux, the final tree, each applied, run and undone by exact text):
 
-  | Mutation | What fails |
+  | Mutation | What happens |
   |---|---|
-  | `recover_plan` asks where the operator is again (the fix taken out) | this story at "a rig on RETURN is let out at its carrier's ramp and put aboard", the rig beside the ramp and "Recover it yourself" in the owner's queue; story 4 at "the host puts it aboard as its operator, who sits in his other rig" |
-  | The gate's widening for a guard taken out (`arena/absent.rs`, `permits`: a guard answers for its own hull only, as a unit on `HOLD` does) | this story at "a guard returns fire on the unit that hit its owner's carrier": ten of the raider's rounds arrived on the carrier and the guard fired none |
+  | `recover_plan` asks where the operator is again (the fix taken out) | The story fails at "a rig on RETURN is let out at its carrier's ramp and put aboard", the rig beside the ramp and "Recover it yourself" in the owner's queue; story 4 fails at "the host puts it aboard as its operator, who sits in his other rig" |
+  | The gate's widening for a guard taken out (`src/arena/absent.rs`, `permits`: a guard answers for its own hull only, as a unit on `HOLD` does) | The story fails at "a guard returns fire on the unit that hit its owner's carrier": ten of the raider's rounds arrived on the carrier and the guard fired none |
+  | Kin made everybody (`fired_on_kin`: fire that arrived on any other unit counts as fire on the player's own) | The story fails at "a guard holds its fire on a stranger's quarrel": with two of the raider's rounds arrived on the miner's rig, the guard had fired 31 at the raider |
+  | `permits` alone made too wide (a guard may fire on whatever it asks to) | The story passes, and should: a mind is shown as Hostile, and turned to face, only what `answerable` names, so `permits` is the second of two locks and this story does not tell them apart. The kernel's in-source tests hold `permits` |
 
-- **Windows** (this worktree): the story, three passing runs, and story 4; `cargo fmt`;
-  `cargo clippy -p tacsim --all-targets -- -D warnings`; CI's M7 memory-size clippy pass on
-  `tacsim`; `cargo doc -p tacsim --no-deps` under `-D warnings`; `cargo test -p
-  mush-contract-tests` (the fiat budget, the census, the panic budget and the restriction
-  lints among them), nothing re-blessed.
+- **Windows** (this worktree, the final tree): the story and story 4; `cargo fmt`; `cargo
+  clippy -p tacsim --all-targets -- -D warnings`; CI's M7 memory-size clippy pass on
+  `tacsim`; `cargo doc -p tacsim --no-deps` under `-D warnings`, with and without
+  `--document-private-items`; `cargo test -p mush-contract-tests` (the fiat budget, the
+  census, the panic budget and the restriction lints among them), nothing re-blessed.
+- **Main moved while this was in flight** (`4efa11521`: MW.14c and MW.13). It was merged in
+  with no conflict; everything above named "the final tree" is after that merge.
 - **CI**: the branch's dispatch run and the pull request's own run are named in the pull
   request's body, since a note cannot name the run of its own commit.
 
