@@ -2853,6 +2853,10 @@ times are conclav.dev's, each run in a batch of four:
   the hired rig 67 cells from the intruder and 54 from its leader, past its own sight and past
   the range a party shares contacts over. It answers NEGATIVE; its order row is the same HOLD
   row byte for byte; the field's ledger holds no engagement commanded for it; it fires nothing.
+- `mw14c_the_order_under_a_concentrate_lapses_with_its_leader` (22 s). The same far hull on
+  its leader's ADVANCE declines a `CONCENTRATE` and drives on. The leader quits: the history
+  turns the order the hull goes back to into a HOLD under a sequence of its own, and the hull
+  holds. The kernel was offered no engagement for it and it fired nothing.
 - `mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired` (40 s). Two hired crew in
   armed rigs, no player in a unit. The intruder fires on the roster's carrier; the escort,
   nearer, never fires on the roster. The commander holds and names the intruder for both hulls
@@ -2892,6 +2896,7 @@ named for it run; every one failed that test.
 | the commander reads and names contacts its book does not hold Hostile | story 5: the roster never advances, holding for a contact that is not Hostile |
 | the commander orders an absent player's unit, and the issue admits it | story 6: "every order the commander gave went to her own slot" |
 | an order in flight remembered only in RAM | story 7: "the same next order as the book owed before the restart" |
+| the order under a `CONCENTRATE` does not lapse | "the order under the CONCENTRATE lapses with its leader and the hull holds" |
 | unarmed hulls concentrated | story 1: a `CONCENTRATE` reaches two mining rigs inside the dwell |
 | a `CONCENTRATE` does not press | `field::orders`, AP.8's pressing test |
 | the plan's new key required on read | `mush_tactics`, the older-plan test |
@@ -2908,10 +2913,11 @@ SCREEN, SUPPORT or MINE. A player-held jammer.
 
 **Not pinned by a story.** A Hostile that leaves the commander's sight by driving out of it
 (the story's Hostile is destroyed, and the commander's frame drops the wreck). The name kept
-for the dwell while a live contact is out of sight (the rule's unit test has it). The order
-under a `CONCENTRATE` lapsing with its leader, and a declined `CONCENTRATE` over an order that
-had not reached the kernel (the second reader's first two points: the stand-down has a unit
-test, the executor's two paths have none). The tolerant target refused for an order that is
+for the dwell while a live contact is out of sight (the rule's unit test has it). A declined
+`CONCENTRATE` over an order that had not reached the kernel (the second reader's first point:
+the executor's path has no test of its own). The order under a `CONCENTRATE` lapsing while
+the hull is on the contact, or after it came back from it (the story flies the declined
+case). The tolerant target refused for an order that is
 not a `CONCENTRATE` (no typed line can ask for it; the check is the issue path's own). A
 successor inheriting the dwell (unit test only). A `CONCENTRATE` chained over another in a
 field. A work point named on a preset.
@@ -2924,7 +2930,7 @@ conclusions, and reported five points, all checked in the tree and all fixed bef
    said HOLD. The executor now offers that order under the return's sequence;
 2. the lapse scan could not see the order under a `CONCENTRATE`, so a hull that declined one,
    or came back from one, went on pressing for a leader who had gone. `under_lapsing` and the
-   stand-down are the fix;
+   stand-down are the fix, and a story flies the declined case;
 3. the dwell was read off the book's standing orders, and an order of an earlier spell left on
    an unreachable hull made the posture look old. It is now read from the kept orders, which
    are stamped and in order;
