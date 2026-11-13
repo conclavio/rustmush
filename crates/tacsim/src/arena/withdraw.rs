@@ -154,16 +154,17 @@ impl Arena {
         // and the kernel decides here, on the posture the unit is flown on now: a `GUARD`
         // that can no longer defend itself is `RETURN` and is let go like one. A casualty
         // under tow is its tug's to take out.
-        if state.coupled_to.is_none()
-            && state.absent
-            && !crate::arena::absent::flown(state).is_return()
-        {
-            return Err(WithdrawRefusal::Standing);
-        }
+        // **Doc 45 unit AP.7**: and it is judged by its tug here too. A tug nobody sits in is
+        // an absent player's for the whole field; were the casualty let out on the tug's pose
+        // and the tug then kept for its posture, a load typed by the tug's player would split
+        // the pair. Both stay, with the one refusal.
         let judged = match state.coupled_to {
             Some(tug) => self.unit(tug).ok_or(WithdrawRefusal::NotUnderOwnPower)?,
             None => state,
         };
+        if judged.absent && !crate::arena::absent::flown(judged).is_return() {
+            return Err(WithdrawRefusal::Standing);
+        }
         if !under_own_power(judged) {
             return Err(WithdrawRefusal::NotUnderOwnPower);
         }

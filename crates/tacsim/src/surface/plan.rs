@@ -170,6 +170,12 @@ pub enum PlanEnd {
     Cleared,
     /// The rig cannot reach the ramp on its charge: the plan ends where it stands.
     Stranded,
+    /// **A field opened around the rig and it left by its carrier's ramp** (doc 45 unit AP.7;
+    /// Q-45-10): its mind took it home on `RETURN`, or its operator recovered it out of the
+    /// field. Set parking by the start of that recover and ended by its finish
+    /// (`crate::surface::act`), so the plan ends once the rig is aboard. A rig that stayed in
+    /// the field is paused with its site and never reads this.
+    Field,
 }
 
 impl PlanEnd {
@@ -187,7 +193,8 @@ impl PlanEnd {
             | PlanEnd::HoldFull
             | PlanEnd::Bound
             | PlanEnd::Cleared
-            | PlanEnd::Stranded => false,
+            | PlanEnd::Stranded
+            | PlanEnd::Field => false,
         }
     }
 
@@ -205,6 +212,7 @@ impl PlanEnd {
             PlanEnd::ChartFull => "chart full",
             PlanEnd::Cleared => "cleared",
             PlanEnd::Stranded => "stranded",
+            PlanEnd::Field => "a field opened",
         }
     }
 }
@@ -2862,6 +2870,21 @@ mod tests {
                 addr: "C117".to_owned()
             })
         );
+    }
+
+    /// **Doc 45 unit AP.7: a plan a field cut short** (Q-45-10). The reason is no right, so
+    /// its parking is never noted on its own; it has a word for the projection; and it is
+    /// stored by name.
+    #[test]
+    fn ap7_a_plan_ended_by_a_field_is_stored_and_worded() {
+        assert!(!PlanEnd::Field.is_right());
+        assert_eq!(PlanEnd::Field.word(), "a field opened");
+        let state = FillState::Parking {
+            why: PlanEnd::Field,
+        };
+        let text = serde_json::to_string(&state).unwrap_or_default();
+        assert_eq!(text, r#"{"state":"parking","why":{"kind":"field"}}"#);
+        assert_eq!(serde_json::from_str::<FillState>(&text).ok(), Some(state));
     }
 
     /// A block's four soundings, nearest first from the start cell, a fully sounded field

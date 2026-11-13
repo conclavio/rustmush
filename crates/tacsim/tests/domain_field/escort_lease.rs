@@ -51,7 +51,7 @@ fn escort_rig(rig: &Rig, pilot: ObjId) -> ObjId {
 }
 
 /// **Lease the escort at Occator's counter**: the preview, then the signature, then the loan.
-fn lease_escort(rig: &mut Rig, pilot: ObjId) {
+pub(crate) fn lease_escort(rig: &mut Rig, pilot: ObjId) {
     at_counter(rig, pilot);
     let preview = run(&mut rig.tw, pilot, "+tv/lease escort");
     assert!(
@@ -195,7 +195,7 @@ pub(crate) fn contact_near(
 }
 
 /// Mint `minor` into `who`'s own credit account from Ceres's treasury (staff's path).
-fn top_up(rig: &mut Rig, who: ObjId, minor: i64) {
+pub(crate) fn top_up(rig: &mut Rig, who: ObjId, minor: i64) {
     let account = tacsim::port::credit::own_account(rig.tw.world(), who)
         .map(|account| account.id.0)
         .expect("the pilot's account");
@@ -266,6 +266,10 @@ pub(crate) fn stand_up_out(
         let _ = finish(rig, kin, escort);
         assert!(on_ground_at(&rig.tw, kin, RAMP));
         to_cell(rig, kin, cell);
+        // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its
+        // operator left it on HOLD. This one is to stand where it is put, and he says so from
+        // aboard the carrier before he boards the escort.
+        crate::field_host_rig::left_on_hold(rig, escort, 2);
     }
     // (2) Aboard it in the bay, down the ramp, out beside the rig.
     board_escort(rig, escort, hull);

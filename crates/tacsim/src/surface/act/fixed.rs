@@ -1105,6 +1105,10 @@ pub(super) fn by_params(
 pub(super) struct Stamp {
     pub(super) by: Option<ActBy>,
     pub(super) plan: Option<PlanFixed>,
+    /// **The start is the recover of a rig that left a running field at its carrier's ramp**
+    /// (doc 45 unit AP.7; Q-45-10): the write parks the record's live plan
+    /// (`PlanEnd::Field`), and the recover's finish ends it.
+    pub(super) from_field: bool,
 }
 
 /// `Conflict` "the plan moved on" (the brief's D16: the world moved between the decision and the

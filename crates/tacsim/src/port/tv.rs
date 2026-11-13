@@ -936,6 +936,8 @@ pub const END_CHART_FULL: &str = "your chart of {body} is full; +tv/forget makes
 pub const END_CLEARED: &str = "you cleared it.";
 /// An end: stranded — `{ramp}`.
 pub const END_STRANDED: &str = "it cannot reach the {ramp} on its charge.";
+/// An end: a field opened around the rig and it went home up the ramp (doc 45 unit AP.7).
+pub const END_FIELD: &str = "a field opened around it and it was taken home.";
 /// A wait: the helm — `{name}`.
 pub const WAIT_HELM: &str = "you no longer hold the {name}'s helm";
 /// A wait: ashore — `{name}`.

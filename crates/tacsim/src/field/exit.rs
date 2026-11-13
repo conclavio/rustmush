@@ -469,7 +469,12 @@ pub(crate) fn on_withdrawn(
         .unwrap_or((None, Vec::new(), 0, None));
     // Doc 44 cut MW.7: a unit its mind flew home for an absent player is the host's to put
     // aboard, read here while its row still stands.
-    super::absent::on_out(ctx, &site, unit, asked.as_ref().map(|asked| &asked.then));
+    super::absent::on_out(
+        ctx,
+        &site,
+        unit,
+        asked.as_ref().map(|asked| (&asked.then, asked.quiet)),
+    );
     // The check-in, at the field pose beside the ramp (Q-CF-36): a mobile unit leaves nothing on
     // the record's unit index. A departing carrier (F-6) checks its souls in aboard it, as its
     // demotion would.

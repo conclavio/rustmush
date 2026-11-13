@@ -108,6 +108,9 @@ async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     let lost = c_tvs[0];
     launched_composed(&mut rig, c, lost);
     to_cell(&mut rig, lost, (114, 124));
+    // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its operator
+    // left it on HOLD. The prospector is to fall where it stands.
+    crate::field_host_rig::left_on_hold(&mut rig, c, 1);
     let hull = armed(&mut rig, "Red Hound", (110, 124), 90_000);
     seat(&mut rig, hull, a);
     let (epoch, unrecorded) = record_of(&mut rig.tw, lost)

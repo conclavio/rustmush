@@ -726,8 +726,39 @@ impl SurfaceActProvider {
         let by = by_params(word, parameters)?;
         // Doc 20 cut SM.11 (D8): a live plan holds its rig from every hand start — a hand unload
         // too, never the recover's queued one — and its stop.
-        let held = read_record(txn, &self.excursions, tv)?
+        let standing = read_record(txn, &self.excursions, tv)?;
+        let held = standing
+            .as_ref()
             .and_then(|record| record.live_plan_for(actor).map(|plan| plan.no));
+        // Doc 45 unit AP.7 (Q-45-10): save one hand start, the recover of a rig that left a
+        // running field at its carrier's ramp (the site's record names its exit), read in
+        // this very transaction. It is what parks the plan, below, and its finish ends it.
+        let exit_recover = held.is_some()
+            && matches!(
+                word,
+                StartWord::Act {
+                    kind: ActKind::Recover,
+                    ..
+                }
+            )
+            && match standing
+                .as_ref()
+                .and_then(|record| record.excursion.as_ref())
+            {
+                Some(out) => txn
+                    .get(
+                        &self.sites,
+                        &crate::surface::site_record::SiteKey(out.site.clone()),
+                    )
+                    .map_err(|_| {
+                        port_error(
+                            ActionErrorCode::Integrity,
+                            "the site records are unavailable",
+                        )
+                    })?
+                    .is_some_and(|site| site.exited(tv)),
+                None => false,
+            };
         let hand = by.by.is_none();
         let queued_unload = matches!(
             word,
@@ -740,7 +771,7 @@ impl SurfaceActProvider {
             word,
             StartWord::PlanFile | StartWord::PlanClear | StartWord::PlanStrike | StartWord::PlanEnd
         );
-        if hand && !control && !queued_unload && held.is_some() {
+        if hand && !control && !queued_unload && !exit_recover && held.is_some() {
             return Err(port_error(
                 ActionErrorCode::ProviderRejected,
                 code_of_word("plan_live"),
@@ -785,7 +816,7 @@ impl SurfaceActProvider {
             }
         };
         let wire = wire_word(kind, quiet);
-        let (plan, stamp) = match by.by {
+        let (plan, mut stamp) = match by.by {
             None => (
                 rig.plans
                     .get(wire)
@@ -825,6 +856,7 @@ impl SurfaceActProvider {
                             step,
                         }),
                         plan: Some(binding),
+                        from_field: false,
                     },
                 )
             }
@@ -859,6 +891,7 @@ impl SurfaceActProvider {
                     Stamp {
                         by: Some(ActBy::Idle),
                         plan: None,
+                        from_field: false,
                     },
                 )
             }
@@ -912,6 +945,8 @@ impl SurfaceActProvider {
         }
         // Doc 36 cut GC.0 (Q-36-17): a rig recovering under its own power leaves the site's unit
         // index in this commit.
+        // Doc 45 unit AP.7 (Q-45-10): and whether this is the recover of a rig that left a
+        // running field at its carrier's ramp, which the start's write reads.
         if kind == ActKind::Recover
             && let Some(site) = plan.site.as_ref()
         {
@@ -926,6 +961,7 @@ impl SurfaceActProvider {
                 .get(&self.sites, &key)
                 .map_err(|_| integrity())?
                 .cloned();
+            stamp.from_field = record.as_ref().is_some_and(|record| record.exited(tv));
             if let Some(next) =
                 crate::surface::site_record::left_under_own_power(record.as_ref(), tv)
             {
@@ -1556,6 +1592,26 @@ impl SurfaceActProvider {
                 slot: rig.slot,
                 site,
             });
+        }
+        // Doc 45 unit AP.7 (Q-45-10): a rig that leaves a running field by the ramp is going
+        // home, and the plan it was working goes with it. The plan parks here, in the bundle
+        // that starts the recover, so the finish that puts the rig aboard ends it; a recover
+        // that does not land leaves a parking plan, which brings the rig home by itself once
+        // the site demotes and ends from the bay. A plan already parking keeps its reason.
+        // Only the actor's own plan: a former lessee's plan still on the record is not
+        // theirs to end.
+        if stamp.from_field
+            && let Some(live) = record.plan.as_mut()
+            && live.author == actor
+            && live.state == FillState::Live
+        {
+            live.state = FillState::Parking {
+                why: PlanEnd::Field,
+            };
+            live.seq = live
+                .seq
+                .checked_add(1)
+                .ok_or_else(|| port_error(ActionErrorCode::Integrity, "a plan's seq overflows"))?;
         }
         // Doc 20 cut SM.11: a plan step's update rides the same bundle.
         if let Some(binding) = &stamp.plan {
@@ -3424,6 +3480,36 @@ impl ActionProvider for SurfaceDoneProvider {
                         tally(&mut record, act.by, |tally| {
                             tally.trips = tally.trips.saturating_add(1);
                         });
+                    }
+                    // Doc 45 unit AP.7 (Q-45-10): the rig left a running field at its ramp
+                    // and is aboard, so the plan its start parked ends in this write, with
+                    // one `Ended` note the tick tells its author at trip level. A queued
+                    // unload is SM.8's own and lands whether the plan lives or not. The ore
+                    // it brought home is a trip of the plan's, whoever ran the recover.
+                    if let Some(plan) = record.plan.as_mut()
+                        && plan.state
+                            == (FillState::Parking {
+                                why: PlanEnd::Field,
+                            })
+                    {
+                        if loaded && !matches!(act.by, Some(ActBy::Plan { .. })) {
+                            plan.tally.trips = plan.tally.trips.saturating_add(1);
+                        }
+                        plan.passed.clear();
+                        plan.state = FillState::Ended {
+                            why: PlanEnd::Field,
+                            at_ic: act.due_ic,
+                        };
+                        push_note(
+                            plan,
+                            PlanNoteKind::Ended {
+                                why: PlanEnd::Field,
+                            },
+                            act.due_ic,
+                        )?;
+                        plan.seq = plan.seq.checked_add(1).ok_or_else(|| {
+                            port_error(ActionErrorCode::Integrity, "a plan's seq overflows")
+                        })?;
                     }
                     record.excursion = None;
                     // Doc 20 cut SM.4b (§3.6 of the brief): a recover that drove home spends its

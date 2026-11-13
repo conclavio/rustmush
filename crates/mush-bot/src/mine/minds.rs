@@ -187,6 +187,12 @@ pub mod absent {
     pub const ADMITTED_ON: &str = "while you were away: its mind has the controls and flies it on ";
     /// `tacsim::field::absent::STAYS_ON` (doc 45 unit AP.6).
     pub const STAYS_ON: &str = "passes to its mind, which flies it on ";
+    /// `tacsim::field::absent::UNATTENDED` (doc 45 unit AP.7).
+    pub const UNATTENDED: &str =
+        "with nobody in its seat: its mind has the controls, makes for its carrier's ramp";
+    /// `tacsim::field::absent::UNATTENDED_ON` (doc 45 unit AP.7).
+    pub const UNATTENDED_ON: &str =
+        "with nobody in its seat: its mind has the controls and flies it on ";
 }
 
 /// The `+minds`, `@mind/*` and `@registry/*` command family (17g C2, doc 17h M8):
@@ -589,6 +595,8 @@ mod tests {
             TAKEN_ON,
             ADMITTED_ON,
             STAYS_ON,
+            UNATTENDED,
+            UNATTENDED_ON,
         )
     }
 

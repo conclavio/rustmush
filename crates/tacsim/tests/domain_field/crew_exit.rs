@@ -315,6 +315,10 @@ async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extra
     let hull_b = armed(&mut rig, "Grey Hound", (114, 124), 270_000);
     seat(&mut rig, hull_a, a);
     seat(&mut rig, hull_b, b);
+    // Doc 45 unit AP.7: a rig nobody sits in is its mind's in a field, which takes it up the
+    // ramp before its operator can ask. C holds the prospector's console, so the recover below
+    // is C's own, as this gate has it.
+    seat(&mut rig, prospector, c);
     // B flies from inside the hull: a cab, not a remote console.
     staff_hand(&mut rig, |ctx| {
         ctx.w.move_to(b, hull_b).expect("B climbs into the hull");

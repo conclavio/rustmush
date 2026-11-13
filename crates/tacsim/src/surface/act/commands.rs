@@ -126,6 +126,30 @@ pub(super) fn plan_holds(ctx: &Ctx<'_>, rig: &RigAt) -> Result<(), CmdError> {
     }
 }
 
+/// **Whether `tv` left a running field at its carrier's ramp and has not yet come aboard**
+/// (doc 45 unit AP.7; Q-45-10): its open excursion's site is promoted and the site's record
+/// names its exit (`crate::surface::site_record::SiteRecord::exited`). The recover that follows
+/// is the one hand act a live plan does not hold its rig from: it is what parks the plan, and
+/// its finish ends it. A record that will not read answers no.
+pub(super) fn left_a_field(ctx: &Ctx<'_>, tv: ObjId) -> bool {
+    let Some(handles) = ctx.w.module_state::<PortHandles>() else {
+        return false;
+    };
+    let Ok(Some(record)) = ctx.action_state(&handles.families.excursions, &RigKey(tv)) else {
+        return false;
+    };
+    let Some(site) = record.excursion.as_ref().map(|out| out.site.clone()) else {
+        return false;
+    };
+    ctx.action_state(
+        &handles.families.sites,
+        &crate::surface::site_record::SiteKey(site),
+    )
+    .ok()
+    .flatten()
+    .is_some_and(|site| site.exited(tv))
+}
+
 /// **The record's busy refusal** (`RIG_BUSY`): an act in flight.
 pub(super) fn busy_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<Refusal> {
     let act = record.act.as_ref()?;
@@ -408,8 +432,12 @@ pub(crate) fn act_cmd(
     let Some(action) = handles.surface_act.clone() else {
         return Err(CmdError::msg(tv::TV_UNWIRED));
     };
-    // Doc 20 cut SM.11 (D8): a live plan holds its rig.
-    plan_holds(ctx, rig)?;
+    // Doc 20 cut SM.11 (D8): a live plan holds its rig. Doc 45 unit AP.7 (Q-45-10): save from
+    // the one hand act that ends the plan, the recover of a rig that left a running field at
+    // its carrier's ramp.
+    if !(kind == ActKind::Recover && left_a_field(ctx, rig.tv)) {
+        plan_holds(ctx, rig)?;
+    }
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     // 1. The world plan (the start's offer runs the same function). A reading act needs the
@@ -3190,6 +3218,7 @@ pub(crate) fn end_why(w: &World, author: ObjId, why: PlanEnd, words: &PlanWords)
         PlanEnd::ChartFull => tv::END_CHART_FULL.replace("{body}", &words.body),
         PlanEnd::Cleared => tv::END_CLEARED.to_owned(),
         PlanEnd::Stranded => tv::END_STRANDED.replace("{ramp}", &words.ramp),
+        PlanEnd::Field => tv::END_FIELD.to_owned(),
     }
 }
 

@@ -125,6 +125,9 @@ async fn lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable() {
     to_cell(&mut rig, escort, (ramp.0 + 4, ramp.1));
     to_cell(&mut rig, wingman, (ramp.0 + 5, ramp.1));
     powerless(&mut rig, escort);
+    // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its operator
+    // left it on HOLD. The escort is to lie where it stands.
+    crate::field_host_rig::left_on_hold(&mut rig, a, 1);
     let (b, _, _) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
     let hull = armed(&mut rig, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
     seat(&mut rig, hull, b);
@@ -215,6 +218,9 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
     to_cell(&mut rig, escort, (ramp.0 + 4, ramp.1));
     to_cell(&mut rig, wingman, (ramp.0 + 5, ramp.1));
     powerless(&mut rig, escort);
+    // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its operator
+    // left it on HOLD. The escort is to lie where it stands.
+    crate::field_host_rig::left_on_hold(&mut rig, a, 1);
     // A stranger's armed hull west of the pad: its pilot's mark opens each field.
     let (b, _, _) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
     let hull = armed(&mut rig, "Red Hound", (ramp.0 - 8, ramp.1), 90_000);
@@ -617,6 +623,9 @@ async fn lane3_a_loaded_combat_casualty_never_darkens_the_lift() {
     let (rx, ry, _) = ramp_at(&rig.tw, AHUNA);
     let ramp = (rx.div_euclid(1_000), ry.div_euclid(1_000));
     to_cell(&mut rig, tug, (ramp.0 + 1, ramp.1));
+    // Doc 45 unit AP.7: a rig nobody sits in goes home when a field opens, unless its operator
+    // left it on HOLD. The tug is to stand beside the drone.
+    crate::field_host_rig::left_on_hold(&mut rig, a, 1);
     let drone = combat_casualty(&mut rig, "Red Drone", (ramp.0 + 2, ramp.1));
     // A stranger's armed hull west of the pad: its pilot's mark opens the field.
     let (b, _, _) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);

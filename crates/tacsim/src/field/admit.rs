@@ -563,6 +563,8 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     // Doc 45 cut AP.5 (Q-45-1, Q-45-2): the seats nobody is at pass to their minds now, on the
     // record just written.
     seat_absent(ctx, site, None);
+    // Doc 45 unit AP.7 (Q-45-1): and so do the units nobody sits in.
+    super::absent::unattended(ctx, site, None);
     let line = super::FIELD_OPENED
         .replace("{n}", &field.ordinal.to_string())
         .replace("{site}", &site_name(ctx, site));

@@ -2972,6 +2972,69 @@ mod tests {
         );
     }
 
+    /// **Doc 45 unit AP.7: a unit that carries nothing to fire cannot guard, and stays**
+    /// (Q-45-10). Its `GUARD` never began, so it does not end in a drive home: the unit is
+    /// flown as `HOLD`. Its frame and its mind read `hold`, the order is the hold, the kernel
+    /// keeps it at its ramp, and it answers for nobody's other unit. The player's word is
+    /// kept. A unit that had something to fire and has spent it still goes home (AP.6).
+    #[test]
+    fn ap7_a_unit_with_nothing_to_fire_set_to_guard_stays_as_on_hold() {
+        use crate::arena::perception::MindObjective;
+        use crate::arena::withdraw::WithdrawRefusal;
+        use crate::posture::Posture;
+        let mut bare = a_guards_field();
+        if let Some(state) = bare.unit_mut(RED) {
+            state.weapons.clear();
+            state.ammo.clear();
+        }
+        assert!(bare.set_posture(RED, Posture::Guard));
+        assert!(bare.set_absent(RED, true));
+        bare.note_fired_on(BLUE, KIN);
+        assert_eq!(bare.flown_posture(RED), Posture::Hold);
+        assert_eq!(bare.posture(RED), Posture::Guard, "the word is kept");
+        let tempo = bare.clock.tempo();
+        assert_eq!(
+            bare.frame_for(RED, tempo).map(|frame| frame.posture),
+            Some(Posture::Hold),
+            "its mind reads HOLD"
+        );
+        assert_eq!(
+            objective_of(&bare),
+            Some(MindObjective::Hold),
+            "laid a hold, not the way home"
+        );
+        bare.stand_posture(RED);
+        assert_eq!(objective_of(&bare), Some(MindObjective::Hold));
+        assert_eq!(
+            bare.unit(RED).and_then(|state| state.stand_at),
+            Some(reds_cell(&bare)),
+            "stood where it is"
+        );
+        assert_eq!(
+            bare.withdraw(RED, Some(REDS_RAMP)).err(),
+            Some(WithdrawRefusal::Standing),
+            "the ramp keeps it"
+        );
+        assert_eq!(
+            bare.absent_denies_fire(RED, BLUE),
+            Some(crate::arena::absent::Denied::FiredFirst),
+            "it does not answer for its player's other unit"
+        );
+        // A carrier lifting off its pad is asked with no ramp, and nothing of this keeps it:
+        // the live lift is its commander's own act (doc 27 Q-H10).
+        assert!(bare.withdraw(RED, None).is_ok(), "a lift is never refused");
+        // The same unit with a spent magazine is a guard that ended: it goes home.
+        let mut spent = a_guards_field();
+        if let Some(state) = spent.unit_mut(RED) {
+            for rounds in state.ammo.values_mut() {
+                *rounds = 0;
+            }
+        }
+        assert!(spent.set_posture(RED, Posture::Guard));
+        assert!(spent.set_absent(RED, true));
+        assert_eq!(spent.flown_posture(RED), Posture::Return);
+    }
+
     /// **Doc 45 unit AP.6: nothing an attacker reads changes** (Q-45-16). Blue holds red on
     /// its plot. Its whole frame, and its mind's whole view, are the same bytes whether red is
     /// flown by its pilot or by its mind for an absent one, on any posture, stood or not,

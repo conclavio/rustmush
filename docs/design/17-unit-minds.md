@@ -240,7 +240,9 @@ word off the same record as a hull on the ground (`space/backup.rs`; the space v
 The view carries the word. In a field the arena acts on it for a unit a mind flies for an absent
 player (doc 45 unit AP.6; `crates/tacsim/src/arena/absent.rs`): it decides the standing order the
 mind is laid and what the absent player's rule lets the unit answer, and a `guard` the unit can no
-longer defend reads `return`. A rig on a plan and a carrier are doc 45's AP.7, and space is AP.9.
+longer defend reads `return`. Since doc 45's AP.7 the same holds for a unit nobody sits in (a rig on a
+plan, a carrier), with two readings of its own: a unit that carries nothing to fire and is set to
+`guard` reads `hold`, and so does a carrier whose record says `return`. Space is AP.9.
 
 **Notices.** `pending_notices` is cleared every pulse and must be empty between pulses, so a think
 that spans pulses cannot read it. `MindState.notices` is a bounded buffer (16 entries) filled by the
