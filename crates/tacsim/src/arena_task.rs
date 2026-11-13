@@ -1192,8 +1192,8 @@ struct Task {
     /// base, never at once ([`arena_loop`]).
     resumed: bool,
     /// **The think pool this task sends its batches to** (17b cut M4.1; doc
-    /// 17 §6 "Execution policy", D-UM-22): the process's one
-    /// ([`MindPool::shared`]) in production, a private one in a test.
+    /// 17 §6 "Execution policy", D-UM-22): the server's one
+    /// (`crate::minds::pool::of_world`) in production, a private one in a test.
     pool: Arc<MindPool>,
     /// **The batch in flight** (17b cut M4.1): the last pulse's collected
     /// thinks, submitted after that pulse's publication and awaited at the

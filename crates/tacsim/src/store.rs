@@ -211,6 +211,12 @@ pub struct TacsimStore {
     /// readable or not (when `space_state.is_none() && space_state_held`, the document is
     /// unreadable and quarantined against overwrite).
     pub(crate) space_state_held: bool,
+    /// **The server's one think pool** (doc 44 unit MW.11; [`TacsimStore::mind_pool`]): empty
+    /// until something thinks. RAM only.
+    pub(crate) mind_pool: crate::minds::PoolSlot,
+    /// **The host of every space think** (doc 44 unit MW.11; [`TacsimStore::space_thinks`]):
+    /// the runners kept by digest and the batches in flight. RAM only.
+    pub(crate) space_thinks: crate::space::thinks::HostSlot,
     /// Frozen at wiring.
     pub(crate) cfg: TacsimConfig,
     /// The packs the host read and this module verified, keyed `(id, version)`.
@@ -523,6 +529,21 @@ impl TacsimStore {
     #[must_use]
     pub fn config(&self) -> &TacsimConfig {
         &self.cfg
+    }
+
+    /// **The server's one think pool** (doc 44 unit MW.11, Q-44-28; `crate::minds::pool`):
+    /// built the first time anything thinks, with this store's `[tacsim.minds].workers`.
+    /// A match's task and a space mind are both handed this one, and neither names a size.
+    #[must_use]
+    pub fn mind_pool(&self) -> std::sync::Arc<crate::minds::MindPool> {
+        self.mind_pool.get(self.cfg.minds.workers)
+    }
+
+    /// **The host of this world's space thinks** (doc 44 unit MW.11;
+    /// [`crate::space::thinks::ThinkHost`]), on [`TacsimStore::mind_pool`].
+    #[must_use]
+    pub fn space_thinks(&self) -> std::sync::Arc<crate::space::thinks::ThinkHost> {
+        self.space_thinks.get(|| self.mind_pool())
     }
 
     /// **A hull's black box, its open tail** (doc 23 cut S.1, §7; the read seam an inspection

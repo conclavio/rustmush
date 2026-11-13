@@ -48,21 +48,16 @@ use super::applier::Seat;
 use super::bubble::{
     BubbleInputTape, EmconPosture, HullStatus, LocalSpaceBubble, SpaceShipState, admitted_party,
 };
+use super::thinks::{Answer, Ask, ThinkHost, Thinker};
 use super::view::{ContactBook, Situation, Stop};
 use super::weapons::isqrt_i128;
-use crate::arena::card::line;
-use crate::arena::core::{ClassTable, CoreClass};
 use crate::arena::intents::IntentKind;
-use crate::arena::mind::{MindView, ThinkResult};
+use crate::arena::mind::MindView;
 use crate::arena::party::{Mark, PartyId};
 use crate::arena::perception::{FrameNotice, Receiver as FrameReceiver};
-use crate::arena::profile_rules::BoundProgram;
-use crate::arena::profile_runtime::ProfileToken;
-use crate::arena::runtime_card::{CardCatalog, ProfileKey, stock_definition};
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, ContactId, Designator, MatchMode, Power, TerrainCell, Waypoints,
+    ArenaDefinition, ArenaTerrain, Designator, MatchMode, Power, TerrainCell, Waypoints,
 };
-use crate::config::{ArenaConfig, ReflexConfig};
 use crate::port::apply::{credit_scale, minor_of};
 use crate::port::licence::{LICENCE_SETTLE_WINDOW_SECS, licence_gate, licence_port};
 
@@ -919,7 +914,8 @@ pub fn emit_light_lagged_picket_hail(
     )
 }
 
-fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
+/// The one-cell map every space think is handed: a space mind has no ground under it.
+pub(super) fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
     let terrain = ArenaTerrain::uniform(
         16,
         16,
@@ -941,198 +937,12 @@ fn minimal_space_arena_definition() -> Option<ArenaDefinition> {
     })
 }
 
-fn build_minimal_sealed_space_arena() -> Option<crate::arena::state::Arena> {
-    use crate::arena::mind::MindSeal;
-    use crate::arena::party::FieldHost;
-    use crate::arena::resolution::UnitProfile;
-    use crate::arena::state::{Arena, Controller, CustodyOut, CustodyUnit, TrackedRules};
-    use crate::config::{MatchConfig, SensorsConfig};
-    use mush_sim::data::Pose;
-
-    let definition = minimal_space_arena_definition()?;
-    let (unit, _) = super::custody::instantiate_stock_space_unit(
-        ObjId(1),
-        crate::definitions::content::CORVETTE,
-    )
-    .ok()?;
-    let seal = build_space_mind_seal(
-        ObjId(1),
-        crate::arena::mind::SortieId::ic(ObjId(1), 1),
-        "kirkwood_picket",
-        crate::minds::content::kirkwood_picket_digest().0,
-    )
-    .unwrap_or_else(MindSeal::placeholder);
-    let pose = Pose::at(1_500, 1_500, 0, unit.rules().clone());
-    let custody_unit = CustodyUnit {
-        id: ObjId(1),
-        team: PartyId::RED,
-        pose,
-        mobility: TrackedRules {
-            max_speed_cms: 1_000,
-            accel_cms2: 200,
-            brake_cms2: 400,
-            turn_rate_mdeg_s: 30_000,
-            reverse_factor_pct: 40,
-        },
-        sensor_height_cm: 150,
-        sensor: None,
-        weapons: Vec::new(),
-        profile: UnitProfile::default(),
-        gunnery: 0,
-        controller: Controller::Mind,
-        slot: 0,
-        seal,
-        unit,
-    };
-    let mut host = FieldHost::all_hostile();
-    host.every_class = true;
-    Arena::new(
-        CustodyOut {
-            definition,
-            units: vec![custody_unit],
-            pilots: Vec::new(),
-            resolution: crate::match_::stock_resolution(),
-            seed: 2_350,
-            mode: MatchMode::Skirmish,
-            host,
-        },
-        &ArenaConfig::default(),
-        &MatchConfig::default(),
-        &SensorsConfig::default(),
-    )
-    .ok()
-}
-
-static CACHED_SPACE_ARENA_DEF: std::sync::LazyLock<Option<Arc<ArenaDefinition>>> =
-    std::sync::LazyLock::new(|| minimal_space_arena_definition().map(Arc::new));
-
-static BASE_SEALED_SPACE_ARENA: std::sync::LazyLock<Option<crate::arena::state::Arena>> =
-    std::sync::LazyLock::new(build_minimal_sealed_space_arena);
-
-/// Install the unit's sealed scripted runner via [`crate::minds::sealed::install_sealed_runners`]
-/// (resolving the Rhai source by seal digest from [`crate::store::TacsimStore`]) and execute
-/// the think job on the process-wide [`crate::minds::MindPool`] (`SF.R22`, `D-35-1`, `D-35-17`).
-#[allow(clippy::too_many_arguments)]
-pub fn run_sealed_mind_on_pool(
-    unit_obj: ObjId,
-    seal: Option<&crate::arena::mind::MindSeal>,
-    default_digest: [u8; 32],
-    store: Option<&crate::store::TacsimStore>,
-    think_seq: u64,
-    t_ms: i64,
-    view: Arc<MindView>,
-    memory: &[u8],
-) -> Option<ThinkResult> {
-    use crate::arena::mind::{CollectedThink, SealEngine};
-
-    let mut arena = BASE_SEALED_SPACE_ARENA.as_ref()?.clone();
-    let digest = seal.map_or(default_digest, |s| s.source_sha256);
-    if let Some(u) = arena.units.first_mut() {
-        u.id = unit_obj;
-        u.seal.engine = SealEngine::Scripted;
-        u.seal.digest = digest;
-    }
-    let cfg = ArenaConfig::default();
-    crate::minds::sealed::install_sealed_runners(&mut arena, &cfg, &|d| {
-        crate::minds::content::source_lookup(store, d).map(str::to_owned)
-    })
-    .ok()?;
-    let runner = arena.runners.remove(&unit_obj)?;
-
-    let card_def = stock_definition(
-        &[(SmolStr::new_static("Line"), line(&ReflexConfig::default()))],
-        CoreClass::I,
-    )
-    .ok()?;
-    let mut catalog = CardCatalog::default();
-    let def_digest = catalog.admit(card_def).ok()?;
-    let card = catalog
-        .resolve(ProfileKey {
-            definition: def_digest,
-            index: 0,
-        })
-        .ok()?;
-    let core_profile = ClassTable::STOCK.row(CoreClass::I);
-    let program = BoundProgram::bind(&[], &[], &[], &core_profile, 0).ok()?;
-    let profile_token = ProfileToken {
-        unit: unit_obj,
-        generation: 0,
-        key: card.key(),
-    };
-    let map: Arc<ArenaDefinition> = CACHED_SPACE_ARENA_DEF.as_ref()?.clone();
-    let collected = CollectedThink {
-        epochs: [0, 0, 0],
-        unit: unit_obj,
-        think_seq,
-        t_ms,
-        lands_ms: t_ms.saturating_add(500),
-        seed: u64::from(unit_obj.0).wrapping_add(think_seq),
-        dropped: false,
-        profile: core_profile,
-        view,
-        memory: memory.to_vec(),
-        map,
-        wrecks: Vec::new(),
-        card,
-        program,
-        profile_token,
-        runner,
-        substep_hash: None,
-        ranges_before: BTreeMap::new(),
-    };
-    let mut answers = crate::minds::MindPool::shared(1)
-        .submit(vec![collected])
-        .wait()
-        .ok()?;
-    Some(answers.pop()?.result)
-}
-
-/// Run one think of the mind sealed on `ship_id` inside `bubble` (`D-35-1`, `D-35-11`,
-/// `SF.R22`; doc 44 unit MW.9), on the one view every space mind reads
-/// ([`super::view::space_mind_view`]): `book` is this observer's contact numbers and
-/// `situation` what the host knows of the stops. Answers the think and the ship each contact
-/// id of that view names, for [`super::applier::apply_intents`].
-#[allow(clippy::too_many_arguments)]
-pub fn run_space_rhai_think_with_seal(
-    bubble: &LocalSpaceBubble,
-    ship_id: &str,
-    unit_obj: ObjId,
-    seal: Option<&crate::arena::mind::MindSeal>,
-    default_digest: [u8; 32],
-    store: Option<&crate::store::TacsimStore>,
-    think_seq: u64,
-    memory: &[u8],
-    book: &mut ContactBook,
-    situation: &Situation,
-) -> Option<(ThinkResult, BTreeMap<ContactId, String>)> {
-    let (view, contact_map) =
-        super::view::space_mind_view(bubble, ship_id, unit_obj, book, situation)?;
-    let t_ms = view.t_ms;
-    let result = run_sealed_mind_on_pool(
-        unit_obj,
-        seal,
-        default_digest,
-        store,
-        think_seq,
-        t_ms,
-        Arc::new(view),
-        memory,
-    )?;
-    Some((result, contact_map))
-}
-
-/// Run one Rhai [`crate::minds::MindPool`] think step for a collector drone sortie (`drone_mining.rhai`, `SF.R14`, `SF.R22`, `D-35-13`).
+/// **The view a collector drone thinks on** (`drone_mining.rhai`, `SF.R14`, `D-35-13`): where
+/// its carrier is, and nothing of the rock or the hold yet (doc 44 unit MW.12 gives it those).
 #[must_use]
-pub fn run_drone_rhai_think(
-    store: Option<&crate::store::TacsimStore>,
-    drone_obj: ObjId,
-    seal: Option<&crate::arena::mind::MindSeal>,
-    pos_m: [i64; 3],
-    think_seq: u64,
-    memory: &[u8],
-) -> Option<ThinkResult> {
+pub(crate) fn drone_view(drone_obj: ObjId, pos_m: [i64; 3], think_seq: u64) -> MindView {
     let t_ms = i64::try_from(think_seq.saturating_mul(1_000)).unwrap_or(0);
-    let view = Arc::new(MindView {
+    MindView {
         unit: drone_obj.0,
         callsign: Designator::Unit {
             party: CARRIER_PARTY,
@@ -1174,17 +984,76 @@ pub fn run_drone_rhai_think(
         space: None,
         // Doc 45 unit AP.3: a collector drone is nobody's standing order; the default.
         posture: crate::posture::Posture::Return,
-    });
-    run_sealed_mind_on_pool(
-        drone_obj,
-        seal,
-        crate::minds::content::drone_mining_digest().0,
-        store,
+    }
+}
+
+/// **Collect one think of a collector drone** (doc 44 unit MW.11): the job for the pool, on
+/// the mind it was sealed with at launch (the compiled drone doctrine when it holds no seal).
+/// Nothing is thought here; the answer is written by the mining tick that finds it
+/// ([`super::mining`]).
+#[must_use]
+pub(crate) fn collect_drone_think(
+    host: &ThinkHost,
+    store: Option<&crate::store::TacsimStore>,
+    drone_obj: ObjId,
+    seal: Option<&crate::arena::mind::MindSeal>,
+    pos_m: [i64; 3],
+    think_seq: u64,
+    memory: &[u8],
+) -> Option<Ask> {
+    let digest = seal.map_or_else(
+        || crate::minds::content::drone_mining_digest().0,
+        |seal| seal.source_sha256,
+    );
+    let view = Arc::new(drone_view(drone_obj, pos_m, think_seq));
+    let job = host.job(store, drone_obj, digest, think_seq, &view, memory)?;
+    Some(Ask {
+        who: Thinker::Drone,
+        unit: drone_obj,
         think_seq,
-        t_ms,
-        view,
-        memory,
-    )
+        contacts: BTreeMap::new(),
+        jobs: vec![job],
+    })
+}
+
+/// **Collect one think of the mind sealed on `ship_id` inside `bubble`** (`D-35-1`,
+/// `D-35-11`, `SF.R22`; doc 44 units MW.9 and MW.11), on the one view every space mind reads
+/// ([`super::view::space_mind_view`]): `book` is this observer's contact numbers and
+/// `situation` what the host knows of the stops. The job is frozen here, on the world
+/// thread, and thought on the pool; the [`Ask`] keeps the ship each contact id of the view
+/// names, for [`super::applier::apply_intents`] when the answer lands.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub(crate) fn collect_bubble_think(
+    host: &ThinkHost,
+    store: Option<&crate::store::TacsimStore>,
+    bubble: &LocalSpaceBubble,
+    who: Thinker,
+    ship_id: &str,
+    unit_obj: ObjId,
+    digests: &[[u8; 32]],
+    think_seq: u64,
+    memory: &[u8],
+    book: &mut ContactBook,
+    situation: &Situation,
+) -> Option<Ask> {
+    let (view, contacts) =
+        super::view::space_mind_view(bubble, ship_id, unit_obj, book, situation)?;
+    let view = Arc::new(view);
+    let jobs: Vec<_> = digests
+        .iter()
+        .filter_map(|digest| host.job(store, unit_obj, *digest, think_seq, &view, memory))
+        .collect();
+    if jobs.is_empty() {
+        return None;
+    }
+    Some(Ask {
+        who,
+        unit: unit_obj,
+        think_seq,
+        contacts,
+        jobs,
+    })
 }
 
 /// **The stops the customs corvette has on the carriers of its bubble** (doc 44 unit MW.9):
@@ -1221,57 +1090,40 @@ pub fn picket_situation(
     situation
 }
 
-/// One think of the corvette's mind, applied by the one applier.
-fn step_corvette_mind_on_bubble(
-    bubble: &mut LocalSpaceBubble,
-    tape: &mut BubbleInputTape,
+/// Collect one think of the corvette's mind, on the bubble as it stands.
+fn collect_corvette_think(
+    bubble: &LocalSpaceBubble,
     picket: &mut KirkwoodPicketState,
     situation: &Situation,
+    host: &ThinkHost,
     store: Option<&crate::store::TacsimStore>,
-    emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
-) {
+) -> Option<Ask> {
     if bubble
         .ships
         .get(&picket.corvette_ship_id)
         .is_none_or(|corvette| corvette.status != HullStatus::Operational)
     {
-        return;
+        return None;
     }
     // Doc 44 unit MW.10: she thinks with the mind she was sealed with when the bubble
     // opened, and with no other. With no seal she does not think.
-    let Some(sealed) = picket.corvette_seal.as_ref().map(|seal| seal.source_sha256) else {
-        return;
-    };
-    let Some((res, cmap)) = run_space_rhai_think_with_seal(
+    let sealed = picket
+        .corvette_seal
+        .as_ref()
+        .map(|seal| seal.source_sha256)?;
+    collect_bubble_think(
+        host,
+        store,
         bubble,
+        Thinker::Corvette,
         &picket.corvette_ship_id,
         picket.corvette_hull,
-        picket.corvette_seal.as_ref(),
-        sealed,
-        store,
+        &[sealed],
         picket.corvette_think_seq,
         &picket.corvette_memory,
         &mut picket.corvette_contacts,
         situation,
-    ) else {
-        return;
-    };
-    if res.fault.is_some() {
-        return;
-    }
-    picket.corvette_think_seq = picket.corvette_think_seq.saturating_add(1);
-    picket.corvette_memory = res.memory;
-    picket.corvette_last_trace = res.trace;
-    let _ = super::applier::apply_intents(
-        bubble,
-        tape,
-        &picket.corvette_ship_id,
-        Seat::PATROL,
-        &cmap,
-        &res.intents,
-        emitted_events,
-    );
-    picket.corvette_last_intents = res.intents;
+    )
 }
 
 /// **The picket's own rules, on state** (`SF.R18`; doc 44 unit MW.9): a carrier that is hailed
@@ -1320,63 +1172,142 @@ fn settle_picket_stops(
     }
 }
 
-/// One think of the raider's mind, applied by the one applier. She thinks while she lurks as
-/// well: when to light her torch is her doctrine's to decide.
-fn step_raider_mind_on_bubble(
-    bubble: &mut LocalSpaceBubble,
-    tape: &mut BubbleInputTape,
+/// Collect one think of the raider's mind, on the bubble as it stands. She thinks while she
+/// lurks as well: when to light her torch is her doctrine's to decide.
+fn collect_raider_think(
+    bubble: &LocalSpaceBubble,
     picket: &mut KirkwoodPicketState,
     situation: &Situation,
+    host: &ThinkHost,
     store: Option<&crate::store::TacsimStore>,
-    emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
-) {
+) -> Option<Ask> {
     if bubble
         .ships
         .get(&picket.raider_ship_id)
         .is_none_or(|raider| raider.status != HullStatus::Operational)
     {
-        return;
+        return None;
     }
     // Doc 44 unit MW.10: as the corvette, the mind she was sealed with and no other.
-    let Some(sealed) = picket.raider_seal.as_ref().map(|seal| seal.source_sha256) else {
-        return;
-    };
-    let Some((res, cmap)) = run_space_rhai_think_with_seal(
+    let sealed = picket.raider_seal.as_ref().map(|seal| seal.source_sha256)?;
+    collect_bubble_think(
+        host,
+        store,
         bubble,
+        Thinker::Raider,
         &picket.raider_ship_id,
         picket.raider_hull,
-        picket.raider_seal.as_ref(),
-        sealed,
-        store,
+        &[sealed],
         picket.raider_think_seq,
         &picket.raider_memory,
         &mut picket.raider_contacts,
         situation,
-    ) else {
+    )
+}
+
+/// **Settle the picket's rules on the step the bubble has just taken, and collect its two
+/// minds' thinks on that snapshot** (`SF.R18`, `SF.R22`; doc 44 units MW.9 and MW.11). Both
+/// think on the same state; neither sees what the other is about to do. The order of the
+/// asks is the order their answers are applied in ([`deliver_picket_think`]): the raider
+/// first once customs have ruled on a carrier, the corvette first until then. `store` is
+/// where a seal's source is looked up; `step_ms` is what the bubble steps by.
+pub(crate) fn collect_picket_thinks(
+    bubble: &mut LocalSpaceBubble,
+    picket: &mut KirkwoodPicketState,
+    carriers: &[(ObjId, String, PartyId)],
+    host: &ThinkHost,
+    store: Option<&crate::store::TacsimStore>,
+    step_ms: u32,
+) -> Vec<Ask> {
+    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
+    settle_picket_stops(bubble, picket, carriers);
+    let situation = picket_situation(bubble, picket, carriers, step_ms);
+    let corvette = collect_corvette_think(bubble, picket, &situation, host, store);
+    let raider = collect_raider_think(bubble, picket, &situation, host, store);
+    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
+    let ruled =
+        picket.inspection_outcome.is_some() || !picket.carrier_inspection_outcome.is_empty();
+    let asks = if ruled {
+        [raider, corvette]
+    } else {
+        [corvette, raider]
+    };
+    asks.into_iter().flatten().collect()
+}
+
+/// **Land one answer of a picket's mind** (doc 44 units MW.9 and MW.11): write what the
+/// think remembered and hand its intents to the one applier, at the head of the bubble's
+/// next step. An answer for a hull that is no longer operational, or for a think the
+/// record has moved past, is dropped; one with no clean result changes nothing, so the
+/// same think is collected again.
+pub(crate) fn deliver_picket_think(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    picket: &mut KirkwoodPicketState,
+    answer: Answer,
+    emitted_events: &mut Vec<super::bubble::SpaceCombatEvent>,
+) {
+    let Some(res) = answer.result else {
         return;
     };
-    if res.fault.is_some() {
-        return;
+    let operational = |ship_id: &str| {
+        bubble
+            .ships
+            .get(ship_id)
+            .is_some_and(|ship| ship.status == HullStatus::Operational)
+    };
+    match answer.who {
+        Thinker::Corvette => {
+            if answer.unit != picket.corvette_hull
+                || answer.think_seq != picket.corvette_think_seq
+                || !operational(&picket.corvette_ship_id)
+            {
+                return;
+            }
+            picket.corvette_think_seq = picket.corvette_think_seq.saturating_add(1);
+            picket.corvette_memory = res.memory;
+            picket.corvette_last_trace = res.trace;
+            let _ = super::applier::apply_intents(
+                bubble,
+                tape,
+                &picket.corvette_ship_id,
+                Seat::PATROL,
+                &answer.contacts,
+                &res.intents,
+                emitted_events,
+            );
+            picket.corvette_last_intents = res.intents;
+        }
+        Thinker::Raider => {
+            if answer.unit != picket.raider_hull
+                || answer.think_seq != picket.raider_think_seq
+                || !operational(&picket.raider_ship_id)
+            {
+                return;
+            }
+            picket.raider_think_seq = picket.raider_think_seq.saturating_add(1);
+            picket.raider_memory = res.memory;
+            picket.raider_last_trace = res.trace;
+            let applied = super::applier::apply_intents(
+                bubble,
+                tape,
+                &picket.raider_ship_id,
+                Seat::RAIDER,
+                &answer.contacts,
+                &res.intents,
+                emitted_events,
+            );
+            if applied.fired_heavy {
+                picket.raider_ambush_launched = true;
+            }
+            picket.raider_last_intents = res.intents;
+        }
+        Thinker::Interdictor | Thinker::Backup | Thinker::Drone => {}
     }
-    picket.raider_think_seq = picket.raider_think_seq.saturating_add(1);
-    picket.raider_memory = res.memory;
-    picket.raider_last_trace = res.trace;
-    let applied = super::applier::apply_intents(
-        bubble,
-        tape,
-        &picket.raider_ship_id,
-        Seat::RAIDER,
-        &cmap,
-        &res.intents,
-        emitted_events,
-    );
-    if applied.fired_heavy {
-        picket.raider_ambush_launched = true;
-    }
-    picket.raider_last_intents = res.intents;
 }
 
 /// The carrier a test names by its ship id alone, as the entry the picket steps by.
+#[cfg(test)]
 fn lone_carrier(bubble: &LocalSpaceBubble, carrier_ship_id: &str) -> Vec<(ObjId, String, PartyId)> {
     let hull = carrier_ship_id
         .strip_prefix("hull.")
@@ -1389,8 +1320,13 @@ fn lone_carrier(bubble: &LocalSpaceBubble, carrier_ship_id: &str) -> Vec<(ObjId,
     vec![(hull, carrier_ship_id.to_owned(), party)]
 }
 
-/// Step the Kirkwood Customs Picket's two minds for a bubble with the one carrier
-/// `carrier_ship_id`, a second at a time and on the compiled doctrines.
+/// **A rig with no world steps the picket's two minds for the one carrier
+/// `carrier_ship_id`**, a second at a time and on the compiled doctrines: the thinks are
+/// collected on the bubble as it stands, run where they are submitted, and landed at once.
+/// That is the sequence the space tick gives a bubble nobody else commands: what is
+/// collected at the end of one step lands at the head of the next, and nothing moves in
+/// between.
+#[cfg(test)]
 pub fn step_kirkwood_picket(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
@@ -1401,11 +1337,10 @@ pub fn step_kirkwood_picket(
     step_kirkwood_picket_for_carriers_with_store(bubble, tape, picket, &carriers, None, 1_000)
 }
 
-/// Step the Kirkwood Customs Picket's sealed minds across all participating carriers
-/// (`SF.R18`, `SF.R22`; doc 44 unit MW.9): each mind thinks once on the one view and is applied
-/// by the one applier, and the picket's own rules are settled on state between them. `store`
-/// is where a seal's source is looked up; `step_ms` is what the bubble steps by.
-pub fn step_kirkwood_picket_for_carriers_with_store(
+/// [`step_kirkwood_picket`] across `carriers`, with `store` as where a seal's source is
+/// looked up and `step_ms` as what the bubble steps by.
+#[cfg(test)]
+pub(crate) fn step_kirkwood_picket_for_carriers_with_store(
     bubble: &mut LocalSpaceBubble,
     tape: &mut BubbleInputTape,
     picket: &mut KirkwoodPicketState,
@@ -1413,18 +1348,18 @@ pub fn step_kirkwood_picket_for_carriers_with_store(
     store: Option<&crate::store::TacsimStore>,
     step_ms: u32,
 ) -> Vec<super::bubble::SpaceCombatEvent> {
+    use super::thinks::{Due, Owed, Owner};
+    let host = ThinkHost::inline();
+    let asks = collect_picket_thinks(bubble, picket, carriers, &host, store, step_ms);
+    let owner = Owner::Bubble(mush_sim::DomainId(0));
     let mut emitted_events = Vec::new();
-    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
-    settle_picket_stops(bubble, picket, carriers);
-    let situation = picket_situation(bubble, picket, carriers, step_ms);
-    if picket.inspection_outcome.is_some() || !picket.carrier_inspection_outcome.is_empty() {
-        step_raider_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
-        step_corvette_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
-    } else {
-        step_corvette_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
-        step_raider_mind_on_bubble(bubble, tape, picket, &situation, store, &mut emitted_events);
+    if host.submit(owner, (0, 0), asks)
+        && let Owed::Ready { answers, .. } = host.settle(owner, (0, 0), Due::default())
+    {
+        for answer in answers {
+            deliver_picket_think(bubble, tape, picket, answer, &mut emitted_events);
+        }
     }
-    bubble.set_inspecting(CUSTOMS_CORVETTE_PARTY, picket.is_screening());
     emitted_events
 }
 
@@ -1969,6 +1904,11 @@ pub fn build_kirkwood_picket_ships(
     )
 }
 
+/// What a space think costs the world thread (doc 44 unit MW.11): a by-hand lane.
+#[cfg(test)]
+#[path = "think_cost.rs"]
+mod think_cost;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2041,7 +1981,9 @@ mod tests {
         assert!(!picket.raider_ambush_launched);
 
         // Step 3: customs fine her and clear her. The raider hears the clearance on the
-        // picket's radio and lights her torch; the corvette, which now holds her, screens.
+        // picket's radio and lights her torch. The corvette thought on the same snapshot
+        // (doc 44 unit MW.11), where the raider was still dark, so it holds nothing to screen
+        // against yet; until that unit it thought second and saw her torch in the same step.
         picket.set_inspection_status_for(ObjId(10), PicketInspectionStatus::ClearedAfterFine);
         picket.set_inspection_outcome_for(
             ObjId(10),
@@ -2065,17 +2007,24 @@ mod tests {
             Some(EmconPosture::ActiveCombat)
         );
         assert!(!picket.raider_ambush_launched);
-        assert_eq!(
-            picket.corvette_last_trace,
-            vec!["PICKET_SCREEN_ENGAGE_RAIDER".to_owned()]
+        assert_eq!(picket.corvette_think_seq, 3);
+        assert!(
+            picket.corvette_last_trace.is_empty(),
+            "the corvette thought on the snapshot where the raider was dark: {:?}",
+            picket.corvette_last_trace
         );
         // The clearance reached the corvette's mind through its view: its memory is what its
         // own last think left, and nothing else has written it.
         assert_eq!(picket.corvette_memory, memory_before);
 
         // Step 4: with her torch lit the raider holds the carrier, and opens: two torpedoes
-        // and a railgun round, at the lock her mind set, on the burn her mind asked.
+        // and a railgun round, at the lock her mind set, on the burn her mind asked. The
+        // corvette now holds the raider, and screens: one think after her torch.
         let ambush_events = step_kirkwood_picket(&mut bubble, &mut tape, &mut picket, "hull.10");
+        assert_eq!(
+            picket.corvette_last_trace,
+            vec!["PICKET_SCREEN_ENGAGE_RAIDER".to_owned()]
+        );
         assert!(picket.raider_ambush_launched);
         assert_eq!(
             picket.raider_last_trace,

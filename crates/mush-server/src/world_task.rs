@@ -3401,6 +3401,11 @@ async fn run(
     world_clock_checkpoint_s: u64,
 ) -> WorldOutcome {
     tracing::info!("world task running");
+    // Doc 44 unit MW.11 (Q-44-28): this loop runs the world on the wall clock. From here
+    // a space think that has not answered when its bubble's next step is due holds that
+    // step, and this thread never waits for a think worker. A rig that moves its clock by
+    // hand does not come through here, and its host waits for its workers instead.
+    tacsim::space::thinks::run_on_the_wall_clock(&engine.world);
     // 16b cut T.2 (T4): the one receiver of every running match's egress. Taken
     // once, here, because the loop is its only legitimate owner — a second taker
     // would silently split the stream.

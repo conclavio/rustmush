@@ -159,6 +159,22 @@ pub fn install_sealed_runner(
     Ok(true)
 }
 
+/// **The runner a scripted seal's digest names, with no arena to set it on** (doc 44 unit
+/// MW.11): by [`install_sealed_runner`]'s rule, for a host that keeps one runner for each
+/// digest and hands it to every think of that seal (`crate::space::thinks::ThinkHost`).
+///
+/// # Errors
+///
+/// [`InstallError::NoSource`], [`InstallError::Compile`], as [`install_sealed_runners`].
+pub(crate) fn scripted_runner(
+    unit: ObjId,
+    digest: &[u8; 32],
+    cfg: &ArenaConfig,
+    sources: &dyn Fn(&[u8; 32]) -> Option<String>,
+) -> Result<Arc<dyn MindRunner>, InstallError> {
+    runner_for(unit, digest, cfg, sources, &mut BTreeMap::new())
+}
+
 /// **One scripted seal's runner** (this module's head): the source for `digest`, compiled once
 /// per distinct source text across `compiled`.
 fn runner_for(

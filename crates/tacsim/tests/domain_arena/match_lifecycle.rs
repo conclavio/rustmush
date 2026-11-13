@@ -4168,7 +4168,7 @@ async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
         &cfg.sensors,
         &tacsim::config::MindsConfig::default(),
         &std::collections::BTreeMap::new(),
-        tacsim::minds::MindPool::shared(2),
+        tacsim::minds::MindPool::new(2),
         tasks.egress_sender().expect("the egress sender"),
     )
     .expect("the replacement check-out is accepted");

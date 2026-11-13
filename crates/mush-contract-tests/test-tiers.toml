@@ -276,6 +276,14 @@ id = "mush-server/src/world_task/submission_disposition/tests/registry_load.rs::
 tier = "by-hand"
 by_hand = "9c625bdf"
 
+# Doc 44 unit MW.11 (Q-44-28): what one space think costs the world thread, per actor and
+# per picket step, in release. A measurement, never a gate; the figures before the unit and
+# after it, on conclav.dev and on Windows, are in doc 44's MW.11 cut note.
+[[test]]
+id = "tacsim/src/space/think_cost.rs::mw11_what_a_space_think_costs_the_world_thread"
+tier = "by-hand"
+by_hand = "556a20a2"
+
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
 [[test]]

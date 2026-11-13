@@ -1770,7 +1770,403 @@ value to write. Whichever of AP.3 and MW.10 merges second merges main in and re-
 
 ## MW.11
 
-Not built.
+The think's cost measured, then every space think taken off the world thread, onto the
+server's one pool, with a runner kept for each seal (doc 44 §7.1, Q-44-28; first review
+finding 5, second review row 17). PR #570. Paths are under `crates/tacsim/src/space/` unless
+given.
+
+**The rule for a late think, which is the arena's.** A think is collected on the snapshot a
+step leaves and handed to the pool; its intents land at the head of the owner's next step,
+through the one applier, before the bubble moves again. A step is not taken until the thinks
+it owes have answered. If the pool has not answered when step N+1 is due, step N+1 waits and
+the world thread does not: the tick asks whether the batch is done, finds it is not, leaves
+that bubble exactly as it stands and goes on to the next. The held step is due at every
+later tick and is taken at the first one that finds the answers in, as the step it was when
+it first fell due (the same length, the same IC second); the wall time it waited is not
+simulated, as frozen time and a stall past the step cap are not. So a late pool makes a
+bubble late and never different, which is the arena's rule (`minds/pool.rs`: "a saturated
+pool is seen as late wakes, never as a different result"). The arena can wait because each
+match has a task of its own; a bubble steps on the world thread, so its wait is a held step.
+The rule gave every item of the acceptance in space, so no other rule was considered.
+
+**Built.**
+
+- **The think host** (`thinks.rs`, new; `ThinkHost`). One for each world's store
+  (`TacsimStore::space_thinks`). It holds the pool, a runner for each digest, and at most one
+  set of thinks in flight for each owner. An owner is a bubble, a hull the backup mind flies
+  outside every bubble, or a hull's drones at a cluster. `submit` hands them over, each
+  actor's as a pool batch of its own; `settle` is what a due step asks: `Held`, or the
+  answers in collection order. Nothing else under `space/` names the pool.
+- **Two ways to settle, and who chooses.** The server's world loop calls
+  `thinks::run_on_the_wall_clock` once before its first tick
+  (`crates/mush-server/src/world_task.rs`, `run`); from then on the host holds a late step
+  and never waits. A world no loop runs is a rig whose clock is moved by hand: no wall time
+  passes between two of its ticks, so a held step there would only make a story count ticks
+  by chance, and its host waits for its workers instead. It is the arena's own split: its
+  task tests on a virtual clock wait for the real workers (`arena_task.rs`, `await_thinks`).
+- **A bubble's step** (`tick.rs` `step_bubble`, lifted out of `step_active_bubbles` so a
+  test can call it). In order: the answers of the last step's thinks land through the one
+  applier, in the order they were collected; the crews' standing orders are applied; the
+  bubble flies, and a carrier closing on a derelict is moved; the host's own rules are
+  settled on that state (the picket's stops, the interdictor's stand-down); and the minds'
+  next thinks are collected on it and submitted. Every mind of a bubble thinks on the same
+  snapshot, and it is the state the step leaves: nothing moves the bubble after the
+  collection but a crew's command. A bubble's opening is step nought: its minds' first
+  thinks are collected when it opens (`collect_thinks_at_open`).
+- **The picket and the interdictor** (`picket.rs` `collect_picket_thinks`,
+  `deliver_picket_think`; `tick.rs` `collect_interdictor_think`, `land_interdictor_think`).
+  The order the corvette's and the raider's answers are applied in is fixed when they are
+  collected: the raider first once customs have ruled on a carrier, the corvette first
+  until then, as before.
+- **The backup mind in a bubble** (`backup.rs` `seat_in_bubble`, `collect_in_bubble`,
+  `land_in_bubble`). The seat's rules (which burn it lets through, whether she is hove to)
+  are read off the bubble when the answer lands, not as the think saw it.
+- **The backup mind outside a bubble** (`backup.rs` `step_adrift`, `collect_adrift`,
+  `land_adrift`). One tick collects her think, the next acts on it and collects again.
+- **The backup seat's three sources are one ask.** Her own seal, the store's house default
+  and the compiled default were tried one after another on the world thread, the next only
+  when the last faulted. They are now one think on each source in the same batch, and the
+  first that answers without a fault is hers.
+- **The drones** (`mining.rs` `landed_drone_thinks`, `land_drone_think`; `picket.rs`
+  `collect_drone_think`). The mining tick lands what the last tick collected and collects
+  again. The launching command no longer thinks at all (`commands.rs`): a drone's first think
+  is collected by the next tick.
+- **The pool is the server's** (`crates/tacsim/src/minds/pool.rs` `of_world`, `PoolSlot`;
+  `crates/tacsim/src/store.rs` `TacsimStore::mind_pool`). The store builds it with its own
+  `[tacsim.minds].workers` the first time anything thinks. `MindPool::shared(workers)`, the
+  process static sized by its first caller, is deleted, so no caller can name a size. The
+  three places a match takes its pool (`crates/tacsim/src/arena_bridge.rs`) ask the store.
+- **A runner is kept for each seal** (`thinks.rs` `ThinkHost::job`): by the digest the seal
+  names, built at the first think of that digest on this server and shared by every hull
+  sealed with it. The card, the empty rule program and the one-cell map every space think is
+  held to are built once for the process. `run_sealed_mind_on_pool`, which cloned an arena,
+  installed a runner and rebuilt the card and the program for every think, is deleted.
+- **A restart** (`tick.rs` `ThinksOwed`, `ActiveInterdictionBubble::thinks_owed`). The batch
+  in flight is in RAM; the bubble's record says which step collected the thinks it owes and
+  the step length their views were told. A bubble read back with thinks owed and no batch
+  in flight collects them again from the state it kept.
+- **A crew that takes the helm back** (`tick.rs` `handle_crew_revived_or_connected`;
+  `ThinkHost::forget`, `discard`): the think the backup mind had out for her is struck from
+  the bubble's batch, or her own batch is dropped (Q-44-37). The other minds' answers of that
+  batch still land.
+- **The backup mind's think number** is a count on her record
+  (`SpaceLinkdeadState::mind_think_seq`). It was the wall second, which a held step would
+  have changed.
+- **A contact that has left the bubble** between a think and its landing names nothing: an
+  intent on it is dropped by the applier, as one on an unknown contact is.
+- **A step that stays held is said in the log**: at the fifth tick and every sixtieth after.
+- **Nothing is left behind**: a bubble that closes, a hull the seat no longer flies adrift
+  and a hull whose cluster session ends each drop their thinks (`keep_bubbles`,
+  `keep_hulls`).
+- **The contract test**
+  (`crates/mush-contract-tests/tests/engine_contracts/space_thinks_off_thread.rs`): under
+  `space/` only the host names the pool, a batch handle or the inline runner; nothing runs a
+  think where it stands or builds a runner; the host waits in one place, behind its hold
+  check; and the server's world loop calls `run_on_the_wall_clock` once.
+
+No config key, verb, player-facing sentence, pack, lane, relay or snapshot format moved, and
+`MIND_ABI` is as AP.3 left it. Two records gained an optional field: a bubble's
+`thinks_owed` and a link-loss record's `mind_think_seq`.
+
+**A tape replay runs no think.** `BubbleInputTape::replay` and `replay_from_snapshot` apply
+the commands on the tape to a snapshot and take no host, no pool and no store; that is as it
+was. What a mind decided is on the tape as the commands the applier wrote when its answer
+landed. `tick.rs` `mw11_a_replay_of_the_tape_reproduces_the_bubble_and_runs_no_think` holds
+it.
+
+**The cost, before and after.**
+
+*The method* (`think_cost.rs`, an `#[ignore]`d lane; the recipe is in `ci.yml` and its
+by-hand row in `test-tiers.toml`). One fixed bubble for each actor, stepped once so its
+sensors hold their contacts; 200 thinks thrown away, then 5,000 timed with
+`std::time::Instant` on the calling thread, each carrying the memory the last one left.
+The calling thread stands for the world thread. Intents are not applied, so every sample
+thinks on the same snapshot. Release profile. Before the unit the lane timed the whole
+think as the step called it (`run_space_rhai_think_with_seal`) and its stages apart; since
+the unit it times what is left on the world thread, the collect (the view, the job on the
+kept runner, the hand-over) and the landing (asking the host, taking the answers), on a host
+that holds as the server's does, and times the think apart as a worker runs it. The time
+the lane spends spinning until a batch is done is not world-thread time and is not counted.
+Before: the lane on `0d52a87d2`, the code as main had it. After: `556a20a27`.
+
+*Linux* (conclav.dev, EPYC 9J45, 32 vCPU; two runs of each, medians in microseconds, both
+runs given; the box's load average was 18 to 28 during the runs before and 6 during the
+runs after, so read the medians and not the tails):
+
+| One think of | Before: the world thread | of that, the runner and the job rebuilt | of that, the think | After: the world thread | After: a worker, the think |
+|---|---|---|---|---|---|
+| the corvette, 1 carrier | 365, 393 | 344, 346 | 6.0, 6.3 | 9.2, 8.9 | 11.9, 11.8 |
+| the raider, 1 carrier | 383, 381 | 342, 344 | 3.6, 3.7 | 9.0, 8.2 | 5.8, 6.1 |
+| the backup mind, on a carrier | 391, 398 | 345, 344 | 7.6, 7.5 | 9.2, 9.1 | 13.2, 13.6 |
+| the corvette, 6 carriers | 407, 401 | 347, 345 | 16.1, 16.0 | 11.0, 10.7 | 21.4, 22.1 |
+| the raider, 6 carriers | 384, 377 | 346, 342 | 3.8, 3.6 | 9.3, 4.8 | 6.0, 3.0 |
+| the interdictor, 2 carriers | 412, 409 | 341, 343 | 15.1, 15.2 | 9.9, 9.4 | 28.1, 28.0 |
+| a drone | 369, 374 | not split | not split | 8.1, 3.9 | not split |
+
+| One step of a picket bubble | Before | After |
+|---|---|---|
+| its two minds, on the world thread, 1 carrier | 771, 779 | 13.5, 14.1 |
+| its two minds, on the world thread, 6 carriers | 795, 793 | 18.8, 18.0 |
+| the bubble's own physics, 1 carrier | 0.7, 0.7 | 0.6, 1.0 |
+| the bubble's own physics, 6 carriers | 1.6, 1.6 | 2.0, 2.3 |
+
+The 99th percentile of one think on the world thread was 430 to 590 before and is 10 to 18
+after. Asking a batch that is still out, which is all a held step costs a tick, is under
+0.1. After the unit the world thread's share is the collect (5 to 8, of which the view is
+0.2 to 1.0) and the landing (0.4 to 2.8).
+
+*Windows* (the owner's box, release, one run of each, medians):
+
+| | Before: the world thread | After: the world thread | After: a worker, the think |
+|---|---|---|---|
+| the corvette, 1 carrier | 441 | 4.5 | 8.0 |
+| the raider, 1 carrier | 446 | 3.4 | 5.6 |
+| the backup mind, on a carrier | 449 | 4.5 | 9.3 |
+| the corvette, 6 carriers | 454 | 5.7 | 16.9 |
+| the raider, 6 carriers | 431 | 3.8 | 5.7 |
+| the interdictor, 2 carriers | 463 | 4.8 | 17.9 |
+| a drone | 425 | 1.3 | not split |
+| a picket step's two minds, 1 carrier | 885 | 4.1 | |
+| a picket step's two minds, 6 carriers | 908 | 10.8 | |
+
+Before, 380 of each think's 440 or so was the runner and the job rebuilt, and the think
+itself 7 to 22. The 99th percentile of one think on the world thread was 660 to 810 before
+and is 5 to 12 after.
+
+*What the figures say.* A think cost the world thread about 380 microseconds, and a picket
+bubble paid twice that on every step, against under a microsecond of physics. Nine tenths
+of it was not thinking: it was a cloned arena, an installed runner, a card and a program,
+built again for each think. The think itself is 4 to 28 microseconds. With the runner kept
+the whole of it would fit on the world thread at about 30 microseconds a think; it is off
+the thread because the ruling says so and because a player's doctrine (MW.13) will not be
+this small. The worker's figure reads higher after than before because the lane runs that
+think a second time on a thread that did not run the first.
+
+**What moved, and why.** Nothing an arena does moved: no seal identity, arena state hash,
+pinned ledger line or corpus row is touched, and `MIND_ABI` is as it was. An arena's thinks
+run as they did; only who holds its pool changed. What moved is in space, and for three
+reasons, each of them the rule and nothing else:
+
+1. **A think lands at the head of the next step.** A bubble's opening is step nought: its
+   minds' first thinks are collected when it opens and land at the head of its first step,
+   so a cast actor still acts on the first tick, on a snapshot one step older. The backup
+   mind in a bubble thought before the step and still lands before it; only her first think
+   after she takes the helm is a step later. Outside a bubble, and for a drone, a think is
+   collected on one tick and lands on the next, where it used to do both on one. A drone's
+   launch no longer thinks.
+2. **Every mind of a bubble thinks on the same snapshot.** The corvette no longer sees in
+   the same step what the raider just did.
+3. **The interdictor waits one think for its hail to be answered**
+   (`content/minds/interdictor_patrol.rhai`). Its hail lands a step after it thinks it, and
+   the hailed hull's burn a step after that. Its old rule, to judge a hull on the think
+   after the hail, now judged a snapshot in which the hull could only just have heard it:
+   a hull whose mind braked at the first chance was closed on and fired at for one think
+   (the MW.9 story of the Dray caught it: her drift against the interdictor rose from
+   45,000 to 57,297 mm/s). The doctrine now holds for that one think (`heard` in its
+   memory, trace `INTERDICTOR_AWAIT_ANSWER`). A hull radiating for a fight is still not
+   hailed and not waited for.
+
+Each value and each story that changed:
+
+| What | Was | Is | Why, and the evidence |
+|---|---|---|---|
+| `content/space/picket_cast.json`, the interdictor's `doctrine_sha256` | `a16210e1…188925` | `da72cb9f…d760e13b` | Reason 3: the doctrine's bytes changed (twice: `45a5d733…ee4604` stood between, until the second reader's fix to the wait). `minds/content/cast.rs` `the_packs_cast_names_each_shipped_doctrine_by_its_digest` holds the pin to the file |
+| `picket.rs` `kirkwood_picket_and_belt_raider_rhai_doctrines_run_on_rhai_runner_without_faults` | the corvette traced `PICKET_SCREEN_ENGAGE_RAIDER` on the step the raider lit her torch | it traces nothing on that step and screens on the next | Reason 2. The raider's own trace, posture and salvo are on the steps they were |
+| `tick.rs` `a_doctrine_changed_to_hold_where_it_closed_makes_the_interdictor_hold` | the interdictor closed on its second think | on its third | Reason 3. The thrust it closes with, and the replay, are asserted as before |
+| Story `sfr15`, the carrier's damage after four ticks under the interdictor | `drive 118/250, hull 471/600` | `drive 172/250, hull 524/600` | Reason 3: one volley fewer lands in the four ticks. The step is 54 off the drive and 53 off the hull, the same step MW.9's re-pin made (from `64/250, 418/600`) when the hail took the first think |
+| Story `sfr20` | the pilot turns stern on tick 2, beams on 0, 2, 3, vents on 1, 2; four ticks | stern on 3, beams on 0, 3, 4, vents on 2, 3; five ticks | Reason 3: the interdictor's volleys land on ticks 2, 3, 4 where they landed on 1, 2, 3, and the pilot's turn and later shots follow them. The assertions (the stripped mount, the crit, the rear split, the bubble closing) are unchanged |
+| Story `sfr13` | the torpedo is in the feeds of the first tick after she radiates | of the second, with her point defence on manual for the read | Reasons 1 and a consequence. A launch now lands before its step's physics, so a torpedo flies in the step it is launched in. **Evidence:** the same prints on `0d52a87d2` and on this unit give the same bubble at steps 2, 3 and 4 (range 17,301, 16,639, 15,745 m; the tube's magazine 7; her two point-defence mounts at 1,950 rounds). On main the torpedo was launched after step 1 and shot down during step 2; here it is launched and shot down during step 2. The only difference is that main's tick 1 showed it sitting at its launcher. With the point defence on AUTO no tick shows it, so the gunner holds it while the feeds are read |
+| Story `sfr6`; story `sfr8` | one tick, then two, before the raider's salvo is asserted | two, then three | Reason 1: her torch and her salvo are two thinks, each landing a step after it |
+| Story `mw10` | one second before the open bubble's interdictor closes | two | Reason 3 |
+| Story `sfr14` | a drone's think count is at least 2 after one tick | exactly 0, 1 and 2 after one, two and three ticks | Reason 1, and no think at launch. The story now pins the latency itself |
+| Stories `sfr23`, `sfr25`, `sfr32`, `sfr32b`, and the helper `wait_out_the_grace` | the tick the grace runs out on shows the seat's act | the tick after it | Reason 1: that tick collects her mind's first think, the next lands it |
+| Story `cr6` | waits until nothing is in flight, then docks | waits until the raider no longer flies and nothing is in flight | Reason 1: there is now one second with the raider lit and her salvo not yet launched, where the old wait ended and the dock was refused (`SF.R9`). Before, her ordnance in flight carried the wait until the corvette had finished with her (nine steps later, the same fight) |
+| Story `mw9_a_dray_whose_crew_has_no_link…` | passes unchanged in its own text | | Through the helper's second and reason 3; she is still never hit |
+
+The other 255 of `tests/domain_world/`'s 266 stories pass as they were written.
+No assertion was removed or loosened.
+
+**What the survey had wrong, and what it did not see.**
+
+- "Every think is `MindPool::shared(1).submit().wait()` each time a bubble steps" named four
+  thinkers. There were six think sites: the three cast actors, the backup mind in a bubble,
+  the backup mind outside one (`step_adrift`, on the space tick), and the drone in two
+  places, the mining tick and the launching command (`commands.rs`). The last two are not in
+  `tick.rs`, `picket.rs` or `mining.rs`'s step, and all six are converted.
+- **The think was not the cost.** Nine tenths of what a think cost the world thread was
+  rebuilding its runner and its job (the table above). The script itself was 4 to 17
+  microseconds. The second review's row 17 had it right ("what costs is rebuilding the
+  runner each think"); the size was not known.
+- The backup seat tried up to three sources in sequence, each a full blocking think.
+- The backup mind's think number was the wall second, and its view's clock outside a bubble
+  is the wall second still (`tier1_view`). The first is fixed here; the second is what she is
+  told the time is, and stays.
+- **The IC second of a step is an input to the bubble.** `StepWall` carries the world's IC
+  second and detection reads it (`is_bubble_ship_detected`). So a bubble held under a running
+  clock is late against the world's IC clock: the held step keeps the IC second it fell due
+  with, and every later step reads a later one than it would have. That is the same lateness
+  the rule accepts for wall time, and it is why the determinism test with the clock running
+  holds everything but the IC stamps equal.
+- Two picket minds thought one after the other inside a step, and the second saw what the
+  first had just done. No design asked for that; it fell out of thinking in a loop.
+- The process static made "the configured number of workers" untestable in a process that
+  runs more than one world, which every test binary does under `cargo test`.
+
+**Defaults taken.**
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | **A late think holds its own bubble's step; nothing else moves, and the world thread never waits.** The arena's rule (above) | **Expensive**, as Q-44-28 says: every space story's timing rests on it |
+| 2 | **The rig's host waits and the server's holds, and the world loop is what says which.** The default, for a world no loop has claimed, is to wait. The alternative was a config key; a key that makes the server block if it is mistyped was not wanted. A new driver that runs a world on the wall clock must make the same call, and the contract test pins the one that exists | Low: one call |
+| 3 | A held step is taken as it first fell due, and the wall time it waited is not simulated. The alternative, one long step for the whole wait, is a different step for a late pool | Medium: it is the determinism |
+| 4 | **Every mind of a bubble thinks on the same snapshot.** The corvette no longer sees in the same step what the raider just did, nor the raider the corvette, nor the backup mind either of them. This changes play by one think: the corvette screens against the raider one second after her torch, not in the same second | Low in code, but it is the property that lets the thinks run at once |
+| 5 | The pool is one for each store, not one for each process. A server has one store. A test process with many worlds has many pools, each dropped with its world | Low |
+| 6 | A runner is kept by digest for the life of the server, and never dropped. A digest's bytes cannot change (the store is addressed by digest), and a server sees a handful of doctrines and their revisions | Low: a bound, if staff ever publish thousands |
+| 7 | The first think of a digest builds its runner on the world thread: one compile for each doctrine revision in a server's life (the compiled script is cached by digest already) | Low |
+| 8 | A drone does not think in the command that launches it. Its record starts at think nought with no memory and thinks on the next tick | Low |
+| 9 | Drones and a hull adrift have nothing that steps, so "held" for them is that they do not think again until the last think has landed | Low |
+| 10 | After a restart a bubble that owed thinks collects them again on the state it kept. If a crew commanded between the collection and the restart, the second collection sees that command and the first did not | Low: the alternative is to drop the owed think, which is a different run |
+| 11 | A runner's panic leaves its own actor doing nothing for that step, with an `error!` line; it thinks again on the next. Each actor's think is a pool batch of its own, so the other minds of the bubble land as usual. The arena voids a match for the same panic; a bubble has no void | Low |
+| 12 | A bubble held for a long time is logged and nothing more. Nothing closes it or clears it | Low. See "Left" |
+| 13 | **What a mind launches flies in the step it lands in.** An answer lands before its step's physics, as the arena's does. Before the unit a cast actor's launch was applied after the step, so the crews' feeds showed a torpedo at its launcher for one tick before it moved; now the first tick that shows it shows it a second into its flight, and one that point defence reaches in that second is never shown. The alternative, to land answers after the step's physics, keeps that tick and puts every intent a step behind the state it is applied to. **The owner's to rule if the lost tick matters to play** | Medium: it is where in the step an answer lands, and every space story's timing follows it |
+| 14 | The backup seat runs every source it holds on each think (her seal, the house default, the compiled default) and takes the first clean answer. With no sealed mind and no house pointer that is one think, as before; with all three it is three on the pool where it was one on the world thread unless one faulted | Low |
+| 15 | A source that has no runner (not held, or it does not compile) is looked up again at each think and warned about each time. No seal site seals such a digest (MW.10) | Low |
+
+**Left, and for which unit.**
+
+- **MW.12** (drones as sorties): the drone's intents are still discarded and its view still
+  has no rock and no hold. Its think now lands a tick after it is collected, which is where
+  MW.12's intents will land. `collect_drone_think` is where the real view goes.
+- **MW.13** (a player's mind on a ship): a player's seal is a new digest on the same host,
+  with nothing to add here. It is the first source of the backup seat's ask already. Its
+  rule program is still not bound: `thinks.rs` `KIT` binds an empty program for every space
+  think.
+- **AP.9** (space reads the posture): the posture reaches a backup mind's view at
+  collection, in `collect_in_bubble` and `collect_adrift`.
+- **MW.20** (minds measured at size): eight bubbles on one server is its row. The lane here
+  measures one think and one step; the host's counters (`ThinkStats`: thinks, batches, held
+  steps, runners built) are what a soak would read, and nothing shows them to staff yet.
+- **MW.12 must give drones the held-step rule.** While a drones' batch is still out on the
+  server's host, no further think is collected for them, so how many thinks a drone has
+  landed when its sortie ends depends on the pool. Nothing reads a drone's intents yet, so
+  no outcome moves; once MW.12 makes its yield depend on them, the yield has to wait for
+  the think as a bubble's step does. The same is true of a hull adrift, whose act is one
+  passage engaged a tick later.
+- **No watchdog on a held bubble.** A think is bounded by its class's operation budget, so a
+  runner cannot spin; a pool that never answers would hold its bubbles until a restart, and
+  the log says so. Deferred, with no unit: it wants a ruling on what a bubble does when its
+  minds are gone (fly on without them, or close).
+- **Relation changes are still not on the tape** (MW.9's note). Unchanged.
+- **The space journey over SSH and space on the nightly** are doc 35's (SF.R31's list).
+  Nothing here was run against a live server.
+
+**The acceptance, and what holds each.** The unit tests are in `tick_thinks_tests.rs`
+(declared by `tick.rs`) and `thinks.rs`; the story is in
+`crates/tacsim/tests/domain_world/voyage.rs`.
+
+| The row asks | Held by | Before the cut |
+|---|---|---|
+| The measured cost before and after, with the method | The tables above; the lane `mw11_what_a_space_think_costs_the_world_thread` | Never measured |
+| The same encounter, run again from before a decision with the workers' timing varied, gives the same commands, the same mind memory and the same outcome | `mw11_a_picket_is_the_same_whatever_the_workers_timing` (three minds: the corvette, the raider, a backup-flown carrier; customs rule mid-encounter) and `mw11_an_interdiction_is_the_same_whatever_the_workers_timing`. Each takes the encounter to a point where its minds have thinks out, then runs it on from there six ways: thinks run on the stepping thread; a rig's host on one worker and on four; the server's host on one worker and on three, every step's thinks parked while the tick finds the step held nought to three times, the clock standing; and the same with the wall clock running on under the held steps. The first five are held equal whole: every command, the bubble, each mind's memory, think count and contact numbers. The last is held equal but for the IC second on its steps | There was one way to run it |
+| A restart between a think and its landing changes nothing | `mw11_a_bubble_read_back_with_thinks_owed_collects_them_again`: the record goes through its stored form and meets a host that has never seen it | Nothing was in flight across a tick |
+| A server whose first think is in space has the configured number of workers | The story `mw11_a_server_whose_first_think_is_in_space_has_the_configured_workers` (`workers = 3`; the bubble's opening think is the server's first; the pool is three and is the one a match is handed) and `minds/pool.rs` `m4_a_dropped_pool_answers_what_it_queued_and_a_stores_pool_is_one` (1, 3 and 5) | The process static was sized by its first caller, and space asked for one |
+| No think blocks the world thread, the drone's included | `mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on` (two hundred due ticks with every worker parked: none takes the step, none writes anything, and the step taken afterwards is the one that first fell due); `thinks.rs` `mw11_a_holding_host_does_not_wait_and_a_held_step_keeps_its_length`; `mw11_every_think_of_a_bubble_runs_on_a_pool_worker` (thirty thinks, every one on a `tacsim-mind-N` thread); the contract test, which holds every think under `space/` to the host and the host's one wait behind its hold check; and `crates/mush-server/tests/world_task/arena_bridge.rs` `the_world_loop_tells_the_space_minds_to_hold_late_steps`, on the server's own loop. The drone and the hull adrift go through the same `settle` | Every think was a wait on the world thread |
+| A runner is kept for each seal and not rebuilt each think | `thinks.rs` `mw11_a_runner_is_built_once_for_a_digest_and_kept` (a hundred thinks, one runner, the same `Arc` on every job and for a second hull of the same seal); the story (one runner over the encounter); the lane asserts one runner for 5,200 thinks | A runner, a card and a program for every think |
+| A crew that takes the helm back discards the think in flight (Q-44-37) | `mw11_a_think_struck_from_a_batch_does_not_land_and_the_rest_do` | The think was never in flight |
+| A tape replay runs no think | `mw11_a_replay_of_the_tape_reproduces_the_bubble_and_runs_no_think` | Held by construction, and still is |
+
+**A second reader** (an Opus agent, the diff only, nothing run) found ten things. Fixed:
+
+- **The interdictor's new wait could strand her with her drive cut.** The wait did not
+  reset `closing`, and a wait left by one hull's hail could fire later against another hull
+  that had been taken without a hail, after which she never closed again. The wait now
+  resets `closing`, and a hull taken without a hail, and a station with nobody hostile,
+  clear it. The doctrine's digest moved again with the fix, to the value in the table
+  above.
+- **One runner's panic took every mind of its bubble with it**, because a bubble's thinks
+  were one pool batch and the pool loses a batch whole. Each actor's ask is now a batch of
+  its own.
+- **A bubble read back after a restart could collect on a later state than the first
+  collection saw**: a carrier closing on a derelict was moved after the thinks were
+  collected. The collection now comes after it.
+- A hull that stopped being adrift, or whose cluster session ended, other than by the two
+  ways already covered, left its thinks behind. `keep_hulls` prunes both each tick.
+- Two stale comments in `voyage.rs` named the deleted `run_sealed_mind_on_pool` and
+  `MindPool::shared`.
+
+Answered, not changed:
+
+- **A launch now flies a step before any crew's feed shows it** (the `sfr13` edit). True,
+  and it is where the rule lands an answer. Default 13 above puts it to the owner.
+- **A drone's think count depends on the pool while its batch is held.** True, and
+  harmless until MW.12 reads a drone's intents; it is on the "Left" list for that unit.
+- **A store replaced after the world loop has claimed it would wait again.** The store is
+  replaced once, at boot, before the loop starts. Not guarded. And a pool whose host
+  refuses it every worker thread runs a batch on the thread that submits it, as it does for
+  an arena; that was so before.
+- **Runners are never evicted, a source with no runner is looked up at each think, and the
+  backup seat runs every source it holds.** Defaults 6, 15 and 14.
+- **The determinism tests tick once a wall second**, so a held step followed by another
+  cadence (the five-second cruise) is not exercised. See "Not verified".
+
+**Verified, and how.**
+
+- **Mutation checks**, on Linux (conclav.dev), each putting one behaviour back or taking
+  one rule out, against the unit tests named for the unit. All six were caught:
+
+  | Mutation | Caught by |
+  |---|---|
+  | A held step is taken as the tick that takes it finds it, not as it first fell due | `mw11_a_holding_host_does_not_wait_and_a_held_step_keeps_its_length` |
+  | No runner is kept | `mw11_a_runner_is_built_once_for_a_digest_and_kept`, and five more (a test's parked runner is lost with the cache) |
+  | The pool is one worker whatever the configuration says | `m4_a_dropped_pool_answers_what_it_queued_and_a_stores_pool_is_one` |
+  | A struck think lands | `mw11_a_think_struck_from_a_batch_does_not_land_and_the_rest_do` |
+  | A bubble read back with thinks owed does not collect them again | `mw11_a_bubble_read_back_with_thinks_owed_collects_them_again` |
+  | An answer lands on the step that collected it | both determinism tests, the held-step test, the restart test and the struck-think test |
+
+- **The whole of `tacsim`'s tests on Linux** (conclav.dev), on `2a0aa776f`, the unit with
+  the second reader's fixes and before main was merged in: 4,558 passed, 33 skipped (the
+  `#[ignore]`d ones). `tests/domain_world/`'s 266 stories are among them.
+- **On the same commit there**: `mush-server`'s `world_task` `arena_bridge` module, 3
+  passed (the world loop's claim among them); `mush-contract-tests`, 199 passed and 8
+  skipped there, no budget re-blessed; `cargo doc -D warnings --document-private-items` on
+  `tacsim` and `mush-server`; `cargo fmt --check`.
+- **Main merged in** at `63dbcb3f6` (AP.4, #568; it touches nothing under `space/` or
+  `minds/pool.rs`), as `8f434b94f`. On the merged tree: `cargo clippy --all-targets -D
+  warnings` on `tacsim`, `mush-server` and `mush-contract-tests`, on Linux, clean after two
+  findings were fixed; `mush-contract-tests` on Windows, 199 passed and 8 ignored.
+- **The evidence for `sfr13`**: the same prints on main's code (`0d52a87d2`) and on this
+  unit, on conclav.dev, by a patch to the story that was never committed. The figures are
+  in the table above.
+- **Two of the unit's own tests raced, and CI's four-core runner found it** (run
+  43321942691, `test (tacsim-lib)`): the held-step test asserted that a worker had reached
+  its parked think without waiting for it, and the pool-worker test read the workers'
+  traces while the last step's thinks were still out. Both now wait for the worker. The
+  unit's tests and every test under `space::` then passed pinned to one core six times
+  running and to two cores three times, on conclav.dev (`taskset`).
+- **The harness gate on conclav.dev**, run 43320927299 on `1298949b0` (the code as it is;
+  the commits after it touch tests and this note): green, the timing gate live. No
+  baseline field moved, so nothing is re-blessed.
+- **CI on the pull request's head and the dispatch-only jobs**: the pull request records
+  the runs.
+
+**Not verified.**
+
+- **Nothing was run against a live server or over SSH**, and no bubble has been held on a
+  real server: the held step is exercised by unit tests on the bubble's own step function
+  with parked workers, and the world loop's claim by one test on the server's loop.
+- **A held step in cruise cadence, and a held step whose length differs from the step the
+  views were told.** The determinism tests use the one-second cadence throughout.
+- **The interdictor doctrine's stale wait** (the second reader's first finding) is fixed
+  and is not pinned by a test of its own: no test takes a second hull in while a hail is
+  out.
+- **The picket's cast actors with a selected revision** under the new timing: MW.10's
+  story selects for the interdictor only.
+- **Eight bubbles at once, and a saturated pool on a real box**: MW.20's.
+- **The Windows figures are one run of each**, on a box that was also building. The lane's
+  figures were taken at `556a20a27`, before the second reader's change that gives each
+  actor its own pool batch: a picket step now hands over twice where it handed over once.
+  Not re-measured.
+- The `#[ignore]`d by-hand lanes that no workflow runs.
 
 ## MW.12
 

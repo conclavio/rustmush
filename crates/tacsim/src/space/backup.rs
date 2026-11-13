@@ -49,6 +49,7 @@ use smol_str::SmolStr;
 use super::applier::{BurnRule, Seat};
 use super::bubble::HullStatus;
 use super::picket::{CARRIER_PARTY, HEAVE_TO_REL_VEL_MMPS};
+use super::thinks::{Answer, Ask, Due, Owed, Owner, ThinkHost, Thinker};
 use super::tick::{ActiveInterdictionBubble, SpaceBubbleBook, SpaceLinkdeadState};
 use crate::arena::intents::{IntentKind, MotorGoal};
 use crate::arena::mind::{MindView, ThinkResult};
@@ -87,7 +88,7 @@ pub enum BackupAct {
 
 /// What one think asked of the seat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ask {
+enum Asks {
     /// No helm intent.
     Nothing,
     /// `speed(n)`, n above nought.
@@ -99,7 +100,7 @@ enum Ask {
 /// One think, read: what it asks of the seat outside a bubble, and the intents themselves,
 /// which inside a bubble go to the applier.
 struct Thought {
-    ask: Ask,
+    ask: Asks,
     intents: Vec<IntentKind>,
 }
 
@@ -127,15 +128,12 @@ pub fn house_doctrine_documents(role: &str, source: &str) -> [(SmolStr, serde_js
     ]
 }
 
-/// Think once for `hull` on `view`, with the first of her sealed mind, the store's house
-/// default and the compiled house default that thinks without a fault; write what it
-/// remembered and traced into `state`.
-fn think(
-    w: &World,
-    hull: ObjId,
-    view: MindView,
-    state: &mut SpaceLinkdeadState,
-) -> Option<Thought> {
+/// **The sources the seat tries for `hull`, first choice first** (doc 35 §11 `B-3`): her own
+/// sealed mind where the store holds its source, the store's house default, and the compiled
+/// house default. One think is collected on each ([`super::thinks::Ask::jobs`]) and the first
+/// that answers without a fault is hers; until doc 44 unit MW.11 they were tried one after
+/// another on the world thread.
+fn sources(w: &World, hull: ObjId) -> Vec<[u8; 32]> {
     let store = w.module_state::<TacsimStore>();
     let sealed = super::picket::space_mind_seal_of(w, hull)
         .map(|seal| seal.source_sha256)
@@ -143,42 +141,17 @@ fn think(
     let house = store.and_then(|store| store.house_doctrine(LINKDEAD_RETURN_ROLE));
     let compiled = linkdead_return_digest().0;
     let mut tried: Vec<[u8; 32]> = Vec::new();
-    let think_seq = u64::try_from(w.now()).unwrap_or(0);
-    let t_ms = view.t_ms;
-    let view = Arc::new(view);
     for digest in [sealed, house, Some(compiled)].into_iter().flatten() {
-        if tried.contains(&digest) {
-            continue;
-        }
-        tried.push(digest);
-        let result = super::picket::run_sealed_mind_on_pool(
-            hull,
-            None,
-            digest,
-            store,
-            think_seq,
-            t_ms,
-            Arc::clone(&view),
-            &state.mind_memory,
-        );
-        match result {
-            Some(result) if result.fault.is_none() => return Some(read(result, state)),
-            Some(result) => tracing::warn!(
-                hull = hull.0,
-                fault = ?result.fault,
-                "tacsim: a link-loss backup mind faulted; the next source is tried"
-            ),
-            None => tracing::warn!(
-                hull = hull.0,
-                "tacsim: a link-loss backup mind did not run; the next source is tried"
-            ),
+        if !tried.contains(&digest) {
+            tried.push(digest);
         }
     }
-    None
+    tried
 }
 
 /// Read a clean think into the seat's terms and keep its memory and its last trace word.
 fn read(result: ThinkResult, state: &mut SpaceLinkdeadState) -> Thought {
+    state.mind_think_seq = state.mind_think_seq.saturating_add(1);
     if state.mind_memory != result.memory {
         state.mind_memory = result.memory;
     }
@@ -187,15 +160,15 @@ fn read(result: ThinkResult, state: &mut SpaceLinkdeadState) -> Thought {
     {
         state.mind_last_trace = Some(word.clone());
     }
-    let mut ask = Ask::Nothing;
+    let mut ask = Asks::Nothing;
     for intent in &result.intents {
         match intent {
-            IntentKind::Goal(MotorGoal::Hold) => ask = Ask::Hold,
+            IntentKind::Goal(MotorGoal::Hold) => ask = Asks::Hold,
             IntentKind::Speed { cms } => {
                 ask = if *cms > 0 {
-                    Ask::MakeForPort
+                    Asks::MakeForPort
                 } else {
-                    Ask::Hold
+                    Asks::Hold
                 };
             }
             // `B-4`: outside a bubble the seat has two acts, a passage and a hold. Inside
@@ -267,7 +240,7 @@ fn tier1_view(
 
 /// Where a hull the backup mind has is, as the seat sorts her.
 enum Whereabouts {
-    /// In an interdiction bubble: [`fly_in_bubble`] flies her on the bubble's own step.
+    /// In an interdiction bubble: she is flown on the bubble's own step ([`land_in_bubble`]).
     Bubble,
     /// In free flight or at a cluster: the seat may engage a passage.
     Adrift,
@@ -324,9 +297,25 @@ pub(crate) fn step_backup_minds(ctx: &mut Ctx<'_>) {
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(host) = super::thinks::host_of(ctx.w) {
+        // A hull whose record is gone (her crew is back, she is lost) leaves no think behind.
+        let flown: std::collections::BTreeSet<ObjId> =
+            held.iter().map(|state| state.hull).collect();
+        host.keep_hulls(|owner| match owner {
+            Owner::Adrift(hull) => flown.contains(&hull),
+            Owner::Bubble(_) | Owner::Cluster(_) => true,
+        });
+    }
     for mut state in held {
         let hull = state.hull;
-        match whereabouts(ctx.w, hull) {
+        let here = whereabouts(ctx.w, hull);
+        if !matches!(here, Whereabouts::Adrift)
+            && let Some(host) = super::thinks::host_of(ctx.w)
+        {
+            // Doc 44 unit MW.11: a think collected while she was adrift is not hers any more.
+            host.discard(Owner::Adrift(hull));
+        }
+        match here {
             Whereabouts::Bubble => {}
             Whereabouts::Alongside => {
                 // `B-1`: she is home, or no longer a hull under way (a derelict, say); the
@@ -357,33 +346,101 @@ pub(crate) fn step_backup_minds(ctx: &mut Ctx<'_>) {
     }
 }
 
-/// One think for a hull in free flight or at a cluster, and the seat's act on it.
-fn step_adrift(ctx: &mut Ctx<'_>, mut state: SpaceLinkdeadState) {
+/// The mark of a hull's thinks outside a bubble: the wall second her crew's link dropped, so
+/// a think from an earlier loss of link is never taken for this one's.
+fn adrift_mark(state: &SpaceLinkdeadState) -> super::thinks::Mark {
+    (state.grace_started_wall_s, 0)
+}
+
+/// **A hull in free flight or at a cluster** (doc 35 §11; doc 44 unit MW.11): the seat acts
+/// on the think she owes, if it has answered, and collects her next. Nothing here waits for
+/// a worker: with her think still out on a server's host she is left as she is until a later
+/// tick.
+fn step_adrift(ctx: &mut Ctx<'_>, state: SpaceLinkdeadState) {
+    let Some(host) = super::thinks::host_of(ctx.w) else {
+        return;
+    };
+    let Some(state) = land_adrift(ctx, &host, state) else {
+        return;
+    };
+    collect_adrift(ctx, &host, &state);
+}
+
+/// Collect one think for a hull outside every bubble, when she is due one.
+fn collect_adrift(ctx: &Ctx<'_>, host: &ThinkHost, state: &SpaceLinkdeadState) {
     let hull = state.hull;
     let wall_now_s = ctx.w.now();
     if wall_now_s < state.next_think_at_wall_s {
         return;
     }
     let no_route = wall_now_s < state.return_retry_at_wall_s;
-    let Some(thought) = think(
-        ctx.w,
+    let view = Arc::new(tier1_view(
         hull,
-        tier1_view(
-            hull,
-            wall_now_s,
-            no_route,
-            // Doc 45 unit AP.3: the posture her player left on her, off her own record.
-            crate::posture::record::of(ctx.w, hull),
-        ),
-        &mut state,
-    ) else {
-        keep(ctx, hull, state);
-        return;
+        wall_now_s,
+        no_route,
+        // Doc 45 unit AP.3: the posture her player left on her, off her own record.
+        crate::posture::record::of(ctx.w, hull),
+    ));
+    let store = ctx.w.module_state::<TacsimStore>();
+    let jobs: Vec<_> = sources(ctx.w, hull)
+        .into_iter()
+        .filter_map(|digest| {
+            host.job(
+                store,
+                hull,
+                digest,
+                state.mind_think_seq,
+                &view,
+                &state.mind_memory,
+            )
+        })
+        .collect();
+    let ask = Ask {
+        who: Thinker::Backup,
+        unit: hull,
+        think_seq: state.mind_think_seq,
+        contacts: std::collections::BTreeMap::new(),
+        jobs,
     };
+    let _ = host.submit(Owner::Adrift(hull), adrift_mark(state), vec![ask]);
+}
+
+/// **Act on the think a hull outside every bubble owes** (doc 35 §11). Answers her record
+/// as it now stands, for the next think to be collected on; `None` when her think has not
+/// answered (a server's host holds her), or she is no longer the seat's to fly adrift.
+fn land_adrift(
+    ctx: &mut Ctx<'_>,
+    host: &ThinkHost,
+    mut state: SpaceLinkdeadState,
+) -> Option<SpaceLinkdeadState> {
+    let hull = state.hull;
+    let owner = Owner::Adrift(hull);
+    let mark = adrift_mark(&state);
+    if !host.in_flight(owner, mark) {
+        return Some(state);
+    }
+    let answer = match host.settle(owner, mark, Due::default()) {
+        Owed::Held => return None,
+        Owed::Nothing => return Some(state),
+        Owed::Ready { mut answers, .. } => answers.pop(),
+    };
+    let Some(result) = answer
+        .filter(|answer| answer.think_seq == state.mind_think_seq)
+        .and_then(|answer| answer.result)
+    else {
+        tracing::warn!(
+            hull = hull.0,
+            "tacsim: a link-loss backup mind did not answer; she is thought for again"
+        );
+        return Some(state);
+    };
+    let wall_now_s = ctx.w.now();
+    let no_route = wall_now_s < state.return_retry_at_wall_s;
+    let thought = read(result, &mut state);
     let mut line = None;
     match thought.ask {
-        Ask::Nothing => {}
-        Ask::Hold => {
+        Asks::Nothing => {}
+        Asks::Hold => {
             if !matches!(
                 state.backup_act,
                 BackupAct::Holding | BackupAct::HoldingForRetrieval
@@ -400,14 +457,14 @@ fn step_adrift(ctx: &mut Ctx<'_>, mut state: SpaceLinkdeadState) {
             };
         }
         // Inside the wait the seat does not ask the planner again, whatever the mind asks.
-        Ask::MakeForPort if no_route => {}
-        Ask::MakeForPort => {
+        Asks::MakeForPort if no_route => {}
+        Asks::MakeForPort => {
             // The engine holds one submission an actor: a passage engaged behind another
             // would be flown on a debit that was turned away. Wait a tick instead.
             let payer = super::commands::resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
             if ctx.authoritative_pending(payer) || ctx.authoritative_queue_full() {
                 keep(ctx, hull, state);
-                return;
+                return still_adrift(ctx, hull);
             }
             let port = state
                 .queued_return_port
@@ -444,9 +501,22 @@ fn step_adrift(ctx: &mut Ctx<'_>, mut state: SpaceLinkdeadState) {
     if let Some(line) = line {
         crate::port::voyage::narrate_hull(ctx, hull, &line);
     }
+    still_adrift(ctx, hull)
 }
 
-/// What [`fly_in_bubble`] leaves for [`settle_bubble_backup`], which has the world.
+/// `hull`'s record as the book now holds it, if the seat still flies her outside a bubble.
+fn still_adrift(ctx: &Ctx<'_>, hull: ObjId) -> Option<SpaceLinkdeadState> {
+    if !matches!(whereabouts(ctx.w, hull), Whereabouts::Adrift) {
+        return None;
+    }
+    ctx.w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.linkdead_hulls.get(&hull))
+        .filter(|state| state.backup_has_helm())
+        .cloned()
+}
+
+/// What [`land_in_bubble`] leaves for [`settle_bubble_backup`], which has the world.
 #[derive(Debug, Default)]
 pub(crate) struct BubbleBackup {
     /// She is hove to under a customs hail: submit her to inspection.
@@ -455,49 +525,94 @@ pub(crate) struct BubbleBackup {
     line: Option<&'static str>,
 }
 
-/// Fly `hull` for one step of her bubble (doc 35 §11 `B-5`; doc 44 unit MW.9): think on the
-/// view every space mind reads, with the `dt_wall_ms` the bubble is about to step as its
-/// step, and hand what the mind asks to the one applier, seated [`Seat::ABSENT`]. Her helm is
-/// live under the seat, so the linkdead drive cut is lifted; her point defence stays on AUTO.
-/// The seat adds nothing to her flying: a burn that heaves her to is the mind's own.
-pub(crate) fn fly_in_bubble(
+/// **The seat's own upkeep of a hull it flies in a bubble** (doc 35 §11 `B-5`), at the head
+/// of each of the bubble's steps: her helm is live under the seat, so the linkdead drive cut
+/// is lifted; her point defence stays on AUTO.
+pub(crate) fn seat_in_bubble(active: &mut ActiveInterdictionBubble, ship_id: &str) {
+    if let Some(ship) = active.bubble.ships.get_mut(ship_id)
+        && ship.status == HullStatus::Operational
+    {
+        ship.crew_linkdead = false;
+        ship.pdc_auto = true;
+    }
+}
+
+/// **Collect `hull`'s think on the step her bubble has just taken** (doc 35 §11 `B-5`; doc 44
+/// units MW.9 and MW.11): on the view every space mind reads, with `step_ms` as the step the
+/// bubble flies before she thinks again, once for each source the seat tries. The answer
+/// lands at the head of the bubble's next step ([`land_in_bubble`]).
+pub(crate) fn collect_in_bubble(
     w: &World,
-    active: &mut ActiveInterdictionBubble,
+    host: &ThinkHost,
+    active: &ActiveInterdictionBubble,
     hull: ObjId,
     ship_id: &str,
     state: &mut SpaceLinkdeadState,
-    dt_wall_ms: u32,
-) -> BubbleBackup {
-    let mut flown = BubbleBackup::default();
-    let Some(ship) = active.bubble.ships.get_mut(ship_id) else {
-        return flown;
-    };
-    if ship.status != HullStatus::Operational {
-        return flown;
+    step_ms: u32,
+) -> Option<Ask> {
+    if active
+        .bubble
+        .ships
+        .get(ship_id)
+        .is_none_or(|ship| ship.status != HullStatus::Operational)
+    {
+        return None;
     }
-    ship.crew_linkdead = false;
-    ship.pdc_auto = true;
-
-    let mut situation = active.situation(dt_wall_ms);
+    let mut situation = active.situation(step_ms);
     // Doc 45 unit AP.3: the posture her player left on her, off her own record, so her mind
     // reads in a bubble the word it reads outside one.
     situation
         .postures
         .insert(ship_id.to_owned(), crate::posture::record::of(w, hull));
-    let stop = situation.stop_of(ship_id);
-    let customs_holds = active.picket.is_some() && stop.holds();
-    let Some((view, contacts)) = super::view::space_mind_view(
+    super::picket::collect_bubble_think(
+        host,
+        w.module_state::<TacsimStore>(),
         &active.bubble,
+        Thinker::Backup,
         ship_id,
         hull,
+        &sources(w, hull),
+        state.mind_think_seq,
+        &state.mind_memory,
         &mut state.mind_contacts,
         &situation,
-    ) else {
+    )
+}
+
+/// **Land `hull`'s think at the head of her bubble's step** (doc 35 §11 `B-5`; doc 44 units
+/// MW.9 and MW.11): hand what the mind asked to the one applier, seated [`Seat::ABSENT`],
+/// before the bubble steps `dt_wall_ms`. The seat's rules are read off the bubble as it
+/// stands now, not as the think saw it. The seat adds nothing to her flying: a burn that
+/// heaves her to is the mind's own. An answer for a think her record has moved past, or
+/// with no clean result, changes nothing.
+pub(crate) fn land_in_bubble(
+    active: &mut ActiveInterdictionBubble,
+    ship_id: &str,
+    state: &mut SpaceLinkdeadState,
+    answer: Answer,
+    dt_wall_ms: u32,
+) -> BubbleBackup {
+    let mut flown = BubbleBackup::default();
+    if answer.think_seq != state.mind_think_seq
+        || active
+            .bubble
+            .ships
+            .get(ship_id)
+            .is_none_or(|ship| ship.status != HullStatus::Operational)
+    {
+        return flown;
+    }
+    let Some(result) = answer.result else {
+        tracing::warn!(
+            hull = state.hull.0,
+            "tacsim: a link-loss backup mind did not answer; she is thought for again"
+        );
         return flown;
     };
-    let Some(thought) = think(w, hull, view, state) else {
-        return flown;
-    };
+    let thought = read(result, state);
+    let situation = active.situation(dt_wall_ms);
+    let stop = situation.stop_of(ship_id);
+    let customs_holds = active.picket.is_some() && stop.holds();
     // `B-4`: she never runs a picket under power. While a stop holds her the one burn the seat
     // lets her mind fly is one that takes her drift against the stopping ship off; with no
     // stop on her it flies none.
@@ -523,7 +638,7 @@ pub(crate) fn fly_in_bubble(
             burn,
             ..Seat::ABSENT
         },
-        &contacts,
+        &answer.contacts,
         &thought.intents,
         &mut answered,
     );

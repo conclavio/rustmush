@@ -50,6 +50,7 @@ use super::custody::{
     check_in_space_unit, check_out_space_unit, instantiate_stock_space_unit,
     record_space_combat_to_black_box, space_ship_from_tactical_unit,
 };
+use super::thinks::{Answer, Ask, Due, Owed, Owner, ThinkHost, Thinker};
 use crate::arena::party::{Mark, PartyId, Relation};
 use crate::field_ops::{
     CustodyTitleStatus, FieldUnitAssessment, OperationalState, RecoveryOpId, SalvageClaimBook,
@@ -126,6 +127,17 @@ pub struct BubbleCarrierEntry {
     pub holding_for_salvage_until_wall_s: Option<i64>,
 }
 
+/// **The thinks a bubble owes its next step** (doc 44 unit MW.11, Q-44-28;
+/// [`super::thinks`]): which step collected them, and the step length their views were
+/// told. With these a bubble read back after a restart collects the same thinks again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinksOwed {
+    /// The bubble's step count once the collecting step is counted.
+    pub step: u32,
+    /// The step length, milliseconds, the collected views read as their step.
+    pub step_ms: u32,
+}
+
 /// Active interdiction bubble bound to a promoted waypoint [`DomainId`] (`SF.R12`, `D-35-5`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveInterdictionBubble {
@@ -189,9 +201,20 @@ pub struct ActiveInterdictionBubble {
     /// hull once, on its own state.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub stood_down: std::collections::BTreeSet<ObjId>,
+    /// **The thinks this bubble owes its next step** (doc 44 unit MW.11): set when a step
+    /// collects its minds' thinks, cleared when their answers land at the head of the next.
+    /// The batch itself is in RAM ([`super::thinks::ThinkHost`]); a bubble read back with
+    /// this set and no batch in flight collects the thinks again from the state it kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinks_owed: Option<ThinksOwed>,
 }
 
 impl ActiveInterdictionBubble {
+    /// Who owes this bubble's thinks, and the mark of the batch `owed` names.
+    fn think_owner(&self, owed: ThinksOwed) -> (Owner, super::thinks::Mark) {
+        (Owner::Bubble(self.domain), (self.opened_ic_s, owed.step))
+    }
+
     /// Return whether `hull` is a promoted carrier participating in this domain bubble (`SF.R12`).
     #[must_use]
     pub fn contains_carrier(&self, hull: ObjId) -> bool {
@@ -963,6 +986,10 @@ pub struct SpaceLinkdeadState {
     /// The backup mind's own contact numbers inside a bubble (doc 44 unit MW.9).
     #[serde(default, skip_serializing_if = "super::view::ContactBook::is_empty")]
     pub mind_contacts: super::view::ContactBook,
+    /// How many thinks of the backup mind have landed (doc 44 unit MW.11): the next
+    /// think's sequence number. It was the wall second, which a late step would change.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub mind_think_seq: u64,
     /// What the backup seat last did for her (doc 35 §11); the crew hear each change once.
     #[serde(default)]
     pub backup_act: super::backup::BackupAct,
@@ -975,6 +1002,12 @@ pub struct SpaceLinkdeadState {
     /// for a few times a minute, not every second.
     #[serde(default)]
     pub next_think_at_wall_s: i64,
+}
+
+/// Whether `n` is nought: a counter that has not moved is not written.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 impl SpaceLinkdeadState {
@@ -2813,6 +2846,7 @@ fn begin_linkdead_for_hull(ctx: &mut Ctx<'_>, hull: ObjId, announce_grace: bool)
                     mind_memory: Vec::new(),
                     mind_last_trace: None,
                     mind_contacts: super::view::ContactBook::default(),
+                    mind_think_seq: 0,
                     backup_act: super::backup::BackupAct::Standby,
                     return_retry_at_wall_s: 0,
                     next_think_at_wall_s: 0,
@@ -2860,7 +2894,7 @@ fn handle_crew_disconnected(ctx: &mut Ctx<'_>, player: ObjId) {
 
 /// End `hull`'s grace: the backup mind has the helm from here until a crew member comes back
 /// or she docks (doc 35 §11 `B-1`). The seat flies her from the next space tick
-/// ([`super::backup::step_backup_minds`] outside a bubble, [`super::backup::fly_in_bubble`]
+/// ([`super::backup::step_backup_minds`] outside a bubble, [`super::backup::land_in_bubble`]
 /// inside one); nothing is engaged here, so the return is no longer one passage decided once.
 fn expire_linkdead_grace_for_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
     let mut handed_over = false;
@@ -2898,9 +2932,19 @@ fn handle_crew_revived_or_connected(ctx: &mut Ctx<'_>, player: ObjId) {
         return;
     }
     let mut restored = false;
+    // Doc 44 Q-44-37, unit MW.11: a think the backup mind has out for her is discarded with
+    // the seat. Outside a bubble it is her own batch; inside one it is one answer of the
+    // bubble's batch, struck where it stands so the other actors' answers still land.
+    let host = super::thinks::host_of(ctx.w);
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         if book.linkdead_hulls.remove(&hull).is_some() {
             restored = true;
+        }
+        if let Some(host) = &host {
+            host.discard(Owner::Adrift(hull));
+            if let Some(active) = book.active_for_hull(hull) {
+                host.forget(Owner::Bubble(active.domain), Thinker::Backup, hull);
+            }
         }
         if let Some(active) = book.active_for_hull_mut(hull) {
             let ship_id = active.carrier_ship_id_for(hull).to_owned();
@@ -4033,17 +4077,300 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     }
 }
 
+/// **What one tick's pass over the bubbles reads of the world**, read once before the
+/// pass (doc 44 unit MW.11): the clocks, the hulls a docking session holds, the crews'
+/// standing orders, the think host and the store.
+struct BubbleTick<'a> {
+    /// Whether the world's timeline is frozen.
+    frozen: bool,
+    /// The world's wall second.
+    wall_now_s: i64,
+    /// The world's IC second.
+    ic_now_s: i64,
+    /// The hulls a docking session holds.
+    paused_hulls: &'a std::collections::BTreeSet<ObjId>,
+    /// The crews' standing orders.
+    standing_orders: &'a mush_sim::tick::StandingOrderBook,
+    /// Where the bubbles' minds think.
+    host: &'a ThinkHost,
+    /// Where a seal's source is looked up.
+    store: Option<&'a TacsimStore>,
+    /// The world, for what a backup mind reads of its hull.
+    w: &'a World,
+}
+
+/// One combat report a stepped bubble leaves for the black boxes: the carrier and the
+/// interdictor, by hull and by ship id, the events, and how each stands.
+type CombatReport = (
+    ObjId,
+    ObjId,
+    String,
+    String,
+    Vec<super::bubble::SpaceCombatEvent>,
+    OperationalState,
+    OperationalState,
+);
+
+/// What one tick's pass over the bubbles leaves for the world to finish.
+#[derive(Default)]
+struct BubbleTickOut {
+    /// What each backup seat left to settle with the world in hand.
+    backup_flown: Vec<(ObjId, super::backup::BubbleBackup)>,
+    /// The carriers that ran a picket and have no outcome recorded yet.
+    ran_picket_hulls: Vec<ObjId>,
+    /// The steps that had combat events.
+    combat_reports: Vec<CombatReport>,
+}
+
+/// **One bubble's step on one tick** (`SF.R10`, `SF.R29`; doc 44 unit MW.11, Q-44-28).
+/// Answers whether the bubble stepped: `false` when no step is due yet, when the world is
+/// frozen, or when the thinks its last step collected have not answered and the host
+/// holds late steps. A step, in order: the answers of the last step's thinks land through
+/// the one applier; the crews' standing orders are applied; the bubble flies; the host's
+/// own rules are settled on that state; and the minds' next thinks are collected on it and
+/// handed to the pool.
+fn step_bubble(
+    active: &mut ActiveInterdictionBubble,
+    tick: &BubbleTick<'_>,
+    linkdead_hulls: &mut BTreeMap<ObjId, SpaceLinkdeadState>,
+    out: &mut BubbleTickOut,
+) -> bool {
+    let hull = active.hull;
+    let wall_now_s = tick.wall_now_s;
+    active.bubble.outage_frozen = tick.frozen;
+    if tick.frozen {
+        // Frozen time is not owed back as one long step when the clock resumes (doc 35d §6.5).
+        if active.last_stepped_wall_s > 0 {
+            active.last_stepped_wall_s = wall_now_s;
+        }
+        return false;
+    }
+    // `SF.R25` (doc 35d §2 #4, Q-35d-3's default): a docking session holds the docking hull
+    // alone, her drive cut; every other ship in the bubble keeps its clock.
+    for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+        let hold = tick.paused_hulls.contains(&chull);
+        if let Some(ship) = active.bubble.ships.get_mut(&cship_id)
+            && ship.docking_hold != hold
+        {
+            ship.docking_hold = hold;
+        }
+    }
+    // Doc 44 unit MW.11: a step that was held for its thinks is due at every tick until
+    // it is taken, and is taken as it first fell due.
+    let held = active.thinks_owed.and_then(|owed| {
+        let (owner, mark) = active.think_owner(owed);
+        tick.host.held_step(owner, mark)
+    });
+    let due = if let Some(held) = held {
+        held
+    } else {
+        let cadence_ms = active.adaptive_step_wall_ms();
+        // One fire steps the wall time since the last, up to `MAX_BUBBLE_TICK_STEP_MS`. Time
+        // past that is a stall and is not simulated (`SF.R29`, doc 35d §6.5: carrying it over
+        // would fast-forward a fight the crews could not answer). A clock that steps back
+        // re-anchors the bubble; it used to hold it still until the clock caught up.
+        let dt_wall_ms = if active.last_stepped_wall_s > 0 {
+            if wall_now_s < active.last_stepped_wall_s {
+                active.last_stepped_wall_s = wall_now_s;
+                return false;
+            }
+            let elapsed_wall_s = wall_now_s - active.last_stepped_wall_s;
+            if elapsed_wall_s == 0
+                || (cadence_ms == CRUISE_STEP_WALL_MS
+                    && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS))
+            {
+                return false;
+            }
+            u32::try_from(elapsed_wall_s.saturating_mul(1_000))
+                .unwrap_or(MAX_BUBBLE_TICK_STEP_MS)
+                .min(MAX_BUBBLE_TICK_STEP_MS)
+        } else {
+            1_000
+        };
+        Due {
+            dt_wall_ms,
+            ic_now_s: tick.ic_now_s,
+        }
+    };
+    // Doc 44 unit MW.11 (Q-44-28): the step is taken only when the thinks the last one
+    // collected have answered. On the server a batch that is late holds this bubble where
+    // it stands and the tick goes on; the world thread never waits for a worker.
+    let Some((answers, due)) =
+        thinks_for_step(active, tick.host, tick.store, tick.w, linkdead_hulls, due)
+    else {
+        return false;
+    };
+    let Due {
+        dt_wall_ms,
+        ic_now_s,
+    } = due;
+    active.last_stepped_wall_s = wall_now_s;
+    // The seat's upkeep of each hull a backup mind flies, before her answer lands.
+    for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+        if linkdead_hulls
+            .get(&chull)
+            .is_some_and(SpaceLinkdeadState::backup_has_helm)
+        {
+            super::backup::seat_in_bubble(active, &cship_id);
+        }
+    }
+    // The answers land, in the order they were collected, through the one applier.
+    let mut events = Vec::new();
+    for mut answer in answers {
+        // A ship that has left the bubble since the think was collected names nothing now:
+        // an intent on its contact is dropped by the applier, as one on an unknown contact.
+        answer
+            .contacts
+            .retain(|_, ship_id| active.bubble.ships.contains_key(ship_id));
+        land_bubble_think(
+            active,
+            answer,
+            linkdead_hulls,
+            &mut out.backup_flown,
+            &mut events,
+            dt_wall_ms,
+        );
+    }
+    for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+        if linkdead_hulls
+            .get(&chull)
+            .is_some_and(SpaceLinkdeadState::backup_has_helm)
+        {
+            continue;
+        }
+        let is_linkdead = active
+            .bubble
+            .ships
+            .get(&cship_id)
+            .is_some_and(|s| s.crew_linkdead);
+        if is_linkdead {
+            continue;
+        }
+        if let Some(order) = tick.standing_orders.get(chull, OrderChannel::Posture)
+            && let OrderValue::Emcon { level } = order.value()
+        {
+            let posture = match level {
+                0 => EmconPosture::Ghost,
+                1 => EmconPosture::Passive,
+                2 => EmconPosture::Standard,
+                _ => EmconPosture::ActiveCombat,
+            };
+            if active
+                .bubble
+                .ships
+                .get(&cship_id)
+                .is_some_and(|s| s.emcon != posture)
+            {
+                let _ = active.tape.record_and_apply(
+                    &mut active.bubble,
+                    BubbleInputCommand::SetEmcon {
+                        ship_id: cship_id.clone(),
+                        posture,
+                    },
+                );
+            }
+        }
+        if let Some(order) = tick.standing_orders.get(chull, OrderChannel::Thrust)
+            && let OrderValue::Scalar { value } = order.value()
+            && *value <= 0
+            && active
+                .bubble
+                .ships
+                .get(&cship_id)
+                .is_some_and(|s| s.thrust_mmps2 != [0, 0, 0])
+        {
+            let _ = active.tape.record_and_apply(
+                &mut active.bubble,
+                BubbleInputCommand::CommandBurnMmps2 {
+                    ship_id: cship_id.clone(),
+                    thrust_mmps2: [0, 0, 0],
+                    force_into_reserve: false,
+                },
+            );
+        }
+    }
+    events.extend(active.tape.record_and_apply(
+        &mut active.bubble,
+        BubbleInputCommand::StepWall {
+            dt_wall_ms,
+            ic_now_s,
+        },
+    ));
+    if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
+        step_derelict_approach_in_bubble(active);
+    }
+    // The host's rules are settled on the step just taken, and the minds' next thinks
+    // are collected on the state it leaves and handed to the pool. Nothing moves the
+    // bubble after this but a crew's command, so a bubble read back after a restart
+    // collects on the same state. Their intents land at the head of its next step.
+    let owed = ThinksOwed {
+        step: active.steps.saturating_add(1),
+        step_ms: dt_wall_ms,
+    };
+    let asks = collect_bubble_thinks(active, tick.host, tick.store, tick.w, linkdead_hulls, owed);
+    let (owner, mark) = active.think_owner(owed);
+    active.thinks_owed = tick.host.submit(owner, mark, asks).then_some(owed);
+    if let Some(picket) = active.picket.as_ref() {
+        for (chull, _, _) in active.carrier_picket_entries() {
+            if picket.inspection_status_for(chull)
+                == super::picket::PicketInspectionStatus::RanThePicket
+                && picket.inspection_outcome_for(chull).is_none()
+            {
+                out.ran_picket_hulls.push(chull);
+            }
+        }
+    }
+    active.push_bounded_snapshot();
+    active.compact_tape_if_needed();
+    active.steps = active.steps.saturating_add(1);
+    if !events.is_empty() {
+        let carrier_state = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .map(|s| match s.status {
+                HullStatus::Operational => OperationalState::Operational,
+                HullStatus::DisabledDerelict { .. } => OperationalState::Disabled,
+            })
+            .unwrap_or(OperationalState::Operational);
+        let interdictor_state = active
+            .bubble
+            .ships
+            .get(&active.interdictor_ship_id)
+            .map(|s| match s.status {
+                HullStatus::Operational => OperationalState::Operational,
+                HullStatus::DisabledDerelict { .. } => OperationalState::Disabled,
+            })
+            .unwrap_or(OperationalState::Operational);
+        out.combat_reports.push((
+            hull,
+            active.interdictor_hull,
+            active.carrier_ship_id.clone(),
+            active.interdictor_ship_id.clone(),
+            events,
+            carrier_state,
+            interdictor_state,
+        ));
+    }
+    true
+}
+
 fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let frozen = ctx.w.world_timeline().is_frozen();
     let wall_now_s = ctx.w.now();
-    let mut combat_reports = Vec::new();
-    let mut ran_picket_hulls = Vec::new();
     let standing_orders = mush_sim::tick::standing_orders_snapshot(ctx.w);
+    // Doc 44 unit MW.11: every think of a bubble goes through the store's host, onto the
+    // server's pool. The space tick does not run for a world with no store.
+    let Some(host) = super::thinks::host_of(ctx.w) else {
+        return;
+    };
 
     let Some(slot) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
         return;
     };
     if slot.by_domain.is_empty() {
+        // The last bubble has closed: nothing of its thinks is kept.
+        host.keep_bubbles(&std::collections::BTreeSet::new());
         return;
     }
     // `SF.R29` (doc 35d §6.6, `D-35-17`): the book is lifted out of the world for the step so
@@ -4056,7 +4383,6 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     // Doc 35 §11: the hulls a backup mind has. Their records leave the book for the loop, so
     // the seat can write its memory while the bubbles are borrowed.
     let mut linkdead_hulls = std::mem::take(&mut book.linkdead_hulls);
-    let mut backup_flown: Vec<(ObjId, super::backup::BubbleBackup)> = Vec::new();
 
     let paused_hulls: std::collections::BTreeSet<ObjId> = book
         .docking_sessions
@@ -4065,178 +4391,27 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         .map(|(&h, _)| h)
         .collect();
 
+    let tick = BubbleTick {
+        frozen,
+        wall_now_s,
+        ic_now_s: now.at,
+        paused_hulls: &paused_hulls,
+        standing_orders: &standing_orders,
+        host: &host,
+        store,
+        w: ctx.w,
+    };
+    let mut out = BubbleTickOut::default();
     for active in book.by_domain.values_mut() {
-        let hull = active.hull;
-        active.bubble.outage_frozen = frozen;
-        if frozen {
-            // Frozen time is not owed back as one long step when the clock resumes (doc 35d §6.5).
-            if active.last_stepped_wall_s > 0 {
-                active.last_stepped_wall_s = wall_now_s;
-            }
-            continue;
-        }
-        // `SF.R25` (doc 35d §2 #4, Q-35d-3's default): a docking session holds the docking hull
-        // alone, her drive cut; every other ship in the bubble keeps its clock.
-        for (chull, cship_id, _, _) in active.all_carrier_hulls() {
-            let hold = paused_hulls.contains(&chull);
-            if let Some(ship) = active.bubble.ships.get_mut(&cship_id)
-                && ship.docking_hold != hold
-            {
-                ship.docking_hold = hold;
-            }
-        }
-        let cadence_ms = active.adaptive_step_wall_ms();
-        // One fire steps the wall time since the last, up to `MAX_BUBBLE_TICK_STEP_MS`. Time
-        // past that is a stall and is not simulated (`SF.R29`, doc 35d §6.5: carrying it over
-        // would fast-forward a fight the crews could not answer). A clock that steps back
-        // re-anchors the bubble; it used to hold it still until the clock caught up.
-        let dt_wall_ms = if active.last_stepped_wall_s > 0 {
-            if wall_now_s < active.last_stepped_wall_s {
-                active.last_stepped_wall_s = wall_now_s;
-                continue;
-            }
-            let elapsed_wall_s = wall_now_s - active.last_stepped_wall_s;
-            if elapsed_wall_s == 0
-                || (cadence_ms == CRUISE_STEP_WALL_MS
-                    && elapsed_wall_s * 1_000 < i64::from(CRUISE_STEP_WALL_MS))
-            {
-                continue;
-            }
-            u32::try_from(elapsed_wall_s.saturating_mul(1_000))
-                .unwrap_or(MAX_BUBBLE_TICK_STEP_MS)
-                .min(MAX_BUBBLE_TICK_STEP_MS)
-        } else {
-            1_000
-        };
-        active.last_stepped_wall_s = wall_now_s;
-        for (chull, cship_id, _, _) in active.all_carrier_hulls() {
-            if let Some(state) = linkdead_hulls
-                .get_mut(&chull)
-                .filter(|state| state.backup_has_helm())
-            {
-                let flown = super::backup::fly_in_bubble(
-                    ctx.w, active, chull, &cship_id, state, dt_wall_ms,
-                );
-                backup_flown.push((chull, flown));
-                continue;
-            }
-            let is_linkdead = active
-                .bubble
-                .ships
-                .get(&cship_id)
-                .is_some_and(|s| s.crew_linkdead);
-            if is_linkdead {
-                continue;
-            }
-            if let Some(order) = standing_orders.get(chull, OrderChannel::Posture)
-                && let OrderValue::Emcon { level } = order.value()
-            {
-                let posture = match level {
-                    0 => EmconPosture::Ghost,
-                    1 => EmconPosture::Passive,
-                    2 => EmconPosture::Standard,
-                    _ => EmconPosture::ActiveCombat,
-                };
-                if active
-                    .bubble
-                    .ships
-                    .get(&cship_id)
-                    .is_some_and(|s| s.emcon != posture)
-                {
-                    let _ = active.tape.record_and_apply(
-                        &mut active.bubble,
-                        BubbleInputCommand::SetEmcon {
-                            ship_id: cship_id.clone(),
-                            posture,
-                        },
-                    );
-                }
-            }
-            if let Some(order) = standing_orders.get(chull, OrderChannel::Thrust)
-                && let OrderValue::Scalar { value } = order.value()
-                && *value <= 0
-                && active
-                    .bubble
-                    .ships
-                    .get(&cship_id)
-                    .is_some_and(|s| s.thrust_mmps2 != [0, 0, 0])
-            {
-                let _ = active.tape.record_and_apply(
-                    &mut active.bubble,
-                    BubbleInputCommand::CommandBurnMmps2 {
-                        ship_id: cship_id.clone(),
-                        thrust_mmps2: [0, 0, 0],
-                        force_into_reserve: false,
-                    },
-                );
-            }
-        }
-        let mut events = active.tape.record_and_apply(
-            &mut active.bubble,
-            BubbleInputCommand::StepWall {
-                dt_wall_ms,
-                ic_now_s: now.at,
-            },
-        );
-        let carrier_picket_entries = active.carrier_picket_entries();
-        if let Some(picket) = active.picket.as_mut() {
-            let picket_events = super::picket::step_kirkwood_picket_for_carriers_with_store(
-                &mut active.bubble,
-                &mut active.tape,
-                picket,
-                &carrier_picket_entries,
-                store,
-                dt_wall_ms,
-            );
-            events.extend(picket_events);
-            for (chull, _, _) in &carrier_picket_entries {
-                if picket.inspection_status_for(*chull)
-                    == super::picket::PicketInspectionStatus::RanThePicket
-                    && picket.inspection_outcome_for(*chull).is_none()
-                {
-                    ran_picket_hulls.push(*chull);
-                }
-            }
-        } else {
-            let picket_events = step_interdictor_picket(active, store, dt_wall_ms);
-            events.extend(picket_events);
-        }
-        if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
-            step_derelict_approach_in_bubble(active);
-        }
-        active.push_bounded_snapshot();
-        active.compact_tape_if_needed();
-        active.steps = active.steps.saturating_add(1);
-        if !events.is_empty() {
-            let carrier_state = active
-                .bubble
-                .ships
-                .get(&active.carrier_ship_id)
-                .map(|s| match s.status {
-                    HullStatus::Operational => OperationalState::Operational,
-                    HullStatus::DisabledDerelict { .. } => OperationalState::Disabled,
-                })
-                .unwrap_or(OperationalState::Operational);
-            let interdictor_state = active
-                .bubble
-                .ships
-                .get(&active.interdictor_ship_id)
-                .map(|s| match s.status {
-                    HullStatus::Operational => OperationalState::Operational,
-                    HullStatus::DisabledDerelict { .. } => OperationalState::Disabled,
-                })
-                .unwrap_or(OperationalState::Operational);
-            combat_reports.push((
-                hull,
-                active.interdictor_hull,
-                active.carrier_ship_id.clone(),
-                active.interdictor_ship_id.clone(),
-                events,
-                carrier_state,
-                interdictor_state,
-            ));
-        }
+        let _ = step_bubble(active, &tick, &mut linkdead_hulls, &mut out);
     }
+    let BubbleTickOut {
+        backup_flown,
+        ran_picket_hulls,
+        combat_reports,
+    } = out;
+    // A bubble that has closed leaves no batch behind.
+    host.keep_bubbles(&book.by_domain.keys().copied().collect());
     lifted.linkdead_hulls = linkdead_hulls;
     if let Some(slot) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
         *slot = lifted;
@@ -4571,14 +4746,15 @@ fn settle_interdictor_stand_down(active: &mut ActiveInterdictionBubble) {
     }
 }
 
-/// One think of the interdictor's mind, applied by the one applier
-/// ([`super::applier::apply_intents`]), after the host has settled who is stood down.
-fn step_interdictor_picket(
+/// **Collect the interdictor's think** on the step its bubble has just taken (doc 44 units
+/// MW.9 and MW.11), after the host has settled who is stood down. `step_ms` is what the
+/// bubble steps by.
+fn collect_interdictor_think(
     active: &mut ActiveInterdictionBubble,
+    host: &ThinkHost,
     store: Option<&TacsimStore>,
     step_ms: u32,
-) -> Vec<super::bubble::SpaceCombatEvent> {
-    let mut emitted = Vec::new();
+) -> Option<Ask> {
     settle_interdictor_stand_down(active);
     if active
         .bubble
@@ -4586,35 +4762,52 @@ fn step_interdictor_picket(
         .get(&active.interdictor_ship_id)
         .is_none_or(|ship| ship.status != HullStatus::Operational)
     {
-        return emitted;
+        return None;
     }
     let situation = active.situation(step_ms);
     // Doc 44 unit MW.10: it thinks with the mind it was sealed with when the bubble opened,
     // and with no other. With no seal it does not think.
-    let Some(sealed) = active
+    let sealed = active
         .interdictor_seal
         .as_ref()
-        .map(|seal| seal.source_sha256)
-    else {
-        return emitted;
-    };
-    let Some((res, cmap)) = super::picket::run_space_rhai_think_with_seal(
+        .map(|seal| seal.source_sha256)?;
+    super::picket::collect_bubble_think(
+        host,
+        store,
         &active.bubble,
+        Thinker::Interdictor,
         &active.interdictor_ship_id,
         active.interdictor_hull,
-        active.interdictor_seal.as_ref(),
-        sealed,
-        store,
+        &[sealed],
         active.interdictor_think_seq,
         &active.interdictor_memory,
         &mut active.interdictor_contacts,
         &situation,
-    ) else {
-        return emitted;
-    };
-    if res.fault.is_some() {
-        return emitted;
+    )
+}
+
+/// **Land the interdictor's answer** at the head of its bubble's next step, through the one
+/// applier ([`super::applier::apply_intents`]). An answer for a think its record has moved
+/// past, or for a hull that no longer flies, is dropped; one with no clean result changes
+/// nothing.
+fn land_interdictor_think(
+    active: &mut ActiveInterdictionBubble,
+    answer: Answer,
+    emitted: &mut Vec<super::bubble::SpaceCombatEvent>,
+) {
+    if answer.unit != active.interdictor_hull
+        || answer.think_seq != active.interdictor_think_seq
+        || active
+            .bubble
+            .ships
+            .get(&active.interdictor_ship_id)
+            .is_none_or(|ship| ship.status != HullStatus::Operational)
+    {
+        return;
     }
+    let Some(res) = answer.result else {
+        return;
+    };
     active.interdictor_think_seq = active.interdictor_think_seq.saturating_add(1);
     active.interdictor_memory = res.memory;
     let _ = super::applier::apply_intents(
@@ -4622,10 +4815,204 @@ fn step_interdictor_picket(
         &mut active.tape,
         &active.interdictor_ship_id,
         super::applier::Seat::PATROL,
-        &cmap,
+        &answer.contacts,
         &res.intents,
-        &mut emitted,
+        emitted,
     );
+}
+
+/// **Collect every think of a bubble on the step it has just taken** (doc 44 unit MW.11):
+/// the customs corvette's and the raider's, or the interdictor's, after the host's own
+/// rules are settled on that state; then the backup mind of each carrier whose crew has no
+/// link. Every one thinks on the same snapshot, and the order of the asks is the order
+/// their answers are applied in ([`land_bubble_think`]). `owed.step_ms` is the step the
+/// views are told the bubble flies before they think again.
+fn collect_bubble_thinks(
+    active: &mut ActiveInterdictionBubble,
+    host: &ThinkHost,
+    store: Option<&TacsimStore>,
+    w: &World,
+    linkdead_hulls: &mut BTreeMap<ObjId, SpaceLinkdeadState>,
+    owed: ThinksOwed,
+) -> Vec<Ask> {
+    let carrier_picket_entries = active.carrier_picket_entries();
+    let mut asks = if let Some(picket) = active.picket.as_mut() {
+        super::picket::collect_picket_thinks(
+            &mut active.bubble,
+            picket,
+            &carrier_picket_entries,
+            host,
+            store,
+            owed.step_ms,
+        )
+    } else {
+        collect_interdictor_think(active, host, store, owed.step_ms)
+            .into_iter()
+            .collect()
+    };
+    for (chull, cship_id, _, _) in active.all_carrier_hulls() {
+        if let Some(state) = linkdead_hulls
+            .get_mut(&chull)
+            .filter(|state| state.backup_has_helm())
+        {
+            asks.extend(super::backup::collect_in_bubble(
+                w,
+                host,
+                active,
+                chull,
+                &cship_id,
+                state,
+                owed.step_ms,
+            ));
+        }
+    }
+    asks
+}
+
+/// **A bubble's minds first think on the snapshot it opens with** (doc 44 unit MW.11): the
+/// opening is step nought, and what is collected on it lands at the head of the bubble's
+/// first step, as every later think lands at the head of the step after its own. Without
+/// this nobody in a new bubble would decide anything until its second step.
+fn collect_thinks_at_open(ctx: &mut Ctx<'_>, domain: DomainId) {
+    let Some(host) = super::thinks::host_of(ctx.w) else {
+        return;
+    };
+    let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+        return;
+    };
+    // The bubble and the link-loss records leave the book while the store is read.
+    let Some(mut active) = book.by_domain.remove(&domain) else {
+        return;
+    };
+    let mut linkdead_hulls = std::mem::take(&mut book.linkdead_hulls);
+    let owed = ThinksOwed {
+        step: 0,
+        step_ms: COMBAT_STEP_WALL_MS,
+    };
+    let asks = collect_bubble_thinks(
+        &mut active,
+        &host,
+        ctx.w.module_state::<TacsimStore>(),
+        ctx.w,
+        &mut linkdead_hulls,
+        owed,
+    );
+    let (owner, mark) = active.think_owner(owed);
+    active.thinks_owed = host.submit(owner, mark, asks).then_some(owed);
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.linkdead_hulls = linkdead_hulls;
+        book.by_domain.insert(domain, active);
+    }
+}
+
+/// **The thinks `active`'s due step owes, answered** (doc 44 unit MW.11, Q-44-28): `None`
+/// holds the step, because the batch is still on the pool and this host does not wait.
+/// Otherwise the answers to land, in collection order, and the step to take: `due`, or the
+/// step as it first fell due if it was held. A bubble that owes thinks and has no batch in
+/// flight was read back after a restart: it collects them again from the state it kept,
+/// which is the snapshot they were first collected on unless a crew has commanded since.
+fn thinks_for_step(
+    active: &mut ActiveInterdictionBubble,
+    host: &ThinkHost,
+    store: Option<&TacsimStore>,
+    w: &World,
+    linkdead_hulls: &mut BTreeMap<ObjId, SpaceLinkdeadState>,
+    due: Due,
+) -> Option<(Vec<Answer>, Due)> {
+    let Some(owed) = active.thinks_owed else {
+        return Some((Vec::new(), due));
+    };
+    let (owner, mark) = active.think_owner(owed);
+    if !host.in_flight(owner, mark) {
+        let asks = collect_bubble_thinks(active, host, store, w, linkdead_hulls, owed);
+        if !host.submit(owner, mark, asks) {
+            active.thinks_owed = None;
+            return Some((Vec::new(), due));
+        }
+    }
+    match host.settle(owner, mark, due) {
+        Owed::Held => None,
+        Owed::Nothing => {
+            active.thinks_owed = None;
+            Some((Vec::new(), due))
+        }
+        Owed::Ready { answers, due } => {
+            active.thinks_owed = None;
+            Some((answers, due))
+        }
+    }
+}
+
+/// **Land one answer at the head of `active`'s step** (doc 44 unit MW.11): to the seat it
+/// was collected for. A backup mind's answer is dropped when the seat no longer has that
+/// hull (her crew is back).
+fn land_bubble_think(
+    active: &mut ActiveInterdictionBubble,
+    answer: Answer,
+    linkdead_hulls: &mut BTreeMap<ObjId, SpaceLinkdeadState>,
+    backup_flown: &mut Vec<(ObjId, super::backup::BubbleBackup)>,
+    events: &mut Vec<super::bubble::SpaceCombatEvent>,
+    dt_wall_ms: u32,
+) {
+    match answer.who {
+        Thinker::Corvette | Thinker::Raider => {
+            if let Some(picket) = active.picket.as_mut() {
+                super::picket::deliver_picket_think(
+                    &mut active.bubble,
+                    &mut active.tape,
+                    picket,
+                    answer,
+                    events,
+                );
+            }
+        }
+        Thinker::Interdictor => {
+            if active.picket.is_none() {
+                land_interdictor_think(active, answer, events);
+            }
+        }
+        Thinker::Backup => {
+            let hull = answer.unit;
+            if !active.contains_carrier(hull) {
+                return;
+            }
+            let ship_id = active.carrier_ship_id_for(hull).to_owned();
+            if let Some(state) = linkdead_hulls
+                .get_mut(&hull)
+                .filter(|state| state.backup_has_helm())
+            {
+                let flown =
+                    super::backup::land_in_bubble(active, &ship_id, state, answer, dt_wall_ms);
+                backup_flown.push((hull, flown));
+            }
+        }
+        Thinker::Drone => {}
+    }
+}
+
+/// **A rig with no world steps the interdictor's mind once**: its think is collected on the
+/// bubble as it stands, run where it is submitted, and landed at once. That is the
+/// sequence the space tick gives a bubble nobody else commands: what is collected at the
+/// end of one step lands at the head of the next, and nothing moves in between.
+#[cfg(test)]
+fn step_interdictor_picket(
+    active: &mut ActiveInterdictionBubble,
+    store: Option<&TacsimStore>,
+    step_ms: u32,
+) -> Vec<super::bubble::SpaceCombatEvent> {
+    let host = ThinkHost::inline();
+    let mut emitted = Vec::new();
+    let asks: Vec<Ask> = collect_interdictor_think(active, &host, store, step_ms)
+        .into_iter()
+        .collect();
+    let owner = Owner::Bubble(active.domain);
+    if host.submit(owner, (0, 0), asks)
+        && let Owed::Ready { answers, .. } = host.settle(owner, (0, 0), Due::default())
+    {
+        for answer in answers {
+            land_interdictor_think(active, answer, &mut emitted);
+        }
+    }
     emitted
 }
 
@@ -4854,6 +5241,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.by_domain.insert(domain, active);
         }
+        collect_thinks_at_open(ctx, domain);
         let line = "[SPACE] Interdiction contact detected at waypoint boundary; local space bubble opened on 1:1 wall clock.";
         crate::port::voyage::narrate_hull(ctx, hull, line);
         super::commands::push_space_panels(ctx, hull);
@@ -5113,6 +5501,7 @@ fn build_interdiction_bubble(
         interdictor_seal,
         interdictor_contacts: super::view::ContactBook::default(),
         stood_down: std::collections::BTreeSet::new(),
+        thinks_owed: None,
     })
 }
 
@@ -5348,6 +5737,11 @@ pub(crate) fn destroy_unclaimed_npc_hull(ctx: &mut Ctx<'_>, npc_hull: ObjId) {
     }
 }
 
+/// Doc 44 unit MW.11: the same encounter whatever the workers' timing, and a held step.
+#[cfg(test)]
+#[path = "tick_thinks_tests.rs"]
+mod thinks_tests;
+
 /// Doc 44 unit MW.9: the interdictor on the one applier, and its stand-down hull by hull.
 #[cfg(test)]
 mod interdictor_tests {
@@ -5437,6 +5831,7 @@ mod interdictor_tests {
             ),
             interdictor_contacts: super::super::view::ContactBook::default(),
             stood_down: std::collections::BTreeSet::new(),
+            thinks_owed: None,
         }
     }
 
@@ -5556,8 +5951,12 @@ mod interdictor_tests {
         // The carrier is abeam of the interdictor, up the y axis and a little above it.
         let carriers = [(ESCORT, CARRIER_PARTY, [0, 16_000, 12_000], [15_000, 0, 0])];
 
-        // The first think hails; the carrier holds her course, so the second engages.
+        // The first think hails, and the second waits for the hail to be answered (doc 44
+        // unit MW.11: the hull could not have heard it sooner). The carrier holds her course,
+        // so the third engages.
         let mut closing = interdiction(&carriers);
+        let _ = step_interdictor_picket(&mut closing, None, 1_000);
+        assert_eq!(interdictor_of(&closing).thrust_mmps2, [0, 0, 0]);
         let _ = step_interdictor_picket(&mut closing, None, 1_000);
         assert_eq!(interdictor_of(&closing).thrust_mmps2, [0, 0, 0]);
         let _ = step_interdictor_picket(&mut closing, None, 1_000);
