@@ -297,7 +297,7 @@ The owner ruled on 2026-11-11 that a unit whose whole crew has lost its link is 
   - **The five minutes (Q-44-36)** start when the last crew member loses their link. An earlier crew member's own disconnect, when the server ends their session, does not shorten them.
 - **B-2, one mind per unit.** The backup mind is a Rhai doctrine, thought once a space tick while there is something to decide. A hull on a corridor between ports is not thought for: she is already going where she filed.
 - **B-3, which mind.** In this order, the first whose source the store holds and which thinks without a fault:
-  1. the mind the player sealed on the unit;
+  1. the mind the player sealed on the unit: since doc 44 unit MW.13 a filed mind sealed with `+ship/mind` under the Roll's claim, thought with only while it still fits her core and her holder (`crates/tacsim/src/port/ship_mind.rs`). It may lock, which a house default may not; it never fires;
   2. the house default the store names: `tacsim:doctrine:linkdead_return`, a pointer (`{"sha256": …}`) to a `tacsim:mindsrc:` document;
   3. the house default compiled in, `content/minds/linkdead_return.rhai`, which every hull carries.
 - **B-4, what it may and may not do.** The mind asks; a seat (`crates/tacsim/src/space/backup.rs`) acts, and the limits are the seat's, so no source can step past them.

@@ -288,7 +288,7 @@ fn claim_log() -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(
         tracing_subscriber::fmt()
             .with_ansi(false)
-            .with_env_filter(tracing_subscriber::EnvFilter::new("ic_claim=debug"))
+            .with_env_filter(tracing_subscriber::EnvFilter::new("ic_claim=debug,warn"))
             .with_writer(std::io::stderr)
             .finish(),
     )
@@ -469,7 +469,31 @@ async fn mw13_a_filed_mind_sealed_aboard_flies_an_absent_pilots_ship_and_its_cla
     // on the corridor, and the server restarts with her under way: the boot admits a held
     // ship on her passage, and the seal is the same.
     let boundary = sail_and_lose_the_link(&mut world.rig, pilot, hull);
+    eprintln!(
+        "MW13 under way: ic {} of boundary {boundary}, rate {}",
+        crate::excursions::ic_now(&world.rig.tw),
+        world.rig.tw.world().world_timeline().current().rate
+    );
     let mut world = world.reboot_reconnecting(&[mush_core::GOD]);
+    eprintln!(
+        "MW13 after the restart: ic {} of boundary {boundary}, rate {}, journey {:?}, linkdead {:?}",
+        crate::excursions::ic_now(&world.rig.tw),
+        world.rig.tw.world().world_timeline().current().rate,
+        world
+            .rig
+            .tw
+            .world()
+            .module_state::<mush_sim::JourneyBook>()
+            .and_then(|book| book.get(hull))
+            .map(|journey| (journey.state().clone(), journey.leg_due_at(0))),
+        world
+            .rig
+            .tw
+            .world()
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|book| book.linkdead_state(hull))
+            .map(|state| (state.backup_has_helm(), state.backup_act)),
+    );
     assert_eq!(
         ship_mind::aboard(world.rig.tw.world(), hull).as_ref(),
         Some(&sealed),

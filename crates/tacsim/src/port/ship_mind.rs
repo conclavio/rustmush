@@ -354,6 +354,18 @@ pub(crate) fn holds(ctx: &Ctx<'_>, hull: ObjId) -> bool {
     )
 }
 
+/// **Whether a ship's cursor still stands in the way of a new seal**: a claim asked or open
+/// (`Opening`), or a Close the book does not hold yet (`Closing`). A `Closing` cursor whose
+/// claim the book holds closed is where a ship's cursor rests, as is `Refused`: the next
+/// `+ship/mind` replaces either.
+fn cursor_live(w: &World, cursor: Option<&ClaimCursor>) -> bool {
+    match cursor {
+        Some(ClaimCursor::Opening { .. } | ClaimCursor::Open { .. }) => true,
+        Some(ClaimCursor::Closing { open, .. }) => claim_closed(w, *open).is_none(),
+        Some(ClaimCursor::Closed { .. } | ClaimCursor::Refused { .. }) | None => false,
+    }
+}
+
 /// Every ship hull the world holds: the programme ports' rows, the yards' and the owned-hull
 /// register's ships.
 fn ship_hulls(w: &World) -> BTreeSet<ObjId> {
@@ -403,7 +415,7 @@ pub(crate) fn offers(
             cursor,
             Some(ClaimCursor::Opening { operator, .. }) if *operator == actor
         );
-        if helm == Some(hull) && !cursor.is_some_and(ClaimCursor::is_live) {
+        if helm == Some(hull) && !cursor_live(w, cursor) {
             ops.push(MindOp::Seal.word().into());
         }
         if mine {
@@ -519,7 +531,7 @@ pub(crate) fn prepare(
                         "that ship's mind is not yours to seal",
                     ));
                 }
-                if record.claim.as_deref().is_some_and(ClaimCursor::is_live) {
+                if cursor_live(world, record.claim.as_deref()) {
                     return Err(refuse(MIND_ALREADY.replace("{name}", &name)));
                 }
                 if berth_host(world, hull).is_none() {
@@ -1163,7 +1175,7 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .and_then(|state| state.epoch_action.clone())
         .filter(|_| crate::minds::ic_sortie::claim_path_composed(ctx.w));
     let cursor = record.as_ref().and_then(|record| record.claim.as_deref());
-    let live = cursor.is_some_and(ClaimCursor::is_live);
+    let live = cursor_live(ctx.w, cursor);
     let now = ctx.w.world_ic_now().at;
     let attempt = record.as_ref().map_or(0, |record| record.attempts);
     let key = |op: MindOp| {
