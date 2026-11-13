@@ -23,22 +23,22 @@
 //!
 //! | The cursor | Means | Moves when |
 //! |---|---|---|
-//! | `Opening` | the holder asked; the claim opens, then stands | the hull's epoch closes at a port (`Closing`, in the bundle that closes the epoch); `+ship/mind off` at her berth; the seal no longer fits her ([`fits`]) |
+//! | `Opening` | the holder asked; the claim opens, then stands | the hull's epoch closes at a port (`Closing`, in the bundle that closes the epoch); `+ship/mind off` at her berth; the seal no longer fits her (`fits`) |
 //! | `Closing` | the claim's Close is owed | the book holds the claim closed |
 //! | `Refused` | the Registry did not admit the claim | the next `+ship/mind` |
 //!
 //! A ship's cursor is never `Open`: the book says whether the claim is open
-//! ([`claim_of`]), and one fact is not kept in two places. The claim closes once, because one
+//! (`claim_of`), and one fact is not kept in two places. The claim closes once, because one
 //! record's one cursor names one open token and the book closes a token once.
 //!
 //! # A seal is checked again where it is used
 //!
-//! [`sealed`] is the only reader the space seat has, and it answers a seal only while the
+//! `sealed` is the only reader the space seat has, and it answers a seal only while the
 //! hull still carries the core the seal was taken over and the character who sealed it still
 //! has authority over the hull (`mush_roll::commerce::ic_claims::hull_authority`, the rule the
 //! claim's Open asked). So no route by which a hull's core or title changes has to remember
 //! the seal: a refit, a strip, a sale, a sweep, a repossession or a staff transfer each leave a
-//! seal that [`sealed`] no longer answers, and the arm closes its claim on its next fire
+//! seal that `sealed` no longer answers, and the arm closes its claim on its next fire
 //! (`void`).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -292,7 +292,7 @@ pub struct Aboard {
     pub seal_digest: [u8; 32],
 }
 
-/// **What is sealed aboard `hull`** ([`Aboard`]), if a mind still stands there ([`sealed`]).
+/// **What is sealed aboard `hull`** ([`Aboard`]), if a mind still stands there (`sealed`).
 #[must_use]
 pub fn aboard(w: &World, hull: ObjId) -> Option<Aboard> {
     let sealed = sealed(w, hull)?;
@@ -321,7 +321,7 @@ pub fn aboard(w: &World, hull: ObjId) -> Option<Aboard> {
 }
 
 /// **The mind sealed aboard `hull`, made ready to think on `w`'s host**, if one stands
-/// ([`sealed`]): the space seat's first source (`crate::space::backup`).
+/// (`sealed`): the space seat's first source (`crate::space::backup`).
 #[must_use]
 pub(crate) fn thinker(w: &World, hull: ObjId) -> Option<Arc<crate::space::thinks::SealedMind>> {
     #[cfg(test)]
@@ -809,6 +809,8 @@ enum Owes {
     Void(&'static str),
     /// The Roll would not open it: give it up.
     GiveUp,
+    /// The arm holds an Open's ticket its cursor no longer asks: release it.
+    Stale,
     /// Submit the claim's Close.
     Close,
     /// The Close has landed: acknowledge it and tell the operator.
@@ -823,6 +825,18 @@ fn owes(
     record: &ShipEpochRecord,
 ) -> (Option<(ObjId, Owes)>, bool) {
     let arm = &state.mind_arm;
+    // An Open's ticket the cursor no longer asks (given up, or its passage ended) is released
+    // first: the host keeps one Open pending an actor, so a ticket left there would refuse
+    // its holder's next seal on any hull until a restart.
+    if let Some((mark, ticket)) = arm.opens.get(&hull) {
+        let asked = matches!(
+            record.claim.as_deref(),
+            Some(ClaimCursor::Opening { launch_ic, .. }) if launch_ic == mark
+        );
+        if !asked {
+            return (Some((ticket.actor(), Owes::Stale)), false);
+        }
+    }
     let read = claim_of(w, hull);
     match (record.claim.as_deref(), read) {
         (Some(ClaimCursor::Opening { operator, .. }), ClaimRead::Active { open, dispatcher })
@@ -936,6 +950,18 @@ fn close_of(kind: ClaimCloseKind) -> SurfaceClose {
     }
 }
 
+/// **Release an Open's ticket the arm no longer needs**: acknowledged when the book holds
+/// its claim (the host drops it), withdrawn when it does not
+/// (`IcHost::withdraw_surface_open`).
+fn release(w: &World, host: &crate::minds::ic_sortie::IcHost, hull: ObjId, ticket: &IcHostTicket) {
+    if matches!(host.acknowledge(w, ticket), Ok(Some(_))) {
+        return;
+    }
+    if let Err(error) = host.withdraw_surface_open(w, ticket) {
+        tracing::warn!(hull = hull.0, %error, "tacsim: a ship's mind claim's ticket was not released; its holder's next seal waits for a restart");
+    }
+}
+
 /// Submit one mind op of the epoch action as `operator`.
 fn submit_op(
     ctx: &mut Ctx<'_>,
@@ -1032,7 +1058,7 @@ pub(crate) fn step(
                 Some(ticket) => ticket,
                 None => {
                     if let Some((_, stale)) = state.mind_arm.opens.remove(&hull) {
-                        let _ = host.acknowledge(ctx.w, &stale);
+                        release(ctx.w, &host, hull, &stale);
                     }
                     let minted = crate::minds::ic_sortie::surface::surface_start(
                         ctx.w, operator, hull, *launch_ic,
@@ -1112,15 +1138,20 @@ pub(crate) fn step(
                 MindOp::Refuse,
                 (*launch_ic, state.fires),
             );
+            // The Open's ticket stays with the arm until the cursor is `Refused` (`Owes::Stale`
+            // then withdraws it): a refuse the book refuses leaves the claim standing.
             if step == Step::Submitted {
-                if let Some((_, ticket)) = state.mind_arm.opens.remove(&hull) {
-                    let _ = host.acknowledge(ctx.w, &ticket);
-                }
-                state.mind_arm.tries.remove(&hull);
                 let line = MIND_REFUSED.replace("{name}", &name);
                 crate::port_tick::notify_budget(ctx, operator, &line, NoticeLevel::Trip);
             }
             step
+        }
+        (Owes::Stale, _) => {
+            if let Some((_, ticket)) = state.mind_arm.opens.remove(&hull) {
+                release(ctx.w, &host, hull, &ticket);
+            }
+            state.mind_arm.tries.remove(&hull);
+            Step::Worked
         }
         (Owes::Close, Some(ClaimCursor::Closing { open, kind, .. })) => {
             let kept = state

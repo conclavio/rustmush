@@ -717,6 +717,52 @@ fn until_closed(world: &mut M8World, claim: mush_core::CommitToken) -> String {
     heard
 }
 
+/// **Ask a seal and lose every Open the arm submits**, until the arm has given the claim up
+/// and the pilot has been told: the first Open it submitted, never landed. The cursor is
+/// `Refused` and the arm has not fired since.
+fn seal_and_give_up(world: &mut M8World, seal_line: &str) -> mush_core::AuthoritativeSubmit {
+    let (pilot, hull) = (world.pilot, ObjId(world.row.hull));
+    let (out, queued) = command(&mut world.rig, pilot, seal_line);
+    assert_eq!(queued.len(), 1, "one submission: {out}");
+    crate::excursions::land(&mut world.rig, &queued[0])
+        .unwrap_or_else(|refused| panic!("+ship/mind: the go lands: {refused}"));
+    let mut held = None;
+    let mut heard = String::new();
+    for _ in 0..40 {
+        let (events, queued) = crate::excursions::fire(&mut world.rig);
+        heard.push_str(&crate::excursions::said(&world.rig.tw, &events, pilot));
+        heard.push('\n');
+        for submit in queued {
+            if submit.action.key().id.as_str() == "open_ic_mind" {
+                // Lost, as a batch is; the first is kept to land late.
+                held.get_or_insert(submit);
+            } else {
+                crate::excursions::land_all(&mut world.rig, std::slice::from_ref(&submit));
+            }
+        }
+        world.pulse();
+        if matches!(
+            cursor(&mut world.rig, hull),
+            Some(ClaimCursor::Refused { .. })
+        ) {
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            cursor(&mut world.rig, hull),
+            Some(ClaimCursor::Refused { .. })
+        ),
+        "the arm gave the claim up: {:?}",
+        cursor(&mut world.rig, hull)
+    );
+    assert!(
+        heard.contains(&ship_mind::MIND_REFUSED.replace("{name}", "Salt Moth")),
+        "and told her: {heard}"
+    );
+    held.expect("the arm submitted the Open")
+}
+
 /// **Doc 44 unit MW.13 (second review, row 25): a seal does not outlive its core or its
 /// holder.** One filed mind, sealed twice on the pilot's Dray at her berth.
 ///
@@ -726,10 +772,13 @@ fn until_closed(world: &mut M8World, claim: mush_core::CommitToken) -> String {
 ///    unseals her and the claim closes. Then the yard re-dresses her as a Dray-P, which
 ///    carries no core, and nothing of the old seal is left to seal again: a new `+ship/mind`
 ///    is resolved against the hull as she now is, and is refused for want of a core.
-/// C. *A claim the cursor no longer names.* She asks a seal again and the arm's Open is held
-///    back, as a batch still on its way is. The arm tries its five times, gives the claim up
-///    and tells her. Then the held Open lands: a claim stands on the hull that no cursor
-///    names. The arm closes it as its dispatcher and tells her why; nothing is left open.
+/// C. *A claim given up.* She asks a seal again and every Open the arm submits is lost. The
+///    arm tries its five times, gives the claim up and tells her, and withdraws the Open from
+///    the host: an Open that turns up afterwards is refused, and her next seal is not held
+///    behind the one given up. Asked again, the Open is held back once more and lands in the
+///    one gap left, after the cursor was given up and before the arm's next fire: a claim
+///    stands on the hull that no cursor names. The arm closes it as its dispatcher and tells
+///    her why; nothing is left open.
 /// B. *A change of title.* Sealed again, her title's claims are released and she is titled
 ///    to a House the pilot holds no office with, as a sale or a sweep titles a hull to its new
 ///    holder. No owner of the claim sees that. The seat reads no mind aboard at once, the
@@ -834,39 +883,20 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
     assert!(back.contains("as a standard Dray"), "{back}");
     crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
 
-    // C. An Open that lands after its cursor was given up.
-    let (out, queued) = command(&mut world.rig, pilot, &seal_line);
-    assert_eq!(queued.len(), 1, "one submission: {out}");
-    crate::excursions::land(&mut world.rig, &queued[0])
-        .unwrap_or_else(|refused| panic!("+ship/mind: the go lands: {refused}"));
-    let mut held = None;
-    for _ in 0..40 {
-        let (_, queued) = crate::excursions::fire(&mut world.rig);
-        for submit in queued {
-            if submit.action.key().id.as_str() == "open_ic_mind" {
-                // Held back: the first is kept to land late, the arm's retries are lost.
-                held.get_or_insert(submit);
-            } else {
-                crate::excursions::land_all(&mut world.rig, std::slice::from_ref(&submit));
-            }
-        }
-        world.pulse();
-        if matches!(
-            cursor(&mut world.rig, hull),
-            Some(ClaimCursor::Refused { .. })
-        ) {
-            break;
-        }
-    }
+    // C. A claim given up: every Open is lost, and the one that turns up late is refused.
+    let lost = seal_and_give_up(&mut world, &seal_line);
+    fires(&mut world, 2);
     assert!(
-        matches!(
-            cursor(&mut world.rig, hull),
-            Some(ClaimCursor::Refused { .. })
-        ),
-        "the arm gave the claim up: {:?}",
-        cursor(&mut world.rig, hull)
+        crate::excursions::land(&mut world.rig, &lost).is_err(),
+        "an Open that turns up after it was withdrawn opens nothing"
     );
-    let held = held.expect("the arm submitted the Open");
+    assert_eq!(
+        tacsim::ic_claim_of(world.rig.tw.world(), hull),
+        tacsim::IcClaimRead::None
+    );
+    // Asked again (the one given up does not stand in its way), and this time the held Open
+    // lands after the cursor was given up and before the arm's next fire.
+    let held = seal_and_give_up(&mut world, &seal_line);
     crate::excursions::land(&mut world.rig, &held)
         .unwrap_or_else(|refused| panic!("the held Open lands late: {refused}"));
     let tacsim::IcClaimRead::Active {
