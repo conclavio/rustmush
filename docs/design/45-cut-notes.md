@@ -2231,8 +2231,12 @@ memory-size pass failed once: one more field on the bubble took an older test's 
 (`mw11_a_step_whose_thinks_are_out_is_held_and_the_thread_goes_on`) from under 64 KiB to
 66,213 bytes, and its saved copy of the run is now kept on the heap. Also here: the whole
 `domain_world` binary (267 passed), whose `voyage.rs` flies `RETURN` at the picket, at an
-interdictor and at a cluster, untouched by this unit. The rest of the tacsim suite and the
-dispatch-only stories are the branch's CI run's (below). conclav.dev was not used: a gate
+interdictor and at a cluster, untouched by this unit, and the whole tacsim unit suite (2,346
+passed). **The branch's CI**: dispatch run 43511550945 on `ee951fe72`, the pull-request jobs
+and every dispatch-only story, green on all 54 jobs. Main `1c96e57c1` (#586, the picket a
+restart on the corridor did not raise, and #587) was then merged in as `a2e4607da`, and what
+it touches was run again here: clippy, the space, posture and composition unit tests, the
+four stories with MW.13's fast one, and `voyage.rs`'s 67. conclav.dev was not used: a gate
 run held it.
 
 ## AP.10
