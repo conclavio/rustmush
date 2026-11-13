@@ -2880,7 +2880,499 @@ a leased rig and bunkers aboard, which cost it nothing in the two runs.
 
 ## MW.20
 
-Not built.
+Minds measured at size, as a measurement and not a gate (doc 44 §7.1, Q-44-34, Q-44-48).
+PR #577. Harness and test code only: no game code changed, and no figure is asserted by
+any job.
+
+**The short of it.** At 100 units nothing misses on the measuring box, the Rhai seats
+included, alone or with eight bubbles beside it. A step of a 100-mind field or match takes
+1 to 2 ms against a budget of 20 to 40; the think pool is never late; no bubble's step is
+ever held. The misses are past the target (a 300-unit match with 100 or more Rhai seats,
+a 200-unit one with every hull seated) and on a slower box (the October miss was on the
+live box, which is half as fast a core).
+Three things were found that the row did not ask about: an open bubble costs the world
+thread more to save than to step; the shipped lobby cannot field more than twelve units,
+so the 100-unit match is measured on the kernel and not through `SIM START`; and hulls
+with no order do not close on each other, which decides what a field measurement must
+look like.
+
+### What was built
+
+- **`crates/tacsim/tests/domain_world/minds_at_size.rs`**, four `#[ignore]`d lanes on the
+  by-hand tier (`test-tiers.toml`, with the `MW20_*` knobs; the recipe is a comment in
+  `ci.yml`). Each prints `MW20` lines and asserts only that its rig is sound.
+  - `mw20_a_field_of_minds_at_size`: GC.12's field (Ahuna Flank's own ground, priced as
+    the host prices it) with 100 hulls in three or six parties, the production fill or
+    Rhai seats, opened as `arena_task::spawn_field` opens one and stepped on the task's
+    policy: a wake's thinks go to a pool after the step, are awaited and landed at the
+    next wake's head, and are awaited before a due snapshot's encode. The step is timed
+    alone, as the task's `took` is.
+  - `mw20_eight_bubbles_think_on_the_pool`: eight customs-picket bubbles opened through
+    player commands, the think host holding late steps as the server's does, each module
+    tick of a second fired alone so the space tick's cost is read apart from the rest.
+  - `mw20_a_field_and_eight_bubbles_on_one_server`: both, on one world and the store's
+    one pool, the field stepped in real time on a thread of its own.
+  - `mw20_an_idle_fire_by_tick`: the stocked world at 24:1 with nothing in flight.
+- **`crates/tacsim/tests/harness.rs`** (the fill harness). The minds lane takes a sizing
+  variant, `rhai_authored`: its slots a side at Class I on the scripted engine, Standard
+  Doctrine, the rest the ROM, which is the fill as it was before the fill decision.
+  `TACSIM_MINDS_RHAI_SEATS` is its seats a side. It runs only when
+  `TACSIM_MINDS_VARIANTS` names it; it is not one of the weekly four, no baseline carries
+  a block for it and the delta never reads it. The mock cost run prints one more line,
+  `harness_cost_prompt`: the requests it was handed, sized by `mush-llm`'s own budget
+  estimate.
+- **`crates/tacsim/tests/domain_world/voyage.rs`**: `flown_into_pickets`, eight pilots who
+  charter, load, board and clear Ceres for eight venues in one IC second, on the shipped
+  lane seeded with a picket waypoint on each of those routes.
+
+**Read-only hooks in the game: none.** The lanes use what is already public: the arena's
+`step`, `deliver_answers` and `mind_runner`; the engine's scheduler, which a test may
+drain and refill (that is how one tick is fired alone, through the engine's own
+`fire_due`); the think host's `stats`; `thinks::run_on_the_wall_clock`.
+
+### How each figure was taken
+
+- **Host.** conclav.dev (`hg.conclav.dev`, AMD EPYC 9J45, 32 vCPU, 62 GB), as `ghrunner`
+  in a throwaway clone, release profile (`lto = "thin"`), the code as committed at
+  `fb39c2b5`. The box is shared: other sessions were building and testing on it, and its
+  one-minute load average was 5 to 10 through the runs (each run's is in its log). No
+  `Gate (VPS)` run was in progress or queued. Read medians; a single worst wake may be
+  somebody else's link step.
+- **Runs.** Three of each configuration unless a row says otherwise. A table cell is the
+  median of the runs' figures with the worst run's figure in brackets. The field and the
+  match are deterministic (the same state hash every run), so only the timing varies.
+- **Not through a server.** No lane boots `mushd` or the split pair. The field and the
+  match are the kernel stepped by the lane on the task's policy; the world is a
+  `TestWorld` on the production composition (tacsim's own roster, as the stories boot
+  it), ticked by the lane. There is no gateway, no Redis, no persist writer and no
+  player's session, so nothing here is the cost of sending a frame or writing a batch.
+- **The live boxes against this one**, as far as the repo says. dev1 and dev2 are on
+  conclav.io: 8 cores and 31 GB, shared by both games and the production Redis
+  (`docs/ops.md`). Two readings of the same work exist on both boxes. Standard Doctrine's
+  rate, which the minds lane measures at its head, was 9.4 to 10.0 budget units a
+  microsecond on conclav.io on 2026-10-09 (worked back from the computed lenses in
+  `match_/seal.rs`'s decision log) and is 20.1 here: half the speed. The 300-unit CI
+  cohort's wake p99 was 8.8 to 10.0 ms there (16c T-109) and 6.4 to 7.9 here (doc 43
+  TS.21): 1.3 times. So read every time below as 1.3 to 2 times longer on the live box,
+  on a quarter of the cores, beside a second game. conclav.io had 4 vCPU when both of its
+  readings were taken and has 8 now; nothing has been measured there since. No run of
+  this unit touched conclav.io.
+
+### 1. A simulator match of 100, the native doctrine
+
+`tacsim_harness_arena_minds` at `TACSIM_UNITS=100`, the authored reach, 30 arena seconds
+after the warm-up, the tempo pinned to `Engaged`, a seeded quarter of the wakes one
+substep late (the lane's own rule: a late wake steps two substeps and runs the first
+one's thinks inline, inside the step). 97 wakes a run. The budget is the lane's lenses:
+20 ms a wake at the 99th percentile over the on-time wakes, 32 ms a 500 ms window.
+
+| Field | Wake, median | On-time wake p99 | Late wake p99 | Worst wake | Window p99 | Think CPU a window, p99 | Batch wait p50 / p99 | Held |
+|---|---|---|---|---|---|---|---|---|
+| the production fill (50 a side at Class I, native) | 1.63 ms | 2.04 (2.18) | 3.21 (3.41) | 3.97 | 3.82 (3.91) | 0.31 (0.35) ms | 72 / 175 µs | 3 of 3 |
+| every hull the ROM | 1.50 ms | 1.89 (2.05) | 3.30 (3.32) | 3.41 | 3.67 (3.87) | 0.31 (0.41) ms | 75 / 127 µs | 3 of 3 |
+| the production fill, no wake late (1 run) | 1.56 ms | 2.02 | | 2.32 | 3.91 | 0.37 ms | 99 / 163 µs | yes |
+
+It holds with a factor of nine to spare on the wake and eight on the window. A native
+think is 4 µs at the median and 12 at the 99th percentile; building a hull's view is 20.
+The task's thread is the step; the pool's two threads spend a third of a millisecond in
+every half second.
+
+**The world thread's share of a match was not measured at 100.** A match runs on a task
+of its own; what reaches the world thread is the egress (frames for seated pilots, ledger
+chunks, a snapshot every five seconds). The harness's fan-out lane measures that through
+the production task and the real egress, at 24 pilots and no fight (below). A 100-unit
+match through the production task would need the staff path and more muster places than
+that lane's twenty-four, and this unit did not build one.
+
+The fan-out lane, as it stands (`tacsim_harness_fan_out`, three runs): one match through
+the production task and the real egress, 24 seated pilots driving, no contact made. One
+apply of a pulse's frames costs the world thread 3.36 ms at the median (3.39), 5.20 at
+the 99th percentile (5.35) and 66 to 69 ms once a run, at the match's opening. That is 95
+pulses in 30 arena seconds, so about 11 ms of the world thread in each second for 24
+pilots, and a pilot's panel is 12.7 KB a pulse. It is the players' share at the target's
+24 seats, and one apply is more than a step of the 100-unit match above; the 76 machines
+beside them would add ledger lines and no frames.
+
+### 2. An IC field of 100, the native doctrine
+
+Lane 1, 120 arena seconds a run (460 wakes, every one at `Engaged` tempo), no wake late,
+the pool two threads. Three parties are miners, their escort and a raider; six are GC.12's
+own. The field is fought: 80 of 100 hulls stand at the end with three parties, 68 with
+six. The budget is the one GC.12 set the field's cap against,
+`[tacsim.harness].engaged_p99_ms`, 40 ms a pulse; the watchdog's `tempo.stall_ms` is
+2,000.
+
+| Field | Step, median | Step p99 | Worst wake | 500 ms window p99 / worst | Batch wait p50 / p99 | Think CPU a window | Held |
+|---|---|---|---|---|---|---|---|
+| three parties | 1.08 ms | 1.67 (1.70) | 3.52 | 3.29 / 5.12 | 66 / 149 (173) µs | 0.14 ms | 3 of 3 |
+| six parties | 1.25 ms | 1.81 (2.21) | 2.51 | 3.57 / 4.76 | 63 / 144 (155) µs | 0.13 ms | 3 of 3 |
+| three parties, a quarter of wakes late | 1.27 ms | 3.27 (3.47) | 4.33 | 4.61 / 5.28 | 84 / 200 (216) µs | 0.16 ms | 3 of 3 |
+| three parties, paced in real time, 60 s | 2.12 ms | 3.01 (3.13) | 3.88 | 5.99 / 7.22 | 59 / 240 (311) µs | 0.30 ms | 3 of 3 |
+
+Paced in real time a step costs twice what it costs back to back: the task sleeps 250 ms
+between wakes and comes back to cold caches. That row is the one to hold against a live
+box. The loop woke 0.16 ms behind its due time at the 99th percentile, 2.4 at worst, and
+no pulse lagged.
+
+What the field hands the world thread, by size: its ledger is 21 KB a second with three
+parties and 29 with six, and its snapshot is 2.2 to 2.5 MB every five seconds
+(`[tacsim.arena].snapshot_ms`), encoded on the task's thread in 9 to 10 ms (16 at worst).
+What the world thread spends taking them was not measured.
+
+### 3. The same on Rhai seats
+
+**It does not miss at 100.** The row expected it to.
+
+*The match*, `rhai_authored`, three runs a row (six for the last), the same field and
+lenses as §1:
+
+| Rhai seats | On-time wake p99 | Late wake p99 | Worst wake | Window p99 | Think CPU a window, p99, against the lens | Rhai ops in a window, peak, of 200,000 | Batch wait p50 / p99 | Held |
+|---|---|---|---|---|---|---|---|---|
+| 12 | 1.79 (1.90) | 3.50 (3.57) | 5.53 | 3.57 (3.66) | 1.12 (1.12) of 12.5 ms | 10,116 | 81 / 409 µs | 3 of 3 |
+| 24 | 1.91 (1.98) | 3.74 (3.99) | 4.81 | 3.81 (3.82) | 1.71 (1.98) | 16,836 | 131 / 510 µs | 3 of 3 |
+| 48 | 1.98 (2.06) | 4.27 (4.46) | 5.46 | 4.27 (4.46) | 2.78 (2.83) | 30,290 | 376 / 759 µs | 3 of 3 |
+| 72 | 1.96 (1.96) | 4.40 (4.66) | 6.05 | 4.40 (4.51) | 3.66 (3.73) | 47,417 | 490 / 985 µs | 3 of 3 |
+| 100, every hull | 2.22 (2.32) | 4.94 (5.19) | 6.55 | 4.94 (5.30) | 5.24 (5.49) | 62,788 | 770 / 1,290 µs | 6 of 6 |
+
+*The field*, lane 1, three parties unless said, three runs a row:
+
+| Rhai seats | Step, median | Step p99 | Worst wake | Batch wait p50 / p99 | Think CPU a window | Rhai ops a second, of 400,000 | Held |
+|---|---|---|---|---|---|---|---|
+| 12 | 1.13 ms | 1.80 (1.87) | 2.05 | 191 / 575 (601) µs | 0.60 ms | 10,056 | 3 of 3 |
+| 24 | 1.13 ms | 1.73 (1.77) | 1.99 | 274 / 709 (755) µs | 0.88 ms | 18,408 | 3 of 3 |
+| 48 | 1.13 ms | 1.76 (1.88) | 2.33 | 436 / 974 (986) µs | 1.52 ms | 34,686 | 3 of 3 |
+| 72 | 1.16 ms | 1.81 (1.81) | 2.26 | 607 / 1,400 (1,420) µs | 2.18 ms | 53,079 | 3 of 3 |
+| 100 | 1.12 ms | 1.74 (1.76) | 4.11 | 787 / 1,735 (1,758) µs | 2.85 ms | 72,009 | 3 of 3 |
+| 100, six parties | 1.29 ms | 1.82 (1.87) | 2.03 | 744 / 1,728 (1,731) µs | 2.77 ms | 68,751 | 3 of 3 |
+| 100, a quarter of wakes late | 1.29 ms | 4.79 (4.88) | 5.22 | 823 / 1,824 (1,936) µs | 2.83 ms | 72,009 | 3 of 3 |
+| 100, paced in real time, 60 s | 2.17 ms | 3.60 (3.62) | 5.44 | 51 / 1,313 (1,328) µs | 3.87 ms | 76,336 | 3 of 3 |
+
+*Where the time goes.* A Rhai think of Standard Doctrine is 45 to 85 µs at the median
+(about 800 budget units), 80 to 175 at the 99th percentile and under half a millisecond
+at worst but for one of 3.5 ms; the native think it replaces is 3 to 4. With every seat on Rhai that is 2.8 ms
+of the pool's threads in each half second where the native fill spends 0.14: twenty times
+the thinking, and still under one per cent of one core. None of it is on the task's
+thread unless a wake is late: an on-time step is the same with 100 Rhai seats as with
+none. A late wake runs the first interval's thinks inline, which is the only place the
+seats reach the step: a late wake's 99th percentile goes from 3.7 ms native to 5.1 with
+100 seats.
+The batch a wake hands the pool is back in 0.8 ms at the median and 1.8 at the 99th
+percentile, against the 250 ms to the next wake.
+
+*At what seat count it stops holding today.* Not at any count a 100-unit field or match
+can hold. Past the target, on the 300-unit field the fill decision was taken on:
+
+| Units | Rhai seats | On-time wake p99 | Late wake p99 | Window p99 | Think CPU a window, p99, against its lens | Rhai ops in a window, peak, of the pool's | Held |
+|---|---|---|---|---|---|---|---|
+| 200 | 200, every hull | 5.02 (5.09) | 11.81 (11.87) | 11.81 (11.87) | 10.62 (10.63) of 9.35 ms | 125,645 of 150,000 | 0 of 3: the thinking, by 14 per cent |
+| 300 | none: the production fill | 8.33 (8.86) | 15.21 (15.34) | 16.62 (17.35) | 1.08 (2.09) of 6.10 ms | 0 | 3 of 3 |
+| 300 | 72, what admission admits | 8.74 (9.08) | 16.87 (17.71) | 17.03 (17.71) | 5.77 (5.94) of 6.23 ms | 51,641 of 100,000 | 3 of 3, the thinking at 93 per cent of its lens |
+| 300 | 100 | 9.53 (9.93) | 17.85 (19.24) | 17.98 (19.24) | 7.16 (8.26) of 6.23 ms | 67,731 | 0 of 3: the thinking, by 15 per cent (33 at worst) |
+| 300 | 150 | 9.10 (9.97) | 18.19 (20.70) | 18.19 (19.96) | 8.78 (8.83) of 6.23 ms | 95,705 | 0 of 3: the thinking, by 41 per cent |
+| 300 | 200 | 12.53 (12.98) | 21.66 (27.47) | 22.23 (26.44) | 11.39 (12.23) of 6.23 ms | 129,603 | 0 of 3: the thinking by 83 per cent, the pool's operations a window by 30 |
+| 300 | 300, every hull | | | | | | does not open |
+
+The box's load average was 12 through these runs, higher than for the tables above.
+
+So on this box the seats stop holding between 72 and 100 at 300 units, and with every
+hull seated at 200 units. **What trips is never the step.** The wake and the window hold
+their lenses to 200 seats at 300 units (12.5 ms of 20, 22 of 32). What trips is the lens
+on the pool's own threads: the thinking in a window against what the pool's whole
+allotment would cost at the host's measured rate, with a quarter over. Standard Doctrine
+runs at 12 budget units a microsecond in a fought field and at 20 in the lane's
+calibration (one hull, one thread, a warm view), so the lens is passed with the pool two
+thirds spent. That lens was written to bound variance, not load, and it is the first
+thing a wider use of Rhai seats would have to look at again.
+
+The 72 that hold at 300 units are exactly what admission admits (`match_::pool`: 36 a
+side at Class I). The rows past it field seats the lobby would refuse; the lane fields
+them on purpose.
+
+With all 300 hulls seated the arena refuses the check-out before a step is taken:
+`SnapshotCapacity`, "snapshot needs at least 505630786 bytes; maximum is 503316480". The
+snapshot's worst-case bound for 300 scripted minds is past its 480 MB ceiling.
+
+*Why it missed in October and holds here.* The decision's runs were a 300-unit field with
+72 Rhai seats. On ALIEN18 they missed the per-wake lens alone (17.3 to 20.8 ms against
+12), and that lens then counted the late wakes, which step two substeps by design; it
+has since been asserted over the on-time wakes (16c T-108) and moved to 20 ms (T-109). On
+conclav.io they missed every lens, the thinking included (15.5 to 16.7 ms a window against
+12.6 to 13.3). The same field here holds every lens. So the miss was the box and the
+lens's old rule, and the count of seats was never the limit at this size. By the factor
+of two above, 100 seats at 100 units would be expected to hold on the live box as well
+(the thinking about 11 ms a window against a lens of 25 there); **not verified**, since no
+run may be made on that box.
+
+### 4. Eight bubbles in space
+
+Lane 2. Eight hulls, each flown by a player's commands from Ceres onto its own route's
+picket waypoint, open eight customs-picket bubbles on one tick, each on its own domain,
+each with its two cast minds (the corvette and the raider) thinking through MW.11's host
+on the store's pool. The crews stay linked and give no order, so every bubble stays open
+for as long as the lane runs. The host holds late steps, as the server's does.
+
+| Pool | Ticks | The space tick on the world thread, p50 / p99 / worst | Thinks a tick | Held steps | Pool queue, peak |
+|---|---|---|---|---|---|
+| 1 worker, ticks back to back | 3 x 120 | 3.99 (4.58) / 4.61 (5.45) / 6.26 ms | 16 | 0 of 2,880 | 0 |
+| **2 workers (shipped)**, back to back | 3 x 120 | 4.01 (4.02) / 4.56 (4.61) / 4.75 ms | 16 | 0 of 2,880 | 0 |
+| 4 workers, back to back | 3 x 120 | 4.19 (4.42) / 6.10 (6.43) / 9.36 ms | 16 | 0 of 2,880 | 0 |
+| 1 worker, a second apart | 2 x 120 | 6.87 (6.93) / 8.80 (9.12) / 10.92 ms | 16 | 0 of 1,920 | 0 |
+| **2 workers (shipped)**, a second apart | 2 x 120 | 8.77 (8.82) / 13.08 (13.81) / 14.23 ms | 16 | 0 of 1,920 | 0 |
+| 4 workers, a second apart | 2 x 120 | 6.75 (6.83) / 10.19 (11.19) / 18.05 ms | 16 | 0 of 1,920 | 0 |
+
+The rows a second apart are the server's pacing. They read higher than the back-to-back
+rows for the reason §2's real-time row does (a thread that sleeps comes back cold), and
+they differ from each other by the box and not by the pool: the two-worker pair ran while
+somebody else's build did.
+
+**What the key buys in space: nothing at this size.** Sixteen thinks a tick, each 3 to 28
+µs of a worker (MW.11's table), are done long before the next tick with one worker, with
+the ticks a second apart or back to back. No step was held in any run and the pool's
+queue was never seen above nought.
+
+**The space tick costs the world thread 0.5 ms a second for each open bubble**, and it
+is linear: 0.58 ms with one bubble open, 1.07 with two, 2.06 with four, 4.0 with eight
+(one run of 120 ticks each, the same world otherwise). Over 900 ticks it does not grow
+(p50 4.05 ms, p99 5.32). MW.11 measured what the minds cost that thread at 14 to 19 µs a
+picket step and the bubble's own physics at 1 to 2, so the minds are about four per cent
+of it. Most of it is `persist_space_state`, which on every tick clones the whole bubble
+book, compares it with the copy it kept, and for every bubble that stepped clones it
+again and encodes its whole record for the store. One bubble's record is 63.4 KB of JSON;
+timed on the same thread outside the tick, one encoding of it is 0.30 ms and one clone
+0.03. Two clones and an encoding are 0.36 of the 0.5 ms, before the comparison, and it is
+also eight 63 KB documents written to
+the store every second, half a megabyte a second while eight bubbles are open. It holds
+(4 to 9 ms in a 1,000 ms tick), so nothing here misses; it is the place the time goes, and
+the first thing to look at if more bubbles are wanted. Not fixed here.
+
+Eight live domains also cost `sim.domain_pulse` 1.1 ms a second where it costs 0.003
+idle, and the port tick is as it is idle (5.0 to 5.2 ms a fire, every five seconds).
+
+**With the backup mind flying every hull** (`MW20_BACKUP=1`, two workers, a second apart,
+five runs). Every crew's link is dropped and the grace waited out inside the bubbles, so
+each bubble has a third mind. It heaves its hull to, customs rule, and all eight bubbles
+close on the 33rd tick. Over those 32 ticks a bubble's step hands over 2.4 thinks, the
+space tick is 7.36 ms at the median (7.50) and 8.91 at the 99th percentile (11.41), and
+no step is held. A bubble whose carrier the backup mind flies costs the world thread what
+one with an idle crew does.
+
+**Eight is `mush_sim::MAX_ACTIVE_DOMAINS`.** A ninth interception queues. The lane ran
+at the cap with nothing else live. Whatever else holds a live activation on a server
+comes out of the same eight; which of a match or a field does was not checked.
+
+### 5. A field and eight bubbles on one server
+
+Lane 3: lane 2's world ticked a wall second apart on one thread while lane 1's
+three-party field is stepped in real time on another, both on the store's one pool, 60
+seconds a run.
+
+| | The field's step, p50 / p99 / worst | Woke behind, p99 / worst | Batch wait p50 / p99 / worst | The space tick, p50 / p99 | The rest of a second's ticks, p50 / p99 | Held steps | Held |
+|---|---|---|---|---|---|---|---|
+| the field alone, real time (from §2) | 2.12 / 3.01 (3.13) / 3.88 ms | 0.16 / 2.4 ms | 59 / 240 / 371 µs | | | | 3 of 3 |
+| both, native, 2 workers | 2.10 / 2.81 (3.78) / 3.90 ms | 0.15 / 0.65 ms | 34 / 272 (844) / 1,204 µs | 7.33 (7.65) / 9.12 (10.08) ms | 4.04 / 9.92 (11.49) ms | 0 of 1,440 | 3 of 3 |
+| both, 100 Rhai seats, 2 workers | 2.07 / 3.06 (3.16) / 3.65 ms | 0.17 / 0.42 ms | 40 / 1,328 (1,362) / 1,497 µs | 7.24 (7.58) / 10.74 (16.34) ms | 4.13 / 9.58 (20.88) ms | 0 of 1,440 | 3 of 3 |
+| both, 100 Rhai seats, 1 worker (2 runs) | 2.10 / 3.11 / 8.34 ms | 0.17 / 0.20 ms | 49 / 1,756 / 2,741 µs | 7.33 (7.42) / 9.39 (9.82) ms | 3.94 / 9.63 (9.75) ms | 0 of 960 | 2 of 2 |
+| both, 100 Rhai seats, 4 workers (2 runs) | 2.12 / 3.12 / 3.36 ms | 0.37 / 0.75 ms | 39 / 997 / 1,533 µs | 7.45 (7.54) / 14.49 (17.37) ms | 4.22 / 13.57 (13.93) ms | 0 of 960 | 2 of 2 |
+
+**Together they are what they are apart.** The field's step does not move. The bubbles'
+thinks share the pool with the field's batches and are never late. The world thread, with
+eight bubbles open and nothing else, spends about 11 ms of each second at the median
+(7.3 on the space tick, 4 on everything else); at the 99th percentile the space tick is
+9 to 17 ms and the rest of a second's ticks 10 to 21. The
+space tick is 7.3 ms here and 4.0 back to back for the reason the field's step doubles:
+a thread that sleeps a second comes back cold.
+
+**What the `workers` key buys, with both running**: the field's batch of 100 Rhai thinks
+is back in 1.8 ms at the 99th percentile with one worker, 1.3 with two and 1.0 with four
+(alone, back to back: 2.4, 1.7 and 1.1). Every one of those is under one per cent of the
+250 ms it has. One worker is enough at 100 units and eight bubbles on this box; two
+leaves room for a second match, and four buys nothing that was measured.
+
+### 6. What a full match's squads would spend at the LLM (Q-44-48)
+
+No provider was called. The only thing in a match that calls the LLM is squad
+deliberation, on the `tacsim_deliberate` route (`z-ai/glm-5.3-flash`, 512 output tokens,
+in the deploy template): each machine squad asks for an order when it has none, when its
+order expires or when its contacts change, and at most once in 30 arena seconds
+(`[tacsim.arena].deliberate_min_ms`). The harness's cost run plays a match with every
+squad's request made for real against `mush_llm::MockProvider`, and now sizes the
+requests the mock was handed. Fifteen arena minutes is `[tacsim.match].max_duration_ms`.
+
+| Match | Squads | Arena minutes played | Requests | Requests a squad-minute | Input tokens a request, p50 / max | Input tokens, all | With the 512 ceiling added to each |
+|---|---|---|---|---|---|---|---|
+| 6 a side, all machines (the most the shipped centre fields) | 4 | 3.0 (it ended by elimination) | 15 | 1.26 | 735 / 823 | 11,217 | 18,897 |
+| 12 a side (the players' target), all machines | 6 | 15 | 75 | 0.83 | 722 / 868 | 55,621 | 94,021 |
+| 50 a side | 26 | 15 | 226 | 0.58 | 738 / 871 | 170,501 | 286,213 |
+
+**The assumptions.**
+
+- *Tokens are characters over four*, over the system prompt, the squad's report and the
+  order tool's description and schema: `mush-llm`'s own estimate, the one its budget's
+  pre-check charges a request before it is sent. No tokenizer was run.
+- *The output is not known.* The mock answers a scripted order of 48 tokens. The route's
+  ceiling is 512, and the route asks for low reasoning, whose tokens count as output.
+  The last column is the worst case; the truth is between the last two.
+- *The mock's order runs out in ten seconds*, so a squad asks again as soon as the floor
+  lets it: these counts are near the most a match can ask. A provider that gives longer
+  orders asks less. A reply that does not parse is asked for once more, which the counts
+  leave out.
+- *Every unit is a machine in a squad.* Only machines are dealt into squads, and a squad
+  under a pilot's live order does not ask.
+- *The lane does not go through the world's door*, which lets eight of a match's requests
+  be in flight at once, nor through `[llm.concurrency]`'s three background slots and
+  queue of twelve. A match of 26 squads asks 26 times in its first pulse; on a server
+  some of those are shed and asked again later. The count over a match is about the same;
+  the opening burst is not.
+- *One sample of each*, one seed. The fight is deterministic under the mock.
+
+**Against the day's budget** (5,000,000 tokens and $5, 60 requests a minute, one bucket
+for every route; the ledger settles what a call used and starts again at a restart; a
+squad's commander is the call's actor, so the $1 a day an actor is allowed by default is
+a commander's, and is never met at these counts):
+
+| Match | Tokens settled, at 48 out to 512 out | Matches in a day's 5,000,000 | Requests a minute, mean |
+|---|---|---|---|
+| 6 a side | 11,937 to 18,897 | 264 to 418 | 5 |
+| 12 a side, 15 minutes | 59,221 to 94,021 | 53 to 84 | 5 |
+| 50 a side, 15 minutes | 181,349 to 286,213 | 17 to 27 | 15 |
+
+**In money: not measured for the route's model.** The repo configures no price for
+`z-ai/glm-5.3-flash`; OpenRouter reports each call's cost in its reply, and that is what
+the ledger adds up. Two figures bound it, neither a quote. At the mock's placeholder of
+$0.00008 a call the three matches are $0.001, $0.006 and $0.018. At the only rates the
+template does configure, the Anthropic provider's $5 and $25 a million tokens, which
+deliberation would pay only if its route were pointed there, they are $0.07 to $0.25,
+$0.37 to $1.24 and $1.12 to $3.75.
+
+**What it says for Q-44-48.** At the configured route the $5 is not what runs out; the
+token budget is, and it is not close: a day of back-to-back twelve-a-side matches is 96
+matches and the budget covers 53 to 84 of them, with the Registry, the NPCs and the
+content routes on the same bucket. A server that runs a few matches an evening spends a
+few per cent of the day. The provider's 60 requests a minute is nowhere near (5 to 15 a
+minute a match). The default stands on these figures; the one thing the owner may want to
+change is not the size but the shape: there is no `per_feature` line for
+`tacsim_deliberate`, so nothing stops matches spending the tokens NPC dialogue needs.
+
+### The floor: an idle fire of each module tick, in release
+
+Lane 4: the stocked world at 24:1, nobody connected, nothing in flight, 600 seconds,
+each due tick fired alone; three runs. 26 ticks are registered on this roster.
+
+| | ms a fire, mean | ms a fire, p99 / worst | Fires in 600 s | ms a wall second |
+|---|---|---|---|---|
+| `tacsim.port` | 5.05 | 5.14 / 5.15 | 120 | 1.01 |
+| `propagation.delivery` | 0.70 | 0.74 / 0.91 | 600 | 0.70 |
+| `tacsim.surface` | 0.11 | 0.13 / 0.16 | 600 | 0.11 |
+| `tacsim.field` | 0.016 | 0.03 / 0.07 | 600 | 0.02 |
+| `tacsim.space` | 0.010 | 0.02 / 0.03 | 600 | 0.01 |
+| the other 21 | under 0.04 each | | | 0.02 together |
+| **all** | | | | **1.89 (1.94)** |
+
+The rows are the first run's; the total is the three runs'. A whole second's fire, timed
+as the engine fires it: 0.87 ms at the median, 6.8 at the 99th percentile, 11.3 at
+worst. One second in five carries the port tick.
+
+PR #576 measured the same in a test build: 44.6 ms a fire, 31.9 of it the port tick. In
+release the port tick is 5.0 ms and a second's ticks are 1.9: six times and more than
+twenty times less. A story's idle second is slow because of the build it runs in; the
+server's is not. The port tick is still more than half of the idle world thread (#576
+split it by arm: the clerks).
+
+**This is tacsim's composition**, as its stories boot it. The server's own roster adds
+the market's, the Roll's and the Registry's ticks, which this crate's tests cannot
+compose and which were not measured.
+
+### What misses
+
+At the target, on this box: nothing. Past it, or on another box:
+
+| What | Where | By how much |
+|---|---|---|
+| Rhai seats, 100 of them in a 300-unit match | conclav.dev | the thinking's lens by 15 per cent (33 at worst); the step holds |
+| Rhai seats, 200 in a 300-unit match | conclav.dev | the thinking by 83 per cent, the pool's operations a window by 30 |
+| Rhai seats, every hull of a 200-unit match | conclav.dev | the thinking by 14 per cent |
+| Rhai seats, every hull of a 300-unit match | any box | the arena does not open: the snapshot's bound is 505.6 MB against 480 |
+| The fill at 300 units with 72 Rhai seats, on the live box | conclav.io, 2026-10-09 (`match_/seal.rs`'s log), not re-run | the window by 12 per cent, the thinking by 23 to 26; holds here |
+| A 100-unit match through `SIM START` | the shipped centre | cannot be started: six pods a side |
+| A three-party field whose parties stand 31 cells apart | lane 1's first layout | never fights (below) |
+
+### Found, not fixed
+
+1. **Saving an open bubble costs the world thread more than stepping it** (§4): at least
+   0.36 of each bubble's 0.5 ms a second is `persist_space_state` copying and encoding the
+   whole record, and each open bubble is a 63 KB document written to the store every
+   second. Nothing misses at eight. A dirty flag, or writing a bubble's record on change
+   of what a restart needs and not on every step, is the cheap win. `space/tick.rs`,
+   which MW.12 holds.
+2. **The shipped simulator fields twelve.** `PODS_PER_SIDE` is 6 and
+   `[tacsim.match].max_slots_per_side` is clamped to it, so a match is at most six a
+   side, AI fill included. The combat-scale target of 100 units with 24 players has no
+   path through the lobby; this unit measured the kernel at 100.
+3. **Hulls with no order do not close.** Three parties 31 cells apart stood at `Alert`
+   for 180 arena seconds without a shot; 18 cells apart they fight at once. The reading,
+   not traced through the doctrine: a hull with no order holds its ground and fights what
+   comes into its reach. In a match the squads' orders are what move them, and those come
+   from the LLM; in an IC field nothing orders a machine but its player's posture. A
+   field of minds fights only where its parties already stand in reach of each other,
+   which is how the lane stands them.
+4. **A field's snapshot is 2.2 to 2.5 MB every five seconds** (§2), and a match's is the
+   same order. It is known (16b cut AF.2 measured the encode at 300 units); it is listed
+   because nothing has measured what the world thread and the store spend on it.
+5. **A bubble read back after a restart is held for one tick.** Its thinks are collected
+   again and its step is asked for in the same tick, before a worker can have answered.
+   Seen while building the lane (an earlier form of it that copied a bubble's record, not
+   committed) and not reproduced through a restart; harmless, and by the rule MW.11
+   wrote.
+6. **`mushd.toml.example` still says** the pool is "process-wide … sized once per process
+   by the first match". MW.11 made it the store's.
+
+### For the owner
+
+- **`[tacsim.minds].workers`: leave it at two.** Nothing measured needs more, on a box
+  with cores to spare. On an 8-core box shared by two games it is two threads that are
+  nearly always asleep.
+- **The LLM's day budget (Q-44-48): the default stands.** See §6. Consider a
+  `per_feature` budget for `tacsim_deliberate` if matches and NPCs are to share a day.
+- **Rhai seats.** The fill is native because 72 seats missed on the live box in October.
+  At the size the game fields (twelve) and at the target (100) the seats hold on this box
+  with room, and the arithmetic says they would on the live box. If the owner wants the
+  fill, or licensed minds in numbers, on Rhai, the evidence against it is one day's runs
+  on a box that has since doubled its cores. That is a decision this unit does not make.
+- **Space.** Eight bubbles cost the world thread 4 to 7 ms a second, nearly all of it
+  saving. If space is to carry many more encounters than eight at once, item 1 above is
+  first, and `MAX_ACTIVE_DOMAINS` is the cap that will be met before the CPU is.
+
+### Not measured, and why
+
+- **Anything on a live box or through a server**: the rule of this unit. Every figure is
+  conclav.dev's, a kernel or a `TestWorld`.
+- **The world thread's share of a 100-unit match or field**: only its inputs (ledger and
+  snapshot sizes) and the fan-out lane's 24 pilots.
+- **A match's squads against a real provider**: tests never call one. The token count is
+  an estimate; the output and the price are bounds.
+- **A field with seated players, or with players absent** (MW.7's gate, AP.6's posture):
+  every hull is a mind with no order. The gate is a branch in the fire path and the
+  narrowed view is smaller, so it is not expected to cost more; not measured.
+- **Space with players' own minds** (MW.13, not built), **drones** (MW.12, in flight) and
+  **the interdictor's bubble**: the picket's two cast minds, and the backup mind, are what
+  was measured.
+- **Class II and III seats.** The Rhai seats are Class I on Standard Doctrine, about 800
+  budget units a think. A licensed mind may spend 4,500. The harness's ceiling variant
+  measures four such hulls; a field of them was not run. Admission bounds their sum by
+  the same pool.
+- **The server roster's idle ticks** (the market, the Roll, the Registry).
+- **More than three runs of anything**, and a quiet box.
+
+### Defaults taken
+
+| | Default | Cost to reverse |
+|---|---|---|
+| 1 | The field and the match are measured on the kernel, stepped by the lane on the task's policy, not through the task. The task prints no step time, and a hook in it was not wanted | Low: a lane |
+| 2 | Eight bubbles are eight picket waypoints seeded into the shipped lane, flown to by commands. A test may not write the bubble book (doc 35d's contract), so a copied record was not an option | Low |
+| 3 | The crews stay linked and idle, so a bubble stays open; the backup mind's bubbles are a second row | Low |
+| 4 | "Held" for a field is GC.12's budget and the pool's lateness; for a match it is the harness's lenses as they stand | Low |
+| 5 | The Rhai sizing variant is outside the weekly four, the baseline and the delta | Low |
+| 6 | A token is four characters, as `mush-llm`'s budget has it | Low |
 
 ## MW.21
 
