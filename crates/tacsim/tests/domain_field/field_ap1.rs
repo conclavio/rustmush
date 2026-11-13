@@ -72,9 +72,9 @@ const URVARA_REACH: At = At {
 };
 
 /// Everything the world said, to anyone, since the story began.
-type Heard = Vec<(Audience, OutputEvent)>;
+pub(crate) type Heard = Vec<(Audience, OutputEvent)>;
 /// Every letter the mail seam was handed: its recipients, its subject, its body.
-type Post = Arc<Mutex<Vec<(Vec<ObjId>, String, String)>>>;
+pub(crate) type Post = Arc<Mutex<Vec<(Vec<ObjId>, String, String)>>>;
 
 /// Drop every connection of `who` and end their session (`excursions.rs`'s helper).
 fn disconnect(tw: &mut TestWorld, who: ObjId) {
@@ -104,7 +104,7 @@ fn disconnect(tw: &mut TestWorld, who: ObjId) {
 
 /// `field_host_rig::pump`, keeping what the world said while it staged the arena's messages:
 /// the host's snapshot and close branches speak there.
-fn pump(
+pub(crate) fn pump(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
@@ -147,7 +147,7 @@ fn pump(
 
 /// One world second, keeping what its ticks said (the admission speaks there), and every
 /// submission they queued, landed.
-fn second(rig: &mut Rig, heard: &mut Heard) {
+pub(crate) fn second(rig: &mut Rig, heard: &mut Heard) {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
     heard.extend(rig.tw.fire_due(t.saturating_mul(1_000)));
@@ -157,7 +157,7 @@ fn second(rig: &mut Rig, heard: &mut Heard) {
 }
 
 /// Pump and tick until `done` holds or `secs` of wall time pass; answers whether it held.
-async fn until(
+pub(crate) async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,

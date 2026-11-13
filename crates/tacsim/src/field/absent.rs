@@ -857,6 +857,17 @@ pub(crate) fn homebound(w: &World, unit: ObjId) -> bool {
         .is_some_and(|minding| minding.homebound.contains_key(&unit))
 }
 
+/// **Whether the host owes `unit` its recover as `who`** ([`on_out`]): the player the host
+/// runs that recover as, and nobody else. The recover's own gate reads it
+/// (`crate::surface::act::recover_plan`; doc 45 unit AP.11): the host's recover is not asked
+/// where that player is.
+#[must_use]
+pub(crate) fn homebound_as(w: &World, unit: ObjId, who: ObjId) -> bool {
+    w.module_state::<Minding>()
+        .and_then(|minding| minding.homebound.get(&unit))
+        .is_some_and(|owed| owed.pilot == who)
+}
+
 /// The recover a unit of a running field goes home by: the DT recover of a roster's unit, else
 /// the rig's own recover act into the bay slot it launched from.
 fn recover_of(ctx: &Ctx<'_>, unit: ObjId) -> Option<Then> {
