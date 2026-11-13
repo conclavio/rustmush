@@ -258,6 +258,10 @@ pub(crate) fn sealed(w: &World, hull: ObjId) -> Option<Sealed<'_>> {
 /// ([`sealed`]): the space seat's first source (`crate::space::backup`).
 #[must_use]
 pub(crate) fn thinker(w: &World, hull: ObjId) -> Option<Arc<crate::space::thinks::SealedMind>> {
+    #[cfg(test)]
+    if let Some(mind) = test_support::aboard(hull) {
+        return Some(mind);
+    }
     let sealed = sealed(w, hull)?;
     let host = crate::space::thinks::host_of(w)?;
     let classes = w
@@ -1192,6 +1196,51 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! A unit test's way to put a sealed mind aboard a hull of a rig that composes no claim
+    //! path: the mind [`super::thinker`] answers for that hull, on this thread, until the
+    //! guard is dropped. A world's sealed mind is always the claim book's.
+
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use mush_core::ObjId;
+
+    use crate::space::thinks::SealedMind;
+
+    thread_local! {
+        static ABOARD: RefCell<BTreeMap<ObjId, Arc<SealedMind>>> = const { RefCell::new(BTreeMap::new()) };
+    }
+
+    /// The sealed minds put aboard on this thread, taken off again when it is dropped.
+    #[derive(Debug)]
+    pub(crate) struct Aboard(Vec<ObjId>);
+
+    impl Drop for Aboard {
+        fn drop(&mut self) {
+            ABOARD.with(|aboard| {
+                let mut aboard = aboard.borrow_mut();
+                for hull in &self.0 {
+                    aboard.remove(hull);
+                }
+            });
+        }
+    }
+
+    /// Put each mind aboard its hull for as long as the answer lives.
+    pub(crate) fn seal_aboard(minds: Vec<(ObjId, Arc<SealedMind>)>) -> Aboard {
+        let hulls = minds.iter().map(|(hull, _)| *hull).collect();
+        ABOARD.with(|aboard| aboard.borrow_mut().extend(minds));
+        Aboard(hulls)
+    }
+
+    pub(super) fn aboard(hull: ObjId) -> Option<Arc<SealedMind>> {
+        ABOARD.with(|aboard| aboard.borrow().get(&hull).map(Arc::clone))
+    }
 }
 
 #[cfg(test)]

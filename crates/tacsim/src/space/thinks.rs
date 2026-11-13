@@ -883,7 +883,83 @@ pub fn run_on_the_wall_clock(w: &mush_core::World) {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    //! Runners a test puts in a host's way.
+    //! Runners a test puts in a host's way, and a mind sealed aboard a ship.
+
+    use smol_str::SmolStr;
+
+    /// **A draft sealed over an ungoverned Class II Dray**, through the one seal entry
+    /// (`seal_with_policy`), with `rules` as its opening profile's rule program and `source`
+    /// as its script: the seal a claim's capture takes, less the claim. A draft seals only on
+    /// an ungoverned core (D-UM-41), so the hull is the Dray's ungoverned twin; a filed mind
+    /// on a governed core is the stories' (`tests/domain_field/mw13_ship_mind.rs`).
+    pub(crate) fn sealed_draft(
+        hull: mush_core::ObjId,
+        rules: Vec<crate::arena::schema::AuthoredRule>,
+        source: &str,
+    ) -> crate::arena::mind::MindSeal {
+        use sha2::{Digest as _, Sha256};
+
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::mind::{SealEngine, SortieId};
+        use crate::arena::profile_seal::{MindIdentity, MindOrigin};
+        use crate::arena::runtime_card::stock_definition;
+        use crate::config::ReflexConfig;
+        use crate::definitions::Catalog;
+        use crate::definitions::core_replacement::{SHIP_II_UNGOVERNED, fitted_catalog};
+        use crate::deliberation::order::CharacterRef;
+        use crate::match_::seal::{SealPolicy, seal_with_policy};
+
+        let fielded = Catalog::build_fielded(&[], crate::NS).expect("the fielded content");
+        let fitted = fitted_catalog(fielded).expect("the fitted families");
+        let spec = fitted.units.get(SHIP_II_UNGOVERNED).expect("the cored Dray");
+        let unit = mush_tactics::TacticalUnit::from_spec(spec, hull).expect("it instantiates");
+        let reflex = ReflexConfig::default();
+        let card = crate::arena::card::line(&reflex);
+        let mut definition = stock_definition(
+            &[(SmolStr::new_static("Line"), card.clone())],
+            CoreClass::II,
+        )
+        .expect("the stock definition");
+        definition.profiles[0].rules = rules;
+        let source_sha256: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+        let identity = MindIdentity {
+            mind: SmolStr::new_static("Keeper"),
+            origin: MindOrigin::Draft {
+                character: mush_core::ObjId(77),
+                mind: 1,
+                revision: 1,
+                digest: mush_core::DefinitionDigest::from_bytes(source_sha256),
+            },
+            source_sha256,
+        };
+        let principal = Some(CharacterRef::Character {
+            id: mush_core::ObjId(77),
+        });
+        let fallback = None;
+        seal_with_policy(
+            hull,
+            &unit,
+            &[],
+            SortieId::ic(hull, 100),
+            &SealPolicy {
+                authored: Some(&definition),
+                selected_profiles: &[],
+                classes: &ClassTable::STOCK,
+                rom_cfg: &reflex,
+                principal: &principal,
+                card: &card,
+                odds_floor_permille: 100,
+                engine_for_minds: SealEngine::Scripted,
+                rated: CoreClass::II,
+                class_cap: CoreClass::III,
+                identity: &identity,
+                profiles: &[],
+                fallback: &fallback,
+                impounded: false,
+            },
+        )
+        .expect("the draft seals on the ungoverned core")
+    }
 
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Condvar, Mutex, PoisonError};

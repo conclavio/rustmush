@@ -651,6 +651,179 @@ mod tests {
         assert_eq!(thrust(&bubble, "patrol"), [0, 0, 0]);
     }
 
+    /// **Doc 44 unit MW.13 (Q-44-26): a mind sealed aboard has the helm and the sensors and
+    /// no fire channel.** In the absent seat with its lock let through, its `lock` lands and
+    /// its `fire` is dropped, with a mount to fire and a lock to fire it at; its burns are
+    /// held to the rule every source is held to.
+    #[test]
+    fn mw13_a_sealed_minds_seat_locks_and_never_shoots() {
+        let (mut bubble, mut tape, _) = field();
+        let contacts = BTreeMap::from([(ContactId(1), "patrol".to_owned())]);
+        if let Some(ship) = bubble.ships.get_mut("dray") {
+            ship.lasers
+                .push(super::super::weapons::LaserMount::standard_turret(
+                    "laser_1",
+                ));
+        }
+        let sealed = Seat {
+            lock: true,
+            burn: BurnRule::Toward([1_000, 0, 0]),
+            ..Seat::ABSENT
+        };
+        assert_eq!(sealed.fire, FireRule::Never);
+        let mut events = Vec::new();
+        let asks = [
+            IntentKind::Lock {
+                contact: ContactId(1),
+            },
+            IntentKind::Fire {
+                weapon: SmolStr::new_static("laser_1"),
+                slot: Some(1),
+            },
+            IntentKind::Heading { mdeg: 180_000 },
+            IntentKind::Speed { cms: 5 },
+        ];
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            sealed,
+            &contacts,
+            &asks,
+            &mut events,
+        );
+        let dray = bubble.ships.get("dray").expect("the dray");
+        assert_eq!(
+            dray.locked_target_id.as_deref(),
+            Some("patrol"),
+            "her sensors are the mind's: the lock lands"
+        );
+        assert_eq!(
+            applied.dropped, 2,
+            "the shot is dropped, and the burn that would add to her drift"
+        );
+        assert!(!applied.fired_heavy);
+        assert!(events.is_empty(), "nothing was fired: {events:?}");
+        assert!(
+            !tape.entries.iter().any(|entry| matches!(
+                entry.command,
+                BubbleInputCommand::FireOffensiveLasers { .. }
+                    | BubbleInputCommand::FireRailgun { .. }
+                    | BubbleInputCommand::FireTorpedoSalvo { .. }
+            )),
+            "no fire command reached the tape"
+        );
+        assert_eq!(dray.thrust_mmps2, [0, 0, 0]);
+        // The house default in the same seat, with the same asks: no lock either.
+        let (mut bubble, mut tape, _) = field();
+        let _ = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            Seat::ABSENT,
+            &contacts,
+            &asks,
+            &mut events,
+        );
+        assert_eq!(
+            bubble.ships.get("dray").and_then(|ship| ship.locked_target_id.clone()),
+            None
+        );
+    }
+
+    /// **Doc 44 unit MW.13: what a bound rule program does in a bubble.** A `LOCK NEAREST`
+    /// row picks the nearest hostile the view held; a fire row binds inert on a seal with no
+    /// fire channel; a range predicate is weighed; a predicate a bubble has no fact for is
+    /// never satisfied; a row with a think term acts only on a think that sampled it true.
+    #[test]
+    fn mw13_a_lock_row_of_a_rule_program_picks_the_nearest_hostile() {
+        use crate::arena::conditions::{Comparison, LockSelector, Rule, RulePredicate};
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::profile_rules::{BoundProgram, RuleSample};
+        use crate::arena::schema::{AuthoredRule, ThinkPredicate};
+        use crate::arena::state::Channel;
+
+        let (mut bubble, _, _) = field();
+        bubble.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, Some(Mark::Hostile));
+        let contacts = BTreeMap::from([(ContactId(1), "patrol".to_owned())]);
+        let class = ClassTable::STOCK.row(CoreClass::II);
+        let bind = |rules: Vec<AuthoredRule>| {
+            BoundProgram::bind(&rules, &[], &[Channel::Helm, Channel::Sensors], &class, 100)
+                .expect("the program binds")
+        };
+        let lock = |predicates: Vec<RulePredicate>, think: Vec<ThinkPredicate>| AuthoredRule {
+            rule: Rule::lock_rule(LockSelector::Nearest, None, predicates),
+            think,
+        };
+        let asked = |program: &BoundProgram, sample: Option<&RuleSample>| {
+            program_lock(program, sample, &bubble, "dray", &contacts)
+        };
+
+        assert_eq!(asked(&bind(Vec::new()), None), None, "no row, no lock");
+        assert_eq!(
+            asked(&bind(vec![lock(Vec::new(), Vec::new())]), None),
+            Some(ContactId(1)),
+            "LOCK NEAREST picks the hostile"
+        );
+        // The corvette is 50 km off.
+        let near = RulePredicate::Range {
+            comparison: Comparison::Less,
+            metres: 10_000,
+        };
+        let far = RulePredicate::Range {
+            comparison: Comparison::Greater,
+            metres: 10_000,
+        };
+        assert_eq!(asked(&bind(vec![lock(vec![near], Vec::new())]), None), None);
+        assert_eq!(
+            asked(&bind(vec![lock(vec![far], Vec::new())]), None),
+            Some(ContactId(1))
+        );
+        let unknowable = RulePredicate::Aspect { mask: 1 };
+        assert_eq!(
+            asked(&bind(vec![lock(vec![unknowable], Vec::new())]), None),
+            None,
+            "a bubble has no fact for an aspect"
+        );
+        // A fire row is inert on a seal with no fire channel, and is no lock.
+        let hold = AuthoredRule {
+            rule: Rule::hold_rule(SmolStr::new_static("cannon"), Vec::new()),
+            think: Vec::new(),
+        };
+        let program = bind(vec![hold]);
+        assert!(program.rows.iter().all(|row| row.inert));
+        assert_eq!(asked(&program, None), None);
+        // A think term: unsampled it holds the row; sampled true it lets it act.
+        let program = bind(vec![lock(
+            Vec::new(),
+            vec![ThinkPredicate::Hostiles { at_least: 1 }],
+        )]);
+        assert_eq!(asked(&program, None), None);
+        let sample = |truth: bool| RuleSample {
+            program: program.digest,
+            generation: 0,
+            sampled_ms: 0,
+            lands_ms: 0,
+            expires_ms: 1_000,
+            truth: vec![truth],
+        };
+        assert_eq!(asked(&program, Some(&sample(false))), None);
+        assert_eq!(asked(&program, Some(&sample(true))), Some(ContactId(1)));
+        // A ship that is not held hostile is not locked by a rule.
+        let mut neutral = bubble.clone();
+        neutral.set_party_relation(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY, None);
+        assert_eq!(
+            program_lock(
+                &bind(vec![lock(Vec::new(), Vec::new())]),
+                None,
+                &neutral,
+                "dray",
+                &contacts
+            ),
+            None
+        );
+    }
+
     #[test]
     fn the_absent_seat_drops_every_lock_and_every_shot_and_burns_only_to_heave_to() {
         let (mut bubble, mut tape, _) = field();
