@@ -160,6 +160,36 @@ impl Family {
     }
 }
 
+/// `--minds`'s refusal for a word it does not know.
+pub const MINDS_ROLE_USAGE: &str = "--minds takes author or buyer";
+
+/// `--charter`'s refusal for a name the lane does not take ([`lane::market::charter_ok`]).
+pub const CHARTER_RULE: &str = "--charter takes 1 to 40 letters, digits and single spaces, \
+     starting with a letter";
+
+/// **Which half of the mind market's walk a bot plays** (doc 44 unit MW.19, `--minds`): the
+/// two halves are two bots on two logins, since the market refuses a sale between two
+/// characters of one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarketRole {
+    /// Writes a mind, files it and lists it.
+    Author,
+    /// Buys a licence, flies it in the simulator and launches it on a site.
+    Buyer,
+}
+
+impl MarketRole {
+    /// The role's word, in any case, trimmed; else [`MINDS_ROLE_USAGE`].
+    pub fn parse(word: &str) -> Result<MarketRole, String> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "author" => Ok(MarketRole::Author),
+            "buyer" => Ok(MarketRole::Buyer),
+            _ => Err(MINDS_ROLE_USAGE.to_owned()),
+        }
+    }
+}
+
 /// What the runner hands the lane at its start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {

@@ -4280,6 +4280,13 @@ fn delivered_of(
 }
 
 /// One world second and the field's egress: ticks, landed submissions, pumped frames.
+///
+/// It ends flushed, as a turn of the world loop does: the loop persists the step's legacy work
+/// at its foot after the egress arm as after any other, and holds a queued command back while
+/// any is pending (`CommandSubmitDrive::DeferredByLegacyPredecessor`). The field's snapshot
+/// rides the arena's own clock, so without the flush the last pump could leave its two
+/// documents queued beside the next order, which the engine refuses to stage
+/// (`StagePreparedActionError::LegacyModuleOps`): seen once in a loaded sweep of main.
 async fn field_second(
     world: &mut TestWorld,
     store: &InMemoryStore,
@@ -4291,6 +4298,7 @@ async fn field_second(
     }
     pulse(world, store, 1).await?;
     pump_arena(world, rx);
+    persist_legacy(world, store).await?;
     Ok(())
 }
 

@@ -42,6 +42,8 @@ pub mod detachment;
 pub mod escort;
 #[path = "field.rs"]
 pub mod field;
+#[path = "market.rs"]
+pub mod market;
 #[path = "salvage.rs"]
 pub mod salvage;
 #[path = "works.rs"]
@@ -157,6 +159,10 @@ pub enum Beat {
     SecondSounding,
     Home,
     Sell,
+    /// The mind market's counter and the Registry's rating (doc 44 unit MW.19).
+    Market,
+    /// The simulator centre, flown by a licensed mind (doc 44 unit MW.19).
+    Simulator,
     Done,
 }
 
@@ -173,6 +179,8 @@ impl Beat {
             Beat::SecondSounding => "second_sounding",
             Beat::Home => "home",
             Beat::Sell => "sell",
+            Beat::Market => "market",
+            Beat::Simulator => "simulator",
             Beat::Done => "done",
         }
     }
@@ -201,6 +209,16 @@ pub enum Milestone {
     Unloaded,
     DockedHome,
     Sold,
+    /// Doc 44 unit MW.19, the author: the Registry said the rating finished.
+    MindRated,
+    /// The filing confirmed and its number read from the holdings.
+    MindFiled,
+    /// The author's row read on the counter.
+    MindListed,
+    /// The buyer's paid licence read from the holdings.
+    LicenceBought,
+    /// The simulator match the licensed mind flew is over and its report read.
+    MindFlownSim,
 }
 
 /// One line to type, its beat, and the lane's clock when it went.
@@ -345,6 +363,8 @@ enum Kind {
     Field(field::Task),
     /// A step of the escort pilot's IC field (doc 32 G-4).
     Escort(escort::Task),
+    /// A step of the mind market's walk (doc 44 unit MW.19).
+    Market(market::Task),
     /// The outbox read that fixes the floor an ENGAGE's reply is read above.
     FieldFloor,
     /// A walk, done on the room's name.
@@ -496,6 +516,8 @@ pub struct Lane {
     field: Option<field::Field>,
     /// The escort pilot (doc 32 G-4), `--field-escort` only.
     escort: Option<escort::Escort>,
+    /// The mind market's walk (doc 44 unit MW.19), `--minds` only.
+    market: Option<market::Market>,
 }
 
 impl Lane {
@@ -553,6 +575,7 @@ impl Lane {
             expedition: None,
             field: None,
             escort: None,
+            market: None,
         };
         lane.walk(Beat::KitUp, "c", ROOM_ARRIVALS, 0);
         lane
@@ -571,6 +594,39 @@ impl Lane {
     pub fn with_escort(mut self, captain: Option<String>) -> Self {
         self.escort = Some(escort::Escort::flying_for(captain));
         self.report.escort = Some(escort::Evidence::default());
+        self
+    }
+
+    /// **File and list a mind** (doc 44 unit MW.19, the author's half; [`market`]): the Co-op's
+    /// enrolment for the credit account, then `mind`@`revision` (the revision the runner pushed
+    /// and saved over SSH) filed under `charter`, rated by the Registry and listed sealed at
+    /// the counter. No hull is refitted and nothing sails.
+    pub fn with_author(mut self, mind: String, revision: u64, charter: String) -> Self {
+        self.report.market = Some(market::Evidence {
+            role: "author".to_owned(),
+            charter: charter.clone(),
+            ..market::Evidence::default()
+        });
+        self.market = Some(market::Market::new(
+            market::Role::Author { mind, revision },
+            charter,
+        ));
+        self
+    }
+
+    /// **Buy a licence and fly it** (doc 44 unit MW.19, the buyer's half; [`market`]): the
+    /// escort's kit-up and bunkers (the armed rig is the one leased with a core), the purchase
+    /// of `charter` at the counter, a simulator match the licensed mind flies, and a launch
+    /// under the licence at the site, recovered and sailed home.
+    pub fn with_buyer(mut self, charter: String) -> Self {
+        self.escort = Some(escort::Escort::flying_for(None));
+        self.report.escort = Some(escort::Evidence::default());
+        self.report.market = Some(market::Evidence {
+            role: "buyer".to_owned(),
+            charter: charter.clone(),
+            ..market::Evidence::default()
+        });
+        self.market = Some(market::Market::new(market::Role::Buyer, charter));
         self
     }
 
@@ -670,6 +726,9 @@ impl Lane {
                 sentence,
                 lane_ms: now_ms,
             });
+            return;
+        }
+        if self.market_unasked(raw) {
             return;
         }
         self.buf.push(Got {
@@ -874,6 +933,7 @@ impl Lane {
             Kind::Field(task) => self.field_verdict(task, opened, &text, &raw, quiet, now_ms),
             Kind::FieldFloor => done_if(quiet),
             Kind::Escort(task) => self.escort_verdict(task, opened, &text, &raw, quiet, now_ms),
+            Kind::Market(task) => self.market_verdict(task, opened, &text, &raw, quiet, now_ms),
             // The bay gate's refusal of a unit still out: the lift goes again with `leave=`.
             Kind::LiftHome
                 if self.field.is_some()
@@ -1122,6 +1182,10 @@ impl Lane {
                     Kind::Dock => lines::docks(&self.settings.hull),
                     Kind::Cycles => "the run's last cycle".to_owned(),
                     Kind::Unload => UNLOADED.to_owned(),
+                    Kind::Market(market::Task {
+                        phase: market::Phase::Rating,
+                    }) => "the Registry's word that the rating finished".to_owned(),
+                    Kind::Market(_) => "the simulator match's end".to_owned(),
                     _ => "a follow-on".to_owned(),
                 });
                 Verdict::Fail(format!(
@@ -1172,6 +1236,21 @@ impl Lane {
                     self.fail(now_ms, format!("escort {:?}: {error}", task.phase));
                 }
             }
+            (Kind::Market(task), verdict) => {
+                if let Err(error) =
+                    self.market_next(task.phase, &verdict, &raw, decided_at, step.sends, now_ms)
+                {
+                    self.fail(now_ms, format!("market {:?}: {error}", task.phase));
+                }
+            }
+            // Doc 44 unit MW.19: the author's account is open; the buyer's hull has settled
+            // (its rig is launched under the licence, from the bay), and the buyer is home.
+            (Kind::Enrol, _) if self.is_author() => self.market_author_start(),
+            (Kind::MapSite, _) if self.is_buyer() => {
+                self.report.witness = lines::grid_rows(&raw);
+                self.market_launch();
+            }
+            (Kind::Leave, _) if self.is_buyer() => self.market_home(now_ms),
             (Kind::LeaseGo, _) if self.is_escort() => self.escort_loans(&deciding),
             (Kind::MapSite, _) if self.is_escort() => {
                 self.report.witness = lines::grid_rows(&raw);
@@ -1487,7 +1566,13 @@ impl Lane {
                 EXTRA_CREW_DAYS.saturating_mul(if self.expedition.is_some() { 2 } else { 1 }),
             );
         if plan.tank_t >= want_tank && plan.locker >= want_locker {
-            self.walk(Beat::BoardAndLift, "exchange", ROOM_EXCHANGE, 0);
+            if self.buyer_owes_the_market() {
+                // Doc 44 unit MW.19: the licence is bought and flown in the simulator before
+                // the hull sails; the walk comes back to this lane at Arrivals.
+                self.market_buyer_start();
+            } else {
+                self.walk(Beat::BoardAndLift, "exchange", ROOM_EXCHANGE, 0);
+            }
             return;
         }
         if self.bunker_rounds >= MAX_BUNKER_ROUNDS {
