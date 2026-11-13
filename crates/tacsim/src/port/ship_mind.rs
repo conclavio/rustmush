@@ -193,6 +193,9 @@ pub(crate) enum Unfit {
     Core,
     /// The character who sealed it no longer has authority over the hull.
     Holder,
+    /// The claim is one the hull's cursor does not name: an Open that landed after its cursor
+    /// was given up.
+    LeftOpen,
 }
 
 impl Unfit {
@@ -202,6 +205,7 @@ impl Unfit {
             Unfit::NoCore => "she carries no core",
             Unfit::Core => "her core has changed",
             Unfit::Holder => "she is no longer yours to fly it on",
+            Unfit::LeftOpen => "an earlier claim on her was left open",
         }
     }
 }
@@ -697,9 +701,6 @@ pub(crate) fn prepare(
     provider.output(invocation, (hull, op.word(), false))
 }
 
-/// Why the arm closes a claim its hull's cursor does not name.
-const ORPHANED: &str = "an earlier claim on her was left open";
-
 /// **Why a standing claim's seal should stand no longer**, or `Ok`: the seal does not fit the
 /// hull ([`fits`]), or the hull's epoch closed after the mind was sealed and the close did not
 /// move the cursor (a close prepared with no world in hand).
@@ -721,7 +722,7 @@ fn standing(
         return Ok(());
     };
     if seal.sortie != crate::arena::mind::SortieId::ic(hull, *launch_ic) {
-        return Err(ORPHANED);
+        return Err(Unfit::LeftOpen.clause());
     }
     fits(w, hull, &seal, *operator).map_err(Unfit::clause)?;
     let docked_since = record.open.is_none()
@@ -858,9 +859,10 @@ fn owes(
         // was still on its way when its cursor was given up or its passage ended, landed
         // since. Left alone it would hold its licence's seat and fly her for ever; the arm
         // closes it, as its dispatcher.
-        (_, ClaimRead::Active { dispatcher, .. }) => {
-            (Some((dispatcher, Owes::Void(ORPHANED))), false)
-        }
+        (_, ClaimRead::Active { dispatcher, .. }) => (
+            Some((dispatcher, Owes::Void(Unfit::LeftOpen.clause()))),
+            false,
+        ),
         (
             Some(ClaimCursor::Opening {
                 operator,
