@@ -2405,10 +2405,50 @@ Answered, not changed:
 
 **Verified, and how.**
 
-- **Mutation checks** were running on conclav.dev when this was first pushed; the table
-  is the next commit's.
+- **Mutation checks**, on Linux (conclav.dev), each putting one behaviour back or taking
+  one rule out, as a one-file patch over the unit's own, against the unit tests of
+  `sortie.rs` and `applier.rs` and, for the six that reach the world, the story with `sfr5`,
+  `sfr14` and `sfr22`. All eighteen were caught. "The story" is
+  `mw12_a_drone_whose_doctrine_stops_short_brings_back_less_and_no_sortie_stays_in_the_book`.
 
-- **Runs**: the pull request records them until the next commit does.
+  | Mutation | Caught by |
+  |---|---|
+  | The yield ignores the mind: a landing files the whole hold whatever was lifted | The story: "B went home with one lift: one tonne more, drawn once" (8 t against 5) |
+  | A think's intents are discarded, as before the unit | Nine unit tests, `mw12_the_house_drone_fills_its_hold_and_lands_with_it` first |
+  | The sortie's record is left open (no close is filed) | The story: "the excursion book holds no drone after it lands" |
+  | The selection is not read: a launch seals the compiled digest | The story: "the next drone is sealed with the revision staff selected" |
+  | The closes owed are not persisted | The story: "the close is still owed after the restart" |
+  | A held step is taken without its thinks | `mw12_a_step_whose_thinks_are_out_holds_the_drones`: "a held step moves nothing and writes nothing" |
+  | A late tick is a long step | `mw12_drones_take_one_step_a_wall_second_and_a_late_tick_is_not_a_long_step` (7,000 ms against 2,000) |
+  | The rock's ore is told after the answers land | `mw12_two_drones_on_one_rock_never_lift_the_same_tonne` (6,000 kg carried of 5,000) |
+  | A reeled drone lands its hold | `mw12_a_drone_that_does_not_come_home_is_reeled_in_with_nothing` |
+  | The seat of a crew that is away still works | `mw12_a_drone_whose_crew_is_away_lifts_nothing_and_comes_home` |
+  | A collector works for any seat | `a_collector_works_the_rock_its_drone_has_locked_for_a_seat_that_may_work`, and the test above |
+  | The ore is told to the bubble off the tape | `mw12_a_replay_of_the_tape_reproduces_the_sortie_and_runs_no_think` (step 25, slot 2) |
+  | A drone lands without having left its bay | Eleven unit tests, `mw12_a_lift_needs_reach_and_a_cycled_collector_and_a_landing_needs_a_slow_return` among them |
+  | A landed drone stays in the session | The story, `sfr5` and `sfr14` |
+  | A close is dropped before its record is staged | The story: "a close whose record is not in the book yet waits for it" |
+  | A session read back asks every drone | `mw12_a_drone_launched_while_thinks_are_out_thinks_no_sooner_for_a_restart` (step 58 against 57) |
+  | The ship may move with drones out | The story: `+helm/approach B` is taken |
+  | A launch from inside the drones' reach is allowed | `mw12_a_ship_inside_her_drones_reach_of_the_rock_does_not_launch_them` |
+
+- **On Linux (conclav.dev), on the unit as it is**: every unit test of `tacsim` and all 267
+  stories of `tests/domain_world/` (2,568 run, 7 skipped; one failed, the unit's own story,
+  on an assertion about which refusal `+helm/match B` gives first, since corrected and run
+  again with the space unit tests and the drone stories: 85 passed). On the unit before the
+  second reader's fixes, `cost_lane`, `domain_arena` (1,127), `domain_economy` (588) and the
+  first 296 of `domain_field` passed; that run was stopped there to free the box.
+- **The memory-size clippy** CI's lint shard runs (`.github/clippy-m7`), on conclav.dev:
+  clean.
+- **On Windows**: `cargo fmt --check`, `cargo clippy --all-targets -D warnings` and
+  `cargo doc -D warnings --document-private-items` on `tacsim`; the 80 unit tests under
+  `space::` and `minds::content`; `mush-contract-tests`, 199 passed and 8 ignored, no budget
+  re-blessed. The two unit tests that failed in the first draft failed at the same step, with
+  the same figures, on Windows and on Linux.
+- **`cargo test -p mush-bot`** on Windows: no failure in the part of its output that was
+  kept. The pull request's `test (bot)` job is the check.
+- **CI on the pull request's head and the dispatch-only jobs**: the pull request records the
+  runs.
 
 **Not verified.**
 
