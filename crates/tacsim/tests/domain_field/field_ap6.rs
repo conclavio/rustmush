@@ -406,6 +406,7 @@ async fn ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strang
     );
     let plotted = seen(&g.rig, g.intruder, HULL_AT);
     let plotted_where = seen_where(&g.rig, g.intruder, HULL_AT);
+    let plotted_row = contact_near(&g.rig, g.intruder, HULL_AT);
     g.leave();
     // Twelve seconds with the marked intruder ten cells off: nothing, and the rig is where it
     // was. The intruder's own row of it reads as it did when its pilot flew it.
@@ -427,19 +428,32 @@ async fn ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strang
         plotted_where,
         "what an attacker reads of the rig is what it read before its mind took it"
     );
+    // The one lawful move, exactly: an unknown row classified as the rig's own party, under the
+    // party's designator, its provisional number kept as its alias. Any other change of identity
+    // fails here.
     let after = seen(&g.rig, g.intruder, HULL_AT);
-    let classified = matches!(
-        contact_near(&g.rig, g.intruder, HULL_AT).map(|row| row.class),
-        Some(tacsim::arena::state::Classification::Classified { .. })
-    );
-    assert!(
-        after == plotted
-            || (plotted
-                .as_deref()
-                .is_some_and(|row| row.contains(" Unknown "))
-                && classified),
-        "the rig's identity moved only by the classify clock: {plotted:?} then {after:?}"
-    );
+    if after != plotted {
+        use tacsim::arena::state::{Classification, Designator};
+        let party = tacsim::field::live_on(g.rig.tw.world(), &cid(AHUNA))
+            .and_then(|live| live.party_of(hull))
+            .expect("the rig's party");
+        let now = contact_near(&g.rig, g.intruder, HULL_AT);
+        let (Some(then), Some(now)) = (plotted_row.as_ref(), now.as_ref()) else {
+            panic!("the intruder holds the rig before and after: {plotted:?} then {after:?}");
+        };
+        assert!(
+            then.class == Classification::Unknown
+                && now.class == Classification::Classified { party }
+                && matches!(now.designator, Designator::Unit { party: p, .. } if p == party)
+                // 16b cut Q.1: the renamed row keeps its provisional number as its alias.
+                && now.alias
+                    == match then.designator {
+                        Designator::Provisional(n) => Some(n),
+                        _ => then.alias,
+                    },
+            "the rig's identity moved only by the classify clock: {plotted:?} then {after:?}"
+        );
+    }
     let miner = g.miner;
     assert_eq!(
         presence(&mut g.rig, miner),

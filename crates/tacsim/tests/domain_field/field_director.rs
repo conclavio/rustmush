@@ -537,6 +537,75 @@ async fn gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home() 
     }
 }
 
+/// **Doc 47 unit CO.10, found and fixed: a raid that joins a running field takes its leader's
+/// WITHDRAW.** GC.11's ground: a field is open when the director's raid comes due, and the
+/// carrier and its two hulls join it. Each hull's crew is seated (doc 42b SU.1), so the join
+/// raises the hull's helm epoch in the arena; the world's mirror must hold that epoch too, or
+/// every order the host stamps for the hull carries the stale one and the kernel refuses it
+/// (`Refusal::Epoch`). Before the fix the raider's join never mirrored it, so the leader's
+/// WITHDRAW (`raiders::order_home`) was refused for every hull and none was ever ordered home:
+/// it went home only if the doctrine happened to bring it beside the ramp. That is true of every
+/// joined raid, whatever the world's object ids; GC.11 above is the behaviour it costs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // one raid, in order
+async fn co10_a_raid_that_joins_a_running_field_mirrors_its_crews_helm() {
+    use tacsim::arena::state::Channel;
+    let mut rig = stocked_tuned(|cfg| {
+        tune(cfg);
+        cfg.field.disengage_s = 600;
+        cfg.field.raid_field_s = 60;
+    });
+    let (a, tvs, guard) = tempting_site(&mut rig, false);
+    rationed(&mut rig, guard, 0);
+    let (barge, raiders) = raided_before(&mut rig, false);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    let (out, queued) = command(&mut rig, a, "+field/mark W=hostile");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 20, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "a field runs on the site"
+    );
+    ore(&mut rig, tvs[0]);
+    let joined = until(&mut rig, &mut rx, &mut lines, 30, |rig, _| {
+        tacsim::field::live_on(rig.tw.world(), &cid(AHUNA)).is_some_and(|live| {
+            raiders.iter().all(|hull| {
+                live.units
+                    .iter()
+                    .any(|row| row.unit == *hull && row.arrived)
+            })
+        })
+    })
+    .await;
+    assert!(joined, "both hulls join the running field");
+    // The joined hull's helm epoch, as far as the world knows, once the kernel's answer to the
+    // join is in: the epoch its seat holds in the arena (an admission's and a join's seat is
+    // epoch 1, `field::admit`), never the 0 of a hull the world has no seat for. Every order the
+    // host offers the hull is stamped with it (`arena_bridge::offer_helm`), the leader's WITHDRAW
+    // among them; at 0 the kernel refused it `Epoch`.
+    let helm = |rig: &Rig, hull: ObjId| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map_or(0, |registry| registry.epoch_of(hull, Channel::Helm))
+    };
+    let mirrored = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
+        raiders.iter().all(|hull| helm(rig, *hull) == 1)
+    })
+    .await;
+    assert!(
+        mirrored,
+        "each hull's seated crew holds its helm at the seat's epoch: {:?}",
+        raiders
+            .iter()
+            .map(|hull| (hull.0, helm(&rig, *hull)))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// **Doc 36a lane 3, P1-11** (doc 36 cut GC.3's rule, for the director's own barge): a barge
 /// whose drive is down stays on the ground. The director lands its raid as the GC.11 gate has
 /// it; staff then destroy the barge's drive where a round would have. The raid loses half, turns
