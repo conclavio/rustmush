@@ -83,6 +83,8 @@ mod field_ap8;
 mod field_boarding;
 #[path = "domain_field/field_carrier.rs"]
 mod field_carrier;
+#[path = "domain_field/field_co5.rs"]
+mod field_co5;
 #[path = "domain_field/field_crash.rs"]
 mod field_crash;
 #[path = "domain_field/field_director.rs"]

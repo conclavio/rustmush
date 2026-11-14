@@ -254,6 +254,10 @@ the actual vehicle bay and have an authored helm console. You need Deploy
 permission and the NPC needs OperateCrew permission; employment alone grants
 neither. An occupied billet or another operator's control prevents taking over.
 The NPC boards the unit and requests control through its existing station.
+An armed rig's console carries the helm, the sensors and the fire channel, and
+the NPC takes control of all three; only a crew member on a combat duty (a
+plan activated for combat, under a contract that covers it) may sit at a
+console that fires. Anyone else flies an unarmed rig.
 Preflight and launch check current facts again after that request settles.
 Each departure takes the existing ramp duration;
 units complete independently. A blocked departure remains pending and can be
