@@ -2266,7 +2266,9 @@ the three crates (the libraries' 848, 368 and 73 among them) with none failed, a
 the runs. On Windows the Economy library's refit and `ct0_` tests pass. Clippy with `-D warnings`
 over all targets of `mush-economy`, `mush-core` and `mush-industry`, CI's M7 memory-size pass,
 rustdoc with `-D warnings` and `--document-private-items`, the doc-tests and `cargo test -p
-mush-contract-tests` are clean. The branch's CI dispatch (run 43626561607, at the code commit ): every job green but two dispatch-only stories still running when this note was written (the M7 player market commands and the M6 author story), none failed.
+mush-contract-tests` are clean. The branch's CI dispatch (run 43626561607, at the code commit
+`cffb7bb78`): 53 jobs green and two dispatch-only stories still running when this note was
+written (the M7 player market commands and the M6 author story), none failed.
 
 **The yardstick, before and after.** Before is main `114c03694`.
 
