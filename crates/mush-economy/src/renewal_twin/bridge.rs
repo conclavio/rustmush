@@ -1,6 +1,7 @@
 //! Closed Economy half of renewal composition and complete boot recovery.
 //! Neither decoded rows nor a disabled/unbooted owner establish empty history.
 use super::{
+    Issuer,
     history::{self, OfferBook},
     receipt::RenewalAuditError,
 };
@@ -12,20 +13,22 @@ use mush_core::mechanics::{
 };
 use mush_core::{DefinitionRef, ModError};
 use std::collections::{BTreeMap, BTreeSet};
+use std::marker::PhantomData;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Configuration {
+pub(crate) struct Configuration<I: Issuer> {
     pub(crate) manifest: DefinitionRef,
     pub(crate) participants: [DefinitionRef; 2],
     pub(crate) actions: [DefinitionRef; 5],
     pub(crate) service_close: Option<DefinitionRef>,
+    pub(crate) issuer: PhantomData<I>,
 }
-impl Configuration {
+impl<I: Issuer> Configuration<I> {
     pub(crate) fn service_reference(&self) -> Result<DefinitionRef, ModError> {
         let [economy, retention] = &self.participants;
         let descriptor=DefinitionDescriptor::new(DefinitionKind::new("action").map_err(|_|failed())?,
-            DefinitionId::new(super::SERVICE_CLOSE_ACTION).map_err(|_|failed())?,1,
-            serde_json::json!({"format":1,"protocol":"house_mind_renewal_service_v1","transition":"unfunded_service_close","service_actor":1}))
+            DefinitionId::new(I::SERVICE_CLOSE_ACTION).map_err(|_|failed())?,1,
+            serde_json::json!({"format":1,"protocol":I::SERVICE_PROTOCOL,"transition":"unfunded_service_close","service_actor":1}))
             .map_err(|_|failed())?.with_references(vec![self.manifest.clone(),economy.clone(),retention.clone()]);
         DefinitionRegistryBuilder::new()
             .register(OwnerId::new("market").map_err(|_| failed())?, descriptor)
@@ -47,20 +50,27 @@ impl Configuration {
             return Err(failed());
         }
         for ((id, transition), reference) in [
-            (super::DRAFT_ACTION, "draft"),
-            (super::FUND_ACTION, "fund"),
-            (super::GRANT_ACTION, "grant"),
-            (super::REFUND_ACTION, "refund"),
-            (super::CLOSE_ACTION, "unfunded_close"),
+            (I::DRAFT_ACTION, "draft"),
+            (I::FUND_ACTION, "fund"),
+            (I::GRANT_ACTION, "grant"),
+            (I::REFUND_ACTION, "refund"),
+            (I::CLOSE_ACTION, "unfunded_close"),
         ]
         .into_iter()
         .zip(&self.actions)
         {
             let descriptor = DefinitionDescriptor::new(
                 DefinitionKind::new("action").map_err(|_| failed())?,
-                DefinitionId::new(id).map_err(|_| failed())?, 1,
-                serde_json::json!({"format":1,"protocol":"house_mind_renewal_v1","transition":transition}),
-            ).map_err(|_| failed())?.with_references(vec![self.manifest.clone(), configured_economy.clone(), roll.clone()]);
+                DefinitionId::new(id).map_err(|_| failed())?,
+                1,
+                serde_json::json!({"format":1,"protocol":I::PROTOCOL,"transition":transition}),
+            )
+            .map_err(|_| failed())?
+            .with_references(vec![
+                self.manifest.clone(),
+                configured_economy.clone(),
+                roll.clone(),
+            ]);
             let expected = DefinitionRegistryBuilder::new()
                 .register(OwnerId::new("market").map_err(|_| failed())?, descriptor)
                 .map_err(|_| failed())?;
@@ -81,16 +91,22 @@ impl Configuration {
         id: &str,
     ) -> Result<(), mush_core::participant::ParticipantError> {
         let [draft, fund, grant, refund, close] = &self.actions;
-        let expected = match id {
-            super::DRAFT_ACTION => draft,
-            super::FUND_ACTION => fund,
-            super::GRANT_ACTION => grant,
-            super::REFUND_ACTION => refund,
-            super::CLOSE_ACTION => close,
-            super::SERVICE_CLOSE_ACTION => {
-                self.service_close.as_ref().ok_or_else(super::refused)?
-            }
-            _ => return Err(super::refused()),
+        // An associated constant of the issuer cannot be a pattern: the arms of the old
+        // `match`, in their order.
+        let expected = if id == I::DRAFT_ACTION {
+            draft
+        } else if id == I::FUND_ACTION {
+            fund
+        } else if id == I::GRANT_ACTION {
+            grant
+        } else if id == I::REFUND_ACTION {
+            refund
+        } else if id == I::CLOSE_ACTION {
+            close
+        } else if id == I::SERVICE_CLOSE_ACTION {
+            self.service_close.as_ref().ok_or_else(super::refused)?
+        } else {
+            return Err(super::refused());
         };
         if expected != action {
             return Err(super::refused());
@@ -104,7 +120,7 @@ fn failed() -> ModError {
 
 /// Retain only exact bounded immutable owner documents. Disabled composition
 /// refuses their presence before any legacy projection can be healed.
-pub(crate) fn documents(
+pub(crate) fn documents<I: Issuer>(
     kv: &[(smol_str::SmolStr, serde_json::Value)],
     enabled: bool,
 ) -> Result<Vec<(String, Vec<u8>)>, ModError> {
@@ -113,9 +129,9 @@ pub(crate) fn documents(
     let mut services = 0usize;
     for (name, value) in kv
         .iter()
-        .filter(|(k, _)| k.starts_with(history::PREFIX) || k.starts_with(super::service::PREFIX))
+        .filter(|(k, _)| k.starts_with(I::OFFER_PREFIX) || k.starts_with(I::SERVICE_PREFIX))
     {
-        let (count, limit) = if name.starts_with(super::service::PREFIX) {
+        let (count, limit) = if name.starts_with(I::SERVICE_PREFIX) {
             (&mut services, super::service::MAX_BYTES)
         } else {
             (&mut offers, history::MAX_RECORD_BYTES)
@@ -132,58 +148,56 @@ pub(crate) fn documents(
 }
 /// A checkpoint can never hide renewal journal entries, even in disabled mode.
 /// Old checkpoints with no renewal namespace retain their omitted empty field.
-pub(crate) fn checkpoint_complete(
+pub(crate) fn checkpoint_complete<I: Issuer>(
     fold: &crate::fold::FoldState,
     rows: &[crate::checkpoint::IdemRow],
     enabled: bool,
 ) -> bool {
     if enabled {
-        return fold.house_renewal_receipts.checkpoint_complete(rows);
+        return I::receipts(fold).checkpoint_complete(rows);
     }
-    !rows.iter().any(|row| row.ns.as_str() == super::NAMESPACE)
-        && (fold.house_renewal_receipts.uninitialized()
-            || fold.house_renewal_receipts.checkpoint_complete(rows))
+    !rows.iter().any(|row| row.ns.as_str() == I::NAMESPACE)
+        && (I::receipts(fold).uninitialized() || I::receipts(fold).checkpoint_complete(rows))
 }
-fn is_renewal(contract: &EconomicContract) -> bool {
+fn is_renewal<I: Issuer>(contract: &EconomicContract) -> bool {
     contract
         .consent
         .managed
         .as_ref()
-        .and_then(|m| m.house_renewal_offer_marker())
+        .and_then(I::marker)
         .is_some()
 }
-fn is_renewal_hold(hold: &Hold) -> bool {
-    hold.holder.namespace.as_str() == super::NAMESPACE
+fn is_renewal_hold<I: Issuer>(hold: &Hold) -> bool {
+    hold.holder.namespace.as_str() == I::NAMESPACE
 }
 
 /// Runs on the actual complete fold and raw contracts/holds before legacy
 /// repair. The returned book is the only configured boot route to its latch.
-pub(crate) fn recover(
+pub(crate) fn recover<I: Issuer>(
     fold: &mut crate::fold::FoldState,
     snapshot: &mut EconomySnapshot,
     contracts: &mut BTreeMap<ContractId, EconomicContract>,
     holds: &BTreeMap<HoldId, Hold>,
     documents: &[(String, Vec<u8>)],
     enabled: bool,
-) -> Result<OfferBook, ModError> {
+) -> Result<OfferBook<I>, ModError> {
     if !enabled {
         if !documents.is_empty()
-            || contracts.values().any(is_renewal)
-            || holds.values().any(is_renewal_hold)
-            || fold.journal_holds.values().any(is_renewal_hold)
-            || !(fold.house_renewal_receipts.uninitialized()
-                || fold.house_renewal_receipts.checkpoint_complete(&[]))
+            || contracts.values().any(is_renewal::<I>)
+            || holds.values().any(is_renewal_hold::<I>)
+            || fold.journal_holds.values().any(is_renewal_hold::<I>)
+            || !(I::receipts(fold).uninitialized() || I::receipts(fold).checkpoint_complete(&[]))
         {
             return Err(failed());
         }
         return Ok(OfferBook::default());
     }
-    fold.house_renewal_receipts
+    I::receipts_mut(fold)
         .finish_replay()
         .map_err(|_| failed())?;
     let mut exact = EconomySnapshot::new();
     let mut contract_ids = BTreeSet::new();
-    for contract in contracts.values().filter(|c| is_renewal(c)) {
+    for contract in contracts.values().filter(|c| is_renewal::<I>(c)) {
         if contract_ids.len() == history::MAX_RECORDS {
             return Err(failed());
         }
@@ -192,16 +206,12 @@ pub(crate) fn recover(
     }
     // Include every actual hold touching this inventory, including crossed
     // namespace claims. Unrelated legacy holds need no duplicate allocation.
-    for (retained_holds, hold) in holds.values().filter(|h| is_renewal_hold(h) || matches!(h.purpose, crate::record::HoldPurpose::Escrow { contract } if contract_ids.contains(&contract))).enumerate() {
+    for (retained_holds, hold) in holds.values().filter(|h| is_renewal_hold::<I>(h) || matches!(h.purpose, crate::record::HoldPurpose::Escrow { contract } if contract_ids.contains(&contract))).enumerate() {
         if retained_holds == history::MAX_RECORDS { return Err(failed()); }
         exact.put_hold(hold.clone());
     }
     let mut hold_ids = BTreeSet::new();
-    for actual in fold
-        .house_renewal_receipts
-        .receipts()
-        .map_err(|_| failed())?
-    {
+    for actual in I::receipts(fold).receipts().map_err(|_| failed())? {
         let receipt = actual.funding();
         let contract = contracts.get(&receipt.contract()).ok_or_else(failed)?;
         let hold = holds.get(&receipt.hold()).ok_or_else(failed)?;
@@ -217,18 +227,18 @@ pub(crate) fn recover(
     }
     if holds
         .values()
-        .any(|h| is_renewal_hold(h) && !hold_ids.contains(&h.id))
+        .any(|h| is_renewal_hold::<I>(h) && !hold_ids.contains(&h.id))
         || fold
             .journal_holds
             .values()
-            .any(|h| (is_renewal_hold(h) || matches!(h.purpose, crate::record::HoldPurpose::Escrow { contract } if contract_ids.contains(&contract))) && !hold_ids.contains(&h.id))
+            .any(|h| (is_renewal_hold::<I>(h) || matches!(h.purpose, crate::record::HoldPurpose::Escrow { contract } if contract_ids.contains(&contract))) && !hold_ids.contains(&h.id))
     {
         return Err(failed());
     }
     let book = OfferBook::from_documents_with_resale(
         &exact,
         documents,
-        &fold.house_renewal_receipts,
+        I::receipts(fold),
         &fold.paid_resale_receipts,
     )
     .map_err(|_| failed())?;
@@ -240,16 +250,16 @@ pub(crate) fn recover(
 
 /// Source-free absence proof, independent of enabled renewal business policy.
 /// The private latch is set by real boot only; default/unavailable is unknown.
-pub(crate) fn require_absent(state: &EconomyStore) -> Result<(), RenewalAuditError> {
-    if state.frozen || !state.house_renewal_inventory_checked {
+pub(crate) fn require_absent<I: Issuer>(state: &EconomyStore) -> Result<(), RenewalAuditError> {
+    if state.frozen || !I::inventory_checked(state) {
         return Err(RenewalAuditError::Incomplete);
     }
-    if state.house_renewal_offers.operations().len() != 0
-        || state.snapshot.contracts().any(is_renewal)
-        || state.snapshot.holds().any(is_renewal_hold)
-        || state.fold.journal_holds.values().any(is_renewal_hold)
-        || !(state.fold.house_renewal_receipts.uninitialized()
-            || state.fold.house_renewal_receipts.checkpoint_complete(&[]))
+    if I::book(state).operations().len() != 0
+        || state.snapshot.contracts().any(is_renewal::<I>)
+        || state.snapshot.holds().any(is_renewal_hold::<I>)
+        || state.fold.journal_holds.values().any(is_renewal_hold::<I>)
+        || !(I::receipts(&state.fold).uninitialized()
+            || I::receipts(&state.fold).checkpoint_complete(&[]))
     {
         return Err(RenewalAuditError::Refused);
     }

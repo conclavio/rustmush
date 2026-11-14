@@ -1,24 +1,32 @@
 //! Actual owner create/close and money plans. No paired commercial head or
 //! commercial predecessor is fabricated by these isolated E4 fixtures.
 use super::*;
-use crate::managed_renewal::RenewalAttemptV1;
+use crate::renewal_twin::RenewalAttemptV1;
 
-fn retry(r: &Rig, previous: u64, commit: u64) -> Result<Prepared, ParticipantError> {
-    install::retry(
+fn retry<I: Rig>(
+    r: &Fixture<I>,
+    previous: u64,
+    commit: u64,
+) -> Result<Prepared<I>, ParticipantError> {
+    install::retry::<I>(
         &r.state,
         &r.context(false, token(commit)),
         r.offer.clone(),
         token(previous),
     )
 }
-fn publish_retry(r: &mut Rig, previous: u64, commit: u64) -> TestResult<RenewalOfferOutput> {
+fn publish_retry<I: Rig>(
+    r: &mut Fixture<I>,
+    previous: u64,
+    commit: u64,
+) -> TestResult<RenewalOfferOutput<I>> {
     let (out, patch, _) = retry(r, previous, commit)?;
     patch.recheck_in(&r.state, &r.context(false, token(commit)))?;
     patch.bind(&mut r.state)?.apply();
     Ok(out)
 }
-fn close_at(r: &mut Rig, operation: u64, commit: u64) -> TestResult {
-    let (_, patch, _) = install::close(
+fn close_at<I: Rig>(r: &mut Fixture<I>, operation: u64, commit: u64) -> TestResult {
+    let (_, patch, _) = install::close::<I>(
         &r.state,
         &r.context(true, token(commit)),
         token(operation),
@@ -28,41 +36,55 @@ fn close_at(r: &mut Rig, operation: u64, commit: u64) -> TestResult {
     patch.bind(&mut r.state)?.apply();
     Ok(())
 }
-fn all_documents(r: &Rig) -> TestResult<Vec<(String, Vec<u8>)>> {
-    r.state
-        .renewal_offers
+fn all_documents<I: Rig>(r: &Fixture<I>) -> TestResult<Vec<(String, Vec<u8>)>> {
+    I::book(&r.state)
         .operations()
         .map(|op| {
             Ok((
-                history::key(op),
-                serde_json::to_vec(r.state.renewal_offers.get(op).ok_or("offer")?)?,
+                history::key::<I>(op),
+                serde_json::to_vec(I::book(&r.state).get(op).ok_or("offer")?)?,
             ))
         })
         .collect()
 }
-fn cold(r: &Rig, docs: &[(String, Vec<u8>)]) -> Result<OfferBook, ParticipantError> {
-    OfferBook::from_documents_with_renewals(&r.state.snapshot, docs, &r.state.fold.renewal_receipts)
+fn cold<I: Rig>(
+    r: &Fixture<I>,
+    docs: &[(String, Vec<u8>)],
+) -> Result<OfferBook<I>, ParticipantError> {
+    OfferBook::<I>::from_documents_with_renewals(
+        &r.state.snapshot,
+        docs,
+        I::receipts(&r.state.fold),
+    )
 }
 
-#[test]
-fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> TestResult {
+pub(crate) fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry<I: Rig>()
+-> TestResult {
     for reason in [UnfundedCloseReason::Declined, UnfundedCloseReason::Expired] {
-        let mut r = Rig::new()?;
+        let mut r = Fixture::<I>::new()?;
         cash(&mut r)?;
         let (first, _) = r.publish()?;
         check_eq!(first.attempt(), RenewalAttemptV1::Automatic);
         check!(retry(&r, 3, 6).is_err(), "unaccepted is not terminal");
         if reason == UnfundedCloseReason::Expired {
-            r.world.set_now(r.offer.terms.expires_at.at);
+            r.world.set_now(r.offer.terms().expires_at().at);
         }
         let (_, patch, _) = r.close(reason)?;
         patch.bind(&mut r.state)?.apply();
-        let before = serde_json::to_vec(r.state.renewal_offers.get(token(3)).ok_or("old offer")?)?;
+        let before = serde_json::to_vec(I::book(&r.state).get(token(3)).ok_or("old offer")?)?;
         // A fresh disclosed interval is necessary after actual expiration.
-        r.offer.terms.not_before = r.world.world_ic_now();
-        r.offer.terms.expires_at.at = r.offer.terms.not_before.at.checked_add(100).ok_or("time")?;
+        *I::terms(&mut r.offer).not_before = r.world.world_ic_now();
+        I::terms(&mut r.offer).expires_at.at = r
+            .offer
+            .terms()
+            .not_before()
+            .at
+            .checked_add(100)
+            .ok_or("time")?;
         let next_contract = r.state.next_contract;
-        check!(install::offer(&r.state, &r.context(false, token(6)), r.offer.clone()).is_err());
+        check!(
+            install::offer::<I>(&r.state, &r.context(false, token(6)), r.offer.clone()).is_err()
+        );
         let second = publish_retry(&mut r, 3, 6)?;
         check_eq!(
             second.attempt(),
@@ -74,7 +96,7 @@ fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> Te
         check_ne!(second.contract(), first.contract());
         check_ne!(second.consent_hash(), first.consent_hash());
         check_eq!(
-            serde_json::to_vec(r.state.renewal_offers.get(token(3)).ok_or("old offer")?)?,
+            serde_json::to_vec(I::book(&r.state).get(token(3)).ok_or("old offer")?)?,
             before
         );
         check!(
@@ -86,8 +108,8 @@ fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> Te
         publish_retry(&mut r, 6, 8)?;
         let mut docs = all_documents(&r)?;
         docs.reverse();
-        r.state.renewal_offers = cold(&r, &docs)?;
-        let audit = r.state.renewal_audit()?;
+        *I::book_mut(&mut r.state) = cold(&r, &docs)?;
+        let audit = audit::read::<I>(&r.state)?;
         check_eq!(audit.len(), 3);
         let row = audit.get(token(8))?;
         check_eq!(row.format(), 2);
@@ -106,25 +128,25 @@ fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> Te
     Ok(())
 }
 
-#[test]
-fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_proof() -> TestResult
-{
-    let (mut r, first, _) = funded(true)?;
+pub(crate) fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_proof<
+    I: Rig,
+>() -> TestResult {
+    let (mut r, first, _) = funded::<I>(true)?;
     check!(
         retry(&r, 3, 6).is_err(),
         "funded without terminal is not retryable"
     );
     let prep = prepared(&r, first.clone(), Transition::Refund, 5)?;
     install_money(&mut r, prep)?;
-    let old = r.state.fold.renewal_receipts.get(token(3))?.clone();
+    let old = I::receipts(&r.state.fold).get(token(3))?.clone();
     let offered = publish_retry(&mut r, 3, 6)?;
     let second = request(&offered);
     let prep = prepared(&r, second.clone(), Transition::Fund, 7)?;
     install_money(&mut r, prep)?;
     let prep = prepared(&r, second, Transition::Grant, 8)?;
     install_money(&mut r, prep)?;
-    check_eq!(r.state.fold.renewal_receipts.get(token(3))?, &old);
-    let current = r.state.fold.renewal_receipts.get(token(6))?;
+    check_eq!(I::receipts(&r.state.fold).get(token(3))?, &old);
+    let current = I::receipts(&r.state.fold).get(token(6))?;
     check_ne!(old.funding().hold(), current.funding().hold());
     check_eq!(
         old.terminal().ok_or("old refund")?.outcome(),
@@ -140,49 +162,45 @@ fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_
     );
     let mut docs = all_documents(&r)?;
     docs.reverse();
-    r.state.renewal_offers = cold(&r, &docs)?;
+    *I::book_mut(&mut r.state) = cold(&r, &docs)?;
     check_eq!(
-        r.state
-            .renewal_audit()?
+        audit::read::<I>(&r.state)?
             .offers()
             .collect::<Result<Vec<_>, _>>()?
             .len(),
         2
     );
-    check!(OfferBook::from_documents(&r.state.snapshot, &docs).is_err());
+    check!(OfferBook::<I>::from_documents(&r.state.snapshot, &docs).is_err());
     let mut replay = crate::fold::FoldState::default();
     let mut txs = r.state.transactions.values().collect::<Vec<_>>();
     txs.sort_by_key(|tx| tx.journal_seq);
     for tx in txs {
         replay.fold_entry(tx.journal_seq, tx);
     }
-    replay.renewal_receipts.finish_replay()?;
+    I::receipts_mut(&mut replay).finish_replay()?;
     check_eq!(replay, r.state.fold);
-    OfferBook::from_documents_with_renewals(&r.state.snapshot, &docs, &replay.renewal_receipts)?;
+    OfferBook::<I>::from_documents_with_renewals(&r.state.snapshot, &docs, I::receipts(&replay))?;
     Ok(())
 }
 
-#[test]
-fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody() -> TestResult {
-    let (mut r, first, _) = funded(false)?;
+pub(crate) fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody<
+    I: Rig,
+>() -> TestResult {
+    let (mut r, first, _) = funded::<I>(false)?;
     let prep = prepared(&r, first, Transition::Refund, 5)?;
     install_money(&mut r, prep)?;
-    let first_contract = r
-        .state
-        .renewal_offers
-        .get(token(3))
-        .ok_or("prior row")?
-        .contract;
+    let first_contract = I::book(&r.state).get(token(3)).ok_or("prior row")?.contract;
+    let stranger = I::stranger(&mut r)?;
     let state = r.state.clone();
     let offer = r.offer.clone();
     for case in 0..8 {
         r.state = state.clone();
         r.offer = offer.clone();
         match case {
-            0 => r.offer.basis.product_digest = DefinitionDigest::from_bytes([33; 32]),
-            1 => r.offer.basis.predecessor_generation = 2,
-            2 => r.offer.terms.buyer = r.offer.terms.seller.into(),
-            3 => r.state.fold.renewal_receipts = receipt::RenewalReceiptAudit::default(),
+            0 => *I::basis(&mut r.offer).product_digest = DefinitionDigest::from_bytes([33; 32]),
+            1 => *I::basis(&mut r.offer).predecessor_generation = 2,
+            2 => *I::terms(&mut r.offer).buyer = stranger.into(),
+            3 => *I::receipts_mut(&mut r.state.fold) = receipt::RenewalReceiptAudit::<I>::default(),
             4 => {
                 let mut c = r
                     .state
@@ -193,10 +211,10 @@ fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody
                 c.revision = c.revision.checked_add(1).ok_or("revision")?;
                 r.state.snapshot.put_contract(c);
             }
-            5 => r.offer.terms.title_revision = 2,
-            6 => r.offer.terms.expires_at = r.world.world_ic_now(),
+            5 => *I::terms(&mut r.offer).title_revision = 2,
+            6 => *I::terms(&mut r.offer).expires_at = r.world.world_ic_now(),
             7 => {
-                r.offer.terms.not_before.clock = mush_core::ClockRef::WorldIc {
+                I::terms(&mut r.offer).not_before.clock = mush_core::ClockRef::WorldIc {
                     generation: u64::MAX,
                 }
             }
@@ -208,9 +226,9 @@ fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody
     r.offer = offer;
     let mut context = r.context(false, token(6));
     context.actor = GOD;
-    check!(install::retry(&r.state, &context, r.offer.clone(), token(3)).is_err());
+    check!(install::retry::<I>(&r.state, &context, r.offer.clone(), token(3)).is_err());
     let (_, patch, _) = retry(&r, 3, 6)?;
-    r.state.fold.renewal_receipts = receipt::RenewalReceiptAudit::default();
+    *I::receipts_mut(&mut r.state.fold) = receipt::RenewalReceiptAudit::<I>::default();
     check!(
         patch
             .recheck_in(&r.state, &r.context(false, token(6)))
@@ -230,19 +248,20 @@ fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody
     Ok(())
 }
 
-#[test]
-fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attempts() -> TestResult {
-    let mut r = Rig::new()?;
+pub(crate) fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attempts<
+    I: Rig,
+>() -> TestResult {
+    let mut r = Fixture::<I>::new()?;
     cash(&mut r)?;
     r.publish()?;
-    let old = r.state.renewal_offers.get(token(3)).ok_or("old")?;
+    let old = I::book(&r.state).get(token(3)).ok_or("old")?;
     // Original serializer field order and omission are retained exactly.
     #[derive(serde::Serialize)]
-    struct Original<'a> {
+    struct Original<'a, O> {
         format: u16,
         operation: CommitToken,
         action: &'a DefinitionRef,
-        offer: &'a RenewalOffer,
+        offer: &'a O,
         contract: ContractId,
         consent_hash: [u8; 32],
         created_at_ic: &'a ClockStamp,
@@ -264,7 +283,7 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
     let old_value = serde_json::to_value(old)?;
     close_at(&mut r, 3, 4)?;
     publish_retry(&mut r, 3, 6)?;
-    let new = r.state.renewal_offers.get(token(6)).ok_or("new")?;
+    let new = I::book(&r.state).get(token(6)).ok_or("new")?;
     let new_value = serde_json::to_value(new)?;
     check_eq!(new.format, 2);
     for mut value in [old_value.clone(), new_value.clone()] {
@@ -272,7 +291,7 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
             .as_object_mut()
             .ok_or("object")?
             .insert("attempt".into(), serde_json::Value::Null);
-        check!(serde_json::from_value::<OfferRecord>(value).is_err());
+        check!(serde_json::from_value::<OfferRecord<I>>(value).is_err());
     }
     for (mut value, attempt) in [
         (
@@ -292,7 +311,7 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
         } else {
             obj.remove("attempt");
         }
-        let row: OfferRecord = serde_json::from_value(value)?;
+        let row: OfferRecord<I> = serde_json::from_value(value)?;
         check!(row.validate().is_err());
     }
     let bytes = serde_json::to_string(new)?;
@@ -301,24 +320,22 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
         "\"attempt\":{\"kind\":\"automatic\"},\"attempt\":",
         1,
     );
-    check!(serde_json::from_str::<OfferRecord>(&duplicate).is_err());
+    check!(serde_json::from_str::<OfferRecord<I>>(&duplicate).is_err());
     Ok(())
 }
 
-#[test]
-fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -> TestResult {
-    let mut r = Rig::new()?;
+pub(crate) fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links<I: Rig>()
+-> TestResult {
+    let mut r = Fixture::<I>::new()?;
     cash(&mut r)?;
     r.publish()?;
     close_at(&mut r, 3, 4)?;
     publish_retry(&mut r, 3, 6)?;
     close_at(&mut r, 6, 7)?;
     publish_retry(&mut r, 6, 8)?;
-    let rows = r
-        .state
-        .renewal_offers
+    let rows = I::book(&r.state)
         .operations()
-        .map(|op| r.state.renewal_offers.get(op).cloned().ok_or("row"))
+        .map(|op| I::book(&r.state).get(op).cloned().ok_or("row"))
         .collect::<Result<Vec<_>, _>>()?;
     let baseline = all_documents(&r)?;
     cold(&r, &baseline)?;
@@ -350,8 +367,10 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
                     reason: UnfundedCloseReason::Declined,
                 });
             }
-            2 => second.offer.basis.product_digest = DefinitionDigest::from_bytes([91; 32]),
-            3 => second.offer.terms.buyer = ObjId(u32::MAX).into(),
+            2 => {
+                *I::basis(&mut second.offer).product_digest = DefinitionDigest::from_bytes([91; 32])
+            }
+            3 => *I::terms(&mut second.offer).buyer = ObjId(u32::MAX).into(),
             4 => second.created_at_utc = 999,
             5 => second.closure = None,
             6 => {
@@ -372,29 +391,29 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
             row.validate()?;
             snapshot.put_contract(contract(row)?);
             row.verify_documents(&snapshot)?;
-            docs.push((history::key(row.operation), serde_json::to_vec(row)?));
+            docs.push((history::key::<I>(row.operation), serde_json::to_vec(row)?));
         }
         docs.reverse();
         check!(
-            OfferBook::from_documents_with_renewals(
+            OfferBook::<I>::from_documents_with_renewals(
                 &snapshot,
                 &docs,
-                &r.state.fold.renewal_receipts
+                I::receipts(&r.state.fold)
             )
             .is_err(),
             "linked corruption case {case}"
         );
     }
     let mut missing = baseline.clone();
-    missing.retain(|(key, _)| key != &history::key(token(3)));
+    missing.retain(|(key, _)| key != &history::key::<I>(token(3)));
     check!(cold(&r, &missing).is_err());
     let mut without_root = r.state.snapshot.clone();
-    without_root.remove_contract(r.state.renewal_offers.get(token(3)).ok_or("root")?.contract);
+    without_root.remove_contract(I::book(&r.state).get(token(3)).ok_or("root")?.contract);
     check!(
-        OfferBook::from_documents_with_renewals(
+        OfferBook::<I>::from_documents_with_renewals(
             &without_root,
             &missing,
-            &r.state.fold.renewal_receipts
+            I::receipts(&r.state.fold)
         )
         .is_err(),
         "orphan must refuse even without an orphan contract"
@@ -405,97 +424,81 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
     Ok(())
 }
 
-#[test]
-fn newer_automatic_predecessor_prevents_returning_to_old_retry_head() -> TestResult {
-    let mut r = Rig::new()?;
+pub(crate) fn newer_automatic_predecessor_prevents_returning_to_old_retry_head<I: Rig>()
+-> TestResult {
+    let mut r = Fixture::<I>::new()?;
     cash(&mut r)?;
     r.publish()?;
     close_at(&mut r, 3, 4)?;
     let old = r.offer.clone();
-    r.offer.basis.predecessor_generation = 2;
-    r.offer.basis.next_generation = 3;
+    *I::basis(&mut r.offer).predecessor_generation = 2;
+    *I::basis(&mut r.offer).next_generation = 3;
     // This is only an E4 economic fixture. F3 separately must prove the actual
     // commercial current generation and prior successful grant.
-    let (_, patch, _) = install::offer(&r.state, &r.context(false, token(6)), r.offer.clone())?;
+    let (_, patch, _) =
+        install::offer::<I>(&r.state, &r.context(false, token(6)), r.offer.clone())?;
     patch.bind(&mut r.state)?.apply();
     r.offer = old;
     check!(retry(&r, 3, 7).is_err());
-    check!(install::offer(&r.state, &r.context(false, token(7)), r.offer.clone()).is_err());
+    check!(install::offer::<I>(&r.state, &r.context(false, token(7)), r.offer.clone()).is_err());
     let mut docs = all_documents(&r)?;
     docs.reverse();
-    r.state.renewal_offers = cold(&r, &docs)?;
+    *I::book_mut(&mut r.state) = cold(&r, &docs)?;
     check!(retry(&r, 3, 7).is_err());
     Ok(())
 }
 
-#[test]
-fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> TestResult {
-    let mut r = Rig::new()?;
-    r.six_roles()?;
+pub(crate) fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap<I: Rig>()
+-> TestResult {
+    let mut r = Fixture::<I>::new()?;
+    I::widen(&mut r)?;
     r.publish()?;
-    let original = r
-        .state
-        .renewal_offers
-        .get(token(3))
-        .ok_or("origin")?
-        .clone();
+    let original = I::book(&r.state).get(token(3)).ok_or("origin")?.clone();
     // Pure maximum-shape sizing, not an authority/current-account fixture.
     // Find the actual old validator boundary using a permitted JSON
     // string field; the fixed identity and generation widths are maximized.
     let mut original = original;
     original.contract = ContractId(u64::MAX);
-    original.offer.basis.licence = u64::MAX;
-    original.offer.basis.predecessor_generation = u64::MAX - 1;
-    original.offer.basis.next_generation = u64::MAX;
-    original.offer.terms.price = Amount::from_minor(i64::MAX);
-    original.offer.terms.buyer = ObjId(u32::MAX).into();
-    original.offer.terms.seller = ObjId(u32::MAX - 1);
-    original.offer.terms.charter = ObjId(u32::MAX - 2);
-    original.offer.terms.title_revision = u64::MAX;
-    original.offer.terms.payer = AccountId(u64::MAX);
-    original.offer.terms.remainder.account = AccountId(u64::MAX - 1);
-    original.offer.terms.remainder.owner = PrincipalId::Object(original.offer.terms.seller);
-    original
-        .offer
-        .terms
+    *I::basis(&mut original.offer).licence = u64::MAX;
+    *I::basis(&mut original.offer).predecessor_generation = u64::MAX - 1;
+    *I::basis(&mut original.offer).next_generation = u64::MAX;
+    *I::terms(&mut original.offer).price = Amount::from_minor(i64::MAX);
+    *I::terms(&mut original.offer).buyer = ObjId(u32::MAX).into();
+    *I::terms(&mut original.offer).charter = ObjId(u32::MAX - 2);
+    *I::terms(&mut original.offer).title_revision = u64::MAX;
+    *I::terms(&mut original.offer).payer = AccountId(u64::MAX);
+    I::terms(&mut original.offer).remainder.account = AccountId(u64::MAX - 1);
+    I::terms(&mut original.offer)
         .registry
         .recipient
         .as_mut()
         .ok_or("registry")?
         .account = AccountId(u64::MAX - 2);
-    original
-        .offer
-        .terms
+    I::terms(&mut original.offer)
         .venue
         .as_mut()
         .and_then(|v| v.recipient.as_mut())
         .ok_or("venue")?
         .account = AccountId(u64::MAX - 3);
-    for (ordinal, parent) in original.offer.terms.parents.iter_mut().enumerate() {
-        parent.charter = ObjId(u32::MAX - 3 - u32::try_from(ordinal)?);
-        let title = parent.title.as_mut().ok_or("parent title")?;
-        title.title_revision = u64::MAX;
-        title.recipient.account = AccountId(u64::MAX - 4 - u64::try_from(ordinal)?);
-        title.recipient.owner = PrincipalId::Object(ObjId(u32::MAX - 10 - u32::try_from(ordinal)?));
-    }
-    original.offer.terms.not_before = ClockStamp {
+    I::widest(&mut original.offer)?;
+    *I::terms(&mut original.offer).not_before = ClockStamp {
         clock: mush_core::ClockRef::WorldIc {
             generation: u64::MAX,
         },
         at: i64::MAX - MAX_RENEWAL_OFFER_IC_SECONDS,
     };
-    original.offer.terms.expires_at = ClockStamp {
-        clock: original.offer.terms.not_before.clock.clone(),
+    *I::terms(&mut original.offer).expires_at = ClockStamp {
+        clock: original.offer.terms().not_before().clock.clone(),
         at: i64::MAX,
     };
-    original.created_at_ic = original.offer.terms.not_before.clone();
+    original.created_at_ic = original.offer.terms().not_before().clone();
     original.created_at_utc = i64::MAX;
     let mut low = 0usize;
     let mut high = history::MAX_RECORD_BYTES;
     while low < high {
         let mid = low + (high - low).div_ceil(2);
         let mut row = original.clone();
-        row.offer.terms.instrument =
+        *I::terms(&mut row.offer).instrument =
             InstrumentId::new(format!("cr{}", "a".repeat(mid))).ok_or("instrument")?;
         row.consent_hash = contract(&row)?.consent_hash;
         if row.validate().is_ok() {
@@ -504,13 +507,14 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
             high = mid - 1;
         }
     }
-    original.offer.terms.instrument =
+    *I::terms(&mut original.offer).instrument =
         InstrumentId::new(format!("cr{}", "a".repeat(low))).ok_or("instrument")?;
     original.consent_hash = contract(&original)?.consent_hash;
     original.validate()?;
     let mut oversized = original.clone();
-    oversized.offer.terms.instrument =
-        InstrumentId::new(format!("{}a", original.offer.terms.instrument)).ok_or("instrument")?;
+    *I::terms(&mut oversized.offer).instrument =
+        InstrumentId::new(format!("{}a", original.offer.terms().instrument()))
+            .ok_or("instrument")?;
     oversized.consent_hash = contract(&oversized)?.consent_hash;
     check!(
         oversized.validate().is_err(),
@@ -543,7 +547,10 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
         terminal.validate()?;
         let actual = contract(&terminal)?;
         let writes = vec![
-            crate::registry_filing::json_write(history::key(terminal.operation).into(), &terminal)?,
+            crate::registry_filing::json_write(
+                history::key::<I>(terminal.operation).into(),
+                &terminal,
+            )?,
             crate::registry_filing::json_write(
                 crate::api::contract_key(terminal.contract),
                 &actual,
@@ -562,5 +569,24 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
     check_eq!(history::MAX_RECORD_BYTES, 8192);
     check_eq!(history::MAX_CONTRACT_BYTES, 8192);
     check_eq!(history::FUTURE_RESERVE_BYTES, 2048);
+    Ok(())
+}
+
+/// A retry stays on the line of the offer it follows: the same lineage for the personal
+/// issuer, the same organisation and scope for the House. The other-line offer is good in
+/// every other way (the same basis, buyer, charter and instrument, and the issuer current),
+/// and a first offer of it would be accepted.
+pub(crate) fn a_retry_on_another_line_of_the_issuer_is_refused<I: Rig>() -> TestResult {
+    let mut r = Fixture::<I>::new()?;
+    cash(&mut r)?;
+    r.publish()?;
+    close_at(&mut r, 3, 4)?;
+    retry(&r, 3, 6)?;
+    I::other_line(&mut r)?;
+    r.offer.terms().check_current(&r.state, &r.world)?;
+    check!(retry(&r, 3, 6).is_err(), "a retry on another line");
+    let mut fresh = r.offer.clone();
+    *I::basis(&mut fresh).licence = 8;
+    install::offer::<I>(&r.state, &r.context(false, token(7)), fresh)?;
     Ok(())
 }

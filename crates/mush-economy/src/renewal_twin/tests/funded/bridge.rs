@@ -3,11 +3,11 @@
 //! Actual owner images and replay joins used by the production boot helper.
 //! These do not replace the paired Roll/Market licence audits.
 use super::*;
-use crate::managed_renewal::bridge;
+use crate::renewal_twin::bridge;
 use mush_core::ModuleBootData;
 use std::collections::HashMap;
 
-fn actual_fold(r: &Rig) -> crate::fold::FoldState {
+fn actual_fold<I: Rig>(r: &Fixture<I>) -> crate::fold::FoldState {
     let mut fold = crate::fold::FoldState::default();
     let mut entries = r.state.transactions.values().collect::<Vec<_>>();
     entries.sort_by_key(|tx| tx.journal_seq);
@@ -16,8 +16,8 @@ fn actual_fold(r: &Rig) -> crate::fold::FoldState {
     }
     fold
 }
-fn projections(
-    r: &Rig,
+fn projections<I: Rig>(
+    r: &Fixture<I>,
 ) -> (
     BTreeMap<ContractId, EconomicContract>,
     BTreeMap<crate::HoldId, crate::record::Hold>,
@@ -41,38 +41,34 @@ fn ordinary() -> mush_testkit::TestWorld {
         Box::new(crate::EconomyModule::new()),
     ])
 }
-#[test]
-fn actual_default_boot_proves_absence_without_new_serialized_history() -> TestResult {
-    check!(
-        EconomyStore::default()
-            .require_no_renewal_history()
-            .is_err()
-    );
+pub(crate) fn actual_default_boot_proves_absence_without_new_serialized_history<I: Rig>()
+-> TestResult {
+    check!(I::absent(&EconomyStore::default()).is_err());
     let world = ordinary();
     let state = world
         .world()
         .module_state::<EconomyStore>()
         .ok_or("store")?;
-    state.require_no_renewal_history()?;
+    I::absent(state)?;
     check!(
-        state.renewal_audit().is_err(),
+        audit::read::<I>(state).is_err(),
         "disabled empty boot is not combined renewal activation"
     );
     check!(
         serde_json::to_value(&state.fold)?
-            .get("renewal_receipts")
+            .get(I::FOLD_KEY)
             .is_none()
     );
     let mut frozen = state.clone();
     frozen.frozen = true;
-    check!(frozen.require_no_renewal_history().is_err());
+    check!(I::absent(&frozen).is_err());
     Ok(())
 }
-#[test]
-fn disabled_actual_boot_refuses_retained_offer_before_any_healing_write() -> TestResult {
-    let mut r = Rig::new()?;
+pub(crate) fn disabled_actual_boot_refuses_retained_offer_before_any_healing_write<I: Rig>()
+-> TestResult {
+    let mut r = Fixture::<I>::new()?;
     let (_, writes) = r.publish()?;
-    let kv = documents(&writes)?
+    let kv = documents::<I>(&writes)?
         .into_iter()
         .map(|(key, bytes)| Ok((key.into(), serde_json::from_slice(&bytes)?)))
         .collect::<TestResult<Vec<_>>>()?;
@@ -92,23 +88,22 @@ fn disabled_actual_boot_refuses_retained_offer_before_any_healing_write() -> Tes
     check!(world.take_module_ops().is_empty());
     Ok(())
 }
-#[test]
-fn complete_boot_helper_joins_all_five_actual_owner_states() -> TestResult {
+pub(crate) fn complete_boot_helper_joins_all_five_actual_owner_states<I: Rig>() -> TestResult {
     for phase in 0..5 {
-        let mut r = Rig::new()?;
+        let mut r = Fixture::<I>::new()?;
         cash(&mut r)?;
         let (offer, writes) = r.publish()?;
         let req = request(&offer);
-        let mut docs = documents(&writes)?;
+        let mut docs = documents::<I>(&writes)?;
         if phase == 4 {
-            let (_, patch, writes) = install::close(
+            let (_, patch, writes) = install::close::<I>(
                 &r.state,
                 &r.context(true, token(7)),
                 req.operation,
                 UnfundedCloseReason::Declined,
             )?;
             patch.bind(&mut r.state)?.apply();
-            docs = documents(&writes)?;
+            docs = documents::<I>(&writes)?;
         } else if phase >= 1 {
             let p = prepared(&r, req.clone(), Transition::Fund, 4)?;
             install_money(&mut r, p)?;
@@ -135,7 +130,7 @@ fn complete_boot_helper_joins_all_five_actual_owner_states() -> TestResult {
         let (mut contracts, holds) = projections(&r);
         let mut snapshot = EconomySnapshot::new();
         let mut fold = actual_fold(&r);
-        let book = bridge::recover(
+        let book = bridge::recover::<I>(
             &mut fold,
             &mut snapshot,
             &mut contracts,
@@ -150,22 +145,19 @@ fn complete_boot_helper_joins_all_five_actual_owner_states() -> TestResult {
         check!(snapshot.contract(req.contract) == Some(&expected));
         check_eq!(book.operations().len(), 1);
         check_eq!(
-            fold.renewal_receipts.receipts()?.count(),
+            I::receipts(&fold).receipts()?.count(),
             usize::from((1..4).contains(&phase))
         );
         check!(book.combined_verified());
     }
     Ok(())
 }
-#[test]
-fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestResult {
-    let (mut r, req, docs) = funded(true)?;
+pub(crate) fn boot_helper_rejects_independent_missing_crossed_and_extra_images<I: Rig>()
+-> TestResult {
+    let (mut r, req, docs) = funded::<I>(true)?;
     let p = prepared(&r, req.clone(), Transition::Grant, 5)?;
     install_money(&mut r, p)?;
-    let actual_hold = r
-        .state
-        .fold
-        .renewal_receipts
+    let actual_hold = I::receipts(&r.state.fold)
         .get(req.operation)?
         .funding()
         .hold();
@@ -188,7 +180,7 @@ fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestRes
                 fold.journal_holds.remove(&actual_hold);
             }
             5 => {
-                fold.renewal_receipts = receipt::RenewalReceiptAudit::default();
+                *I::receipts_mut(&mut fold) = receipt::RenewalReceiptAudit::<I>::default();
             }
             6 => {
                 let mut extra = holds.get(&actual_hold).ok_or("hold")?.clone();
@@ -199,7 +191,7 @@ fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestRes
                 docs.push(docs.first().ok_or("document")?.clone());
             }
             8 => {
-                docs.first_mut().ok_or("document")?.0 = history::key(token(999));
+                docs.first_mut().ok_or("document")?.0 = history::key::<I>(token(999));
             }
             9 => {
                 let mut extra = holds.get(&actual_hold).ok_or("hold")?.clone();
@@ -217,7 +209,7 @@ fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestRes
         }
         let mut snapshot = EconomySnapshot::new();
         check!(
-            bridge::recover(
+            bridge::recover::<I>(
                 &mut fold,
                 &mut snapshot,
                 &mut contracts,
@@ -232,9 +224,8 @@ fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestRes
     }
     Ok(())
 }
-#[test]
-fn disabled_inventory_refuses_every_actual_evidence_source() -> TestResult {
-    let (r, _, docs) = funded(false)?;
+pub(crate) fn disabled_inventory_refuses_every_actual_evidence_source<I: Rig>() -> TestResult {
+    let (r, _, docs) = funded::<I>(false)?;
     for case in 0..5 {
         let (mut contracts, mut holds) = projections(&r);
         let mut fold = actual_fold(&r);
@@ -249,13 +240,13 @@ fn disabled_inventory_refuses_every_actual_evidence_source() -> TestResult {
             holds.clear();
         }
         if case != 3 {
-            fold.renewal_receipts = receipt::RenewalReceiptAudit::default();
+            *I::receipts_mut(&mut fold) = receipt::RenewalReceiptAudit::<I>::default();
         }
         if case != 4 {
             fold.journal_holds.clear();
         }
         check!(
-            bridge::recover(
+            bridge::recover::<I>(
                 &mut fold,
                 &mut EconomySnapshot::new(),
                 &mut contracts,
@@ -269,11 +260,11 @@ fn disabled_inventory_refuses_every_actual_evidence_source() -> TestResult {
     }
     Ok(())
 }
-#[test]
-fn renewal_checkpoint_coverage_cannot_disappear_in_disabled_mode() -> TestResult {
-    let (r, _, _) = funded(false)?;
+pub(crate) fn renewal_checkpoint_coverage_cannot_disappear_in_disabled_mode<I: Rig>() -> TestResult
+{
+    let (r, _, _) = funded::<I>(false)?;
     let mut fold = actual_fold(&r);
-    fold.renewal_receipts.finish_replay()?;
+    I::receipts_mut(&mut fold).finish_replay()?;
     let rows = r
         .state
         .transactions
@@ -287,12 +278,12 @@ fn renewal_checkpoint_coverage_cannot_disappear_in_disabled_mode() -> TestResult
             plan_hash: tx.plan_hash.iter().map(|b| format!("{b:02x}")).collect(),
         })
         .collect::<Vec<_>>();
-    check!(bridge::checkpoint_complete(&fold, &rows, true));
-    check!(!bridge::checkpoint_complete(&fold, &rows, false));
-    check!(!bridge::checkpoint_complete(&fold, &[], true));
+    check!(bridge::checkpoint_complete::<I>(&fold, &rows, true));
+    check!(!bridge::checkpoint_complete::<I>(&fold, &rows, false));
+    check!(!bridge::checkpoint_complete::<I>(&fold, &[], true));
     let empty = crate::fold::FoldState::default();
-    check!(!bridge::checkpoint_complete(&empty, &rows, false));
-    check!(bridge::checkpoint_complete(&empty, &[], false));
-    check!(!bridge::checkpoint_complete(&empty, &[], true));
+    check!(!bridge::checkpoint_complete::<I>(&empty, &rows, false));
+    check!(bridge::checkpoint_complete::<I>(&empty, &[], false));
+    check!(!bridge::checkpoint_complete::<I>(&empty, &[], true));
     Ok(())
 }

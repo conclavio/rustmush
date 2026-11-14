@@ -1404,7 +1404,563 @@ kernel's table is the purchase twins (`entitlement` 1,436, `house` 1,415), which
 
 ## CT.4
 
-Not built.
+The renewal twin in economy. Built 2026-11-14 on main `26d30dd4b` (CT.0 to CT.3 in).
+
+**The survey, before the cut.** `managed_renewal.rs` and its nine files (4,480 lines) against
+`managed_house_renewal.rs` and its nine (4,471): `diff` gives 96 hunks, 257 changed lines on the
+personal side and 248 on the House's, and everything else is the same text. File by file, and
+sorted:
+
+| File | Lines, personal and House | Hunks | (a) a rename | (b) an identity string | (c) real logic | (d) tests only |
+|---|---|---|---|---|---|---|
+| `managed_renewal.rs` | 459, 461 | 10 | 4 | 2 | 2 | 2 |
+| `audit.rs` | 147, 147 | 9 | 9 | | | |
+| `bridge.rs` | 253, 257 | 12 | 10 | 2 | | |
+| `funding.rs` | 434, 434 | 13 | 13 | | | |
+| `history.rs` | 630, 611 | 5 | 1 | 1 | 2 | 1 |
+| `install.rs` | 526, 535 | 18 | 17 | | 1 | |
+| `money_install.rs` | 557, 550 | 6 | 5 | | 1 | |
+| `receipt.rs` | 981, 981 | 1 | | 1 | | |
+| `service.rs` | 195, 195 | 1 | | 1 | | |
+| `subject.rs` | 298, 300 | 21 | 3 | 1 | 17 | |
+| **All** | 4,480, 4,471 | 96 | 62 | 8 | 23 | 3 |
+
+- *(a) A rename, 62 hunks.* Which of the store's two fields (`renewal_offers` against
+  `house_renewal_offers`, on 27 lines), which of the fold's (`renewal_receipts`, on 22), the boot latch,
+  the managed consent's variant read and built, the engine's plan guard and the closed plan's
+  name, and in the House file a local `issuer` that is the buyer under another name.
+- *(b) An identity string, 8 hunks, 14 strings:* five action ids and the service's, the journal
+  namespace, the two key prefixes, the two `protocol` names of the action payloads, the offer's
+  digest domain, the stored contract's name and the funding plan's description.
+- *(c) Real logic, 23 hunks.* Outside `subject.rs` there are six, and they are four differences:
+  the scope a contract is filed under (none, or the organisation's), the titles an offer and a
+  sale fence (the charter and each paid royalty parent's, or the charter alone; two sites), what
+  a retry must keep of the offer it follows (the lineage, or the organisation and the scope),
+  and the purchase family a transferred holder's licence was born in; the sixth hunk is the
+  personal file's export of `RenewalLineageV1`. The other seventeen are `subject.rs`: the
+  basis's one extra field, the terms' fields and the wire of the royalty parents, the payout
+  computation, the payees, and the check of the issuer's current authority.
+- *(d) Tests only, 3 hunks:* two `mod` lines, and two `#[cfg(test)]` constructors of the offer
+  book the House file did not have.
+
+Where each of doc 46 §4.3's nine sits in economy:
+
+| §4.3 | In economy | Carried by |
+|---|---|---|
+| 1, the terms and their payout | `subject.rs`, and three of the four differences above | each family's own records; `Terms::payouts` and `recipients`; `titles`, `same_line` |
+| 2, the current-authority check | `subject.rs` `check_current` | `Terms::check_current` |
+| 3, the payee | `subject.rs` (the remainder's owner and, for the House, its treasury's scope) and the contract's scope | `Terms::payouts`, `Terms::check_current`, `contract_scope` |
+| 4, the birth variant | one constant; the inverted audit check is the kernel's | `BIRTH_ROUTE` |
+| 5, buyer admission and template acceptance | not in economy (the market's `config.rs` and `offer.rs`) | — |
+| 6, the `OwnCharter` stop | not in economy (the Roll's `reader.rs`, the market's `player.rs`) | — |
+| 7, the account pairing | the payout computation: no payee is the payer's account, and one owner an account | `Terms::payouts` |
+| 8, the prerequisite audits | the kernel's. Economy's own prerequisite, that a family's renewals need its birth's purchases, is two hand-written checks in `module.rs` and stays so | — |
+| 9, the identity strings | the 14 strings of (b) | 14 associated constants |
+
+So economy's surface is, as the kernel's was, narrower than §4.3's nine: six of them are in the
+twin, a seventh (the prerequisites) is two hand-written checks outside it, and two of the
+brief's mutations (the House's buyer admission, the `OwnCharter` stop) have nothing here to
+mutate. Both files hold the same ten sentences: one refusal ("The renewal offer is
+unavailable or has changed."), the composition's refusal, two audit errors, four `serde`
+messages and the two memo lines of a grant's journal entry. The personal file alone has the two
+messages about royalty parents. Every string
+literal of the twenty production files was listed before and after: the same 80, but for one
+format string (`"{PREFIX}{}"` is `"{}{}"` with the prefix as an argument) and the empty string
+of `#[serde(bound = "")]`.
+
+**Built.** One owner, two instantiations, in `crates/mush-economy/src/`:
+
+| File | Lines | What it is |
+|---|---|---|
+| `renewal_twin.rs` | 790 | the marker, the attempt, the output, the seven `prepare_*` functions and the contract, generic over the issuer; `entry_points!` and `subject_records!` |
+| `renewal_twin/issuer.rs` | 158 | the sealed trait `Issuer`, the issuer types `Personal` and `House`, and the three record traits `Basis`, `Terms` and `Offer` |
+| `renewal_twin/{audit, bridge, funding, history, install, money_install, receipt, service}.rs` | 3,751 | the eight files of the old personal family, generic over the issuer |
+| `renewal_twin/wire.rs` | 39 | the decode helpers both `subject.rs` files had word for word |
+| `managed_renewal.rs`, `managed_house_renewal.rs` | 115, 109 | `impl Issuer for Personal` and `for House`, and the family's face (`entry_points!`) |
+| `managed_renewal/subject.rs`, `managed_house_renewal/subject.rs` | 204, 205 | each family's own three `checked!` records, its payout computation and its authority check |
+
+The twenty production files were 8,951 lines; the fifteen are 5,371.
+
+*The trait as built.* `Issuer: sealed::Sealed + Copy + Debug + Default + Eq + 'static`, in a
+module private to the crate. Fifteen associated constants, three associated types and eleven
+functions:
+
+| Item | What it carries | §4.3 |
+|---|---|---|
+| `DRAFT_ACTION`, `CLOSE_ACTION`, `FUND_ACTION`, `GRANT_ACTION`, `REFUND_ACTION`, `SERVICE_CLOSE_ACTION` | the six action ids | 9 |
+| `NAMESPACE` | the idempotency and cause namespace of the family's journal entries, and its holds' | 9 |
+| `OFFER_PREFIX`, `SERVICE_PREFIX` | the key prefixes of the offer record and the service closure | 9 |
+| `PROTOCOL`, `SERVICE_PROTOCOL` | the `protocol` name the composition checks in the action payloads | 9 |
+| `OFFER_DOMAIN` | the digest domain of an offer | 9 |
+| `CONTRACT_NAME`, `FUNDING_DESCRIPTION` | the stored contract's name; the funding plan's description, which is under the plan hash | 9 |
+| `BIRTH_ROUTE` | the purchase family a renewed licence was born in | 4 |
+| `Basis`, `Terms`, `Offer` | the family's own three records (below) | 1 |
+| `book`, `bind`, `receipts`, `receipts_mut`, `inventory_checked` | which of the store's and the fold's fields are this issuer's. The fields stay two hand-written fields each; this is the rename (a) | (a) |
+| `marker`, `consent` | this issuer's variant of the managed consent, read and built | (a) |
+| `validate` | the engine's validation under this issuer's plan guard | (a) |
+| `contract_scope(terms)` | the scope the contract is filed under | 3 |
+| `titles(terms)` | the titles an offer and a sale stand on | 1 |
+| `same_line(row, before)` | what a retry keeps of the offer it follows | 1 |
+
+The record traits are what the owner reads of an issuer's records: `Basis` (its shape check and
+four fields), `Offer` (its basis, its terms, `validate` and `digest`) and `Terms` (eight fields,
+and the three functions that are the issuer's own rules: `payouts`, `recipients` and
+`check_current`, §4.3's 1, 2, 3 and 7). Every constant holds the value its file held, byte for
+byte; two tests hold each to a literal and the snapshot holds the bytes they produce.
+
+*What stayed as two implementations, and why.*
+
+- **The two `impl Issuer` blocks.** Eight of the eleven functions are one line each: a field,
+  a variant or a guard of a closed list that stays two hand-written entries (§4.6).
+- **`subject.rs`, as doc 46 §5.1 expected.** The three records are different shapes (the
+  personal basis has the royalty chain's digest; the terms share twelve fields of fifteen and
+  fourteen), the personal payout is the entitlement purchase's `EconomicRecipe` and the
+  House's is its own, and the authority check reads a player's titles in one and the
+  organisation store in the other. What the two files had word for word (the basis's shape
+  check, the terms' window check, the offer's `decode`, `validate` and `digest`, the wire
+  helpers and the player check) is written once: `subject_records!` and `wire.rs`.
+- **No record went through a new arm of `checked!`.** The owner reads an offer through
+  `Issuer::Offer`, an associated type, and each family keeps its own `RenewalBasisV1`,
+  `RenewalOfferTermsV1` and `RenewalOffer` under the one macro, with the calls as CT.1 left
+  them. The alternative was one `RenewalOffer<I>`, which needs a generic arm in `mush-core`
+  for a record of three fields whose other two are different shapes anyway. `mush-core` is not
+  edited and CT.1's mutations did not need re-running. What it costs: the owner reads
+  `offer.terms().buyer()` where it read `offer.terms.buyer`, and a call whose only
+  issuer-typed argument is an offer cannot infer the issuer and names it
+  (`install::offer::<I>(…)`).
+- **The other records are generic**, with every field where it was. Six hold an issuer-typed
+  field and need no marker (`RenewalMarkerV1<I>` holds `I::Basis`; `OfferRecord<I>` holds
+  `I::Offer`; `Proof`, the two histories and the receipt audit hold those). Three hold nothing
+  of the issuer's but are validated against its action ids when decoded, so they carry a
+  `PhantomData<I>`: the funding receipt, the terminal receipt and the service closure. The
+  marker is `#[serde(skip)]` on the encode and their decode is the hand-written pair it always
+  was, through the same `FundingWire`, `TerminalWire` and `ClosureWire`, which are not generic.
+  Mutations F4 and F5 are what happens when the skip is not there.
+- **Seven plain names are one type under both paths**: `RenewalAttemptV1`,
+  `UnfundedCloseReason`, `RenewalOutcome`, `RenewalServiceCloseReason`, `RenewalAuditError`,
+  `RenewalMoneyRequest` and `RenewalClosureView`. They are vocabulary with public fields or
+  variants, nothing in them depends on the issuer, and the money request is built by struct
+  literal in the market, so it could not take a marker. Everything that is a proof is still a
+  type an issuer: the outputs, the receipts, the histories, the marker, the book, the receipt
+  audit, the patches, the closed plan, the composition's configuration and the audit's views.
+  Mutations X4 to X7 are the compiler refusing one issuer the other's.
+
+*The entry points.* The rest of Economy, and the Roll and the market, name the two families by
+module and by hand, as before. `entry_points!` expands in each family's file to what its callers
+name: the aliases of the generic types at the family's issuer, the shared names, the identity
+constants under their old names, seven `prepare_*` forwarders, and the seven small modules
+(`audit`, `bridge`, `history`, `install`, `money_install`, `receipt`, `service`) with the
+aliases and the five forwarders `boot.rs`, `module.rs`, `fold.rs` and `registry_filing.rs` read.
+The engine's two names for the closed plan, `ClosedRenewalPlan` and `ClosedHouseRenewalPlan`,
+are `ClosedPlan<Personal>` and `ClosedPlan<House>`.
+
+*What did not move.* In `mush-economy`, outside the two families' files and the new module,
+two files are edited: `lib.rs` (one `mod` line) and `module.rs` (two lines: the composition's
+`Configuration` literal names its marker). `registry_filing.rs`, `registry_filing/prepare.rs`,
+`boot.rs`, `engine.rs`, `fold.rs`, `sweep.rs` and `contract/managed.rs` have no diff: the
+closed lists (`EconomyRequest`, `EconomyOutput`, the plan guard, the managed-consent wire) are
+as they were. No file outside `mush-economy` is edited. No `dyn`, no function pointer and no
+callback was added.
+
+**Tests.** `cargo test -p mush-economy -- --list`, ignored tests included (there are none),
+before and after:
+
+| | Before | After |
+|---|---|---|
+| All targets (library, integration tests, doc-tests) | 809 | 881 |
+| The library's tests | 279 | 350 |
+| Under `managed_renewal::` | 52 | 61 |
+| Under `managed_house_renewal::` | 1 | 62 |
+| Under `renewal_twin::` | 0 | 1 |
+
+No name disappeared and none changed: the diff of the two sorted lists is 72 additions.
+
+- **One body, run twice.** The personal family's 51 scenarios are functions generic over the
+  issuer under `renewal_twin/`: nine in `tests.rs`, fifteen in `tests/funded.rs`, six, seven and
+  six in `tests/funded/{bridge, reoffer, service}.rs`, one in `tests/output.rs` and seven in
+  `bridge_registration_tests.rs`. `instantiate!` (one in `tests.rs`, one in
+  `bridge_registration_tests.rs`) names each as a `#[test]` in the family's own module and
+  rebuilds the personal family's module tree, so `managed_renewal::tests::funded::reoffer::<name>`
+  and the rest are the paths they always were, and `managed_house_renewal::tests::…` and
+  `managed_house_renewal::bridge_registration_tests::…` are the same 51 names, new. A body left
+  out of the list is dead code, which `-D warnings` refuses.
+- **The rig.** `Rig: Issuer` is the test-side trait (`renewal_twin/tests.rs`): the seed (a
+  world at 1000 with a buyer, the issuer's side and a charter, three zero-balance accounts and
+  an offer of 100 over 100 IC seconds), `widen` (every payee role the issuer has: six for the
+  personal issuer, three for the House), a mutable view of the fields both issuers' offers
+  have (`terms`, `basis`: the owner only reads an offer, a test rewrites one), `lapse` (the
+  seller leaves, or the organisation's charter does), `stranger`, `other_line`, `widest` and
+  `own_wire_is_strict`. `Fixture<I>` carries the issuer. `Composition: Issuer`
+  (`bridge_registration_tests.rs`) is the birth a family's registration stands on: six
+  entitlement actions, or the House filing and three House purchase actions. Each family's
+  `impl` is in its own test module; the House's is CT.0's walk fixture, moved.
+- **The CT.0 walk** was one file `include!`d by both families. It is one generic function,
+  `renewal_twin/tests/ct0_walk.rs`, called by the two snapshot tests under their old names.
+- **What the bodies no longer assume.** Where a scenario counted the personal issuer's six
+  payees or its seven journal lines it asks the rig (`ROLES`); where it reached for the seller
+  it asks for a `stranger` or for the issuer's `lapse`; the strict-wire scenario's royalty-parent
+  cases are the personal rig's `own_wire_is_strict`, and the House's refuses an offer without
+  its organisation or its scope.
+- **Added, 21 names.**
+  - `managed_renewal::tests::personal_identity_strings_hold_todays_bytes` and
+    `managed_house_renewal::tests::house_identity_strings_hold_todays_bytes`: every associated
+    constant against a literal, and the family module's old names against the constants.
+  - `renewal_twin::tests::the_issuer_seal_admits_exactly_two`, and the `compile_fail` doc-test
+    on `Issuer` (below).
+  - Six bodies run for both issuers, twelve names, each asked for by a mutation that passed
+    (below): `every_title_an_offer_stands_on_is_current_and_fenced`,
+    `an_offer_is_refused_once_the_issuers_side_lapses` and
+    `a_payee_cannot_be_the_payers_own_account` under `tests::`;
+    `every_title_a_sale_stands_on_is_current_and_fenced` and
+    `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not` under `tests::funded::`;
+    `a_retry_on_another_line_of_the_issuer_is_refused` under `tests::funded::reoffer::`.
+  - Five single-issuer tests, for the same reason (next).
+- **Single-issuer tests, and why each is single:**
+  - `managed_house_renewal::tests::a_house_offer_needs_its_organisation_scope_and_title_current`:
+    a suspended organisation, a retired scope, another organisation's scope, a title on
+    another scope and a title somebody else holds. The personal issuer has no organisation;
+    its counterpart is the titles scenario above, which runs for both.
+  - `managed_house_renewal::tests::a_house_offer_pays_its_remainder_to_the_scoped_treasury`:
+    the House's payee. The personal remainder is held to the seller by the entitlement
+    purchase's recipe, which is not this unit's.
+  - `managed_house_renewal::tests::a_house_contract_is_filed_under_the_issuers_scope` and
+    `managed_renewal::tests::a_personal_contract_is_filed_under_no_scope`: one hook, two
+    answers, each against a literal. A shared body would read the hook it is testing.
+  - `managed_renewal::tests::a_personal_offer_refuses_a_title_on_a_scope`: a personal title
+    carries no scope; a House title must.
+  - The two identity tests and the two snapshot tests are an issuer's by construction.
+  - The brief's two examples of a single-issuer scenario, the `OwnCharter` stop and the
+    House's buyer admission, are not in economy (the survey).
+
+The test files went from 4,933 lines to 5,849, the eleven new scenarios, the rig and the two
+identity tests in them.
+
+**What the House runs found.** `managed_house_renewal` had no test before CT.0's walk.
+
+- **Every one of the 51 scenarios passes for the House on the first run**, once three
+  assertions that counted the personal issuer's payees were asked of the rig. No scenario fails
+  for the House on main's own code, and nothing was fixed in production.
+- **What they did not find is the finding.** The 51 are the personal family's scenarios, so
+  they exercise what the two families share. The House's own rules (its organisation, its
+  scope, its scoped title, its treasury) had no test in the crate at all: ten mutations of
+  them passed (S7 to S14, H5, H5b, below), and on main's own files the three of those that
+  were tried pass as well. They are covered now by the House-only tests and by the scenarios
+  that run for both.
+
+**The snapshots.** `git diff --stat 26d30dd4b -- '*.snap'` is empty. Economy's seven `ct0_`
+tests pass on Windows and on Linux, the other crates' on Linux, and `renewal_personal.snap` and
+`renewal_house.snap` were never re-blessed. The snapshot stopped the unit twice on the way, both
+times in the tests and neither in the owner: the scripted pass over the walk had rewritten the
+label `"RenewalMarkerV1"` as `"RenewalMarkerV1<I>"` (sixteen lines of each file), and then
+`"RenewalOffer"` as `"I::Offer"`. Both were undone.
+
+**The seal.** `Issuer`'s supertrait is `sealed::Sealed`, a public trait in a module private to
+`renewal_twin/issuer.rs`, implemented there for `Personal` and `House`.
+
+- *From outside the crate* the trait cannot be named: the module is private. The `compile_fail`
+  example on `Issuer`'s documentation is that attempt, and runs with the crate's doc-tests.
+- *From inside the crate* the attempts were made by hand on the clone, each alone, in
+  `managed_house_renewal.rs`, with `cargo check -p mush-economy` (X1 to X3 below).
+- `the_issuer_seal_admits_exactly_two` is the census for a later edit that widens the seal
+  instead of going round it: exactly two `impl Sealed for`, both in `issuer.rs`; exactly two
+  `impl Issuer for`, one in each family's file; one `mod sealed {` with no `pub`; no `dyn`
+  beside the trait's name. It is a census of the source, not a proof.
+
+**The mutations.** Each was made alone on a throwaway clone on conclav.dev (the worktree is
+never edited, so nothing is reverted in it), economy's library tests run
+(`cargo test -p mush-economy --lib`: 333 at the first pass, 350 once the tests below were
+added), the file put back. "P" is a test under `managed_renewal::`, "H" one under
+`managed_house_renewal::`. The first pass is what the tests caught before any was added; the
+second is the same list against the tree as built.
+
+*The trait's functions, one issuer at a time, answering their neutral value.*
+
+| # | The mutation | First pass | As built | A `ct0_` test |
+|---|---|---|---|---|
+| H1 | `House::contract_scope` answers `None` | the House snapshot alone | 2 tests (H): `a_house_contract_is_filed_under_the_issuers_scope` | yes |
+| H2 | `Personal::titles` answers the charter alone | **nothing** | 2 tests (P): `every_title_an_offer_stands_on_is_current_and_fenced`, `every_title_a_sale_stands_on_is_current_and_fenced` | no |
+| H3 | `House::titles` answers nothing | H `actual_before_images_and_identity_refuse_stale_bind…` | 3 tests (H): `every_title_an_offer_stands_on_is_current_and_fenced`, `every_title_a_sale_stands_on_is_current_and_fenced` | no |
+| H4 | `Personal::same_line` answers `true` | **nothing** | 1 test (P): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| H5 | `House::same_line` answers `true` | **nothing** | 1 test (H): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| H5b | `House::same_line` no longer compares the scope | **nothing** | 1 test (H): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| H5c | `House::same_line` no longer compares the organisation | **nothing** | **nothing** | no |
+| H6 | `Personal::inventory_checked` answers `true` | 3 tests: both personal absence tests, **and the House's default-boot test** (below) | 2 tests (P): `renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_order`, `actual_default_boot_proves_absence_without_new_serialized_history` | no |
+| H7 | `House::inventory_checked` answers `true` | H `renewal_bridge_resolves_all_actions…` | 2 tests (H): `renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_order`, `actual_default_boot_proves_absence_without_new_serialized_history` | no |
+| H8 | `Personal::marker` answers `None` | 23 personal tests, the snapshot among them | 25 tests (P): `actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funded_shape`, `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not`, … | yes |
+| H9 | `House::marker` answers `None` | 23 House tests, the snapshot among them | 25 tests (H): `actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funded_shape`, `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not`, … | yes |
+| X4 to X7 | the personal issuer handed the House's book, receipts, consent or plan guard (`book`, `receipts`, `consent`, `validate`) | does not compile: `error[E0308]: mismatched types`, four times | the same | — |
+
+`bind` and `receipts_mut` have no neutral value and return the same fields as `book` and
+`receipts`; the compiler refuses the swap as it does X4 and X6.
+
+*The terms' own rules (`subject.rs`), §4.3's 1, 2, 3 and 7.*
+
+| # | The mutation | First pass | As built |
+|---|---|---|---|
+| S1 | personal `check_current` answers `Ok` after the shape check | 2 personal tests | 7 tests (P): `a_personal_offer_refuses_a_title_on_a_scope`, `an_offer_is_refused_once_the_issuers_side_lapses`, … |
+| S2 | House `check_current` answers `Ok` after the shape check | 2 House tests | 8 tests (H): `a_house_offer_needs_its_organisation_scope_and_title_current`, `a_house_offer_pays_its_remainder_to_the_scoped_treasury`, … |
+| S3 | personal: the seller need not be a present player | **nothing** | **nothing** |
+| S4 | personal: the seller need not hold the charter's title | 2 personal tests | 5 tests (P): `a_personal_offer_refuses_a_title_on_a_scope`, `every_title_an_offer_stands_on_is_current_and_fenced`, … |
+| S5 | personal: a royalty parent's title is not checked | **nothing** | 2 tests (P): `every_title_an_offer_stands_on_is_current_and_fenced`, `every_title_a_sale_stands_on_is_current_and_fenced` |
+| S6 | personal: a title on a scope is accepted as the seller's | **nothing** | 1 test (P): `a_personal_offer_refuses_a_title_on_a_scope` |
+| S7 | House: the organisation need not be active | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S8 | House: the scope need not be active | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S8b | House: the scope need not be the organisation's | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S9 | House: the organisation need not hold the charter's title | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S10 | House: the title need not be on the offer's scope | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S11 | the payee: the House remainder need not be the organisation's | **nothing** | 1 test (H): `a_house_offer_pays_its_remainder_to_the_scoped_treasury` |
+| S12 | the payee: the House remainder account need not be the scoped treasury | **nothing** | 1 test (H): `a_house_offer_pays_its_remainder_to_the_scoped_treasury` |
+| S13 | the account pairing: a House payee may be the payer's own account | **nothing** | 1 test (H): `a_payee_cannot_be_the_payers_own_account` |
+| S14 | House: the charter may be leaving the game | **nothing** | 2 tests (H): `an_offer_is_refused_once_the_issuers_side_lapses`, `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not` |
+
+*The identity constants, one of each kind.* Each fails its issuer's identity test and its
+issuer's snapshot, and nothing else unless said: the shared rig reads the constants, so an
+ordinary scenario moves with them (CT.3's warning).
+
+| # | The mutation | What failed | A `ct0_` test |
+|---|---|---|---|
+| C1 | the namespace, personal: `.v2` | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C2 | the namespace, House, given the personal value | 6 tests (2 P, 4 H): `renewal_six_payee_capture_and_refund_have_exact_real_journal_provenance`, `actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_proof` | yes |
+| C3 | an action id, House: `fund_house_mind_renewal2` | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C4 | an action id, personal: the service close | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C5 | a digest domain, personal: the offer's, `.v2` | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C6 | a digest domain, House: the offer's, `.v2` | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C7 | a key prefix, House: the offer record's | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C8 | a key prefix, personal: the service closure's | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C9 | the `protocol` name, House actions | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C10 | the `protocol` name, personal service action | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C11 | the contract's name, House | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C12 | the funding plan's description, personal | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C13 | the birth route, personal given the House's | 1 test (P): `personal_identity_strings_hold_todays_bytes` | no |
+| C14 | the birth route, House given the personal one | 1 test (H): `house_identity_strings_hold_todays_bytes` | no |
+
+*The hooks' call sites in the one implementation, and the records.*
+
+| # | The mutation | First pass | As built | A `ct0_` test |
+|---|---|---|---|---|
+| G1 | `require_link` no longer asks the issuer's line | **nothing** | 2 tests (1 P, 1 H): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| G2 | an offer fences the charter's title alone | **nothing** | 1 test (P): `every_title_an_offer_stands_on_is_current_and_fenced` | no |
+| G3 | a sale fences the charter's title alone | **nothing** | 1 test (P): `every_title_a_sale_stands_on_is_current_and_fenced` | no |
+| G4 | the contract is filed under no scope | the House snapshot alone | 2 tests (H): `a_house_contract_is_filed_under_the_issuers_scope` | yes |
+| G5 | the holder basis always asks for an entitlement birth | **nothing** | **nothing** | no |
+| G6 | the absence proof no longer needs the boot latch | 4 tests, two an issuer | 4 tests (2 P, 2 H): `renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_order`, `actual_default_boot_proves_absence_without_new_serialized_history` | no |
+| G7 | an offer no longer checks the issuer's current authority | 2 tests, one an issuer | 9 tests (4 P, 5 H): `a_house_offer_needs_its_organisation_scope_and_title_current`, `a_house_offer_pays_its_remainder_to_the_scoped_treasury`, … | no |
+| G8 | a sale no longer checks the issuer's current authority | 2 tests, one an issuer | 6 tests (3 P, 3 H): `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not`, `every_title_a_sale_stands_on_is_current_and_fenced`, … | no |
+| F1 | a field moved: `OfferRecord`'s `contract` and `consent_hash` change places | 4 tests: both snapshots, both `legacy_wire_is_exact…` | 4 tests (2 P, 2 H): `legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attempts` | yes, two |
+| F2 | a field moved: `RenewalMarkerV1`'s `operation` and `effect` | both snapshots | 2 tests (1 P, 1 H): `ct0_renewal_house_snapshot`, `ct0_renewal_personal_snapshot` | yes, two |
+| F3 | a field moved: `RenewalFundingReceiptV1`'s `commit` and `action` | both snapshots | 2 tests (1 P, 1 H): `ct0_renewal_house_snapshot`, `ct0_renewal_personal_snapshot` | yes, two |
+| F4 | the funding receipt's marker is no longer skipped by serde (`"issuer":null`) | 10 tests, five an issuer, both snapshots among them | 10 tests (5 P, 5 H): `maximum_primitive_receipts_fit_their_real_strict_codecs`, `renewal_checkpoint_join_requires_both_actual_money_rows_even_after_hot_eviction`, … | yes, two |
+| F5 | the service closure's marker is no longer skipped | 6 tests, three an issuer, both snapshots among them | 6 tests (3 P, 3 H): `service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay`, `service_closed_offer_allows_only_fresh_explicit_retry_and_retains_old_proof` | yes, two |
+
+*The seal, with `cargo check -p mush-economy`.*
+
+| # | The attempt, in `managed_house_renewal.rs` | The compiler's answer |
+|---|---|---|
+| X1 | `struct Guild; impl Issuer for Guild {}` | `error[E0277]: the trait bound `Guild: Sealed` is not satisfied`, beside E0046 for the items the attempt leaves out |
+| X2 | `impl crate::renewal_twin::issuer::sealed::Sealed for Guild {}` | `error[E0603]: module `issuer` is private` |
+| X3 | a second `impl Issuer for crate::renewal_twin::Personal {}` | `error[E0119]: conflicting implementations of trait `Issuer` for type `Personal`` |
+
+Against the brief's list: every function of the trait (H1 to H9, X4 to X7, and S1, S2 for the
+terms'); a family id, an action id, a digest domain and a key prefix (C1 to C8), each failing
+an identity test and a `ct0_` test; the payee (S11, S12, and H1 and G4 for the contract's
+scope); the account pairing (S13); a field moved in a generic record (F1 to F3). The House's
+buyer admission and the `OwnCharter` stop are not in economy; the nearest economy has to an
+admission is the House's authority check (S7 to S10, S14) and to a stop the issuer's lapse.
+
+- **Twenty-one mutations passed at first:** H2, H4, H5, H5b, H5c; S3, S5 to S14 and S8b;
+  G1, G2, G3, G5. Every one is a check of what an issuer's side must be (its titles, its line,
+  its organisation, scope, treasury and payees), and none is a shared check: the 51 scenarios
+  the House now runs were written for what the families share, and pass for both.
+- **They are older than this unit.** Thirteen of them were made on main's own files (a second
+  clone at `26d30dd4b`, never synced). The six personal ones that can be made there (H2 and G2,
+  G3, H4 and G1, S3, S5, S6) pass main's 279 tests, and so do the five House ones tried (H5,
+  S7, S12, S13 and G7's House half), which on main have only CT.0's walk to fail. G7 and G8
+  for the personal family fail one test each on main, as they did here at first. The twin did not open the
+  gaps: it made them cheap to find, since every difference is now a named function or a line
+  of an issuer's file.
+- **What closed them** is under Tests. Each new test was then shown to fail under its
+  mutation (the "As built" column).
+- **Not closed: three.** H5c and S3 are checks held twice ("Found on the way"), which
+  no test can catch alone while the other copy stands. G5, the birth route of a transferred
+  holder's basis, is reached only by record formats 3 and 4, which need a settled paid resale
+  in the same store; it is owed with CT.0's holder attempts on the real path, and the two
+  identity tests hold the constant meanwhile (C13, C14).
+- **A House test failed under a personal mutation (H6).** One shared scenario,
+  `actual_default_boot_proves_absence_without_new_serialized_history`, still called the
+  personal family's public absence method and read the personal fold key when run for the
+  House: a line the generic pass over the tests had left alone, in a test that passed for
+  both. It asks the rig now (`Rig::absent`, `Rig::FOLD_KEY`), and the shared bodies were
+  searched for any other name that is one family's. A hook mutation that fails the *other*
+  issuer's test is the sign to look for.
+
+**Divergences.**
+
+- **The trait is §5.1's sketch with the store added and the stop taken out.** `FAMILY`,
+  `OFFER_DOMAIN`, the action ids and `Terms` are there. `authority` and `payees` are functions
+  of the terms (`Terms::check_current`, `Terms::payouts`), because that is where both files had
+  them. `stop` is not there: economy has no `OwnCharter`. Eight functions the sketch did not
+  have say which entry of a closed list is the issuer's.
+- **Three modules, not one**, as in the kernel: one implementation module and two family
+  modules, because every caller and every test path names `managed_renewal::` and
+  `managed_house_renewal::`.
+- **The records are an associated type, not a generic record** (above), so `mush-core` and the
+  wire macro are untouched.
+- **Seven plain names are shared by both families** (above). A request or a close reason built
+  for one family is, to the compiler, the other's too. Nothing new is accepted at run time: the
+  operation is looked up in the issuer's own book and the action is matched against the
+  issuer's own id.
+- **Two macros.** `entry_points!` is the two instantiations, as in the kernel. `subject_records!`
+  is not part of the owner: it gives two concrete records one text for the inherent methods
+  their callers reach by path (`RenewalOffer::decode`, `digest`, `validate`), and implements the
+  record traits over them.
+- **`match` became `if`.** `Configuration::require` matched on the six action ids; an associated
+  constant of a type parameter cannot be a pattern. The arms are in their old order.
+- **Three `#[expect(clippy::boxed_local)]`**, on the two `bind`s and on `finish_images`. The
+  patches and the money preparation are boxed on purpose (they are large, and M7's lints hold
+  stack frames to 64 KiB); behind a type parameter clippy cannot size them and says the box is
+  not needed. The return types name two aliases (`OfferPrepared<I>`, `MoneyPrepared<I, O>`),
+  which `type_complexity` asked for once the tuples had a parameter.
+- **Derived `Debug` shows the marker** on the two receipts, the service closure and the
+  composition's configuration, and so on whatever holds them. No production path formats them.
+- **The mutations ran on a clone**, as in CT.0 to CT.3; the worktree was never mutated.
+- **The House rig has a second scope.** CT.0's House fixture made one scope; the rig now makes
+  a second (`other`) for the retry-on-another-line scenario. The House snapshot did not move.
+
+**Not built.**
+
+- Anything outside `mush-economy`. `mush-core`, `mush-roll`, `mush-market`, `mush-industry` and
+  `tacsim` are unedited and pass.
+- The closed lists (§4.6): the store's two books and two latches, the fold's two audits, the
+  two variants of the managed consent, the two plan guards, the eighteen renewal variants of
+  `EconomyRequest` and the six of `EconomyOutput`, `prepare.rs`'s eighteen request methods, and
+  the two registration prerequisites in `module.rs`. Deliberate.
+- The refit pair (CT.7), the purchase twins and `managed_purchase` (CT.9), `managed_coverage`,
+  `managed_charter_transfer`, `managed_paid_resale`.
+- A public face for the twin. `renewal_twin` is private to the crate (below, for CT.5).
+- The holder attempts on the real path (formats 3 and 4 need a settled paid resale in the same
+  store), as CT.0 left them: `BIRTH_ROUTE` is held by the identity tests and by no walk
+  (mutations C13, C14 and G5).
+
+**Compile time** (§7.4). conclav.dev, six jobs, `CARGO_INCREMENTAL=0`, the crate's `lib.rs`
+touched before each run and every dependency already checked, wall time of
+`cargo check -p <crate>`. One run that is not counted, then five; two rounds, before and after
+alternating (main's own clone, then this branch's), because the box is shared and its load
+moved between 6 and 12 while they ran. Medians of five, in seconds:
+
+| | Before, rounds 1 and 2 | After, rounds 1 and 2 |
+|---|---|---|
+| `cargo check -p mush-economy` | 8.33, 8.46 | 8.01, 8.00 |
+| `cargo check -p mush-roll` | 8.13, 8.17 | 8.14, 8.28 |
+| `cargo check -p mush-market` | 3.39, 3.52 | 3.61, 3.46 |
+
+Economy's check is about 0.4 s shorter, 4%: one owner to type-check, not two. The Roll's and
+the market's moved by less than the two rounds differ from each other. They read the family
+modules' aliases, and no generic function of economy's is instantiated in them: the entry
+points are ordinary functions.
+
+**On Linux** (conclav.dev, a throwaway clone of `26d30dd4b` with this branch's files over it):
+`cargo test -p mush-economy` passes 881 tests over its 13 targets, none failed and none ignored (the
+library's 350 among them); `cargo test -p mush-roll -p mush-market
+-p mush-industry --no-fail-fast` passes 858 tests with none failed and one ignored, no file of
+the three crates edited; `cargo test -p tacsim --lib ct0_` passes the registration snapshot. No
+`.snap` file differs after the runs. On Windows economy's full suite passes (the same counts),
+and on both `cargo test -p mush-contract-tests` (the census, the panic budget, the restriction
+lints), clippy with `-D warnings` over all targets of the four crates, CI's M7 memory-size pass
+and the docs check with `-D warnings` are clean. The branch's dispatched CI run, which is the
+only place the M7 and M8 stories drive the renewal families end to end, [run 43610436921](https://github.com/conclavio/rustmush/actions/runs/43610436921)
+at `b2186f598`: 54 of 55 jobs green when this was written, the M7 player-market story still
+running. Since that commit the code has changed by one comment in `renewal_twin.rs` and the
+default-boot test's fix; the pull request's own run covers the head.
+
+**The yardstick, before and after.** Before is main `26d30dd4b`.
+
+| Root | Before: cloned of lines | Rate | After: cloned of lines | Rate |
+|---|---|---|---|---|
+| `crates/mush-market/src` | 10,522 of 45,090 | 23.3% | 10,522 of 45,090 | 23.3% |
+| `crates/mush-economy/src` | 20,913 of 99,897 | 20.9% | 13,466 of 97,211 | 13.9% |
+| `crates/mush-roll/src/commerce` | 16,802 of 91,607 | 18.3% | 16,802 of 91,607 | 18.3% |
+| `crates/mush-core/src/action_state/terminal_capacity` | 6,610 of 38,725 | 17.1% | 6,610 of 38,725 | 17.1% |
+
+Economy lost 7,447 cloned lines, which is §7.3's estimate for its renewal twin (7,500). The two
+family directories were 3,918 of 8,604 and 3,800 of 4,196; they are 123 of 577 and 210 of 691,
+and `renewal_twin/` is 727 of 8,756. By `wc -l` economy's `src` went from 102,292 lines to
+99,631, with eleven scenarios and a second issuer's rig more in it. What the family
+directories still hold in common is the two `impl Issuer` blocks and the two rigs' seeds. What
+is left at the top of economy's table is the refit pair (CT.7) and the repeated owner-test
+skeletons.
+
+**Found on the way.**
+
+- **The House's own rules had no test** (the mutations, above), and five of the personal
+  family's checks had none either: a royalty parent's title, checked and fenced; the retry's
+  lineage; a title on a scope. Closed here.
+- **One check has no test and cannot have one from here:** the birth route of a transferred
+  holder's basis (G5). It is owed with CT.0's holder attempts on the real path.
+- **Two checks are held twice.** The personal seller's presence is asked for by
+  `check_current` and again by the title check that follows it (S3), and the House's
+  organisation comparison in `same_line` is implied by the scope's, since a scope has one
+  organisation and the authority check holds the offer to it (H5c). Both are kept as written;
+  neither can be caught alone.
+- **The two files differed by nothing the survey did not list.** Every line outside the 96
+  hunks was the same text.
+- **A second read, not anchored on this one.** A reviewer given the twenty old files and the
+  new ones, and told to substitute each issuer into the twin and explain every hunk that is
+  left, found no behavioural difference, no change in the order of evaluation and no
+  persisted byte that could differ for either issuer, and each of the fifteen constants equal
+  to its old literal character for character. It named two things that are not behaviour:
+  the derived `Debug` of the two receipts, the service closure and the configuration now
+  prints the marker (no production path formats them), and seven plain types are shared by
+  both families (above), where a request built for one family is still refused by the other's
+  owner at run time (the operation is looked up in the issuer's own book).
+- No defect in production code was found, and no production behaviour was changed.
+
+**For CT.5.**
+
+- *Copy:* the survey first, sorted into rename, identity string and real logic, and the trait
+  from it; the issuer types and the seal in one file and each `impl` in its family's file; the
+  old modules as the two instantiation points; `Rig: Issuer`, `Fixture<I>` and `instantiate!`;
+  an identity test an issuer; the mutations on a clone, one a function and one a constant kind,
+  and a surviving mutation run against main's own files before anything is concluded from it.
+- *Move the tests under the twin.* A generic scenario reads items that are `pub(super)` in the
+  twin's files. With the bodies in `renewal_twin/tests/` they see them; from the family's test
+  module they would not, and every visibility would have to be widened for the tests alone.
+  The family's test module holds its `impl Rig` and one `instantiate!`.
+- *Two commits.* The first here made the owner generic and left the old tests untouched,
+  compiling against the family modules' aliases: 279 tests passing over the new owner before
+  one test line changed. It costs a throwaway set of test-only forwarders in `entry_points!`,
+  and it separates "the owner moved" from "the tests moved".
+- *The nested test modules.* `instantiate!` rebuilds the personal family's module tree
+  (`tests::funded::reoffer::…`). A macro cannot repeat a path prefix inside a repetition of
+  names, so it takes the prefix as one token tree (`(funded::reoffer::)`) and a second macro
+  splices it.
+- *An associated type cannot be inferred from.* `fn offer<I: Issuer>(request: I::Offer)` needs
+  `offer::<I>(…)` at every call. Functions that take `&OfferRecord<I>` infer. There are 26
+  turbofish in the owner here and about two hundred in the tests.
+- *A derive asks the issuer's records for more than they have.* `#[derive(Default)]` on a
+  struct holding `Vec<I::Offer>` wants `I::Offer: Default`; write the `impl`. Serde wants
+  `#[serde(bound = "")]` on every generic record, with the bounds on the trait's associated
+  types.
+- *The scripted pass rewrote names inside string literals.* `"RenewalMarkerV1"`, a snapshot
+  label, became `"RenewalMarkerV1<I>"`, and the snapshot caught it. Exclude literals.
+- *Do differently: decide what is shared.* Seven plain types here are one type under both
+  paths. The Roll's `from_economy` conversions of `RenewalAttemptV1`, one a family, now take the
+  same type; that compiles unedited and can be one function.
+- *What the Roll will meet that economy did not.*
+  - **Economy's twin is not nameable from the Roll.** Each Roll implementation can name its
+    family's aliases (`mush_economy::managed_renewal::RenewalOfferView<'_>`), as economy's two
+    name the kernel's builder methods. To write the Roll's body once over economy's types
+    (`RenewalOfferView<'_, R::Economy>`) the module has to be public, and before that the
+    eight store functions (`book`, `bind`, `receipts`, …) must leave the public trait for a
+    supertrait in the private `sealed` module: `bind` hands out the snapshot mutably. That is
+    an edit to economy, small, and CT.5's to propose.
+  - **The `OwnCharter` stop and the authority reader** (`reader.rs`), which economy does not
+    have, and a record with `attrs on both` (`RenewalBindingV1`'s `holder_basis`): if that
+    record has to be generic, the macro arm CT.4 avoided is needed there.
+  - **The Roll's walks are structural** (CT.0), so its snapshot proves less than economy's
+    did; CT.0b's composed capture is what stands in.
+  - **Rows and roots**, which have key shapes and capacity fingerprints the kernel checks:
+    more identity constants than economy's fourteen, and the kernel's `Issuer` holds the other
+    half of some of them.
 
 ## CT.5
 
