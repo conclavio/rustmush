@@ -150,8 +150,10 @@ Stories (`tests/domain_field/`):
 | AP.9 tick test | `RETURN` answers nobody | answers |
 | MW.11 `mw11_a_picket_is_the_same_whatever_the_workers_timing` | her last act `HeavingTo` | `ReturningFire`, after the raider's fire arrived on her |
 | MW.11 `mw11_every_think_of_a_bubble_runs_on_a_pool_worker` | 30 thinks in ten steps | her beam now takes the raider out within ten steps, so it thought 8 times: the test is about worker threads, so her mounts are removed and it counts 30 again |
-| MW.7 `field_mw7` stories 2, 3 and 6 | already "`RETURN` answers" (AP.6) | unchanged |
-| AP.10, AP.11, MW.8 (`voyage.rs`), MW.21 | no assertion that `RETURN` fires nothing where fire arrived on her | unchanged; run, results below |
+| MW.7 `field_mw7` stories 2, 3 and 6 | already "`RETURN` answers" (AP.6) | unchanged, pass |
+| MW.21 `mw21_completion` (dispatch) | the tape holds no shot of hers | a shot of hers is allowed only at a ship whose fire had arrived on her, never the corvette; her lock stays the bought mind's under the answer (`Reading` gains `fired_on_by`). On the branch the bought mind's ship does answer the raider by the house default: R-47-2 end to end |
+| MW.13 `mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs` | passed on a shared, narrowed view | unchanged, passes because the sealed mind's view is its sensors' (below) |
+| AP.10 (`domain_arena` cockpit), AP.11 (`field_ap11`), MW.8 (`domain_world` `voyage.rs`) | no assertion that `RETURN` fires nothing where fire arrived on it | unchanged; AP.11 passes on conclav.dev, all three in the branch's full dispatch |
 
 **Divergences.**
 
@@ -179,6 +181,43 @@ Stories (`tests/domain_field/`):
 | 1 | The ground's home for the landing is the doctrine's own `Withdraw` goal (the party's entry cell), not a carrier's ramp the host names | Low: one call |
 | 2 | Beside a sealed mind the house default fires at the ship its own think locked; her lock stays the sealed mind's | Low: `apply_answer` |
 | 3 | The house default's answer beside a sealed mind is the first clean house source after it (the store's, else the compiled one) | Low |
+
+**Mutations**, each alone on a throwaway clone at the branch head on conclav.dev (Linux), with
+the in-source `space::`, `arena::absent` and `arena::weapons` tests and the stories
+`field_ap6`, `field_mw7` (stories 2, 3) and `space_ap9`'s two `co2_`. Every one is caught:
+
+| | Mutation | Caught by |
+|---|---|---|
+| M1s | `RETURN` given nothing to answer, in space (`answers_of` empty on `RETURN`) | `space::backup` `co2_what_a_hull_may_answer…`; the tick-level `co2_the_house_default_answers…`, `co2_a_sealed_minds_ship…`, `co2_beside_a_sealed_mind…`, `mw11_a_picket…`; story `co2_at_the_picket…` |
+| M1g | `RETURN` given nothing to answer, on the ground (`absent_denies_fire` refuses on `RETURN`) | `arena::weapons` `co2_a_house_mind_on_return…`, `mw7_an_absent_players_mind…`, AP.6's guard test; stories `co2_the_same_rig_on_return…`, MW.7's 2 and 3 |
+| M2 | `RETURN` stops when it answers (the landing lands the stand as thought) | story `co2_the_same_rig_on_return_answers_on_its_way_home` (it does not move between the two records). The unit test calls `keep_going_home` itself, so it is the story that holds the call |
+| M3 | It fires first (the gate lets every shot through, nothing narrowed, ground and space) | 14 unit tests and 7 stories, among them AP.6's story 5 (a stance-declared Hostile) and `co2_a_ship_left_on_any_posture…` |
+| M4g | It answers a party only marked or held hostile, on the ground | `arena::weapons` AP.6, AP.7, AP.10, MW.7 and `co2_` unit tests (7). The stories pass: the narrowed view keeps the house mind off such a party, as AP.6 recorded |
+| M4s | It answers a party only held hostile, in space (`answers_of` takes in every hostile ship) | `mw13_two_sealed_minds…`; story `co2_a_ship_left_on_any_posture_does_not_answer_for_a_stranger` |
+| M5 | It answers the customs ship (the `complying` filter gone) | `space::backup` `co2_what_a_hull_may_answer…`. The stories pass: the corvette never fires on a ship that complies |
+| M6 | The sealed-mind ship's house default takes the helm and the lock | `co2_a_sealed_minds_ship_answers_by_the_house_default_and_keeps_its_sensors` (her lock), `co2_beside_a_sealed_mind_the_house_default_lands_its_shots_and_nothing_else` (her drive) |
+| M7 | `GUARD`'s widening applied to `HOLD` (space and ground) | `space::backup` `co2_what_a_hull_may_answer…`, `arena::weapons` AP.6, AP.7, AP.10; story `ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour` |
+| M8 | Nothing answers beside a sealed mind (AP.9's default 1 back) | `co2_a_sealed_minds_ship…`, `co2_beside_a_sealed_mind…` |
+
+**Verified, and how.**
+
+- Windows, the branch head: `cargo test -p tacsim --lib` (2,352 passed),
+  `cargo clippy -p tacsim --all-targets -D warnings`, the lint job's M7 memory-size pass
+  (with `.github/clippy-m7`), `cargo doc -p tacsim --no-deps` with and without private items
+  under `-D warnings`, `cargo test -p mush-contract-tests` (nothing re-blessed), `cargo fmt`.
+- conclav.dev: the `domain_field` stories named above plus AP.11's closing story, MW.13's
+  undispatched ones and AP.9's other two; MW.21's dispatch story by `--ignored --exact`
+  (passed, 174 s); the mutation table.
+- The branch's full CI dispatch (PR jobs and every dispatch-only story), in the pull request.
+- **`MIND_ABI` did not move** (`rhai=1.26.0;api=9;stock=3`), no seal, pin or descriptor
+  moved, and no gate-harness baseline can: nothing here runs without an absent player, so the
+  harness was not run.
+- No mind API, store schema or persisted record changed shape. `Answer::house` lives only
+  between a batch and its landing.
+
+**Not verified.** Nothing ran against a live server or over SSH; nothing was deployed. The
+ground's answer at ranges past the doctrine's stand range was not flown (no story's geometry
+reaches it).
 
 **Not built.**
 
