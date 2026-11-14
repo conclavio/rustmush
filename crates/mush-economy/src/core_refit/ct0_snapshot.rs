@@ -28,7 +28,7 @@ use mush_testkit::snapshot::Snapshot;
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn reference(owner: &str, kind: &str, id: &str) -> Outcome<DefinitionRef> {
+pub(super) fn reference(owner: &str, kind: &str, id: &str) -> Outcome<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new(owner)?,
         DefinitionDescriptor::new(
@@ -39,7 +39,7 @@ fn reference(owner: &str, kind: &str, id: &str) -> Outcome<DefinitionRef> {
         )?,
     )?)
 }
-fn family(prefix: &str) -> Outcome<[DefinitionRef; 3]> {
+pub(super) fn family(prefix: &str) -> Outcome<[DefinitionRef; 3]> {
     Ok([
         reference("tacsim", "unit", &format!("{prefix}_i"))?,
         reference("tacsim", "unit", &format!("{prefix}_ii"))?,
@@ -69,7 +69,7 @@ fn line_only() -> Outcome<RefitPaymentPolicy> {
         coreless: Vec::new(),
     })
 }
-fn composed() -> Outcome<RefitPaymentPolicy> {
+pub(super) fn composed() -> Outcome<RefitPaymentPolicy> {
     Ok(RefitPaymentPolicy {
         families: vec![family("rig")?],
         ungovern: Some(UngovernTerms {
@@ -86,7 +86,7 @@ fn composed() -> Outcome<RefitPaymentPolicy> {
         ..line_only()?
     })
 }
-fn intent(
+pub(super) fn intent(
     policy: &RefitPaymentPolicy,
     kind: RefitKind,
     target: DefinitionRef,

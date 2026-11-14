@@ -141,6 +141,8 @@ python3 deploy/instance/launch-bringup.py "$inst/instance.env" --no-systemd --bi
   { tail -40 "$work/bringup.log" >&2; exit 1; }
 grep -q 'Registry operators: #[0-9]* ready\.' "$work/bringup.log" ||
   { echo "minds-lane: the bring-up names no Registry operator ready" >&2; tail -20 "$work/bringup.log" >&2; exit 1; }
+grep -q 'each House holds 3 hulls of its own' "$work/bringup.log" ||
+  { echo "minds-lane: the bring-up seeded the Houses no hulls (doc 47 cut CO.9)" >&2; tail -20 "$work/bringup.log" >&2; exit 1; }
 grep -q '^launch_path = ' "$inst/mushd.toml"
 log "the launch is Active after $(since)"
 

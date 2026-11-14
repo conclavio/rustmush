@@ -1298,12 +1298,12 @@ fn message(
             // `ALL` stays refused whole when any hull cannot.
             let tolerant = *target == mush_tactics::detachment::OrderTarget::Able;
             if tolerant && !field_orders::concentrates(directive) {
-                return Err("Only a CONCENTRATE goes to whoever can take it.".into());
+                return Err("Only a FOCUS goes to whoever can take it.".into());
             }
             // It ends with its contact and not with a clock: an expiry would end the
             // engagement in the kernel with nothing to take the hull back to its order.
             if field_orders::concentrates(directive) && expires_at_ms.is_some() {
-                return Err(super::CONCENTRATE_NO_EXPIRY.into());
+                return Err(super::FOCUS_NO_EXPIRY.into());
             }
             let mut afield = std::collections::BTreeSet::new();
             if tolerant {
