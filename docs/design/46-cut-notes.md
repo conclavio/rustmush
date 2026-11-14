@@ -1677,17 +1677,17 @@ second is the same list against the tree as built.
 
 | # | The mutation | First pass | As built | A `ct0_` test |
 |---|---|---|---|---|
-| H1 | `House::contract_scope` answers `None` | the House snapshot alone | @@H1@@ | yes |
-| H2 | `Personal::titles` answers the charter alone | **nothing** | @@H2@@ | no |
-| H3 | `House::titles` answers nothing | H `actual_before_images_and_identity_refuse_stale_bind…` | @@H3@@ | no |
-| H4 | `Personal::same_line` answers `true` | **nothing** | @@H4@@ | no |
-| H5 | `House::same_line` answers `true` | **nothing** | @@H5@@ | no |
-| H5b | `House::same_line` no longer compares the scope | **nothing** | @@H5b@@ | no |
-| H5c | `House::same_line` no longer compares the organisation | **nothing** | @@H5c@@ | no |
-| H6 | `Personal::inventory_checked` answers `true` | 3 tests: both personal absence tests, **and the House's default-boot test** (below) | @@H6@@ | no |
-| H7 | `House::inventory_checked` answers `true` | H `renewal_bridge_resolves_all_actions…` | @@H7@@ | no |
-| H8 | `Personal::marker` answers `None` | 23 personal tests, the snapshot among them | @@H8@@ | yes |
-| H9 | `House::marker` answers `None` | 23 House tests, the snapshot among them | @@H9@@ | yes |
+| H1 | `House::contract_scope` answers `None` | the House snapshot alone | 2 tests (H): `a_house_contract_is_filed_under_the_issuers_scope` | yes |
+| H2 | `Personal::titles` answers the charter alone | **nothing** | 2 tests (P): `every_title_an_offer_stands_on_is_current_and_fenced`, `every_title_a_sale_stands_on_is_current_and_fenced` | no |
+| H3 | `House::titles` answers nothing | H `actual_before_images_and_identity_refuse_stale_bind…` | 3 tests (H): `every_title_an_offer_stands_on_is_current_and_fenced`, `every_title_a_sale_stands_on_is_current_and_fenced` | no |
+| H4 | `Personal::same_line` answers `true` | **nothing** | 1 test (P): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| H5 | `House::same_line` answers `true` | **nothing** | 1 test (H): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| H5b | `House::same_line` no longer compares the scope | **nothing** | 1 test (H): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| H5c | `House::same_line` no longer compares the organisation | **nothing** | **nothing** | no |
+| H6 | `Personal::inventory_checked` answers `true` | 3 tests: both personal absence tests, **and the House's default-boot test** (below) | 2 tests (P): `renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_order`, `actual_default_boot_proves_absence_without_new_serialized_history` | no |
+| H7 | `House::inventory_checked` answers `true` | H `renewal_bridge_resolves_all_actions…` | 2 tests (H): `renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_order`, `actual_default_boot_proves_absence_without_new_serialized_history` | no |
+| H8 | `Personal::marker` answers `None` | 23 personal tests, the snapshot among them | 25 tests (P): `actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funded_shape`, `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not`, … | yes |
+| H9 | `House::marker` answers `None` | 23 House tests, the snapshot among them | 25 tests (H): `actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funded_shape`, `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not`, … | yes |
 | X4 to X7 | the personal issuer handed the House's book, receipts, consent or plan guard (`book`, `receipts`, `consent`, `validate`) | does not compile: `error[E0308]: mismatched types`, four times | the same | — |
 
 `bind` and `receipts_mut` have no neutral value and return the same fields as `book` and
@@ -1697,21 +1697,21 @@ second is the same list against the tree as built.
 
 | # | The mutation | First pass | As built |
 |---|---|---|---|
-| S1 | personal `check_current` answers `Ok` after the shape check | 2 personal tests | @@S1@@ |
-| S2 | House `check_current` answers `Ok` after the shape check | 2 House tests | @@S2@@ |
-| S3 | personal: the seller need not be a present player | **nothing** | @@S3@@ |
-| S4 | personal: the seller need not hold the charter's title | 2 personal tests | @@S4@@ |
-| S5 | personal: a royalty parent's title is not checked | **nothing** | @@S5@@ |
-| S6 | personal: a title on a scope is accepted as the seller's | **nothing** | @@S6@@ |
-| S7 | House: the organisation need not be active | **nothing** | @@S7@@ |
-| S8 | House: the scope need not be active | **nothing** | @@S8@@ |
-| S8b | House: the scope need not be the organisation's | **nothing** | @@S8b@@ |
-| S9 | House: the organisation need not hold the charter's title | **nothing** | @@S9@@ |
-| S10 | House: the title need not be on the offer's scope | **nothing** | @@S10@@ |
-| S11 | the payee: the House remainder need not be the organisation's | **nothing** | @@S11@@ |
-| S12 | the payee: the House remainder account need not be the scoped treasury | **nothing** | @@S12@@ |
-| S13 | the account pairing: a House payee may be the payer's own account | **nothing** | @@S13@@ |
-| S14 | House: the charter may be leaving the game | **nothing** | @@S14@@ |
+| S1 | personal `check_current` answers `Ok` after the shape check | 2 personal tests | 7 tests (P): `a_personal_offer_refuses_a_title_on_a_scope`, `an_offer_is_refused_once_the_issuers_side_lapses`, … |
+| S2 | House `check_current` answers `Ok` after the shape check | 2 House tests | 8 tests (H): `a_house_offer_needs_its_organisation_scope_and_title_current`, `a_house_offer_pays_its_remainder_to_the_scoped_treasury`, … |
+| S3 | personal: the seller need not be a present player | **nothing** | **nothing** |
+| S4 | personal: the seller need not hold the charter's title | 2 personal tests | 5 tests (P): `a_personal_offer_refuses_a_title_on_a_scope`, `every_title_an_offer_stands_on_is_current_and_fenced`, … |
+| S5 | personal: a royalty parent's title is not checked | **nothing** | 2 tests (P): `every_title_an_offer_stands_on_is_current_and_fenced`, `every_title_a_sale_stands_on_is_current_and_fenced` |
+| S6 | personal: a title on a scope is accepted as the seller's | **nothing** | 1 test (P): `a_personal_offer_refuses_a_title_on_a_scope` |
+| S7 | House: the organisation need not be active | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S8 | House: the scope need not be active | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S8b | House: the scope need not be the organisation's | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S9 | House: the organisation need not hold the charter's title | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S10 | House: the title need not be on the offer's scope | **nothing** | 1 test (H): `a_house_offer_needs_its_organisation_scope_and_title_current` |
+| S11 | the payee: the House remainder need not be the organisation's | **nothing** | 1 test (H): `a_house_offer_pays_its_remainder_to_the_scoped_treasury` |
+| S12 | the payee: the House remainder account need not be the scoped treasury | **nothing** | 1 test (H): `a_house_offer_pays_its_remainder_to_the_scoped_treasury` |
+| S13 | the account pairing: a House payee may be the payer's own account | **nothing** | 1 test (H): `a_payee_cannot_be_the_payers_own_account` |
+| S14 | House: the charter may be leaving the game | **nothing** | 2 tests (H): `an_offer_is_refused_once_the_issuers_side_lapses`, `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not` |
 
 *The identity constants, one of each kind.* Each fails its issuer's identity test and its
 issuer's snapshot, and nothing else unless said: the shared rig reads the constants, so an
@@ -1719,38 +1719,38 @@ ordinary scenario moves with them (CT.3's warning).
 
 | # | The mutation | What failed | A `ct0_` test |
 |---|---|---|---|
-| C1 | the namespace, personal: `.v2` | @@C1@@ | yes |
-| C2 | the namespace, House, given the personal value | @@C2@@ | yes |
-| C3 | an action id, House: `fund_house_mind_renewal2` | @@C3@@ | yes |
-| C4 | an action id, personal: the service close | @@C4@@ | yes |
-| C5 | a digest domain, personal: the offer's, `.v2` | @@C5@@ | yes |
-| C6 | a digest domain, House: the offer's, `.v2` | @@C6@@ | yes |
-| C7 | a key prefix, House: the offer record's | @@C7@@ | yes |
-| C8 | a key prefix, personal: the service closure's | @@C8@@ | yes |
-| C9 | the `protocol` name, House actions | @@C9@@ | yes |
-| C10 | the `protocol` name, personal service action | @@C10@@ | yes |
-| C11 | the contract's name, House | @@C11@@ | yes |
-| C12 | the funding plan's description, personal | @@C12@@ | yes |
-| C13 | the birth route, personal given the House's | @@C13@@ | no |
-| C14 | the birth route, House given the personal one | @@C14@@ | no |
+| C1 | the namespace, personal: `.v2` | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C2 | the namespace, House, given the personal value | 6 tests (2 P, 4 H): `renewal_six_payee_capture_and_refund_have_exact_real_journal_provenance`, `actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_proof` | yes |
+| C3 | an action id, House: `fund_house_mind_renewal2` | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C4 | an action id, personal: the service close | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C5 | a digest domain, personal: the offer's, `.v2` | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C6 | a digest domain, House: the offer's, `.v2` | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C7 | a key prefix, House: the offer record's | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C8 | a key prefix, personal: the service closure's | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C9 | the `protocol` name, House actions | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C10 | the `protocol` name, personal service action | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C11 | the contract's name, House | 2 tests (H): `ct0_renewal_house_snapshot`, `house_identity_strings_hold_todays_bytes` | yes |
+| C12 | the funding plan's description, personal | 2 tests (P): `ct0_renewal_personal_snapshot`, `personal_identity_strings_hold_todays_bytes` | yes |
+| C13 | the birth route, personal given the House's | 1 test (P): `personal_identity_strings_hold_todays_bytes` | no |
+| C14 | the birth route, House given the personal one | 1 test (H): `house_identity_strings_hold_todays_bytes` | no |
 
 *The hooks' call sites in the one implementation, and the records.*
 
 | # | The mutation | First pass | As built | A `ct0_` test |
 |---|---|---|---|---|
-| G1 | `require_link` no longer asks the issuer's line | **nothing** | @@G1@@ | no |
-| G2 | an offer fences the charter's title alone | **nothing** | @@G2@@ | no |
-| G3 | a sale fences the charter's title alone | **nothing** | @@G3@@ | no |
-| G4 | the contract is filed under no scope | the House snapshot alone | @@G4@@ | yes |
-| G5 | the holder basis always asks for an entitlement birth | **nothing** | @@G5@@ | no |
-| G6 | the absence proof no longer needs the boot latch | 4 tests, two an issuer | @@G6@@ | no |
-| G7 | an offer no longer checks the issuer's current authority | 2 tests, one an issuer | @@G7@@ | no |
-| G8 | a sale no longer checks the issuer's current authority | 2 tests, one an issuer | @@G8@@ | no |
-| F1 | a field moved: `OfferRecord`'s `contract` and `consent_hash` change places | 4 tests: both snapshots, both `legacy_wire_is_exact…` | @@F1@@ | yes, two |
-| F2 | a field moved: `RenewalMarkerV1`'s `operation` and `effect` | both snapshots | @@F2@@ | yes, two |
-| F3 | a field moved: `RenewalFundingReceiptV1`'s `commit` and `action` | both snapshots | @@F3@@ | yes, two |
-| F4 | the funding receipt's marker is no longer skipped by serde (`"issuer":null`) | 10 tests, five an issuer, both snapshots among them | @@F4@@ | yes, two |
-| F5 | the service closure's marker is no longer skipped | 6 tests, three an issuer, both snapshots among them | @@F5@@ | yes, two |
+| G1 | `require_link` no longer asks the issuer's line | **nothing** | 2 tests (1 P, 1 H): `a_retry_on_another_line_of_the_issuer_is_refused` | no |
+| G2 | an offer fences the charter's title alone | **nothing** | 1 test (P): `every_title_an_offer_stands_on_is_current_and_fenced` | no |
+| G3 | a sale fences the charter's title alone | **nothing** | 1 test (P): `every_title_a_sale_stands_on_is_current_and_fenced` | no |
+| G4 | the contract is filed under no scope | the House snapshot alone | 2 tests (H): `a_house_contract_is_filed_under_the_issuers_scope` | yes |
+| G5 | the holder basis always asks for an entitlement birth | **nothing** | **nothing** | no |
+| G6 | the absence proof no longer needs the boot latch | 4 tests, two an issuer | 4 tests (2 P, 2 H): `renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_order`, `actual_default_boot_proves_absence_without_new_serialized_history` | no |
+| G7 | an offer no longer checks the issuer's current authority | 2 tests, one an issuer | 9 tests (4 P, 5 H): `a_house_offer_needs_its_organisation_scope_and_title_current`, `a_house_offer_pays_its_remainder_to_the_scoped_treasury`, … | no |
+| G8 | a sale no longer checks the issuer's current authority | 2 tests, one an issuer | 6 tests (3 P, 3 H): `a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not`, `every_title_a_sale_stands_on_is_current_and_fenced`, … | no |
+| F1 | a field moved: `OfferRecord`'s `contract` and `consent_hash` change places | 4 tests: both snapshots, both `legacy_wire_is_exact…` | 4 tests (2 P, 2 H): `legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attempts` | yes, two |
+| F2 | a field moved: `RenewalMarkerV1`'s `operation` and `effect` | both snapshots | 2 tests (1 P, 1 H): `ct0_renewal_house_snapshot`, `ct0_renewal_personal_snapshot` | yes, two |
+| F3 | a field moved: `RenewalFundingReceiptV1`'s `commit` and `action` | both snapshots | 2 tests (1 P, 1 H): `ct0_renewal_house_snapshot`, `ct0_renewal_personal_snapshot` | yes, two |
+| F4 | the funding receipt's marker is no longer skipped by serde (`"issuer":null`) | 10 tests, five an issuer, both snapshots among them | 10 tests (5 P, 5 H): `maximum_primitive_receipts_fit_their_real_strict_codecs`, `renewal_checkpoint_join_requires_both_actual_money_rows_even_after_hot_eviction`, … | yes, two |
+| F5 | the service closure's marker is no longer skipped | 6 tests, three an issuer, both snapshots among them | 6 tests (3 P, 3 H): `service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay`, `service_closed_offer_allows_only_fresh_explicit_retry_and_retains_old_proof` | yes, two |
 
 *The seal, with `cargo check -p mush-economy`.*
 
@@ -1767,17 +1767,24 @@ scope); the account pairing (S13); a field moved in a generic record (F1 to F3).
 buyer admission and the `OwnCharter` stop are not in economy; the nearest economy has to an
 admission is the House's authority check (S7 to S10, S14) and to a stop the issuer's lapse.
 
-- **Twenty-one mutations passed at first.** @@SURVIVORS@@
+- **Twenty-one mutations passed at first:** H2, H4, H5, H5b, H5c; S3, S5 to S14 and S8b;
+  G1, G2, G3, G5. Every one is a check of what an issuer's side must be (its titles, its line,
+  its organisation, scope, treasury and payees), and none is a shared check: the 51 scenarios
+  the House now runs were written for what the families share, and pass for both.
 - **They are older than this unit.** Thirteen of them were made on main's own files (a second
   clone at `26d30dd4b`, never synced). The six personal ones that can be made there (H2 and G2,
   G3, H4 and G1, S3, S5, S6) pass main's 279 tests, and so do the five House ones tried (H5,
   S7, S12, S13 and G7's House half), which on main have only CT.0's walk to fail. G7 and G8
-  for the personal family fail one test each on main, as here. The twin did not open the
+  for the personal family fail one test each on main, as they did here at first. The twin did not open the
   gaps: it made them cheap to find, since every difference is now a named function or a line
   of an issuer's file.
 - **What closed them** is under Tests. Each new test was then shown to fail under its
   mutation (the "As built" column).
-- **Not closed:** @@OPEN@@
+- **Not closed: three.** H5c and S3 are checks held twice ("Found on the way"), which
+  no test can catch alone while the other copy stands. G5, the birth route of a transferred
+  holder's basis, is reached only by record formats 3 and 4, which need a settled paid resale
+  in the same store; it is owed with CT.0's holder attempts on the real path, and the two
+  identity tests hold the constant meanwhile (C13, C14).
 - **A House test failed under a personal mutation (H6).** One shared scenario,
   `actual_default_boot_proves_absence_without_new_serialized_history`, still called the
   personal family's public absence method and read the personal fold key when run for the
@@ -1860,7 +1867,10 @@ the three crates edited; `cargo test -p tacsim --lib ct0_` passes the registrati
 and on both `cargo test -p mush-contract-tests` (the census, the panic budget, the restriction
 lints), clippy with `-D warnings` over all targets of the four crates, CI's M7 memory-size pass
 and the docs check with `-D warnings` are clean. The branch's dispatched CI run, which is the
-only place the M7 and M8 stories drive the renewal families end to end, is @@CI@@.
+only place the M7 and M8 stories drive the renewal families end to end, [run 43610436921](https://github.com/conclavio/rustmush/actions/runs/43610436921)
+at `b2186f598`: 54 of 55 jobs green when this was written, the M7 player-market story still
+running. Since that commit the code has changed by one comment in `renewal_twin.rs` and the
+default-boot test's fix; the pull request's own run covers the head.
 
 **The yardstick, before and after.** Before is main `26d30dd4b`.
 
