@@ -105,13 +105,20 @@ fn prepare(
     let (actual, resolved, _) = resolved.into_authoritative_parts();
     check_eq!(actual, action);
     let invocation = resolved.invocation().clone();
-    let (p, output) = w
+    let prepared = w
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
             &action,
             &resolved,
             token(serial),
-        )?;
+        );
+    let (p, output) = ct0b::seen(
+        &action,
+        actor,
+        invocation.parameters(),
+        prepared,
+        ct0b::disk_reader(&w.disk),
+    )?;
     Ok(Box::new(Prepared {
         p,
         output,
@@ -173,6 +180,7 @@ fn take_install(w: &mut IcWorld) -> TestResult {
     let (bundle, install) = staged.into_parts();
     retain_writes(&mut w.disk, bundle.writes())?;
     w.engine.install_composed_action(install)?;
+    ct0b::installed(bundle.writes(), ct0b::disk_reader(&w.disk));
     Ok(())
 }
 fn land(w: &mut IcWorld, p: Box<Prepared>) -> TestResult {

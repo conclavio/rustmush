@@ -624,6 +624,7 @@ fn signed(
         matching.next().is_none(),
         "ambiguous actual House line offer"
     );
+    let asked = parameters.clone();
     let req = request(n, actor, "market", parameters.clone())?;
     let resolved = w.engine.resolve_legal_action(
         &offers,
@@ -644,8 +645,16 @@ fn signed(
     )?;
     let (actual, invocation, _) = resolved.into_authoritative_parts();
     check_eq!(actual, exact);
-    Ok(w.engine
-        .prepare_registered_composed_resolved_authoritative_action(&exact, &invocation, token(n))?)
+    let prepared = w
+        .engine
+        .prepare_registered_composed_resolved_authoritative_action(&exact, &invocation, token(n));
+    Ok(ct0b::seen(
+        &exact,
+        actor,
+        &asked,
+        prepared,
+        ct0b::image_reader(&w.image),
+    )?)
 }
 fn persist(
     w: &mut PlayerWorld,
@@ -688,6 +697,7 @@ fn persist(
         .collect();
     mush_testkit::fold_module_ops_into(&mut w.image, operations);
     w.engine.install_composed_action(installation)?;
+    ct0b::installed(writes, ct0b::image_reader(&w.image));
     w.commit()
 }
 fn apply(w: &mut PlayerWorld, prepared: PreparedComposedTxn) -> TestResult<Vec<ReplayWrite>> {
@@ -746,10 +756,17 @@ fn direct(
     mush_core::action::PreparedAuthoritativeAction,
 )> {
     let a = action(w, id)?;
-    Ok(w.engine.prepare_registered_composed_authoritative_action(
+    let prepared = w.engine.prepare_registered_composed_authoritative_action(
         &a,
-        &request(n, actor, "market", params)?,
+        &request(n, actor, "market", params.clone())?,
         token(n),
+    );
+    Ok(ct0b::seen(
+        &a,
+        actor,
+        &params,
+        prepared,
+        ct0b::image_reader(&w.image),
     )?)
 }
 fn stage(

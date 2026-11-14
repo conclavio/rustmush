@@ -189,6 +189,11 @@ fn ct0_conduct_wire() -> TestResult {
         "artifact":null,"measurement":null}),
     )?;
     withdrawn.matches(&job, &cancelled)?;
+    // Doc 46 unit CT.0b (CT.1's finding): a cancelled result says `null` for both, and a
+    // document that leaves either key out is refused.
+    for key in ["artifact", "measurement"] {
+        mush_testkit::snapshot::refuses_left_out("ConductResult (cancelled)", &withdrawn, key)?;
+    }
     for (label, row) in [("passed", &passed), ("cancelled", &withdrawn)] {
         rig::document_keyed(&mut s, &format!("{label} result"), &f.conduct_results, row)?;
         s.wire(&format!("{label} result digest"), &row.digest()?)?;

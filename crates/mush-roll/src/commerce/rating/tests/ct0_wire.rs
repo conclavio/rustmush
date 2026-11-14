@@ -101,6 +101,13 @@ fn ct0_rating_wire() -> Ct0Result {
     s.codec("MeterSummary", &probe.meter, |j| {
         j["ops_faults"] = 99.into()
     })?;
+    // Doc 46 unit CT.0b (CT.1's finding): a meter that never thought says `"peak":null`, and
+    // a document that leaves the key out is refused, not read as a meter with no peak.
+    mush_testkit::snapshot::refuses_left_out(
+        "MeterSummary (no think, no peak)",
+        &MeterSummary::new(0, 0, 0, None, 0, 0, 0, 0)?,
+        "peak",
+    )?;
     s.codec_shape("CaseBinding", &probe.binding)?;
     s.codec("Coverage", &probe.coverage, |j| {
         j["required_thinks"] = 0.into()

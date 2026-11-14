@@ -268,6 +268,13 @@ fn codecs(snap: &mut Snapshot) -> TestResult {
         &refunded_receipt,
         format,
     )?;
+    // Doc 46 unit CT.0b (CT.1's finding): a refunded receipt says `"issued_at_ic":null`, and
+    // a document that leaves the key out is refused, not read as a receipt never issued.
+    mush_testkit::snapshot::refuses_left_out(
+        "HouseReceiptV1 (refunded, not issued)",
+        &refunded_receipt,
+        "issued_at_ic",
+    )?;
     Ok(())
 }
 

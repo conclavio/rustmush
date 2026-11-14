@@ -81,9 +81,16 @@ fn act(
         "public selector resolved a different protocol"
     );
     let invocation = resolved.invocation().clone();
-    let (p, output) = w
+    let prepared = w
         .engine
-        .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))?;
+        .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n));
+    let (p, output) = ct0b::seen(
+        &action,
+        actor,
+        invocation.parameters(),
+        prepared,
+        ct0b::disk_reader(&w.disk),
+    )?;
     let prepared = Box::new(Prepared {
         p,
         output,

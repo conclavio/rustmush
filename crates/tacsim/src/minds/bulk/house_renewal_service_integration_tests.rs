@@ -65,6 +65,7 @@ fn next(
     let driven = selected.ok_or("actual House renewal selector")?;
     check!(driven.is_observed());
     let (request, proof) = driven.into_parts();
+    ct0b::selected(&request);
     check_eq!(request.actor, actor);
     check_eq!(request.action.key().owner.as_str(), "market");
     check_eq!(request.action.key().id.as_str(), expected);
@@ -120,13 +121,17 @@ fn land(w: &mut PlayerWorld, request: &AuthoritativeSubmit, n: u128) -> TestResu
     let (action, invocation, _) = resolved.into_authoritative_parts();
     check_eq!(action, request.action);
     let before = disk(w);
-    let (prepared, _) = w
+    let asked = invocation.invocation().parameters().clone();
+    let prepared = w
         .engine
-        .prepare_registered_composed_resolved_authoritative_action(
-            &action,
-            &invocation,
-            token(n),
-        )?;
+        .prepare_registered_composed_resolved_authoritative_action(&action, &invocation, token(n));
+    let (prepared, _) = ct0b::seen(
+        &action,
+        request.actor,
+        &asked,
+        prepared,
+        ct0b::image_reader(&w.image),
+    )?;
     check!(disk(w) == before, "prepare publishes no private rows");
     apply(w, prepared)?;
     Ok(())

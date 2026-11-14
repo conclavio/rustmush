@@ -214,6 +214,7 @@ pub(super) fn apply(
         .collect();
     mush_testkit::fold_module_ops_into(&mut world.image, operations);
     world.engine.install_composed_action(install)?;
+    ct0b::installed(writes, ct0b::image_reader(&world.image));
     world.commit()?;
     Ok(())
 }

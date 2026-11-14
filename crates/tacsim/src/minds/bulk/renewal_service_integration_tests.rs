@@ -62,6 +62,7 @@ fn next(
     let driven = selected.ok_or("actual renewal selector")?;
     check!(driven.is_observed());
     let (request, proof) = driven.into_parts();
+    ct0b::selected(&request);
     check_eq!(request.actor, actor);
     check_eq!(request.action.key().owner.as_str(), "market");
     check_eq!(request.action.key().id.as_str(), expected);
@@ -119,13 +120,21 @@ fn land(world: &mut PlayerWorld, request: &AuthoritativeSubmit, number: u128) ->
     let (action, resolved, _) = resolved.into_authoritative_parts();
     check_eq!(action, request.action);
     let before = balances(world)?;
-    let (prepared, _) = world
+    let asked = resolved.invocation().parameters().clone();
+    let prepared = world
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
             &action,
             &resolved,
             token(number),
-        )?;
+        );
+    let (prepared, _) = ct0b::seen(
+        &action,
+        request.actor,
+        &asked,
+        prepared,
+        ct0b::image_reader(&world.image),
+    )?;
     check_eq!(balances(world)?, before, "prepare is inert");
     let (writes, install) = prepared.into_parts();
     apply(world, &writes, install)

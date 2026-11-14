@@ -68,13 +68,20 @@ fn prepare(
     mush_core::action::PreparedAuthoritativeAction,
 )> {
     let action = action(world, owner, id, version)?;
-    Ok(world
+    let prepared = world
         .engine
         .prepare_registered_composed_authoritative_action(
             &action,
-            &invocation(number, actor, owner, params)?,
+            &invocation(number, actor, owner, params.clone())?,
             token(number),
-        )?)
+        );
+    Ok(ct0b::seen(
+        &action,
+        actor,
+        &params,
+        prepared,
+        ct0b::image_reader(&world.image),
+    )?)
 }
 // Ordinary commerce steps exercise the same public unique-verb choice as +act.
 // The separate direct prepare helper remains for owner-fence boundary tests.
@@ -133,6 +140,7 @@ fn prepare_public(
         matching.next().is_none(),
         "ambiguous actual personal licence line offer"
     );
+    let asked = parameters.clone();
     let req = invocation(number, actor, owner, parameters.clone())?;
     let resolved = world.engine.resolve_legal_action(
         &offers,
@@ -153,13 +161,16 @@ fn prepare_public(
     )?;
     let (actual, request, _) = resolved.into_authoritative_parts();
     check_eq!(actual, exact);
-    Ok(world
+    let prepared = world
         .engine
-        .prepare_registered_composed_resolved_authoritative_action(
-            &exact,
-            &request,
-            token(number),
-        )?)
+        .prepare_registered_composed_resolved_authoritative_action(&exact, &request, token(number));
+    Ok(ct0b::seen(
+        &exact,
+        actor,
+        &asked,
+        prepared,
+        ct0b::image_reader(&world.image),
+    )?)
 }
 fn commit(
     world: &mut PlayerWorld,
