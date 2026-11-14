@@ -553,8 +553,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     // (was 12).
     assert_eq!(
         catalog.specs.len(),
-        // Doc 41 cut RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's two.
-        21,
+        // Doc 41 cut RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's two;
+        // doc 47 unit CO.10: twenty-two with the wrecker.
+        22,
         "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
          the range's target, 16b cut AE.1's three chassis, 16b cut AE.3's drone, \
          doc 18 cut IC2's Dray, doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, doc 32 cut CF.6c's escort line tank, doc 35 cut SF.R12's Republic Corvette, doc 41 cut RS.1's tender \n         and cut RS.6a's crawler and lifter"
@@ -1128,9 +1129,10 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     assert_eq!(
         fielded.len(),
         // Doc 35 cut SF.R12: and the Republic Corvette (was `+ 27`); doc 41 cut RS.1: and the
-        // tender; cut RS.6a: and Tycho's crawler and lifter, last.
-        stock.len() + 31,
-        "nine shipped packs and thirty-one extension files: doc 16 section 9's ten, \
+        // tender; cut RS.6a: and Tycho's crawler and lifter; doc 47 unit CO.10: and the wrecker,
+        // last.
+        stock.len() + 32,
+        "nine shipped packs and thirty-two extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis, 16b cut AE.3's drone, doc 18 cut IC2's Dray and \
          doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, \
@@ -3156,8 +3158,8 @@ fn ic2_the_dray_is_a_hauler_and_binds_class_zero() {
     // Dray (was `+ 1`, the Dray only).
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 10,
-        "the Dray, terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, Republic Corvette, tender, crawler and lifter"
+        before.specs.len() + 11,
+        "the Dray, terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, Republic Corvette, tender, crawler, lifter and wrecker"
     );
     for (id, reference) in &before.references {
         assert_eq!(
@@ -4437,8 +4439,8 @@ fn sm3a_nothing_fielded_before_the_vehicles_moved() {
     let before = Catalog::build_game(&operator, tacsim::NS).expect("the earlier content binds");
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 9,
-        "the terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, corvette, tender, crawler and lifter"
+        before.specs.len() + 10,
+        "the terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, corvette, tender, crawler, lifter and wrecker"
     );
     for (id, reference) in &before.references {
         assert_eq!(

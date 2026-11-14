@@ -77,6 +77,17 @@ fn seen(rig: &Rig, viewer: ObjId, at: (u16, u16)) -> Option<String> {
     })
 }
 
+/// **[`seen`]'s words of where and how the unit reads** (doc 47 unit CO.10): bearing, range,
+/// motion, cell, aspect and facing, not its designator or class.
+fn seen_where(rig: &Rig, viewer: ObjId, at: (u16, u16)) -> Option<String> {
+    contact_near(rig, viewer, at).map(|row| {
+        format!(
+            "{:?} {:?} {:?} {:?} {:?} {:?}",
+            row.bearing_mdeg, row.range_cm, row.moving, row.cell, row.aspect, row.facing
+        )
+    })
+}
+
 /// The presence picture `who` reads off the site map: its lines that name a presence.
 fn presence(rig: &mut Rig, who: ObjId) -> String {
     let map = run(&mut rig.tw, who, "+tv/map");
@@ -394,6 +405,7 @@ async fn ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strang
         "the presence picture an attacker reads does not move with a posture"
     );
     let plotted = seen(&g.rig, g.intruder, HULL_AT);
+    let plotted_where = seen_where(&g.rig, g.intruder, HULL_AT);
     g.leave();
     // Twelve seconds with the marked intruder ten cells off: nothing, and the rig is where it
     // was. The intruder's own row of it reads as it did when its pilot flew it.
@@ -405,10 +417,28 @@ async fn ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strang
         g.exchange()
     );
     assert!(g.stays(), "a guard stays where it stood");
+    // Doc 47 unit CO.10: where and how the rig reads is what it read before; its identity may
+    // only have moved by the sensor's own clock (`classify_after_ms`: an unknown contact held
+    // long enough is classified), which runs whoever flies the rig. Whether that clock comes due
+    // inside these twelve seconds moved when lane v34 laid two more rigs in Occator's shed at
+    // boot, so the identity words are not pinned, only their one lawful move.
     assert_eq!(
-        seen(&g.rig, g.intruder, HULL_AT),
-        plotted,
+        seen_where(&g.rig, g.intruder, HULL_AT),
+        plotted_where,
         "what an attacker reads of the rig is what it read before its mind took it"
+    );
+    let after = seen(&g.rig, g.intruder, HULL_AT);
+    let classified = matches!(
+        contact_near(&g.rig, g.intruder, HULL_AT).map(|row| row.class),
+        Some(tacsim::arena::state::Classification::Classified { .. })
+    );
+    assert!(
+        after == plotted
+            || (plotted
+                .as_deref()
+                .is_some_and(|row| row.contains(" Unknown "))
+                && classified),
+        "the rig's identity moved only by the classify clock: {plotted:?} then {after:?}"
     );
     let miner = g.miner;
     assert_eq!(
