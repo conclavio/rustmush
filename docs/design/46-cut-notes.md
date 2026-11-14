@@ -582,11 +582,18 @@ holds for the four new files as it does for CT.0's.
   `renewal_house.snap`, `purchase_personal.snap` and `purchase_house.snap`, compared by
   `mush_testkit::snapshot` at the story's end. A difference fails the story with the kit's
   report (the file, the line, both sides).
+- **A story that stops early still reports.** `begin` returns a guard the story holds. If the
+  story fails before its end (a step refused, a check failed), dropping the guard compares the
+  record so far with the committed files as a prefix and prints for each file the first line
+  that differs, or that the record agrees as far as it goes
+  (`CT0B_CAPTURE file=… preparations=N: first difference, line L`). A change that makes a
+  provider refuse a step therefore names the preparation that is now refused, not only the
+  story's own error.
 - **In the kit**, `mush_testkit::snapshot::refuses_left_out`: the pin for a decode-only
   attribute that requires a key (below, "The smaller pins").
 
 No production source was edited and no visibility was widened. The story's name, tier, path and
-`M7_STORY` lines are as they were; the record prints two kinds of line of its own, both starting
+`M7_STORY` lines are as they were; every line the record prints of its own starts
 `CT0B_CAPTURE`.
 
 **The route, and the measurement behind it.** CT.0 named two routes. This is the first: the
@@ -596,14 +603,14 @@ call for it:
 
 | Question | Measured | Answer |
 |---|---|---|
-| Are the story's stamps, tokens and ids the same from run to run? | Three runs of one binary at once on conclav.dev, the unprojected record of each (7.3 MB, every digest and number as it is) compared by `cmp` | Byte-identical, all four files. Again with the final recorder: TBD-V4 |
-| And on Windows? | One run on the owner's Windows box against the three Linux runs | Byte-identical. The rating's certificate id is the same on both. TBD-WIN |
+| Are the story's stamps, tokens and ids the same from run to run? | Three runs of one binary at once on conclav.dev, the unprojected record of each (7.3 MB, every digest and number as it is) compared by `cmp` | Byte-identical, all four files: three runs of the first recorder, two of the second, and with the final recorder three more (two at once and the blessing run), whose unprojected records have the same SHA-256 as each other |
+| And on Windows? | One run on the owner's Windows box against the three Linux runs | Byte-identical, unprojected and projected: the final recorder's four records on Windows have the SHA-256 of the Linux ones, and the story passed there against the files blessed on Linux. The genuine rating gives the same certificate on both. The hosted Linux runner of branch CI passed against them too |
 | What does the compare add to a pinned story? | The recorder times itself (`CT0B_CAPTURE recorder_ms=… compare_ms=…`) | 0.16 s in the hooks and 0.4 s comparing, of a 970 to 1,000 s story on conclav.dev; 0.9 s of 1,057 s on Windows. Noise |
 | Does the record see every twin transition the story runs? | An audit build (never committed) in which the engine printed every composed preparation and the recorder every one it saw | The first audit found 30 renewal preparations the hooks missed, all in the paid-resale route's rig, which was then hooked. The second: 353 of 353. The story's other 119 market preparations are the legacy original purchase (versions 1 and 2) and the paid resale, which are not twins |
-| Would another programme's edit move the committed files? | Two variants (never committed), each compared with the committed files: a comment added to `crates/tacsim/src/minds/fees.rs`, which the registry manifest pins by its source text; and every object made after the shipped content renumbered by seven | The comment moves 2,348 lines of the unprojected record and none of the committed files: the story passes. The renumbering: TBD-SHIFT |
+| Would another programme's edit move the committed files? | Two variants (never committed), each compared with the committed files: a comment added to `crates/tacsim/src/minds/fees.rs`, which the registry manifest pins by its source text; and every object made after the shipped content renumbered by seven | The comment moves 2,348 lines of the unprojected record and none of the projected one (measured with the first and the second recorder; the final one renames a superset) The renumbering moves 2,006 lines of the unprojected record (the House purchase's none: its charter is made before the content loads) and none of the committed files: the story passes. A first projection that renamed only `charter`, `acting`, `object` and `Object` failed this check on `holder` and `buyer`, which were added |
 
-The story is 16 to 17 minutes on conclav.dev, not the half hour CT.0's note gives: that figure
-is the hosted runner's.
+The story is 16 to 17 minutes on conclav.dev, not the half hour CT.0's note gives; on the hosted
+runner the whole CI cell, build included, took 20 minutes (run 43613654718).
 
 **What a file holds.** Only what the twins' families own, so that a change elsewhere does not
 re-bless it. The projection is in `ct0b_capture.rs` and is five rules:
@@ -668,17 +675,18 @@ in CT.0's files.
   states and attempts but the expired close, which the story does not drive for a House.
 - `purchase_personal.snap` (`market/{list,quote,purchase,settle,refund}_original_mind@3` and
   `…_derived_mind@1`; the Roll's `entitlement/writer.rs` `fund` and `terminal`): listed, quoted,
-  funded, granted and refunded, for `original_v3` and `derived_v1`, sealed, open and open-resale
-  forms, a character buyer and an organisation's.
+  funded, granted and refunded, for `original_v3` and `derived_v1`, open and open-resale forms,
+  a character buyer and an organisation's.
 - `purchase_house.snap` (`market/{list,quote,purchase,settle,refund}_house_mind@1` and `@2`;
-  `house_purchase/writer.rs`): the same states for `house_v1` and for the two-seat `house_v2`.
+  `house_purchase/writer.rs` `fund` and `terminal`): the same states for `house_v1` and for the
+  two-seat `house_v2`, sealed form.
 
 This closes, on the composed path, four items of CT.0's "Not covered": item 1 (the Roll's
 writers; their readers run too, and what they read is in the rows the writers write), item 2
 (the outcome kinds `drafted`, `funded`, `granted`, `refunded`, `closed` and `service_closed`; both
 provider refusals as printed; both close key formats; the submission key's domain), item 4 (the
 House purchase's replay writes, with each row's family and schema envelope and the `registry`
-counts document) and item 5 (the transferred-holder attempts).
+counts document, `market_mind_house_counts`) and item 5 (the transferred-holder attempts).
 
 **The smaller pins.**
 
@@ -708,7 +716,51 @@ file, the story's test binary built, the file put back, the story run), never in
 "Committed files" is what the story said; "Unprojected record" is the mutant's `CT0B_RAW_DIR`
 against the unmutated run's.
 
-TBD-MUTATIONS
+| # | Where | The mutation | What the story said | Unprojected record |
+|---|---|---|---|---|
+| 1 | the Roll, renewal records (a digest domain the writer stores) | `roll.mind.renewal_predecessor.v1` to `.v2` | failed in the walk, at the first renewal draft (340 s): `Provider { action: … draft_mind_renewal … message: "This renewal is unavailable or has changed." }`. Re-run on Windows with the guard (474 s): `CT0B_CAPTURE file=renewal_personal preparations=1: first difference, line 24`, committed `[0001 market/draft_mind_renewal@1]`, produced `[0001 market/draft_mind_renewal@1, refused]` | the story stopped |
+| 2 | the Roll, term economics (the digest the renewal writer's grant stores) | `roll.mind.paid_term_economics.v1` to `.v2` | failed in the walk, at the same draft (337 s), with the same refusal | the story stopped |
+| 3 | the Roll, commercial roots (the key prefix of a renewal operation's root) | `v1/renewal_operation/{token}` to `v1/renewal_op/{token}` | failed in the walk, at the same draft (339 s), with the same refusal | the story stopped |
+| 4 | the Roll, `renewal/writer.rs` (the order of two writes in the grant's bundle) | the `paid_terms` and `term_economics` inserts swapped | **not caught**: the story passed (971 s) | **not caught**: no line differs |
+| 5 | the market, `mind_renewal/publication.rs` (a field of the receipt a provider assembles) | `predecessor: self.binding.predecessor()` to `self.binding.next()` | failed in the walk (340 s): the service's close, `close_mind_renewal_service … "This retained renewal cleanup is unavailable."` | the story stopped |
+| 6 | the market, `mind_renewal/provider.rs` (an outcome kind) | `"drafted"` to `"draft"` | `SNAPSHOT MOVED: …/ct0b/renewal_personal.snap (33 of 1840 lines)`, first difference line 27: `outcome = {…"kind":"drafted",…}` | 66 lines, all in `renewal_personal` |
+| 7 | the market, `mind_house_renewal/service.rs` (the House submission domain, CT.0's M10) | `market.house_renewal_submission.v1` to `.v2` | `SNAPSHOT MOVED: …/ct0b/renewal_house.snap (6 of 881 lines)`, first difference line 251: committed `key is = renewal.<the digest of market.house_renewal_submission.v1 over the actor, the action, the parameters and the selection d/2/1>`, produced `key is = not the service's submission digest` | 24 lines, all in `renewal_house` |
+| 8 | the market, `mind_renewal/service.rs` (the personal submission domain) | `market.renewal_submission.v1` to `.v2` | `SNAPSHOT MOVED: …/ct0b/renewal_personal.snap (11 of 1840 lines)`, first difference line 22, the same `key is` line | 44 lines |
+| 9 | the Roll, `renewal/protocol.rs` (an action id the market's dispatched service submits: `service.rs` `action` selects by it) | `Self::Fund => "fund_mind_renewal2"` | failed at the first renewal boot (339 s): `economy: renewal composition or complete recovery refused` | the story stopped |
+| 10 | the market, `mind_renewal/service.rs` (the service-close key, which is persisted) | `"renewal.close.{}.{}.{}"` to `"renewal.closed.{}.{}.{}"` | `SNAPSHOT MOVED: …/ct0b/renewal_personal.snap (1803 of 1844 lines)`, first difference line 42: `key = renewal.close.d.000000000000000000000000008adb08.<d1>` | 12 lines |
+| 11 | the market, `mind_renewal/registration.rs` (a printed sentence of a provider) | `"This renewal is unavailable or has changed."` to `"This renewal is unavailable or changed."` | `SNAPSHOT MOVED: …/ct0b/renewal_personal.snap (28 of 1840 lines)`, first difference line 159: `refused = action provider rejected market:action:draft_mind_renewal@1#<d1>: ProviderRejected: This renewal is unavailable or has changed.` (on Windows, 1,308 s) | 56 lines, all in `renewal_personal` |
+| 12 | the market, `mind_entitlement/provider.rs` (a purchase twin's outcome kind) | `"funded"` to `"fund"` | `SNAPSHOT MOVED: …/ct0b/purchase_personal.snap (35 of 2771 lines)`, first difference line 60: `outcome = {…"id":"mind_entitlement_recorded"…"kind":"funded",…}` (on Windows, 1,292 s) | 70 lines, all in `purchase_personal` |
+| 13 | the Roll, commercial roots (the House renewal operation's key prefix) | `v1/house_renewal_operation/{token}` to `v1/house_renewal_op/{token}` | failed in the walk, in the House phase (39 s): `draft_house_mind_renewal … "This renewal is unavailable or has changed."` | the story stopped |
+
+Thirteen mutations; twelve fail the story. Every kind the brief named is there: a digest domain
+in what a Roll writer stores (1, 2), a key prefix (3, 13), the order of two writes in a writer's
+bundle (4), a field of a record a market provider assembles (5), the House renewal submission
+domain (7, with its personal twin 8), an action id the market's dispatched service submits (9)
+and a printed sentence of a provider (11); and the outcome kinds (6, 12) and the service-close
+key (10) besides.
+
+- **Two ways to fail.** Where the mutated byte is one a later step reads back (a stored digest,
+  a root's key, a receipt the pair checks), the walk refuses before any compare: the Roll's
+  writers and the kernel recompute what they were handed over the stored rows, and the story's
+  error names the refused action (1, 2, 3, 5, 9, 13). Where nothing reads it back (an outcome, a
+  key the service submits, a sentence), the story reaches its end and the compare names the file
+  and the line (6, 7, 8, 10, 11, 12). These runs were made before the guard above existed; with
+  it, a walk that refuses also prints where the record left the committed files. Mutation 1 was re-run with it, on Windows: the personal renewal file's first
+  difference is line 24, `[0001 market/draft_mind_renewal@1]` produced as
+  `[0001 market/draft_mind_renewal@1, refused]`, and the other three files agree as far as they
+  go.
+- **Mutation 4 is not caught, and nothing needs to catch it.** The kernel sorts a bundle's
+  writes by their target before they are a bundle (`canonicalize_replay_writes`,
+  `crates/mush-core/src/authoritative.rs`), so the order a writer emits them in is not persisted:
+  the mutant's unprojected record is the unmutated one, byte for byte. Only a test of the
+  writer's emitted order before canonicalisation could see it, and it would pin a detail no store
+  and no reader sees. Not built.
+- **The procedure.** Mutations 1 to 10 and 13 ran on conclav.dev, each alone on a throwaway
+  clone: `perl` over one file, the story's test binary built, the file put back, the story run
+  with its own `CT0B_RAW_DIR`. conclav.dev stopped answering (ssh on 22 and 2222 timed out) at
+  about 16:17 UTC with 11 and 12 running, so those two were run on the Windows box: each built
+  alone with the file put back after the build (`git checkout` of a file with no uncommitted
+  work), then the two stories side by side.
 
 **Not covered.** A later unit must not read these files as proof of what is listed here.
 
@@ -767,11 +819,12 @@ diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the com
 ```
 
 - **Run time.** On conclav.dev the story is 16 to 17 minutes (970 to 1,000 s measured, up to
-  six at once), and its test binary builds in about nine minutes cold and three and a half after
-  a change to `mush-roll` or `mush-market`, at sixteen jobs: so command 1 is about twenty
+  six at once; eight at once and two builds is more than the box took, below), and its test
+  binary rebuilds in three to four minutes after a change to `mush-roll`, `mush-market` or the
+  story's files, at sixteen jobs (a cold build was not timed): so command 1 is about twenty
   minutes, and command 2 about twenty-five with the two runs side by side. On the owner's
-  Windows box the story is 18 minutes (1,057 s) after a ten-minute build at two jobs. On a
-  hosted runner: TBD-HOSTED.
+  Windows box the story is 18 to 22 minutes (1,057 s alone, 1,307 s beside a build) after a
+  ten-minute build at two jobs. On a hosted runner the whole CI cell, build included, took 20 minutes (run 43613654718).
 - **In branch CI.** `gh workflow run ci.yml --ref <branch>` runs command 1 as the cell
   "M7 author and buyer lifecycle" of `mind-commerce-acceptance` (the tacsim stories do not read
   the pulse). Pull-request CI does not run it: the story is nightly tier, as before.
@@ -780,7 +833,7 @@ diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the com
   the line's section says which action of which preparation. If the unit edits a file the
   registry manifest pins (none of `mush-roll`, `mush-market`, `mush-economy` or `mush-core`
   is), every digest moves and command 2 proves nothing: command 1 still does.
-- A unit that splits or renames nothing in the story leaves both commands green. A unit may
+- A unit that moves no persisted byte, key, digest or sentence leaves both commands green. A unit may
   not re-bless: `COMMERCE_SNAPSHOT_BLESS=1` on the story is for a change outside doc 46 that
   means to move a line, with the diff named in its cut note.
 - What these commands do not prove is the list above. For CT.5 that is chiefly item 3 (the
@@ -801,6 +854,9 @@ diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the com
 - **A bundle's writes are sorted by target** before they are persisted (the third item above).
 - **A twin's provider has one refusal sentence** (the renewal service's close has its own). The
   80 refusals the story provokes have many causes and print four lines between them.
+- **conclav.dev stopped answering** (ssh on 22 and 2222 timing out) at about 16:17 UTC on
+  2026-11-14, while this unit had about eight story runs and two 14-job builds on it. Whether
+  the load did it is not known. Run at most four stories and one build there at a time.
 - No defect was found.
 
 ## CT.1
