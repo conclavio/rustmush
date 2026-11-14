@@ -35,12 +35,14 @@ pub struct MoneyPatch<M: Leg> {
     chunk: u64,
     fold: Box<MoneyFold<M>>,
 }
+/// What `prepare` hands the composition: the output, the patch and its replay writes.
+pub(crate) type Prepared<M> = (Output<M>, Box<MoneyPatch<M>>, Vec<ReplayWrite>);
 pub(crate) fn prepare<M: Leg>(
     config: &M::Config,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request<M>,
-) -> Result<(Output<M>, Box<MoneyPatch<M>>, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<Prepared<M>, ParticipantError> {
     let mut prepared = money::prepare(config, state, ctx, request)?;
     let next_transaction = state
         .next_transaction
