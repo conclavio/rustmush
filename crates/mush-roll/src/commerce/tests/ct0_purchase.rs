@@ -22,24 +22,15 @@ use crate::commerce::{
     CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow,
     WorldIcSeconds,
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, ObjId};
+use mush_core::{CommitToken, ObjId};
 use mush_economy::managed_purchase::FundingReceipt;
 use mush_economy::{Amount, InstrumentId};
 use mush_testkit::snapshot::Snapshot;
 use serde_json::json;
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn hash(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
-}
+use mush_testkit::fixtures::digest as hash;
+use mush_testkit::fixtures::stamp;
+use mush_testkit::fixtures::token;
 fn identity() -> TestResult<RevisionIdentity> {
     Ok(serde_json::from_value(json!({"format":1,
         "revision":{"key":{"character":1,"mind":1,"number":1},"digest":hash(1)},"source":hash(2)}))?)

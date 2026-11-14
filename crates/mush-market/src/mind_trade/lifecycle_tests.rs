@@ -5,6 +5,7 @@
 use super::*;
 use crate::mind_trade::index;
 use mush_core::{Engine, GameModule, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, Outbox};
+use mush_testkit::cold::{ColdError, load_typed};
 use std::collections::BTreeMap;
 
 struct CapturingMarket;
@@ -605,12 +606,13 @@ fn restart_audit_refuses_missing_counter_actor_or_expiry_and_orphan_index() {
     }
     let restore = |rows: &BTreeMap<String, Value>| {
         let (mut engine, _) = rig();
-        engine
-            .hydrate_action_state(rows.iter().map(|(key, value)| {
-                mush_core::ActionStateBootRecord::new(crate::NS, key.clone(), value.clone())
-            }))
-            .expect("valid individual typed rows");
-        boot(&mut engine)
+        let typed = rows
+            .iter()
+            .map(|(key, value)| (crate::NS, key.as_str(), value));
+        match load_typed(&mut engine, crate::NS, typed) {
+            Err(ColdError::Typed(error)) => panic!("valid individual typed rows: {error:?}"),
+            loaded => loaded,
+        }
     };
     restore(&disk).expect("exact real writer postimages restart");
     for family in [

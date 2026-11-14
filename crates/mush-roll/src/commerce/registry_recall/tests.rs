@@ -11,6 +11,7 @@ use mush_org::{
     AccessPolicy, OrgAction, OrgId, OrgModule, OrgMutationOp, OrgMutationPlan, OrgScopeId,
     OrgStore, PolicyEffect, PolicyRule, PolicySubject, ScopeSelector, SystemPrincipalId,
 };
+use mush_testkit::cold;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
@@ -124,8 +125,8 @@ fn command(e: &mut Engine, line: &str) -> Result {
     if out.events().iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Sys(text) if text.spans().iter().any(|s|s.tag.as_deref()==Some("error")))) {return Err("actual Org fixture command refused".into());}
     Ok(())
 }
-fn boot(e: &mut Engine, data: HashMap<smol_str::SmolStr, ModuleBootData>) -> Result {
-    e.modules_loaded(data, &mut Outbox::new(), &mut mush_core::Effects::new())?;
+fn boot(e: &mut Engine, data: cold::Boot) -> Result {
+    cold::load(e, data)?;
     Ok(())
 }
 struct Rig {
@@ -548,11 +549,4 @@ fn registry_recall_policy_is_closed_bounded_and_does_not_invent_identifier_minim
     Ok(())
 }
 
-#[inline(never)]
-fn boxed_test_engine(
-    world: mush_core::World,
-    registry: mush_core::Registry,
-    modules: Vec<Box<dyn mush_core::GameModule>>,
-) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
-    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
-}
+use mush_testkit::fixtures::boxed_engine as boxed_test_engine;

@@ -3,27 +3,21 @@
 //! Codec and real registration/refusal tests. The successful paid operation,
 //! real Registry certification and funding/restart gates remain separate.
 use super::*;
-use mush_core::{ClockRef, ClockStamp, ObjId};
+use mush_core::ObjId;
 use mush_roll::commerce::rating::{RatingClass, RatingRef};
 use mush_roll::commerce::{
     CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow,
     WorldIcSeconds,
 };
+use mush_testkit::fixtures::{stamp, token};
 use records::*;
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
 fn hash() -> DefinitionDigest {
     DefinitionDigest::for_canonical_value("market.quote.test", &json!({}))
         .expect("valid test fixture")
 }
 fn at(n: i64) -> WorldIcSeconds {
-    WorldIcSeconds::from_stamp(&ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at: n,
-    })
-    .expect("valid test fixture")
+    WorldIcSeconds::from_stamp(&stamp(n)).expect("valid test fixture")
 }
 fn subject() -> OriginalSubject {
     let identity: RevisionIdentity = serde_json::from_value(json!({"format":1,

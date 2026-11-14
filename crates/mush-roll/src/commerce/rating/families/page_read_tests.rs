@@ -19,9 +19,7 @@ use std::sync::{Arc, Mutex};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Answers = Arc<Mutex<Vec<Result<[RatingRef; 2], OwnerReadError>>>>;
 type Handles = Arc<Mutex<Option<RatingFamilies>>>;
-fn hash(byte: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([byte; 32])
-}
+use mush_testkit::fixtures::digest as hash;
 
 fn complete(number: u8) -> TestResult<test_support::CompleteRating> {
     let identity = serde_json::from_value(json!({"format":1,
@@ -453,11 +451,4 @@ fn batching_preserves_last_page_attempt_binding_and_independent_current_status()
     Ok(())
 }
 
-#[inline(never)]
-fn boxed_test_engine(
-    world: mush_core::World,
-    registry: mush_core::Registry,
-    modules: Vec<Box<dyn mush_core::GameModule>>,
-) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
-    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
-}
+use mush_testkit::fixtures::boxed_engine as boxed_test_engine;

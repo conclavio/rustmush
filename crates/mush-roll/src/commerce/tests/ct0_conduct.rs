@@ -12,16 +12,12 @@ use crate::commerce::rating::execution::ArtifactIdentity;
 use crate::commerce::rating::{RatingClass, RatingRef, RatingSubject};
 use crate::commerce::records::Record;
 use crate::commerce::{CharterId, FiledRevisionId, LineId, RevisionIdentity};
-use mush_core::{CommitToken, DefinitionDigest, DefinitionRef};
+use mush_core::{CommitToken, DefinitionRef};
 use mush_testkit::snapshot::Snapshot;
 use serde_json::json;
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn hash(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
+use mush_testkit::fixtures::digest as hash;
+use mush_testkit::fixtures::token;
 
 fn subject() -> TestResult<ConductSubject> {
     let revision: RevisionIdentity = serde_json::from_value(json!({"format":1,

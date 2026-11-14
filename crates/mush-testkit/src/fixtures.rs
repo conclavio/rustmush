@@ -11,6 +11,8 @@
 //! `token(7)` is sixteen bytes of `7`, and a test that takes it from here
 //! writes the bytes it wrote before.
 
+use std::collections::BTreeSet;
+
 use mush_core::{
     Audience, ClockRef, ClockStamp, CommitToken, DefinitionDigest, Engine, GameModule, ModError,
     ObjId, Registry, World,
@@ -27,6 +29,12 @@ use crate::TestWorld;
 #[must_use]
 pub fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
+}
+
+/// The set of [`token`]s of `ids`.
+#[must_use]
+pub fn tokens(ids: &[u8]) -> BTreeSet<CommitToken> {
+    ids.iter().map(|n| token(*n)).collect()
 }
 
 /// The definition digest whose thirty-two bytes are all `n`. The test files
@@ -120,6 +128,7 @@ mod tests {
     #[test]
     fn the_fixed_values_are_the_bytes_the_test_files_wrote() {
         assert_eq!(token(7).to_hex(), "07".repeat(16));
+        assert_eq!(tokens(&[7, 7, 9]), BTreeSet::from([token(7), token(9)]));
         assert_eq!(digest(9), DefinitionDigest::from_bytes([9; 32]));
         assert_eq!(
             stamp(40),

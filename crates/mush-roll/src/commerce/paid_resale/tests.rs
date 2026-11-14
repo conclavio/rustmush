@@ -3,16 +3,11 @@ use super::*;
 use crate::commerce::{
     TermGeneration, paid::PersonalPaidLicence, records::Record, roots::RootAnchor,
 };
-use mush_core::{CommitToken, DefinitionDigest};
 use mush_economy::managed_paid_resale::PaidBirthRefV1;
 use serde_json::{Value, json};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn hash(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
+use mush_testkit::fixtures::digest as hash;
+use mush_testkit::fixtures::token;
 fn original() -> Value {
     json!({"format":1,"id":"1","charter":"2","line":"3","holder":4,"term":"1","operation":token(1)})
 }

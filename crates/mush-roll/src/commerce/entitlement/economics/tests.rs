@@ -6,9 +6,7 @@ use mush_core::mechanics::{
 };
 use serde_json::json;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-fn hash(byte: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([byte; 32])
-}
+use mush_testkit::fixtures::digest as hash;
 fn identity(number: u64) -> TestResult<RevisionIdentity> {
     Ok(serde_json::from_value(json!({"format":1,
         "revision":{"key":{"character":1,"mind":number,"number":1},"digest":hash(1)},

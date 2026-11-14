@@ -11,6 +11,7 @@ use crate::engine::{NoCustody, NoFacts, ValidateEnv};
 use crate::module::JOURNAL_LOG;
 use crate::plan::{EconomyPlan, PlanResult, RequestedLine};
 use crate::record::{EconomicCause, EconomicVisibility, IdempotencyKey};
+use mush_testkit::fixtures::boxed_engine as boxed_test_engine;
 use std::collections::BTreeMap;
 
 fn cash(r: &mut Rig) -> TestResult {
@@ -875,11 +876,7 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
                 Box::new(crate::EconomyModule::new()),
             ],
         )?;
-        engine.modules_loaded(
-            Default::default(),
-            &mut mush_core::Outbox::new(),
-            &mut mush_core::Effects::new(),
-        )?;
+        mush_testkit::cold::load(&mut engine, Default::default())?;
         *engine
             .world
             .module_state_mut::<EconomyStore>()
@@ -941,13 +938,4 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
         );
     }
     Ok(())
-}
-
-#[inline(never)]
-fn boxed_test_engine(
-    world: mush_core::World,
-    registry: mush_core::Registry,
-    modules: Vec<Box<dyn mush_core::GameModule>>,
-) -> Result<Box<mush_core::Engine>, mush_core::ModError> {
-    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

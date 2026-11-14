@@ -22,11 +22,13 @@ use super::tests::{fixture, purchase};
 use super::{EntitlementPurchaseV1, EntitlementQuoteV1};
 use mush_core::{
     ActionTxn, CommitToken, Engine, GameModule, ModError, ModuleBootData, ModuleCtx, ModuleWrite,
-    ObjId, Outbox, Registrar, Registry, StateFamilyHandle, World,
+    ObjId, Registrar, Registry, StateFamilyHandle, World,
 };
 use mush_economy::managed_entitlement::EntitlementProtocol;
 use mush_roll::commerce::paid::PaidForm;
 use mush_roll::commerce::purchase::PurchasePhase;
+use mush_testkit::cold::load_typed;
+use mush_testkit::fixtures::{token, tokens};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -87,9 +89,6 @@ fn rig() -> TestResult<(Box<Engine>, Handles)> {
         .ok_or("captured handles")?
         .clone();
     Ok((Box::new(e), h))
-}
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
 }
 const BUYER: ObjId = ObjId(8);
 
@@ -215,25 +214,19 @@ fn row(e: &Engine, h: &Handles, buyer: ObjId) -> TestResult<Option<EntitlementAc
         .get(&h.actors, &index::BuyerKey::Character(buyer))?
         .cloned())
 }
-fn tokens(ids: &[u8]) -> BTreeSet<CommitToken> {
-    ids.iter().map(|n| token(*n)).collect()
-}
 /// The writer's refusal text, when `step` refused.
 fn refusal(step: Result<(), String>) -> Option<String> {
     step.err()
 }
+/// The typed rows of `disk`, as the market's boot hands them over.
+fn rows(disk: &Disk) -> impl Iterator<Item = (&str, &str, &Value)> {
+    disk.iter()
+        .map(|(key, value)| (crate::NS, key.as_str(), value))
+}
 /// Hydrate `disk` into a fresh rig and run its boot audit.
 fn boot(disk: &Disk) -> TestResult {
     let (mut e, _) = rig()?;
-    e.hydrate_action_state(disk.iter().map(|(key, value)| {
-        mush_core::ActionStateBootRecord::new(crate::NS, key.clone(), value.clone())
-    }))?;
-    e.module_loaded(
-        crate::NS,
-        ModuleBootData::default(),
-        &mut Outbox::new(),
-        &mut mush_core::engine::Effects::new(),
-    )?;
+    load_typed(&mut e, crate::NS, rows(disk))?;
     Ok(())
 }
 
@@ -409,15 +402,7 @@ fn an_abandoned_quote_survives_reboot_after_it_expires() -> TestResult {
     e.world.set_now(10_000);
     let (mut later, later_handles) = rig()?;
     later.world.set_now(10_000);
-    later.hydrate_action_state(disk.iter().map(|(key, value)| {
-        mush_core::ActionStateBootRecord::new(crate::NS, key.clone(), value.clone())
-    }))?;
-    later.module_loaded(
-        crate::NS,
-        ModuleBootData::default(),
-        &mut Outbox::new(),
-        &mut mush_core::engine::Effects::new(),
-    )?;
+    load_typed(&mut later, crate::NS, rows(&disk))?;
     check_eq!(
         later
             .action_state()

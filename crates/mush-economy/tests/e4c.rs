@@ -23,16 +23,16 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::module::{ModError, Registrar, WorldEvent};
 use mush_core::{
-    ArgShape, Audience, CmdError, CommandSpec, Ctx, Deferred, Effects, GOD, GameModule, LIMBO,
-    ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox, World,
+    ArgShape, CmdError, CommandSpec, Ctx, Deferred, Effects, GOD, GameModule, LIMBO, ModuleOp,
+    ModuleWrite, ObjId, ObjKind, Outbox, World,
 };
 use mush_economy::{
     AccountId, AssetEffectKind, ContractId, ContractState, ContractStateKind, EconomicCause,
     EconomicEvent, EconomyObserver, EconomySnapshot, EconomyStore, FactProvider, FactState,
 };
 use mush_org::{CapabilityId, PrincipalId, SystemPrincipalId};
-use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::TestWorld;
+use mush_testkit::fixtures::{err, ok};
 
 #[path = "e4c/fact_revision.rs"]
 mod fact_revision;
@@ -332,32 +332,6 @@ fn boot_with_tail(issuers: Vec<SystemPrincipalId>, max: usize) -> TestWorld {
     ])
 }
 
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
-}
-fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let ev = tw.run(actor, line);
-    assert!(!has_error(&ev), "`{line}` was refused: {}", texts(&ev));
-    texts(&ev)
-}
-fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let ev = tw.run(actor, line);
-    assert!(
-        has_error(&ev),
-        "`{line}` should have been refused, got: {}",
-        texts(&ev)
-    );
-    texts(&ev)
-}
 fn store(tw: &TestWorld) -> &EconomyStore {
     tw.world()
         .module_state::<EconomyStore>()

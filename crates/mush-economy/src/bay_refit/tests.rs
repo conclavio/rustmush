@@ -8,10 +8,11 @@ use super::*;
 use crate::core_integration::ScopedCoreAccount;
 use crate::plan::HoldOp;
 use mush_core::{
-    ClockRef, ClockStamp, DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind,
-    DefinitionRef, DefinitionRegistryBuilder, ObjId, OwnerId,
+    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, ObjId, OwnerId,
 };
 use mush_org::{OrgId, OrgScopeId, SystemPrincipalId};
+use mush_testkit::fixtures::stamp;
 
 fn reference(owner: &str, kind: &str, id: &str) -> DefinitionRef {
     DefinitionRegistryBuilder::new()
@@ -44,12 +45,6 @@ fn policy() -> BayPaymentPolicy {
         recipe: reference("industry", "recipe", "bay_refit"),
         bays: vec![site(40, 1), site(41, 1)],
         max_fee_minor: 50_000,
-    }
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
     }
 }
 fn subject(p: &BayPaymentPolicy) -> BaySubject {

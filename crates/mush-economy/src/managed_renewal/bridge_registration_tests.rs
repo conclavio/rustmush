@@ -379,7 +379,7 @@ fn attempt(
 ) -> TestResult<(Result<Box<Engine>, ModError>, Specs, Trace)> {
     let (modules, specs, trace) = modules(economy_first, fault)?;
     Ok((
-        Engine::with_modules(World::new_minimal(), Registry::new(), modules).map(Box::new),
+        mush_testkit::fixtures::boxed_engine(World::new_minimal(), Registry::new(), modules),
         specs,
         trace,
     ))

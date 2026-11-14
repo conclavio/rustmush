@@ -4,10 +4,8 @@ use super::*;
 use crate::record::{CatalogRef, HoldPurpose};
 use mush_core::{ClockRef, ClockStamp, DefinitionDigest, ObjId};
 use mush_org::SystemPrincipalId;
+use mush_testkit::fixtures::token;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
 fn sized_intent() -> Result<FundingIntent> {
     let mut i = FundingIntent {
         consent: super::super::tests::maximum_consent()?,

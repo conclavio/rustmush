@@ -21,16 +21,16 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::module::{ModError, Registrar};
 use mush_core::{
-    ArgShape, Audience, CmdError, CommandSpec, Ctx, GOD, GameModule, LIMBO, ModuleBootData,
-    ModuleWrite, ObjId, ObjKind,
+    ArgShape, CmdError, CommandSpec, Ctx, GOD, GameModule, LIMBO, ModuleBootData, ModuleWrite,
+    ObjId, ObjKind,
 };
 use mush_economy::{
     APPROVAL_TTL_SECS, AccountId, Amount, ApprovalStatus, EconomicCause, EconomyError, EconomyPlan,
     EconomySnapshot, EconomyStore, IdempotencyKey, PostOutcome, RequestedLine,
 };
 use mush_org::{PrincipalId, SystemPrincipalId};
-use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::TestWorld;
+use mush_testkit::fixtures::{err, ok, texts};
 use smol_str::SmolStr;
 
 // ---- rig ------------------------------------------------------------------
@@ -43,33 +43,6 @@ fn boot() -> (TestWorld, Probe) {
         Box::new(ProbeMod(probe.clone())),
     ]);
     (tw, probe)
-}
-
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
-}
-fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let ev = tw.run(actor, line);
-    assert!(!has_error(&ev), "`{line}` was refused: {}", texts(&ev));
-    texts(&ev)
-}
-fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let ev = tw.run(actor, line);
-    assert!(
-        has_error(&ev),
-        "`{line}` should have been refused, got: {}",
-        texts(&ev)
-    );
-    texts(&ev)
 }
 
 fn store(tw: &TestWorld) -> &EconomyStore {
@@ -138,7 +111,8 @@ fn reboot(tw: &mut TestWorld, kv: &Kv) {
             )
         })
         .collect();
-    tw.modules_loaded(boot);
+    tw.try_cold_loaded(boot)
+        .expect("module boot data must load");
 }
 fn patch(kv: &mut Kv, key: &str, f: impl Fn(&mut serde_json::Value)) {
     let rows = kv

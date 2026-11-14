@@ -4,13 +4,10 @@ use super::super::{
     PageContent, Peak, ProbeName, RatingClass, RatingError, TrialEnd, TrialLayout, TrialOutcome,
 };
 use super::{RatingScore, RatingTally, rating_score};
-use mush_core::mechanics::DefinitionDigest;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn hash(byte: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([byte; 32])
-}
+use mush_testkit::fixtures::digest as hash;
 fn trial(variant: u8, seed: u8) -> CaseKind {
     CaseKind::Trial {
         variant,
