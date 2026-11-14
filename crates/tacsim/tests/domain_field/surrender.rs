@@ -87,6 +87,19 @@ async fn su7_a_yielded_line_tank_drives_aboard_under_escort() {
     crate::surrender_rig::escorted_aboard(&AHUNA_FLANK).await;
 }
 
+/// **Doc 47 unit CO.10 at 256**: a yielded line tank that cannot drive is taken in by the
+/// stranger's leased wrecker in a field of three parties, its crew captured aboard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn co10_a_yielded_line_tank_is_towed_in_by_a_leased_wrecker() {
+    crate::surrender_rig::towed_in_by_the_wrecker(&AHUNA_FLANK).await;
+}
+
+/// **CO.10 at 512**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn co10_a_yielded_line_tank_is_towed_in_by_a_leased_wrecker_at_512() {
+    crate::surrender_rig::towed_in_by_the_wrecker(&URVARA_REACH).await;
+}
+
 /// **SU.7 at 512**.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn su7_a_yielded_line_tank_drives_aboard_under_escort_at_512() {

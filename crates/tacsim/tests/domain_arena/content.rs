@@ -2531,7 +2531,7 @@ fn m3_every_shipped_chassis_binds_its_core() {
     // Doc 18 cut IC2: twelve with the Dray, which fits no core (Class 0, the
     // drive ROM) — was eleven. Doc 20 cut SM.3a: fourteen with the terrain vehicle
     // and the Dray-P, neither fitting a core (Class 0, as the Dray).
-    let expected: [(&str, Fitted<'_>); 21] = [
+    let expected: [(&str, Fitted<'_>); 22] = [
         (content::LINE_TANK, line),
         (content::LINE_TANK_LASER, line),
         (content::LINE_TANK_THERMAL, line),
