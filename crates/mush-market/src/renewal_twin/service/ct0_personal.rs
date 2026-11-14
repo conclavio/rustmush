@@ -6,4 +6,7 @@
 //! this service's own names.
 use super::*;
 
+/// Doc 46 CT.6: the personal issuer's command, under the name the shared lines read.
+const COMMAND: &str = <mush_economy::renewal_twin::Personal as Issuer>::COMMAND;
+
 crate::mind_house_renewal::tests::ct0_snapshot::service_lines!();

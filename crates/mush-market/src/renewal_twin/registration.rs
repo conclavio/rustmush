@@ -1,24 +1,26 @@
 //! Opt-in, final-freeze validated binding to the one real Roll writer and
 //! existing Economy participant. No registration-order-dependent authority.
+use super::Issuer;
+use super::config::RenewalConfig;
 use super::config::{descriptor, error};
-use super::{Families, RenewalConfig};
+use super::families::Families;
 use mush_core::action::{ActionError, ActionErrorCode};
 use mush_core::mechanics::{DefinitionKind, DefinitionRegistryBuilder, OwnerId};
 use mush_core::{DefinitionRef, ModError, Registrar};
 use mush_economy::registry_filing::InitialFilingParticipant;
-use mush_roll::commerce::renewal::protocol::{self, Transition};
+use mush_roll::commerce::renewal_twin::protocol::{self, Step};
 
-pub(crate) fn register(
+pub(crate) fn register<I: Issuer>(
     reg: &mut Registrar<'_>,
-    config: &RenewalConfig,
-) -> Result<Families, ModError> {
+    config: &RenewalConfig<I>,
+) -> Result<Families<I>, ModError> {
     if reg.module() != crate::NS {
         return Err(error("renewals require Market registration"));
     }
     // The action/outcome union is registered by Market's existing purchase path.
     let policy = config.policy_descriptor()?;
     reg.definition_validator(
-        DefinitionKind::new("renewal_policy").map_err(error)?,
+        DefinitionKind::new(I::POLICY_KIND).map_err(error)?,
         crate::lot::exact_validator(std::slice::from_ref(&policy)),
     )?;
     if reg.definition(policy)? != config.policy_ref()? {
@@ -28,8 +30,8 @@ pub(crate) fn register(
     let outcome = reg.definition(config.outcome_descriptor()?)?;
     let (families, reader) = Families::register(reg, config)?;
     let actions = config.actions()?;
-    for (kind, action) in Transition::ALL.into_iter().zip(actions.iter()) {
-        if reg.definition(protocol::descriptor(
+    for (kind, action) in Step::ALL.into_iter().zip(actions.iter()) {
+        if reg.definition(protocol::descriptor::<I>(
             kind,
             &config.manifest,
             &config.participants,
@@ -38,7 +40,8 @@ pub(crate) fn register(
             return Err(error("renewal action differs"));
         }
         let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
-        let writer = config.writer.for_action(
+        let writer = I::for_action(
+            &config.writer,
             reg,
             action,
             &config.manifest,
@@ -66,7 +69,7 @@ pub(crate) fn register(
         )?;
     }
     if let Some(action) = config.service_action()? {
-        if reg.definition(protocol::service_descriptor(
+        if reg.definition(protocol::service_descriptor::<I>(
             &config.manifest,
             &config.participants,
         )?)? != action
@@ -74,7 +77,8 @@ pub(crate) fn register(
             return Err(error("renewal service action differs"));
         }
         let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
-        let writer = config.writer.for_action(
+        let writer = I::for_action(
+            &config.writer,
             reg,
             &action,
             &config.manifest,
@@ -99,7 +103,8 @@ pub(crate) fn register(
                 refusal,
             },
         )?;
-        reg.mind_renewal_capacity_with_service(
+        I::capacity_with_service(
+            reg,
             config.manifest.clone(),
             config.participants.ordered(),
             actions,
@@ -107,7 +112,8 @@ pub(crate) fn register(
         )?;
         super::service::register(reg, config, families.clone(), reader)?;
     } else {
-        reg.mind_renewal_capacity(
+        I::capacity(
+            reg,
             config.manifest.clone(),
             config.participants.ordered(),
             actions,
@@ -115,7 +121,7 @@ pub(crate) fn register(
     }
     Ok(families)
 }
-fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModError> {
+fn binding<I: Issuer>(reg: &mut Registrar<'_>, config: &RenewalConfig<I>) -> Result<(), ModError> {
     let manifest = config.manifest.clone();
     let participants = config.participants.clone();
     let actions = config.actions()?;
@@ -131,9 +137,9 @@ fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModErr
     refs.sort();
     refs.dedup();
     let d = descriptor(
-        "mind_renewal_binding",
+        I::BINDING_KIND,
         "roll",
-        serde_json::json!({"format":1,"protocol":"personal_mind_renewal_v1"}),
+        serde_json::json!({"format":1,"protocol":<I as mush_economy::renewal_twin::Issuer>::PROTOCOL}),
     )?
     .with_references(refs.clone());
     let expected = DefinitionRegistryBuilder::new()
@@ -141,7 +147,7 @@ fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModErr
         .map_err(error)?;
     let payload = d.payload().clone();
     reg.definition_validator(
-        DefinitionKind::new("mind_renewal_binding").map_err(error)?,
+        DefinitionKind::new(I::BINDING_KIND).map_err(error)?,
         move |ctx: &mush_core::mechanics::DefinitionValidationContext<'_>| {
             let actual = ctx.definition();
             if actual.reference() != &expected
@@ -153,13 +159,10 @@ fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModErr
             for r in &refs {
                 ctx.get_exact(r).map_err(|e| e.to_string())?;
             }
-            writer
-                .validate_registration(&manifest, &participants, &actions)
+            I::validate_registration(&writer, &manifest, &participants, &actions)
                 .map_err(|e| e.to_string())?;
             if let Some(service) = &service_close {
-                writer
-                    .validate_service_registration(service)
-                    .map_err(|e| e.to_string())?;
+                I::validate_service_registration(&writer, service).map_err(|e| e.to_string())?;
             }
             Ok(())
         },

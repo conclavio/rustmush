@@ -54,7 +54,7 @@ fn action(
         protocol::descriptor(transition, manifest, &p)?,
     )?)
 }
-pub(super) fn fixture() -> TestResult<MindRenewalOperationV1> {
+pub(crate) fn fixture() -> TestResult<MindRenewalOperationV1> {
     let manifest = definition("tacsim", "registry_manifest", "combat", 1)?;
     let participants = [
         definition("economy", "owner_participant", "initial_filing", 2)?,

@@ -1,18 +1,24 @@
 //! Real two-owner composed transitions. Every selector is self-attributed;
 //! no caller supplies a wallet, price, receipt, term image or royalty schedule.
-use super::{Families, MindRenewalOperationV1, RenewalConfig};
+use super::config::RenewalConfig;
+use super::families::Families;
+use super::records::{OperationRow, ReceiptRow, Row};
+use super::{Issuer, RollOperation};
 use mush_core::action::{
     ActionError, ActionInvocation, ActionProvider, AuthoritativeActionOutput, PerceivedRef,
     PrincipalId,
 };
 use mush_core::participant::ParticipantHandle;
 use mush_core::{ActionTxn, CommitToken, DefinitionRef, PrepareCtx, RulesValue};
-use mush_economy::managed_renewal::{RenewalMoneyRequest, UnfundedCloseReason};
-use mush_economy::registry_filing::{EconomyRequest, InitialFilingParticipant};
+use mush_economy::registry_filing::InitialFilingParticipant;
+use mush_economy::renewal_twin::{RenewalMoneyRequest, UnfundedCloseReason};
 use mush_roll::commerce::{
     LicenceId,
-    renewal::{
-        RenewalAttemptV1, RenewalStateV1, protocol::Transition, writer::RegisteredRenewalWriter,
+    renewal_twin::{
+        Binding as _, Facts as _,
+        protocol::Step as Transition,
+        records::{RenewalAttemptV1, RenewalStateV1},
+        writer::{PreparedRenewal, RegisteredRenewalWriter},
     },
 };
 use serde::Deserialize;
@@ -35,13 +41,13 @@ struct Close {
     operation: CommitToken,
     reason: UnfundedCloseReason,
 }
-pub(super) enum Request {
+pub(crate) enum Request {
     Draft(LicenceId),
     Retry(CommitToken),
     Operation(CommitToken),
     Close(CommitToken, UnfundedCloseReason),
 }
-pub(super) fn decode(kind: Transition, value: &Value) -> Result<Request, String> {
+pub(crate) fn decode(kind: Transition, value: &Value) -> Result<Request, String> {
     let bad = |_| super::records::invalid();
     match kind {
         Transition::Draft => {
@@ -70,17 +76,17 @@ pub(super) fn decode(kind: Transition, value: &Value) -> Result<Request, String>
 fn invalid(_: impl std::fmt::Display) -> String {
     super::records::invalid()
 }
-pub(super) struct Provider {
+pub(crate) struct Provider<I: Issuer> {
     pub action: DefinitionRef,
     pub outcome: DefinitionRef,
     pub kind: Transition,
-    pub config: RenewalConfig,
-    pub families: Families,
+    pub config: RenewalConfig<I>,
+    pub families: Families<I>,
     pub economy: ParticipantHandle<InitialFilingParticipant>,
-    pub writer: RegisteredRenewalWriter,
+    pub writer: RegisteredRenewalWriter<I>,
     pub refusal: ActionError,
 }
-pub(super) fn require_due(
+pub(crate) fn require_due(
     now: &mush_core::ClockStamp,
     end: mush_roll::commerce::WorldIcSeconds,
 ) -> Result<(), String> {
@@ -90,19 +96,22 @@ pub(super) fn require_due(
     }
     Ok(())
 }
-impl Provider {
+impl<I: Issuer> Provider<I> {
     fn observed(
         &self,
         ctx: &mut PrepareCtx<'_>,
         txn: &mut ActionTxn<'_>,
         licence: LicenceId,
-    ) -> Result<mush_roll::commerce::renewal::writer::PreparedRenewal, String> {
-        let value = self.writer.observe(ctx, txn, licence).map_err(invalid)?;
+    ) -> Result<PreparedRenewal<I>, String> {
+        let value = I::observe(&self.writer, ctx, txn, licence).map_err(invalid)?;
+        if !I::admits(&self.config, value.facts()) {
+            return Err(super::records::invalid());
+        }
         require_due(
             &ctx.world().map_err(invalid)?.world_ic_now(),
-            value.facts().predecessor_term_end(),
+            I::term_end(value.facts()),
         )?;
-        self.writer.preflight(ctx, txn, &value).map_err(invalid)?;
+        I::preflight(&self.writer, ctx, txn, &value).map_err(invalid)?;
         Ok(value)
     }
     fn request(&self, inv: &ActionInvocation) -> Result<Request, String> {
@@ -121,13 +130,7 @@ impl Provider {
         txn: &mut ActionTxn<'_>,
         operation: CommitToken,
         actor: mush_core::ObjId,
-    ) -> Result<
-        (
-            MindRenewalOperationV1,
-            mush_roll::commerce::renewal::RenewalOperationV1,
-        ),
-        String,
-    > {
+    ) -> Result<(I::Renewal, RollOperation<I>), String> {
         let row = txn
             .get(&self.families.operations, &operation)
             .map_err(invalid)?
@@ -158,10 +161,7 @@ impl Provider {
         {
             return Err(super::records::invalid());
         }
-        let roll = self
-            .writer
-            .operation(ctx, txn, operation)
-            .map_err(invalid)?;
+        let roll = I::operation(&self.writer, ctx, txn, operation).map_err(invalid)?;
         row.matches_roll(&roll)?;
         if txn
             .get(&self.families.receipts, &operation)
@@ -249,38 +249,30 @@ impl Provider {
             inv.actor(),
         )?;
         let request = match attempt {
-            RenewalAttemptV1::HolderAutomatic { basis } => EconomyRequest::RenewalHolderDraft {
-                offer: offer.clone(),
-                basis,
-            },
+            RenewalAttemptV1::HolderAutomatic { basis } => {
+                I::holder_draft_request(offer.clone(), basis)
+            }
             RenewalAttemptV1::HolderRetry {
                 basis,
                 previous_operation,
-            } => EconomyRequest::RenewalHolderRetry {
-                offer: offer.clone(),
-                basis,
-                previous_operation,
-            },
-            RenewalAttemptV1::Automatic {} => EconomyRequest::RenewalDraft(offer.clone()),
-            RenewalAttemptV1::BuyerRetry { previous_operation } => EconomyRequest::RenewalRetry {
-                offer: offer.clone(),
-                previous_operation,
-            },
+            } => I::holder_retry_request(offer.clone(), basis, previous_operation),
+            RenewalAttemptV1::Automatic {} => I::draft_request(offer.clone()),
+            RenewalAttemptV1::BuyerRetry { previous_operation } => {
+                I::retry_request(offer.clone(), previous_operation)
+            }
         };
         let output = ctx
             .prepare_owner(&self.economy, request)
-            .and_then(|o| o.renewal_offer())
+            .and_then(I::offer_output)
             .map_err(invalid)?;
-        let roll = self
-            .writer
-            .draft(ctx, txn, &offer, attempt, &observed, &output)
+        let roll = I::draft(&self.writer, ctx, txn, &offer, attempt, &observed, &output)
             .map_err(invalid)?;
-        let row = MindRenewalOperationV1::captured(&self.config, offer, &roll)?;
+        let row = I::Renewal::captured(&self.config, offer, &roll)?;
         super::capacity::check(&self.families, &row)?;
         txn.insert(&self.families.operations, &commit, row.clone())
             .map_err(invalid)?;
         self.readback(txn, &row)?;
-        ctx.reserve_mind_renewal_completion(txn).map_err(invalid)?;
+        I::reserve_completion(ctx, txn).map_err(invalid)?;
         Ok((commit, "drafted"))
     }
     #[inline(never)]
@@ -296,7 +288,7 @@ impl Provider {
         if fresh
             && (before.manifest() != &self.config.manifest
                 || before.participants() != &self.config.participants.ordered()
-                || before.expected_action(self.kind)? != self.action)
+                || before.expected_step(self.kind)? != self.action)
         {
             return Err(super::records::invalid());
         }
@@ -319,32 +311,39 @@ impl Provider {
         };
         let after_roll = if self.kind == Transition::Fund {
             let output = ctx
-                .prepare_owner(&self.economy, EconomyRequest::RenewalFunding(money))
-                .and_then(|o| o.renewal_funding())
+                .prepare_owner(&self.economy, I::funding_request(money))
+                .and_then(I::funding_output)
                 .map_err(invalid)?;
-            self.writer
-                .fund(
-                    ctx,
-                    txn,
-                    &roll,
-                    before.offer(),
-                    observed.as_ref().ok_or_else(super::records::invalid)?,
-                    &output,
-                )
-                .map_err(invalid)?
+            I::fund(
+                &self.writer,
+                ctx,
+                txn,
+                &roll,
+                before.offer(),
+                observed.as_ref().ok_or_else(super::records::invalid)?,
+                &output,
+            )
+            .map_err(invalid)?
         } else {
             let request = if self.kind == Transition::Grant {
-                EconomyRequest::RenewalGrant(money)
+                I::grant_request(money)
             } else {
-                EconomyRequest::RenewalRefund(money)
+                I::refund_request(money)
             };
             let output = ctx
                 .prepare_owner(&self.economy, request)
-                .and_then(|o| o.renewal_terminal())
+                .and_then(I::terminal_output)
                 .map_err(invalid)?;
-            self.writer
-                .terminal(ctx, txn, &roll, before.offer(), observed.as_ref(), &output)
-                .map_err(invalid)?
+            I::terminal(
+                &self.writer,
+                ctx,
+                txn,
+                &roll,
+                before.offer(),
+                observed.as_ref(),
+                &output,
+            )
+            .map_err(invalid)?
         };
         let after = before.progressed(&after_roll)?;
         txn.replace(&self.families.operations, &operation, after.clone())
@@ -355,8 +354,7 @@ impl Provider {
                 .map_err(invalid)?;
         }
         self.readback(txn, &after)?;
-        ctx.advance_mind_renewal_completion(txn, operation)
-            .map_err(invalid)?;
+        I::advance_completion(ctx, txn, operation).map_err(invalid)?;
         Ok((
             operation,
             match self.kind {
@@ -380,31 +378,20 @@ impl Provider {
             return Err(super::records::invalid());
         }
         let output = ctx
-            .prepare_owner(
-                &self.economy,
-                EconomyRequest::RenewalClose { operation, reason },
-            )
-            .and_then(|o| o.renewal_offer())
+            .prepare_owner(&self.economy, I::close_request(operation, reason))
+            .and_then(I::offer_output)
             .map_err(invalid)?;
-        let after_roll = self
-            .writer
-            .close(ctx, txn, &roll, &output)
-            .map_err(invalid)?;
+        let after_roll = I::close(&self.writer, ctx, txn, &roll, &output).map_err(invalid)?;
         let after = before.progressed(&after_roll)?;
         txn.replace(&self.families.operations, &operation, after.clone())
             .map_err(invalid)?;
         txn.insert(&self.families.receipts, &operation, after.receipt()?)
             .map_err(invalid)?;
         self.readback(txn, &after)?;
-        ctx.advance_mind_renewal_completion(txn, operation)
-            .map_err(invalid)?;
+        I::advance_completion(ctx, txn, operation).map_err(invalid)?;
         Ok((operation, "closed"))
     }
-    fn readback(
-        &self,
-        txn: &mut ActionTxn<'_>,
-        row: &MindRenewalOperationV1,
-    ) -> Result<(), String> {
+    fn readback(&self, txn: &mut ActionTxn<'_>, row: &I::Renewal) -> Result<(), String> {
         if txn
             .get(&self.families.operations, &row.operation())
             .map_err(invalid)?
@@ -427,7 +414,7 @@ impl Provider {
         Ok(())
     }
 }
-impl ActionProvider for Provider {
+impl<I: Issuer> ActionProvider for Provider<I> {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
         self.request(inv)
             .map(|_| ())
