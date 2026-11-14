@@ -54,6 +54,11 @@ fn document<T: Record>(
     serde_json::json!({"family":{"owner":family.owner(),"id":family.descriptor().id()},"key":row.key(),
         "schema":{"id":family.descriptor().value_schema(),"version":family.descriptor().schema_version()},"value":row})
 }
+/// A row made from the opened and the funded operation.
+type Make<I> = fn(
+    &<I as super::super::Issuer>::Operation,
+    &<I as super::super::Issuer>::Operation,
+) -> TestResult<<I as super::super::Issuer>::Operation>;
 pub(crate) fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded<I: Rig>()
 -> TestResult {
     let (_engine, f) = families()?;
@@ -93,7 +98,7 @@ pub(crate) fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes
     )?;
     super::super::capacity::check::<I>(&f, &opened)?;
     let funded = funded::<I>(&opened)?;
-    let rows: [fn(&I::Operation, &I::Operation) -> TestResult<I::Operation>; 5] = [
+    let rows: [Make<I>; 5] = [
         |opened, _| Ok(opened.clone()),
         |_, funded| Ok(funded.clone()),
         |_, funded| terminal::<I>(funded, true),

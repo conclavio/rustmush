@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Structural history tests. These do not fabricate an accepted E4 grant;
 //! actual owner/output/audit integration must also pass at the paired boundary.
 //!
