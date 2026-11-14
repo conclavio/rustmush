@@ -545,6 +545,7 @@ pub(crate) mod rating_roots;
 pub(crate) mod read;
 pub mod records;
 pub mod renewal;
+pub mod renewal_twin;
 pub mod rights;
 pub(crate) mod roots;
 pub mod sale_reader;

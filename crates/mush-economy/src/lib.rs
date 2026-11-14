@@ -115,7 +115,7 @@ mod plan;
 mod record;
 pub(crate) mod refit_twin;
 pub mod registry_filing;
-pub(crate) mod renewal_twin;
+pub mod renewal_twin;
 mod snapshot;
 pub mod unit_authority;
 

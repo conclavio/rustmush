@@ -567,3 +567,9 @@ impl RenewalReader {
         }))
     }
 }
+
+#[cfg(test)]
+mod service_tests {
+    use super::*;
+    crate::commerce::renewal_twin::tests::reader_service_tests!();
+}
