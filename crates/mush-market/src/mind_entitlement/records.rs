@@ -1,5 +1,6 @@
 //! Exact immutable consent data, separate from the legacy original products.
 use super::codec::{self, Bounded, Row};
+use mush_core::checked;
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, ObjId};
 use mush_economy::Holder;
 use mush_economy::managed_entitlement::{
@@ -27,21 +28,7 @@ fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-macro_rules! data {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(super) $field:$ty),*}
-        #[derive(Deserialize)] #[serde(deny_unknown_fields)]
-        struct $wire {$($(#[$attr])* $field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let row=$wire::deserialize(d)?; let value=Self {$($field:row.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?; Ok(value)
-            }
-        }
-    };
-}
-data!(EntitlementSubjectV1,SubjectWire,{
+checked!(pub struct EntitlementSubjectV1, SubjectWire, pub(super) fields, attrs on wire, {
     seller:ObjId,title_revision:u64,charter:CharterId,line:LineId,filed:FiledRevisionId,sequence:u64,
     owner_licence:LicenceId,owner_term:TermGeneration,owner_window:TermWindow,
     revision:RevisionIdentity,schema:DefinitionDigest,definition:DefinitionDigest,rating:RatingRef,
@@ -75,7 +62,7 @@ impl EntitlementSubjectV1 {
         self.parent
     }
 }
-data!(EntitlementProductV1,ProductWire,{
+checked!(pub struct EntitlementProductV1, ProductWire, pub(super) fields, {
     protocol:EntitlementProtocol,terms:PaidTerms,revision:RevisionPolicy,
     term_seconds:i64,grace_seconds:i64,grant:GrantEconomicsV1,
 });
@@ -251,7 +238,7 @@ fn common(
     }
     Ok(())
 }
-data!(EntitlementListingV1,ListingWire,{
+checked!(pub struct EntitlementListingV1, ListingWire, pub(super) fields, {
     format:u16,publication:CommitToken,subject:EntitlementSubjectV1,product:EntitlementProductV1,
     royalty:FiledRoyaltyTermsV1,price:Amount,instrument:InstrumentId,venue:Venue,registry:Cut,
     policy:DefinitionRef,observed_at_utc:i64,
@@ -343,7 +330,7 @@ impl Row for EntitlementListingV1 {
         Ok(())
     }
 }
-data!(EntitlementQuoteV1,QuoteWire,{
+checked!(pub struct EntitlementQuoteV1, QuoteWire, pub(super) fields, {
     format:u16,publication:CommitToken,listing:CommitToken,listing_digest:DefinitionDigest,
     buyer:Holder,subject:EntitlementSubjectV1,product:EntitlementProductV1,product_digest:DefinitionDigest,
     royalty:FiledRoyaltyTermsV1,price:Amount,instrument:InstrumentId,registry:Cut,venue:Venue,

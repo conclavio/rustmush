@@ -1,5 +1,6 @@
 //! Exact Market wire. Roll validates the common state relation; Market also
 //! pins the retained manifest, complete offer and exact owner references.
+use mush_core::checked;
 use mush_core::{
     ClockStamp, CommitToken, DefinitionDigest, DefinitionRef,
     mechanics::{DefinitionRegistryBuilder, OwnerId},
@@ -16,7 +17,7 @@ use mush_roll::commerce::{
         protocol::{self, Transition},
     },
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 pub(super) fn invalid() -> String {
     "renewal records disagree or exceed their bounds".into()
@@ -44,24 +45,7 @@ fn decode<T: serde::de::DeserializeOwned + Serialize>(
     }
     Ok(row)
 }
-macro_rules! data {
-    ($name:ident,$wire:ident,{$($field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(super) $field:$ty),*}
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire {$($field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let row=$wire::deserialize(d)?;
-                let value=Self {$($field:row.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?;
-                Ok(value)
-            }
-        }
-    };
-}
-data!(MindRenewalOperationV1,OperationWire,{
+checked!(pub struct MindRenewalOperationV1, OperationWire, pub(super) fields, {
     format:u16,operation:CommitToken,action:DefinitionRef,attempt:RenewalAttemptV1,
     manifest:DefinitionRef,participants:[DefinitionRef;2],binding:Box<RenewalBindingV1>,
     offer:Box<RenewalOffer>,offer_digest:DefinitionDigest,contract:ContractId,consent_hash:[u8;32],
@@ -227,7 +211,7 @@ impl MindRenewalOperationV1 {
     }
 }
 
-data!(MindRenewalReceiptV1,ReceiptWire,{
+checked!(pub struct MindRenewalReceiptV1, ReceiptWire, pub(super) fields, {
     format:u16,operation:CommitToken,licence:LicenceId,predecessor:TermGeneration,
     next:TermGeneration,contract:ContractId,consent_hash:[u8;32],state:RenewalStateV1,
 });

@@ -4,6 +4,7 @@ use super::super::Holder;
 use super::super::paid::PaidTermRecord;
 use super::super::records::{PublicationError, Record};
 use super::super::{CharterId, LicenceId, LineId, TermGeneration, WorldIcSeconds};
+use mush_core::checked;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::managed_paid_resale::{
     PaidBirthRefV1, PaidHolderRefV1, PaidResaleBasisV1, PaidResaleDecisionKindV1,
@@ -48,22 +49,7 @@ fn decode<T: serde::de::DeserializeOwned + Serialize>(
     }
     Ok(row)
 }
-macro_rules! checked {
- ($name:ident,$wire:ident,{$($field:ident:$ty:ty),* $(,)?})=>{
-  #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-  pub struct $name {$(pub(crate) $field:$ty),*}
-  #[derive(Deserialize)]
-  #[serde(deny_unknown_fields)]
-  struct $wire {$($field:$ty),*}
-  impl<'de> Deserialize<'de> for $name {
-   fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error>{
-    let w=$wire::deserialize(d)?;let v=Self{$($field:w.$field),*};
-    v.validate().map_err(serde::de::Error::custom)?;Ok(v)
-   }
-  }
- };
-}
-checked!(PaidResaleBinding,BindingWire,{
+checked!(pub struct PaidResaleBinding, BindingWire, pub(crate) fields, {
  licence:LicenceId,charter:CharterId,line:LineId,birth:PaidBirthRefV1,ownership:PaidHolderRefV1,
  term:PaidTermRecord,term_clock:ClockRef,economics_digest:DefinitionDigest,royalty_chain_digest:DefinitionDigest,
 });
@@ -142,7 +128,7 @@ impl PaidResaleBinding {
         self.royalty_chain_digest
     }
 }
-checked!(PaidResaleRef,ResaleRefWire,{sequence:u64,operation:CommitToken,digest:DefinitionDigest});
+checked!(pub struct PaidResaleRef, ResaleRefWire, pub(crate) fields, {sequence:u64,operation:CommitToken,digest:DefinitionDigest});
 impl PaidResaleRef {
     pub fn validate(&self) -> Result<(), PublicationError> {
         if !(1..=65536).contains(&self.sequence) {
@@ -161,7 +147,7 @@ impl PaidResaleRef {
         self.digest
     }
 }
-checked!(ResaleClaimObservation,ClaimsWire,{generation:u64,next_transition:u64,open_paid:u32});
+checked!(pub struct ResaleClaimObservation, ClaimsWire, pub(crate) fields, {generation:u64,next_transition:u64,open_paid:u32});
 impl ResaleClaimObservation {
     pub fn validate(&self) -> Result<(), PublicationError> {
         if self.next_transition == 0
@@ -388,7 +374,7 @@ impl PaidResaleRecord {
         &self.state
     }
 }
-checked!(PaidResaleHead,HeadWire,{format:u16,licence:LicenceId,current:PaidResaleRef,state:PaidResaleState});
+checked!(pub struct PaidResaleHead, HeadWire, pub(crate) fields, {format:u16,licence:LicenceId,current:PaidResaleRef,state:PaidResaleState});
 impl Record for PaidResaleHead {
     const FAMILY: &'static str = "roll_mind_paid_resale_heads";
     const MAX_BYTES: usize = 4096;
@@ -446,13 +432,13 @@ impl PaidResaleHead {
         &self.state
     }
 }
-checked!(HolderTerm,HolderTermWire,{generation:TermGeneration,operation:CommitToken,digest:DefinitionDigest});
+checked!(pub struct HolderTerm, HolderTermWire, pub(crate) fields, {generation:TermGeneration,operation:CommitToken,digest:DefinitionDigest});
 impl HolderTerm {
     pub fn validate(&self) -> Result<(), PublicationError> {
         Ok(())
     }
 }
-checked!(PaidHolderRecord,HolderWire,{
+checked!(pub struct PaidHolderRecord, HolderWire, pub(crate) fields, {
  format:u16,licence:LicenceId,generation:u64,holder:Holder,birth:PaidBirthRefV1,predecessor:PaidHolderRefV1,
  operation:CommitToken,action:DefinitionRef,acceptance:CommitToken,offer:CommitToken,offer_digest:DefinitionDigest,
  term:HolderTerm,accepted_at_ic:ClockStamp,economic_digest:DefinitionDigest,

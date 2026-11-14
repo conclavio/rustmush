@@ -1,6 +1,7 @@
 //! Immutable acquisition economics remain distinct from current qualification.
 //! Old paid terms are never decoded through these new required records.
 
+use mush_core::checked;
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::{Amount, InstrumentId};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -63,25 +64,7 @@ impl DownstreamTermsV1 {
     }
 }
 
-macro_rules! record {
-    ($name:ident, $wire:ident, {$($field:ident : $ty:ty),* $(,)?}) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-        pub struct $name { $(pub(crate) $field: $ty),* }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire { $($field: $ty),* }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let row=$wire::deserialize(d)?;
-                let value=Self { $($field:row.$field),* };
-                value.validate().map_err(serde::de::Error::custom)?;
-                Ok(value)
-            }
-        }
-    };
-}
-
-record!(RenewalTemplateV1, RenewalWire, {
+checked!(pub struct RenewalTemplateV1, RenewalWire, pub(crate) fields, {
     format:u16, instrument:InstrumentId, price:Amount,
     term_seconds:i64, grace_seconds:i64,
     terms:PaidTerms, revision:RevisionPolicy, policy:DefinitionRef,
@@ -181,7 +164,7 @@ impl RoyaltyChainRefV1 {
     }
 }
 
-record!(GrantEconomicsV1, GrantWire, {
+checked!(pub struct GrantEconomicsV1, GrantWire, pub(crate) fields, {
     format:u16, downstream:DownstreamTermsV1, renewal:RenewalTemplateV1,
     royalty_chain:RoyaltyChainRefV1,
 });
@@ -226,7 +209,7 @@ impl GrantEconomicsV1 {
     }
 }
 
-record!(PaidTermEconomicsV1, TermWire, {
+checked!(pub struct PaidTermEconomicsV1, TermWire, pub(crate) fields, {
     format:u16, licence:LicenceId, generation:TermGeneration,
     operation:CommitToken, product_digest:DefinitionDigest, grant:GrantEconomicsV1,
 });
@@ -334,7 +317,7 @@ impl RoyaltyBasisV1 {
         Ok(())
     }
 }
-record!(RoyaltyEdgeV1, EdgeWire, {
+checked!(pub struct RoyaltyEdgeV1, EdgeWire, pub(crate) fields, {
     parent:ParentContent,charter:CharterId,line:LineId,
     acquisition:AcquisitionV1,royalty_permille:u16,basis:RoyaltyBasisV1,
 });
@@ -397,7 +380,7 @@ impl<'de> Deserialize<'de> for Edges {
         d.deserialize_seq(Visitor)
     }
 }
-record!(FiledRoyaltyTermsV1, FiledWire, {
+checked!(pub struct FiledRoyaltyTermsV1, FiledWire, pub(crate) fields, {
     format:u16,filed:FiledRevisionId,revision:RevisionIdentity,
     publication:CommitToken,edges:Edges,
 });

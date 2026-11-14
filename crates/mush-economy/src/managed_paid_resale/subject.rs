@@ -5,26 +5,10 @@ use crate::managed_entitlement::{
 };
 use crate::managed_purchase::PurchasePayout;
 use crate::{AccountId, Amount, InstrumentId};
+use mush_core::checked;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, ObjId};
 use serde::{Deserialize, Serialize};
 
-macro_rules! closed {
-    ($name:ident, $wire:ident, {$($field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-        pub struct $name {$(pub $field:$ty),*}
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire {$($field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let w=$wire::deserialize(d)?;
-                let row=Self {$($field:w.$field),*};
-                row.validate().map_err(serde::de::Error::custom)?;
-                Ok(row)
-            }
-        }
-    };
-}
 pub(super) fn world(clock: &ClockRef) -> Result<(), ParticipantError> {
     if !matches!(clock, ClockRef::WorldIc {generation} if *generation != 0) {
         return Err(refused());
@@ -51,13 +35,13 @@ pub enum PaidBirthRouteV1 {
     Entitlement,
     House,
 }
-closed!(PaidBirthRefV1,BirthWire,{route:PaidBirthRouteV1,operation:CommitToken,digest:DefinitionDigest});
+checked!(pub struct PaidBirthRefV1, BirthWire, pub fields, {route:PaidBirthRouteV1,operation:CommitToken,digest:DefinitionDigest});
 impl PaidBirthRefV1 {
     pub fn validate(&self) -> Result<(), ParticipantError> {
         bounded(self, 1024).map(|_| ())
     }
 }
-closed!(PaidHolderRefV1,HolderWire,{generation:u64,operation:CommitToken,digest:DefinitionDigest});
+checked!(pub struct PaidHolderRefV1, HolderWire, pub fields, {generation:u64,operation:CommitToken,digest:DefinitionDigest});
 impl Copy for PaidHolderRefV1 {}
 impl PaidHolderRefV1 {
     pub fn validate(&self) -> Result<(), ParticipantError> {
@@ -67,7 +51,7 @@ impl PaidHolderRefV1 {
         Ok(())
     }
 }
-closed!(PaidResaleWindowV1,WindowWire,{
+checked!(pub struct PaidResaleWindowV1, WindowWire, pub fields, {
     format:u16,eligibility_start:i64,issued_at:i64,term_end:i64,grace_end:i64,
 });
 impl PaidResaleWindowV1 {
@@ -84,7 +68,7 @@ impl PaidResaleWindowV1 {
         Ok(())
     }
 }
-closed!(PaidResaleTermBasisV1,TermWire,{
+checked!(pub struct PaidResaleTermBasisV1, TermWire, pub fields, {
     generation:u64,operation:CommitToken,digest:DefinitionDigest,clock:ClockRef,
     window:PaidResaleWindowV1,terms_digest:DefinitionDigest,policy_digest:DefinitionDigest,
 });
@@ -97,7 +81,7 @@ impl PaidResaleTermBasisV1 {
         self.window.validate()
     }
 }
-closed!(PaidResaleBasisV1,BasisWire,{
+checked!(pub struct PaidResaleBasisV1, BasisWire, pub fields, {
     licence:u64,charter:ObjId,line:u64,birth:PaidBirthRefV1,holder:PaidHolderRefV1,
     term:PaidResaleTermBasisV1,economics_digest:DefinitionDigest,royalty_chain_digest:DefinitionDigest,
 });
@@ -350,7 +334,7 @@ pub enum PaidResaleModeV1 {
     Immediate,
     Pending,
 }
-closed!(PaidResaleClaimsV1,ClaimsWire,{next_transition:u64,open_paid:u32});
+checked!(pub struct PaidResaleClaimsV1, ClaimsWire, pub fields, {next_transition:u64,open_paid:u32});
 impl PaidResaleClaimsV1 {
     pub fn validate(&self) -> Result<(), ParticipantError> {
         if self.next_transition == 0 || self.open_paid > 32768 {
@@ -359,7 +343,7 @@ impl PaidResaleClaimsV1 {
         Ok(())
     }
 }
-closed!(PaidResaleConsentV1,ConsentWire,{
+checked!(pub struct PaidResaleConsentV1, ConsentWire, pub fields, {
     format:u16,operation:CommitToken,effect:DefinitionRef,offer_digest:DefinitionDigest,
     terms:PaidResaleTermsV1,payer:AccountId,mode:PaidResaleModeV1,accepted_at_ic:ClockStamp,
     accepted_at_utc:i64,deadline:ClockStamp,claims:PaidResaleClaimsV1,

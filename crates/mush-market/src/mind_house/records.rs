@@ -1,5 +1,6 @@
 //! Exact immutable consent data, separate from the legacy original products.
 use super::codec::{self, Bounded, Row};
+use mush_core::checked;
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, ObjId};
 use mush_economy::Holder;
 use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
@@ -25,21 +26,7 @@ fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-macro_rules! data {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(super) $field:$ty),*}
-        #[derive(Deserialize)] #[serde(deny_unknown_fields)]
-        struct $wire {$($(#[$attr])* $field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let row=$wire::deserialize(d)?; let value=Self {$($field:row.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?; Ok(value)
-            }
-        }
-    };
-}
-data!(HouseSubjectV1,SubjectWire,{
+checked!(pub struct HouseSubjectV1, SubjectWire, pub(super) fields, {
     issuer:HouseIssuer,title_revision:u64,charter:CharterId,line:LineId,filed:FiledRevisionId,sequence:u64,
     owner_licence:LicenceId,owner_term:TermGeneration,owner_window:TermWindow,
     revision:RevisionIdentity,schema:DefinitionDigest,definition:DefinitionDigest,rating:RatingRef,
@@ -62,7 +49,7 @@ impl HouseSubjectV1 {
         self.revision
     }
 }
-data!(HouseProductV1,ProductWire,{
+checked!(pub struct HouseProductV1, ProductWire, pub(super) fields, {
     protocol:HouseProtocol,terms:PaidTerms,revision:RevisionPolicy,
     term_seconds:i64,grace_seconds:i64,grant:HouseGrantEconomicsV1,
 });
@@ -183,7 +170,7 @@ fn common(
     }
     Ok(())
 }
-data!(HouseListingV1,ListingWire,{
+checked!(pub struct HouseListingV1, ListingWire, pub(super) fields, {
     format:u16,publication:CommitToken,publisher:ObjId,subject:HouseSubjectV1,product:HouseProductV1,
     price:Amount,instrument:InstrumentId,venue:Venue,registry:Cut,
     policy:DefinitionRef,observed_at_utc:i64,
@@ -227,7 +214,7 @@ impl Row for HouseListingV1 {
         Ok(())
     }
 }
-data!(HouseQuoteV1,QuoteWire,{
+checked!(pub struct HouseQuoteV1, QuoteWire, pub(super) fields, {
     format:u16,publication:CommitToken,listing:CommitToken,listing_digest:DefinitionDigest,
     buyer:Holder,subject:HouseSubjectV1,product:HouseProductV1,product_digest:DefinitionDigest,
     price:Amount,instrument:InstrumentId,registry:Cut,venue:Venue,

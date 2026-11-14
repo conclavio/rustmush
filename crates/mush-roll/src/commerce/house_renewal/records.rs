@@ -11,6 +11,7 @@ use super::super::{
     paid::{PaidTermRecord, PaidTerms, PersonalPaidLicence},
     records::{PublicationError, Record, RevisionPolicy},
 };
+use mush_core::checked;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::managed_paid_resale::RenewalHolderBasisV1;
 use mush_economy::{
@@ -72,30 +73,12 @@ fn decode<T: serde::de::DeserializeOwned + Serialize>(
     Ok(row)
 }
 
-macro_rules! checked {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$($(#[$attr])* pub(crate) $field:$ty),*}
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire {$($(#[$attr])* $field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let row=$wire::deserialize(d)?;
-                let value=Self {$($field:row.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?;
-                Ok(value)
-            }
-        }
-    };
-}
-
 fn present_holder<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<RenewalHolderBasisV1>, D::Error> {
     RenewalHolderBasisV1::deserialize(d).map(Some)
 }
-checked!(RenewalBindingV1,BindingWire,{
+checked!(pub struct RenewalBindingV1, BindingWire, pub(crate) fields, attrs on both, {
     format:u16,licence:LicenceId,holder:Holder,issuer:HouseIssuer,charter:CharterId,line:LineId,
     birth_operation:CommitToken,predecessor:TermGeneration,next:TermGeneration,
     predecessor_operation:CommitToken,predecessor_term:DefinitionDigest,
@@ -388,7 +371,7 @@ impl RenewalAttemptV1 {
     }
 }
 
-checked!(RenewalClosureV1,ClosureWire,{
+checked!(pub struct RenewalClosureV1, ClosureWire, pub(crate) fields, {
     commit:CommitToken,action:DefinitionRef,at_ic:ClockStamp,posted_at_utc:i64,reason:UnfundedCloseReason,
 });
 impl RenewalClosureV1 {
@@ -481,7 +464,7 @@ impl RenewalStateV1 {
     }
 }
 
-checked!(RenewalOperationV1,OperationWire,{
+checked!(pub struct RenewalOperationV1, OperationWire, pub(crate) fields, {
     format:u16,operation:CommitToken,action:DefinitionRef,attempt:RenewalAttemptV1,
     binding:RenewalBindingV1,offer_digest:DefinitionDigest,contract:ContractId,consent_hash:[u8;32],
     created_at_ic:ClockStamp,created_at_utc:i64,state:RenewalStateV1,

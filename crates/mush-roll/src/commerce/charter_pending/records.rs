@@ -5,6 +5,7 @@ use crate::commerce::records::{OwnerTerm, PublicationError, Record};
 use crate::commerce::{
     CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow,
 };
+use mush_core::checked;
 use mush_core::{ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
 use mush_economy::managed_charter_transfer::{
     CharterOwnershipBasisV1, CharterPendingDecisionKindV1, CharterPendingHistory,
@@ -40,14 +41,7 @@ fn digest<T: Serialize>(domain: &str, row: &T) -> Result<DefinitionDigest, Publi
     )
     .map_err(bad)
 }
-macro_rules! closed {
- ($name:ident,$wire:ident,{$($field:ident:$ty:ty),*$(,)?})=>{
-  #[derive(Clone,Debug,PartialEq,Eq,Serialize)] pub(crate) struct $name {$(pub(crate) $field:$ty),*}
-  #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct $wire {$($field:$ty),*}
-  impl<'de> Deserialize<'de> for $name {fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error>{let w=$wire::deserialize(d)?;let row=Self {$($field:w.$field),*};row.validate().map_err(serde::de::Error::custom)?;Ok(row)}}
- };
-}
-closed!(PendingOwnerTerm,OwnerTermWire,{licence:LicenceId,generation:TermGeneration,operation:CommitToken,digest:DefinitionDigest,window:TermWindow});
+checked!(pub(crate) struct PendingOwnerTerm, OwnerTermWire, pub(crate) fields, {licence:LicenceId,generation:TermGeneration,operation:CommitToken,digest:DefinitionDigest,window:TermWindow});
 impl PendingOwnerTerm {
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {
         bounded(self, 1024)
@@ -80,7 +74,7 @@ impl PendingOwnerTerm {
         }
     }
 }
-closed!(PendingOffer,OfferWire,{
+checked!(pub(crate) struct PendingOffer, OfferWire, pub(crate) fields, {
  format:u16,operation:CommitToken,action:DefinitionRef,charter:CharterId,birth:CommitToken,ownership:CharterOwnershipRef,
  seller:ObjId,buyer:ObjId,seller_account:AccountId,instrument:InstrumentId,price:Amount,title_revision:u64,
  line:LineId,filed:FiledRevisionId,revision:RevisionIdentity,owner_term:PendingOwnerTerm,
@@ -169,7 +163,7 @@ impl Record for PendingOffer {
 // plus the new one; a ninth live offer refuses the Offer) and the Fund (the
 // consumed offer out; the row deleted when empty), inside their own
 // transactions (`super::index`); audited clock-free at boot.
-closed!(PendingBuyerOffers,BuyerOffersWire,{format:u16,buyer:ObjId,charter:CharterId,offers:std::collections::BTreeSet<CommitToken>});
+checked!(pub(crate) struct PendingBuyerOffers, BuyerOffersWire, pub(crate) fields, {format:u16,buyer:ObjId,charter:CharterId,offers:std::collections::BTreeSet<CommitToken>});
 /// The C2b bound on one buyer's live offers for one charter.
 pub(crate) const MAX_BUYER_OFFERS: usize = 8;
 impl PendingBuyerOffers {
@@ -194,7 +188,7 @@ impl Record for PendingBuyerOffers {
         envelope(self)
     }
 }
-closed!(ClaimObservation,ClaimWire,{generation:u64,next_transition:u64,open_owned:u32});
+checked!(pub(crate) struct ClaimObservation, ClaimWire, pub(crate) fields, {generation:u64,next_transition:u64,open_owned:u32});
 impl ClaimObservation {
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {
         if self.next_transition == 0
@@ -406,7 +400,7 @@ impl PendingRecord {
         Ok(())
     }
 }
-closed!(PendingHead,HeadWire,{format:u16,charter:CharterId,current:PendingRef,state:PendingState});
+checked!(pub(crate) struct PendingHead, HeadWire, pub(crate) fields, {format:u16,charter:CharterId,current:PendingRef,state:PendingState});
 impl Record for PendingHead {
     const FAMILY: &'static str = "roll_mind_charter_pending_head";
     const MAX_BYTES: usize = 4096;

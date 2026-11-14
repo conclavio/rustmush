@@ -1,5 +1,6 @@
 //! Strict complete Market records. Pair checks are data relations; only actual
 //! Roll owner reads and opaque Economy outputs may authorize publication.
+use mush_core::checked;
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::managed_paid_resale::{PaidResaleHistoryV1, PaidResaleTermsV1};
 use mush_roll::commerce::{
@@ -36,22 +37,7 @@ fn decode<T: serde::de::DeserializeOwned + Serialize>(
     }
     Ok(row)
 }
-macro_rules! data {
-    ($name:ident,$wire:ident,{$($field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(super) $field:$ty),*}
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire {$($field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let w=$wire::deserialize(d)?; let row=Self {$($field:w.$field),*};
-                row.validate().map_err(serde::de::Error::custom)?; Ok(row)
-            }
-        }
-    };
-}
-data!(MindPaidResaleOffer,OfferWire,{
+checked!(pub struct MindPaidResaleOffer, OfferWire, pub(super) fields, {
     format:u16,operation:CommitToken,action:DefinitionRef,binding:PaidResaleBinding,terms:PaidResaleTermsV1,
 });
 impl MindPaidResaleOffer {
@@ -99,7 +85,7 @@ impl MindPaidResaleOffer {
         Ok(())
     }
 }
-data!(MindPaidResaleOperation,OperationWire,{
+checked!(pub struct MindPaidResaleOperation, OperationWire, pub(super) fields, {
     format:u16,operation:CommitToken,action:DefinitionRef,licence:LicenceId,sequence:u64,
     offer:CommitToken,offer_digest:DefinitionDigest,roll_digest:DefinitionDigest,state:PaidResaleState,
 });
@@ -196,7 +182,7 @@ pub enum ResaleOutcome {
     Settled,
     Refunded,
 }
-data!(MindPaidResaleReceipt,ReceiptWire,{
+checked!(pub struct MindPaidResaleReceipt, ReceiptWire, pub(super) fields, {
     format:u16,operation:CommitToken,acceptance:CommitToken,licence:LicenceId,offer:CommitToken,
     offer_digest:DefinitionDigest,roll_digest:DefinitionDigest,economic_digest:DefinitionDigest,outcome:ResaleOutcome,
 });

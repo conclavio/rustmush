@@ -2,28 +2,11 @@
 //! premium authorization, funding reservation or mechanical loss proof.
 use super::{MAX_SUBJECT_BYTES, refused};
 use crate::{AccountId, Amount, InstrumentId};
+use mush_core::checked;
 use mush_core::participant::ParticipantError;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
 use mush_org::{OrgId, OrgScopeId};
-use serde::{Deserialize, Serialize};
-
-macro_rules! record {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-        pub struct $name { $(pub $field:$ty),* }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire { $($(#[$attr])* $field:$ty),* }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let w=$wire::deserialize(d)?;
-                let value=Self {$($field:w.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?;
-                Ok(value)
-            }
-        }
-    }
-}
+use serde::Deserialize;
 
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -31,7 +14,7 @@ fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     Option::<T>::deserialize(d)
 }
 
-record!(CoverageBasisV1, BasisWire, {
+checked!(pub struct CoverageBasisV1, BasisWire, pub fields, attrs on wire, {
     format:u16, product:CommitToken, product_digest:DefinitionDigest,
     quote:CommitToken, quote_digest:DefinitionDigest,
     ic_open:CommitToken, seal_digest:DefinitionDigest, admission_digest:DefinitionDigest,
@@ -70,7 +53,7 @@ impl CoverageBasisV1 {
     }
 }
 
-record!(CoverageMoneyTermsV1, TermsWire, {
+checked!(pub struct CoverageMoneyTermsV1, TermsWire, pub fields, {
     format:u16, buyer:ObjId, insurer:OrgId, scope:OrgScopeId, treasury:AccountId,
     payer:AccountId, instrument:InstrumentId, adjudicator:ObjId,
     insured_value:Amount, base_premium:Amount, discount:Amount, premium:Amount,
@@ -113,7 +96,7 @@ impl CoverageMoneyTermsV1 {
     }
 }
 
-record!(CoverageQuoteTermsV1, QuoteTermsWire, {
+checked!(pub struct CoverageQuoteTermsV1, QuoteTermsWire, pub fields, {
     format:u16, buyer:ObjId, insurer:OrgId, scope:OrgScopeId, treasury:AccountId,
     payer:AccountId, instrument:InstrumentId, adjudicator:ObjId,
     insured_value:Amount, base_premium:Amount, discount:Amount, premium:Amount,
@@ -182,7 +165,7 @@ impl CoverageQuoteTermsV1 {
     }
 }
 
-record!(CoverageConsentV1, ConsentWire, {
+checked!(pub struct CoverageConsentV1, ConsentWire, pub fields, {
     format:u16, operation:CommitToken, effect:DefinitionRef, accepted_at_utc:i64,
     basis:CoverageBasisV1, terms:CoverageMoneyTermsV1,
 });
