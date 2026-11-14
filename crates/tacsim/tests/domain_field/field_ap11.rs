@@ -8,7 +8,8 @@
 //! **The cast.**
 //!
 //! - **The owner**: a carrier on the pad, a leased armed rig he sits in, and a prospector out
-//!   on the ground with nobody in its cab. He sets the armed rig to `GUARD` from its cab,
+//!   on the ground with nobody in its cab. He sets his ship to `HOLD` from aboard her
+//!   (`+ship/posture`, doc 45 unit AP.9's verb) and the armed rig to `GUARD` from its cab,
 //!   leaves the prospector on `RETURN` (the word every unit holds until its player says
 //!   otherwise), and quits in the armed rig's seat. A third hull he holds title to lies
 //!   disabled on open ground: a casualty of a fight already had.
@@ -48,17 +49,21 @@
 //! 9. *The casualty* (Q-45-22). The claim's contest window is the configured 48 IC days,
 //!    counted from the second it was filed, while the title holder was away. His login moves
 //!    nothing, and it is still what it was after the restart. He was written to at the filing.
+//! 10. *The ship's arm* (doc 47 unit CO.7; R-47-3: `RETURN` answers fire and does not stop
+//!     its return). The owner brings his armed rig aboard, lifts his ship for Ceres, sets her
+//!     to `RETURN` there from aboard her and files for Stickney Yards by the Kirkwood customs
+//!     picket. His link drops on the corridor and the grace runs out, so the house default has
+//!     her helm. In the picket's bubble, beside the customs corvette and the belt raider her
+//!     party holds hostile from its opening, she heaves to for the corvette and is cleared;
+//!     she locks and fires on nobody until the raider's first round at her; she answers the
+//!     raider within a few of its rounds and the bubble's steps, read off the bubble's tape,
+//!     and never answers anyone else, the corvette least of all; and her answering does not
+//!     stop her return: the picket lets her go and she flies her filed passage to its end.
 //!
-//! **The ship arm, and what it owes doc 45 unit AP.9.** The owner's ship in this story is his
-//! carrier. Only this much of the row's "a ship on `HOLD`" is true today and pinned here: her
-//! posture is the same one record a rig's is (unit AP.3), it reads `HOLD` through the field's
-//! promotion and demotion and after a restart, and nothing the field does moves it. **Not
-//! pinned, because it is not built:** no verb sets a ship's posture outside a field (`+tv`
-//! addresses rigs, and `MIND POSTURE` is a seat's word inside a field), so the story writes
-//! her record through the record's one writer, as AP.3's story did; and a ship flies no
-//! posture in a bubble. AP.9 adds both to **this** story, at the two places marked `AP.9`:
-//! the owner's own words in place of the staged write, and a ship in a bubble that complies
-//! under `HOLD` while the rigs here fly theirs.
+//! **The ship's two words.** On her pad in the field she is flown as `HOLD` whatever her
+//! record says (doc 45 unit AP.7), so the field holds her to the record only: `HOLD` through
+//! the promotion, the demotion and the restart, and nothing the field does moves it. Under
+//! way her word is what she flies (10).
 //!
 //! **What is a fixture** (each named in the cut note): the raider's hull is made and seated
 //! by a staff hand (CF.2's `armed` and `seat`); the two co-ops are made and their officers
@@ -66,7 +71,9 @@
 //! (`to_cell`); the casualty is a spare rig titled to the owner by `@asset/transfer`, its
 //! power destroyed and left on the site's index by staff (GC.6's precedent: a leased rig's
 //! title cannot move, and no verb disables a hull); the world's rate is set to the live
-//! game's 24:1 by staff's `@tacsim/time`; the ship's posture is the staged write above; and
+//! game's 24:1 by staff's `@tacsim/time`, and the ship's arm at the lane stories' 3,600:1; her
+//! tank for Stickney is topped up at Ceres by the rig's stores fixture (`load`), as for the
+//! passage out; the link loss is a dropped connection and the grace is jumped, not waited; and
 //! the mail is the seam the server fills with `mush-mail`, filled here with a recorder.
 
 use std::sync::Arc;
@@ -80,16 +87,19 @@ use tacsim::arena_task::ArenaOut;
 use tacsim::field::absent::{ADMITTED_ON, BACK_IN_SEAT, UNATTENDED, Why, away_of, minded};
 use tacsim::field::notice::{AFTER_FIELD, Fate};
 use tacsim::field::{FIELD_OPENED, FIELD_SETTLED};
+use tacsim::port::HullRow;
 use tacsim::port_tick::{NOTICE_HEADING, pending_notices};
 use tacsim::posture::Posture;
 use tacsim::posture::order::{POSTURE_READ, POSTURE_SET, line};
+use tacsim::space::bubble::{BubbleInputCommand, BubbleInputEntry};
+use tacsim::space::{PicketInspectionStatus, SpaceBubbleBook};
 use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
 use tokio::sync::mpsc::Receiver;
 
 use crate::driving_rig::{
-    RAMP, RAMP_CELL, Rig, act_go, cid, command, count, finish, land, launched, on_ground_at,
-    on_pad_as, on_pad_with, parent, reboot, record_of, run, said, set_rate, stocked_tuned, to_cell,
-    to_ic, warm, world_rate,
+    RAMP, RAMP_CELL, Rig, act_go, cid, command, count, drain, file_and_launch, finish, ic_now,
+    land, land_quietly, launched, load, on_ground_at, on_pad_as, on_pad_with, parent, reboot,
+    record_of, run, said, set_rate, stocked_tuned, to_cell, to_ic, warm, world_rate,
 };
 use crate::escort_lease::{board_escort, contact_near, fired, in_field, lease_escort, top_up};
 use crate::field_ap1::{Heard, Post, until};
@@ -100,6 +110,7 @@ use crate::field_host_rig::{
 };
 use crate::field_mw7::{arrived, bound, connect, fired_at, quit};
 use crate::site_record_rig::{staff, staff_member};
+use crate::space_ap9::{ShipAtPicket, drop_link_in, read_at_the_picket};
 
 /// Where the owner's armed rig stands on `GUARD`, his prospector on `RETURN`, the miner's
 /// prospector on `HOLD`, the raider, and the owner's casualty.
@@ -117,6 +128,15 @@ const IDLE_S: u32 = 60;
 const LIVE_RATE: u32 = 24;
 /// The salvage contest window Q-45-22 leaves as it was, IC days.
 const WINDOW_IC_DAYS: i64 = 48;
+/// The owner's ship, as a posture line names her.
+const SHIP: &str = "The Salt Moth";
+/// Wall seconds the ship arm waits at most for the picket to let her go (about 35 in a run).
+const PICKET_S: u32 = 600;
+/// The ship arm's bound on her answer: within this many of the bubble's steps of the raider's
+/// first round at her, and with no more than this many of its rounds fired at her (one step
+/// and three rounds in a run).
+const ANSWER_STEPS: u32 = 3;
+const ANSWER_ROUNDS: usize = 6;
 
 /// The field's tempo: the lab's pulse, a field that holds until nobody has fired for
 /// [`IDLE_S`], a short rally (a mind that would fire first has done so well inside each quiet
@@ -247,6 +267,8 @@ struct Story {
     /// `RETURN`.
     owner: ObjId,
     carrier: ObjId,
+    /// His ship's row, for the ship's arm.
+    row: HullRow,
     guard: ObjId,
     homer: ObjId,
     /// The miner and her prospector on `HOLD`: the stranger beside the guard.
@@ -307,7 +329,14 @@ async fn stand_up() -> Story {
         crate::driving_rig::lease_one(rig, pilot);
     });
     let carrier = ObjId(row.hull);
+    let ship_row = row.clone();
     let (guard, homer) = (tvs[0], tvs[1]);
+    // His ship's word, set from aboard her by her commander (doc 45 unit AP.9's verb): HOLD.
+    assert_eq!(
+        run(&mut rig.tw, owner, "+ship/posture hold"),
+        line(POSTURE_SET, SHIP, Posture::Hold),
+        "the ship's word is set from aboard her"
+    );
     // His prospector goes down the ramp by his own command from aboard, and is stood off it.
     // He sets nothing on it: it holds RETURN, and he reads that from aboard its carrier.
     let launch = act_go(&mut rig, owner, "+tv/2 launch go");
@@ -403,13 +432,6 @@ async fn stand_up() -> Story {
         line(POSTURE_SET, "Rig 1", Posture::Guard),
         "the set says what was set, and no more"
     );
-    // AP.9: the ship. No verb sets a ship's posture outside a field today, so her record is
-    // written through its one writer (this module's head). AP.9 replaces this with the
-    // owner's own command.
-    let staged = crate::support::with_ctx(&mut rig.tw, |ctx| {
-        tacsim::posture::record::set(ctx, carrier, Posture::Hold)
-    });
-    assert_eq!(staged, Ok(true), "the ship's record moves to HOLD");
     assert_eq!(
         (held(&rig, guard), held(&rig, homer), held(&rig, carrier)),
         (Posture::Guard, Posture::Return, Posture::Hold),
@@ -509,6 +531,7 @@ async fn stand_up() -> Story {
         rig,
         owner,
         carrier,
+        row: ship_row,
         guard,
         homer,
         miner,
@@ -1069,10 +1092,9 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
     );
     assert!(s.aboard(homer), "with the prospector in her bay");
     assert_eq!(fired(&s.lines, carrier), 0, "and she fired nothing");
-    // AP.9: what the ship did on her word goes here. Today a carrier on her pad is flown as
-    // HOLD whatever her record says (doc 45 unit AP.7), so nothing above tells her HOLD from
-    // a RETURN: the record is all this story can hold her to. AP.9 adds a ship in a bubble
-    // that holds station and complies on the same word the rigs here obeyed.
+    // A carrier on her pad is flown as HOLD whatever her record says (doc 45 unit AP.7), so
+    // nothing in the field tells her HOLD from a RETURN. What she does on her word under way
+    // is the ship's arm, (10).
 
     // (9) The casualty. The claim is the economy's contract: its window is the configured 48
     // IC days, counted from the second it was filed, while the title holder was away.
@@ -1143,8 +1165,320 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
     );
 
     // A restart. The words and the window are what they were.
-    let Story { rig, intruder, .. } = s;
-    let rig = reboot(rig, &[owner, miner, intruder]);
+    let Story {
+        rig, intruder, row, ..
+    } = s;
+    let mut rig = reboot(rig, &[owner, miner, intruder]);
     assert_eq!(words(&rig), left, "each record survives the restart");
     check(&rig, "after a restart");
+
+    // (10) The ship's arm.
+    ship_arm(&mut rig, owner, &row, guard);
+}
+
+/// A round on the bubble's tape: who fired, at whom.
+fn round(command: &BubbleInputCommand) -> Option<(&str, &str)> {
+    match command {
+        BubbleInputCommand::FireOffensiveLasers {
+            shooter_id,
+            target_id,
+        }
+        | BubbleInputCommand::FireRailgun {
+            shooter_id,
+            target_id,
+        }
+        | BubbleInputCommand::FireTorpedoSalvo {
+            shooter_id,
+            target_id,
+            ..
+        } => Some((shooter_id, target_id)),
+        _ => None,
+    }
+}
+
+/// **The ship arm's watch on her at the picket** (this module's head, (10)): AP.9's reading of
+/// her a second at a time, and what the bubble's tape gained between readings, each line by
+/// the bubble step it was read after. The tape is cut back when it is long, so what was read
+/// is kept and compared.
+#[derive(Default)]
+struct Watch {
+    seen: Vec<BubbleInputEntry>,
+    /// Every round on the tape, in order: the step, who fired, at whom.
+    rounds: Vec<(u32, String, String)>,
+    /// Every lock her ship set, in order: the step, and on whom.
+    locks: Vec<(u32, Option<String>)>,
+    /// Her readings, a second apart, each with the step it was read after.
+    log: Vec<(u32, ShipAtPicket)>,
+}
+
+impl Watch {
+    /// Read her now; `None` once she is in no picket's bubble.
+    fn read(&mut self, rig: &Rig, hull: ObjId) -> Option<ShipAtPicket> {
+        let world = rig.tw.world();
+        let active = world
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))?;
+        let now = read_at_the_picket(world, hull)?;
+        let entries = &active.tape.entries;
+        let fresh =
+            if entries.len() >= self.seen.len() && entries[..self.seen.len()] == self.seen[..] {
+                &entries[self.seen.len()..]
+            } else {
+                &entries[..]
+            };
+        for entry in fresh {
+            if let Some((by, at)) = round(&entry.command) {
+                self.rounds
+                    .push((active.steps, by.to_owned(), at.to_owned()));
+            }
+            if let BubbleInputCommand::SetLockedTarget { ship_id, target_id } = &entry.command
+                && *ship_id == now.ship
+            {
+                self.locks.push((active.steps, target_id.clone()));
+            }
+        }
+        self.seen.clone_from(entries);
+        self.log.push((active.steps, now.clone()));
+        Some(now)
+    }
+
+    /// The rounds `by` fired at `at`, in order, by step.
+    fn of(&self, by: &str, at: impl Fn(&str) -> bool) -> Vec<u32> {
+        self.rounds
+            .iter()
+            .filter(|(_, who, on)| who == by && at(on))
+            .map(|(step, _, _)| *step)
+            .collect()
+    }
+}
+
+/// One wall second of the closing story's world, its fires landed.
+fn tick(rig: &mut Rig) {
+    let _ = second(rig);
+}
+
+/// **The ship's arm** (this module's head, (10); doc 47 unit CO.7, R-47-3). After the restart
+/// the owner brings his armed rig aboard, lifts his ship for Ceres and there sets her to
+/// `RETURN` and files for Stickney Yards, by the Kirkwood customs picket. His link drops on
+/// the corridor and the grace runs out, so the house default has her helm. In the picket's
+/// bubble beside the customs corvette and the belt raider: she heaves to for the corvette and
+/// is cleared; she locks and fires on nobody until the raider's fire has arrived on her; she
+/// answers the raider within a few of its rounds and never answers anyone else; and her
+/// answering does not stop her return: the picket lets her go and she flies her filed passage
+/// to its end. Rounds are counted off the bubble's own tape and bounded by its steps, not by
+/// wall seconds.
+#[allow(clippy::too_many_lines)] // one passage, in order
+fn ship_arm(rig: &mut Rig, owner: ObjId, row: &HullRow, guard: ObjId) {
+    let carrier = ObjId(row.hull);
+    // The armed rig comes aboard: stood beside the ramp, recovered by its pilot from its cab,
+    // and he steps out into the bay.
+    to_cell(rig, guard, RAMP_CELL);
+    tick(rig);
+    let asked = act_go(rig, owner, "+tv/1 recover go");
+    let mut aboard = false;
+    for _ in 0..120 {
+        let due = record_of(&mut rig.tw, guard)
+            .and_then(|record| record.act)
+            .map(|act| act.due_ic);
+        if let Some(due) = due {
+            to_ic(rig, due);
+        }
+        if matches!(
+            parent(&rig.tw, guard),
+            mush_sim::SpatialParent::Interior { .. }
+        ) {
+            aboard = true;
+            break;
+        }
+        tick(rig);
+    }
+    assert!(aboard, "the armed rig is put aboard: {asked}");
+    let mut out = String::new();
+    for _ in 0..4 {
+        out = run(&mut rig.tw, owner, "+tv/1 leave");
+        if out.contains("You step into the vehicle bay") {
+            break;
+        }
+        tick(rig);
+        tick(rig);
+    }
+    assert!(out.contains("You step into the vehicle bay"), "{out}");
+
+    // To Ceres, and there her word for the passage: RETURN, set from aboard her.
+    set_rate(&mut rig.tw, 3_600);
+    let lift = file_and_launch(rig, owner, carrier, "+ship/lift ceres");
+    let _ = to_ic(rig, lift.plan.depart_ic + lift.plan.total_s);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), carrier),
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "ceres_port"
+        ),
+        "she is docked at Ceres"
+    );
+    assert_eq!(
+        run(&mut rig.tw, owner, "+ship/posture return"),
+        line(POSTURE_SET, SHIP, Posture::Return),
+        "her commander sets RETURN from aboard her"
+    );
+    // The tank for Stickney: the rig's stores fixture, as for the passage out.
+    load(rig, row, 60, 40, 9_900);
+    let ticket = file_and_launch(rig, owner, carrier, "+ship/undock stickney");
+    drop_link_in(&mut rig.tw, owner);
+    // Past the link-loss grace at the play rate, then back to the passage's rate.
+    set_rate(&mut rig.tw, LIVE_RATE);
+    let past = rig
+        .tw
+        .world()
+        .now()
+        .saturating_add(tacsim::space::SPACE_LINKDEAD_GRACE_WALL_S + 10);
+    rig.tw.set_now(past);
+    let _ = rig.tw.fire_due(past.saturating_mul(1_000));
+    let queued = drain(&mut rig.tw);
+    land_quietly(rig, &queued);
+    tick(rig);
+    set_rate(&mut rig.tw, 3_600);
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|book| book.linkdead_state(carrier))
+            .is_some_and(|state| state.backup_has_helm()),
+        "past the grace a mind has her helm"
+    );
+    let _ = to_ic(
+        rig,
+        ticket.plan.depart_ic + i64::from(ticket.plan.legs[0].secs),
+    );
+
+    // At the picket, a second at a time, until it lets her go.
+    let mut watch = Watch::default();
+    let first = watch
+        .read(rig, carrier)
+        .expect("the Kirkwood picket's bubble opens on her");
+    let (her, raider, corvette) = (
+        first.ship.clone(),
+        first.raider.clone(),
+        first.corvette.clone(),
+    );
+    let mut left = false;
+    for _ in 0..PICKET_S {
+        tick(rig);
+        if watch.read(rig, carrier).is_none() {
+            left = true;
+            break;
+        }
+    }
+    let story = |watch: &Watch| {
+        format!(
+            "rounds {:?}; her locks {:?}; last {:?}",
+            watch.rounds,
+            watch.locks,
+            watch.log.last()
+        )
+    };
+    // She never answers the corvette she complies with: every round of hers on the tape is at
+    // the raider (the only other ship in the bubble), and no lock of hers names the corvette.
+    let hers = watch.of(&her, |_| true);
+    assert!(
+        watch.of(&her, |at| at == raider).len() == hers.len()
+            && watch
+                .locks
+                .iter()
+                .all(|(_, on)| on.as_deref() != Some(corvette.as_str())),
+        "she answers the raider and nobody else, never the corvette: {}",
+        story(&watch)
+    );
+    // She heaves to for the corvette by her mind's own burn, is cleared, and never runs.
+    assert!(
+        watch
+            .log
+            .iter()
+            .any(|(_, now)| now.act == Some(tacsim::space::BackupAct::HeavingTo))
+            && watch.log.iter().any(|(_, now)| now.cleared())
+            && watch
+                .log
+                .iter()
+                .all(|(_, now)| now.status != PicketInspectionStatus::RanThePicket),
+        "she heaves to by her mind's own burn, is cleared and never runs the picket: {}",
+        story(&watch)
+    );
+    // The raider opens on her once customs have finished with her (the picket's script: the
+    // story's premise, not the rule under test).
+    let on_her = watch.of(&raider, |at| at == her);
+    let opened = *on_her
+        .first()
+        .unwrap_or_else(|| panic!("the raider fires on her: {}", story(&watch)));
+    assert!(
+        watch
+            .log
+            .iter()
+            .any(|(step, now)| *step < opened && now.cleared()),
+        "she was cleared before the raider opened on her: {}",
+        story(&watch)
+    );
+    // She answers, bounded by the raider's rounds and the bubble's steps, not by seconds.
+    let answered = *hers
+        .first()
+        .unwrap_or_else(|| panic!("she answers the raider: {}", story(&watch)));
+    let before = on_her.iter().filter(|step| **step <= answered).count();
+    assert!(
+        answered.saturating_sub(opened) <= ANSWER_STEPS && before <= ANSWER_ROUNDS,
+        "she answers within {ANSWER_STEPS} steps and {ANSWER_ROUNDS} of the raider's rounds \
+         at her: she answered at step {answered}, the raider opened at step {opened} and had \
+         fired {before} at her: {}",
+        story(&watch)
+    );
+    // She never fires first: no lock and no round of hers lands until a step after the one in
+    // which the raider's fire arrived on her (her mind thinks on what it has seen, so its
+    // answer lands the step after), though the raider her party holds hostile lit its torch
+    // beside her the step before it opened.
+    let arrived = watch
+        .log
+        .iter()
+        .find(|(_, now)| now.hit_by_the_raider())
+        .map(|(step, _)| *step)
+        .unwrap_or_else(|| panic!("the raider's fire arrives on her: {}", story(&watch)));
+    assert!(
+        hers.iter().all(|step| *step > arrived)
+            && watch.locks.iter().all(|(step, _)| *step > arrived),
+        "she locks and fires on nothing until the raider's fire has arrived on her (step \
+         {arrived}): {}",
+        story(&watch)
+    );
+
+    // Answering did not stop her return: the picket lets her go, she is on her filed passage
+    // again, and she flies it to its end on the word she was left.
+    assert!(left, "the picket lets her go: {}", story(&watch));
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), carrier),
+            tacsim::port::ship::Berth::UnderWay
+        ),
+        "she is on her filed passage again"
+    );
+    // The picket held her a while, so she lands later than her plan said: an IC day at a time
+    // until she is docked, at most her whole passage again.
+    let docked = |rig: &Rig| {
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), carrier),
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "stickney_port"
+        )
+    };
+    let _ = to_ic(rig, ticket.plan.depart_ic + ticket.plan.total_s);
+    for _ in 0..ticket.plan.total_s / 86_400 + 1 {
+        if docked(rig) {
+            break;
+        }
+        let _ = to_ic(rig, ic_now(&rig.tw) + 86_400);
+    }
+    assert!(
+        docked(rig),
+        "she reaches the end of her passage: {:?}",
+        tacsim::port::ship::berth_of(rig.tw.world(), carrier)
+    );
+    assert_eq!(
+        held(rig, carrier),
+        Posture::Return,
+        "on the word she was left"
+    );
 }
