@@ -868,14 +868,14 @@ pub const PARTY_LETTERS: &str = "ABCDEFGHJKLMNPQRSTUVWYZ";
 pub const NPC_ORDERS_HEAD: &str = "Orders your NPC leader gave";
 /// `tacsim::detachment::sortie::NPC_ORDER`'s middle, between the leader's name and the slot.
 pub const NPC_ORDER_TO: &str = " to slot ";
-/// `tacsim::detachment::sortie::CONCENTRATE_USAGE`'s middle.
-pub const CONCENTRATE_USAGE: &str = "CONCENTRATE <contact>";
-/// `tacsim::detachment::sortie::CONCENTRATE_UNIDENTIFIED`'s head.
-pub const CONCENTRATE_UNIDENTIFIED: &str = "CONCENTRATE needs a contact you have identified";
-/// `tacsim::detachment::sortie::CONCENTRATE_NO_CONTACT`'s head.
+/// `tacsim::detachment::sortie::FOCUS_USAGE`'s middle.
+pub const CONCENTRATE_USAGE: &str = "FOCUS <contact>";
+/// `tacsim::detachment::sortie::FOCUS_UNIDENTIFIED`'s head.
+pub const CONCENTRATE_UNIDENTIFIED: &str = "FOCUS needs a contact you have identified";
+/// `tacsim::detachment::sortie::FOCUS_NO_CONTACT`'s head.
 pub const CONCENTRATE_NO_CONTACT: &str = "No such contact in your own scope.";
-/// `tacsim::detachment::sortie::CONCENTRATE_NO_EXPIRY`'s head.
-pub const CONCENTRATE_NO_EXPIRY: &str = "CONCENTRATE takes no EXPIRES";
+/// `tacsim::detachment::sortie::FOCUS_NO_EXPIRY`'s head.
+pub const CONCENTRATE_NO_EXPIRY: &str = "FOCUS takes no EXPIRES";
 /// `tacsim::detachment::planning::commands::WORK_POINT_NAMED`'s head, before the cell.
 pub const WORK_POINT_NAMED: &str = "Work point: cell ";
 /// `tacsim::detachment::planning::commands::WORK_POINT_NONE`'s head.
@@ -1843,11 +1843,11 @@ mod tests {
             .replace("{leader}", "Sana Okonkwo")
             .replace("{slot}", "2")
             .replace("{sequence}", "7")
-            .replace("{order}", "CONCENTRATE BK")
+            .replace("{order}", "FOCUS BK")
             .replace("{status}", "WILCO received");
         assert_eq!(
             given,
-            "Sana Okonkwo to slot 2, order 7: CONCENTRATE BK; WILCO received."
+            "Sana Okonkwo to slot 2, order 7: FOCUS BK; WILCO received."
         );
         assert!(has(&normalise(&given), NPC_ORDER_TO), "{given}");
         let window = normalise(&format!("{} {given}", sortie::NPC_ORDERS_HEAD));
@@ -1855,10 +1855,10 @@ mod tests {
             order_replies(&window, 2).is_empty(),
             "an NPC leader's order is not one the reader sent: {window}"
         );
-        assert!(sortie::CONCENTRATE_USAGE.contains(CONCENTRATE_USAGE));
-        assert!(sortie::CONCENTRATE_UNIDENTIFIED.starts_with(CONCENTRATE_UNIDENTIFIED));
-        assert!(sortie::CONCENTRATE_NO_CONTACT.starts_with(CONCENTRATE_NO_CONTACT));
-        assert!(sortie::CONCENTRATE_NO_EXPIRY.starts_with(CONCENTRATE_NO_EXPIRY));
+        assert!(sortie::FOCUS_USAGE.contains(CONCENTRATE_USAGE));
+        assert!(sortie::FOCUS_UNIDENTIFIED.starts_with(CONCENTRATE_UNIDENTIFIED));
+        assert!(sortie::FOCUS_NO_CONTACT.starts_with(CONCENTRATE_NO_CONTACT));
+        assert!(sortie::FOCUS_NO_EXPIRY.starts_with(CONCENTRATE_NO_EXPIRY));
         let named = planning::WORK_POINT_NAMED
             .replace("{x}", "140")
             .replace("{y}", "118");
