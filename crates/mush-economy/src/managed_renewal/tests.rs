@@ -194,6 +194,10 @@ impl Rig for Personal {
     fn book_mut(state: &mut EconomyStore) -> &mut OfferBook<Self> {
         &mut state.renewal_offers
     }
+    fn absent(state: &EconomyStore) -> Result<(), super::RenewalAuditError> {
+        state.require_no_renewal_history()
+    }
+    const FOLD_KEY: &'static str = "renewal_receipts";
     /// The seller: a real character, and no party to the buyer's consent.
     fn stranger(f: &mut Fixture<Self>) -> TestResult<ObjId> {
         Ok(f.offer.terms.seller)

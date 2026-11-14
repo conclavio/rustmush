@@ -43,29 +43,25 @@ fn ordinary() -> mush_testkit::TestWorld {
 }
 pub(crate) fn actual_default_boot_proves_absence_without_new_serialized_history<I: Rig>()
 -> TestResult {
-    check!(
-        EconomyStore::default()
-            .require_no_renewal_history()
-            .is_err()
-    );
+    check!(I::absent(&EconomyStore::default()).is_err());
     let world = ordinary();
     let state = world
         .world()
         .module_state::<EconomyStore>()
         .ok_or("store")?;
-    state.require_no_renewal_history()?;
+    I::absent(state)?;
     check!(
         audit::read::<I>(state).is_err(),
         "disabled empty boot is not combined renewal activation"
     );
     check!(
         serde_json::to_value(&state.fold)?
-            .get("renewal_receipts")
+            .get(I::FOLD_KEY)
             .is_none()
     );
     let mut frozen = state.clone();
     frozen.frozen = true;
-    check!(frozen.require_no_renewal_history().is_err());
+    check!(I::absent(&frozen).is_err());
     Ok(())
 }
 pub(crate) fn disabled_actual_boot_refuses_retained_offer_before_any_healing_write<I: Rig>()

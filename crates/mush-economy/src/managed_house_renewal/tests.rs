@@ -249,6 +249,10 @@ impl Rig for House {
     fn book_mut(state: &mut EconomyStore) -> &mut OfferBook<Self> {
         &mut state.house_renewal_offers
     }
+    fn absent(state: &EconomyStore) -> Result<(), super::RenewalAuditError> {
+        state.require_no_house_renewal_history()
+    }
+    const FOLD_KEY: &'static str = "house_renewal_receipts";
     /// A House has no seller, so the stranger is a character made for the purpose.
     fn stranger(f: &mut Fixture<Self>) -> TestResult<ObjId> {
         Ok(f.world

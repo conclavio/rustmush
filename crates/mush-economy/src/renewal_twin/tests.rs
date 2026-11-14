@@ -129,6 +129,10 @@ pub(crate) trait Rig: Issuer {
     fn basis(offer: &mut Self::Offer) -> BasisMut<'_>;
     fn decode(bytes: &[u8]) -> Result<Self::Offer, ParticipantError>;
     fn book_mut(state: &mut EconomyStore) -> &mut OfferBook<Self>;
+    /// The store's public absence proof for this family, one hand-written method each.
+    fn absent(state: &EconomyStore) -> Result<(), RenewalAuditError>;
+    /// The key this family's receipt audit is written under in a serialized fold.
+    const FOLD_KEY: &'static str;
     /// A character that is not the buyer and has no part in the offer's consent.
     fn stranger(f: &mut Fixture<Self>) -> TestResult<ObjId>;
     /// The issuer's side stops being current: the seller leaves, or the organisation's
