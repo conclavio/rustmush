@@ -611,7 +611,8 @@ limits above stand under all three: it never fires first, and it never mines or
 trades.
 
 - **RETURN** takes the unit home, as the section above describes. It returns
-  fire on a unit that fires on it, on the way and beside the ramp.
+  fire on a unit that fires on it, on the way and beside the ramp, and it
+  does not stop to do it: the house default fires as it drives.
 - **HOLD** keeps the unit on the cell where its mind took it. It turns to face
   a unit that has fired on it and returns that unit's fire. It answers for
   nobody else, and it is not taken home.

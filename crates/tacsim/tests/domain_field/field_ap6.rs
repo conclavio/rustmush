@@ -18,8 +18,11 @@
 //! 2. [`ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour`]: on `HOLD` the same fire
 //!    on the lessee's other rig is not answered; fire on the rig itself is, from a seat that was
 //!    never set to `FIRE FREE`. It is not taken home, and its player reads why at login.
-//! 3. [`ap6_the_same_rig_on_return_goes_home`]: on `RETURN` it answers for nobody, drives to
-//!    its carrier's ramp and is put aboard.
+//! 3. [`co2_the_same_rig_on_return_answers_on_its_way_home`] (doc 47 unit CO.2, R-47-3): on
+//!    `RETURN`, fired on as it makes for its ramp, it answers the unit that fired, and nobody
+//!    else, while it drives on; and it is put aboard.
+//!    (Until CO.2: `ap6_the_same_rig_on_return_goes_home`, fired on only through its
+//!    neighbour.)
 //! 4. [`ap6_a_guard_that_loses_its_last_fire_channel_goes_home`]: a guard with two rounds
 //!    left answers with them, and with nothing left to fire goes home; the lessee's word is
 //!    still `GUARD`.
@@ -537,31 +540,156 @@ async fn ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour() {
     assert!(heard.contains(&told), "{heard}");
 }
 
-/// **Story 3** (this module's head): `RETURN` goes home, and answers for nobody on the way.
+/// `unit`'s positions in the field's position record, centimetres, in the order recorded:
+/// each with the index of the line that carries it.
+fn track(lines: &[LedgerEvent], of: ObjId) -> Vec<(usize, i64, i64)> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(at, line)| match &line.kind {
+            EventKind::PositionSummary { units } => units
+                .iter()
+                .find(|(unit, ..)| *unit == of)
+                .map(|(_, x, y, ..)| (at, *x, *y)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The cell `unit` was last recorded on, if the record has it.
+fn last_cell(lines: &[LedgerEvent], of: ObjId) -> Option<(u16, u16)> {
+    track(lines, of).last().map(|(_, x, y)| {
+        let (cx, cy) = tacsim::surface::excursion::site_cell(*x, *y);
+        (
+            u16::try_from(cx).unwrap_or(0),
+            u16::try_from(cy).unwrap_or(0),
+        )
+    })
+}
+
+/// One position record of a unit: the index of its line, and its `x` and `y`, centimetres.
+type Recorded = (usize, i64, i64);
+
+/// **Where the field recorded `hull` while it answered**: the first position record after
+/// its first round, and the first record after a round it fired once that record had passed
+/// (the field records every unit every five arena seconds). `None` until it has fired across
+/// two records.
+fn answered_across(lines: &[LedgerEvent], hull: ObjId) -> Option<(Recorded, Recorded)> {
+    let shots: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == hull))
+        .map(|(at, _)| at)
+        .collect();
+    let path = track(lines, hull);
+    let first_shot = *shots.first()?;
+    let after = path.iter().position(|(at, ..)| *at >= first_shot)?;
+    let from = *path.get(after)?;
+    let later = *shots.iter().find(|at| **at > from.0)?;
+    let to = *path.iter().find(|(at, ..)| *at >= later)?;
+    Some((from, to))
+}
+
+impl Ground {
+    /// **The intruder's player keeps a lock on the lessee's rig wherever the field last
+    /// recorded it and fires** until `done` holds or `secs` of wall time pass.
+    async fn raid_the_rig(
+        &mut self,
+        secs: u64,
+        mut done: impl FnMut(&Rig, &[LedgerEvent]) -> bool,
+    ) -> bool {
+        let gun = weapon_of(&self.rig, self.hostile);
+        for _ in 0..secs {
+            // Where the field last recorded it (every five arena seconds), and the contact
+            // the intruder plots nearest there: not one of the two rigs left on HOLD.
+            let at = last_cell(&self.lines, self.hull).unwrap_or(HULL_AT);
+            let apart = |a: (u16, u16), b: (u16, u16)| a.0.abs_diff(b.0).max(a.1.abs_diff(b.1));
+            let target = frame(&self.rig, self.intruder).and_then(|frame| {
+                frame
+                    .contacts
+                    .iter()
+                    .filter_map(|contact| contact.cell.map(|cell| (cell, contact)))
+                    .filter(|(cell, _)| apart(*cell, KIN_AT) > 1 && apart(*cell, WORKER_AT) > 1)
+                    .min_by_key(|(cell, _)| apart(*cell, at))
+                    .filter(|(cell, _)| apart(*cell, at) <= 12)
+                    .map(|(_, contact)| contact.clone())
+            });
+            if let Some(contact) = target
+                && frame(&self.rig, self.intruder)
+                    .is_some_and(|frame| frame.lock != Some(contact.id))
+            {
+                let _ = run(
+                    &mut self.rig.tw,
+                    self.intruder,
+                    &format!("LOCK {}", contact.designator),
+                );
+            }
+            let _ = run(&mut self.rig.tw, self.intruder, &format!("FIRE {gun}"));
+            if self.wait(1, |rig, lines| done(rig, lines)).await {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// **Story 3** (this module's head): `RETURN` answers the unit that fires on it on its way
+/// home, and nobody else, and does not stop going home to do it (doc 47 unit CO.2,
+/// R-47-3). Until CO.2 this story was `ap6_the_same_rig_on_return_goes_home`: the rig was
+/// fired on only through its neighbour, and fired nothing; under fire itself the doctrine's
+/// cornered stand would have stopped it where it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ap6_the_same_rig_on_return_goes_home() {
+async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
     let mut g = ground(Posture::Return, |_, _| {}).await;
     let (hull, kin, hostile) = (g.hull, g.kin, g.hostile);
     g.leave();
-    let struck = g
-        .raid(KIN_AT, 150, |_, lines| arrived(lines, hostile, kin) >= 3)
+    // The intruder fires on the rig itself as it makes for its ramp, wherever it has got
+    // to: it answers, more than once, and nobody else. (That it does not answer for its
+    // neighbour on RETURN is the gate's: `arena::weapons::tests`, AP.6's guard test.)
+    let answered = g
+        .raid_the_rig(150, |_, lines| answered_across(lines, hull).is_some())
         .await;
     g.cease();
     assert!(
-        struck,
-        "the intruder's fire arrives on the lessee's other rig: {}",
-        g.exchange()
+        answered,
+        "a rig on RETURN answers the unit that fires on it: {}; last recorded at {:?}",
+        g.exchange(),
+        last_cell(&g.lines, hull)
     );
+    assert_eq!(
+        arrived(&g.lines, hostile, kin),
+        0,
+        "the story's premise: the intruder fired on the rig, not its neighbour"
+    );
+    let on_it = first(
+        &g.lines,
+        |kind| matches!(kind, EventKind::Impact { unit, target, .. } if *unit == hostile && *target == hull),
+    );
+    let answer = first(
+        &g.lines,
+        |kind| matches!(kind, EventKind::Fired { unit, .. } if *unit == hull),
+    );
+    assert!(
+        on_it.is_some() && on_it < answer,
+        "its first round follows the first arrival on it: {on_it:?} then {answer:?}"
+    );
+    assert_eq!(
+        fired(&g.lines, hull),
+        fired_at(&g.lines, hull, hostile),
+        "and on nobody else"
+    );
+    // It kept going while it answered: where the field recorded it just after its first
+    // round, and where it recorded it after a later round, differ.
+    let (from, to) = answered_across(&g.lines, hull).expect("the raid ended on it");
+    let moved_cm = (to.1 - from.1).abs().max((to.2 - from.2).abs());
+    assert!(
+        moved_cm >= 100,
+        "it drove on while it answered: {from:?} then {to:?}"
+    );
+    // And it is home.
     assert!(
         g.goes_home(240).await,
         "a rig on RETURN is taken out at its carrier's ramp and put aboard: {}",
-        g.exchange()
-    );
-    let _ = g.wait(5, |_, _| false).await;
-    assert_eq!(
-        fired(&g.lines, hull),
-        0,
-        "it answered for nobody on the way: {}",
         g.exchange()
     );
 }

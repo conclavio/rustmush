@@ -517,10 +517,21 @@ fn mw11_a_picket_is_the_same_whatever_the_workers_timing() {
     assert!(picket.corvette_think_seq >= 5 && picket.raider_think_seq >= 5);
     assert!(!picket.corvette_memory.is_empty(), "the corvette remembers");
     assert!(backup.mind_think_seq >= 5, "the backup mind thought");
+    // Doc 47 unit CO.2 (R-47-3): she hove to, and once the raider opened on her she
+    // answered it, on `RETURN`, the word every hull holds. Until CO.2 the last act was
+    // heaving to.
     assert_eq!(
         backup.backup_act,
-        super::super::backup::BackupAct::HeavingTo,
-        "and hove her to"
+        super::super::backup::BackupAct::ReturningFire,
+        "she hove to and answered the raider"
+    );
+    assert!(
+        reference
+            .active
+            .bubble
+            .fired_on_by("hull.10")
+            .is_some_and(|by| by.contains(&picket.raider_ship_id)),
+        "after the raider's fire had arrived on her"
     );
 }
 
@@ -769,7 +780,17 @@ fn mw11_every_think_of_a_bubble_runs_on_a_pool_worker() {
     use crate::space::thinks::test_support::Traced;
     let tw = TestWorld::new();
     let w = tw.world();
-    let (active, linkdead) = picket_encounter();
+    let (mut active, linkdead) = picket_encounter();
+    // Doc 47 unit CO.2: her mind answers the raider under every posture now, and inside ten
+    // steps her beam takes the raider out of the fight, which then thinks no more. This
+    // test is about where thinks run, not the fight: she carries nothing to answer with.
+    if let Some(ship) = active.bubble.ships.get_mut("hull.10") {
+        ship.lasers.clear();
+        ship.railguns.clear();
+        ship.torpedo_tubes.clear();
+    }
+    active.tape = BubbleInputTape::new(&active.bubble);
+    active.snapshots = vec![active.bubble.snapshot()];
     let digests = digests_of(&active);
     let host = ThinkHost::on_pool(MindPool::new(3));
     assert_eq!(host.workers(), 3);
@@ -1144,21 +1165,63 @@ fn world_with_posture(hull: ObjId, posture: crate::posture::Posture) -> TestWorl
     tw
 }
 
-/// **Doc 45 unit AP.9: on the bubble's own step, the house default answers the raider that
-/// fired on her on `HOLD` and on `GUARD`, and not on `RETURN`; under every posture she
-/// fires on nobody before she is fired on, and never on the corvette that stopped her.**
+/// **Doc 45 unit AP.9, as doc 47 unit CO.2 rules it (R-47-3): on the bubble's own step, the
+/// house default answers the raider that fired on her under every posture; she fires on
+/// nobody before she is fired on, and never on the corvette that stopped her.** (Until
+/// CO.2 she answered on `HOLD` and `GUARD` and not on `RETURN`.)
 ///
 /// The picket encounter of doc 44 unit MW.11: one Dray whose crew has no link, the customs
-/// corvette and the belt raider, which her party holds hostile from the opening. Her mind
-/// heaves her to, customs clear her, the raider lights and opens on her. The three runs
-/// differ in the one word on her hull's record. The whole path is flown: the view narrowed
-/// to what she may answer, the doctrine's own lock and shot, the seat's gate, the bubble's
-/// record of the arrival.
+/// corvette and the belt raider, which her party holds hostile from the opening: three
+/// parties. Her mind heaves her to, customs clear her, the raider lights and opens on her.
+/// The three runs differ in the one word on her hull's record. The whole path is flown: the
+/// view narrowed to what she may answer, the doctrine's own lock and shot, the seat's gate,
+/// the bubble's record of the arrival.
 #[test]
-fn ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture() {
+fn co2_the_house_default_answers_the_raider_that_fired_on_her_under_every_posture() {
     use crate::posture::Posture;
 
-    let fly = |posture: Posture| {
+    for posture in [Posture::Return, Posture::Hold, Posture::Guard] {
+        let (beams, lock, on_raider, on_corvette, act, raider) =
+            fly_the_picket(posture, None, |_| {});
+        assert!(!beams.is_empty(), "{posture}: she fires");
+        assert!(
+            beams.iter().all(|target| *target == raider),
+            "{posture}: on the raider and on nobody else: {beams:?}"
+        );
+        assert_eq!(lock.as_deref(), Some(raider.as_str()), "{posture}");
+        assert!(on_raider, "{posture}: her fire arrives on the raider");
+        assert!(!on_corvette, "{posture}: never on the corvette");
+        assert_eq!(
+            act,
+            Some(super::super::backup::BackupAct::ReturningFire),
+            "{posture}"
+        );
+    }
+}
+
+/// What [`fly_the_picket`] reads at the end: her beams' targets, her lock, whether her fire
+/// arrived on the raider and on the corvette, the seat's last act, and the raider's ship id.
+type PicketReading = (
+    Vec<String>,
+    Option<String>,
+    bool,
+    bool,
+    Option<super::super::backup::BackupAct>,
+    String,
+);
+
+/// **The picket encounter flown until the raider's fire has arrived on her, and ten steps
+/// more**, her hull's record on `posture`, a mind sealed aboard her if `sealed` names one,
+/// `each` called on the run after every step until the arrival. Asserts that she locked and
+/// fired on nobody before she was fired on.
+fn fly_the_picket(
+    posture: crate::posture::Posture,
+    sealed: Option<Arc<crate::space::thinks::SealedMind>>,
+    mut each: impl FnMut(&Run),
+) -> PicketReading {
+    let _aboard =
+        sealed.map(|mind| crate::port::ship_mind::test_support::seal_aboard(vec![(CARRIER, mind)]));
+    {
         let tw = world_with_posture(CARRIER, posture);
         let (active, linkdead) = picket_encounter();
         let raider = active
@@ -1214,6 +1277,7 @@ fn ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture() {
                 &never,
             );
             wall += 1;
+            each(&run);
             if !arrived_on(&run, "hull.10", &raider)
                 && (!beams(&run).is_empty()
                     || run
@@ -1260,29 +1324,170 @@ fn ap9_the_house_default_answers_the_raider_that_fired_on_her_by_her_posture() {
             trace,
             raider,
         )
-    };
+    }
+}
 
-    let (beams, lock, on_raider, on_corvette, act, _) = fly(Posture::Return);
-    assert!(
-        beams.is_empty() && lock.is_none() && !on_raider && !on_corvette,
-        "on RETURN she answers nobody: {beams:?} {lock:?}"
-    );
-    assert_ne!(act, Some(super::super::backup::BackupAct::ReturningFire));
+/// **Doc 47 unit CO.2 (R-47-2): a ship with a mind sealed aboard answers fire by the house
+/// default, and her sealed mind keeps her helm and her sensors.**
+///
+/// The same picket, the same three parties, with [`KEEPER`] sealed aboard her: it heaves her
+/// to by its own burn, asks no lock, and asks a shot of every mount at every think, which
+/// its seat drops (a ship's seal carries no fire channel). Under every posture, once the
+/// raider's fire has arrived on her, her beams go at the raider and nobody else; before it
+/// they go nowhere; her lock is the sealed mind's, which is none, because the house
+/// default's answer is fired at its ship without moving her lock; and every word on her
+/// record is the sealed mind's. Until CO.2 nothing answered for a hull with a sealed mind.
+#[test]
+fn co2_a_sealed_minds_ship_answers_by_the_house_default_and_keeps_its_sensors() {
+    use crate::arena::core::ClassTable;
+    use crate::posture::Posture;
+    use crate::space::thinks::{SealedMind, test_support::sealed_draft};
 
-    for posture in [Posture::Hold, Posture::Guard] {
-        let (beams, lock, on_raider, on_corvette, act, raider) = fly(posture);
-        assert!(!beams.is_empty(), "{posture}: she fires");
+    let seal = sealed_draft(CARRIER, Vec::new(), KEEPER);
+    let mind = Arc::new(SealedMind::of(&seal, KEEPER, &ClassTable::STOCK).expect("it thinks"));
+    for posture in [Posture::Return, Posture::Hold, Posture::Guard] {
+        let mut words = Vec::new();
+        let (beams, lock, on_raider, on_corvette, act, raider) =
+            fly_the_picket(posture, Some(Arc::clone(&mind)), |run| {
+                if let Some(word) = run
+                    .linkdead
+                    .get(&CARRIER)
+                    .and_then(|state| state.mind_last_trace.clone())
+                {
+                    words.push(word);
+                }
+            });
+        assert!(
+            !words.is_empty() && words.iter().all(|word| word.starts_with("KEEPER_")),
+            "{posture}: the sealed mind flew her: {words:?}"
+        );
+        assert!(!beams.is_empty(), "{posture}: the house default answers");
         assert!(
             beams.iter().all(|target| *target == raider),
             "{posture}: on the raider and on nobody else: {beams:?}"
         );
-        assert_eq!(lock.as_deref(), Some(raider.as_str()), "{posture}");
-        assert!(on_raider, "{posture}: her fire arrives on the raider");
-        assert!(!on_corvette, "{posture}: never on the corvette");
+        assert!(on_raider && !on_corvette, "{posture}");
+        assert_eq!(
+            lock, None,
+            "{posture}: her lock is the sealed mind's, and it locked nothing"
+        );
         assert_eq!(
             act,
             Some(super::super::backup::BackupAct::ReturningFire),
             "{posture}"
         );
     }
+}
+
+/// **Doc 47 unit CO.2 (R-47-2): beside a mind sealed aboard, only the house default's fire
+/// channel lands.** One landing, by hand: the raider's fire has arrived on her and the
+/// corvette's hail holds her, so a burn against her drift is one the seat lets through. The
+/// sealed mind asks her drive cut; the house default asks a burn against her drift, a lock
+/// on the raider and a shot. Her drive stays cut, her lock does not move, and her beam goes
+/// at the raider. The same house think landed alone, as her first source, burns and locks.
+#[test]
+fn co2_beside_a_sealed_mind_the_house_default_lands_its_shots_and_nothing_else() {
+    use crate::arena::core::ClassTable;
+    use crate::arena::intents::{IntentKind, MotorGoal};
+    use crate::arena::mind::ThinkResult;
+    use crate::posture::Posture;
+    use crate::space::thinks::{Answer, SealedMind, Thinker, test_support::sealed_draft};
+
+    let tw = world_with_posture(CARRIER, Posture::Return);
+    let seal = sealed_draft(CARRIER, Vec::new(), KEEPER);
+    let mind = Arc::new(SealedMind::of(&seal, KEEPER, &ClassTable::STOCK).expect("it thinks"));
+    let land = |sealed: bool| {
+        let (mut active, mut linkdead) = picket_encounter();
+        let raider = active
+            .picket
+            .as_ref()
+            .map(|picket| picket.raider_ship_id.clone())
+            .expect("a picket");
+        active
+            .bubble
+            .fired_on
+            .entry("hull.10".to_owned())
+            .or_default()
+            .insert(raider.clone());
+        let laser = active
+            .bubble
+            .ships
+            .get("hull.10")
+            .and_then(|ship| ship.lasers.first())
+            .map(|mount| mount.id.clone())
+            .expect("the Dray carries a beam");
+        let contact = crate::arena::state::ContactId(7);
+        let house = ThinkResult {
+            intents: vec![
+                IntentKind::Heading {
+                    mdeg: super::super::view::helm_word_of([-1_000, 0, 0]),
+                },
+                IntentKind::Speed { cms: 50 },
+                IntentKind::Lock { contact },
+                IntentKind::Fire {
+                    weapon: laser.as_str().into(),
+                    slot: Some(1),
+                },
+            ],
+            ..ThinkResult::default()
+        };
+        let kept = ThinkResult {
+            intents: vec![IntentKind::Goal(MotorGoal::Hold)],
+            ..ThinkResult::default()
+        };
+        let state = linkdead.get_mut(&CARRIER).expect("her record");
+        let answer = Answer {
+            who: Thinker::Backup,
+            unit: CARRIER,
+            think_seq: state.mind_think_seq,
+            contacts: BTreeMap::from([(contact, raider.clone())]),
+            result: Some(if sealed { kept } else { house.clone() }),
+            sealed: sealed.then(|| Arc::clone(&mind)),
+            house: sealed.then_some(house),
+        };
+        let _ = super::super::backup::land_in_bubble(
+            tw.world(),
+            &mut active,
+            "hull.10",
+            state,
+            answer,
+            1_000,
+        );
+        let ship = active.bubble.ships.get("hull.10").expect("her ship");
+        let beams: Vec<String> = active
+            .tape
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.command {
+                BubbleInputCommand::FireOffensiveLasers { target_id, .. } => {
+                    Some(target_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        (
+            ship.thrust_mmps2,
+            ship.locked_target_id.clone(),
+            beams,
+            raider,
+        )
+    };
+
+    let (thrust, lock, beams, raider) = land(true);
+    assert_eq!(
+        thrust,
+        [0, 0, 0],
+        "the sealed mind's helm: her drive is cut"
+    );
+    assert_eq!(lock, None, "her lock is the sealed mind's");
+    assert_eq!(beams, vec![raider.clone()], "the house default's shot");
+
+    let (thrust, lock, beams, _) = land(false);
+    assert_ne!(
+        thrust,
+        [0, 0, 0],
+        "the same think as her first source burns against her drift"
+    );
+    assert_eq!(lock.as_deref(), Some(raider.as_str()));
+    assert_eq!(beams, vec![raider]);
 }

@@ -2841,6 +2841,9 @@ impl Arena {
         // written (never hashed; the bytes are).
         state.doctrine_state = doctrine_state_of(&state.memory);
         let intents = std::mem::take(&mut answer.intents);
+        // Doc 47 unit CO.2 (R-47-3): a house mind on `RETURN` answers on its way home; its
+        // stop under the go-home order lands as the drive home (`Arena::keep_going_home`).
+        let intents = self.keep_going_home(unit, intents);
         self.expire_mind_order(unit, t_ms, counters);
         // 17b cut M4.6b (the owner's STOP E): a `Support` whose charge has
         // left the match, ended beside the expiry — after it, so one landing

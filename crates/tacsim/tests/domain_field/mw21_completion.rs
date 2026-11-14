@@ -279,6 +279,9 @@ struct Reading {
     wrote: Vec<BubbleInputCommand>,
     /// Her lock.
     lock: Option<String>,
+    /// The ships whose fire has arrived on her, by the bubble's own record (doc 45 unit
+    /// AP.9).
+    fired_on_by: std::collections::BTreeSet<String>,
     /// Her commanded thrust, mm/s².
     thrust: [i64; 3],
     /// Her speed against the corvette, mm/s.
@@ -403,6 +406,11 @@ impl Watch {
             corvette: picket.corvette_ship_id.clone(),
             wrote,
             lock: ship.locked_target_id.clone(),
+            fired_on_by: active
+                .bubble
+                .fired_on_by(&ship_id)
+                .cloned()
+                .unwrap_or_default(),
             thrust: ship.thrust_mmps2,
             drift: tacsim::space::relative_speed_3d_mmps(ship.vel_mmps, corvette.vel_mmps),
             emcon: ship.emcon,
@@ -726,8 +734,11 @@ fn runs_then_brakes(took: &Reading, ran: &Reading, braked: &Reading) -> [i64; 3]
 ///    brakes at an eighth of that or less, by its own arithmetic, and she is still under
 ///    the hail many steps on.
 /// 4. *The absent-player limits.* Its first think asks a burn that would run the picket:
-///    none is written. Every think asks a shot of her lasers with the lock standing: the
-///    tape holds none, and nothing but a lock and burns that take her drift off.
+///    none is written. Every think asks a shot of her lasers with the lock standing: none of
+///    its shots is written, and nothing of its own but a lock and burns that take her drift
+///    off. Beside it the house default answers fire under attack (doc 47 unit CO.2,
+///    R-47-2): a shot of hers on the tape is at a ship whose fire had already arrived on her,
+///    never at the corvette she complies with, and never moves the lock the bought mind set.
 /// 5. *Only her own stores.* From her sailing to her berth at Stickney no account in the
 ///    world moves, the author's and the buyer's among them, no row of the market, the Roll
 ///    or the economy moves, and the one inventory pool that does is her hold's reaction
@@ -1266,7 +1277,17 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
         );
         assert_eq!(now.emcon, EmconPosture::Standard, "{now:?}");
         for command in &now.wrote {
+            // Doc 47 unit CO.2 (R-47-2): the house default's answer beside the bought mind.
+            let answers = match command {
+                BubbleInputCommand::FireOffensiveLasers { target_id, .. }
+                | BubbleInputCommand::FireRailgun { target_id, .. }
+                | BubbleInputCommand::FireTorpedoSalvo { target_id, .. } => {
+                    *target_id != now.corvette && was.fired_on_by.contains(target_id)
+                }
+                _ => false,
+            };
             let allowed = *command == now.locks_on()
+                || answers
                 || matches!(command, BubbleInputCommand::CommandBurnMmps2 { .. })
                 || (now.helm == Helm::Crew
                     && matches!(
@@ -1278,8 +1299,14 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
                     ));
             assert!(
                 allowed,
-                "the tape holds a lock and burns for her, and her own command; no shot, \
-                 no work: {command:?} at {now:?}"
+                "the tape holds a lock and burns for her, her own command, and a shot only \
+                 at a ship that had fired on her; no work: {command:?} at {now:?}"
+            );
+        }
+        if now.helm == Helm::Mind && was.helm == Helm::Mind {
+            assert!(
+                now.lock.is_none() || now.locks_the_corvette(),
+                "her lock is the bought mind's, and an answer never moves it: {now:?}"
             );
         }
         if was.helm == Helm::Mind && now.helm == Helm::Mind {
