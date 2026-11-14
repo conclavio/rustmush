@@ -1804,6 +1804,11 @@ async fn enrol(rig: &mut Rig, pilot: ObjId, name: &str) -> HullRow {
 /// cargo, `chandlery`, reaction mass and provisions to the planner's own figures for
 /// Stickney (IC10's loop), then the market sweep's two laps for the Draws' receipts.
 async fn outfit(rig: &mut Rig, pilot: ObjId) -> Outfit {
+    outfit_for(rig, pilot, "stickney").await
+}
+
+/// [`outfit`] to the planner's own figures for `port` (doc 47 cut CO.8).
+async fn outfit_for(rig: &mut Rig, pilot: ObjId, port: &str) -> Outfit {
     let c03 = station_room(&rig.tw, "ceres_port", "room.c03_arrivals");
     let c04 = station_room(&rig.tw, "ceres_port", "room.c04_concourse");
     let c07 = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
@@ -1821,7 +1826,7 @@ async fn outfit(rig: &mut Rig, pilot: ObjId) -> Outfit {
     let food_ask = listing_of(&rig.tw, "ceres_port", "coop", "provisions");
     let (mut fuel, mut food) = (0_u64, 0_u64);
     for _ in 0..6 {
-        let plan = run(rig, pilot, "+ship/plan stickney").await;
+        let plan = run(rig, pilot, &format!("+ship/plan {port}")).await;
         let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
         let (days, locker) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
         if tank >= burn && locker >= days {
@@ -2751,6 +2756,11 @@ fn due_label(tw: &TestWorld, due_utc: i64) -> String {
 /// the time left doubles; the queued depart's `Next due:` keeps its UTC hour and its
 /// IC label is re-derived through the new generation (never stored); and the hull
 /// docks at the frozen IC instant.
+///
+/// Doc 47 cut CO.8: she flies to Luna's Aitken Highport, whose one leg passes no interdicted
+/// waypoint.
+/// The route to Stickney passes Kirkwood, where the customs picket stops her however late
+/// she crosses, and a picket pauses her journey, so her arrival would not be the frozen one.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn ic12_a_rate_change_mid_passage_relabels_the_arrival() {
@@ -2760,13 +2770,13 @@ async fn ic12_a_rate_change_mid_passage_relabels_the_arrival() {
     let kit = pilot(&mut rig, "Kit", "kitacct").await;
     let row = enrol(&mut rig, kit, "Salt Moth").await;
     let hull = ObjId(row.hull);
-    let _ = outfit(&mut rig, kit).await;
+    let _ = outfit_for(&mut rig, kit, "luna").await;
     board_from_chandlery(&mut rig, kit, "Salt Moth").await;
     set_rate(&mut rig, 3_600).await;
     // A daily hour two real hours on (to the minute), the next occurrence of it.
     let now = rig.tw.world().now();
     let daily = (now + 7_200).div_euclid(60) * 60;
-    let out = run(&mut rig, kit, "+ship/order depart stickney at=now").await;
+    let out = run(&mut rig, kit, "+ship/order depart luna at=now").await;
     assert!(out.contains("Order 1 filed"), "{out}");
     let out = run(
         &mut rig,
@@ -2784,9 +2794,8 @@ async fn ic12_a_rate_change_mid_passage_relabels_the_arrival() {
     assert!(under_way(&rig.tw, hull), "order 1 flew");
     let flown = ticket(&mut rig.tw, hull, 1).expect("the ticket");
     let arrival = flown.plan.depart_ic + flown.plan.total_s;
-    let boundary = flown.plan.depart_ic + i64::from(flown.plan.legs[0].secs);
-    // Mid-passage: past the Kirkwood boundary.
-    let _ = to_ic(&mut rig, boundary + 3_600).await;
+    // Mid-passage.
+    let _ = to_ic(&mut rig, flown.plan.depart_ic + flown.plan.total_s / 2).await;
     assert!(under_way(&rig.tw, hull));
     let before = journey(&rig.tw, hull).expect("the journey");
     let eta_3600 = real_at(&rig.tw, arrival);

@@ -78,6 +78,12 @@ not interdicted, because they step the clock past Kirkwood to reach Stickney and
 and `domain_economy/sale.rs` (their `lane_variant`; `orders.rs`'s `stocked()` now seeds it, as `sale.rs`'s
 did). With the fix and without the move, 3 `domain_world` and 29 `domain_economy` stories fail, at "the
 tactical bubble is not secure", "GOD never submits from the port tick" and "the 395's epoch closed at Stickney".
+One mush-server story, `commerce_composition::ic_slice_loop::ic12_a_rate_change_mid_passage_relabels_the_arrival`,
+stepped an IC hour past the Kirkwood boundary and failed at "docked at the frozen instant": the picket's pause moves
+the arrival. It boots the production root on the shipped content, where a seeded lane is refused at the shipped
+version and not taken at the next, and the only route to Stickney passes Kirkwood. So it now flies to Luna's
+Aitken Highport, whose one leg passes no interdicted waypoint, outfitted for that plan (`outfit_for`). Rheasilvia,
+the other long single leg, needs a leg home this hull's tank cannot hold.
 
 **Divergences.** None from doc 47. `orders.rs` was composed on the shipped game content (`Roster::bare`) and now
 boots a seeded lane, as `sale.rs` does; `Roster::bare` is removed.
