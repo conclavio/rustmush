@@ -99,12 +99,12 @@ fn draft(b: &Birth, n: u8, at: i64, attempt: RenewalAttemptV1) -> TestResult<Ren
         operation: token(n),
         action: definition("action", "draft_house_mind_renewal")?,
         attempt,
-        binding: RenewalBindingV1::capture(
+        binding: Box::new(RenewalBindingV1::capture(
             &b.licence,
             &b.term,
             &b.economics,
             HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-        )?,
+        )?),
         offer_digest: digest(n),
         contract: serde_json::from_value(json!(n))?,
         consent_hash: [n; 32],

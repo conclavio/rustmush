@@ -53,7 +53,7 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     let wire = serde_json::to_value(&row.binding)?;
     check_eq!(
         serde_json::from_value::<RenewalBindingV1>(wire.clone())?,
-        row.binding
+        *row.binding
     );
     for bad in [
         serde_json::Value::Null,

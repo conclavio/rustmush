@@ -80,7 +80,7 @@ fn ct0_prepare(
     before: Option<&RenewalOperationV1>,
     after: &RenewalOperationV1,
 ) -> Result<roots::RenewalRoots, PublicationError> {
-    roots::RenewalRoots::prepare(action, commit, publication, before, after, None, None)
+    roots::RenewalRoots::prepare(action, commit, publication, before, after, None, None, ())
 }
 
 /// The birth the walk renews: its three rows, the filed royalty chain its grant
