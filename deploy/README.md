@@ -862,8 +862,9 @@ world and from the document, never assumed: every identity is looked up by name
 before it is made, a grant is made only when `@org/show` does not list it, an
 account is minted only up to its figure, and the phase is the document's own
 (absent, `initialize`, `active`). The one thing the script keeps is
-`<DATA_DIR>/bringup/state.json`: the hulls it has lent a House (below), so a
-run that stops in between hands back what it took. It is in the data
+`<DATA_DIR>/bringup/state.json`: the hulls an older run lent a House, so a run
+that stops in between hands back what it took (since doc 47 cut CO.9 nothing
+new is lent: the Houses are seeded hulls of their own, below). It is in the data
 directory, so a reset removes it with the world.
 
 **The service logins.** Where the hand sequence below hangs the clerk and the
@@ -892,25 +893,26 @@ Doctrine named `Seedline`, listed as `Seedline Market`; or `meridiani`,
 publisher. A House buys only a line whose rating scored above nothing; a copy
 of Standard does.
 
-After the listing the script lends the House its hulls (next paragraph) and
-**restarts the world's unit**: a House shops once an IC month, a month in which
-it found nothing stays closed until the next one or a restart, and its first
-look was at an empty counter. The gateway holds every connection across the
-restart. `--no-purchase` stops after the listing.
+After the listing the script makes sure the House holds hulls of its own (next
+paragraph) and **restarts the world's unit**: a House shops once an IC month, a
+month in which it found nothing stays closed until the next one or a restart,
+and its first look was at an empty counter. The gateway holds every connection
+across the restart. `--no-purchase` stops after the listing.
 
-**The hulls are lent, not given.** A House buys nothing without titled hulls
-(its cap is the floor of 400 per mille of them, so three for the first
-licence), and the only spare hulls a fresh world has are the Ceres Co-op's
-pool Drays. A Dray titled to a House closes `+coop/enrol` for every player:
-the Co-op's readiness wants every pool Dray with the Trust or a graduate. So
-the script titles three free Drays to one House (`--purchase-house`,
-Meridiani), waits for the purchase, and hands them back to the Co-op First
-Captain Trust on the scope they came from. After the bring-up the Houses hold
-their policies, agents, grants and funded treasuries, one House holds a
-licence, and none holds a hull, so none buys again until it has hulls.
-`--keep-house-hulls` leaves the three with the House: it keeps buying, and
-enrolment stays closed. Giving the Houses hulls of their own needs a route the
-game does not have yet (doc 44's cut notes, MW.1).
+**Each House holds hulls of its own** (doc 47 cut CO.9). A House buys nothing
+without titled hulls (its cap is the floor of 400 per mille of them, so three
+for the first licence). In the Active boot #1 seeds every House three Drays at
+Ceres Freeport with `@tacsim/port seed ceres_port dray <mark>=org:<House>`
+(marks `MER-01` to `MER-03`, `COP-…`, `TYC-…`); the port's next fires lay
+them up, dock them and title them to the House on its root scope, and the
+script waits until `@asset/list owner=org:<House>` lists three. A mark seeds
+once, so a second run seeds nothing new. Nothing of the Co-op's pool moves, so
+`+coop/enrol` stays open. `--house-hulls <n>` changes the count (0 seeds
+none), `--house-design` the design. Who may fly a House's hull is the
+House's to grant: `@org/grant #<member>=<House> unit.deploy` (a holder of
+`economy.account.post` on its root scope, an officer, may too). A store an
+older bring-up LENT the Co-op's Drays to a House gets them handed back to the
+Trust first.
 
 **The LLM check** (doc 44 section 8, step 8; Q-44-6, Q-44-48). On the started
 unit, which has the provider keys, #1 asks a major NPC a question and starts a

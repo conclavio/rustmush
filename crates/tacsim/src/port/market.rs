@@ -167,7 +167,10 @@ fn refusal(line: String) -> VenueRefusal {
 /// hull is the actor's (its title or live charter, cut IC13's `helm_of`), and it is docked at the port whose venue this
 /// is.
 fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
-    if helm_of(w, actor).is_none_or(|helm| helm.hull != hull) {
+    // Doc 47 cut CO.9: a House's pilot flies her; only its officer trades her hold.
+    if helm_of(w, actor).is_none_or(|helm| helm.hull != hull)
+        || !crate::port::owned::may_trade_hold(w, hull, actor)
+    {
         return Err(refusal(NOT_YOUR_CHARTER.to_owned()));
     }
     let port = port_name(def);
@@ -234,6 +237,10 @@ impl VenueGate for PortVenueGate {
     ) -> Option<EndpointRef> {
         port_of_venue(w, venue)?;
         let charter = helm_of(w, actor)?;
+        // Doc 47 cut CO.9: a House's pilot without office trades nothing from her hold.
+        if !crate::port::owned::may_trade_hold(w, charter.hull, actor) {
+            return None;
+        }
         match presence {
             // L10: the charter hull's hold wherever the hull lies; `admit` says why it
             // may not load, in the gate's own words.
