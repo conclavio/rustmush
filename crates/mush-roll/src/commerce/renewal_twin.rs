@@ -28,3 +28,6 @@ pub mod protocol;
 pub mod records;
 pub(crate) mod roots;
 pub mod writer;
+
+#[cfg(test)]
+pub(crate) mod tests;
