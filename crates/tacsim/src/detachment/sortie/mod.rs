@@ -31,6 +31,7 @@ pub(crate) use runtime::{
     ACTION, action_descriptor, bridge_descriptor, outcome_descriptor, register,
 };
 pub(crate) use runtime::{availability_key, ctx_available, offer_available, require_available};
+pub use seating::NPC_SEAT_NO_FIRE;
 pub use surface::SurfaceCrew;
 pub use work::{FieldStep, FieldWork};
 
