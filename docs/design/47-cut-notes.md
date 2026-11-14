@@ -1116,7 +1116,8 @@ rides beside an escort in a 20 t bay". So Occator gets a third lease design, the
   on GC.11's ground: once the kernel's answer to the join is in, the world mirrors each joined
   hull's helm at its seat's epoch (1, as `field::admit` seats every crew). It reads no position
   and no id, so it holds under any numbering. Without the fix it fails on both hulls
-  (`[(819, 0), (821, 0)]`); with it, it passes, and GC.11 passes unchanged. A probe on the
+  (`[(819, 0), (821, 0)]`), and it fails the same way on base's own numbering, without lane
+  v34's two rigs (`[(813, 0), (815, 0)]`); with it, it passes, and GC.11 passes unchanged. A probe on the
   kernel's intent loop (not kept) showed the WITHDRAW refused `Epoch` for both hulls on base and
   applied for both with the fix. The ledger line it writes (`DetachmentCommanded`) is not what
   the test reads, since a ledger chunk reaches the world only when it fills or the field ends.
