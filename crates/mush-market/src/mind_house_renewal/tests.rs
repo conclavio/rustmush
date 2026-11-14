@@ -2,7 +2,7 @@
 //! view, certify a source, register a provider, or publish a grant.
 use super::records::{MindRenewalOperationV1, MindRenewalReceiptV1};
 use mush_core::{
-    ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId,
+    ClockRef, ClockStamp, DefinitionDigest, DefinitionRef, ObjId,
     mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
     },
@@ -26,20 +26,9 @@ use mush_roll::commerce::{
     rating::RatingClass,
     records::RevisionPolicy,
 };
+use mush_testkit::fixtures::{digest, stamp, token};
 use serde_json::{Value, json};
 pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn digest(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
-}
 fn definition(owner: &str, kind: &str, id: &str, n: u8) -> TestResult<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new(owner)?,

@@ -3,15 +3,12 @@
 use super::{protocol, records::*};
 use crate::commerce::{families::CommerceFamilies, records::Record};
 use mush_core::{
-    CommitToken, DefinitionDigest, Engine, GameModule, ModError, Registrar, Registry,
-    StateFamilyHandle, World,
+    DefinitionDigest, Engine, GameModule, ModError, Registrar, Registry, StateFamilyHandle, World,
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
+use mush_testkit::fixtures::token;
 fn wide_offer() -> Result<PendingOffer> {
     let d = DefinitionDigest::from_bytes([255; 32]);
     let ownership = json!({"generation":65536,"operation":token(252),"digest":d});

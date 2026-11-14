@@ -8,16 +8,14 @@ use super::*;
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionRef, ObjId};
 use serde_json::json;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn token(number: u64) -> TestResult<CommitToken> {
     Ok(CommitToken::from_hex(&format!("{number:032x}"))?)
 }
-fn digest(byte: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([byte; 32])
-}
+use mush_testkit::fixtures::digest;
 fn definition(owner: &str, kind: &str, id: &str) -> TestResult<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new(owner)?,
@@ -40,12 +38,7 @@ fn protocol() -> TestResult<IcProtocol> {
         },
     })
 }
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
-}
+use mush_testkit::fixtures::stamp;
 fn world(at: i64) -> TestResult<WorldIcSeconds> {
     Ok(WorldIcSeconds::from_stamp(&stamp(at))?)
 }

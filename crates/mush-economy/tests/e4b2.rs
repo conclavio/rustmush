@@ -26,7 +26,8 @@ use mush_economy::{
 };
 use mush_org::{CapabilityId, OrgId, OrgScopeId, OrgStore, PrincipalId};
 use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::TestWorld;
+use mush_testkit::fixtures::{err, has_error, ok, texts};
 use smol_str::SmolStr;
 
 const NS: &str = "economy";
@@ -230,32 +231,6 @@ fn boot_with_tail(max: usize) -> TestWorld {
     ])
 }
 
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
-}
-fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let ev = tw.run(actor, line);
-    assert!(!has_error(&ev), "`{line}` was refused: {}", texts(&ev));
-    texts(&ev)
-}
-fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let ev = tw.run(actor, line);
-    assert!(
-        has_error(&ev),
-        "`{line}` should have been refused, got: {}",
-        texts(&ev)
-    );
-    texts(&ev)
-}
 fn store(tw: &TestWorld) -> &EconomyStore {
     tw.world()
         .module_state::<EconomyStore>()
@@ -339,14 +314,15 @@ fn merge(base: &mut Vec<(SmolStr, serde_json::Value)>, extra: Vec<(SmolStr, serd
     }
 }
 fn reboot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) {
-    tw.modules_loaded(HashMap::from([(
+    tw.try_cold_loaded(HashMap::from([(
         SmolStr::new(NS),
         ModuleBootData {
             kv,
             streams: HashMap::new(),
             ..Default::default()
         },
-    )]));
+    )]))
+    .expect("module boot data must load");
 }
 fn patch(kv: &mut [(SmolStr, serde_json::Value)], key: &str, f: impl Fn(&mut serde_json::Value)) {
     let mut seen = false;

@@ -9,7 +9,7 @@ use super::{
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionRef, ObjId};
 use mush_economy::managed_entitlement::{
     EntitlementProtocol, GrossRecipientCut, Recipient, RoyaltyRecipientCut, RoyaltyTitleRecipient,
 };
@@ -27,15 +27,10 @@ use mush_roll::commerce::{
     CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow,
     WorldIcSeconds,
 };
+use mush_testkit::fixtures::{digest as hash, stamp, token};
 use serde_json::{Value, json};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn hash(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
 fn identity(n: u64) -> TestResult<RevisionIdentity> {
     Ok(serde_json::from_value(
         json!({"format":1,"revision":{"key":{"character":7,"mind":n,"number":1},"digest":hash(1)},"source":hash(2)}),
@@ -53,10 +48,7 @@ fn definition(owner: &str, kind: &str, id: &str, version: u32) -> TestResult<Def
     )?)
 }
 fn at(n: i64) -> TestResult<WorldIcSeconds> {
-    Ok(WorldIcSeconds::from_stamp(&ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at: n,
-    })?)
+    Ok(WorldIcSeconds::from_stamp(&stamp(n))?)
 }
 pub(super) fn fixture(
     protocol: EntitlementProtocol,

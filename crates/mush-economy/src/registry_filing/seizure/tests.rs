@@ -6,6 +6,7 @@
 use super::*;
 use crate::engine::MapOnlyKeys;
 use crate::record::AssetLifecycle;
+use mush_testkit::fixtures::token as commit;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -17,9 +18,6 @@ const REGISTRY: OrgId = OrgId(9);
 
 fn issuer() -> SystemPrincipalId {
     SystemPrincipalId::new("roll.registry").expect("an issuer")
-}
-fn commit(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
 }
 fn birth() -> crate::managed_title::TitleBirth {
     crate::managed_title::TitleBirth::core(commit(1), TransactionId(1))

@@ -25,7 +25,7 @@ use mush_store::{
 use serde_json::json;
 use smol_str::SmolStr;
 
-use crate::{TestWorld, WriteBatchView, boot_world};
+use crate::{TestWorld, WriteBatchView};
 
 type Events = Vec<(Audience, OutputEvent)>;
 type Result<T> = std::result::Result<T, String>;
@@ -489,17 +489,7 @@ impl AcknowledgedWorld {
             serial,
             epoch,
         } = self;
-        let mut world = inner.engine.world;
-        let connected: Vec<_> = world
-            .iter()
-            .map(|o| o.id)
-            .filter(|id| world.is_connected(*id))
-            .collect();
-        for id in connected {
-            world.set_connected(id, false);
-        }
-        let (_, registry) = boot_world();
-        let mut engine = Engine::with_modules(world, registry, modules)?;
+        let mut engine = crate::recompose(inner.engine.world, modules)?;
         install_offer_key(&mut engine);
         let mut next = Self {
             inner: TestWorld {

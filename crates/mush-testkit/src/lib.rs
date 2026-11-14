@@ -41,6 +41,15 @@
     clippy::panic_in_result_fn
 )]
 
+// Doc 46 cut CT.2, the commerce test kit: what the tests of `mush-economy`,
+// `mush-roll` and `mush-market` each rebuilt. Each module documents itself
+// (an outer doc comment here beside a module's own `//!` leaves that module's
+// intra-doc links unresolved).
+pub mod checks;
+pub mod cold;
+pub mod fixtures;
+pub mod funding;
+pub mod owner_rig;
 pub mod proc;
 pub mod snapshot;
 
@@ -453,17 +462,7 @@ impl TestWorld {
         modules: Vec<Box<dyn GameModule>>,
         boot: HashMap<SmolStr, ModuleBootData>,
     ) -> Result<TestWorld, mush_core::ModError> {
-        let mut world = self.engine.world;
-        let connected: Vec<ObjId> = world
-            .iter()
-            .map(|o| o.id)
-            .filter(|id| world.is_connected(*id))
-            .collect();
-        for id in connected {
-            world.set_connected(id, false);
-        }
-        let (_, registry) = boot_world();
-        let engine = Engine::with_modules(world, registry, modules)?;
+        let engine = recompose(self.engine.world, modules)?;
         let mut tw = TestWorld {
             engine: Box::new(engine),
             next_conn: self.next_conn,
@@ -548,6 +547,27 @@ impl Default for TestWorld {
     fn default() -> Self {
         TestWorld::new()
     }
+}
+
+/// The composition step every restart shares ([`TestWorld::reboot_into`],
+/// [`TestWorld::cold_reboot_into`], `AcknowledgedWorld::reboot_into`): a real
+/// restart has no sessions, so every connection is dropped; then a fresh
+/// [`boot_world`] registry and an engine of `modules` over `world`'s objects.
+/// Nothing is loaded yet.
+pub(crate) fn recompose(
+    mut world: World,
+    modules: Vec<Box<dyn GameModule>>,
+) -> Result<Engine, mush_core::ModError> {
+    let connected: Vec<ObjId> = world
+        .iter()
+        .map(|o| o.id)
+        .filter(|id| world.is_connected(*id))
+        .collect();
+    for id in connected {
+        world.set_connected(id, false);
+    }
+    let (_, registry) = boot_world();
+    Engine::with_modules(world, registry, modules)
 }
 
 /// Fold a drained write batch into per-namespace boot data **the way the store

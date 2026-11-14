@@ -13,16 +13,12 @@ use super::super::authority::{Authorization, Source};
 use super::super::records::{Reason, RecallOperation};
 use super::*;
 use crate::commerce::tests::ct0_rig::{self as rig, TestResult};
-use mush_core::{ClockRef, ClockStamp, DefinitionDigest};
+use mush_core::{ClockRef, ClockStamp};
 use mush_org::{OrgId, OrgScopeId, SystemPrincipalId};
 use mush_testkit::snapshot::Snapshot;
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn hash(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
+use mush_testkit::fixtures::digest as hash;
+use mush_testkit::fixtures::token;
 
 fn policy() -> TestResult<RegistryRecallPolicy> {
     Ok(RegistryRecallPolicy::new(

@@ -27,9 +27,8 @@
 use std::sync::Arc;
 
 use mush_core::{
-    Audience, CommitToken, GOD, GameClock, IdempotencyKey, IdempotencyScope,
-    InterfaceAbilityProvider, ObjId, ObjKind, OfferExecutionContext, OfferSubmission, RequestUid,
-    ScopedIdempotencyKey,
+    CommitToken, GOD, GameClock, IdempotencyKey, IdempotencyScope, InterfaceAbilityProvider, ObjId,
+    ObjKind, OfferExecutionContext, OfferSubmission, RequestUid, ScopedIdempotencyKey,
 };
 use mush_economy::{AccountId, EconomyStore, EscalationKind, ExternalRef, PartyCap, VaultId};
 use mush_inventory::{
@@ -42,8 +41,8 @@ use mush_market::{
     STALE_QUOTE,
 };
 use mush_org::{OrgId, PrincipalId};
-use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::TestWorld;
+use mush_testkit::fixtures::{err, ok};
 use serde_json::{Value, json};
 
 // ---- the rig ---------------------------------------------------------------
@@ -121,40 +120,6 @@ fn boot() -> (TestWorld, InventoryFamilies) {
         .0
         .clone();
     (tw, families)
-}
-
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
-}
-
-fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let events = tw.run(actor, line);
-    assert!(
-        !has_error(&events),
-        "`{line}` was refused: {}",
-        texts(&events)
-    );
-    texts(&events)
-}
-
-fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let events = tw.run(actor, line);
-    assert!(
-        has_error(&events),
-        "`{line}` should have been refused: {}",
-        texts(&events)
-    );
-    texts(&events)
 }
 
 fn economy(tw: &TestWorld) -> &EconomyStore {

@@ -148,12 +148,9 @@ fn house_rules() -> Result<Rules> {
     Ok(r)
 }
 fn command(f: &mut Fixture, line: &str) -> Result {
-    let events = f.world.run(GOD, line);
-    if events.iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Sys(t) if t.spans().iter().any(|s|s.tag.as_deref()==Some("error")))) {
-        return Err("actual House fixture command refused".into());
-    }
-    fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
-    let _ = f.world.world_mut().take_dirty();
+    Funding::of("cr")
+        .line(line)
+        .run_into(&mut f.world, &mut f.boot)?;
     Ok(())
 }
 fn policy_command(f: &mut Fixture, actor: ObjId, scope: OrgScopeId, mode: &str) -> Result {
@@ -169,17 +166,15 @@ fn parameters(f: &Fixture, org: OrgId, scope: OrgScopeId) -> Value {
 fn house_fixture() -> Result<(Box<Fixture>, ObjId, OrgId, OrgScopeId)> {
     let mut f = Fixture::empty_rules(house_rules()?)?;
     f.world.set_now(100);
-    for line in [
-        "@org/create House",
-        "@org/scope create House=publication",
-        "@instrument/register cr=0",
-        "@account/system faucet=cr",
-        "@account/open org:House/0=cr",
-        "@account/system roll.registry=cr",
-        "@econ/mint 0=1 10000",
-    ] {
-        command(&mut f, line)?;
-    }
+    Funding::of("cr")
+        .line("@org/create House")
+        .line("@org/scope create House=publication")
+        .register(0)
+        .system("faucet")
+        .open_for("org:House/0")
+        .system("roll.registry")
+        .mint(0, 1, 10000)
+        .run_into(&mut f.world, &mut f.boot)?;
     let org = f
         .world
         .world()
@@ -234,37 +229,17 @@ fn receipt_for(f: &Fixture, n: u8) -> Result<UpdateAuditSubject> {
 fn registered(
     modules: Vec<Box<dyn GameModule>>,
 ) -> std::result::Result<Box<mush_core::Engine>, ModError> {
-    mush_core::Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
-        .map(Box::new)
+    mush_testkit::fixtures::boxed_engine(World::new_minimal(), mush_core::Registry::new(), modules)
 }
 #[inline(never)]
 fn cold(f: &Fixture, rules: &Rules) -> Result<Box<mush_core::Engine>> {
     let (_, registry) = mush_testkit::boot_world();
-    let mut engine =
-        mush_core::Engine::with_modules(f.world.world().clone(), registry, modules(rules, 100))
-            .map(Box::new)?;
-    let mut boot = f.boot.clone();
-    let mut typed = Vec::new();
-    for (namespace, data) in &mut boot {
-        data.kv.retain(|(key, value)| {
-            if mush_core::is_action_state_persistence_key(key) {
-                typed.push(mush_core::ActionStateBootRecord::new(
-                    namespace.clone(),
-                    key.clone(),
-                    value.clone(),
-                ));
-                false
-            } else {
-                true
-            }
-        });
-    }
-    engine.hydrate_action_state(typed)?;
-    engine.modules_loaded(
-        boot,
-        &mut mush_core::Outbox::new(),
-        &mut mush_core::engine::Effects::new(),
+    let mut engine = mush_testkit::fixtures::boxed_engine(
+        f.world.world().clone(),
+        registry,
+        modules(rules, 100),
     )?;
+    mush_testkit::cold::load(&mut engine, f.boot.clone())?;
     Ok(engine)
 }
 

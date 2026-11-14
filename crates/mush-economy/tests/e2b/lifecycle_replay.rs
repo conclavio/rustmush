@@ -10,14 +10,12 @@
 //! removed, which replays the whole journal. Both must equal each other and
 //! the live store, snapshot for snapshot.
 
-use std::collections::HashMap;
-
-use mush_core::{GOD, ModuleBootData, ObjId, ObjKind};
+use mush_core::{GOD, ObjId, ObjKind};
 use mush_testkit::TestWorld;
 use proptest::prelude::*;
 use smol_str::SmolStr;
 
-use super::{NS, boot_j3, fold_into, has_error, store, sweep_at};
+use super::{boot_j3, econ_boot, fold_into, has_error, store, sweep_at};
 
 /// The RAM tail and the checkpoint cadence: small, so a short history crosses
 /// both.
@@ -171,13 +169,8 @@ fn reboot(kv: Vec<(SmolStr, serde_json::Value)>, c: &Cast) -> TestWorld {
         (&c.people, &c.things),
         "the cast's ids"
     );
-    tw.modules_loaded(HashMap::from([(
-        SmolStr::new(NS),
-        ModuleBootData {
-            kv,
-            ..ModuleBootData::default()
-        },
-    )]));
+    tw.try_cold_loaded(econ_boot(kv))
+        .expect("module boot data must load");
     tw
 }
 

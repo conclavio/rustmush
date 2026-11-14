@@ -4,7 +4,6 @@
 //! Market/Roll transaction and server writer are tested separately.
 
 use super::*;
-use std::collections::HashMap;
 
 use mush_core::action::{ActionError, ActionErrorCode, ActionInvocation, ActionProvider};
 use mush_core::authoritative::ReplayWrite;
@@ -12,17 +11,15 @@ use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
 use mush_core::participant::BoundParticipant;
-use mush_core::{
-    Audience, GOD, GameModule, LedgerChunk, ModError, ModuleBootData, ModuleOp, ModuleWrite,
-    Registrar,
-};
-use mush_proto::OutputEvent;
+use mush_core::{GOD, GameModule, LedgerChunk, ModError, Registrar};
+use mush_testkit::cold::{Boot as BootMap, fold_replay_writes_into};
+use mush_testkit::fixtures::has_error;
+use mush_testkit::funding::Funding;
 use mush_testkit::{TestWorld, fold_module_ops_into};
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-type BootMap = HashMap<SmolStr, ModuleBootData>;
 
 fn module_error(error: impl std::fmt::Display) -> ModError {
     ModError::msg(error.to_string())
@@ -127,11 +124,7 @@ fn store(tw: &TestWorld) -> TestResult<&EconomyStore> {
 }
 fn run(tw: &mut TestWorld, command: &str) {
     let events = tw.run(GOD, command);
-    let error = |(_, event): &(Audience, OutputEvent)| {
-        matches!(event,
-        OutputEvent::Sys(text) if text.spans().iter().any(|span| span.tag.as_deref() == Some("error")))
-    };
-    assert!(!events.iter().any(error), "{command}: {events:?}");
+    assert!(!has_error(&events), "{command}: {events:?}");
 }
 fn objects(tw: &mut TestWorld) -> TestResult<(ObjId, ObjId)> {
     let seller = tw
@@ -146,37 +139,8 @@ fn fold(tw: &mut TestWorld, disk: &mut BootMap) {
     fold_module_ops_into(disk, tw.take_module_ops());
 }
 fn persist(disk: &mut BootMap, writes: Vec<ReplayWrite>) -> TestResult {
-    let operations = writes
-        .into_iter()
-        .map(|write| {
-            Ok(match write {
-                ReplayWrite::ModuleJsonSet {
-                    namespace,
-                    key,
-                    value,
-                } => ModuleOp {
-                    ns: namespace.as_str().into(),
-                    op: ModuleWrite::JsonSet {
-                        key: key.as_str().into(),
-                        value,
-                    },
-                },
-                ReplayWrite::LedgerChunkSet { write } => ModuleOp {
-                    ns: write.namespace().as_str().into(),
-                    op: ModuleWrite::JsonSet {
-                        key: write.key().as_str().into(),
-                        value: serde_json::to_value(write.chunk())?,
-                    },
-                },
-                _ => {
-                    return Err(
-                        "purchase E4 only writes module JSON and actual ledger chunks".into(),
-                    );
-                }
-            })
-        })
-        .collect::<TestResult<Vec<_>>>()?;
-    fold_module_ops_into(disk, operations);
+    // Purchase E4 only writes module JSON and actual ledger chunks.
+    fold_replay_writes_into(disk, &writes)?;
     Ok(())
 }
 struct Fixture {
@@ -189,16 +153,14 @@ impl Fixture {
         let mut tw = world(purchases)?;
         let (seller, charter) = objects(&mut tw)?;
         tw.set_now(1000);
-        run(&mut tw, "@instrument/register cr=2");
-        run(&mut tw, "@account/system faucet=cr");
-        run(&mut tw, "@account/open #1=cr");
-        run(&mut tw, &format!("@account/open #{}=cr", seller.0));
-        run(&mut tw, "@account/system roll.registry=cr");
-        run(&mut tw, "@econ/mint 0=1 10000");
-        run(
-            &mut tw,
-            &format!("@asset/title #{}=#{}", charter.0, seller.0),
-        );
+        Funding::instrument("cr", 2)
+            .system("faucet")
+            .open(GOD)
+            .open(seller)
+            .system("roll.registry")
+            .mint(0, 1, 10000)
+            .line(format!("@asset/title #{}=#{}", charter.0, seller.0))
+            .run(&mut tw)?;
         let title = store(&tw)?
             .snapshot()
             .asset(charter)
@@ -367,7 +329,7 @@ impl Fixture {
             (self.purchase.seller, self.purchase.charter)
         );
         tw.set_now(self.tw.world().now());
-        tw.try_modules_loaded(disk)?;
+        tw.try_cold_loaded(disk)?;
         check!(!store(&tw)?.is_frozen());
         Ok(tw)
     }

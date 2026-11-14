@@ -553,7 +553,289 @@ Not built.
 
 ## CT.2
 
-Not built.
+The test kit. Built 2026-11-13 on main `2b1f5aa3b`, beside CT.1 (source against tests: this unit
+edits `mush-testkit` and test files only, and none of CT.1's twenty files).
+
+**Built.** Five modules in `mush-testkit` and the three crates' tests moved onto them. The kit
+names no commerce type. That is forced, not a choice: `mush-economy` dev-depends on
+`mush-testkit`, so a kit function that named `EconomyStore` would name the library build's type,
+which is not the type economy's own unit tests see. Everything is the kernel's vocabulary
+(`mush-core`) and command text.
+
+| Module | What it is | Files that use it (economy, the Roll, the market) |
+|---|---|---|
+| `checks` | `check!`, `check_eq!`, `check_ne!`, `refused`, `CheckFailed`: the one implementation of what each crate kept as `src/test_checks.rs` (about 180 lines a copy) | every test of the three crates, through a forwarding shim a crate (below) |
+| `fixtures` | `token(n)`, `tokens(ids)`, `digest(n)` (the files' `hash` or `digest`), `stamp(at)`, `boxed_engine` (the files' `boxed_test_engine`), and the one-line drivers `texts`, `has_error`, `ok`, `err` | 63 files: 26, 25, 12 |
+| `cold` | the cold restart: `Boot`, `take_typed_rows`, `load` (typed rows hydrated before any module's boot, then the modules), `load_typed`, `fold_replay_writes_into`, and on `TestWorld` `try_cold_loaded`, `cold_reboot_into`, `cold_restart` | 27 files: 19, 5, 3 |
+| `funding` | `Funding`: the setup lines that open and fund fixture accounts, run as God, the first refusal an error that names the line | 9 files, all economy |
+| `owner_rig` | the mock-owner skeleton: `MockOwner` (a rig's names), `declare()` (the builder for its definitions) and `register_declarations`, the fixture receipt family (`FixtureReceipt`, `receipts`, `prepared_receipt`), `InertOwner` and `Unavailable`, `prepare`, `stage`, `install_staged` | 5 files, all economy |
+
+- **The skeleton.** The three `owner_tests.rs` (`managed_coverage`, `managed_charter_transfer`,
+  `managed_paid_resale`) and the two `registry_filing` rigs (`charter_transfer/tests.rs`,
+  `update/tests.rs`) wrote the same skeleton out in full. Each now keeps what is its family's (the
+  provider's request, the receipt's subject and rule, the fixture objects, the setup lines) and
+  calls the kit for the rest. The five files went from 1,361, 1,350, 1,365, 996 and 1,333 lines to
+  1,113, 1,121, 1,112, 787 and 1,128. What a rig still spells out: its `MockOwner` constant, its
+  receipt struct, its provider, its `Fixture`, and four thin methods (`prepare`, `stage`,
+  `take_install`, `publish`) of three to six lines each that keep the tests' call sites as they
+  were.
+- **The cold restart.** No test file of the three crates partitions typed rows, hydrates or
+  loads by hand any more (one `hydrate_action_state` call is left, named below). A rig still says
+  which world and which modules. Three shapes are in use, and each rig took the one that keeps
+  its tests' meaning:
+  - `cold_restart`, a restart over a copy of the running world's objects, clock and timeline into
+    a freshly composed engine: the three owner rigs. They used to rebuild a fresh world, re-spawn
+    the same players and boot it twice;
+  - a re-seeded world, then `try_cold_loaded`: economy's boot tests and integration tests, which
+    check the fresh ids against the old ones or boot documents into a world without the players;
+  - a bare `Engine`, then `cold::load` or `cold::load_typed`: the Roll's and the market's family
+    rigs, and `registry_filing/update/tests/house.rs`.
+- **The small helpers.** A private copy became a `use` of the kit's function, aliased where the
+  file's name differs (`use mush_testkit::fixtures::digest as hash;`), so no call site and no
+  test body changed for them.
+- `TestWorld::reboot_into` and `AcknowledgedWorld::reboot_into` compose their engine through the
+  same function as the kit's restart (`recompose`: sessions dropped, a fresh registry, the
+  modules over the world's objects). Their behaviour is unchanged.
+
+**Tests.** No test was lost or renamed. The lists are `cargo test -p <crate> -- --list`, ignored
+tests included, sorted, compared name for name (Linux, conclav.dev):
+
+| Crate | Tests before | Tests after | Ignored before and after |
+|---|---|---|---|
+| `mush-economy` | 809 | 809, the same names | 0 |
+| `mush-roll` | 369 | 369, the same names | 0 |
+| `mush-market` | 234 | 234, the same names | 1 |
+| `mush-testkit` | 37 | 64: the 37 and 27 of the kit's own (one doc test's listed name carries its line number, `boot_world (line 86)`, now `(line 95)`) | 1 |
+
+Every `ct0_*` test passes and `git diff --stat origin/main -- '*.snap'` is empty: nothing was
+re-blessed. The kit's own tests cover each module: a failed check reports what the assert
+reported; a restart holds what the documents hold and not what only the running world's memory
+held; a typed row goes to the kernel and never to a module's boot; a module's refusal is the
+restart's error in the module's words; a receipt that names another action, or that the rig's
+rule refuses, does not stage; a definition that drifted from its declaration does not compose; a
+refused setup line stops the funding and names itself.
+
+Test bodies changed in three places, each asserting what it asserted: four hydrate-then-boot
+pairs in the Roll's `bootstrap_tests.rs` are one `restart` call each; the market's
+`mind_house_renewal/ct0_snapshot.rs` probe asks `load_typed` for the kernel's refusal
+(`ColdError::Typed`) where it asked `hydrate_action_state(..).is_err()`; and the positive boots of
+economy's boot tests call `try_cold_loaded` where they called `try_modules_loaded`.
+
+**The mutations.** The kit must not make a test pass that should fail. Each line is one break of
+production behaviour, made alone, and the test whose setup moved onto the kit run against it.
+| # | Crate | The break | The test, and what of the kit it stands on | What the test said |
+|---|---|---|---|---|
+| E1 | economy | `managed_coverage/install.rs`: the bind no longer writes the hold it places, so the running store has it and the documents do not | `managed_coverage::owner_tests::native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral` (the owner rig, `fold_replay_writes_into`, `cold_restart`) | failed at the restart: `Module(Msg("economy: hull coverage requires exact paired recovery"))` |
+| E2 | economy | `commands.rs`: `@econ/mint` credits the system source back, not the account | `managed_paid_resale::owner_tests::resale_immediate_debits_gross_and_credits_exact_split_without_title_or_hold` (`Funding`) | failed: the acceptance is refused, the payer holds nothing |
+| E5 | economy | the same break | `managed_charter_transfer::owner_tests`, the module (`Funding`) | 11 tests failed, at the initial filing the actor can no longer pay |
+| E3b | economy | `managed_coverage/decision.rs`: a clean expiry before the term's end is accepted | `managed_coverage::owner_tests::expiry_clock_loss_interval_and_claim_delay_refuse_false_terminal_windows` (the owner rig's `prepare`) | `assertion failed: f.terminal(3, expired.clone()).is_err()` |
+| E4 | economy | `commands.rs`: `@econ/history <account> 0` is clamped again, not refused | `tests/e4c.rs`, `vf_d8_history_validates_n_and_the_help_says_ids_are_masked` (`fixtures::err`) | panicked: `` `@econ/history 1 0` should have been refused, got: tx #0 … `` |
+| R1 | the Roll | `commerce/bootstrap.rs`: a setup-mode boot skips its emptiness checks | `commerce::bootstrap_tests::setup_uses_actual_empty_economy_replay_and_does_not_open_until_active_restart` (`fold_replay_writes_into`, `cold::load`) | panicked: `Initialize refuses retained prior deployment` |
+| R2b | the Roll | `commerce/renewal/records.rs`: `follows` no longer asks for the same origin | `commerce::renewal::tests::exact_transition_and_issued_clock_refuse_crossed_receipts` (`fixtures::{token, digest, stamp}`) | `assertion failed: crossed.follows(&funded).is_err()` |
+| R3b | the Roll | `commerce/paid_holdings.rs`: the boot audit reconciles nothing | `commerce::paid_holdings::tests::paid_holdings_audit_requires_exactly_one_row_per_pointer` (`cold::load_typed`) | `Error: missing` |
+| M1 | the market | `mind_trade/mod.rs`: the families' boot audit answers `Ok` without looking | `mind_trade::tests::lifecycle::restart_audit_refuses_missing_counter_actor_or_expiry_and_orphan_index` (`cold::load_typed`) | panicked: `missing market_mind_offer_counts must not look healthy` |
+| M2 | the market | `trade.rs`: a venue gate's refusal of a quote is ignored | `tests/ic7.rs`, `ic7_a_gate_refusal_escrows_nothing` (`fixtures::err`) | panicked: `` `+market/quote 0=10` should have been refused, got: Quote #0 … `` |
+
+Ten pairs, ten failures. E1 is the cold restart (a write dropped across it is caught, and by the
+owner's own recovery, not by the fixture); E2 and E5 are the funded accounts.
+
+Three other breaks were tried first and **passed**: a coverage loss dated at the term's end
+accepted (`decision.rs`, the `occurred_at.at >= ends_at.at` condition removed), a Roll renewal
+draft accepted over a head with funding pending (`renewal/chain.rs`, `head.pending.is_some()`
+removed), and the Roll's boot no longer calling the paid-holdings audit (`commerce/audit.rs`).
+Each was then run against main `2b1f5aa3b`, before any of this unit, and passes there too. The kit
+hides nothing: in the first two another condition of the same check refuses the same input (for
+the loss, the claim delay; for the draft it was not traced), and in the third the rig's own
+module calls the family's audit, so the line removed is one no test of that crate reaches. They
+are listed under "Found on the way".
+
+The procedure differed from the brief's in the way CT.0's did: each mutation was made on a
+throwaway clone on conclav.dev (`perl` over one file, the named test, the file put back), not in
+the worktree, so no uncommitted work was at risk and nothing had to be reverted in it.
+
+**Divergences.**
+
+- **The cold restart is not built on `AcknowledgedWorld`.** §5.3 says "on
+  `AcknowledgedWorld::reboot_into`". It is built on the same restart sequence (and shares the
+  composition step with it), over a boot map with no Store behind it. `AcknowledgedWorld` drives a
+  real in-memory Store and refuses a boot whose typed rows are not what that Store acknowledged
+  ("typed boot must use the actual acknowledged fixture Store"). The commerce owner tests stage
+  and install prepared actions directly, and a large share of them hand the restart a document
+  they damaged on purpose, to see the owner under test refuse it. On `AcknowledgedWorld` the
+  fixture would refuse first and the owner would never be asked. Moving them would also have
+  meant rewriting what those tests do, not their setup.
+- **`test_checks.rs` is still a file in each crate, 40 lines or so.** The implementation is one
+  (`mush_testkit::checks`). What is left in `mush-economy`, `mush-roll` and `mush-market` is three
+  forwarding macros (and, in the Roll, the conversion into `RollError`, which only the Roll can
+  write). A `macro_rules!` is textually scoped and each crate's tests name the macros bare, so
+  deleting the file needs `#[macro_use] extern crate mush_testkit;` in place of
+  `#[macro_use] mod test_checks;` in each `lib.rs`. That is a one-line edit of a file this unit
+  did not touch (production source, and CT.1 was writing in those crates); a twin unit that owns
+  the crate's `lib.rs` can make it. The seven other copies (`mush-industry`, `mush-inventory`,
+  `mush-proto`, `mush-server`, `mush-sim`, `mush-tactics`, `tacsim`) are outside the three crates
+  and unchanged.
+- **Five rigs share the skeleton, not three.** The two `registry_filing` rigs carried the same
+  code and moved with the three `owner_tests.rs`.
+- **In economy's boot tests a typed row now reaches the kernel.** The positive boots of
+  `registry_filing/boot_tests.rs`, `registry_filing/charter_transfer/tests.rs`,
+  `registry_filing/update/tests.rs` and `managed_purchase/boot_tests.rs` used
+  `try_modules_loaded`, which handed the rig's typed fixture receipts to the mock module's boot as
+  plain documents and left the engine's typed state empty. Through `try_cold_loaded` they are
+  hydrated and validated first, as a real boot does. The tests pass unchanged.
+- **The definition-drift message is the kit's.** Two rigs said "fixture drift" and three "fixture
+  definition drift"; no test reads it. A refused setup line now names the line and what it
+  printed, where each rig had its own fixed sentence.
+- `cold_restart` copies every object of the running world, so a flag set after setup (the buyer's
+  GOING flag in the paid-resale refund test) is in the restarted world, where the old fresh
+  re-seed did not have it. That is what a restart over a kept store holds.
+
+**Left where it is, by name.** A helper of the same name that means something else stays:
+
+- `token`: big-endian over a `u64` or `u128` in economy's `managed_renewal/tests.rs`,
+  `managed_renewal/tests/ct0_walk.rs`, `managed_house_renewal/ct0_snapshot.rs`, the market's
+  `mind_renewal/service/tests.rs` and `mind_trade/lifecycle_tests.rs` (`id`); from a hex string in
+  the Roll's `publication_tests.rs` and `ic_claims/tests.rs`; with a four-byte prefix in the
+  market's `mind_commands/tests.rs`.
+- `digest` / `hash`: a fixed `[255; 32]` with no argument in economy's
+  `managed_paid_resale/tests.rs`; from a hex string in the Roll's `publication_tests.rs`; a
+  canonical-value digest in the market's `mind_trade/tests.rs`.
+- Restarts that are one party's internals (§5.3): the three `cold` helpers under economy's
+  `managed_renewal/tests/` rebuild an `OfferBook` or run `bridge::recover` from documents, with no
+  engine; the Roll's `src/tests.rs` `load` and `reboot` reload a `RollStore` from a disk; the one
+  `hydrate_action_state` left, in the Roll's `publication_tests.rs`, hands the kernel a single
+  hand-built row to see it refused.
+- Boots that are not restarts: `live_boot` (the Roll's `paid_holdings`) and the market's
+  `fn boot(&mut Engine)` re-run a module's audit over its own running engine; the market's
+  `tests/ic7.rs` and `ic8.rs` call `TestWorld::modules_loaded` to reload edited documents into the
+  running engine, whose rigs hold handles bound to the live composition.
+- Boots inside test bodies that assert a module's own refusal (`RetryFullFetch`, a damaged or
+  disabled family) stay `try_modules_loaded`: hydrating first would change which side refuses.
+- The `fold_kv` family of economy's integration tests (`e2b`, `e3b`, `e3b2`, `e3_verify`, `e4b1`,
+  `e4b2`): they return the folded rows for the tests to search and patch by key, `log:` chunk keys
+  included; `fold_module_ops_into` moves those keys into `ledger`, so it is not the same thing.
+- The Roll's `filing_tests.rs` `retain` folds replay writes with deletes into its own disk;
+  `fold_replay_writes_into` refuses a delete, as the economy rigs did.
+- Setup written as one `ok(&mut tw, GOD, …)` or `exec_ok` a line (the market's `ic*` tests,
+  economy's `e*` tests and `core_integration/end_user/tests.rs`) is already the kit's driver and
+  was not turned into a `Funding`.
+
+**Not built.**
+
+- No visibility in production code was widened and no production file was edited; no helper was
+  left for want of one.
+- The twins' tests as one body run for both issuers (§5.3's second sentence) are the twin units'
+  (CT.3 to CT.6), not this one.
+- The composed stories' rig (`PlayerWorld`, its `Durable`, `Disk` and `retain_writes`) is CT.8's
+  and was not touched (Q-46-6).
+- **A pre-rated store for a fast composed walk** (CT.0's "Owed") is not in this unit. The kit
+  makes one half of it cheaper. The stories keep a `Durable` (a disk of documents, the objects,
+  the next id, the clock), fold replay writes into it with their own `retain_writes` and boot a
+  composition from it; `cold::Boot`, `fold_replay_writes_into` and `cold::load` are that
+  machinery in one place, so a composed walk outside the stories does not have to copy it. What
+  it would still take: (1) the kit's `Boot` holds documents only, so a kept store needs the
+  objects, the next id and the clock beside it, and a file form; (2) the half hour is
+  `complete_registry`, the real rating schedule, which the stories run on purpose ("no synthetic
+  rating rows"); skipping it means a store captured after it, and such a store is tied to the
+  tree's store formats and to the registry manifest, which names the unit catalogue, so it cannot
+  be a committed blob: it needs a generator (the first act of the M7 story, at the fast pulse)
+  and a check that refuses a stale one; (3) whether the story's stamps are the same from run to
+  run is still not checked, and a compared file needs them to be.
+
+**For the twin units** (CT.4 first).
+
+- A helper that names a crate's own type cannot live in the kit: the crate's unit tests would
+  get the library build's copy of the type. A rig shared by a twin's two issuers belongs in a
+  `#[cfg(test)]` module of the crate, over the kit's kernel-level pieces.
+- Economy's renewal tests do not stand on `owner_rig`. `managed_renewal/tests.rs` has its own
+  participant-level `Rig` (no mock provider, no engine boot), a big-endian `token(u64)`, and
+  `cold` helpers that rebuild an `OfferBook` or run `bridge::recover`. This unit left all of it
+  alone, and `managed_house_renewal` still has only CT.0's walk. "One body run for both issuers"
+  is that `Rig` made generic, which is CT.4's to do; from the kit it has the checks, `stamp`,
+  `boxed_engine`, `cold::load` and `fold_replay_writes_into`.
+- `cold_restart` keeps the running world's objects. A test that needs a world without them, or
+  that checks fresh ids against old ones, re-seeds and calls `try_cold_loaded`.
+- The name-list check is a script kept with this unit's hand-over note (`ct2-names.sh`): a
+  crate's `cargo test -- --list`, sorted, against the list recorded before. Each twin unit owes
+  the same comparison (§7.4).
+
+**The yardstick, before and after** (`node scripts/clone-yardstick.mjs`; before is CT.0's
+"after", reproduced to the line on main `2b1f5aa3b`):
+
+| Root | Before: cloned of lines | Rate | After: cloned of lines | Rate |
+|---|---|---|---|---|
+| `crates/mush-market/src` | 10,698 of 45,375 | 23.6% | 10,632 of 45,188 | 23.5% |
+| `crates/mush-economy/src` | 22,237 of 101,401 | 21.9% | 20,969 of 99,977 | 21.0% |
+| `crates/mush-roll/src/commerce` | 16,942 of 91,868 | 18.4% | 16,820 of 91,718 | 18.3% |
+| `crates/mush-core/src/action_state/terminal_capacity` | 11,605 of 40,352 | 28.8% | 11,605 of 40,352 | 28.8% |
+
+The yardstick counts a clone inside one root, and economy's rigs are where the skeleton was:
+economy's root is 1,424 lines shorter and holds 1,268 fewer cloned lines, the Roll's 150 and 122, the market's 187 and 66. The small helpers barely move it: a three-line `fn token` is under the eight-line
+window.
+
+Test lines (a file under a `tests/` directory, named `*tests.rs`, `ct0_*.rs` or `test_checks.rs`,
+or starting `#![cfg(test)]`; an inline `#[cfg(test)] mod` counts from its first line):
+
+| Crate | Test lines before | After | Other lines before and after |
+|---|---|---|---|
+| `mush-economy` | 55,111 | 53,501 | 79,457 |
+| `mush-roll` | 25,701 | 25,422 | 73,881 |
+| `mush-market` | 20,462 | 20,128 | 35,109 |
+| the three | 101,274 | 99,051 | 188,447 |
+| `mush-testkit` (its own tests) | 2,410 | 3,092 | 4,740 before, 6,044 after: the kit |
+
+By `git diff --shortstat` against `2b1f5aa3b`: economy 30 files, 540 added and 2,150 removed; the
+Roll 27 files, 114 and 393; the market 15 files, 67 and 401: 72 test files, 721 lines added and
+2,944 removed. The kit is 1,976 lines in five new files, of which about a third are its
+own tests (682 lines) and about a fifth its documentation (412).
+
+**Time.** `cargo test -p <crate> --lib`, the `finished in` line, three runs each on conclav.dev
+(Linux, 32 cores, other work on the box):
+
+| Crate | Before | After |
+|---|---|---|
+| `mush-economy` (279 tests) | 8.74, 8.62, 9.19 s | 7.29, 7.28, 7.29 s |
+| `mush-roll` (367) | 18.78, 19.32, 19.45 s | 18.12, 18.03, 18.18 s |
+| `mush-market` (136) | 2.40, 2.28, 2.50 s | 1.97, 1.89, 1.91 s |
+| `mush-testkit` (13, then 37) | 0.01 s | 0.01 s |
+
+Nothing is slower. The "after" runs came out about a second faster in economy, which is more
+likely the box's other load at the time than the kit: a restart over a copied world composes one
+engine where the old rigs composed one and booted it twice, and that is all that changed in what
+a test executes. On the owner's Windows box the same three finish in 12.50, 25.55 and 2.56 s
+(one run, `-j 2`, after only).
+
+**Checked.** On Linux (conclav.dev) and on Windows (the owner's box), the full suites of the four
+crates, all features: 30 test binaries and the doc tests, 1,488 tests passed, none failed, 2
+ignored, the same on both. On Linux also: `cargo clippy --all-targets --all-features -D warnings`
+on the four crates; CI's M7 memory-size clippy pass on the three; `cargo doc --no-deps
+--document-private-items` with `-D warnings`; `cargo test -p mush-contract-tests` (census, panic
+budget, restriction lints, fiat budget: no count moved, since no worker added or removed a slot
+accessor in a `tests/` file). `cargo tree -i mush-testkit -e normal` shows one dependent,
+`mush-contract-tests`, as before: no `Cargo.toml` changed, and the kit took no new dependency.
+The rustdoc run caught one thing, fixed before the pull request: a module documented both by an
+outer comment in `lib.rs` and by its own `//!` leaves the links of the second unresolved. The
+kit's modules document themselves; `mush-testkit`'s older `toy_ruleset` module has the same
+shape and the same broken links under its feature, which CI's default-feature run does not build
+(listed below).
+
+**Found on the way.**
+
+- The integration tests' in-place reboots (`e2b`'s `try_boot`, `e3b`, `e3b2`, `e3_verify`,
+  `e4b1`, `e4b2`) boot the same engine a second time. `try_cold_loaded` hydrates before it loads,
+  and the kernel refuses to hydrate over typed state it already holds. None of these worlds holds
+  any today. A rig there that staged a typed action and then rebooted in place would now be
+  refused, where before it was silently booted over.
+- Three production conditions that no test of their crate guards alone (the three mutations that
+  passed, above): the coverage decision's `occurred_at.at >= ends_at.at`, the renewal draft's
+  `head.pending.is_some()`, and the paid-holdings audit's call from the Roll's commerce boot
+  (`commerce/audit.rs`), which only the composed stories reach. A test that feeds each its one
+  input would close them. None was added: a new test is not this unit's, and the list of names
+  had to stay as it was.
+- `mush-testkit`'s `toy_ruleset` module does not document under `--features toy-ruleset` with
+  `-D warnings` (seven unresolved links, `ToyRuleset::named` and others), on main as here: its
+  outer doc comment in `lib.rs` sits beside the module's own. CI documents default features only.
+  Not fixed (not this unit's module).
+- No defect in production code was found.
 
 ## CT.3
 

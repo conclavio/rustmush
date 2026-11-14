@@ -7,7 +7,7 @@
 use super::*;
 use crate::commerce::rating::{RatingClass, RatingSubject, test_support::complete_rating};
 use crate::{Envelope, RevisionKey};
-use mush_core::{ClockRef, CommitToken, RequestUid, mechanics::DefinitionDigest};
+use mush_core::{ClockRef, RequestUid};
 use mush_economy::{Amount, CatalogRef, TransactionId};
 use mush_org::SystemPrincipalId;
 
@@ -32,12 +32,8 @@ fn original_filing_rejects_structurally_valid_marked_source() -> TestResult {
     check!(f.check(&f.rows).is_err());
     Ok(())
 }
-fn token(byte: u8) -> CommitToken {
-    CommitToken::from_bytes([byte; 16])
-}
-fn digest(byte: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([byte; 32])
-}
+use mush_testkit::fixtures::digest;
+use mush_testkit::fixtures::token;
 
 struct Fixture {
     subject: Subject,

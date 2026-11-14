@@ -8,12 +8,8 @@ use mush_core::{
 };
 use serde_json::{Value, json};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-pub(super) fn hash(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
-pub(super) fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
+pub(super) use mush_testkit::fixtures::digest as hash;
+pub(super) use mush_testkit::fixtures::token;
 pub(super) fn manifest(n: u8) -> Result<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new("tacsim")?,

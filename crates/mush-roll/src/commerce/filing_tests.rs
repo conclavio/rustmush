@@ -6,25 +6,25 @@
 //! owner audit, shell reservation, fee journal, title and root installation all
 //! follow their actual implementations; no readiness bit is set by the test.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use mush_core::action::{
-    ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CommitToken,
-    IdempotencyKey, IdempotencyScope, PerceivedRef, PrincipalId as Actor, RequestUid,
-    ScopedIdempotencyKey,
+    ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, IdempotencyKey,
+    IdempotencyScope, PerceivedRef, PrincipalId as Actor, RequestUid, ScopedIdempotencyKey,
 };
 use mush_core::authoritative::ReplayWrite;
 use mush_core::mechanics::{CanonicalId, DefinitionDigest, OwnerId};
 use mush_core::{
-    ActionStateBootRecord, Engine, GOD, GameModule, ModError, ModuleBootData, ModuleCtx, ModuleOp,
-    ModuleWrite, ObjId, Outbox, Registrar, Registry, World,
+    Engine, GOD, GameModule, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId,
+    Outbox, Registrar, Registry, World,
 };
 use mush_economy::{
     Account, AccountId, AccountStatus, Amount, CatalogRef, CreditPolicy, EconomyModule,
     EconomyStore, InstrumentDef, InstrumentId, InstrumentKind, InstrumentStatus, NegativePolicy,
 };
 use mush_org::{PrincipalId, SystemPrincipalId};
+use mush_testkit::cold;
 use serde_json::{Value, json};
 
 use super::bootstrap_tests::{self as setup, Manifest, descriptor, manifest_descriptor, reference};
@@ -137,9 +137,7 @@ fn read_holding(
         .take()
         .unwrap()
 }
-pub(super) fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
+pub(super) use mush_testkit::fixtures::token;
 
 #[derive(Clone, Default)]
 struct Sources(BTreeMap<DefinitionDigest, String>);
@@ -356,30 +354,15 @@ fn try_engine(
     let handles = handles.lock().unwrap().clone().unwrap();
     Ok((engine, handles))
 }
-fn load(engine: &mut Engine, disk: &Disk) -> Result<(), ModError> {
-    let mut modules: HashMap<_, ModuleBootData> = HashMap::new();
-    let mut typed = Vec::new();
+fn load(engine: &mut Engine, disk: &Disk) -> Result<(), cold::ColdError> {
+    let mut boot = cold::Boot::new();
     for ((ns, key), value) in disk {
-        if mush_core::action_state::is_action_state_persistence_key(key) {
-            typed.push(ActionStateBootRecord::new(
-                ns.as_str(),
-                key.as_str(),
-                value.clone(),
-            ));
-        } else {
-            modules
-                .entry(ns.as_str().into())
-                .or_default()
-                .kv
-                .push((key.as_str().into(), value.clone()));
-        }
+        boot.entry(ns.as_str().into())
+            .or_default()
+            .kv
+            .push((key.as_str().into(), value.clone()));
     }
-    engine.hydrate_action_state(typed).unwrap();
-    engine.modules_loaded(
-        modules,
-        &mut Outbox::new(),
-        &mut mush_core::engine::Effects::new(),
-    )
+    cold::load(engine, boot)
 }
 fn invocation(n: u8, parameters: Value) -> ActionInvocation {
     let request = RequestUid::from_bytes([n; 16]);
@@ -1173,11 +1156,4 @@ fn source_revalidation_after_custody_refuses_every_filing_image_and_fail_stops()
 #[path = "sale_reader/tests.rs"]
 mod sale_reads;
 
-#[inline(never)]
-fn boxed_test_engine(
-    world: mush_core::World,
-    registry: mush_core::Registry,
-    modules: Vec<Box<dyn mush_core::GameModule>>,
-) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
-    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
-}
+use mush_testkit::fixtures::boxed_engine as boxed_test_engine;

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use mush_core::module::{ModError, Registrar};
 use mush_core::{
-    ArgShape, Audience, CmdError, CommandSpec, Ctx, Effect, Effects, GOD, GameModule, LedgerChunk,
+    ArgShape, CmdError, CommandSpec, Ctx, Effect, Effects, GOD, GameModule, LedgerChunk,
     LedgerEntry, ModuleBootData, ModuleWrite, ObjId, Outbox, StoreReadResult, WorldCommand,
     WorldEvent,
 };
@@ -20,8 +20,9 @@ use mush_economy::{
     KeyMode, PostOutcome, RequestedLine, TransactionId, idem_key, is_idem_key,
 };
 use mush_org::PrincipalId;
-use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::TestWorld;
+use mush_testkit::cold::{Boot, ColdError};
+use mush_testkit::fixtures::{has_error, texts};
 use smol_str::SmolStr;
 
 // Doc 43 cut TS.5: generated histories, checkpoint boot against whole replay.
@@ -35,18 +36,6 @@ fn boot() -> TestWorld {
         Box::new(mush_org::OrgModule::new()),
         Box::new(mush_economy::EconomyModule::new()),
     ])
-}
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
 }
 fn store(tw: &TestWorld) -> &EconomyStore {
     tw.world()
@@ -78,34 +67,24 @@ fn fold_kv(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
     }
     kv
 }
-fn reboot(kv: Vec<(SmolStr, serde_json::Value)>) -> TestWorld {
-    let mut tw = boot();
-    tw.modules_loaded(HashMap::from([(
+/// The economy's boot data: `kv` and nothing else.
+fn econ_boot(kv: Vec<(SmolStr, serde_json::Value)>) -> Boot {
+    HashMap::from([(
         SmolStr::new(NS),
         ModuleBootData {
             kv,
-            streams: HashMap::new(),
-            ..Default::default()
+            ..ModuleBootData::default()
         },
-    )]));
+    )])
+}
+fn reboot(kv: Vec<(SmolStr, serde_json::Value)>) -> TestWorld {
+    let mut tw = boot();
+    tw.try_cold_loaded(econ_boot(kv))
+        .expect("module boot data must load");
     tw
 }
 fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result<(), String> {
-    let mut out = Outbox::new();
-    let mut fx = Effects::new();
-    tw.engine_mut()
-        .modules_loaded(
-            HashMap::from([(
-                SmolStr::new(NS),
-                ModuleBootData {
-                    kv,
-                    streams: HashMap::new(),
-                    ..Default::default()
-                },
-            )]),
-            &mut out,
-            &mut fx,
-        )
+    tw.try_cold_loaded(econ_boot(kv))
         .map_err(|e| format!("{e:?}"))
 }
 /// Register gold, a system faucet (acct 0), and one player account (acct 1); mint
@@ -481,13 +460,8 @@ fn boot_with_tail(max: usize) -> TestWorld {
 
 fn reboot_with_tail(kv: Vec<(SmolStr, serde_json::Value)>, max: usize) -> TestWorld {
     let mut tw = boot_with_tail(max);
-    tw.modules_loaded(HashMap::from([(
-        SmolStr::new(NS),
-        ModuleBootData {
-            kv,
-            ..ModuleBootData::default()
-        },
-    )]));
+    tw.try_cold_loaded(econ_boot(kv))
+        .expect("module boot data must load");
     tw
 }
 
@@ -805,13 +779,8 @@ fn boot_j3(tail: usize, every: u64) -> TestWorld {
 
 fn reboot_j3(kv: Vec<(SmolStr, serde_json::Value)>, tail: usize, every: u64) -> TestWorld {
     let mut tw = boot_j3(tail, every);
-    tw.modules_loaded(HashMap::from([(
-        SmolStr::new(NS),
-        ModuleBootData {
-            kv,
-            ..ModuleBootData::default()
-        },
-    )]));
+    tw.try_cold_loaded(econ_boot(kv))
+        .expect("module boot data must load");
     tw
 }
 
@@ -884,14 +853,18 @@ fn reboot_j4(
         omitted.insert(SmolStr::new("journal"), floor);
     }
     let mut tw = boot_j3(tail, every);
-    tw.try_modules_loaded(HashMap::from([(
+    tw.try_cold_loaded(HashMap::from([(
         SmolStr::new(NS),
         ModuleBootData {
             kv,
             omitted,
             ..ModuleBootData::default()
         },
-    )]))?;
+    )]))
+    .map_err(|e| match e {
+        ColdError::Module(e) => e,
+        e => ModError::msg(e.to_string()),
+    })?;
     Ok(tw)
 }
 
@@ -1234,13 +1207,8 @@ fn reboot_w2(
     window_secs: i64,
 ) -> TestWorld {
     let mut tw = boot_w2(tail, every, window_max, window_secs);
-    tw.modules_loaded(HashMap::from([(
-        SmolStr::new(NS),
-        ModuleBootData {
-            kv,
-            ..ModuleBootData::default()
-        },
-    )]));
+    tw.try_cold_loaded(econ_boot(kv))
+        .expect("module boot data must load");
     tw
 }
 
