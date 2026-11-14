@@ -568,8 +568,9 @@ fn last_cell(lines: &[LedgerEvent], of: ObjId) -> Option<(u16, u16)> {
 }
 
 /// **Where the field recorded `hull` while it answered**: the first position record after
-/// its first round, and the first after a round it fired once two more records had passed
-/// (ten arena seconds at the five-second cadence). `None` until it has fired across them.
+/// its first round, and the first record after a round it fired once that record had passed
+/// (the field records every unit every five arena seconds). `None` until it has fired across
+/// two records.
 fn answered_across(
     lines: &[LedgerEvent],
     hull: ObjId,
@@ -584,8 +585,7 @@ fn answered_across(
     let first_shot = *shots.first()?;
     let after = path.iter().position(|(at, ..)| *at >= first_shot)?;
     let from = *path.get(after)?;
-    let two_on = path.get(after + 2)?.0;
-    let later = *shots.iter().find(|at| **at >= two_on)?;
+    let later = *shots.iter().find(|at| **at > from.0)?;
     let to = *path.iter().find(|(at, ..)| *at >= later)?;
     Some((from, to))
 }
@@ -679,7 +679,7 @@ async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
         "and on nobody else"
     );
     // It kept going while it answered: where the field recorded it just after its first
-    // round, and where it recorded it at a later round, two records on, differ.
+    // round, and where it recorded it after a later round, differ.
     let (from, to) = answered_across(&g.lines, hull).expect("the raid ended on it");
     let moved_cm = (to.1 - from.1).abs().max((to.2 - from.2).abs());
     assert!(
